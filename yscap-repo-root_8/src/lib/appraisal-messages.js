@@ -87,11 +87,25 @@ function storedFailNote(e) {
       ? 'Not sent — sending to the appraisal company is switched off. Switch it on, then send it again.'
       : 'Not sent — the appraisal company connection is switched off. Switch it on, then send it again.';
   }
-  // THEY ANSWERED AND SAID NO. `retryable` is set by the transport for exactly this
-  // question, so it is read rather than a status range being re-derived here — and it
-  // must be a real `false`, never a missing one, or every network failure without a
-  // status would be reported as a permanent refusal.
-  if (e && e.retryable === false && Number(e.status) >= 400 && Number(e.status) < 500) {
+  // THEIR END TURNED OUR LOGIN AWAY — a different person fixes a credential from a
+  // rejected document, so the two must not read alike.
+  const status = Number(e && e.status);
+  if (/_REJECTED$/.test(code) || status === 401 || status === 403) {
+    return 'Not sent — the appraisal company did not accept our login. '
+      + 'The connection needs to be checked before this can go.';
+  }
+  // THEY ANSWERED AND SAID NO. `retryable` is what the transport sets for exactly this
+  // question, on BOTH desks, so it is read rather than re-derived — and it must be a
+  // real `false`, never a missing one, or every network failure would be reported as a
+  // permanent refusal.
+  //
+  // IT IS DELIBERATELY NOT PAIRED WITH A 4xx RANGE. Class puts `success:false` inside an
+  // HTTP **200** (their own guide, and the transport says so where it throws), which is
+  // their ORDINARY refusal — "Loan number already exists". Gating on 4xx skipped it and
+  // wrote "could not be reached. You can send it again." onto the row: they were
+  // reached, they answered, and sending the identical thing again cannot work. That is
+  // both halves of the sentence false on the most common failure this desk has.
+  if (e && e.retryable === false) {
     return 'Not sent — the appraisal company would not accept it. Sending the same thing again will not help.';
   }
   return 'Not sent — the appraisal company could not be reached. You can send it again.';

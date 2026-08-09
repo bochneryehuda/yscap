@@ -337,7 +337,10 @@ async function productTitles() {
       }
       _productCache = { at: now, byId };
     }
-    return _productCache.byId;
+    // A COPY, not the live cache. Handing out the Map itself let any caller mutate this
+    // module's catalogue for the rest of the process — and the caller here loops over it
+    // per order, which is exactly where a stray `set`/`delete` would go unnoticed.
+    return new Map(_productCache.byId);
   } catch (_) { return null; }
 }
 

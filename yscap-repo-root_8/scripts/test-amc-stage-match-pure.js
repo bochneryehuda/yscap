@@ -207,6 +207,31 @@ for (const n of [1, 2, 3]) {
               // IDENTIFIABLE means this file's answer carries a name that picks out
               // THIS file and no other — the same question `bestFit` answers.
               const uniqueName = mine.fileName != null && bestFit(mine.fileName) === i;
+              // …OR THE WHOLE BATCH LINES UP, name for name. On files whose names differ
+              // only in case, no single label can pick one out — but a batch where every
+              // answer spells exactly one file, no two spell the same one and every file
+              // is spelled cannot have come from a rewrite (a rewrite is a function of
+              // the name, so it collapses such a pair or misses both), so the labels are
+              // an echo and every file is identifiable.
+              //
+              // This is the ONE place the oracle restates a rule the module also has,
+              // and it is deliberate and bounded: it feeds the identifiable-but-MISSED
+              // counter only, which can never excuse a mis-file — the never-wrong
+              // assertion above is a separate test over a separate condition. Without
+              // it the sweep would not notice that pass 0 had been deleted.
+              const linedUp = (() => {
+                if (answers.length !== files.length) return false;
+                const by = new Array(files.length).fill(-1);
+                for (let k = 0; k < answers.length; k++) {
+                  const fn = answers[k].fileName;
+                  if (fn == null) return false;
+                  const hits = [];
+                  for (let j = 0; j < files.length; j++) if (files[j].fileName === fn) hits.push(j);
+                  if (hits.length !== 1 || by[hits[0]] !== -1) return false;
+                  by[hits[0]] = k;
+                }
+                return by.every((k) => k !== -1);
+              })();
               // A part number is only IDENTIFYING while nothing contradicts it: the
               // batch is complete (so the numbering is still ours) and this answer's own
               // filename does not point away from this file. When the two labels
@@ -222,7 +247,7 @@ for (const n of [1, 2, 3]) {
               // protects a document. Weakening this one asks for less optimism.
               const trustedPart = mine.name === 'part' + i && keep.length === n
                 && (mine.fileName == null || !pointsAway(mine.fileName, i));
-              if (uniqueName || trustedPart) {
+              if (uniqueName || trustedPart || linedUp) {
                 identifiableMissed++;
                 if (missedShapes.length < 5) {
                   missedShapes.push(`MISSED n=${n} dup=${dupNames} keep=[${keep}] order=[${order}] name=${nameMode} fn=${fnMode} i=${i}`);
@@ -293,34 +318,66 @@ const F = (...names) => names.map((fileName) => ({ fileName }));
 // the exact spelling of one AND a plausible lower-cased rewrite of the other, and a
 // vendor rewriting names on the way in is ordinary. Nothing separates those readings.
 //
-// So a batch whose PART NUMBERS have been renumbered is refused here, deliberately.
-// Refusing costs a retry, which is always available; the swap records both documents as
-// delivered, greys them out in the picker, and makes the one nobody received impossible
-// to send again. The property being asserted is the one that matters, and it is the
-// tenth audit's actual finding: neither file may ever be given the other's link.
+// WHAT SEPARATES THE TWO IS THE SHAPE OF THE WHOLE BATCH, not the one answer. When
+// every answer names one of our files exactly, no two name the same one and every file
+// is named, no rewrite can have produced that (a rewrite is a function of the name, so
+// it collapses these two onto one file or onto neither) — so the exact names are an
+// echo, possibly reordered, and they place. A batch that does NOT line up that way
+// leaves both readings open, and the module refuses.
 {
   const files = F('Contract.pdf', 'contract.pdf');
   const got = matchStaged(files, [
     { name: 'part0', fileName: 'contract.pdf', retrievalUrl: 'ASSIGNMENT' },
     { name: 'part1', fileName: 'Contract.pdf', retrievalUrl: 'PURCHASE' },
   ]);
-  ok(!got[0] || got[0].retrievalUrl !== 'ASSIGNMENT',
-     'a case-different sibling never receives the other document’s link');
-  ok(!got[1] || got[1].retrievalUrl !== 'PURCHASE', 'and the swap cannot happen the other way');
-  ok(got[0] === null && got[1] === null,
-     'and where the exact spelling is also a plausible rewrite of its sibling, nothing is guessed');
+  ok(got[0] && got[0].retrievalUrl === 'PURCHASE',
+     'two files whose names differ only in case are told apart when the whole batch lines up');
+  ok(got[1] && got[1].retrievalUrl === 'ASSIGNMENT', 'and neither gets the other’s link');
 }
-// The SAME two files with TRUTHFUL part numbers still place — the case above costs a
-// retry only when the vendor renumbered, not on an ordinary answer.
+// …with NOTHING but the filenames — no part numbers at all. This is the ordinary answer
+// on such a loan, the vendor returns it the same way every time, and refusing it does
+// not cost a retry: it costs the document, permanently.
 {
   const files = F('Contract.pdf', 'contract.pdf');
   const got = matchStaged(files, [
-    { name: 'part0', fileName: 'Contract.pdf', retrievalUrl: 'PURCHASE' },
-    { name: 'part1', fileName: 'contract.pdf', retrievalUrl: 'ASSIGNMENT' },
+    { fileName: 'Contract.pdf', retrievalUrl: 'PURCHASE' },
+    { fileName: 'contract.pdf', retrievalUrl: 'ASSIGNMENT' },
   ]);
-  ok(got[0] && got[0].retrievalUrl === 'PURCHASE',
-     'two files whose names differ only in case are still told apart when the numbering holds');
-  ok(got[1] && got[1].retrievalUrl === 'ASSIGNMENT', 'and each keeps its own link');
+  ok(got[0] && got[0].retrievalUrl === 'PURCHASE', 'an unnumbered echo of both names still places');
+  ok(got[1] && got[1].retrievalUrl === 'ASSIGNMENT', 'each on its own file');
+}
+// THE ELEVENTH AUDIT'S SWAP, which is the same two files and must still refuse: ONE
+// answer, carrying file 1's exact spelling and file 0's part number. Its filename is
+// equally readable as a lower-cased rewrite of file 0's name, the batch is short so
+// nothing corroborates either reading, and file 1 was never staged — placing it there
+// records a document as delivered that nobody received.
+{
+  const files = F('Contract.pdf', 'contract.pdf');
+  const got = matchStaged(files, [
+    { name: 'part0', fileName: 'contract.pdf', retrievalUrl: 'BYTES-OF-FILE-0' },
+  ]);
+  ok(got[1] === null, 'a file that was never staged is never handed another file’s link');
+  ok(got[0] === null, 'and where the exact spelling is also a plausible rewrite of its sibling, nothing is guessed');
+}
+// Two files that genuinely SHARE a name line up with nothing — the echo names both, so
+// it names neither, and no arrangement of the batch can change that.
+{
+  const files = F('Contract 2024.pdf', 'Contract 2024.pdf');
+  const got = matchStaged(files, [
+    { fileName: 'Contract 2024.pdf', retrievalUrl: 'A' },
+    { fileName: 'Contract 2024.pdf', retrievalUrl: 'B' },
+  ]);
+  ok(got[0] === null && got[1] === null, 'two files with the identical name are never told apart by it');
+}
+// A REWRITE THAT COLLAPSES THEM is refused, which is what makes the rule above safe: a
+// vendor lower-casing both names produces two answers claiming ONE file.
+{
+  const files = F('Contract.pdf', 'contract.pdf');
+  const got = matchStaged(files, [
+    { fileName: 'contract.pdf', retrievalUrl: 'A' },
+    { fileName: 'contract.pdf', retrievalUrl: 'B' },
+  ]);
+  ok(got[0] === null && got[1] === null, 'a rewrite that collapses two names onto one places nothing');
 }
 // THE SWAP the ninth audit found, and the reason filenames are compared by MEANING.
 // The vendor reordered the parts, numbered them by their own position, and rewrote the
@@ -412,12 +469,28 @@ const F = (...names) => names.map((fileName) => ({ fileName }));
   // that name agrees with BOTH files, so agreeing proves nothing and position is all
   // that is left — which is exactly the unlabelled batch this refuses above. The sweep
   // cannot see this case (a shared name makes every shape unprovable either way), so it
-  // is pinned by hand: reverting the `discriminates` test in pass 3 revives it silently.
+  // is pinned by hand. It is what stops the pass-0 line-up rule from reaching a genuine
+  // duplicate: the echo names BOTH files, so it names exactly one of nothing.
   const shared = matchStaged(F('Contract.pdf', 'Contract.pdf'), [
     { fileName: 'Contract.pdf', retrievalUrl: 'u0' },
     { fileName: 'Contract.pdf', retrievalUrl: 'u1' }]);
   ok(shared[0] === null && shared[1] === null,
      'a filename both files share is not evidence, so position alone is still refused');
+}
+// EXACT SPELLING BEATS A MATCH OF MEANING WHEN BOTH CLAIM ONE FILE — deliberate, and
+// pinned by hand because the sweep's alphabet cannot reach it. Two answers claim file 0:
+// one carries its exact name, the other a rewrite of it. Everywhere else an ambiguous
+// claim is refused (`hits.length === 1`), so this is the one place the module chooses
+// between two claimants rather than declining — and it chooses the stronger evidence,
+// which is the same reason `identifies` ranks exact above key at all. Under exclusivity
+// this can only fire when one of the two is lying, and taking the merely-equivalent one
+// would be the case-different swap again.
+{
+  const got = matchStaged(F('a b.pdf', 'zzz.pdf'), [
+    { fileName: 'a b.pdf', retrievalUrl: 'EXACT' },
+    { fileName: 'ab.pdf', retrievalUrl: 'REWRITTEN' }]);
+  ok(got[0] && got[0].retrievalUrl === 'EXACT', 'the exact spelling wins over a rewrite of the same name');
+  ok(got[1] === null, 'and the file neither of them named is left alone');
 }
 // Junk in, nothing out — never a throw.
 ok(matchStaged(F('a.pdf'), null)[0] === null, 'a non-array answer matches nothing');

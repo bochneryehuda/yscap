@@ -587,7 +587,18 @@ function Documents({ appId, orderId, onChange }) {
         <Banner tone="bad">
           <strong>These were NOT sent:</strong>
           <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
-            {skipped.map((s2, i) => <li key={i}>{s2.filename || 'a document'} — {s2.detail || s2.reason}</li>)}
+            {/* THE REASON IN WORDS, and the appraisal company's own reference under it.
+                `errorTraceID` is a support ticket number, not an explanation — it used
+                to BE the explanation, which told nobody anything — so it reads as what
+                it is: the thing to quote when somebody calls them about this file. */}
+            {skipped.map((s2, i) => (
+              <li key={i}>
+                {s2.filename || 'a document'} — {s2.detail || s2.reason}
+                {s2.traceId
+                  ? <div style={{ fontSize: 11, opacity: 0.75 }}>Their reference: {s2.traceId}</div>
+                  : null}
+              </li>
+            ))}
           </ul>
         </Banner>
       ) : null}

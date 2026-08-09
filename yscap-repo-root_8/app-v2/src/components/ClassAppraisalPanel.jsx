@@ -287,20 +287,31 @@ function roleOf(c) { return (c && (c.Type != null ? c.Type : c.type)) || null; }
 //     said the same thing about a refusal Class had ANSWERED, where sending the identical
 //     text again cannot work, so it sent people to wait for something that never happens.
 //
-// Legacy rows still hold the raw exception text ("Class addNote failed: HTTP 502",
-// "connect ECONNREFUSED 10.0.0.4:443"). Those are recognised by their own shape and
-// translated rather than shown, which is what this function was originally for.
-const RAW_EXCEPTION_RE = /HTTP \d{3}|ECONN\w*|ETIMEDOUT|fetch failed|failed:|[A-Z][A-Z0-9]*_[A-Z0-9_]+/;
+// Legacy rows still hold the raw exception text, and THE TEST FOR THEM RUNS THE OTHER
+// WAY ROUND — recognise OURS, translate everything else. An allow-by-shape filter
+// (`/HTTP \d{3}|ECONN\w*|…/`) was tried and is fail-OPEN: anything it does not happen to
+// match is shown verbatim, so it put on the owner's screen exactly what this function
+// exists to keep off it — "Class addNote refused: Loan number already exists" (their
+// `success:false` inside an HTTP 200, the ordinary refusal), "Class notes failed after 3
+// attempts", "class: the UAD version of this order is unknown…", "socket hang up",
+// "Unexpected token < in JSON at position 0". The old version could not leak at all;
+// that was a fix trading one bug for a worse one.
+//
+// So the contract is a PREFIX the server owns (`src/lib/appraisal-messages.js`), which
+// is a thing this side can actually verify, rather than a list of shapes an exception
+// might take, which it cannot.
+const OURS_RE = /^(?:TEST MODE\b|Not sent —)/;
 
 function failNote(stored) {
-  if (!stored) return null;
+  if (typeof stored !== 'string' && typeof stored !== 'number') return stored == null ? null : { text: 'not sent — you can send it again', bad: true };
   const t = String(stored).trim();
   if (!t) return null;
   if (/^TEST MODE\b/.test(t)) return { text: 'test mode — recorded here, not sent to Class', bad: false };
   // A sentence the server wrote: show it as it is. It already names the state and the
   // next step, and re-deciding either here would be a second place for them to live.
-  if (!RAW_EXCEPTION_RE.test(t)) return { text: t.replace(/^Not sent — /, 'not sent — '), bad: true };
-  // Legacy raw text. The one distinction a person can act on is a switch of ours.
+  if (OURS_RE.test(t)) return { text: t.replace(/^Not sent — /, 'not sent — '), bad: true };
+  // Anything else is a row written before that contract existed, so it is the
+  // exception's own text. The one distinction a person can act on is a switch of ours.
   if (/switched off|disabled/i.test(t)) return { text: 'not sent — the connection is switched off', bad: true };
   return { text: 'not sent — you can send it again', bad: true };
 }
@@ -471,12 +482,16 @@ function OrderDetail({ appId, order, onChanged }) {
                     // A test-mode row is not a failure, so it must not be painted like
                     // one — the tone comes from the note, never from the column merely
                     // being filled in.
+                    // THE ONE QUESTION, ASKED ONCE. Guarding "still sending" on the raw
+                    // column while the note is decided from a TRIMMED copy let a
+                    // whitespace-only value produce neither a note nor `sending…`, so a
+                    // message that never left read as delivered.
                     const note = failNote(n.send_error);
                     return (
                       <div style={{ fontSize: 11, color: note && note.bad ? BAD : MUTED, marginTop: 2 }}>
                         {ours ? 'Us' : 'Class'} · {fmtWhen(n.vendor_created_at || n.created_at)}
                         {note ? ` · ${note.text}` : ''}
-                        {ours && !n.send_error && !n.sent_at ? ' · sending…' : ''}
+                        {ours && !note && !n.sent_at ? ' · sending…' : ''}
                       </div>
                     );
                   })()}

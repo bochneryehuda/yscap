@@ -20,16 +20,22 @@
  * first-come loop, because a weak match on file 0 must never steal the answer that
  * file 1 matches strongly:
  *
+ *   0. THE WHOLE BATCH LINES UP — every answer spells exactly one of our files, no two
+ *      spell the same one, and every file is spelled. A rewrite is a function of the
+ *      name, so it cannot produce that shape from two names that differ only in case;
+ *      a single lying filename cannot either, because the file it names has its own
+ *      answer claiming it. So the labels are an echo, possibly reordered.
  *   1. `name === 'part<i>'` AND the filename agrees (or the vendor echoed none) —
  *      but a BARE name (no filename to corroborate it) is trusted ONLY when the
  *      vendor returned as many answers as we sent. A dropped part is exactly when
  *      `part<i>` stops meaning our i, and a length that disagrees is the tell.
  *   2. The filename, when it identifies exactly one unmatched file AND exactly one
  *      unmatched answer. A duplicated filename identifies nothing.
- *   3. Position — only when the vendor returned as many answers as we sent, the
- *      entry carries NO identifying field that contradicts it, and there is nothing
- *      else it could be. A `name` naming a different part is evidence AGAINST
- *      position, never for it.
+ *   3. Position — ONLY on a single file with a single answer, where there is nothing
+ *      to confuse it with. A multi-file batch the vendor labels unusably is refused;
+ *      order alone can hide a reorder, and that is the swap this module exists to
+ *      prevent. (A general position pass was written, proved unreachable, and removed —
+ *      see pass 3.)
  *
  * Anything unmatched is REFUSED by the caller, which costs a retry. Guessing costs a
  * document that everything then reports as delivered.
@@ -158,10 +164,61 @@ function matchStaged(files, staged) {
     && named.every((n) => n >= 0 && n < answers.length);
   const barePartNamesTrusted = sameLength || !looksRenumbered;
 
+  // ---- pass 0: the whole batch lines up, name for name ---------------------
+  //
+  // EXCLUSIVITY IS RIGHT ABOUT ONE ANSWER AND WRONG ABOUT A WHOLE BATCH, and left on
+  // its own it threw away an ordinary case permanently rather than for one retry. On a
+  // loan carrying "Contract.pdf" and "contract.pdf", a vendor that simply echoes both
+  // names back — in order, nothing renumbered, nothing rewritten — was refused outright,
+  // because each name also matches its sibling in MEANING. The vendor answers the same
+  // way every time, so "it costs a retry" was false there: it costs the document.
+  //
+  // What settles it is the SHAPE OF THE WHOLE ANSWER, which one answer cannot show. A
+  // rewrite is a FUNCTION of the name, so it cannot map two names onto each other's
+  // spellings: apply any lower-casing, upper-casing or title-casing to both files above
+  // and the two answers either collapse onto ONE file or land on NEITHER. So when every
+  // answer names exactly one file, no two name the same one, and every file is named,
+  // the "these are rewrites" reading is not available — the vendor echoed our own names
+  // and possibly reordered them, which is exactly what the labels then say.
+  //
+  // AND A SINGLE LIE CANNOT PRODUCE THIS SHAPE. If one answer echoes some OTHER file's
+  // name, that file's own honest answer claims it too — the batch is complete, so that
+  // answer is present — and two claims on one file breaks the matching. Being wrong here
+  // therefore requires EVERY misplaced answer to be lying about its filename, which is
+  // the one thing no rule can defend against.
+  //
+  // Exact spelling only: a match of MEANING is what the sibling case turns on, so
+  // admitting it would re-open precisely the swap this guards.
+  const exactBijection = () => {
+    if (!answers.length || answers.length !== files.length) return null;
+    const claim = new Array(answers.length).fill(-1);
+    const takenBy = new Array(files.length).fill(-1);
+    for (let k = 0; k < answers.length; k++) {
+      const s = answers[k];
+      if (!s || s.fileName == null) return null;
+      const spelling = exactOf(s.fileName);
+      let hit = -1;
+      for (let j = 0; j < files.length; j++) {
+        if (fileExact[j] == null || fileExact[j] !== spelling) continue;
+        if (hit !== -1) return null;          // two files share this name — it names neither
+        hit = j;
+      }
+      if (hit === -1) return null;            // names none of our files
+      if (takenBy[hit] !== -1) return null;   // two answers claim one file
+      takenBy[hit] = k; claim[k] = hit;
+    }
+    return takenBy.every((k) => k !== -1) ? claim : null;
+  };
+  const lined = exactBijection();
+  if (lined) {
+    for (let k = 0; k < answers.length; k++) { out[lined[k]] = answers[k]; taken.add(answers[k]); }
+    return out;
+  }
+
   // ---- pass 1: the part name, corroborated ---------------------------------
   for (let i = 0; i < files.length; i++) {
     const want = 'part' + i;
-    const hit = answers.find((s) => {
+    const cands = answers.filter((s) => {
       if (taken.has(s) || s.name !== want) return false;
       // The filename identifies THIS file: the strongest evidence there is, and it
       // stands even in a batch whose numbering is otherwise untrustworthy.
@@ -171,6 +228,18 @@ function matchStaged(files, staged) {
       // Otherwise the part name stands alone, and is trusted on the usual terms.
       return barePartNamesTrusted;
     });
+    // TWO ANSWERS CANNOT BOTH BE part<i>, AND TAKING THE FIRST IS A COIN FLIP. This
+    // used to be `answers.find(…)`, so a batch carrying `part0, part1, part0` gave file
+    // 0 whichever part0 happened to come first — on the one decision where being wrong
+    // records a document as delivered that nobody received. Pass 2 has refused an
+    // ambiguous claim since it was written (`hits.length === 1`); pass 1 simply never
+    // asked the question. A filename that identifies this file still settles it, because
+    // that is real evidence rather than a tie-break.
+    let hit = cands.length === 1 ? cands[0] : null;
+    if (!hit && cands.length > 1) {
+      const corroborated = cands.filter((s) => identifies(s, i));
+      if (corroborated.length === 1) hit = corroborated[0];
+    }
     if (hit) { out[i] = hit; taken.add(hit); }
   }
 
@@ -196,42 +265,36 @@ function matchStaged(files, staged) {
     if (hits.length === 1) { out[i] = hits[0]; taken.add(hits[0]); }
   }
 
-  // ---- pass 3: position, as a last resort and only when nothing argues against it ----
+  // ---- pass 3: ONE file, one answer ----------------------------------------
   //
-  // A BATCH THE VENDOR LABELS NOT AT ALL IS REFUSED, and that is the deliberate
-  // trade. Order is the only thing left to go on, and a reorder we cannot see would
-  // swap two documents silently, record both as delivered and make neither
-  // retryable — the worst failure this integration has, and the one six audits kept
-  // finding. The cost is the other direction: such a batch does not send. That cost is
-  // bounded and visible — the refusal names each file and its reason, the poller says
-  // so every tick, and a single document always sends (with one file there is nothing
-  // to confuse it with). The vendor's own contract documents `name`, so this is the
-  // hypothetical case, not the ordinary one.
-  if (sameLength) {
-    for (let i = 0; i < files.length; i++) {
-      if (out[i]) continue;
-      const at = answers[i];
-      if (!at || taken.has(at)) continue;
-      // Either identifying field, when present, must AGREE. Reaching here means pass 1
-      // and pass 2 did not match it, so a present `name` necessarily names another
-      // part and a present `fileName` did not identify this file: both are evidence
-      // against position, not for it.
-      if (at.name != null && at.name !== 'part' + i) continue;
-      // Kept in the same shape as pass 1 so the two read alike, though `usable` below is
-      // what actually enforces filename agreement here — this line only ever fires on a
-      // name belonging to one of our other files, which pass 2 has already placed.
-      if (namesAnotherFile(at, i)) continue;
-      // With nothing USABLE to check, position is a guess — unless the vendor labels
-      // nothing at all (see above), or there is only one file, where there is nothing
-      // to confuse it with. A filename that two of our files share is not usable: it
-      // agrees with both, so agreeing proves nothing.
-      // A filename only CORROBORATES position when it actually matches this file — a
-      // vendor-sanitized name is not disproof (above) but it is not proof either, so a
-      // batch labelled only with names we cannot recognise is refused like an
-      // unlabelled one.
-      const usable = at.name != null || (!!identifies(at, i) && claimedOnce(i));
-      if (!usable && files.length > 1) continue;
-      out[i] = at; taken.add(at);
+  // A BATCH THE VENDOR LABELS NOT AT ALL IS REFUSED, and that is the deliberate trade.
+  // Order is the only thing left to go on, and a reorder we cannot see would swap two
+  // documents silently, record both as delivered and make neither retryable — the worst
+  // failure this integration has, and the one six audits kept finding. The cost is the
+  // other direction: such a batch does not send. That cost is bounded and visible — the
+  // refusal names each file and its reason, and the poller says so every tick. The
+  // vendor's own contract documents `name`, so this is the hypothetical case, not the
+  // ordinary one.
+  //
+  // WHAT REMAINS IS THE CASE WHERE POSITION CANNOT BE WRONG: a single file, with a
+  // single answer, and nothing to confuse it with.
+  //
+  // This used to be written as a general position pass, guarded by a `name` agreement
+  // check, a `namesAnotherFile` veto, and a `usable` clause requiring the filename to
+  // identify this file and no other answer to claim it. Every one of those guards was
+  // UNREACHABLE, and the twelfth audit proved it by instrumenting the sweep: 4
+  // placements here, none with more than one file. The reasoning is short — with the
+  // lengths equal a bare `part<i>` is trusted, so pass 1 already placed any answer whose
+  // name is `part<i>` unless `namesAnotherFile` vetoed it, which this pass then vetoes
+  // too; and an answer whose filename identifies file i exclusively, claimed by nobody
+  // else, is exactly what pass 2 places. So the guards described a general rule the code
+  // could not reach, which is worse than not having one: a later reader "fixing" one of
+  // them would have changed behaviour without knowing it. The rule it can reach is
+  // stated instead.
+  if (sameLength && files.length === 1) {
+    const at = answers[0];
+    if (at && !taken.has(at) && !out[0] && (at.name == null || at.name === 'part0')) {
+      out[0] = at; taken.add(at);
     }
   }
 

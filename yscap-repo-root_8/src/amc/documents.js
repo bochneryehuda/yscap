@@ -264,11 +264,17 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
     spOrderNumber: order.sp_order_number, clientOrderNumber: order.client_order_number, documents,
   });
   const amcAction = built.message.requestActionType;
+  // EVERY EXIT FROM HERE CARRIES WHAT WAS HELD BACK, and that is the point: `skipped`
+  // is where each vendor trace id now lives (it was taken out of the wording because it
+  // is a support reference, not an explanation), so an exit that journals without it
+  // makes the trace id exist nowhere at all — the exact outcome the change was for.
+  const withHeld = (payload) => (skipped.length ? { answered: payload, held: skipped } : payload);
 
   let resp;
   try { resp = await transport.write(built, { orderId: order.cdg_order_number || undefined, label: amcAction, dryrun }); }
   catch (e) {
-    await journal(dbh, { orderId: order.id, appId: order.application_id, action: amcAction, request: built, ok: false, error: String(e.message || e), staffId });
+    await journal(dbh, { orderId: order.id, appId: order.application_id, action: amcAction, request: built,
+      response: withHeld(null), ok: false, error: String(e.message || e), staffId });
     return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'send_failed', message: sendFailMessage(e, 'The documents'), skipped };
   }
 
@@ -277,7 +283,8 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
     const err = cdg.parseError(resp);
     if (err) {
       if (String(err.code) === '-100' || /authenticat/i.test(err.description || '')) session.invalidate();
-      await journal(dbh, { orderId: order.id, appId: order.application_id, action: amcAction, request: built, response: resp, ok: false, error: err.description || err.code, staffId });
+      await journal(dbh, { orderId: order.id, appId: order.application_id, action: amcAction, request: built,
+        response: withHeld(resp), ok: false, error: err.description || err.code, staffId });
       return { ok: false, error: 'amc_nack', message: nackMessage(err, 'the documents'), skipped };
     }
   }
@@ -297,9 +304,8 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
   // vendor trace id, which is deliberately no longer in the wording the desk reads and
   // would otherwise exist nowhere at all. It rides INSIDE `response`: `journal`
   // destructures a fixed set of keys, so a new top-level one is silently dropped.
-  const answered = dry ? { dryrun: true } : resp;
   await journal(dbh, { orderId: order.id, appId: order.application_id, action: amcAction, request: built,
-    response: skipped.length ? { answered, held: skipped } : answered, ok: true, staffId });
+    response: withHeld(dry ? { dryrun: true } : resp), ok: true, staffId });
   return { ok: true, dryrun: dry || undefined, uploaded, skipped };
 }
 

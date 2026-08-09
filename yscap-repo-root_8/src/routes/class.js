@@ -25,6 +25,8 @@ const orderBuild = require('../class/order-build');
 const callbacks = require('../class/callbacks');
 const messages = require('../class/messages');
 const revisionReasons = require('../class/revision-reasons');
+// ONE wording for both desks — see src/lib/appraisal-messages.js.
+const { storedFailNote } = require('../lib/appraisal-messages');
 
 router.use(requireAuth, requireStaff);
 
@@ -213,7 +215,11 @@ router.post('/files/:id/order', async (req, res) => {
         : 'The order WAS placed with Class, but PILOT could not record it — its updates will not reach this file. Tell an administrator, with the order number above.',
     });
   } catch (e) {
-    await finish({ status: 'error', last_error: String((e && e.message) || e).slice(0, 500) });
+    // A SENTENCE, NEVER THE EXCEPTION'S OWN TEXT. `class_orders.last_error` is read
+    // straight back to the screen by the orders list below, so this is the one on this
+    // desk where a raw paste is visible immediately — and it was the one the sibling
+    // sweep missed.
+    await finish({ status: 'error', last_error: storedFailNote(e) });
     if (e.code === 'CLASS_OUTBOUND_DISABLED') {
       return res.status(409).json({ error: e.code, message: 'Placing orders with Class Valuation is switched off.' });
     }
@@ -295,7 +301,7 @@ const { bigintId } = require('../lib/bigint-id');
 // true on THIS desk too. Their catalogue is the only place the name lives, so it is
 // resolved on read, and ONLY for a row that needs it (a healthy file asks for nothing).
 //
-// IT GOES THROUGH `client.productTitle`, WHICH IS THE CACHED LOOKUP. `client.products`
+// IT GOES THROUGH `client.productTitles`, WHICH IS THE CACHED LOOKUP. `client.products`
 // is a raw GET with no cache at all — on a read that renders the orders list, called
 // again after every note, sync, revision and placed order, that is a live request to
 // Class with a 60-second timeout and three tries, so a slow vendor stalls the file
@@ -325,7 +331,9 @@ async function nameClassOrders(rows) {
   const byId = await client.productTitles();
   if (!byId) return rows;   // catalogue unreachable — a number with no name still reads
   for (const o of need) {
-    const nm = byId.get(String(o.product_id));
+    // TRIMMED, because the single-id lookup this replaced trimmed: a product id stored
+    // with stray whitespace used to resolve and must not silently stop.
+    const nm = byId.get(String(o.product_id).trim());
     if (nm) o.product_title = nm;
   }
   return rows;

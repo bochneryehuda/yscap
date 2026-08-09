@@ -100,8 +100,13 @@ function signInMessage(e, opts = {}) {
   // THEIR OWN REFUSAL IS WORTH SHOWING — "Invalid credentials" tells somebody exactly
   // what to do — so it is framed and bounded by the shared wording, never pasted.
   if (code === 'AMC_LOGIN_REJECTED') {
-    return nackMessage(e, 'our sign-in') + saved
-      + ' The login details need to be checked or re-issued.';
+    // THEIR TEXT ENDS WHERE WE SAY IT DOES. `nackMessage` closes on the vendor's own
+    // words, which carry no full stop of their own, so appending to it ran two sentences
+    // together: "…would not accept our sign-in: Invalid credentials The login details
+    // need to be checked". Terminating it first is the whole fix; the vendor's fragment
+    // still comes last within its own sentence.
+    const said = nackMessage(e, 'our sign-in').replace(/[\s.]*$/, '.');
+    return said + saved + ' The login details need to be checked or re-issued.';
   }
   // AND THE EXCEPTION'S OWN TEXT STOPS HERE. This used to end with
   // `' (' + raw.slice(0, 160) + ')'`, which put "AMC DoLogin failed: HTTP 502" and

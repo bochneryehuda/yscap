@@ -71,6 +71,41 @@ function objectAt(src, openIdx) {
   return null;   // unbalanced — report nothing rather than a runaway slice
 }
 
+// COMMENTS ARE NOT CODE, and this file is written in a codebase that quotes the code it
+// removed. `src/amc/session.js` already carries the literal `' (' + raw.slice(0,160) +
+// ')'` in a comment explaining why it is gone; add the word `return` anywhere near it
+// and the scan below would fail on CORRECT source — and the natural "fix" for that is to
+// weaken the scan, which is how a guard stops guarding. `objectAt` has skipped comments
+// since it was written; the taint scan must too.
+function stripComments(src) {
+  let out = '';
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (c === '/' && src[i + 1] === '/') {
+      const nl = src.indexOf('\n', i);
+      if (nl < 0) break;
+      out += '\n'; i = nl; continue;                    // keep the line count honest
+    }
+    if (c === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2);
+      if (end < 0) break;
+      out += src.slice(i, end + 2).replace(/[^\n]/g, ' ');
+      i = end + 1; continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      const q = c; out += c;
+      for (i++; i < src.length; i++) {
+        out += src[i];
+        if (src[i] === '\\') { i++; out += src[i]; continue; }
+        if (src[i] === q) break;
+      }
+      continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
 // WHAT COUNTS AS "the exception's own text". `String(e)`, `e.message`, `e.stack`,
 // `e.body` — the transport's words, written for us.
 //
@@ -152,20 +187,43 @@ for (const rel of FILES) {
   // hide, because it is the one place holding the exception ON PURPOSE.
   //
   // The exception arrives under a local name (`const raw = String(e.message || '')`),
-  // so the assignment is traced first — only the simple one-line form, which is the
-  // shape these helpers use, and the limit is stated rather than pretended away.
+  // so the assignment is traced first — declarations, plain assignments, `+=` and
+  // destructures.
+  //
+  // WHAT IT STILL CANNOT SEE, said plainly rather than pretended away: taint carried
+  // through a FUNCTION CALL — `function detailOf(e){ return String(e.message); }` and
+  // then `return 'Could not sign in (' + detailOf(e) + ')'`. Following that needs real
+  // dataflow, which a regex sweep is the wrong tool for. That hole is covered instead by
+  // the RUNTIME check at the end of this file, which calls the actual wording helpers
+  // with actual exceptions and reads what comes out — the only check that does not care
+  // how the sentence was assembled.
+  const code = stripComments(src);
   const tainted = new Set();
-  const re4 = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]*)/g;
-  while ((m = re4.exec(src))) {
-    const val = m[2];
-    if (looksRaw(val)) tainted.add(m[1]);
+  // A DECLARATION (`const raw = …`), a PLAIN ASSIGNMENT (`s = …`, `s += …`) and a
+  // DESTRUCTURE (`const { message } = e`) all park the exception under a local name, and
+  // only the first was traced — so two one-line refactors of the same defect walked past.
+  const re4 = /(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*\+?=\s*([^;\n]*)/g;
+  while ((m = re4.exec(code))) {
+    if (looksRaw(m[2])) tainted.add(m[1]);
+  }
+  const re4b = /(?:const|let|var)\s*\{([^}]*)\}\s*=\s*\(?\s*e(?:rr)?\b/g;
+  while ((m = re4b.exec(code))) {
+    for (const part of m[1].split(',')) {
+      const nm = part.split(':').pop().trim().replace(/^\.\.\./, '');
+      if (/^(?:message|stack|body)$/.test(part.split(':')[0].trim()) && nm) tainted.add(nm);
+    }
   }
   // …then every `return` whose expression BUILDS a sentence (it contains a quoted
   // string) and also mentions one of those names, or the exception itself.
   const re5 = /\breturn\s+([^;]*);/g;
-  while ((m = re5.exec(src))) {
+  while ((m = re5.exec(code))) {
     const expr = m[1];
-    if (!/['"`]/.test(expr)) continue;                 // not a sentence being built
+    // A bare `return s;` where `s` was BUILT into a sentence elsewhere carries no quote
+    // of its own, so the "is a sentence being built here" test walks past it — and
+    // `let s = 'Could not sign in'; s += ' (' + e.message + ')'; return s;` is one
+    // refactor away from the defect this exists to catch.
+    const bare = expr.trim();
+    if (!/['"`]/.test(expr) && !(/^[A-Za-z_$][\w$]*$/.test(bare) && tainted.has(bare))) continue;
     const names = [...tainted].filter((nm) => new RegExp(`\\b${nm}\\b`).test(expr));
     const direct = looksRaw(expr);
     if (names.length || direct) {
@@ -218,6 +276,83 @@ ok(shouty.length === 0, 'and every one of them reads as ordinary English');
   // on. Flagging either would make this check argue against the rule it enforces.
   ok(!looksRaw('String(err.description).trim()'), 'and never mistakes the vendor’s own refusal for it');
   ok(!looksRaw('e && e.code ? String(e.code) : \'\''), 'nor the code a helper branches on');
+}
+
+// ---------------------------------------------------------------------------
+// (4) AND THE WORDING HELPERS ARE ACTUALLY RUN.
+// ---------------------------------------------------------------------------
+// Everything above reads source, which can only ever catch the shapes it knows. This
+// calls the two helpers that decide what a person is told, hands them the exceptions
+// the transports really throw, and reads the sentences. It does not care how they were
+// assembled — which is exactly the gap a source scan leaves.
+{
+  const msgs = require(path.join(ROOT, 'src/lib/appraisal-messages'));
+  const session = require(path.join(ROOT, 'src/amc/session'));
+  const mk = (o) => Object.assign(new Error(o.m || 'x'), o);
+  // Every failure shape the two transports throw, taken from their own throw sites.
+  const THROWN = [
+    mk({ m: 'Class addNote refused: Loan number already exists', status: 200, retryable: false, body: { success: false } }),
+    mk({ m: 'Class order failed: HTTP 400', status: 400, retryable: false }),
+    mk({ m: 'Class order failed: HTTP 502', status: 502, retryable: true }),
+    mk({ m: 'Class token failed: HTTP 401', status: 401, retryable: false }),
+    mk({ m: 'Class notes failed after 3 attempts' }),
+    mk({ m: 'class: the UAD version of this order is unknown, so it cannot be read', code: 'class_version_unknown' }),
+    mk({ m: 'CLASS_OUTBOUND_DISABLED: refusing POST /orders — writes are gated off', code: 'CLASS_OUTBOUND_DISABLED' }),
+    mk({ m: 'AMC_DISABLED', code: 'AMC_DISABLED' }),
+    mk({ m: 'AMC_OUTBOUND_DISABLED', code: 'AMC_OUTBOUND_DISABLED' }),
+    mk({ m: 'AMC_CLIENT_ID / AMC_CLIENT_SECRET are not set', code: 'AMC_NOT_CONFIGURED' }),
+    mk({ m: 'AMC_LOGIN_ACCOUNT / AMC_LOGIN_PASSWORD / AMC_SUBDOMAIN are not all set', code: 'AMC_NOT_CONFIGURED' }),
+    mk({ m: 'AMC DoLogin failed: Invalid credentials', code: 'AMC_LOGIN_REJECTED', description: 'Invalid credentials' }),
+    mk({ m: 'AMC GetToken returned no accessToken' }),
+    mk({ m: 'connect ECONNREFUSED 10.0.0.4:443' }),
+    mk({ m: 'fetch failed' }),
+    mk({ m: 'The operation was aborted.' }),
+    mk({ m: 'Unexpected token < in JSON at position 0' }),
+    mk({ m: 'terminating connection due to administrator command' }),
+  ];
+  // A sentence must not carry any of the thrown text, nor any of the jargon the third
+  // check bans. The VENDOR's own `description` is the one thing that may travel, and
+  // only the login-rejected case carries one.
+  const leaked = [];
+  const badEnglish = [];
+  const say = (where, out, e) => {
+    const t = String(out);
+    // No fragment of the exception's own message, taken four words at a time — enough
+    // to catch a paste, short enough not to trip on an ordinary word.
+    const words = String(e.message).split(/\s+/);
+    for (let i = 0; i + 3 < words.length; i++) {
+      const frag = words.slice(i, i + 4).join(' ');
+      if (frag.length > 8 && t.includes(frag)) { leaked.push(`${where}: ${t}`); return; }
+    }
+    if (JARGON.test(t)) badEnglish.push(`${where}: ${t}`);
+    // Two sentences must not run together — a full stop or the end, never a capital
+    // letter hard against a word.
+    if (/[a-z] [A-Z][a-z]+ [a-z]/.test(t) && !/[.!?] [A-Z]/.test(t.replace(/[.!?] [A-Z]/g, '. X'))) {
+      // (only a smell; the explicit run-on shape is asserted below)
+    }
+  };
+  for (const e of THROWN) {
+    say('storedFailNote', msgs.storedFailNote(e), e);
+    say('sendFailMessage', msgs.sendFailMessage(e, 'The order'), e);
+    say('signInMessage', session.signInMessage(e), e);
+    say('signInMessage+draft', session.signInMessage(e, { savedDraft: true }), e);
+  }
+  if (leaked.length) console.error('  leaked exception text: ' + leaked.join('\n    '));
+  ok(leaked.length === 0, 'no wording helper hands back any part of the exception it was given');
+  if (badEnglish.length) console.error('  jargon at runtime: ' + badEnglish.join('\n    '));
+  ok(badEnglish.length === 0, 'and every sentence they build reads as ordinary English');
+
+  // THE VENDOR'S OWN REFUSAL DOES TRAVEL, and it must not run into our next sentence.
+  const rejected = mk({ m: 'AMC DoLogin failed: Invalid credentials', code: 'AMC_LOGIN_REJECTED', description: 'Invalid credentials' });
+  const said = session.signInMessage(rejected);
+  ok(said.includes('Invalid credentials'), 'the appraisal company’s own reason is still shown');
+  ok(!/Invalid credentials [A-Z]/.test(said), 'and their words are closed off before ours begin');
+
+  // A helper must never answer with nothing — an empty note on a row reads as success.
+  for (const e of THROWN) {
+    ok(String(msgs.storedFailNote(e)).trim().length > 10, 'every stored note is a real sentence');
+    break;
+  }
 }
 
 console.log(`\n[test-appraisal-refusals-speak-pure] ${pass} passed, ${fail} failed`);

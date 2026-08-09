@@ -88,7 +88,13 @@ async function getAccessToken() {
   if (!a.clientId || !a.clientSecret) {
     // No OAuth creds: a lower-env fallback api key may be configured instead.
     if (a.fallbackApiKey) return null;
-    throw new Error('AMC_CLIENT_ID / AMC_CLIENT_SECRET are not set');
+    // THE CODE IS THE SIBLING OF session.js's. Both mean "the connection was never
+    // finished", both are read by `storedFailNote` and `signInMessage`, and only one of
+    // them carried a code — so this half was reported as "could not be reached. You can
+    // send it again", which is a switch nobody will ever turn on by retrying.
+    const e = new Error('AMC_CLIENT_ID / AMC_CLIENT_SECRET are not set');
+    e.code = 'AMC_NOT_CONFIGURED';
+    throw e;
   }
   const now = Date.now();
   if (_tok.value && now < _tok.exp) return _tok.value;
