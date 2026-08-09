@@ -165,5 +165,60 @@ console.log('\nE · THE TEMPLATE — the figures survive HTML *and* text/plain')
   ok(empty.html === before.html, 'and an EMPTY figures/facts payload renders nothing rather than an empty box');
 }
 
+console.log('\nF · A PORTAL DRAW REQUEST speaks the same money vocabulary');
+
+{
+  // The §5B path: a line-item request that has not reached Sitewire yet, so there is no rollup
+  // entry and its OWN row is the source of record. It must still go through drawMoney.
+  const { moneyFromPortalRequest } = require('../src/sitewire/draw-email-blocks')._internals;
+  const lines = [{ sitewire_job_item_id: 1, name: 'Roof', requested_cents: REQ, approved_cents: null }];
+
+  ok(moneyFromPortalRequest(null) === null, 'no request yields no money object rather than a zeroed one');
+
+  const submitted = moneyFromPortalRequest({ id: 12, status: 'submitted', lines, total_requested_cents: REQ, approved_cents: null });
+  const sf = de.drawFigures(submitted, { borrower: true });
+  ok(submitted.has_inspector_amounts === false, 'a request nobody has inspected reports NO approved amounts');
+  ok(sf.primary.label === 'Requested' && sf.primary.value === '$50,000',
+    'so the REQUEST is the headline, never a confident $0 approval: ' + sf.primary.label + ' ' + sf.primary.value);
+
+  const decided = moneyFromPortalRequest({
+    id: 12, status: 'approved', total_requested_cents: REQ, approved_cents: APPR,
+    lines: [{ sitewire_job_item_id: 1, name: 'Roof', requested_cents: REQ, approved_cents: APPR }],
+  });
+  const df = de.drawFigures(decided, { borrower: true });
+  ok(df.primary.label === 'Approved on this draw' && df.primary.value === '$33,450',
+    'a decided request leads with the APPROVED amount: ' + df.primary.label + ' ' + df.primary.value);
+  // THE GUARD THAT MATTERS: no draw fee is resolved on this path (the close-out nets it later),
+  // so the email must never promise a wire amount or claim there is no fee.
+  ok(decided.is_final_approved === false, 'a coordinator-approved portal request is NOT our final approval');
+  ok(!/no draw fee|wired to you/i.test(String(df.primary.sub || '')),
+    'and it never claims a fee it has not resolved: ' + JSON.stringify(df.primary.sub));
+  ok(df.secondary.some((s) => s.label === 'Requested' && s.value === '$50,000'), 'the request sits underneath, smaller');
+  ok(df.secondary.some((s) => /Not approved/i.test(s.label) && s.value === '$16,550'), 'and so does the held-back difference');
+
+  // A decision recorded only as a total (the TrustPoint-mirrored shape) still reads as approved.
+  const totalOnly = moneyFromPortalRequest({ id: 13, status: 'closed_out', total_requested_cents: REQ, approved_cents: APPR, lines: [] });
+  ok(totalOnly.approved_cents === APPR && totalOnly.has_inspector_amounts === true,
+    'a request whose decision is only a total still reports a real approved amount');
+  ok(de.drawFacts({ money: decided, draw: { number: decided.number } }).rows[0].value === '#P12',
+    'and the facts box names it by its portal reference');
+}
+
+console.log('\nG · THE TEAM\'S OWN DRAW EMAIL gets the same treatment');
+
+{
+  // "the emails that are going out to our team and the emails everywhere" — the coordinator's
+  // enter-this-in-TrustPoint notice had its total sitting in a meta row indistinguishable from
+  // the forty line items stacked beneath it.
+  const catalog = require('../src/lib/email/catalog');
+  const many = Array.from({ length: 52 }, (_, i) => ({ name: 'Line ' + (i + 1), requested_cents: 100000 }));
+  const m = catalog.trustpointImport({ drawNumber: 'P12', propertyLabel: '825 Bishop St', loanNumber: 'YS-1', lines: many, totalCents: 5200000 });
+  ok(m.html.indexOf('[object Object]') === -1, 'the desk email renders with no [object Object]');
+  ok(m.html.includes('$52,000.00'), 'the total requested is the headline figure');
+  ok(m.html.includes('Line by line') && m.html.includes('Line 40'), 'the line items are a table, not forty meta rows');
+  ok(/\+12 more line item/.test(m.html), 'and the lines it could NOT show are named — never a silent cap');
+  ok(m.text.includes('$52,000.00') && m.text.includes('Line 40'), 'all of it reaches text/plain too');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

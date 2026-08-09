@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import { fileToBase64 } from '../lib/files.js';
 import DocPreview from './DocPreview.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /**
  * Credit report (Xactus import) — the internal "Credit report" condition
@@ -909,7 +910,7 @@ function ExternalCreditPanel({ appId, itemId, scopeKind, onChanged, onDownload, 
   // (bytes + row) and keeps it out of SharePoint, exactly like the file screen's
   // own delete. Distinct from Reject, which keeps a rejected copy on the file.
   async function del(doc) {
-    if (!window.confirm(`Permanently delete "${doc.filename || 'this credit report'}"?\n\nThis removes it for good and it will NOT be synced to SharePoint. Use this only for a document uploaded by mistake.`)) return;
+    if (!(await askConfirm(`Permanently delete "${doc.filename || 'this credit report'}"?\n\nThis removes it for good and it will NOT be synced to SharePoint. Use this only for a document uploaded by mistake.`))) return;
     setErr(''); setBusy(true);
     try {
       await api.staffDeleteDoc(doc.id);
@@ -938,7 +939,7 @@ function ExternalCreditPanel({ appId, itemId, scopeKind, onChanged, onDownload, 
   }
 
   async function withdraw() {
-    if (!window.confirm('Withdraw the exception request? The credit condition goes back to needing an imported report.')) return;
+    if (!(await askConfirm('Withdraw the exception request? The credit condition goes back to needing an imported report.'))) return;
     setErr(''); setBusy(true);
     try {
       await api.creditWaiverRemove(appId, { itemId: targetItemId, scope: scopeKind === 'co' ? 'co' : 'primary' });

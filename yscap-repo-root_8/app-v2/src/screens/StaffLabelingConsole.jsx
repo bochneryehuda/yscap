@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { showMessage } from '../lib/dialog.js';
+import { showMessage, askConfirm } from '../lib/dialog.js';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
@@ -75,7 +75,7 @@ export default function StaffLabelingConsole() {
   };
 
   const remove = async (id) => {
-    if (!window.confirm('Remove this example from training? (The uploaded file stays in Azure.)')) return;
+    if (!(await askConfirm('Remove this example from training? (The uploaded file stays in Azure.)'))) return;
     setBusy(true);
     try { await api.labelingDeleteExample(id); await load(); }
     catch (e) { showMessage('Could not remove: ' + (e && e.message || 'error')); }

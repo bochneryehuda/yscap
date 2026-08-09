@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /* Sovereign 4/4 admin surface — training proposals queue (owner-directed 2026-07-21).
  *
@@ -149,7 +150,7 @@ export default function StaffTrainingProposals() {
                   )}
                   {r.status === 'shadow_testing' && (
                     <button className="btn primary small" disabled={busy} title="Turn this change ON for real — PILOT starts using it on live files from now on."
-                      onClick={() => { if (window.confirm(`Turn this change on for real?\n\n"${PROPOSAL_LABEL[r.proposal_type] || r.proposal_type}"\n\nPILOT will start using it on live files from now on. You can still reject it later.`)) decide(r, 'promoted'); }}>Turn on for real (promote)</button>
+                      onClick={async () => { if (await askConfirm(`Turn this change on for real?\n\n"${PROPOSAL_LABEL[r.proposal_type] || r.proposal_type}"\n\nPILOT will start using it on live files from now on. You can still reject it later.`)) decide(r, 'promoted'); }}>Turn on for real (promote)</button>
                   )}
                   <button className="btn ghost small" disabled={busy} title="Decline this change — PILOT keeps working as it does today."
                     onClick={() => decide(r, 'rejected')}>Reject</button>

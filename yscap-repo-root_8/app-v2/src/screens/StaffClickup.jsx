@@ -3,6 +3,7 @@ import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import { useFlash } from '../components/FlashToast.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /* ClickUp Control Center (admin / platform_setup).
    Lets an admin validate and drive the ClickUp ⇄ portal sync without a
@@ -196,7 +197,7 @@ export default function StaffClickup() {
         <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <button className="btn primary" disabled={busy === 'sweep'}
             onClick={async () => {
-              if (!window.confirm('Read every ClickUp card again and refresh every borrower profile? This adds people and details — it never creates a loan file and never changes anything in ClickUp.')) return;
+              if (!(await askConfirm('Read every ClickUp card again and refresh every borrower profile? This adds people and details — it never creates a loan file and never changes anything in ClickUp.'))) return;
               setBusy('sweep'); setErr('');
               try { await api.clickupStartProfileSweep({}); flash('Started — it works through ClickUp in the background.'); loadSweep(); }
               catch (e) { setErr(e.message || 'Could not start'); }
@@ -222,8 +223,8 @@ export default function StaffClickup() {
         </p>
         <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
           <button className="btn primary" disabled={!!busy} onClick={() => runBackfill('dryrun')}>{busy === 'dryrun' ? 'Running…' : 'Dry-run (read-only)'}</button>
-          <button className="btn" disabled={!!busy} onClick={() => { if (window.confirm('Build the borrower identity graph from every ClickUp task? This writes shadow profiles but no loan files.')) runBackfill('data'); }}>{busy === 'data' ? 'Starting…' : 'Build identity graph'}</button>
-          <button className="btn" disabled={!!busy} onClick={() => { if (window.confirm('Full backfill: build the identity graph AND materialize RTL loan files. Proceed?')) runBackfill('full'); }}>{busy === 'full' ? 'Starting…' : 'Full backfill'}</button>
+          <button className="btn" disabled={!!busy} onClick={async () => { if (await askConfirm('Build the borrower identity graph from every ClickUp task? This writes shadow profiles but no loan files.')) runBackfill('data'); }}>{busy === 'data' ? 'Starting…' : 'Build identity graph'}</button>
+          <button className="btn" disabled={!!busy} onClick={async () => { if (await askConfirm('Full backfill: build the identity graph AND materialize RTL loan files. Proceed?')) runBackfill('full'); }}>{busy === 'full' ? 'Starting…' : 'Full backfill'}</button>
         </div>
 
         {dry && (

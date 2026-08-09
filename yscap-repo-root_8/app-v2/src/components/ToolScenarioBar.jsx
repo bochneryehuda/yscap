@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { readToolState, writeToolState } from '../lib/tool-scenario-state.js';
+import { askConfirm } from '../lib/dialog.js';
 
 /* SAVED SCENARIOS for an Investor Suite tool (owner-directed 2026-07-30).
  *
@@ -65,7 +66,7 @@ export default function ToolScenarioBar({ slug, toolName, getWin, onCountChange 
     if (!name) return flash('err', 'A scenario needs a name so you can find it again.');
 
     const existing = list.find((s) => s.name.trim().toLowerCase() === name.toLowerCase());
-    if (existing && !window.confirm(`You already have a scenario called "${existing.name}". Replace it with what's on screen now?`)) return;
+    if (existing && !(await askConfirm(`You already have a scenario called "${existing.name}". Replace it with what's on screen now?`))) return;
 
     setBusy(true);
     try {
@@ -107,7 +108,7 @@ export default function ToolScenarioBar({ slug, toolName, getWin, onCountChange 
   };
 
   const remove = async (row) => {
-    if (!window.confirm(`Delete the scenario "${row.name}"? This can't be undone.`)) return;
+    if (!(await askConfirm(`Delete the scenario "${row.name}"? This can't be undone.`))) return;
     setBusy(true);
     try { await api.deleteToolScenario(row.id); await refresh(); flash('ok', `Deleted "${row.name}".`); }
     catch (e) { flash('err', (e && e.detail) || "Couldn't delete that scenario."); }
