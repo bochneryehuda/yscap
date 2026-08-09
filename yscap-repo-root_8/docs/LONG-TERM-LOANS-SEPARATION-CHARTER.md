@@ -44,7 +44,7 @@ Reduced to its operating rules, this is the law now recorded in `CLAUDE.md`
 
 ## 2. What is actually here today (measured, not remembered)
 
-Everything below was **re-counted on merged `main` (f8a7df4, 2026-08-03)** — the repository moves fast, so these
+Everything below was **re-counted on merged `main` (ef573ae, 2026-08-03)** — the repository moves fast, so these
 figures are stamped with the commit they were measured at rather than left to rot. It is the reason the answer to
 "can we just add a loan-type column?" is no.
 
@@ -55,8 +55,8 @@ figures are stamped with the commit they were measured at rather than left to ro
 | Migration files that reference `applications` (185 of them in real SQL, the rest in comments) | **199** |
 | Columns on `applications` (45 in `schema.sql` + 97 added later, none ever dropped) | **142** |
 | Foreign keys pointing at `applications` | **111** |
-| Database triggers defined in `db/` | **36** |
-| Steps in the `npm test` chain | **594** |
+| Database triggers defined in `db/` (25 distinct; **15 of them fire ON `applications`**) | **36** |
+| Steps in the `npm test` chain | **595** |
 | JavaScript files under `src/` | **585** |
 
 Every one of those was designed, tested and hardened for **one** product: a short-term rehab loan on a house.
@@ -119,7 +119,7 @@ already the system's behaviour. We are formalising it, not inventing it.
 Add `product = 'rtl' | 'lt'` to `applications` and filter everywhere.
 
 - ✅ Cheapest to start; the pipeline is one query.
-- ❌ **Rejected.** 36 triggers and 199 migrations already act on that table with no idea a second product exists.
+- ❌ **Rejected.** 15 triggers and 185 migrations already act on that table with no idea a second product exists.
   Every existing query in 585 files silently becomes wrong until it is found and filtered. Protection would depend
   on never forgetting a `WHERE` clause — across every future change, forever. This is precisely the outcome the
   owner ruled out: *"features that we add for one by mistake added to the other."*
