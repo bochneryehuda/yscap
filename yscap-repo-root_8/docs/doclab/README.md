@@ -33,7 +33,7 @@ convention.
 | `src/doclab/field-map.js` | Where every variable comes from, and what is missing |
 | `src/doclab/payload.js` | Builds the request. Pure. Never fabricates |
 | `src/doclab/client.js` | The guarded transport |
-| `db/493_doclab.sql` | Requests, their history, the cached catalogues |
+| `db/505_doclab.sql` | Requests, their history, the cached catalogues |
 | `scripts/test-doclab-*.js` | 59 checks, in `npm test` |
 
 **Status: foundations only.** Nothing is wired to a screen and nothing can reach DocLab — there are

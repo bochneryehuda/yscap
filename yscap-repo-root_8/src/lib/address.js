@@ -573,8 +573,46 @@ function addressTextOf(v) {
   return [street, pick(v.city), tail].filter(Boolean).join(', ');
 }
 
-// "15th" -> "15", "61th" -> "61" (a typo for 61st is the same street).
-const dropOrdinal = (t) => t.replace(/^(\d+)(?:st|nd|rd|th)$/i, '$1');
+/* A NUMBERED STREET IS THE SAME STREET HOWEVER IT IS SPELLED.
+ *
+ * "15th" -> "15", "61th" -> "61" (a typo for 61st is the same street) — and,
+ * added 2026-08-09 after a live miss, the WORD form too: a county clerk writes
+ * "SECOND STREET", the vendor returns "2ND ST", and a borrower types "2nd St".
+ * Without this they are three different streets, which in a book concentrated
+ * in Brooklyn and Lakewood — where a large share of addresses ARE numbered
+ * streets — is a routine false mismatch, and a false mismatch here does not
+ * merely fail to match: it stages a DUPLICATE candidate for a property already
+ * on the record.
+ *
+ * Only ever applied to a whole token, so "Secondary Rd" and "Fortieth Manor"
+ * (a real name, not a number) are untouched — a token that IS the number word
+ * and nothing else. Compounds are handled by the caller joining the parts, so
+ * "Twenty First" and "Twenty-First" both reach here as two tokens and become
+ * "21" via the tens + unit combination below.
+ */
+const ORDINAL_WORD = {
+  first: '1', second: '2', third: '3', fourth: '4', fifth: '5',
+  sixth: '6', seventh: '7', eighth: '8', ninth: '9', tenth: '10',
+  eleventh: '11', twelfth: '12', thirteenth: '13', fourteenth: '14', fifteenth: '15',
+  sixteenth: '16', seventeenth: '17', eighteenth: '18', nineteenth: '19', twentieth: '20',
+  thirtieth: '30', fortieth: '40', fiftieth: '50', sixtieth: '60',
+  seventieth: '70', eightieth: '80', ninetieth: '90', hundredth: '100',
+};
+/* The TENS PREFIX of a compound ("twenty first"). Cardinal, not ordinal, because
+ * only the last word of a compound ordinal carries the ordinal ending. */
+const TENS_WORD = { twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
+const dropOrdinal = (t) => {
+  const s = t.replace(/^(\d+)(?:st|nd|rd|th)$/i, '$1');
+  if (s !== t) return s;
+  /* Strip the hyphen so "Twenty-First" is read as one number word. The token
+     loop folds the SPACED form ("Twenty First"); a hyphen makes it arrive here
+     as a single token instead, and both spellings are ordinary on a deed. */
+  const w = String(t || '').toLowerCase().replace(/[^a-z]/g, '');
+  if (Object.prototype.hasOwnProperty.call(ORDINAL_WORD, w)) return ORDINAL_WORD[w];
+  const m = w.match(/^(twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)$/);
+  if (m) return String(TENS_WORD[m[1]] + Number(ORDINAL_WORD[m[2]]));
+  return t;
+};
 const alnum = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
 /**
@@ -663,7 +701,21 @@ function parseAddressParts(v) {
     }
   }
 
-  const norm = toks.map((t) => { const k = alnum(dropOrdinal(t)); return TYPE_CANON[k] || k; }).filter(Boolean);
+  /* "Twenty First St" and "Twenty-First St" both arrive as two tokens, so the
+     tens word and the unit ordinal are folded together BEFORE the per-token
+     pass — otherwise "twenty" survives as a word and the street reads
+     "twenty1st", matching neither "21st" nor itself written the other way.
+     Only a tens word IMMEDIATELY followed by a 1–9 ordinal is folded, so
+     "Twenty Oaks Ln" and a street that merely starts with a number word are
+     untouched. */
+  const folded = [];
+  for (let i = 0; i < toks.length; i += 1) {
+    const tens = TENS_WORD[String(toks[i] || '').toLowerCase().replace(/[^a-z]/g, '')];
+    const nextOrd = i + 1 < toks.length ? Number(dropOrdinal(String(toks[i + 1] || '').replace(/[^a-z0-9]/gi, ''))) : NaN;
+    if (tens && Number.isInteger(nextOrd) && nextOrd >= 1 && nextOrd <= 9) { folded.push(String(tens + nextOrd)); i += 1; }
+    else folded.push(toks[i]);
+  }
+  const norm = folded.map((t) => { const k = alnum(dropOrdinal(t)); return TYPE_CANON[k] || k; }).filter(Boolean);
   out.street = norm.join('');
   const tail = norm[norm.length - 1];
   out.streetBase = (norm.length > 1 && tail && OPTIONAL_TYPE.has(tail)) ? norm.slice(0, -1).join('') : out.street;

@@ -56,7 +56,23 @@ const TR=(function(){
   // The entity a deal was held under, for display/exports: the LLC name, or
   // "Personal name" when the borrower held it personally (no LLC).
   function entityLabel(p){ return p.ownedPersonally ? "Personal name" : (p.entity||""); }
-  function exitDate(p){ return p.kind==="flip" ? p.saleDate : (p.rentDate||p.refiDate); }
+  /* A GROUND-UP EXITS ON WHICHEVER COMPLETION IT HAS (owner-authorized 2026-08-09:
+     a ground-up is finished when the building is done AND they "Sold OR
+     rented/refinanced"). Same shape as the server's exitDateOf in
+     src/lib/experience.js: the base answer first, and the ground fallback ONLY
+     when the base rule produced none — so this can add an exit date, never move
+     or remove one.
+     INERT UNTIL THE GROUND-UP SECTION EXISTS. The tool only builds "flip" and
+     "hold" kinds today, so isGround() is never true yet. It is written now so
+     that adding a ground kind cannot silently inherit the HOLD rule and count a
+     built-and-sold house as nothing — which is exactly the bug this fixes on the
+     server side. */
+  function isGround(k){ const s=String(k||"").toLowerCase(); return s.indexOf("ground")>=0||s.indexOf("construction")>=0; }
+  function exitDate(p){
+    const base = p.kind==="flip" ? p.saleDate : (p.rentDate||p.refiDate);
+    if(base) return base;
+    return isGround(p.kind) ? (p.saleDate||p.rentDate||p.refiDate) : base;
+  }
   function exitLabel(p){ return p.kind==="flip" ? "Sold" : (p.rentDate?"Leased":(p.refiDate?"Refinanced":"Exit")); }
   function holdMonths(p){ return monthsBetween(p.purchaseDate, exitDate(p)); }
 

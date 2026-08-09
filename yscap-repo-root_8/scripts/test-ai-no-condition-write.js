@@ -62,6 +62,13 @@ const ALLOWLIST = new Set([
   'src/lib/order-inbox.js',
   'src/lib/esign/draw-wire.js',      // e-sign / draw-wire condition
   'src/lib/raise-issue.js',          // staff "raise an issue" on an entity
+  // A staffer picks a document type and a reason on a past project and presses
+  // "Request a document"; this carries that click out. Not an AI path — there is
+  // no model anywhere in it: the vocabulary is a fixed table in the file, the
+  // wording is built from that table, and every field is chosen by the person at
+  // the screen. The routes are `POST /track-records/:id/request-doc` and the
+  // "needs documents" verify button, both behind the staff scope check.
+  'src/lib/track-record/doc-request.js',
   'src/lib/product-registration.js', // product registration -> first-class conditions row (db/022)
   'src/lib/closing.js',              // closing workspace -> HUD/ALTA + closed-package + tracking conditions (fixed templates, closer workflow)
   'src/routes/admin-conditions.js',  // admin Condition Studio (checklist_templates)

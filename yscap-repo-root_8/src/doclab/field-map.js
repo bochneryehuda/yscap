@@ -107,17 +107,17 @@ const FIELDS = Object.freeze([
     source: 'borrowers.current_address (the entity\'s notice address)',
     note: 'PILOT holds no separate mailing address for the entity, so the borrower\'s own address is used. Worth confirming with counsel that this is what the notice clause should say.' },
   { key: 'borrower_title', status: 'mapped', group: 'borrowers', array: 'borrowers',
-    source: 'llc_borrowers.member_title / llc_members.member_title (db/494)',
+    source: 'llc_borrowers.member_title / llc_members.member_title (db/506)',
     note: 'The owner\'s role — "Managing Member", "President". A FIXED list per entity type (lib/entity-type.TITLES), never free text: this prints under a signature line and DocLab merges it verbatim, so "managing member" / "Managing Member" / "MGR" must not all be reachable. Staff-entered; the closing desk is nudged when it is still blank.' },
   { key: 'signatory_name', status: 'mapped', group: 'borrowers', array: 'borrowers.signatories',
     source: 'borrowers.full_name of every member on llc_borrowers',
     note: 'Who signs for the entity. On a personal-name purchase, the borrower themself.' },
   { key: 'signatory_title', status: 'mapped', group: 'borrowers', array: 'borrowers.signatories',
-    source: 'llc_borrowers.member_title / llc_members.member_title (db/494)',
+    source: 'llc_borrowers.member_title / llc_members.member_title (db/506)',
     note: 'Same source as borrower_title, and this one is printed on the signature block of every document — which is why a blank one is a closing-desk nudge rather than something we let slide.' },
 
   /* ─────────────────────────────── entity character ───────────────────────────────
-     WAS THE BIGGEST GAP, AND IS NOW CLOSED (owner-directed 2026-08-09, db/494).
+     WAS THE BIGGEST GAP, AND IS NOW CLOSED (owner-directed 2026-08-09, db/506).
      PILOT's table is still called `llcs`, but it now carries `entity_type` — LLC,
      corporation, partnership or trust — and src/lib/entity-type.js turns that one
      answer into the four wordings below. That module is the ONE definition; never
@@ -138,10 +138,10 @@ const FIELDS = Object.freeze([
     source: 'llc_borrowers.ownership_pct / llc_members.ownership_pct (per owner)',
     note: 'ONLY sent for an entity whose owners hold a percentage. A corporation is sent number_of_shares instead — sending both would print whichever the template asks for, so the wrong one would land on a pledge as a fact.' },
   { key: 'number_of_shares', status: 'mapped', group: 'entity',
-    source: 'llc_borrowers.shares / llc_members.shares (per owner, db/494)',
+    source: 'llc_borrowers.shares / llc_members.shares (per owner, db/506)',
     note: 'Corporations only. Staff-entered at the closing desk; blank until somebody fills it, which the readiness report says out loud rather than sending a zero.' },
   { key: 'certificate_number', status: 'mapped', group: 'entity',
-    source: 'llc_borrowers.certificate_number / llc_members.certificate_number (db/494)',
+    source: 'llc_borrowers.certificate_number / llc_members.certificate_number (db/506)',
     note: 'A corporation issues NUMBERED stock certificates, and our loans take a pledge of the owners\' interests as extra collateral — the pledge has to name the exact certificate being handed over, the way a mortgage names the exact property. An LLC normally has no certificate, which is why the percentage serves there instead.' },
   { key: 'written consent', status: 'needs_config', group: 'entity',
     source: 'a standing sentence of boilerplate',

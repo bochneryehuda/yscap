@@ -7,7 +7,7 @@ import StaffExceptions from './StaffExceptions.jsx';
 import StaffFindingEscalations from './StaffFindingEscalations.jsx';
 import SyncReviews from './SyncReviews.jsx';
 import StaffMyExceptions from './StaffMyExceptions.jsx';
-import StaffTrackRecordReviews from './StaffTrackRecordReviews.jsx';
+import StaffTrackRecordWorkspace from './StaffTrackRecordWorkspace.jsx';
 
 /**
  * Approvals — ONE place for everything waiting on a human decision (owner-directed
@@ -30,9 +30,15 @@ const TABS = [
      somebody reads the closing statement behind it (owner-directed 2026-08-03).
      It belongs here rather than in a nav link of its own: it is a queue waiting
      on a human decision, which is what this hub is. Open to every staff role —
-     anyone can ask for a document or mark a line documentation-required; only a
-     processor can VERIFY one, and the server enforces that, not the tab. */
-  { key: 'track-record', label: 'Track record', blurb: 'Deals a borrower entered themselves, waiting for someone to verify them against the documents.', min: 'all', Comp: StaffTrackRecordReviews },
+     anyone can ask for a document or reject a check; only somebody with sign-off
+     can CONFIRM one, and the server enforces that, not the tab.
+
+     REPLACED 2026-08-09 by the WORKSPACE, which is the owner's "two stacked
+     track records, combine into ONE": the same queue, grouped the same way, plus
+     the three checks per project with their evidence and the typed document ask.
+     The old screen is retired rather than kept alongside — two of them on one
+     screen is the complaint this rebuild started from. */
+  { key: 'track-record', label: 'Track record', blurb: 'Every past project, its three checks, and the documents behind them — one screen.', min: 'all', Comp: StaffTrackRecordWorkspace },
   { key: 'mine', label: 'My requests', blurb: 'Exception requests you raised — withdraw or track them here.', min: 'all', Comp: StaffMyExceptions },
 ];
 

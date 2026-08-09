@@ -357,7 +357,7 @@ function buildPayload(file, lender, opts = {}) {
      `f.entityOrgType` family), which is what a closer needs when a real entity is
      unusual; the derivation is the default, never a ceiling.
 
-     AN UNCONFIRMED TYPE IS STILL SENT, AND WARNED ABOUT. db/494 stamped the whole
+     AN UNCONFIRMED TYPE IS STILL SENT, AND WARNED ABOUT. db/506 stamped the whole
      back book `llc` without anybody choosing it, so on those files this is our
      assumption rather than a stated fact — and a document that says "operating
      agreement" about a corporation is worse than one that says nothing. The value

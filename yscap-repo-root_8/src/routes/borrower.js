@@ -2869,6 +2869,41 @@ router.upsertPartner = upsertPartner;
 // ---------------- TRACK RECORDS (general per-borrower section) ----------------
 // A borrower's track record is one general dataset — never tied to a single
 // file. Loan-file experience conditions link here automatically.
+/* ── CONFIRMING PROPERTIES FOUND IN THE PUBLIC RECORDS (blueprint §9.4) ─────
+   Staff searched and staged; the borrower says which are theirs. A "yes" is a
+   CLAIM — it writes a line at `pending`, which counts toward nothing until our
+   team verifies it — and it is strictly less risky than the line they can
+   already type by hand below. Nothing on these three routes makes a vendor
+   call: a borrower may never spend the office's lookup allowance. */
+router.get('/track-record-candidates', async (req, res) => {
+  try {
+    res.json(await require('../lib/track-record/borrower-confirm').loadForBorrower(me(req)));
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.post('/track-record-candidates/:id/answer', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const out = await require('../lib/track-record/borrower-confirm').answerCandidate(req.params.id, {
+      borrowerId: me(req), answer: b.answer, dealType: b.dealType, note: b.note,
+    });
+    await audit(req, 'borrower_answered_track_record_candidate', 'borrower', me(req),
+      { candidateId: req.params.id, answer: b.answer, trackRecordId: out.trackRecordId || null });
+    try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+    require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.post('/track-record-candidates/:id/undo', async (req, res) => {
+  try {
+    const out = await require('../lib/track-record/borrower-confirm').undoAnswer(req.params.id, { borrowerId: me(req) });
+    await audit(req, 'borrower_undid_track_record_candidate', 'borrower', me(req),
+      { candidateId: req.params.id, lineRemoved: out.lineRemoved === true, lineKept: out.lineKept === true });
+    try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+    require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+
 router.get('/track-records', async (req, res) => {
   // Explicit borrower-safe allowlist — NEVER `t.*`. The row carries internal-only
   // columns the borrower must not see: `lo_notes` (candid staff notes on the deal,
@@ -3058,8 +3093,25 @@ router.post('/track-records', async (req, res) => {
   // PUT guard) — the conflict then no-ops and we re-select its id. Rows without
   // a clientRowId keep plain-insert behavior (the partial index ignores NULLs).
   const clientRowId = b.clientRowId ? String(b.clientRowId).slice(0, 80) : null;
+  /* A TYPED ENTITY NAME BECOMES A REAL ENTITY (owner-directed 2026-08-09: "any
+     LLC that he enters should be a real LLC on his profile"). Before this the
+     name was stored as free text and nothing else happened — no document slots,
+     no members, no verification, and no way for one verified company to carry
+     ownership to the other properties it held.
+
+     Only when the borrower did NOT pick an existing entity from the list
+     (`b.llcId`), and never for a personally-owned line. `promoteEntityName` never
+     throws, refuses junk, and writes nothing when the name could mean two of
+     their companies — so this can neither lose the deal being saved nor attach
+     it to the wrong company. */
+  let promotedLlcId = null;
+  if (!b.llcId && !b.ownedPersonally && b.entityName) {
+    const p = await require('../lib/track-record-entity')
+      .promoteEntityName(me(req), b.entityName, { firstSeenOn: 'track_record' });
+    promotedLlcId = p.llcId;
+  }
   const allNames = ['borrower_id', 'llc_id', 'client_row_id', ...names];
-  const allVals = [me(req), b.llcId || null, clientRowId, ...vals];
+  const allVals = [me(req), b.llcId || promotedLlcId || null, clientRowId, ...vals];
   const ph = allVals.map((_, i) => '$' + (i + 1)).join(',');
   const updateSet = ['llc_id=EXCLUDED.llc_id', ...names.map(n => `${n}=EXCLUDED.${n}`), 'updated_at=now()'].join(', ');
   const r = await db.query(
@@ -3075,6 +3127,10 @@ router.post('/track-records', async (req, res) => {
     trId = ex.rows[0] && ex.rows[0].id;
   }
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+  // AUDITED, like the staff door (staff_add_track_record). Without this the only
+  // trace of a borrower-created line was an SSE event and entered_by_kind — so
+  // "who put this deal on the record, and when" had no durable answer.
+  await audit(req, 'add_track_record', 'track_record', trId, { address: b.propertyAddress || null, dealType: b.dealType || null });
   // Live cross-user refresh (#112): staff viewing this borrower's record reload.
   require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
   res.status(201).json({ ok: true, trackRecordId: trId, missing: trackRecordMissing(b) });
@@ -3100,6 +3156,7 @@ router.put('/track-records/:id', async (req, res) => {
       WHERE id=$1 AND borrower_id=$2`,
     [req.params.id, me(req), b.llcId || null, ...vals]);
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+  await audit(req, 'edit_track_record', 'track_record', req.params.id, { address: b.propertyAddress || null, dealType: b.dealType || null });
   require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
   res.json({ ok: true, missing: trackRecordMissing(b) });
 });
@@ -3111,6 +3168,7 @@ router.delete('/track-records/:id', async (req, res) => {
     [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found or already verified' });
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+  await audit(req, 'delete_track_record', 'track_record', req.params.id);
   require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
   res.json({ ok: true });
 });

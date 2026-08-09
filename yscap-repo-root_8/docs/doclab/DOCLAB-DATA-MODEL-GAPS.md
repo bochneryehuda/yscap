@@ -32,8 +32,8 @@ already ahead, and the work is just to make sure the good structure actually rea
 
 ### 1. ~~We call every company an "LLC"~~ — **BUILT 2026-08-09**
 
-**This was the biggest one by a distance. It is now closed** (owner-directed 2026-08-09; db/494,
-db/495, `src/lib/entity-type.js`). The write-up below is kept because it explains *why* the change
+**This was the biggest one by a distance. It is now closed** (owner-directed 2026-08-09; db/506,
+db/507, `src/lib/entity-type.js`). The write-up below is kept because it explains *why* the change
 was worth making — and what still has to happen on each file.
 
 **What now happens.** Every company record carries an entity type — **LLC, corporation, partnership

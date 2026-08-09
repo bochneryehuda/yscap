@@ -310,8 +310,15 @@ async function openForFile(appId, q = db) {
  * must not make a condition permanently unsignable.
  */
 async function experienceBlockReason(appId, q = db) {
-  let open;
-  try { open = await openForFile(appId, q); } catch (_) { return null; }
+  let all;
+  try { all = await openForFile(appId, q); } catch (_) { return null; }
+  /* ONLY A 'warning' HOLDS THE CONDITION. `openForFile` returns every open row
+     because the screen must SHOW them all, but an 'info' finding is advisory —
+     a public-records index disagreeing with the borrower is something a reviewer
+     should see, not something that stops a closing. Without this filter the first
+     advisory code added would silently become a gate, and an outside data vendor
+     would be able to hold up a loan. */
+  const open = all.filter((f) => f && f.severity !== 'info');
   if (!open.length) return null;
   const what = open.length === 1 ? 'one thing' : `${open.length} things`;
   const first = open[0] && open[0].title ? ` (${open[0].title.toLowerCase()})` : '';
