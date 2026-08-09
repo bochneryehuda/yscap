@@ -54,44 +54,21 @@ function matchStaged(files, staged) {
 
   const taken = new Set();
 
-  // TWO ANSWERS CANNOT SHARE ONE LINK, and an answer that shares one is placed by
-  // nothing. `retrievalUrl` is the thing actually handed to the appraiser, so two files
-  // pointed at one link IS the mis-file this module exists to prevent — and it is what a
-  // vendor produces when it drops one of our files and answers twice about another (the
-  // count still matches, the spellings still look right, and exactly one of the two names
-  // is a lie). Which of them is the real one is not knowable, so neither is used.
+  // AN ANSWER'S LINK, asked ONE way. Two places asked it two ways — the pre-guard below
+  // treated `''` as "no link" while pass 1's de-duplication used it as a KEY, so two
+  // different answers that both carried an empty link collapsed into one and the first
+  // was taken: the coin flip pass 1 exists to refuse.
   //
-  // Marking them TAKEN rather than removing them is deliberate: `answers.length` is what
-  // makes a bare `part<i>` and a position believable, and quietly shrinking it would
-  // change those rules while claiming to change nothing.
-  // …unless they are the SAME answer said twice, which is not a disagreement at all. A
-  // repeated entry — or the identical object appearing twice in the array — carries one
-  // link AND one set of labels, so it describes one document and the first of them is
-  // used. Two entries sharing a link while DISAGREEING about which file they are is the
-  // dangerous shape, and neither of those is used.
-  {
-    const byLink = new Map();
-    for (const s of answers) {
-      const u = s.retrievalUrl == null ? null : String(s.retrievalUrl);
-      if (!u) continue;
-      if (!byLink.has(u)) byLink.set(u, []);
-      byLink.get(u).push(s);
-    }
-    const label = (s) => JSON.stringify([s.name == null ? null : String(s.name),
-      s.fileName == null ? null : String(s.fileName)]);
-    for (const group of byLink.values()) {
-      if (group.length < 2) continue;
-      const agree = group.every((s) => label(s) === label(group[0]));
-      // Agreeing: one answer, said twice — keep the first, ignore the copies.
-      // Disagreeing: one link cannot be two documents, and which is real is unknowable.
-      // A repeat that is the SAME OBJECT is one entry, not two — taking "the copy"
-      // would take the keeper with it, since they are the same reference.
-      for (let k = agree ? 1 : 0; k < group.length; k++) {
-        if (agree && group[k] === group[0]) continue;
-        taken.add(group[k]);
-      }
-    }
-  }
+  // Only a STRING counts. `String(v)` on a vendor object gives "[object Object]" for
+  // every one of them, which would read as one shared link and stop the whole batch
+  // sending — and on an object with no usable `toString` it throws, in a module whose
+  // contract is that junk in gives nothing out and never an exception.
+  const linkOf = (s) => {
+    const v = s && s.retrievalUrl;
+    if (typeof v !== 'string') return null;
+    const t = v.trim();
+    return t || null;
+  };
 
   // ===========================================================================
   // HOW A FILENAME IS COMPARED — EXACT FIRST, MEANING ONLY WHEN IT IS SAFE.
@@ -266,20 +243,94 @@ function matchStaged(files, staged) {
       if (takenBy[hit] !== -1) return null;   // two answers claim one file
       takenBy[hit] = k; claim[k] = hit;
     }
-    // ONE DOCUMENT CANNOT BE TWO DOCUMENTS. A vendor that dropped a file and answered
-    // twice about another passes the count and the spelling test — one of the two
-    // answers carries a name that is a lie — but both hand back the SAME link, and that
-    // is what says so. Judged only where the links are actually there to compare.
-    const links = answers.map((s) => (s.retrievalUrl == null ? null : String(s.retrievalUrl)));
-    if (links.every((u) => u)) {
-      if (new Set(links).size !== links.length) return null;
+    // …AND WHERE TWO OF OUR FILES CAN BE REWRITTEN INTO EACH OTHER, THE SPELLING IS NOT
+    // ENOUGH ON ITS OWN. The paragraph above claimed a single liar could not produce this
+    // shape, because the file it names has its own answer claiming it too. That is only
+    // true when the honest sibling echoes its name UNCHANGED. It does not have to:
+    //
+    //     files   : CONTRACT.PDF        , Contract.pdf
+    //     answers : part0 "Contract.pdf"   ← a lie (or a title-cased rewrite)
+    //               part1 "CONTRACT.PDF"   ← file 1's OWN name, upper-cased. Honest.
+    //
+    // The honest answer's rewrite lands on file 0's exact spelling, so it never collides
+    // with the liar, the line-up closes, and the two documents are swapped — with both
+    // part numbers TRUTHFUL and the batch in its original order. One lie was enough.
+    //
+    // So for a file that some sibling could be rewritten into (they share a normalized
+    // key), the part number has to CORROBORATE the spelling. Where the names cannot be
+    // confused for one another no rewrite can permute them, and the filename still stands
+    // alone — which is what keeps an ordinary reordered echo working.
+    //
+    // The cost is real and is the right way round: a colliding pair whose numbering was
+    // ALSO renumbered is refused, because at that point nothing in the answer is
+    // trustworthy about which file is which.
+    for (let k = 0; k < answers.length; k++) {
+      const i = claim[k];
+      const risky = fileKey[i] != null && countKey(fileKey[i]) > 1;
+      if (!risky) continue;
+      const said = partIndex(answers[k]);
+      if (said !== i) return null;   // absent, malformed or disagreeing — all unproven
     }
-    // These last two are redundant with the collision test above (with equal counts,
-    // one-to-one and onto are the same thing) and are KEPT deliberately — unlike the
-    // guards deleted from pass 3, each states a real precondition of the rule rather
-    // than describing one the code could never reach.
+    // A LINK-UNIQUENESS TEST USED TO SIT HERE and could never fire: the pre-guard above
+    // has already marked every duplicate-link answer TAKEN, and the `taken.has(s)` test
+    // at the top of this loop refuses on the first one. Both were kept "belt and
+    // braces", and each hid the other — removing either alone left every test green.
+    // The rule this commit applies to pass 3 applies here too, so the unreachable half
+    // is gone and the one that carries the weight is pinned by a named test.
     return takenBy.every((k) => k !== -1) ? claim : null;
   };
+  // TWO ANSWERS CANNOT SHARE ONE LINK, and an answer that shares one is placed by
+  // nothing. `retrievalUrl` is the thing actually handed to the appraiser, so two files
+  // pointed at one link IS the mis-file this module exists to prevent — and it is what a
+  // vendor produces when it drops one of our files and answers twice about another (the
+  // count still matches, the spellings still look right, and exactly one of the two names
+  // is a lie). Which of them is the real one is not knowable, so neither is used.
+  //
+  // Marking them TAKEN rather than removing them is deliberate: `answers.length` is what
+  // makes a bare `part<i>` and a position believable, and quietly shrinking it would
+  // change those rules while claiming to change nothing.
+  // …unless they are the SAME answer said twice, which is not a disagreement at all. A
+  // repeated entry — or the identical object appearing twice in the array — carries one
+  // link AND one set of labels, so it describes one document and the first of them is
+  // used. Two entries sharing a link while DISAGREEING about which file they are is the
+  // dangerous shape, and neither of those is used.
+  {
+    const byLink = new Map();
+    for (const s of answers) {
+      const u = linkOf(s);
+      if (!u) continue;
+      if (!byLink.has(u)) byLink.set(u, []);
+      byLink.get(u).push(s);
+    }
+    // WHICH FILE an entry claims — that is the only disagreement that matters, and it is
+    // asked of the FILES rather than of the raw label text. Comparing `[name, fileName]`
+    // strings made an entry that merely OMITS a field "disagree" with its twin, so both
+    // were discarded even though they carry the same link and are therefore provably the
+    // same document; and it coerced `name`, which throws on an object with no `toString`.
+    const claimsOf = (s) => {
+      const out = [];
+      for (let j = 0; j < files.length; j++) if (strengthFor(s, j) > 0) out.push(j);
+      const n = partIndex(s);
+      if (n != null && !out.includes(n)) out.push(n);
+      return out.sort().join(',');
+    };
+    for (const group of byLink.values()) {
+      if (group.length < 2) continue;
+      // A group agrees when no two members point at DIFFERENT files. An entry that
+      // says nothing (no filename, no part number) contradicts nobody.
+      const said = group.map(claimsOf).filter((c) => c !== '');
+      const agree = said.every((c) => c === said[0]);
+      // Agreeing: one answer, said twice — keep the first, ignore the copies.
+      // Disagreeing: one link cannot be two documents, and which is real is unknowable.
+      // A repeat that is the SAME OBJECT is one entry, not two — taking "the copy"
+      // would take the keeper with it, since they are the same reference.
+      for (let k = agree ? 1 : 0; k < group.length; k++) {
+        if (agree && group[k] === group[0]) continue;
+        taken.add(group[k]);
+      }
+    }
+  }
+
   const lined = exactBijection();
   if (lined) {
     for (let k = 0; k < answers.length; k++) { out[lined[k]] = answers[k]; taken.add(answers[k]); }
@@ -311,9 +362,12 @@ function matchStaged(files, staged) {
     // document, so counting it as an ambiguity refused a single-file send that had
     // exactly one unambiguous answer.
     const seen = new Set();
+    const seenObj = new Set();
     const distinct = cands.filter((s) => {
-      const u = s.retrievalUrl == null ? null : String(s.retrievalUrl);
-      if (u == null) return true;             // nothing to compare — keep it
+      if (seenObj.has(s)) return false;       // the identical object, twice
+      seenObj.add(s);
+      const u = linkOf(s);
+      if (!u) return true;                    // nothing to compare — keep it
       if (seen.has(u)) return false;
       seen.add(u); return true;
     });

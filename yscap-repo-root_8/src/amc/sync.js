@@ -25,7 +25,7 @@ const db = require('../db');
 const cfg = require('../config');
 const switches = require('../lib/integrations/switches');
 const cdg = require('./cdg');
-const { storedNackNote } = require('../lib/appraisal-messages');
+const { storedNackNote, nackMessage } = require('../lib/appraisal-messages');
 const client = require('./client');
 const session = require('./session');
 const storage = require('../lib/storage');
@@ -67,7 +67,7 @@ async function applyStatusResponse(dbh, order, resp) {
     // A stale api key surfaces as an auth NACK — drop it so the next call re-logs in.
     if (String(err.code) === '-100' || /authenticat/i.test(err.description || '')) session.invalidate();
     await dbh.query(`UPDATE amc_orders SET last_error=$2, last_polled_at=now(), updated_at=now() WHERE id=$1`,
-      [order.id, storedNackNote(err, 'a status check on the order')]);
+      [order.id, storedNackNote(err, 'a status check on the order', { reading: true })]);
     return { error: err };
   }
   const st = cdg.parseStatus(resp);
@@ -120,8 +120,11 @@ async function ingestDocuments(dbh, order, deps = {}) {
   const err = cdg.parseError(resp);
   if (err) {
     if (String(err.code) === '-100' || /authenticat/i.test(err.description || '')) session.invalidate();
-    await dbh.query(`UPDATE amc_orders SET last_error=$2, updated_at=now() WHERE id=$1`, [order.id, storedNackNote(err, 'a request for the documents')]);
-    return { ok: false, error: err };
+    await dbh.query(`UPDATE amc_orders SET last_error=$2, updated_at=now() WHERE id=$1`, [order.id, storedNackNote(err, 'a request for the documents', { reading: true })]);
+    // A REFUSAL CARRIES PLAIN WORDS, not only the vendor's error object. This one
+    // reaches the caller — and the poller's log line — with `error` alone, so whatever
+    // read it had nothing a person could act on.
+    return { ok: false, error: err, message: nackMessage(err, 'a request for the documents') };
   }
 
   const app = (await dbh.query(`SELECT borrower_id FROM applications WHERE id=$1`, [order.application_id])).rows[0];

@@ -93,12 +93,19 @@ function storedFailNote(e) {
       : 'Not sent — the appraisal company connection is switched off. Switch it on, then send it again.';
   }
   // WE NEVER GOT AS FAR AS SENDING IT. Our own pre-flight guards throw before a request
-  // is made — an order whose form version we cannot resolve, a message we could not
-  // build — and reporting those as "could not be reached, you can send it again" is
-  // false twice over and sends somebody to wait out an outage that is not happening.
-  // They are recognised by carrying a code of OUR OWN and no vendor status.
+  // is made — an order whose form version we cannot resolve — and reporting that as
+  // "could not be reached, you can send it again" is false twice over.
+  //
+  // THE SHAPE OF A CODE IS NOT EVIDENCE, and inferring from it was wrong in both
+  // directions. `!/^[A-Z0-9_]+$/` was meant to mean "ours, not a SHOUTY gate code", but
+  // the class includes digits, so every Postgres SQLSTATE (`23505`, `22P02`, `57014`)
+  // slipped past it and was reported as the appraisal company being unreachable — on a
+  // path where the message HAD been delivered and only our own write of the receipt
+  // failed, so "you can send it again" would duplicate it at the vendor. In the other
+  // direction a vendor NACK code like `-100` was claimed as our own problem. The list is
+  // explicit now, and anything unrecognised is described without blaming either end.
   const status = Number(e && e.status);
-  if (LOCAL_REFUSAL.has(code) || (code && !/^[A-Z0-9_]+$/.test(code) && !Number.isFinite(status))) {
+  if (LOCAL_REFUSAL.has(code)) {
     return 'Not sent — something on our side stopped this before it went out. '
       + 'Sending it again will not help until it is looked at.';
   }
@@ -128,7 +135,18 @@ function storedFailNote(e) {
   if (e && e.retryable === false) {
     return 'Not sent — the appraisal company would not accept it. Sending the same thing again will not help.';
   }
-  return 'Not sent — the appraisal company could not be reached. You can send it again.';
+  // A NETWORK failure is the honest "could not be reached"; anything else unrecognised is
+  // described WITHOUT claiming which end failed, because claiming the vendor was down
+  // when our own database refused the write is how "you can send it again" ends up
+  // duplicating a message that already arrived.
+  if (e && e.retryable === true) {
+    return 'Not sent — the appraisal company could not be reached. You can send it again.';
+  }
+  if (!code && !Number.isFinite(status)) {
+    return 'Not sent — the appraisal company could not be reached. You can send it again.';
+  }
+  return 'Not sent — this did not go through. Try once more, and tell an administrator if '
+    + 'it keeps happening.';
 }
 
 /**
@@ -136,17 +154,21 @@ function storedFailNote(e) {
  * code says nothing to anybody), bounded and framed — the same rule `nackMessage`
  * applies to the live answer, so the row and the button never disagree.
  */
-function storedNackNote(err, what) {
+function storedNackNote(err, what, opts = {}) {
   const d = err && err.description != null ? String(err.description).trim() : '';
   const subject = what || 'it';
+  // THE VERB MATCHES WHAT WAS ASKED FOR — the rule this file's own header states, and
+  // the prefix broke it at two of three callers. A status poll and a document read SEND
+  // NOTHING, so "Not sent — …" is a plain untruth on the row a person later reads.
+  const lead = opts.reading ? 'Could not be read' : 'Not sent';
   // IT CARRIES THE SAME OPENING AS EVERY OTHER STORED SENTENCE, and that opening is a
   // CONTRACT, not decoration: a panel showing one of these columns tells our wording
   // from a legacy raw exception by exactly this prefix (see ClassAppraisalPanel's
   // `failNote`). Without it, a NACK — the one failure carrying the vendor's own
   // actionable words — would be thrown away and replaced with "you can send it again",
   // which is the opposite of what to do about a refusal.
-  if (!d) return `Not sent — the appraisal company would not accept ${subject}.`;
-  return `Not sent — the appraisal company would not accept ${subject}: ${d.slice(0, 300)}`;
+  if (!d) return `${lead} — the appraisal company answered with a refusal about ${subject}.`;
+  return `${lead} — the appraisal company answered with a refusal about ${subject}: ${d.slice(0, 300)}`;
 }
 
 module.exports = {

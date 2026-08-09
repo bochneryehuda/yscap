@@ -29,17 +29,32 @@ let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL: ' + m); } };
 
 const ROOT = path.join(__dirname, '..');
+// BOTH DESKS MEANS BOTH DESKS. A hand-written list claimed "both desks are actually
+// being read" and then asserted its own LENGTH — a count that was satisfied while
+// src/amc/sync.js, src/amc/client.js, src/amc/preflight.js, src/amc/lookups.js,
+// src/class/client.js and src/class/poller.js were never opened, two of them holding raw
+// exception text in returned structures. A count is not coverage; the set is.
+const listJs = (rel) => {
+  const dir = path.join(ROOT, rel);
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).filter((f) => f.endsWith('.js')).map((f) => rel + '/' + f).sort();
+};
 const FILES = [
-  'src/amc/order-service.js', 'src/amc/documents.js', 'src/amc/comments.js',
-  'src/amc/revisions.js', 'src/amc/rov.js', 'src/amc/session.js',
-  'src/class/order-service.js', 'src/class/messages.js', 'src/class/callbacks.js',
+  ...listJs('src/amc'),
+  ...listJs('src/class'),
   'src/routes/amc.js', 'src/routes/class.js',
-  // The shared wording itself. It was NOT on this list, so the one module whose entire
+  // The shared wording itself. It was NOT on the old list, so the one module whose whole
   // job is what a person reads was the one module nothing checked.
   'src/lib/appraisal-messages.js',
 ].filter((f) => fs.existsSync(path.join(ROOT, f)));
 
-ok(FILES.length >= 10, 'both desks are actually being read (a shrunken list would pass vacuously)');
+// Named modules that must be in the set, so a refactor moving one out of these folders
+// fails here rather than silently dropping out of every check in this file.
+for (const must of ['src/amc/sync.js', 'src/amc/session.js', 'src/amc/documents.js',
+  'src/amc/order-service.js', 'src/class/messages.js', 'src/class/callbacks.js',
+  'src/routes/class.js', 'src/lib/appraisal-messages.js']) {
+  ok(FILES.includes(must), must + ' is read by this sweep');
+}
 
 // ---------------------------------------------------------------------------
 // (1) A REFUSAL CARRIES PLAIN WORDS, NOT ONLY A CODE.
@@ -217,45 +232,67 @@ for (const rel of FILES) {
     }
   }
 
-  // ---- (2c) …AND NEITHER DOES A COLUMN.
-  // The two checks above walk `return` statements, so a DATABASE WRITE of the
-  // exception's own text was invisible to them — and a stored column is the WORST place
-  // for it, because it is permanent and one render away from a screen. Four such writes
-  // were found and fixed by hand across three audits, and a fifth
-  // (`class_callback_events.process_error`, selected straight into an API response) was
-  // still there afterwards, in a file this sweep was already reading and passing.
+  // ---- (2c) …AND NEITHER DOES ANYTHING THE RAW TEXT IS HANDED TO.
+  // The checks above walk `return` statements, so a DATABASE WRITE of the exception's
+  // own text was invisible to them — and a stored column is the worst place for it,
+  // being permanent and one render from a screen. Five such writes were found by hand
+  // across three audits.
   //
-  // So the test is turned around: a raw expression is a DEFECT unless it sits somewhere
-  // raw text belongs. Those places are named — the journal, the log, a rethrow — and the
-  // list is short on purpose. Anything else, including a place nobody has thought of
-  // yet, is reported.
-  const ALLOWED = /\b(?:journal|console\.(?:warn|error|log|info)|throw|logger|debug)\b/;
-  const RAW_ANY = /String\(\s*\(?\s*e(?:rr)?\s*(?:\)|&&|\|\||\.(?:message|stack|body)\b)|\be(?:rr)?\.(?:message|stack|body)\b/g;
-  while ((m = RAW_ANY.exec(code))) {
-    // The statement this sits in: back to the previous `;`, bounded so a long function
-    // body cannot reach an unrelated `journal(` and excuse this one.
-    //
-    // A `{` is NOT a boundary, and using one was wrong: `console.warn(\`… ${row.id} …\`,
-    // String(e.message))` opens a brace inside its own template literal, so the scan
-    // started INSIDE the string and never saw the `console.warn` it was looking for —
-    // reporting a log line, which is the one place raw text belongs.
-    const from = Math.max(code.lastIndexOf(';', m.index), m.index - 400, 0);
-    const stmt = code.slice(from, Math.min(code.length, m.index + 200));
-    if (ALLOWED.test(stmt)) continue;
-    // `class_callback_events.process_error` is the ONE column that deliberately keeps
-    // the exception's own text, and it earns that the same way `journal` does: it is a
-    // record of a delivery WE could not interpret, there is no journal for callbacks,
-    // and triaging a dead-lettered one needs the real words. What made it a defect was
-    // that the orders route SELECTed it straight into an API response — so the guarantee
-    // is not "this column is fine", it is "this column never leaves the server", and
-    // that is asserted separately below rather than assumed here.
-    if (/process_error/.test(stmt)) continue;
-    // A wording helper reading the exception in order to CLASSIFY it is the point of
-    // this module — what matters is where the result goes, which (2)/(2b) judge.
-    if (/\b(?:code|status|retryable|description)\b/.test(stmt) && !/\.query\(/.test(stmt)) continue;
-    rawText.push(`${rel}:${lineOfCode(m.index)} — the exception's own text outside the log/journal`);
+  // WHAT THIS ASKS IS WHERE THE TEXT GOES, not whether it is touched. A wording helper
+  // reading `e.message` to CLASSIFY it is the entire point of these modules, and
+  // `err.body = body` is the transport building its own error. What is never acceptable
+  // is handing those words to a SINK — a column, a response, a structure that is
+  // returned. The first cut asked the opposite question and needed four exemptions,
+  // every one of which turned out fail-open: `throw` excused a store-then-rethrow, a
+  // fixed forward window swallowed the NEXT statement's console.warn, naming
+  // `process_error` excused a raw value bound to a different column, and naming
+  // `status` excused `res.status(502).json({ detail: String(e.message) })` — the literal
+  // defect this file exists to prevent. Naming the sinks is narrower AND stricter.
+  const SINK = /\.query\(|\.json\(|\.push\(|\bres\s*\.|sendMail|notify\w*\(/;
+  // THE EXCEPTION IS WHATEVER THE `catch` CALLED IT. Hard-coding `e|err` let
+  // `catch (netErr)` — which src/class/client.js already uses — escape every check here,
+  // and so did `ex`, `error` and `e2`. Taking the names from the file's own `catch`
+  // bindings also stops an arrow parameter that happens to be called `e` (`.map((e) =>
+  // String(e).trim())`, over EMAIL ADDRESSES) from reading as an exception.
+  const caught = new Set();
+  const CATCH_RE = /\bcatch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/g;
+  let cm;
+  while ((cm = CATCH_RE.exec(code))) caught.add(cm[1]);
+  if (caught.size) {
+    const names = [...caught].map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    const RAW_ANY = new RegExp(
+      'String\\(\\s*\\(?\\s*(?:' + names + ')\\s*(?:\\)|&&|\\|\\||\\.(?:message|stack|body)\\b)'
+      + '|\\b(?:' + names + ')\\.(?:message|stack|body)\\b', 'g');
+    while ((m = RAW_ANY.exec(code))) {
+      // The statement, bounded at BOTH ends. A fixed forward window swallowed the next
+      // statement, and store-then-log is how both desks are written.
+      const from = Math.max(code.lastIndexOf(';', m.index), m.index - 400, 0);
+      const semi = code.indexOf(';', m.index);
+      const to = semi === -1 ? Math.min(code.length, m.index + 200)
+        : Math.min(semi + 1, m.index + 400);
+      const stmt = code.slice(from, to);
+      if (!SINK.test(stmt)) continue;                       // read, not handed on
+      if (/\b(?:console\.(?:warn|error|log|info)|journal|logger)\b/.test(stmt)) continue;
+      // THE PREFLIGHT SCREEN IS THE ONE PLACE THE VENDOR'S OWN BODY IS THE ANSWER: its
+      // whole purpose is telling an egress proxy's plain-text refusal from a rejected
+      // credential, which look identical without it, and it is an admin diagnostic, not
+      // a desk. Narrow on purpose — the `raw:` key, in that file only.
+      if (rel === 'src/amc/preflight.js' && /\braw\s*:/.test(stmt)) continue;
+      // …and the ONE column that deliberately keeps the raw words, for the same reason:
+      // `class_callback_events.process_error` records a delivery WE could not interpret,
+      // there is no journal for callbacks, and triaging a dead-lettered one needs the
+      // real text. The exemption is for the value BOUND TO that column, never for any
+      // statement that merely mentions it — `SET process_error=$2, public_note=$3` with
+      // the raw text in `$3` must still be reported. And the guarantee is not "this
+      // column is fine", it is "this column never leaves the server", which (2d) asserts.
+      if (/process_error\s*=\s*\$2\b/.test(stmt) && /\$2\b/.test(stmt)) {
+        const args = stmt.slice(stmt.lastIndexOf('['));
+        const parts = args.replace(/^\[/, '').split(',');
+        if (parts[1] && new RegExp(String(m[0]).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(parts[1])) continue;
+      }
+      rawText.push(rel + ':' + lineOfCode(m.index) + " — the exception's own text handed to a sink");
+    }
   }
-
   const tainted = new Set();
   // A DECLARATION (`const raw = …`), a PLAIN ASSIGNMENT (`s = …`, `s += …`) and a
   // DESTRUCTURE (`const { message } = e`) all park the exception under a local name, and
@@ -280,9 +317,26 @@ for (const rel of FILES) {
     // of its own, so the "is a sentence being built here" test walks past it — and
     // `let s = 'Could not sign in'; s += ' (' + e.message + ')'; return s;` is one
     // refactor away from the defect this exists to catch.
+    // `src/amc/preflight.js` `classify()` is the API-health screen's whole purpose: it
+    // exists to turn a transport failure into a diagnosis for an ADMIN, and telling an
+    // egress proxy's plain-text refusal from a rejected credential needs the body. It is
+    // never a desk, and it is the same exemption (2c) gives that file's `raw:` key.
+    if (rel === 'src/amc/preflight.js') continue;
     const bare = expr.trim();
-    if (!/['"`]/.test(expr) && !(/^[A-Za-z_$][\w$]*$/.test(bare) && tainted.has(bare))) continue;
-    const names = [...tainted].filter((nm) => new RegExp(`\\b${nm}\\b`).test(expr));
+    const bareTainted = /^[A-Za-z_$][\w$]*$/.test(bare) && tainted.has(bare);
+    if (!/['"`]/.test(expr) && !bareTainted) continue;
+    // `return s;` where `s` was BUILT elsewhere carries no quote and no `+` of its own,
+    // so the "concatenated in" test below cannot see it. It is already known tainted.
+    if (bareTainted) {
+      rawText.push(`${rel}:${lineOfCode(m.index)} — returned sentence built from ${bare}`);
+      continue;
+    }
+    // BUILT INTO the sentence, not merely mentioned. A helper that TESTS the exception's
+    // text to choose a branch (`return msg ? 'Could not be reached.' : '…'`) leaks
+    // nothing, and flagging it would push the wording back toward saying less. So the
+    // name has to be concatenated in, or interpolated into a template.
+    const names = [...tainted].filter((nm) => new RegExp(
+      `\\+\\s*${nm}\\b|\\b${nm}\\s*(?:\\.[\\w$]+\\s*\\([^)]*\\)\\s*)?\\+|\\$\\{[^}]*\\b${nm}\\b`).test(expr));
     const direct = looksRaw(expr);
     if (names.length || direct) {
       rawText.push(`${rel}:${lineOfCode(m.index)} — returned sentence built from `

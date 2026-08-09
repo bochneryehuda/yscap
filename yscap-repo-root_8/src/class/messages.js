@@ -79,8 +79,14 @@ async function note(orderRowId, content, { staffId } = {}) {
         [rowId, TEST_MODE_PREFIX + 'written here, not sent to Class.']);
       return { ok: true, dryrun: true, id: rowId };
     }
+    // THE RECEIPT IS WRITTEN OUTSIDE THE SEND'S OWN CATCH. It used to sit inside, so a
+    // database hiccup on this line — a lock timeout, a dropped connection — was reported
+    // as the SEND failing, and the note it wrote said "you can send it again" about a
+    // message Class had already accepted. Sending it again duplicates it at the vendor.
+    // The send succeeded; that is the answer, whatever happens to our own bookkeeping.
     await db.query('UPDATE class_notes SET sent_at = now(), send_error = NULL, class_note_id = $2 WHERE id = $1',
-      [rowId, out && out.noteId != null ? String(out.noteId) : null]);
+      [rowId, out && out.noteId != null ? String(out.noteId) : null])
+      .catch((dbErr) => { console.error('[class] note sent but not recorded:', rowId, dbErr && dbErr.message); });
     return { ok: true, id: rowId, noteId: out && out.noteId };
   } catch (e) {
     await db.query('UPDATE class_notes SET send_error = $2 WHERE id = $1',

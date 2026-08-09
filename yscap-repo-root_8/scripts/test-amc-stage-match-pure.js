@@ -222,7 +222,22 @@ for (const n of [1, 2, 3]) {
               // files that genuinely SHARE a name are not identifiable by any label,
               // however honest — an echo of that name is true of both.
               const distinctNames = new Set(files.map((f) => f.fileName)).size === files.length;
-              const linedUp = distinctNames
+              // …AND AN ECHO PROVES NOTHING WHEN A SIBLING COULD BE REWRITTEN INTO IT.
+              // Where two files differ only by the kind of thing an upload endpoint
+              // changes — case, spaces, punctuation — one answer echoing its own name
+              // and one LYING are indistinguishable from two honest echoes, so the
+              // spelling alone does not identify anything and the numbering has to be
+              // truthful as well. This counter used to demand those, which is a demand
+              // to guess: a real vendor batch of that shape was proven to swap two
+              // documents. What the generator knows, and states here, is whether the
+              // numbers it emitted were true.
+              const key = (v) => String(v).toLowerCase().replace(/[^a-z0-9]+/g, '');
+              const keys = files.map((f) => key(f.fileName));
+              const numbersTrue = answers.every((a) => a.name == null
+                || !/^part\d+$/.test(String(a.name)) ? false : Number(String(a.name).slice(4)) === a.truth);
+              const rewriteSafe = keys.every((k, i) => keys.indexOf(k) === keys.lastIndexOf(k))
+                || numbersTrue;
+              const linedUp = distinctNames && rewriteSafe
                 && answers.length === files.length
                 && new Set(answers.map((a) => a.truth)).size === answers.length
                 && answers.every((a) => a.fileName != null
@@ -313,33 +328,55 @@ const F = (...names) => names.map((fileName) => ({ fileName }));
 // the exact spelling of one AND a plausible lower-cased rewrite of the other, and a
 // vendor rewriting names on the way in is ordinary. Nothing separates those readings.
 //
-// WHAT SEPARATES THE TWO IS THE SHAPE OF THE WHOLE BATCH, not the one answer. When
-// every answer names one of our files exactly, no two name the same one and every file
-// is named, no rewrite can have produced that (a rewrite is a function of the name, so
-// it collapses these two onto one file or onto neither) — so the exact names are an
-// echo, possibly reordered, and they place. A batch that does NOT line up that way
-// leaves both readings open, and the module refuses.
+// WHAT SEPARATES THE TWO IS THE SHAPE OF THE WHOLE BATCH — and, where two of our files
+// could be REWRITTEN into each other, the numbering as well.
+//
+// The line-up rule was first written believing that a single lying filename could not
+// produce a complete one-to-one match, because the file it named would have its own
+// answer claiming it. That is only true if the honest sibling echoes its name UNCHANGED,
+// and it does not have to. The fourteenth audit's counterexample, reproduced below,
+// swaps two documents with ONE lie, both part numbers TRUTHFUL and no reorder at all.
+//
+// So on a loan whose filenames differ only by the sort of thing an upload endpoint
+// changes, the part numbers have to corroborate the spelling. Where the names cannot be
+// confused, the filename still stands alone.
 {
-  const files = F('Contract.pdf', 'contract.pdf');
-  const got = matchStaged(files, [
-    { name: 'part0', fileName: 'contract.pdf', retrievalUrl: 'ASSIGNMENT' },
-    { name: 'part1', fileName: 'Contract.pdf', retrievalUrl: 'PURCHASE' },
-  ]);
+  // THE SWAP: file 1's answer echoed its own name upper-cased, which is file 0's exact
+  // spelling; file 0's answer names file 1. One lie, and the line-up closes.
+  const got = matchStaged(F('CONTRACT.PDF', 'Contract.pdf'), [
+    { name: 'part0', fileName: 'Contract.pdf', retrievalUrl: 'BYTES-OF-FILE-0' },
+    { name: 'part1', fileName: 'CONTRACT.PDF', retrievalUrl: 'BYTES-OF-FILE-1' }]);
+  ok(!got[0] || got[0].retrievalUrl !== 'BYTES-OF-FILE-1', 'a rewrite that lands on a sibling never swaps two documents');
+  ok(!got[1] || got[1].retrievalUrl !== 'BYTES-OF-FILE-0', 'in either direction');
+  ok(got[0] === null && got[1] === null, 'and where the numbering contradicts the spelling, nothing is placed');
+}
+{
+  // THE ORDINARY ANSWER on such a loan — spelling and numbering agreeing — still places.
+  const got = matchStaged(F('Contract.pdf', 'contract.pdf'), [
+    { name: 'part0', fileName: 'Contract.pdf', retrievalUrl: 'PURCHASE' },
+    { name: 'part1', fileName: 'contract.pdf', retrievalUrl: 'ASSIGNMENT' }]);
   ok(got[0] && got[0].retrievalUrl === 'PURCHASE',
-     'two files whose names differ only in case are told apart when the whole batch lines up');
+     'two files whose names differ only in case are told apart when spelling and numbering agree');
   ok(got[1] && got[1].retrievalUrl === 'ASSIGNMENT', 'and neither gets the other’s link');
 }
-// …with NOTHING but the filenames — no part numbers at all. This is the ordinary answer
-// on such a loan, the vendor returns it the same way every time, and refusing it does
-// not cost a retry: it costs the document, permanently.
 {
-  const files = F('Contract.pdf', 'contract.pdf');
-  const got = matchStaged(files, [
+  // …and with NOTHING but the filenames, on colliding names, it is refused: two honest
+  // echoes and one-lie-plus-one-rewrite are the same two strings.
+  const got = matchStaged(F('Contract.pdf', 'contract.pdf'), [
     { fileName: 'Contract.pdf', retrievalUrl: 'PURCHASE' },
-    { fileName: 'contract.pdf', retrievalUrl: 'ASSIGNMENT' },
-  ]);
-  ok(got[0] && got[0].retrievalUrl === 'PURCHASE', 'an unnumbered echo of both names still places');
-  ok(got[1] && got[1].retrievalUrl === 'ASSIGNMENT', 'each on its own file');
+    { fileName: 'contract.pdf', retrievalUrl: 'ASSIGNMENT' }]);
+  ok(got[0] === null && got[1] === null,
+     'an unnumbered echo of two names that differ only in case proves nothing');
+}
+{
+  // WHERE THE NAMES CANNOT BE CONFUSED, the filename still stands alone — a reordered,
+  // renumbered batch of plainly distinct names places on its filenames, which is the
+  // case this rule was built for.
+  const got = matchStaged(F('Scope of Work.pdf', 'Contract 2024.pdf'), [
+    { name: 'part0', fileName: 'Contract 2024.pdf', retrievalUrl: 'CONTRACT' },
+    { name: 'part1', fileName: 'Scope of Work.pdf', retrievalUrl: 'SOW' }]);
+  ok(got[0] && got[0].retrievalUrl === 'SOW', 'a reordered echo of distinct names still places');
+  ok(got[1] && got[1].retrievalUrl === 'CONTRACT', 'each on its own file');
 }
 // THE ELEVENTH AUDIT'S SWAP, which is the same two files and must still refuse: ONE
 // answer, carrying file 1's exact spelling and file 0's part number. Its filename is
@@ -531,6 +568,17 @@ for (const order of [0, 1]) {
     { name: 'part0', fileName: 'A.pdf', retrievalUrl: 'uA' },
     { name: 'part0', fileName: 'B.pdf', retrievalUrl: 'uA' }]);
   ok(got[0] === null && got[1] === null, 'two answers sharing one link place nothing');
+}
+// …and the LINE-UP rule has to honour that too. Both entries name a real, distinct file
+// of ours, so the spellings form a perfect match and pass 0 would place them — it is only
+// the shared link that says one of the two names is a lie. Pinned because the guard that
+// carries this (pass 0 refusing an answer the pre-guard set aside) had a redundant twin
+// that hid it: either could be deleted alone with every test still green.
+{
+  const got = matchStaged(F('A.pdf', 'B.pdf'), [
+    { fileName: 'A.pdf', retrievalUrl: 'uA' },
+    { fileName: 'B.pdf', retrievalUrl: 'uA' }]);
+  ok(got[0] === null && got[1] === null, 'a shared link stops the whole-batch line-up too');
 }
 // …but the SAME answer said twice is one answer, not a disagreement, and must still send.
 {

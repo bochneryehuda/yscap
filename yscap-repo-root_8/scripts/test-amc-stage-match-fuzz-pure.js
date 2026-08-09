@@ -27,8 +27,23 @@
 const assert = require('assert');
 const { matchStaged } = require('../src/amc/stage-match');
 
-let rngState = Number(process.env.STAGE_FUZZ_SEED || 20260809) | 0;
-const rnd = () => { rngState = (rngState * 1103515245 + 12345) & 0x7fffffff; return rngState / 0x7fffffff; };
+// THE GENERATOR HAS TO ACTUALLY GENERATE. The obvious textbook LCG —
+// `(s * 1103515245 + 12345) & 0x7fffffff` — is WRONG in JavaScript: the product reaches
+// ~2.4e18, far past the 2^53 a double holds exactly, so the low bits are gone before the
+// mask ever sees them. Measured, it visits 16,470 states and then cycles with a period of
+// 10,466, which came out as **993 distinct vendor shapes** however many iterations were
+// asked for. "fuzzed 189,102 responses" was a 190-fold overstatement of the evidence, and
+// the guard written to catch exactly that counted ITERATIONS, so it passed vacuously too.
+//
+// xorshift32 stays inside 32 bits at every step (`>>> 0` after each shift), so nothing is
+// silently rounded away: 400,000 draws, 400,000 distinct states.
+let rngState = (Number(process.env.STAGE_FUZZ_SEED || 20260809) | 0) >>> 0 || 1;
+const rnd = () => {
+  rngState ^= rngState << 13; rngState >>>= 0;
+  rngState ^= rngState >>> 17;
+  rngState ^= rngState << 5;  rngState >>>= 0;
+  return rngState / 4294967296;
+};
 const pick = (a) => a[Math.floor(rnd() * a.length) % a.length];
 
 // Distinct documents, near-misses, exact duplicates and an unnamed file.
@@ -42,6 +57,8 @@ const POOL = [
 const rewrite = (nm) => (nm == null ? null : nm.replace(/ /g, '_').toUpperCase());
 
 let cases = 0, wrong = 0, shared = 0;
+// What the corpus guard has to count: a shape it has already tried is not evidence.
+const shapes = new Set();
 const bad = [];
 
 const ITERS = Number(process.env.STAGE_FUZZ_CASES || 200000);
@@ -106,6 +123,9 @@ for (let iter = 0; iter < ITERS; iter++) {
   });
 
   cases++;
+  shapes.add(JSON.stringify([files.map((f) => f.fileName),
+    answers.map((a) => [a.name === undefined ? '\u0000' : a.name,
+      a.fileName === undefined ? '\u0000' : a.fileName, a.truth])]));
   const got = matchStaged(files, answers);
 
   // (1) NEVER WRONG — judged only where the evidence, taken at face value, pointed at
@@ -130,11 +150,14 @@ for (let iter = 0; iter < ITERS; iter++) {
   }
 }
 
-console.log(`  fuzzed ${cases} vendor responses (case/punctuation-colliding names included)`);
+console.log(`  fuzzed ${cases} vendor responses, ${shapes.size} distinct shapes`);
 for (const b of bad) console.error('  ' + JSON.stringify(b));
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL: ' + m); } };
-ok(cases > 100000, 'the fuzzer actually generated a corpus (a shrunken run would pass vacuously)');
+// DISTINCT shapes, because that is the evidence. Counting iterations is what let a
+// generator visiting 993 shapes report 189,102 and pass its own anti-vacuity guard.
+ok(shapes.size > 20000,
+   `the fuzzer generated a real corpus, not one shape repeated (${shapes.size} distinct)`);
 ok(wrong === 0, `no document is ever matched to another document's answer (${wrong} mis-filed)`);
 ok(shared === 0, `and no answer is ever given to two files (${shared} shared)`);
 

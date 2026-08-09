@@ -15,6 +15,8 @@
  * is gated by the same switches as everything else (AMC_ENABLED).
  */
 const cdg = require('./cdg');
+// ONE wording for both desks — see src/lib/appraisal-messages.js.
+const { storedFailNote } = require('../lib/appraisal-messages');
 const client = require('./client');
 const session = require('./session');
 
@@ -72,7 +74,14 @@ async function refreshAll(db) {
   const out = { ok: [], failed: [] };
   for (const t of LOOKUP_TYPES) {
     try { const rows = await refreshOne(db, t); out.ok.push({ type: t, count: rows.length }); }
-    catch (e) { out.failed.push({ type: t, error: e.message }); }
+    // THE RETURNED STRUCTURE CARRIES PLAIN WORDS. `e.message` here is "AMC GetJobType
+    // failed: HTTP 502" or a socket error — written for us — and this list is reported,
+    // so it went one render from somebody who could do nothing with it. The real text
+    // goes to the log, which is where we read it.
+    catch (e) {
+      console.warn('[amc] lookup refresh failed:', t, e && e.message);
+      out.failed.push({ type: t, message: storedFailNote(e) });
+    }
   }
   return out;
 }
