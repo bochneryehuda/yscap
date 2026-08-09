@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { fmtDay } from '../lib/dates.js';
@@ -93,6 +93,7 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
      usable; none picked is the general search, which can only answer "found
      in more than one state — pick one". */
   const [pickStates, setPickStates] = useState(() => new Set());
+  const statesRef = useRef(null);   // the <details> popover — closed when a search starts
   /* THE BUDGET METER (mega-workspace phase F): what a search costs is visible
      BEFORE the button is pressed — lookups this hour against the office's
      shared hourly allowance, and paid contact credits this month against the
@@ -150,6 +151,7 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
       + (states.length ? `, state by state (${states.join(', ')})` : '')
       + '. It uses part of the office\'s hourly lookup allowance, which is shared with everyone.',
       { confirmLabel: 'Search the records', cancelLabel: 'Not now' }))) return;
+    if (statesRef.current) statesRef.current.open = false;
     setBusy(true); setSearchMsg(null);
     try {
       const out = await api.staffTrackRecordSearch(borrowerId, { states });
@@ -261,7 +263,7 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
         <span style={{ color: MUTED, fontSize: 14 }}>
           {borrowerName ? `for ${borrowerName}` : ''}
         </span>
-        <details style={{ position: 'relative', marginLeft: 'auto' }}>
+        <details ref={statesRef} style={{ position: 'relative', marginLeft: 'auto' }}>
           <summary className="btn ghost" style={{ listStyle: 'none', cursor: 'pointer', userSelect: 'none' }}>
             {pickStates.size ? `States: ${[...pickStates].join(', ')}` : 'States: any'} ▾
           </summary>

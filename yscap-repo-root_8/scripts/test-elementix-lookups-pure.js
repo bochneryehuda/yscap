@@ -157,6 +157,25 @@ console.log('\n3. entity vs company, and a money string that is not a number');
   ok(!NI.sameEntityName('', 'MW TRADING LLC'), 'an empty name never matches anything');
   ok(NI.sameEntityName('LLC', 'LLC'),
     'a name that IS a bare suffix is not stripped to nothing — the last word survives');
+  ok(NI.sameEntityName('S & G Holdings LLC', 'S AND G HOLDINGS LLC'),
+    '"&" reads as AND — the same words, two spellings');
+  ok(!NI.sameEntityName('MW Trading Inc', 'MW Trading LLC'),
+    'two names BOTH stating a corporate form, and different kinds of company, never match — a stranger\'s corporation must not stage as the borrower\'s LLC');
+  ok(NI.sameEntityName('MW Trading', 'MW Trading Inc'),
+    'while a name stating NO form still matches either — the vendor\'s own with-or-without behavior');
+  ok(NI.sameEntityName('MW Trading Co', 'MW Trading LLC'),
+    'and Co/Company/Ltd are form-neutral — they decide nothing');
+
+  /* A REFUSAL THAT NEVER REACHED THE WIRE COSTS NOTHING (audit 2026-08-09).
+     The preflight makes a malformed request free; the research counter must
+     not book it as a spent lookup. A 2-character entity name with no state is
+     refused at the `search` 3-character floor before anything is sent. */
+  reset();
+  const freeRefusal = await L.researchProperty({ entityName: 'ab', ...NO_DB });
+  ok(calls.length === 0 && freeRefusal.calls === 0,
+    'a contract-refused step books ZERO api calls — nothing was sent, nothing is counted');
+  ok((freeRefusal.errors || []).some((e) => e.reason === 'bad_args'),
+    '…while the refusal itself is still recorded as the reason');
 
   ok(L.money('$1,240,000') === 1240000, 'currentExposure parses out of a display string');
   ok(L.money('1.2M') === 1200000 && L.money('750k') === 750000, '…including the short forms');

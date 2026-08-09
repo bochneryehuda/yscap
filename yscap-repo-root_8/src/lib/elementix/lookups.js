@@ -257,15 +257,36 @@ async function call(tool, args, opts = {}) {
  * else's deeds on this borrower's record — so jurisdictional boilerplate
  * ("A DELAWARE LLC") is deliberately NOT stripped.
  */
-const ENTITY_SUFFIX = new Set(['LLC', 'INC', 'CORP', 'CO', 'LTD', 'LP', 'LLP', 'PLLC', 'PC',
-  'COMPANY', 'CORPORATION', 'INCORPORATED', 'LIMITED']);
-function entityNameKey(v) {
-  const words = str(v).toUpperCase().replace(/[.,'’`]/g, '').replace(/[^A-Z0-9 ]+/g, ' ')
-    .split(/\s+/).filter(Boolean);
-  while (words.length > 1 && ENTITY_SUFFIX.has(words[words.length - 1])) words.pop();
-  return words.join(' ');
+/* A trailing corporate form is stripped for the compare, but its FAMILY is
+   remembered: "MW Trading" ≡ "MW Trading LLC" (the vendor's own with-or-
+   without behavior), while "MW Trading INC" vs "MW Trading LLC" — two names
+   BOTH stating a form, and different kinds of company — never match (audit
+   2026-08-09: collapsing the forms entirely could stage a same-base-name
+   stranger's corporation). CO/COMPANY/LTD are form-neutral in practice and
+   decide nothing. '&' reads as AND so "S & G" ≡ "S AND G" — the same words,
+   two spellings. */
+const ENTITY_SUFFIX_FAMILY = {
+  LLC: 'llc', PLLC: 'llc',
+  INC: 'corp', CORP: 'corp', CORPORATION: 'corp', INCORPORATED: 'corp',
+  LP: 'partnership', LLP: 'partnership',
+  CO: null, COMPANY: null, LTD: null, LIMITED: null, PC: null,
+};
+function entityNameParts(v) {
+  const words = str(v).toUpperCase().replace(/&/g, ' AND ').replace(/[.,'’`]/g, '')
+    .replace(/[^A-Z0-9 ]+/g, ' ').split(/\s+/).filter(Boolean);
+  let family = null;
+  while (words.length > 1 && Object.prototype.hasOwnProperty.call(ENTITY_SUFFIX_FAMILY, words[words.length - 1])) {
+    family = ENTITY_SUFFIX_FAMILY[words.pop()] || family;
+  }
+  return { key: words.join(' '), family };
 }
-const sameEntityName = (a, b) => { const k = entityNameKey(a); return !!k && k === entityNameKey(b); };
+const entityNameKey = (v) => entityNameParts(v).key;
+function sameEntityName(a, b) {
+  const pa = entityNameParts(a); const pb = entityNameParts(b);
+  if (!pa.key || pa.key !== pb.key) return false;
+  if (pa.family && pb.family && pa.family !== pb.family) return false;
+  return true;
+}
 
 /**
  * Find the ENTITY (a state-registered LLC or similar), never the rolled-up
@@ -446,7 +467,7 @@ async function researchPerson({ personName, state, staffId, db }, opts = {}) {
     ok: true, calls: 0, errors: [], searched: false, truncated: [],
     deeds: [], mortgages: [], person: null, ambiguousPerson: false, tooCommon: false,
   };
-  const note = (step, r) => { out.calls += (r && r.calls) || 1; if (!r.ok) out.errors.push({ step, reason: r.reason, detail: r.detail }); return r; };
+  const note = (step, r) => { out.calls += stepCost(r); if (!r.ok) out.errors.push({ step, reason: r.reason, detail: r.detail }); return r; };
 
   const p = note('match_person', await searchPerson(personName, state, o));
   if (p.ok) {
@@ -513,8 +534,9 @@ async function addressTransactions(addressId, opts = {}) {
  * have completed a call. Every transaction row already states its own `type`
  * (deed / mortgage / satisfaction / …), so the caller always has it.
  */
-const DOCUMENT_TYPES = ['mortgage', 'deed', 'satisfaction', 'assignment', 'preforeclosure',
-  'mechanics_lien', 'mechanics_lien_release', 'tax_lien', 'tax_lien_release'];
+/* Read from the contract, not restated — two lists that must move together
+   is one list too many (audit 2026-08-09). */
+const DOCUMENT_TYPES = (CONTRACTS.tools.get_document.params.type.enum || []).slice();
 async function document(documentId, opts = {}) {
   if (!isUuid(documentId)) return bad('bad_args', 'That is not a document id from a transaction.');
   const type = str(opts.type).toLowerCase();
@@ -624,6 +646,15 @@ function rowsOf(d) {
   return [];
 }
 
+/** What a research step actually SPENT. A `bad_args` refusal never reached the
+ *  wire — the wrapper guards and the contract preflight both refuse before
+ *  sending — so counting it would overstate `track_record_searches.api_calls`
+ *  on exactly the passes the preflight exists to make free (audit 2026-08-09).
+ *  A result that states its own `calls` is believed; anything else that went
+ *  out is 1. */
+const stepCost = (r) => (r && typeof r.calls === 'number' ? r.calls
+  : (r && r.ok === false && r.reason === 'bad_args' ? 0 : 1));
+
 /** `scope:'count'` sizes a result before paging it — the difference between one
  *  cheap call and twenty expensive ones. */
 function pageArgs(opts = {}) {
@@ -666,7 +697,7 @@ async function researchProperty({ entityName, state, address, borrowerNames, sta
     deeds: [], mortgages: [], satisfactions: [], ownerships: [], currentOwner: null, coverage: null,
     entity: null, people: [], ambiguousEntity: false, tooCommon: false,
   };
-  const note = (step, r) => { out.calls += 1; if (!r.ok) out.errors.push({ step, reason: r.reason, detail: r.detail }); return r; };
+  const note = (step, r) => { out.calls += stepCost(r); if (!r.ok) out.errors.push({ step, reason: r.reason, detail: r.detail }); return r; };
 
   if (str(entityName)) {
     const e = note('match_entity', await searchEntity(entityName, state, o));

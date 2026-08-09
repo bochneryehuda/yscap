@@ -574,6 +574,13 @@ async function runSearch({ borrowerId, staffId, states }, client) {
     ? `${b.name ? `${b.name} and ` : ''}${entityNames.length === 1 ? entityNames[0] : `${entityNames.length} companies`}`
     : (b.name || 'nothing'))
     + (cappedStates.length ? ` in ${cappedStates.join(', ')}` : '');
+  /* A SEARCH THAT STOPPED AT A FORK IS NOT AN EMPTY COUNTY (audit 2026-08-09).
+     With no state picked, a name held in more than one state is refused as
+     ambiguous — correct — but the headline then read "found nothing … the
+     county does not publish online", a confident wrong explanation printed
+     ABOVE the right one in the skips. The fork gets its own sentence. */
+  const stoppedAtFork = found === 0 && !vendorProblem
+    && skips.some((s) => s.reason === 'ambiguous_entity' || s.reason === 'ambiguous_person');
   return {
     ok: true,
     searchId: search.id,
@@ -591,9 +598,11 @@ async function runSearch({ borrowerId, staffId, states }, client) {
           ? 'The public-records service paused us (the hourly allowance is used up), so this search did not run. Try again in a little while — nothing here says anything about the borrower.'
           : vendorProblem === 'failed'
             ? 'The public-records service could not answer, so this search did not really run. The reasons are listed below — nothing here says anything about the borrower.'
-            : (found === 0
-              ? `We searched the public records under ${underText} and found nothing. That usually means the county does not publish online, not that there is nothing to find.`
-              : `Found ${found} ${found === 1 ? 'property' : 'properties'} under ${underText}${staged === found ? '' : ` — ${staged} new`}.`)),
+            : (stoppedAtFork
+              ? 'The records hold this name in more than one state, and picking one would be a guess — so nothing was brought in. Pick the state(s) to search in the drop-down and run it again. Nothing here says the borrower has no history.'
+              : (found === 0
+                ? `We searched the public records under ${underText} and found nothing. That usually means the county does not publish online, not that there is nothing to find.`
+                : `Found ${found} ${found === 1 ? 'property' : 'properties'} under ${underText}${staged === found ? '' : ` — ${staged} new`}.`))),
   };
 }
 
