@@ -171,10 +171,65 @@ function finish() {
     ok((await readAt()) !== null, 'the real borrower opening the thread DOES mark it read (the guard skips only the helper)');
 
     // ---- LOGIN by email + password ----------------------------------------
-    const login = await call('POST', '/auth/assistant/login', null, { email: `ba-helper-${sfx}@test.local`, password: 'Helper-Assistant-Pass-2026' });
+    const helperEmail = `ba-helper-${sfx}@test.local`;
+    const helperPass = 'Helper-Assistant-Pass-2026';
+    const login = await call('POST', '/auth/assistant/login', null, { email: helperEmail, password: helperPass });
     ok(login.status === 200 && login.body && login.body.token, 'the helper can sign in by email + password');
-    const badLogin = await call('POST', '/auth/assistant/login', null, { email: `ba-helper-${sfx}@test.local`, password: 'wrong' });
+    const badLogin = await call('POST', '/auth/assistant/login', null, { email: helperEmail, password: 'wrong' });
     ok(badLogin.status === 401, 'a wrong password is refused');
+
+    // ---- THE CLIENT LOGIN SCREEN IS THE HELPER'S SIGN-IN --------------------
+    // Owner-directed 2026-08-09: a helper has no sign-in screen of their own.
+    // They type their email and password into the ONE client login, and the
+    // server works out that these are helper credentials — the same
+    // cross-surface routing that already sends a staffer who typed there to
+    // their console. `/auth/borrower/login` is the endpoint that screen posts to.
+    const viaClient = await call('POST', '/auth/borrower/login', null, { email: helperEmail, password: helperPass });
+    ok(viaClient.status === 200 && viaClient.body && viaClient.body.token,
+      'a helper signs in on the CLIENT login screen — no separate helper door');
+    ok(viaClient.body && viaClient.body.assistant === true && viaClient.body.kind === 'borrower',
+      'the client login reports it handed back a HELPER session, not a borrower one');
+    // The token must be a real helper session, not merely a 200: it has to carry
+    // the envelope, so the PII strip and the sign block ride along. Proven by
+    // USING it rather than by reading the JWT — that is what the helper does.
+    const clientTok = viaClient.body.token;
+    const meViaClient = await call('GET', '/auth/me', clientTok);
+    ok(meViaClient.status === 200 && meViaClient.body && meViaClient.body.assistant === true,
+      'the token from the client login is a helper session');
+    ok(meViaClient.body && meViaClient.body.id === bId,
+      'that helper session is scoped to the borrower they help (not to themselves)');
+    const piiViaClient = await call('GET', '/api/borrower/profile', clientTok);
+    ok(piiViaClient.status === 200 && !('date_of_birth' in piiViaClient.body)
+       && !('ssn_last4' in piiViaClient.body) && !('fico' in piiViaClient.body),
+      'personal details are still stripped on a session obtained from the client login');
+    const signViaClient = await call('POST', `/api/borrower/applications/${appId}/esign/sign-view`, clientTok, {});
+    ok(signViaClient.status === 403 && signViaClient.body.assistantBlocked === 'esign',
+      'signing is still blocked on a session obtained from the client login');
+
+    // A wrong helper password on the client login is refused — the fallback is
+    // not a way around the password, and it must not leak WHICH store the email
+    // belongs to.
+    const badViaClient = await call('POST', '/auth/borrower/login', null, { email: helperEmail, password: 'wrong' });
+    ok(badViaClient.status === 401, 'a wrong helper password on the client login is refused');
+    // An email nobody holds is still a plain 401 (no hint that helpers exist).
+    const nobody = await call('POST', '/auth/borrower/login', null, { email: `nobody-${sfx}@test.local`, password: helperPass });
+    ok(nobody.status === 401, 'an unknown email on the client login is refused');
+    // The BORROWER's own sign-in through the same door is untouched — the whole
+    // point is that one screen serves both, so a regression here would be worse
+    // than the bug being fixed. (The fixture stores a placeholder hash, so give
+    // this borrower a REAL password first — otherwise the control proves
+    // nothing about the borrower path.)
+    await db.query(`UPDATE borrower_auth SET password_hash=$2 WHERE borrower_id=$1`,
+      [bId, await C.hashPassword('Borrower-Own-Pass-2026')]);
+    const borrowerViaClient = await call('POST', '/auth/borrower/login', null,
+      { email: `ba-b-${sfx}@test.local`, password: 'Borrower-Own-Pass-2026' });
+    ok(borrowerViaClient.status === 200 && borrowerViaClient.body && borrowerViaClient.body.token,
+      'the borrower still signs in on the client login exactly as before');
+    ok(!borrowerViaClient.body.assistant,
+      'the borrower’s own session is NOT flagged as a helper session');
+    const meBorrower = await call('GET', '/auth/me', borrowerViaClient.body.token);
+    ok(meBorrower.status === 200 && !meBorrower.body.assistant,
+      'the borrower’s own session carries no helper envelope (full access kept)');
 
     // ---- DISABLE kills the live session immediately (dual-identity) ---------
     const disable = await call('POST', `/api/borrower/assistants/${helperId}/disable`, borrowerTok, {});
@@ -185,8 +240,12 @@ function finish() {
     // the disable — the token is passed as a query param, not a bearer header).
     const evt = await call('GET', `/api/events?token=${encodeURIComponent(helperTok)}`, null);
     ok(evt.status === 401, 'the disabled helper’s live event stream is refused');
-    const loginAfter = await call('POST', '/auth/assistant/login', null, { email: `ba-helper-${sfx}@test.local`, password: 'Helper-Assistant-Pass-2026' });
+    const loginAfter = await call('POST', '/auth/assistant/login', null, { email: helperEmail, password: helperPass });
     ok(loginAfter.status === 401, 'a disabled helper can no longer sign in');
+    // ...and the client login is not a way back in for them either — the new
+    // door must honour the revocation exactly as the old one does.
+    const clientAfter = await call('POST', '/auth/borrower/login', null, { email: helperEmail, password: helperPass });
+    ok(clientAfter.status === 401, 'a disabled helper cannot sign in on the client login either');
     const gone = await call('GET', '/api/borrower/assistants', borrowerTok);
     ok(gone.status === 200 && !gone.body.assistants.some((a) => a.id === helperId), 'the disabled helper drops off the list');
   } catch (e) {
