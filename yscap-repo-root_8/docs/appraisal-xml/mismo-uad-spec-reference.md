@@ -53,11 +53,19 @@ inference. Assembled 2026-07-19.
 - **SFREP / ClickFORMS — UAD 2.6 quality rankings KB**: https://support.sfrep.com/knowledgebase/?id=1232
 - **MISMO Appraisal Procurement / Commercial Appraisal datasets**: https://www.mismo.org/standards-resources/mismo-product/appraisal-procurement-dataset-specification
 
-> **UAD version note.** The GSEs are moving from **UAD 2.6** (the MISMO-2.6-based XML we parse today,
-> with the four legacy forms 1004/1025/1073/etc.) to **UAD 3.6** (MISMO-**3.6**-based, single dynamic
-> "URAR", mandatory production later in the redesign timeline). Definitions below are the **UAD 2.6 /
-> current Selling Guide** ones our files use. If files start arriving in UAD 3.6, the XML paths change
-> wholesale (MISMO 3.6 container structure) and this parser needs a separate mapping.
+> **UAD version note.** The GSEs are moving from **UAD 2.6** (the MISMO-2.6-based XML this document
+> covers, with the legacy forms 1004/1025/1073/etc.) to **UAD 3.6** (MISMO-**3.6**-based, one dynamic
+> "URAR", **mandatory 2 November 2026**, with 2.6 retired after pipeline clean-up in May 2027).
+> Definitions below are the **UAD 2.6 / current Selling Guide** ones, and they still govern every 2.6
+> file — which PILOT keeps reading, unchanged, for as long as they keep arriving.
+>
+> **The separate mapping this note used to call for now exists.** The XML paths do change wholesale,
+> so UAD 3.6 has its own reader and its own map: `docs/appraisal-xml/uad-3.6-research.md` (the
+> industry research + the GSE appendix set to download) and `uad-3.6-field-map.md` (the field map),
+> implemented in `src/lib/appraisal/xml36.js`, `uad36-map.js`, `extract36.js` and `package36.js`.
+> `extract()` routes by detected version, and both readers return the same canonical object — so the
+> C1-C6/Q1-Q6 definitions, the view/location ratings and the condition-of-appraisal vocabulary below
+> are shared by both standards and remain the authority for both.
 
 ---
 

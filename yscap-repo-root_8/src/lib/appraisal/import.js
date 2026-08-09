@@ -46,19 +46,33 @@ async function importAppraisal(db, args) {
 /**
  * File a refused appraisal XML so the UAD 3.6 exposure can be COUNTED (db/438).
  *
- * THE THREE KINDS ARE KEPT APART ON PURPOSE. `uad_3_6` is the one that matters —
- * a real appraisal in the format we cannot read — and today it is ZERO across the
- * 152 real reports in hand. `not_appraisal` is somebody attaching an Encompass
- * iLAD loan-application export instead of the appraisal, which is a different
- * problem with a different answer (no reader would fix it); all three of today's
- * refusals are that. Counting them together would bury the number that matters
- * inside the number that does not.
+ * THE THREE KINDS ARE KEPT APART ON PURPOSE. `not_appraisal` is somebody attaching
+ * an Encompass iLAD loan-application export instead of the appraisal, which is a
+ * different problem with a different answer (no reader would fix it); all three of
+ * the refusals on record are that. Counting them together would bury the number
+ * that matters inside the number that does not.
+ *
+ * `uad_3_6` USED TO BE THE NUMBER THAT MATTERED — a real appraisal in a format we
+ * could not read, counted so somebody could answer "is the 2 November 2026 format
+ * change here yet?". PILOT now READS UAD 3.6 (`extract36`), so a 3.6 report is
+ * imported rather than refused and this bucket should stay at zero. It is kept —
+ * not retired — because a 3.6 file can still be refused for an ordinary reason (no
+ * comparable grid, unreadable XML), and the day one is, the count is how we find
+ * out. A rising `uad_3_6` now means the READER has a gap, not that the format has
+ * arrived.
  *
  * Never throws — the caller has already decided to refuse, and this only records.
  */
 async function recordFormatRefusal(db, { applicationId, documentId, importedBy, xml, format, reason }) {
   const fmt = format || {};
-  const kind = fmt.uad36 ? 'uad_3_6' : (fmt.notAnAppraisal ? 'not_appraisal' : 'unreadable');
+  // NOT-AN-APPRAISAL WINS OVER THE VERSION, and the order matters more now than it
+  // did. A file can carry a UAD 3.6 label AND no comparable grid — an iLAD export on
+  // the 3.6 reference model is exactly that shape. Reading the version first filed it
+  // as `uad_3_6`, which said "a real appraisal in a format we cannot read" about a
+  // document that is not an appraisal at all: wrong twice, and it would put a number
+  // in the one bucket that is supposed to mean the reader has a gap. The honest
+  // problem is the document, whichever standard it was written to.
+  const kind = fmt.notAnAppraisal ? 'not_appraisal' : (fmt.uad36 ? 'uad_3_6' : 'unreadable');
   let filename = null;
   if (documentId) {
     try {
@@ -129,7 +143,7 @@ async function formatRefusalCounts(db, { sinceDays = 365 } = {}) {
       notAppraisal: (by.not_appraisal || EMPTY_COUNT()),
       unreadable: (by.unreadable || EMPTY_COUNT()),
       mandatoryFrom: '2026-11-02',
-      reads: 'UAD 2.6 (MISMO 2.6)',
+      reads: 'UAD 2.6 (MISMO 2.6) and UAD 3.6 (MISMO 3.6)',
     };
   } catch (_) {
     // FAIL CLOSED TO THE SAME SHAPE. Returning a bare `{ok:false}` made every
@@ -137,7 +151,7 @@ async function formatRefusalCounts(db, { sinceDays = 365 } = {}) {
     // where the reporting surface is already degraded — turning "we could not
     // read the count" into a broken page.
     return { ok: false, uad36: EMPTY_COUNT(), notAppraisal: EMPTY_COUNT(), unreadable: EMPTY_COUNT(),
-      mandatoryFrom: '2026-11-02', reads: 'UAD 2.6 (MISMO 2.6)' };
+      mandatoryFrom: '2026-11-02', reads: 'UAD 2.6 (MISMO 2.6) and UAD 3.6 (MISMO 3.6)' };
   }
 }
 
@@ -149,13 +163,14 @@ async function importAppraisalTx(db, {
   if (!applicationId) throw new Error('applicationId required');
   const A = extract(xml);
   if (!A.ok) {
-    // REMEMBER WHAT WE COULD NOT READ. UAD 3.6 / MISMO 3.x becomes MANDATORY for
-    // Fannie and Freddie appraisals on 2 NOVEMBER 2026 and PILOT reads UAD 2.6 —
-    // from that date the desk stops working on new reports. The parser already
-    // recognises the format and refuses it with an honest message, but the
-    // refusal was a sentence shown to one officer and then thrown away, so
-    // nobody could answer "how many did we turn away last month?" — the only
-    // question that says whether the exposure is still theoretical.
+    // REMEMBER WHAT WE COULD NOT READ. UAD 3.6 / MISMO 3.6 becomes MANDATORY for
+    // Fannie and Freddie appraisals on 2 NOVEMBER 2026, and PILOT now reads it —
+    // `extract()` routes a 3.x file to `extract36`, so reaching this branch with a
+    // 3.6 file means the READER refused it (no comparable grid, unreadable XML),
+    // not that the format is unsupported. The refusal used to be a sentence shown
+    // to one officer and then thrown away, so nobody could answer "how many did we
+    // turn away last month?" — which is now the question that says whether the
+    // 3.6 reader has a gap worth closing.
     //
     // AWAITED, INSIDE A SAVEPOINT — not fire-and-forget. Two traps this repo has
     // already been bitten by, both live here: `db` is usually a TRANSACTION
