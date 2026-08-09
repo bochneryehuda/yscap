@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { showMessage, askConfirm } from '../lib/dialog.js';
+import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
@@ -83,11 +83,10 @@ export default function StaffLabelingConsole() {
   };
 
   const kickTraining = async (targetProject, docType) => {
-    const modelId = window.prompt(
+    const modelId = await askPrompt(
       targetProject === 'classifier'
         ? 'Azure Custom Classification project id (e.g. pilot-doc-splitter):'
-        : `Azure Custom Neural project id for ${docType} (e.g. pilot-${docType.replace(/_/g, '-')}):`,
-      targetProject === 'classifier' ? 'pilot-doc-splitter' : `pilot-${(docType || '').replace(/_/g, '-')}`);
+        : `Azure Custom Neural project id for ${docType} (e.g. pilot-${docType.replace(/_/g, '-')}):`, { defaultValue: targetProject === 'classifier' ? 'pilot-doc-splitter' : `pilot-${(docType || '').replace(/_/g, '-')}` });
     if (!modelId || !modelId.trim()) return;
     setBusy(true);
     try {

@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import ExceptionCard from '../components/ExceptionCard.jsx';
+import { askPrompt } from '../lib/dialog.js';
 
 /* Loan policy EXCEPTIONS — the review box (owner-directed 2026-07-22; redesigned
  * 2026-07-24, docs/EXCEPTION-WORKFLOW-REDESIGN.md).
@@ -166,7 +167,7 @@ export default function StaffExceptions() {
     // The clear note is asked for HERE — never silently reused from the decision
     // textarea (typing a decision rationale then clearing used to store it as the
     // clear note).
-    const note = window.prompt('Optional note for the archive (why this is being cleared):', '');
+    const note = await askPrompt('Optional note for the archive (why this is being cleared):', { defaultValue: '' });
     if (note === null) return; // cancelled
     setBusy(row.id);
     try {

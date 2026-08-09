@@ -38,6 +38,28 @@ const read = async (id) => (await db.query(
   `SELECT first_name, middle_name, last_name, name_suffix, name_review_needed, name_review_reason, name_split_checked_at
      FROM borrowers WHERE id=$1`, [id])).rows[0];
 
+/* DRAIN THE QUEUE, DON'T TAKE ONE CAPPED PASS.
+   `healBorrowerNamesOnce` is a GLOBAL sweep over `borrowers` with a row LIMIT,
+   ORDER BY created_at ASC — it does not know about this fixture. EVERY borrower
+   any other suite creates joins the same queue, because a fresh row starts
+   unchecked (the very first assertion in this file relies on that), and this
+   fixture's rows are the NEWEST, so they sort LAST. On a database carrying more
+   unchecked borrowers than the cap they sit past it entirely and are never looked
+   at — so one pass proves nothing about them, and the suite would report the
+   SPLITTER as broken when nothing is wrong with it. Measured: 5,200 seeded
+   borrowers made FIVE assertions here fail, "merged first name is split" among
+   them. Draining first makes every assertion about THIS fixture again instead of
+   about how busy the database happens to be.
+   Bounded, and it says so rather than spinning: every row a pass reads is stamped
+   (split, flagged or skipped), so the queue strictly shrinks and this terminates. */
+const drain = async () => {
+  for (let i = 0; i < 60; i++) {
+    const p = await heal.healBorrowerNamesOnce({ limit: 5000 });
+    if (!p || !p.looked) return;
+  }
+  ok('the name back-fill drained rather than spinning', false);
+};
+
 (async () => {
   try {
     // ── The columns really exist and hold what we think ────────────────────
@@ -51,7 +73,7 @@ const read = async (id) => (await db.query(
     // ── The backfill splits a merged first name ────────────────────────────
     {
       const id = await mkBorrower('Issac Michael', 'Grunzweig');
-      await heal.healBorrowerNamesOnce({ limit: 5000 });
+      await drain();
       const r = await read(id);
       eq('merged first name is split',
         { f: r.first_name, m: r.middle_name, l: r.last_name },
@@ -64,7 +86,7 @@ const read = async (id) => (await db.query(
 
       // IDEMPOTENT: a second pass must not touch it again.
       const stamp = r.name_split_checked_at;
-      await heal.healBorrowerNamesOnce({ limit: 5000 });
+      await drain();
       const again = await read(id);
       eq('a second pass changes nothing',
         { f: again.first_name, m: again.middle_name, l: again.last_name, s: String(again.name_split_checked_at) },
@@ -74,7 +96,7 @@ const read = async (id) => (await db.query(
     // ── A suffix wrongly stored as the surname is recovered ────────────────
     {
       const id = await mkBorrower('John Michael Smith', 'Jr');
-      await heal.healBorrowerNamesOnce({ limit: 5000 });
+      await drain();
       const r = await read(id);
       eq('suffix recovered out of the last name',
         { f: r.first_name, m: r.middle_name, l: r.last_name, s: r.name_suffix },
@@ -84,7 +106,7 @@ const read = async (id) => (await db.query(
     // ── A clean two-word name is left completely alone ─────────────────────
     {
       const id = await mkBorrower('Dov', 'Steiner');
-      await heal.healBorrowerNamesOnce({ limit: 5000 });
+      await drain();
       const r = await read(id);
       eq('a clean name is untouched',
         { f: r.first_name, m: r.middle_name, l: r.last_name, rev: r.name_review_needed },
@@ -95,7 +117,7 @@ const read = async (id) => (await db.query(
     // ── Placeholder / shadow rows are never split and never nag ────────────
     {
       const id = await mkBorrower('Unknown', 'Unknown');
-      await heal.healBorrowerNamesOnce({ limit: 5000 });
+      await drain();
       const r = await read(id);
       eq('a placeholder profile is left alone and never flagged',
         { f: r.first_name, l: r.last_name, rev: r.name_review_needed },
@@ -105,7 +127,7 @@ const read = async (id) => (await db.query(
     // ── A row that already carries a middle name is never re-split ─────────
     {
       const id = await mkBorrower('Issac', 'Grunzweig', { middle: 'Michael' });
-      await heal.healBorrowerNamesOnce({ limit: 5000 });
+      await drain();
       const r = await read(id);
       eq('an already-split row is untouched',
         { f: r.first_name, m: r.middle_name, l: r.last_name },
@@ -119,7 +141,7 @@ const read = async (id) => (await db.query(
         ['Rabbi Moshe', 'Klein'], ['Sean', "O'Brien"], ['Anna Maria', 'Lopez-Garcia']]) {
         ids.push({ id: await mkBorrower(f, l), was: `${f} ${l}` });
       }
-      await heal.healBorrowerNamesOnce({ limit: 5000 });
+      await drain();
       for (const { id, was } of ids) {
         const r = await read(id);
         const now = N.joinFullName({ first: r.first_name, middle: r.middle_name, last: r.last_name, suffix: r.name_suffix });

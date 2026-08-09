@@ -4139,6 +4139,16 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
    address from pushing the card sideways on a phone. */
 .app-dialog-body{margin:0 0 16px;white-space:pre-wrap;overflow-wrap:anywhere;
   font-size:14px;line-height:1.5;color:#3A4550}
+/* The prompt's text field. Colours are EXPLICIT darks per the hard rule — an
+   --ink* token is a LIGHT paper colour in this palette and renders white on
+   white. 16px is not cosmetic: iOS Safari zooms the whole page on focus of any
+   control under 16px, which on a phone throws the dialog off screen. */
+.app-dialog-field{display:block;width:100%;box-sizing:border-box;margin:0 0 16px;
+  font-size:16px;line-height:1.4;color:#141B22;background:#FFFFFF;
+  border:1px solid #D9D2C4;border-radius:8px;padding:10px 12px}
+.app-dialog-field:focus{outline:2px solid #2F7F86;outline-offset:1px;border-color:#2F7F86}
+.app-dialog-field::placeholder{color:#7A858C}
+textarea.app-dialog-field{resize:vertical;min-height:76px}
 .app-dialog-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
 @media(max-width:640px){
   .app-dialog{padding:18px 16px calc(16px + env(safe-area-inset-bottom))}
@@ -4206,3 +4216,207 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .sos-internal{border-left:2px solid var(--gold,#AE8746);padding-left:9px;margin-left:-11px}
 .sos-internal-tag{display:inline-block;margin-left:6px;font-size:9.5px;font-weight:700;
   letter-spacing:.05em;text-transform:uppercase;color:var(--gold,#AE8746);vertical-align:1px}
+
+/* =====================================================================
+   API HEALTH — the integration status desk (owner-directed 2026-08-09,
+   "the API health page is very outdated … focus on modernization").
+
+   WHAT WAS WRONG, so nobody rebuilds it that way again: the screen was ~800
+   lines of hand-written inline hex — none of the tokens above, so it could not
+   follow the white-first palette — and it opened with no verdict. Twenty-eight
+   integrations rendered as one undifferentiated wall of fully-expanded cards in
+   six sections, with the eleven that are deliberately not connected shouting as
+   loudly as the AI brain that reads every document. "Is anything broken right
+   now?" took reading seven small count pills and scrolling six screens.
+
+   The shape here is the one every modern status page converged on: ONE headline
+   verdict, the mix on a single bar, problems sorted to the top and opened by
+   themselves, and a search + filter so a named service is one keystroke away
+   rather than a scroll. Everything quiet collapses.
+
+   Namespaced `ah-*` INCLUDING every state modifier (`ah-on`, never a bare
+   `.on`) — a bare state class on a namespaced component collides with the
+   global utilities, which is what turned an un-ticked credit card into a
+   shrink-wrapped 63px box that scrolled its whole modal sideways.
+
+   Text colours are tokens that resolve DARK (--text / --text-muted / --text-soft)
+   or explicit darks. NEVER an --ink* token: every one of those is a LIGHT paper
+   colour in this palette and renders white on white.
+   ===================================================================== */
+
+/* ---- tone system: one place decides what each status LOOKS like ---- */
+.ah-t-live{--ah-fg:#1F6A4E;--ah-bg:var(--success-soft);--ah-br:#BFDACD}
+.ah-t-info{--ah-fg:var(--teal-br);--ah-bg:var(--primary-soft);--ah-br:var(--primary-border)}
+.ah-t-warn{--ah-fg:#8A6110;--ah-bg:var(--warning-soft);--ah-br:#E6D3A8}
+.ah-t-bad{--ah-fg:#8E2320;--ah-bg:var(--danger-soft);--ah-br:#E4C2BE}
+.ah-t-mute{--ah-fg:var(--text-muted);--ah-bg:var(--surface-soft);--ah-br:var(--border)}
+
+/* ---- HERO: the verdict, the mix, and the legend that doubles as a filter ---- */
+.ah-hero{background:linear-gradient(180deg,#ffffff,#fcfaf4);border:1px solid var(--line);
+  border-radius:14px;padding:22px 24px;box-shadow:0 1px 2px rgba(20,27,34,.03),0 8px 26px rgba(20,27,34,.05);
+  display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:26px;align-items:center}
+@media(max-width:860px){.ah-hero{grid-template-columns:1fr;gap:18px;padding:18px}}
+.ah-verdict{display:flex;gap:14px;align-items:flex-start;min-width:0}
+.ah-verdict-ic{flex:0 0 auto;width:44px;height:44px;border-radius:12px;display:grid;place-items:center;
+  color:var(--ah-fg);background:var(--ah-bg);border:1px solid var(--ah-br)}
+.ah-verdict-ic svg{width:22px;height:22px}
+.ah-verdict-h{font-family:var(--serif);font-weight:600;font-size:clamp(20px,3.2vw,27px);line-height:1.15;
+  color:var(--text);margin:0;overflow-wrap:anywhere}
+.ah-verdict-sub{font-size:13.5px;color:var(--text-muted);margin-top:5px;line-height:1.45}
+/* the mix, on one bar — 28 services read as a shape before they read as numbers */
+.ah-mixtop{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:8px}
+.ah-mix{height:12px;border-radius:999px;background:var(--ink-3);overflow:hidden;display:flex}
+.ah-mix > i{display:block;height:100%;transition:width .45s ease}
+.ah-mix > i + i{border-left:1px solid rgba(255,255,255,.55)}
+.ah-legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+/* A legend entry IS the filter — the count you just read is the thing you want to see. */
+.ah-leg{appearance:none;font:inherit;cursor:pointer;text-align:left;display:flex;align-items:center;gap:7px;
+  padding:5px 11px;border-radius:999px;border:1px solid var(--border);background:var(--surface);
+  color:var(--text-muted);transition:border-color .14s ease,background .14s ease}
+.ah-leg:hover{border-color:var(--border-strong);background:var(--surface-soft)}
+.ah-leg.ah-sel{border-color:var(--ah-br,var(--primary-border));background:var(--ah-bg,var(--primary-soft));color:var(--ah-fg,var(--teal-br))}
+.ah-leg:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.ah-leg-sw{width:9px;height:9px;border-radius:3px;flex:0 0 auto}
+.ah-leg-n{font-weight:700;font-variant-numeric:tabular-nums;color:var(--text)}
+.ah-leg.ah-sel .ah-leg-n{color:var(--ah-fg)}
+.ah-leg-k{font-size:12.5px}
+
+/* ---- TOOLBAR: search + filter, sticky so it stays reachable down a long page ----
+   `top` clears the app's own sticky top bar (.app-topbar, 72px / 60px on a phone) —
+   pinned to 0 it would slide underneath it and disappear. */
+.ah-tools{position:sticky;top:72px;z-index:5;display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  padding:10px 0;background:var(--bg);border-bottom:1px solid var(--border)}
+@media(max-width:900px){.ah-tools{top:60px}}
+.ah-search{position:relative;flex:1 1 260px;min-width:0}
+.ah-search-ic{position:absolute;left:11px;top:50%;transform:translateY(-50%);width:16px;height:16px;
+  color:var(--text-soft);pointer-events:none}
+/* 16px minimum or iOS Safari zooms the whole page on focus and throws the layout off screen. */
+.ah-search-in{width:100%;font:inherit;font-size:16px;padding:9px 34px 9px 34px;border-radius:var(--radius);
+  border:1px solid var(--border);background:var(--surface);color:var(--text)}
+.ah-search-in:focus{outline:none;border-color:var(--primary-border);box-shadow:0 0 0 3px var(--primary-soft)}
+.ah-search-x{position:absolute;right:6px;top:50%;transform:translateY(-50%);appearance:none;border:0;
+  background:none;color:var(--text-soft);font-size:17px;line-height:1;cursor:pointer;padding:4px 6px}
+.ah-search-x:hover{color:var(--text)}
+.ah-chips{display:flex;gap:6px;flex-wrap:wrap}
+.ah-chip{appearance:none;font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap;
+  padding:7px 12px;border-radius:999px;border:1px solid var(--border);background:var(--surface);color:var(--text-muted)}
+.ah-chip:hover{background:var(--surface-soft);color:var(--text)}
+.ah-chip.ah-sel{background:var(--primary-soft);border-color:var(--primary-border);color:var(--primary-hover)}
+.ah-chip:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.ah-chip-n{font-variant-numeric:tabular-nums;opacity:.75;margin-left:5px}
+
+/* ---- SECTION heading inside the list ---- */
+.ah-sec{margin-top:22px}
+.ah-sec-h{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.ah-sec-h h3{font-family:var(--serif);font-weight:600;font-size:17px;margin:0;color:var(--text)}
+.ah-sec-n{font-size:12px;font-weight:700;color:var(--text-soft);font-variant-numeric:tabular-nums}
+.ah-sec-sub{font-size:13px;color:var(--text-muted);margin:2px 0 12px}
+.ah-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px}
+@media(max-width:560px){.ah-grid{grid-template-columns:1fr}}
+
+/* ---- INTEGRATION CARD ---- */
+.ah-card{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--ah-fg);
+  border-radius:12px;padding:15px 17px;box-shadow:0 1px 2px rgba(20,27,34,.03);
+  display:flex;flex-direction:column;min-width:0}
+.ah-card-h{display:flex;align-items:center;gap:9px;flex-wrap:wrap;min-width:0}
+.ah-name{font-weight:700;font-size:14.5px;color:var(--text);min-width:0;overflow-wrap:anywhere}
+.ah-spacer{flex:1 1 auto;min-width:0}
+.ah-purpose{font-size:12.5px;color:var(--text-muted);margin-top:6px;line-height:1.5}
+/* The plain-English verdict — the sentence that says what to DO — never collapses. */
+.ah-detail{font-size:12.5px;color:var(--text);margin-top:7px;line-height:1.5}
+.ah-meta{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:9px}
+.ah-fact{font-size:11.5px;color:var(--text-muted)}
+.ah-fact b{color:var(--text);font-weight:650}
+/* A separator you can actually see. --border-strong is a HAIRLINE colour: as text on
+   white it renders at 1.8:1, which the render audit reads as invisible — and it is. */
+.ah-dotsep{color:var(--text-soft)}
+
+/* A card eyebrow. `.act-label` is the ACTION-BAR version and is deliberately
+   `white-space:nowrap` (a cluster label must not wrap onto two lines) — reused on a
+   card it pushed a full sentence 14px past the card's own edge, measured in a real
+   render. A card eyebrow is prose, so it gets its own class and wraps. */
+.ah-eyebrow{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-soft);
+  font-weight:700;line-height:1.4;margin-bottom:6px}
+
+/* status pill + the tiny uppercase tags that qualify it */
+.ah-pill{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:800;letter-spacing:.05em;
+  text-transform:uppercase;padding:4px 10px;border-radius:999px;white-space:nowrap;
+  color:var(--ah-fg);background:var(--ah-bg);border:1px solid var(--ah-br)}
+.ah-pill .ah-dot{width:7px;height:7px;border-radius:999px;background:currentColor;flex:0 0 auto}
+/* Only a LIVE service pulses. A pulsing red would read as activity where there is none. */
+.ah-pill.ah-t-live .ah-dot{animation:ah-pulse 2.4s ease-in-out infinite}
+@keyframes ah-pulse{0%,100%{box-shadow:0 0 0 0 rgba(46,122,94,.45)}50%{box-shadow:0 0 0 4px rgba(46,122,94,0)}}
+@media(prefers-reduced-motion:reduce){.ah-pill.ah-t-live .ah-dot{animation:none}}
+.ah-tag{display:inline-flex;align-items:center;font-size:9.5px;font-weight:800;letter-spacing:.05em;
+  text-transform:uppercase;padding:2px 7px;border-radius:999px;
+  color:var(--ah-fg);background:var(--ah-bg);border:1px solid var(--ah-br)}
+
+/* the expander */
+.ah-more{appearance:none;font:inherit;font-size:12px;font-weight:650;cursor:pointer;align-self:flex-start;
+  display:inline-flex;align-items:center;gap:5px;margin-top:10px;padding:5px 9px;border-radius:var(--radius);
+  border:1px solid transparent;background:none;color:var(--teal-br)}
+.ah-more:hover{background:var(--primary-soft)}
+.ah-more:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
+.ah-more svg{width:13px;height:13px;transition:transform .16s ease}
+.ah-more.ah-open svg{transform:rotate(180deg)}
+.ah-body{margin-top:11px;padding-top:11px;border-top:1px solid var(--border)}
+
+/* ---- environment credential chips (NAMES only, never a value) ---- */
+.ah-env{display:flex;gap:6px;flex-wrap:wrap}
+.ah-envchip{display:inline-flex;align-items:center;gap:5px;font-size:11px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;padding:3px 8px;border-radius:6px;
+  color:var(--ah-fg);background:var(--ah-bg);border:1px solid var(--ah-br);overflow-wrap:anywhere}
+.ah-envchip .ah-envas{opacity:.75;font-weight:600}
+
+/* ---- runtime on/off switches ---- */
+.ah-sw{display:flex;align-items:flex-start;gap:11px;padding:10px 0;border-top:1px solid var(--border)}
+.ah-sw:first-of-type{border-top:0}
+.ah-sw-l{flex:1 1 auto;min-width:0}
+.ah-sw-t{font-size:12.5px;font-weight:650;color:var(--text);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.ah-sw-s{font-size:11.5px;color:var(--text-muted);margin-top:2px;line-height:1.45}
+.ah-tog{appearance:none;flex:0 0 auto;width:42px;height:24px;border-radius:999px;position:relative;padding:0;
+  border:1px solid rgba(20,27,34,.10);background:var(--border-strong);cursor:pointer;transition:background .16s ease}
+.ah-tog > i{position:absolute;top:1px;left:1px;width:20px;height:20px;border-radius:999px;background:#fff;
+  box-shadow:0 1px 2px rgba(20,27,34,.35);transition:left .16s ease}
+.ah-tog.ah-on{background:var(--primary)}
+.ah-tog.ah-on.ah-danger{background:var(--danger)}
+.ah-tog.ah-on > i{left:20px}
+.ah-tog:disabled{opacity:.55;cursor:default}
+.ah-tog:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+
+/* ---- a note box (what to do next) ---- */
+.ah-note{font-size:12.5px;line-height:1.5;border-radius:var(--radius);padding:9px 11px;margin-top:11px;
+  color:var(--ah-fg);background:var(--ah-bg);border:1px solid var(--ah-br)}
+.ah-note code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+  background:rgba(20,27,34,.06);border-radius:4px;padding:1px 5px;overflow-wrap:anywhere}
+.ah-note b{font-weight:700}
+
+/* ---- scoreboard tiles (the document mirror) ---- */
+.ah-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin-top:4px}
+.ah-tile{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:var(--surface);
+  container-type:inline-size}
+.ah-tile.ah-toned{color:var(--ah-fg);background:var(--ah-bg);border-color:var(--ah-br)}
+.ah-tile-v{font-size:clamp(17px,13cqw,23px);font-weight:700;line-height:1.12;color:var(--text);
+  font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.ah-tile.ah-toned .ah-tile-v{color:var(--ah-fg)}
+.ah-tile-k{font-size:11px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--text-muted);margin-top:3px;overflow-wrap:anywhere}
+.ah-tile.ah-toned .ah-tile-k{color:var(--ah-fg);opacity:.85}
+
+/* ---- the typed-confirmation modal for a switch that changes live behaviour ----
+   `.cv-modal` deliberately carries NO padding — each modal supplies its own (see
+   `.lead-convert`), so without this the copy renders flush against the card edge. */
+.ah-confirm{padding:22px 24px}
+@media(max-width:640px){.ah-confirm{padding:20px 18px calc(20px + env(safe-area-inset-bottom))}}
+.ah-confirm h3{font-size:19px;margin:0 0 10px}
+.ah-confirm .input{margin-top:2px}
+
+/* ---- misc ---- */
+.ah-empty{border:1px dashed var(--border);border-radius:12px;padding:26px 18px;text-align:center;
+  color:var(--text-muted);font-size:13.5px;background:var(--surface)}
+.ah-live-ago{font-variant-numeric:tabular-nums}
+.ah-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+/* The Sitewire field explorer's discovered-field chips. */
+.ah-fields{display:flex;flex-wrap:wrap;gap:6px}
+.ah-fieldchip{font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;border-radius:6px;
+  padding:2px 8px;color:var(--ah-fg);background:var(--ah-bg);border:1px solid var(--ah-br);overflow-wrap:anywhere}

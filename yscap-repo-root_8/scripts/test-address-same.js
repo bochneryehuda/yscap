@@ -160,10 +160,18 @@ ok(eqLocDiff === false, 'a genuinely different address is still a write');
       const b = (await db.query(
         `INSERT INTO borrowers(first_name,last_name,email) VALUES('Addr','Same',$1) RETURNING id`,
         ['addrsame' + Math.random() + '@e.com'])).rows[0].id;
+      // THE FIXTURE IS BACKDATED PAST EVERY REAL ROW ON PURPOSE.
+      // `closeEquivalentAddressReviewsOnce` is a GLOBAL sweep over the whole
+      // queue — `ORDER BY created_at LIMIT 500` — so on a re-used database a few
+      // hundred older open address reviews sit in front of a fixture dated now()
+      // and it is never looked at: the assertions below then fail with nothing
+      // wrong with the closer. Dating these first makes the pass reach them
+      // whatever the backlog is.
       const mkRow = async (enc, pilot, tag) => (await db.query(
         `INSERT INTO sync_review_queue
-           (borrower_id, task_id, direction, field_key, current_value, proposed_value, reason, clickup_value, portal_value, source)
-         VALUES ($1,$2,'inbound','current_address',$3,$4,'encompass_address_differs: test',$4,$3,'encompass') RETURNING id`,
+           (borrower_id, task_id, direction, field_key, current_value, proposed_value, reason, clickup_value, portal_value, source, created_at)
+         VALUES ($1,$2,'inbound','current_address',$3,$4,'encompass_address_differs: test',$4,$3,'encompass',
+                 now() - interval '9000 days') RETURNING id`,
         [b, 'encompass:test-' + tag + '-' + Math.random(), pilot, enc])).rows[0].id;
 
       const equivalent = await mkRow('5701 15 Ave 4D, Brooklyn, NY 11219', '5701 15th Ave Apt 4d, Brooklyn, NY 11219, USA', 'same');
@@ -175,8 +183,13 @@ ok(eqLocDiff === false, 'a genuinely different address is still a write');
       ok(await st(equivalent) === 'resolved', 'the same-address row is closed');
       ok(await st(real) === 'open', 'the genuinely different row STAYS OPEN for a human');
 
-      const again = await closer.closeEquivalentAddressReviewsOnce({ limit: 500 });
-      ok(!again.closed, 'a second pass closes nothing (idempotent)');
+      // IDEMPOTENT is asserted on OUR rows, not on the global counter — a second
+      // pass legitimately reaches other borrowers' rows the first pass's 500-row
+      // cap left behind, and counting those would fail a pass that did exactly
+      // the right thing.
+      await closer.closeEquivalentAddressReviewsOnce({ limit: 500 });
+      ok(await st(equivalent) === 'resolved' && await st(real) === 'open',
+        'a second pass changes nothing (idempotent)');
 
       await db.query(`DELETE FROM sync_review_queue WHERE borrower_id=$1`, [b]);
       await db.query(`DELETE FROM borrowers WHERE id=$1`, [b]);

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { showMessage, askConfirm } from '../lib/dialog.js';
+import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import DocCompare from './DocCompare.jsx';
@@ -1388,7 +1388,7 @@ function Experience({ experience, appId, onChange, readOnly }) {
   const blocking = findings.some((f) => f.severity === 'fatal');
 
   async function grantException() {
-    const note = window.prompt('Reason for the experience exception (recorded on the file):');
+    const note = await askPrompt('Reason for the experience exception (recorded on the file):');
     if (!note || !note.trim()) return;
     setBusy(true); setErr('');
     try { await api.underwritingExperienceException(appId, { grant: true, note }); await onChange(); }
@@ -2693,7 +2693,7 @@ function SovereignAskAdminSection({ appId }) {
   const [xdBusy, setXdBusy] = useState(false);
   const [xdRes, setXdRes] = useState(null);
   const ask = async () => {
-    const q = window.prompt('What do you want the super-admin to decide about this file?');
+    const q = await askPrompt('What do you want the super-admin to decide about this file?');
     if (!q || !q.trim()) return;
     setBusy(true); setSent(false);
     try {
@@ -2915,7 +2915,7 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true, show
               <button className="btn ghost" style={{ padding: '3px 9px', fontSize: 11, color: 'var(--crit,#B4483C)', borderColor: 'var(--crit,#B4483C)' }}
                 onClick={async () => {
                   const n = (rows || []).filter(r => r.status !== 'dismissed').length;
-                  const reason = window.prompt(`Dismiss all ${n} open AI suggestion${n === 1 ? '' : 's'} on this file? Type a reason (e.g. "test file", "team already reviewed").`, '');
+                  const reason = await askPrompt(`Dismiss all ${n} open AI suggestion${n === 1 ? '' : 's'} on this file? Type a reason (e.g. "test file", "team already reviewed").`, { defaultValue: '' });
                   if (reason == null) return;
                   try {
                     const r = await api.aiDismissAllOnFile(appId, reason || 'Bulk-dismissed from file view');
@@ -3017,7 +3017,7 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
   };
 
   const askAdmin = async () => {
-    const q = window.prompt('What should the super-admin decide?', suggestion.title);
+    const q = await askPrompt('What should the super-admin decide?', { defaultValue: suggestion.title });
     if (!q || !q.trim()) return;
     setBusy(true);
     try {
@@ -3042,7 +3042,7 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
   };
 
   const convertToTask = async () => {
-    const taskId = window.prompt('ClickUp task URL or id to link this suggestion to:');
+    const taskId = await askPrompt('ClickUp task URL or id to link this suggestion to:');
     if (!taskId || !taskId.trim()) return;
     await doAction('convert_to_task', { taskId: taskId.trim() });
   };
@@ -3103,7 +3103,7 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
             <button className="btn ghost" style={{ fontSize: 11, color: 'var(--crit,#B4483C)', borderColor: 'var(--crit,#B4483C)' }}
               onClick={async () => {
                 const code = suggestion.evidence.code;
-                const reason = window.prompt(`Silence '${code}' portfolio-wide? Every future finding with this code will be dropped before it reaches any file. Type a reason (audited).`, '');
+                const reason = await askPrompt(`Silence '${code}' portfolio-wide? Every future finding with this code will be dropped before it reaches any file. Type a reason (audited).`, { defaultValue: '' });
                 if (reason == null || !reason.trim()) return;
                 try {
                   await api.aiSilencedCodesAdd(code, reason.trim());
@@ -3439,7 +3439,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
             </div>
             <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
               <button className="btn ghost" style={{ fontSize: 11 }} onClick={async () => {
-                const hours = parseInt(window.prompt('Snooze the fraud banner for how many hours? (1–168)', '24') || '', 10);
+                const hours = parseInt(await askPrompt('Snooze the fraud banner for how many hours? (1–168)', { defaultValue: '24' }) || '', 10);
                 if (!(hours >= 1 && hours <= 168)) return;
                 try { await api.fraudBannerSnooze(appId, hours); load(); }
                 catch (e) { showMessage(`Snooze failed: ${(e && e.message) || 'error'}`); }

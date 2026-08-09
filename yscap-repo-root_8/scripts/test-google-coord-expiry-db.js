@@ -108,8 +108,29 @@ const get = async (key) => (await db.query(
     // =====================================================================
     // 1. THE SWEEP
     // =====================================================================
-    const r1 = await AC.expireGoogleCoordsOnce({ limit: 1000 });
-    ok(!r1.error && r1.expired >= 2, `the sweep clears the lapsed Google rows (${JSON.stringify(r1)})`);
+    /* DRAIN, DON'T TAKE ONE CAPPED PASS. `expireGoogleCoordsOnce` is a GLOBAL
+       sweep with a row LIMIT and no ORDER BY, so on a re-used database the rows
+       seeded above are simply not in the batch it happens to read: the sweep
+       reports a big `expired` count, every assertion about OUR rows fails, and
+       nothing is wrong with the sweep. It is self-draining (a cleared row has a
+       NULL lat and drops out of its own queue), so we loop until a pass clears
+       nothing. Draining also makes section 6's cap assertions honest — they
+       measure a table with nothing else left to expire. */
+    const drain = async () => {
+      const tot = { expired: 0, passes: 0, stuck: false, error: null };
+      for (let i = 0; i < 60; i++) {
+        const p = await AC.expireGoogleCoordsOnce({ limit: 1000 });
+        tot.passes++;
+        tot.expired += p.expired || 0;
+        if (p.error) { tot.error = p.error; return tot; }
+        if (!p.expired) return tot;
+      }
+      tot.stuck = true;
+      return tot;
+    };
+
+    const r1 = await drain();
+    ok(!r1.error && !r1.stuck && r1.expired >= 2, `the sweep clears the lapsed Google rows (${JSON.stringify(r1)})`);
 
     const a = await get(A);
     ok(a && a.place_id === `ChIJ-${RUN}`,
@@ -186,7 +207,10 @@ const get = async (key) => (await db.query(
     ok(legOsm && legOsm.coords_expire_at === null,
       'and an OSM row is left with none — it never expires');
 
-    await AC.expireGoogleCoordsOnce({ limit: 1000 });
+    // Drained, not one pass: the back-date above just gave EVERY Google row in
+    // the table an expiry in the past, so on a re-used database one capped pass
+    // may never reach this row.
+    await drain();
     const legAfter = await get(LEGACY);
     ok(legAfter && legAfter.lat === null && legAfter.place_id === `ChIJlegacy-${RUN}`,
       'so the first sweep clears it — which IS the compliance action — while keeping its identity');

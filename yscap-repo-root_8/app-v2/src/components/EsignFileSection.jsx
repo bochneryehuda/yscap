@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { goToSection, requestAppDetailTab } from './FileSections.jsx';
-import { askConfirm } from '../lib/dialog.js';
+import { askConfirm, askPrompt } from '../lib/dialog.js';
 import {
   PHASE, PURPOSE, ROLE, TERMINAL, timeAgo, absTime, recipientSteps, recipientState,
   agingHours, agingLevel, agingLabel,
@@ -172,8 +172,8 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
     setLnInput('');
   }, 'Loan number saved.');
   const resend = (rowId) => act(`resend:${rowId}`, () => api.post(`/api/staff/esign/${rowId}/resend`), 'Reminder resent.');
-  const voidEnv = (rowId) => {
-    const reason = window.prompt('Void this envelope — reason (required):');
+  const voidEnv = async (rowId) => {
+    const reason = await askPrompt('Void this envelope — reason (required):');
     if (!reason || !reason.trim()) return;
     return act(`void:${rowId}`, () => api.post(`/api/staff/esign/${rowId}/void`, { reason }), 'Envelope voided.');
   };
@@ -286,7 +286,7 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
   // panel drives the FIRST send only, so a term-sheet package that failed or was
   // voided needs its own way past the Encompass check — asked for right here,
   // the same way Void asks for its reason.
-  const reissueSend = (e) => {
+  const reissueSend = async (e) => {
     // A re-issue mails the term sheet stored on the file right now, so it meets the
     // same "the sheet that goes out is the final one" rule as a first send. When the
     // file is ready, the re-issue FINALIZES the sheet first (owner-directed
@@ -294,7 +294,7 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
     if (tsStampBlocks && e.purpose === 'term_sheet_package') {
       if (tsCanFinalize) return finalizeAndSend(e.purpose, true);
       if (isSuper) {
-        const reason = window.prompt(
+        const reason = await askPrompt(
           'The term sheet on file still prints “NOT FINAL”, and the file isn’t ready to finalize.\n\n'
           + 'Send it anyway as a super-admin override? Say why — it is recorded on the file:');
         if (!reason || !reason.trim()) return;
@@ -312,7 +312,7 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
         setErr('Encompass doesn’t match this file yet — fix the fields on the Encompass sync tab under Application details, or ask an admin to make an exception for this send.');
         return;
       }
-      const reason = window.prompt(
+      const reason = await askPrompt(
         'Encompass still doesn’t match this file.\n\n'
         + 'Send this package anyway? Say why — it is recorded on the file and in the exception register:');
       if (!reason || !reason.trim()) return;
