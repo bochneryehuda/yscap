@@ -3027,8 +3027,25 @@ router.post('/track-records', async (req, res) => {
   // PUT guard) — the conflict then no-ops and we re-select its id. Rows without
   // a clientRowId keep plain-insert behavior (the partial index ignores NULLs).
   const clientRowId = b.clientRowId ? String(b.clientRowId).slice(0, 80) : null;
+  /* A TYPED ENTITY NAME BECOMES A REAL ENTITY (owner-directed 2026-08-09: "any
+     LLC that he enters should be a real LLC on his profile"). Before this the
+     name was stored as free text and nothing else happened — no document slots,
+     no members, no verification, and no way for one verified company to carry
+     ownership to the other properties it held.
+
+     Only when the borrower did NOT pick an existing entity from the list
+     (`b.llcId`), and never for a personally-owned line. `promoteEntityName` never
+     throws, refuses junk, and writes nothing when the name could mean two of
+     their companies — so this can neither lose the deal being saved nor attach
+     it to the wrong company. */
+  let promotedLlcId = null;
+  if (!b.llcId && !b.ownedPersonally && b.entityName) {
+    const p = await require('../lib/track-record-entity')
+      .promoteEntityName(me(req), b.entityName, { firstSeenOn: 'track_record' });
+    promotedLlcId = p.llcId;
+  }
   const allNames = ['borrower_id', 'llc_id', 'client_row_id', ...names];
-  const allVals = [me(req), b.llcId || null, clientRowId, ...vals];
+  const allVals = [me(req), b.llcId || promotedLlcId || null, clientRowId, ...vals];
   const ph = allVals.map((_, i) => '$' + (i + 1)).join(',');
   const updateSet = ['llc_id=EXCLUDED.llc_id', ...names.map(n => `${n}=EXCLUDED.${n}`), 'updated_at=now()'].join(', ');
   const r = await db.query(
