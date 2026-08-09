@@ -173,7 +173,12 @@ const A3 = { line1: '9 Maple Ct', city: 'Lakewood', state: 'NJ', zip: '08701' };
     ok(good.status === 200, 'answering the question lets it through');
     const out = await good.json();
     const line = (await db.query('SELECT deal_type FROM track_records WHERE id=$1', [out.trackRecordId])).rows[0];
-    ok(line.deal_type === 'hold', '…and THEIR answer is what lands, not our guess');
+    /* Their ANSWER lands — in the canonical spelling ('hold' → 'fix-and-hold',
+       the same label the track-record tool writes), so the word on the line
+       and the bucket it counts in can never disagree. */
+    ok(require('../src/lib/experience').bucketOf(line.deal_type) === 'holds'
+        && /hold/i.test(line.deal_type),
+      '…and THEIR answer is what lands (canonical spelling), not our guess');
   }
 
   console.log('\n3. NOTHING INTERNAL LEAKS to the borrower');

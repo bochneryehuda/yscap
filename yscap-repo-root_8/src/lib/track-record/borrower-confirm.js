@@ -301,13 +301,14 @@ async function undoLocked(db, candidateId, { borrowerId }) {
           /* …every figure still exactly what the candidate staged (a staffer
              re-typing a price is work, whether or not a trigger calls it
              material)… */
-          AND t.deal_type IS NOT DISTINCT FROM t.deal_type
           AND t.purchase_price IS NOT DISTINCT FROM $4::numeric
           AND t.purchase_date  IS NOT DISTINCT FROM $5::date
           AND t.sale_price     IS NOT DISTINCT FROM $6::numeric
           AND t.sale_date      IS NOT DISTINCT FROM $7::date
-          AND t.rent_date IS NULL AND t.refi_date IS NULL
-          AND t.rent_amount IS NULL AND t.refi_amount IS NULL
+          AND t.rent_amount    IS NOT DISTINCT FROM $8::numeric
+          AND t.rent_date      IS NOT DISTINCT FROM $9::date
+          AND t.refi_amount    IS NOT DISTINCT FROM $10::numeric
+          AND t.refi_date      IS NOT DISTINCT FROM $11::date
           /* …still the row this module wrote, with nothing hanging off it. */
           AND t.origin = 'public_records'
           AND t.entered_by_kind = 'borrower'
@@ -315,7 +316,8 @@ async function undoLocked(db, candidateId, { borrowerId }) {
           AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.track_record_id = t.id)
         RETURNING id`,
       [c.imported_track_record_id, borrowerId, IMPORT_NOTE,
-        c.purchase_price, c.purchase_date, c.sale_price, c.sale_date]);
+        c.purchase_price, c.purchase_date, c.sale_price, c.sale_date,
+        c.rent_amount, c.rent_date, c.refi_amount, c.refi_date]);
     lineRemoved = r.rows.length > 0;
     if (!lineRemoved) {
       /* Removed already by a staffer, or worked? A line that no longer exists
