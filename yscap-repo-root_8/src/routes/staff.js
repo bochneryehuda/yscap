@@ -10895,6 +10895,131 @@ router.post('/llcs/:id/verify', async (req, res) => {
   } catch (_) { /* best-effort */ }
   res.json({ ok: true, verified: false, revokedChildren });
 });
+
+/* ── CHECK A: DOES THIS BORROWER CONTROL THIS ENTITY? ───────────────────────
+   Owner-directed 2026-08-09. Ownership is TWO independent questions, and this
+   route answers the first one ONCE per entity:
+
+     CHECK A — does the borrower CONTROL this entity?  (here)
+     CHECK B — did that entity own THIS property?      (per track-record line)
+
+   So ten properties across two entities is two of these plus ten small
+   per-line confirmations — "if we verify ownership of these two LLCs, then all
+   the ownership of all the properties is verified."
+
+   IT IS NOT `llcs.is_verified`, and the two must not be collapsed. That flag
+   means "this entity's four document slots are complete" and it signs off the
+   entity CONDITION on every vesting loan file. Check A is a statement about a
+   PERSON's relationship to the company, it lives on `llc_borrowers` (so two
+   borrowers on one entity are answered separately), and it drives the TRACK
+   RECORD. An entity can be document-complete without anyone having confirmed
+   who runs it, and one borrower's control says nothing about a co-borrower's.
+
+   Authority mirrors the entity verify route exactly: verifying is a
+   `sign_off_conditions` call because it carries evidence onto the track record,
+   revoking is open to any reviewer on the file but REQUIRES a reason. */
+router.post('/llcs/:id/ownership-check', async (req, res) => {
+  const own = await db.query(`SELECT borrower_id, llc_name FROM llcs WHERE id=$1`, [req.params.id]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+
+  const b = req.body || {};
+  /* WHOSE control is being confirmed. Defaults to the entity's own borrower, but
+     an entity can be linked to several people (llc_borrowers is many-to-many),
+     and each answers Check A for themselves. */
+  const borrowerId = b.borrowerId || own.rows[0].borrower_id;
+  if (!(await canSeeBorrowerId(req, borrowerId))) return res.status(403).json({ error: 'forbidden' });
+
+  const verified = b.verified !== false;
+  if (verified && !can(req.actor, 'sign_off_conditions')) {
+    return res.status(403).json({
+      error: 'Only a processor can confirm control of an entity — it carries ownership evidence onto every property that entity held.' });
+  }
+  if (!verified && !String(b.reason || '').trim()) {
+    return res.status(400).json({ error: 'a reason is required to revoke — it removes the ownership evidence from every property this entity carried' });
+  }
+  if (verified && !String(b.evidenceKind || '').trim()) {
+    /* WHAT PROVED IT is not optional. "Verified" with no stated basis is the
+       thing this whole rebuild exists to stop — a reviewer months later has to
+       be able to see WHY, not just THAT. */
+    return res.status(400).json({
+      error: 'say what proves it: the operating agreement, a Secretary of State officer listing, a signature on a deed, or a K-1' });
+  }
+
+  const link = await db.query(
+    `INSERT INTO llc_borrowers (llc_id, borrower_id) VALUES ($1,$2)
+     ON CONFLICT DO NOTHING RETURNING llc_id`, [req.params.id, borrowerId]).catch(() => null);
+  if (link) { /* linked or already there — either is fine */ }
+
+  const evidence = verified ? {
+    kind: String(b.evidenceKind).slice(0, 40),
+    documentId: b.documentId || null,
+    sosTitle: b.sosTitle ? String(b.sosTitle).slice(0, 120) : null,
+    signerName: b.signerName ? String(b.signerName).slice(0, 160) : null,
+    note: b.note ? String(b.note).slice(0, 500) : null,
+    recordedAt: new Date().toISOString(),
+  } : null;
+
+  await db.query(
+    `UPDATE llc_borrowers
+        SET ownership_verified=$3,
+            ownership_verified_at = CASE WHEN $3 THEN now() ELSE NULL END,
+            ownership_verified_by = CASE WHEN $3 THEN $4::uuid ELSE NULL END,
+            ownership_evidence    = CASE WHEN $3 THEN $5::jsonb ELSE NULL END,
+            held_from = COALESCE($6::date, held_from),
+            held_to   = COALESCE($7::date, held_to)
+      WHERE llc_id=$1 AND borrower_id=$2`,
+    [req.params.id, borrowerId, verified, req.actor.id,
+      evidence ? JSON.stringify(evidence) : null,
+      require('../lib/fields').normalizeTypedDate(b.heldFrom),
+      require('../lib/fields').normalizeTypedDate(b.heldTo)]);
+
+  await audit(req, verified ? 'llc_ownership_verified' : 'llc_ownership_revoked', 'llc', req.params.id,
+    { borrowerId, evidenceKind: verified ? evidence.kind : null, reason: b.reason || null });
+
+  /* THE CARRY. This is the whole point — one answer here reaches every property
+     the entity held. Best-effort: it never throws, and a fan-out failure must
+     not undo the reviewer's decision, which is already committed above. */
+  const carry = await require('../lib/track-record-ownership')
+    .syncEntityToTrackRecords(req.params.id, {
+      checkB: (row) => (row.satisfied_by_llc_id || b.assumeCheckB ? { proved: true, confidence: 'likely' } : null),
+    });
+
+  res.json({ ok: true, verified, carry });
+});
+
+/* The properties this entity holds, with each line's ownership pillar — so the
+   entity screen can show "ownership carried from this entity" per property
+   rather than making somebody open ten track records to find out. */
+router.get('/llcs/:id/track-records', async (req, res) => {
+  const own = await db.query(`SELECT borrower_id FROM llcs WHERE id=$1`, [req.params.id]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+
+  const rows = (await db.query(
+    `SELECT t.id, t.property_address, t.deal_type, t.purchase_date, t.counts_from, t.hold_days,
+            t.is_verified, t.verification_status, t.entity_name,
+            p.auto_verdict, p.auto_grade, p.auto_evidence, p.human_verdict, p.satisfied_by_llc_id
+       FROM track_records t
+       LEFT JOIN track_record_pillars p
+              ON p.track_record_id = t.id AND p.pillar = 'ownership'
+      WHERE t.llc_id = $1
+      ORDER BY t.counts_from DESC NULLS LAST, t.created_at DESC`, [req.params.id])).rows;
+
+  const check = (await db.query(
+    `SELECT borrower_id, ownership_verified, ownership_verified_at, ownership_evidence, held_from, held_to
+       FROM llc_borrowers WHERE llc_id=$1`, [req.params.id])).rows;
+
+  res.json({
+    ok: true,
+    checkA: check,
+    properties: rows.map((r) => ({
+      ...r,
+      carried: String(r.satisfied_by_llc_id || '') === String(req.params.id),
+      ownershipMessage: (r.auto_evidence && r.auto_evidence.message) || null,
+    })),
+  });
+});
+
 // Verification statuses mirror the static Track Record tool: pending review,
 // documentation required, verified (with docs), limited (public record only).
 // 'verified' and 'limited' both count toward the borrower's experience tier.
