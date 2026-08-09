@@ -174,6 +174,17 @@ function fieldRows(built, extra) {
       rows.push({ path: field, label: LABELS[field] || field, value: null, state: 'missing', why: m.why });
     }
   }
+  // AND SO DOES AN ASSUMPTION ABOUT SOMETHING THAT IS NOT IN THE BODY. The builder
+  // says "no property-access contact on the file — the appraiser will contact the
+  // borrower to arrange entry", and that sentence reached nothing: the loop above
+  // covers `missing` and had no twin for `assumptions`, so the one thing the reviewer
+  // most needs to know about access was computed and dropped. The AMC desk shows the
+  // same sentence.
+  for (const a of (built.assumptions || [])) {
+    if (!a || !a.field || rows.some((r) => r.path === a.field)) continue;
+    rows.push({ path: a.field, label: LABELS[a.field] || a.field,
+      value: a.value == null ? null : String(a.value), state: 'derived', why: a.why });
+  }
   return rows;
 }
 

@@ -32,6 +32,9 @@ const appraisalCard = require('../lib/appraisal-card');
 
 router.use(requireAuth, requireStaff);
 
+// Their best-person-to-contact list (cdg.js marks the leaf "verify against UAT";
+// these four are the values the vendor's own mapping documents).
+const BEST_CONTACTS = ['Borrower', 'Co-Borrower', 'Owner', 'Agent'];
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 
 // Same file-scope rule as the draw desk: see_all_files -> any file; else only assigned.
@@ -270,7 +273,11 @@ function readOverrides(src) {
   if (s.amcIdentifier != null && s.amcIdentifier !== '') o.amcIdentifier = String(s.amcIdentifier);
   if (Array.isArray(s.subproductCodes)) o.subproductCodes = s.subproductCodes.map(String);
   if (s.mortgageType) o.mortgageType = String(s.mortgageType);
-  if (s.bestContact) o.bestContact = String(s.bestContact);
+  // CLAMPED to their documented enum. It reaches the vendor verbatim as
+  // `partyRoleTypeIdentifier`, and it was the one overridable value on the order
+  // message that was not pinned — the clamp on the upload `action` was added for
+  // exactly this reason and stopped one field short.
+  if (BEST_CONTACTS.includes(String(s.bestContact))) o.bestContact = String(s.bestContact);
   if (s.titleCategory) o.titleCategory = String(s.titleCategory);
   if (s.requestComment) o.requestComment = String(s.requestComment);
   if (s.needByDate) o.needByDate = String(s.needByDate);

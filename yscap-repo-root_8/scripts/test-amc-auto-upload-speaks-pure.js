@@ -65,6 +65,20 @@ async function run(result) {
   out = await run({ ok: false, error: 'nothing_to_upload', skipped: [] });
   ok(out === '', 'nor is having nothing to send');
 
+  // WHOSE FAULT IT WAS DECIDES WHO HAS TO ACT. Our own storage failing is not the
+  // appraisal company refusing, and on this path the log line is the only signal.
+  out = await run({ ok: true, uploaded: 0, skipped: [
+    { documentId: 'd1', filename: 'contract.pdf', reason: 'read_failed', detail: 'the stored copy could not be read' }] });
+  ok(/could not send/.test(out) && !/would not accept/.test(out),
+     'a storage failure is not reported as the appraisal company refusing');
+  ok(/contract\.pdf/.test(out) && /could not be read/.test(out), 'and it still names the file and the reason');
+
+  out = await run({ ok: true, uploaded: 1, skipped: [
+    { documentId: 'd1', filename: 'a.pdf', reason: 'stage_rejected', detail: 'virus scan' },
+    { documentId: 'd2', filename: 'b.pdf', reason: 'empty', detail: 'the stored copy is empty' }] });
+  ok(/would not accept/.test(out) && /could not send/.test(out),
+     'a mixed batch reports each side to the right party');
+
   // A whole-batch refusal is reported with its sentence.
   out = await run({ ok: false, error: 'stage_rejected', message: 'The appraisal company would not accept that document: sow.pdf — virus scan', skipped: [] });
   ok(/would not accept/.test(out), 'a whole-batch refusal is reported, with its own words');

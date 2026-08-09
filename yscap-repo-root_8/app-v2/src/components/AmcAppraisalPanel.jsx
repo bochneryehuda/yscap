@@ -139,7 +139,11 @@ export default function AmcAppraisalPanel({ appId }) {
         </div>
       ) : null}
 
-      {selected ? <OrderDetail appId={appId} orderId={selected} onChange={load} /> : null}
+      {/* KEYED ON THE ORDER, so switching orders REMOUNTS the detail. Without it the
+          Documents tab's held-back list, picks, notice and error survived the change and
+          order A's red "These were NOT sent:" showed on order B. The Class panel does
+          not have this only because its detail already sits inside a keyed row. */}
+      {selected ? <OrderDetail key={selected} appId={appId} orderId={selected} onChange={load} /> : null}
 
       {/* Place a new order */}
       {!notConfigured && preview ? (

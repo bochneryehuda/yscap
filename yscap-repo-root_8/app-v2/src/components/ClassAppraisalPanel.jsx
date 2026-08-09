@@ -267,6 +267,12 @@ const fmtWhen = (d) => { if (!d) return ''; try { return new Date(d).toLocaleStr
 // set to the error CODE, so without reading the body the desk shows "not_connected"
 // where the server wrote a plain sentence a person can act on. Same helper, same
 // wording, as the other appraisal desk — a refusal must read the same on both.
+// A contact's ROLE, whichever way this order spells it: their key is `Type` on UAD 2.6
+// and `type` on 3.6, and the server has read both since day one. Reading only `Type`
+// made every role label vanish on a 3.6 order — and gave every row the same React key —
+// on the very screen this branch first put a property-access person on.
+function roleOf(c) { return (c && (c.Type != null ? c.Type : c.type)) || null; }
+
 function refusal(out) {
   if (!out) return '';
   if (Array.isArray(out.missing) && out.missing.length) {
@@ -297,8 +303,17 @@ function PlacedOrders({ appId, data, openOrder, onOpen, onChanged }) {
                                fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>{label}</span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ color: INK, fontWeight: 600 }}>
-                    {o.class_order_id ? `Class order ${o.class_order_id}` : 'Not yet numbered by Class'}
+                    {/* THE FORM'S NAME, on the order — the same thing the other
+                        appraisal desk shows on its own order row. It was stored on the
+                        order and sent to this screen, and then nothing rendered it, so
+                        the list said only "Class order 12345" and never which report
+                        was actually bought. */}
+                    {o.product_title || (o.product_id ? `Their form #${o.product_id}` : 'Form not recorded')}
                     {o.dryrun ? <span style={{ color: MUTED, fontWeight: 400 }}> · test</span> : null}
+                  </div>
+                  <div style={{ fontSize: 12, color: MUTED }}>
+                    {o.class_order_id ? `Class order ${o.class_order_id}` : 'Not yet numbered by Class'}
+                    {o.product_title && o.product_id ? ` · their form #${o.product_id}` : ''}
                   </div>
                   <div style={{ fontSize: 12, color: MUTED }}>
                     {/* Which form version this order is on. It is on the row rather than
@@ -772,13 +787,13 @@ function Contacts({ contacts }) {
       <SectionTitle>Who Class will contact</SectionTitle>
       <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden' }}>
         {contacts.map((c, i) => (
-          <div key={`${c.Type}-${i}`} style={{ borderTop: i ? `1px solid ${LINE}` : 'none', padding: '9px 12px' }}>
+          <div key={`${roleOf(c) || 'contact'}-${i}`} style={{ borderTop: i ? `1px solid ${LINE}` : 'none', padding: '9px 12px' }}>
             <div style={{ color: INK, fontWeight: 550 }}>
               {[c.firstName, c.lastName].filter(Boolean).join(' ') || '(no name on file)'}
               {c.primaryContact ? <span style={{ color: TEAL, fontSize: 12, fontWeight: 600 }}> · main contact</span> : null}
             </div>
             <div style={{ fontSize: 12, color: MUTED }}>
-              {NAME[c.Type] || c.Type}
+              {NAME[roleOf(c)] || roleOf(c) || 'Contact'}
               {(c.contactMethods || []).length ? ' · ' + c.contactMethods.map((m) => m.value).join(' · ') : ' · no phone or email on file'}
             </div>
           </div>

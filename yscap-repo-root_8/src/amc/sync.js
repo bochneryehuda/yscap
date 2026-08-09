@@ -269,10 +269,19 @@ async function autoUploadStep(dbh, order) {
     // so the scope of work being rejected produced a successful-looking tick, no
     // row, and not one word anywhere. It is the batch where silence costs most.
     const held = ((up && up.skipped) || []).filter((x) => x && x.reason !== 'already_uploaded');
-    if (held.length) {
-      console.warn('[amc] the appraisal company would not accept', held.length,
-        'document(s) on order', order.id + ':',
-        held.map((x) => `${x.filename || x.documentId} (${x.detail || x.reason})`).join('; '));
+    // WHOSE FAULT IT WAS DECIDES WHO HAS TO ACT. `read_failed` / `empty` are OUR
+    // storage — the bytes never left the building — and logging those under "the
+    // appraisal company would not accept" points ops at the wrong party on the one
+    // path where this line is the only signal anybody gets.
+    const theirs = held.filter((x) => x.reason === 'stage_rejected');
+    const ours = held.filter((x) => x.reason !== 'stage_rejected');
+    const list = (xs) => xs.map((x) => `${x.filename || x.documentId} (${x.detail || x.reason})`).join('; ');
+    if (theirs.length) {
+      console.warn('[amc] the appraisal company would not accept', theirs.length,
+        'document(s) on order', order.id + ':', list(theirs));
+    }
+    if (ours.length) {
+      console.warn('[amc] could not send', ours.length, 'document(s) on order', order.id + ':', list(ours));
     }
     if (up && up.ok === false && up.error && up.error !== 'nothing_to_upload') {
       console.warn('[amc] auto document upload refused for order', order.id + ':', up.message || up.error);

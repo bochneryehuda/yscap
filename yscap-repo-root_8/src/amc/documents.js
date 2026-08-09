@@ -20,6 +20,7 @@
  */
 const db = require('../db');
 const cdg = require('./cdg');
+const { matchStaged } = require('./stage-match');
 const client = require('./client');
 const session = require('./session');
 const storage = require('../lib/storage');
@@ -138,11 +139,11 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
   const specs = [];   // parallel metadata
   const skipped = [];
   for (const d of rows) {
-    if (already.has(String(d.id))) { skipped.push({ documentId: d.id, filename: d.filename, reason: 'already_uploaded' }); continue; }
+    if (already.has(String(d.id))) { skipped.push({ documentId: d.id, filename: d.filename, reason: 'already_uploaded', detail: reasonText('already_uploaded') }); continue; }
     let bytes;
     try { bytes = await readStorage(d.storage_ref); }
-    catch (_) { skipped.push({ documentId: d.id, filename: d.filename, reason: 'read_failed' }); continue; }
-    if (!bytes || !bytes.length) { skipped.push({ documentId: d.id, filename: d.filename, reason: 'empty' }); continue; }
+    catch (_) { skipped.push({ documentId: d.id, filename: d.filename, reason: 'read_failed', detail: reasonText('read_failed') }); continue; }
+    if (!bytes || !bytes.length) { skipped.push({ documentId: d.id, filename: d.filename, reason: 'empty', detail: reasonText('empty') }); continue; }
     files.push({ fileName: d.filename || 'document', contentType: d.content_type || 'application/octet-stream', bytes });
     specs.push({ documentId: d.id, filename: d.filename, category: categoryOf(d) });
   }
@@ -175,50 +176,12 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
   // THE JOIN IS BY NAME, NOT BY POSITION. `staged` is the vendor's array; assuming it
   // comes back in the order we sent it is exactly how one document's bytes end up
   // filed under another's name. `name` is the `part<i>` the client itself assigned, so
-  // it is the reliable key; `fileName` is the fallback.
-  // Each staged answer belongs to exactly ONE file. Without this, a vendor that drops
-  // a rejected part and RE-INDEXES the rest hands the same answer to two documents —
-  // one of them gets a duplicate of its neighbour's bytes and the other is recorded as
-  // delivered having never been sent.
-  const claimed = new Set();
-  const claim = (s) => { if (!s || claimed.has(s)) return null; claimed.add(s); return s; };
-  const stagedFor = (i) => {
-    // THE PART NAME IS CHECKED TOO, not trusted. It is the most reliable key we have,
-    // which is exactly why an unchecked match is dangerous: a vendor that refuses one
-    // file, omits it, and re-indexes the rest returns `part1` for what was our
-    // `part2` — and the scope of work is then sent under the photo's name and link,
-    // marked delivered, with the picker greying it out so nobody can retry it. A
-    // `fileName` that disagrees means this answer is about a different file, so we
-    // fall THROUGH (never return null here) and let the filename match rescue it.
-    const byPart = staged.find((s) => s && !claimed.has(s) && s.name === 'part' + i
-      && (!s.fileName || s.fileName === files[i].fileName));
-    if (byPart) return claim(byPart);
-    const byName = staged.filter((s) => s && !claimed.has(s) && s.fileName === files[i].fileName);
-    if (byName.length === 1) return claim(byName[0]);
-    // THE POSITIONAL FALLBACK IS THE LAST RESORT, AND IT IS CHECKED. Taking
-    // `staged[i]` on faith is precisely how one document's bytes are sent under
-    // another's name — reproduced: with the vendor's answers reordered, the purchase
-    // contract went out carrying the scope of work's link, both rows said `uploaded`,
-    // and the picker then greyed the contract out so it could never be retried. So the
-    // position is only trusted when the vendor gives us NOTHING to check it against;
-    // a `fileName` that disagrees means the answer is not about this file, and the
-    // honest outcome is to refuse it rather than to guess which document it belongs to.
-    if (staged.length !== files.length) return null;
-    const at = staged[i];
-    if (!at || claimed.has(at)) return null;
-    // A disagreeing filename means this answer is not about this file.
-    if (at.fileName && at.fileName !== files[i].fileName) return null;
-    // AND WITH NOTHING USABLE TO MATCH ON, POSITION IS NOT EVIDENCE — it is the
-    // assumption this whole function exists to remove. (What reaches here is an
-    // answer whose `name` is absent or names a different part AND whose `fileName` is
-    // absent or matched no single file.) On a SINGLE file there is nothing to confuse
-    // it with, so position is certain; on a batch it is a guess,
-    // and guessing wrong sends one document's bytes under another's name. Refusing
-    // costs a retry; guessing costs a document that everything then reports as
-    // delivered.
-    if (!at.fileName && !at.name && files.length > 1) return null;
-    return claim(at);
-  };
+  // WHICH ANSWER BELONGS TO WHICH FILE is its own problem, and a hard one — six audit
+  // passes each found a new way an incremental version of it mis-filed a document. The
+  // whole rule lives in src/amc/stage-match.js, pure and swept exhaustively; an answer
+  // it cannot place with confidence comes back null and is refused below.
+  const matched = matchStaged(files, staged);
+  const stagedFor = (i) => matched[i] || null;
   // A DENYLIST, DELIBERATELY, NOT AN ALLOWLIST. The vendor's success word is not
   // documented (the only shape in this repo is our own dry-run stub's 'Success'), so an
   // allowlist would silently refuse every document the day they answer "Uploaded" —
