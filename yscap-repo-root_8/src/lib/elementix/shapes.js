@@ -86,7 +86,12 @@ function addressesOf(row) {
     const s = typeof v === 'string' ? str(v) : str(v && (v.addressFull || v.address || v.oneLine));
     if (s && !out.includes(s)) out.push(s);
   };
-  for (const key of ['addresses', 'addressDetails']) {
+  /* `propertyAddresses` is the PERSON tools' spelling — verified live
+     2026-08-09: `get_person_mortgages` carries the property under
+     `propertyAddresses[{id, addressFull}]` where the entity tools say
+     `addresses`. Without it every person-route row read as having NO property
+     address and was dropped as unreadable. */
+  for (const key of ['addresses', 'addressDetails', 'propertyAddresses']) {
     const list = row && row[key];
     if (Array.isArray(list)) list.forEach(push);
     else if (list) push(list);
@@ -125,8 +130,14 @@ function mlsOf(row) {
   const m = {
     salePrice: money(row.mlsSalePrice), saleStatus: str(row.mlsSaleStatus) || null,
     saleListedOn: ymd(row.mlsSaleListingDate),
+    saleRemovedOn: ymd(row.mlsSaleRemovalDate),
     rentPrice: money(row.mlsRentPrice), rentStatus: str(row.mlsRentStatus) || null,
     rentListedOn: ymd(row.mlsRentListingDate),
+    /* The day the rent listing came off the market — the closest thing the
+       records carry to "it leased". Carried as EVIDENCE; the importer only
+       ever writes a rent date from it when the status states an outcome
+       ('rented'/'leased'), because off-market also means withdrawn. */
+    rentRemovedOn: ymd(row.mlsRentRemovalDate),
   };
   return Object.values(m).some((v) => v != null) ? m : null;
 }
@@ -202,6 +213,11 @@ function mortgage(row) {
     isExtension: typeof row.isExtension === 'boolean' ? row.isExtension : null,
     loanPurpose: str(row.loanPurpose) || null,
     deedId: str(row.deedId) || null,
+    /* The PRICE ON THE DEED this mortgage financed — the vendor states it on
+       the mortgage row itself (as a STRING on real rows: "475000.00"), which
+       is what lets a purchase be staged from a mortgage alone in a county
+       whose deeds are not in coverage. */
+    deedConsideration: money(row.deedConsideration),
   };
 }
 

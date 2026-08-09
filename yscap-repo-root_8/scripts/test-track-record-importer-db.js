@@ -216,22 +216,23 @@ const found = (name) => {
 
   console.log('\n5c. A ZERO RESULT SAYS WHOSE LIMITATION IT IS');
   {
-    /* A search runs ONLY under the companies on the profile. A borrower with
-       none gets a zero, and read as "we searched and found no history" that is
-       a finding against them produced by a gap in OUR data — the D3 class,
-       where a coverage gap was painted as a failed verification. */
+    /* A borrower with no companies is now searched under their PERSONAL NAME
+       (owner-directed 2026-08-09: "he should also use the borrower's personal
+       name to search") — a deal bought in a personal name has no entity, and
+       an entity-only search read that whole class of borrowers as having no
+       history. So "nothing to search" is only ever true of a profile with no
+       name AND no companies, and the report says whose name was looked up. */
     const bare = (await db.query(
       `INSERT INTO borrowers (first_name,last_name,email) VALUES ('No','Entities',$1) RETURNING id`,
       [`${tag}_ne@example.com`])).rows[0].id;
     reply = found;
     const out = await IMP.runSearch({ borrowerId: bare, staffId: staff.id });
-    ok(out.found === 0 && out.nothingToSearch === true,
-      'a borrower with NO companies returns nothing, and says the search could not run');
-    ok(/no companies on their profile/.test(out.summary) && /Add the company/.test(out.summary),
-      '…in a sentence that names OUR gap and what to do about it, not a verdict on the borrower');
-    ok(Array.isArray(out.searchedUnder) && out.searchedUnder.length === 0,
-      '…and reports that it searched under nothing, rather than leaving a screen to infer it');
-    ok(out.apiCalls === 0, '…and spends nothing — there was nothing to look under');
+    ok(out.nothingToSearch === false,
+      'a borrower with NO companies is still searched — under their own name');
+    ok(Array.isArray(out.searchedUnder) && out.searchedUnder.includes('No Entities'),
+      '…and the report NAMES the person it looked up, rather than leaving a screen to infer it');
+    ok((out.skips || []).some((s) => s.reason === 'no_entities'),
+      '…while still recording that the profile has no companies to search under');
 
     // And a real search names what it looked under.
     const withEnt = await IMP.runSearch({ borrowerId, staffId: staff.id });

@@ -1,5 +1,5 @@
 -- ============================================================================
--- 506_draw_attachments.sql — invoices, receipts and extra photos ON a draw
+-- 507_draw_attachments.sql — invoices, receipts and extra photos ON a draw
 -- (owner-directed 2026-08-09).
 --
 -- THE PROBLEM. Every override on a draw takes a typed note and nothing else:

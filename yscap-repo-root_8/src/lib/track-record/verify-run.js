@@ -79,7 +79,15 @@ async function runVerify(trackRecordId, opts = {}, client) {
 
   const address = addressLabel(t.property_address);
   const entityName = str(t.entity_name) || str(t.llc_name);
-  const state = (t.property_address && t.property_address.state) || '';
+  /* THE STATE MAY LIVE INSIDE A STRING. An IMPORTED line's `property_address`
+     is a jsonb STRING scalar (the vendor's one-line address), so `.state` read
+     undefined and the search went out with NO state filter — `match_entity`
+     then returned several rows, the one-or-nothing rule refused to pick, and
+     every pillar answered `no_data`. The Verify button was silently weaker on
+     exactly the lines the importer created (audit 2026-08-09). Fall back to
+     the two-letter state in the one-line form ("…, NJ 08701"). */
+  const state = (t.property_address && typeof t.property_address === 'object' && t.property_address.state)
+    || ((address.match(/,\s*([A-Za-z]{2})\s*\d{5}(?:-\d{4})?\s*$/) || [])[1] || '');
   const key = queryKey(trackRecordId, entityName, address);
 
   /* Every name this borrower's entity might be recorded under, plus every name

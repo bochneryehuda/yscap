@@ -1,5 +1,5 @@
 -- ============================================================================
--- 505_draw_release_party.sql — WHO releases a draw's money, and what the money
+-- 506_draw_release_party.sql — WHO releases a draw's money, and what the money
 -- ledger records when it isn't us (owner-directed 2026-08-09).
 --
 -- THE PROBLEM. `draw_disbursements` only ever gets a row when a human records a

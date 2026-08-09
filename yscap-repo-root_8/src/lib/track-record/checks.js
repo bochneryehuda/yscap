@@ -499,9 +499,30 @@ function exitPillar(line, recs, ctx, today) {
      holding it — permanently unreachable, on top of `currentOwner` never being
      populated at all. Both halves are fixed; this is the read. */
   if (recs.currentOwner && addressesOfRecord(recs.currentOwner).some((a) => samePlace(a, line.property_address))) {
-    const still = anyOurs(recs.currentOwner.owners, ctx);
-    const asOf = ymd(recs.currentOwner.asOf);
-    if (still.hit && asOf && asOf > exit) {
+    /* THE FIELDS ARE THE SHAPE'S OWN — `grantees`/`people`/`date`/`isCurrent`
+       (shapes.ownership), never `owners`/`asOf`, which exist on NO row the
+       normaliser produces. Reading the invented names made this check
+       permanently dark: proven against a real ownership row, `own.owners` and
+       `own.asOf` were both undefined, so a borrower claiming a 2024 sale on a
+       property the county still showed them holding passed as `no_data`
+       instead of `contradicted` (audit 2026-08-09). This is the exact class
+       the shapes module's header exists to end, one layer up.
+
+       An ownership row carries no "as of" stamp — `date` is when the holding
+       STARTED and `isCurrent` means no transfer has been recorded since. So
+       the honest test is: the CURRENT owner is still our side, the holding
+       began on or before the claimed exit, and the exit is far enough in the
+       past that "the county just hasn't recorded it yet" is no longer the
+       ordinary explanation (recording lag is weeks; 90 days is generous).
+       Inside the lag window this stays `no_data` — a lag painted as a
+       contradiction is a false accusation. */
+    const holders = [...(recs.currentOwner.grantees || []), ...(recs.currentOwner.people || [])];
+    const still = anyOurs(holders, ctx);
+    const heldSince = ymd(recs.currentOwner.date);
+    // `today` is the injected clock — this module owns none (see the header).
+    const exitWellPast = (daysBetween(exit, today) ?? 0) > 90;
+    if (still.hit && recs.currentOwner.isCurrent !== false
+        && (!heldSince || heldSince <= exit) && exitWellPast) {
       return {
         ...base,
         auto_source: 'elementix',
@@ -509,8 +530,9 @@ function exitPillar(line, recs, ctx, today) {
         auto_confidence: 'likely',
         auto_grade: GRADE.FAIR,
         auto_evidence: {
-          why: `The claimed exit is ${exit}, but the public record still shows "${still.matched}" as the owner as of ${asOf}.`,
-          exitDate: exit, currentOwner: still.matched, asOf,
+          why: `The claimed exit is ${exit}, but the county's current-owner record still shows "${still.matched}" holding this property`
+            + `${heldSince ? ` (since ${heldSince})` : ''}, with no transfer recorded since.`,
+          exitDate: exit, currentOwner: still.matched, heldSince: heldSince || null,
         },
       };
     }

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
+import { fmtDay } from '../lib/dates.js';
 
 /**
  * THE BULK PROPERTY WORKBENCH (blueprint §9.5, owner-directed 2026-08-09)
@@ -48,10 +49,23 @@ const money = (v) => {
   if (!Number.isFinite(n) || n <= 0) return null;
   return '$' + n.toLocaleString('en-US', { maximumFractionDigits: 0 });
 };
-const day = (d) => {
-  const m = String(d || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
-  return m ? `${m[3]}/${m[2]}/${m[1].slice(2)}` : null;
-};
+/* THE DATE IS THE REPO'S ONE FORMAT — never a private one written here.
+   This function used to be `${d}/${m}/${yy}`, which is DAY/MONTH and reads as a
+   different date to everybody who uses this: on a real reviewer's screen a sale
+   on 2 March 2025 printed "02/03/25", which an American reads as 3 February.
+   Found by opening the screen in a browser and looking at it — every source
+   guard passed the whole time, because the bug was that the digits were in the
+   wrong ORDER, not that they were missing.
+
+   It is worse than a lone wrong format: `StaffBorrowerDetail` renders the
+   borrower's EXISTING record with `fmtDay` (MM/DD/YYYY, locale pinned to en-US)
+   directly BELOW this list, so one screen showed the same day two ways and
+   invited a reviewer to compare them. Dates decide whether a deal falls inside
+   the frozen 36-month window, so a misread here is not cosmetic.
+
+   `fmtDay` also pins the locale, which a hand-rolled `toLocaleDateString()`
+   does not — that would silently re-order itself on a machine set to en-GB. */
+const day = (d) => fmtDay(d) || null;
 
 /** The band, in words. Never a number — see the header. */
 const BAND = {
@@ -190,14 +204,23 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
       setRunAt((n) => n + 1);
       await load();
     } catch (e) {
-      if (e && e.code === 'would_reopen_verification') {
+      /* THE CODE LIVES ON `e.data.code` — api.js sets `err.status` and
+         `err.data`, never a bare `err.code`. Reading `e.code` here made BOTH
+         branches unreachable (proven over real HTTP): the server's 409 said
+         "Confirm if that is what you want" and the screen showed it in a box
+         with one OK button — "Join it to the line we have" was a dead end on
+         every verified line. Every other call site in app-v2 reads
+         `e.data.code`; this one now does too. */
+      const code = (e && (e.code || (e.data && e.data.code))) || null;
+      if (code === 'would_reopen_verification') {
         if (await askConfirm(e.message, { confirmLabel: 'Yes, reopen it', cancelLabel: 'Leave it alone' })) {
           try { await api.staffDecideCandidate(id, { action, ...(extra || {}), confirmReopen: true });
             setRunAt((n) => n + 1); await load(); }
           catch (e2) { await showMessage((e2 && e2.message) || 'That did not save.'); }
         }
-      } else if (e && e.code === 'deal_type_needed') {
-        await showMessage(`${e.message}\n\n${e.why || ''}`.trim(), { title: 'What kind of deal was it?' });
+      } else if (code === 'deal_type_needed' || code === 'deal_type_unrecognized') {
+        const why = (e && (e.why || (e.data && e.data.why))) || '';
+        await showMessage(`${e.message}\n\n${why}`.trim(), { title: 'What kind of deal was it?' });
       } else {
         await showMessage((e && e.message) || 'That did not save.', { title: 'Not saved' });
       }

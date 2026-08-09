@@ -447,6 +447,29 @@ function Entities({ id }) {
 function TrackRecord({ id }) {
   const [rows, err, reload] = useLoad(() => api.staffBorrowerTrackRecords(id), [id]);
   const [busy, setBusy] = useState('');
+  /* TWO DIFFERENT "VERIFY"s, kept apart on purpose (owner-directed 2026-08-09:
+     "I thought that button is to verify the details in Elementix. If that's
+     not the button, then we should do a separate button for that"). CHECK THE
+     RECORDS reads the county's own records for this one property and works on
+     ANY line — no exit date needed, because it verifies whatever facts exist
+     (they owned it, what they paid). VERIFY is the final sign-off that makes
+     the deal COUNT toward the tier, and it stays gated on a completed
+     in-window exit — a "verified" line that counts toward nothing is the
+     misleading state that gate exists to prevent. */
+  async function research(t) {
+    setBusy(t.id);
+    try {
+      const out = await api.staffResearchTrackRecord(t.id);
+      const errs = (out.errors || []).map((e) => e.detail || e.reason).filter(Boolean);
+      await showMessage(
+        (out.summary || 'The records were checked.')
+        + (errs.length ? `\n\n${errs.join('\n')}` : '')
+        + '\n\nOpen the Track record workspace to see each check and the evidence.',
+        { title: 'Public records check' });
+      reload();
+    } catch (e) { showMessage((e && e.message) || 'Could not check the records'); }
+    finally { setBusy(''); }
+  }
   async function verify(t) {
     setBusy(t.id);
     try { await api.staffVerifyTrackRecord(t.id, { status: 'verified' }); reload(); } catch (e) { showMessage(e.message || 'Could not verify'); }
@@ -491,9 +514,20 @@ function TrackRecord({ id }) {
               <td style={{ padding: '10px 12px' }}>{money(t.purchase_price)}</td>
               <td style={{ padding: '10px 12px' }}>{money(t.sale_price || t.current_value)}</td>
               <td style={{ padding: '10px 12px' }}>{t.is_verified ? <span className="pill ok">✓</span> : <span className="pill">no</span>}</td>
-              <td style={{ padding: '10px 12px' }}>{t.is_verified
-                ? <button className="btn ghost small" disabled={busy === t.id} onClick={() => revoke(t)} title="Revoke this project’s verification (borrower is notified)">Revoke</button>
-                : <button className="btn ghost small" disabled={busy === t.id} onClick={() => verify(t)}>Verify</button>}</td>
+              <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>
+                <button className="btn soft small" disabled={busy === t.id} onClick={() => research(t)}
+                  title="Read the county’s public records for this property — works on any line, fills the three checks, never marks it verified by itself.">
+                  Check the records</button>
+                {' '}
+                <Link className="btn soft small" to="/internal/approvals?tab=track-record"
+                  title="Open this borrower’s full track-record workspace — every check, the documents, and the actions.">
+                  Open</Link>
+                {' '}
+                {t.is_verified
+                  ? <button className="btn ghost small" disabled={busy === t.id} onClick={() => revoke(t)} title="Revoke this project’s verification (borrower is notified)">Revoke</button>
+                  : <button className="btn ghost small" disabled={busy === t.id} onClick={() => verify(t)}
+                    title="The final sign-off: makes this deal count toward experience. Needs a completed exit within 3 years.">Verify</button>}
+              </td>
             </tr>
           ))}
         </tbody>

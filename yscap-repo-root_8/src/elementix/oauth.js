@@ -44,6 +44,28 @@ function pool() { return require('../db').pool; }
 
 const MCP_URL = () => String(cfg.elementix.url || '').replace(/\/+$/, '');
 
+/**
+ * The RFC 8707 `resource` value a stored row should put on the wire.
+ *
+ * Preference order, and why each rung exists:
+ *  1. `discovery.resourceIndicator` — the value the resource's OWN metadata
+ *     declared at connect time (rows stored after 2026-08-09 carry it).
+ *  2. The ORIGIN of the stored resource_url — for rows connected BEFORE the
+ *     fix, whose discovery predates the field. Verified live: Elementix
+ *     declares its origin (`https://app.elementix.com`) as the resource, so
+ *     the origin is the declared value for every existing row, and using it
+ *     lets a stale connection SELF-HEAL on its next refresh instead of
+ *     needing a human to reconnect.
+ *  3. The stored resource_url verbatim — the pre-fix behaviour, kept as the
+ *     last resort so a value that will not parse never crashes a refresh.
+ */
+function indicatorOf(row) {
+  const disc = row && row.discovery;
+  const stored = disc && typeof disc === 'object' && String(disc.resourceIndicator || '').trim();
+  if (stored) return stored;
+  try { return new URL(row.resource_url).origin; } catch (_) { return (row && row.resource_url) || ''; }
+}
+
 /** How long an in-flight approval may sit before the browser round trip is stale. */
 const PENDING_TTL_SEC = 15 * 60;
 
@@ -307,6 +329,22 @@ async function discover(mcpUrl = MCP_URL()) {
     ok: true,
     unauthorized,
     resourceUrl: mcpUrl,
+    /* ═══ THE OAUTH `resource` IS WHAT THE RESOURCE DECLARES, NEVER OUR URL ══
+       ROOT CAUSE of the live "Could not start an Elementix session."
+       (owner-reported 2026-08-09): every token request sent
+       `resource=https://app.elementix.com/api/mcp` — OUR endpoint URL — while
+       the resource's OWN RFC 9728 metadata declares
+       `resource: "https://app.elementix.com"` (the origin, no path; verified
+       live against /.well-known/oauth-protected-resource/mcp). Clerk minted a
+       token for an audience the MCP endpoint does not answer to, the endpoint
+       replied 401 invalid_token to `initialize` on every call, and the whole
+       search read as "found nothing".
+
+       `resourceUrl` above stays the MCP URL — it is the DATABASE KEY of the
+       stored connection, and re-keying would orphan every existing row. THIS
+       field is the RFC 8707 indicator that actually goes on the wire, at all
+       three places a resource is sent (authorize, code exchange, refresh). */
+    resourceIndicator: String((resourceMeta && resourceMeta.resource) || '').trim() || mcpUrl,
     issuer: String(asMeta.issuer || issuer || ''),
     authorizationEndpoint: asMeta.authorization_endpoint || null,
     tokenEndpoint: asMeta.token_endpoint || null,
@@ -469,8 +507,9 @@ async function beginConnect({ staffId = null, actorId = null } = {}) {
   auth.searchParams.set('code_challenge', pkce.challenge);
   auth.searchParams.set('code_challenge_method', pkce.method);
   if (scope) auth.searchParams.set('scope', scope);
-  // RFC 8707 — bind the token to this resource so it cannot be replayed elsewhere.
-  auth.searchParams.set('resource', d.resourceUrl);
+  // RFC 8707 — bind the token to this resource so it cannot be replayed
+  // elsewhere. The DECLARED indicator, never our endpoint URL — see discover().
+  auth.searchParams.set('resource', d.resourceIndicator || d.resourceUrl);
 
   return { ok: true, authorizeUrl: auth.toString(), state, unattended: unattendedVerdict(d) };
 }
@@ -501,7 +540,7 @@ async function completeConnect({ code, state }) {
     redirect_uri: p.redirect_uri,
     client_id: p.client_id || '',
     code_verifier: p.code_verifier,
-    resource: p.resource_url,
+    resource: indicatorOf(p),
   });
   const secret = decrypt(p.client_secret_enc);
   const headers = { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' };
@@ -604,7 +643,7 @@ async function rowFor(staffId = null) {
  * `staffId` falls back to the company-wide connection when that officer has
  * none of their own — one seat today, per-officer seats later, no code change.
  */
-async function accessToken(staffId = null) {
+async function accessToken(staffId = null, opts = {}) {
   let row;
   try {
     row = await rowFor(staffId);
@@ -623,7 +662,11 @@ async function accessToken(staffId = null) {
   const tok = decrypt(row.access_token_enc);
   const expSoon = row.expires_at && (new Date(row.expires_at).getTime() - Date.now()) < REFRESH_SKEW_SEC * 1000;
 
-  if (tok && !expSoon) return { ok: true, token: tok, tokenType: row.token_type || 'Bearer', row };
+  /* `forceRefresh` exists for exactly one caller: the client's one-retry after
+     the MCP endpoint REJECTED the token we hold. Handing back the same cached,
+     unexpired-but-rejected token there made the retry a no-op — the rejection
+     is the proof the token is bad, whatever its clock says. */
+  if (tok && !expSoon && !opts.forceRefresh) return { ok: true, token: tok, tokenType: row.token_type || 'Bearer', row };
   const refreshed = await refresh(row);
   if (refreshed.ok) return refreshed;
   if (tok && !row.expires_at) {
@@ -643,7 +686,7 @@ async function refresh(row) {
   }
   const form = new URLSearchParams({
     grant_type: 'refresh_token', refresh_token: rt,
-    client_id: row.client_id || '', resource: row.resource_url,
+    client_id: row.client_id || '', resource: indicatorOf(row),
   });
   const secret = decrypt(row.client_secret_enc);
   const headers = { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' };
@@ -719,5 +762,6 @@ module.exports = {
     encrypt, decrypt, canEncrypt, newPkce, newState,
     resourceMetadataUrlFrom, candidateResourceMetadataUrls, candidateAuthServerMetadataUrls,
     REFRESH_SKEW_SEC, PENDING_TTL_SEC, SEAT_MODEL, seatRefusal,
+    indicatorOf,
   },
 };
