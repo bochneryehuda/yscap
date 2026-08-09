@@ -9,6 +9,7 @@ import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { passwordProblem } from '../lib/password.js';
 import { BorrowerProfileForm, BorrowerSsnRow, NameSplitPrompt, PortalAccessRow } from '../components/BorrowerProfilePanel.jsx';
 import { fullNameOf } from '../lib/personName.js';
+import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 import { BorrowerContacts } from '../components/FileContacts.jsx';
 
 // Borrower CRM hub — the single place staff see everything about a person:
@@ -462,9 +463,21 @@ function TrackRecord({ id }) {
   }
   if (err) return <div className="notice err">{err}</div>;
   if (!rows) return <Empty t="Loading…" />;
-  if (!rows.length) return <div className="panel"><Empty t="No track-record entries." /></div>;
+  /* THE WORKBENCH RENDERS EVEN WITH AN EMPTY RECORD — that is precisely the case
+     where searching the public records is most useful, and hiding it behind
+     "no entries" would put the tool out of reach exactly when it is needed. */
+  if (!rows.length) {
+    return (
+      <>
+        <StaffPropertyWorkbench borrowerId={id} />
+        <div className="panel"><Empty t="No track-record entries." /></div>
+      </>
+    );
+  }
   return (
-    <div className="panel" style={{ padding: 0, overflowX: 'auto' }}>
+    <>
+    <StaffPropertyWorkbench borrowerId={id} />
+    <div className="panel" style={{ padding: 0, overflowX: 'auto', marginTop: 14 }}>
       <table className="tbl" style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead><tr style={{ textAlign: 'left' }}>
           {['Property', 'Type', 'Entity', 'Purchase', 'Sale/Value', 'Verified', ''].map(h => <th key={h} style={{ padding: '10px 12px' }}>{h}</th>)}
@@ -486,6 +499,7 @@ function TrackRecord({ id }) {
         </tbody>
       </table>
     </div>
+    </>
   );
 }
 

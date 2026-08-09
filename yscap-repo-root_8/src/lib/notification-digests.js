@@ -2345,6 +2345,11 @@ async function runDue() {
     // 'completed' for those two, so every deal we have ever closed sat on the desk
     // looking like outstanding work — which is how a queue stops being read.
     await require('./order-tracking').retireSatisfiedOrdersOnce().catch((e) => console.error('[digests] order-retire', e && e.message));
+    /* Abandoned Elementix approvals. `sweepPending()` had ZERO callers, so a
+       half-finished browser approval sat in the table forever — harmless until
+       somebody debugging a connection reads a stale pending row as the current
+       attempt. It is its own no-op when Elementix was never configured. */
+    await require('../elementix/oauth').sweepPending().catch((e) => console.error('[digests] elementix-pending', e && e.message));
     // …and THEN chase what is genuinely still out. Ordered after the retires on
     // purpose: nudging somebody about an order the same tick is about to retire is
     // the noise this desk exists to remove.

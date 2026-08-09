@@ -62,6 +62,20 @@ async function ensureFileConditions(appId, { reason = 'ensure' } = {}) {
   } catch (e) {
     console.warn(`[conditions] auto credit reuse skipped for ${a.id}: ${(e && e.message) || e}`);
   }
+  // A track-record document request made when the borrower had NO open file
+  // lives on their profile (blueprint §5.4 — an operating agreement is a fact
+  // about the person, not about one loan). This is where it moves onto a file:
+  // the SAME row migrates, so its documents, its history and its internal notes
+  // travel with it and the borrower is never asked twice for something they
+  // already sent. This chokepoint is why it reaches previous files too — every
+  // creation path, every re-sync and every key-field change comes through here.
+  // Best-effort: a migration hiccup must never break file/condition creation.
+  try {
+    const moved = await require('../track-record/doc-request').migrateProfileRequests(a.borrower_id, a.id);
+    if (moved.moved) console.log(`[conditions] moved ${moved.moved} track-record document request(s) onto file ${a.id}`);
+  } catch (e) {
+    console.warn(`[conditions] track-record request migration skipped for ${a.id}: ${(e && e.message) || e}`);
+  }
   return { ok: true, items: n };
 }
 

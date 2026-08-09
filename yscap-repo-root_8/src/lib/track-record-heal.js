@@ -154,6 +154,23 @@ async function mergeTrackRecordPair({ keepId, loserId, actorId }) {
     if (conflict) {
       throw Object.assign(new Error(`the two lines disagree on ${conflict.replace(/_/g, ' ')} — make them agree on the track record first, then merge`), { status: 409, expose: true });
     }
+    /* CARRYING A FIGURE INTO A VERIFIED KEEPER RE-OPENS ITS VERIFICATION, AND
+       THAT IS THE INTENDED BEHAVIOUR — do not "fix" it (recorded 2026-08-09,
+       docs/TRACK-RECORD-CURRENT-STATE.md D5).
+
+       EVERY ONE of the 14 CARRY_COLS is a material column in db/485's verify
+       guard, so the moment this UPDATE fills a blank on a verified keeper the
+       trigger returns that row to `is_verified=false` / `pending`. That reads
+       like an accident and is not: the figure being carried came off a row NOBODY
+       REVIEWED (the loser is refused above if it is verified), so the combined
+       line now states something the verification never covered. Re-review is the
+       correct answer, and it is the same doctrine db/485 applies to every other
+       write — a verified line describes evidence a person checked, not a row id.
+
+       The only reason to touch this is if the guard's material list and this list
+       ever diverge; keep them in step rather than exempting the merge. Pinned by
+       `scripts/test-track-record-phase0.js` §5b, which asserts every CARRY_COL is
+       still material and that a real carry really does un-verify the keeper. */
     const carry = CARRY_COLS.filter((c) => norm(row[c]) != null && norm(keep[c]) == null);
     if (carry.length) {
       await client.query(

@@ -479,8 +479,12 @@ async function addTrackRecordIfAbsent(dbc, borrowerId, addr) {
   // that may already carry duplicate keys (it would fail the migration), so this
   // narrows the window rather than making truly-concurrent inserts impossible.
   const r = await dbc.query(
-    `INSERT INTO track_records (borrower_id, property_address, is_verified, origin, inferred, address_key, notes)
-     SELECT $1,$2::jsonb,false,'encompass',true,$3,$4
+    /* entered_by_kind/at are stamped HERE, not left to db/458's boot backfill:
+       between this write and the next deploy the row read as "we don't know who
+       entered this", which every reader is required to treat as not-reviewed. */
+    `INSERT INTO track_records (borrower_id, property_address, is_verified, origin, inferred, address_key, notes,
+                               entered_by_kind, entered_at)
+     SELECT $1,$2::jsonb,false,'encompass',true,$3,$4,'encompass',now()
       WHERE NOT EXISTS (SELECT 1 FROM track_records WHERE borrower_id=$1 AND address_key=$3)
      RETURNING id`,
     [borrowerId, JSON.stringify(addr), encKey, 'Added from Encompass history; unverified']);
