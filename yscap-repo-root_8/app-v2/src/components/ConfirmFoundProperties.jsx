@@ -95,7 +95,18 @@ export default function ConfirmFoundProperties({ onChanged }) {
 
   const load = useCallback(async () => {
     try { setState(await api.trackRecordCandidates()); }
-    catch { setState({ ok: false, properties: [], total: 0, answered: 0 }); }
+    catch {
+      /* A FAILED RELOAD KEEPS WHAT IS ON SCREEN (2026-08-09 audit: a network
+         blip mid-answering used to blank the state, and the render gate below
+         read the empty list as "nothing to confirm" — the whole section
+         vanished under the borrower between two answers, with their progress
+         showing in neither place). With nothing loaded yet, staying quiet is
+         right — this section is an invitation, not a page — but data already
+         shown is never thrown away because one refresh failed. */
+      setState((prev) => (prev && Array.isArray(prev.properties) && prev.properties.length
+        ? { ...prev, reloadFailed: true }
+        : { ok: false, properties: [], total: 0, answered: 0 }));
+    }
   }, []);
   useEffect(() => { load(); }, [load]);
 

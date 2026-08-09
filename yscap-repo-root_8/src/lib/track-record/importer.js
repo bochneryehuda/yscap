@@ -924,7 +924,12 @@ async function matchExisting(db, c, { staffId, note, confirmReopen }) {
   const fills = {};
   for (const f of FILLABLE) {
     const ours = t[f];
-    const theirs = c[f];
+    /* THE CANDIDATE'S ENTITY LINK LIVES IN `proposed_llc_id` — candidates have
+       no `llc_id` column, so `c.llc_id` read undefined and a match NEVER linked
+       the entity even when the search had already resolved which of the
+       borrower's companies held the deed (2026-08-09 audit: the one fill that
+       carries Check A over to the ownership pillar was silently skipped). */
+    const theirs = f === 'llc_id' ? c.proposed_llc_id : c[f];
     const oursBlank = ours == null || ours === '' || (f === 'property_address' && !addressLabel(ours));
     if (oursBlank && theirs != null && theirs !== '') fills[f] = theirs;
   }
@@ -996,8 +1001,16 @@ async function compareCandidate(candidateId, client) {
 
   const rows = FILLABLE.map((f) => {
     const ours = show(f, t[f]);
-    const theirs = show(f, c[f]);
-    const conflict = !!ours && !!theirs && ours !== theirs;
+    const theirs = show(f, f === 'llc_id' ? c.proposed_llc_id : c[f]);
+    /* THE ADDRESS IS COMPARED BY PLACE, NEVER BY SPELLING (2026-08-09 audit):
+       the candidate matched this line THROUGH the address matcher, so showing
+       its own two spellings ("26 South 10th Street…" vs "26 S 10th St…") as a
+       CONFLICT told the reviewer the records disagree about the one fact the
+       match already proved they agree on. Same-place spellings render side by
+       side as agreement; a genuinely different place still conflicts. */
+    const samePlace = f === 'property_address' && !!ours && !!theirs
+      && (() => { try { return require('../address').sameAddress(t[f], c[f]); } catch (_) { return false; } })();
+    const conflict = !!ours && !!theirs && ours !== theirs && !samePlace;
     return {
       field: f,
       ours, theirs,
@@ -1009,7 +1022,9 @@ async function compareCandidate(candidateId, client) {
       material: MATERIAL.includes(f),
       note: conflict
         ? 'Both hold a value and they disagree — the line keeps yours. Change it by hand if the records are right.'
-        : (!ours && theirs ? 'Blank here, so this fills in.' : (ours && !theirs ? 'The records hold nothing — yours is kept.' : 'Neither holds anything.')),
+        : (samePlace && ours !== theirs
+          ? 'The same place, spelled two ways — not a disagreement. The line keeps its spelling.'
+          : (!ours && theirs ? 'Blank here, so this fills in.' : (ours && !theirs ? 'The records hold nothing — yours is kept.' : (ours && theirs ? 'They agree.' : 'Neither holds anything.')))),
     };
   });
 
