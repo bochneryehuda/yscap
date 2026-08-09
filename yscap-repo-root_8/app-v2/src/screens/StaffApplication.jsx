@@ -17,6 +17,8 @@ import ChatThread from '../components/ChatThread.jsx';
 import { NewChatModal } from './StaffChat.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
+import ExperienceHeader from '../components/track-record/ExperienceHeader.jsx';
+import RecordLedger from '../components/track-record/RecordLedger.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import DocumentsPanel from '../components/DocumentsPanel.jsx';
 import EmailCenter from '../components/EmailCenter.jsx';
@@ -2448,16 +2450,23 @@ const TODO_GROUPS = [
   { key: 'nobody', title: 'Worth knowing', tone: '#4B585C', blurb: 'Nothing to chase — these lines simply cannot count.' },
 ];
 
-function TrackRecordTodo({ appId, borrowerId, reloadKey }) {
-  const [data, setData] = useState(null);
+function TrackRecordTodo({ appId, borrowerId, reloadKey, preloaded }) {
+  /* The panel now fetches the to-do ONCE and shares it (header math, per-line
+     chips, and this detailed list all read the same payload) — `preloaded`
+     short-circuits the self-fetch so the section never asks twice. A mount
+     without it still fetches for itself, unchanged. */
+  const shared = preloaded !== undefined;
+  const [fetched, setFetched] = useState(null);
   const [err, setErr] = useState('');
   useEffect(() => {
+    if (shared) return undefined;
     let alive = true;
     api.staffTrackRecordTodo(appId, borrowerId)
-      .then((d) => { if (alive) { setData(d && typeof d === 'object' ? d : null); setErr(''); } })
-      .catch((e) => { if (alive) { setData(null); setErr((e && e.message) || 'could not work out what is left'); } });
+      .then((d) => { if (alive) { setFetched(d && typeof d === 'object' ? d : null); setErr(''); } })
+      .catch((e) => { if (alive) { setFetched(null); setErr((e && e.message) || 'could not work out what is left'); } });
     return () => { alive = false; };
-  }, [appId, borrowerId, reloadKey]);
+  }, [appId, borrowerId, reloadKey, shared]);
+  const data = shared ? preloaded : fetched;
 
   if (err) return <div className="small" style={{ color: '#8A6D3B', marginTop: 12 }}>{err}</div>;
   if (!data) return null;
@@ -2466,7 +2475,11 @@ function TrackRecordTodo({ appId, borrowerId, reloadKey }) {
   const findings = Array.isArray(data.findings) ? data.findings : [];
   const exp = data.experience || null;
   const s = data.summary || { items: 0, us: 0, borrower: 0, lines: 0 };
-  const expShort = exp && (!exp.registered || (exp.shortfall || []).length);
+  /* SHORTFALL-ONLY — being unregistered stopped being a gate refusal on
+     2026-08-06 (a fully-verified claim signs off; Products & Pricing's own
+     condition is what demands a registration), so "short" here means the
+     shortfall alone, matching the server's `ok` and the gate. */
+  const expShort = !!(exp && (exp.shortfall || []).length);
 
   // One flat list per group — the property is named on each row, so an officer
   // reads their own work in one place instead of hunting it across ten cards.
@@ -2483,7 +2496,7 @@ function TrackRecordTodo({ appId, borrowerId, reloadKey }) {
     : [
       s.items ? `${s.items} ${s.items === 1 ? 'thing' : 'things'} on ${s.lines} ${s.lines === 1 ? 'deal' : 'deals'}` : '',
       findings.length ? `${findings.length} ${findings.length === 1 ? 'finding' : 'findings'} to settle` : '',
-      expShort ? 'experience short of the registered product' : '',
+      expShort ? 'experience short of what this file needs' : '',
     ].filter(Boolean).join(' · ');
 
   return (
@@ -2515,24 +2528,30 @@ function TrackRecordTodo({ appId, borrowerId, reloadKey }) {
           settled or dismissed.
         </div>
       )}
-      {exp && expShort && (
+      {expShort && (
         <div className="small" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 8,
           border: '1px solid #EAE4D7', background: '#FBF9F4', color: '#141B22' }}>
-          {!exp.registered ? (
-            <>
-              <strong>No product registered yet.</strong>{' '}
-              Experience is checked against the registered product, so the experience condition can&rsquo;t be
-              signed off until Products &amp; Pricing has been registered.
-            </>
+          <strong>Verified experience is short of {exp.registered ? 'the registered product' : 'this file’s claim'}.</strong>{' '}
+          Verified on the record: {exp.verified.flips} {exp.verified.flips === 1 ? 'flip' : 'flips'},{' '}
+          {exp.verified.holds} {exp.verified.holds === 1 ? 'hold' : 'holds'}, {exp.verified.ground} ground-up.
+          {exp.registered ? (
+            <> The product was registered on {exp.need.flips}/{exp.need.holds}/{exp.need.ground} — verify{' '}
+              {exp.shortfall.map((x) => x.text).join(', ')}, or re-register on the experience the borrower can prove.</>
           ) : (
-            <>
-              <strong>Verified experience is short of the registered product.</strong>{' '}
-              Verified on the record: {exp.verified.flips} {exp.verified.flips === 1 ? 'flip' : 'flips'},{' '}
-              {exp.verified.holds} {exp.verified.holds === 1 ? 'hold' : 'holds'}, {exp.verified.ground} ground-up.
-              The product was registered on {exp.need.flips}/{exp.need.holds}/{exp.need.ground} — verify{' '}
-              {exp.shortfall.map((x) => x.text).join(', ')}, or re-register on the experience the borrower can prove.
-            </>
+            <> The file claims {exp.need.flips}/{exp.need.holds}/{exp.need.ground} — verify{' '}
+              {exp.shortfall.map((x) => x.text).join(', ')}, or lower the claim to what the borrower can prove.</>
           )}
+        </div>
+      )}
+      {exp && !exp.registered && !expShort && (
+        /* INFORMATIONAL, never blocking — the gate signs off a fully-verified
+           claim without a registration (2026-08-06); the registration is
+           Products & Pricing's own condition. Note it, don't refuse on it. */
+        <div className="small" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 8,
+          border: '1px solid #EAE4D7', background: '#FBF9F4', color: '#4B585C' }}>
+          <strong style={{ color: '#141B22' }}>No product registered yet.</strong>{' '}
+          The claim is fully verified, so the experience condition can be signed off. Registering a product is
+          Products &amp; Pricing&rsquo;s own condition — a registration on different experience re-checks this.
         </div>
       )}
 
@@ -2619,6 +2638,61 @@ function StaffTrackRecordPanel({ app, role }) {
   // section fetch it twice.
   const [todoKey, setTodoKey] = useState(0);
   const reloadAll = useCallback(() => { refreshTrs(); setTodoKey((k) => k + 1); }, [refreshTrs]);
+  /* ONE to-do fetch for the whole section (mega-workspace phase C): the
+     experience header, the per-line "not counting" reasons and the detailed
+     what's-left list all read this single payload — the server's own wording,
+     the same definitions the sign-off gate uses. Best-effort: with it null the
+     ledger degrades to verified/unverified and the header to the file's own
+     claim columns. */
+  const [todo, setTodo] = useState(null);
+  /* When THIS fetch fails, the detail list below gets `preloaded={undefined}`
+     and falls back to its own self-fetch — a second chance, and its own amber
+     "could not work out what is left" note if that fails too. Without this, a
+     parent failure silently blanked the list (pre-merge audit NIT). */
+  const [todoFailed, setTodoFailed] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setTodoFailed(false);
+    api.staffTrackRecordTodo(app.id, borrowerId)
+      .then((d) => { if (alive) setTodo(d && typeof d === 'object' ? d : null); })
+      .catch(() => { if (alive) { setTodo(null); setTodoFailed(true); } });
+    return () => { alive = false; };
+  }, [app.id, borrowerId, todoKey]);
+  const todoByLine = useMemo(() => {
+    const m = {};
+    for (const l of ((todo && todo.lines) || [])) m[String(l.id)] = l.todo || [];
+    return m;
+  }, [todo]);
+  // The three per-line asks, exactly as the flat list carried them — now handed
+  // to the ledger so the arrangement changed and the actions did not.
+  const trRequestDoc = useCallback(async (t, addr) => {
+    const label = await askPrompt(`Request a document for "${addr}" — which document do you need? (the borrower will see this)`);
+    if (label == null || !label.trim()) return;
+    setTrBusy(t.id); setTrMsg('');
+    try { await api.staffRequestTrackRecordDoc(t.id, app.id, label.trim()); setTrMsg(`Document requested on ${addr} — added as a condition on this file.`); reloadAll(); }
+    catch (e) { setTrMsg(e.message || 'Could not request the document'); }
+    finally { setTrBusy(''); }
+  }, [app.id, reloadAll]);
+  const trRaiseIssue = useCallback(async (t, addr) => {
+    const reason = await askPrompt(`Raise an internal issue about "${addr}" — what's the concern?\n\nThis is INTERNAL only: the borrower is NOT notified. Use "Post a condition" if you need the borrower to act.`);
+    if (reason == null || !reason.trim()) return;
+    setTrBusy(t.id); setTrMsg('');
+    try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — recorded internally for review (the borrower was not notified).`); reloadAll(); }
+    catch (e) { setTrMsg(e.message || 'Could not raise the issue'); }
+    finally { setTrBusy(''); }
+  }, [app.id, reloadAll]);
+  const trPostCondition = useCallback(async (t, addr) => {
+    const reason = await askPrompt(`Post a condition on this loan about the track-record property "${addr}" — what does the borrower need to provide?\n\nThe borrower WILL be notified. It appears on their loan as a track-record item (never as a condition on ${addr}).`);
+    if (reason == null || !reason.trim()) return;
+    setTrBusy(t.id); setTrMsg('');
+    try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim(), true); setTrMsg(`Condition posted about ${addr} — the borrower was notified.`); reloadAll(); }
+    catch (e) { setTrMsg(e.message || 'Could not post the condition'); }
+    finally { setTrBusy(''); }
+  }, [app.id, reloadAll]);
+  // The legacy embedded editor stays one click away during the parity period —
+  // collapsed so the new ledger is the record you read, and the iframe only
+  // LOADS once opened (a closed <details> would still boot it).
+  const [legacyOpen, setLegacyOpen] = useState(false);
   // Accept / reject a document uploaded against a track-record line item. Reject
   // requires a reason and un-verifies the line item (its evidence no longer stands).
   const reviewTrDoc = useCallback(async (doc, action) => {
@@ -2717,108 +2791,23 @@ function StaffTrackRecordPanel({ app, role }) {
           </span>
         </div>
       )}
-      {trs.length > 0 && (
-        <div className="panel" style={{ marginBottom: 12, padding: 10 }}>
-          {/* WHAT IS WAITING ON US (owner-directed 2026-08-03: a track record the
-              borrower typed "should go to the processing queue to review … and
-              this should be pending review"). The per-line status pill was
-              already here, but nothing added the pills up, so a borrower who had
-              just entered ten deals produced no signal at all — the officer had
-              to notice ten grey "pending" chips. Counted off the same rows the
-              list below renders, so the two can never disagree. */}
-          {(() => {
-            const waiting = trs.filter((t) => !t.is_verified
-              && (t.verification_status || 'pending') !== 'limited').length;
-            if (!waiting) return null;
-            return (
-              <div className="small" style={{ marginBottom: 8, padding: '6px 10px', borderRadius: 8,
-                border: '1px solid var(--gold)', background: 'rgba(174,135,70,.08)', color: '#141B22' }}>
-                <strong>{waiting} {waiting === 1 ? 'deal is' : 'deals are'} waiting for review.</strong>{' '}
-                Nothing counts toward this file&rsquo;s experience until it is verified — read the closing
-                statement, deed or lease on each one, then set its status to Verified below.{' '}
-                <a href="#/internal/approvals?tab=track-record">Every borrower&rsquo;s waiting deals →</a>
-              </div>
-            );
-          })()}
-          <div className="muted small" style={{ marginBottom: 6 }}>
-            Raise a request against a specific past project — it becomes a named condition on this file the borrower can respond to.
-          </div>
-          {trMsg && <div className="small" style={{ color: 'var(--ok)', marginBottom: 6 }}>{trMsg}</div>}
-          {trs.map((t) => {
-            const pa = t.property_address || {};
-            const addr = pa.oneLine || [pa.line1 || pa.street || pa.address, pa.city, pa.state].filter(Boolean).join(', ') || 'Past project';
-            const itemDocs = trDocs[t.id] || [];
-            const openReqs = (t.doc_requests || []).filter(rq => rq && rq.status !== 'satisfied');
-            return (
-              <div key={t.id} style={{ padding: '4px 0', borderTop: '1px solid rgba(127,169,176,.15)' }}>
-                <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span className="small" style={{ flex: 1, minWidth: 160 }}>{addr}</span>
-                  {t.owned_personally
-                    ? <span className="pill small" title="Held under the borrower's personal name — no LLC">Personal name</span>
-                    : (t.entity_name ? <span className="pill small" title="Entity on record">{t.entity_name}</span> : null)}
-                  {t.verification_status && <span className="pill small">{t.verification_status}</span>}
-                  <button className="btn ghost small" disabled={trBusy === t.id}
-                    title="Ask the borrower for a specific document on this past project — it becomes a condition on this file and files into the project's REO folder"
-                    onClick={async () => {
-                      const label = await askPrompt(`Request a document for "${addr}" — which document do you need? (the borrower will see this)`);
-                      if (label == null || !label.trim()) return;
-                      setTrBusy(t.id); setTrMsg('');
-                      try { await api.staffRequestTrackRecordDoc(t.id, app.id, label.trim()); setTrMsg(`Document requested on ${addr} — added as a condition on this file.`); reloadAll(); }
-                      catch (e) { setTrMsg(e.message || 'Could not request the document'); }
-                      finally { setTrBusy(''); }
-                    }}>Request a document</button>
-                  <button className="btn ghost small" disabled={trBusy === t.id}
-                    title="Flag an internal issue about this past project for the team to review — the borrower is NOT notified and no borrower condition is posted"
-                    onClick={async () => {
-                      const reason = await askPrompt(`Raise an internal issue about "${addr}" — what's the concern?\n\nThis is INTERNAL only: the borrower is NOT notified. Use "Post a condition" if you need the borrower to act.`);
-                      if (reason == null || !reason.trim()) return;
-                      setTrBusy(t.id); setTrMsg('');
-                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — recorded internally for review (the borrower was not notified).`); reloadAll(); }
-                      catch (e) { setTrMsg(e.message || 'Could not raise the issue'); }
-                      finally { setTrBusy(''); }
-                    }}>Raise an issue</button>
-                  <button className="btn ghost small" disabled={trBusy === t.id}
-                    title="Post a borrower-facing condition on THIS loan about this past project — the borrower is notified"
-                    onClick={async () => {
-                      const reason = await askPrompt(`Post a condition on this loan about the track-record property "${addr}" — what does the borrower need to provide?\n\nThe borrower WILL be notified. It appears on their loan as a track-record item (never as a condition on ${addr}).`);
-                      if (reason == null || !reason.trim()) return;
-                      setTrBusy(t.id); setTrMsg('');
-                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim(), true); setTrMsg(`Condition posted about ${addr} — the borrower was notified.`); reloadAll(); }
-                      catch (e) { setTrMsg(e.message || 'Could not post the condition'); }
-                      finally { setTrBusy(''); }
-                    }}>Post a condition</button>
-                </div>
-                {openReqs.map(rq => (
-                  <div className="row" key={rq.id} style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '2px 0 2px 18px' }}>
-                    <span className="small muted" style={{ flex: 1, minWidth: 140 }}>↳ {rq.label}</span>
-                    <span className="pill small">{rq.status}</span>
-                  </div>
-                ))}
-                {/* Per-line-item documents: accept / reject each with a reason (#126). */}
-                {itemDocs.map((d) => {
-                  const rs = d.review_status || 'pending';
-                  return (
-                    <div className="row" key={d.id} style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '2px 0 2px 18px' }}>
-                      <span className="small muted" style={{ flex: 1, minWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
-                      <span className="pill small" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-                      {completerTR && rs !== 'accepted' && <button className="btn primary small" disabled={trBusy === d.id} onClick={() => reviewTrDoc(d, 'accept')}>Accept</button>}
-                      {rs !== 'rejected' && <button className="btn link small" disabled={trBusy === d.id} onClick={() => reviewTrDoc(d, 'reject')}>Reject</button>}
-                      {canDeleteDoc(role) && <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={trBusy === d.id} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => reviewTrDoc(d, 'delete')}>Delete</button>}
-                      {rs === 'rejected' && d.rejection_reason && <span className="small" style={{ color: 'var(--danger)', width: '100%', paddingLeft: 18 }}>{d.rejection_reason}</span>}
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })}
-        </div>
-      )}
-      <StaticToolFrame
-        key={borrowerId}
-        title="Borrower track record"
-        src={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}
-        minHeight={220}
-      />
+      {/* THE EXPERIENCE MATH, AT THE TOP (mega-workspace phase C): claimed /
+          verified / still-needed, every figure off the ONE track-record-todo
+          fetch above — the same definitions the sign-off gate uses, so this
+          header can never promise what the gate would refuse. Degrades to the
+          file's own claim columns when the todo is unreachable. */}
+      <ExperienceHeader app={app} experience={todo && todo.experience}
+        findingsOpen={((todo && todo.findings) || []).length}
+        multiBorrower={people.length > 1} />
+      {/* THE RECORD, AS A LEDGER — grouped the way the tool has always grouped
+          it, with the REO band carrying every not-counting line AND its reason
+          ("nothing entered is ever lost"). Same rows, same per-line handlers as
+          the flat list this replaces — the arrangement changed, the actions
+          did not. */}
+      <RecordLedger lines={trs} docs={trDocs} todoByLine={todoByLine}
+        busyId={trBusy} msg={trMsg} completer={completerTR} canDelete={canDeleteDoc(role)}
+        onRequestDoc={trRequestDoc} onRaiseIssue={trRaiseIssue}
+        onPostCondition={trPostCondition} onReviewDoc={reviewTrDoc} />
       {/* THE PUBLIC-RECORDS WORKBENCH, IN THE LOAN FILE (owner-directed
           2026-08-09: "the Elementix stuff is still missing from the actual track
           record within the loan file … merge together, old information lives in
@@ -2835,9 +2824,32 @@ function StaffTrackRecordPanel({ app, role }) {
         <StaffPropertyWorkbench key={`wb-${borrowerId}`} borrowerId={borrowerId}
           borrowerName={(people.find(p => p.id === borrowerId) || {}).label || ''} />
       </div>
+      {/* The legacy embedded editor — the full add/edit/verify sheet — stays one
+          click away through the parity period (mega-workspace phase C), COLLAPSED
+          so the ledger above is the record you read. The iframe mounts only once
+          opened: a closed <details> would still boot it on every file view.
+          "Open full screen" above stays the primary editing surface. */}
+      <details style={{ marginTop: 12 }} open={legacyOpen}
+        onToggle={(e) => setLegacyOpen(e.currentTarget.open)}>
+        <summary className="small" style={{ cursor: 'pointer', fontWeight: 650, color: '#141B22' }}>
+          Edit the record here (embedded editor)
+          <span style={{ color: '#4B585C', fontWeight: 400 }}> — add, edit, verify or attach documents without leaving the page</span>
+        </summary>
+        {legacyOpen && (
+          <StaticToolFrame
+            key={borrowerId}
+            title="Borrower track record"
+            src={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}
+            minHeight={220}
+          />
+        )}
+      </details>
       {/* AFTER the record itself (owner-directed 2026-08-03) — you read the track
-          record, then you read what is still left on it. */}
-      <TrackRecordTodo appId={app.id} borrowerId={borrowerId} reloadKey={todoKey} />
+          record, then you read what is still left on it. The detail list reads
+          the SAME todo payload fetched above (`preloaded`), so the section costs
+          one fetch, not two. */}
+      <TrackRecordTodo appId={app.id} borrowerId={borrowerId} reloadKey={todoKey}
+        preloaded={todoFailed ? undefined : todo} />
       {full && (
         <ToolModal
           title="Borrower track record"
