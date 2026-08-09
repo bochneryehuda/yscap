@@ -235,10 +235,15 @@ const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log(`FAIL 
     sharepoint_backup_attempts: 9, created_at: "now() - interval '30 hours'" });
   const stuckList = await backup.stuckDocuments(200);
   ok('a never-mirror (heter iska) doc is NOT listed as stuck', !stuckList.some((d) => d.id === heter));
+  // Appraisal photos LOST that immunity on 2026-08-09 (owner-directed: they are
+  // mirrored now, into their own folder). So the inverse is what must hold — a
+  // photo is an ordinary document to this machinery, and one that genuinely
+  // cannot be copied has to show up as stuck like any other. Silently exempting
+  // it again would hide a real failure behind a retired policy.
   const apPhoto = await mkDoc({ filename: 'appraisal-photo-1.png', doc_kind: 'appraisal_photo', storage_ref: 'zz/ph.png',
-    created_at: "now() - interval '30 hours'" });
+    sharepoint_backup_attempts: 9, created_at: "now() - interval '30 hours'" });
   const stuckList2 = await backup.stuckDocuments(200);
-  ok('an appraisal-photo doc is NOT listed as stuck (never-mirror kind)', !stuckList2.some((d) => d.id === apPhoto));
+  ok('an appraisal photo that cannot be copied IS reported as stuck (no longer exempt)', stuckList2.some((d) => d.id === apPhoto));
   notify.notifyAdmins = realNotifyAdmins;   // restore
 
   console.log(`\n${pass} passed, ${fail} failed`);
