@@ -11072,6 +11072,26 @@ router.post('/track-records/:id/verify', async (req, res) => {
   if (isRevoke && !reason) {
     return res.status(400).json({ error: 'a reason is required to revoke verification — the borrower is told why' });
   }
+  /* D16 — THE ORPHAN. Setting a line to "needs documents" used to write ONE
+     column and stop: no condition, no borrower task, no notification, no gate.
+     It is also the only per-line control in the embedded tool, so it is what
+     staff actually reach for — which meant the most-used button in the whole
+     workflow asked nobody for anything.
+     There is now NO WAY to mark a line as needing a document that does not
+     create a real request. A typed `docType` posts the connected condition
+     (§5.2, works with or without a loan file); a plain `reason` still posts one
+     the old way; neither, and the click is refused with a message that says
+     what to do rather than silently doing nothing. */
+  if (status === 'docs' && !isRevoke) {
+    const b = req.body || {};
+    const hasAsk = !!b.docType || !!String(b.reason || b.label || '').trim();
+    if (!hasAsk) {
+      return res.status(400).json({
+        error: 'Say which document you need. Marking a project "needs documents" on its own asks the borrower for nothing.',
+        code: 'doc_request_required',
+      });
+    }
+  }
   await db.query(
     `UPDATE track_records
         SET verification_status=$3,
@@ -11099,10 +11119,40 @@ router.post('/track-records/:id/verify', async (req, res) => {
   } else {
     await audit(req, 'verify_track_record', 'track_record', req.params.id, { status });
   }
+  // The other half of D16: the status write is now ACCOMPANIED by the real ask.
+  // It runs AFTER the column write so the line is already in the right state
+  // when the borrower's email lands, and it is best-effort in ONE direction
+  // only — the request failing is reported, never swallowed, but it can never
+  // roll back a status the reviewer already saw succeed.
+  let request = null; let requestError = null;
+  if (status === 'docs' && !isRevoke) {
+    const b = req.body || {};
+    try {
+      if (b.docType) {
+        request = await require('../lib/track-record/doc-request').requestDocument({
+          trackRecordId: req.params.id, borrowerId: tr.rows[0].borrower_id,
+          appId: b.applicationId || null, slug: b.docType, pillar: b.pillar,
+          llcId: b.llcId, customLabel: b.customLabel, internalNote: b.internalNote,
+          actorId: req.actor.id,
+        });
+      } else if (b.applicationId) {
+        const name = addressLabel(tr.rows[0].property_address) || 'a past project';
+        request = await raiseEntityIssue({
+          appId: b.applicationId, entityKind: 'track_record', entityId: req.params.id,
+          entityName: name, reason: String(b.reason || b.label || '').trim(),
+          actorId: req.actor.id, requestKind: 'doc_request' });
+      } else {
+        requestError = 'Nothing was asked for — open the project from a loan file, or pick a document type.';
+      }
+      if (request) await audit(req, 'request_track_record_doc', 'track_record', req.params.id, { via: 'verify', docType: b.docType || null });
+    } catch (e) {
+      requestError = e.status ? e.message : 'the document request could not be posted';
+    }
+  }
   // Live cross-user refresh (#112): the borrower + other staff see the new
   // verification badge / revoke on the line item immediately.
   require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
-  res.json({ ok: true, status, revoked: isRevoke });
+  res.json({ ok: true, status, revoked: isRevoke, request, requestError });
 });
 
 // ---------------- raise an issue against a track-record line item / an LLC ----------------
@@ -11140,27 +11190,149 @@ router.post('/track-records/:id/raise-issue', async (req, res) => {
 // chokepoint as raise-issue (one condition tagged with the line item), but the
 // wording/notification is a document request, and the borrower can satisfy it
 // by uploading either on the condition or straight on the line item.
+// THE VOCABULARY IS SERVER-FED, so the picker can never offer a type the server
+// would refuse (the 2026-08-02 "a value we OFFER is a value we accept" rule).
+router.get('/track-record-doc-types', (_req, res) => {
+  const DR = require('../lib/track-record/doc-request');
+  res.json({ docTypes: DR.DOC_TYPES, pillars: DR.PILLARS });
+});
+// A live preview of the exact sentence the borrower will read, BEFORE posting.
+// Pure — it writes nothing, so a staffer may try wordings freely.
+router.post('/track-records/:id/request-doc/preview', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const DR = require('../lib/track-record/doc-request');
+    const tr = await db.query(`SELECT borrower_id, property_address, entity_name FROM track_records WHERE id=$1`, [req.params.id]);
+    if (!tr.rows[0]) return res.status(404).json({ error: 'track record not found' });
+    if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    let entityName = String(b.entityName || tr.rows[0].entity_name || '').trim();
+    if (b.llcId && !entityName) {
+      const l = await db.query(`SELECT llc_name FROM llcs WHERE id=$1`, [b.llcId]);
+      entityName = (l.rows[0] && l.rows[0].llc_name) || '';
+    }
+    res.json(DR.buildRequest({
+      trackRecordId: req.params.id, slug: b.docType, pillar: b.pillar,
+      entityName, llcId: b.llcId, customLabel: b.customLabel,
+      propertyLabel: DR.addressLabel(tr.rows[0].property_address),
+    }));
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
 router.post('/track-records/:id/request-doc', async (req, res) => {
   try {
     const b = req.body || {};
-    const appId = b.applicationId;
-    if (!appId) return res.status(400).json({ error: 'applicationId is required — request the document from within a loan file' });
-    const ask = String(b.label || b.reason || '').trim();
-    if (!ask) return res.status(400).json({ error: 'say which document you need' });
+    const appId = b.applicationId || null;
     const tr = await db.query(`SELECT borrower_id, property_address FROM track_records WHERE id=$1`, [req.params.id]);
     if (!tr.rows[0]) return res.status(404).json({ error: 'track record not found' });
     if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
-    if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+    if (appId && !(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+
+    /* THE TYPED PATH. `docType` is what tells the two apart — the old free-text
+       button sends only a label, and it must keep working (it is the control
+       staff actually use today), so the untyped ask still goes through
+       raiseEntityIssue exactly as before. A typed ask is connected three ways:
+       the property, the company and the pillar it is meant to move.
+
+       NO LOAN FILE IS NEEDED for the typed path (§5.4): an operating agreement
+       is a fact about the borrower, so the request lives on their profile and
+       migrates onto their next file. The untyped path still requires one,
+       because raiseEntityIssue builds a condition ON a file. */
+    if (b.docType) {
+      const DR = require('../lib/track-record/doc-request');
+      const out = await DR.requestDocument({
+        trackRecordId: req.params.id, borrowerId: tr.rows[0].borrower_id, appId,
+        slug: b.docType, pillar: b.pillar, llcId: b.llcId, entityName: b.entityName,
+        customLabel: b.customLabel, internalNote: b.internalNote, actorId: req.actor.id,
+      });
+      await audit(req, 'request_track_record_doc', 'track_record', req.params.id,
+        { applicationId: appId, docType: b.docType, pillar: out.pillar, scope: out.scope, reused: out.reused });
+      require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
+      return res.json({ ok: true, ...out });
+    }
+
+    if (!appId) return res.status(400).json({ error: 'applicationId is required — request the document from within a loan file, or pick a document type' });
+    const ask = String(b.label || b.reason || '').trim();
+    if (!ask) return res.status(400).json({ error: 'say which document you need' });
     const name = addressLabel(tr.rows[0].property_address) || 'a past project';
     const out = await raiseEntityIssue({
       appId, entityKind: 'track_record', entityId: req.params.id, entityName: name,
       reason: ask, actorId: req.actor.id, requestKind: 'doc_request',
     });
-    // A fresh ask reopens the line's doc state (an open 'issue' stays issue).
-    await db.query(`UPDATE track_records SET docs_status='requested', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','received','satisfied')`, [req.params.id]);
+    if (String(b.internalNote || '').trim()) {
+      try {
+        await require('../lib/track-record/notes').addNote({
+          subjectKind: 'condition', subjectId: out.itemId, borrowerId: tr.rows[0].borrower_id,
+          body: b.internalNote, authorId: req.actor.id });
+      } catch (_) { /* a note must never lose the request */ }
+    }
+    /* `docs_status` is DERIVED by db/502's trigger from the conditions on the
+       line, so it is already 'requested' by the time we get here — the old
+       hand-written UPDATE is gone rather than left as a second writer. */
     await audit(req, 'request_track_record_doc', 'track_record', req.params.id, { applicationId: appId, label: ask.slice(0, 500) });
     require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
     res.json({ ok: true, ...out });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+
+/* ── INTERNAL NOTES, at all five levels (owner-directed: "internal notes on
+   everything"). STAFF-ONLY: every read and write is scoped through
+   `canSeeBorrowerId`, and there is deliberately no borrower-facing route.
+   The borrower's side of the same conversation is the condition's own
+   `issue_reason`, which is a different field on purpose. */
+const NOTE_OWNER_SQL = {
+  property: 'SELECT borrower_id FROM track_records WHERE id=$1',
+  entity: 'SELECT borrower_id FROM llcs WHERE id=$1',
+  condition: 'SELECT COALESCE(ci.borrower_id, a.borrower_id) AS borrower_id FROM checklist_items ci LEFT JOIN applications a ON a.id = ci.application_id WHERE ci.id=$1',
+  pillar: 'SELECT t.borrower_id FROM track_record_pillars p JOIN track_records t ON t.id = p.track_record_id WHERE p.id=$1',
+  candidate: 'SELECT borrower_id FROM track_record_candidates WHERE id=$1',
+};
+async function noteSubjectBorrower(kind, id) {
+  const sql = NOTE_OWNER_SQL[kind];
+  if (!sql || !id) return null;
+  try { const r = await db.query(sql, [id]); return (r.rows[0] && r.rows[0].borrower_id) || null; }
+  catch (_) { return null; }   // an unreadable subject is never someone you may see
+}
+router.get('/track-record-notes', async (req, res) => {
+  try {
+    const N = require('../lib/track-record/notes');
+    const kind = String(req.query.subjectKind || '');
+    const id = String(req.query.subjectId || '');
+    if (!N.SUBJECTS.includes(kind)) return res.status(400).json({ error: 'what is this note about?' });
+    const borrowerId = await noteSubjectBorrower(kind, id);
+    if (!borrowerId) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, borrowerId))) return res.status(403).json({ error: 'forbidden' });
+    res.json({ notes: await N.readNotes(kind, id) });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.post('/track-record-notes', async (req, res) => {
+  try {
+    const N = require('../lib/track-record/notes');
+    const b = req.body || {};
+    const kind = String(b.subjectKind || '');
+    if (!N.SUBJECTS.includes(kind)) return res.status(400).json({ error: 'what is this note about?' });
+    const borrowerId = await noteSubjectBorrower(kind, b.subjectId);
+    if (!borrowerId) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, borrowerId))) return res.status(403).json({ error: 'forbidden' });
+    const out = await N.addNote({ subjectKind: kind, subjectId: b.subjectId, borrowerId, body: b.body, authorId: req.actor.id });
+    await audit(req, 'track_record_note_added', kind, String(b.subjectId), { borrowerId });
+    res.status(201).json({ ok: true, ...out });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.post('/track-record-notes/:id/retract', async (req, res) => {
+  try {
+    const N = require('../lib/track-record/notes');
+    const own = await db.query(`SELECT borrower_id FROM track_record_notes WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const out = await N.retractNote(req.params.id, req.actor.id);
+    if (!out) return res.status(409).json({ error: 'that note was already withdrawn' });
+    await audit(req, 'track_record_note_retracted', 'note', req.params.id, {});
+    res.json({ ok: true });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.get('/borrowers/:id/track-record-notes', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    res.json({ notes: await require('../lib/track-record/notes').readBorrowerNotes(req.params.id) });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
 });
 router.post('/llcs/:id/raise-issue', async (req, res) => {
