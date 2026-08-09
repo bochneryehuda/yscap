@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { readToolState, writeToolState } from '../lib/tool-scenario-state.js';
-import { askConfirm } from '../lib/dialog.js';
+import { askConfirm, askPrompt } from '../lib/dialog.js';
 
 /* SAVED SCENARIOS for an Investor Suite tool (owner-directed 2026-07-30).
  *
@@ -60,7 +60,7 @@ export default function ToolScenarioBar({ slug, toolName, getWin, onCountChange 
     const read = readToolState(win);
     if (!read) return flash('err', "Couldn't read this tool's numbers. Reload the tool and try again.");
 
-    const raw = window.prompt(`Name this ${toolName} scenario — you'll find it under "My scenarios".`, '');
+    const raw = await askPrompt(`Name this ${toolName} scenario — you'll find it under "My scenarios".`, { defaultValue: '' });
     if (raw == null) return;                                  // cancelled
     const name = String(raw).trim();
     if (!name) return flash('err', 'A scenario needs a name so you can find it again.');

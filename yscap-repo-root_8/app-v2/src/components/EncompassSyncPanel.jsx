@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth.jsx';
+import { askPrompt } from '../lib/dialog.js';
 
 /**
  * Encompass sync — the live, full data-comparison screen (READ-ONLY sync).
@@ -295,7 +296,7 @@ export default function EncompassSyncPanel({ appId }) {
 
   // Any assigned staffer escalates a not-matching / "no data" field to a super admin.
   const requestException = useCallback(async (fieldKey) => {
-    const reason = window.prompt('Why should this field be excepted? A short note for the super admin.');
+    const reason = await askPrompt('Why should this field be excepted? A short note for the super admin.');
     if (reason == null) return;                          // cancelled
     if (!reason.trim()) { setErr('Add a short reason to request an exception.'); return; }
     setBusy(fieldKey); setErr(''); setFlash('');
@@ -308,7 +309,7 @@ export default function EncompassSyncPanel({ appId }) {
   const decideException = useCallback(async (fieldKey, decision) => {
     let reason = '';
     if (decision === 'grant') {
-      const r = window.prompt('Reason for granting this exception (recorded on the file):');
+      const r = await askPrompt('Reason for granting this exception (recorded on the file):');
       if (r == null) return;
       if (!r.trim()) { setErr('Add a short reason to grant an exception.'); return; }
       reason = r.trim();
