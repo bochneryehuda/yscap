@@ -166,6 +166,24 @@ function parseRpcBody(text, contentType) {
 
 const HTTP_TIMEOUT_MS = 30000;
 
+/**
+ * The Authorization scheme that goes on the wire. Elementix's own token
+ * response spells `token_type: "bearer"` (lowercase), and its MCP endpoint
+ * then refuses that exact spelling as "No authorization provided" — verified
+ * live 2026-08-09: the SAME stored token answered 401 sent as `bearer …` and
+ * 200 sent as `Bearer …`. RFC 9110 makes the scheme case-insensitive, so the
+ * canonical spelling is also correct against every compliant server — which is
+ * why this normalizes rather than special-cases Elementix. Reconnecting can
+ * never fix this one: the vendor issues the lowercase spelling on every grant
+ * and every refresh, so the row will always store it; the wire is the one
+ * place to canonicalize, and this is the one function that composes the wire.
+ * A scheme that is not Bearer at all passes through verbatim.
+ */
+function bearerScheme(tokenType) {
+  const t = String(tokenType || '').trim();
+  return !t || /^bearer$/i.test(t) ? 'Bearer' : t;
+}
+
 async function post(body, token, tokenType) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), HTTP_TIMEOUT_MS);
@@ -173,7 +191,7 @@ async function post(body, token, tokenType) {
     const headers = {
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
-      authorization: `${tokenType || 'Bearer'} ${token}`,
+      authorization: `${bearerScheme(tokenType)} ${token}`,
     };
     if (session.id) headers['mcp-session-id'] = session.id;
     const r = await fetch(URL_OF(), { method: 'POST', headers, body: JSON.stringify(body), signal: ac.signal });
@@ -445,6 +463,32 @@ async function recordPaid(tool, actor) {
     [tool, actor.staffId, String(actor.personId).slice(0, 120), String(actor.reason).slice(0, 300)]);
 }
 
+/**
+ * THE BUDGET METER (mega-workspace phase F): calls this hour + paid credits
+ * this month, counted from the LEDGER — the only cross-instance truth (the
+ * in-process bucket forgets deploys and counts one instance). Best-effort:
+ * an unreadable ledger answers nulls, and the SCREEN says "unknown" — this
+ * meter informs a human, it never gates a call (the caps in callTool do).
+ */
+async function usage() {
+  const caps = {
+    hourCap: Math.max(1, Number(cfg.elementix.maxPerHour) || 400),
+    paidCap: Math.max(0, Number(cfg.elementix.paidPerMonth) || 1000),
+  };
+  try {
+    const db = require('../db');
+    const r = await db.query(
+      `SELECT count(*) FILTER (WHERE created_at > now() - interval '1 hour')::int AS hour_n,
+              count(*) FILTER (WHERE paid AND created_at >= date_trunc('month', now()))::int AS paid_n
+         FROM elementix_calls
+        WHERE created_at >= date_trunc('month', now()) OR created_at > now() - interval '1 hour'`);
+    const row = r.rows[0] || {};
+    return { ok: true, callsLastHour: row.hour_n || 0, paidThisMonth: row.paid_n || 0, ...caps };
+  } catch (_) {
+    return { ok: false, callsLastHour: null, paidThisMonth: null, ...caps };
+  }
+}
+
 /** How much of our self-imposed allowance is left — for the API Health page. */
 function budget() {
   const { perSec, perHour } = bucketState();
@@ -461,8 +505,8 @@ function budget() {
 function resetSession() { session = { id: null, initialized: false, url: null }; }
 
 module.exports = {
-  callTool, listTools, budget, paidThisMonth,
+  callTool, listTools, budget, paidThisMonth, usage,
   available, enabled, dryrun,
   PAID_TOOLS,
-  _internals: { parseRpcBody, payloadOf, textOf, overBudget, overBudgetShared, recordCall, resetSession, bucketState },
+  _internals: { parseRpcBody, payloadOf, textOf, overBudget, overBudgetShared, recordCall, resetSession, bucketState, bearerScheme },
 };

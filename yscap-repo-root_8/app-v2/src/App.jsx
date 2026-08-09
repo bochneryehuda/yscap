@@ -29,6 +29,7 @@ import PricingStudio from './screens/PricingStudio.jsx';
 import NotificationSettings from './screens/NotificationSettings.jsx';
 import StaffLogin from './screens/StaffLogin.jsx';
 import StaffQueue from './screens/StaffQueue.jsx';
+import StaffTrackRecordWorkspace from './screens/StaffTrackRecordWorkspace.jsx';
 import StaffNewFile from './screens/StaffNewFile.jsx';
 import StaffTasks from './screens/StaffTasks.jsx';
 import StaffWorkflow from './screens/StaffWorkflow.jsx';
@@ -201,6 +202,10 @@ export default function App() {
               (owner-directed 2026-07-31). Embeds the escalation/exception/finding/
               sync-review/my-request screens unchanged. */}
           <Route path="/internal/approvals" element={<StaffPrivate><StaffApprovals /></StaffPrivate>} />
+          {/* The track-record workspace as its OWN full-screen route (mega-workspace
+              phase F) — the same component the Approvals tab embeds, with room to
+              work. ?borrower=<id> narrows it to one person (profile links here). */}
+          <Route path="/internal/track-record" element={<StaffPrivate><StaffTrackRecordWorkspace /></StaffPrivate>} />
           <Route path="/internal/settings" element={<StaffPrivate><StaffSettings /></StaffPrivate>} />
           {/* Old scattered approval routes now redirect into the hub, keeping their
               query string so deep links (?app=<id>) still land on the right card. */}

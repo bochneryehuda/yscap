@@ -11307,6 +11307,25 @@ router.get('/track-records/:id/workspace', async (req, res) => {
    itself: a staged candidate is in a DIFFERENT TABLE, so it is invisible to
    every experience count, and promoting it still lands `pending`.
    See src/lib/track-record/importer.js. */
+/* THE PROFILE LENS of the Track Record Center (mega-workspace phase D): the
+   borrower CRM profile renders the same ledger the loan file has, so it needs
+   the same per-line to-do codes + the borrower's verified in-window counts —
+   scoped to the PERSON, no file. Same access gate as every borrower read. */
+router.get('/borrowers/:id/track-record-todo', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    res.json(await require('../lib/track-record-todo').borrowerTrackRecordView(req.params.id));
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+/* THE BUDGET METER on the search sheet (mega-workspace phase F): calls this
+   hour against the office's shared hourly allowance, and paid contact credits
+   this month against the owner's monthly cap — read from the ledger, shown
+   BEFORE somebody presses a button that spends one. Read-only; the caps that
+   actually refuse live in the client's callTool. */
+router.get('/elementix/usage', async (req, res) => {
+  try { res.json(await require('../elementix/client').usage()); }
+  catch (_) { res.status(500).json({ error: 'server error' }); }
+});
 router.post('/borrowers/:id/track-record-search', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
