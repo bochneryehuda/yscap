@@ -82,7 +82,8 @@ async function note(orderRowId, content, { staffId } = {}) {
   } catch (e) {
     await db.query('UPDATE class_notes SET send_error = $2 WHERE id = $1',
       [rowId, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
-    return { ok: false, error: e.code || 'send_failed', id: rowId, message: (e && e.message) || String(e) };
+    return { ok: false, error: e.code || 'send_failed', id: rowId, message: 'Could not reach the appraisal company, so nothing was sent. Please try again in a moment.',
+      detail: String((e && e.message) || e).slice(0, 500) };
   }
 }
 
@@ -156,7 +157,8 @@ async function syncNotes(orderRowId) {
     }
     return { ok: true, added, total: list.length };
   } catch (e) {
-    return { ok: false, error: e.code || 'lookup_failed', message: (e && e.message) || String(e) };
+    return { ok: false, error: e.code || 'lookup_failed', message: 'Could not reach the appraisal company, so nothing was sent. Please try again in a moment.',
+      detail: String((e && e.message) || e).slice(0, 500) };
   }
 }
 
@@ -203,7 +205,8 @@ async function requestRevision(orderRowId, { kind = 'revision', reasons: raw, no
   } catch (e) {
     await db.query(`UPDATE class_revisions SET status = 'error', last_error = $2 WHERE id = $1`,
       [rowId, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
-    return { ok: false, error: e.code || 'request_failed', id: rowId, message: (e && e.message) || String(e) };
+    return { ok: false, error: e.code || 'request_failed', id: rowId, message: 'Could not reach the appraisal company, so nothing was sent. Please try again in a moment.',
+      detail: String((e && e.message) || e).slice(0, 500) };
   }
 }
 
@@ -240,7 +243,8 @@ async function requestCancel(orderRowId, { reasons: raw, note: noteText, staffId
   } catch (e) {
     await db.query(`UPDATE class_revisions SET status='error', last_error=$2 WHERE id=$1`,
       [rowId, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
-    return { ok: false, error: e.code || 'request_failed', id: rowId, message: (e && e.message) || String(e) };
+    return { ok: false, error: e.code || 'request_failed', id: rowId, message: 'Could not reach the appraisal company, so nothing was sent. Please try again in a moment.',
+      detail: String((e && e.message) || e).slice(0, 500) };
   }
 }
 

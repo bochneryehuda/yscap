@@ -283,7 +283,12 @@ async function autoUploadStep(dbh, order) {
     if (ours.length) {
       console.warn('[amc] could not send', ours.length, 'document(s) on order', order.id + ':', list(ours));
     }
-    if (up && up.ok === false && up.error && up.error !== 'nothing_to_upload') {
+    // ONLY WHAT THE TWO LINES ABOVE DID NOT ALREADY SAY. When every held-back document
+    // was named individually, the batch sentence repeats them — and for years the two
+    // could even contradict each other, one blaming the appraisal company while the
+    // other blamed our storage. A refusal with nothing in `skipped` (the send itself
+    // failed, the connection is off) has no per-file line, and that is what this is for.
+    if (up && up.ok === false && up.error && up.error !== 'nothing_to_upload' && !held.length) {
       console.warn('[amc] auto document upload refused for order', order.id + ':', up.message || up.error);
     }
   } catch (e) { console.error('[amc] auto document upload failed for order', order.id, (e && e.message) || e); }

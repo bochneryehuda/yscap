@@ -320,7 +320,7 @@ function PlacedOrders({ appId, data, openOrder, onOpen, onChanged }) {
                         rather than leave the number standing alone; and when nothing can
                         name it, lead with the ORDER, which is what a person identifies
                         it by, instead of demoting the order beneath a bare number. */}
-                    {titleOf(o) || (o.class_order_id ? `Class order ${o.class_order_id}` : 'Order not yet placed')}
+                    {titleOf(o) || (o.class_order_id ? `Class order ${o.class_order_id}` : 'Not yet numbered by Class')}
                     {o.dryrun ? <span style={{ color: MUTED, fontWeight: 400 }}> · test</span> : null}
                   </div>
                   <div style={{ fontSize: 12, color: MUTED }}>

@@ -47,7 +47,26 @@ function matchStaged(files, staged) {
   if (!answers.length) return out;
 
   const taken = new Set();
-  const nameOf = (f) => (f && f.fileName != null ? String(f.fileName) : null);
+  // A FILENAME IS COMPARED BY MEANING, NEVER BY SPELLING — the same rule this repo
+  // already applies to every other free-text value that two systems both write (the
+  // loan term, the property type, an address). An upload endpoint routinely rewrites
+  // the name it was handed: spaces to underscores, a case change, punctuation dropped.
+  // Comparing those byte-for-byte gets it wrong in BOTH directions, and both directions
+  // shipped:
+  //   • read as DISAGREEMENT, a rewritten echo of THIS file's own name vetoed the
+  //     `part<i>` label we ourselves assigned (client.js appends the parts as 'part'+i),
+  //     so the document was refused and the desk reported that the appraisal company had
+  //     not answered — when they had, correctly.
+  //   • read as NO EVIDENCE, a rewritten echo of ANOTHER file's name stopped
+  //     contradicting the part number, so a vendor that reorders AND renumbers AND
+  //     rewrites filenames silently swapped two documents.
+  // One key answers both: "Contract_2024.pdf" and "Contract 2024.pdf" are the same
+  // name, and are not the same name as "Scope of Work.pdf".
+  const fnKey = (v) => {
+    const k = String(v).toLowerCase().replace(/[^a-z0-9]+/g, '');
+    return k || null;
+  };
+  const nameOf = (f) => (f && f.fileName != null ? fnKey(f.fileName) : null);
   // The length agreeing is what makes a bare `part<i>` and a bare position believable:
   // it means nothing was dropped, so their numbering is still ours.
   const sameLength = answers.length === files.length;
@@ -81,18 +100,11 @@ function matchStaged(files, staged) {
   // it too, or it hands the file the answer that merely happens to sit in its position
   // and calls the agreeing filename corroboration — which is pass 2's refusal undone.
   const claimedOnce = (fn) => answers.filter((s) => s.fileName != null
-    && String(s.fileName) === fn).length === 1;
+    && fnKey(s.fileName) === fn).length === 1;
 
-  // A FILENAME THAT MATCHES NONE OF OUR FILES IS NOT EVIDENCE ABOUT ANY OF THEM.
-  // An upload endpoint routinely SANITIZES the name it was given — spaces to
-  // underscores, a case change, a uniquifying prefix — so "Scope of Work.pdf" comes
-  // back as "Scope_of_Work.pdf". Read as disagreement, that echo VETOED the `part<i>`
-  // label WE ourselves assigned (client.js appends the parts as 'part'+i), so the
-  // document was refused, reported as "the appraisal company did not answer for this
-  // file", and re-refused on every poll. It only ever CONTRADICTS when it names one of
-  // our OTHER files exactly — which is the renumbering case, and pass 2 then places it
-  // correctly. Anything else is a rename we cannot interpret, and an uninterpretable
-  // label must not outvote one we wrote.
+  // A name that means one of our OTHER files contradicts this file's part number; a
+  // name that means NONE of our files is a rewrite we cannot interpret, and an
+  // uninterpretable label must not outvote one we wrote ourselves.
   const namesAnotherFile = (i, fn) => fn !== nameOf(files[i])
     && files.some((f) => nameOf(f) === fn);
 
@@ -101,7 +113,7 @@ function matchStaged(files, staged) {
     const want = 'part' + i;
     const hit = answers.find((s) => {
       if (taken.has(s) || s.name !== want) return false;
-      const fn = s.fileName == null ? null : String(s.fileName);
+      const fn = s.fileName == null ? null : fnKey(s.fileName);
       // The filename AGREES and actually identifies: the strongest evidence there is,
       // and it stands even in a batch whose numbering is otherwise untrustworthy.
       if (fn != null && discriminates(i) && fn === nameOf(files[i])) return true;
@@ -119,7 +131,16 @@ function matchStaged(files, staged) {
     const fn = nameOf(files[i]);
     if (fn == null) continue;
     if (!discriminates(i)) continue;
-    const hits = answers.filter((s) => !taken.has(s) && s.fileName != null && String(s.fileName) === fn);
+    // THE FILENAME OUTRANKS THE PART NUMBER HERE, DELIBERATELY. Reaching pass 2 means
+    // pass 1 refused, so a part number is already known to be contradicted somewhere in
+    // this batch — and a renumbered batch placed by its filenames is the case this
+    // module was built for. Consulting the part number here was tried and reverted: it
+    // cannot tell a renumbering (name lies, filename true — place it) from a vendor
+    // echoing another file's name (name true, filename lies — refuse it), because a
+    // single answer presents IDENTICALLY in both. No rule separates them, so the choice
+    // is which way to be wrong, and a renumbering is the shape vendors actually produce.
+    const hits = answers.filter((s) => !taken.has(s) && s.fileName != null
+      && fnKey(s.fileName) === fn);
     if (hits.length === 1) { out[i] = hits[0]; taken.add(hits[0]); }
   }
 
@@ -147,7 +168,7 @@ function matchStaged(files, staged) {
       // Kept in the same shape as pass 1 so the two read alike, though `usable` below is
       // what actually enforces filename agreement here — this line only ever fires on a
       // name belonging to one of our other files, which pass 2 has already placed.
-      if (at.fileName != null && namesAnotherFile(i, String(at.fileName))) continue;
+      if (at.fileName != null && namesAnotherFile(i, fnKey(at.fileName))) continue;
       // With nothing USABLE to check, position is a guess — unless the vendor labels
       // nothing at all (see above), or there is only one file, where there is nothing
       // to confuse it with. A filename that two of our files share is not usable: it
@@ -158,7 +179,7 @@ function matchStaged(files, staged) {
       // unlabelled one.
       const usable = at.name != null
         || (at.fileName != null && discriminates(i)
-          && String(at.fileName) === nameOf(files[i]) && claimedOnce(String(at.fileName)));
+          && fnKey(at.fileName) === nameOf(files[i]) && claimedOnce(fnKey(at.fileName)));
       if (!usable && files.length > 1) continue;
       out[i] = at; taken.add(at);
     }

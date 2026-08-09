@@ -34,9 +34,15 @@ const missedShapes = [];
 
 for (const n of [1, 2, 3]) {
   for (const dupNames of [false, true]) {
+    // Real filenames, with spaces and case — a single-token name like `file-0.pdf`
+    // cannot exercise a rewrite, and that blind spot is what let a document swap ship.
     const files = Array.from({ length: n }, (_, i) => ({
-      fileName: dupNames && n > 1 ? 'Contract.pdf' : `file-${i}.pdf`,
+      fileName: dupNames && n > 1 ? 'Contract 2024.pdf' : `Scope of Work ${i}.pdf`,
     }));
+    // What an upload endpoint does to a name on the way in. `sanitized` is the vendor
+    // echoing THIS file's own name, rewritten; it is every bit as truthful as an exact
+    // echo and must be read as such.
+    const rewrite = (nm) => nm.replace(/ /g, '_').toUpperCase();
     // Which parts the vendor kept (it may refuse and drop one).
     const keepSets = [];
     for (let mask = 1; mask < (1 << n); mask++) {
@@ -46,13 +52,20 @@ for (const n of [1, 2, 3]) {
       for (const order of permutations(keep)) {
         // How the vendor labels: original part number, RE-INDEXED, wrong, or none.
         for (const nameMode of ['orig', 'reindex', 'wrong', 'none']) {
-          for (const fnMode of ['echo', 'none']) {
+          for (const fnMode of ['echo', 'sanitized', 'other', 'none']) {
             const answers = order.map((truth, pos) => {
               const a = { truth, retrievalUrl: 'url-' + truth, uploadStatus: 'Success' };
               if (nameMode === 'orig') a.name = 'part' + truth;
               if (nameMode === 'reindex') a.name = 'part' + pos;
               if (nameMode === 'wrong') a.name = 'vendor-doc-' + (truth + 100);
               if (fnMode === 'echo') a.fileName = files[truth].fileName;
+              // The SAME file's name, rewritten by the vendor: still truthful.
+              if (fnMode === 'sanitized') a.fileName = rewrite(files[truth].fileName);
+              // ANOTHER file's name, rewritten: a lie, and one that must never be read
+              // as agreement — this is the shape that swapped two documents.
+              if (fnMode === 'other') {
+                a.fileName = rewrite(files[(truth + 1) % files.length].fileName);
+              }
               return a;
             });
             cases++;
@@ -68,7 +81,15 @@ for (const n of [1, 2, 3]) {
             //   'none'/'none'  — the vendor says nothing; order is all there is.
             // …and a filename two of our files SHARE is not evidence at all: it
             // agrees with both, so it can neither identify nor contradict.
-            const truthful = nameMode === 'orig' || (fnMode === 'echo' && !dupNames);
+            const echoed = fnMode === 'echo' || fnMode === 'sanitized';
+            // `other` is a LYING filename — the vendor echoing a name belonging to a
+            // different file of ours. An answer carrying a true part number and a lying
+            // filename is byte-for-byte indistinguishable from one carrying a renumbered
+            // part number and a TRUE filename, so no rule can separate them and a sweep
+            // that demanded it would be demanding a guess. It stays in the alphabet
+            // because the one-answer-one-document property below still holds over it.
+            const truthful = (nameMode === 'orig' && fnMode !== 'other')
+              || (echoed && !dupNames);
 
             // (1) NEVER WRONG — held wherever the evidence could have told us.
             if (truthful) {
@@ -96,9 +117,15 @@ for (const n of [1, 2, 3]) {
             for (let i = 0; i < n; i++) {
               const mine = answers.find((a) => a.truth === i);
               if (!mine || got[i]) continue;
-              const uniqueName = fnMode === 'echo'
+              const uniqueName = echoed
                 && files.filter((f) => f.fileName === files[i].fileName).length === 1;
-              const trustedPart = nameMode === 'orig' && keep.length === n;
+              // A part number is only IDENTIFYING while nothing contradicts it. When the
+              // echoed filename means one of our OTHER files the two labels disagree,
+              // either could be the lie, and refusing is the correct answer — demanding
+              // a match there would be demanding a guess.
+              const trustedPart = nameMode === 'orig' && keep.length === n && fnMode !== 'other';
+              // eslint-disable-line -- kept explicit: a contradicted part number is not
+              // identifying, for the same reason `truthful` excludes it above.
               if (uniqueName || trustedPart) {
                 identifiableMissed++;
                 if (missedShapes.length < 5) {
@@ -160,6 +187,22 @@ const F = (...names) => names.map((fileName) => ({ fileName }));
   ok(got[0] && got[0].retrievalUrl === 'URL-sow',
      'a vendor-rewritten filename does not overrule the part number we assigned');
   ok(got[1] && got[1].retrievalUrl === 'URL-contract', 'and the untouched one still matches');
+}
+// THE SWAP the ninth audit found, and the reason filenames are compared by MEANING.
+// The vendor reordered the parts, numbered them by their own position, and rewrote the
+// filenames it echoed. Reading a rewritten name as "no evidence" left the part numbers
+// unchallenged and handed the Scope of Work the contract's link — both recorded
+// delivered, both greyed out in the picker, neither retryable. Compared by meaning the
+// filenames identify both correctly, so this places rather than merely refuses.
+{
+  const files = F('Scope of Work.pdf', 'Contract 2024.pdf');
+  const got = matchStaged(files, [
+    { name: 'part0', fileName: 'Contract_2024.pdf', retrievalUrl: 'URL-contract' },
+    { name: 'part1', fileName: 'Scope_of_Work.pdf', retrievalUrl: 'URL-sow' },
+  ]);
+  ok(got[0] && got[0].retrievalUrl === 'URL-sow',
+     'a reordered, renumbered, rewritten batch does not hand the SOW the contract');
+  ok(got[1] && got[1].retrievalUrl === 'URL-contract', 'and the contract gets its own');
 }
 // The same rewrite on a SHORT answer set, which never reaches the position pass at all —
 // so this is the case the pass-1 rule alone has to carry. The vendor refused part1 and

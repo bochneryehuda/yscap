@@ -132,7 +132,7 @@ router.post('/files/:id/card', async (req, res) => {
   const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId]);
   if (!app.rows[0]) return res.status(404).json({ error: 'file not found' });
   const v = appraisalCard.validateCardInput(req.body || {});
-  if (!v.ok) return res.status(400).json({ error: v.error });
+  if (!v.ok) return res.status(400).json({ error: v.error, message: v.error });
   const saved = await appraisalCard.saveApplicationCard({
     appId, borrowerId: app.rows[0].borrower_id,
     number: v.number, cvc: v.cvc, expMonth: v.expMonth, expYear: v.expYear, zip: v.zip,
@@ -165,7 +165,7 @@ router.post('/orders/:orderId/comments', async (req, res) => {
   const order = await orderScoped(req, res);
   if (!order) return;
   const body = (req.body && req.body.body) || '';
-  if (!String(body).trim()) return res.status(400).json({ error: 'empty message' });
+  if (!String(body).trim()) return res.status(400).json({ error: 'empty message', message: 'Type a message before sending it.' });
   let staffName = null;
   try {
     const s = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
@@ -200,9 +200,12 @@ router.post('/orders/:orderId/revisions', async (req, res) => {
   const order = await orderScoped(req, res);
   if (!order) return;
   const body = (req.body && req.body.body) || '';
-  if (!String(body).trim()) return res.status(400).json({ error: 'empty request' });
+  if (!String(body).trim()) return res.status(400).json({ error: 'empty request', message: 'Say what needs changing before sending it.' });
   const kind = revisions.normKind(req.body && req.body.kind);
-  if (kind === 'rov') return res.status(400).json({ error: 'use the ROV endpoint for a reconsideration of value' });
+  if (kind === 'rov') {
+    return res.status(400).json({ error: 'wrong_door',
+      message: 'A reconsideration of value is sent from its own button, not from here.' });
+  }
   const out = await revisions.postRevision(db, order, { staffId: req.actor.id, kind, body });
   if (!out.ok) return res.status(400).json(out);
   res.json(out);
@@ -255,7 +258,10 @@ router.post('/orders/:orderId/rov', async (req, res) => {
 router.get('/files/:id/documents', async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
-  const orderId = Number.isInteger(parseInt(req.query.orderId, 10)) ? parseInt(req.query.orderId, 10) : null;
+  // A bigint id, not a parseInt — the same door class as the two above, and the same
+  // outcome when it is wrong: 1e20 passes Number.isInteger, reaches the bigint bind
+  // and comes back to the desk as "Something went wrong on our end".
+  const orderId = bigintId(req.query.orderId);
   res.json({ documents: await amcDocuments.listUploadable(db, appId, orderId) });
 });
 
@@ -264,7 +270,7 @@ router.post('/orders/:orderId/documents', async (req, res) => {
   const order = await orderScoped(req, res);
   if (!order) return;
   const ids = Array.isArray(req.body && req.body.documentIds) ? req.body.documentIds.filter(isUuid) : [];
-  if (!ids.length) return res.status(400).json({ error: 'pick at least one document' });
+  if (!ids.length) return res.status(400).json({ error: 'no_documents', message: 'Pick at least one document to send.' });
   // CLAMPED to the three actions the builder accepts (cdg.js buildUploadDocuments). `requestActionType` reaches the
   // vendor verbatim, and every other field on that message is pinned — this one was
   // passed straight through from the request body.

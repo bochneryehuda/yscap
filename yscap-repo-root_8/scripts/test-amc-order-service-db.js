@@ -157,6 +157,37 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     ok(named2.order.form_description === '1004 w/ 1007 - Single Family Residence',
       'the order records the form NAME, so the orders list never shows a bare number');
 
+    // AN ORDER THAT ALREADY EXISTS IS NAMED TOO — the owner's actual report. The name is
+    // recorded when an order is CREATED, so every order placed before that existed has
+    // none, and the list fell back to "Form 56634" on exactly the screen he reported it
+    // from. A backfill cannot fix it (the names live in the vendor's per-tenant
+    // catalogue), so it is resolved on READ, through the same rule the builder uses.
+    await c.query(`UPDATE amc_orders SET form_description = NULL WHERE id = $1`, [named2.order.id]);
+    const relisted = await orderService.listOrders(c, appId);
+    const back = relisted.find((o) => String(o.id) === String(named2.order.id));
+    ok(back && back.form_description === '1004 w/ 1007 - Single Family Residence',
+      'an order stored with no form name is named when the list is read');
+    const backOne = await orderService.getOrder(c, named2.order.id);
+    ok(backOne && backOne.form_description === '1004 w/ 1007 - Single Family Residence',
+      'and so is a single order read on its own');
+    const stillNull = await c.query(`SELECT form_description FROM amc_orders WHERE id = $1`, [named2.order.id]);
+    ok(stillNull.rows[0].form_description === null,
+      'reading it never writes to the row — the name is resolved, not persisted behind our back');
+
+    // A NAME ALREADY ON THE ROW IS NEVER REPLACED: it may be the vendor's own wording,
+    // which is more authoritative than anything we can look up.
+    await c.query(`UPDATE amc_orders SET form_description = 'What the vendor called it' WHERE id = $1`,
+      [named2.order.id]);
+    const kept = await orderService.getOrder(c, named2.order.id);
+    ok(kept.form_description === 'What the vendor called it', 'a stored form name always wins');
+
+    // A product code the catalogue does not know leaves the number showing rather than
+    // guessing, and must never throw on the read path.
+    await c.query(`UPDATE amc_orders SET form_description = NULL, product_code = 'no-such-code' WHERE id = $1`,
+      [named2.order.id]);
+    const unknown = await orderService.getOrder(c, named2.order.id);
+    ok(unknown && unknown.form_description == null, 'an unknown form code is left unnamed, never invented');
+
     // ---- the four role contacts (owner-directed 2026-08-09) ----
     // Class Valuation carries Borrower / Co-borrower / Property access / Loan officer;
     // the AMC now carries the same four people, read by the SHARED reader.

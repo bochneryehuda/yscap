@@ -371,7 +371,11 @@ async function processEvent(row, { dbc } = {}) {
       console.warn(`[class] callback ${row.id} (${row.event_name}) given up after ${attempt} attempts:`,
         String((e && e.message) || e).slice(0, 200));
     }
-    return { ok: false, error: (e && e.message) || String(e), attempts: attempt, dead };
+    // The raw text is kept for the worker and the log; `message` is what any screen
+    // that ever renders this would show.
+    return { ok: false, error: 'callback_failed', detail: String((e && e.message) || e).slice(0, 500),
+      message: 'An update from the appraisal company could not be recorded. It will be retried.',
+      attempts: attempt, dead };
   }
 }
 
@@ -459,7 +463,8 @@ async function refreshOrder(order) {
     const body = await client.order(order.class_order_id, { version: v.version });
     return { ok: true, version: v, order: body };
   } catch (e) {
-    return { ok: false, reason: 'lookup_failed', message: (e && e.message) || String(e) };
+    return { ok: false, reason: 'lookup_failed', detail: String((e && e.message) || e).slice(0, 500),
+      message: 'That order could not be read from the appraisal company just now. Please try again in a moment.' };
   }
 }
 

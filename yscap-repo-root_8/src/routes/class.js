@@ -293,27 +293,30 @@ const { bigintId } = require('../lib/bigint-id');
 // `class_orders.product_title` is written at order time, so every order older than that
 // carries only a number — the owner's "it says only the form number" report, which is
 // true on THIS desk too. Their catalogue is the only place the name lives, so it is
-// resolved on read, best-effort, and ONLY when a row actually needs it (a healthy file
-// never makes the call). `client.products` caches for minutes, so this is at most one
-// request per process per cache window, and a failure just leaves the number showing.
+// resolved on read, and ONLY for a row that needs it (a healthy file asks for nothing).
+//
+// IT GOES THROUGH `client.productTitle`, WHICH IS THE CACHED LOOKUP. `client.products`
+// is a raw GET with no cache at all — on a read that renders the orders list, called
+// again after every note, sync, revision and placed order, that is a live request to
+// Class with a 60-second timeout and three tries, so a slow vendor stalls the file
+// screen for minutes and a failed one makes the orders section vanish (the panel
+// swallows the error). The AMC twin is DB-only for the same reason. `productTitle`
+// caches the whole catalogue for minutes, never throws, and answers null when it
+// cannot say — which just leaves the number showing, exactly as before.
 async function nameClassOrders(rows) {
   const need = rows.filter((o) => o && !o.product_title && o.product_id != null);
   if (!need.length || !client.configured().enabled) return rows;
-  try {
-    const r = await client.products({ limit: 200 });
-    const byId = new Map();
-    for (const p of (r && r.products) || []) {
-      const id = p && (p.id != null ? p.id : p.productId);
-      const nm = p && (p.title || p.name || p.productName || p.description);
-      if (id != null && nm) byId.set(String(id), String(nm).trim());
-    }
-    for (const o of need) {
-      const nm = byId.get(String(o.product_id));
+  // One id at a time, but they all hit the same cached catalogue, so this is ONE
+  // request per process per cache window however many orders the file has.
+  for (const o of need) {
+    try {
+      const nm = await client.productTitle(o.product_id);
       if (nm) o.product_title = nm;
-    }
-  } catch (_) { /* the number still shows; naming is a nicety, never a failure */ }
+    } catch (_) { /* a number with no name still reads; naming is never a failure */ }
+  }
   return rows;
 }
+
 
 
 // Returns the SANITIZED id when the order is on this file, else null. It returns the
@@ -338,7 +341,10 @@ async function orderOnFile(appId, orderRowId) {
 // perfectly healthy, and reads that way in the logs too.
 function vendorFailStatus(out) {
   if (out && (out.error === 'bad_reasons' || out.error === 'empty')) return 400;
-  if (out && out.error === 'not_accepted_yet') return 409;
+  // A state of OUR OWN file or OUR OWN switches is not an upstream failure. 502 says the
+  // appraisal company let us down, which puts a healthy vendor in the logs and in the
+  // team's head — and `disabled` means nobody has turned the connection on yet.
+  if (out && (out.error === 'not_accepted_yet' || out.error === 'disabled')) return 409;
   return 502;
 }
 
@@ -457,7 +463,12 @@ router.post('/callback-setup/register', requirePermission('platform_setup'), asy
   const cfgd = client.configured();
   const c = require('../config').class || {};
   if (!cfgd.enabled) return res.status(409).json({ error: 'CLASS_DISABLED', message: 'The Class Valuation connection is switched off.' });
-  if (!c.callbackUrl) return res.status(409).json({ error: 'no_callback_url', message: 'Set CLASS_CALLBACK_URL to the address Class should call.' });
+  if (!c.callbackUrl) {
+    // Plain words for the person, the setting's own name for whoever configures it.
+    return res.status(409).json({ error: 'no_callback_url',
+      message: 'The address the appraisal company sends updates to has not been set up yet. Ask the team to set it.',
+      detail: 'CLASS_CALLBACK_URL is not set' });
+  }
   if (!cfgd.callbackReady) {
     return res.status(409).json({ error: 'no_callback_credentials',
       message: 'Set the username and password Class should use when it calls us. Without them the receiver refuses every delivery.' });
@@ -488,7 +499,8 @@ router.post('/callback-setup/register', requirePermission('platform_setup'), asy
       return res.status(409).json({ error: e.code, message: 'Writing to Class Valuation is switched off, so we cannot register the callback yet.' });
     }
     console.warn('[class] callback registration failed:', e && e.message, e && e.body ? JSON.stringify(e.body).slice(0, 500) : '');
-    res.status(502).json({ error: e.code || 'register_failed', detail: e.message });
+    res.status(502).json({ error: e.code || 'sync_failed',
+      message: 'The appraisal company could not be reached just now. Please try again in a moment.' });
   }
 });
 

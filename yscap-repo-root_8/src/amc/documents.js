@@ -27,6 +27,35 @@ const storage = require('../lib/storage');
 const tpr = require('../lib/tpr-export');
 const { journal } = require('./order-service');
 
+/**
+ * WHAT THE PERSON AT THE DESK IS TOLD WHEN A SEND FAILS.
+ *
+ * The exception's own text is written for US — "AMC CreateAppraisal -> 502",
+ * "AMC_OUTBOUND_DISABLED: refusing CreateAppraisal — writes are gated off", "fetch
+ * failed", a raw vendor description. Returned as `message` it is relayed by the route
+ * and rendered verbatim in the desk's banner, where a non-developer learns nothing from
+ * it and cannot act on it. The two cases a person CAN act on are told apart, and the
+ * detail goes to the log.
+ */
+// THE VENDOR'S OWN REFUSAL IS WORTH SHOWING — "Loan number already exists" tells the
+// person exactly what to do, unlike a transport error — but it is THEIR text, so it is
+// bounded and framed rather than pasted raw, and a bare numeric code (which says nothing
+// to anybody) is replaced by plain words.
+function nackMessage(err, what) {
+  const d = err && err.description != null ? String(err.description).trim() : '';
+  if (!d) return 'The appraisal company would not accept ' + what + '.';
+  return 'The appraisal company would not accept ' + what + ': ' + d.slice(0, 300);
+}
+
+function sendFailMessage(e, what) {
+  if (e && e.code === 'AMC_OUTBOUND_DISABLED') {
+    return 'Sending to the appraisal company is switched off, so ' + what + ' was not sent.';
+  }
+  return 'Could not reach the appraisal company, so ' + what + ' was not sent. '
+    + 'Please try again in a moment.';
+}
+
+
 // The stable category labels the auto-upload rules key on (tpr-export's own strings).
 const CAT_SOW = 'Scope of Work';
 const CAT_CONTRACT = 'Contract & Assignment';
@@ -168,7 +197,7 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
   try { staged = await stage(files); }
   catch (e) {
     await journal(dbh, { orderId: order.id, appId: order.application_id, action: 'postdocuments', ok: false, error: String(e.message || e), staffId });
-    return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'stage_failed', message: String(e.message || e), skipped };
+    return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'stage_failed', message: sendFailMessage(e, 'the documents'), skipped };
   }
 
   // THE VENDOR ANSWERS PER FILE, AND A FAILURE THERE IS AN HTTP 200. `/postdocuments`
@@ -224,11 +253,27 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
     });
   }
   if (!documents.length) {
-    await journal(dbh, { orderId: order.id, appId: order.application_id, action: 'postdocuments', ok: false, error: 'every file was rejected at staging', staffId });
-    return { ok: false, error: 'stage_rejected', skipped,
-      message: 'The appraisal company would not accept '
-        + (skipped.length === 1 ? 'that document' : 'any of those documents')
-        + ': ' + skipped.map((x) => `${x.filename || 'a file'} — ${x.detail}`).join('; ') };
+    // THE BATCH-LEVEL ANSWER MUST NOT CONTRADICT THE PER-FILE ONES. Giving each skip its
+    // own honest reason and leaving this sentence hard-coded produced, verbatim:
+    // "The appraisal company would not accept that document: Scope of Work.pdf — we
+    // could not tell which of their answers was about this file" — a sentence that
+    // blames them and then says the opposite. Worse on the unattended path, where the
+    // poller logs the per-file reasons on OUR side of the split and this message on
+    // THEIRS, in the same tick. So it is composed from what actually happened.
+    const theirs = skipped.filter((x) => x.reason === 'stage_rejected');
+    const lead = !theirs.length
+      ? 'These could not be sent'
+      : (theirs.length === skipped.length
+        ? 'The appraisal company would not accept ' + (skipped.length === 1 ? 'that document' : 'any of those documents')
+        : 'Nothing could be sent');
+    await journal(dbh, { orderId: order.id, appId: order.application_id, action: 'postdocuments', ok: false,
+      error: theirs.length ? 'every file was rejected at staging' : 'no answer could be matched to a file', staffId });
+    return {
+      // The CODE follows the same rule the per-file reasons do — a batch nobody refused
+      // is not `stage_rejected`, and sync.js splits the poller's log on exactly this.
+      ok: false, error: theirs.length ? 'stage_rejected' : 'unmatched_answer', skipped,
+      message: lead + ': ' + skipped.map((x) => `${x.filename || 'a file'} — ${x.detail}`).join('; '),
+    };
   }
   const built = cdg.buildUploadDocuments({
     action: action || (documents.length > 1 ? 'UploadDocumentMulti' : 'UploadDocument'),
@@ -241,7 +286,7 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
   try { resp = await transport.write(built, { orderId: order.cdg_order_number || undefined, label: amcAction, dryrun }); }
   catch (e) {
     await journal(dbh, { orderId: order.id, appId: order.application_id, action: amcAction, request: built, ok: false, error: String(e.message || e), staffId });
-    return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'send_failed', message: String(e.message || e), skipped };
+    return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'send_failed', message: sendFailMessage(e, 'the documents'), skipped };
   }
 
   const dry = !!(resp && resp.__dryrun);
@@ -250,7 +295,7 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
     if (err) {
       if (String(err.code) === '-100' || /authenticat/i.test(err.description || '')) session.invalidate();
       await journal(dbh, { orderId: order.id, appId: order.application_id, action: amcAction, request: built, response: resp, ok: false, error: err.description || err.code, staffId });
-      return { ok: false, error: 'amc_nack', message: err.description || err.code, skipped };
+      return { ok: false, error: 'amc_nack', message: nackMessage(err, 'the documents'), skipped };
     }
   }
 
