@@ -99,6 +99,42 @@ const ok = (cond, what) => { if (cond) { pass++; console.log(`  ok  ${what}`); }
     ok(r.status === 200, `a registration genuinely priced on zero experience signs off (got HTTP ${r.status})`);
   }
 
+  console.log('\n5. THE TO-DO PAYLOAD AGREES WITH THE GATE (2026-08-09 pre-merge audit)');
+  {
+    const TODO = require('../src/lib/track-record-todo');
+    // (a) the audited bypass shape: claim zeroed UNDER a live registration
+    // needing 3 — the to-do must surface the registered need, never "nothing
+    // required" on the exact file section 1 proved the gate refuses.
+    const appId = await mkApp(0);
+    await db.query(
+      `INSERT INTO product_registrations (application_id, program, inputs, quote, is_current)
+       VALUES ($1, 'standard', $2::jsonb, '{}'::jsonb, true)`,
+      [appId, JSON.stringify({ expFlips: 3, expHolds: 0, expGround: 0 })]);
+    const t = await TODO.trackRecordTodo(appId, { client: db });
+    ok(!!t.experience, 'the experience block is present on a zeroed claim under a live registration');
+    ok(!!t.experience && t.experience.need.flips === 3,
+      `…carrying the REGISTERED need (got ${t.experience && JSON.stringify(t.experience.need)})`);
+    ok(!!t.experience && t.experience.shortfall.some((x) => /3 more flips/.test(x.text)),
+      '…and the shortfall says what the gate refuses with');
+    ok(t.ok === false, '…so the to-do never reads "all done" on a file the gate refuses');
+
+    // (b) UNREGISTERED IS INFORMATIONAL, NOT BLOCKING (the 2026-08-06 gate
+    // rule): a fully-verified claim with no registration reads all-done —
+    // `ok` turns on the shortfall alone, never on `registered`.
+    const appId2 = await mkApp(1);
+    const lineId = (await db.query(
+      `INSERT INTO track_records (borrower_id, property_address, deal_type, purchase_date, sale_date, entered_by_kind)
+       VALUES ($1, $2::jsonb, 'flip', '2025-01-05', '2025-11-20', 'staff') RETURNING id`,
+      [borrowerId, JSON.stringify({ oneLine: `9 Todo Agree Way ${tag}, Lakewood, NJ 08701` })])).rows[0].id;
+    // verify through a non-material UPDATE (db/485 downgrades a raw verified INSERT)
+    await db.query(`UPDATE track_records SET is_verified=true, verification_status='verified', verified_at=now() WHERE id=$1`, [lineId]);
+    const t2 = await TODO.trackRecordTodo(appId2, { client: db });
+    ok(!!t2.experience && t2.experience.registered === false && t2.experience.shortfall.length === 0,
+      'a verified claim with no registration carries no shortfall');
+    ok(t2.ok === (t2.summary.items === 0 && t2.findings.length === 0),
+      `…and \`ok\` is decided WITHOUT the registered flag (ok=${t2.ok}, items=${t2.summary.items}, findings=${t2.findings.length})`);
+  }
+
   server.close();
   console.log(`\n${fail ? 'FAILED' : 'OK'}  the gate asks the registration before it asks the claim — ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

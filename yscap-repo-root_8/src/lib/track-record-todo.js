@@ -251,8 +251,14 @@ async function trackRecordTodo(appId, { borrowerId = null, client = null } = {})
   let experience = null;
   try {
     const claimed = EXP.requestedFromApp(app);
-    if (EXP.hasRequirement(claimed)) {
-      const need = await EXP.registeredExperienceNeed(appId, client, claimed);
+    // THE REGISTRATION IS ASKED FIRST — the same 2026-08-09 ordering the
+    // sign-off gate got: a claim somebody lowered to zero UNDER a live
+    // registration still owes the registered need, and gating this block on
+    // the claim alone made the to-do say "no experience required" on the
+    // exact file the gate refuses. registeredExperienceNeed falls back to
+    // the claim when nothing is registered, so one call answers both shapes.
+    const need = await EXP.registeredExperienceNeed(appId, client, claimed);
+    if (EXP.hasRequirement(claimed) || EXP.hasRequirement(need)) {
       const verified = await EXP.countBorrowersExperience(EXP.fileBorrowerIds(app), client, { verifiedOnly: true });
       const reg = (await client.query(
         `SELECT 1 FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId])).rows[0];
@@ -264,8 +270,13 @@ async function trackRecordTodo(appId, { borrowerId = null, client = null } = {})
   } catch (_) { experience = null; }
 
   const summary = summarize(lines);
+  // `registered` is INFORMATIONAL, never blocking: since 2026-08-06 the gate
+  // signs off a fully-verified claim with no registration (Products & Pricing's
+  // own condition is what demands one), so `ok` turns on the SHORTFALL alone —
+  // the old `!registered` term made the to-do read "not done" on files the
+  // gate would clear.
   const ok = !summary.items && !findings.length
-    && !(experience && (!experience.registered || experience.shortfall.length));
+    && !(experience && experience.shortfall.length);
   return { ok, summary, lines, findings, experience, unreadable: false };
 }
 
