@@ -282,6 +282,11 @@ export default function DrawsPanel({ appId }) {
               <SitewireDocuments appId={appId} readsOff={readsOff} />
             </Section>
 
+            {/* SETTINGS — every knob that governs this file's draws, and WHICH LEVEL decided each. */}
+            <Section id="dsec-settings" title="Draw settings on this file" defaultOpen={false}>
+              <FileDrawSettings appId={appId} />
+            </Section>
+
             {/* MANAGE — reallocations, project status + controls. */}
             <Section id="dsec-changes" title="Scope-of-Work change requests" defaultOpen={false}>
               <ChangeRequests appId={appId} items={change_requests} busy={busy} act={act} />
@@ -2046,6 +2051,31 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
             {a.label}
           </button>
         ))}
+        {/* SOMEBODY READ THE INSPECTION. Records the read and drives the readiness checklist —
+            DELIBERATELY NOT A GATE: Deliver still works whether or not this was pressed, because
+            turning it into a refusal would be a new hold on live files nobody asked for. It only
+            appears once findings exist, since there is nothing to read before that. */}
+        {finding && !finding.reviewed_at && (
+          <button className="btn btn-sm soft" title="Record that you read the inspector's report. It never blocks Deliver — it is what the checklist reads."
+            disabled={busy === 'review' + draw.sitewire_draw_id}
+            onClick={async () => {
+              const note = await askPrompt('Anything worth recording about this inspection? (optional)',
+                { title: 'Mark the inspection reviewed', confirmLabel: 'Mark reviewed', multiline: true });
+              if (note === null) return;   // they backed out — a blank answer is still a real "reviewed, no note"
+              act('review' + draw.sitewire_draw_id, async () => {
+                await api.post(`/api/sitewire/files/${appId}/findings/${finding.id}/review`, note ? { note } : {});
+                reload();
+                return { msg: 'Recorded that you reviewed this inspection.' };
+              });
+            }}>
+            Mark reviewed
+          </button>
+        )}
+        {finding && finding.reviewed_at && (
+          <span className="pill sw-approved" title={finding.review_note || 'Somebody read the inspector’s report before it went out.'}>
+            Reviewed {fmtDay(finding.reviewed_at)}
+          </span>
+        )}
         <button className="btn btn-sm ghost" title={readTip} disabled={readsOff || busy === 'deliver' + draw.sitewire_draw_id}
           onClick={() => act('deliver' + draw.sitewire_draw_id, async () => { const r = await api.post(`/api/sitewire/files/${appId}/findings/${draw.sitewire_draw_id}/deliver`, {}); const ready = Array.isArray(r.reports_ready) && r.reports_ready.length; return { msg: `Findings delivered to the borrower (${r.lines} items).${ready ? ' Photos archived + PILOT reports ready.' : (r.reports_pending ? ' Archiving photos + preparing reports…' : '')}` }; })}>
           {finding ? 'Re-send findings' : 'Deliver findings to borrower'}
@@ -2263,6 +2293,85 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
    (owner-directed 2026-08-09.) The answer, WHICH level gave it — this project / this capital
    provider / the company default — and the question that has to be asked when the money is set to
    come from an investor who does not own the loan yet. It never changes anything by itself. */
+/* WHERE DID THIS COME FROM? — every knob that governs this file's draws, its answer, and WHICH OF
+   THE THREE LEVELS decided it (owner-directed 2026-08-09: the settings were spread across a global
+   table, a per-capital-provider table and three per-file routes, and nothing anywhere said which one
+   won — so a coordinator looking at a $250 fee had to guess).
+
+   READ-ONLY on purpose. The knobs are SET where they belong — the company defaults and the
+   per-capital-provider rules on the Draw Rules screen, the per-project ones on their own cards
+   (who releases the money, lien waivers, the fee on the Start-draw screen). A second place to write
+   them would be a second thing that can disagree; this is the one place that ANSWERS. */
+function FileDrawSettings({ appId }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    let live = true;
+    api.get(`/api/sitewire/files/${appId}/draw-settings`)
+      .then((r) => { if (live) setData(r); })
+      .catch((e) => { if (live) setErr(e?.data?.error || 'Could not read the settings for this file.'); });
+    return () => { live = false; };
+  }, [appId]);
+
+  if (err) return <div className="muted">{err}</div>;
+  if (!data) return <div className="muted">Loading…</div>;
+
+  const rows = Array.isArray(data.settings) ? data.settings : [];
+  // A knob nobody has set anywhere reads as the built-in default, which is a real answer and is
+  // shown — "nothing is set" is exactly what somebody chasing a surprising fee needs to see.
+  const show = (s) => {
+    if (s.value === null || s.value === undefined || s.value === '') return '—';
+    if (s.type === 'money_cents') return usd(s.value);
+    if (s.type === 'pct') return `${s.value}%`;
+    if (s.type === 'days') return `${s.value} day${Number(s.value) === 1 ? '' : 's'}`;
+    if (s.type === 'hours') return `${s.value} hour${Number(s.value) === 1 ? '' : 's'}`;
+    if (s.type === 'bool') return s.value ? 'Yes' : 'No';
+    return String(s.value);
+  };
+
+  return (
+    <div>
+      <div className="act-card-sub" style={{ marginBottom: 10, color: '#4B585C' }}>
+        Every setting that governs this file's draws, and where each answer came from. Company
+        defaults and capital-provider rules are set on the Draw Rules screen; the per-project ones
+        are set on their own cards above.
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table className="dd-table" style={{ minWidth: 640 }}>
+          <thead><tr><th>Setting</th><th>In force</th><th>Decided by</th><th>Company</th><th>Capital provider</th><th>This project</th></tr></thead>
+          <tbody>
+            {rows.map((s) => (
+              <tr key={s.key}>
+                <td>
+                  <div style={{ fontWeight: 500, color: '#141B22' }}>
+                    {s.label}
+                    {/* An advisory knob WARNS and never refuses — saying so here stops somebody
+                        reading a warning they can override as a rule that blocked them. */}
+                    {s.advisory ? <span className="pill sw-draft" style={{ marginLeft: 6, fontSize: 11 }}>advisory</span> : null}
+                  </div>
+                  {s.help ? <div className="small" style={{ color: '#4B585C' }}>{s.help}</div> : null}
+                </td>
+                <td style={{ fontWeight: 600, color: '#141B22', whiteSpace: 'nowrap' }}>{show(s)}</td>
+                <td style={{ color: s.level === 'none' ? '#4B585C' : '#141B22', whiteSpace: 'nowrap' }}>{s.levelLabel}</td>
+                {['company', 'capital_provider', 'project'].map((lv) => (
+                  <td key={lv} style={{ whiteSpace: 'nowrap', fontWeight: s.level === lv ? 700 : 400, color: s.level === lv ? '#141B22' : '#4B585C' }}>
+                    {/* A level that CANNOT hold this knob says so, rather than showing a blank that
+                        reads as "nobody set it here yet". */}
+                    {s.settable && s.settable[lv] === false
+                      ? <span className="small" style={{ color: '#8A99A8' }}>n/a</span>
+                      : show({ ...s, value: s.levels ? s.levels[lv] : null })}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function ReleasePartyCard({ appId, release, reload }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');

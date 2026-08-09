@@ -2177,7 +2177,10 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
          LEFT JOIN sitewire_job_item_links jil ON jil.application_id=d.application_id AND jil.sitewire_job_item_id=r.sitewire_job_item_id
         WHERE d.application_id=$1 ORDER BY r.sitewire_request_id`, [appId])).rows;
     const ledger = (await db.query(`SELECT * FROM draw_disbursements WHERE application_id=$1 ORDER BY created_at DESC`, [appId])).rows;
-    const findings = (await db.query(`SELECT id, sitewire_draw_id, status, total_requested_cents, total_approved_cents, delivered_at, accepted_at, accepted_via, disputed_at, resolved_at, wire_due_at FROM draw_findings WHERE application_id=$1 ORDER BY delivered_at DESC`, [appId])).rows;
+    // `reviewed_at`/`review_note` ride along so the desk can show whether a human has read the
+    // inspector's report, and offer the stamp when nobody has. The checklist derives the same fact
+    // server-side; this is what lets the BUTTON know which state it is in.
+    const findings = (await db.query(`SELECT id, sitewire_draw_id, status, total_requested_cents, total_approved_cents, delivered_at, accepted_at, accepted_via, disputed_at, resolved_at, wire_due_at, reviewed_at, review_note FROM draw_findings WHERE application_id=$1 ORDER BY delivered_at DESC`, [appId])).rows;
     const changeRequests = (await db.query(
       `SELECT cr.id, cr.status, cr.reason, cr.created_at, cr.decided_at, d.net_zero, d.after_ctc, d.needs_capital_partner, d.capital_partner_status, d.deltas
          FROM change_requests cr JOIN sow_change_request_details d ON d.change_request_id=cr.id
