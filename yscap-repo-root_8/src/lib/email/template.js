@@ -126,6 +126,13 @@ function render(p) {
   // closing prep").
   var heading  = (p.heading != null && String(p.heading).trim()) ? String(p.heading).trim() : title;
   var subjectTag = (p.subjectTag != null && String(p.subjectTag).trim()) ? String(p.subjectTag).trim() : '';
+  // WHICH DRAW this is about ("Draw 2"), printed at the FRONT of the subject —
+  // owner-directed 2026-08-09. It leads rather than trailing because three draws on
+  // one property otherwise produce three identical-looking subjects, and the file
+  // tag (loan # · borrower · street) is the same on all of them. Never rendered in
+  // the body: the H1 already says what the message is about. Built by
+  // src/lib/draw-label.js, which returns null rather than a number it isn't sure of.
+  var drawTag  = (p.drawTag != null && String(p.drawTag).trim()) ? String(p.drawTag).trim() : '';
   var kicker   = (p.kicker != null && String(p.kicker).trim()) ? String(p.kicker).trim() : '';
   var pre      = p.preheader || p.intro || title;
   var greeting = p.greeting || '';
@@ -804,6 +811,18 @@ function render(p) {
       .map(function (s) { return s.trim(); })
       .filter(function (s) { return s && titleLc.indexOf(s.toLowerCase()) === -1; });
     if (extra.length) subject = title + ' · ' + extra.join(' · ');
+  }
+  // The draw tag leads. Same dedup discipline as the file tag, but it cannot be a
+  // plain substring test: several titles spell the draw the OTHER way ("Your
+  // construction draw #2 has been released"), so "Draw 2" would not be found and
+  // the subject would read "Draw 2 · Your construction draw #2 …". Match the NUMBER
+  // in either spelling instead.
+  if (drawTag) {
+    var nums = String(drawTag).match(/\d+/g) || [];
+    var already = nums.length > 0 && nums.every(function (n) {
+      return new RegExp('\\bdraws?\\s*#?\\s*' + n + '\\b', 'i').test(subject);
+    });
+    if (!already) subject = drawTag + ' · ' + subject;
   }
   return { subject: subject, html: html, text: t.join('\n') };
 }

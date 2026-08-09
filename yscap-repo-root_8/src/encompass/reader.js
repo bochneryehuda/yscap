@@ -328,6 +328,16 @@ async function pullLoanForApplication(appId) {
       WHERE id=$2`,
     [jsonText, appId],
   );
+
+  // THE SOLD SIGNAL. The Purchase Advice date rides the field-by-number read above; this lands it
+  // in its own column so "has this loan been sold?" is one indexed question rather than a jsonb
+  // dig on every draw screen. Read-only INTO our column — nothing is ever written to Encompass.
+  // Best-effort and self-describing: with no owner-supplied field id it does nothing at all, and
+  // the draw desk honestly says it cannot tell (which shows the not-sold warning).
+  try {
+    await require('../sitewire/release-party').syncPurchaseAdviceDate(db, appId, loan._fieldValues);
+  } catch (_) { /* never break a pull over a reference field */ }
+
   return { ok: true, guid, pulledAt: new Date().toISOString(), size: Buffer.byteLength(jsonText, 'utf8') };
 }
 
