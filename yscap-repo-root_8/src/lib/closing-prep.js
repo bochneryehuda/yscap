@@ -553,7 +553,7 @@ async function getClosingPrepData(applicationId) {
             NULLIF(TRIM(b.full_name),'') AS borrower_name, b.email AS borrower_email, b.cell_phone AS borrower_cell,
             NULLIF(TRIM(cb.full_name),'') AS co_borrower_name, cb.email AS co_borrower_email,
             l.llc_name AS entity_name, l.formation_state AS entity_state,
-            l.entity_type, l.entity_type_confirmed,
+            l.entity_type, l.entity_type_confirmed, l.entity_subtype,
             lo.full_name AS lo_name, lo.email AS lo_email, lo.title AS lo_title,
             lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls,
             pr.full_name AS proc_name, pr.email AS proc_email, pr.title AS proc_title,
@@ -690,6 +690,7 @@ async function getClosingPrepData(applicationId) {
     entityTypeConfirmed: !!a.entity_type_confirmed,
     entityKind: a.llc_id ? require('./entity-type').describe({
       entity_type: a.entity_type, entity_type_confirmed: a.entity_type_confirmed,
+      entity_subtype: a.entity_subtype,
     }) : null,
     /* WHO SIGNS, AND AS WHAT. A title prints under the signature line on every
        recorded instrument and DocLab merges it verbatim, so a blank one is real

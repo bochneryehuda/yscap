@@ -45,8 +45,8 @@ const MAX_ENTITY_DEPTH = 5;
    owner_llc_id → the owning LLC's own row); entity members carry the owning
    LLC's live name/verification so UIs and the verification gate can reason
    about the chain without extra queries. */
-async function getMembers(llcId) {
-  const r = await db.query(
+async function getMembers(llcId, client = db) {
+  const r = await client.query(
     `SELECT m.id, m.full_name, m.ownership_pct, m.email, m.phone,
             m.member_kind, m.owner_llc_id,
             m.member_title, m.shares, m.certificate_number,
@@ -125,8 +125,8 @@ async function ownershipLinkError(llcId, ownerLlcId, client = db) {
 
 /* The three document slots with each slot's CURRENT document (one per slot —
    re-uploads supersede within the slot). */
-async function getSlots(llcId) {
-  const r = await db.query(
+async function getSlots(llcId, client = db) {
+  const r = await client.query(
     `SELECT ci.id AS item_id, t.code, COALESCE(ci.borrower_label, ci.label) AS label,
             COALESCE(ci.borrower_hint, ci.hint) AS hint, ci.status AS item_status,
             COALESCE(ci.is_required, true) AS is_required, t.sort_order,
@@ -180,11 +180,25 @@ const isRequiredSlot = (s) => s.is_required !== false && !OPTIONAL_SLOT_CODES.in
    absent — but a REJECTED document in any slot always blocks: a verified
    entity must never carry a rejected document. */
 function missingForVerification(llc, members, slots) {
+  const ET = require('./entity-type');
+  /* WHAT THIS PARTICULAR ENTITY CAN ACTUALLY PRODUCE (owner-directed 2026-08-09).
+     This is a HARD gate — a verified entity is what satisfies the vesting-entity
+     condition, which gates clear to close — so demanding a document that does not
+     exist is a dead end nobody can resolve. A REVOCABLE living trust has no EIN
+     (it uses the grantor's own Social Security number) and is filed with no
+     state; a GENERAL partnership is created by its agreement and is generally
+     not state-filed either. src/lib/entity-type.js `requirements()` is the one
+     definition, and it RELAXES on an unstated sub-kind rather than blocking —
+     the screens ask the sub-kind question instead of the gate refusing the file.
+     A value that IS present is still checked and still sent; optional never
+     means unwanted. */
+  const req = ET.requirements(llc);
+  const kind = ET.describe(llc);
   const missing = [];
-  if (!llc.ein) missing.push('EIN');
+  if (!llc.ein) { if (req.ein) missing.push('EIN'); }
   else if (!EIN_RE.test(String(llc.ein).trim())) missing.push('EIN format looks invalid (expect XX-XXXXXXX)');
-  if (!llc.formation_state) missing.push('formation state');
-  if (!llc.formation_date) missing.push('formation date');
+  if (!llc.formation_state && req.formationState) missing.push(kind.stateLabel.toLowerCase());
+  if (!llc.formation_date) missing.push(kind.dateLabel.toLowerCase());
   const own = pct(llc.ownership_pct);
   if (own == null) missing.push('borrower ownership %');
   else if (own > 100 + EPS) missing.push(`borrower ownership % exceeds 100 (${own})`);
@@ -201,7 +215,14 @@ function missingForVerification(llc, members, slots) {
     if (!s.document_id) missing.push(`${s.label} not uploaded`);
     else if (s.review_status !== 'accepted') missing.push(`${s.label} not yet accepted`);
   }
-  if (slots.filter(isRequiredSlot).length < LLC_SLOT_CODES.length) missing.push('document requirements not generated');
+  /* "The slots were never built" is a DIFFERENT thing from "one of them is
+     deliberately optional", and counting the REQUIRED ones conflated the two —
+     which, the moment a general partnership's state-filing slot is correctly
+     made optional, would answer "document requirements not generated" on a
+     perfectly complete entity and re-create the dead end this all exists to
+     remove. Count what EXISTS. */
+  const built = new Set(slots.map((s) => s.code));
+  if (LLC_SLOT_CODES.some((code) => !built.has(code))) missing.push('document requirements not generated');
   // Layered entities verify BOTTOM-UP: every entity that owns a slice of this
   // one must itself be verified (its own info, ownership and three documents)
   // before this one can be. getMembers carries the owner's live state.
@@ -264,11 +285,14 @@ function completeness(llc, members, slots) {
 }
 
 /* Everything a UI needs about one LLC in one shape. */
-async function getLlcBundle(llcId) {
-  const l = await db.query(`SELECT * FROM llcs WHERE id=$1`, [llcId]);
+/* `client` is optional and defaults to the pool — a caller already inside a
+   transaction passes its own so the read sees its own uncommitted writes, the
+   same trailing-client shape `findOrCreateLlc` and `replaceMembers` take. */
+async function getLlcBundle(llcId, client = db) {
+  const l = await client.query(`SELECT * FROM llcs WHERE id=$1`, [llcId]);
   const llc = l.rows[0];
   if (!llc) return null;
-  const [members, slots] = await Promise.all([getMembers(llcId), getSlots(llcId)]);
+  const [members, slots] = await Promise.all([getMembers(llcId, client), getSlots(llcId, client)]);
   /* WHAT THIS ENTITY IS, in the shape a screen can render without knowing the
      rules — the owner noun, whether it holds SHARES or a PERCENTAGE, the titles
      its owners may hold. Derived here rather than in each screen so "Ownership %"
@@ -590,16 +614,21 @@ async function replaceMembers(llcId, members, opts = {}) {
 async function applyEntitySlotWording(llcId, client = db) {
   const ET = require('./entity-type');
   try {
-    const r = await client.query(`SELECT entity_type FROM llcs WHERE id=$1`, [llcId]);
+    const r = await client.query(`SELECT entity_type, entity_subtype FROM llcs WHERE id=$1`, [llcId]);
     if (!r.rows[0]) return { updated: 0 };
-    const type = ET.normalizeKey(r.rows[0].entity_type) || ET.DEFAULT_TYPE;
+    const row = r.rows[0];
+    const type = ET.normalizeKey(row.entity_type) || ET.DEFAULT_TYPE;
+    const subtype = ET.normalizeSubtype(type, row.entity_subtype);
     let updated = 0;
     for (const code of ET.TYPED_SLOT_CODES) {
-      const want = ET.slotWording(code, type);
+      const want = ET.slotWording(code, type, subtype);
       if (!want) continue;
-      // Every wording this slot could legitimately be carrying — the four types'
-      // own. Anything else is a human's edit and is not ours to overwrite.
-      const ours = ET.KEYS.map((k) => ET.slotWording(code, k)).filter(Boolean);
+      // Every wording this slot could legitimately be carrying — every type's AND
+      // every sub-kind's. Anything else is a human's edit and is not ours to
+      // overwrite. It must include the sub-kind variants, or switching a
+      // partnership from general to limited would refuse to re-word the slot it
+      // just made wrong.
+      const ours = ET.slotWordings(code);
       const okLabels = Array.from(new Set(ours.map((w) => w.label)));
       const okBorrower = Array.from(new Set(ours.map((w) => w.borrowerLabel)));
       const okHints = Array.from(new Set(ours.map((w) => w.hint).filter(Boolean)));
@@ -640,6 +669,34 @@ async function applyEntitySlotWording(llcId, client = db) {
         [llcId, code, want.label, want.borrowerLabel, okLabels, okBorrower, want.hint, okHints]);
       updated += u.rowCount || 0;
     }
+    /* A SLOT STOPS GATING WHEN THE DOCUMENT DOES NOT EXIST.
+       A general partnership and a trust are created by a signed agreement, not
+       by a state filing, and a REVOCABLE living trust has no EIN of its own —
+       it uses the grantor's Social Security number. Those two slots can then
+       never be filled, and while they are REQUIRED the entity can never be
+       verified, the vesting-entity condition never clears and the file cannot
+       reach clear to close: a dead end nobody can resolve, because the documents
+       do not exist. `entity-type.requirements()` is the one definition and the
+       pass runs BOTH ways, so correcting a partnership from general to limited,
+       or a trust from revocable to irrevocable, restores the requirement.
+
+       ONLY these two slots, and only while nobody has worked them — an uploaded
+       or reviewed document means a human has an opinion about that slot, and a
+       reviewer can always flip the requirement back on the condition itself. */
+    const req = ET.requirements(row);
+    const SLOT_REQUIREMENT = { rtl_llc_formation: !!req.formationState, rtl_llc_ein: !!req.ein };
+    for (const [code, isRequired] of Object.entries(SLOT_REQUIREMENT)) {
+      const u2 = await client.query(
+        `UPDATE checklist_items ci SET is_required = $3, updated_at = now()
+           FROM checklist_templates t
+          WHERE t.id = ci.template_id AND t.code = $2
+            AND ci.llc_id = $1
+            AND COALESCE(ci.is_required, true) IS DISTINCT FROM $3
+            AND ci.status = 'outstanding'
+            AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id = ci.id)`,
+        [llcId, code, isRequired]);
+      updated += u2.rowCount || 0;
+    }
     return { updated };
   } catch (_) {
     // Wording is cosmetic next to the entity itself existing. Never block a create.
@@ -677,16 +734,20 @@ async function confirmEntityType(llcId, type, opts = {}) {
   try {
     if (!llcId || !ET.isRecognized(type)) return { changed: false, reason: 'not_stated' };
     const key = ET.normalizeKey(type);
+    // Normalized AGAINST the type being recorded, so a sub-kind can never land
+    // on a type that does not have one. Null leaves whatever is there alone.
+    const sub = ET.normalizeSubtype(key, opts.entitySubtype) || null;
     const r = await client.query(
       `UPDATE llcs
           SET entity_type = $2, entity_type_confirmed = true,
-              entity_type_set_at = now(), entity_type_set_by = $3, updated_at = now()
+              entity_type_set_at = now(), entity_type_set_by = $3,
+              entity_subtype = COALESCE($4, entity_subtype), updated_at = now()
         WHERE id = $1 AND entity_type_confirmed = false AND is_verified = false
         RETURNING entity_type`,
-      [llcId, key, opts.staffId || null]);
+      [llcId, key, opts.staffId || null, sub]);
     if (!r.rows[0]) return { changed: false, reason: 'already_confirmed_or_verified' };
     await applyEntitySlotWording(llcId, client);
-    return { changed: true, entityType: key };
+    return { changed: true, entityType: key, entitySubtype: sub };
   } catch (_) {
     return { changed: false, reason: 'failed' };
   }
@@ -779,15 +840,21 @@ async function findOrCreateLlc(borrowerId, fields, client = db) {
   const stated = fields && fields.entityType;
   const confirmed = ET.isRecognized(stated);
   const entityType = confirmed ? ET.normalizeKey(stated) : ET.DEFAULT_TYPE;
+  /* WHICH KIND OF PARTNERSHIP OR TRUST (owner-directed 2026-08-09). Only those
+     two types have a sub-kind, and it is normalized AGAINST THE TYPE — so
+     "revocable" sent with a partnership, or any sub-kind sent with an LLC, reads
+     as nothing rather than being stored against the wrong type where it would
+     silently relax the wrong requirement. Blank is the honest default. */
+  const entitySubtype = ET.normalizeSubtype(entityType, fields && fields.entitySubtype) || null;
   try {
     const r = await client.query(
       `INSERT INTO llcs (borrower_id,llc_name,ein,formation_state,formation_date,ownership_pct,
-                         entity_type,entity_type_confirmed,entity_type_set_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CASE WHEN $8 THEN now() ELSE NULL END) RETURNING id`,
+                         entity_type,entity_type_confirmed,entity_type_set_at,entity_subtype)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CASE WHEN $8 THEN now() ELSE NULL END,$9) RETURNING id`,
       [borrowerId, name, (fields.ein || null), (fields.formationState || null),
         require('./fields').normalizeTypedDate(fields.formationDate), (fields.ownershipPct || null),
-        entityType, confirmed]);  // WO-6 (F-M11): year-0026-proof formation date
-    return { id: r.rows[0].id, existed: false, entityType, entityTypeConfirmed: confirmed };
+        entityType, confirmed, entitySubtype]);  // WO-6 (F-M11): year-0026-proof formation date
+    return { id: r.rows[0].id, existed: false, entityType, entitySubtype, entityTypeConfirmed: confirmed };
   } catch (e) {
     // Only reachable where uq_llcs_borrower_name exists: a concurrent create
     // won the race for the same name — reuse the winner instead of erroring.

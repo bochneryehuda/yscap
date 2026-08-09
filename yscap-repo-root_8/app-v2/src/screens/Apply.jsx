@@ -831,9 +831,9 @@ export default function Apply() {
                       checked={(form.vesting || 'entity') === o.v}
                       onChange={() => setForm(f => {
                         const next = o.v === 'individual'
-                          ? { ...(f || {}), vesting: 'individual', entityName: '', llcId: '', entityType: '' }
+                          ? { ...(f || {}), vesting: 'individual', entityName: '', llcId: '', entityType: '', entitySubtype: '' }
                           : { ...(f || {}), vesting: 'entity' };
-                        save({ data: o.v === 'individual' ? { vesting: 'individual', entityName: '', llcId: '', entityType: '' } : { vesting: 'entity' } });
+                        save({ data: o.v === 'individual' ? { vesting: 'individual', entityName: '', llcId: '', entityType: '', entitySubtype: '' } : { vesting: 'entity' } });
                         return next;
                       })} />
                     <span>{o.t}</span>
@@ -847,10 +847,12 @@ export default function Apply() {
             </div>
             {(form.vesting || 'entity') === 'entity' ? (
             <div className="field"><label>Vesting entity name</label>
-              <LlcPicker value={form.entityName || ''} entityType={form.entityType || ''} placeholder="e.g. 1420 Bedford Holdings LLC"
-                onPick={({ id, name, entityType }) => setForm(f => {
-                  const next = { ...(f || {}), entityName: name, llcId: id, entityType: entityType || (f || {}).entityType || '' };
-                  save({ data: { entityName: name, llcId: id, entityType: next.entityType } });
+              <LlcPicker value={form.entityName || ''} entityType={form.entityType || ''} entitySubtype={form.entitySubtype || ''}
+                placeholder="e.g. 1420 Bedford Holdings LLC"
+                onPick={({ id, name, entityType, entitySubtype }) => setForm(f => {
+                  const next = { ...(f || {}), entityName: name, llcId: id,
+                    entityType: entityType || (f || {}).entityType || '', entitySubtype: entitySubtype || '' };
+                  save({ data: { entityName: name, llcId: id, entityType: next.entityType, entitySubtype: next.entitySubtype } });
                   return next;
                 })} />
               <p className="muted small" style={{ marginTop: 4 }}>Reuse an entity you've used before, or create a new one — we'll ask for its formation documents, EIN letter and governing document once.</p></div>

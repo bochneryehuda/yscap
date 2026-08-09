@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
-import { ENTITY_TYPES, DEFAULT_ENTITY_TYPE, describeEntity } from '../lib/entityType.js';
+import { ENTITY_TYPES, DEFAULT_ENTITY_TYPE, describeEntity, subtypesFor, hasSubtypes } from '../lib/entityType.js';
 
 /* Pick the file's VESTING ENTITY from the borrower's reusable entity library, or
    create a new one inline. Creating one materializes its document slots (state
@@ -22,9 +22,10 @@ import { ENTITY_TYPES, DEFAULT_ENTITY_TYPE, describeEntity } from '../lib/entity
    the logged-in borrower's own. With no borrowerId yet (a brand-new borrower on
    the staff new-file form) it still captures a typed entity name + type via
    onPick — the server resolves/creates the entity once the borrower exists. */
-export default function LlcPicker({ value, onPick, placeholder, staff = false, borrowerId = null, entityType = '' }) {
+export default function LlcPicker({ value, onPick, placeholder, staff = false, borrowerId = null, entityType = '', entitySubtype = '' }) {
   const [name, setName] = useState(value || '');
   const [type, setType] = useState(entityType || '');
+  const [sub, setSub] = useState(entitySubtype || '');
   const [llcs, setLlcs] = useState([]);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -34,6 +35,7 @@ export default function LlcPicker({ value, onPick, placeholder, staff = false, b
 
   useEffect(() => { setName(value || ''); }, [value]);
   useEffect(() => { setType(entityType || ''); }, [entityType]);
+  useEffect(() => { setSub(entitySubtype || ''); }, [entitySubtype]);
   useEffect(() => {
     const load = staff ? (borrowerId ? api.staffBorrowerLlcs(borrowerId) : Promise.resolve([])) : api.llcs();
     load.then(setLlcs).catch(() => setLlcs([]));
@@ -57,8 +59,8 @@ export default function LlcPicker({ value, onPick, placeholder, staff = false, b
        record it as a human's answer. An unconfirmed one carries nothing, and the
        entity screen asks properly. */
     const stated = l.entity_type_confirmed ? (l.entity_type || '') : '';
-    setType(stated);
-    onPick && onPick({ id: l.id, name: l.llc_name, entityType: stated || null });
+    setType(stated); setSub(l.entity_subtype || '');
+    onPick && onPick({ id: l.id, name: l.llc_name, entityType: stated || null, entitySubtype: l.entity_subtype || null });
   };
   const gate = useSubmitGate();
   async function create() {
@@ -66,11 +68,11 @@ export default function LlcPicker({ value, onPick, placeholder, staff = false, b
     if (!nm || busy || !type || !gate.enter()) return;   // guard against a double-tap creating two entities
     setBusy(true);
     try {
-      const body = { llcName: nm, entityType: type };
+      const body = { llcName: nm, entityType: type, ...(sub ? { entitySubtype: sub } : {}) };
       const r = staff ? await api.staffCreateLlc(borrowerId, body) : await api.createLlc(body);
       const fresh = await (staff ? api.staffBorrowerLlcs(borrowerId) : api.llcs()).catch(() => llcs); setLlcs(fresh);
       setOpen(false); setPicked(true);
-      onPick && onPick({ id: r.llcId || r.id, name: nm, entityType: type });
+      onPick && onPick({ id: r.llcId || r.id, name: nm, entityType: type, entitySubtype: sub || null });
     } catch { /* leave as typed text */ }
     finally { setBusy(false); gate.leave(); }
   }
@@ -86,7 +88,7 @@ export default function LlcPicker({ value, onPick, placeholder, staff = false, b
         <input className="input" autoComplete="off" value={name} placeholder={placeholder || 'Start typing the entity name…'}
           onChange={e => {
             setName(e.target.value); setOpen(true); setPicked(false);
-            onPick && onPick({ id: null, name: e.target.value, entityType: type || null });
+            onPick && onPick({ id: null, name: e.target.value, entityType: type || null, entitySubtype: sub || null });
           }}
           onFocus={() => setOpen(true)} />
         {open && (matches.length > 0 || (q && !exact)) && (
@@ -117,12 +119,26 @@ export default function LlcPicker({ value, onPick, placeholder, staff = false, b
           <label className="lbl" style={{ color: '#3A4550' }}>Entity type</label>
           <select className="input" value={type}
             onChange={e => {
-              setType(e.target.value);
-              onPick && onPick({ id: null, name, entityType: e.target.value || null });
+              setType(e.target.value); setSub('');
+              onPick && onPick({ id: null, name, entityType: e.target.value || null, entitySubtype: null });
             }}>
             <option value="">Select…</option>
             {ENTITY_TYPES.map(t => <option key={t.key} value={t.key}>{t.longLabel}</option>)}
           </select>
+          {/* Only a partnership and a trust have a kind. It decides what we can
+              ask them for — a revocable trust has no EIN of its own, a general
+              partnership no state filing — so asking it here saves the entity
+              being stuck later. */}
+          {hasSubtypes(type) && (
+            <select className="input" style={{ marginTop: 6 }} value={sub}
+              onChange={e => {
+                setSub(e.target.value);
+                onPick && onPick({ id: null, name, entityType: type || null, entitySubtype: e.target.value || null });
+              }}>
+              <option value="">What kind? Select…</option>
+              {subtypesFor(type).map(x => <option key={x.key} value={x.key}>{x.label}</option>)}
+            </select>
+          )}
           <div className="hint" style={{ color: '#4B585C' }}>
             {kind
               ? `We'll ask for its ${kind.governingDocWord}${kind.usesShares ? ' and stock certificate' : ''}, state formation documents and EIN letter.`

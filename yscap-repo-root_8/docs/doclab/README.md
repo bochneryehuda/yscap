@@ -20,6 +20,7 @@ convention.
 |---|---|
 | Understand the whole thing and what happens next | **`DOCLAB-INTEGRATION-BLUEPRINT.md`** |
 | Know what to change in PILOT's own data model | **`DOCLAB-DATA-MODEL-GAPS.md`** |
+| Know what a partnership or a trust needs | **`DOCLAB-ENTITY-TYPES.md`** — the answer is *nothing new from DocLab*; the real gap was ours |
 | Call the API | `DOCLAB-API-REFERENCE-V3.1.md` |
 | Know what a template needs and where it comes from | `DOCLAB-DATA-DICTIONARY.md` + `src/doclab/field-map.js` |
 | Know why DSCR is refused | `DOCLAB-RTL-SCOPE.md` |

@@ -455,6 +455,23 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
           </div>
         </div>
       )}
+      {/* WHICH KIND OF PARTNERSHIP OR TRUST. "General partnership" and "limited
+          partnership" are different legal entities with different liability, and
+          that word is printed onto the recorded instrument — so it is worth
+          settling before the documents are drafted. Same posture as the rest:
+          the desk is told, the order is not blocked. */}
+      {!!file.entitySubtypeNeeded && (
+        <div className="notice" style={{ marginTop: 10, ...CALLOUT }} role="status">
+          <div style={{ fontWeight: 600, marginBottom: 4, color: INK }}>
+            What kind of {String(file.entityKind || 'entity').toLowerCase()} is {file.entityName}?
+          </div>
+          <div className="small" style={{ color: MUTED }}>
+            A general partnership and a limited partnership are different legal entities, and a revocable trust
+            has no EIN of its own — so this decides both what the documents call it and what we can ask the
+            borrower for. Set it on the vesting entity in the Borrower section.
+          </div>
+        </div>
+      )}
       {/* NOBODY HAS SAID WHAT KIND OF COMPANY THIS IS. Everything treats it as an
           LLC in the meantime, which it usually is — but the loan documents describe
           an LLC's members and operating agreement where a corporation has

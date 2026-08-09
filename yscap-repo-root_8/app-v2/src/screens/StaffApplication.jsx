@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
-import { ENTITY_TYPES, describeEntity, titlesFor } from '../lib/entityType.js';
+import { ENTITY_TYPES, describeEntity, titlesFor, subtypesFor, hasSubtypes } from '../lib/entityType.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fileToBase64 } from '../lib/files.js';
 import { onFilesDropped } from '../lib/drop-files.js';
@@ -1803,7 +1803,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
   // #57 — the file's vesting entity is the focus; other borrower entities stay
   // collapsed behind this toggle so staff verify just the entity on this property.
   const [showOthers, setShowOthers] = useState(false);
-  const blankCreate = { llcName: '', entityType: '', ein: '', formationState: '', formationDate: '', ownershipPct: '' };
+  const blankCreate = { llcName: '', entityType: '', entitySubtype: '', ein: '', formationState: '', formationDate: '', ownershipPct: '' };
   const [cf, setCf] = useState(blankCreate);
   function beginEdit(l) {
     setEditId(l.id); setErr('');
@@ -1813,7 +1813,8 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
       // Blank until somebody CHOSE one — db/494 stamped the back book as an LLC
       // with nobody saying so, and pre-selecting that assumption would turn it
       // into a stated fact the first time anyone pressed Save.
-      entityType: l.entity_type_confirmed ? (l.entity_type || '') : '' });
+      entityType: l.entity_type_confirmed ? (l.entity_type || '') : '',
+      entitySubtype: l.entity_subtype || '' });
     setEm((l.members || []).map(m => ({
       fullName: m.full_name, ownershipPct: String(m.ownership_pct), email: m.email || '',
       memberKind: m.member_kind === 'entity' ? 'entity' : 'person',
@@ -1857,7 +1858,8 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
     setBusy('create'); setErr('');
     try {
       const created = await api.staffCreateLlc(app.borrower_id, {
-        llcName: cf.llcName.trim(), entityType: cf.entityType, ein: cf.ein || undefined, formationState: cf.formationState || undefined,
+        llcName: cf.llcName.trim(), entityType: cf.entityType, entitySubtype: cf.entitySubtype || undefined,
+        ein: cf.ein || undefined, formationState: cf.formationState || undefined,
         formationDate: cf.formationDate || undefined, ownershipPct: cf.ownershipPct === '' ? undefined : Number(cf.ownershipPct) });
       // The verify list is now scoped to the vesting + track-record entities, so a
       // brand-new entity would not appear unless it's linked. When the file has no
@@ -1967,10 +1969,20 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                 an operating agreement, and the loan documents need to know whether
                 its owners hold a percentage or shares. */}
             <label><span>Entity type *</span>
-              <select className="input" value={cf.entityType} onChange={e => setCf({ ...cf, entityType: e.target.value })}>
+              <select className="input" value={cf.entityType} onChange={e => setCf({ ...cf, entityType: e.target.value, entitySubtype: '' })}>
                 <option value="">Select…</option>
                 {ENTITY_TYPES.map(t => <option key={t.key} value={t.key}>{t.longLabel}</option>)}
               </select></label>
+            {/* Only a partnership and a trust have a kind, and it decides what we
+                may ask them for — a revocable trust has no EIN of its own, a
+                general partnership no state filing. */}
+            {hasSubtypes(cf.entityType) && (
+              <label><span>What kind?</span>
+                <select className="input" value={cf.entitySubtype} onChange={e => setCf({ ...cf, entitySubtype: e.target.value })}>
+                  <option value="">Select…</option>
+                  {subtypesFor(cf.entityType).map(x => <option key={x.key} value={x.key}>{x.label}</option>)}
+                </select></label>
+            )}
             <label><span>EIN</span>
               <input className="input" value={cf.ein} placeholder="XX-XXXXXXX" onChange={e => setCf({ ...cf, ein: e.target.value })} /></label>
             <label><span>Formation state</span>
@@ -2052,10 +2064,17 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                                 decides which governing document the borrower is asked
                                 for and which titles the owners below may hold. */}
                             <label><span>Entity type</span>
-                              <select className="input" value={ef.entityType || ''} onChange={e => setEf({ ...ef, entityType: e.target.value })}>
+                              <select className="input" value={ef.entityType || ''} onChange={e => setEf({ ...ef, entityType: e.target.value, entitySubtype: '' })}>
                                 <option value="">Not confirmed — treated as an LLC</option>
                                 {ENTITY_TYPES.map(t => <option key={t.key} value={t.key}>{t.longLabel}</option>)}
                               </select></label>
+                            {hasSubtypes(ef.entityType) && (
+                              <label><span>What kind?</span>
+                                <select className="input" value={ef.entitySubtype || ''} onChange={e => setEf({ ...ef, entitySubtype: e.target.value })}>
+                                  <option value="">Not stated</option>
+                                  {subtypesFor(ef.entityType).map(x => <option key={x.key} value={x.key}>{x.label}</option>)}
+                                </select></label>
+                            )}
                           </div>
                           <div style={{ fontWeight: 600, marginTop: 12 }}>Other owners</div>
                           <p className="muted small" style={{ marginBottom: 6 }}>

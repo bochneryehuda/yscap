@@ -275,6 +275,23 @@ const slotOf = async (c, llcId, code) => (await c.query(
 
     /* ───────────── F. the condition wording ───────────── */
     console.log('\nF. the condition lists say entity, not LLC');
+    /* db/507 IS RUN HERE, INSIDE THE TRANSACTION, rather than trusting whatever
+       state the database happens to be in. Three earlier migrations (db/012,
+       db/033, db/057) re-assert this condition's old "LLC" wording on every
+       boot and db/507 is what re-asserts the new wording over them — so what
+       must be proven is that 507 CONVERGES from any of those, not that some
+       other suite happened to leave the row tidy. Re-running it also proves it
+       is idempotent, and the rollback leaves nothing behind. */
+    const sqlPath = require('path').join(__dirname, '..', 'db', '507_entity_condition_wording.sql');
+    const sql507 = require('fs').readFileSync(sqlPath, 'utf8');
+    // Start from the worst case: the wording db/057 writes on every boot.
+    await c.query(
+      `UPDATE checklist_templates
+          SET label = 'LLC (vesting entity) — verify entity, ownership & the three documents',
+              borrower_label = 'Your LLC (vesting entity)'
+        WHERE code = 'rtl_p1_llc'`);
+    await c.query(sql507);
+    await c.query(sql507);   // idempotent — a second boot changes nothing
     const tpl = (await c.query(
       `SELECT label, borrower_label, hint, borrower_hint FROM checklist_templates WHERE code='rtl_p1_llc'`)).rows[0];
     assert.ok(tpl, 'the vesting-entity condition template must exist');
@@ -290,6 +307,132 @@ const slotOf = async (c, llcId, code) => (await c.query(
       assert.ok(!/^LLC /.test(row.label), `${row.code} template still leads with "LLC ": ${row.label}`);
     }
     ok('the entity-document templates are type-neutral, so a fresh slot never inherits a lie');
+
+    /* ───────────── G. the dead end a trust used to hit ───────────── */
+    console.log('\nG. a real trust can actually be verified');
+    const trust = await llcLib.findOrCreateLlc(bor, {
+      llcName: 'The Bochner Family Trust', entityType: 'trust', entitySubtype: 'revocable',
+      formationDate: '2019-03-03',
+    }, c);
+    const tRow = (await c.query(`SELECT entity_type, entity_subtype FROM llcs WHERE id=$1`, [trust.id])).rows[0];
+    assert.strictEqual(tRow.entity_type, 'trust');
+    assert.strictEqual(tRow.entity_subtype, 'revocable');
+    ok('a trust records which kind it is');
+
+    // The database refuses a kind that belongs to another type — a value stored
+    // against the wrong type would silently relax the wrong requirement.
+    let crossRefused = false;
+    await c.query('SAVEPOINT s3');
+    try { await c.query(`UPDATE llcs SET entity_subtype='general' WHERE id=$1`, [trust.id]); }
+    catch (e) { crossRefused = e.code === '23514'; }
+    await c.query('ROLLBACK TO SAVEPOINT s3');
+    assert.ok(crossRefused, "a partnership's kind must not be storable on a trust");
+    let llcRefused = false;
+    await c.query('SAVEPOINT s4');
+    try { await c.query(`UPDATE llcs SET entity_subtype='revocable' WHERE id=$1`, [madeBlank.id]); }
+    catch (e) { llcRefused = e.code === '23514'; }
+    await c.query('ROLLBACK TO SAVEPOINT s4');
+    assert.ok(llcRefused, 'an LLC has no kind, so it must not be able to carry one');
+    ok('the database refuses a kind on a type that does not have one');
+
+    /* THE WHOLE POINT. A revocable living trust uses the grantor's own Social
+       Security number and is filed with no state. Before the sub-kind existed,
+       `missingForVerification` demanded an EIN and a formation state from every
+       entity — so this trust could NEVER be verified, the vesting-entity
+       condition could never clear, and the file could never reach clear to
+       close, with nobody able to fix it because the documents do not exist. */
+    await seedSlots(c, trust.id);
+    await llcLib.applyEntitySlotWording(trust.id, c);
+    await c.query(`UPDATE llcs SET ownership_pct = 100 WHERE id=$1`, [trust.id]);
+    let tBundle = await llcLib.getLlcBundle(trust.id, c);
+    let tMissing = llcLib.missingForVerification(tBundle, tBundle.members, tBundle.slots);
+    assert.ok(!tMissing.some((m) => /ein/i.test(m)), `a revocable trust must not be asked for an EIN — got ${JSON.stringify(tMissing)}`);
+    assert.ok(!tMissing.some((m) => /state/i.test(m)), `a trust must not be asked for a formation state — got ${JSON.stringify(tMissing)}`);
+    ok('a revocable trust is no longer asked for an EIN or a state filing it does not have');
+
+    // The date IS still required — it is part of the trust's legal name.
+    await c.query(`UPDATE llcs SET formation_date = NULL WHERE id=$1`, [trust.id]);
+    tBundle = await llcLib.getLlcBundle(trust.id, c);
+    tMissing = llcLib.missingForVerification(tBundle, tBundle.members, tBundle.slots);
+    assert.ok(tMissing.some((m) => /trust date/i.test(m)),
+      `the trust date must still be required, and named as a TRUST date — got ${JSON.stringify(tMissing)}`);
+    await c.query(`UPDATE llcs SET formation_date = '2019-03-03' WHERE id=$1`, [trust.id]);
+    ok('the trust date is still required, and the message calls it a trust date');
+
+    // An LLC is untouched — nothing was relaxed for the types that do file.
+    await c.query(`UPDATE llcs SET ownership_pct = 100 WHERE id=$1`, [madeBlank.id]);
+    await seedSlots(c, madeBlank.id);
+    const llcBundle = await llcLib.getLlcBundle(madeBlank.id, c);
+    const llcMissing = llcLib.missingForVerification(llcBundle, llcBundle.members, llcBundle.slots);
+    assert.ok(llcMissing.some((m) => /EIN/.test(m)), 'an LLC must still be asked for its EIN');
+    assert.ok(llcMissing.some((m) => /formation state/i.test(m)), 'an LLC must still be asked for its formation state');
+    ok('an LLC still has to produce all three — the relaxation is only for the kinds that cannot');
+
+    /* ───────────── H. the state-filing slot stops gating ───────────── */
+    console.log('\nH. the slot stops asking for a filing that does not exist');
+    const gp = await llcLib.findOrCreateLlc(bor, {
+      llcName: 'Bochner & Sons', entityType: 'partnership', entitySubtype: 'general',
+      ein: '12-3456789', formationDate: '2020-01-15',
+    }, c);
+    await seedSlots(c, gp.id);
+    await llcLib.applyEntitySlotWording(gp.id, c);
+    await c.query(`UPDATE llcs SET ownership_pct = 100 WHERE id=$1`, [gp.id]);
+    const gpSlot = await slotOf(c, gp.id, 'rtl_llc_formation');
+    assert.ok(/if the partnership has one/i.test(gpSlot.label),
+      `a general partnership must not be asked for a certificate it never had — got "${gpSlot.label}"`);
+    const gpReq = (await c.query(
+      `SELECT ci.is_required FROM checklist_items ci JOIN checklist_templates t ON t.id = ci.template_id
+        WHERE ci.llc_id=$1 AND t.code='rtl_llc_formation'`, [gp.id])).rows[0];
+    assert.strictEqual(gpReq.is_required, false, 'and the slot must stop gating verification');
+    ok('a general partnership is told there may be no filing, and the slot stops gating');
+
+    let gpBundle = await llcLib.getLlcBundle(gp.id, c);
+    let gpMissing = llcLib.missingForVerification(gpBundle, gpBundle.members, gpBundle.slots);
+    assert.ok(!gpMissing.some((m) => /not uploaded/i.test(m) && /registration/i.test(m)),
+      `the state-filing slot must not block — got ${JSON.stringify(gpMissing)}`);
+    assert.ok(!gpMissing.some((m) => /requirements not generated/i.test(m)),
+      `making one slot optional must not read as "the slots were never built" — got ${JSON.stringify(gpMissing)}`);
+    ok('and "document requirements not generated" does not fire on a deliberately optional slot');
+
+    // CORRECTING the kind restores the requirement — the pass runs both ways.
+    await c.query(`UPDATE llcs SET entity_subtype='limited' WHERE id=$1`, [gp.id]);
+    await llcLib.applyEntitySlotWording(gp.id, c);
+    const lpSlot = await slotOf(c, gp.id, 'rtl_llc_formation');
+    assert.ok(/Certificate of Limited Partnership/i.test(lpSlot.label), `got "${lpSlot.label}"`);
+    const lpReq = (await c.query(
+      `SELECT ci.is_required FROM checklist_items ci JOIN checklist_templates t ON t.id = ci.template_id
+        WHERE ci.llc_id=$1 AND t.code='rtl_llc_formation'`, [gp.id])).rows[0];
+    assert.strictEqual(lpReq.is_required, true, 'an LP does file with the state, so the requirement comes back');
+    gpBundle = await llcLib.getLlcBundle(gp.id, c);
+    gpMissing = llcLib.missingForVerification(gpBundle, gpBundle.members, gpBundle.slots);
+    assert.ok(gpMissing.some((m) => /formation state/i.test(m)), 'and its state is required again');
+    ok('correcting general → limited restores both the wording and the requirement');
+
+    // A slot somebody has already worked is never overridden.
+    await c.query(`UPDATE llcs SET entity_subtype='general' WHERE id=$1`, [gp.id]);
+    await c.query(
+      `UPDATE checklist_items ci SET status='received'
+         FROM checklist_templates t
+        WHERE t.id = ci.template_id AND t.code='rtl_llc_formation' AND ci.llc_id=$1`, [gp.id]);
+    await llcLib.applyEntitySlotWording(gp.id, c);
+    const worked = (await c.query(
+      `SELECT ci.is_required FROM checklist_items ci JOIN checklist_templates t ON t.id = ci.template_id
+        WHERE ci.llc_id=$1 AND t.code='rtl_llc_formation'`, [gp.id])).rows[0];
+    assert.strictEqual(worked.is_required, true,
+      'a slot a human has already worked keeps its requirement — we do not overrule them');
+    ok('a slot somebody has already worked is left exactly as they left it');
+
+    /* ───────────── I. the kind on the file's own screens ───────────── */
+    console.log('\nI. the kind reaches the screens that need it');
+    const desc = require('../src/lib/entity-type').describe(
+      (await c.query(`SELECT * FROM llcs WHERE id=$1`, [trust.id])).rows[0]);
+    assert.strictEqual(desc.hasSubtypes, true);
+    assert.strictEqual(desc.subtype, 'revocable');
+    assert.strictEqual(desc.dateLabel, 'Trust date');
+    assert.strictEqual(desc.requirements.ein, false);
+    const bundleKind = (await llcLib.getLlcBundle(trust.id, c)).entity;
+    assert.strictEqual(bundleKind.subtypeLabel, 'Revocable (living) trust');
+    ok('the bundle every screen reads carries the kind, its label and what it must produce');
 
     console.log(`\nAll ${pass} entity-type database checks passed.\n`);
   } finally {

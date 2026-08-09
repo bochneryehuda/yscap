@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import LlcManager, { llcBadge } from './LlcManager.jsx';
-import { ENTITY_TYPES, DEFAULT_ENTITY_TYPE, describeEntity } from '../lib/entityType.js';
+import { ENTITY_TYPES, DEFAULT_ENTITY_TYPE, describeEntity, subtypesFor, hasSubtypes } from '../lib/entityType.js';
 
 /* The borrower's reusable ENTITIES — the full entity section of the profile.
    Every entity the borrower owns lives here with its formation details, its
@@ -53,6 +53,7 @@ export default function Entities() {
   const [showAdd, setShowAdd] = useState(false);
   const [name, setName] = useState('');
   const [type, setType] = useState('');
+  const [sub, setSub] = useState('');
   const [busy, setBusy] = useState(false);
 
   const load = () => api.llcs().then(r => setRows(r || [])).catch(e => setErr(e.message));
@@ -63,7 +64,10 @@ export default function Entities() {
     if (!name.trim()) { setErr('Entity name is required.'); return; }
     if (!type) { setErr('Pick what kind of entity it is — it decides which documents we ask for.'); return; }
     setBusy(true); setErr('');
-    try { await api.createLlc({ llcName: name.trim(), entityType: type }); setName(''); setType(''); setShowAdd(false); await load(); }
+    try {
+      await api.createLlc({ llcName: name.trim(), entityType: type, ...(sub ? { entitySubtype: sub } : {}) });
+      setName(''); setType(''); setSub(''); setShowAdd(false); await load();
+    }
     catch (e) { setErr(e.message || 'Could not add'); } finally { setBusy(false); }
   }
 
@@ -93,10 +97,18 @@ export default function Entities() {
               <input className="input" value={name} placeholder="e.g. 1420 Bedford Holdings LLC"
                 onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} /></label>
             <label style={{ gridColumn: '1 / -1' }}><span>Entity type</span>
-              <select className="input" value={type} onChange={e => setType(e.target.value)}>
+              <select className="input" value={type} onChange={e => { setType(e.target.value); setSub(''); }}>
                 <option value="">Select…</option>
                 {ENTITY_TYPES.map(t => <option key={t.key} value={t.key}>{t.longLabel}</option>)}
               </select>
+              {/* Only a partnership and a trust have a kind — and it decides what
+                  we can ask for, so it is worth the one extra question. */}
+              {hasSubtypes(type) && (
+                <select className="input" style={{ marginTop: 6 }} value={sub} onChange={e => setSub(e.target.value)}>
+                  <option value="">What kind? Select…</option>
+                  {subtypesFor(type).map(x => <option key={x.key} value={x.key}>{x.label}</option>)}
+                </select>
+              )}
               <span className="muted small" style={{ color: '#4B585C' }}>
                 {type ? `We'll ask for its ${describeEntity({ entity_type: type }).governingDocWord}${describeEntity({ entity_type: type }).usesShares ? ' and stock certificate' : ''}.`
                   : 'This decides which documents we ask for.'}

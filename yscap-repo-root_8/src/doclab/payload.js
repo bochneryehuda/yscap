@@ -364,12 +364,24 @@ function buildPayload(file, lender, opts = {}) {
      goes out (an LLC is right the overwhelming majority of the time and omitting
      it prints a blank on a mortgage either way) with a warning naming the file. */
   const ET = entityType;
-  const derived = ET.docLabVariables({ entity_type: f.entityType });
+  /* The SUB-KIND rides along, and it changes a word that is printed onto a
+     recorded instrument: a "general partnership" and a "limited partnership" are
+     different legal entities with different liability. It never changes a
+     trust's word — "trust" is never wrong and the trust's own name carries the
+     rest. See the SUBTYPES note in lib/entity-type.js. */
+  const entityRow = { entity_type: f.entityType, entity_subtype: f.entitySubtype };
+  const derived = ET.docLabVariables(entityRow);
   const entityKind = ET.typeOf(f.entityType);
   if (trimmed(f.entityName) && !ET.isRecognized(f.entityType)) {
     warnings.push({
       code: 'entity_type_assumed',
       message: `Nobody has stated whether "${trimmed(f.entityName)}" is an LLC, a corporation, a partnership or a trust, so the documents will describe it as a limited liability company. Confirm the entity type before these go out.`,
+    });
+  }
+  if (trimmed(f.entityName) && ET.hasSubtypes(f.entityType) && !ET.subtypeOf(entityRow) && !trimmed(f.entityOrgType)) {
+    warnings.push({
+      code: 'entity_subtype_unstated',
+      message: `Nobody has said what kind of ${entityKind.label.toLowerCase()} "${trimmed(f.entityName)}" is, so the documents will describe it as a plain "${derived.type_of_organization}". A general partnership and a limited partnership are different legal entities — confirm it before these go out.`,
     });
   }
   c.set('type_of_organization', trimmed(f.entityOrgType) || derived.type_of_organization);

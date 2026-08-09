@@ -4,7 +4,7 @@ import DocPreview from './DocPreview.jsx';
 import { fileToBase64 } from '../lib/files.js';
 import { onFilesDropped } from '../lib/drop-files.js';
 import { EmailInput } from './FormattedInputs.jsx';
-import { ENTITY_TYPES, describeEntity, entityTypeAssumed, titlesFor } from '../lib/entityType.js';
+import { ENTITY_TYPES, describeEntity, entityTypeAssumed, titlesFor, subtypesFor } from '../lib/entityType.js';
 
 /* One LLC, fully managed: entity details, ownership structure (the borrower's
    own % plus every other member until it totals 100%), and the three fixed
@@ -122,6 +122,9 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
         // so, and showing that assumption pre-selected would turn it into a fact
         // the first time somebody pressed Save without looking at it.
         entityType: l.entity_type_confirmed ? (l.entity_type || '') : '',
+        // Which KIND of partnership or trust. Unlike the type, this is never
+        // assumed by a migration — a value here was always typed by a person.
+        entitySubtype: l.entity_subtype || '',
       });
       setMembers((l.members || []).map(m => ({
         fullName: m.full_name, ownershipPct: String(m.ownership_pct), email: m.email || '',
@@ -213,7 +216,7 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
      being EDITED first so switching the type re-words the owners section
      immediately, before Save — otherwise picking "Corporation" leaves the page
      still asking for members and offering an LLC's titles. */
-  const kind = describeEntity({ entity_type: f.entityType || llc.entity_type });
+  const kind = describeEntity({ entity_type: f.entityType || llc.entity_type, entity_subtype: f.entitySubtype || llc.entity_subtype });
   const own = pctNum(f.ownershipPct);
   const ownSet = f.ownershipPct !== '';
   const memberTotal = (members || []).reduce((s, m) => s + pctNum(m.ownershipPct), 0);
@@ -272,17 +275,31 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
             Save. Saving a type re-labels the entity's document slots. */}
         <label><span>Entity type</span>
           <select className="input" value={f.entityType} disabled={locked}
-            onChange={e => setF({ ...f, entityType: e.target.value })}>
+            onChange={e => setF({ ...f, entityType: e.target.value, entitySubtype: '' })}>
             <option value="">Select…</option>
             {ENTITY_TYPES.map(t => <option key={t.key} value={t.key}>{t.longLabel}</option>)}
           </select></label>
+        {/* WHICH KIND — only a partnership and a trust have one, and it earns its
+            place: a REVOCABLE living trust has no EIN of its own (it uses the
+            grantor's Social Security number) and a GENERAL partnership is filed
+            with no state, so this is what stops us demanding documents that do
+            not exist and leaving the entity permanently unverifiable. It also
+            decides what the loan documents call it. */}
+        {kind.hasSubtypes && (
+          <label><span>What kind of {kind.label.toLowerCase()}?</span>
+            <select className="input" value={f.entitySubtype || ''} disabled={locked}
+              onChange={e => setF({ ...f, entitySubtype: e.target.value })}>
+              <option value="">Select…</option>
+              {subtypesFor(f.entityType || llc.entity_type).map(x => <option key={x.key} value={x.key}>{x.label}</option>)}
+            </select></label>
+        )}
         <label><span>EIN</span>
           <input className="input" value={f.ein} placeholder="XX-XXXXXXX" disabled={locked} onChange={e => setF({ ...f, ein: e.target.value })} /></label>
-        <label><span>Formation state</span>
+        <label><span>{kind.stateLabel}</span>
           <select className="input" value={f.formationState} disabled={locked} onChange={e => setF({ ...f, formationState: e.target.value })}>
             <option value="">—</option>{US_STATES.map(s => <option key={s} value={s}>{s}</option>)}
           </select></label>
-        <label><span>Formation date</span>
+        <label><span>{kind.dateLabel}</span>
           <input className="input" type="date" value={f.formationDate} disabled={locked} onChange={e => setF({ ...f, formationDate: e.target.value })} /></label>
         <label><span>Your ownership %</span>
           <input className="input" type="number" min="0" max="100" value={f.ownershipPct} disabled={locked} onChange={e => setF({ ...f, ownershipPct: e.target.value })} /></label>

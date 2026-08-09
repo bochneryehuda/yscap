@@ -745,6 +745,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
                     <div class="field-rows two-col" style="margin:0">
                         <div class="field"><label for="eName">Vesting entity name</label><div class="input"><input id="eName" type="text" placeholder="e.g. 123 Main Holdings LLC"></div></div>
                         <div class="field"><label for="eType">Entity type <span class="req">*</span></label><div class="input"><select id="eType"><option value="">Select…</option><option value="llc">LLC</option><option value="corporation">Corporation (Inc / S-Corp)</option><option value="partnership">Partnership (LP / LLP / general)</option><option value="trust">Trust</option></select></div><span class="field-err">Select the entity type.</span><div class="hint" id="eTypeHint">A corporation uploads its bylaws and stock certificate where an LLC uploads its operating agreement — so we ask up front.</div></div>
+                        <div class="field hidden" id="eSubtypeField"><label for="eSubtype">What kind?</label><div class="input"><select id="eSubtype"><option value="">Select…</option></select></div><div class="hint">A revocable trust has no EIN of its own and a general partnership is not filed with any state — this tells us what we can and cannot ask you for.</div></div>
                     </div>
                     <div class="field-rows two-col" style="margin:0">
                         <div class="field"><label for="eState">State of formation</label><div class="input"><input id="eState" type="text" placeholder="e.g. NY"></div></div>
@@ -1846,7 +1847,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
       ["Loan officer", off ? (off.name + (off.title ? " — " + off.title : "")) : "No preference — routed to loan desk"]
     ]});
     var v = [["Vesting", el("vestEntity").checked ? (label("eType") || "Entity") : "Individual"]];
-    if (el("vestEntity").checked) { v.push(["Vesting entity name", val("eName")]); v.push(["Entity type", label("eType")]); v.push(["State of formation", val("eState")]); v.push(["EIN", val("eEin")]); }
+    if (el("vestEntity").checked) { v.push(["Vesting entity name", val("eName")]); v.push(["Entity type", label("eType")]); if (val("eSubtype")) v.push(["Kind", label("eSubtype")]); v.push(["State of formation", val("eState")]); v.push(["EIN", val("eEin")]); }
     S.push({ title: "Vesting", step: 1, items: v });
     for (var i = 1; i <= n; i++) {
       var p = "b" + i, items = [
@@ -2167,11 +2168,41 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
          answer was never SENT — so every entity arrived assumed to be an LLC and
          a corporation was asked for an operating agreement it does not have. */
       eType: el("vestEntity").checked ? val("eType") : null,
+      /* Only a partnership and a trust have a kind, and it is what stops us
+         asking a revocable trust for an EIN it does not have. */
+      eSubtype: el("vestEntity").checked ? val("eSubtype") : null,
       eState: el("vestEntity").checked ? val("eState") : null,
       eEin: el("vestEntity").checked ? val("eEin") : null,
       payload: YS.collectState()
     };
   }
+  /* WHICH KIND OF PARTNERSHIP OR TRUST — only those two have one, so the box
+     appears only when it has something to ask. It is not required: a borrower
+     who does not know can leave it, and the loan team settles it before closing.
+     Kept in step with src/lib/entity-type.js SUBTYPES. */
+  var ENTITY_SUBTYPES = {
+    partnership: [["general", "General partnership"], ["limited", "Limited partnership (LP)"], ["llp", "Limited liability partnership (LLP)"]],
+    trust: [["revocable", "Revocable (living) trust"], ["irrevocable", "Irrevocable trust"]]
+  };
+  function syncEntitySubtype() {
+    var wrap = el("eSubtypeField"), sel = el("eSubtype");
+    if (!wrap || !sel) return;
+    var opts = ENTITY_SUBTYPES[val("eType")] || [];
+    if (!opts.length) { wrap.classList.add("hidden"); sel.value = ""; sel.innerHTML = '<option value="">Select\u2026</option>'; return; }
+    var keep = sel.value;
+    sel.innerHTML = '<option value="">Select\u2026</option>';
+    for (var i = 0; i < opts.length; i++) {
+      var o = document.createElement("option");
+      o.value = opts[i][0]; o.textContent = opts[i][1];
+      sel.appendChild(o);
+    }
+    // A kind only survives a type change if the new type still offers it.
+    sel.value = opts.some(function (x) { return x[0] === keep; }) ? keep : "";
+    wrap.classList.remove("hidden");
+  }
+  if (el("eType")) el("eType").addEventListener("change", syncEntitySubtype);
+  syncEntitySubtype();
+
   function doSubmit() {
     if (!el("consent").checked) {
       el("consentErr").style.display = "block";

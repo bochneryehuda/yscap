@@ -164,8 +164,11 @@ async function resolveEntityByName(borrowerId, name, fields = {}) {
        untouched by contract, so this is the one place a type can reach it — and
        llc.confirmEntityType carries the guards that make it safe: it only ever
        writes an entity nobody has confirmed and that nobody has verified. */
-    try { await llcLib.confirmEntityType(id, fields.entityType, { staffId: fields.staffId || null }); }
-    catch (_) { /* best-effort */ }
+    try {
+      await llcLib.confirmEntityType(id, fields.entityType, {
+        staffId: fields.staffId || null, entitySubtype: fields.entitySubtype,
+      });
+    } catch (_) { /* best-effort */ }
   }
   return { id, existed };
 }

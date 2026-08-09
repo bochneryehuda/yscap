@@ -64,6 +64,7 @@ function formFrom(app) {
     // Only a CONFIRMED type is carried — see LlcPicker.choose for why an assumed
     // one must never ride out of a picker as though somebody had answered.
     entityType: app.entity_type_confirmed ? (app.entity_type || '') : '',
+    entitySubtype: app.entity_subtype || '',
     /* WHO TAKES TITLE — a CHOICE, not a name box (owner-directed 2026-08-03:
        "where you can fill the Vesting Entity LLC, you can only fill that LLC
        name. You cannot select that. You don't need to fill that LLC name because
@@ -216,7 +217,9 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
           if (!llcId && f.entityName.trim()) {
             // WHICH KIND OF ENTITY travels with the name (owner-directed
             // 2026-08-09) — it decides which governing document we ask for.
-            const c = await api.staffCreateLlc(app.borrower_id, { llcName: f.entityName.trim(), entityType: f.entityType || undefined });
+            const c = await api.staffCreateLlc(app.borrower_id, {
+              llcName: f.entityName.trim(), entityType: f.entityType || undefined,
+              entitySubtype: f.entitySubtype || undefined });
             llcId = c.llcId || c.id;
           }
           if (llcId && String(llcId) !== String(app.llc_id || '')) await api.staffSetVestingLlc(app.id, llcId);
@@ -330,9 +333,9 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
             </div>
             {f.vesting === 'entity' && (
               <label className="col-4"><span>Vesting entity name</span>
-                <LlcPicker value={f.entityName} staff borrowerId={app.borrower_id} entityType={f.entityType}
+                <LlcPicker value={f.entityName} staff borrowerId={app.borrower_id} entityType={f.entityType} entitySubtype={f.entitySubtype}
                   placeholder="Which entity is this property purchased under?"
-                  onPick={({ id, name, entityType }) => setF((s) => ({ ...s, entityName: name, llcId: id || '', entityType: entityType || s.entityType }))} />
+                  onPick={({ id, name, entityType, entitySubtype }) => setF((s) => ({ ...s, entityName: name, llcId: id || '', entityType: entityType || s.entityType, entitySubtype: entitySubtype || '' }))} />
               </label>
             )}
             {/* Occupancy is intentionally NOT shown (owner-directed) — kept in the

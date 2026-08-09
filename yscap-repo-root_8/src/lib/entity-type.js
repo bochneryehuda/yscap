@@ -96,6 +96,111 @@ const DEFAULT_TYPE = 'llc';
 const KEYS = Object.freeze(TYPES.map((t) => t.key));
 const BY_KEY = Object.freeze(TYPES.reduce((m, t) => { m[t.key] = t; return m; }, {}));
 
+/* ─────────────────────────── the sub-kinds ───────────────────────────
+ *
+ * A PARTNERSHIP AND A TRUST ARE NOT ONE THING EACH (owner-directed 2026-08-09,
+ * after research into what DocLab actually needs for them). Two facts hang off
+ * the sub-kind and nothing else can supply them:
+ *
+ *   · WHAT WE CAN LEGITIMATELY ASK THE BORROWER FOR. A GENERAL partnership is
+ *     created by a signed agreement and is generally not filed with any state —
+ *     there is no certificate to upload. A REVOCABLE living trust uses the
+ *     grantor's own Social Security number and has no EIN of its own while the
+ *     grantor is alive. Demanding either is demanding a document that does not
+ *     exist, and because the entity-verification gate is a hard requirement that
+ *     would leave a real trust PERMANENTLY unverifiable — which blocks the
+ *     entity condition, which blocks clear to close. That is the single most
+ *     valuable thing this table fixes.
+ *   · WHAT THE LOAN DOCUMENTS CALL IT. "limited partnership" and "general
+ *     partnership" are different legal entities and DocLab prints
+ *     `type_of_organization` verbatim onto a recorded instrument.
+ *
+ * DELIBERATELY NOT REFINED FOR A TRUST'S ORG TYPE. "revocable trust" is standard
+ * vesting language, but a wrong word on a recorded instrument is expensive and
+ * "trust" is never wrong — the trust's own NAME carries the rest ("The Smith
+ * Family Trust, dated March 3, 2019"). A closer can still override it per file.
+ *
+ * `requires` is what the verification gate reads. `optional` never means "we do
+ * not want it": a value that IS present is still stored, still verified and still
+ * sent. It means we may not REFUSE to finish the entity for the want of it.
+ */
+const SUBTYPES = Object.freeze({
+  partnership: Object.freeze([
+    { key: 'general', label: 'General partnership', docLabOrgType: 'general partnership',
+      // Files a partnership return (Form 1065), so it has an EIN; it is created
+      // by agreement, so there is usually nothing filed with a state.
+      requires: { ein: true, formationState: false } },
+    { key: 'limited', label: 'Limited partnership (LP)', docLabOrgType: 'limited partnership',
+      requires: { ein: true, formationState: true } },
+    { key: 'llp', label: 'Limited liability partnership (LLP)', docLabOrgType: 'limited liability partnership',
+      requires: { ein: true, formationState: true } },
+  ]),
+  trust: Object.freeze([
+    { key: 'revocable', label: 'Revocable (living) trust', docLabOrgType: 'trust',
+      // Uses the grantor's SSN, and trusts are generally not state-filed.
+      requires: { ein: false, formationState: false } },
+    { key: 'irrevocable', label: 'Irrevocable trust', docLabOrgType: 'trust',
+      requires: { ein: true, formationState: false } },
+  ]),
+});
+
+/** The sub-kinds this type offers, or [] for a type that has none. */
+function subtypesFor(type) { return SUBTYPES[normalizeKey(type) || DEFAULT_TYPE] || []; }
+
+/** Does this type ask a sub-kind question at all? Only partnership and trust do. */
+function hasSubtypes(type) { return subtypesFor(type).length > 0; }
+
+/**
+ * The stored sub-kind for anything a door might hand us, or '' when this type
+ * has none / the value is not one of them. Never guesses — an unreadable answer
+ * is an unanswered question, exactly as the type itself is.
+ */
+function normalizeSubtype(type, v) {
+  const list = subtypesFor(type);
+  if (!list.length) return '';
+  const raw = String(v == null ? '' : v).trim().toLowerCase();
+  if (!raw) return '';
+  const hit = list.find((x) => x.key === raw)
+    || list.find((x) => x.label.toLowerCase() === raw)
+    // The obvious spellings a form or a person might send.
+    || list.find((x) => raw.startsWith(x.key))
+    || (raw === 'lp' ? list.find((x) => x.key === 'limited') : null)
+    || (raw === 'gp' ? list.find((x) => x.key === 'general') : null);
+  return hit ? hit.key : '';
+}
+
+function subtypeOf(entity) {
+  const t = typeOf(entity && entity.entity_type).key;
+  const k = normalizeSubtype(t, entity && (entity.entity_subtype || entity.entitySubtype));
+  return k ? subtypesFor(t).find((x) => x.key === k) : null;
+}
+
+/**
+ * WHAT THIS PARTICULAR ENTITY MUST HAVE BEFORE IT CAN BE VERIFIED.
+ *
+ * Read by `llc.missingForVerification`, which is a HARD gate — so the cost of
+ * the two possible mistakes is not symmetric, and that decides the default. Ask
+ * a revocable trust for an EIN it does not have and the entity can NEVER be
+ * verified, the entity condition never clears and the file cannot reach clear to
+ * close: a dead end no human can resolve. Fail to ask a limited partnership for
+ * its state certificate and a reviewer simply asks for it — the requirement is
+ * togglable on the condition itself. So an UNSTATED sub-kind relaxes rather than
+ * blocks, and the screens ask the sub-kind question instead.
+ *
+ * The formation DATE is always required: a trust is legally identified by its
+ * name AND its date, and a partnership agreement is dated.
+ */
+function requirements(entity) {
+  const t = typeOf(entity && entity.entity_type);
+  if (!hasSubtypes(t.key)) return { ein: true, formationState: true, formationDate: true, subtypeKnown: true };
+  const sub = subtypeOf(entity);
+  if (!sub) {
+    // We do not know which kind it is, so we do not know what it can produce.
+    return { ein: false, formationState: false, formationDate: true, subtypeKnown: false };
+  }
+  return { ...sub.requires, formationDate: true, subtypeKnown: true };
+}
+
 /**
  * Read a type from anything a door might hand us — a stored key, a dropdown
  * label, the marketing form's own wording ("Corporation (Inc / S-Corp)").
@@ -167,6 +272,19 @@ const SLOT_WORDING = Object.freeze({
       hint: 'Certificate of Limited Partnership / partnership registration from the state' },
     trust: { label: 'Trust formation documents', borrowerLabel: 'Trust formation documents',
       hint: 'The document that created the trust. Many trusts are not filed with a state — send what exists' },
+    /* BY SUB-KIND, where the document genuinely differs. A GENERAL partnership
+       files nothing with a state, so naming a "Certificate of Partnership" asks
+       for a document that does not exist — the slot says so instead, and
+       `requirements()` stops it gating verification. */
+    'partnership:general': { label: 'State registration (if the partnership has one)',
+      borrowerLabel: 'State registration (if you have one)',
+      hint: 'A general partnership is created by its agreement and is usually not filed with any state. If it was registered anywhere, send that; otherwise leave this empty' },
+    'partnership:limited': { label: 'Certificate of Limited Partnership (formation state)',
+      borrowerLabel: 'State formation documents',
+      hint: 'Certificate of Limited Partnership filed with the state' },
+    'partnership:llp': { label: 'LLP registration (formation state)',
+      borrowerLabel: 'State formation documents',
+      hint: 'The statement of qualification / LLP registration filed with the state' },
   }),
   rtl_llc_opagmt: Object.freeze({
     llc: { label: 'Operating Agreement', borrowerLabel: 'Operating agreement',
@@ -178,6 +296,14 @@ const SLOT_WORDING = Object.freeze({
       hint: 'Signed partnership agreement showing the ownership structure' },
     trust: { label: 'Trust agreement', borrowerLabel: 'Trust agreement',
       hint: 'The signed trust agreement, showing the trustees and the beneficiaries' },
+    /* A living trust's document is as often called a DECLARATION of trust, and
+       lenders normally accept a certification/abstract of trust in place of the
+       full instrument — saying so stops a borrower hunting for a document by a
+       name theirs does not use. */
+    'trust:revocable': { label: 'Trust agreement', borrowerLabel: 'Trust agreement',
+      hint: 'The signed trust agreement or declaration of trust — a certification (abstract) of trust naming the trustees and their powers is usually enough' },
+    'trust:irrevocable': { label: 'Trust agreement', borrowerLabel: 'Trust agreement',
+      hint: 'The signed trust agreement — a certification (abstract) of trust naming the trustees and their powers is usually enough' },
   }),
   rtl_llc_ein: Object.freeze({
     llc: { label: 'EIN letter (IRS)', borrowerLabel: 'EIN letter (IRS)', hint: 'IRS SS-4 / CP-575 EIN confirmation letter' },
@@ -192,10 +318,26 @@ const SLOT_WORDING = Object.freeze({
  * vary. Returning null rather than a guess is what lets a caller leave a
  * template's own label alone instead of overwriting it with an invention.
  */
-function slotWording(code, type) {
+function slotWording(code, type, subtype) {
   const byType = SLOT_WORDING[code];
   if (!byType) return null;
-  return byType[normalizeKey(type) || DEFAULT_TYPE] || byType[DEFAULT_TYPE] || null;
+  const t = normalizeKey(type) || DEFAULT_TYPE;
+  // The sub-kind wins where one is published for this slot; otherwise the type's
+  // own wording stands, so adding a sub-kind never has to restate every slot.
+  const sub = normalizeSubtype(t, subtype);
+  return (sub && byType[`${t}:${sub}`]) || byType[t] || byType[DEFAULT_TYPE] || null;
+}
+
+/**
+ * Every wording a slot could legitimately be carrying — every type's, and every
+ * sub-kind's. `llc.applyEntitySlotWording` guards on this so a label a human
+ * edited by hand is never overwritten, and it must include the sub-kind variants
+ * or switching a partnership from general to limited would refuse to re-word the
+ * slot it just made wrong.
+ */
+function slotWordings(code) {
+  const byType = SLOT_WORDING[code];
+  return byType ? Object.values(byType) : [];
 }
 
 /** Every slot code whose wording depends on the entity type. */
@@ -256,6 +398,8 @@ function titleProblem(title, type) {
  */
 function describe(entity) {
   const t = typeOf(entity && entity.entity_type);
+  const sub = subtypeOf(entity);
+  const req = requirements(entity);
   return {
     key: t.key,
     label: t.label,
@@ -267,6 +411,23 @@ function describe(entity) {
     governingDocWord: t.governingDocWord,
     titles: titlesFor(t.key),
     confirmed: !!(entity && entity.entity_type_confirmed),
+    // The sub-kind, and whether this type even has one to ask about.
+    hasSubtypes: hasSubtypes(t.key),
+    subtypes: subtypesFor(t.key),
+    subtype: sub ? sub.key : '',
+    subtypeLabel: sub ? sub.label : '',
+    requirements: req,
+    /* WHAT THE DATE IS CALLED. A trust is legally identified by its name AND its
+       date — "The Smith Family Trust, dated March 3, 2019" — so calling that box
+       "formation date" on a trust asks the wrong question about the one fact
+       that completes its legal name. A partnership's is its agreement's date. */
+    dateLabel: t.key === 'trust' ? 'Trust date'
+      : t.key === 'partnership' ? 'Partnership agreement date'
+        : 'Formation date',
+    /* Whether the state box is asking for something this entity has at all. A
+       general partnership and a trust are usually not filed anywhere. */
+    stateLabel: t.key === 'trust' ? 'State the trust was signed in'
+      : 'Formation state',
   };
 }
 
@@ -291,8 +452,14 @@ function needsConfirmation(entity) {
  */
 function docLabVariables(entity) {
   const t = typeOf(entity && entity.entity_type);
+  /* THE SUB-KIND REFINES THE ORG TYPE, and this is not cosmetic: DocLab prints
+     `type_of_organization` verbatim onto a recorded instrument, and a "general
+     partnership" and a "limited partnership" are different legal entities with
+     different liability. A trust's sub-kind deliberately does NOT refine it —
+     see the SUBTYPES comment. */
+  const sub = subtypeOf(entity);
   return {
-    type_of_organization: t.docLabOrgType,
+    type_of_organization: (sub && sub.docLabOrgType) || t.docLabOrgType,
     acknowledgement_corporate_status: t.acknowledgement,
     bylaws_operating_agreement: t.governingDocWord,
     operating_agreement_or_bylaws: t.governingDocWord,
@@ -302,7 +469,8 @@ function docLabVariables(entity) {
 module.exports = {
   TYPES, KEYS, BY_KEY, DEFAULT_TYPE,
   typeOf, normalizeKey, isRecognized,
-  SLOT_WORDING, TYPED_SLOT_CODES, slotWording,
+  SUBTYPES, subtypesFor, hasSubtypes, normalizeSubtype, subtypeOf, requirements,
+  SLOT_WORDING, TYPED_SLOT_CODES, slotWording, slotWordings,
   TITLES, AUTHORIZED_SIGNATORY, titlesFor, titleProblem,
   describe, needsConfirmation, docLabVariables,
 };

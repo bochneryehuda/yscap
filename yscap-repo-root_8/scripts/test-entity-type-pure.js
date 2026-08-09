@@ -37,7 +37,12 @@ console.log('\nA. the portal mirror cannot drift from the server');
   const grab = (name) => {
     const at = src.indexOf(`export const ${name} =`);
     assert.ok(at >= 0, `${name} missing from the portal mirror`);
-    const open = src.indexOf(name === 'ENTITY_TITLES' ? '{' : '[', at + name.length + 10);
+    // Whichever bracket the value actually opens with — the tables are a mix of
+    // arrays and objects, and hard-coding one per name is how this silently
+    // grabbed an empty array and "proved" the mirror was empty.
+    const eq = src.indexOf('=', at);
+    const oCurly = src.indexOf('{', eq); const oSquare = src.indexOf('[', eq);
+    const open = (oCurly !== -1 && (oSquare === -1 || oCurly < oSquare)) ? oCurly : oSquare;
     let depth = 0, end = -1;
     for (let i = open; i < src.length; i++) {
       const c = src[i];
@@ -74,6 +79,14 @@ console.log('\nA. the portal mirror cannot drift from the server');
     assert.strictEqual(!!m.usesShares, !!t.usesShares, `${t.key}: usesShares differs`);
   }
   ok('every label, governing document and owner noun matches');
+
+  const mirrorSubs = grab('ENTITY_SUBTYPES');
+  for (const t of ET.KEYS) {
+    const mine = ET.subtypesFor(t).map((x) => [x.key, x.label]);
+    const theirs = (mirrorSubs[t] || []).map((x) => [x.key, x.label]);
+    assert.deepStrictEqual(theirs, mine, `${t}: the portal offers different sub-kinds than the server accepts`);
+  }
+  ok('every sub-kind matches — a picker can never offer one the server would drop');
 
   const mirrorTitles = grab('ENTITY_TITLES');
   for (const k of ET.KEYS) {
@@ -248,6 +261,149 @@ console.log('\nF. the type is what the loan documents read');
     assert.strictEqual(o.payload.variables.number_of_shares, undefined, `a share count of ${JSON.stringify(bad)} must be refused`);
   }
   ok('a fractional, negative, zero or unreadable share count is absent, never rounded into something plausible');
+}
+
+/* ─────────── G. the sub-kinds: partnership and trust ─────────── */
+console.log('\nG. a partnership and a trust are not one thing each');
+{
+  assert.deepStrictEqual(ET.subtypesFor('partnership').map((x) => x.key), ['general', 'limited', 'llp']);
+  assert.deepStrictEqual(ET.subtypesFor('trust').map((x) => x.key), ['revocable', 'irrevocable']);
+  assert.deepStrictEqual(ET.subtypesFor('llc'), []);
+  assert.strictEqual(ET.hasSubtypes('corporation'), false);
+  ok('only a partnership and a trust have a kind at all');
+
+  // NORMALIZED AGAINST THE TYPE. A sub-kind stored on the wrong type would
+  // silently relax the wrong requirement, so it must not be storable at all.
+  assert.strictEqual(ET.normalizeSubtype('partnership', 'revocable'), '');
+  assert.strictEqual(ET.normalizeSubtype('llc', 'general'), '');
+  assert.strictEqual(ET.normalizeSubtype('trust', 'revocable'), 'revocable');
+  assert.strictEqual(ET.normalizeSubtype('partnership', 'LP'), 'limited');
+  assert.strictEqual(ET.normalizeSubtype('partnership', 'Limited partnership (LP)'), 'limited');
+  assert.strictEqual(ET.normalizeSubtype('partnership', 'nonsense'), '');
+  assert.strictEqual(ET.normalizeSubtype('partnership', ''), '');
+  ok("a kind is read against its own type — one from another type reads as nothing");
+
+  /* THE POINT OF THE WHOLE THING. `missingForVerification` is a HARD gate, and a
+     verified entity is what satisfies the vesting-entity condition, which gates
+     clear to close. A revocable living trust uses the grantor's own Social
+     Security number and is filed with no state; a general partnership is created
+     by its agreement and is filed with no state either. Requiring those would
+     make a perfectly ordinary family trust permanently unverifiable. */
+  const req = (t, sk) => ET.requirements({ entity_type: t, entity_subtype: sk });
+  assert.deepStrictEqual(req('llc'), { ein: true, formationState: true, formationDate: true, subtypeKnown: true });
+  assert.deepStrictEqual(req('corporation'), { ein: true, formationState: true, formationDate: true, subtypeKnown: true });
+  ok('an LLC and a corporation must still have all three — nothing was relaxed for them');
+
+  assert.strictEqual(req('trust', 'revocable').ein, false, 'a revocable trust has no EIN of its own');
+  assert.strictEqual(req('trust', 'revocable').formationState, false);
+  assert.strictEqual(req('trust', 'irrevocable').ein, true, 'an irrevocable trust does have its own EIN');
+  assert.strictEqual(req('trust', 'irrevocable').formationState, false, 'no trust is state-filed');
+  assert.strictEqual(req('partnership', 'general').ein, true, 'a general partnership files a return, so it has an EIN');
+  assert.strictEqual(req('partnership', 'general').formationState, false, 'but it is filed with no state');
+  assert.strictEqual(req('partnership', 'limited').formationState, true, 'an LP files a certificate with the state');
+  assert.strictEqual(req('partnership', 'llp').formationState, true);
+  ok('each kind is asked only for what it can actually produce');
+
+  // The DATE is never relaxed: a trust is legally identified by its name AND its
+  // date, and a partnership agreement is dated.
+  for (const [t, sk] of [['trust', 'revocable'], ['partnership', 'general'], ['llc', null]]) {
+    assert.strictEqual(req(t, sk).formationDate, true, `${t} must still carry a date`);
+  }
+  ok('the date is always required — it is part of a trust\'s legal name');
+
+  /* AN UNSTATED KIND RELAXES RATHER THAN BLOCKS, deliberately: the two mistakes
+     do not cost the same. Demand an EIN a revocable trust does not have and the
+     file dead-ends with nobody able to fix it; fail to demand an LP's state
+     certificate and a reviewer simply asks for it. */
+  assert.strictEqual(req('trust', null).ein, false);
+  assert.strictEqual(req('partnership', null).formationState, false);
+  assert.strictEqual(req('partnership', null).subtypeKnown, false, 'and it SAYS it does not know, so a screen can ask');
+  assert.strictEqual(req('llc', null).subtypeKnown, true, 'a type with no kind is never "unknown"');
+  ok('an unstated kind relaxes and flags itself, rather than dead-ending the file');
+}
+
+/* ─────────── H. what the documents call it ─────────── */
+console.log('\nH. the kind is printed on the instrument');
+{
+  const org = (t, sk) => ET.docLabVariables({ entity_type: t, entity_subtype: sk }).type_of_organization;
+  assert.strictEqual(org('partnership', 'general'), 'general partnership');
+  assert.strictEqual(org('partnership', 'limited'), 'limited partnership');
+  assert.strictEqual(org('partnership', 'llp'), 'limited liability partnership');
+  assert.strictEqual(org('partnership', null), 'partnership');
+  ok('a partnership is named exactly — they are different legal entities with different liability');
+
+  // Deliberately NOT refined. "trust" is never wrong; the trust's own name
+  // carries the rest ("The Smith Family Trust, dated March 3, 2019"), and a
+  // wrong word on a recorded instrument is expensive.
+  assert.strictEqual(org('trust', 'revocable'), 'trust');
+  assert.strictEqual(org('trust', 'irrevocable'), 'trust');
+  ok('a trust stays "trust" — the safe word, with the name carrying the detail');
+
+  // The governing document and the acknowledgement do not move with the kind.
+  const v = ET.docLabVariables({ entity_type: 'partnership', entity_subtype: 'limited' });
+  assert.strictEqual(v.bylaws_operating_agreement, 'partnership agreement');
+  assert.strictEqual(v.acknowledgement_corporate_status, 'partnership agreement and its partners');
+  ok('the governing-document wording is the type\'s, not the kind\'s');
+
+  const base = {
+    loanCategory: '12 Month', propertyAddress: { state: 'NY' }, lenderName: 'YS Capital',
+    entityName: 'Hudson Partners LP', borrowerName: 'Jane Doe',
+  };
+  const lp = payload.buildPayload({ ...base, entityType: 'partnership', entitySubtype: 'limited', membershipInterestPct: 100 },
+    { name: 'YS Capital' }, { prepaymentAllowed: ['RTL-No'] });
+  assert.strictEqual(lp.payload.variables.type_of_organization, 'limited partnership');
+  assert.strictEqual(lp.payload.variables.membership_interest_percentage, '100');
+  assert.strictEqual(lp.payload.variables.number_of_shares, undefined,
+    'a partnership holds percentages, never shares');
+  ok('a partnership goes out through the percentage path, named for its kind');
+
+  const warn = (o, code) => (o.warnings || []).some((w) => w.code === code);
+  const vague = payload.buildPayload({ ...base, entityType: 'partnership' },
+    { name: 'YS Capital' }, { prepaymentAllowed: ['RTL-No'] });
+  assert.strictEqual(warn(vague, 'entity_subtype_unstated'), true);
+  assert.strictEqual(warn(lp, 'entity_subtype_unstated'), false);
+  const anLlc = payload.buildPayload({ ...base, entityName: 'Acme LLC', entityType: 'llc' },
+    { name: 'YS Capital' }, { prepaymentAllowed: ['RTL-No'] });
+  assert.strictEqual(warn(anLlc, 'entity_subtype_unstated'), false,
+    'an LLC has no kind, so it must never be nagged for one');
+  ok('an unstated kind warns, and a type that has none never does');
+}
+
+/* ─────────── I. the slots ask for a document that exists ─────────── */
+console.log('\nI. the slots follow the kind');
+{
+  const gp = ET.slotWording('rtl_llc_formation', 'partnership', 'general');
+  assert.ok(/not filed with any state|if the partnership has one/i.test(gp.label + ' ' + gp.hint),
+    'a general partnership must not be asked for a certificate it never had');
+  const lp = ET.slotWording('rtl_llc_formation', 'partnership', 'limited');
+  assert.ok(/Certificate of Limited Partnership/i.test(lp.label));
+  assert.strictEqual(ET.slotWording('rtl_llc_formation', 'partnership', 'llp').label,
+    'LLP registration (formation state)');
+  ok('each kind of partnership is asked for its own filing, or told there is none');
+
+  // An unstated kind falls back to the TYPE's wording rather than a guess.
+  assert.strictEqual(ET.slotWording('rtl_llc_formation', 'partnership', '').label,
+    'Certificate of Partnership (formation state)');
+  assert.strictEqual(ET.slotWording('rtl_llc_formation', 'partnership').label,
+    'Certificate of Partnership (formation state)');
+  ok('no kind falls back to the type, and the old two-argument call still works');
+
+  // slotWordings must list every variant, or applyEntitySlotWording would refuse
+  // to re-word a slot when the kind changes.
+  const all = ET.slotWordings('rtl_llc_formation').map((w) => w.label);
+  for (const sk of ['general', 'limited', 'llp']) {
+    assert.ok(all.includes(ET.slotWording('rtl_llc_formation', 'partnership', sk).label),
+      `the ${sk} wording must be in the known set`);
+  }
+  ok('every kind\'s wording is in the known set the re-word guard uses');
+
+  const t = ET.describe({ entity_type: 'trust', entity_subtype: 'revocable' });
+  assert.strictEqual(t.dateLabel, 'Trust date');
+  assert.strictEqual(t.subtypeLabel, 'Revocable (living) trust');
+  assert.strictEqual(t.requirements.ein, false);
+  assert.strictEqual(ET.describe({ entity_type: 'llc' }).dateLabel, 'Formation date');
+  assert.strictEqual(ET.describe({ entity_type: 'partnership' }).dateLabel, 'Partnership agreement date');
+  ok('the date box asks the right question — a trust has a trust date, not a formation date');
 }
 
 console.log(`\nAll ${pass} entity-type checks passed.\n`);

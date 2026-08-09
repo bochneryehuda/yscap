@@ -370,6 +370,9 @@ async function siteIntake(p, opts = {}) {
               // sent it (owner-directed 2026-08-09) — the same collected-then-
               // discarded class as the refinance fields.
               entityType: (p.eType || p.entityType || null),
+              // Which KIND of partnership or trust — it decides what we may ask
+              // this entity for and what the loan documents call it.
+              entitySubtype: (p.eSubtype || p.entitySubtype || null),
             },
           });
         }

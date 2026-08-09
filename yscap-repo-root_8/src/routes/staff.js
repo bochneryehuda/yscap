@@ -1598,7 +1598,7 @@ router.get('/applications/:id', async (req, res) => {
             -- chose it (db/506 stamped the whole back book as an LLC with nobody
             -- choosing). The file screen needs both: one to word the entity section,
             -- the other to admit it is assuming rather than state a guess as a fact.
-            l.entity_type, l.entity_type_confirmed,
+            l.entity_type, l.entity_type_confirmed, l.entity_subtype,
             cb.first_name AS co_first_name, cb.last_name AS co_last_name,
             cb.middle_name AS co_middle_name, cb.name_suffix AS co_name_suffix, cb.full_name AS co_full_name,
             cb.email AS co_email, cb.cell_phone AS co_cell_phone,
@@ -6881,6 +6881,11 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
         ownersMissingTitles: data.ownersMissingTitles || [],
         entityTypeConfirmed: data.entityTypeConfirmed,
         entityKind: data.entityKind ? data.entityKind.label : null,
+        /* A partnership and a trust each come in kinds, and the kind is printed
+           on the instrument — a general partnership and a limited partnership
+           are different legal entities. Another nudge, never a blocker. */
+        entitySubtypeNeeded: !!(data.entityKind && data.entityKind.hasSubtypes && !data.entityKind.subtype),
+        entitySubtypeLabel: data.entityKind ? data.entityKind.subtypeLabel : null,
       },
       deal: closingPrep.dealMeta(data),
       order: {
@@ -10439,10 +10444,13 @@ router.post('/borrowers/:id/llcs', async (req, res) => {
     llcName: String(b.llcName).trim(), ein: ein.ein, formationState: b.formationState,
     formationDate: b.formationDate, ownershipPct: b.ownershipPct,
     entityType: b.entityType,   // LLC / Corporation / Partnership / Trust (owner-directed 2026-08-09)
+    // …and, for a partnership or a trust, WHICH kind — it decides what we may ask
+    // them for (a revocable trust has no EIN; a general partnership no state filing).
+    entitySubtype: b.entitySubtype,
   });
   // A type stated on a name the borrower already has still records — see
   // llc.confirmEntityType for the three guards that keep it safe.
-  if (existed) { try { await llcLib.confirmEntityType(llcId, b.entityType, { staffId: req.actor.id }); } catch (_) { /* best-effort */ } }
+  if (existed) { try { await llcLib.confirmEntityType(llcId, b.entityType, { staffId: req.actor.id, entitySubtype: b.entitySubtype }); } catch (_) { /* best-effort */ } }
   // Only a brand-new entity gets members + its document checklist; an existing
   // one keeps its own (never clobbered by a re-create).
   if (!existed) {
@@ -10825,13 +10833,19 @@ router.patch('/llcs/:id', async (req, res) => {
     if (!ET.isRecognized(b.entityType)) {
       return res.status(400).json({ error: `Pick one of: ${ET.TYPES.map((t) => t.label).join(', ')}.` });
     }
+    /* The sub-kind is normalized AGAINST the type being saved, so switching a
+       trust to an LLC cannot leave "revocable" behind on a type that has no
+       sub-kind — and an explicit blank CLEARS it, because "I picked the wrong
+       one" has to be undoable. */
+    const sub = ET.normalizeSubtype(ET.normalizeKey(b.entityType), b.entitySubtype) || null;
     await db.query(
       `UPDATE llcs SET entity_type=$2, entity_type_confirmed=true, entity_type_set_at=now(),
-                       entity_type_set_by=$3, updated_at=now()
+                       entity_type_set_by=$3, entity_subtype=$4, updated_at=now()
         WHERE id=$1 AND is_verified=false`,
-      [req.params.id, ET.normalizeKey(b.entityType), req.actor.id]);
+      [req.params.id, ET.normalizeKey(b.entityType), req.actor.id, sub]);
     try { await llcLib.applyEntitySlotWording(req.params.id); } catch (_) { /* wording is cosmetic */ }
-    await audit(req, 'set_entity_type', 'llc', req.params.id, { entityType: ET.normalizeKey(b.entityType) });
+    await audit(req, 'set_entity_type', 'llc', req.params.id,
+      { entityType: ET.normalizeKey(b.entityType), entitySubtype: sub });
     entityTypeChanged = true;
   }
   // WO-6 (F-M11): normalize a mid-typed formation date so year-0026 can't persist.

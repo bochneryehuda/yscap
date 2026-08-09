@@ -325,7 +325,7 @@ export default function StaffNewFile() {
   const _fromTermSheet = Object.keys(_pf.f).length > 0 || Object.keys(_pf.addr).length > 0;
   const [f, setF] = useState({
     firstName: '', lastName: '', email: '', phone: '',
-    program: '', loanType: '', propertyType: '', units: '', entityName: '', llcId: '', entityType: '', vesting: 'entity',
+    program: '', loanType: '', propertyType: '', units: '', entityName: '', llcId: '', entityType: '', entitySubtype: '', vesting: 'entity',
     purchasePrice: '', asIsValue: '', arv: '', rehabBudget: '', rehabType: '', sqftPre: '', sqftPost: '',
     isAssignment: false, underlyingContractPrice: '',
     // Refinance-only. The loan is sized on the as-is value above; these carry the
@@ -491,6 +491,7 @@ export default function StaffNewFile() {
         // the entity is genuinely new — a name the borrower already has keeps
         // the type it was set up with.
         entityType: (!f.llcId && f.entityName.trim() && f.entityType) ? f.entityType : undefined,
+        entitySubtype: (!f.llcId && f.entityName.trim() && f.entitySubtype) ? f.entitySubtype : undefined,
         // The server reads this through fields.vestsIndividually, which lets a
         // picked entity win — so the two can never contradict each other.
         vesting: f.vesting || 'entity',
@@ -773,7 +774,7 @@ export default function StaffNewFile() {
                   <input type="radio" name="vestingChoice" value={o.v}
                     checked={(f.vesting || 'entity') === o.v}
                     onChange={() => setF(s2 => (o.v === 'individual'
-                      ? { ...s2, vesting: 'individual', entityName: '', llcId: '', entityType: '' }
+                      ? { ...s2, vesting: 'individual', entityName: '', llcId: '', entityType: '', entitySubtype: '' }
                       : { ...s2, vesting: 'entity' }))} />
                   <span>{o.t}</span>
                 </label>
@@ -786,9 +787,9 @@ export default function StaffNewFile() {
           </div>
           {(f.vesting || 'entity') === 'entity' ? (
           <div className="field"><label>Vesting entity name</label>
-            <LlcPicker value={f.entityName} staff borrowerId={borrowerId} entityType={f.entityType}
+            <LlcPicker value={f.entityName} staff borrowerId={borrowerId} entityType={f.entityType} entitySubtype={f.entitySubtype}
               placeholder={borrowerId ? 'Which entity is this property purchased under?' : 'Type the entity name (created once the borrower is saved)'}
-              onPick={({ id, name, entityType }) => setF(s => ({ ...s, entityName: name, llcId: id || '', entityType: entityType || s.entityType }))} />
+              onPick={({ id, name, entityType, entitySubtype }) => setF(s => ({ ...s, entityName: name, llcId: id || '', entityType: entityType || s.entityType, entitySubtype: entitySubtype || '' }))} />
             <p className="muted small" style={{ marginTop: 4 }}>
               {borrowerId ? 'Pick one of this borrower’s entities or create a new one — we’ll ask for its formation documents, EIN letter and governing document.'
                 : 'If the property vests in an entity, type its name — it’s created on the borrower once the file is saved.'}
