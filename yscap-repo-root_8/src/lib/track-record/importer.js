@@ -355,6 +355,11 @@ async function loadQueue(borrowerId, client) {
        the queue never acts on its own recommendation. */
     suggested: r.match_track_record_id ? 'match_existing' : 'import_new',
     internalNotes: r.internal_notes,
+    /* WHO ANSWERED. db/504. A borrower's "not mine" is weaker evidence than a
+       staffer's and is meant to be reviewable — the `declined` list is the one
+       place a wrong answer quietly REMOVES experience rather than adding it. */
+    decidedByKind: r.decided_by_kind || null,
+    decidedByBorrower: r.decided_by_borrower ? true : false,
     deedCount: (r.raw && Array.isArray(r.raw.deeds)) ? r.raw.deeds.length : 0,
   });
 
@@ -422,7 +427,13 @@ async function settle(db, id, status, staffId, note) {
  * real LLC on the borrower profile"); and the row lands `pending` because
  * db/485's guard says so, not because this module remembered to ask for it.
  */
-async function importNew(db, c, { staffId, note, dealType }) {
+/* `enteredByKind` names WHO put the line on the record, and it is a parameter
+   rather than the constant 'staff' because a borrower confirming their own
+   property goes through this same function. Writing 'staff' for a borrower's
+   own answer would make the audit trail say something untrue and would hide
+   the line from the queue built to surface self-reported ones. It defaults to
+   'staff' so every existing caller is unchanged. */
+async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staff', borrowerActor = null }) {
   let llcId = c.proposed_llc_id || null;
   let entityCreated = false;
   if (!llcId && str(c.entity_name)) {
@@ -436,18 +447,28 @@ async function importNew(db, c, { staffId, note, dealType }) {
        (borrower_id, llc_id, property_address, address_key, deal_type,
         purchase_price, purchase_date, sale_price, sale_date, entity_name,
         origin, entered_by_kind, entered_at, notes)
-     VALUES ($1,$2::uuid,$3::jsonb,$4,$5,$6,$7,$8,$9,$10,'public_records','staff',now(),$11)
+     VALUES ($1,$2::uuid,$3::jsonb,$4,$5,$6,$7,$8,$9,$10,'public_records',$12,now(),$11)
      RETURNING id, is_verified, verification_status`,
     [c.borrower_id, llcId, JSON.stringify(c.property_address || null),
       TRK.trackRecordKey(c.property_address) || '', str(dealType) || c.deal_type,
       c.purchase_price, c.purchase_date, c.sale_price, c.sale_date, c.entity_name,
-      'Brought on from the public records.']);
+      enteredByKind === 'borrower'
+        ? 'The borrower confirmed this one from the public records.'
+        : 'Brought on from the public records.',
+      enteredByKind]);
 
   const row = ins.rows[0];
+  /* EXACTLY ONE DECIDER (db/504's `trc_one_decider_check`): a staffer or a
+     borrower, never both. `decided_by` is a staff_users FK, so a borrower's id
+     may never go there — that constraint is the schema doing its job. */
   await db.query(
     `UPDATE track_record_candidates
-        SET status='imported', imported_track_record_id=$2, decided_by=$3::uuid, decided_at=now(), resolution_note=$4
-      WHERE id=$1`, [c.id, row.id, staffId || null, str(note).slice(0, 500) || null]);
+        SET status='imported', imported_track_record_id=$2,
+            decided_by=$3::uuid, decided_by_borrower=$5::uuid, decided_by_kind=$6,
+            decided_at=now(), resolution_note=$4
+      WHERE id=$1`,
+    [c.id, row.id, borrowerActor ? null : (staffId || null), str(note).slice(0, 500) || null,
+      borrowerActor || null, borrowerActor ? 'borrower' : 'staff']);
 
   return {
     ok: true, action: 'import_new', status: 'imported',

@@ -2838,6 +2838,41 @@ router.upsertPartner = upsertPartner;
 // ---------------- TRACK RECORDS (general per-borrower section) ----------------
 // A borrower's track record is one general dataset — never tied to a single
 // file. Loan-file experience conditions link here automatically.
+/* ── CONFIRMING PROPERTIES FOUND IN THE PUBLIC RECORDS (blueprint §9.4) ─────
+   Staff searched and staged; the borrower says which are theirs. A "yes" is a
+   CLAIM — it writes a line at `pending`, which counts toward nothing until our
+   team verifies it — and it is strictly less risky than the line they can
+   already type by hand below. Nothing on these three routes makes a vendor
+   call: a borrower may never spend the office's lookup allowance. */
+router.get('/track-record-candidates', async (req, res) => {
+  try {
+    res.json(await require('../lib/track-record/borrower-confirm').loadForBorrower(me(req)));
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.post('/track-record-candidates/:id/answer', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const out = await require('../lib/track-record/borrower-confirm').answerCandidate(req.params.id, {
+      borrowerId: me(req), answer: b.answer, dealType: b.dealType, note: b.note,
+    });
+    await audit(req, 'borrower_answered_track_record_candidate', 'borrower', me(req),
+      { candidateId: req.params.id, answer: b.answer, trackRecordId: out.trackRecordId || null });
+    try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+    require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.post('/track-record-candidates/:id/undo', async (req, res) => {
+  try {
+    const out = await require('../lib/track-record/borrower-confirm').undoAnswer(req.params.id, { borrowerId: me(req) });
+    await audit(req, 'borrower_undid_track_record_candidate', 'borrower', me(req),
+      { candidateId: req.params.id, lineRemoved: out.lineRemoved === true, lineKept: out.lineKept === true });
+    try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+    require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+
 router.get('/track-records', async (req, res) => {
   // Explicit borrower-safe allowlist — NEVER `t.*`. The row carries internal-only
   // columns the borrower must not see: `lo_notes` (candid staff notes on the deal,
