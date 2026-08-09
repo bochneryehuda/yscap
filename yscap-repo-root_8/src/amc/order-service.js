@@ -161,6 +161,12 @@ async function cardStatus(db, appId) {
 // ---------------------------------------------------------------------------
 // Form-selection rules (admin-editable amc_form_map rows).
 // ---------------------------------------------------------------------------
+// SCOPED TO THE ENVIRONMENT THIS SERVICE IS POINTED AT. db/481 gave the table an
+// `environment` column precisely because their product ids differ between UAT and
+// production, and said "the resolver only ever reads rows matching the environment
+// the service is pointed at" — but nothing implemented it, so a UAT rule could pick a
+// production form (and, now that a rule also supplies a NAME, could label one). Every
+// seeded row is 'production', which is the default, so this changes nothing today.
 async function formRules(db) {
   const r = await db.query(
     `SELECT id, program, property_category, loan_purpose, loan_type, property_key,
@@ -168,7 +174,9 @@ async function formRules(db) {
             amc_identifier, priority, active
        FROM amc_form_map
       WHERE active = true
-      ORDER BY priority ASC, id ASC`);
+        AND COALESCE(environment, 'production') = $1
+      ORDER BY priority ASC, id ASC`,
+    [(cfg.amc && cfg.amc.environment) || 'production']);
   return r.rows;
 }
 
@@ -211,10 +219,36 @@ function formNameFor(productCode, forms, rules) {
   return rule ? String(rule.product_name).trim() || null : null;
 }
 
-// The form catalog for a tenant, best-effort — an unreachable cache must never stop
-// an order being built. Always an array.
+/**
+ * The form catalog for a tenant, best-effort — an unreachable cache must never stop
+ * an order being built. Always an array.
+ *
+ * WITH NO SUBDOMAIN CONFIGURED IT USES THE ONE CACHED TENANT, and that is the whole
+ * point rather than a convenience. `AMC_SUBDOMAIN` is not set today — the commit that
+ * added the form NAME says so itself — while db/481 seeded the live NAN catalog under
+ * `subdomain='nan'`. Reading the catalog under the configured (blank) key found
+ * nothing, so the desk could only name the nine forms db/481 ALSO wrote onto a rule,
+ * and every other form — a staff override, a 1004D update, a field review, ground-up
+ * — still printed a bare number, which is the complaint this was meant to answer. The
+ * override dropdown was empty for the same reason.
+ *
+ * The fallback is deliberately narrow: it applies ONLY when nothing is configured, so
+ * there is no second tenant it could be confused with, and only when exactly ONE
+ * subdomain is cached. A CONFIGURED subdomain whose catalog is empty falls back to
+ * nothing at all — borrowing another tenant's names there is exactly the "confidently
+ * describes the wrong report" failure the per-subdomain rule exists to prevent.
+ */
 async function formCatalog(db, subdomain) {
-  try { return await lookups.forms(db, subdomain); } catch (_) { return []; }
+  try {
+    const rows = await lookups.forms(db, subdomain);
+    if (rows.length || subdomain) return rows;
+    const only = await db.query(
+      `SELECT DISTINCT subdomain FROM amc_lookup_cache
+        WHERE lookup_type IN ('Get_JobTypes_By_LoanType','GetJobType')
+          AND COALESCE(subdomain,'') <> ''`);
+    if (only.rows.length !== 1) return rows;
+    return await lookups.forms(db, only.rows[0].subdomain);
+  } catch (_) { return []; }
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +270,12 @@ async function buildPreview(db, appId, opts = {}) {
   return {
     context: ctx,
     deal,
-    chosenForm: chosen ? { ...chosen, formName } : null,
+    // `chosenForm` is the AUTO-PICKED form, so it is named from ITS OWN code — never
+    // from `spec.productCode`, which a staff override replaces. Naming it from the
+    // spec labelled the auto-picked code with the overridden form's name, which is the
+    // "confidently describes the wrong report" failure this feature exists to avoid,
+    // arriving through a staff override instead of through a wrong tenant.
+    chosenForm: chosen ? { ...chosen, formName: formNameFor(chosen.productCode, forms, rules) } : null,
     // Named at the top level too: with no rule matched there is no chosenForm at all,
     // and a staff-picked form still has a name worth showing.
     productCode: spec.productCode || null,
@@ -401,7 +440,12 @@ async function createOrder(db, appId, opts = {}) {
 
   let resp;
   try {
-    resp = await client.write(built, { orderId: orderIdParam || undefined, label: spec.requestAction });
+    // `dryrun` is passed, not re-read. It decided above whether to sign in, so if the
+    // transport asked the switch again and got a different answer it would post the
+    // message we built WITHOUT an api key — a real order, with real borrower details,
+    // unauthenticated. The transport still re-checks the switch on its own; this only
+    // ever forces the dry run on.
+    resp = await client.write(built, { orderId: orderIdParam || undefined, label: spec.requestAction, dryrun });
   } catch (e) {
     await db.query(`UPDATE amc_orders SET status = 'error', last_error = $2, updated_at = now() WHERE id = $1`,
       [order.id, String(e.message || e)]);

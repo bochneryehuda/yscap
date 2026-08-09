@@ -22,8 +22,9 @@
  * is read straight off the file; nothing here guesses, and nothing here writes.
  *
  * The DB read is one query per role source and never throws: an appraisal order must
- * not fail because the optional property-access lookup had a bad moment. `personFrom`
- * and `splitName` are pure and unit-tested (scripts/test-appraisal-contacts-pure.js).
+ * not fail because the optional property-access lookup had a bad moment. `personFrom`,
+ * `splitName` and `reachable` are pure and unit-tested
+ * (scripts/test-amc-contacts-and-form-name-pure.js).
  */
 
 const { splitFullName } = require('./person-name');
@@ -74,16 +75,41 @@ function personFrom(role, src) {
     workPhone: text(src.workPhone || src.phone),
   };
   const reachable = out.email || out.mobile || out.workPhone;
-  if (!out.fullName && !reachable) return null;
+  if (!out.fullName && !out.company && !reachable) return null;
   return out;
+}
+
+// Can this person actually be reached? Asked in one place because three separate
+// callers used to answer it three ways — the wire said "call the agent", the screen
+// said nobody was on file, and the order gate said the file was complete.
+//
+// A MANUFACTURED ADDRESS IS NOT A WAY TO REACH SOMEBODY. The ClickUp sync mints
+// `noemail+<taskId>@clickup.local` for a borrower with no email (`clickup/ingest.js`),
+// and sending that to an appraisal company as the borrower's contact is worse than
+// sending nothing: it reads as a real address to everyone downstream.
+const PLACEHOLDER_EMAIL = /@clickup\.local$/i;
+function usableEmail(v) {
+  const s = text(v);
+  return s && !PLACEHOLDER_EMAIL.test(s) ? s : null;
+}
+function reachable(p) {
+  return !!(p && (usableEmail(p.email) || text(p.mobile) || text(p.workPhone)));
 }
 
 // The best property-access contact on a file, or null. `service_contacts` holds
 // many kinds; only the two that can open a door are considered, in that order.
 async function loadPropertyAccess(db, appId) {
   try {
+    // THE FILTER AND THE MATCH MUST ASK THE SAME QUESTION. The link row carries its
+    // own `contact_type` and so does the directory row, and they DO diverge: the
+    // vendor-merge route re-points a link at a surviving directory row without
+    // touching the link's type (`closing-prep.js` documents the same divergence for
+    // its own filter). Selecting `sc.contact_type` while filtering on the link's meant
+    // a merged realtor passed the SQL and was then dropped in JS — silently losing the
+    // exact contact this reader exists to find. One expression, used for both.
     const r = await db.query(
-      `SELECT sc.contact_type, sc.company_name, sc.contact_name, sc.email, sc.phone
+      `SELECT COALESCE(l.contact_type, sc.contact_type) AS contact_type,
+              sc.company_name, sc.contact_name, sc.email, sc.phone
          FROM application_service_contacts l
          JOIN service_contacts sc ON sc.id = l.service_contact_id
         WHERE l.application_id = $1
@@ -94,8 +120,12 @@ async function loadPropertyAccess(db, appId) {
     for (const type of ACCESS_TYPES) {
       const hit = rows.find((x) => x.contact_type === type);
       if (!hit) continue;
+      // A COMPANY NAME IS NOT A PERSON'S NAME. Passing "Keystone Realty" as the full
+      // name split it into a first name "Keystone" and a surname "Realty", and the
+      // appraiser was handed a person who does not exist. The company travels as the
+      // company; only a real contact name is ever split.
       const p = personFrom('PropertyAccess', {
-        fullName: hit.contact_name || hit.company_name,
+        fullName: hit.contact_name,
         company: hit.company_name,
         email: hit.email,
         workPhone: hit.phone,
@@ -144,4 +174,4 @@ async function loadAppraisalContacts(db, appId) {
   };
 }
 
-module.exports = { loadAppraisalContacts, personFrom, splitName, ACCESS_TYPES };
+module.exports = { loadAppraisalContacts, personFrom, splitName, reachable, usableEmail, ACCESS_TYPES };

@@ -19,6 +19,9 @@ const { norm } = require('./form-select');
 // The repo's ONE definition of "what kind of property is this" — reused, never
 // re-derived, so the appraisal desk and the loan file cannot disagree.
 const { propertyTypeKey } = require('../lib/property-type');
+// The ONE test for "can the appraiser actually reach this person" — shared with the
+// Class desk, so a contact that counts on one desk cannot fail to count on the other.
+const { reachable, usableEmail } = require('../lib/appraisal-contacts');
 
 // Our property category → AppraisalScope titleCategoryType. Best-effort labels;
 // staff can override on the preview. Unknown → pass the category through as-is.
@@ -147,7 +150,7 @@ function buildOrderSpec(ctx, form, opts = {}) {
     // Valuation carries (src/class/order-build.js), read once by the shared
     // src/lib/appraisal-contacts.js so the two desks can never name different
     // people for one file. See buildRoleContacts below for how each role travels.
-    contacts: buildRoleContacts(ctx, opts),
+    contacts: buildRoleContacts(ctx),
 
     parties: {
       loanOfficerId: (ctx.parties && ctx.parties.loanOfficerAmcId) || null,
@@ -165,7 +168,11 @@ function buildOrderSpec(ctx, form, opts = {}) {
 
 function buildContacts(b) {
   const out = [];
-  if (b.email || b.homePhone) out.push({ type: 'Home', email: b.email || undefined, phone: b.homePhone || b.cellPhone || undefined });
+  // A manufactured `noemail+<task>@clickup.local` address is not a contact detail —
+  // it is what the ClickUp sync writes when a borrower has NO email, and sending it
+  // to the appraisal company reads as a real address to everybody downstream.
+  const email = usableEmail(b.email);
+  if (email || b.homePhone) out.push({ type: 'Home', email: email || undefined, phone: b.homePhone || b.cellPhone || undefined });
   if (b.workPhone) out.push({ type: 'Work', phone: b.workPhone });
   if (b.cellPhone && !(out[0] && out[0].phone === b.cellPhone)) out.push({ type: 'Mobile', phone: b.cellPhone });
   return out.length ? out : undefined;
@@ -190,20 +197,20 @@ function buildContacts(b) {
 //     they hear about the order without occupying a routing slot.
 // A role we cannot fill is simply absent; nothing here invents a person.
 // ---------------------------------------------------------------------------
-function buildRoleContacts(ctx, opts = {}) {
+function buildRoleContacts(ctx) {
   const src = ctx.contacts || {};
   const rows = [];
   const add = (role, person, how) => {
     if (!person) return;
     const name = person.fullName || [person.firstName, person.lastName].filter(Boolean).join(' ') || null;
-    if (!name && !person.email && !person.mobile && !person.workPhone) return;
+    if (!name && !reachable(person)) return;
     rows.push({
       role,
       name,
       firstName: person.firstName || null,
       lastName: person.lastName || null,
       company: person.company || null,
-      email: person.email || null,
+      email: usableEmail(person.email),
       phone: person.mobile || person.workPhone || null,
       // How this person actually reaches the appraisal company, so the order
       // screen can say so instead of implying every role is sent the same way.
@@ -214,7 +221,6 @@ function buildRoleContacts(ctx, opts = {}) {
   add('Coborrower', src.coBorrower, 'borrower');
   add('PropertyAccess', src.propertyContact, 'party');
   add('LoanOfficer', src.loanOfficer, 'notification');
-  if (opts.suppressLoanOfficerNotify) return rows.filter((r) => r.role !== 'LoanOfficer');
   return rows;
 }
 
@@ -225,7 +231,7 @@ function buildRoleContacts(ctx, opts = {}) {
 function notifyList(ctx, opts = {}) {
   const typed = Array.isArray(opts.notifyEmails) ? opts.notifyEmails : [];
   const lo = ctx.contacts && ctx.contacts.loanOfficer;
-  const all = [...typed, lo && lo.email].filter(Boolean).map((e) => String(e).trim()).filter(Boolean);
+  const all = [...typed, lo && usableEmail(lo.email)].filter(Boolean).map((e) => String(e).trim()).filter(Boolean);
   const seen = new Set();
   return all.filter((e) => { const k = e.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
 }
@@ -236,8 +242,11 @@ function notifyList(ctx, opts = {}) {
 // desk has always sent. The exact enum spelling is one of the leaves marked
 // "verify against UAT" in cdg.js.
 function bestContactFor(ctx) {
-  const pc = ctx.contacts && ctx.contacts.propertyContact;
-  return pc ? 'Agent' : 'Borrower';
+  // REACHABLE, not merely present. A realtor recorded with only a company name — which
+  // the file-contacts door explicitly allows — used to flip this to 'Agent' while the
+  // order screen said nobody was on file and the wire carried no number for them: the
+  // appraiser was told to call an agent and given no way to.
+  return reachable(ctx.contacts && ctx.contacts.propertyContact) ? 'Agent' : 'Borrower';
 }
 
 // Who is missing, in plain words, for the order screen. NOT a refusal: an appraisal
@@ -246,6 +255,9 @@ function bestContactFor(ctx) {
 function contactNotes(spec) {
   const rows = (spec && spec.contacts) || [];
   const has = (role) => rows.some((r) => r.role === role && (r.email || r.phone));
+  // NOTE: `email`/`phone` on a built row are ALREADY filtered by `reachable` upstream
+  // (buildRoleContacts drops a manufactured address), so this and bestContactFor and
+  // missingRequired are all answering the same question about the same values.
   const notes = [];
   if (!has('PropertyAccess')) {
     notes.push('No property-access contact on the file — the appraiser will call the borrower to arrange entry.');

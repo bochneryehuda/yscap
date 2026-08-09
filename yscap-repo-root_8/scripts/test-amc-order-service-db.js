@@ -102,12 +102,23 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     await c.query(
       `INSERT INTO amc_form_map (program, product_code, product_name, priority, active)
        VALUES ('ground_up', '77', 'Owner label for 77', 20, true)`);
+    // SEEDED UNDER THE TENANT'S OWN KEY, NOT UNDER WHATEVER THE READER ASKS FOR.
+    // This is the audit's finding: the first version of this test seeded under
+    // `ctx.subdomain || ''` — the same key the reader uses — so it matched by
+    // construction and could not see that with AMC_SUBDOMAIN unset (the state today)
+    // the real catalog, which db/481 seeds under 'nan', was invisible. Every form the
+    // owner had not also named on a rule still printed a bare number, and the override
+    // dropdown was empty. 'nan' is the live tenant; the reader is given nothing.
     await c.query(
       `INSERT INTO amc_lookup_cache (lookup_type, subdomain, payload, fetched_at)
-       VALUES ('GetJobType', $1, $2::jsonb, now())
+       VALUES ('GetJobType', 'nan', $1::jsonb, now())
        ON CONFLICT (lookup_type, subdomain)
          DO UPDATE SET payload = EXCLUDED.payload, fetched_at = now()`,
-      [ctx.subdomain || '', JSON.stringify([{ id: '5', name: '1004 w/ 1007 - Single Family Residence' }])]);
+      [JSON.stringify([
+        { id: '5', name: '1004 w/ 1007 - Single Family Residence' },
+        { id: '56012', name: '1004D - Appraisal Update' },
+      ])]);
+    ok(!ctx.subdomain, 'the test runs with no AMC_SUBDOMAIN configured — the live state');
 
     const named = await orderService.buildPreview(c, appId);
     ok(named.formName === '1004 w/ 1007 - Single Family Residence',
@@ -116,6 +127,31 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     ok(named.productCode === '5', 'the preview says which product code that name belongs to');
     ok(orderService.formNameFor('77', [], await orderService.formRules(c)) === 'Owner label for 77',
       'a form outside the catalog still gets the name set on its rule');
+    ok(named.forms.length > 0,
+      'the full form list reaches the override dropdown — the owner asked for every form, not the nine we named');
+    ok(named.forms.some((f) => String(f.id) === '56012'),
+      'including a form no rule mentions');
+
+    // A STAFF OVERRIDE IS NAMED FROM ITS OWN CODE, and so is the auto-picked form.
+    // Naming `chosenForm` from the SPEC labelled the auto-picked code with the
+    // overridden form's name — the "confidently describes the wrong report" failure,
+    // arriving through an override instead of through a wrong tenant.
+    const over = await orderService.buildPreview(c, appId, { overrides: { productCode: '56012' } });
+    ok(over.formName === '1004D - Appraisal Update' && over.productCode === '56012',
+      'the preview names the form staff actually picked');
+    ok(over.chosenForm.productCode === '5' && over.chosenForm.formName === '1004 w/ 1007 - Single Family Residence',
+      'while the auto-picked form keeps ITS OWN name — the two can never be crossed');
+
+    // THE RULES ARE SCOPED TO THIS ENVIRONMENT. db/481 gave the table an `environment`
+    // column because their ids differ between UAT and production, and said the
+    // resolver would only read matching rows — nothing implemented it, so a UAT rule
+    // could pick, and now name, a production form.
+    await c.query(
+      `INSERT INTO amc_form_map (loan_type, property_key, product_code, product_name, priority, environment, active)
+       VALUES ('bridge','sfr','999','A UAT-only form', 1, 'uat', true)`);
+    const rulesNow = await orderService.formRules(c);
+    ok(!rulesNow.some((r) => String(r.product_code) === '999'),
+      'a rule from another environment is never used, whatever its priority');
 
     const named2 = await orderService.createOrder(c, appId, { place: false, staffId: null });
     ok(named2.order.form_description === '1004 w/ 1007 - Single Family Residence',
@@ -148,6 +184,32 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     ok(withPeople.spec.parties.bestContact === 'Agent',
       'with a property-access contact, that is who the appraiser is told to call');
     ok((withPeople.contactNotes || []).length === 0, 'nothing left to warn about once all four are on file');
+
+    // THE LINK'S TYPE AND THE DIRECTORY'S TYPE DO DIVERGE, and the reader must ask
+    // ONE question about it. The vendor-MERGE route re-points a link at a surviving
+    // directory row without touching the link's own type — so a realtor whose vendor
+    // record was later merged into a differently-typed one passed the SQL filter (on
+    // the link) and was then dropped by the JS match (on the directory), silently
+    // losing the exact contact this reader exists to find.
+    await c.query(`UPDATE service_contacts SET contact_type='other' WHERE id=$1`, [sc.rows[0].id]);
+    const merged = await orderService.buildPreview(c, appId);
+    const mAccess = (merged.spec.contacts || []).find((x) => x.role === 'PropertyAccess');
+    ok(mAccess && mAccess.company === 'Acme Realty',
+      'a merged vendor record still reaches the order — the filter and the match agree');
+    await c.query(`UPDATE service_contacts SET contact_type='realtor' WHERE id=$1`, [sc.rows[0].id]);
+
+    // A COMPANY IS NOT A PERSON, and an unreachable one is not the best contact.
+    await c.query(`UPDATE service_contacts SET contact_name=NULL, email=NULL, phone=NULL WHERE id=$1`, [sc.rows[0].id]);
+    const nameless = await orderService.buildPreview(c, appId);
+    const nAccess = (nameless.spec.contacts || []).find((x) => x.role === 'PropertyAccess');
+    ok(!nAccess || (nAccess.firstName === null && nAccess.lastName === null),
+      'a company name is never split into a person who does not exist');
+    ok(nameless.spec.parties.bestContact === 'Borrower',
+      'and an unreachable property contact never becomes the best person to contact');
+    ok((nameless.contactNotes || []).some((n) => /property-access/i.test(n)),
+      'the screen says so too — the wire and the screen agree');
+    await c.query(`UPDATE service_contacts SET contact_name='Dana Realtor', email='dana@acme.test', phone='555-9000' WHERE id=$1`,
+      [sc.rows[0].id]);
 
     // ---- TEST MODE / no login must never 500 (owner-reported 2026-08-09) ----
     // The AMC master switch is off in a test environment, which is exactly the state

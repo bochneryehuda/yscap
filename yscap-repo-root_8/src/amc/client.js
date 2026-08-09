@@ -135,7 +135,14 @@ async function post(baseUrl, message, opts = {}) {
     const e = new Error('AMC_DISABLED: the AMC integration master switch is off');
     e.code = 'AMC_DISABLED'; throw e;
   }
-  if (write && switches.on('AMC_DRYRUN')) {
+  // `opts.dryrun` is the CALLER'S already-made decision, and it can only ever force a
+  // dry run — never cancel one. A caller that builds its message differently for a dry
+  // run (order-service builds it with no api key, because a test run must not need a
+  // login) has to be sure the message it built is the one this gate judges: the switch
+  // is an in-memory flag refreshed on a timer, so reading it a second time here could
+  // legitimately disagree with the first read and post an UNAUTHENTICATED live order
+  // carrying real borrower details. Decided once, passed down, and still re-checked.
+  if (write && (opts.dryrun === true || switches.on('AMC_DRYRUN'))) {
     console.warn(`[amc][DRYRUN] would POST ${label || 'action'} body=${JSON.stringify(cdgMaskSafe(message))}`);
     return { __dryrun: true };
   }

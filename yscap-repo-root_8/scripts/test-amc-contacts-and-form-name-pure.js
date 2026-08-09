@@ -163,7 +163,58 @@ ok(!ob.missingRequired(accessOnly).some((m) => /email or phone/i.test(m)),
   'a realtor with the lockbox answers the question just as well');
 
 // ---------------------------------------------------------------------------
-// 6. Name splitting goes through the repo's ONE splitter
+// 6. REACHABLE, NOT MERELY PRESENT — the pre-merge audit's findings
+// ---------------------------------------------------------------------------
+const { reachable, usableEmail } = require('../src/lib/appraisal-contacts');
+
+// (a) A MANUFACTURED ADDRESS IS NOT A CONTACT DETAIL. The ClickUp sync writes
+// `noemail+<taskId>@clickup.local` for a borrower with NO email, and sending that to
+// the appraisal company reads as a real address to everyone downstream.
+ok(usableEmail('noemail+abc123@clickup.local') === null, 'the ClickUp placeholder address is not usable');
+ok(usableEmail('NoEmail+X@ClickUp.Local') === null, '…in any casing');
+ok(usableEmail('  y@x.com ') === 'y@x.com', 'a real address is, trimmed');
+ok(reachable({ email: 'noemail+1@clickup.local' }) === false, 'a borrower with only that address is not reachable');
+ok(reachable({ email: 'noemail+1@clickup.local', mobile: '555-1' }) === true, '…but a phone number still reaches them');
+ok(reachable(null) === false && reachable({}) === false, 'nobody is not reachable');
+
+const placeholderCtx = {
+  ...CTX,
+  borrowers: [{ classification: 'Primary', firstName: 'Y', lastName: 'W', email: 'noemail+t1@clickup.local' }],
+  contacts: { borrower: personFrom('Borrower', { firstName: 'Y', lastName: 'W', email: 'noemail+t1@clickup.local' }),
+    loanOfficer: personFrom('LoanOfficer', { fullName: 'LO', email: 'noemail+lo@clickup.local' }) },
+};
+const ph = ob.buildOrderSpec(placeholderCtx, { productCode: '1' });
+ok(!JSON.stringify(ph).includes('clickup.local'), 'the placeholder never reaches the order at all');
+ok(ob.missingRequired(ph).some((m) => /email or phone/i.test(m)),
+   'and the order is refused, because there really is nobody to call');
+
+// (b) A COMPANY IS NOT A PERSON. "Keystone Realty" was being split into a first name
+// "Keystone" and a surname "Realty" — a person who does not exist.
+const co = personFrom('PropertyAccess', { company: 'Keystone Realty', workPhone: '555-9' });
+ok(co && co.firstName === null && co.lastName === null, 'a company is never split into a fake first and last name');
+ok(co.company === 'Keystone Realty' && co.phone === undefined, 'the company travels as the company');
+
+// (c) THE THREE ANSWERS MUST AGREE. A property contact with a company name and no way
+// to reach them used to set bestContact to 'Agent' while the screen said nobody was on
+// file — the appraiser was told to call an agent and given no number for one.
+const unreachableAccess = {
+  ...CTX,
+  contacts: { borrower: CONTACTS.borrower, propertyContact: personFrom('PropertyAccess', { company: 'Keystone Realty' }) },
+};
+const ua = ob.buildOrderSpec(unreachableAccess, { productCode: '1' });
+ok(ua.parties.bestContact === 'Borrower',
+   'an unreachable property contact does NOT become the best person to contact');
+ok(ob.contactNotes(ua).some((n) => /property-access/i.test(n)),
+   'and the screen still says the appraiser will call the borrower — the two agree');
+const uaWire = cdg.buildCreateAppraisal(ua, { apiKey: 'k', subdomain: 'nan' });
+ok(!(uaWire.message.deals[0].parties || []).some((p) => p.partyRoleTypeIdentifier === 'Agent'),
+   'and the wire never says "call the agent"');
+// A reachable one still does all three.
+ok(spec.parties.bestContact === 'Agent' && ob.contactNotes(spec).length === 0,
+   'a reachable property contact still becomes the best contact, with nothing to warn about');
+
+// ---------------------------------------------------------------------------
+// 7. Name splitting goes through the repo's ONE splitter
 // ---------------------------------------------------------------------------
 ok(splitName('Dana Realtor').firstName === 'Dana' && splitName('Dana Realtor').lastName === 'Realtor',
   'two words split in half');
