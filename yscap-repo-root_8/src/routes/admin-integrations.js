@@ -57,7 +57,10 @@ const fail = (res, code, e, msg) => {
  * as it was before this existed.
  */
 async function monitorBlock(integrations) {
-  const out = { ...monitor.describe(), lastSweepAt: null };
+  // `switch` is the full effective() shape, so the page drives the alerts through the SAME
+  // toggle/reset endpoints and the same audit row as every per-integration switch — the
+  // monitor is simply the one switch that belongs to no single card (integration: null).
+  const out = { ...monitor.describe(), lastSweepAt: null, switch: switches.effective(monitor.SWITCH_KEY) };
   try {
     const rows = (await db.query('SELECT key, down_since, updated_at FROM integration_health_state')).rows;
     const byKey = new Map(rows.map((r) => [r.key, r]));
