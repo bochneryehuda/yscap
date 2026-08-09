@@ -45,15 +45,36 @@ const tag = `trres_${process.pid}`;
 const ADDR = { line1: '77 Research Rd', city: 'Lakewood', state: 'NJ', zip: '08701' };
 const ONE_LINE = '77 Research Rd, Lakewood, NJ, 08701';
 
+/* THE VENDOR'S REAL ENVELOPES AND FIELD NAMES.
+ *
+ * `match_entity` answers `{status, match:{…}}` — a SINGULAR OBJECT, never a
+ * `results` array — and the name is `originalName`, never `name`. A deed row
+ * carries `addresses[{addressFull}]`, `recordingDate` and `totalConsideration`.
+ * This fixture previously used the invented `{results:[{address, recordedDate}]}`
+ * shape, so the whole suite passed against a vendor that does not exist while
+ * the real reader saw nothing at all. Captured shapes:
+ * scripts/fixtures/elementix-shapes.json. */
+const deedRow = (grantors, grantees, date, amount, docId) => ({
+  id: docId, countyDocumentId: docId, dataSource: 'elementix',
+  addresses: [{ id: `a_${docId}`, addressFull: ONE_LINE }],
+  grantors, grantees, recordingDate: date, totalConsideration: amount,
+  isGrantee: grantees.some((g) => /Research Holdings/i.test(g)),
+  isGrantor: grantors.some((g) => /Research Holdings/i.test(g)),
+});
 const foundReply = (name) => {
-  if (name === 'match_entity') return { ok: true, data: { results: [{ id: '11111111-2222-3333-4444-555555555555', name: 'RESEARCH HOLDINGS LLC' }] } };
+  if (name === 'match_entity') {
+    return { ok: true, data: { status: 'exact', match: {
+      id: '11111111-2222-3333-4444-555555555555',
+      originalName: 'RESEARCH HOLDINGS LLC', normalizedName: 'RESEARCH HOLDINGS LLC', state: 'NJ',
+    } } };
+  }
   if (name === 'get_entity_deeds') {
-    return { ok: true, data: { results: [
-      { address: ONE_LINE, grantors: ['Somebody Else'], grantees: ['Research Holdings LLC'], recordedDate: '2024-02-08', documentId: 'D-ACQ' },
-      { address: ONE_LINE, grantors: ['Research Holdings LLC'], grantees: ['Marcus Reed'], recordedDate: '2025-06-20', documentId: 'D-SALE', armsLength: true },
+    return { ok: true, data: { data: [
+      deedRow(['Somebody Else'], ['Research Holdings LLC'], '2024-02-08', 410000, 'D-ACQ'),
+      deedRow(['Research Holdings LLC'], ['Marcus Reed'], '2025-06-20', 612000, 'D-SALE'),
     ] } };
   }
-  return { ok: true, data: { results: [] } };
+  return { ok: true, data: { data: [] } };
 };
 
 (async () => {

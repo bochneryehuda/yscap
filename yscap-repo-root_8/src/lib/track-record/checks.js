@@ -176,7 +176,7 @@ const asArray = (v) => (Array.isArray(v) ? v.filter((x) => x != null) : (v == nu
 function gradeOf(rec, signedByBorrower) {
   if (!rec) return GRADE.UNACCEPTABLE;
   if (signedByBorrower) return GRADE.SUPERIOR;
-  if (rec.documentId && ymd(rec.recordedDate)) return GRADE.STRONG;
+  if (rec.documentId && ymd(rec.date)) return GRADE.STRONG;
   return GRADE.FAIR;
 }
 
@@ -231,9 +231,32 @@ function normalizeRecords(v) {
   };
 }
 
+/**
+ * EVERY ADDRESS A RECORD NAMES FOR THE PROPERTY.
+ *
+ * A vendor row carries `addresses[]` — a list, because one recorded document can
+ * convey more than one parcel — and NEVER a field called `address`. Reading
+ * `r.address` returned `undefined` on every real row, so `forProperty` matched
+ * nothing, so BOTH the ownership and the exit pillar reported `no_data` on files
+ * where the records held perfect evidence. The engine was dark and nothing
+ * anywhere said so, because "no records about this property" and "I cannot read
+ * the records at all" produce the identical verdict.
+ *
+ * `src/lib/elementix/shapes.js` now normalises at the connector seam, so a
+ * production row always arrives with `addresses[]`. The single-string form is
+ * still accepted for a hand-built row (the pure tests build rows directly), and
+ * a row that carries neither yields NO addresses — never a silent match.
+ */
+function addressesOfRecord(r) {
+  if (!r) return [];
+  if (Array.isArray(r.addresses)) return r.addresses;
+  if (r.addresses) return [r.addresses];
+  return r.address ? [r.address] : [];
+}
+
 /** Every record of this kind that is about THIS property. */
 function forProperty(records, address) {
-  return records.filter((r) => r && samePlace(r.address, address));
+  return records.filter((r) => addressesOfRecord(r).some((a) => samePlace(a, address)));
 }
 
 /* ── PILLAR 1 — RECENCY ──────────────────────────────────────────────────── */
@@ -287,7 +310,7 @@ function recencyPillar(line, recs, ctx, today) {
   // distinction the scoring ladder pays for, so report it here rather than
   // making the ladder re-derive it.
   const deed = forProperty(recs.deeds, line.property_address)
-    .find((d) => { const n = daysBetween(exit, d.recordedDate); return n != null && Math.abs(n) <= DATE_TOLERANCE_DAYS; });
+    .find((d) => { const n = daysBetween(exit, d.date); return n != null && Math.abs(n) <= DATE_TOLERANCE_DAYS; });
 
   return {
     ...base,
@@ -297,11 +320,11 @@ function recencyPillar(line, recs, ctx, today) {
     auto_grade: deed ? gradeOf(deed, false) : GRADE.WEAK,
     auto_evidence: {
       why: deed
-        ? `The exit is dated ${exit}, inside the ${experience.EXIT_WINDOW_MONTHS}-month window, and a recorded instrument on ${ymd(deed.recordedDate)} corroborates it.`
+        ? `The exit is dated ${exit}, inside the ${experience.EXIT_WINDOW_MONTHS}-month window, and a recorded instrument on ${ymd(deed.date)} corroborates it.`
         : `The exit is dated ${exit}, inside the ${experience.EXIT_WINDOW_MONTHS}-month window. Nothing recorded corroborates the date.`,
       exitDate: exit,
       monthsAgo,
-      recordingDate: deed ? ymd(deed.recordedDate) : null,
+      recordingDate: deed ? ymd(deed.date) : null,
       documentId: deed ? (deed.documentId || null) : null,
       deedCorroboratesExitDate: !!deed,
     },
@@ -321,8 +344,8 @@ function ownershipPillar(line, recs, ctx, today) {
     if (!who.hit) continue;
     // Prefer the one nearest the claimed purchase date; any is better than none.
     if (!acq) { acq = d; acqWho = who; continue; }
-    const cur = daysBetween(line.purchase_date, acq.recordedDate);
-    const cand = daysBetween(line.purchase_date, d.recordedDate);
+    const cur = daysBetween(line.purchase_date, acq.date);
+    const cand = daysBetween(line.purchase_date, d.date);
     if (cand != null && (cur == null || Math.abs(cand) < Math.abs(cur))) { acq = d; acqWho = who; }
   }
 
@@ -331,7 +354,7 @@ function ownershipPillar(line, recs, ctx, today) {
     const checkB = {
       grantee: acqWho.matched,
       granteeIsMatchedEntity: true,
-      recordingDate: ymd(acq.recordedDate),
+      recordingDate: ymd(acq.date),
       documentId: acq.documentId || null,
       heldAs: acqWho.as,
       borrowerSignedInstrument: signed,
@@ -470,7 +493,12 @@ function exitPillar(line, recs, ctx, today) {
 
   // THE ONE AFFIRMATIVE CONTRADICTION: they say they exited, and the record says
   // they still own it, as of a date after the claimed exit.
-  if (recs.currentOwner && samePlace(recs.currentOwner.address, line.property_address)) {
+  /* THE SAME MISSING FIELD, one more time. An ownership row carries
+     `addresses[]` too, so reading `.address` here made the single most valuable
+     check in the engine — they say they sold it and the record still shows them
+     holding it — permanently unreachable, on top of `currentOwner` never being
+     populated at all. Both halves are fixed; this is the read. */
+  if (recs.currentOwner && addressesOfRecord(recs.currentOwner).some((a) => samePlace(a, line.property_address))) {
     const still = anyOurs(recs.currentOwner.owners, ctx);
     const asOf = ymd(recs.currentOwner.asOf);
     if (still.hit && asOf && asOf > exit) {
@@ -550,9 +578,9 @@ function findSale(line, recs, ctx, exit) {
   for (const d of deeds) {
     const out = anyOurs(d.grantors, ctx);
     if (!out.hit) continue;
-    const gap = daysBetween(exit, d.recordedDate);
+    const gap = daysBetween(exit, d.date);
     if (gap == null || Math.abs(gap) > DATE_TOLERANCE_DAYS) continue;
-    if (!best || Math.abs(gap) < Math.abs(daysBetween(exit, best.recordedDate))) best = d;
+    if (!best || Math.abs(gap) < Math.abs(daysBetween(exit, best.date))) best = d;
   }
   if (!best) return null;
 
@@ -568,8 +596,8 @@ function findSale(line, recs, ctx, exit) {
         auto_confidence: 'certain',
         auto_grade: gradeOf(best, false),
         auto_evidence: {
-          why: `The deed recorded on ${ymd(best.recordedDate)} conveys this property from "${anyOurs(best.grantors, ctx).matched}" to "${buyer.matched}" — both the borrower's own side. The property never changed hands, so this is not an exit.`,
-          exitDate: exit, recordingDate: ymd(best.recordedDate), documentId: best.documentId || null,
+          why: `The deed recorded on ${ymd(best.date)} conveys this property from "${anyOurs(best.grantors, ctx).matched}" to "${buyer.matched}" — both the borrower's own side. The property never changed hands, so this is not an exit.`,
+          exitDate: exit, recordingDate: ymd(best.date), documentId: best.documentId || null,
           selfDealing: true,
         },
       },
@@ -586,13 +614,13 @@ function findSale(line, recs, ctx, exit) {
       auto_grade: gradeOf(best, signed),
       auto_evidence: {
         why: relatedParty
-          ? `A deed recorded on ${ymd(best.recordedDate)} conveys this property away from the borrower's side, but the record flags it as not arm's length — a person should look at who the buyer is.`
-          : `A deed recorded on ${ymd(best.recordedDate)} conveys this property away from the borrower's side to an unrelated buyer.`,
+          ? `A deed recorded on ${ymd(best.date)} conveys this property away from the borrower's side, but the record flags it as not arm's length — a person should look at who the buyer is.`
+          : `A deed recorded on ${ymd(best.date)} conveys this property away from the borrower's side to an unrelated buyer.`,
         exitDate: exit,
-        recordingDate: ymd(best.recordedDate),
+        recordingDate: ymd(best.date),
         documentId: best.documentId || null,
         grantee: asArray(best.grantees)[0] || null,
-        consideration: best.consideration != null ? best.consideration : null,
+        consideration: best.amount != null ? best.amount : null,
         armsLengthSale: !relatedParty,
         relatedPartyExit: relatedParty,
         borrowerSignedInstrument: signed,
@@ -621,14 +649,14 @@ function findRefinance(line, recs, ctx) {
     const term = Number(m.termMonths);
     if (!Number.isFinite(term) || term < PERM_TERM_MIN_MONTHS) continue;
     if (claimed) {
-      const gap = daysBetween(claimed, m.recordedDate);
+      const gap = daysBetween(claimed, m.date);
       if (gap == null || Math.abs(gap) > DATE_TOLERANCE_DAYS) continue;
     }
-    if (!best || (ymd(m.recordedDate) || '') > (ymd(best.recordedDate) || '')) best = m;
+    if (!best || (ymd(m.date) || '') > (ymd(best.date) || '')) best = m;
   }
   if (!best) return null;
 
-  const monthsAfterPurchase = purchase ? monthsBetween(purchase, ymd(best.recordedDate)) : null;
+  const monthsAfterPurchase = purchase ? monthsBetween(purchase, ymd(best.date)) : null;
   const satisfaction = forProperty(recs.satisfactions, line.property_address)
     .find((s) => !s.mortgageDocumentId || s.mortgageDocumentId !== best.documentId);
 
@@ -638,8 +666,8 @@ function findRefinance(line, recs, ctx) {
     auto_confidence: 'certain',
     auto_grade: gradeOf(best, signedByBorrower(best, ctx)),
     auto_evidence: {
-      why: `A ${best.termMonths}-month mortgage recorded on ${ymd(best.recordedDate)} refinanced this property${monthsAfterPurchase != null ? `, ${monthsAfterPurchase} months after the purchase` : ''}.`,
-      recordingDate: ymd(best.recordedDate),
+      why: `A ${best.termMonths}-month mortgage recorded on ${ymd(best.date)} refinanced this property${monthsAfterPurchase != null ? `, ${monthsAfterPurchase} months after the purchase` : ''}.`,
+      recordingDate: ymd(best.date),
       documentId: best.documentId || null,
       termMonths: Number(best.termMonths),
       monthsAfterPurchase,

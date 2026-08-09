@@ -114,8 +114,14 @@ console.log('\n3. entity vs company, and a money string that is not a number');
 {
   reset();
   await (L.searchEntity('MW Trading LLC', 'nj', NO_DB));
-  ok(calls[0].args.entityFilter === 'entity',
-    'an entity search PINS entityFilter:entity — a company uuid works with none of the get_entity_* tools');
+  /* `entityFilter` BELONGS TO `search`, NOT TO `match_entity`. The old assertion
+     pinned a parameter the tool does not have — a guess about the vendor,
+     written down as a requirement, and then guarded by a test, which is how a
+     wrong belief survives review. Confirmed against the live schema. The
+     entity-vs-company distinction is real and still matters on `search`; here
+     the tool only ever matches entities. */
+  ok(calls[0].args.entityFilter === undefined,
+    'match_entity is NOT sent entityFilter — that parameter belongs to `search`, and this tool only matches entities');
   ok(calls[0].args.state === 'NJ', '…and the state is upper-cased for the filter');
 
   reset();

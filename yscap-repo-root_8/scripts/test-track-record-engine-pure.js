@@ -48,10 +48,10 @@ const CTX = {
 const RECS = {
   searched: true,
   deeds: [
-    { address: ONE_LINE, grantors: ['Somebody Else'], grantees: ['Bishop Street Holdings LLC'],
-      recordedDate: '2024-02-08', documentId: 'D-ACQ-1' },
-    { address: ONE_LINE, grantors: ['Bishop Street Holdings LLC'], grantees: ['Marcus Reed'],
-      recordedDate: '2025-06-20', documentId: 'D-SALE-1', consideration: 415000, armsLength: true },
+    { addresses: [ONE_LINE], grantors: ['Somebody Else'], grantees: ['Bishop Street Holdings LLC'],
+      date: '2024-02-08', documentId: 'D-ACQ-1' },
+    { addresses: [ONE_LINE], grantors: ['Bishop Street Holdings LLC'], grantees: ['Marcus Reed'],
+      date: '2025-06-20', documentId: 'D-SALE-1', amount: 415000, armsLength: true },
   ],
   mortgages: [], satisfactions: [], currentOwner: null,
   coverage: { entityCombinedCoveragePct: 88, county: 'Baltimore City|MD' },
@@ -118,7 +118,7 @@ console.log('\n3. A contradiction is a record that says otherwise — never an a
 {
   const other = byPillar(C.computeChecks(LINE, {
     searched: true,
-    deeds: [{ address: ONE_LINE, grantors: ['A'], grantees: ['Completely Different Co LLC'], recordedDate: '2024-02-08', documentId: 'X' }],
+    deeds: [{ addresses: [ONE_LINE], grantors: ['A'], grantees: ['Completely Different Co LLC'], date: '2024-02-08', documentId: 'X' }],
   }, CTX, TODAY)).ownership;
   ok(other.auto_verdict === 'contradicted', 'every readable deed conveying to somebody else contradicts the claim');
   ok(other.auto_confidence === 'possible',
@@ -132,8 +132,8 @@ console.log('\n3. A contradiction is a record that says otherwise — never an a
      GRANTOR on an unrelated later deed. Appearing on a deed is not owning it. */
   const grantorOnly = C.computeChecks(LINE, {
     searched: true,
-    deeds: [{ address: ONE_LINE, grantors: ['Bishop Street Holdings LLC'], grantees: ['Third Party LLC'],
-      recordedDate: '2025-06-20', documentId: 'D' }],
+    deeds: [{ addresses: [ONE_LINE], grantors: ['Bishop Street Holdings LLC'], grantees: ['Third Party LLC'],
+      date: '2025-06-20', documentId: 'D' }],
   }, CTX, TODAY);
   ok(byPillar(grantorOnly).ownership.auto_verdict === 'contradicted',
     'appearing only as GRANTOR is not ownership — the deed conveys the property to somebody else');
@@ -195,7 +195,7 @@ console.log('\n6. The exit — a sale, a real refinance, and the two things that
 
   const still = byPillar(C.computeChecks(LINE, {
     ...RECS, deeds: [RECS.deeds[0]],
-    currentOwner: { address: ONE_LINE, owners: ['Bishop Street Holdings LLC'], asOf: '2026-07-01' },
+    currentOwner: { addresses: [ONE_LINE], owners: ['Bishop Street Holdings LLC'], asOf: '2026-07-01' },
   }, CTX, TODAY)).exit;
   ok(still.auto_verdict === 'contradicted',
     'claiming a sale while the record still shows them as owner AFTER that date is a real contradiction');
@@ -203,7 +203,7 @@ console.log('\n6. The exit — a sale, a real refinance, and the two things that
   const hold = { deal_type: 'hold', purchase_date: '2024-02-01', refi_date: '2025-04-01', property_address: ADDR };
   const refi = (termMonths, isExtension) => byPillar(C.computeChecks(hold, {
     searched: true, deeds: [], satisfactions: [],
-    mortgages: [{ address: ONE_LINE, borrowers: ['Bishop Street Holdings LLC'], recordedDate: '2025-04-04', documentId: 'M1', termMonths, isExtension }],
+    mortgages: [{ addresses: [ONE_LINE], borrowers: ['Bishop Street Holdings LLC'], date: '2025-04-04', documentId: 'M1', termMonths, isExtension }],
   }, CTX, TODAY)).exit;
   ok(refi(360, false).auto_verdict === 'proved', 'a 30-year refinance is a real exit');
   ok(refi(12, false).auto_verdict === 'no_data', 'refinancing into ANOTHER short-term loan is not');
@@ -222,7 +222,7 @@ console.log('\n6. The exit — a sale, a real refinance, and the two things that
      after the refinance branch precisely so the recorded evidence still wins. */
   const rentedAndRefinanced = byPillar(C.computeChecks(
     { deal_type: 'hold', purchase_date: '2024-02-01', rent_date: '2025-04-01', refi_date: '2025-04-01', property_address: ADDR },
-    { searched: true, mortgages: [{ address: ONE_LINE, borrowers: ['Bishop Street Holdings LLC'], recordedDate: '2025-04-04', termMonths: 360, documentId: 'M1' }] },
+    { searched: true, mortgages: [{ addresses: [ONE_LINE], borrowers: ['Bishop Street Holdings LLC'], date: '2025-04-04', termMonths: 360, documentId: 'M1' }] },
     CTX, TODAY)).exit;
   ok(rentedAndRefinanced.auto_verdict === 'proved',
     'a hold that both rented AND refinanced is proved off the recorded mortgage — it never falls through to "a lease is not public"');
@@ -257,7 +257,7 @@ console.log('\n8. Garbage in never takes a borrower\'s record off the screen');
 console.log('\n9. Binding a stranger\'s record needs every precondition');
 {
   const row = { property_address: ADDR };
-  const cand = { address: ONE_LINE };
+  const cand = { addresses: [ONE_LINE] };
   const good = M.decideMatch(row, cand, { elxStatus: 'exact', sqlSamePlace: true });
   ok(good.action === 'auto_confirm', 'an exact vendor match that both comparers confirm may bind on its own');
 

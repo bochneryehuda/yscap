@@ -137,7 +137,13 @@ function findOurRow(rows, address) {
 function decideMatch(ourRow, candidate, opts = {}) {
   const reasons = []; const blockers = [];
   const ours = ourRow && ourRow.property_address !== undefined ? ourRow.property_address : ourRow;
-  const theirs = candidate && candidate.address !== undefined ? candidate.address : candidate;
+    /* A canonical vendor row carries `addresses[]` (src/lib/elementix/shapes.js);
+     older callers and hand-built rows pass `.address` or a bare string. All
+     three are accepted HERE, at the one place a candidate is read, rather than
+     each caller guessing — the guessing is what made the engine dark. */
+  const theirs = candidate && Array.isArray(candidate.addresses) && candidate.addresses.length
+    ? candidate.addresses[0]
+    : (candidate && candidate.address !== undefined ? candidate.address : candidate);
   const differs = differences(ours, theirs);
   const key = (() => { try { return TRK.trackRecordKey(theirs) || ''; } catch (_) { return ''; } })();
 
@@ -186,7 +192,13 @@ function decideMatch(ourRow, candidate, opts = {}) {
  * whether to add a NEW line, never an automatic insert.
  */
 function matchCandidate(rows, candidate, opts = {}) {
-  const theirs = candidate && candidate.address !== undefined ? candidate.address : candidate;
+    /* A canonical vendor row carries `addresses[]` (src/lib/elementix/shapes.js);
+     older callers and hand-built rows pass `.address` or a bare string. All
+     three are accepted HERE, at the one place a candidate is read, rather than
+     each caller guessing — the guessing is what made the engine dark. */
+  const theirs = candidate && Array.isArray(candidate.addresses) && candidate.addresses.length
+    ? candidate.addresses[0]
+    : (candidate && candidate.address !== undefined ? candidate.address : candidate);
   const row = findOurRow(rows, theirs);
   if (!row) {
     return {

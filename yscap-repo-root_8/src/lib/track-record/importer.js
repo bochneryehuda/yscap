@@ -77,6 +77,17 @@ const FILLABLE = [
   'sale_price', 'sale_date', 'entity_name',
 ];
 
+/** The property a vendor row is about. `addresses[]` is the canonical shape
+ *  (see src/lib/elementix/shapes.js); the singular forms are accepted so a
+ *  hand-built row still works, and a row naming nothing returns null rather
+ *  than an empty string that would group with every other unreadable row. */
+function firstAddress(d) {
+  if (!d) return null;
+  if (Array.isArray(d.addresses) && d.addresses.length) return d.addresses[0];
+  if (d.addresses && !Array.isArray(d.addresses)) return d.addresses;
+  return d.property_address || d.address || null;
+}
+
 function addressLabel(pa) {
   if (!pa) return '';
   if (typeof pa === 'string') return pa;
@@ -118,32 +129,56 @@ function candidatesFrom(research, entityNames) {
   const byKey = new Map();
   const skips = [];
   for (const d of (research.deeds || [])) {
-    const bought = isOurs(d.grantees);
-    const sold = isOurs(d.grantors);
+    /* THE PROPERTY THE DEED CONVEYS. A row carries `addresses[]`, never
+       `address` — and reading the missing field did not merely lose the
+       address, it lost the KEY: every deed hashed to the same empty string, so
+       two properties in two different towns collapsed into ONE candidate with
+       no address, no price and no date. Measured against a real payload before
+       this was changed.
+       Only the FIRST address is taken as the subject. A multi-parcel deed is
+       real but rare, and splitting one into several candidates would put
+       properties on the record that nobody chose; the rest stay in `raw` for a
+       reviewer. */
+    const addr = firstAddress(d);
+    /* The vendor computes `isGrantee`/`isGrantor` SERVER-SIDE against the entity
+       that was queried, which is strictly better than re-deriving it by fuzzy
+       name matching — that re-derivation is what produced the York, PA false
+       positive the scoring ladder's A3 exists for. Fall back to the name test
+       only when the vendor did not say; `null` must never read as `false`. */
+    const bought = d.isGrantee === true || (d.isGrantee == null && isOurs(d.grantees));
+    const sold = d.isGrantor === true || (d.isGrantor == null && isOurs(d.grantors));
     if (!bought && !sold) {
-      skips.push({ address: addressLabel(d.address), reason: 'not_our_party',
+      skips.push({ address: addressLabel(addr), reason: 'not_our_party',
         why: 'Neither side of this deed is the borrower or one of their companies.' });
       continue;
     }
-    const key = dedupeKeyFor({ documentId: d.documentId, property_address: d.address,
-      purchase_date: bought ? d.recordedDate : null, sale_date: sold ? d.recordedDate : null });
+    const key = dedupeKeyFor({ documentId: d.countyDocumentId || d.documentId || d.id, property_address: addr,
+      purchase_date: bought ? d.date : null, sale_date: sold ? d.date : null });
     // Two deeds on ONE property — the buy and the sell — are one candidate.
-    const addrKey = TRK.trackRecordKey(d.address) || addressLabel(d.address).toLowerCase();
+    const addrKey = TRK.trackRecordKey(addr) || addressLabel(addr).toLowerCase();
+    /* AN UNREADABLE ADDRESS IS NOT A GROUPING KEY. Without this every row whose
+       address could not be parsed groups with every other one — which is
+       exactly the collapse above, in its general form. */
+    if (!addrKey) {
+      skips.push({ address: addressLabel(addr), reason: 'no_address',
+        why: 'The record does not name a property address we can read, so it cannot be matched or staged.' });
+      continue;
+    }
     const existing = [...byKey.values()].find((c) => c._addrKey === addrKey);
     const c = existing || {
       _addrKey: addrKey, dedupe_key: key,
-      property_address: d.address, deal_type: null,
+      property_address: addr, deal_type: null,
       purchase_price: null, purchase_date: null, sale_price: null, sale_date: null,
       entity_name: null, raw: { deeds: [] },
     };
     if (bought) {
-      c.purchase_date = ymd(d.recordedDate) || c.purchase_date;
-      c.purchase_price = num(d.consideration) ?? c.purchase_price;
+      c.purchase_date = ymd(d.date) || c.purchase_date;
+      c.purchase_price = (d.amount == null ? null : num(d.amount)) ?? c.purchase_price;
       c.entity_name = c.entity_name || firstOurName(d.grantees, names);
     }
     if (sold) {
-      c.sale_date = ymd(d.recordedDate) || c.sale_date;
-      c.sale_price = num(d.consideration) ?? c.sale_price;
+      c.sale_date = ymd(d.date) || c.sale_date;
+      c.sale_price = (d.amount == null ? null : num(d.amount)) ?? c.sale_price;
       c.entity_name = c.entity_name || firstOurName(d.grantors, names);
     }
     c.raw.deeds.push(d);

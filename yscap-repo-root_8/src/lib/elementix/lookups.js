@@ -55,6 +55,7 @@
  */
 
 const client = require('../../elementix/client');
+const SHAPES = require('./shapes');
 
 /**
  * THE CLOSED SET. A tool not named here cannot be called through this module.
@@ -166,37 +167,56 @@ async function call(tool, args, opts = {}) {
 async function searchEntity(name, state, opts = {}) {
   const n = str(name);
   if (!n) return bad('bad_args', 'Say which company to look for.');
-  const args = { name: n, entityFilter: 'entity' };
+  /* `entityFilter` BELONGS TO `search`, NOT TO `match_entity` — it is not a
+     parameter of this tool and sending it is at best ignored. The entity-vs-
+     company distinction the header warns about is real and still matters on
+     `search`; here the tool only ever matches entities. */
+  const args = { name: n };
   const st = stateCode(state);
   if (st) args.state = st;
   const out = await call('match_entity', args, opts);
   if (!out.ok) return out;
   const rows = rowsOf(out.data);
+  /* THE NAME IS `originalName`/`normalizedName`, NEVER `name`. A caller reading
+     `.name` gets undefined and the promotion chokepoint then has nothing to
+     match the borrower's typed company against. Normalised to `name` here so no
+     consumer has to know. */
+  const status = str(out.data && out.data.status);
   return {
     ok: true,
-    data: rows.map((r) => ({ ...r, _nameCommonness: nameCommonness(r), _tooCommon: nameTooCommon(r) })),
-    ambiguous: rows.length > 1,
+    data: rows.map((r) => ({
+      ...r,
+      name: str(r.name) || str(r.normalizedName) || str(r.originalName) || null,
+      _nameCommonness: nameCommonness(r),
+      _tooCommon: nameTooCommon(r),
+    })),
+    /* The vendor states its own confidence. An `exact` single hit is not
+       ambiguous however many rows come back; anything else with more than one
+       row is a human question, and picking the first is how somebody else's
+       deeds land on this borrower's record. */
+    matchStatus: status || null,
+    ambiguous: rows.length > 1 && status !== 'exact',
   };
 }
 
 async function entityDeeds(entityId, opts = {}) {
   if (!isUuid(entityId)) return bad('bad_args', 'That is not an entity id from a search result.');
-  return call('get_entity_deeds', { entityId, ...pageArgs(opts) }, opts);
+  return call('get_entity_deeds', { id: entityId, ...pageArgs(opts) }, opts);
 }
 
 async function entityMortgages(entityId, opts = {}) {
   if (!isUuid(entityId)) return bad('bad_args', 'That is not an entity id from a search result.');
-  return call('get_entity_mortgages', { entityId, ...pageArgs(opts) }, opts);
+  return call('get_entity_mortgages', { id: entityId, ...pageArgs(opts) }, opts);
 }
 
 async function entityPeople(entityId, opts = {}) {
   if (!isUuid(entityId)) return bad('bad_args', 'That is not an entity id from a search result.');
-  return call('get_entity_associated_people', { entityId }, opts);
+  return call('get_entity_associated_people', { id: entityId }, opts);
 }
 
 async function coOccurringEntities(entityId, opts = {}) {
   if (!isUuid(entityId)) return bad('bad_args', 'That is not an entity id from a search result.');
-  return call('get_entity_co_occurring_entities', { entityId }, opts);
+  return call('get_entity_co_occurring_entities', { id: entityId, minSharedPrincipals: 1 }, opts);
 }
 
 async function matchAddress(address, opts = {}) {
@@ -205,9 +225,24 @@ async function matchAddress(address, opts = {}) {
   return call('match_address', { address: a }, opts);
 }
 
+/**
+ * Ownership history for an address — who held it and between which dates.
+ *
+ * THE TOOL WAS IN THE ALLOWLIST WITH NO CALLER, so `researchProperty` never
+ * populated `currentOwner` and `checks.js` could never fire the single most
+ * valuable test there is: they say they sold it, and the record still shows
+ * them holding it. It is also the ONLY place `isNonArmsLengthTransfer` lives —
+ * a caller looking for it on a deed finds nothing and reads that as
+ * "arm's length".
+ */
+async function addressOwnership(addressId, opts = {}) {
+  if (!isUuid(addressId)) return bad('bad_args', 'That is not an address id from a match result.');
+  return call('get_address_ownership', { id: addressId, ...pageArgs(opts) }, opts);
+}
+
 async function addressTransactions(addressId, opts = {}) {
   if (!isUuid(addressId)) return bad('bad_args', 'That is not an address id from a match result.');
-  return call('get_address_transactions', { addressId, ...pageArgs(opts) }, opts);
+  return call('get_address_transactions', { id: addressId, ...pageArgs(opts) }, opts);
 }
 
 /**
@@ -284,6 +319,22 @@ function rowsOf(d) {
   for (const k of ['results', 'rows', 'items', 'data', 'entities', 'matches']) {
     if (Array.isArray(d[k])) return d[k];
   }
+  /* THE `match_*` TOOLS ANSWER WITH A SINGULAR OBJECT, NOT A LIST.
+     `match_entity` returns `{status, match:{id, originalName, normalizedName,
+     state}, differs, normalized}` — `match`, singular, and an OBJECT. It is not
+     in the list above (which carries the plural `matches`), so this returned []
+     and `searchEntity` resolved nothing, every time, for every borrower. The
+     entity-first path — the cheap, high-precision route the whole design rests
+     on — had therefore never once run. Wrapped as a one-row list so every
+     caller keeps one shape.
+     `nested.data` covers `get_document({include:'signers'})` → `{signers:{data}}`
+     and `get_address` → `{entities:{data}}`, which are envelopes around an
+     envelope and otherwise read as empty. */
+  if (d.match && typeof d.match === 'object') return [d.match];
+  for (const k of Object.keys(d)) {
+    const v = d[k];
+    if (v && typeof v === 'object' && Array.isArray(v.data)) return v.data;
+  }
   return [];
 }
 
@@ -292,7 +343,14 @@ function rowsOf(d) {
 function pageArgs(opts = {}) {
   const a = {};
   if (opts.countOnly) a.scope = 'count';
-  if (Number.isFinite(Number(opts.limit))) a.limit = Math.min(Math.max(Number(opts.limit), 1), 100);
+  /* `perPage`, NOT `limit`. PROVEN 2026-08-09: `get_entity_deeds` called with
+     {limit: 2} returned FIVE rows — the vendor ignores `limit` silently and its
+     default page is 5. So a borrower with 29 properties read as 5, and nothing
+     anywhere said so: not an error, not a warning, just a short answer that
+     looks complete. The page size is the one parameter where being wrong is
+     invisible, which is why it gets its own comment. */
+  const n = Number(opts.perPage != null ? opts.perPage : opts.limit);
+  if (Number.isFinite(n)) a.perPage = Math.min(Math.max(n, 1), 100);
   return a;
 }
 
@@ -313,7 +371,7 @@ async function researchProperty({ entityName, state, address, borrowerNames, sta
   const o = { staffId, db };
   const out = {
     ok: true, calls: 0, errors: [], searched: false,
-    deeds: [], mortgages: [], satisfactions: [], currentOwner: null, coverage: null,
+    deeds: [], mortgages: [], satisfactions: [], ownerships: [], currentOwner: null, coverage: null,
     entity: null, people: [], ambiguousEntity: false, tooCommon: false,
   };
   const note = (step, r) => { out.calls += 1; if (!r.ok) out.errors.push({ step, reason: r.reason, detail: r.detail }); return r; };
@@ -333,10 +391,16 @@ async function researchProperty({ entityName, state, address, borrowerNames, sta
 
   const entityId = out.entity && (out.entity.id || out.entity.entityId || out.entity.uuid);
   if (isUuid(entityId)) {
+    /* NORMALISED HERE, AT THE ONE SEAM. Everything downstream — the pure
+       pillar engine, the importer, the counterparty control — reads canonical
+       rows, so no consumer has to know that a deed's price is
+       `totalConsideration` while an ownership row's is a STRING of the same
+       name, or that the property address is `addresses[{addressFull}]` and
+       never `address`. Reading a raw row is what made the engine dark. */
     const d = note('get_entity_deeds', await entityDeeds(entityId, o));
-    if (d.ok) { out.deeds = rowsOf(d.data); out.searched = true; }
+    if (d.ok) { out.deeds = SHAPES.deeds(rowsOf(d.data)); out.searched = true; }
     const m = note('get_entity_mortgages', await entityMortgages(entityId, o));
-    if (m.ok) { out.mortgages = rowsOf(m.data); out.searched = true; }
+    if (m.ok) { out.mortgages = SHAPES.mortgages(rowsOf(m.data)); out.searched = true; }
     const p = note('get_entity_associated_people', await entityPeople(entityId, o));
     if (p.ok) out.people = rowsOf(p.data);
   }
@@ -352,12 +416,29 @@ async function researchProperty({ entityName, state, address, borrowerNames, sta
       const t = note('get_address_transactions', await addressTransactions(addrId, o));
       if (t.ok) {
         out.searched = true;
-        for (const row of rowsOf(t.data)) {
-          const kind = str(row.type || row.transactionType || row.kind).toLowerCase();
-          if (kind.includes('mortgage')) out.mortgages.push(row);
-          else if (kind.includes('satisf') || kind.includes('release')) out.satisfactions.push(row);
+        /* The normaliser reads the row's own `type` and sets `kind`, so the
+           sorting below is on a canonical field rather than on three guesses at
+           what the vendor might have called it. It also renames
+           `partiesGrantor`/`partiesGrantee` to grantors/grantees — without
+           which every address-branch result was dropped by `candidatesFrom` as
+           "not our party", recorded as a judgement about the borrower rather
+           than as the field mismatch it was. */
+        for (const row of SHAPES.transactions(rowsOf(t.data))) {
+          if (row.kind === 'mortgage') out.mortgages.push(row);
+          else if (row.kind === 'satisfaction') out.satisfactions.push(row);
           else out.deeds.push(row);
         }
+      }
+      /* WHO HOLDS IT NOW — the input to the most valuable check there is: they
+         say they sold it and the record still shows them owning it. The tool
+         was in the allowlist with no caller, so `currentOwner` was never
+         populated and `checks.js` could never fire that test. */
+      const own = note('get_address_ownership', await addressOwnership(addrId, o));
+      if (own.ok) {
+        const rows = SHAPES.ownerships(rowsOf(own.data));
+        out.ownerships = rows;
+        out.currentOwner = rows.find((r) => r.isCurrent) || null;
+        out.searched = true;
       }
     }
   }
@@ -374,6 +455,7 @@ module.exports = {
   entityPeople,
   coOccurringEntities,
   matchAddress,
+  addressOwnership,
   addressTransactions,
   document,
   coverage,

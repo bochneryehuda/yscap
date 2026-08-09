@@ -42,11 +42,27 @@ const A2 = '118 Oak Ave, Lakewood, NJ 08701';
 
 /* One property bought and sold (two deeds, ONE candidate), plus a second
    property, plus a deed the borrower merely appears on as a stranger. */
+/* THE VENDOR'S REAL SHAPE, not a convenient one. These rows are written the way
+   `get_entity_deeds` actually answers — `addresses[{addressFull}]`,
+   `recordingDate`, `totalConsideration` — because the first version of this
+   fixture used `address`/`recordedDate`/`consideration`, which are the names the
+   READER guessed, and so the suite passed while the importer could not read a
+   single real record. A fixture invented by whoever wrote the reader can only
+   ratify their guess. The canonical shapes live in
+   scripts/fixtures/elementix-shapes.json, captured from live calls. */
+const deed = (addr, grantors, grantees, date, amount, docId) => ({
+  id: docId, countyDocumentId: docId, dataSource: 'elementix',
+  addresses: [{ id: `a_${docId}`, addressFull: addr }],
+  grantors, grantees, recordingDate: date, totalConsideration: amount,
+  // The vendor states these itself, against the entity that was queried.
+  isGrantee: grantees.some((g) => /MW Trading/i.test(g)),
+  isGrantor: grantors.some((g) => /MW Trading/i.test(g)),
+});
 const DEEDS = [
-  { address: A1, grantors: ['Somebody Else'], grantees: ['MW Trading LLC'], recordedDate: '2025-08-02', consideration: 410000, documentId: 'd1' },
-  { address: A1, grantors: ['MW Trading LLC'], grantees: ['Marcus Reed'], recordedDate: '2026-03-14', consideration: 612000, documentId: 'd2' },
-  { address: A2, grantors: ['Nobody Ltd'], grantees: ['MW Trading LLC'], recordedDate: '2025-01-10', consideration: 300000, documentId: 'd3' },
-  { address: '9 Stranger Ct, Trenton, NJ 08608', grantors: ['A Co'], grantees: ['B Co'], recordedDate: '2025-05-05', documentId: 'd4' },
+  deed(A1, ['Somebody Else'], ['MW Trading LLC'], '2025-08-02', 410000, 'd1'),
+  deed(A1, ['MW Trading LLC'], ['Marcus Reed'], '2026-03-14', 612000, 'd2'),
+  deed(A2, ['Nobody Ltd'], ['MW Trading LLC'], '2025-01-10', 300000, 'd3'),
+  deed('9 Stranger Ct, Trenton, NJ 08608', ['A Co'], ['B Co'], '2025-05-05', null, 'd4'),
 ];
 const found = (name) => {
   if (name === 'match_entity') return { ok: true, data: { results: [{ id: ENT_ID, name: 'MW TRADING LLC' }] } };
