@@ -24,6 +24,7 @@ const reconcile = require('../sitewire/reconcile');
 const rollupMod = require('../sitewire/rollup');
 const drawTimeline = require('../sitewire/draw-timeline');
 const { drawEmailBlocks } = require('../sitewire/draw-email-blocks');
+const drawEmail = require('../lib/email/draw-email'); // the ONE money formatter for a draw email
 const { planReallocation } = require('../sitewire/reallocation');
 const M = require('../sitewire/mapper');
 const T = require('../sitewire/transforms');
@@ -1269,16 +1270,27 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
     if (fundedStatus === 'released' && split.net_release_cents > 0) {
       try {
         const amt = '$' + (split.net_release_cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        await notify.notifyAppBorrowers(application_id, {
+        // The release is now the HEADLINE figure, with the approval, the request and the draw fee
+        // beneath it (draw rule 15). The release row was committed a moment ago, so the rollup —
+        // the same one the branded PDF and the desk read — already reports this draw as released
+        // and its figures agree with `amt` by construction.
+        const blocks = await drawEmailBlocks(db, application_id, { sitewireDrawId: drawId, borrower: true });
+        // ONE email, the whole team visibly on it (draw rule 15). The loop-in Cc is applied at the
+        // notify chokepoint for every 'draws' notification, so the old bccExtra — which put the
+        // desk on an invisible Bcc nobody could reply-all to — is no longer needed here.
+        await notify.notifyAppThread(application_id, {
           type: 'draw',
-          // Draw number in the SUBJECT + the draw desk looped in (owner-directed 2026-07-27),
-          // matching the TrustPoint-mirrored release email in src/trustpoint/mirror.js.
-          bccExtra: await require('../lib/draw-recipients').drawTeamBcc(application_id),
           title: `Your construction draw${own.number != null ? ` #${own.number}` : ''} has been released`,
-          hero: { label: 'Released to you', value: amt, sub: 'typically arrives in 1–2 business days', tone: 'positive' },
+          staffTitle: `Draw funds released${own.number != null ? ` — draw #${own.number}` : ''}`,
+          staffBody: `A construction draw of ${amt} was released to the borrower on this file.`,
+          figures: (blocks && blocks.figures) || null,
+          facts: (blocks && blocks.facts) || null,
+          // The hero survives only as the fallback, so the email never loses its headline number.
+          hero: (blocks && blocks.figures) ? null
+            : { label: 'Released to you', value: amt, sub: 'typically arrives in 1–2 business days', tone: 'positive' },
           badge: { text: 'Draw released', tone: 'positive' },
-          body: `Your loan team has released a construction draw of ${amt} on your file. Depending on your bank, funds typically take 1–2 business days to arrive.`,
-          lines: ['Questions about this draw? Just reply to this email or reach your loan officer.'],
+          body: `Your loan team has released a construction draw on your file. Depending on your bank, funds typically take 1–2 business days to arrive.`,
+          lines: ['Questions about this draw? Just reply to this email — your loan team is on it.'],
           applicationId: application_id, link: `/app/${application_id}`, ctaLabel: 'View your draws' });
       } catch (_) { /* milestone email is best-effort */ }
     }
@@ -1322,12 +1334,21 @@ router.post('/files/:id/retainage-release', requirePermission('manage_draws'), a
     // Milestone → borrower: the completion retainage has been released.
     try {
       const amt = '$' + (toRelease / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      await notify.notifyAppBorrowers(appId, {
+      // A retainage release is not a DRAW, so there is no per-draw money object and no `drawFigures`
+      // stage to read — the one number that matters is the amount being wired. It is formatted by
+      // the composer's own `usd` (whole dollars, like every other draw headline) so this band can
+      // never disagree in shape with the ones beside it; nothing is computed here. The facts box is
+      // the FILE-level budget picture, which is exactly the right closing statement.
+      const blocks = await drawEmailBlocks(db, appId, { borrower: true });
+      await notify.notifyAppThread(appId, {
         type: 'draw',
         title: `Your held-back retainage has been released`,
-        hero: { label: 'Retainage released', value: amt, sub: 'your construction is complete', tone: 'positive' },
+        staffTitle: 'Retainage released at completion',
+        staffBody: `The retainage held back across this file's draws — ${amt} — was released to the borrower.`,
+        figures: { primary: { label: 'Retainage released', value: drawEmail.usd(toRelease), sub: 'held back across your draws — now yours', tone: 'positive' }, secondary: [] },
+        facts: (blocks && blocks.facts) || null,
         badge: { text: 'Complete', tone: 'positive' },
-        body: `With your construction complete, the retainage held back across your draws — ${amt} — has now been released.`,
+        body: `With your construction complete, the retainage we held back across your draws has now been released. Depending on your bank, funds typically take 1–2 business days to arrive.`,
         applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws' });
     } catch (_) { /* best-effort */ }
     res.json({ ok: true, disbursement: row, released_cents: toRelease });
@@ -2522,9 +2543,15 @@ router.post('/findings/:findingId/lines/:lineId/decide', requirePermission('mana
         value: l.dispute_status === 'approved'
           ? (l.dispute_desired_cents != null ? `Approved — now ${usd(l.approved_cents)}` : 'Approved on review')
           : `Reviewed — kept at ${usd(l.approved_cents)}` }));
+      // The OUTCOME as a headline, not a paragraph (draw rule 15): the decision moved the draw's
+      // approved amount, so the figure band leads with what the borrower is now getting. Read from
+      // the rollup AFTER the per-line write above, so it reflects the decision just made.
+      const blocks = await drawEmailBlocks(db, f.application_id, { sitewireDrawId: f.sitewire_draw_id, borrower: true });
       await notify.notifyAppBorrowers(f.application_id, {
         type: 'draw_dispute_resolved', title: 'We reviewed your draw dispute',
         badge: { text: 'Reviewed', tone: approvedN ? 'positive' : 'neutral' },
+        figures: (blocks && blocks.figures) || null,
+        facts: (blocks && blocks.facts) || null,
         body: approvedN
           ? `We reviewed the item(s) you flagged on your inspection results — ${approvedN} of ${decided.length} ${approvedN === 1 ? 'was' : 'were'} approved for a higher amount, and the rest were reviewed and kept as-is. Your updated results are in your portal.`
           : 'We reviewed the item(s) you flagged on your inspection results. After review they were kept as-is. The full details are in your portal.',

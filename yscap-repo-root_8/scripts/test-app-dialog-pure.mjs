@@ -125,6 +125,62 @@ for (const f of jsxFiles('app-v2/src')) {
 ok(offenders.length === 0,
   `no portal screen raises a browser alert() any more${offenders.length ? ` — still: ${offenders.join(', ')}` : ''}`);
 
+// ---------------------------------------------------------------------------
+// C2. THE CONFIRM MIGRATION, AND THE ONE WAY IT CAN GO CATASTROPHICALLY WRONG.
+//     `askConfirm` returns a PROMISE. A promise is truthy. So a call site that
+//     forgets the `await` reads as "the user said yes" on EVERY click and fires
+//     the destructive action nobody agreed to — silently, with a green build.
+//     These three guards are what make the migration safe to keep.
+// ---------------------------------------------------------------------------
+const jsAndJsx = (dir, out = []) => {
+  for (const e of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
+    const p = `${dir}/${e.name}`;
+    if (e.isDirectory()) jsAndJsx(p, out);
+    else if (/\.jsx?$/.test(e.name)) out.push(p);
+  }
+  return out;
+};
+const portalFiles = jsAndJsx('app-v2/src').filter((f) => !f.endsWith('app-v2/src/lib/dialog.js'));
+
+// (1) Nothing raises the browser's own confirm any more. dialog.js is excluded
+//     because its no-host fallback is deliberate — see the header there.
+const nativeConfirm = portalFiles.filter((f) => /\bwindow\.confirm\(/.test(read(f)));
+ok(nativeConfirm.length === 0,
+  `no portal screen raises a browser confirm() any more${nativeConfirm.length ? ` — still: ${nativeConfirm.join(', ')}` : ''}`);
+
+// (2) EVERY askConfirm call is awaited. This is the guard that matters: an
+//     un-awaited call is the "always yes" bug, and nothing else catches it —
+//     not the build (a promise is a valid expression), not eslint, not a render.
+const unawaited = [];
+for (const f of portalFiles) {
+  const src = read(f);
+  for (const m of src.matchAll(/(.{0,12})\baskConfirm\s*\(/g)) {
+    const before = m[1];
+    if (/await\s+$/.test(before)) continue;            // the correct form
+    if (/[.\w$]$/.test(before.trimEnd())) continue;    // a property/import mention, not a call
+    unawaited.push(`${f}: …${m[0].trim()}`);
+  }
+}
+ok(unawaited.length === 0,
+  `every askConfirm call is awaited — an un-awaited one reads as "yes" on every click${unawaited.length ? `\n     ${unawaited.join('\n     ')}` : ''}`);
+
+// (3) Every file that CALLS it also IMPORTS it. esbuild emits an undeclared
+//     identifier verbatim, so a missing import builds clean and then throws
+//     ReferenceError at click time — which the ErrorBoundary turns into the
+//     full-screen "Something went wrong". Seven files hit exactly this while
+//     the migration was being written, because they already imported
+//     showMessage and the import step skipped them.
+const missingImport = portalFiles.filter((f) => {
+  const src = read(f);
+  if (!/\baskConfirm\s*\(/.test(src)) return false;
+  // NOTE the path is matched loosely: a module inside lib/ imports its sibling
+  // as './dialog.js', with no 'lib/' in the specifier at all.
+  const imp = src.match(/import\s*\{([^}]*)\}\s*from\s*['"][^'"]*\bdialog\.js['"]/);
+  return !imp || !/\baskConfirm\b/.test(imp[1]);
+});
+ok(missingImport.length === 0,
+  `every file calling askConfirm imports it${missingImport.length ? ` — missing in: ${missingImport.join(', ')}` : ''}`);
+
 // The host must be mounted, or every message silently takes the fallback and
 // nothing is branded at all.
 const app = read('app-v2/src/App.jsx');

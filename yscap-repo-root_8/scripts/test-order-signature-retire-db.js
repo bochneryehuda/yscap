@@ -103,8 +103,27 @@ const PDF = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Roo
   }
 
   /* ── 2. the pass retires exactly the signature images ────────────────────── */
-  const res = await retireSignatureImagesOnce({ limit: 100 });
-  assert(res.retired >= 4, `the pass retires the signature images (retired ${res.retired})`);
+  /* DRAIN, DON'T TAKE ONE CAPPED PASS. This is a GLOBAL sweep over `documents`
+     with a row LIMIT, ordered created_at ASC and resuming from a durable cursor —
+     it does not know about this fixture. Every other suite that files an
+     order-return or closing-correspondence image adds to the same queue, and this
+     fixture's rows are the NEWEST, so they sort LAST: on a database carrying more
+     candidates than the cap they sit past it entirely and are never looked at.
+     Measured: 150 seeded candidate images made EIGHT assertions below fail —
+     starting with "retired 0" — with nothing wrong with the retirement rule.
+     Draining first makes every assertion about THIS fixture again. Bounded, and
+     it stops on no progress rather than spinning. */
+  let res = { retired: 0, scanned: 0 }, drainPasses = 0, drainStuck = false;
+  for (let i = 0; i < 60; i++) {
+    const p = await retireSignatureImagesOnce({ limit: 100 });
+    drainPasses++;
+    res.retired += p.retired || 0;
+    res.scanned += p.scanned || 0;
+    if (!p.scanned) break;
+    if (i === 59) drainStuck = true;
+  }
+  assert(res.retired >= 4 && !drainStuck,
+    `the pass retires the signature images (retired ${res.retired} over ${drainPasses} pass(es))`);
   {
     const a = await row(sigPending);
     assert(a.is_current === false, 'the pending signature image is off the current file');

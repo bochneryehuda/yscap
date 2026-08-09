@@ -7,6 +7,7 @@ import TermSheetStudio, {
 import { fullNameOf } from '../lib/personName.js';
 import { moneyNum } from '../lib/money.js';
 import { fmtRatePct, fmtRatePctFromPct } from '../lib/rateFormat.js';
+import { askConfirm } from '../lib/dialog.js';
 
 /* Product registration on a loan file — borrower AND staff logins. The panel
    shows the registered product; "Reprice / re-register" opens the real static
@@ -1390,7 +1391,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const counterTerms = escCountered ? (esc.counter_terms || {}) : null;
   const acceptCounter = async () => {
     if (!escCountered) return;
-    if (!window.confirm('Accept the super-admin’s counter-offer and re-register the file with those terms?')) return;
+    if (!(await askConfirm('Accept the super-admin’s counter-offer and re-register the file with those terms?'))) return;
     setBusy(true); setErr('');
     try {
       await api.acceptCounterOffer(appId);

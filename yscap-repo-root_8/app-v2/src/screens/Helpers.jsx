@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /* HELPERS (borrower assistant logins) — a borrower gives someone their own login
    to help with the loan. A helper can do everything in the portal EXCEPT see
@@ -41,7 +42,7 @@ export default function Helpers() {
     catch (ex) { setErr(ex.message || 'Could not resend.'); }
   }
   async function remove(id) {
-    if (!window.confirm('Remove this helper? Their login will stop working right away.')) return;
+    if (!(await askConfirm('Remove this helper? Their login will stop working right away.'))) return;
     setErr(''); setNote('');
     try { await api.assistantDisable(id); await load(); }
     catch (ex) { setErr(ex.message || 'Could not remove that helper.'); }

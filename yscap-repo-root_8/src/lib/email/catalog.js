@@ -452,9 +452,13 @@ function trustpointImport({ drawNumber, propertyLabel, loanNumber, lines = [], t
   if (propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
   if (loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
   meta.push({ label: 'Draw', value: `#${drawNumber == null ? '—' : drawNumber}` });
-  meta.push({ label: 'Total requested', value: usd(totalCents) });
-  for (const l of lines.slice(0, 40)) meta.push({ label: l.name, value: usd(l.requested_cents) });
-  if (lines.length > 40) meta.push({ label: 'More lines', value: `+${lines.length - 40} more — see the file's draw desk` });
+  // The owner's draw-email rule applies to the emails going to OUR TEAM too, not only the
+  // borrower's (owner-directed 2026-08-03: "the emails that are going out to our team and the
+  // emails everywhere"). The total was a meta row indistinguishable from the forty line items
+  // stacked under it; it is now the headline, and the lines are a real TABLE — which is what the
+  // coordinator is copying from, so it is worth reading as one.
+  const CAP = 40;
+  const shown = lines.slice(0, CAP);
   return render({
     audience: 'staff',
     title: `Draw #${drawNumber == null ? '—' : drawNumber} needs to be entered into TrustPoint`,
@@ -463,10 +467,20 @@ function trustpointImport({ drawNumber, propertyLabel, loanNumber, lines = [], t
     replyable: true,
     preheader: 'A submitted draw on a TrustPoint-administered file needs manual entry.',
     intro: 'A draw was just submitted on this file. Its draws are administered on TrustPoint, so it needs to be entered there by hand — the line-by-line amounts are below, ready to copy over.',
+    figures: { primary: { label: 'Total requested', value: usd(totalCents) }, secondary: [] },
     lines: [
       'Enter it in TrustPoint as a REGULAR workflow draw — never TrustPoint’s “imported draw” option (imported draws send no updates back, which would blind the follow-up tracking).',
       'Once it’s entered, mark the Workflow item done (“Entered in TrustPoint”).',
     ],
+    table: shown.length ? {
+      title: 'Line by line',
+      head: ['Line item', 'Requested'],
+      align: ['left', 'right'],
+      rows: shown.map((l) => [String(l.name || 'Line item'), usd(l.requested_cents)]),
+      // NO SILENT CAPS: a coordinator copying 40 of 52 lines into TrustPoint and being told
+      // nothing is exactly how a draw gets entered short.
+      note: lines.length > CAP ? `+${lines.length - CAP} more line item(s) — open the file's draw desk for the full list.` : null,
+    } : null,
     meta,
     note: 'Reply to this email to reach the draws desk and the loan team together.',
   });

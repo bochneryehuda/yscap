@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { InfoTip } from '../components/FileSections.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /* Inspection & fee rules (admin/setup). Per capital partner (with an optional program
    override) decide virtual vs. on-site inspection, whether a Sitewire inspector and/or
@@ -278,7 +279,7 @@ function InvestorContacts() {
     finally { setBusy(false); }
   }
   async function remove(id, email) {
-    if (!window.confirm(`Stop sending draw deliveries to ${email}?`)) return;
+    if (!(await askConfirm(`Stop sending draw deliveries to ${email}?`))) return;
     setBusy(true); setErr(''); setNote('');
     try { await api.del(`/api/sitewire/investor-contacts/${id}`); setNote('Contact removed.'); load(); }
     catch (e) { setErr(e?.data?.error || 'Could not remove that contact.'); }

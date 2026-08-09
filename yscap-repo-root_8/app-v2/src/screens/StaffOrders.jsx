@@ -8,6 +8,7 @@ import { fmtDay } from '../lib/dates.js';
 // Why an order's clock is stopped, worded in ONE place and shared with the file's
 // own order card — the decision itself is the server's (order-sla.orderState).
 import { dormantMarker } from '../lib/orderDormant.js';
+import { askConfirm } from '../lib/dialog.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ORDERS QUEUE — every title, insurance & attorney closing-prep order across the
@@ -92,7 +93,7 @@ function OrderCell({ o, appId, kind, onChased, fileStatus }) {
       const who = to.length
         ? `This follow-up goes to:\n\n${to.join('\n')}\n\nSend it?`
         : 'Send the follow-up on this order?\n\n(The recipient list could not be loaded — open the file to see it.)';
-      if (!window.confirm(who)) { setBusy(false); return; }
+      if (!(await askConfirm(who))) { setBusy(false); return; }
       const r = await api.staffOrderFollowup(appId, kind, {});
       setMsg(r.unconfirmed ? 'Sent — but unconfirmed, check the thread' : 'Chased');
       onChased && onChased();
