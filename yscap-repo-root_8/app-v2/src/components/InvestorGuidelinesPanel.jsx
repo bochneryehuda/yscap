@@ -36,7 +36,7 @@ function VerdictChip({ verdict, suggestPost }) {
   const s = VERDICT[verdict] || VERDICT.outstanding;
   const label = suggestPost && verdict === 'outstanding' ? 'Suggest posting' : s.label;
   return (
-    <span style={{ fontSize: 10.5, fontWeight: 800, color: s.fg, background: s.bg, border: `1px solid ${s.fg}44`, borderRadius: 999, padding: '2px 9px', whiteSpace: 'nowrap' }}>
+    <span style={{ fontSize: 11, fontWeight: 800, color: s.fg, background: s.bg, border: `1px solid ${s.fg}44`, borderRadius: 999, padding: '2px 9px', whiteSpace: 'nowrap' }}>
       {label}
     </span>
   );
@@ -185,7 +185,7 @@ export default function InvestorGuidelinesPanel({ appId }) {
                 return (
                   <div key={`${u.cond_no}-${i}`} style={{ marginBottom: 8, border: `1px solid ${fg}44`, borderLeft: `4px solid ${fg}`, borderRadius: 10, padding: '8px 14px', background: bg }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: 10.5, fontWeight: 800, color: fg, textTransform: 'uppercase', letterSpacing: '.05em' }}>{fatal ? '● ' : '○ '}{kind}</span>
+                      <span style={{ fontSize: 11, fontWeight: 800, color: fg, textTransform: 'uppercase', letterSpacing: '.05em' }}>{fatal ? '● ' : '○ '}{kind}</span>
                       <span style={{ fontSize: 13, fontWeight: 700 }}>{u.name}</span>
                     </div>
                     {u.flag === 'coverage_gap' && (

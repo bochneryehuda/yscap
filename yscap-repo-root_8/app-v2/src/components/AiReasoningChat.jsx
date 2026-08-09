@@ -73,7 +73,7 @@ export default function AiReasoningChat({ appId }) {
               const mine = m.role === 'user';
               return (
                 <div key={i} style={{ alignSelf: mine ? 'flex-end' : 'flex-start', maxWidth: '88%' }}>
-                  <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', marginBottom: 1 }}>{mine ? 'You' : 'PILOT'}</div>
+                  <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', marginBottom: 1 }}>{mine ? 'You' : 'PILOT'}</div>
                   <div style={{
                     fontSize: 12.5, lineHeight: 1.45, whiteSpace: 'pre-wrap',
                     background: mine ? 'var(--teal,#2F7F86)' : 'var(--card,#fff)',

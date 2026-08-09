@@ -528,7 +528,7 @@ export default function StaffConditionStudio() {
                   <span className={`pill cc-type cc-type-${d.conditionType}`}>{typeLabel[d.conditionType] || d.conditionType}</span>
                   <span className={'pill cc-aud-' + d.audience}>{audienceLabel(d.audience)}</span>
                   {d.category && <span className="pill">{catLabel[d.category] || d.category}</span>}
-                  {d.origin === 'system' && <span className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }}>Built-in</span>}
+                  {d.origin === 'system' && <span className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold-ink)' }}>Built-in</span>}
                   {d.fieldKey && <span className="pill">→ {d.fieldKey}</span>}
                 </div>
                 {d.borrowerLabel && d.borrowerLabel !== d.label && <div className="muted small">Borrower sees: “{d.borrowerLabel}”</div>}

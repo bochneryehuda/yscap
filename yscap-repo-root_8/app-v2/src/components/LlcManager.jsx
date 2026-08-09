@@ -44,7 +44,7 @@ function SlotRow({ llc, slot, onPick, onDownload, onPreview, dlBusy, uploading, 
   const pill = !d ? { text: 'Not uploaded', style: undefined }
     : rs === 'accepted' ? { text: 'Accepted ✓', style: { borderColor: 'var(--ok)', color: 'var(--ok)' } }
     : rs === 'rejected' ? { text: 'Rejected', style: { borderColor: 'var(--danger)', color: 'var(--danger)' } }
-    : { text: 'In review', style: { borderColor: 'var(--gold)', color: 'var(--gold)' } };
+    : { text: 'In review', style: { borderColor: 'var(--gold)', color: 'var(--gold-ink)' } };
   return (
     <div className={`checkitem${canDrop ? ' cond-drop' : ''}${over ? ' drop-over' : ''}`} style={{ alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 }} {...drop}>
       {over && canDrop && <div className="drop-hint">Drop file to upload</div>}
