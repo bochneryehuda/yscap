@@ -41,52 +41,58 @@ const mk = async (street, unit, obs) => {
     const e = await mk('99 Quiet Rd', null, 4);
     console.log('before:', (await db.query(
       `SELECT count(*)::int n FROM properties WHERE city=$1`, [CITY])).rows[0].n, 'rows');
-    /* RUN THE SWEEP TO EXHAUSTION, rather than once — because that is what "after the
-       sweep has run" actually means, and asserting on ONE pass is what made this test
-       fail on a long-lived database while the sweep worked perfectly.
 
-       `rekeyOnce` is BOUNDED (100 rows) and self-draining, and `properties` is a shared
-       warehouse: with 75 other rows queued, one pass spends most of its budget
-       elsewhere and can leave part of this fixture behind — which is exactly what
-       happened ("8 Saint James Pl" survived at key_version null, so only one of the two
-       merges had run). At boot the pass repeats until there is nothing left, so the
-       test drives it the same way. Bounded so a bug that never drains fails the test
-       instead of hanging it. */
-    const out = { passes: 0, scanned: 0, merged: 0, rekeyed: 0 };
-    for (let i = 0; i < 60; i++) {
-      const p = await RK.rekeyOnce(db, { limit: 100 });
-      out.passes += 1; out.scanned += p.scanned; out.merged += p.merged; out.rekeyed += p.rekeyed;
-      if (!p.scanned) break;
-    }
-    console.log('sweep drained:', JSON.stringify(out));
+    /* DRAIN THE TABLE, DON'T TAKE ONE CAPPED PASS.
+       `rekeyOnce` is a GLOBAL sweep with a row LIMIT, ordered by observation_count
+       — it does not know about this fixture. So on a database carrying more
+       un-re-keyed properties than the cap (every other suite in `npm test` files
+       reports into the same warehouse, and this suite runs 686th of 724), ONE pass
+       proves nothing about these five rows: they can sit past the cap entirely and
+       never be looked at, and "a second run is a no-op" is false while anyone
+       else's backlog is still outstanding. Draining first makes both assertions
+       about THIS fixture again instead of about how busy the database happens to
+       be. Measured: a clean run of the whole suite leaves 58 properties, one that
+       had accumulated 112 failed here with nothing wrong with the merge logic. */
+    const drain = async () => {
+      const tot = { passes: 0, scanned: 0, merged: 0, rekeyed: 0, stuck: false, errors: [] };
+      for (let i = 0; i < 60; i++) {
+        const p = await RK.rekeyOnce(db, { limit: 200 });
+        tot.passes++; tot.scanned += p.scanned; tot.merged += p.merged; tot.rekeyed += p.rekeyed;
+        if (p.errors && p.errors.length) tot.errors.push(...p.errors.slice(0, 3));
+        if (!p.scanned) return tot;                       // drained
+        // Every branch of rekeyOnce stamps key_version EXCEPT the error path, so a
+        // row that keeps throwing would be re-read forever. Stop on no progress
+        // rather than spin, and let the assertions report it.
+        if (!(p.rekeyed + p.merged + p.unchanged + p.unkeyable)) { tot.stuck = true; return tot; }
+      }
+      tot.stuck = true;
+      return tot;
+    };
+    const out = await drain();
+    console.log('sweep:', JSON.stringify(out));
+
     const after = (await db.query(
       `SELECT address_key, street, observation_count, key_version FROM properties WHERE city=$1 ORDER BY street`, [CITY])).rows;
     console.log('after: ', after.length, 'rows');
     for (const r of after) console.log('   ', r.street.padEnd(20), r.address_key, 'obs=' + r.observation_count, 'v=' + r.key_version);
-    /* AND ONE MORE PASS MUST CHANGE NOTHING *HERE* — asked about THESE rows, not about
-       the whole table. A global `scanned === 0` would be an assertion about every other
-       suite's leftovers, not about this fixture. */
-    const again = await RK.rekeyOnce(db, { limit: 100 });
-    console.log('one more pass (must not touch these rows):',
-      JSON.stringify({ scanned: again.scanned, merged: again.merged, rekeyed: again.rekeyed }));
-    const afterAgain = (await db.query(
-      `SELECT address_key, street, observation_count, key_version FROM properties WHERE city=$1 ORDER BY street`, [CITY])).rows;
-    const settled = JSON.stringify(after) === JSON.stringify(afterAgain);
-    if (!settled) console.log('   the extra pass CHANGED these rows:', JSON.stringify(afterAgain));
+    const again = await RK.rekeyOnce(db, { limit: 200 });
+    console.log('second run (must be a no-op):', JSON.stringify({ scanned: again.scanned, merged: again.merged, rekeyed: again.rekeyed }));
     const status = await RK.rekeyStatus(db);
     const streets = after.map((r) => r.street).sort().join(' | ');
+    // THE MERGE IS PROVEN ON THE FIXTURE'S OWN ROWS — five went in, three survive,
+    // and WHICH three is the real assertion. A global `merged` counter cannot say
+    // that: on a shared database it also counts other suites' merges, and on a
+    // quiet one it would pass even if the wrong row had won.
     // THE RICHER HISTORY SURVIVES: "150 15 Ave" had 5 observations to "150 15th
     // Ave"'s 2, and "8 St James Pl" had 3 to "8 Saint James Pl"'s 1. Keeping the
     // thinner row would move the larger history under an address seen once.
-    // 5 fixture rows in, 3 out, so both duplicate pairs merged — counted from the
-    // FIXTURE rather than from the sweep's global tally, which also counts merges among
-    // rows another suite left behind. WHICH row survived is what proves the richer
-    // history won, and the `streets` check below is that: "150 15 Ave" over "150 15th
-    // Ave", "8 St James Pl" over "8 Saint James Pl".
-    const good = after.length === 3 && settled
+    const good = after.length === 3 && !out.stuck && again.scanned === 0
       && after.every((r) => r.key_version === K.KEY_VERSION)
       && streets === '150 15 Ave | 8 St James Pl | 99 Quiet Rd';
-    if (!good) console.log('   survivors were:', streets);
+    if (!good) {
+      console.log('   survivors were:', streets);
+      if (out.stuck) console.log('   the sweep did not drain:', JSON.stringify(out.errors.slice(0, 3)));
+    }
     console.log(good ? '\ntest-property-rekey-db: PASS — the split rows merged, the rest were re-keyed, and the sweep drained'
       : '\ntest-property-rekey-db: FAIL', '| remaining overall:', status.remaining);
     process.exitCode = good ? 0 : 1;
