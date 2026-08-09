@@ -98,6 +98,50 @@ function makeDeps() {
     const dup = await docs.uploadToOrder(c, order, { staffId: null, documentIds: [sowId] }, makeDeps());
     ok(!dup.ok && dup.error === 'nothing_to_upload' && dup.skipped.some((s) => s.reason === 'already_uploaded'), 'picking an already-sent document is skipped');
 
+    // =====================================================================
+    // TEST MODE MUST NOT LEAVE A DOCUMENT PERMANENTLY UNSENDABLE.
+    // Two findings from the re-audit, both on this path:
+    //   • the dry-run switch was read TWICE — once when STAGING (which mints fake
+    //     `dryrun://getdocument/N` URLs and uploads nothing) and again when SENDING
+    //     the message carrying them. It is an in-memory flag refreshed on a timer with
+    //     network I/O in between, so they can disagree: a LIVE UploadDocument went out
+    //     carrying `dryrun://` links.
+    //   • the rows a test-mode upload writes are `pending` — nothing left the building
+    //     — but the "already sent" set counted them, so the real upload of that same
+    //     document was blocked forever and the screen said "already sent".
+    // =====================================================================
+    const thirdId = (await c.query(
+      `INSERT INTO documents (application_id, filename, content_type, storage_ref, doc_kind, is_current)
+       VALUES ($1,'later.pdf','application/pdf','ref-later','contract',true) RETURNING id`, [appId])).rows[0].id;
+
+    const dryDeps = makeDeps();
+    dryDeps.dryrun = true;
+    // Staging in test mode mints the fake links the vendor must never see.
+    dryDeps.postDocuments = async (files) => files.map((f, i) => ({ fileName: f.fileName, uploadStatus: 'Success', retrievalUrl: 'dryrun://getdocument/' + i }));
+    const sentLive = [];
+    dryDeps.transport = { write: async (built, opts) => {
+      if (!(opts && opts.dryrun)) sentLive.push(built);
+      return { __dryrun: true };
+    } };
+    const dry = await docs.uploadToOrder(c, order, { staffId: null, documentIds: [thirdId] }, dryDeps);
+    ok(dry.ok && dry.dryrun === true, 'a test-mode upload reports itself as a test run');
+    ok(sentLive.length === 0, 'and the transport is TOLD it is a test run — the decision is not re-read');
+    const pend = await c.query(
+      `SELECT status, retrieval_url FROM amc_order_documents WHERE order_id=$1 AND document_id=$2`, [order.id, thirdId]);
+    ok(pend.rows[0].status === 'pending', 'the row records that nothing actually went');
+
+    const list3 = await docs.listUploadable(c, appId, order.id);
+    ok(list3.find((d) => String(d.id) === String(thirdId)).alreadyUploaded === false,
+      'and the screen does NOT claim it was sent');
+    const real = await docs.uploadToOrder(c, order, { staffId: null, documentIds: [thirdId] }, makeDeps());
+    ok(real.ok && real.uploaded.length === 1,
+      'so the real upload of that same document still goes — a test run can never strand a document');
+    const urls = await c.query(
+      `SELECT retrieval_url FROM amc_order_documents WHERE order_id=$1 AND document_id=$2 AND status='uploaded'`,
+      [order.id, thirdId]);
+    ok(urls.rows.length === 1 && !/^dryrun:/.test(urls.rows[0].retrieval_url),
+      'and what was recorded as sent is a real link, never a dryrun:// one');
+
     await c.query('ROLLBACK');
   } catch (e) {
     try { await c.query('ROLLBACK'); } catch (_) { /* ignore */ }

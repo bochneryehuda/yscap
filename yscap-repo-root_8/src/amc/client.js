@@ -191,9 +191,12 @@ function login(message, opts = {}) { return post(AMC().loginUrl, message, { ...o
 // ---- document upload (multipart) → getdocument retrieval URLs ----
 // files: [{ fileName, contentType, bytes(Buffer) }]. Returns
 // [{ name, fileName, uploadStatus, retrievalUrl, errorTraceID }].
-async function postDocuments(files) {
+async function postDocuments(files, opts = {}) {
   if (!switches.on('AMC_ENABLED')) { const e = new Error('AMC_DISABLED'); e.code = 'AMC_DISABLED'; throw e; }
-  if (switches.on('AMC_DRYRUN')) {
+  // Like `post`, the caller's decision can only force the dry run ON. This one matters
+  // as much as the order path: staging is what mints the `dryrun://` URLs, and if the
+  // send that follows read a different answer those fake links went to the vendor.
+  if (opts.dryrun === true || switches.on('AMC_DRYRUN')) {
     console.warn(`[amc][DRYRUN] would upload ${files.length} document(s) to /postdocuments`);
     return files.map((f, i) => ({ name: `part${i}`, fileName: f.fileName, uploadStatus: 'Success', retrievalUrl: `dryrun://getdocument/${i}`, errorTraceID: null }));
   }

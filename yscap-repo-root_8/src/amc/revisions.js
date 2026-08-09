@@ -37,14 +37,23 @@ async function postRevision(dbh, order, { staffId, kind, body, rovDetail }, deps
   const text = String(body || '').trim();
   if (!text) return { ok: false, error: 'empty' };
   const transport = deps.transport || client;
-  const authCtx = deps.authContext || (await session.authContext());
+  const dryrun = deps.dryrun != null ? !!deps.dryrun : !!client.configured().dryrun;
+  let authCtx;
+  try {
+    // TEST MODE MUST NOT NEED A LOGIN, and a login that fails is answered in plain
+    // words rather than thrown at the route's catch-all — which reported it as the
+    // server's generic "Something went wrong on our end".
+    authCtx = deps.authContext || (await session.authContext(dryrun ? { offline: true } : undefined));
+  } catch (e) {
+    return { ok: false, error: 'not_connected', message: session.signInMessage(e) };
+  }
   const built = cdg.buildAddRevision({
     apiKey: authCtx.apiKey, subdomain: order.sp_subdomain || authCtx.subdomain,
     spOrderNumber: order.sp_order_number, clientOrderNumber: order.client_order_number, text,
   });
   let resp;
   try {
-    resp = await transport.write(built, { orderId: order.cdg_order_number || undefined, label: 'AddRevision' });
+    resp = await transport.write(built, { orderId: order.cdg_order_number || undefined, label: 'AddRevision', dryrun });
   } catch (e) {
     await journal(dbh, { orderId: order.id, appId: order.application_id, action: 'AddRevision', request: built, ok: false, error: String(e.message || e), staffId });
     return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'send_failed', message: String(e.message || e) };
@@ -71,7 +80,16 @@ async function postRevision(dbh, order, { staffId, kind, body, rovDetail }, deps
 // one is filed as an inbound-originated row. Returns { ok, added }.
 async function syncRevisions(dbh, order, deps = {}) {
   const transport = deps.transport || client;
-  const authCtx = deps.authContext || (await session.authContext());
+  const dryrun = deps.dryrun != null ? !!deps.dryrun : !!client.configured().dryrun;
+  let authCtx;
+  try {
+    // TEST MODE MUST NOT NEED A LOGIN, and a login that fails is answered in plain
+    // words rather than thrown at the route's catch-all — which reported it as the
+    // server's generic "Something went wrong on our end".
+    authCtx = deps.authContext || (await session.authContext(dryrun ? { offline: true } : undefined));
+  } catch (e) {
+    return { ok: false, error: 'not_connected', message: session.signInMessage(e) };
+  }
   const resp = await transport.read(cdg.buildGetRevisions({
     apiKey: authCtx.apiKey, subdomain: order.sp_subdomain || authCtx.subdomain,
     spOrderNumber: order.sp_order_number, clientOrderNumber: order.client_order_number,

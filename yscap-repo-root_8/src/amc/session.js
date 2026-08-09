@@ -45,15 +45,41 @@ async function apiKey() {
 
 function invalidate() { _apiKey = { value: null, exp: 0 }; }
 
-// The identifiers every CDG message needs, with the api key resolved.
-async function authContext() {
+/**
+ * The identifiers every CDG message needs, with the api key resolved.
+ *
+ * `{ offline: true }` skips the sign-in entirely and returns the identifiers WITHOUT
+ * an api key. That is what TEST MODE needs: a dry run builds the exact message and
+ * sends nothing, so requiring a live AppraisalScope login to look at it is both
+ * pointless and — on a tenant whose login is not set up yet — the reason a test click
+ * used to fail. Anything built this way must never be posted; the transport's
+ * `opts.dryrun` is what guarantees that.
+ */
+async function authContext(opts = {}) {
   const a = cfg.amc || {};
   return {
-    apiKey: await apiKey(),
+    apiKey: opts.offline ? null : await apiKey(),
     subdomain: a.subdomain,
     lenderIdentifier: a.lenderIdentifier,
     sourceClientId: a.sourceClientId,
   };
 }
 
-module.exports = { apiKey, invalidate, authContext };
+/**
+ * Why we could not sign in, in words a non-developer can act on. Lives here, beside
+ * the throw, so every caller of `authContext` says the same thing — the three real
+ * causes need three different people, and "Something went wrong on our end" names
+ * none of them.
+ */
+function signInMessage(e) {
+  const raw = String((e && e.message) || '');
+  if ((e && e.code) === 'AMC_DISABLED' || /AMC_DISABLED/.test(raw)) {
+    return 'Appraisal ordering is switched off. Turn it on in API Health first.';
+  }
+  if (/are not all set/.test(raw)) {
+    return 'The appraisal company login isn’t set up yet, so nothing can be sent. Turn on test mode to check this, or ask an admin to finish the connection.';
+  }
+  return 'Could not sign in to the appraisal company, so nothing was sent. (' + raw.slice(0, 160) + ')';
+}
+
+module.exports = { apiKey, invalidate, authContext, signInMessage };

@@ -113,10 +113,27 @@ async function syncNotes(orderRowId) {
       if (!n || typeof n !== 'object') continue;
       const id = text(n.noteId || n.NoteId || n.id || n.Id);
       const dir = text(n.direction || n.Direction) === 'FromClient' ? 'FromClient' : 'ToClient';
+      // AND A NOTE WITH NO ID NEEDS THE SAME GUARD AS THE CALLBACK PATH. The partial
+      // index arbitrates nothing when `class_note_id` is NULL — their guide allows a
+      // note with content and no id — so every press of "check for replies"
+      // re-inserted it and the unread badge counted every copy. That hole was closed
+      // on the callback writer; this is the OTHER writer of the same table, and it is
+      // the one a human presses. Same identity: same order, same direction, same
+      // words. `vendor_created_at` is compared too, so a genuine later message that
+      // happens to repeat an earlier one still lands whenever Class stamps it.
       const r = await db.query(
         `INSERT INTO class_notes (class_order_row, application_id, class_note_id, direction, content, vendor_created_at,
                                   sent_at)
-         VALUES ($1,$2,$3,$4,$5,$6, CASE WHEN $4 = 'FromClient' THEN now() ELSE NULL END)
+         SELECT $1::bigint, $2::uuid, $3::text, $4::text, $5::text, $6::timestamptz,
+                CASE WHEN $4 = 'FromClient' THEN now() ELSE NULL END
+          WHERE $3::text IS NOT NULL
+             OR NOT EXISTS (
+                  SELECT 1 FROM class_notes
+                   WHERE class_order_row = $1::bigint
+                     AND class_note_id IS NULL
+                     AND direction = $4::text
+                     AND content IS NOT DISTINCT FROM $5::text
+                     AND vendor_created_at IS NOT DISTINCT FROM $6::timestamptz)
          ON CONFLICT (class_note_id) WHERE class_note_id IS NOT NULL DO NOTHING
          RETURNING id`,
         [order.id, order.application_id, id, dir, text(n.content || n.Content), text(n.created || n.Created)]);

@@ -57,7 +57,8 @@ async function listUploadable(dbh, appId, orderId = null) {
   if (orderId) {
     const s = await dbh.query(
       `SELECT document_id FROM amc_order_documents
-        WHERE order_id=$1 AND direction='outbound' AND document_id IS NOT NULL`, [orderId]);
+        WHERE order_id=$1 AND direction='outbound' AND status = 'uploaded'
+          AND document_id IS NOT NULL`, [orderId]);
     sent = new Set(s.rows.map((x) => String(x.document_id)));
   }
   return r.rows.map((d) => ({
@@ -73,8 +74,22 @@ async function listUploadable(dbh, appId, orderId = null) {
 async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, deps = {}) {
   const transport = deps.transport || client;
   const readStorage = deps.readStorage || ((ref) => storage.read(ref));
-  const stage = deps.postDocuments || ((files) => transport.postDocuments(files));
-  const authCtx = deps.authContext || (await session.authContext());
+  // TEST MODE IS DECIDED ONCE HERE TOO. This path reads the switch twice — once when
+  // STAGING the bytes (a dry run mints fake `dryrun://getdocument/N` URLs and uploads
+  // nothing) and again when SENDING the message that carries those URLs. The switch is
+  // an in-memory flag refreshed on a timer with real network I/O between the two, so
+  // they can disagree — and when they did, a LIVE UploadDocument went out carrying
+  // `dryrun://` links, the rows were written as `uploaded`, and every later attempt
+  // skipped those documents as already sent. The appraiser never received them and
+  // nothing said so. Same shape, same fix as createOrder: read once, pass it down.
+  const dryrun = deps.dryrun != null ? !!deps.dryrun : !!client.configured().dryrun;
+  const stage = deps.postDocuments || ((files) => transport.postDocuments(files, { dryrun }));
+  let authCtx;
+  try {
+    authCtx = deps.authContext || (await session.authContext(dryrun ? { offline: true } : undefined));
+  } catch (e) {
+    return { ok: false, error: 'not_connected', message: session.signInMessage(e) };
+  }
   const ids = (documentIds || []).filter(Boolean);
   if (!ids.length) return { ok: false, error: 'no_documents' };
 
@@ -85,9 +100,14 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
        LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
        LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
       WHERE d.application_id = $1 AND d.id = ANY($2::uuid[])`, [order.application_id, ids])).rows;
+  // ONLY A DOCUMENT THAT REALLY WENT counts as already sent. A test-mode upload writes
+  // its rows as `pending` (nothing left the building), so counting those permanently
+  // blocked the real upload of the same document — a document the appraiser never got,
+  // reported on the screen as "already sent".
   const already = new Set((await dbh.query(
     `SELECT document_id FROM amc_order_documents
-      WHERE order_id=$1 AND direction='outbound' AND document_id = ANY($2::uuid[])`,
+      WHERE order_id=$1 AND direction='outbound' AND status = 'uploaded'
+        AND document_id = ANY($2::uuid[])`,
     [order.id, ids])).rows.map((x) => String(x.document_id)));
 
   const files = [];   // for /postdocuments
@@ -124,7 +144,7 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
   const amcAction = built.message.requestActionType;
 
   let resp;
-  try { resp = await transport.write(built, { orderId: order.cdg_order_number || undefined, label: amcAction }); }
+  try { resp = await transport.write(built, { orderId: order.cdg_order_number || undefined, label: amcAction, dryrun }); }
   catch (e) {
     await journal(dbh, { orderId: order.id, appId: order.application_id, action: amcAction, request: built, ok: false, error: String(e.message || e), staffId });
     return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'send_failed', message: String(e.message || e), skipped };

@@ -297,7 +297,14 @@ async function processEvent(row, { dbc } = {}) {
                        WHERE class_order_row = $1::bigint
                          AND direction = 'ToClient'
                          AND class_note_id IS NULL
-                         AND content IS NOT DISTINCT FROM $4::text)
+                         AND content IS NOT DISTINCT FROM $4::text
+                         -- THE VENDOR'S OWN TIMESTAMP IS PART OF THE IDENTITY, so a
+                         -- genuine nudge days later that repeats the same wording is
+                         -- a NEW message and still lands. Without it the guard was a
+                         -- permanent swallow: same words, ever, meant dropped in
+                         -- silence. (With no timestamp on either there is nothing left
+                         -- to tell them apart, and one row is the safe reading.)
+                         AND vendor_created_at IS NOT DISTINCT FROM $5::timestamptz)
              ON CONFLICT (class_note_id) WHERE class_note_id IS NOT NULL DO NOTHING`,
             [order.id, order.application_id, n.noteId, n.content, n.created]);
         }

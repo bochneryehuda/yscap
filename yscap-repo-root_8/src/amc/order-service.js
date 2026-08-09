@@ -355,20 +355,6 @@ async function applyAck(db, orderId, ack, resp) {
   return r.rows[0];
 }
 
-// Why we could not sign in to the appraisal company, in words a non-developer can
-// act on. The three real causes are: the master switch is off, the login has never
-// been set up, and the login was refused — and they need three different people.
-function signInMessage(e) {
-  const raw = String((e && e.message) || '');
-  if ((e && e.code) === 'AMC_DISABLED' || /AMC_DISABLED/.test(raw)) {
-    return 'Appraisal ordering is switched off. Turn it on in API Health first.';
-  }
-  if (/are not all set/.test(raw)) {
-    return 'The appraisal company login isn’t set up yet, so nothing can be sent. The order was saved as a draft — turn on test mode to check the order, or ask an admin to finish the connection.';
-  }
-  return 'Could not sign in to the appraisal company, so nothing was sent. The order was saved as a draft. (' + raw.slice(0, 160) + ')';
-}
-
 /**
  * Create — and optionally PLACE — an appraisal order for a file.
  *
@@ -421,7 +407,7 @@ async function createOrder(db, appId, opts = {}) {
     try {
       authCtx = await session.authContext();   // DoLogin (needs AMC_ENABLED); throws if off
     } catch (e) {
-      const why = signInMessage(e);
+      const why = session.signInMessage(e);
       await db.query(`UPDATE amc_orders SET last_error = $2, updated_at = now() WHERE id = $1`, [order.id, why]);
       await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, ok: false, error: why, staffId: opts.staffId });
       return { ok: false, error: 'not_connected', message: why, order: await getOrder(db, order.id) };

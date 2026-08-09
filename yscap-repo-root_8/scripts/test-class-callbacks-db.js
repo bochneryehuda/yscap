@@ -532,18 +532,6 @@ async function main() {
         WHERE class_order_row = $1 AND direction = 'ToClient' AND class_note_id IS NULL`, [order26]);
     ok(again.rows[0].n === 1, 're-delivering the same id-less note adds nothing');
 
-    // A DIFFERENT message must still land — the guard dedupes, it does not swallow.
-    await db.query(
-      `INSERT INTO class_callback_events (event_name, class_order_id, payload, payload_hash)
-       VALUES ('NewNotes', $1, $2::jsonb, $3)`,
-      [`cls26-${tag}`, JSON.stringify({ data: [{ content: 'The appraiser is running late.' }] }),
-       `burst-notes-other-${tag}`]);
-    await cb.drain({ limit: 25 });
-    const two = await db.query(
-      `SELECT count(*)::int AS n FROM class_notes
-        WHERE class_order_row = $1 AND direction = 'ToClient' AND class_note_id IS NULL`, [order26]);
-    ok(two.rows[0].n === 2, 'a genuinely different message still lands');
-
     // The same hole, mirrored: an attachment announcement with an id and NO name.
     await db.query(
       `INSERT INTO class_callback_events (event_name, class_order_id, payload, payload_hash)
@@ -556,6 +544,64 @@ async function main() {
         WHERE class_order_row = $1 AND name IS NULL`, [order26]);
     ok(att.rows[0].n === 1,
        `a name-less attachment announcement stays ONE row (got ${att.rows[0].n})`);
+
+    // THE OTHER WRITER OF THE SAME TABLE. "Check for replies" (messages.syncNotes) is
+    // the one a human presses, and it carried the identical partial-index hole: every
+    // press re-inserted an id-less note and the unread badge counted every copy.
+    // The integration is switched OFF in a test environment and `syncNotes` refuses
+    // early when it is, so both the switch reading and the vendor call are stubbed —
+    // what is under test is the INSERT, not the transport.
+    // Absolute numbers: the thread is cleared first, so this block does not depend on
+    // how many rows the assertions above happened to leave behind.
+    await db.query('DELETE FROM class_notes WHERE class_order_row = $1', [order26]);
+    const classClient = require('../src/class/client');
+    const realNotes = classClient.notes;
+    const realConfigured = classClient.configured;
+    classClient.configured = () => ({ ...realConfigured(), enabled: true });
+    classClient.notes = async () => ({ data: [
+      { content: 'Please confirm access with the tenant.', created: '2026-08-12T10:00:00Z' },
+      { noteId: `n-${tag}-1`, content: 'The appraiser will call you.' },
+    ] });
+    const messages = require('../src/class/messages');
+    const counts = [];
+    for (let i = 0; i < 4; i++) {
+      await messages.syncNotes(order26);
+      counts.push((await db.query(
+        `SELECT count(*)::int AS n FROM class_notes WHERE class_order_row = $1`, [order26])).rows[0].n);
+    }
+    classClient.notes = realNotes;
+    classClient.configured = realConfigured;
+    ok(counts[0] === counts[3],
+       `pressing "check for replies" four times adds nothing after the first (${counts.join(' → ')})`);
+    ok(counts[3] === 2, 'the id-bearing note is added once and the id-less one is not duplicated');
+
+    // A DIFFERENT message must still land — the guard dedupes, it does not swallow.
+    await db.query(
+      `INSERT INTO class_callback_events (event_name, class_order_id, payload, payload_hash)
+       VALUES ('NewNotes', $1, $2::jsonb, $3)`,
+      [`cls26-${tag}`, JSON.stringify({ data: [{ content: 'The appraiser is running late.' }] }),
+       `burst-notes-other-${tag}`]);
+    await cb.drain({ limit: 25 });
+    const two = await db.query(
+      `SELECT count(*)::int AS n FROM class_notes
+        WHERE class_order_row = $1 AND direction = 'ToClient' AND class_note_id IS NULL`, [order26]);
+    ok(two.rows[0].n === 2, 'a genuinely different message still lands');
+
+    // …but a genuine NUDGE days later, with the same wording and the vendor's own new
+    // timestamp, is a NEW message and must land. Without the timestamp in the identity
+    // the guard was a permanent swallow: those words, ever again, dropped in silence.
+    await db.query(
+      `INSERT INTO class_callback_events (event_name, class_order_id, payload, payload_hash)
+       VALUES ('NewNotes', $1, $2::jsonb, $3)`,
+      [`cls26-${tag}`,
+       JSON.stringify({ data: [{ content: 'Please confirm access with the tenant.', created: '2026-08-20T09:00:00Z' }] }),
+       `burst-notes-nudge-${tag}`]);
+    await cb.drain({ limit: 25 });
+    const nudged = await db.query(
+      `SELECT count(*)::int AS n FROM class_notes
+        WHERE class_order_row = $1 AND direction = 'ToClient' AND class_note_id IS NULL`, [order26]);
+    ok(nudged.rows[0].n === 3, 'a later nudge repeating the same wording still lands — the guard dedupes, it does not swallow');
+
 
     await db.query('DELETE FROM class_notes WHERE class_order_row = $1', [order26]);
     await db.query('DELETE FROM class_attachments WHERE class_order_row = $1', [order26]);

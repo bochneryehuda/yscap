@@ -221,5 +221,23 @@ ok(splitName('Dana Realtor').firstName === 'Dana' && splitName('Dana Realtor').l
 ok(splitName('John Michael Smith Jr').lastName === 'Smith', 'a middle name and a suffix are handled');
 ok(splitName('').firstName === null, 'a blank name splits to nothing');
 
+// ---------------------------------------------------------------------------
+// 8. THE SCREEN MUST NOT UNDO THE SERVER'S CARE
+// ---------------------------------------------------------------------------
+// `preview.formName` names the form that would ACTUALLY be ordered; `chosenForm
+// .formName` names the AUTO-PICKED one, and on a staff override those are two
+// different forms. The panel used to fall back from the first to the second, which
+// printed the auto-picked form's NAME above the overridden form's NUMBER — the exact
+// "confidently describes the wrong report" failure, moved from the wire to the screen.
+// A source check, because this is a rule about which value a component may read.
+{
+  const fs = require('fs');
+  const panel = fs.readFileSync(require('path').join(__dirname, '..', 'app-v2/src/components/AmcAppraisalPanel.jsx'), 'utf8');
+  ok(!/preview\.formName\s*\|\|\s*form\.formName/.test(panel),
+     'the order screen never falls back from the ordered form’s name to the auto-picked one');
+  ok(/formLabel\(formName, code\)/.test(panel),
+     'and it renders the pair through formLabel, which shows "Form #<code>" when there is no name');
+}
+
 console.log(`\n[test-amc-contacts-and-form-name-pure] ${pass} passed, ${fail} failed`);
 assert.strictEqual(fail, 0, 'AMC contacts / form-name assertions failed');

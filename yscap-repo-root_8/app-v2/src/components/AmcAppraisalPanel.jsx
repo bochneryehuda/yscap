@@ -154,8 +154,14 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound }) {
   const card = preview.card || {};
   const prop = spec.property || {};
   const loan = spec.loan || {};
+  // BOTH READ FROM THE SAME PAIR. `preview.formName` is the name of the form that
+  // would actually be ordered; `chosenForm.formName` is the name of the AUTO-PICKED
+  // one, and on a staff override those are two different forms. Falling back from one
+  // to the other printed the auto-picked form's NAME above the overridden form's
+  // NUMBER — the "confidently describes the wrong report" failure, on the screen
+  // instead of on the wire. With no name at all, formLabel() shows "Form #<code>".
   const code = preview.productCode || spec.productCode || form.productCode || null;
-  const formName = preview.formName || form.formName || null;
+  const formName = preview.formName || null;
   const contacts = spec.contacts || [];
   const contactNotes = preview.contactNotes || [];
   return (
