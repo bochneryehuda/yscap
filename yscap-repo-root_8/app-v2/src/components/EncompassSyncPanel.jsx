@@ -38,7 +38,15 @@ const LABELS = {
   max_ltc: 'Max LTC %', note_rate: 'Interest rate %', origination_pct: 'Origination fee %', term_months: 'Term (months)',
   maturity_date: 'Maturity date', total_experience_deals: 'Experience (deals)', rehab_type: 'Rehab type',
   accrual_type: 'Accrual type', ref_cash_to_close: 'Est. cash to close', ref_down_payment: 'Down payment',
-  ref_table_funder: 'Table funder', ref_cross_collateralized: 'Cross-collateralized', ref_multi_property: 'Multi-property',
+  ref_cross_collateralized: 'Cross-collateralized', ref_multi_property: 'Multi-property',
+  // CX.TABLEFUNDER (owner-directed 2026-08-09) — THREE keys, because the field itself and the two
+  // questions asked about it are different things. `funding_channel` is the raw value, shown for
+  // context and never checked (its tenant spellings are unverified, so comparing it could block a
+  // term sheet over a word nobody enumerated). The two `_rule` / `_agreement` rows are the real
+  // questions, and each fires only on a value PILOT can positively read.
+  funding_channel: 'How the loan funded (Encompass)',
+  funding_channel_rule: 'Funding channel allowed for this note buyer',
+  funding_channel_agreement: 'How the loan funded — closing desk vs Encompass',
 };
 const CATEGORY_LABEL = {
   program: 'Program & identity', identity: 'Borrower & property', loan: 'Loan & terms', interest: 'Loan & terms',

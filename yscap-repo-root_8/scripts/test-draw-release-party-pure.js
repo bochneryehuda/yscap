@@ -83,7 +83,16 @@ eq(RP.notSoldWarning({}), null, 'D6 asked with nothing → nothing');
 const w = RP.notSoldWarning({ mode: 'investor_direct', sold: 'not_sold' });
 eq(w.suggestMode, 'reimbursement', 'D7 the one-click way out is "we release"');
 ok(ID.MODES.includes(w.suggestMode), 'D8 …and it is a real mode the switch can store');
-ok(/release it yourself/i.test(w.body), 'D9 the question is asked in the owner\'s own words');
+// The owner CHANGED the default on 2026-08-09 ("default should be like it was sold already, but
+// it should give you a warning that it doesn't have a PA date if you're sure you want to do
+// investor delivery"), so the wording had to move with it: it now leads with permission to carry
+// on and offers releasing it ourselves second. Both halves are pinned — proceeding is offered
+// FIRST, and the way out is still there.
+ok(/go ahead/i.test(w.body), 'D9 carrying on is offered — the owner\'s new default is "treat it as sold"');
+ok(/release the money yourself/i.test(w.body), 'D9b …and releasing it ourselves is still offered as the alternative');
+ok(w.body.search(/go ahead/i) < w.body.search(/release the money yourself/i),
+  'D9c …in that ORDER: the default reads first, the alternative second');
+ok(!/isn.t sold yet/i.test(w.title), 'D9d the title states the FACT (no PA date), not the old conclusion');
 eq(w.certain, true, 'D10 a proven "no PA date" says so plainly');
 eq(RP.notSoldWarning({ mode: 'investor_direct', sold: 'unknown' }).certain, false, 'D11 …and an unreadable one is honest that it cannot tell');
 ok(!/\bmust\b|cannot proceed|blocked/i.test(w.body), 'D12 it is a QUESTION, never a refusal');

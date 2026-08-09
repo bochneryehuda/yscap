@@ -355,6 +355,20 @@ async function deliveryPreview(appId, drawId) {
 
   const blockers = ID.deliveryBlockers({ finding, investorContacts: contacts, noteBuyer: app.note_buyer, mode, wireForm });
 
+  // HAS THIS LOAN ACTUALLY BEEN SOLD? A WARNING, NEVER A BLOCKER — this is the exact moment the
+  // owner named (2026-08-09: "default should be like it was sold already, but it should give you a
+  // warning that it doesn't have a PA date if you're sure you want to do investor delivery"). It is
+  // deliberately kept OUT of `blockers`, so `can_send` is untouched and the send is never refused
+  // over it; the screen shows it beside the button and the coordinator decides.
+  //
+  // A table-funded loan was sold at the closing table and produces NO warning at all, which is the
+  // whole point — otherwise every Fidelis delivery would carry a nag about a date that is never
+  // coming. Best-effort: an unreadable state simply shows nothing rather than blocking a send or
+  // inventing a doubt.
+  let soldState = null;
+  try { soldState = await require('./release-party').releaseStateFor(db, appId, { sitewireDrawId: drawId }); }
+  catch (_) { soldState = null; }
+
   const history = (await db.query(
     `SELECT id, funding_mode, investor_total_cents, to_borrower_cents, to_us_cents, to_emails,
             status, error, sent_at, sent_by
@@ -377,7 +391,14 @@ async function deliveryPreview(appId, drawId) {
     wire_form: wireForm,
     to: rcpt.to, cc: rcpt.cc,
     blockers,
+    // `can_send` reads ONLY the blockers. The sold warning below is advisory by the owner's own
+    // rule and must never creep into this — if it ever needs to stop a send, that is a new
+    // owner decision, not a line moved.
     can_send: blockers.length === 0,
+    sold: soldState ? soldState.sold : null,
+    sold_label: soldState ? soldState.soldLabel : null,
+    sold_via: soldState ? soldState.soldVia : null,
+    sold_warning: soldState ? soldState.warning : null,
     history,
   };
 }

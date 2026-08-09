@@ -14,23 +14,35 @@
  * "which mode?" has exactly one definition in this codebase and this module can never disagree
  * with the email that goes to the investor.
  *
- * THE SOLD SIGNAL IS THE PURCHASE ADVICE (PA) DATE FROM ENCOMPASS. A file with a PA date has been
- * sold to the investor; a file without one has not. It is read-only reference data — Encompass
- * stays read-only, forever — and it NEVER flips the release party by itself. All it does is raise
- * a WARNING when the money is set to come from an investor who does not own the loan yet:
+ * THERE ARE TWO WAYS A LOAN IS SOLD, and missing the first is what would make this feature a
+ * nuisance (owner-directed 2026-08-09):
  *
- *     "This loan isn't sold yet. Do you want to release it yourself?"
+ *   TABLE FUNDED — sold AT the closing table. The closer funded it on the "Table Funding"
+ *     warehouse line, or Encompass's own funding channel says so. Such a loan is sold the day it
+ *     closes and a purchase advice date is NEVER coming, so the absence of one proves nothing.
+ *     Checked FIRST, or every Fidelis deal we ever close would warn the coordinator and chase the
+ *     closer forever over a date that does not exist. See ../lib/funding-channel.js.
+ *   PURCHASE ADVICE — sold later, to the investor, and the PA date from Encompass records it.
  *
- * IT FAILS TOWARD ASKING. Sold is a three-valued answer — sold / not sold / we cannot tell — and
- * both of the last two show the warning, because the only state that should silence it is an
- * affirmative "yes, it was sold". An unreadable file, a file pulled before this was wired, and a
- * deployment with no PA field id configured all read as "cannot tell", and all of them ask.
+ * Both are read-only reference data — Encompass stays read-only, forever — and NEITHER flips the
+ * release party by itself. All they do is raise a WARNING when the money is set to come from an
+ * investor who may not own the loan yet.
+ *
+ * THE DEFAULT IS TO CARRY ON (owner-directed 2026-08-09: "default should be like it was sold
+ * already, but it should give you a warning that it doesn't have a PA date if you're sure you want
+ * to do investor delivery"). Sold is still a three-valued answer — sold / not sold / we cannot
+ * tell — and both of the last two show the warning, because the only state that should silence it
+ * is an affirmative "yes, it was sold". But the warning refuses nothing and writes nothing: it
+ * offers going ahead first and releasing it ourselves second.
  *
  * The decision half is PURE (no DB, no network). The reader at the bottom takes its `db` as an
  * argument, so the whole file unit-tests against a stub.
  */
 
 const ID = require('./investor-delivery');   // pure: MODES / resolveFundingModeAt / labels
+// TABLE FUNDING — whether this loan was sold at the closing table, in which case no purchase
+// advice date is ever coming. Pure (its only require is the Encompass value map).
+const FC = require('../lib/funding-channel');
 
 // ---------------------------------------------------------------------------
 // The sold signal
@@ -40,8 +52,15 @@ const SOLD = { SOLD: 'sold', NOT_SOLD: 'not_sold', UNKNOWN: 'unknown' };
 
 const SOLD_LABEL = {
   sold: 'Sold to the investor',
-  not_sold: 'Not sold yet',
-  unknown: 'Not sold yet (as far as PILOT can tell)',
+  not_sold: 'No purchase advice date yet',
+  unknown: 'No purchase advice date yet',
+};
+
+/** How we know a loan was sold — so a screen can say WHY, not just that it was. */
+const SOLD_VIA = { TABLE: 'table_funding', ADVICE: 'purchase_advice' };
+const SOLD_VIA_LABEL = {
+  table_funding: 'Table funded — sold at the closing table',
+  purchase_advice: 'Purchase advice received',
 };
 
 /**
@@ -87,11 +106,27 @@ function paDateOf(v) {
  *
  * Never throws. Anything it cannot read is 'unknown', which shows the warning.
  */
-function soldStatus({ paDate = null, fieldConfigured = false, pulled = true } = {}) {
+function soldStatus({ paDate = null, fieldConfigured = false, pulled = true,
+  tableFunded = null, channel = null } = {}) {
+  // TABLE FUNDED IS SOLD, FULL STOP, AND IT IS CHECKED FIRST (owner-directed 2026-08-09:
+  // "anything that is set in Encompass for table funding means that it's right away sold, so you
+  // can right away consider it for the investor to release … if that says table funding, then it
+  // is not going to have a PA date"). A table-funded loan is sold AT the closing table, so no
+  // purchase advice is ever coming and its absence proves nothing. Checked before the PA date
+  // precisely so the missing date can never be read as "not sold" on these files — which would
+  // warn the coordinator, and chase the closer, on every single Fidelis deal, forever.
+  if (FC.soldAtTable({ tableFunded, channel })) return SOLD.SOLD;
   if (paDateOf(paDate)) return SOLD.SOLD;      // a real date is proof, whatever else is missing
   if (!fieldConfigured) return SOLD.UNKNOWN;
   if (!pulled) return SOLD.UNKNOWN;
   return SOLD.NOT_SOLD;
+}
+
+/** Why we say a loan is sold — 'table_funding' | 'purchase_advice' | null (we do not say it is). */
+function soldVia({ paDate = null, tableFunded = null, channel = null } = {}) {
+  if (FC.soldAtTable({ tableFunded, channel })) return SOLD_VIA.TABLE;
+  if (paDateOf(paDate)) return SOLD_VIA.ADVICE;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,14 +159,22 @@ function autoLedgers(mode) { return ledgerParty(mode) === 'investor'; }
 // The not-sold warning
 // ---------------------------------------------------------------------------
 
-const NOT_SOLD_TITLE = 'This loan isn’t sold yet';
+const NOT_SOLD_TITLE = 'No purchase advice date on this file';
 
 /**
  * The warning, or null when there is nothing to warn about.
  *
+ * IT IS A CHECK, NOT A STOP, AND THE DEFAULT IS TO CARRY ON (owner-directed 2026-08-09: "default
+ * should be like it was sold already, but it should give you a warning that it doesn't have a PA
+ * date if you're sure you want to do investor delivery"). Nothing here changes a stored value,
+ * nothing refuses the delivery, and the wording leads with the FACT (no purchase advice date)
+ * rather than the old conclusion ("this loan isn't sold yet") — which was too strong now that a
+ * table-funded loan is correctly read as sold without one, and which read as an accusation on a
+ * file that was merely waiting on paperwork.
+ *
  * It fires only when BOTH halves are true: the money is set to come from the investor, AND we
- * cannot confirm the investor owns this loan. It is a QUESTION, never a refusal — the coordinator
- * can carry on, or take the one-click switch to "We release". Nothing here changes a stored value.
+ * cannot confirm the investor owns this loan. Switching to "We release" stays offered as the
+ * SECOND option rather than the recommendation.
  */
 function notSoldWarning({ mode = null, sold = SOLD.UNKNOWN } = {}) {
   if (ledgerParty(mode) !== 'investor') return null;          // we release, or manual — not our question
@@ -141,9 +184,9 @@ function notSoldWarning({ mode = null, sold = SOLD.UNKNOWN } = {}) {
     code: 'not_sold_yet',
     title: NOT_SOLD_TITLE,
     body: (certain
-      ? 'This file has no purchase advice date, so the loan has not been sold to the investor yet. '
-      : 'PILOT cannot confirm this loan has been sold to the investor yet — there is no purchase advice date on file. ')
-      + 'This draw is currently set for the investor to release the money. Do you want to release it yourself instead?',
+      ? 'This file has no purchase advice date, so PILOT cannot confirm the loan has been sold to the investor yet. '
+      : 'PILOT cannot tell whether this loan has been sold yet — there is no purchase advice date on file. ')
+      + 'You can go ahead with the investor delivery if you know it is sold. If it is not, you can release the money yourself instead.',
     suggestMode: 'reimbursement',
     suggestLabel: 'Switch to “We release”',
     certain,
@@ -159,13 +202,15 @@ function notSoldWarning({ mode = null, sold = SOLD.UNKNOWN } = {}) {
  * Shape (everything a screen needs, nothing it has to work out for itself):
  *
  *   { mode, level, levelLabel, modeLabel, modeHelp, party, autoLedger,
- *     sold, soldLabel, paDate, warning,
+ *     sold, soldLabel, soldVia, soldViaLabel, tableFunded, paDate, warning,
  *     levels: { draw, project, capital_provider, company } }   ← what each level actually holds
  */
 function describe({ drawMode = null, fileMode = null, ruleMode = null, companyMode = null,
-  paDate = null, fieldConfigured = false, pulled = true } = {}) {
+  paDate = null, fieldConfigured = false, pulled = true,
+  tableFunded = null, channel = null } = {}) {
   const at = ID.resolveFundingModeAt({ drawMode, fileMode, ruleMode, companyMode });
-  const sold = soldStatus({ paDate, fieldConfigured, pulled });
+  const sold = soldStatus({ paDate, fieldConfigured, pulled, tableFunded, channel });
+  const via = soldVia({ paDate, tableFunded, channel });
   const keep = (v) => (ID.MODES.includes(String(v || '')) ? String(v) : null);
   return {
     mode: at.mode,
@@ -176,7 +221,13 @@ function describe({ drawMode = null, fileMode = null, ruleMode = null, companyMo
     party: ledgerParty(at.mode),
     autoLedger: autoLedgers(at.mode),
     sold,
-    soldLabel: SOLD_LABEL[sold],
+    // A table-funded loan reads "Table funded — sold at the closing table" rather than the generic
+    // "Sold to the investor", so a coordinator can see WHY there is no purchase advice date on a
+    // file that is nonetheless completely fine.
+    soldLabel: (via && SOLD_VIA_LABEL[via]) || SOLD_LABEL[sold],
+    soldVia: via,
+    soldViaLabel: via ? SOLD_VIA_LABEL[via] : null,
+    tableFunded: FC.soldAtTable({ tableFunded, channel }),
     paDate: paDateOf(paDate),
     warning: notSoldWarning({ mode: at.mode, sold }),
     // The levels are reported RAW (an unrecognised stored value reads as null, exactly as the
@@ -213,9 +264,15 @@ async function releaseStateFor(db, appId, { sitewireDrawId = null } = {}) {
     try { const r = await db.query(sql, params); return (r && r.rows) || []; } catch (_) { return []; }
   };
 
+  // `encompass_extra` carries the funding channel Encompass holds; `table_funded` is the closer's
+  // own answer, derived from the warehouse line they funded on. EITHER means sold at the table —
+  // see FC.soldAtTable for why either alone is enough.
   const app = (await q(
-    `SELECT purchase_advice_date, encompass_last_pulled_at, lender
-       FROM applications WHERE id=$1`, [appId]))[0] || {};
+    `SELECT a.purchase_advice_date, a.encompass_last_pulled_at, a.lender, a.encompass_extra,
+            cw.table_funded
+       FROM applications a
+       LEFT JOIN closing_workflow cw ON cw.application_id = a.id
+      WHERE a.id=$1`, [appId]))[0] || {};
 
   const link = (await q(
     `SELECT investor_funding_mode FROM sitewire_property_links
@@ -247,11 +304,24 @@ async function releaseStateFor(db, appId, { sitewireDrawId = null } = {}) {
     `SELECT value FROM sitewire_settings WHERE key='investor_funding_mode_default'`))
     .map((r) => (typeof r.value === 'string' ? r.value : (r.value && String(r.value))))[0] || null;
 
+  // The Encompass channel, read out of the stored pull through the SAME extractor the panel uses,
+  // so this and the Encompass screen can never read one stored value two different ways. Guarded:
+  // a file never pulled, or a stored copy this cannot parse, simply has no channel and the closer's
+  // own table_funded flag answers on its own.
+  let channel = null;
+  try {
+    const fm = require('../lib/integrations/encompass-field-map');
+    const t = app.encompass_extra ? fm.extractFields(app.encompass_extra) : null;
+    channel = (t && FC.channelKey(t.funding_channel)) || null;
+  } catch (_) { channel = null; }
+
   const state = describe({
     drawMode, fileMode: link.investor_funding_mode || null, ruleMode, companyMode,
     paDate: app.purchase_advice_date || null,
     fieldConfigured: paFieldConfigured(),
     pulled: !!app.encompass_last_pulled_at,
+    tableFunded: app.table_funded === true ? true : (app.table_funded === false ? false : null),
+    channel,
   });
   // STAFF-ONLY: the note buyer's name rides along so the desk can say "Fidelis releases the
   // money" instead of the anonymous "the investor". Every consumer of this is behind
@@ -292,7 +362,7 @@ async function syncPurchaseAdviceDate(db, appId, fieldValues) {
 }
 
 module.exports = {
-  SOLD, SOLD_LABEL, NOT_SOLD_TITLE,
-  paDateOf, soldStatus, ledgerParty, autoLedgers, notSoldWarning, describe,
+  SOLD, SOLD_LABEL, SOLD_VIA, SOLD_VIA_LABEL, NOT_SOLD_TITLE,
+  paDateOf, soldStatus, soldVia, ledgerParty, autoLedgers, notSoldWarning, describe,
   paFieldConfigured, releaseStateFor, syncPurchaseAdviceDate,
 };

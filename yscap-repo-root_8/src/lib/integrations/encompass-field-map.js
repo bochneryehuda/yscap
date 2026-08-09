@@ -65,13 +65,22 @@ function pull(entry) {
 //   our     — human hint of where the PILOT value comes from (column:… / quote:… /
 //             derive / none). Documentation for WO-B; this module never reads it.
 
-// The ONE field id this registry does not hard-code, because the owner supplies it: the Purchase
-// Advice (PA) date, which is how PILOT knows a loan has been sold (see the entry below). Read
-// straight from the environment rather than through src/config.js so this module keeps its "no
-// requires" property — every registry invariant test enumerates REGISTRY, and a config import
-// would drag the whole config graph into a pure data map. Blank/unset → null, and the entry is
-// then simply absent: nothing sends a placeholder id, and nothing pretends to know the answer.
-const PA_DATE_FIELD_ID = String(process.env.ENCOMPASS_PA_DATE_FIELD_ID || '').trim() || null;
+// The Purchase Advice (PA) date — how PILOT knows a loan has been sold (see the entry below).
+// THE ID IS 2370, SUPPLIED BY THE OWNER (2026-08-09: "the PA date for these files is going to be
+// this field id 2370 — this field is going to be empty until it's sold, and it's going to get a
+// date for when it's sold"). The env var stays as an OVERRIDE rather than the only source: it was
+// the placeholder while the id was unknown, and leaving it in place means a tenant that turns out
+// to store this somewhere else is a configuration change, not a deploy. Setting it to a blank
+// string deliberately switches the field OFF (the entry disappears and the sold status honestly
+// reads "we cannot tell"), which is the fastest way to stop a wrong id 400-ing the read batch.
+// Read straight from the environment rather than through src/config.js so this module keeps its
+// "no requires" property — every registry invariant test enumerates REGISTRY, and a config import
+// would drag the whole config graph into a pure data map.
+const PA_DATE_FIELD_ID = (
+  Object.prototype.hasOwnProperty.call(process.env, 'ENCOMPASS_PA_DATE_FIELD_ID')
+    ? String(process.env.ENCOMPASS_PA_DATE_FIELD_ID || '').trim()
+    : '2370'
+) || null;
 
 const REGISTRY = Object.freeze([
   // ── Identity / program / vesting ──────────────────────────────────────────
@@ -96,6 +105,34 @@ const REGISTRY = Object.freeze([
   // these fields is the staff Encompass panel — this name must NEVER reach a
   // borrower. ADVISORY: our side is free text, so a difference surfaces for a human.
   pull({ key: 'capital_provider', encompassFieldId: 'CX.CAPITALPROVIDER', type: 'enum', category: 'program', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'capitalProvider', nameFallback: true, verified: true, our: 'column:lender (note buyer)', note: 'Note buyer / capital provider — STAFF-ONLY. Encompass dropdown read live 2026-07-26: Fidelis Investors / RCN / Roc Capital / Temple View Capital / CorrFirst / BlueLake / EMCAP / Other. nameFallback: an unmapped buyer still compares by name (corporate-form + spelling tolerant) when both sides carry one' }),
+  // THE FUNDING CHANNEL — how the loan funded, and therefore whether it was sold at
+  // the closing table (owner-directed 2026-08-09). It was `ref_table_funder`, read on
+  // every pull and compared against nothing; the owner's rule gives it a job, so it is
+  // promoted to a real compared field here. PILOT's side is the closer's WAREHOUSE pick
+  // (closing.tableFundedFor — funding on the "Table Funding" line means sold at
+  // closing), so this row answers "does the closing desk agree with Encompass about how
+  // this loan funded?".
+  //
+  // REFERENCE — displayed, never counted by summarize(), and that is DELIBERATE rather
+  // than timid. It was built as a compared enum first, and that shipped a real hazard:
+  // `summarize()` counts "no data to compare" as NOT PASSING, and this field's exact
+  // tenant values are UNVERIFIED (`verified:false` — the registry has called it a "table
+  // funder FLAG" since it was written, while the owner describes it as a channel). So on
+  // any FUNDED file whose CX.TABLEFUNDER held a spelling the value map does not carry —
+  // a table funder's NAME, say — our side would be present, theirs unmappable, the row
+  // incomparable, and the term sheet AND the data-tape export blocked. The only fix
+  // would have been enumerating the spelling in code, which nobody at the desk can do:
+  // a gate whose own remedy the user cannot perform, which is the dead-end class this
+  // repo warns about.
+  //
+  // Both real questions are asked instead by rows this codebase fully controls, in
+  // reconcile.compareFundingChannel, and each fires ONLY on a positively-readable value:
+  //   · `funding_channel_rule` (BLOCK) — the owner's hard rule, that Blue Lake / EMCAP /
+  //     CorrFirst may never be table funded;
+  //   · `funding_channel_agreement` (ADVISORY) — our closer's warehouse pick disagreeing
+  //     with Encompass about how this loan funded.
+  // An unreadable Encompass value produces neither, so it can never gate anything.
+  pull({ key: 'funding_channel', encompassFieldId: 'CX.TABLEFUNDER', type: 'text', category: 'program', compare: 'reference', gate: GATE.REFERENCE, valueMap: 'fundingChannel', verified: false, our: 'derive(closing_workflow.warehouse → table_funded)', note: 'Funding channel — Table Funding (sold at the closing table) vs direct RTL delegated / with TPR (sold later, so a purchase advice date is expected). Shown for context; the two questions that matter are asked as their own rows (funding_channel_rule / funding_channel_agreement) so an unverified tenant value can never block a term sheet or a tape. valueMap is still declared because funding-channel.js reads it — ONE table for both' }),
   pull({ key: 'loan_to_be_vested', encompassFieldId: 'CX.LOANTOBEVESTED', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'vesting', our: 'derive(applications.llc_id present → entity)', note: 'Entity vs individual vesting flag' }),
   // Field 4008 — the TITLE VESTING ROLE (owner-directed 2026-08-05): Encompass
   // must carry field 4008 = "Officer" when the subject is vested on an LLC/entity
@@ -187,7 +224,7 @@ const REGISTRY = Object.freeze([
   // ENCOMPASS_PA_DATE_FIELD_ID. Until it is set the id is null, so `allFieldIds()` (which
   // filters falsy) never sends a made-up id to the fieldReader — a wrong id would 400 the whole
   // batch — and the sold status honestly reads "we cannot tell", which shows the warning.
-  ...(PA_DATE_FIELD_ID ? [pull({ key: 'purchase_advice_date', encompassFieldId: PA_DATE_FIELD_ID, type: 'date', category: 'loan', compare: 'reference', gate: GATE.REFERENCE, verified: false, our: 'column:purchase_advice_date', note: 'Purchase advice date — read-only reference. Present = the loan was sold to the investor; blank = not sold yet. Drives the draw "this loan isn\'t sold yet" warning only; gates nothing. Field id comes from ENCOMPASS_PA_DATE_FIELD_ID (owner-supplied) — verify against the live tenant once set' })] : []),
+  ...(PA_DATE_FIELD_ID ? [pull({ key: 'purchase_advice_date', encompassFieldId: PA_DATE_FIELD_ID, type: 'date', category: 'loan', compare: 'reference', gate: GATE.REFERENCE, verified: false, our: 'column:purchase_advice_date', note: 'Purchase advice date — field 2370, supplied by the owner 2026-08-09. Read-only reference: present = the loan was sold to the investor. Blank does NOT mean "not sold" on its own — a TABLE FUNDED loan was sold at the closing table and never receives one (see src/lib/funding-channel.js), which is why release-party.soldStatus checks table funding FIRST. Drives a warning at investor delivery and the 30-day chase; gates nothing. ENCOMPASS_PA_DATE_FIELD_ID overrides the id, and setting it blank switches the field off entirely' })] : []),
 
   // ── Experience / rehab-type / accrual (enum + int, advisory) ──────────────
   // A FIRST-TIME BORROWER IS A ZERO, NOT A BLANK (owner-reported 2026-08-07:
@@ -212,7 +249,7 @@ const REGISTRY = Object.freeze([
   // Encompass field for our purposes — do NOT reference it in the comparison.
   pull({ key: 'ref_cash_to_close', encompassFieldId: 'CX.RTLCASHTOCLOSEESTIMAT', type: 'money', category: 'cost', compare: 'reference', gate: GATE.REFERENCE, our: 'none', note: 'Estimated cash to close — reference only' }),
   pull({ key: 'ref_down_payment', encompassFieldId: 'CX.RTLDOWNPAYMENT', type: 'money', category: 'cost', compare: 'reference', gate: GATE.REFERENCE, our: 'none', note: 'Down payment — reference only' }),
-  pull({ key: 'ref_table_funder', encompassFieldId: 'CX.TABLEFUNDER', type: 'text', category: 'program', compare: 'reference', gate: GATE.REFERENCE, our: 'none', note: 'Table funder flag — reference only (staff-internal)' }),
+  // (CX.TABLEFUNDER moved UP into the program section — it is compared now, not reference-only.)
   pull({ key: 'ref_cross_collateralized', encompassFieldId: 'CX.CROSSCOLLATERALIZEDFLAG', type: 'text', category: 'program', compare: 'reference', gate: GATE.REFERENCE, our: 'none', note: 'Cross-collateralized flag — reference only' }),
   pull({ key: 'ref_multi_property', encompassFieldId: 'CX.MULTIPROPERTYFLAG', type: 'text', category: 'program', compare: 'reference', gate: GATE.REFERENCE, our: 'none', note: 'Multi-property flag — reference only' }),
 ]);
@@ -319,6 +356,46 @@ const VALUE_MAPS = Object.freeze({
     'roc capital': 'roccapital', 'roc': 'roccapital', 'roc360': 'roccapital',
     'temple view capital': 'templeview', 'temple view': 'templeview', 'templeview': 'templeview',
     'other': 'other',
+  },
+  // CX.TABLEFUNDER ↔ closing_workflow.warehouse (owner-directed 2026-08-09: "look on
+  // the channel in Encompass cx.tablefunder — if that says table funding, then it is
+  // not going to have a PA date").
+  //
+  // THE FIELD IS READ IN BOTH OF THE TWO SHAPES IT COULD PLAUSIBLY HOLD, and that is
+  // deliberate rather than lazy. The registry has carried this field since it was
+  // written, described as a "table funder FLAG" — a Y/N — while the owner describes it
+  // as a CHANNEL whose value literally reads "table funding". Both readings mean the
+  // same thing about the loan, and it cannot be checked from here (Encompass is
+  // read-only and there is no live tenant in this process), so the table recognizes
+  // both and the rule below only ever acts on a POSITIVE reading. A value in neither
+  // list maps to null — "we do not recognize this", never a guess (`verified:false` on
+  // the entry says the same thing to a human).
+  //
+  // THE TWO DIRECT VALUES SHARE ONE TOKEN, and that is a correctness requirement rather
+  // than a shortcut. OUR side of this comparison is the closer's WAREHOUSE pick, which
+  // says only whether the loan funded on the Table Funding line — it cannot tell
+  // delegated from TPR, because PILOT never records which. Giving those two their own
+  // tokens would therefore make every correctly-configured direct file read as a
+  // MISMATCH (ours 'direct' vs theirs 'direct_delegate') for a distinction our side is
+  // structurally incapable of holding. The question this row asks is binary — was this
+  // loan sold at the table, or is it still to be sold — and that is exactly what both
+  // sides can answer. Encompass's exact wording is never lost: the panel shows the RAW
+  // value beside the normalized one, so a human still sees "Direct RTL / w TPR".
+  fundingChannel: {
+    'table funding': 'table_funding', 'table funded': 'table_funding', 'tablefunding': 'table_funding',
+    'table fund': 'table_funding', 'table-funding': 'table_funding', 'table funder': 'table_funding',
+    'y': 'table_funding', 'yes': 'table_funding', 'true': 'table_funding', '1': 'table_funding',
+    'n': 'direct', 'no': 'direct', 'false': 'direct', '0': 'direct',
+    'direct rtl': 'direct', 'direct': 'direct',
+    'direct rtl / delegate': 'direct', 'direct rtl/delegate': 'direct',
+    'direct rtl delegate': 'direct', 'direct rtl - delegate': 'direct',
+    'direct / delegate': 'direct', 'direct delegate': 'direct',
+    'delegate': 'direct', 'delegated': 'direct',
+    'direct rtl / w tpr': 'direct', 'direct rtl/w tpr': 'direct',
+    'direct rtl w tpr': 'direct', 'direct rtl - w tpr': 'direct',
+    'direct rtl / with tpr': 'direct', 'direct rtl with tpr': 'direct',
+    'direct / w tpr': 'direct', 'direct w tpr': 'direct',
+    'w tpr': 'direct', 'with tpr': 'direct', 'tpr': 'direct',
   },
   // CX.REHABTYPE ↔ applications.rehab_type (Cosmetic/Moderate/Heavy/Adding SF/Ground-up)
   // Owner-directed 2026-07-26: Encompass only has Light / Heavy / Expansion, so our

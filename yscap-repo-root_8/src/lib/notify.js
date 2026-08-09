@@ -86,6 +86,9 @@ const KICKER_OF = {
   sharepoint_backlog_slo: 'Document sync', inbound_reply: 'File reply',
   officer_assigned: 'Your loan officer', all_caught_up: 'You’re all set',
   milestone: 'Milestone', digest: 'Your loan file',
+  // The purchase advice that never arrived (owner-directed 2026-08-09). STAFF-ONLY — it goes to
+  // the file's closer and the super admins, never a borrower.
+  purchase_advice_missing: 'Purchase advice',
   // The Workflow (owner-directed 2026-07-21): a file was submitted to your
   // personal work queue, or a file you submitted was finished + sent back.
   workflow_submitted: 'Workflow', workflow_returned: 'Workflow', workflow_ready: 'Workflow',
@@ -579,6 +582,10 @@ const CATEGORY_OF = {
   // New borrower touchpoints (owner-directed 2026-07-20)
   officer_assigned: 'status_updates', all_caught_up: 'status_updates',
   milestone: 'status_updates', digest: 'reminders',
+  // A CHASE, so 'reminders'. Deliberately NOT 'draws': that category is what makes notify Cc the
+  // whole draw loop-in (coordinator + desk + officer) onto an email, and this one is about the
+  // SALE of the loan, which is the closer's and the super admins' business, not the draw desk's.
+  purchase_advice_missing: 'reminders',
   // The Workflow (owner-directed 2026-07-21) — staff hand-off events. Action-
   // bearing, so NOT added to STAFF_INAPP_TYPES: they email the recipient/submitter.
   workflow_submitted: 'status_updates', workflow_returned: 'status_updates', workflow_ready: 'status_updates',

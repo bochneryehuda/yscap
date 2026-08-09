@@ -2269,6 +2269,18 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
             </ul>
           )}
 
+          {/* HAS THIS LOAN BEEN SOLD? A CHECK, NOT A STOP — the Deliver button stays enabled
+              (owner-directed 2026-08-09: "default should be like it was sold already, but it
+              should give you a warning that it doesn't have a PA date if you're sure you want to
+              do investor delivery"). Gold, not red: red is for the blockers above, which do refuse.
+              A table-funded loan produces no warning at all — it was sold at the closing table. */}
+          {p.sold_warning && (
+            <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 8, background: 'var(--gold-soft,#F7F1E4)', border: '1px solid var(--gold,#AE8746)' }}>
+              <div style={{ fontWeight: 700, color: '#141B22' }}>{p.sold_warning.title}</div>
+              <div className="small" style={{ marginTop: 4, color: '#3A4550' }}>{p.sold_warning.body}</div>
+            </div>
+          )}
+
           <div className="row" style={{ gap: 10, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-sm primary" disabled={busy || !p.can_send} onClick={send}
               title={p.can_send ? (p.funding_mode === 'manual' ? 'Record this draw as delivered manually' : `Deliver this draw to ${p.note_buyer}`) : 'Clear the items above first'}>
@@ -2395,7 +2407,13 @@ function ReleasePartyCard({ appId, release, reload }) {
             {' · '}<span style={{ color: '#4B585C' }}>from {release.levelLabel}</span>
           </div>
         </div>
-        <span className={`chip ${release.sold === 'sold' ? 'good' : ''}`} title="Read from the purchase advice date in Encompass">
+        {/* TWO ways a loan is sold, and the label says WHICH — a table-funded loan was sold at the
+            closing table and is never getting a purchase advice date, so "no PA date" on one of
+            those is completely normal and must not read as a problem (owner-directed 2026-08-09). */}
+        <span className={`chip ${release.sold === 'sold' ? 'good' : ''}`}
+          title={release.soldVia === 'table_funding'
+            ? 'Funded on the Table Funding warehouse line — sold at the closing table, so no purchase advice date is expected'
+            : 'Read from the purchase advice date in Encompass'}>
           {release.soldLabel}
         </span>
       </div>

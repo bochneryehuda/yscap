@@ -87,6 +87,11 @@ const DIGEST_ACTION = Object.freeze({
   DRAW_APPROVED_UNRECORDED: 'draw_approved_unrecorded',
   INVESTOR_FEE_OWED: 'investor_fee_owed_chase',
   RETAINAGE_RELEASABLE: 'retainage_releasable',
+  // A funded loan that was NOT sold at the closing table and still has no purchase advice a month
+  // later (owner-directed 2026-08-09: "if it doesn't get a purchase date till 30 days after a
+  // funding date, then we should get notified — super admin should get notified, and the closer
+  // should get notified").
+  PURCHASE_ADVICE_MISSING: 'purchase_advice_missing',
 });
 
 /**
@@ -1374,6 +1379,110 @@ async function retainageReleasableOnce() {
   return sent;
 }
 
+/* G) THE PURCHASE ADVICE NEVER ARRIVED (owner-directed 2026-08-09: "there should be a workflow for
+   this stuff that doesn't have a purchase date — if it doesn't get a purchase date till 30 days
+   after a funding date, then we should get notified; super admin should get notified, and the
+   closer should get notified").
+
+   THE WHOLE SWEEP IS BUILT AROUND NOT FIRING ON A TABLE-FUNDED LOAN. A loan sold at the closing
+   table is never going to receive a purchase advice — that is what table funding MEANS — so
+   chasing one would put a monthly email on every Fidelis deal we ever close, forever, which is the
+   fastest way to teach a team to ignore this alert. Three independent things have to say the loan
+   is still to be sold before anyone is told:
+     · the closer's own warehouse pick is not the Table Funding line (closing_workflow.table_funded,
+       the reliable local signal — a human on our own desk chose it);
+     · Encompass's funding channel does not say table funding either (belt and braces, for a file
+       where the two disagree — the disagreement itself is surfaced on the Encompass panel);
+     · neither place we record a purchase advice has one — the Encompass-read date on the file AND
+       the closer's own hand-entered `purchasing_advice` row. Missing the second would chase files
+       where a human had already recorded the advice by hand, which is precisely the desk this is
+       meant to help.
+
+   RTL only, structurally: `applications` IS the RTL product's table — the long-term side has its
+   own `lt_*` tables and does not appear here at all.
+
+   Self-gating (≤ once per file per week) and business-hours like every other sweep. The threshold
+   is the owner's 30 days, with an env override for a deployment that wants to be told sooner. */
+const PURCHASE_ADVICE_CHASE_DAYS = () => Math.max(1, Number(process.env.PURCHASE_ADVICE_CHASE_DAYS || 30));
+
+async function purchaseAdviceMissingOnce() {
+  let sent = 0;
+  const days = PURCHASE_ADVICE_CHASE_DAYS();
+  let rows = [];
+  try {
+    rows = (await db.query(
+      `SELECT a.id, a.ys_loan_number, a.funded_date, a.lender, a.closer_id,
+              (CURRENT_DATE - a.funded_date)::int AS age,
+              -- The Encompass funding channel, read from the flat by-number map the reader writes
+              -- on every pull, falling back to the customFields[] array a pull made before that
+              -- wiring would have stored. Text only — the JS side normalizes it through the ONE
+              -- shared value map, so this never has to know the tenant's exact wording.
+              -- jsonb_typeof guard: jsonb_array_elements RAISES on anything that is not an array,
+              -- and one stored copy whose customFields came back as an object would throw the whole
+              -- query — which this function's catch would swallow into a permanent, confident
+              -- "nothing to chase". A shape we did not expect must cost us that one file's
+              -- fallback, never the sweep.
+              COALESCE(
+                a.encompass_extra->'_fieldValues'->>'CX.TABLEFUNDER',
+                (SELECT cf->>'value'
+                   FROM jsonb_array_elements(
+                          CASE WHEN jsonb_typeof(a.encompass_extra->'customFields') = 'array'
+                               THEN a.encompass_extra->'customFields' ELSE '[]'::jsonb END) cf
+                  WHERE cf->>'fieldName' = 'CX.TABLEFUNDER' LIMIT 1)
+              ) AS channel_raw
+         FROM applications a
+         LEFT JOIN closing_workflow cw ON cw.application_id = a.id
+         LEFT JOIN purchasing_advice pa ON pa.application_id = a.id
+        WHERE a.deleted_at IS NULL
+          AND a.status = 'funded'
+          AND a.funded_date IS NOT NULL
+          AND a.funded_date <= CURRENT_DATE - (($1)::text || ' days')::interval
+          AND COALESCE(cw.table_funded, false) = false
+          AND a.purchase_advice_date IS NULL
+          AND pa.advice_date IS NULL
+          AND ${notThrottled('a.id', DIGEST_ACTION.PURCHASE_ADVICE_MISSING, "interval '7 days'")}
+        ORDER BY a.funded_date ASC, a.id
+        LIMIT 200`, [String(days)])).rows;
+  } catch (e) { console.error('[digest] purchase-advice-missing query', e && e.message); return 0; }
+
+  for (const r of rows) {
+    try {
+      // Encompass's own answer, through the shared normalizer. Belt and braces on top of the
+      // warehouse check already applied in SQL.
+      if (require('./funding-channel').soldAtTable({ channel: require('./funding-channel').channelKey(r.channel_raw) })) continue;
+      if (!(await _gate(DIGEST_ACTION.PURCHASE_ADVICE_MISSING, r.id, '7 days'))) continue;
+      const age = Number(r.age || 0);
+      const who = r.lender ? String(r.lender) : 'the investor';
+      const payload = {
+        type: 'purchase_advice_missing',
+        title: `No purchase advice ${age} days after funding`,
+        badge: { text: 'Chase the sale', tone: 'action' },
+        body: `This loan funded ${age} days ago and was not table funded, so it still has to be sold to ${who} — and no purchase advice date has come back. Chase it, or record the advice on the file if it has already arrived.`,
+        applicationId: r.id,
+        link: `/internal/app/${r.id}`,
+        ctaLabel: 'Open the loan file',
+      };
+      // THE CLOSER FIRST, then the super admins — and the closer is EXCLUDED from the admin
+      // fan-out when they are one, so a closer who is also a super admin gets one email, not two
+      // (the same plural exclusion notifyAdmins already applies for the file team).
+      const told = [];
+      if (r.closer_id) {
+        try { await notify.notifyStaff(r.closer_id, payload); told.push(String(r.closer_id)); sent += 1; }
+        catch (e) { console.error('[digest] purchase-advice-missing closer', r.id, e && e.message); }
+      }
+      // SUPER ADMINS ONLY, and never the shared NOTIFY_ADMINS inbox — that list is hand-typed
+      // ADDRESSES with no role attached, so it is the one list that could carry somebody the owner
+      // did not name here. Every admin still SEES it in PILOT; only super admins are emailed.
+      const admins = await notify.notifyAdmins({
+        ...payload, exceptStaffIds: told, emailRoles: ['super_admin'], skipSharedInbox: true,
+      });
+      sent += Array.isArray(admins) ? admins.length : (admins ? 1 : 0);
+      await _stamp(DIGEST_ACTION.PURCHASE_ADVICE_MISSING, r.id, { days: age, buyer: r.lender || null });
+    } catch (e) { console.error('[digest] purchase-advice-missing', r.id, e && e.message); }
+  }
+  return sent;
+}
+
 /* 7) order_trustpoint (blueprint 2b) — a draw submitted through the portal composer on a TrustPoint
    (Blue Lake physical) file that the coordinator has NOT yet hand-entered into TrustPoint. The
    portal_draw_requests row IS the state: platform 'trustpoint' + status 'submitted' + no tp_draw_id
@@ -2566,6 +2675,7 @@ async function runDue() {
     await drawApprovedUnrecordedOnce().catch((e) => console.error('[digests] draw-approved-unrecorded', e && e.message));
     await investorFeeOwedOnce().catch((e) => console.error('[digests] investor-fee-owed', e && e.message));
     await retainageReleasableOnce().catch((e) => console.error('[digests] retainage-releasable', e && e.message));
+    await purchaseAdviceMissingOnce().catch((e) => console.error('[digests] purchase-advice-missing', e && e.message));
     await trainingRunOnce().catch((e) => console.error('[digests] training-run', e && e.message));
     await certificateSurveyOnce().catch((e) => console.error('[digests] cert-survey', e && e.message));
     await directSourceSweepOnce().catch((e) => console.error('[digests] direct-source-sweep', e && e.message));
@@ -2781,7 +2891,7 @@ module.exports = {
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, trustpointUnreleasedOnce, workflowAgingOnce, conditionFreshnessReopenOnce,
   orderTrustpointOnce, orderTrinityOnce, investorPendingDeliveryOnce, withInvestorOnce,
   drawInspectionLateOnce, drawFindingsUnreviewedOnce,
-  drawApprovedUnrecordedOnce, investorFeeOwedOnce, retainageReleasableOnce,
+  drawApprovedUnrecordedOnce, investorFeeOwedOnce, retainageReleasableOnce, purchaseAdviceMissingOnce,
   orderOverdueOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, unfundedRereadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
