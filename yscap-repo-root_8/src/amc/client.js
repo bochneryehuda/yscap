@@ -169,10 +169,16 @@ async function post(baseUrl, message, opts = {}) {
       const headers = await authHeaders({ 'Content-Type': 'application/json' });
       ({ res, buf } = await fetchWithTimeout(url, { method: 'POST', headers, body: payload }, TIMEOUT_MS));
     } catch (netErr) {
-      // …but never over an error that already SAID what it was. `authHeaders()` runs
-      // inside this try, so a gate refusal (AMC_DISABLED) or a rejected credential was
-      // being restamped as a retryable network blip and looped three times with backoff.
-      if (!netErr.code) netErr.retryable = true;
+      // STAMPED UNCONDITIONALLY, and the `if (!netErr.code)` guard that briefly sat here
+      // is gone. It was written to stop a gate refusal or a rejected credential being
+      // restamped as a network blip — and every premise of that was false. The gate
+      // refusals are thrown BEFORE this loop and cannot reach it; the credential tag is
+      // read ahead of `retryable` by the wording, so the tag alone already wins; and it
+      // did not stop the looping it claimed to. What it DID do was break the transport's
+      // own timeout: an abort throws a DOMException, whose legacy `code` is the number
+      // 20 — truthy — so the single most common transient failure this transport has
+      // stopped being marked retryable and started reporting as an unclassified failure.
+      netErr.retryable = true;
       lastErr = netErr;
       if (attempt < MAX_TRIES) { await sleep(backoffMs(attempt) + Math.floor(Math.random() * 250)); continue; }
       throw netErr;

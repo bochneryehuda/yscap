@@ -607,6 +607,52 @@ for (const order of [0, 1]) {
     { name: 'part1', fileName: 'B.pdf', retrievalUrl: 'u' }]);
   ok(padded[0] === null && padded[1] === null, 'nor one link written twice with different padding');
 }
+// A SHARED LINK IS JUDGED BY THE RAWEST TEST THERE IS, and these pin why. The clever
+// version asked which file each entry pointed at and whether those agreed; it went wrong
+// in three consecutive audits, most recently by reading "named a file we never sent" as
+// "said nothing", so the entry naming a REAL file was discarded as the copy.
+{
+  // An entry naming nothing of ours does NOT agree with one naming a real file.
+  const a = matchStaged(F('Contract.pdf', 'Contract.pdf'), [
+    { name: 'part0', fileName: 'B.pdf', retrievalUrl: 'u1' },
+    { name: null, fileName: 'Contract.pdf', retrievalUrl: 'u1' }]);
+  ok(a[0] === null && a[1] === null, 'a link claimed by two entries that differ places nothing');
+  // One entry claims by filename, the other by number, and they point at different files.
+  const b = matchStaged(F('A.pdf', 'B.pdf'), [
+    { name: null, fileName: 'A.pdf', retrievalUrl: 'u' },
+    { name: 'part1', fileName: null, retrievalUrl: 'u' }]);
+  ok(b[0] === null && b[1] === null, 'and so does one where the two claims are of different kinds');
+  // A repeat that merely OMITS a field is not a repeat.
+  const c = matchStaged(F('A.pdf'), [
+    { name: 'part0', fileName: 'A.pdf', retrievalUrl: 'u' },
+    { name: 'part0', retrievalUrl: 'u' }]);
+  ok(c[0] === null, 'nor is an entry that says less than its twin');
+}
+// A LINK IS READ THE SAME WAY BY THE MATCHER AND BY THE SENDER — one definition,
+// exported, so the two cannot drift. While they differed, an array-valued link was real
+// to the sender and invisible to the guard, and two files were handed one document.
+{
+  const { linkText } = require('../src/amc/stage-match');
+  for (const [v, want] of [['u', 'u'], ['  u  ', 'u'], ['', null], [9001, '9001'], [0, null],
+    [NaN, null], [Infinity, null], [true, null], [['x'], null], [{}, null], [null, null], [undefined, null]]) {
+    let got; try { got = linkText(v); } catch (_) { got = 'THREW'; }
+    ok(got === want, `a link of ${JSON.stringify(String(v))} reads as ${JSON.stringify(want)}, not ${JSON.stringify(got)}`);
+  }
+  // …including the one that used to throw out of the sender into a 500.
+  let threw = false;
+  try { linkText(Object.create(null)); } catch (_) { threw = true; }
+  ok(!threw, 'and reading a link never throws, whatever the vendor sent');
+}
+// A PART LABEL IS READ THE ONE WAY TOO. `partIndex` accepts a padded `part00`; pass 1
+// used to compare the string `'part' + i`, so the module disagreed with itself and a
+// vendor that pads its numbers was refused on every file.
+{
+  const got = matchStaged(F('Contract.pdf', 'contract.pdf'), [
+    { name: 'part00', fileName: 'Contract.pdf', retrievalUrl: 'u1' },
+    { name: 'part01', fileName: 'contract.pdf', retrievalUrl: 'u2' }]);
+  ok(got[0] && got[0].retrievalUrl === 'u1', 'a zero-padded part label is still our part number');
+  ok(got[1] && got[1].retrievalUrl === 'u2', 'on both files');
+}
 // TWO ENTRIES THAT CROSS-CLAIM ARE NOT AGREEING. They share a link, so one of them is a
 // lie — and folding "which file does this point at?" into one sorted list made
 // `part1 "A.pdf"` and `part0 "B.pdf"` both read as "0,1", unanimous, so one was kept and

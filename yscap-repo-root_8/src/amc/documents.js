@@ -20,14 +20,14 @@
  */
 const db = require('../db');
 const cdg = require('./cdg');
-const { matchStaged } = require('./stage-match');
+const { matchStaged, linkText } = require('./stage-match');
 const client = require('./client');
 const session = require('./session');
 const storage = require('../lib/storage');
 const tpr = require('../lib/tpr-export');
 const { journal } = require('./order-service');
 // One definition for both desks — never a pasted copy; see the module header.
-const { sendFailMessage, nackMessage } = require('../lib/appraisal-messages');
+const { sendFailMessage, nackMessage, SENT_NOT_RECORDED } = require('../lib/appraisal-messages');
 
 
 // The stable category labels the auto-upload rules key on (tpr-export's own strings).
@@ -197,7 +197,11 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
   // and a document not sent is the expensive direction. A URL is the real evidence of
   // staging; the words below are the ones that mean a refusal in anybody's vocabulary.
   const REFUSED = /fail|error|reject|deny|denied|invalid|quarantin|block|refus|virus|malware/i;
-  const okStage = (s) => !!(s && s.retrievalUrl && String(s.retrievalUrl).trim()
+  // A LINK IS READ THE ONE WAY, shared with the matcher (`stage-match.linkText`). While
+  // the two disagreed, an array- or boolean-valued `retrievalUrl` was a real link to this
+  // side and invisible to the guard that stops two files being given one document — and
+  // `String(Object.create(null))` THREW out of here into a 500.
+  const okStage = (s) => !!(s && linkText(s.retrievalUrl)
     && !REFUSED.test(String(s.uploadStatus == null ? '' : s.uploadStatus)));
 
   const sendable = [];      // the specs whose bytes really are staged
@@ -291,14 +295,30 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
 
   // Only what was really staged AND really sent is recorded — walked over `sendable`,
   // never over `staged`, so a rejected file can never be written as delivered.
+  // THE RECEIPT IS WRITTEN AFTER THEY TOOK THE DOCUMENTS. A failure part-way through
+  // used to throw: on the manual path the route answered "Something went wrong on our
+  // end" about documents the appraiser already has, and on the UNATTENDED path the
+  // poller swallowed it — so the next tick sent the same documents again. Recorded and
+  // reported instead, so nothing re-sends what has already gone.
   const uploaded = [];
+  let receiptFailed = null;
   for (let i = 0; i < sendable.length; i++) {
-    await dbh.query(
-      `INSERT INTO amc_order_documents
-         (order_id, direction, document_id, document_type, object_name, action, retrieval_url, status)
-       VALUES ($1,'outbound',$2,$3,$4,$5,$6,$7)`,
-      [order.id, sendable[i].documentId, documents[i].documentType, documents[i].objectName, amcAction, sendable[i].staged.retrievalUrl, dry ? 'pending' : 'uploaded']);
+    try {
+      await dbh.query(
+        `INSERT INTO amc_order_documents
+           (order_id, direction, document_id, document_type, object_name, action, retrieval_url, status)
+         VALUES ($1,'outbound',$2,$3,$4,$5,$6,$7)`,
+        [order.id, sendable[i].documentId, documents[i].documentType, documents[i].objectName, amcAction, sendable[i].staged.retrievalUrl, dry ? 'pending' : 'uploaded']);
+    } catch (dbErr) {
+      receiptFailed = receiptFailed || dbErr;
+      console.error('[amc] document sent but not recorded:', order.id, documents[i].objectName, dbErr && dbErr.message);
+      continue;
+    }
     uploaded.push({ documentId: sendable[i].documentId, objectName: documents[i].objectName });
+  }
+  if (receiptFailed) {
+    await dbh.query(`UPDATE amc_orders SET last_error = $2, updated_at = now() WHERE id = $1`,
+      [order.id, SENT_NOT_RECORDED]).catch(() => {});
   }
   // A PARTIAL batch still has to record why the rest was held back — including each
   // vendor trace id, which is deliberately no longer in the wording the desk reads and

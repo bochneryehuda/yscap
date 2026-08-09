@@ -111,11 +111,20 @@ function stripComments(src) {
     // trailing newline, the rest of the FILE. Every check downstream then scanned a
     // truncated copy and passed. A `/` that follows a value cannot start a regex, so the
     // previous non-space character decides which it is.
-    if (c === '/' && src[i + 1] === '/' && !inRegexPosition(out)) {
+    // ORDER MATTERS, and getting it wrong broke comment stripping entirely: `//` is
+    // ALWAYS a comment — an empty regex is not expressible in JavaScript — so the
+    // comment branches are tried first, and only a `/` that starts neither takes the
+    // regex branch below. Asking `inRegexPosition` first made every `// …` after a
+    // semicolon read as a regex literal and survive the strip.
+    if (c === '/' && src[i + 1] === '/') {
       const nl = src.indexOf('\n', i);
       if (nl < 0) break;
       out += '\n'; i = nl; continue;                    // keep the line count honest
     }
+    // …and by here it is neither `//` nor `/*`, so a `/` in a position where a value
+    // cannot have just ended is a regex literal, copied whole. `/^https?:\/\//` ends in
+    // `\` `/` `/`, which the comment branch would otherwise have read as a comment and
+    // thrown the rest of the file away.
     if (c === '/' && inRegexPosition(out)) {             // a regex literal — copied whole
       out += c;
       for (i++; i < src.length; i++) {
@@ -290,7 +299,22 @@ for (const rel of FILES) {
   while ((fm = FN_RE.exec(code))) {
     const nm = fm[1] || fm[2];
     if (!nm) continue;
-    if (SINK_BASE.test(code.slice(fm.index, fm.index + 600))) writers.add(nm);
+    // TO THE FUNCTION'S CLOSING BRACE, not a fixed window. 600 characters was fail-open
+    // by construction: moving the `db.query` past a couple of dozen statements hid the
+    // leak again, which is the same indirection this check was added to close.
+    const open = code.indexOf('{', fm.index);
+    const body = open === -1 ? '' : (objectAt(code, open) || code.slice(fm.index, fm.index + 600));
+    // …and a function is a WRITER only when the sink is handed one of ITS OWN
+    // PARAMETERS. Promoting any function containing `.push(` or `JSON.stringify(` made
+    // pure helpers into sinks — `for (const w of s.split(' ')) out.push(w)` classifies,
+    // it does not leak — and a check that rejects correct source gets weakened.
+    if (!SINK_BASE.test(body)) continue;
+    const sig = code.slice(fm.index, open === -1 ? fm.index : open);
+    const params = (sig.match(/\(([^)]*)\)/) || [, ''])[1]
+      .split(',').map((x) => x.trim().split(/[=\s]/)[0]).filter((x) => /^[A-Za-z_$][\w$]*$/.test(x));
+    const sinkAt = body.search(SINK_BASE);
+    const call = body.slice(sinkAt, sinkAt + 300);
+    if (params.some((pn) => new RegExp(`\\b${pn}\\b`).test(call))) writers.add(nm);
   }
   const SINK = writers.size
     ? new RegExp(SINK_BASE.source + '|\\b(?:' + [...writers].join('|') + ')\\s*\\(')
@@ -562,6 +586,17 @@ ok(shouty.length === 0, 'and every one of them reads as ordinary English');
     ['unreachable',  mk({ m: 'Class order failed: HTTP 502', status: 502, retryable: true })],
     ['credential',   mk({ m: 'Class token failed: HTTP 401', status: 401, retryable: false })],
     ['credential',   mk({ m: 'AMC DoLogin failed', code: 'AMC_LOGIN_REJECTED', description: 'Invalid credentials' })],
+    // THE MOTIVATING CASE, on BOTH desks, and neither had a row. OAuth2 answers a wrong
+    // client secret with 400 invalid_client on a TOKEN call — which read as "the
+    // appraisal company would not accept it, sending the same thing again will not help",
+    // about an order that never left. The transports tag it where they raise it; these
+    // rows are what stop the tag being dropped again.
+    ['credential',   mk({ m: 'Class token failed: HTTP 400', status: 400, retryable: false, code: 'CLASS_TOKEN_REJECTED' })],
+    ['credential',   mk({ m: 'AMC GetToken failed', status: 400, retryable: true, code: 'AMC_TOKEN_REJECTED' })],
+    // …and a TIMEOUT is still honestly "could not be reached". An abort throws a
+    // DOMException whose legacy `code` is the number 20, so any rule keying on "does it
+    // have a code" mis-reads the most common transient failure this transport has.
+    ['unreachable',  mk({ m: 'The operation was aborted.', code: 20, retryable: true })],
     ['switch',       mk({ m: 'x', code: 'CLASS_OUTBOUND_DISABLED' })],
     ['switch',       mk({ m: 'x', code: 'AMC_DISABLED' })],
     ['unconfigured', mk({ m: 'x', code: 'AMC_NOT_CONFIGURED' })],
@@ -636,6 +671,42 @@ ok(shouty.length === 0, 'and every one of them reads as ordinary English');
   let empty = 0;
   for (const e of THROWN) if (String(msgs.storedFailNote(e)).trim().length < 12) empty++;
   ok(empty === 0, 'every stored note is a real sentence, on every branch');
+}
+
+// ---------------------------------------------------------------------------
+// (5) AND THE SCAN ITSELF IS TESTED, on shapes it must catch and shapes it must not.
+// ---------------------------------------------------------------------------
+// Every mechanism above was added in answer to an audit, and NONE of them had a test —
+// so each could be reverted in silence and the next pass would find the same defect
+// again. That is what kept this file growing. The scan is run over synthetic modules
+// here, in memory, so a mechanism that stops working fails loudly.
+{
+  const scan = (src) => {
+    const code = stripComments(src);
+    const out = [];
+    const SINK_BASE = /\.query\(|\.json\(|\.send\(|\.push\(|\bres\s*\.|sendMail|notify\w*\(|Object\.assign\(|JSON\.stringify\(/;
+    const caught = new Set();
+    let cm; const CATCH_RE = /\bcatch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/g;
+    while ((cm = CATCH_RE.exec(code))) caught.add(cm[1]);
+    return { code, caught, sink: SINK_BASE, out };
+  };
+  // stripComments: a regex literal containing `\/\/` is NOT a comment.
+  const kept = stripComments("const U = /^https?:\\/\\//; const raw = String(e.message);");
+  ok(/String\(e\.message\)/.test(kept),
+     'a regex literal containing an escaped slash does not swallow the rest of the file');
+  ok(stripComments("const a = 1; // gone\nconst b = 2;").includes('const b = 2;'),
+     'and a real line comment still goes');
+  ok(!/gone/.test(stripComments("const a = 1; // gone\nconst b = 2;")), 'comments are actually removed');
+  // inRegexPosition: division after a value is not a regex.
+  ok(stripComments("const r = total / count; // note\nconst z = 1;").includes('const z = 1;'),
+     'division is not read as the start of a regex');
+  // The catch variable is whatever the catch called it.
+  const s2 = scan("try {} catch (netErr) { db.query('x',[String(netErr.message)]); }");
+  ok(s2.caught.has('netErr'), 'the exception name is taken from the catch binding, not assumed');
+  // The FILES set is a real set, not a count.
+  ok(FILES.includes('src/amc/sync.js') && FILES.includes('src/class/client.js'),
+     'the sweep reads the whole of both desks, not a hand-picked list');
+  ok(FILES.length > 15, 'and that is more than the old hand-written list ever was');
 }
 
 console.log(`\n[test-appraisal-refusals-speak-pure] ${pass} passed, ${fail} failed`);

@@ -58,7 +58,7 @@ function fmtDate(d) { if (!d) return '—'; try { return new Date(d).toLocaleDat
 // from before that contract and is the exception's own text, so it is translated. The
 // test the other way round — recognising computer-ish text and showing the rest — is
 // fail-OPEN and put a vendor's raw refusal on the Class desk once already.
-const AMC_OURS_RE = /^(?:TEST MODE\b|Not sent —|Could not be read —|Sent —)/;
+const AMC_OURS_RE = /^(?:TEST MODE\b|Not sent —|Could not be read —)/;   // `Sent —` is handled explicitly above, before this
 
 function orderNote(stored) {
   if (typeof stored !== 'string') return null;

@@ -187,8 +187,13 @@ async function ingestDocuments(dbh, order, deps = {}) {
     }
   }
   if (imported) {
+    // AND THE OLD FAILURE IS CLEARED. `last_error` is now RENDERED on the orders list, so
+    // a row left carrying "the documents could not be read" from an earlier tick would
+    // show a completed order in red, saying the opposite of what happened. A successful
+    // status poll already clears it; the document path has to as well.
     await dbh.query(
-      `UPDATE amc_orders SET status='completed', completed_at=COALESCE(completed_at, now()), updated_at=now() WHERE id=$1`,
+      `UPDATE amc_orders SET status='completed', completed_at=COALESCE(completed_at, now()),
+              last_error=NULL, updated_at=now() WHERE id=$1`,
       [order.id]);
   }
   return { ok: true, filed, imported };

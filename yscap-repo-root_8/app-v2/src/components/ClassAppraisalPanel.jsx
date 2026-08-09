@@ -302,7 +302,7 @@ function roleOf(c) { return (c && (c.Type != null ? c.Type : c.type)) || null; }
 // might take, which it cannot.
 // The openings the server owns. `Could not be read — ` is the same contract for a poll
 // or a document read, where "Not sent" would be a plain untruth.
-const OURS_RE = /^(?:TEST MODE\b|Not sent —|Could not be read —|Sent —)/;
+const OURS_RE = /^(?:TEST MODE\b|Not sent —|Could not be read —)/;   // `Sent —` is handled explicitly above, before this
 
 function failNote(stored) {
   // Only a string is a stored note. `false`, `0`, `{}` and `[]` are not failures with

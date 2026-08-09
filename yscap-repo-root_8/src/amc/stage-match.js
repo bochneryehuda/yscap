@@ -47,6 +47,34 @@
  * @returns an array the same length as `files`; each element is the staged entry for
  *          that file, or null when nothing can be matched to it with confidence.
  */
+// HOW A LINK IS READ — one definition, shared with the sender.
+//
+// `documents.js` decides whether an answer is usable, and this module decides whether two
+// answers are the same document. They MUST read `retrievalUrl` the same way: while one
+// accepted booleans, arrays and objects and the other did not, an array-valued link was
+// invisible to the guard and perfectly real to the sender, so two files were handed one
+// document. It is also TOTAL — `String(Object.create(null))` throws, and that throw used
+// to escape `okStage` into a 500.
+function linkText(v) {
+  // A number other than zero, because that is EXACTLY what the sender accepted before
+  // this became shared (`s.retrievalUrl && String(s.retrievalUrl).trim()` — `0` is
+  // falsy). Widening what the sender will post is not this change's job.
+  if (typeof v === 'number') return (Number.isFinite(v) && v !== 0) ? String(v) : null;
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  return t || null;
+}
+
+// A value rendered so two of them can be compared without coercing anything. `undefined`,
+// a missing key and `null` are told apart; nothing here can throw.
+function raw(v) {
+  if (v === undefined) return ['u'];
+  if (v === null) return ['n'];
+  const t = typeof v;
+  if (t === 'string' || t === 'number' || t === 'boolean') return [t[0], String(v)];
+  return ['o'];        // an object of any shape says nothing we can compare
+}
+
 function matchStaged(files, staged) {
   const out = new Array(files.length).fill(null);
   const answers = Array.isArray(staged) ? staged.filter((s) => s && typeof s === 'object') : [];
@@ -71,12 +99,7 @@ function matchStaged(files, staged) {
   // 445,421 shapes. Objects are still excluded, because `String({})` is
   // "[object Object]" for every one of them and treating that as one shared link would
   // stop a whole batch sending; `okStage` refuses those too.
-  const linkOf = (s) => {
-    const v = s && s.retrievalUrl;
-    if (typeof v !== 'string' && typeof v !== 'number') return null;
-    const t = String(v).trim();
-    return t || null;
-  };
+  const linkOf = (s) => linkText(s && s.retrievalUrl);
 
   // ===========================================================================
   // HOW A FILENAME IS COMPARED — EXACT FIRST, MEANING ONLY WHEN IT IS SAFE.
@@ -207,21 +230,30 @@ function matchStaged(files, staged) {
   // applies here. The SHARED-LINK pre-guard above is separate and stays: it is what
   // stops two files being given one document's link.
 
-  // TWO ANSWERS CANNOT SHARE ONE LINK, and an answer that shares one is placed by
-  // nothing. `retrievalUrl` is the thing actually handed to the appraiser, so two files
-  // pointed at one link IS the mis-file this module exists to prevent — and it is what a
-  // vendor produces when it drops one of our files and answers twice about another (the
-  // count still matches, the spellings still look right, and exactly one of the two names
-  // is a lie). Which of them is the real one is not knowable, so neither is used.
+  // TWO ANSWERS CANNOT SHARE ONE LINK, and neither of them is used.
+  //
+  // `retrievalUrl` is the thing actually handed to the appraiser, so two files pointed at
+  // one link IS the mis-file this module exists to prevent — and it is what a vendor
+  // produces when it drops one of our files and answers twice about another (the count
+  // still matches, the spellings still look right, and exactly one of the two names is a
+  // lie). Which of them is real is not knowable, so neither is used.
+  //
+  // THE ONLY EXEMPTION IS AN ENTRY REPEATED VERBATIM, and it is deliberately the dumbest
+  // test that can work: every field we read, compared raw. The clever version asked
+  // "which file does each of them point at, and do those agree?" — and it went wrong in
+  // three consecutive audits, most recently by conflating "named nothing of ours" with
+  // "said nothing", so an answer naming a file we never sent was read as agreeing with
+  // one that named a real file, and the real one was discarded as a copy. Judgement was
+  // the defect. There is nothing here to get wrong.
+  //
+  // A repeat that DIFFERS in any way — a missing part number, a rewritten filename — is
+  // not a repeat: the two entries say different things about one link, so one of them is
+  // lying, and that is precisely the case that must refuse. It costs a retry on a shape
+  // no vendor is known to produce; the alternative cost a document.
   //
   // Marking them TAKEN rather than removing them is deliberate: `answers.length` is what
   // makes a bare `part<i>` and a position believable, and quietly shrinking it would
   // change those rules while claiming to change nothing.
-  // …unless they are the SAME answer said twice, which is not a disagreement at all. A
-  // repeated entry — or the identical object appearing twice in the array — carries one
-  // link AND one set of labels, so it describes one document and the first of them is
-  // used. Two entries sharing a link while DISAGREEING about which file they are is the
-  // dangerous shape, and neither of those is used.
   {
     const byLink = new Map();
     for (const s of answers) {
@@ -230,41 +262,18 @@ function matchStaged(files, staged) {
       if (!byLink.has(u)) byLink.set(u, []);
       byLink.get(u).push(s);
     }
-    // WHICH FILE an entry claims — that is the only disagreement that matters, and it is
-    // asked of the FILES rather than of the raw label text. Comparing `[name, fileName]`
-    // strings made an entry that merely OMITS a field "disagree" with its twin, so both
-    // were discarded even though they carry the same link and are therefore provably the
-    // same document; and it coerced `name`, which throws on an object with no `toString`.
-    // WHICH FILE an entry claims, kept as TWO separate claims. Folding the filename's
-    // fit and the part number into one sorted list made two entries that CROSS-claim
-    // read as agreeing — `part1 "A.pdf"` and `part0 "B.pdf"` both flatten to "0,1" — so
-    // one of them was kept and placed on a coin flip. They are compared apart, and a
-    // claim nobody made (`null`) contradicts nothing.
-    const claimsOf = (s) => {
-      const byName = [];
-      for (let j = 0; j < files.length; j++) if (strengthFor(s, j) > 0) byName.push(j);
-      return { name: byName.length ? byName.join(',') : null, part: partIndex(s) };
-    };
-    const claimsAgree = (a, b) => (a.name == null || b.name == null || a.name === b.name)
-      && (a.part == null || b.part == null || a.part === b.part);
+    // Every field this module reads, rendered totally — no coercion that can throw, and
+    // `undefined` told apart from `null` and from a missing key.
+    const shape = (s) => JSON.stringify([raw(s && s.name), raw(s && s.fileName),
+      raw(s && s.uploadStatus), raw(s && s.retrievalUrl)]);
     for (const group of byLink.values()) {
       if (group.length < 2) continue;
-      // A group agrees when NO TWO MEMBERS point at different files. An entry that says
-      // nothing contradicts nobody, so it is compared rather than filtered out — the
-      // filter made a silent entry vanish and let the remaining pair look unanimous.
-      const said = group.map(claimsOf);
-      let agree = true;
-      for (let a = 0; agree && a < said.length; a++) {
-        for (let b = a + 1; b < said.length; b++) {
-          if (!claimsAgree(said[a], said[b])) { agree = false; break; }
-        }
-      }
-      // Agreeing: one answer, said twice — keep the first, ignore the copies.
-      // Disagreeing: one link cannot be two documents, and which is real is unknowable.
-      // A repeat that is the SAME OBJECT is one entry, not two — taking "the copy"
-      // would take the keeper with it, since they are the same reference.
-      for (let k = agree ? 1 : 0; k < group.length; k++) {
-        if (agree && group[k] === group[0]) continue;
+      const first = shape(group[0]);
+      const same = group.every((s) => shape(s) === first);
+      for (let k = same ? 1 : 0; k < group.length; k++) {
+        // A repeat that is the SAME OBJECT is one entry, not two — taking "the copy"
+        // would take the keeper with it, since they are the same reference.
+        if (same && group[k] === group[0]) continue;
         taken.add(group[k]);
       }
     }
@@ -272,9 +281,13 @@ function matchStaged(files, staged) {
 
   // ---- pass 1: the part name, corroborated ---------------------------------
   for (let i = 0; i < files.length; i++) {
-    const want = 'part' + i;
     const cands = answers.filter((s) => {
-      if (taken.has(s) || s.name !== want) return false;
+      // READ THE NUMBER, don't compare the string. `partIndex` already accepts a
+      // zero-padded label (`part00`), and comparing `s.name !== 'part' + i` here did
+      // not — so the module disagreed with itself about what a part label is, and a
+      // vendor that pads its numbers was refused on every file. `partIndex` is the one
+      // definition; this is the only place that was not using it.
+      if (taken.has(s) || partIndex(s) !== i) return false;
       // The filename identifies THIS file: the strongest evidence there is, and it
       // stands even in a batch whose numbering is otherwise untrustworthy.
       if (identifies(s, i)) return true;
@@ -294,15 +307,16 @@ function matchStaged(files, staged) {
     // identical object appearing twice in the array — carries one link and describes one
     // document, so counting it as an ambiguity refused a single-file send that had
     // exactly one unambiguous answer.
-    const seen = new Set();
+    // THE SAME ANSWER TWICE IS NOT TWO CLAIMANTS. A LINK de-duplication used to sit here
+    // as well and could never fire — the pre-guard has already set aside every
+    // shared-link answer except one — so it is gone, for the reason pass 0 went: a
+    // condition that cannot run reads as a safety net and is not one. Identity is the
+    // case that remains, and it is the one the pre-guard cannot see, because an entry
+    // with no link at all is never grouped.
     const seenObj = new Set();
     const distinct = cands.filter((s) => {
       if (seenObj.has(s)) return false;       // the identical object, twice
-      seenObj.add(s);
-      const u = linkOf(s);
-      if (!u) return true;                    // nothing to compare — keep it
-      if (seen.has(u)) return false;
-      seen.add(u); return true;
+      seenObj.add(s); return true;
     });
     let hit = distinct.length === 1 ? distinct[0] : null;
     if (!hit && distinct.length > 1) {
@@ -370,4 +384,4 @@ function matchStaged(files, staged) {
   return out;
 }
 
-module.exports = { matchStaged };
+module.exports = { matchStaged, linkText };

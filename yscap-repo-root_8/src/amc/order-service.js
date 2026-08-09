@@ -27,7 +27,7 @@ const formSelect = require('./form-select');
 const orderBuild = require('./order-build');
 const { loadAppraisalContacts } = require('../lib/appraisal-contacts');
 // One definition for both desks — never a pasted copy; see the module header.
-const { sendFailMessage, nackMessage, storedFailNote, storedNackNote } = require('../lib/appraisal-messages');
+const { sendFailMessage, nackMessage, storedFailNote, storedNackNote, SENT_NOT_RECORDED } = require('../lib/appraisal-messages');
 
 
 // ---------------------------------------------------------------------------
@@ -348,6 +348,9 @@ async function applyAck(db, orderId, ack, resp) {
         sp_order_number = COALESCE($3, sp_order_number),
         appraisal_file_number = COALESCE($4, appraisal_file_number),
         form_description = COALESCE($5, form_description),
+        -- The ACK means they took it, so whatever failed before did not stop this order.
+        -- The column is on screen now; a stale sentence there is wrong information.
+        last_error = NULL,
         status = $6, status_code = $7, status_name = $8, status_description = $9,
         ack_response = $10, ordered_at = COALESCE(ordered_at, now()), updated_at = now()
       WHERE id = $1 RETURNING *`,
@@ -473,8 +476,23 @@ async function createOrder(db, appId, opts = {}) {
     return { ok: false, error: 'amc_nack', message: nackMessage(err, 'the order') };
   }
 
+  // THE RECEIPT IS WRITTEN AFTER THEY ACCEPTED IT, so a failure here is OURS, not a
+  // failed order. Unguarded, a database hiccup on this line threw out of `createOrder`
+  // into the route's catch-all, which answers "The appraisal order could not be
+  // completed. Nothing was sent." about an order CoreLogic has already taken — and
+  // pressing the button again places a SECOND appraisal, at cost, on someone's property.
+  // The Class desk got this treatment on all three of its send paths; this is its
+  // sibling, and it was missed.
   const ack = cdg.parseAck(resp);
-  const updated = await applyAck(db, order.id, ack, resp);
+  let updated;
+  try {
+    updated = await applyAck(db, order.id, ack, resp);
+  } catch (dbErr) {
+    console.error('[amc] order placed but not recorded:', order.id, dbErr && dbErr.message);
+    await db.query(`UPDATE amc_orders SET last_error = $2, updated_at = now() WHERE id = $1`,
+      [order.id, SENT_NOT_RECORDED]).catch(() => {});
+    updated = await getOrder(db, order.id).catch(() => order);
+  }
   await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, response: resp, ok: true, staffId: opts.staffId });
   return { ok: true, order: updated };
 }
