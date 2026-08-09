@@ -80,16 +80,14 @@ async function postRevision(dbh, order, { staffId, kind, body, rovDetail }, deps
 // one is filed as an inbound-originated row. Returns { ok, added }.
 async function syncRevisions(dbh, order, deps = {}) {
   const transport = deps.transport || client;
-  const dryrun = deps.dryrun != null ? !!deps.dryrun : !!client.configured().dryrun;
-  let authCtx;
-  try {
-    // TEST MODE MUST NOT NEED A LOGIN, and a login that fails is answered in plain
-    // words rather than thrown at the route's catch-all — which reported it as the
-    // server's generic "Something went wrong on our end".
-    authCtx = deps.authContext || (await session.authContext(dryrun ? { offline: true } : undefined));
-  } catch (e) {
-    return { ok: false, error: 'not_connected', message: session.signInMessage(e) };
-  }
+  // A READ IS NEVER A DRY RUN, so it needs a REAL api key. The dry-run gate in the
+  // transport applies to WRITES only (`client.read` passes `write:false`), so building
+  // this with the offline, key-less context would not stop it — it would post an
+  // UNAUTHENTICATED request to the vendor, get NACKed -100, and `session.invalidate()`
+  // below would then throw away the good key the poller had just obtained: a forced
+  // sign-in per order per tick, and the vendor's replies never filed, for as long as
+  // test mode was on. Reading is free and harmless; it signs in properly.
+  const authCtx = deps.authContext || (await session.authContext());
   const resp = await transport.read(cdg.buildGetRevisions({
     apiKey: authCtx.apiKey, subdomain: order.sp_subdomain || authCtx.subdomain,
     spOrderNumber: order.sp_order_number, clientOrderNumber: order.client_order_number,

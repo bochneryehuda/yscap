@@ -237,7 +237,15 @@ function notesFrom(payload) {
     .map((n) => ({
       noteId: text(n.noteId || n.NoteId || n.id || n.Id),
       content: text(n.content || n.Content),
-      created: when(n.created || n.Created) || when(payload && payload.created),
+      // THE NOTE'S OWN STAMP, AND ONLY ITS OWN. This used to fall back to the
+      // ENVELOPE's `created`, which is when THIS DELIVERY was sent — different on
+      // every retry. Once the stamp became part of a note's identity that made a
+      // re-delivery look like a new message and put the same words on the thread
+      // twice. It is also the wrong value to show a reader: the row's own `created_at`
+      // already records when we received it, so a borrowed delivery time added
+      // nothing and disagreed with what the OTHER writer (messages.syncNotes) stores
+      // for the same note.
+      created: when(n.created || n.Created),
     }))
     .filter((n) => n.noteId || n.content);
 }

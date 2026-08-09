@@ -92,6 +92,16 @@ async function note(orderRowId, content, { staffId } = {}) {
  * receipt (re-marking it unread every time the list refreshed would make the desk's
  * "new message" badge meaningless).
  */
+// THE SAME NORMALIZER THE CALLBACK WRITER USES — imported, not re-written. Two things
+// depend on it. First, the vendor's timestamp is part of a note's identity, so if one
+// writer stored a JS Date at millisecond resolution and the other handed Postgres the
+// raw string at microsecond resolution, the two would file ONE vendor message as TWO
+// rows (a .NET seven-digit fraction is enough to differ). Second, it returns null for
+// anything unparseable: passing the raw string straight into a timestamptz let one odd
+// date from Class abort this whole statement, and every later press of "check for
+// replies" stopped at the same note — so the messages behind it never arrived.
+const whenTs = require('./callbacks')._internals.when;
+
 async function syncNotes(orderRowId) {
   const { order, error, message } = await loadOrder(null, orderRowId);
   if (error) return { ok: false, error, message };
@@ -136,7 +146,7 @@ async function syncNotes(orderRowId) {
                      AND vendor_created_at IS NOT DISTINCT FROM $6::timestamptz)
          ON CONFLICT (class_note_id) WHERE class_note_id IS NOT NULL DO NOTHING
          RETURNING id`,
-        [order.id, order.application_id, id, dir, text(n.content || n.Content), text(n.created || n.Created)]);
+        [order.id, order.application_id, id, dir, text(n.content || n.Content), whenTs(n.created || n.Created)]);
       if (r.rowCount) added++;
     }
     return { ok: true, added, total: list.length };

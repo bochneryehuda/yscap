@@ -104,11 +104,20 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
   // its rows as `pending` (nothing left the building), so counting those permanently
   // blocked the real upload of the same document — a document the appraiser never got,
   // reported on the screen as "already sent".
+  // WHAT COUNTS AS "ALREADY DONE" DEPENDS ON WHAT WE ARE ABOUT TO DO.
+  //   • A REAL send counts only `uploaded` rows. A test-mode row is `pending` —
+  //     nothing left the building — and counting it permanently blocked the real
+  //     upload of that document while the screen said "already sent".
+  //   • A TEST send counts `pending` too, or the auto-upload the poller runs every
+  //     five minutes re-stages the same document forever, one junk row per tick in
+  //     `amc_order_documents` AND `amc_write_log`.
+  // One clause, both readings, so the two can never drift apart.
   const already = new Set((await dbh.query(
     `SELECT document_id FROM amc_order_documents
-      WHERE order_id=$1 AND direction='outbound' AND status = 'uploaded'
+      WHERE order_id=$1 AND direction='outbound'
+        AND (status = 'uploaded' OR ($3::boolean AND status = 'pending'))
         AND document_id = ANY($2::uuid[])`,
-    [order.id, ids])).rows.map((x) => String(x.document_id)));
+    [order.id, ids, dryrun])).rows.map((x) => String(x.document_id)));
 
   const files = [];   // for /postdocuments
   const specs = [];   // parallel metadata

@@ -407,7 +407,7 @@ async function createOrder(db, appId, opts = {}) {
     try {
       authCtx = await session.authContext();   // DoLogin (needs AMC_ENABLED); throws if off
     } catch (e) {
-      const why = session.signInMessage(e);
+      const why = session.signInMessage(e, { savedDraft: true });
       await db.query(`UPDATE amc_orders SET last_error = $2, updated_at = now() WHERE id = $1`, [order.id, why]);
       await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, ok: false, error: why, staffId: opts.staffId });
       return { ok: false, error: 'not_connected', message: why, order: await getOrder(db, order.id) };

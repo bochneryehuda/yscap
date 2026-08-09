@@ -181,7 +181,10 @@ router.post('/files/:id/order', async (req, res) => {
     const out = await client.createOrder(preview.body, {
       OrgId: (require('../config').class || {}).orgId || undefined,
       LenderOrgId: (require('../config').class || {}).lenderOrgId || undefined,
-    }, { path: preview.path });
+      // The SAME decision this route already stamped on the order row, passed down
+      // rather than re-read at send time — or a switch flipped in between leaves a
+      // real order permanently labelled a test.
+    }, { path: preview.path, dryrun: !!cfgd.dryrun });
     if (out && out.__dryrun) {
       await finish({ status: 'dryrun' });
       return res.json({ ok: true, dryrun: true, apiVersion: preview.apiVersion, uad: preview.uad,

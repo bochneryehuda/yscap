@@ -142,6 +142,30 @@ function makeDeps() {
     ok(urls.rows.length === 1 && !/^dryrun:/.test(urls.rows[0].retrieval_url),
       'and what was recorded as sent is a real link, never a dryrun:// one');
 
+    // A TEST RUN MUST NOT LOOP. `autoUploadForOrder` runs from the poller every five
+    // minutes; once a test-mode `pending` row stopped counting as done, the same
+    // document was re-staged on every tick — a junk row per tick in
+    // amc_order_documents AND in amc_write_log, plus a full storage read each time.
+    const loopDeps = () => { const d = makeDeps(); d.dryrun = true;
+      d.transport = { write: async () => ({ __dryrun: true }) }; return d; };
+    const fourthId = (await c.query(
+      `INSERT INTO documents (application_id, filename, content_type, storage_ref, doc_kind, is_current)
+       VALUES ($1,'loopcheck.pdf','application/pdf','ref-loop','contract',true) RETURNING id`, [appId])).rows[0].id;
+    const rowsFor = async () => (await c.query(
+      `SELECT count(*)::int n FROM amc_order_documents WHERE order_id=$1 AND document_id=$2`,
+      [order.id, fourthId])).rows[0].n;
+    await docs.uploadToOrder(c, order, { staffId: null, documentIds: [fourthId] }, loopDeps());
+    const afterFirst = await rowsFor();
+    for (let tick = 0; tick < 4; tick++) {
+      await docs.uploadToOrder(c, order, { staffId: null, documentIds: [fourthId] }, loopDeps());
+    }
+    ok(afterFirst === 1 && (await rowsFor()) === 1,
+      `four more poll ticks in test mode add nothing (rows stayed at ${await rowsFor()})`);
+    // …and the real send is still possible, which is the other half of the rule.
+    const realAfterLoop = await docs.uploadToOrder(c, order, { staffId: null, documentIds: [fourthId] }, makeDeps());
+    ok(realAfterLoop.ok && realAfterLoop.uploaded.length === 1,
+      'while a REAL upload of that same document still goes through');
+
     await c.query('ROLLBACK');
   } catch (e) {
     try { await c.query('ROLLBACK'); } catch (_) { /* ignore */ }

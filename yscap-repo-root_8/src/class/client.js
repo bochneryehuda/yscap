@@ -223,12 +223,18 @@ async function getAccessToken() {
 //                 CLASS_OUTBOUND_ENABLED and short-circuited by CLASS_DRYRUN.
 //   opts.label  — what to call it in an error.
 // ---------------------------------------------------------------------------
-async function request(method, path, { body, query, write, label } = {}) {
+async function request(method, path, { body, query, write, label, dryrun } = {}) {
   if (!switches.on('CLASS_ENABLED')) throw gateError('CLASS_DISABLED', 'the Class Valuation integration master switch is off');
 
   // Dry-run is checked BEFORE the write gate, so it is always safe to leave on
   // while verifying — exactly the AMC ordering.
-  if (write && switches.on('CLASS_DRYRUN')) {
+  //
+  // `opts.dryrun` is a caller's already-made decision and can only ever force the dry
+  // run ON, never cancel one. The order route STAMPS `class_orders.dryrun` from its
+  // own read of this switch, so without passing it down a switch flipped between the
+  // two reads left a real order permanently labelled a test — the same read-it-twice
+  // shape the AMC side was fixed for, in the other vendor's route.
+  if (write && (dryrun === true || switches.on('CLASS_DRYRUN'))) {
     console.warn(`[class][DRYRUN] would ${method} ${path} body=${JSON.stringify(maskSafe(body))}`);
     return { __dryrun: true };
   }
@@ -377,7 +383,7 @@ module.exports = {
   // the body and the endpoint can never disagree. Defaulting to `/orders` keeps
   // every existing caller on 2.6 exactly as before.
   createOrder: (body, query, opts = {}) =>
-    request('POST', opts.path || '/orders', { body, query, write: true, label: 'createOrder' }),
+    request('POST', opts.path || '/orders', { body, query, write: true, label: 'createOrder', dryrun: opts.dryrun }),
   addNote: (orderId, body) => post(`/orders/${encodeURIComponent(orderId)}/notes`, body, { label: 'addNote' }),
   requestRevision: (orderId, body) => post(`/orders/${encodeURIComponent(orderId)}/request-revision`, body, { label: 'requestRevision' }),
   requestCancel: (orderId, body) => post(`/orders/${encodeURIComponent(orderId)}/request-cancel`, body, { label: 'requestCancel' }),

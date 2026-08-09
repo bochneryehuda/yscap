@@ -71,15 +71,21 @@ async function authContext(opts = {}) {
  * causes need three different people, and "Something went wrong on our end" names
  * none of them.
  */
-function signInMessage(e) {
+function signInMessage(e, opts = {}) {
   const raw = String((e && e.message) || '');
+  // `savedDraft` is the order path's own reassurance, kept because it is the one
+  // caller whose work really was written before the failure — telling somebody their
+  // order is saved matters more than the tidiness of one shared sentence.
+  const saved = opts.savedDraft ? ' The order was saved as a draft.' : '';
   if ((e && e.code) === 'AMC_DISABLED' || /AMC_DISABLED/.test(raw)) {
-    return 'Appraisal ordering is switched off. Turn it on in API Health first.';
+    return 'Appraisal ordering is switched off. Turn it on in API Health first.' + saved;
   }
   if (/are not all set/.test(raw)) {
-    return 'The appraisal company login isn’t set up yet, so nothing can be sent. Turn on test mode to check this, or ask an admin to finish the connection.';
+    return 'The appraisal company login isn’t set up yet, so nothing can be sent.' + saved
+      + ' Turn on test mode to check this, or ask an admin to finish the connection.';
   }
-  return 'Could not sign in to the appraisal company, so nothing was sent. (' + raw.slice(0, 160) + ')';
+  return 'Could not sign in to the appraisal company, so nothing was sent.' + saved
+    + ' (' + raw.slice(0, 160) + ')';
 }
 
 module.exports = { apiKey, invalidate, authContext, signInMessage };

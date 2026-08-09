@@ -603,6 +603,77 @@ async function main() {
     ok(nudged.rows[0].n === 3, 'a later nudge repeating the same wording still lands — the guard dedupes, it does not swallow');
 
 
+    // THE TWO WRITERS MUST AGREE ABOUT WHAT A NOTE IS. The vendor's timestamp is part
+    // of an id-less note's identity, so if the callback writer stored a JS Date at
+    // millisecond resolution and "check for replies" handed Postgres the raw string at
+    // microsecond resolution, ONE vendor message became TWO rows — a .NET seven-digit
+    // fraction is enough to differ. Both go through the same normalizer now.
+    {
+      await db.query('DELETE FROM class_notes WHERE class_order_row = $1', [order26]);
+      const stamp = '2026-08-14T11:22:33.1234567Z';   // the shape a .NET API emits
+      await db.query(
+        `INSERT INTO class_callback_events (event_name, class_order_id, payload, payload_hash)
+         VALUES ('NewNotes', $1, $2::jsonb, $3)`,
+        [`cls26-${tag}`, JSON.stringify({ data: [{ content: 'Precision matters.', created: stamp }] }),
+         `precision-${tag}`]);
+      await cb.drain({ limit: 25 });
+
+      const classClient2 = require('../src/class/client');
+      const keepNotes = classClient2.notes, keepCfg = classClient2.configured;
+      classClient2.configured = () => ({ ...keepCfg(), enabled: true });
+      classClient2.notes = async () => ({ data: [{ content: 'Precision matters.', created: stamp }] });
+      await require('../src/class/messages').syncNotes(order26);
+      classClient2.notes = keepNotes; classClient2.configured = keepCfg;
+
+      const both = await db.query(
+        `SELECT count(*)::int AS n FROM class_notes WHERE class_order_row = $1`, [order26]);
+      ok(both.rows[0].n === 1,
+         `one vendor message is ONE row however it reached us (got ${both.rows[0].n})`);
+
+      // A RE-DELIVERY still collapses. The identity is the note's OWN stamp, never the
+      // envelope's — the envelope says when THIS DELIVERY was sent, so folding it in
+      // made every retry look like a new message.
+      await db.query('DELETE FROM class_notes WHERE class_order_row = $1', [order26]);
+      for (const sentAt of ['2026-08-15T06:00:00Z', '2026-08-15T06:00:04Z']) {
+        await db.query(
+          `INSERT INTO class_callback_events (event_name, class_order_id, payload, payload_hash)
+           VALUES ('NewNotes', $1, $2::jsonb, $3)`,
+          [`cls26-${tag}`,
+           JSON.stringify({ created: sentAt, data: [{ content: 'The appraiser is on his way.' }] }),
+           `redeliver-${tag}-${sentAt}`]);
+      }
+      await cb.drain({ limit: 25 });
+      const red = await db.query(
+        `SELECT count(*)::int AS n FROM class_notes WHERE class_order_row = $1`, [order26]);
+      ok(red.rows[0].n === 1,
+         `the same message delivered twice, seconds apart, is still ONE row (got ${red.rows[0].n})`);
+
+      // ONE ODD DATE MUST NOT STOP THE WHOLE SYNC. An unparseable timestamp used to be
+      // handed straight to a timestamptz, which aborted the statement — and every
+      // later press of "check for replies" stopped at the same note, so the real
+      // replies behind it never arrived.
+      await db.query('DELETE FROM class_notes WHERE class_order_row = $1', [order26]);
+      const classClient3 = require('../src/class/client');
+      const kN = classClient3.notes, kC = classClient3.configured;
+      classClient3.configured = () => ({ ...kC(), enabled: true });
+      classClient3.notes = async () => ({ data: [
+        { noteId: `ok-1-${tag}`, content: 'N-1' },
+        { noteId: `bad-${tag}`, content: 'N-2', created: 'n/a' },
+        { noteId: `ok-3-${tag}`, content: 'N-3 — the real reply' },
+      ] });
+      const synced = await require('../src/class/messages').syncNotes(order26);
+      classClient3.notes = kN; classClient3.configured = kC;
+      ok(synced.ok === true, 'one unreadable date does not fail the whole sync');
+      const after = await db.query(
+        `SELECT content FROM class_notes WHERE class_order_row = $1 ORDER BY id`, [order26]);
+      ok(after.rows.length === 3, `every note still lands (got ${after.rows.length})`);
+      ok(after.rows.some((r) => /the real reply/.test(r.content || '')),
+         'including the one AFTER the bad date — the reply that used to be lost');
+      ok(after.rows.every((r) => r.content !== null), 'and none of them arrived blank');
+      await db.query('DELETE FROM class_notes WHERE class_order_row = $1', [order26]);
+      await db.query('DELETE FROM class_callback_events WHERE class_order_id = $1', [`cls26-${tag}`]);
+    }
+
     await db.query('DELETE FROM class_notes WHERE class_order_row = $1', [order26]);
     await db.query('DELETE FROM class_attachments WHERE class_order_row = $1', [order26]);
     await db.query('DELETE FROM class_callback_events WHERE class_order_id = $1', [`cls26-${tag}`]);
