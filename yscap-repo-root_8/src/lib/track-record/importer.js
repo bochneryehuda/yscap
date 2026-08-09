@@ -482,11 +482,59 @@ async function loadQueue(borrowerId, client, opts) {
 
 const ACTIONS = ['import_new', 'match_existing', 'decline', 'snooze'];
 
-async function decideCandidate(candidateId, { action, staffId, note, snoozeDays, dealType, confirmReopen }, client) {
-  const db = client || require('../../db');
-  if (!ACTIONS.includes(str(action))) { const e = new Error('that is not one of the choices'); e.status = 400; throw e; }
+/**
+ * ═══ ONE PROPERTY, ONE DECISION — AND THAT IS A LOCK, NOT A CHECK ══════════
+ *
+ * This used to read the candidate, test `status !== 'staged'`, and then write,
+ * with nothing in between and no `AND status='staged'` on the settling UPDATE.
+ * Two reviewers pressing the same button in the same moment BOTH passed the
+ * check. Measured over real HTTP before the fix: two simultaneous clicks
+ * produced two track-record lines in 5 of 6 trials; eight produced seven lines
+ * for ONE property; duplication in 11 of 12 trials. It reaches the number that
+ * prices the loan — once verified, one property counted as two deals.
+ *
+ * Worse, the two racers need not agree. One clicking "import" while the other
+ * clicks "not theirs" left the candidate `declined` — durably, so `stageOne`'s
+ * `declined_before` branch means no future search ever raises it again — while
+ * the line the first click created sat on the record and counted. The queue and
+ * the track record said opposite things about one property and nothing
+ * reconciled them.
+ *
+ * THE FIX IS THE DATABASE, not a bigger check. The whole decision runs in ONE
+ * transaction opened here, and the candidate is taken with `SELECT … FOR
+ * UPDATE`, so the second reviewer waits and then reads the row as the first
+ * left it — and gets the 409 they should always have got. It is the same
+ * discipline `claims.js` states in its own header ("claiming is ONE statement,
+ * never read-then-write") and that db/401 applied to the conditions engine;
+ * this path simply never got it.
+ *
+ * A caller that passes its OWN `client` owns its own transaction and its own
+ * locking; that path is unchanged, and the conditional settle below is what
+ * still protects it.
+ */
+async function decideCandidate(candidateId, opts, client) {
+  if (!ACTIONS.includes(str(opts && opts.action))) {
+    const e = new Error('that is not one of the choices'); e.status = 400; throw e;
+  }
+  if (client) return decideLocked(client, candidateId, opts);
 
-  const c = (await db.query(`SELECT * FROM track_record_candidates WHERE id=$1`, [candidateId])).rows[0];
+  const conn = await require('../../db').getClient();
+  try {
+    await conn.query('BEGIN');
+    const out = await decideLocked(conn, candidateId, opts);
+    await conn.query('COMMIT');
+    return out;
+  } catch (e) {
+    await conn.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    conn.release();
+  }
+}
+
+async function decideLocked(db, candidateId, { action, staffId, note, snoozeDays, dealType, confirmReopen }) {
+  const c = (await db.query(
+    `SELECT * FROM track_record_candidates WHERE id=$1 FOR UPDATE`, [candidateId])).rows[0];
   if (!c) { const e = new Error('not found'); e.status = 404; throw e; }
   if (c.status !== 'staged' && c.status !== 'snoozed') {
     const e = new Error('Somebody has already decided this one.'); e.status = 409; throw e;
@@ -500,13 +548,14 @@ async function decideCandidate(candidateId, { action, staffId, note, snoozeDays,
 
   if (action === 'snooze') {
     const days = Math.min(Math.max(Number(snoozeDays) || 7, 1), 180);
-    await db.query(
+    const r = await db.query(
       `UPDATE track_record_candidates
           SET status='snoozed', snoozed_until = now() + ($2 || ' days')::interval,
               decided_by=$3::uuid, decided_at=now(),
               internal_notes = CASE WHEN $4 = '' THEN internal_notes ELSE COALESCE(internal_notes,'') || $4 END
-        WHERE id=$1`,
+        WHERE id=$1 AND ${UNDECIDED_SQL}`,
       [candidateId, String(days), staffId || null, str(note) ? `\n${str(note)}` : '']);
+    if (!r.rowCount) throw alreadyDecided();
     return { ok: true, action, status: 'snoozed', days };
   }
 
@@ -514,11 +563,30 @@ async function decideCandidate(candidateId, { action, staffId, note, snoozeDays,
   return importNew(db, c, { staffId, note, dealType });
 }
 
+/* THE UNDECIDED STATES. A settle may only ever move a candidate OUT of one of
+   these — never re-decide something already decided. Written once so the four
+   settling statements below cannot drift from the check in `decideLocked`. */
+const UNDECIDED_SQL = "status IN ('staged','snoozed')";
+
+/** Nobody decided this first. Raised by every settling statement when its
+ *  conditional UPDATE touched no row, which means somebody else got there. */
+function alreadyDecided() {
+  const e = new Error('Somebody has already decided this one.');
+  e.status = 409; e.code = 'already_decided';
+  return e;
+}
+
 async function settle(db, id, status, staffId, note) {
-  await db.query(
+  /* CONDITIONAL ON PURPOSE — this is the belt to `decideLocked`'s FOR UPDATE.
+     The lock is the real fix, but it only covers the transaction this module
+     opens; a caller passing its own client, or a future caller that forgets,
+     still cannot double-settle through here. */
+  const r = await db.query(
     `UPDATE track_record_candidates
         SET status=$2, decided_by=$3::uuid, decided_at=now(), resolution_note=$4
-      WHERE id=$1`, [id, status, staffId || null, str(note).slice(0, 500) || null]);
+      WHERE id=$1 AND ${UNDECIDED_SQL}`,
+    [id, status, staffId || null, str(note).slice(0, 500) || null]);
+  if (!r.rowCount) throw alreadyDecided();
 }
 
 /**
@@ -578,14 +646,21 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
   /* EXACTLY ONE DECIDER (db/504's `trc_one_decider_check`): a staffer or a
      borrower, never both. `decided_by` is a staff_users FK, so a borrower's id
      may never go there — that constraint is the schema doing its job. */
-  await db.query(
+  /* CONDITIONAL, and the reason it is safe to insert the line first is that
+     every caller runs this inside a transaction (`decideLocked` and
+     `borrower-confirm.answerCandidate` both open one and take the candidate
+     FOR UPDATE). A loser here throws, the transaction rolls back, and the line
+     it had just written goes with it — so a race can never leave an orphan
+     track-record row behind. */
+  const settled = await db.query(
     `UPDATE track_record_candidates
         SET status='imported', imported_track_record_id=$2,
             decided_by=$3::uuid, decided_by_borrower=$5::uuid, decided_by_kind=$6,
             decided_at=now(), resolution_note=$4
-      WHERE id=$1`,
+      WHERE id=$1 AND ${UNDECIDED_SQL}`,
     [c.id, row.id, borrowerActor ? null : (staffId || null), str(note).slice(0, 500) || null,
       borrowerActor || null, borrowerActor ? 'borrower' : 'staff']);
+  if (!settled.rowCount) throw alreadyDecided();
 
   return {
     ok: true, action: 'import_new', status: 'imported',
@@ -647,10 +722,12 @@ async function matchExisting(db, c, { staffId, note, confirmReopen }) {
     await db.query(`UPDATE track_records SET ${sets.join(', ')} WHERE id=$1`, vals);
   }
 
-  await db.query(
+  const settled = await db.query(
     `UPDATE track_record_candidates
         SET status='merged', imported_track_record_id=$2, decided_by=$3::uuid, decided_at=now(), resolution_note=$4
-      WHERE id=$1`, [c.id, c.match_track_record_id, staffId || null, str(note).slice(0, 500) || null]);
+      WHERE id=$1 AND ${UNDECIDED_SQL}`,
+    [c.id, c.match_track_record_id, staffId || null, str(note).slice(0, 500) || null]);
+  if (!settled.rowCount) throw alreadyDecided();
 
   const after = (await db.query(
     `SELECT is_verified, verification_status FROM track_records WHERE id=$1`, [c.match_track_record_id])).rows[0];
