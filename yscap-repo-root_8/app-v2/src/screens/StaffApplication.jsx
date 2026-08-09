@@ -2389,7 +2389,11 @@ function TrackRecordTodo({ appId, borrowerId, reloadKey, preloaded }) {
   const findings = Array.isArray(data.findings) ? data.findings : [];
   const exp = data.experience || null;
   const s = data.summary || { items: 0, us: 0, borrower: 0, lines: 0 };
-  const expShort = exp && (!exp.registered || (exp.shortfall || []).length);
+  /* SHORTFALL-ONLY — being unregistered stopped being a gate refusal on
+     2026-08-06 (a fully-verified claim signs off; Products & Pricing's own
+     condition is what demands a registration), so "short" here means the
+     shortfall alone, matching the server's `ok` and the gate. */
+  const expShort = !!(exp && (exp.shortfall || []).length);
 
   // One flat list per group — the property is named on each row, so an officer
   // reads their own work in one place instead of hunting it across ten cards.
@@ -2406,7 +2410,7 @@ function TrackRecordTodo({ appId, borrowerId, reloadKey, preloaded }) {
     : [
       s.items ? `${s.items} ${s.items === 1 ? 'thing' : 'things'} on ${s.lines} ${s.lines === 1 ? 'deal' : 'deals'}` : '',
       findings.length ? `${findings.length} ${findings.length === 1 ? 'finding' : 'findings'} to settle` : '',
-      expShort ? 'experience short of the registered product' : '',
+      expShort ? 'experience short of what this file needs' : '',
     ].filter(Boolean).join(' · ');
 
   return (
@@ -2438,24 +2442,30 @@ function TrackRecordTodo({ appId, borrowerId, reloadKey, preloaded }) {
           settled or dismissed.
         </div>
       )}
-      {exp && expShort && (
+      {expShort && (
         <div className="small" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 8,
           border: '1px solid #EAE4D7', background: '#FBF9F4', color: '#141B22' }}>
-          {!exp.registered ? (
-            <>
-              <strong>No product registered yet.</strong>{' '}
-              Experience is checked against the registered product, so the experience condition can&rsquo;t be
-              signed off until Products &amp; Pricing has been registered.
-            </>
+          <strong>Verified experience is short of {exp.registered ? 'the registered product' : 'this file’s claim'}.</strong>{' '}
+          Verified on the record: {exp.verified.flips} {exp.verified.flips === 1 ? 'flip' : 'flips'},{' '}
+          {exp.verified.holds} {exp.verified.holds === 1 ? 'hold' : 'holds'}, {exp.verified.ground} ground-up.
+          {exp.registered ? (
+            <> The product was registered on {exp.need.flips}/{exp.need.holds}/{exp.need.ground} — verify{' '}
+              {exp.shortfall.map((x) => x.text).join(', ')}, or re-register on the experience the borrower can prove.</>
           ) : (
-            <>
-              <strong>Verified experience is short of the registered product.</strong>{' '}
-              Verified on the record: {exp.verified.flips} {exp.verified.flips === 1 ? 'flip' : 'flips'},{' '}
-              {exp.verified.holds} {exp.verified.holds === 1 ? 'hold' : 'holds'}, {exp.verified.ground} ground-up.
-              The product was registered on {exp.need.flips}/{exp.need.holds}/{exp.need.ground} — verify{' '}
-              {exp.shortfall.map((x) => x.text).join(', ')}, or re-register on the experience the borrower can prove.
-            </>
+            <> The file claims {exp.need.flips}/{exp.need.holds}/{exp.need.ground} — verify{' '}
+              {exp.shortfall.map((x) => x.text).join(', ')}, or lower the claim to what the borrower can prove.</>
           )}
+        </div>
+      )}
+      {exp && !exp.registered && !expShort && (
+        /* INFORMATIONAL, never blocking — the gate signs off a fully-verified
+           claim without a registration (2026-08-06); the registration is
+           Products & Pricing's own condition. Note it, don't refuse on it. */
+        <div className="small" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 8,
+          border: '1px solid #EAE4D7', background: '#FBF9F4', color: '#4B585C' }}>
+          <strong style={{ color: '#141B22' }}>No product registered yet.</strong>{' '}
+          The claim is fully verified, so the experience condition can be signed off. Registering a product is
+          Products &amp; Pricing&rsquo;s own condition — a registration on different experience re-checks this.
         </div>
       )}
 
@@ -2549,11 +2559,17 @@ function StaffTrackRecordPanel({ app, role }) {
      ledger degrades to verified/unverified and the header to the file's own
      claim columns. */
   const [todo, setTodo] = useState(null);
+  /* When THIS fetch fails, the detail list below gets `preloaded={undefined}`
+     and falls back to its own self-fetch — a second chance, and its own amber
+     "could not work out what is left" note if that fails too. Without this, a
+     parent failure silently blanked the list (pre-merge audit NIT). */
+  const [todoFailed, setTodoFailed] = useState(false);
   useEffect(() => {
     let alive = true;
+    setTodoFailed(false);
     api.staffTrackRecordTodo(app.id, borrowerId)
       .then((d) => { if (alive) setTodo(d && typeof d === 'object' ? d : null); })
-      .catch(() => { if (alive) setTodo(null); });
+      .catch(() => { if (alive) { setTodo(null); setTodoFailed(true); } });
     return () => { alive = false; };
   }, [app.id, borrowerId, todoKey]);
   const todoByLine = useMemo(() => {
@@ -2746,7 +2762,8 @@ function StaffTrackRecordPanel({ app, role }) {
           record, then you read what is still left on it. The detail list reads
           the SAME todo payload fetched above (`preloaded`), so the section costs
           one fetch, not two. */}
-      <TrackRecordTodo appId={app.id} borrowerId={borrowerId} reloadKey={todoKey} preloaded={todo} />
+      <TrackRecordTodo appId={app.id} borrowerId={borrowerId} reloadKey={todoKey}
+        preloaded={todoFailed ? undefined : todo} />
       {full && (
         <ToolModal
           title="Borrower track record"

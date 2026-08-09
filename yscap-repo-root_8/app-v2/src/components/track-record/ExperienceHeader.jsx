@@ -81,9 +81,11 @@ export default function ExperienceHeader({ app, experience, findingsOpen, multiB
             <span style={big}>—</span>
           ) : shortfall.length ? (
             <span style={big}>{shortfall.map((x) => (x && x.text) || String(x)).join(', ')}</span>
-          ) : experience && !experience.registered ? (
-            <span style={big}>Verify the claim — no product registered yet</span>
           ) : experience ? (
+            /* Shortfall EMPTY decides "met" whether or not a product is
+               registered — the gate signs off a fully-verified claim without
+               one (2026-08-06); the registration is Products & Pricing's own
+               condition, noted in the what's-left list below, never here. */
             <span style={{ ...big, color: 'var(--teal, #2F7F86)' }}>Requirement met ✓</span>
           ) : (
             <span style={big}>Nothing — no experience required</span>
