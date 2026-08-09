@@ -60,6 +60,24 @@ for (const b of ['bluelake', 'emcap', 'corrfirst']) {
 eq(FC.mayTableFund('other'), null, 'A15 every other buyer: "you don\'t need to care about this field"');
 eq(FC.mayTableFund(null), null, 'A16 …and an unknown buyer has no rule either');
 eq(FC.defaultChannelFor('fidelis'), 'table_funding', 'A17 Fidelis DEFAULTS to table funding');
+// WHO GETS THE 30-DAY MISSING-PURCHASE-ADVICE REMINDER (owner-directed 2026-08-09, answering the
+// question the first cut left open): "blue lake emcap corrfirst — only stuff that needs to be sold
+// to get this reminder. Fidelis is on a case-by-case basis, most of Fidelis is table funding. All
+// the other RCN, [Roc], and Temple View are also table funded, so we don't need a reminder."
+// This is a question about the BUYER; whether a given FILE was table funded is a separate check,
+// and BOTH have to pass before anyone is told.
+for (const b of ['Blue Lake Capital', 'EMCAP Financial', 'CorrFirst']) {
+  eq(FC.chaseMissingPurchaseAdvice(b), true, `A17a ${b} is chased — its loans really do have to be sold`);
+}
+eq(FC.chaseMissingPurchaseAdvice('Fidelis Investors LLC'), true,
+  'A17b Fidelis is NOT excluded by buyer — that is the owner\'s "case-by-case"; its table-funded FILES are skipped by the file check instead');
+for (const b of ['RCN Capital', 'Roc Capital', 'Temple View Capital']) {
+  eq(FC.chaseMissingPurchaseAdvice(b), false, `A17c ${b} is never chased — table funded as a matter of course`);
+}
+eq(FC.chaseMissingPurchaseAdvice(null), true,
+  'A17d a file with NO note buyer is still chased — going quiet on an unclassified funded loan is the expensive direction');
+eq(FC.chaseMissingPurchaseAdvice('Some New Buyer LLC'), true,
+  'A17e …and so is a buyer nobody has classified yet, or the reminder goes dark the day one is added');
 for (const b of ['rcn', 'roccapital', 'templeview', 'bluelake', 'emcap', 'corrfirst', 'other']) {
   eq(FC.defaultChannelFor(b), null, `A18 ${b} has no default — only Fidelis does`);
 }

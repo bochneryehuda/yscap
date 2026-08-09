@@ -1447,9 +1447,16 @@ async function purchaseAdviceMissingOnce() {
 
   for (const r of rows) {
     try {
+      const FC = require('./funding-channel');
       // Encompass's own answer, through the shared normalizer. Belt and braces on top of the
       // warehouse check already applied in SQL.
-      if (require('./funding-channel').soldAtTable({ channel: require('./funding-channel').channelKey(r.channel_raw) })) continue;
+      if (FC.soldAtTable({ channel: FC.channelKey(r.channel_raw) })) continue;
+      // …and the question about the BUYER rather than the file (owner-directed 2026-08-09): RCN,
+      // Roc Capital and Temple View are table funded as a matter of course, so a missing purchase
+      // advice on one of their files is a data-entry gap, not a loan waiting to be sold. Fidelis is
+      // NOT excluded — that is the owner's "case-by-case", and its table-funded files are already
+      // skipped by the check above, which is a fact about the file rather than about the buyer.
+      if (!FC.chaseMissingPurchaseAdvice(r.lender)) continue;
       if (!(await _gate(DIGEST_ACTION.PURCHASE_ADVICE_MISSING, r.id, '7 days'))) continue;
       const age = Number(r.age || 0);
       const who = r.lender ? String(r.lender) : 'the investor';

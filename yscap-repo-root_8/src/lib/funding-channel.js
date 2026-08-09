@@ -60,6 +60,26 @@ const CAN_TABLE_FUND = Object.freeze(['fidelis', 'rcn', 'roccapital', 'templevie
 const DIRECT_ONLY = Object.freeze(['bluelake', 'emcap', 'corrfirst']);
 
 /**
+ * Buyers whose business is table funded AS A MATTER OF COURSE, so a file of theirs with no
+ * purchase advice is not a loan waiting to be sold — it is a gap in someone's data entry, and
+ * chasing it would be noise (owner-directed 2026-08-09, answering the open question left by the
+ * first cut: "blue lake emcap corrfirst — only stuff that needs to be sold to get this reminder.
+ * Fidelis is on a case-by-case basis, most of Fidelis is table funding. All the other RCN, [Roc],
+ * and Temple View are also table funded, so we don't need a reminder. Only these few are real
+ * sold, so we should get a reminder after 30 days.").
+ *
+ * NOTE ON THE SPELLING: the owner said "Rack", which is Roc Capital — the same speech-to-text
+ * slip as "Core First" for CorrFirst. Read through the shared capital-provider table like every
+ * other name here, never off the message.
+ *
+ * FIDELIS IS DELIBERATELY NOT ON THIS LIST, and that is the owner's "case-by-case": most Fidelis
+ * deals are table funded and are ALREADY skipped by the table-funded check, which is a fact about
+ * THE FILE rather than about the buyer. The few that are not table funded genuinely have to be
+ * sold, so they should still be chased.
+ */
+const NO_ADVICE_CHASE = Object.freeze(['rcn', 'roccapital', 'templeview']);
+
+/**
  * Normalize a note buyer — ours (`applications.lender`, free text) or Encompass's
  * (CX.CAPITALPROVIDER) — to the shared capital-provider token, or null when it is blank or a
  * spelling the shared table does not carry. Null means "we do not know which buyer this is", and
@@ -211,10 +231,29 @@ function expectsPurchaseAdvice({ tableFunded = null, channel = null } = {}) {
   return !soldAtTable({ tableFunded, channel });
 }
 
+/**
+ * Should a file for this note buyer ever be CHASED for a missing purchase advice?
+ *
+ * This is a question about the BUYER, and it sits alongside — never instead of — the question
+ * about the FILE (`expectsPurchaseAdvice`, which is what skips anything table funded). Both have
+ * to say yes before anyone is told.
+ *
+ * false for the three buyers whose business is table funded as a matter of course. true for
+ * everything else, INCLUDING a buyer this table does not recognise — and that default is
+ * deliberate. The owner named the buyers who need no reminder; a buyer nobody has classified yet
+ * is not one of them, and a funded loan sitting a month with no purchase advice and no
+ * recognisable buyer is exactly the thing a super admin should be told about. Silence there would
+ * be a gap that appears the day a new note buyer is added and that nobody would ever notice.
+ */
+function chaseMissingPurchaseAdvice(buyer) {
+  const b = toBuyerKey(buyer);
+  return !(b && NO_ADVICE_CHASE.indexOf(b) !== -1);
+}
+
 module.exports = {
   CHANNEL, CHANNEL_LABEL, DIRECT_CHANNELS, DIRECT_ONLY_WORDING,
-  CAN_TABLE_FUND, DIRECT_ONLY, BUYER_LABEL,
+  CAN_TABLE_FUND, DIRECT_ONLY, NO_ADVICE_CHASE, BUYER_LABEL,
   buyerKey, toBuyerKey, channelKey, isTableFunding, isDirect, mayTableFund, defaultChannelFor,
   channelProblem, label,
-  soldAtTable, expectsPurchaseAdvice,
+  soldAtTable, expectsPurchaseAdvice, chaseMissingPurchaseAdvice,
 };

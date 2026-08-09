@@ -155,11 +155,44 @@ const DIG = require('../src/lib/notification-digests');
         { warehouse: 'Stride Bank', fundedDaysAgo: null }],
       ['D8 not a funded file yet',
         { warehouse: 'Stride Bank', fundedDaysAgo: 60, status: 'clear_to_close' }],
+      // THE BUYER'S OWN ANSWER (owner-directed 2026-08-09: "all the other RCN, [Roc], and Temple
+      // View are also table funded, so we don't need a reminder"). These three are silent EVEN ON
+      // a file our closing desk did not mark table funded — the exclusion is about the buyer, not
+      // about the file, which is exactly why the file-level check above cannot express it.
+      ['D9 RCN — table funded as a matter of course, so never chased',
+        { warehouse: 'Stride Bank', fundedDaysAgo: 60, lender: 'RCN Capital' }],
+      ['D10 Roc Capital (the owner\'s "Rack") — likewise',
+        { warehouse: 'Stride Bank', fundedDaysAgo: 60, lender: 'Roc Capital' }],
+      ['D11 Temple View — likewise',
+        { warehouse: 'Stride Bank', fundedDaysAgo: 60, lender: 'Temple View Capital' }],
     ];
     const made = [];
     for (const [, opts] of cases) made.push(await mkFile(opts));
     await DIG.purchaseAdviceMissingOnce();
     for (let i = 0; i < cases.length; i++) ok(cases[i][0], !(await wasChased(made[i])));
+  }
+
+  // ======================================================================
+  // D2. …AND STILL FIRES for the buyers whose loans really do have to be sold
+  // ======================================================================
+  //
+  // The owner: "blue lake emcap corrfirst — only stuff that needs to be sold to get this reminder.
+  // Fidelis is on a case-by-case basis." So Fidelis is NOT excluded by buyer: a Fidelis file that
+  // was not table funded genuinely has to be sold, and its table-funded files are already silenced
+  // by the file-level check (proven in D1). An unrecognised buyer is chased too — going silent on
+  // a note buyer nobody has classified yet would be a gap that appears the day one is added.
+  {
+    const cases = [
+      ['D12 Blue Lake — a loan that really has to be sold', 'Blue Lake Capital'],
+      ['D13 EMCAP — likewise', 'EMCAP Financial'],
+      ['D14 CorrFirst — likewise', 'CorrFirst'],
+      ['D15 Fidelis NOT table funded — the owner\'s case-by-case, so still chased', 'Fidelis Investors LLC'],
+      ['D16 a buyer nobody has classified yet is chased, never silently skipped', 'Some New Buyer LLC'],
+    ];
+    const made = [];
+    for (const [, lender] of cases) made.push(await mkFile({ warehouse: 'Stride Bank', fundedDaysAgo: 60, lender }));
+    await DIG.purchaseAdviceMissingOnce();
+    for (let i = 0; i < cases.length; i++) ok(cases[i][0], await wasChased(made[i]));
   }
 
   // ======================================================================
