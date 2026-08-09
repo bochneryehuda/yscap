@@ -449,7 +449,19 @@ async function syncExperienceChecklistForBorrower(borrowerId, client = db) {
       WHERE borrower_id=$1 OR co_borrower_id=$1`,
     [borrowerId]);
   const out = [];
-  for (const row of apps.rows) out.push(await syncExperienceChecklistForApplication(row.id, client));
+  /* PER-FILE, so one file's failure cannot abort its siblings. This loop used
+     to be a bare await: the first application that threw skipped every one
+     after it, and the caller's advisory catch hid that anything was missed —
+     a revoke reported success while a second file's condition was never
+     recomputed (audit 2026-08-09 #2). A failed file is retried by the next
+     recompute; a SKIPPED one was retried by nothing. */
+  for (const row of apps.rows) {
+    try { out.push(await syncExperienceChecklistForApplication(row.id, client)); }
+    catch (e) {
+      console.error('[experience] condition recompute failed for application', row.id, (e && e.message) || e);
+      out.push(null);
+    }
+  }
   return out;
 }
 
