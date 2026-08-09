@@ -478,11 +478,23 @@ function domAudit(opts) {
   // means. Three samples across the line, two must be blocked, so an element
   // merely clipping one edge is not reported.
   const vh = window.innerHeight;
-  for (const { el } of leaves) {
+  for (const { el, cs } of leaves) {
     const rect = el.getClientRects()[0];
     if (!rect || rect.width < 6 || rect.height < 6) continue;
     const y = rect.top + rect.height / 2;
     if (y < 1 || y > vh - 2) continue;                    // outside the viewport
+    // `elementFromPoint` answers "what would receive a CLICK here", which is
+    // not the same question as "what is painted on top". An adornment carrying
+    // `pointer-events:none` — the "months" and "%" labels sitting inside their
+    // input, which are absolutely positioned ABOVE it and perfectly legible —
+    // is skipped by hit-testing on purpose, so the control underneath answers
+    // instead and the label reports as covered every single time. Re-enable
+    // hit-testing on that one element for the duration of the probe, then put
+    // it back: an inherited `none` is overridden by an explicit `auto` on the
+    // element itself, and pointer-events changes neither layout nor paint.
+    const peNone = (cs || getComputedStyle(el)).pointerEvents === 'none';
+    const prevPe = el.style.pointerEvents;
+    if (peNone) el.style.pointerEvents = 'auto';
     let blocker = null, blocked = 0;
     for (const fx of [0.15, 0.5, 0.85]) {
       const x = rect.left + rect.width * fx;
@@ -491,6 +503,7 @@ function domAudit(opts) {
       if (!top || top === el || el.contains(top) || top.contains(el)) continue;
       blocker = top; blocked++;
     }
+    if (peNone) el.style.pointerEvents = prevPe;
     if (blocked < 2 || !blocker) continue;
     // WHO is doing the covering decides whether this is a defect.
     // A sticky/fixed overlay (a pinned sidebar footer, a floating chat
