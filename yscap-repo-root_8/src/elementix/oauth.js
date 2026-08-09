@@ -490,6 +490,11 @@ async function completeConnect({ code, state }) {
       detail: 'That approval link had already been used or had expired. Start the connection again.' };
   }
 
+  // The return leg is a PUBLIC route with no session (Elementix redirects a
+  // browser to it), so `startedBy` is the only way its audit row can name a
+  // person — and it names the right one: whoever pressed Connect.
+  const startedBy = p.started_by || null;
+
   const form = new URLSearchParams({
     grant_type: 'authorization_code',
     code: String(code),
@@ -503,7 +508,7 @@ async function completeConnect({ code, state }) {
   if (secret) headers.authorization = 'Basic ' + Buffer.from(`${p.client_id}:${secret}`).toString('base64');
 
   const tok = await postToken(p.token_endpoint, form, headers);
-  if (!tok.ok) return { ok: false, reason: 'token_exchange_failed', detail: tok.detail };
+  if (!tok.ok) return { ok: false, reason: 'token_exchange_failed', detail: tok.detail, startedBy };
 
   await store({
     staffId: p.staff_id, resourceUrl: p.resource_url, authServer: p.auth_server,
@@ -517,6 +522,7 @@ async function completeConnect({ code, state }) {
   return {
     ok: true,
     selfRenewing,
+    startedBy,
     detail: selfRenewing
       ? 'Connected, and Elementix issued a refresh token — PILOT can renew access on its own from now on.'
       : 'Connected, but Elementix did NOT issue a refresh token, so this access will expire and a '
