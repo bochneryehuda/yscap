@@ -75,4 +75,15 @@ function start() {
   setInterval(() => { refresh().catch(() => {}); }, REFRESH_MS).unref();
 }
 
-module.exports = { enabled, hasOverride, overridesObject, refresh, setFlag, clearFlag, start };
+/* CACHE-ONLY hooks for tests. `setFlag`/`clearFlag` are the real doors and both write to the
+   database; a PURE test of a switch-gated rule needs to move the in-memory cache and nothing
+   else. Named `_internals` like every other test seam here, and deliberately not part of the
+   public surface — production code must go through setFlag/clearFlag so the override is
+   persisted and audited. */
+function setOverrideForTest(key, on) { overrides.set(key, !!on); }
+function clearOverrideForTest(key) { overrides.delete(key); }
+
+module.exports = {
+  enabled, hasOverride, overridesObject, refresh, setFlag, clearFlag, start,
+  _internals: { setOverrideForTest, clearOverrideForTest },
+};
