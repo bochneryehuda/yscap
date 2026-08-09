@@ -56,6 +56,12 @@ function push(req) {
     // will ever see (see the fallback note above).
     if (!host) {
       if (req.kind === 'confirm') { resolve(window.confirm(dialogText(req))); return; }
+      if (req.kind === 'prompt') {
+        // window.prompt's own two-valued answer is preserved exactly: a string
+        // (possibly empty) when they typed, null when they cancelled.
+        resolve(window.prompt(dialogText(req), req.defaultValue == null ? '' : String(req.defaultValue)));
+        return;
+      }
       window.alert(dialogText(req));
       resolve(undefined);
       return;
@@ -85,6 +91,29 @@ export function showMessage(message, opts = {}) {
 /** Ask a yes/no question. MUST be awaited — see the note above. */
 export function askConfirm(message, opts = {}) {
   return push({ kind: 'confirm', message: String(message == null ? '' : message), ...opts });
+}
+
+/**
+ * Ask for a line of text. MUST be awaited, for the same reason `askConfirm`
+ * must — an un-awaited call hands back a Promise, and every caller here reads
+ * the answer.
+ *
+ * THE RETURN CONTRACT IS `window.prompt`'s, EXACTLY, and it is two-valued on
+ * purpose: a STRING (possibly `''`) when they typed and submitted, and `null`
+ * when they CANCELLED. Call sites in this app genuinely depend on the
+ * difference — several read `if (x == null) return;` (they backed out, say
+ * nothing) and then separately `if (!x.trim()) setErr('Add a short reason')`
+ * (they submitted nothing, so tell them). Collapsing the two into `''` would
+ * silently turn "changed my mind" into an error message, and collapsing them
+ * into `null` would drop a deliberate empty answer.
+ *
+ * @param {string} message
+ * @param {{title?:string, defaultValue?:string, placeholder?:string,
+ *          confirmLabel?:string, cancelLabel?:string, multiline?:boolean}} [opts]
+ * @returns {Promise<string|null>}
+ */
+export function askPrompt(message, opts = {}) {
+  return push({ kind: 'prompt', message: String(message == null ? '' : message), ...opts });
 }
 
 export const _internals = { dialogText };

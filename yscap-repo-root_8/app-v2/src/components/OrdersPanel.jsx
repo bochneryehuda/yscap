@@ -12,7 +12,7 @@ import { fmtDay } from '../lib/dates.js';
 // Why an order's clock is stopped, worded in ONE place and shared with the
 // cross-file Orders desk — the decision itself is the server's.
 import { dormantMarker } from '../lib/orderDormant.js';
-import { askConfirm } from '../lib/dialog.js';
+import { askConfirm, askPrompt } from '../lib/dialog.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ORDERS DESK (#orders) — order TITLE and INSURANCE for a file, and track each
@@ -254,7 +254,7 @@ function ReturnedDoc({ appId, kind, doc, slots, conditionSlots, canAccept, onCha
   const review = async (action) => {
     if (action === 'accept' && !doc.slot_label && !(await askConfirm('Accept this document without assigning a type (binder / invoice / …)? You can assign it first.'))) return;
     let reason;
-    if (action === 'reject') { reason = window.prompt('Why is this document being rejected? (the reason is recorded)'); if (!reason) return; }
+    if (action === 'reject') { reason = await askPrompt('Why is this document being rejected? (the reason is recorded)'); if (!reason) return; }
     setBusy('review'); setErr('');
     try { await api.staffReviewDoc(doc.id, action, reason); onChanged && onChanged(); }
     catch (e) { setErr((e && e.message) || 'Could not update.'); }

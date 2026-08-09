@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import TermSheetStudio, { buildStudioState } from '../components/TermSheetStudio.jsx';
 import { scenarioToDraft, scenarioLabelFromState } from '../lib/scenario.js';
-import { askConfirm } from '../lib/dialog.js';
+import { askConfirm, askPrompt } from '../lib/dialog.js';
 
 /* #103 — Borrower self-service pricing. The borrower prices loans in the SAME
    frozen Term Sheet Studio the staff use (embedded as an iframe — the engine and
@@ -62,7 +62,7 @@ export default function PricingStudio() {
     if (!state) { flash('Give the studio a moment to finish loading, then try again.'); return; }
     // Owner rule: name the scenario from the property address by default (the
     // borrower can rename it); fall back to the deal type when no address yet.
-    const label = window.prompt('Name this scenario', scenarioLabelFromState(state));
+    const label = await askPrompt('Name this scenario', { defaultValue: scenarioLabelFromState(state) });
     if (label == null) return;   // cancelled
     setBusy(true);
     try { await api.savePricingScenario(label, state); await loadScenarios(); flash('Scenario saved.'); }

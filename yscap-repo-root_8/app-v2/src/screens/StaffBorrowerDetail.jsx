@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { showMessage, askConfirm } from '../lib/dialog.js';
+import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
@@ -452,7 +452,7 @@ function TrackRecord({ id }) {
     finally { setBusy(''); }
   }
   async function revoke(t) {
-    const reason = window.prompt('Revoke this project’s verification. The borrower is notified with this reason:');
+    const reason = await askPrompt('Revoke this project’s verification. The borrower is notified with this reason:');
     if (reason == null) return;                       // cancelled
     if (!reason.trim()) { showMessage('A reason is required to revoke verification.'); return; }
     setBusy(t.id);

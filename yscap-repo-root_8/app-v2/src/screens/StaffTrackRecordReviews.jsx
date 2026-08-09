@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { askPrompt } from '../lib/dialog.js';
 
 /* TRACK RECORD — WAITING FOR REVIEW (owner-directed 2026-08-03: "if the borrower
    is entering the track record, it should go to the processing queue to review
@@ -93,7 +94,7 @@ export default function StaffTrackRecordReviews() {
       flash(false, 'This borrower has no open loan file — a document request becomes a condition on a file, so there is nowhere to put it yet.');
       return;
     }
-    const label = window.prompt(`Ask for a document on "${addrOf(row.property_address)}" — which document do you need? (the borrower sees this)`);
+    const label = await askPrompt(`Ask for a document on "${addrOf(row.property_address)}" — which document do you need? (the borrower sees this)`);
     if (label == null || !label.trim()) return;
     setBusy(row.id);
     try {

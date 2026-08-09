@@ -4139,6 +4139,16 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
    address from pushing the card sideways on a phone. */
 .app-dialog-body{margin:0 0 16px;white-space:pre-wrap;overflow-wrap:anywhere;
   font-size:14px;line-height:1.5;color:#3A4550}
+/* The prompt's text field. Colours are EXPLICIT darks per the hard rule — an
+   --ink* token is a LIGHT paper colour in this palette and renders white on
+   white. 16px is not cosmetic: iOS Safari zooms the whole page on focus of any
+   control under 16px, which on a phone throws the dialog off screen. */
+.app-dialog-field{display:block;width:100%;box-sizing:border-box;margin:0 0 16px;
+  font-size:16px;line-height:1.4;color:#141B22;background:#FFFFFF;
+  border:1px solid #D9D2C4;border-radius:8px;padding:10px 12px}
+.app-dialog-field:focus{outline:2px solid #2F7F86;outline-offset:1px;border-color:#2F7F86}
+.app-dialog-field::placeholder{color:#7A858C}
+textarea.app-dialog-field{resize:vertical;min-height:76px}
 .app-dialog-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
 @media(max-width:640px){
   .app-dialog{padding:18px 16px calc(16px + env(safe-area-inset-bottom))}

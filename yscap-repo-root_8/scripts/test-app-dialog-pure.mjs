@@ -25,6 +25,7 @@ const alerts = [];
 const confirms = [];
 let confirmAnswer = true;
 globalThis.window = {
+  prompt: (m, d) => null,
   alert: (m) => { alerts.push(m); },
   confirm: (m) => { confirms.push(m); return confirmAnswer; },
 };
@@ -163,6 +164,73 @@ for (const f of portalFiles) {
 }
 ok(unawaited.length === 0,
   `every askConfirm call is awaited — an un-awaited one reads as "yes" on every click${unawaited.length ? `\n     ${unawaited.join('\n     ')}` : ''}`);
+
+// ---------------------------------------------------------------------------
+// C3. THE PROMPT, whose danger is different from the confirm's. `window.prompt`
+//     answers TWO ways — a string (possibly '') when they typed and submitted,
+//     and null when they CANCELLED — and real call sites here branch on that
+//     difference: EncompassSyncPanel returns SILENTLY on null and shows "Add a
+//     short reason" on ''. Collapse the two and you scold somebody for backing
+//     out. So the contract is asserted, not assumed.
+// ---------------------------------------------------------------------------
+const nativePrompt = portalFiles.filter((f) => /\bwindow\.prompt\s*\(/.test(read(f)));
+ok(nativePrompt.length === 0,
+  `no portal screen raises a browser prompt() any more${nativePrompt.length ? ` — still: ${nativePrompt.join(', ')}` : ''}`);
+
+const unawaitedPrompt = [];
+for (const f of portalFiles) {
+  for (const m of read(f).matchAll(/(.{0,12})\baskPrompt\s*\(/g)) {
+    const before = m[1];
+    if (/await\s+$/.test(before)) continue;
+    if (/[.\w$]$/.test(before.trimEnd())) continue;
+    unawaitedPrompt.push(`${f}: …${m[0].trim()}`);
+  }
+}
+ok(unawaitedPrompt.length === 0,
+  `every askPrompt call is awaited${unawaitedPrompt.length ? `\n     ${unawaitedPrompt.join('\n     ')}` : ''}`);
+
+const missingPromptImport = portalFiles.filter((f) => {
+  const src = read(f);
+  if (!/\baskPrompt\s*\(/.test(src)) return false;
+  const imp = src.match(/import\s*\{([^}]*)\}\s*from\s*['"][^'"]*\bdialog\.js['"]/);
+  return !imp || !/\baskPrompt\b/.test(imp[1]);
+});
+ok(missingPromptImport.length === 0,
+  `every file calling askPrompt imports it${missingPromptImport.length ? ` — missing in: ${missingPromptImport.join(', ')}` : ''}`);
+
+// The two-valued answer, end to end through the host.
+let shownP = null;
+const unsubP = dlg.subscribeDialog((r) => { shownP = r; });
+
+const p1 = dlg.askPrompt('why?', { defaultValue: 'seed' });
+await Promise.resolve();
+ok(shownP && shownP.kind === 'prompt' && shownP.defaultValue === 'seed',
+  'host: a prompt reaches the host carrying its default value');
+dlg.resolveTop('a typed reason');
+ok((await p1) === 'a typed reason', 'host: a typed answer comes back verbatim');
+
+const p2 = dlg.askPrompt('why?');
+await Promise.resolve();
+dlg.resolveTop(null);                       // what Cancel / Escape / backdrop send
+ok((await p2) === null, 'host: CANCEL answers null — never an empty string');
+
+const p3 = dlg.askPrompt('why?');
+await Promise.resolve();
+dlg.resolveTop('');                         // submitted with the box empty
+const p3v = await p3;
+ok(p3v === '' && p3v !== null,
+  'host: an EMPTY SUBMISSION answers "" — a different answer from cancel, and callers rely on it');
+unsubP();
+
+// With no host it must be the browser's own prompt, and its null must survive.
+const nativeAnswers = [];
+const realPrompt = window.prompt;
+window.prompt = (m, d) => { nativeAnswers.push([m, d]); return null; };
+ok((await dlg.askPrompt('fallback?', { defaultValue: 'x' })) === null,
+  'no host: a prompt falls back to the browser AND its cancel stays null');
+ok(nativeAnswers.length === 1 && nativeAnswers[0][1] === 'x',
+  'no host: the default value is handed to the browser dialog too');
+window.prompt = realPrompt;
 
 // (3) Every file that CALLS it also IMPORTS it. esbuild emits an undeclared
 //     identifier verbatim, so a missing import builds clean and then throws

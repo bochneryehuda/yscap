@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import { fileToBase64 } from '../lib/files.js';
 import DocPreview from './DocPreview.jsx';
-import { askConfirm } from '../lib/dialog.js';
+import { askConfirm, askPrompt } from '../lib/dialog.js';
 
 /**
  * Credit report (Xactus import) — the internal "Credit report" condition
@@ -894,7 +894,7 @@ function ExternalCreditPanel({ appId, itemId, scopeKind, onChanged, onDownload, 
     setErr('');
     let why = '';
     if (action === 'reject') {
-      why = window.prompt('Why is this credit report being rejected? The reason is recorded on the file.') || '';
+      why = await askPrompt('Why is this credit report being rejected? The reason is recorded on the file.') || '';
       if (!why.trim()) return;
     }
     setBusy(true);
