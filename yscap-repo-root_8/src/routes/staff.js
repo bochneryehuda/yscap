@@ -8515,13 +8515,24 @@ async function signOffGate(itemId, actor) {
      the Track record section went on displaying it. */
   const trkBlock = await require('../lib/track-record-findings').experienceBlockReason(item.application_id);
   if (trkBlock) return trkBlock;
-  // isExp — the experience REMINDER slot (#97). When NO experience is claimed on
-  // the file (nothing to verify for the chosen structure), it may be signed off
-  // freely; it only becomes gated once experience is claimed on the application /
-  // term sheet / product.
+  // isExp — the experience REMINDER slot (#97). When NO experience is required
+  // for the chosen structure, it may be signed off freely.
+  //
+  // "REQUIRED" IS THE REGISTRATION'S NUMBER FIRST, THE FILE'S CLAIM SECOND —
+  // and the order of these two lines is the whole guard. It used to be
+  // `if (claimed === 0) return null;` BEFORE consulting the registration, so
+  // lowering `requested_exp_*` to zero (an ordinary edit, reachable through the
+  // details door and the studio's explicit claim) signed off a condition whose
+  // CURRENT REGISTRATION still priced the loan on three flips — proven
+  // end-to-end by the 2026-08-09 audit: gate returned null, the PATCH stamped
+  // sign-off, zero deals verified, while registeredExperienceNeed still said
+  // {flips:3}. The registration going stale reopens Products & Pricing, but the
+  // experience condition — the one the owner said must not clear until the
+  // deals are verified — stayed cleared. Asking `need` FIRST means a lowered
+  // claim only relaxes the gate once the product is RE-REGISTERED on it.
   const claim = require('../lib/experience').requestedFromApp(app);
-  const claimed = claim.flips + claim.holds + claim.ground;
-  if (claimed === 0) return null;
+  const need = await require('../lib/experience').registeredExperienceNeed(item.application_id, db, claim);
+  if (need.flips + need.holds + need.ground === 0) return null;
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) dt, count(*)::int n
        FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true AND (${RECENT_EXIT_SQL}) GROUP BY 1`, [expBorrowerIds]);
@@ -8541,8 +8552,8 @@ async function signOffGate(itemId, actor) {
   // to go register a product rather than to verify the ten deals
   // (owner-directed 2026-08-06: "the condition should require verifying 10 —
   // you should not be able to sign it off till you verify 10"). A REGISTERED
-  // file is unaffected: the registration still governs.
-  const need = await require('../lib/experience').registeredExperienceNeed(item.application_id, db, claim);
+  // file is unaffected: the registration still governs. (`need` is computed
+  // ABOVE the zero-claim early-return — that ordering is the 2026-08-09 fix.)
   const short = [];
   if (v.flips < need.flips) short.push(`${need.flips - v.flips} more flip${need.flips - v.flips === 1 ? '' : 's'}`);
   if (v.holds < need.holds) short.push(`${need.holds - v.holds} more hold${need.holds - v.holds === 1 ? '' : 's'}`);

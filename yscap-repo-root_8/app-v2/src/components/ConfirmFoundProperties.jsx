@@ -299,10 +299,15 @@ export default function ConfirmFoundProperties({ onChanged }) {
 
       {Object.keys(notSure).length ? (
         <p style={{ marginTop: 14, marginBottom: 0, color: MUTED, fontSize: 14 }}>
+          {/* HONEST WORDING — "not sure" is not sent anywhere (audit 2026-08-09
+              #12: the server has no such state, and the old copy promised "our
+              team will look into it" about a note that died on reload). Say
+              what is true: the question simply stays open. */}
           You marked {Object.keys(notSure).length}{' '}
-          {Object.keys(notSure).length === 1 ? 'property' : 'properties'} as not sure. Our team will look into
-          {Object.keys(notSure).length === 1 ? ' it' : ' them'} and may ask you about
-          {Object.keys(notSure).length === 1 ? ' it' : ' them'}.
+          {Object.keys(notSure).length === 1 ? 'property' : 'properties'} as not sure — no problem.
+          {Object.keys(notSure).length === 1 ? ' It' : ' They'} will still be here to answer
+          whenever you are ready, and your loan team can help you work
+          {Object.keys(notSure).length === 1 ? ' it' : ' them'} out.
         </p>
       ) : null}
       {Object.keys(skipped).length && done ? (

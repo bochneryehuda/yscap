@@ -16,6 +16,7 @@ import { subscribeChat } from '../lib/chatEvents.js';
 import ChatThread from '../components/ChatThread.jsx';
 import { NewChatModal } from './StaffChat.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
+import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import DocumentsPanel from '../components/DocumentsPanel.jsx';
 import EmailCenter from '../components/EmailCenter.jsx';
@@ -2818,6 +2819,22 @@ function StaffTrackRecordPanel({ app, role }) {
         src={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}
         minHeight={220}
       />
+      {/* THE PUBLIC-RECORDS WORKBENCH, IN THE LOAN FILE (owner-directed
+          2026-08-09: "the Elementix stuff is still missing from the actual track
+          record within the loan file … merge together, old information lives in
+          one place"). Until now the search button and the staged candidates
+          lived ONLY on the borrower CRM profile — an officer working the FILE
+          had no path to them at all. Same component, same borrower key, so the
+          profile tab and this section can never drift: it is the person's one
+          queue, shown wherever the person's record is worked. It follows the
+          "Whose track record" picker above, so on a co-borrower file it shows
+          the selected person's queue. Searching still costs vendor lookups and
+          still confirms first — mounting it here changes where it is, never
+          what it spends. */}
+      <div style={{ marginTop: 12 }}>
+        <StaffPropertyWorkbench key={`wb-${borrowerId}`} borrowerId={borrowerId}
+          borrowerName={(people.find(p => p.id === borrowerId) || {}).label || ''} />
+      </div>
       {/* AFTER the record itself (owner-directed 2026-08-03) — you read the track
           record, then you read what is still left on it. */}
       <TrackRecordTodo appId={app.id} borrowerId={borrowerId} reloadKey={todoKey} />

@@ -299,7 +299,17 @@ async function openForFile(appId, q = db) {
           AND (f.application_id IS NULL OR f.application_id = $2)
         ORDER BY f.created_at`, [ids, appId]);
     return r.rows.map((x) => ({ ...x, actions: actionsFor(x.code) }));
-  } catch (_) { return []; }
+  } catch (e) {
+    /* THROW — do not answer []. An empty list is a STATEMENT ("this track
+       record is clean"), and a read error is not evidence of that. Swallowing
+       here made a database blip indistinguishable from a clean record on the
+       screen AND in the gate at once (audit 2026-08-09 #7). The two consumers
+       want different failure postures, so each owns its own: the ROUTE lets
+       this surface as a 500 and the screen says "could not load" instead of
+       "nothing to review"; `experienceBlockReason` below catches it itself and
+       stays fail-open, exactly as its header documents. */
+    throw e;
+  }
 }
 
 /**
