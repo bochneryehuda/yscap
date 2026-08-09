@@ -2194,7 +2194,11 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     for (const d of rollup.draws.slice(0, CHECKLIST_MAX)) {
       try {
         const c = await drawChecklist.checklistFor(db, appId, d.sitewire_draw_id, { stage: d.approval_stage });
-        if (c) { d.checklist = { steps: c.steps, done: c.done, total: c.total, next_up: c.nextUp, waiting_on: c.waitingOn, complete: c.complete }; d.status_words = c.status; }
+        if (c) {
+          d.checklist = { steps: c.steps, done: c.done, total: c.total, next_up: c.nextUp, waiting_on: c.waitingOn, complete: c.complete };
+          d.status_words = c.status;
+          d.dates = c.dates;                 // expected inspection / decision / release
+        }
       } catch (_) { /* the desk still renders without it */ }
     }
     // The stage HISTORY (when each draw actually reached each step) + how long it has sat where it

@@ -683,6 +683,12 @@ export const api = {
   sitewireOpenDisputeMedia: async (lineId, idx, win) => { const { blob, filename } = await download(`/api/sitewire/findings/lines/${lineId}/dispute-media/${idx}`); openBlob(blob, filename, win); },
   // Sitewire draw desk: authenticated per-draw packet (schedule of values + findings + waivers).
   sitewireExportPacket: async (appId, drawId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/draws/${drawId}/packet`); saveBlob(blob, filename); },
+  // A supporting document filed on a draw. Streamed through the authed download helper for the same
+  // reason every other draw artifact is: an <img>/<a> cannot carry the Bearer token.
+  sitewireOpenDrawAttachment: async (appId, drawId, attId, win) => {
+    try { const { blob, filename } = await download(`/api/sitewire/files/${appId}/draws/${drawId}/attachments/${attId}/file`); openBlob(blob, filename, win); }
+    catch (e) { try { if (win) win.close(); } catch (_) {} throw e; }
+  },
   // PILOT-branded inspection report (phase 2b) — opens the PDF in a tab (`win` is opened synchronously in the
   // click handler so the popup blocker doesn't eat it; closed here on error). mode 'staff' (full) | 'borrower'
   // (borrower-safe: no partner name / fee / net / GPS). Per-draw and whole-project variants.

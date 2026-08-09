@@ -27,12 +27,36 @@ const DRAW_STATUS = {
   pending_capital_partner: { label: 'Final review', cls: 'sw-insp' }, approved: { label: 'Approved & released', cls: 'sw-approved' },
 };
 
+/* WHAT HAPPENS NEXT, AND WHEN — the one line a borrower actually wants (owner-directed
+   2026-08-09). It shows the SOONEST thing still ahead, and nothing at all when there is nothing to
+   promise: a date with no start to count from would be a guess, and a guess in front of somebody
+   waiting on their money is worse than saying nothing. The booked inspection visit leads when
+   there is one — it has been mirrored for months and simply never shown to the person standing at
+   the property. */
+function NextUp({ d }) {
+  if (!d) return <span className="dd-sub">—</span>;
+  const fmt = (iso) => { try { return new Date(iso + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); } catch (_) { return iso; } };
+  if (d.visit_scheduled_at) {
+    const day = String(new Date(d.visit_scheduled_at).toISOString()).slice(0, 10);
+    return <span>Inspection visit <b>{fmt(day)}</b></span>;
+  }
+  for (const [label, v] of [['Inspection', d.inspection], ['Decision', d.decision], ['Funds', d.release]]) {
+    if (v && v.date && !v.actual) {
+      return <span>{label} <b>{fmt(v.date)}</b>{v.late ? <span className="dd-sub"> (running late — we’re on it)</span> : ''}</span>;
+    }
+  }
+  return <span className="dd-sub">—</span>;
+}
+
 export default function BorrowerDraws({ appId }) {
   const [rollup, setRollup] = useState(null);
   const [findings, setFindings] = useState([]);
   const [eligibility, setEligibility] = useState(null);
   const [loading, setLoading] = useState(true);
   const [has, setHas] = useState(true);
+  // WHAT HAPPENS NEXT, AND WHEN (owner-directed 2026-08-09) — keyed by draw. Only the three dates
+  // and the booked visit; never the internal checklist, which names our own work.
+  const [dates, setDates] = useState({});
 
   const load = useCallback(() => {
     setLoading(true);
@@ -42,6 +66,7 @@ export default function BorrowerDraws({ appId }) {
       api.get(`/api/borrower/draws/${appId}/eligibility`).catch(() => null),
     ]).then(([r, f, e]) => {
       setRollup(r && r.rollup ? r.rollup : null);
+      setDates((r && r.dates) || {});
       setFindings((f && f.findings) || []);
       setEligibility(e || null);
       setHas(!!(r && r.rollup && r.rollup.project && r.rollup.project.budget > 0));
@@ -103,7 +128,7 @@ export default function BorrowerDraws({ appId }) {
                 inspector signed off; this is the money that actually reaches the borrower, after
                 the draw fee. It comes straight off the rollup, the same source their PDF report is
                 built from, so the two can never quote different numbers. */}
-            <thead><tr><th>Draw</th><th>Status</th><th className="num">Requested</th><th className="num">Approved</th><th className="num">You receive</th></tr></thead>
+            <thead><tr><th>Draw</th><th>Status</th><th>What’s next</th><th className="num">Requested</th><th className="num">Approved</th><th className="num">You receive</th></tr></thead>
             <tbody>
               {rollup.draws.map((d) => {
                 const s = DRAW_STATUS[d.status] || { label: d.status, cls: 'sw-insp' };
@@ -111,6 +136,7 @@ export default function BorrowerDraws({ appId }) {
                   <tr key={d.sitewire_draw_id}>
                     <td style={{ fontWeight: 600 }}>#{d.number ?? '—'}</td>
                     <td><span className={'pill ' + (d.is_funded ? 'sw-approved' : s.cls)}>{s.label}</span></td>
+                    <td><NextUp d={dates[d.sitewire_draw_id]} /></td>
                     <td className="num">{usd2(d.requested_cents)}</td>
                     <td className="num">{usd2(d.approved_cents)}</td>
                     <td className="num" style={{ fontWeight: 700 }}>{d.net_release_cents == null ? '—' : usd2(d.net_release_cents)}</td>
