@@ -1,0 +1,104 @@
+json_key,Description,Version
+Borrower Information,
+borrower_address,Complete mailing address of the borrower.,3.1.0
+borrower_name,Full legal name of the borrowing entity or individual.,3.1.0
+borrower_state,State where the borrowing entity is formed.,3.1.0
+borrower_title,"Title or role of the borrower (e.g., ""Managing Member"", ""President"").",3.1.0
+signatory_name (borrower),Name of the individual authorized to sign on behalf of the borrower.,3.1.0
+signatory_title (borrower),"Title of the borrower’s signatory (e.g., ""CEO"", ""Authorized Representative"").",3.1.0
+Collateral Property Details,
+collateral_property_address,Full street address of the property used as collateral.,3.1.0
+collateral_property_county,County of the collateral property.,3.1.0
+collateral_property_name,Name or identifier of the collateral property (if applicable).,3.1.0
+collateral_property_state,State where the collateral property is located.,3.1.0
+collateral_property_city,City where the collateral property is located.,3.1.1
+section_number,Used to legally identify the property’s location within a survey system.,3.1.1
+block_number,Used to legally identify the property’s location within a survey system.,3.1.1
+district_number,Used to legally identify the property’s location within a survey system.,3.1.1
+lot_number,Used to legally identify the property’s location within a survey system.,3.1.1
+Document Formatting,
+state_abbrev,"Two-letter abbreviation of the state (e.g., ""NY"").",3.1.0
+type_of_organization,"Legal structure of borrower or lender (e.g., LLC, Inc.).",3.1.0
+year_for_notary_block,Year to be printed in the notary acknowledgment section.,3.1.0
+Guarator Information,
+guarantor_address,Complete mailing address of the guarantor.,3.1.0
+guarantor_name,Full legal name of the guarantor (individual or entity).,3.1.0
+guarantor_title,"Title or role of the guarantor, if applicable.",3.1.0
+signatory_name (guarantor),Name of the individual authorized to sign on behalf of the guarantor.,3.1.0
+signatory_title (guarantor),Title of the guarantor’s signatory.,3.1.0
+guarantor_or_collectively_the_guarantor,"if one guarantor: Guarantor, if multiple: collectively, the guarantor",3.1.0
+pledgor,Name of the individual/entity pledging collateral.,3.1.0
+pledgor_address,Address of the individual/entity pledging collateral.,3.1.2
+pledgor_or_collectively_the_pledgor,"If one: Pledgor, if multiple: collectively, the pledgor",3.1.0
+Legal & Financial Terms,
+acknowledgement_corporate_status,FOR LLC: operating agreement and its members /FOR CORP: bylaws and its shareholders,3.1.0
+amount_at_closing,Initial advance of the loan,3.1.0
+borrower_contribution,,3.1.4
+bylaws_operating_agreement,Boolean or file reference indicating if borrower entity documents are provided.,3.1.0
+company_filing_status,,3.1.4
+operating_agreement_or_bylaws,FOR LLC: operating agreement /FOR CORP: bylaws,3.1.0
+certificate_number,ID associated with a certificate tied to the loan or collateral,3.1.2
+construction_holdback,"Amount held back for construction purposes, if applicable.",3.1.0
+counsel_fee,Legal counsel fee charged to borrower.,3.1.0
+date_of_closing,Date when the loan transaction is finalized.,3.1.0
+orginal_closing_date,,3.1.4
+default_rate_percent,Interest rate applied upon borrower default.,3.1.0
+funding_fee,Fee for funding of the loan,3.1.0
+gap_loan_amount,The amount of funds in the loan amount which exceed the assigned loan in a CEMA. This figure represents the portion of the loan which the borrower will owe Mortgage Recording Tax on in New York,3.1.4
+governing_law,Jurisdiction whose laws govern the loan agreement.,3.1.0
+governing_law_all_caps,"Same as above, but in uppercase for document formatting.",3.1.0
+grace_period_days,Number of days allowed before a late payment incurs penalties.,3.1.0
+individual_jointly_and_severally,Boolean indicating if individuals are liable jointly and severally.,3.1.0
+initial_advance_upon_closing,Initial advance of the loan,3.1.0
+initial_advance,Initial amount disbursed at closing.,3.1.0
+interest_accrual,,3.1.4
+interest_rate,Annual interest rate of the loan.,3.1.0
+interest_reserve,"Amount of interest prepaid on the loan, if any",3.1.0
+last_day_of_the_month,Boolean indicating if payments are due on the last day of the month.,3.1.0
+last_day_to_draw,Final date borrower can draw funds from the loan.,3.1.0
+late_charge_percentage,Percentage charged as a late fee.,3.1.0
+legal_description,Metes and bounds legal description of the real property.,3.1.0
+legal_description_image,Metes and bounds legal description of the real property.,3.1.1
+membership_interest_percentage,ownership percentage held by a member,3.1.2
+monthly_payment,"Amount of the principal, interest monthly payment",3.1.0
+monthly_escrow_payments,"This is the escrow portion of the payment, and can include property taxes, insurance, etc.",3.1.3
+monthly_payment_with_escrow,"The total payment including principal, interest, and escrows",3.1.3
+number_of_shares,quantity of ownership shares held in a corporation or entity associated with the loan transaction.,3.1.2
+prepayment_penalty,Penalty if a loan is prepaid,3.1.0
+prepayment_penalty_date,date through which a prepayment penalty applies,3.1.1
+Lender Information,3.1.0
+lender_address,Full mailing address of the lender.,3.1.0
+lender_city,,3.1.4
+lender_name,Legal name of the lender.,3.1.0
+lender_name_abbreviated,,3.1.4
+lender_name_all_caps,Lender name in uppercase for document formatting.,3.1.0
+lender_state,State where the lender is located.,3.1.0
+lender_town_and_state,Combined town and state of lender for document use.,3.1.0
+lender_type_of_organization,"Type of legal entity (e.g., LLC, Corporation).",3.1.0
+Loan Terms,3.1.0
+first_payment_date,Date which the first payment comes due and payable.,3.1.0
+extended_maturity_date,,3.1.4
+new_maturity_date,,3.1.4
+previous_maturity_date,,3.1.4
+loan_amount,Total principal amount of the loan.,3.1.0
+interest_accrual_payment_date,,3.1.4
+loan_to_value_percent,Loan-to-value ratio as a percentage.,3.1.0
+maturity_date_of_loan,Date when the loan is due to be fully repaid.,3.1.0
+maturity_date,Date when the loan is due to be fully repaid.,3.1.0
+maximum_default_rate_percentage,Maximum interest rate applicable upon default.,3.1.0
+modification_date,,3.1.4
+month_of_closing,"Month in which the loan closes (e.g., ""September"").",3.1.0
+monthly_payment_date_begin,Date when monthly payments begin.,3.1.0
+draw_request_fee,A fee charged each time the borrower requests a draw or disbursement of loan funds.,3.1.1
+exit_fee_percentage,"A percentage-based fee charged when the loan is paid off or exits (maturity, refinance, or sale).",3.1.1
+extension_fee,Fee charged by the lender if the borrower needs more time beyond the original loan term,3.1.2
+origination_fee,Fee charged for processing the loan.,3.1.0
+other_fee,Any additional fees not categorized elsewhere.,3.1.0
+purchase_refinance,"Refers to where the loan is a ""Purchase"" or ""Refinance""",3.1.1
+processing_fee,Fee for administrative processing of the loan.,3.1.0
+security_instrument,,3.1.4
+security_instrument_all_caps,,3.1.4
+short_term_interest_amount,Interest amount applicable for short-term loans.,3.1.0
+Property Details,3.1.0
+property_street_address,Street address of the property.,3.1.0
+property_town

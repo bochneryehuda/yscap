@@ -1,0 +1,205 @@
+{
+  "auto_approve": true  /* Automatically approves document upon loan submission */,
+  "license_type": 10  /* Must be set to 10 or 20 */,
+  "prepayment_option_code": "DIR 1" /* Must be valid for a state */,
+  "requestId": ""  /* Required if document needs to be updated */,
+  "template": {
+    "lender_name": "Golden Templates" /* Required field to determine template */,
+    "loan_category": "NY Building Loan" /* Required field to determine template */,
+    "state": "New York" /* Required field to determine template */
+  },
+  "variables": {
+    "acknowledgement_corporate_status": "operating agreement and members " /* FOR LLC: operating agreement and its members FOR CORP: bylaws and its shareholders */,
+    "amount_at_closing": "$10,000",
+    "block_number": "2345" /* Can be left blank except for NY Building Loan */,
+    "borrower_contribution": "$10,000",
+    "borrowers": [
+      {
+        "borrower_name": "Acme Inc.",
+        "borrower_state": "Colorado",
+        "borrower_address": "100 Main Street, Fort Collins CO 80526",
+        "borrower_title": "Partner",
+        "signatories": [
+          {
+            "signatory_name": "John Smith",
+            "signatory_title": "CFO"
+          },
+          {
+            "signatory_name": "Sahra Allee",
+            "signatory_title": "CEO"
+          },
+          {
+            "signatory_name": "Thao Yu",
+            "signatory_title": "COO"
+          }
+        ]
+      },
+      {
+        "borrower_name": "OpenAI Inc.",
+        "borrower_state": "Kansas",
+        "borrower_title": "Manager",
+        "borrower_address": "1000 Main Street, Fort Collins CO 80526",
+        "signatories": [
+          {
+            "signatory_name": "Maria Sanchez",
+            "signatory_title": "CEO"
+          }
+        ]
+      }
+    ],
+    "bylaws_operating_agreement": "operating agreement "  /* Must be either "bylaws" or "operating agreement" */,
+    "collateral_properties": [
+      {
+        "collateral_property_county": "Laramie",
+        "collateral_property_state": "Colorado",
+        "collateral_property_address": "245 Sunrise Court, Fort Collins CO 80526",
+        "collateral_property_name": "The Bronx Building",
+        "collateral_property_town": "Colorado Springs"
+      }
+    ],
+    "construction_holdback": "$20,000" /* Required for templates that have a holdback */,
+    "counsel_fee": "$1,000" /* Not required if template supports dynamic fees */,
+    "date_of_closing": "October 31, 2025",
+    "default_rate_percent": "6.2" /* Percentage sign not required */,
+    "district_number": "34A" /* Can be left blank except for NY Building Loan */,
+    "draw_fee_amount": "$100" /* Not required if template supports dynamic fees */,
+    "exit_fee_percentage": "10.5",
+        "extension_fee": "$10,000",
+    "fees": {
+      "single_fee": [
+        {
+          "fee_amount": "$2,100.00",
+          "sort_order": 1,
+          "fee_template": "Legal Fee"
+        },
+        {
+          "fee_amount": "$3,400.00",
+          "sort_order": 2,
+          "fee_template": "Prepaid Interest"
+        },
+        {
+          "fee_amount": "$525.00",
+          "sort_order": 3,
+          "fee_template": "Origination Fee"
+        },
+        {
+          "fee_amount": "$2,525.00",
+          "sort_order": 4,
+          "fee_template": "Interest Reserve"
+        },
+        {
+          "fee_amount": "$1,025.00",
+          "sort_order": 5,
+          "fee_template": "Initial Draw Fee"
+        },
+        {
+          "fee_amount": "$1,525.00",
+          "sort_order": 6,
+          "fee_template": "Draw Set-Up Fee"
+        },
+        {
+          "fee_amount": "$4,000.00",
+          "sort_order": 7,
+          "fee_template": "Subsequent Draw Fees"
+        }
+      ],
+      "multiple_fees": [
+        {
+          "fee_template": "Standard Fee",
+          "sort_order": 8,
+          "fee": [
+            {
+              "fee_name": "Underwriting Fee",
+              "fee_amount": "$400.00"
+            },
+            {
+              "fee_name": "Processing Fee",
+              "fee_amount": "$330.00"
+            }
+          ]
+        }
+      ]
+    },
+    "first_day_of_month_plus_1_year": "January 1,2027",
+    "first_payment_date": "November 31, 2025",
+    "funding_fee": "$10,000"  /* Not required if template supports dynamic fees*/,
+    "governing_law": "Colorado",
+    "governing_law_all_caps": "COLORADO",
+    "grace_period_days": "30",
+    "guarantor_or_collectively_the_guarantor": "the “Guarantor\"" /* Must be either "the Guarantor" or "collectively the Guarantor" */,
+    "guarantors": [
+      {
+        "guarantor_name": "PNC Bank, Inc.",
+        "guarantor_address": "100 Main Street, Denver CO 80222"
+      },
+      {
+        "guarantor_name": "PNC International Bank, Inc.",
+        "guarantor_address": "200 Main Street, Denver CO 80222"
+      }
+    ],
+    "individual_jointly_and_severally": "individually"/* Must be either "individually" or "jointly and severally" */,
+    "initial_advance": "$4,000",
+    "initial_advance_upon_closing": "$4,000"  /* Same as initial advacne */,
+    "interest_rate": "5.2",
+    "interest_reserve": "$2,000"  /* Not required if template supports dynamic fees */,
+    "last_day_of_the_month": "October 31, 2025",
+    "last_day_to_draw": "September 01, 2026",
+    "late_charge_percentage": "12.5",
+    "legal_description": "Unit 10 , CD 5 135 Main street, Loveland CO 80523",
+    "legal_description_image": "Unit 10 , CD 5 135 Main street, Loveland CO 80523",
+    "legal_fee": "$13,000" /* Not required if template supports dynamic fees */,
+    "lender_address": "100 Main Street, Loveland CO 80222",
+    "lender_name": "First Lender Coporation"  /* Can be different than lender name used to retrieve template */,
+    "lender_name_all_caps": "FIRST LENDER CORPORATION",
+    "lender_state": "COLORADO",
+    "lender_town_and_state": "Loveland, Colorado",
+    "lender_type": "limited liability company ",
+    "lender_type_of_organization": "limited liability company ",
+    "loan_amount": "$250,000",
+    "loan_category": " "  /* Required but can be empty space */,
+    "loan_id": "ABC 1235",
+    "loan_to_value_percent": "75",
+    "lot_number": "234-98" /* Can be left blank except for NY Building Loan */,
+    "maturity_date": "October 31, 2027",
+    "maturity_date_of_loan": "October 31, 2027",
+    "maximum_default_rate_percentage": "9.25",
+    "membership_interest_percentage": "100" /* Typically the default value unless template requires shareholder percentage */,
+    "month_of_closing": "October",
+    "monthly_payment": "$23,000",
+        "monthly_escrow_payments": "$1,200",
+        "monthly_payment_with_escrows": "$24,200",
+    "monthly_payment_date_begin": "November 31, 2025",
+    "origination_fee": "$16,000" /* Not required if template supports dynamic fees */,
+    "other_fee": "A fee of $2,000 water risk assement" /* Not required if template supports dynamic fees */,
+    "pledgor": "Rich Moore, LLC",
+    "pledgor_or_collectively_the_pledgor": "the “Pledgor\"" /* Must be either "the Pledgor" or "collectively the Pledgor" */,
+    "pre_payment_penalty": [
+      {
+        "prepayment_penalty_date": "July 1, 2026",
+        "prepayment_penalty_type": ""
+      }
+    ],
+    "prepayment_penalty": "$12,000" /* Not required if template supports prepayment options */,
+    "processing_fee": "$2,000" /* Not required if template supports dynamic fees */,
+    "property_street_address": "34 Main Street",
+    "property_town": "Loveland",
+    "purchase_refinance": "New Purchase" /* "New Purchase" or  "Refinance" */,
+    "purpose_of_loan": "Residential Loan",
+    "section_number": "120" /* Can be left blank except for NY Building Loan */,
+        "servicer_name": "ABC Managment Company",
+        "servicer_address": "343 North PLatte Rd, Gloucester MA 98799",
+    "settlement_agent_name": "John Henry, Inc.",
+    "settlement_agent_name_and_address": "John Henry, Inc 500 Main St., Loveland Colorado 80524",
+    "short_term_interest_amount": "10.2",
+    "state": " " /* Required but can be empty space */,
+    "state_abbrev": "FLDEP - Florida Department of Environmental Protection " /* Must be a value from provided list of environmental options */,
+    "title_agent": "Richard Moore, Esq.",
+    "title_agent_name": "Richard Moore, Esq.",
+    "title_agent_name_and_address": "Rich Moore, LLC 500 Main St., Loveland Colorado 80524",
+    "trustee": "Paul Smith" /* Trustee under the Deed of Trust (typically the title company at closing, unless another trustee is designated.*/,
+    "type_of_organization": "limited liability company",
+    "underwriter": "Lecco Corporation",
+    "underwriting_fee": "$3,500" /* Not required if template supports dynamic fees */,
+    "written consent": "The undersigned, being all of the members, managers, directors, or other governing parties hereby adopt the following resolutions by written consent",
+    "year_for_notary_block": "2025" /* Required but can be empty space */
+  }}
