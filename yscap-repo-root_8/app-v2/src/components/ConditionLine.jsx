@@ -1,6 +1,6 @@
 import React from 'react';
-import { audienceStamp, conditionStatusLabel, conditionStatusClass } from '../lib/conditions-vocab.js';
-import { nextStep, pendingDocs } from '../lib/condition-actions.js';
+import { audienceStamp, conditionDisplayState } from '../lib/conditions-vocab.js';
+import { nextStep } from '../lib/condition-actions.js';
 
 /* THE COMPACT CONDITION LINE — one line you scan, click to open.
  *
@@ -38,18 +38,13 @@ export default function ConditionLine({
   done,
 }) {
   const stamp = audienceStamp(it.audience);
-  const signed = !!it.signed_off_at;
-  const waiting = pendingDocs(docs).length;
   const step = nextStep(it, { role, docs });
 
-  // ONE short phrase for "what is going on with this one", worst news first.
-  // Never a stack of chips — that is what this line replaces.
-  const meta = it.waived_at ? 'Not required'
-    : signed ? 'Signed off'
-    : it.status === 'issue' ? 'Sent back'
-    : waiting ? `${waiting} to review`
-    : (docs && docs.length && it.status === 'received') ? 'In review'
-    : conditionStatusLabel(it.status);
+  // THE DISPLAY STATE — the dot colour, the small status word, and the next step
+  // (owner-directed 2026-08-05). Richer than the raw status: it folds in whether a
+  // document is waiting to be reviewed, was accepted but not yet signed off, or was
+  // rejected — so the row says from the OUTSIDE exactly where the condition is up to.
+  const st = conditionDisplayState(it, docs);
 
   return (
     <div className={`cnd${done ? ' cnd-done' : ''}`} role="button" tabIndex={0}
@@ -58,13 +53,16 @@ export default function ConditionLine({
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
       title={open ? 'Close this condition' : 'Open this condition'}>
       <span className={`cnd-chev${open ? ' open' : ''}`} aria-hidden="true">▶</span>
-      <span className={`dot ${signed || it.waived_at ? 'cond-satisfied' : conditionStatusClass(it.status)}`} />
+      <span className={`dot ${st.cls}`} title={st.next} />
       <span className="cnd-name">{it.label}</span>
       <span className={`aud ${stamp.cls}`} title={stamp.title}>{stamp.label}</span>
       <NoteBuyerMark it={it} />
+      <EsignAutoStamp it={it} />
       {it.is_gate && <span className="pill" style={{ borderColor: 'var(--gold)', color: '#8A6D3B', flex: 'none' }}>gate</span>}
       {it.override_at && <span className="pill" style={{ borderColor: 'var(--gold)', color: '#8A6D3B', flex: 'none' }}>override</span>}
-      <span className="cnd-meta">{meta}</span>
+      {/* The small status wording under/beside the dot — says the status, and the
+          next step on hover (the whole material-design ask on a compact line). */}
+      <span className="cnd-meta" title={st.next}>{st.label}</span>
       {/* The next step, without opening the row. stopPropagation so pressing it
           acts on the condition instead of toggling it open underneath you. */}
       {!done && (
@@ -74,6 +72,45 @@ export default function ConditionLine({
         </span>
       )}
     </div>
+  );
+}
+
+/* THE ONE CONTROL THAT CLOSES AN OPEN CONDITION.
+ *
+ * Owner-reported 2026-08-07: "The Collapse button sometimes appears at the top,
+ * sometimes at the bottom, and in some cases is not displayed at all."
+ *
+ * ROOT CAUSE, and it is the whole class rather than three placement mistakes:
+ * ENTERING the collapsed state has always had one definition — `ConditionLine`
+ * above, whose chevron is the same on every row — while LEAVING it was hand-rolled
+ * separately by each of the three renderers that can open a condition, each picking
+ * its own mount point and its own visibility rule:
+ *   • an INTERNAL condition (StaffApplication `Item`) put it at the BOTTOM, inside
+ *     the action bar, and rendered it ONLY when the viewer's own role-action was
+ *     already done — so a live internal condition could be opened and never closed.
+ *     That is the "not displayed at all" case, and it is also why the two the owner
+ *     screenshotted disagreed: the signed-off USPS row qualified, so it showed the
+ *     button — at the bottom.
+ *   • an EXTERNAL condition put it inline in the label line (top).
+ *   • the LLC/vesting condition put it top-right behind a spacer (top).
+ *
+ * So this component is the counterpart of the compact line, deliberately in the
+ * same file: one wording, one look, one place, and NEVER conditional. A row that
+ * can open must always be closable — an expanded condition can run several screens
+ * tall (the entity panel, the Scope of Work), so hunting for the control at the
+ * bottom was the worst of the three answers even when it was there.
+ *
+ * PLACEMENT is owned by the CSS (`.cnd-collapse` pins itself right with
+ * margin-left:auto), not by the caller — a caller that has to align it is a caller
+ * that can align it differently. Drop it as the last child of the open row's header
+ * and it lands in the same spot every time.
+ */
+export function ConditionCollapse({ onToggle, title = 'Close this condition' }) {
+  return (
+    <button type="button" className="cnd-collapse" onClick={onToggle} title={title}>
+      <span className="cnd-chev open" aria-hidden="true">▶</span>
+      <span>Collapse</span>
+    </button>
   );
 }
 
@@ -102,6 +139,28 @@ export function NoteBuyerMark({ it }) {
     <span className="pill" style={{ borderColor: 'var(--gold)', color: '#8A6D3B', flex: 'none', fontWeight: 700 }}
       title={`This condition is on the file because the note buyer is ${mark}. It applies to ${mark} files only.`}>
       {mark}
+    </span>
+  );
+}
+
+/* THE DOCUSIGN AUTO-CLEAR STAMP — "this one takes care of itself."
+ *
+ * Owner-directed 2026-08-05: a few conditions (the term sheet, the application &
+ * business-purpose disclosure, the Heter Iska, and — on an individual-vested file —
+ * the non-owner-occupied certification) are cleared AUTOMATICALLY when their
+ * DocuSign package is fully signed. The borrower signs them in DocuSign when we send
+ * the package, so nobody should chase them by hand. The row carries a stamp saying
+ * so, DERIVED server-side (staff.js → esign/auto-clear.isAutoClearedByEsign) from the
+ * e-sign package definitions, so it can never disagree with what actually clears
+ * them. The stamp disappears once the condition is signed off (its own status takes
+ * over). Teal, like the other "the system handles this" marks. Text is explicit dark
+ * hex — var(--ink*) is a LIGHT token in this palette. */
+export function EsignAutoStamp({ it }) {
+  if (!it || !it.esign_auto || it.signed_off_at || it.waived_at) return null;
+  return (
+    <span className="pill" style={{ borderColor: 'var(--teal)', color: '#256168', flex: 'none', fontWeight: 600 }}
+      title="This condition clears itself automatically when the DocuSign package is fully signed — no one needs to work it by hand.">
+      DocuSign — auto-clears
     </span>
   );
 }

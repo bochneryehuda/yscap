@@ -288,6 +288,57 @@ const A = {
     'band-edge set carries uppers AND lowers from the fixture labels');
   ok(Object.keys(R.familyRates).length > 0, 'per-family rate sets built');
 
+  /* (g) A VOLUNTARY DE-LEVERAGE MUST NOT INVERT THIS MONITOR (owner-directed
+     2026-08-06 levers). The monitor compares the ceiling our engine used against
+     the workbook's tier row. `targetLTC` was always compensated; `targetARLTV` (a
+     value-side ladder rung) and `targetLoan` (a typed amount) are the same kind of
+     thing — a MIN somebody deliberately asked for. Without compensation EVERY
+     de-levered Silver registration files a permanent advisory claiming the pricing
+     engine disagrees with the note buyer's workbook: the control would scream on
+     the SAFE, smaller-loan files and stay silent on the max-loan ones, which is
+     worse than not having it. Both halves are asserted — no false alarm, and the
+     monitor still bites — because "compensate" must never become "stop looking". */
+  (function deLeverage() {
+    const G = { ...A };
+    const capsOf = (ev) => (('pricedCeiling' in ev) ? ev.pricedCeiling : ev.caps);
+
+    for (const [label, extra] of [
+      ['targetARLTV (value-side rung)', { targetARLTV: 0.65 }],
+      ['targetLoan (typed amount)', { targetLoan: 350000 }],
+      ['both at once', { targetARLTV: 0.65, targetLoan: 350000 }],
+    ]) {
+      const inp = { ...G, ...extra };
+      const ev = evalWith(inp, 0.005);
+      if (!ev || !ev.status) continue;
+      const r = monitor.shadowCheck(inp, ev, { markup: 0.005 });
+      ok(r.ok === true, `(g) ${label} does NOT false-fire the workbook monitor (got ${JSON.stringify(r && r.kind)})`);
+    }
+
+    // …and a REAL disagreement still fires, with a lever set and without one.
+    const evReal = evalWith(G, 0.005);
+    for (const [label, extra, mut] of [
+      ['no lever', {}, (c) => { c.maxARLTV = 0.42; }],
+      ['while a value-side rung is set', { targetARLTV: 0.65 }, (c) => { c.maxARLTV = 0.42; }],
+      ['while a typed amount is set', { targetLoan: 350000 }, (c) => { c.maxLoan = 123456; }],
+    ]) {
+      const inp = { ...G, ...extra };
+      const ev = JSON.parse(JSON.stringify(evalWith(inp, 0.005)));
+      mut(capsOf(ev));
+      const r = monitor.shadowCheck(inp, evReal, { markup: 0.005, evOverride: ev });
+      ok(r.ok === false && r.kind === 'cap_mismatch',
+        `(g) a genuine cap disagreement STILL fires ${label} (got ${JSON.stringify(r && r.kind)})`);
+    }
+
+    // The strongest one: the monitor now also catches an engine that IGNORED a
+    // requested de-leverage — a check it could not make before the compensation.
+    const inpIg = { ...G, targetARLTV: 0.65 };
+    const evIg = JSON.parse(JSON.stringify(evalWith(inpIg, 0.005)));
+    capsOf(evIg).maxARLTV = 0.75;                      // the workbook tier value: lever not applied
+    const rIg = monitor.shadowCheck(inpIg, evReal, { markup: 0.005, evOverride: evIg });
+    ok(rIg.ok === false && rIg.kind === 'cap_mismatch',
+      `(g) an engine that IGNORED the requested de-leverage is caught (got ${JSON.stringify(rIg && rIg.kind)})`);
+  })();
+
   console.log(`\n${failures ? 'FAILED' : 'ALL PASSED'} — ${passed} passed, ${failures} failed`);
   process.exit(failures ? 1 : 0);
 })();

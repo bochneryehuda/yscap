@@ -72,6 +72,31 @@ ok(K.propertyKey({ street: '123 Main St', state: 'NJ', zip: '07103' }) !== null,
 ok(K.propertyKey('') === null && K.propertyKey(null) === null && K.propertyKey({}) === null,
   'empty input never produces a key');
 
+// ---- keyProblem NAMES the missing piece (so a left-out comparable can say WHY) --
+ok(K.keyProblem({ street: 'Main St', city: 'Newark', state: 'NJ' }).missing === 'house_number',
+  'a street with no house number reports house_number missing');
+ok(K.keyProblem({ street: '123 Main St', city: 'Newark' }).missing === 'state',
+  'no state reports state missing');
+ok(K.keyProblem({ street: '123 Main St', state: 'NJ' }).missing === 'locality',
+  'no city AND no ZIP reports locality missing');
+ok(K.keyProblem({ street: '123 Main St', city: 'Newark', state: 'NJ' }) === null,
+  'a full address has no problem');
+ok(typeof K.keyProblem({ street: 'Main St', city: 'Newark', state: 'NJ' }).reason === 'string'
+  && K.keyProblem({ street: 'Main St', city: 'Newark', state: 'NJ' }).reason.length > 0,
+  'every problem carries a plain-language reason');
+// keyProblem is the SINGLE SOURCE of the null decision — they can never disagree.
+for (const t of [
+  { street: 'Main St', city: 'Newark', state: 'NJ' },          // no house number
+  { street: '123 Main St', city: 'Newark' },                   // no state
+  { street: '123 Main St', state: 'NJ' },                      // no locality
+  { street: '123 Main St', state: 'NJ', zip: '07103' },        // usable (ZIP locality)
+  { street: '26 S 10th St', city: 'Piscataway', state: 'NJ' }, // usable
+  {}, '', null,                                                 // empty
+]) {
+  ok((K.keyProblem(t) === null) === (K.propertyKey(t) !== null),
+    `keyProblem and propertyKey agree for ${JSON.stringify(t)}`);
+}
+
 // ---- display -----------------------------------------------------------------
 ok(/^26 S 10th St 2, Piscataway, NJ 08854$/.test(
   K.displayAddress({ street: '26 South 10th Street', unit: '2', city: 'PISCATAWAY', state: 'New Jersey', zip: '08854' })),

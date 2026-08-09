@@ -4,9 +4,9 @@ import { useSubmitGate } from '../lib/useSubmitGate.js';
 import TermSheetStudio, {
   buildStudioState, scenarioFromEngineInputs, adminStateFromEngineInputs, blobToBase64,
 } from './TermSheetStudio.jsx';
-import GuarantyWaiverCard from './GuarantyWaiverCard.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import { moneyNum } from '../lib/money.js';
+import { fmtRatePct, fmtRatePctFromPct } from '../lib/rateFormat.js';
 
 /* Product registration on a loan file — borrower AND staff logins. The panel
    shows the registered product; "Reprice / re-register" opens the real static
@@ -123,6 +123,13 @@ export function overridesFromSnapshot(snap, mode) {
   const base = {
     ...compact({
       targetLTC: d.inp && d.inp.targetLTC ? d.inp.targetLTC : null,
+      // THE VALUE-SIDE LEVER MUST TRAVEL WITH THE COST-SIDE ONE. On Silver (EMCAP)
+      // a ladder rung can be earned by giving up ARV leverage instead of cost
+      // leverage, and the two are different engine inputs. Carrying only targetLTC
+      // would register the deal's MAXIMUM loan whenever the borrower picked a
+      // value-side step — the file would price differently from the paper they
+      // signed. compact() drops it when unset, so every other program is unchanged.
+      targetARLTV: d.inp && d.inp.targetARLTV ? d.inp.targetARLTV : null,
       // Interest reserve may instead be an exact dollar amount (owner-directed
       // 2026-07-12) — carried through to the frozen engine, which honors it over
       // months and fits it under the same caps. A BLANK amount is sent as 0 (not
@@ -181,6 +188,19 @@ export function overridesFromSnapshot(snap, mode) {
       // register/quote payload (buildInputs whitelists it); the engine/normalize caps
       // it at the maximum. A blank is dropped by compact() (no exception).
       oopRehab: f.tsOopRehab,
+      // A typed loan amount (owner-directed 2026-08-06). Rides the register/quote
+      // payload exactly like oopRehab above. It reaches the frozen engines as a
+      // voluntary CEILING, so it can only ever reduce and carries no approval —
+      // the way UP is the manual basis keys above, which already escalate. A blank
+      // is dropped by compact(), so an untouched box changes nothing. The borrower
+      // register route's own allowlist never accepts it, so it stays staff-only
+      // even though this panel is shared.
+      targetLoan: f.tsTargetLoan,
+      // The payoff the studio priced on — a refinance pays the existing loan out of
+      // the initial advance, so this decides cash to close and its DIRECTION.
+      // Without it the register silently used the file's (possibly stale, possibly
+      // empty) column while the printed sheet used what the officer typed.
+      payoff: f.payoff,
     }),
     cashOut: /cash/i.test(f.dealPurpose || ''),
     isAssignment: !!f.isAssign,
@@ -196,6 +216,9 @@ export function overridesFromSnapshot(snap, mode) {
     ...(f.tsYspStd === '' ? { markupStdPct: '' } : f.tsYspStd != null ? { markupStdPct: f.tsYspStd } : {}),
     ...(f.tsYspGold === '' ? { markupGoldPct: '' } : f.tsYspGold != null ? { markupGoldPct: f.tsYspGold } : {}),
     ...(f.tsYspSilver === '' ? { markupSilverPct: '' } : f.tsYspSilver != null ? { markupSilverPct: f.tsYspSilver } : {}),
+    // Manual GOLD top-tier markup (item 15): a blank clears the sticky per-file
+    // value (company/historic default governs); a value overrides Gold Tier 1.
+    ...(f.tsYspGoldT1 === '' ? { markupGoldT1Pct: '' } : f.tsYspGoldT1 != null ? { markupGoldT1Pct: f.tsYspGoldT1 } : {}),
   };
 }
 
@@ -246,7 +269,36 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
   const progMax = (q.guidelines && q.guidelines.programCaps) || caps;
   const pricedLower = !!(progMax && caps && (
     caps.maxLtc < progMax.maxLtc - 1e-9 || caps.maxArvLtv < progMax.maxArvLtv - 1e-9 || caps.maxAcqLtv < progMax.maxAcqLtv - 1e-9));
-  const Row = ({ k, v }) => <div className="metrow"><span className="k">{k}</span><span className="v">{v}</span></div>;
+  const Row = ({ k, v, sub = false }) => (
+    <div className={'metrow' + (sub ? ' sos-sub-row' : '')}><span className="k">{k}</span><span className="v">{v}</span></div>
+  );
+  /* THE LINE A SECTION EXISTS TO PRODUCE (owner-directed 2026-08-07: "we also need
+     to have more totals … a total of the closing costs, with the origination fee,
+     legal fee, and title fees all together"). Every total on this page is a figure
+     the pricing engine itself produced — never a sum this component adds up, which
+     could silently disagree with the loan by a cent. */
+  const Total = ({ k, v }) => (
+    <div className="metrow sos-total"><span className="k">{k}</span><span className="v">{v}</span></div>
+  );
+  const Sec = ({ title, note, children, internal = false }) => (
+    <section className={'sos' + (internal ? ' sos-internal' : '')}>
+      <p className="sos-h">{title}{internal && <span className="sos-internal-tag">internal</span>}</p>
+      {note && <p className="sos-sub">{note}</p>}
+      {children}
+    </section>
+  );
+  const g = q.guidelines || {};
+  const refi = q.refi || null;                       // null on a purchase
+  const isRefi = !!refi || inp.loanType === 'Refinance';
+  const oop = Number(s.oopRehab) || 0;               // rehab brought out of pocket (exception)
+  const payoff = Number(refi ? refi.payoff : inp.payoff) || 0;
+  /* Our buy rate and margin. Present ONLY on a staff read: the server keeps the
+     whole build-up inside `adminPricing`, which every borrower-facing path strips
+     (routes/borrower.js, lib/tpr-export.js), and `showAdmin` is the second layer.
+     `exact` is the server's own "this was measured, not estimated" flag — an
+     unmeasurable build-up shows the note rate alone rather than a plausible guess. */
+  const build = (showAdmin && q.adminPricing && q.adminPricing.rateBuildUp) || null;
+  const showBuild = !!(build && build.exact && build.buyRatePct != null);
   return (
     <div className={compactView ? '' : 'panel'} style={compactView ? {} : { background: 'var(--ink-2)', marginTop: 10 }}>
       <div className="row" style={{ alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
@@ -262,61 +314,149 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           <strong>{reg.status === 'INELIGIBLE' ? 'Not eligible as entered' : 'Manual review needed'}:</strong> {shortReason(q.reasons, reg.status)}
         </p>
       )}
-      <div className="grid cols-2">
-        <div>
-          <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Loan structure</p>
-          <Row k="Total loan amount" v={money(s.totalLoan ?? reg.total_loan)} />
-          <Row k="Note rate (interest-only)" v={pct(q.noteRate ?? reg.note_rate)} />
-          <Row k="Initial advance (at closing)" v={money(s.initialAdvance)} />
-          <Row k="Construction holdback" v={money(s.rehabHoldback)} />
-          {s.financedReserve > 0 && <Row k="Financed interest reserve" v={money(s.financedReserve)} />}
-          <Row k="Down payment (equity)" v={money(s.downPayment)} />
-          {s.assignmentExcessOOP > 0 && <Row k="Assignment over cap (out of pocket)" v={money(s.assignmentExcessOOP)} />}
-          <Row k="Payment — initial advance" v={s.initialPayment ? money(s.initialPayment) + '/mo' : '—'} />
-          <Row k="Payment — fully drawn" v={s.monthlyPayment ? money(s.monthlyPayment) + '/mo' : '—'} />
-          <Row k="Term" v={inp.term ? inp.term + ' months' : '—'} />
-          <p className="muted small" style={{ margin: '10px 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Leverage</p>
-          <Row k="Loan-to-cost (LTC)" v={pct(s.ltcPct, 1)} />
-          <Row k="Initial / as-is LTV" v={pct(s.acqLtvPct, 1)} />
-          <Row k="Loan-to-ARV" v={pct(s.arvPct, 1)} />
-          {reg.target_ltc > 0 && <Row k="Selected leverage (LTC target)" v={pct(reg.target_ltc, 1)} />}
-          {s.binding && <Row k="Binding limit" v={s.binding} />}
-          {progMax && ((q.kind === 'bridge' || progMax.maxLtc >= 1 || progMax.maxArvLtv >= 1)
-            // Bridge (and any no-cap product) has no LTC/ARV ceiling — the engine
-            // uses a 100% sentinel. Don't display "100.0%" as if it were a real cap;
-            // show only the as-is advance cap that actually governs (audit #12).
-            ? <Row k="Program max — as-is" v={pct(progMax.maxAcqLtv, 1)} />
-            : <Row k="Program max — LTC / ARV / as-is" v={`${pct(progMax.maxLtc, 1)} / ${pct(progMax.maxArvLtv, 1)} / ${pct(progMax.maxAcqLtv, 1)}`} />)}
-          {pricedLower && <Row k="Most this deal can be priced at — LTC / ARV" v={`${pct(caps.maxLtc, 1)} / ${pct(caps.maxArvLtv, 1)}`} />}
-          {pricedLower && (
-            <p className="small" style={{ margin: '6px 0 0', color: '#4B585C' }}>
-              {cappedWhy || 'On this deal the program prices a lower leverage band than the program maximum.'}{' '}
-              The program maximum above is set by the tier (FICO and experience) and does not change when the deal changes — including the interest reserve.
-            </p>
-          )}
-        </div>
-        <div>
-          <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Fees & cash to close</p>
-          <Row k={`Origination (${q.origPct != null ? (q.origPct * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—'})`} v={money2(q.origination)} />
-          <Row k="UW / processing / legal" v={money2(cc.lenderFee)} />
-          <Row k="Credit report" v={money2(cc.creditFee)} />
-          <Row k="Title / escrow (est.)" v={money2(cc.titleAndSettlement)} />
-          {Array.isArray(cc.extraFees) && cc.extraFees.map((f, i) => (
-            <Row key={i} k={f.name} v={money2(f.amount)} />
-          ))}
-          <Row k="Appraisal (est., POC)" v={money2(cc.appraisalPoc)} />
-          <Row k="Closing costs due at closing" v={money2(cc.dueAtClosing)} />
-          <Row k="Estimated cash to close" v={<strong>{money2(q.cashToClose)}</strong>} />
-          <Row k={`Reserve to show${q.reserveBasis ? ` (${q.reserveBasis})` : ''}`} v={money2(q.reserveRequirement)} />
-          {/* 1% closing-cost buffer (owner-authorized 2026-07-31): extra cash to
-              verify so attorney/other closing charges never run short. Waivable
-              per file by an admin (toggle below the card). */}
-          {(Number(q.closingBuffer) > 0 || q.closingBufferWaived) && (
-            <Row k={q.closingBufferWaived ? 'Closing cost buffer — waived on this file' : 'Closing cost buffer (1% of loan)'}
-              v={q.closingBufferWaived ? '$0.00' : money2(q.closingBuffer)} />
-          )}
-          <Row k="Liquidity to verify" v={<strong>{money2(q.liquidity ?? q.liquidityRequired)}</strong>} />
-          <p className="muted small" style={{ margin: '10px 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Scenario as registered</p>
+      {/* One flowing two-column run, NOT two hand-dealt halves — the money sections
+          are much longer than the structure ones, so splitting them by hand left
+          half a screen blank beside them. */}
+      <div className="sos-cols">
+          {/* RATE — the owner asked to see the rate the way it is BUILT ("the buy
+              rate, the markup, and the final rate"), not just the number the
+              borrower pays. On a borrower read, and whenever the build-up could
+              not be measured exactly, this is simply the note-rate row. Term,
+              payments and the draw fee are their OWN section below: a total has to
+              be the LAST line of its sum, or it reads as one more entry. */}
+          <Sec title="Rate" internal={showBuild}
+            note={showBuild ? 'What the note rate is made of. The buy rate and our margin are internal — never quote them to a borrower.' : null}>
+            {showBuild && <Row k="Program buy rate" v={fmtRatePctFromPct(build.buyRatePct) + '%'} />}
+            {showBuild && <Row k="YS markup" v={(build.markupPct > 0 ? '+ ' : '') + fmtRatePctFromPct(build.markupPct) + '%'} />}
+            <Total k="Note rate (interest-only)" v={fmtRatePct(q.noteRate ?? reg.note_rate) + '%'} />
+            {build && build.why === 'rate_overridden' && (
+              <p className="small" style={{ margin: '6px 0 0', color: '#4B585C' }}>
+                An admin set this rate directly, so it carries no buy rate / markup build-up.
+              </p>
+            )}
+          </Sec>
+
+          <Sec title="Payments & term">
+            <Row k="Term" v={inp.term ? inp.term + ' months' : '—'} />
+            <Row k="Payment — initial advance" v={s.initialPayment ? money(s.initialPayment) + '/mo' : '—'} />
+            <Row k="Payment — fully drawn" v={s.monthlyPayment ? money(s.monthlyPayment) + '/mo' : '—'} />
+            {Number(g.drawFee) > 0 && <Row k="Draw fee (per draw)" v={money2(g.drawFee)} />}
+          </Sec>
+
+          {/* LOAN STRUCTURE — the three pieces of the loan, then the loan. Ordered
+              so they read as parts of the total below them (the frozen rounding
+              rule guarantees they reconcile to the cent). */}
+          <Sec title="Loan structure" note="The advance, the holdback and any financed reserve are the three pieces of the loan.">
+            <Row k="Initial advance (at closing)" v={money(s.initialAdvance)} />
+            <Row k="Construction holdback (drawn later)" v={money(s.rehabHoldback)} />
+            {s.financedReserve > 0 && <Row k="Financed interest reserve" v={money(s.financedReserve)} />}
+            <Total k="Total loan amount" v={money(s.totalLoan ?? reg.total_loan)} />
+          </Sec>
+
+          {/* WHAT THE BORROWER PUTS IN — the money that is NOT the loan. The
+              out-of-pocket rehab row is the owner's "I want to show what is out of
+              pocket of rehab": an approved exception that moves part of the rehab
+              budget off the holdback and onto the borrower so the initial advance
+              can rise. */}
+          <Sec title="Borrower's own funds in the deal">
+            {!isRefi && <Row k="Down payment (equity)" v={money(s.downPayment)} />}
+            {oop > 0 && <Row k="Rehab out of pocket (approved exception)" v={money2(oop)} />}
+            {s.assignmentExcessOOP > 0 && <Row k="Assignment fee over the financeable cap" v={money(s.assignmentExcessOOP)} />}
+            {oop > 0 && s.maxOopRehab > 0 && (
+              <Row k="Most that could be taken out of pocket" v={money2(s.maxOopRehab)} />
+            )}
+            {isRefi && !(oop > 0) && !(s.assignmentExcessOOP > 0) && (
+              <p className="small" style={{ margin: '4px 0 0', color: '#4B585C' }}>
+                A refinance has no down payment — the cash to close below is what the payoff and the closing costs come to over the funds advanced.
+              </p>
+            )}
+          </Sec>
+
+          <Sec title="Leverage" note="Where this loan sits against value, cost and the program's ceilings.">
+            <Row k="Loan-to-cost (LTC)" v={pct(s.ltcPct, 1)} />
+            <Row k="Initial / as-is LTV" v={pct(s.acqLtvPct, 1)} />
+            <Row k="Loan-to-ARV" v={pct(s.arvPct, 1)} />
+            {Number(s.costBasis) > 0 && <Row k="Total project cost (the LTC basis)" v={money(s.costBasis)} />}
+            {reg.target_ltc > 0 && <Row k="Selected leverage (LTC target)" v={pct(reg.target_ltc, 1)} />}
+            {s.binding && <Row k="Binding limit" v={s.binding} />}
+            {progMax && ((q.kind === 'bridge' || progMax.maxLtc >= 1 || progMax.maxArvLtv >= 1)
+              // Bridge (and any no-cap product) has no LTC/ARV ceiling — the engine
+              // uses a 100% sentinel. Don't display "100.0%" as if it were a real cap;
+              // show only the as-is advance cap that actually governs (audit #12).
+              ? <Row k="Program max — as-is" v={pct(progMax.maxAcqLtv, 1)} />
+              : <Row k="Program max — LTC / ARV / as-is" v={`${pct(progMax.maxLtc, 1)} / ${pct(progMax.maxArvLtv, 1)} / ${pct(progMax.maxAcqLtv, 1)}`} />)}
+            {pricedLower && <Row k="Most this deal can be priced at — LTC / ARV" v={`${pct(caps.maxLtc, 1)} / ${pct(caps.maxArvLtv, 1)}`} />}
+            {pricedLower && (
+              <p className="small" style={{ margin: '6px 0 0', color: '#4B585C' }}>
+                {cappedWhy || 'On this deal the program prices a lower leverage band than the program maximum.'}{' '}
+                The program maximum above is set by the tier (FICO and experience) and does not change when the deal changes — including the interest reserve.
+              </p>
+            )}
+          </Sec>
+
+          {/* CLOSING COSTS, WITH THE TOTAL THE OWNER ASKED FOR BY NAME: "a total of
+              the closing costs, with the origination fee, legal fee, and title fees
+              all together". `dueAtClosing` IS that sum (origination + UW/legal +
+              credit + title + any extra fees), straight from the engine — the
+              appraisal sits BELOW it because it is paid outside closing, and folding
+              it in would overstate what the borrower brings to the table. */}
+          <Sec title="Closing costs" note="Everything charged at the closing table, then the appraisal, which is paid separately.">
+            <Row k={`Origination (${q.origPct != null ? (q.origPct * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—'})`} v={money2(q.origination)} />
+            <Row k="UW / processing / legal" v={money2(cc.lenderFee)} />
+            <Row k="Credit report" v={money2(cc.creditFee)} />
+            <Row k="Title / escrow (est.)" v={money2(cc.titleAndSettlement)} />
+            {Array.isArray(cc.extraFees) && cc.extraFees.map((f, i) => (
+              <Row key={i} k={f.name} v={money2(f.amount)} />
+            ))}
+            <Total k="Total closing costs due at closing" v={money2(cc.dueAtClosing)} />
+            <Row k="Appraisal (est., paid outside closing)" v={money2(cc.appraisalPoc)} sub />
+            <Total k="Total closing costs including the appraisal" v={money2(cc.totalIncludingPoc)} />
+          </Sec>
+
+          {/* CASH TO CLOSE — itemized the way the engine actually computes it, which
+              is a DIFFERENT sum on a refinance (payoff + closing − the funds we
+              advance) than on a purchase (down payment + closing). */}
+          <Sec title="Cash to close"
+            note={isRefi ? 'On a refinance the borrower brings whatever the payoff and the closing costs come to over the funds we advance.'
+              : 'The equity and the closing costs the borrower brings to the table.'}>
+            {isRefi ? (
+              <>
+                <Row k="Payoff of the existing loan" v={payoff > 0 ? money2(payoff) : '—'} />
+                <Row k="Closing costs due at closing" v={money2(refi ? refi.closing : cc.dueAtClosing)} />
+                <Row k="Less funds advanced at closing" v={'− ' + money2(refi ? refi.fundedAtClose : s.initialAdvance)} />
+                <Total k="Estimated cash to close" v={money2(q.cashToClose)} />
+                {refi && Number(refi.cashOut) > 0 && <Total k="Cash out to the borrower" v={money2(refi.cashOut)} />}
+              </>
+            ) : (
+              <>
+                <Row k="Down payment (equity)" v={money2(s.downPayment)} />
+                {s.assignmentExcessOOP > 0 && <Row k="Assignment fee over the financeable cap" v={money2(s.assignmentExcessOOP)} />}
+                <Row k="Closing costs due at closing" v={money2(cc.dueAtClosing)} />
+                <Total k="Estimated cash to close" v={money2(q.cashToClose)} />
+              </>
+            )}
+          </Sec>
+
+          {/* LIQUIDITY — the engine's own build-up:
+                cashToClose + reserveRequirement + oopRehab + closingBuffer.
+              Itemizing it is the point: "liquidity to verify" as a bare figure told
+              nobody WHY the borrower has to show that much. */}
+          <Sec title="Liquidity to verify" note="The cash the borrower has to actually show us, and what makes it up.">
+            <Row k="Estimated cash to close" v={money2(q.cashToClose)} />
+            <Row k={`Reserve to show${q.reserveBasis ? ` (${q.reserveBasis})` : ''}${q.reserveMonths ? ` · ${q.reserveMonths} months` : ''}`}
+              v={money2(q.reserveRequirement)} />
+            {oop > 0 && <Row k="Rehab out of pocket" v={money2(oop)} />}
+            {/* 1% closing-cost buffer (owner-authorized 2026-07-31): extra cash to
+                verify so attorney/other closing charges never run short. Waivable
+                per file by an admin (toggle below the card). */}
+            {(Number(q.closingBuffer) > 0 || q.closingBufferWaived) && (
+              <Row k={q.closingBufferWaived ? 'Closing cost buffer — waived on this file' : 'Closing cost buffer (1% of loan)'}
+                v={q.closingBufferWaived ? '$0.00' : money2(q.closingBuffer)} />
+            )}
+            <Total k="Total liquidity to verify" v={money2(q.liquidity ?? q.liquidityRequired)} />
+          </Sec>
+
+          <Sec title="Scenario as registered" note="The deal exactly as it was priced. Changing any of these reopens Products &amp; pricing.">
           <Row k="Strategy / purpose" v={`${inp.strategy || '—'} · ${inp.loanType || '—'}${inp.cashOut ? ' (cash-out)' : ''}`} />
           {/* NAME THE FIGURE THE LOAN WAS SIZED ON (owner-directed 2026-08-02).
               On a refinance `inp.purchasePrice` IS the as-is value — that is the
@@ -330,13 +470,21 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           {inp.isAssignment && q.assignment && (q.assignment.overLimit || q.assignment.overridden) &&
             <Row k={`Effective purchase price ${q.assignment.overridden ? '(admin exception)' : q.assignment.dollarCap ? '(fee capped at the program limit)' : '(fee capped at 15%)'}`} v={money(q.assignment.recognizedPrice)} />}
           <Row k="As-is value / ARV" v={`${money(inp.asIsValue)}${inp.asIsDefaulted ? ' (= purchase, defaulted)' : ''} / ${money(inp.arv)}`} />
+          {/* THE PAYOFF, which the owner asked for by name. It is a real pricing
+              input on a refinance (cash-to-close is sized off it), and it was on no
+              surface here at all. */}
+          {isRefi && <Row k="Payoff of the existing loan" v={payoff > 0 ? money(payoff) : '—'} />}
           <Row k="Rehab budget" v={money(inp.rehabBudget)} />
           {registeredRehabType(inp) && <Row k="Rehab scope" v={registeredRehabType(inp)} />}
+          {oop > 0 && <Row k="Of that, out of pocket" v={money2(oop)} sub />}
+          <Row k="Property type / units" v={`${inp.propertyType || '—'}${inp.units ? ' · ' + inp.units + (inp.units > 1 ? ' units' : ' unit') : ''}`} />
           <Row k="FICO / experience" v={`${inp.fico || '—'} · ${inp.expFlips || 0} flips / ${inp.expHolds || 0} holds / ${inp.expGround || 0} ground-up`} />
           <Row k="Requested interest reserve" v={`${inp.irAmount ? money(inp.irAmount) : `${inp.irMonths || 0} months`}${(inp.irAmount > 0 || inp.irMonths > 0) ? ` · financed: ${money(s.financedReserve || 0)}` : ''}`} />
           {showAdmin && q.adminPricing && (q.adminPricing.markupPct != null || q.adminPricing.manualPricing) && (
             <Row k="Admin pricing" v={`${q.adminPricing.markupPct != null ? 'markup ' + q.adminPricing.markupPct + '%' : ''}${q.adminPricing.manualPricing ? ' · manual basis' : ''}`.trim()} />
           )}
+          </Sec>
+
           {(() => {
             // Term-sheet options (owner-directed 2026-07-22) — accrual, 3-month
             // minimum interest, deferred origination fee, and the estimated dates.
@@ -348,8 +496,7 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
             };
             const def = Number(to.deferredOrigPct) || 0;
             return (
-              <>
-                <p className="muted small" style={{ margin: '10px 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Term-sheet options</p>
+              <Sec title="Term-sheet options" note="What the term sheet says beyond the numbers.">
                 <Row k="Guaranty / recourse" v={to.coBorrowerPgWaived === true ? 'Full recourse — co-borrower guaranty waived (approved exception)' : 'Full recourse — personal guaranty required'} />
                 <Row k="Interest accrual" v={to.accrualType === 'dutch' ? 'Dutch / Full-Boat' : 'Non-Dutch / As-Drawn'} />
                 <Row k="3-month minimum interest" v={to.minInterestEnabled === true ? 'Included' : 'Not included'} />
@@ -357,10 +504,9 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
                 {to.estClosing && <Row k="Estimated closing date" v={niceDate(to.estClosing)} />}
                 {to.firstPayment && <Row k="First payment date (est.)" v={niceDate(to.firstPayment)} />}
                 {to.maturity && <Row k="Maturity date (est.)" v={niceDate(to.maturity)} />}
-              </>
+              </Sec>
             );
           })()}
-        </div>
       </div>
     </div>
   );
@@ -402,6 +548,22 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
+  /* A file created from a term sheet REGISTERS ITSELF on the way in
+     (owner-directed 2026-08-06). When that register was refused — a manual basis
+     needs its liquidity months, a value disagrees with the application, an
+     exception is required — the file still exists, unregistered, exactly as it
+     would have before. The reason is handed over in sessionStorage and surfaced
+     HERE, on the one screen where it can be acted on, rather than being
+     swallowed on a page the officer has already navigated away from. Consumed
+     once: a stale reason on a later visit would be a lie. */
+  useEffect(() => {
+    try {
+      const n = sessionStorage.getItem('ys-newfile-register-note');
+      if (!n) return;
+      sessionStorage.removeItem('ys-newfile-register-note');
+      setErr(`This file was created from a term sheet, but the product could not be registered automatically: ${n} Review the scenario below and register it here.`);
+    } catch (_) { /* best-effort */ }
+  }, []);
   // Manual Program: months of liquidity the registrant must state before a
   // manual product (LTV/LTC/ARV override) can register. Prefilled from the current
   // manual registration or the admin default; required only when the scenario is
@@ -436,15 +598,37 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const sheetBodyRef = useRef(null);
   const studioSaveT = useRef(null);
   const lastStudioSaved = useRef('');
+  // Did a save in this studio session actually feed an experience claim onto the
+  // file? Drives the one refresh on close (owner-directed 2026-08-06). A ref, not
+  // state: it must not re-render the sheet mid-edit.
+  const fedExperience = useRef(false);
+  // Always points at the LATEST finalizeTermSheet closure, so the stable ([]-deps)
+  // imperative handle below never calls a stale one (the E-sign Send button reaches
+  // it through this handle).
+  const finalizeRef = useRef(null);
   const stateUrl = toolItemId
     ? `${isStaff ? '/api/staff' : '/api/borrower'}/applications/${appId}/checklist/${toolItemId}/tool-state`
     : null;
 
   useImperativeHandle(ref, () => ({
     openStudio() { setOpenStudio(true); },
+    // Generate + attach the FINAL term sheet on the spot (owner-directed
+    // 2026-08-04) — the E-sign Send button calls this when the sheet on file still
+    // prints "NOT FINAL" but the file is ready to issue. Returns { ok, reason }.
+    finalizeTermSheet: (...a) => (finalizeRef.current
+      ? finalizeRef.current(...a)
+      : Promise.resolve({ ok: false, reason: 'Products & Pricing is still loading — try again in a moment.' })),
   }), []);
 
   // Autosave the studio scenario onto the pricing condition (debounced).
+  //
+  // The save also FEEDS the experience typed here onto the file (owner-directed
+  // 2026-08-06 — see src/lib/studio-experience-claim.js), and the server says so
+  // by returning the claim it wrote. Remember that it happened, but do NOT
+  // refresh the file here: the conditions list lives behind this sheet, and
+  // re-fetching it under the user mid-edit would churn the screen on every
+  // debounced pass. The refresh happens once, on close (see closeStudio) — the
+  // moment they go back to the list that was reading "no experience required".
   const onStudioState = (s2) => {
     setSnap(s2);
     if (!stateUrl || !s2 || !s2.fields) return;
@@ -454,7 +638,9 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     clearTimeout(studioSaveT.current);
     studioSaveT.current = setTimeout(() => {
       lastStudioSaved.current = key;
-      api.put(stateUrl, { state }).catch(() => { lastStudioSaved.current = ''; });
+      api.put(stateUrl, { state })
+        .then((r) => { if (r && r.experienceClaim) fedExperience.current = true; })
+        .catch(() => { lastStudioSaved.current = ''; });
     }, 1200);
   };
   const adminActive = isStaff || !!adminKey;   // overrides ride along even when the zone is locked shut
@@ -533,7 +719,23 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       const state = studioStateFromFields(s.fields);
       clearTimeout(studioSaveT.current);
       lastStudioSaved.current = JSON.stringify(state);
-      if (stateUrl) api.put(stateUrl, { state }).catch(() => { lastStudioSaved.current = ''; });
+      if (stateUrl) {
+        api.put(stateUrl, { state })
+          .then((r) => { if (r && r.experienceClaim) fedExperience.current = true; })
+          .catch(() => { lastStudioSaved.current = ''; })
+          // The experience typed here is now the file's CLAIM, so the
+          // track-record condition has just gone from "no experience required"
+          // to "verify N" (owner-directed 2026-08-06). Re-fetch the file so the
+          // list they are landing back on says so, instead of showing the old
+          // answer until something else happens to reload the screen. Runs after
+          // the catch on purpose: a debounced save may already have fed the claim,
+          // so a failed close-flush must not swallow the refresh it earned.
+          .then(() => {
+            if (!fedExperience.current) return;
+            fedExperience.current = false;
+            if (onRegistered) onRegistered();
+          });
+      }
       setSavedStudio(state);
     }
     setAdminOpen(false);
@@ -543,6 +745,43 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const cur = data && data.current;
   const history = (data && data.history) || [];
   const superseded = history.filter((h) => !h.is_current);
+
+  // Products & Pricing is part of the SAME system as Application Details — not a
+  // separate integration — so an edit to the file's economics/identity must show
+  // up here WITHOUT a page reload (owner-reported 2026-08: "I edited application
+  // details, then opened Products and Pricing and it was not yet updated — I had
+  // to refresh"). The prefill below reads the file's CURRENT numbers straight off
+  // the `app` prop, and the pricing snapshot (`data`) is the server's view of the
+  // same file, so BOTH must follow a details edit. A stable signature of exactly
+  // the fields those two reads depend on drives the refresh — so it happens on a
+  // real change, not on every unrelated re-render (which could reset a scenario
+  // the user is mid-edit).
+  const appPrefillSig = app ? JSON.stringify([
+    app.purchase_price, app.as_is_value, app.arv, app.rehab_budget, app.rehab_type,
+    app.requested_exp_flips, app.requested_exp_holds, app.requested_exp_ground,
+    app.term, app.requested_ir_months, app.requested_ir_amount,
+    app.is_assignment, app.underlying_contract_price, app.assignment_fee,
+    app.payoff_amount, app.payoff_lender, app.payoff_loan_number, app.estimated_cash_out,
+    app.loan_type, app.program, app.property_type, app.units, app.fico, app.co_fico,
+    app.entity_name, app.co_borrower_id, app.co_borrower_pg_waived, app.liquidity_buffer_waived,
+    app.est_closing_date, app.expected_closing, app.property_address,
+    app.first_name, app.middle_name, app.last_name, app.name_suffix, app.full_name,
+    app.co_first_name, app.co_middle_name, app.co_last_name, app.co_name_suffix,
+  ]) : '';
+  // Re-pull the server pricing snapshot when the file's economics/identity change
+  // (a details edit reopens the P&P condition), so `data.quote`/`data.current`
+  // reflect the CURRENT file too. Skips the first run (the mount effect already
+  // loaded it) and never disturbs an OPEN studio — you can't edit details behind
+  // the full-screen sheet, and a register handles its own refresh.
+  const econSynced = useRef(false);
+  useEffect(() => {
+    if (!econSynced.current) { econSynced.current = true; return; }
+    if (openStudio) return;
+    let alive = true;
+    loadPricing().then((d) => { if (alive) setData(d); }).catch(() => {});
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appPrefillSig]);
 
   // Prefill: the registered scenario when there is one (so a re-open shows
   // exactly what was registered), otherwise the loan file itself.
@@ -594,6 +833,32 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       payoffAmount: app.payoff_amount, payoffLender: app.payoff_lender,
       payoffLoanNumber: app.payoff_loan_number, estimatedCashOut: app.estimated_cash_out,
     });
+    /* FICO IS FILE-OWNED, NOT A FROZEN SCENARIO CHOICE (owner-directed 2026-08-05:
+       "everywhere should be updated according to the imported credit score … the
+       middle score of one borrower and the higher middle score of two borrowers").
+       The imported credit report's middle score — the HIGHER-OF-TWO on a co-borrower
+       file, exactly what the credit condition shows as "prices the deal" — must fill
+       Products & Pricing / the term sheet, NOT the score the product was FIRST
+       registered at (that stale value used to freeze here, so a re-import never
+       reached the studio). The server already computes it as the file's current
+       pricing FICO — the quote input = the higher-of-two borrowers.fico that the
+       credit import writes the report score into — so prefer it, then the file's own
+       fico, then the borrower profile's. It overrides the registered/draft fico ONLY
+       when a real value exists (never blanks it), and the staff can still type a
+       what-if over it; the register sends whatever the field holds, so this is what
+       makes a re-register price at the imported score. */
+    const filePricingFico = (() => {
+      // The HIGHER of the two borrowers' scores, straight off the (always-fresh)
+      // app prop — each borrower's fico is their imported middle score after the
+      // credit write-back, so this is the file's current "prices the deal" score.
+      const hi = Math.max(Number(app.fico) || 0, Number(app.co_fico) || 0);
+      if (hi > 0) return hi;
+      // Fallbacks: the server's pricing quote input (also higher-of-two), then the
+      // borrower profile's fico (the borrower studio, where there is no app.co_fico).
+      const q = (data.quote && data.quote.inputs) ? Number(data.quote.inputs.fico) : 0;
+      if (q > 0) return q;
+      return (profile && Number(profile.fico) > 0) ? Number(profile.fico) : '';
+    })();
     // The last working scenario (autosaved) resumes — but the file-owned
     // economics/experience SNAP to the file's CURRENT values first (#148): an
     // autosave made before the file was edited must never carry the old
@@ -656,6 +921,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // sheet is the borrower-facing artifact, so it must read the file's truth.
       v.coBorrowerPgWaived = app.co_borrower_pg_waived ? 'true' : '';
       v.liqBufferWaived = app.liquidity_buffer_waived ? 'true' : '';
+      // FICO snaps to the file's current pricing score (the imported credit
+      // report's middle score / higher-of-two) — a draft autosaved before credit
+      // was imported must never re-register at the old estimate.
+      if (filePricingFico) v.fico = String(filePricingFico);
       return { v, c };
     }
     const name = isStaff
@@ -701,7 +970,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // CURRENT address always prefills; the registered scenario's stored copy is
       // only a fallback for a file with no address yet. The old order kept the
       // registration-era address on the term sheet forever after a correction.
-      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: addrLine(app.property_address) || inp.address, state: (app.property_address && app.property_address.state) || inp.state, estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived, ...econFallback(inp), ...fileEcon(), ...filePayoff() }));
+      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: addrLine(app.property_address) || inp.address, state: (app.property_address && app.property_address.state) || inp.state, estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived, ...econFallback(inp), ...fileEcon(), ...filePayoff(), ...(filePricingFico ? { fico: filePricingFico } : {}) }));
       if (isStaff) {
         // The registered scenario's admin knobs (markup, points, fees, and any
         // manual LTV/LTC/ARV/rate basis) restore for EVERY staff role — the zone
@@ -723,7 +992,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         expFlips: app.requested_exp_flips ?? inp.expFlips,
         expHolds: app.requested_exp_holds ?? inp.expHolds,
         expGround: app.requested_exp_ground ?? inp.expGround,
-        fico: inp.fico || (profile && profile.fico) || '',
+        fico: filePricingFico || inp.fico || (profile && profile.fico) || '',
         estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived,
         ...econFallback(inp), ...filePayoff(),
       }));
@@ -744,7 +1013,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         arv: app.arv,
         rehabBudget: app.rehab_budget,
         rehabType: app.rehab_type,
-        fico: app.fico || (profile && profile.fico) || '',
+        fico: filePricingFico || app.fico || (profile && profile.fico) || '',
         expFlips: app.requested_exp_flips, expHolds: app.requested_exp_holds, expGround: app.requested_exp_ground,
         estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived,
         termMonths: app.term, irMonths: app.requested_ir_months, irAmount: app.requested_ir_amount,
@@ -754,8 +1023,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       });
     }
     return st;
+    // appPrefillSig makes this recompute when the file's own economics/identity
+    // change (a details edit) — the fix for "P&P didn't update without a reload".
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, profile, savedStudio]);
+  }, [data, profile, savedStudio, appPrefillSig]);
 
   // Borrowers can price/choose but never change the file's deal economics
   // from here — those change through the loan team. Staff edit everything.
@@ -855,9 +1126,15 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // before the register and can be stale). Stamp, capture, then report the
       // stamp we ACTUALLY set on the upload so the DocuSign send can refuse an
       // initial sheet instead of mailing one.
-      const stampFinal = !!(resp && resp.termSheetFinal);
+      // Products & Pricing produces ONLY the INITIAL term sheet (owner-directed
+      // 2026-08-06: "the term sheet generator should only generate initials; the
+      // only place a final is generated is the DocuSign package sender"). This
+      // stored sheet is the preview/record copy on the file; the FINAL that goes
+      // out is BUILT fresh on our server by the sender at send time
+      // (esign/term-sheet-pdf.js), so this copy is never sent and is always initial.
+      const stampFinal = false;
       let stamped = false;
-      try { stamped = studioRef.current.setProvenance(stampFinal ? 'file_final' : 'file') === true; } catch (_) { stamped = false; }
+      try { stamped = studioRef.current.setProvenance('file') === true; } catch (_) { stamped = false; }
       try { pdf = await studioRef.current.capturePdf(); } catch (_) { /* offline */ }
       if (pdf && pdf.blob) {
         try {
@@ -922,6 +1199,72 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     } finally { setBusy(false); gate.leave(); }
   }
 
+  // Poll the studio until it has loaded the (prefilled, registered) scenario and
+  // computed a ready, eligible pricing snapshot — the SAME readiness register()
+  // requires before it will capture. Resolves false on timeout (fail-safe).
+  function waitForStudioReady(timeoutMs) {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const tick = () => {
+        let s = null;
+        try { s = studioRef.current && studioRef.current.snapshot(); } catch (_) { s = null; }
+        if (s && s.ready && s.program && s.d && s.d.status !== 'INELIGIBLE' && s.d.totalLoan > 0) return resolve(true);
+        if (Date.now() - start > timeoutMs) return resolve(false);
+        setTimeout(tick, 200);
+      };
+      setTimeout(tick, 250);
+    });
+  }
+
+  // FINALIZE the term sheet in place (owner-directed 2026-08-04): "that button to
+  // send out the term sheet and package should be the button that is generating the
+  // final term sheet after all the conditions are met." The INITIAL/FINAL wording is
+  // drawn into the PDF client-side, so the ONLY way to a FINAL sheet is to
+  // regenerate it here. This re-captures the SAME registered scenario the studio
+  // prefills — no re-pricing, no re-register side effects — stamped FINAL, but ONLY
+  // when the server confirms the file is ready to issue one (termSheetFinal), so a
+  // sheet can never call itself final on an unfinished file. Fail-safe: any problem
+  // returns { ok:false, reason } and nothing is attached — the caller falls back to
+  // re-registering, or (super-admin) the send override. Returns { ok, reason }.
+  async function finalizeTermSheet() {
+    if (busy) return { ok: false, reason: 'A registration is already in progress — try again in a moment.' };
+    // Server authority FIRST — never stamp a sheet final on a file that isn't ready.
+    let d;
+    try { d = await loadPricing(); } catch (_) { return { ok: false, reason: 'Could not read Products & Pricing right now — try again in a moment.' }; }
+    if (!d || !d.current) return { ok: false, reason: 'No product is registered on this file yet. Register the product in Products & Pricing first.' };
+    if (d.termSheetHold) return { ok: false, reason: (isStaff && typeof d.termSheetHold === 'string') ? d.termSheetHold : 'Term sheets are on hold on this file (the appraisal is under review).' };
+    if (!d.termSheetFinal) {
+      const bl = (d.termSheetFinalBlockers || []).map((b) => b && b.label).filter(Boolean);
+      return { ok: false, reason: bl.length
+        ? `The term sheet can’t be finalized yet — still outstanding: ${bl.join(', ')}. Finish those, then send.`
+        : 'This file isn’t ready to issue a final term sheet yet.' };
+    }
+    setBusy(true); setErr('');
+    try {
+      setData(d);
+      setOpenStudio(true);
+      const ready = await waitForStudioReady(12000);
+      if (!ready) return { ok: false, reason: 'The Term Sheet Studio couldn’t load the registered scenario. Open Products & Pricing and re-register to attach the final term sheet.' };
+      let stamped = false, pdf = null;
+      try { stamped = studioRef.current.setProvenance('file_final') === true; } catch (_) { stamped = false; }
+      try { pdf = await studioRef.current.capturePdf(); } catch (_) { pdf = null; }
+      if (!pdf || !pdf.blob || !stamped) return { ok: false, reason: 'Could not generate the final term sheet PDF (an internet connection is required).' };
+      try {
+        const dataBase64 = await blobToBase64(pdf.blob);
+        const body = { filename: pdf.filename, contentType: 'application/pdf', dataBase64, docKind: 'term_sheet', termSheetFinal: true };
+        if (isStaff) await api.staffUploadAppDoc(appId, body);
+        else await api.uploadDoc({ ...body, applicationId: appId });
+      } catch (_) { return { ok: false, reason: 'The final term sheet was generated but could not be attached — try again.' }; }
+      try { const dNew = await loadPricing(); setData(dNew); } catch (_) { /* keep old */ }
+      if (onRegistered) onRegistered();
+      return { ok: true };
+    } finally {
+      closeStudio();
+      setBusy(false);
+    }
+  }
+  finalizeRef.current = finalizeTermSheet;
+
   // Request an EXCEPTION to a guideline the deal otherwise follows — e.g. to
   // finance MORE of an assignment fee than the 15% cap (a bigger loan). Raises an
   // escalation into the super-admin Workflow; it does NOT change the current
@@ -947,7 +1290,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
 
   const statusLine = snap && !snap.ready ? 'Missing: ' + snap.missing.join(', ')
     : snap && !snap.program ? 'Tap a program card above to choose Standard, Gold Standard, Silver or Manual.'
-    : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : snap.program === 'silver' ? 'Silver' : snap.program === 'manual' ? 'Manual Program' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? d.rate.toFixed(2) + '%' : '—'} · cash to close ${money2(d.cashToClose)} · liquidity ${money2(d.liquidity)}`
+    : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : snap.program === 'silver' ? 'Silver' : snap.program === 'manual' ? 'Manual Program' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? fmtRatePctFromPct(d.rate) + '%' : '—'} · cash to close ${money2(d.cashToClose)} · liquidity ${money2(d.liquidity)}`
     : '';
   // A PLAIN-LANGUAGE reason the product can't be registered yet — shown as a
   // prominent banner in the studio so the Register action never silently
@@ -997,7 +1340,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       appraisalFee: 'appraisal fee', titleFee: 'title / escrow fee',
     };
     const NO_DEFAULT = { ovrEffPrice: 'effective purchase price', manualPricing: 'manual scenario',
-      oopRehab: 'out-of-pocket rehab', oopRehabMax: 'out-of-pocket rehab (raise initial to max)' };
+      oopRehab: 'out-of-pocket rehab', oopRehabMax: 'out-of-pocket rehab (raise initial to max)',
+      // Manual Gold top-tier markup (item 15): mirrors the server's placement in
+      // ENGAGED_OVERRIDE_KEYS — any non-zero value is a deliberate override → approval.
+      markupGoldT1Pct: 'Gold top-tier markup' };
     // A knob with no company default of its own borrows another's — the exact
     // mirror of pricing-overrides.js `defaultKey`, which is what the server
     // re-checks with. Without it the Manual origination has no `cd` entry at
@@ -1060,7 +1406,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
         <h3 style={{ margin: 0 }}>Product registration & term sheet</h3>
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
-          {cur && <span className={`ts-badge ${escPending ? 'warn' : 'ok'}`}>Registered · {cur.program === 'gold' ? 'Gold Standard' : cur.program === 'silver' ? 'Silver' : cur.program === 'manual' ? 'Manual Program' : 'Standard'} · {money(cur.total_loan)} @ {pct(cur.note_rate)}</span>}
+          {cur && <span className={`ts-badge ${escPending ? 'warn' : 'ok'}`}>Registered · {cur.program === 'gold' ? 'Gold Standard' : cur.program === 'silver' ? 'Silver' : cur.program === 'manual' ? 'Manual Program' : 'Standard'} · {money(cur.total_loan)} @ {fmtRatePct(cur.note_rate)}%</span>}
           <button className="btn primary small" onClick={() => setOpenStudio(true)}
             title="Opens the full-screen Term Sheet Studio — everything you enter autosaves to the file; leaving resumes where you left off.">
             {cur ? 'Reprice / re-register' : 'Open Products & Pricing'}
@@ -1114,7 +1460,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
                   {counterTerms.maxAcqLtv != null && <span>as-is LTV {(counterTerms.maxAcqLtv * 100).toFixed(2)}% · </span>}
                   {counterTerms.maxArvLtv != null && <span>ARV LTV {(counterTerms.maxArvLtv * 100).toFixed(2)}% · </span>}
                   {counterTerms.maxLtc    != null && <span>LTC {(counterTerms.maxLtc * 100).toFixed(2)}% · </span>}
-                  {counterTerms.noteRate  != null && <span>rate {(counterTerms.noteRate * 100).toFixed(2)}% · </span>}
+                  {counterTerms.noteRate  != null && <span>rate {fmtRatePct(counterTerms.noteRate)}% · </span>}
                   {counterTerms.origPct   != null && <span>origination {(counterTerms.origPct * 100).toFixed(2)}% · </span>}
                   {counterTerms.loanAmount != null && <span>loan {money(counterTerms.loanAmount)} · </span>}
                 </div>
@@ -1149,9 +1495,9 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       {err && !openStudio && <div role="alert" className="notice err" style={{ marginTop: 10 }}>{err}</div>}
       {msg && !openStudio && <div className="notice ok" style={{ marginTop: 10 }}>{msg}</div>}
 
-      {/* Personal guaranty + the co-borrower guaranty-waiver request (staff only,
-          owner-directed 2026-07-22). Self-hides when the file has no co-borrower. */}
-      {isStaff && app && app.id && !openStudio && <GuarantyWaiverCard appId={app.id} />}
+      {/* The personal-guaranty status + co-borrower guaranty-waiver REQUEST moved
+          OFF Products & Pricing into the Exceptions section (owner-directed
+          2026-08-06): the request now lives with the other exceptions, not here. */}
 
       {/* Request an exception to a guideline the deal otherwise follows — e.g. to
           finance MORE of an assignment fee than the 15% cap (a bigger loan).
@@ -1249,7 +1595,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       {superseded.length > 0 && (
         <p className="muted small" style={{ margin: '8px 0 0' }}>
           {superseded.length} previous registration{superseded.length === 1 ? '' : 's'} on this file (superseded):{' '}
-          {superseded.map((h) => `${h.program === 'gold' ? 'Gold' : h.program === 'silver' ? 'Silver' : h.program === 'manual' ? 'Manual' : 'Standard'} ${money(h.total_loan)} @ ${pct(h.note_rate)} on ${when(h.created_at)}`).join(' · ')}
+          {superseded.map((h) => `${h.program === 'gold' ? 'Gold' : h.program === 'silver' ? 'Silver' : h.program === 'manual' ? 'Manual' : 'Standard'} ${money(h.total_loan)} @ ${fmtRatePct(h.note_rate)}% on ${when(h.created_at)}`).join(' · ')}
         </p>
       )}
 
@@ -1261,7 +1607,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
               <strong>Products &amp; Pricing — Term Sheet Studio</strong>
               <span className="muted small">Autosaves as you work — leaving saves your scenario to the file too.</span>
             </div>
-            {cur && <span className="ts-badge ok" style={{ marginRight: 4 }}>Registered · {money(cur.total_loan)} @ {pct(cur.note_rate)}</span>}
+            {cur && <span className="ts-badge ok" style={{ marginRight: 4 }}>Registered · {money(cur.total_loan)} @ {fmtRatePct(cur.note_rate)}%</span>}
             <button className={`btn primary toolsheet-done${registerBlocked ? ' is-blocked' : ''}`}
               disabled={busy} aria-disabled={busy || registerBlocked} onClick={registerClick}>
               {busy ? (submitExceptionMode ? 'Submitting…' : 'Registering…')

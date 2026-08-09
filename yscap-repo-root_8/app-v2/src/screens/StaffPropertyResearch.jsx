@@ -6,7 +6,9 @@ import {
   INK, MUTED, GOLD, S, money, sqft, num, saleMonth, baths, conditionLabel, conditionRead,
   CONDITION_CODES, compSetShort,
 } from '../lib/research.js';
+import { TownLookup } from '../components/AddressBox.jsx';
 import ResearchImportPanel from '../components/ResearchImportPanel.jsx';
+import ResearchNav from '../components/ResearchNav.jsx';
 
 /* PROPERTY RESEARCH — the search engine over every property and every comparable
    sale our appraisers have ever put in front of us.
@@ -51,6 +53,11 @@ export default function StaffPropertyResearch() {
 
   const [draft, setDraft] = useState(filters);
   useEffect(() => { setDraft(filters); }, [filters]);
+  // The LIVE filters, readable from a callback made on an earlier render — the
+  // address box reports a pick more than once and the later reports carry the
+  // closure from the first.
+  const filtersRef = useRef(filters);
+  useEffect(() => { filtersRef.current = filters; }, [filters]);
 
   const run = useCallback((f) => {
     const mine = ++reqRef.current;
@@ -109,6 +116,7 @@ export default function StaffPropertyResearch() {
 
   return (
     <div>
+      <ResearchNav />
       <header style={{ marginBottom: 14 }}>
         <h1 style={{ margin: '0 0 4px', color: INK }}>Property Research</h1>
         <p style={{ margin: 0, color: MUTED, maxWidth: 760 }}>
@@ -146,14 +154,44 @@ export default function StaffPropertyResearch() {
       }} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 280px) 1fr', gap: 16, alignItems: 'start' }}>
-        {/* ---------------- filters ---------------- */}
-        <aside style={{ ...S.panel, position: 'sticky', top: 12 }}>
+        {/* ---------------- filters ----------------
+            The search column scrolls INSIDE ITSELF (its own scrollbar, capped to
+            the viewport) so reaching the bottom filters no longer drags the whole
+            page — which used to move the results with it. The results column keeps
+            the page scroll, so the two panes move independently (owner-directed
+            2026-08-04). minHeight:0 lets the sticky box actually cap its height. */}
+        <aside style={{ ...S.panel, position: 'sticky', top: 80,
+          maxHeight: 'calc(100vh - 92px)', overflowY: 'auto', minHeight: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
             <strong style={{ color: INK }}>Search</strong>
             {activeCount > 0 && (
               <button className="btn ghost small" onClick={clearAll}>Clear ({activeCount})</button>
             )}
           </div>
+
+          {/* THE SAME ADDRESS BOX AS EVERY OTHER RESEARCH SCREEN (owner-directed
+              2026-08-03). The person searching has the property's address in
+              front of them, not its town spelled the way our reports spell it.
+              It fills the TOWN and STATE — not the ZIP, which on this screen is
+              an independent filter and would narrow the search twice over. */}
+          <TownLookup style={{ marginBottom: 10 }}
+            onFill={({ city, state }) => {
+              // FUNCTIONAL, and it only navigates when something actually moved.
+              // `onFill` fires on the pick and AGAIN when USPS confirms the text,
+              // so a stale `draft` would revert a filter typed in between, and an
+              // unconditional `apply` would push two history entries and run two
+              // searches for one pick.
+              setDraft((d) => ({ ...d, city: city || d.city, state: state || d.state }));
+              // AGAINST THE LIVE FILTERS, NOT THE CAPTURED ONES. `onPick` fires
+              // again when USPS confirms, from the closure made at pick time — so
+              // comparing to `filters` there compares to the value from BEFORE the
+              // first fire applied, and the second fire navigates again.
+              const cur = filtersRef.current;
+              const next = {};
+              if (city && city !== cur.city) next.city = city;
+              if (state && state !== cur.state) next.state = state;
+              if (Object.keys(next).length) apply(next);
+            }} />
 
           <Field label="Address, town or ZIP">
             <input style={S.input} value={draft.q} placeholder="e.g. 10th St Piscataway"
@@ -410,7 +448,10 @@ function Field({ label, children }) {
   return <div style={{ marginBottom: 10 }}><label style={S.label}>{label}</label>{children}</div>;
 }
 function Row({ children }) {
-  return <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>{children}</div>;
+  // minmax(0,1fr) — a bare 1fr track floors at min-content, so a native date
+  // input (its own ~130px minimum) refuses to shrink and overflows the narrow
+  // search column. minmax(0,…) lets each cell shrink to the track.
+  return <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 6 }}>{children}</div>;
 }
 // `filters` is the APPLIED state and is what blur must compare against. Testing
 // `draft[lo] !== undefined` was always true — every key exists on the draft — so

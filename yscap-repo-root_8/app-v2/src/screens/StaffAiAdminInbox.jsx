@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { showMessage } from '../lib/dialog.js';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { Link } from 'react-router-dom';
@@ -51,13 +52,13 @@ export default function StaffAiAdminInbox() {
 
   const submit = async (id) => {
     const answer = answers[id];
-    if (!answer || !answer.trim()) { alert('Type an answer first.'); return; }
+    if (!answer || !answer.trim()) { showMessage('Type an answer first.'); return; }
     setBusy(true);
     try {
       await api.aiAdminAnswer(id, answer);
       setAnswers({ ...answers, [id]: '' });
       await load();
-    } catch (e) { alert('Could not submit answer: ' + (e && e.message || 'error')); }
+    } catch (e) { showMessage('Could not submit answer: ' + (e && e.message || 'error')); }
     finally { setBusy(false); }
   };
 

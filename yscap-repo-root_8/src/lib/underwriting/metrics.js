@@ -32,7 +32,7 @@ const { num } = require('./compare');
 const DEFAULT_CAPS = {
   ltp:     { cap: 0.90, base: 'purchasePrice', numer: 'initial', label: 'Loan-to-purchase', baseLabel: 'purchase price' },
   ltv:     { cap: 0.80, base: 'asIsValue',     numer: 'initial', label: 'Loan-to-value (as-is)', baseLabel: 'as-is value' },
-  ltc:     { cap: 0.90, base: 'cost',          numer: 'total',   label: 'Loan-to-cost', baseLabel: 'purchase + rehab' },
+  ltc:     { cap: 0.90, base: 'cost',          numer: 'total',   label: 'Loan-to-cost', baseLabel: 'lower of price / as-is + rehab' },
   arv_ltv: { cap: 0.75, base: 'arv',           numer: 'total',   label: 'Loan-to-ARV (after-repair)', baseLabel: 'after-repair value' },
 };
 
@@ -54,6 +54,13 @@ const PROGRAM_HIGHEST_CAPS = {
   standard: { maxAcqLtv: 0.90, maxArvLtv: 0.75, maxLtc: 0.925 },
   manual:   { maxAcqLtv: 0.90, maxArvLtv: 0.75, maxLtc: 0.925 },   // Manual prices on the Standard engine.
   gold:     { maxAcqLtv: 0.90, maxArvLtv: 0.75, maxLtc: 0.93  },
+  // Silver (the EMCAP product) was MISSING — so an old Silver registration whose caps
+  // didn't persist fell all the way back to the generic DEFAULT_CAPS 0.90 LTC and could
+  // FALSE-flag a legitimately-sized Silver loan as over-leverage. This fallback mirrors
+  // Standard's ceiling (looser than the 0.90 default it replaces, so it can only REDUCE
+  // false findings, never add one). Only ever used when a registration didn't persist its
+  // own caps; a current Silver registration measures against its exact per-tier caps.
+  silver:   { maxAcqLtv: 0.90, maxArvLtv: 0.75, maxLtc: 0.925 },
 };
 
 // Build a caps override from a file's REGISTERED engine caps (quote.caps fractions) so the leverage
@@ -116,8 +123,10 @@ function computeMetrics(econ = {}, caps = DEFAULT_CAPS) {
   const reserve = num(econ.financedReserve);
   // Cost basis MUST MATCH the frozen engine's LTC denominator (owner-reported
   // 2026-07-29: the AI review reported a wrong 95% LTC because it left the financed
-  // interest reserve OUT of the cost). The frozen engines define
-  //   costBasis = (purchase or as-is) + rehab + (reserveInCost ? financedReserve : 0)
+  // interest reserve OUT of the cost). The frozen engines define (owner-directed
+  // 2026-08-05: the acquisition figure is the LOWER of the purchase price and the
+  // as-is value, not always the price)
+  //   costBasis = min(purchase, as-is) + rehab + (reserveInCost ? financedReserve : 0)
   // where reserveInCost is TRUE for the Standard (silver) program and Gold ground-up,
   // FALSE for Gold reno/bridge — and Gold reno/bridge finance ZERO interest reserve,
   // so adding the financed reserve whenever it is present is exactly the frozen
@@ -125,7 +134,17 @@ function computeMetrics(econ = {}, caps = DEFAULT_CAPS) {
   // the AI review the same cost basis the frozen engine already sized the loan on).
   const reserveInCost = econ.reserveInCost !== false;
   const reserveInBasis = reserveInCost && reserve != null && reserve > 0 ? reserve : 0;
-  const cost = price != null ? price + (rehab != null ? rehab : 0) + reserveInBasis : null;
+  // The LTC cost basis goes by the LOWER of the purchase price and the as-is value —
+  // the frozen engine's acqDenom (owner-directed 2026-08-05: "when the as-is value is
+  // below the purchase price, the total cost — and the LTC — go by the as-is value,
+  // not the purchase price. This is for all the programs"). A blank/absent as-is
+  // value falls back to the price, and a null price (a refinance clears
+  // purchase_price) still skips the LTC metric entirely, exactly as before. LTP (base
+  // purchasePrice) and LTV (base asIsValue) keep their own separate bases.
+  const acqCost = price != null
+    ? (asIs != null && asIs > 0 && asIs < price ? asIs : price)
+    : null;
+  const cost = acqCost != null ? acqCost + (rehab != null ? rehab : 0) + reserveInBasis : null;
   const bases = { purchasePrice: price, asIsValue: asIs, arv, cost };
   // The loan figure each ratio is measured on: acquisition metrics use the initial advance, the
   // rest use the total loan. `null` numerator → the metric is skipped (never guess).

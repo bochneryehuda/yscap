@@ -19,7 +19,6 @@ const notify = require('../lib/notify');
 const usd = (c) => c == null ? '—' : '$' + Math.floor(Number(c) / 100).toLocaleString('en-US');
 // money-leg amounts keep their cents (a mirrored wire is exact, never floored)
 const usd2 = (c) => c == null ? '—' : '$' + (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const { drawTeamBcc } = require('../lib/draw-recipients');
 const { drawEmailBlocks } = require('../sitewire/draw-email-blocks');
 
 // " #2" for the borrower's SUBJECT LINE (owner-directed 2026-07-27: "in the subject line write
@@ -519,7 +518,7 @@ async function verifyPartnerFee(appId, row) {
     if (!stamped) return { skipped: 'checked' };
     if (fees.includes(expected)) return { ok: true };
     const total = fees.reduce((s, c) => s + c, 0);
-    await notify.notifyAppStaff(appId, {
+    await notify.notifyAppStaffThread(appId, {
       type: 'draw_inbound', title: 'Draw fee doesn’t match the agreed amount',
       body: `Draw #${row.number == null ? '—' : row.number} carries fee lines totaling ${usd2(total)}, but the agreed per-draw fee for this program is ${usd2(expected)}. The borrower's net wire depends on this — please double-check the fee with the draw administrator.`,
       badge: { text: 'Fee check', tone: 'action' }, applicationId: appId, link: `/internal/app/${appId}/draws`,
@@ -638,15 +637,17 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
 async function reactReturned(appId, row, addrText) {
   const addr = addrText || 'the property';
   const nLabel = row && row.number != null ? row.number : '—';
-  await notify.notifyAppStaff(appId, {
-    type: 'draw_inbound', title: 'Draw returned on TrustPoint',
-    body: `Draw #${nLabel} for ${addr} was returned in TrustPoint's review — something needs attention before it can be approved.`,
-    badge: { text: 'Returned', tone: 'gold' }, applicationId: appId, link: `/internal/app/${appId}/draws`,
-  }).catch(() => {});
-  await notify.notifyAppBorrowers(appId, {
+  // ONE email, everybody on it (rule 15 — never a bare notifyAppBorrowers+notifyAppStaff pair for
+  // a draw email): the borrower is told in their voice, the draw team rides the visible Cc keyed on
+  // the 'draws' category (drawLoopInBcc — coordinator + officer + draws@ desk), and the desk's feed
+  // keeps its own staff-voiced line. `link` is omitted so each audience gets its default (borrower →
+  // /app, staff → /internal).
+  await notify.notifyAppThread(appId, {
     type: 'draw', title: `Your draw${drawNo(row)} needs attention`,
     body: `Your draw request for ${addr} needs a little more before it can be approved. Your loan team will reach out with exactly what's needed.`,
-    applicationId: appId, link: `/app/${appId}`, bccExtra: await drawTeamBcc(appId),
+    staffTitle: 'Draw returned on TrustPoint',
+    staffBody: `Draw #${nLabel} for ${addr} was returned in TrustPoint's review — something needs attention before it can be approved.`,
+    applicationId: appId,
   }).catch(() => {});
 }
 

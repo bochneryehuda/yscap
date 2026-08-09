@@ -58,6 +58,15 @@ CREATE TABLE applications (
   -- assertion; the seed below sets one so the gate passes as it always meant to.
   expected_closing date,
   est_closing_date date,
+  -- Term-sheet display/record options the FINAL term sheet builder reads at send
+  -- time (owner-directed 2026-08-06; db/265 accrual/min-interest/deferred-orig,
+  -- db/268 co_borrower_pg_waived). loadDocGenData now SELECTs these to assemble
+  -- the term-sheet view, so the fixture must carry them or every send dies on
+  -- `column "co_borrower_pg_waived" does not exist` before a single assertion.
+  co_borrower_pg_waived boolean DEFAULT false,
+  accrual_type text,
+  min_interest_enabled boolean,
+  deferred_orig_pct numeric,
   deleted_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );

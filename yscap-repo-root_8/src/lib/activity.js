@@ -41,9 +41,12 @@ const money = (v) => {
   const n = Number(v);
   return isFinite(n) ? '$' + Math.round(n).toLocaleString('en-US') : String(v);
 };
+// Rate display only (note rate) — 3-decimal precision so 10.625% never truncates
+// to 10.63% (owner-directed 2026-08-04). Not used for LTC/LTV here.
+const { fmtRatePct } = require('./rate-format');
 const pct = (v) => {
   const n = Number(v);
-  return isFinite(n) ? (n * 100).toFixed(2) + '%' : String(v);
+  return isFinite(n) ? fmtRatePct(n) + '%' : String(v);
 };
 
 // Human names for the application columns the staff edit endpoint can touch.
@@ -117,6 +120,26 @@ const AUDIT_RENDER = {
       return {
         verb: (d.previous ? 'repriced & re-registered' : 'registered') + ` ${name} — ${now}`,
         label: lines.join('\n') || null,
+      };
+    },
+  },
+  // The experience typed in the Term Sheet Studio becomes the file's CLAIM the
+  // moment the scenario saves (owner-directed 2026-08-06) — and that claim is
+  // what the track-record condition then refuses to be signed off without. STAFF
+  // ONLY: it belongs to the underwriter reading "why does this file suddenly need
+  // ten verified holds?", not to the borrower's feed.
+  studio_experience_claim: {
+    borrowerSafe: false, kind: 'product',
+    render(d) {
+      d = d || {};
+      const bits = [
+        d.flips != null ? `${d.flips} flip${d.flips === 1 ? '' : 's'}` : null,
+        d.holds != null ? `${d.holds} hold${d.holds === 1 ? '' : 's'} / rentals` : null,
+        d.ground != null ? `${d.ground} ground-up` : null,
+      ].filter(Boolean);
+      return {
+        verb: 'set the claimed experience from the Term Sheet Studio',
+        label: bits.length ? `${bits.join(' · ')} — must be verified on the track record before the experience condition can be signed off` : null,
       };
     },
   },
@@ -959,7 +982,7 @@ const TRAILS = [
       actor: 'staff', actor_name: p.registered_by_name,
       verb: `registered ${p.product_label || p.program || 'a product'}`,
       label: [p.total_loan != null ? `$${Math.round(Number(p.total_loan)).toLocaleString('en-US')}` : null,
-        p.note_rate != null ? `${(Number(p.note_rate) * 100).toFixed(2)}%` : null,
+        p.note_rate != null ? `${fmtRatePct(p.note_rate)}%` : null,
         p.status ? `Engine: ${p.status}` : null, p.is_current ? 'current' : 'superseded'].filter(Boolean).join(' · '),
       entity_type: 'product_registration', entity_id: p.id })],
   },

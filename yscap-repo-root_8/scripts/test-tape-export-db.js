@@ -97,12 +97,48 @@ async function main() {
     // Answer them (with one invalid select to prove validation drops it) + export.
     const saved = await tapes.persistSupplemental(ncApp, 'fidelis', { asset_purchased: 'Land', entitlement_status: 'BAD_VALUE', build_status: 'Framing', lot_purchase_price: '95000', lot_purchase_date: '2026-02-15', junk: 'x' }, db);
     assert.ok(!('entitlement_status' in saved) && saved.build_status === 'Framing' && saved.lot_purchase_price === 95000, 'persist validates: drops out-of-list select, keeps valid');
+    // The questionnaire now ALWAYS returns EVERY applicable field, PRE-FILLED with what
+    // was saved on the file (owner-directed: "it should still populate the questions,
+    // but the answers should already be pre-filled … the spot where you're changing this
+    // detail"). So a re-export shows all 5 fields with the saved answers carried, and
+    // supplementalMissing counts only the one still blank (entitlement_status was dropped
+    // by validation above, so it stayed unanswered).
     const q2 = await tapes.tapeQuestions(ncApp, 'fidelis', db);
-    assert.ok(q2.questions.length === 1 && q2.questions[0].key === 'entitlement_status', 'only the still-unanswered field is re-asked');
+    assert.ok(q2.questions.length === 5, `re-export shows all 5 fields pre-filled (got ${q2.questions.length})`);
+    assert.ok(q2.supplementalMissing === 1, `only the one still-blank field is flagged missing (got ${q2.supplementalMissing})`);
+    const byKey = Object.fromEntries(q2.questions.map((f) => [f.key, f.current]));
+    assert.ok(byKey.build_status === 'Framing' && byKey.asset_purchased === 'Land' && Number(byKey.lot_purchase_price) === 95000,
+      'the saved answers are pre-filled as each field\'s current value');
+    assert.ok(byKey.entitlement_status === '' || byKey.entitlement_status == null, 'the still-unanswered field is blank, not hidden');
     const ncTape = await tapes.buildTape(ncApp, 'fidelis', db);
     const ncSheet = unzip(ncTape.buf).find((p) => p.name === 'xl/worksheets/sheet5.xml').data.toString('utf8');
     assert.ok(/<c r="AT2"[^>]*>[\s\S]*?Framing/.test(ncSheet), 'build status fills column AT');
     assert.ok(ncSheet.indexOf('<v>95000</v>') > -1, 'lot purchase price fills column AU');
+
+    // 7b) REGRESSION GUARD (owner-reported): a Fidelis file labeled with the buyer's
+    //     REAL name — "Fidelis Investors LLC", not the bare "Fidelis" — must persist its
+    //     New-Construction answers. Before the buyerAliases fix, keyNamesTapeBuyer failed
+    //     for the real label, so persistSupplemental silently returned {} (no error) and
+    //     every re-export re-asked all five fields. It must SAVE now, and the re-export
+    //     must show them PRE-FILLED.
+    const ncRealApp = uuid();
+    created.apps.push(ncRealApp);
+    await db.query(
+      `INSERT INTO applications (id,borrower_id,status,ys_loan_number,lender,property_address,program,loan_type,rehab_type,property_type,units,purchase_price,as_is_value,arv,loan_amount,rate_pct,term)
+       VALUES ($1,$2,'processing',$3,'Fidelis Investors LLC',$4,'Ground-Up Construction','Purchase','ground','Single Family',1,300000,150000,600000,420000,11,'18 months')`,
+      [ncRealApp, bId, `YSCAP-TP-${SUFFIX}-NCR`, JSON.stringify({ line1: '2 Builder Rd', city: 'Newark', state: 'NJ', zip: '07104' })]);
+    await reg(ncRealApp, 'standard');
+    const savedReal = await tapes.persistSupplemental(ncRealApp, 'fidelis', { asset_purchased: 'Land', entitlement_status: 'Fully Entitled', build_status: 'Framing', lot_purchase_price: '88000', lot_purchase_date: '2026-03-01' }, db);
+    assert.ok(savedReal.entitlement_status === 'Fully Entitled' && savedReal.build_status === 'Framing', 'the real "Fidelis Investors LLC" label PERSISTS supplemental (regression guard)');
+    const storedReal = (await db.query('SELECT tape_supplemental FROM applications WHERE id=$1', [ncRealApp])).rows[0].tape_supplemental;
+    assert.ok(storedReal && storedReal.entitlement_status === 'Fully Entitled', 'the answers are written to tape_supplemental for the real label');
+    const qReal = await tapes.tapeQuestions(ncRealApp, 'fidelis', db);
+    assert.ok(qReal.questions.length === 5 && qReal.supplementalMissing === 0, 're-export of the real-label file shows all fields, none missing');
+    assert.ok(qReal.questions.find((f) => f.key === 'entitlement_status').current === 'Fully Entitled', 'the real-label re-export is pre-filled');
+    // The real-label file also exports its tape for a NON-admin (the export gate used the
+    // same broken match — a non-admin Fidelis file could not export at all before).
+    const realTape = await tapes.buildTape(ncRealApp, 'fidelis', db, { isAdmin: false });
+    assert.ok(Buffer.isBuffer(realTape.buf) && realTape.buf.length > 10000, 'the real-label file exports its tape for a non-admin');
 
     // A non-new-construction loan asks nothing.
     const q3 = await tapes.tapeQuestions(fidelisApp, 'fidelis', db);

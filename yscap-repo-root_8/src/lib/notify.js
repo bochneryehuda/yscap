@@ -62,10 +62,14 @@ const KICKER_OF = {
   // Data-tape export before Encompass matches (owner-directed 2026-08-02): the
   // request to a super-admin, and the decision sent back to the file's team.
   tape_encompass_exception: 'Data-tape exception', tape_encompass_exception_decided: 'Data-tape exception',
+  // Condition waiver (owner-directed 2026-08-04): any staffer requests to waive a
+  // specific condition; the decision goes back to the file's team.
+  condition_waiver_request: 'Condition waiver', condition_waiver_decided: 'Condition waiver',
   // Credit report signed off on a report obtained ELSEWHERE (owner-directed
   // 2026-08-03): the request for an admin to review.
   credit_import_exception: 'Credit exception',
   exception_comment: 'Exception comment', exception_request_reply: 'Your exception',
+  loan_exception_decided: 'Exception decided',
   exception_aging: 'Exceptions waiting', exception_expired: 'Exception expired',
   message: 'New message', mention: 'You were mentioned', reminder: 'Reminder',
   llc_verified: 'Your entity', llc_unverified: 'Your entity',
@@ -123,6 +127,17 @@ async function enrichFileOpts(opts, audience) {
   if (!Array.isArray(out.meta) || !out.meta.length) {
     out.meta = audience === 'borrower' ? ctx.borrowerMeta : ctx.meta;
   }
+  // ONE EMAIL'S OWN EXTRA FACTS — appended here rather than threaded through `fileContext` so it
+  // works on BOTH paths, including the fan-out helpers that pre-fetch `_fileCtx` once and would
+  // otherwise skip a per-call argument entirely.
+  //
+  // STAFF ONLY, and that restriction is the point: this exists because the Workflow hand-off needs
+  // to name the file's NOTE BUYER, which may never reach a borrower surface. Honouring it on a
+  // borrower email would hand every future caller a way through that rule by accident, so a
+  // borrower's meta is left exactly as `borrowerMeta` built it.
+  if (audience !== 'borrower' && Array.isArray(opts.extraMeta) && opts.extraMeta.length) {
+    out.meta = [...(out.meta || []), ...opts.extraMeta.filter(Boolean)];
+  }
   // Borrower emails always carry the premium loan-officer contact CARD (from the
   // file's assigned officer) so the borrower sees a real person + how to reach
   // them on every message. Officer's own business contact only — never a note
@@ -143,9 +158,16 @@ function buildEmail(opts, audience) {
     subjectTag: opts.subjectTag || '',
     // A small category eyebrow above the headline for scannability.
     kicker:    opts.kicker || KICKER_OF[opts.type] || '',
-    preheader: opts.body || opts.title,
+    preheader: opts.emailBody || opts.body || opts.title,
     greeting:  opts.greeting || (audience === 'borrower' ? 'Hello,' : ''),
-    intro:     opts.body || '',
+    // `body` is ONE field doing two jobs: it is the in-app notification row's text AND the
+    // email's opening paragraph. Usually that is right. It stops being right when the email
+    // grows a money band and a facts table (owner-directed 2026-08-07), because the one-line
+    // summary that serves the in-app row perfectly — "Gold Standard Program · $523,125 @ 10.00%
+    // · cash to close $78,411 · liquidity $109,799" — is then a worse restatement of the block
+    // directly beneath it. `emailBody` lets a caller say the two things separately; every caller
+    // that does not set it is byte-identical to before.
+    intro:     opts.emailBody || opts.body || '',
     lines:     opts.lines || [],
     meta:      opts.meta || [],
     // Every notification email is genuinely repliable (owner-directed
@@ -176,6 +198,14 @@ function buildEmail(opts, audience) {
     // for draws). Absent on every other email, which renders exactly as before.
     figures:   opts.figures || null,
     facts:     opts.facts || null,
+    // The change ledger (what moved off the standard, from → to) and a list table (the files /
+    // items an email is about). Owner-directed 2026-08-07 — an approval email must SHOW what is
+    // being asked for, and a "7 files are overdue" digest must name the seven. Absent on every
+    // other email, which renders exactly as before.
+    changes:   opts.changes || null,
+    table:     opts.table || null,
+    // …and the plural, for an email that carries more than one queue (see template.js `tables`).
+    tables:    opts.tables || null,
     steps:     opts.steps || null,
     progress:  opts.progress || null,
     callout:   opts.callout || null,
@@ -183,6 +213,10 @@ function buildEmail(opts, audience) {
     // Titled how-to blocks (owner-directed 2026-07-21) — clean, professional
     // instruction sections (e.g. "How to request a draw", "What happens next").
     sections:  opts.sections || null,
+    // The earlier conversation, quoted in the shape mail clients collapse behind
+    // their three-dots control (lib/email/quote.js). Used by the inbound forwards so
+    // a reply notification leads with the reply and not with a copy of the thread.
+    quoted:    opts.quoted || null,
     audience,
   });
 }
@@ -207,6 +241,9 @@ function injectOpenPixel(html, notifId) {
 // UPDATE can lose the race with the test's pool.end() ("Cannot use a pool after
 // calling end") or a cleanup DELETE (a sent_emails → notifications foreign-key error).
 // Production never calls drainEmails(); the Set self-empties as each send settles.
+// EVERY fire-and-forget email.sendMail() must go through _track() — the main _emailRow
+// fan-out below, the split-off officer copy, and the notifyAdmins copy — or drainEmails()
+// is incomplete and a test that awaits it can still race that untracked send.
 const _inflight = new Set();
 function _track(p) {
   _inflight.add(p);
@@ -293,7 +330,10 @@ async function _emailRow(id, to, opts, audience) {
     // notification's history; a second capture on the same notification_id would clobber
     // the recorded recipient). Best-effort — never affects the borrower send's result.
     if (splitOfficer) {
-      email.sendMail({ to: officerBcc, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null, _skipCapture: true }).catch(() => {});
+      // Track this fire-and-forget send in _inflight so drainEmails() (test-only) can
+      // await the officer's pixel-free copy. In production nothing drains _inflight, so
+      // it stays fire-and-forget and self-clears on settle — behaviour is identical.
+      _track(email.sendMail({ to: officerBcc, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null, _skipCapture: true }).catch(() => {}));
     }
     // #442 draw email center: also persist the rendered email + attachment BYTES to the
     // sent_emails store that the Draw Management email view reads. Best-effort + caught.
@@ -567,7 +607,14 @@ const CATEGORY_OF = {
   // action-bearing, so it emails like the other exception requests. Deliberately
   // NOT in STAFF_INAPP_TYPES: a condition is waiting on this decision.
   credit_import_exception: 'conditions',
+  // Condition waiver (owner-directed 2026-08-04) — a review request + the decision
+  // back to the team; action-bearing (a condition is waiting on it), so they email.
+  condition_waiver_request: 'conditions', condition_waiver_decided: 'conditions',
   exception_comment: 'conditions', exception_request_reply: 'conditions',
+  // Generic exception decision back to the team — for a decidable type with no
+  // bespoke decision notice of its own (oop_rehab / appraisal_xml_waiver /
+  // credit_import_waiver / any future type). Action-bearing, so it emails.
+  loan_exception_decided: 'conditions',
   exception_aging: 'conditions', exception_expired: 'conditions',
   // Major-fraud / authenticity alert (R3.14, owner-directed 2026-07-22).
   // Action-bearing — admins ARE emailed (owner explicitly asked).
@@ -1073,6 +1120,86 @@ async function notifyAppThread(appId, opts = {}) {
   return { borrowers: rows, staff, emailedTogether: emailed };
 }
 
+/**
+ * The deduped, visible recipient list for a staff thread — a PURE helper so the composition can
+ * be unit-tested with no database. Lowercases + trims, drops blanks, and de-duplicates across the
+ * assignees, the draw loop-in (coordinator + officer + desk) and any explicit caller list, so the
+ * loan officer who is BOTH an assignee and in the loop-in appears exactly once.
+ */
+function _staffThreadRecipients({ assignees = [], loopIn = [], explicit = [] } = {}) {
+  return [...new Set([...assignees, ...loopIn, ...explicit]
+    .map((e) => String(e || '').trim().toLowerCase()).filter(Boolean))];
+}
+
+/**
+ * ONE INTERNAL STAFF EMAIL, THE WHOLE TEAM VISIBLY ON IT — the staff-only sibling of
+ * notifyAppThread.
+ *
+ * Owner-directed 2026-08-03: the internal "a new draw request came in" notice went out as one
+ * email PER assignee (`notifyAppStaff`), so nobody could see who else received it and a reply
+ * reached no one — the exact complaint the borrower-facing draw redesign fixed for the borrower
+ * emails but never for this staff one. This sends ONE email whose recipients are all VISIBLE —
+ * the file's active assignees PLUS, for a 'draws' notification, the draw loop-in team (the
+ * coordinator + the loan officer + the draws@ desk, `draw-recipients.drawLoopInBcc`) — carried on
+ * the file's shared reply-to (`file+<id>@`) so a reply-all keeps the conversation on ONE chain
+ * (that address fans back out to the team, never to the borrower). "For all three purposes"
+ * (Sitewire / Trinity / TrustPoint) is covered because the loop-in resolves the coordinator the
+ * same way for every draw workflow.
+ *
+ * The per-assignee IN-APP rows still go (via `notifyAppStaff` with `inAppOnly`), so the desk feed,
+ * the per-staffer mute settings and the "was anybody on this file?" answer are unchanged — exactly
+ * as notifyAppThread keeps them for the borrower path.
+ *
+ * FAILS TOWARD SENDING: if the one email cannot be composed or the file resolves NO recipients,
+ * the ordinary per-assignee `notifyAppStaff` runs WITH email enabled, so the event never goes dark.
+ */
+async function notifyAppStaffThread(appId, opts = {}) {
+  const shared = { ...opts, applicationId: opts.applicationId || appId };
+
+  let recipients = [];
+  try {
+    const assignees = (await db.query(
+      // ACTIVE assignees only, with a real address — the same roster notifyAppStaff fans out to.
+      `SELECT DISTINCT su.email
+         FROM application_assignees aa
+         JOIN staff_users su ON su.id = aa.staff_id AND su.is_active = true
+        WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND aa.staff_id IS NOT NULL
+          AND COALESCE(su.email,'') <> ''`, [appId])).rows.map((r) => r.email);
+    let loopIn = [];
+    if (categoryOf(opts.type) === 'draws') {
+      // The coordinator + officer + draws@ desk, exactly as the borrower draw emails loop them in.
+      try { loopIn = await require('./draw-recipients').drawLoopInBcc(appId); } catch (_) { /* best-effort */ }
+    }
+    recipients = _staffThreadRecipients({ assignees, loopIn, explicit: Array.isArray(opts.to) ? opts.to : [] });
+  } catch (e) {
+    console.error('[notify] app-staff-thread recipients', appId, (e && e.message) || e);
+  }
+
+  let emailed = false;
+  if (recipients.length) {
+    try {
+      const ctx = await fileContext(appId).catch(() => null);
+      // Enrich + build through the SAME path notifyAdmins uses to send one email to a fixed list,
+      // so the file subject tag, the kicker and the money block (figures/facts) all render.
+      const enriched = await enrichFileOpts({ ...shared, _fileCtx: ctx || undefined }, 'staff');
+      const msg = buildEmail(enriched, 'staff');
+      _track(email.sendMail({
+        to: recipients,
+        subject: msg.subject, text: msg.text, html: msg.html,
+        replyTo: opts.replyTo || fileReplyTo(appId) || cfg.replyToDefault || null,
+      }).catch(() => {}));
+      emailed = true;
+    } catch (e) {
+      console.error('[notify] app-staff-thread send', appId, (e && e.message) || e);
+    }
+  }
+
+  // In-app rows for every assignee (feed + mute settings + coverage answer). Its email is
+  // suppressed only when the one shared email actually went — otherwise it emails as the fallback.
+  const staff = await notifyAppStaff(appId, { ...shared, inAppOnly: emailed });
+  return { emailed, recipients: recipients.length, staff };
+}
+
 /** Notify every active admin (used when an application has no loan officer). */
 async function notifyAdmins(opts) {
   // Enrich once with the file's identity so BOTH the per-admin emails and the
@@ -1100,8 +1227,8 @@ async function notifyAdmins(opts) {
   // point of inAppOnly is "rows yes, emails no" (audit 2026-07-24).
   if (cfg.notifyAdmins.length && opts.inAppOnly !== true) {
     const msg = buildEmail(opts, 'staff');
-    email.sendMail({ to: cfg.notifyAdmins, subject: msg.subject, text: msg.text, html: msg.html,
-      replyTo: opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null }).catch(() => {});
+    _track(email.sendMail({ to: cfg.notifyAdmins, subject: msg.subject, text: msg.text, html: msg.html,
+      replyTo: opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null }).catch(() => {}));
   }
   return ids;
 }
@@ -1121,12 +1248,15 @@ async function fileContext(appId, extraMeta = []) {
     const r = await db.query(
       `SELECT a.ys_loan_number, a.property_address, a.program, a.loan_type, a.status,
               a.purchase_price, a.arv, a.rehab_budget, a.loan_amount,
+              a.lender,
               b.first_name, b.last_name, b.email, b.cell_phone,
               lo.full_name AS lo_name, lo.title AS lo_title, lo.email AS lo_email,
-              lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls
+              lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls,
+              pr.full_name AS proc_name, pr.email AS proc_email
          FROM applications a
          JOIN borrowers b ON b.id=a.borrower_id
          LEFT JOIN staff_users lo ON lo.id=a.loan_officer_id AND lo.is_active=true
+         LEFT JOIN staff_users pr ON pr.id=a.processor_id AND pr.is_active=true
         WHERE a.id=$1`, [appId]);
     const a = r.rows[0];
     if (!a) return null;
@@ -1154,6 +1284,22 @@ async function fileContext(appId, extraMeta = []) {
       a.arv != null ? { label: 'ARV', value: money(a.arv) } : null,
       a.rehab_budget != null ? { label: 'Rehab budget', value: money(a.rehab_budget) } : null,
       a.loan_amount != null ? { label: 'Loan amount', value: money(a.loan_amount) } : null,
+      // WHO IS ON THIS FILE — owner-directed 2026-08-07, on the Workflow hand-off email: *"it
+      // should say in the email who the loan officer on the file is and who the note buyer on the
+      // file is."* A processor picking up a hand-off had no way to tell either from the email, and
+      // both are already on the row this query reads. STAFF meta only — `borrowerMeta` is built
+      // separately below and never receives these.
+      //
+      // THE NOTE BUYER IS DELIBERATELY *NOT* HERE, and that is the whole lesson of this block: this
+      // is the SHARED identity block, so anything added rides EVERY staff email on a file — and
+      // several staff surfaces withhold the capital-partner name ON PURPOSE. The investor draw
+      // reminders speak of "the investor" precisely so the desk can forward one without leaking who
+      // funds the loan (`test-draw-coordinator-reminders-db.js` pins it, and it caught exactly this
+      // when the row was added here). The owner asked for the note buyer on ONE email, so it is
+      // attached to THAT email's own `extraMeta` in `workflow.notifyHandoff` — never to the block
+      // every surface inherits. Put a note-buyer name on a specific email; never on this list.
+      a.lo_name ? { label: 'Loan officer', value: [a.lo_name, a.lo_email].filter(Boolean).join(' · ') } : null,
+      a.proc_name ? { label: 'Processor', value: [a.proc_name, a.proc_email].filter(Boolean).join(' · ') } : null,
       ...extraMeta,
     ].filter(Boolean);
     // Borrower-safe identity block: a clean "which file" summary (no internal
@@ -1200,4 +1346,4 @@ async function fileContext(appId, extraMeta = []) {
   } catch (_) { return null; }
 }
 
-module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAppThread, deliveredCount, notifyAdmins, buildEmail, fileContext, injectOpenPixel, NOTIFY_CATEGORIES, ALWAYS_IN_APP, categoryEmailsByDefault, drainEmails };
+module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAppThread, notifyAppStaffThread, _staffThreadRecipients, deliveredCount, notifyAdmins, buildEmail, fileContext, injectOpenPixel, NOTIFY_CATEGORIES, ALWAYS_IN_APP, categoryEmailsByDefault, drainEmails };

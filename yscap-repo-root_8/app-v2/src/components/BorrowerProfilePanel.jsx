@@ -395,9 +395,14 @@ export function PortalAccessRow({ b, onChanged }) {
     setBusy(true); setErr(''); setMsg('');
     try {
       const r = await api.staffBorrowerInvite(b.id);
+      // `noFile`: no loan file behind this invitation, so the borrower is being
+      // invited to START one (owner-directed 2026-08-07). Say so, or "Invitation
+      // emailed" reads as "invited to a file" and nobody knows which.
       setMsg(r && r.hasAccount
-        ? 'Sign-in link emailed — they already have a portal login.'
-        : 'Invitation emailed.');
+        ? (r.noFile ? 'Sign-in link emailed — they already have a login and can start an application.'
+                    : 'Sign-in link emailed — they already have a portal login.')
+        : (r && r.noFile ? 'Invitation emailed — they can start an application from the portal.'
+                         : 'Invitation emailed.'));
       if (onChanged) await onChanged();
     } catch (e) { setErr(e.message || 'Could not send the invitation.'); }
     finally { setBusy(false); }

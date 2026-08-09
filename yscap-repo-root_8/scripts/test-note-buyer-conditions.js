@@ -46,9 +46,9 @@ const emdCount = async (appId) => (await db.query(
       `INSERT INTO borrowers (first_name,last_name,email) VALUES ('NB','Test',$1) RETURNING id`,
       [`nb-${sfx}@test.local`])).rows[0].id;
 
-    // (2) EMD condition attaches for CorrFirst only.
+    // (2) EMD condition attaches for a CorrFirst PURCHASE only (db/475 — no deposit on a refinance).
     const cf = (await db.query(
-      `INSERT INTO applications (borrower_id,status,lender) VALUES ($1,'processing','CorrFirst') RETURNING id`, [borrowerId])).rows[0].id;
+      `INSERT INTO applications (borrower_id,status,lender,loan_type) VALUES ($1,'processing','CorrFirst','Purchase') RETURNING id`, [borrowerId])).rows[0].id;
     await engine.evaluateApplication(cf, { reason: 'test', notify: false });
     const emd = (await db.query(
       `SELECT ci.audience, ci.item_kind, ci.borrower_label, ci.origin_kind FROM checklist_items ci

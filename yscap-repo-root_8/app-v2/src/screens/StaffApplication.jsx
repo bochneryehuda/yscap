@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { showMessage } from '../lib/dialog.js';
 import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
@@ -37,20 +38,23 @@ import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection, requestConditionsTab, requestAppDetailTab, subscribeAppDetailTab, setSectionResolver, revealAnchor } from '../components/FileSections.jsx';
 import { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, resolveSection, whereDidItGo } from '../lib/stations.js';
-import { captureScrollAnchor, keepAnchored, keepTabPlace, parkScroll, restoreScrollAnchor, unparkScroll } from '../lib/keep-scroll.js';
+import { captureScrollAnchor, keepAnchored, keepTabPlace, parkScroll, restoreScrollAnchor, unparkScroll, nearestFileSectionId } from '../lib/keep-scroll.js';
+import { readStation, readSection, writeStation, savePlace } from '../lib/file-place.js';
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
 import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp, audienceLabel } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
 import { groupBySubject, subjectOf } from '../lib/condition-subjects.js';
 import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
 import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
-import ConditionLine, { ConditionNote, NoteBuyerMark } from '../components/ConditionLine.jsx';
+import ConditionLine, { ConditionNote, NoteBuyerMark, ConditionCollapse } from '../components/ConditionLine.jsx';
 import UspsAddressVerification from '../components/UspsAddressVerification.jsx';
 import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
+import GuarantyWaiverCard from '../components/GuarantyWaiverCard.jsx';
 import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
+import AmcAppraisalPanel from '../components/AmcAppraisalPanel.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import EncompassSyncPanel from '../components/EncompassSyncPanel.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
@@ -1510,14 +1514,18 @@ function ConditionOrderButton({ appId, it, role, onChanged }) {
   );
 }
 
-function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false }) {
+function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false, onRequestWaiver, expanded = false, onToggleExpand }) {
   const [open, setOpen] = useState(false);
   // EVERY condition is a compact line until you open it (owner-directed
   // 2026-07-28: "one compact line each, click to open the one you're working").
-  // It used to collapse only once YOUR role-action was done, so a file's whole
-  // list rendered fully expanded — 24 conditions measured 8,116px, over seven
-  // screens. `expandOverride` is still the per-row manual override on top.
-  const [expandOverride, setExpandOverride] = useState(null);   // null = automatic (shut)
+  //
+  // OPEN/SHUT IS THE PARENT'S `expandedConds`, NOT LOCAL STATE (2026-08-07). This
+  // row used to keep its own `expandOverride`, so the list ran on TWO collapse
+  // stores — the internal rows on this one, every other row on the parent's Set.
+  // That is the same root as the wandering Collapse button: two stores cannot help
+  // but behave differently, and they did (full screen opened both but restored only
+  // one on the way out, and no "open/close everything" could ever reach these
+  // rows). One Set now owns every row on the file.
   const signed = !!it.signed_off_at;
   // No `completer` here any more — who may do what is decided inside the shared
   // action bar (components/ConditionActions), so this row cannot answer that
@@ -1534,16 +1542,16 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   const itemDocs = (isDoc && docs)
     ? docs.filter(d => d.checklist_item_id === it.id && d.is_current && d.source_type !== 'chat_attachment')
     : [];
-  // In full screen everything opens by default (owner-directed); the per-row
-  // manual override still wins, so you can collapse an internal condition by hand.
-  const collapsed = expandOverride === null ? !fullscreen : !expandOverride;
-  if (collapsed) {
+  // Full screen opens everything — the parent seeds `expandedConds` with every
+  // visible row on the way in and restores the normal state on the way out, so an
+  // internal condition now behaves exactly like every other one.
+  if (!expanded) {
     return (
       // data-keep-scroll: a stable handle so a refresh can put this row back
       // exactly where it was on screen (lib/keep-scroll.js).
       <div className="checkitem" data-keep-scroll={`item-${it.id}`} style={{ padding: '2px 10px' }}>
         <ConditionLine it={it} role={role} docs={itemDocs} open={false} done={myDone}
-          onToggle={() => setExpandOverride(true)} onPatch={onPatch} />
+          onToggle={onToggleExpand} onPatch={onPatch} />
       </div>
     );
   }
@@ -1594,6 +1602,8 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
             </pre>
           )}
         </div>
+        {/* Top-right, always — the ONE shared control (components/ConditionLine). */}
+        <ConditionCollapse onToggle={onToggleExpand} />
       </div>
 
       {it.template_code === 'rtl_cond_credit' && (
@@ -1749,12 +1759,12 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
       )}
 
       {/* ONE next step, everything else behind More — the shared bar, so this
-          row and the borrower-facing one can never drift again. */}
+          row and the borrower-facing one can never drift again. Collapse is NOT in
+          here: it is a view control, not an action on the loan, and mixing the two
+          is what put it at the bottom of this one row and nowhere else. */}
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
         <ConditionActions it={it} role={role} team={team} onPatch={onPatch}
-          docs={itemDocs} size="" />
-        {myDone && <button className="btn link small" style={{ marginLeft: 'auto', flex: 'none' }}
-          onClick={() => setExpandOverride(false)}>Collapse</button>}
+          docs={itemDocs} size="" onRequestWaiver={onRequestWaiver} />
       </div>
       <ConditionNote it={it} onPatch={onPatch} />
     </div>
@@ -2173,15 +2183,27 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                     )}
                     {appId && (
                       <button className="btn ghost small" disabled={busy === l.id}
-                        title="Post a request/issue about this entity — it becomes a named condition on this file that the borrower can respond to"
+                        title="Flag an internal issue about this entity for the team to review — the borrower is NOT notified"
                         onClick={async () => {
-                          const reason = window.prompt(`Raise an issue on "${l.llc_name}" — what do you need? (the borrower will see this)`);
+                          const reason = window.prompt(`Raise an internal issue about "${l.llc_name}" — what's the concern?\n\nThis is INTERNAL only: the borrower is NOT notified. Use "Post a condition" if you need the borrower to act.`);
                           if (reason == null || !reason.trim()) return;
                           setBusy(l.id); setErr(''); setMsg('');
-                          try { await api.staffRaiseLlcIssue(l.id, appId, reason.trim()); setMsg(`Issue raised on ${l.llc_name} — added as a condition on this file.`); onChanged && onChanged(); }
+                          try { await api.staffRaiseLlcIssue(l.id, appId, reason.trim()); setMsg(`Issue raised on ${l.llc_name} — recorded internally for review (the borrower was not notified).`); onChanged && onChanged(); }
                           catch (e) { setErr(e.message || 'Could not raise the issue'); }
                           finally { setBusy(''); }
                         }}>Raise an issue</button>
+                    )}
+                    {appId && (
+                      <button className="btn ghost small" disabled={busy === l.id}
+                        title="Post a borrower-facing condition on THIS loan about this entity — the borrower is notified"
+                        onClick={async () => {
+                          const reason = window.prompt(`Post a condition on this loan about the entity "${l.llc_name}" — what does the borrower need to provide?\n\nThe borrower WILL be notified.`);
+                          if (reason == null || !reason.trim()) return;
+                          setBusy(l.id); setErr(''); setMsg('');
+                          try { await api.staffRaiseLlcIssue(l.id, appId, reason.trim(), true); setMsg(`Condition posted about ${l.llc_name} — the borrower was notified.`); onChanged && onChanged(); }
+                          catch (e) { setErr(e.message || 'Could not post the condition'); }
+                          finally { setBusy(''); }
+                        }}>Post a condition</button>
                     )}
                   </div>
                 </div>
@@ -2658,15 +2680,25 @@ function StaffTrackRecordPanel({ app, role }) {
                       finally { setTrBusy(''); }
                     }}>Request a document</button>
                   <button className="btn ghost small" disabled={trBusy === t.id}
-                    title="Post a request/issue about this past project — it becomes a condition on this file"
+                    title="Flag an internal issue about this past project for the team to review — the borrower is NOT notified and no borrower condition is posted"
                     onClick={async () => {
-                      const reason = window.prompt(`Raise an issue on "${addr}" — what do you need? (the borrower will see this)`);
+                      const reason = window.prompt(`Raise an internal issue about "${addr}" — what's the concern?\n\nThis is INTERNAL only: the borrower is NOT notified. Use "Post a condition" if you need the borrower to act.`);
                       if (reason == null || !reason.trim()) return;
                       setTrBusy(t.id); setTrMsg('');
-                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — added as a condition on this file.`); reloadAll(); }
+                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — recorded internally for review (the borrower was not notified).`); reloadAll(); }
                       catch (e) { setTrMsg(e.message || 'Could not raise the issue'); }
                       finally { setTrBusy(''); }
                     }}>Raise an issue</button>
+                  <button className="btn ghost small" disabled={trBusy === t.id}
+                    title="Post a borrower-facing condition on THIS loan about this past project — the borrower is notified"
+                    onClick={async () => {
+                      const reason = window.prompt(`Post a condition on this loan about the track-record property "${addr}" — what does the borrower need to provide?\n\nThe borrower WILL be notified. It appears on their loan as a track-record item (never as a condition on ${addr}).`);
+                      if (reason == null || !reason.trim()) return;
+                      setTrBusy(t.id); setTrMsg('');
+                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim(), true); setTrMsg(`Condition posted about ${addr} — the borrower was notified.`); reloadAll(); }
+                      catch (e) { setTrMsg(e.message || 'Could not post the condition'); }
+                      finally { setTrBusy(''); }
+                    }}>Post a condition</button>
                 </div>
                 {openReqs.map(rq => (
                   <div className="row" key={rq.id} style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '2px 0 2px 18px' }}>
@@ -3002,14 +3034,14 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
           <label><span>Middle name <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional)</span></span>
             <input className="input" value={f.middleName} onChange={e => setF({ ...f, middleName: e.target.value })} /></label>
           <label><span>Last name</span><input className="input" value={f.lastName} onChange={e => setF({ ...f, lastName: e.target.value })} /></label>
-          <label style={{ gridColumn: '1 / -1' }}><span>Email</span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
+          <label style={{ gridColumn: '1 / -1' }}><span>Email <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional — needed later to invite or sign)</span></span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
           <label><span>Phone</span><PhoneInput value={f.phone} onChange={v => setF({ ...f, phone: v })} /></label>
           <label><span>Date of birth</span><input className="input" type="date" value={f.dob} onChange={e => setF({ ...f, dob: e.target.value })} /></label>
           <label style={{ gridColumn: '1 / -1' }}><span>SSN (stored encrypted)</span><input className="input" inputMode="numeric" value={f.ssn} onChange={e => setF({ ...f, ssn: formatSSN(e.target.value) })} placeholder="XXX-XX-XXXX" /></label>
         </div>
         {err && <div role="alert" className="notice err" style={{ marginTop: 6 }}>{err}</div>}
         <div className="row" style={{ gap: 8, marginTop: 8 }}>
-          <button className="btn primary small" onClick={save} disabled={busy || !f.firstName.trim() || !f.lastName.trim() || !f.email.trim()}>{busy ? 'Saving…' : 'Save co-borrower'}</button>
+          <button className="btn primary small" onClick={save} disabled={busy || !f.firstName.trim() || !f.lastName.trim()}>{busy ? 'Saving…' : 'Save co-borrower'}</button>
           <button className="btn ghost small" onClick={() => { setAdding(false); setErr(''); }}>Cancel</button>
         </div>
         </>}
@@ -3178,7 +3210,64 @@ function PersonalNameWaiver({ appId, app, onChanged }) {
   );
 }
 
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, team, canImportCredit, fullscreen = false, closingActive = false }) {
+// Which conditions a person may hand-delete: only the MANUALLY-added ones
+// (owner-directed 2026-08-04). Auto/rules/system conditions are engine-owned.
+const MANUAL_CONDITION_ORIGINS = ['manual_custom', 'manual_library', 'exception'];
+const isManualCondition = (it) => MANUAL_CONDITION_ORIGINS.includes(it && it.origin_kind);
+
+// Delete a manual condition. The adder / an admin succeeds; anyone else gets a
+// 403 and is offered to ASK the adder to delete it (the server records the request
+// and notifies them). The server is the sole authority — the client just tries.
+function ManualConditionDelete({ it, appId, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  if (!isManualCondition(it)) return null;
+  async function doDelete() {
+    if (!window.confirm(`Delete "${it.label}"? This removes the condition from the file.`)) return;
+    setBusy(true);
+    try {
+      await api.staffDeleteCondition(appId, it.id);
+      onChanged && onChanged();
+    } catch (e) {
+      if (e && e.status === 403 && e.data && e.data.code === 'needs_delete_request') {
+        const who = e.data.creatorName || 'the person who added it';
+        if (window.confirm(`Only ${who} can delete this condition (they added it). Ask them to delete it?`)) {
+          const reason = window.prompt('Add a short note for them (optional):', '') || '';
+          try { await api.staffRequestDeleteCondition(appId, it.id, reason); onChanged && onChanged(); showMessage(`Asked ${who} to delete it. They'll get a prompt.`); }
+          catch (_) { showMessage('Could not send the request.'); }
+        }
+      } else {
+        showMessage((e && e.message) || 'Could not delete the condition.');
+      }
+    } finally { setBusy(false); }
+  }
+  return (
+    <button className="btn link small" style={{ marginLeft: 8, color: '#b3261e' }} disabled={busy} onClick={doDelete}>
+      {busy ? 'Working…' : 'Delete'}
+    </button>
+  );
+}
+
+// The prompt the ADDER sees when someone asked them to delete a condition. They
+// can delete it (they are the adder, so the server allows it) or keep it.
+function DeleteRequestBanner({ it, appId, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  if (!it || !it.delete_requested_by) return null;
+  const who = it.delete_requested_by_name || 'A teammate';
+  async function del() { setBusy(true); try { await api.staffDeleteCondition(appId, it.id); onChanged && onChanged(); } catch (e) { showMessage((e && e.message) || 'Could not delete it.'); } finally { setBusy(false); } }
+  async function keep() { setBusy(true); try { await api.staffDismissDeleteRequest(appId, it.id); onChanged && onChanged(); } catch (_) {} finally { setBusy(false); } }
+  return (
+    <div className="notice" style={{ marginTop: 6, borderLeft: '3px solid var(--gold)', padding: '6px 10px', background: 'rgba(174,135,70,0.06)' }}>
+      <b style={{ color: '#141B22' }}>{who} asked to delete this condition.</b>
+      {it.delete_request_reason ? <span style={{ color: '#4B585C' }}> — “{it.delete_request_reason}”</span> : null}
+      <div style={{ marginTop: 4, display: 'flex', gap: 8 }}>
+        <button className="btn small" disabled={busy} onClick={del}>Delete it</button>
+        <button className="btn ghost small" disabled={busy} onClick={keep}>Keep it</button>
+      </div>
+    </div>
+  );
+}
+
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, onRequestWaiver, team, canImportCredit, fullscreen = false, closingActive = false }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [trOpen, setTrOpen] = useState(null);    // track record open full-screen (staff): holds the borrower id, or null
@@ -3268,7 +3357,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
     if (card) { setCard(null); return; }
     setCardBusy(true);
     try { setCard(await api.staffAppraisalCard(appId)); }
-    catch (e) { alert(e.message || 'No card on file yet.'); }
+    catch (e) { showMessage(e.message || 'No card on file yet.'); }
     finally { setCardBusy(false); }
   }
   const docsFor = (itemId) => docs.filter(d => d.checklist_item_id === itemId && d.is_current && d.source_type !== 'chat_attachment');
@@ -3462,8 +3551,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   : app.llc_id ? <span className="pill">In progress</span>
                     : app.personal_name_purchase ? <span className="pill ok">Individual — no entity</span>
                       : <span className="pill">No entity linked</span>}
-                <div className="spacer" />
-                <button className="btn link small" onClick={() => toggleCond('__llc')}>Collapse</button>
+                {/* Top-right, always — the ONE shared control (components/ConditionLine). */}
+                <ConditionCollapse onToggle={() => toggleCond('__llc')} />
               </div>
               <div className="muted small">
                 {app.personal_name_purchase && !app.llc_id
@@ -3516,7 +3605,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               <Item key={it.id} it={it} team={team} onPatch={onPatch} role={role}
                 docs={docs} onUploadTo={onUploadTo} onDropTo={onDropTo} onReviewDoc={onReviewDoc}
                 onDownloadDoc={onDownloadDoc} dlBusy={dlBusy} onPreview={onPreview} appId={appId}
-                onChanged={onChanged} canImportCredit={canImportCredit} fullscreen={fullscreen} />
+                onChanged={onChanged} canImportCredit={canImportCredit} fullscreen={fullscreen}
+                onRequestWaiver={onRequestWaiver}
+                expanded={expandedConds.has(it.id)} onToggleExpand={() => toggleCond(it.id)} />
             );
         const itemDocs = docsFor(it.id);
         const signed = !!it.signed_off_at;
@@ -3531,6 +3622,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
             <div className="checkitem" key={it.id} data-keep-scroll={`cond-${it.id}`} style={{ padding: '2px 10px' }}>
               <ConditionLine it={it} role={role} docs={itemDocs} open={false} done={rowDone}
                 onToggle={() => toggleCond(it.id)} onPatch={onPatch} />
+              {/* A pending "please delete" request shows even on the collapsed row,
+                  so the adder notices it without opening the condition. */}
+              <DeleteRequestBanner it={it} appId={appId} onChanged={onChanged} />
             </div>
           );
         }
@@ -3562,9 +3656,10 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                     <span className="pill" style={{ marginLeft: 8, borderColor: 'var(--gold)', color: 'var(--gold)' }}
                       title={(it.origin_detail && it.origin_detail.rule) ? `Added automatically — applies when: ${it.origin_detail.rule}` : 'Added automatically by a condition rule'}>Auto</span>
                   )}
-                  {/* Always offered — every row opens now, so every row must close. */}
-                  <button className="btn link small" style={{ marginLeft: 8 }} onClick={() => toggleCond(it.id)}>Collapse</button>
+                  {/* Delete a manually-added condition (owner-directed 2026-08-04). */}
+                  <ManualConditionDelete it={it} appId={appId} onChanged={onChanged} />
                 </div>
+                <DeleteRequestBanner it={it} appId={appId} onChanged={onChanged} />
                 {it.pilot_advice && (
                   <div style={{ marginTop: 5 }}><PilotAdvice it={it} /></div>
                 )}
@@ -3735,7 +3830,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   canSendBack is forced on: these rows are the borrower's list,
                   so sending one back is always a real option here. */}
               <ConditionActions it={it} role={role} team={team} onPatch={onPatch}
-                docs={itemDocs} canSendBack />
+                docs={itemDocs} canSendBack onRequestWaiver={onRequestWaiver} />
+              {/* Top-right, always — the ONE shared control (components/ConditionLine). */}
+              <ConditionCollapse onToggle={() => toggleCond(it.id)} />
             </div>
             {(it.issue_reason || it.rejection_reason) && (
               <div className="small" style={{ color: 'var(--danger)', paddingLeft: 20 }}>Sent back: {it.issue_reason || it.rejection_reason}</div>
@@ -4207,6 +4304,28 @@ export default function StaffApplication() {
       // NEXT file and scroll it to the top (open A, switch to B within ~650ms).
       return () => { clearTimeout(t); if (inner) clearTimeout(inner); };
     }
+    // A plain REFRESH lands here: no deep link, no ?finding/?focus. The room is
+    // already restored (the [id] effect read it from sessionStorage); if the
+    // reader was scrolled into a specific section, open it and put them back on it.
+    // A remembered NON-trivial place (any section, or a room other than Overview)
+    // wins over the closer's default landing below — a closer who was working a
+    // section should refresh back onto it, not be yanked to Closing. A first-time
+    // open, or "remembered the top of Overview", has nothing meaningful to restore
+    // and falls through so the closer landing still runs.
+    const savedRoom = readStation(id);
+    const savedSec = readSection(id);
+    if (savedRoom && (savedRoom !== 'st-overview' || savedSec)) {
+      if (!savedSec) return;   // remembered only the room; the [id] effect already put them there
+      let inner = null;
+      const t = setTimeout(() => {
+        requestOpenSection(savedSec);   // the section may render collapsed — open it first
+        inner = setTimeout(() => {
+          const el = document.getElementById(savedSec);
+          if (el) el.scrollIntoView({ behavior: 'auto', block: 'start' });
+        }, 120);
+      }, 220);
+      return () => { clearTimeout(t); if (inner) clearTimeout(inner); };
+    }
     // A closer lands on the Closing section by default (owner-directed 2026-07-26)
     // when there's actually a closing to work — a closer on file or a CTC/funded file.
     if (can('manage_closings') && (app.closer_id || ['clear_to_close', 'funded'].includes(app.status))) {
@@ -4447,8 +4566,27 @@ export default function StaffApplication() {
       }
       setErr(msg);
       if (completing) {
-        try { window.alert('Can’t clear this yet:\n\n' + msg); } catch (_) { /* no window */ }
+        try { showMessage('Can’t clear this yet:\n\n' + msg); } catch (_) { /* no window */ }
       }
+    }
+  }
+  // Any staffer may ASK an admin/super-admin to waive a condition (owner-directed
+  // 2026-08-04). Prompts for the reason, files the request; approval (in the
+  // Exceptions box) marks the condition waived.
+  async function requestWaiver(it) {
+    const reason = window.prompt(
+      `Ask an admin to waive this condition:\n\n“${(it && it.label) || 'condition'}”\n\n`
+      + 'Why should it be waived? (an admin/super-admin will review; if approved, it is marked waived)');
+    if (reason == null || !reason.trim()) return;
+    try {
+      const r = await api.requestConditionWaiver(id, it.id, { reasonNote: reason.trim() });
+      if (!r || !r.ok) throw new Error((r && r.error) || 'Could not send the request.');
+      flash('Waiver requested — an admin will review it ✓');
+      await load();
+    } catch (e) {
+      const emsg = (e && e.data && e.data.error) || (e && e.message) || 'Could not send the request.';
+      setErr(emsg);
+      try { showMessage(emsg); } catch (_) { /* no window */ }
     }
   }
   async function downloadDoc(doc) {
@@ -4713,13 +4851,36 @@ export default function StaffApplication() {
      exactly — the rooms code stands aside entirely, incl. the jump resolver. */
   const [fileViewPref, setFileViewPref] = useStickyFilter('fileView', 'rooms');
   const classic = fileViewPref === 'classic';
-  const [activeStation, setActiveStation] = useState('st-overview');
-  // Opening a DIFFERENT file starts at Overview — the component is reused
-  // across /internal/app/:id, so without this file B opened in whatever room
-  // file A was left in (audit 2026-08-02 #3).
-  useEffect(() => { setActiveStation('st-overview'); pendingRevealRef.current = null; }, [id]);
+  // Start in the room the reader was last in ON THIS FILE, so a browser REFRESH
+  // lands them back where they were working — not on Overview (owner-reported).
+  // Per-file (readStation keys on the id), so opening a DIFFERENT file never
+  // inherits this file's room — the guarantee the old hard `st-overview` reset
+  // was there to give (audit 2026-08-02 #3). A file never opened before, or a
+  // fresh tab, has nothing stored and still starts on Overview.
+  const [activeStation, setActiveStation] = useState(() => readStation(id) || 'st-overview');
+  useEffect(() => { setActiveStation(readStation(id) || 'st-overview'); pendingRevealRef.current = null; }, [id]);
   const activeStationRef = useRef(activeStation); activeStationRef.current = activeStation;
   const pendingRevealRef = useRef(null);
+  // Keep the reader's place saved as they scroll (room + the section they're
+  // reading), so a refresh restores it (see the landing effect below). Debounced
+  // to ~300ms after scrolling STOPS — one sessionStorage write per scroll burst,
+  // never per frame. A pure courtesy: it never throws and does nothing in classic
+  // view (no rooms to restore there).
+  useEffect(() => {
+    if (classic) return undefined;
+    let t = null;
+    const onScroll = () => {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => {
+        t = null;
+        savePlace(idRef.current, { station: activeStationRef.current, section: nearestFileSectionId() || '' });
+      }, 300);
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => { window.removeEventListener('scroll', onScroll); if (t) clearTimeout(t); };
+    // Re-arm on file change too, so a pending save from the previous file's
+    // scroll can't fire against the new one.
+  }, [classic, id]);
   // Permission-gated rooms vanish exactly as their sections do today; a deep
   // link into a hidden room stays a silent no-op (parity with today).
   const stationEnabled = useCallback((stId) => {
@@ -4768,6 +4929,27 @@ export default function StaffApplication() {
       setTimeout(poll, 120);
     }
   }, [setCommTab]);
+  // The E-sign Send button calls this to FINALIZE the term sheet (owner-directed
+  // 2026-08-04). The studio (ProductStudioPanel) mounts only while sec-pricing is
+  // open and its imperative ref lands a beat later — so open the section, poll for
+  // the ref, then drive its finalizeTermSheet(). Degrades to a clear message if the
+  // studio never mounts. Returns a { ok, reason } promise the caller shows/acts on.
+  const finalizeTermSheetBridge = useCallback(() => new Promise((resolve) => {
+    requestOpenSection('sec-pricing');
+    let tries = 0;
+    const poll = () => {
+      const ref = studioRef.current;
+      if (ref && typeof ref.finalizeTermSheet === 'function') {
+        Promise.resolve(ref.finalizeTermSheet())
+          .then((r) => resolve(r || { ok: false, reason: 'Could not finalize the term sheet.' }))
+          .catch((e) => resolve({ ok: false, reason: (e && e.message) || 'Could not finalize the term sheet.' }));
+        return;
+      }
+      if (++tries < 120) { setTimeout(poll, 50); return; }
+      resolve({ ok: false, reason: 'Open Products & Pricing and re-register to attach the final term sheet.' });
+    };
+    setTimeout(poll, 120);
+  }), []);
   // Flush a queued jump once the newly-active room's sections have mounted.
   useEffect(() => {
     const t = pendingRevealRef.current;
@@ -4808,11 +4990,13 @@ export default function StaffApplication() {
       }
       pendingRevealRef.current = target;
       setActiveStation(st);
+      writeStation(idRef.current, st);   // remember the room for a refresh
       return true;
     });
   }, [classic, stationEnabled, runReveal]);
   // A rail click: switch rooms and start at the top of the new room.
   const goStation = useCallback((stId) => {
+    writeStation(idRef.current, stId);   // remember the room (and clear the section) for a refresh
     if (stId === activeStationRef.current) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
     pendingRevealRef.current = null;
     setActiveStation(stId);
@@ -4827,6 +5011,7 @@ export default function StaffApplication() {
     if (!classic && activeStationRef.current !== 'st-deal') {
       pendingRevealRef.current = t;
       setActiveStation('st-deal');
+      writeStation(idRef.current, 'st-deal');   // remember the room for a refresh
       return;
     }
     runReveal(t);
@@ -5021,6 +5206,7 @@ export default function StaffApplication() {
     'sec-esign': line(...openHere('sec-esign')),
     'sec-order-title': line(nTitleToAssign ? `${plural(nTitleToAssign, 'return')} to assign` : 'Nothing waiting to be assigned'),
     'sec-order-insurance': line(nInsToAssign ? `${plural(nInsToAssign, 'return')} to assign` : 'Nothing waiting to be assigned'),
+    'sec-order-appraisal': line('Order the appraisal directly from the AMC'),
     'sec-order-closing': line(nClosingDocs ? `${plural(nClosingDocs, 'document')} on the closing chain` : 'Nothing on the closing chain yet'),
     // The header badge already carries the file COUNT, so the line must not
     // repeat it — a summary that echoes the badge is noise. It speaks only when
@@ -5065,6 +5251,7 @@ export default function StaffApplication() {
       badge: nTitleToAssign ? `${nTitleToAssign} to assign` : '' },
     { id: 'sec-order-insurance', label: 'Insurance', group: 'Orders',
       badge: nInsToAssign ? `${nInsToAssign} to assign` : '' },
+    { id: 'sec-order-appraisal', label: 'Appraisal', group: 'Orders', badge: '' },
     { id: 'sec-order-closing', label: 'Attorney closing prep', group: 'Orders', badge: '' },
     // E-signatures BEFORE closing (owner-directed 2026-08-02).
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & closing' },
@@ -5598,6 +5785,11 @@ export default function StaffApplication() {
           under Structure & pricing (most exceptions are pricing exceptions). */}
       <Section hidden={!show('sec-exceptions')} id="sec-exceptions" title="Exceptions" defaultOpen={false}
         info="Every exception to loan policy on this file — asked for, granted, denied, or recorded — with its EX-number, validity, and whether the deal has changed since. Granted exceptions ride onto the decision certificate and the register export automatically.">
+        {/* The personal-guaranty status + co-borrower guaranty-waiver REQUEST live
+            HERE now (owner-directed 2026-08-06: "remove it from Products & Pricing,
+            add it to the general request & exceptions area"). Self-hides with no
+            co-borrower. The approve side already lives in the Exceptions box. */}
+        <GuarantyWaiverCard appId={id} />
         <ExceptionRegisterCard appId={id} canSeeBox={can('manage_pricing') || role === 'super_admin'} />
       </Section>
 
@@ -5656,7 +5848,7 @@ export default function StaffApplication() {
           closingActive={!!app.closer_id || ['clear_to_close', 'funded'].includes(app.status)}
           onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
           onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
-          onOpenStudio={openStudioAnywhere} />
+          onOpenStudio={openStudioAnywhere} onRequestWaiver={requestWaiver} />
         <StaffChangeRequests appId={id} onChanged={load} />
         <FileContacts appId={id} isStaff heading="File contacts (realtor, attorney, title, insurance, contractor…)" />
         <div className="stack" style={{ marginTop: 14 }}>
@@ -5775,6 +5967,11 @@ export default function StaffApplication() {
       <OrdersPanel appId={id} canAccept={canComplete(role)} only="insurance" />
       </Section>
 
+      <Section hidden={!show('sec-order-appraisal')} id="sec-order-appraisal" summary={summaries['sec-order-appraisal']} title="Appraisal"
+        info="Order the appraisal directly from the AMC (AppraisalScope) with every field filled in and the right form picked automatically. Track its status, message the AMC back and forth, request revisions or dispute the value (ROV) with comps from the Property Research Center, and send documents up. Turns on once the CoreLogic login is set up.">
+      <AmcAppraisalPanel appId={id} />
+      </Section>
+
       <Section hidden={!show('sec-order-closing')} id="sec-order-closing" summary={summaries['sec-order-closing']} title="Attorney closing prep"
         info="Send the closing attorney the file for closing prep, with the package of documents attached. Everything that goes back and forth on that chain — from the attorney, title, the settlement agent — files here as the file's closing correspondence.">
       <OrdersPanel appId={id} canAccept={canComplete(role)} only="closing" />
@@ -5782,7 +5979,7 @@ export default function StaffApplication() {
 
       <Section hidden={!show('sec-esign')} id="sec-esign" summary={summaries['sec-esign']} title="E-signatures" defaultOpen={false}
         info="Send and track the term-sheet package and Heter Iska, with live per-signer status, resend, void, re-issue and downloads.">
-      <EsignFileSection appId={id} role={role} onChanged={load} />
+      <EsignFileSection appId={id} role={role} onChanged={load} onFinalizeTermSheet={finalizeTermSheetBridge} />
       </Section>
       {showClosing && (
         <Section hidden={!show('sec-closing')} id="sec-closing" summary={summaries['sec-closing']} title="Closing" defaultOpen={false}
@@ -6044,7 +6241,7 @@ function TprExport({ appId }) {
   async function download() {
     setBusy(true);
     try { const { blob, filename } = await api.staffTprExport(appId); saveBlob(blob, filename || 'TPR_export.zip'); }
-    catch (e) { alert(e.message || 'Export failed'); }
+    catch (e) { showMessage(e.message || 'Export failed'); }
     finally { setBusy(false); }
   }
   return (
@@ -6130,9 +6327,9 @@ function TapeExport({ appId }) {
       const q = await api.staffTapeQuestions(appId, tapeKey);
       const questions = (q && q.questions) || [];
       const seasoned = q && q.seasoned && q.seasoned.isSeasoned ? q.seasoned : null;
-      if (questions.length || seasoned) { setPending({ tapeKey, name, questions, seasoned }); setBusy(null); return; }
+      if (questions.length || seasoned) { setPending({ tapeKey, name, questions, seasoned, supplementalMissing: (q && q.supplementalMissing) || 0 }); setBusy(null); return; }
       await runExport(tapeKey, name, undefined);
-    } catch (e) { alert((e.data && e.data.message) || e.message || 'Export failed'); setBusy(null); }
+    } catch (e) { showMessage((e.data && e.data.message) || e.message || 'Export failed'); setBusy(null); }
   }
   async function runExport(tapeKey, name, answers) {
     setBusy(tapeKey); setMsg('');
@@ -6158,7 +6355,7 @@ function TapeExport({ appId }) {
         setPending(null); setReqOpen(true); load();
         setBusy(null); return;
       }
-      alert(d.message || e.message || 'Export failed');
+      showMessage(d.message || e.message || 'Export failed');
     }
     finally { setBusy(null); }
   }
@@ -6291,7 +6488,11 @@ function TapeExport({ appId }) {
       {pending && (
         <TapeQuestionsModal
           title={pending.questions.length ? `${pending.name} tape — a few details` : `${pending.name} tape — confirm current numbers`}
-          subtitle={pending.questions.length ? "This is a ground-up loan. Fill these in and they'll be saved on the file, so we won't ask again." : undefined}
+          subtitle={pending.questions.length
+            ? (pending.supplementalMissing > 0
+                ? "This is a ground-up loan. Fill in these details — they're saved on the file and pre-filled here every time you export."
+                : "These details are saved on the file and pre-filled here. Review or change anything, then export.")
+            : undefined}
           questions={pending.questions}
           seasoned={pending.seasoned}
           busy={busy === pending.tapeKey}
@@ -6310,7 +6511,7 @@ function MismoExport({ appId }) {
   async function download() {
     setBusy(true);
     try { const { blob, filename } = await api.staffExportMismo(appId); saveBlob(blob, filename || 'MISMO_3.4.xml'); }
-    catch (e) { alert(e.message || 'Export failed'); }
+    catch (e) { showMessage(e.message || 'Export failed'); }
     finally { setBusy(false); }
   }
   return (

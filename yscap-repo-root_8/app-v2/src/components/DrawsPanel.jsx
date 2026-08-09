@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { showMessage } from '../lib/dialog.js';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import EmailCenter from './EmailCenter.jsx';
@@ -26,6 +27,18 @@ const fmtDay = (v) => {   // MM/DD/YYYY (industry standard), shift-free for date
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v));
   const d = m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(v);
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+};
+// Day + time for a full timestamp (a draw step time), day only for a date-only value. For a full
+// timestamp the date is taken from the SAME local moment as the time — not fmtDay's UTC calendar-day
+// extraction — so a near-midnight-UTC value never shows a date that disagrees with its own time.
+const fmtStamp = (v) => {
+  if (!v) return '';
+  const iso = String(v);
+  const hasTime = /T\d/.test(iso) || iso.includes(':');
+  if (!hasTime) return fmtDay(v);   // date-only → shift-free local calendar date
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return fmtDay(v);
+  return `${d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })} · ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 };
 const STATUS = {
   drafting: 'Drafting', pending_borrower: 'With borrower', inspecting: 'Inspecting',
@@ -288,10 +301,15 @@ export default function DrawsPanel({ appId }) {
    PDF files back to the "Signed draw request form" draw condition AND the typed wire details
    are captured here (masked account number). If the wire account name is a NEW entity (not the
    borrower and not the subject LLC), a FATAL operating-agreement condition is opened. */
+// A SHORT verdict for the chip (a pill can't wrap, so it must fit a phone) — the full explanation
+// for a new entity lives in the operating-agreement block right below the card.
 const WIRE_KIND = {
-  borrower_personal: { label: 'Borrower’s personal account', tone: 'on' },
+  borrower_personal: { label: 'Borrower’s account', tone: 'on' },
   subject_llc: { label: 'Subject LLC account', tone: 'on' },
-  new_entity: { label: 'New entity — operating agreement required', tone: 'off' },
+  // A known entity of the borrower (on their profile / library) — not the file's linked
+  // subject LLC, but not an unknown third party either, so no operating agreement is needed.
+  known_entity: { label: 'Borrower’s entity', tone: 'on' },
+  new_entity: { label: 'New entity', tone: 'off' },
   unknown: { label: 'Not provided', tone: 'warn' },
 };
 function DrawRequestCard({ appId }) {
@@ -369,33 +387,59 @@ function DrawRequestCard({ appId }) {
         </div>
       )}
 
-      {/* captured wire instructions (account number masked) */}
+      {/* WIRE INSTRUCTIONS — redesigned (owner-directed 2026-08-05). The account name (where the
+          money goes) leads, with its verdict chip; the bank details sit in a clean grid below. */}
       {wire && (
-        <div className="dd-card" style={{ marginTop: 10, background: 'var(--paper,#f6f3ec)' }}>
-          <div className="row between" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
-            <b>Captured wire instructions</b>
-            <span className={'dd-chip ' + (WIRE_KIND[wire.name_kind] || WIRE_KIND.unknown).tone}><span className="dot" />{(WIRE_KIND[wire.name_kind] || WIRE_KIND.unknown).label}</span>
+        <div className="act-card" style={{ marginTop: 12 }}>
+          <div className="act-card-head">
+            <div style={{ minWidth: 200, flex: 1 }}>
+              <div className="act-card-title">Where this draw’s money goes</div>
+              <div className="act-card-sub">The borrower’s wire instructions, captured from the signed form.</div>
+            </div>
+            <span className={'dd-chip ' + (WIRE_KIND[wire.name_kind] || WIRE_KIND.unknown).tone}>
+              <span className="dot" />{(WIRE_KIND[wire.name_kind] || WIRE_KIND.unknown).label}
+            </span>
           </div>
-          <div style={{ marginTop: 6, display: 'grid', gap: 4, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
-            <WireRow k="Account name" v={wire.account_name} />
-            <WireRow k="Bank" v={wire.bank_name} />
-            <WireRow k="Account number" v={wire.account_number_masked} />
-            <WireRow k="Routing / ABA" v={wire.routing_number} />
-            <WireRow k="Bank address" v={wire.bank_address} />
-            <WireRow k="Account holder address" v={wire.account_address} />
+
+          <div style={{ marginTop: 12 }}>
+            <div className="act-label" style={{ display: 'block' }}>Account name</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>{wire.account_name || '—'}</div>
           </div>
-          {wire.captured_at && <div className="muted small" style={{ marginTop: 6 }}>Captured {fmtDay(wire.captured_at)} from the signed form.</div>}
+
+          <div style={{ marginTop: 12, display: 'grid', gap: '11px 18px', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
+            <WireField k="Bank" v={wire.bank_name} />
+            <WireField k="Account number" v={wire.account_number_masked} mono />
+            <WireField k="Routing / ABA" v={wire.routing_number} mono />
+            <WireField k="Bank address" v={wire.bank_address} />
+            <WireField k="Account holder address" v={wire.account_address} />
+          </div>
+
+          {wire.captured_at && <div className="act-card-sub" style={{ marginTop: 12 }}>Captured {fmtDay(wire.captured_at)} from the signed form.</div>}
         </div>
       )}
 
-      {/* FATAL: new-entity operating-agreement condition */}
-      {oa && !oa.satisfied && (
-        <div className="dd-card" style={{ marginTop: 10, borderLeft: '3px solid var(--bad,#b04a3f)' }}>
-          <b>Operating agreement required before releasing this wire.</b>
-          <div className="dd-sub" style={{ marginTop: 3 }}>The wire account name is a company that isn’t the borrower or the subject LLC. A fatal condition is open to collect that entity’s operating agreement (and confirm its authority to receive funds) before any wire is released.</div>
+      {/* Operating agreement — the new-entity slot + its progress (Task 5) */}
+      {oa && (
+        <div className="act-card" style={{ marginTop: 10, borderLeft: '3px solid ' + (oa.satisfied ? 'var(--success,#2E7A5E)' : 'var(--danger,#A32A2A)') }}>
+          <div className="act-card-title">
+            {oa.satisfied ? 'Operating agreement — collected' : 'Operating agreement required before releasing this wire'}
+          </div>
+          <div className="act-card-sub" style={{ marginTop: 3 }}>
+            {oa.satisfied
+              ? 'The wire entity’s operating agreement has been collected, and the entity is saved to the borrower’s profile for the future.'
+              : 'The wire account name is a company that isn’t the borrower or the subject LLC. Collect that entity’s operating agreement — and confirm its authority to receive funds — before any wire is released.'}
+          </div>
+          {!oa.satisfied && (
+            <div className="act-card-sub" style={{ marginTop: 6 }}>
+              {oa.doc_accepted > 0
+                ? <span style={{ color: 'var(--success,#2E7A5E)' }}>An operating agreement has been accepted — sign off the condition to clear it. It has been saved to the entity on the borrower’s profile.</span>
+                : oa.doc_total > 0
+                  ? <span style={{ color: 'var(--warning,#B07A1E)' }}>An operating agreement is on the condition, waiting to be reviewed.</span>
+                  : <span style={{ color: 'var(--muted)' }}>No operating agreement on file yet — upload it on the condition, or it is pulled automatically if the borrower already has this entity on their profile.</span>}
+            </div>
+          )}
         </div>
       )}
-      {oa && oa.satisfied && <div className="dd-sub" style={{ marginTop: 8, color: 'var(--teal,#2f7f86)' }}>Operating agreement for the wire entity has been collected.</div>}
 
       {/* signed PDF */}
       {d.signed_document && (
@@ -432,11 +476,14 @@ function DrawRequestCard({ appId }) {
     </div>
   );
 }
-function WireRow({ k, v }) {
+// One wire detail — a small uppercase label above the value, so long values (addresses) read
+// cleanly and the grid never has to right-align a wrapping string.
+function WireField({ k, v, mono }) {
   return (
-    <div className="row between" style={{ gap: 8 }}>
-      <span className="muted small">{k}</span>
-      <span className="small" style={{ fontWeight: 600, textAlign: 'right' }}>{v || '—'}</span>
+    <div>
+      <div className="act-label" style={{ display: 'block' }}>{k}</div>
+      <div style={{ fontSize: 14, fontWeight: 600, color: v ? 'var(--text)' : 'var(--muted)', marginTop: 2,
+        fontVariantNumeric: mono ? 'tabular-nums' : undefined, wordBreak: 'break-word' }}>{v || '—'}</div>
     </div>
   );
 }
@@ -1821,6 +1868,36 @@ const DRAW_ACTIONS = (isOpen) => (isOpen ? [
     hint: 'Put an approved draw back into the inspection stage.' },
 ]);
 
+/* The draw's journey as a staged, timestamped path — the draw equivalent of a loan file's status
+   timeline (owner-directed: "a timestamp on every step … a unified status like a loan file's
+   stages"). The resolved shape (each stage done/current/upcoming, with the date it was reached) is
+   built server-side by src/sitewire/draw-timeline.js so the desk never re-derives it. Collapsed by
+   default so it never crowds the card; a stage with no recorded time shows no date, never a guess. */
+function DrawTimeline({ timeline }) {
+  if (!Array.isArray(timeline) || timeline.length === 0) return null;
+  const cur = timeline.find((s) => s.state === 'current');
+  return (
+    <details style={{ marginTop: 10 }}>
+      <summary className="small" style={{ cursor: 'pointer', color: 'var(--muted)', fontWeight: 600 }}>
+        Draw timeline{cur ? ` — ${cur.label}` : ''}
+      </summary>
+      <ol className="timeline" style={{ marginTop: 10 }}>
+        {timeline.map((s) => (
+          <li key={s.stage} className={`tl-step ${s.state}`}>
+            <span className="tl-dot" />
+            <div className="tl-body">
+              <div className="tl-label">{s.label}</div>
+              {s.at
+                ? <div className="muted small">{fmtStamp(s.at)}</div>
+                : (s.state === 'current' ? <div className="muted small">In progress</div> : null)}
+            </div>
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
 function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff, readsOff, quickStatuses }) {
   const offTip = writesOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
   const readTip = readsOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
@@ -1866,6 +1943,8 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
           {draw.final_approved_cents > 0 ? '' : ' This is what the inspector approved — it still needs the borrower’s acceptance, the capital partner’s review and our final approval.'}
         </div>
       )}
+
+      <DrawTimeline timeline={draw.timeline} />
 
       {/* Sitewire pipeline status — the same status control Sitewire's own desk has, per draw */}
       {Array.isArray(quickStatuses) && quickStatuses.length > 0 && (
@@ -1951,7 +2030,7 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
               if (a.needsNote) {
                 note = window.prompt(a.prompt, '');
                 if (note == null) return;                       // cancelled
-                if (String(note).trim().length < 8) { window.alert('Please write at least a few words explaining why — this goes on the file\u2019s audit trail.'); return; }
+                if (String(note).trim().length < 8) { showMessage('Please write at least a few words explaining why — this goes on the file\u2019s audit trail.'); return; }
               }
               act(a.key + draw.sitewire_draw_id, async () => {
                 await api.post(`/api/sitewire/draws/${draw.sitewire_draw_id}/${a.key}`, note ? { note: String(note).trim() } : {});
@@ -1999,6 +2078,7 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
+  const [note, setNote] = useState('');   // optional note for a MANUAL delivery
   const load = useCallback(() => {
     api.get(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`).then(setP).catch(() => {});
   }, [appId, drawId]);
@@ -2015,18 +2095,30 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
 
   async function send() {
     if (!p) return;
-    const who = p.to.join(', ');
-    const modeLine = p.funding_mode === 'reimbursement'
-      ? `They will be asked to REIMBURSE us ${usd2(p.money.investor_total_cents)}.`
-      : `They will be asked to release ${usd2(p.money.to_borrower_cents)} to the borrower and ${usd2(p.money.to_us_cents)} to us.`;
-    if (!window.confirm(`Deliver this draw to ${p.note_buyer}?\n\nTo: ${who}\n\n${modeLine}\n\nThe draw coordinator, the loan officer and draws@yscapgroup.com are copied. The borrower is never included.`)) return;
+    const manual = p.funding_mode === 'manual';
+    let ok;
+    if (manual) {
+      ok = window.confirm(`Record that this draw was delivered to ${p.note_buyer} outside PILOT?\n\nPILOT sends no email — this only records the delivery so the reminders stop.`);
+    } else {
+      const who = p.to.join(', ');
+      const modeLine = p.funding_mode === 'reimbursement'
+        ? `They will be asked to REIMBURSE us ${usd2(p.money.investor_total_cents)}.`
+        : `They will be asked to release ${usd2(p.money.to_borrower_cents)} to the borrower and ${usd2(p.money.to_us_cents)} to us.`;
+      ok = window.confirm(`Deliver this draw to ${p.note_buyer}?\n\nTo: ${who}\n\n${modeLine}\n\nThe draw coordinator, the loan officer and draws@yscapgroup.com are copied. The borrower is never included.`);
+    }
+    if (!ok) return;
     setBusy(true); setErr(''); setMsg('');
     try {
       const r = await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`, {
-        confirm_note_buyer: p.note_buyer, mode: p.funding_mode,
+        confirm_note_buyer: p.note_buyer, mode: p.funding_mode, note: manual ? note : undefined,
       });
-      const missing = (r.skipped || []).length;
-      setMsg(`Delivered to ${p.note_buyer} (${r.to.length} contact${r.to.length === 1 ? '' : 's'}) with ${r.attachments.length} attachment${r.attachments.length === 1 ? '' : 's'}.${missing ? ` ${missing} item(s) could not be attached — see below.` : ''}`);
+      if (r.manual) {
+        setMsg(`Recorded as delivered to ${p.note_buyer} manually — the "deliver to the investor" reminders will stop.`);
+      } else {
+        const missing = (r.skipped || []).length;
+        setMsg(`Delivered to ${p.note_buyer} (${r.to.length} contact${r.to.length === 1 ? '' : 's'}) with ${r.attachments.length} attachment${r.attachments.length === 1 ? '' : 's'}.${missing ? ` ${missing} item(s) could not be attached — see below.` : ''}`);
+      }
+      setNote('');
       load(); reload();
     } catch (e) { setErr(e?.data?.error || 'Could not deliver this draw to the investor.'); }
     finally { setBusy(false); }
@@ -2090,15 +2182,43 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
             </div>
           </div>
 
-          {/* who it goes to */}
-          <div style={{ marginTop: 14 }}>
-            <div className="act-label" style={{ display: 'block', marginBottom: 5 }}>Recipients</div>
-            <div className="act-card-sub" style={{ marginTop: 0 }}>
-              <b style={{ color: 'var(--text)' }}>To</b> {p.to.length ? p.to.join(', ') : <span style={{ color: 'var(--danger,#B4453C)' }}>no investor contacts saved</span>}<br />
-              <b style={{ color: 'var(--text)' }}>Copied</b> {p.cc.join(', ') || '—'}<br />
-              The borrower is never included.
+          {/* who it goes to — or, for a manual delivery, a note field (PILOT sends no email) */}
+          {p.funding_mode === 'manual' ? (
+            <div style={{ marginTop: 14 }}>
+              <div className="act-label" style={{ display: 'block', marginBottom: 5 }}>Manual delivery</div>
+              <div className="act-card-sub" style={{ marginTop: 0, marginBottom: 6 }}>
+                PILOT sends no email in this mode — you deliver this draw to the investor yourself and record it here so the reminders stop.
+              </div>
+              <textarea value={note} onChange={(e) => setNote(e.target.value)} disabled={busy}
+                placeholder="How it was delivered (optional) — e.g. sent through the investor's portal, or by phone" maxLength={2000} rows={2}
+                aria-label="Manual delivery note"
+                style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--hairline,#E4E0D6)', fontSize: 14, color: '#141B22' }} />
             </div>
-          </div>
+          ) : (
+            <div style={{ marginTop: 14 }}>
+              <div className="act-label" style={{ display: 'block', marginBottom: 5 }}>Recipients</div>
+              <div className="act-card-sub" style={{ marginTop: 0 }}>
+                <b style={{ color: 'var(--text)' }}>To</b> {p.to.length ? p.to.join(', ') : <span style={{ color: 'var(--danger,#B4453C)' }}>no investor contacts saved</span>}<br />
+                <b style={{ color: 'var(--text)' }}>Copied</b> {p.cc.join(', ') || '—'}<br />
+                The borrower is never included.
+              </div>
+            </div>
+          )}
+
+          {/* the signed wire form's review state — the investor wires the borrower off it, so it
+              must be reviewed and accepted first (a MANUAL delivery is handled outside PILOT). */}
+          {p.funding_mode !== 'manual' && p.wire_form && (
+            <div className="act-card-sub" style={{ marginTop: 12 }}>
+              <b style={{ color: 'var(--text)' }}>Signed wire form</b>{' '}
+              {p.wire_form.accepted
+                ? <span style={{ color: 'var(--good,#2F7F53)' }}>accepted ✓</span>
+                : !p.wire_form.present
+                  ? <span style={{ color: 'var(--danger,#B4453C)' }}>not signed yet</span>
+                  : p.wire_form.rejectedOnly
+                    ? <span style={{ color: 'var(--danger,#B4453C)' }}>rejected — needs to be re-signed</span>
+                    : <span style={{ color: 'var(--warn,#AE8746)' }}>waiting to be accepted</span>}
+            </div>
+          )}
 
           {p.blockers.length > 0 && (
             <ul className="act-card-sub" style={{ marginTop: 12, color: 'var(--danger,#B4453C)', paddingLeft: 18 }}>
@@ -2108,8 +2228,9 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
 
           <div className="row" style={{ gap: 10, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-sm primary" disabled={busy || !p.can_send} onClick={send}
-              title={p.can_send ? `Deliver this draw to ${p.note_buyer}` : 'Clear the items above first'}>
-              {busy ? 'Sending…' : `Deliver to ${p.note_buyer || 'the investor'}`}
+              title={p.can_send ? (p.funding_mode === 'manual' ? 'Record this draw as delivered manually' : `Deliver this draw to ${p.note_buyer}`) : 'Clear the items above first'}>
+              {busy ? (p.funding_mode === 'manual' ? 'Recording…' : 'Sending…')
+                : p.funding_mode === 'manual' ? 'Record manual delivery' : `Deliver to ${p.note_buyer || 'the investor'}`}
             </button>
             {p.history.length > 0 && (
               <span className="act-card-sub" style={{ marginTop: 0 }}>
@@ -2158,7 +2279,7 @@ function FindingStatus({ appId, finding, reload }) {
   async function recordAgreement() {
     const note = window.prompt('How did the borrower approve this draw?\n\nFor example: "approved by phone with Yehuda 8/3" or "emailed approval, forwarded to the file". This goes on the file’s audit trail.', '');
     if (note == null) return;
-    if (String(note).trim().length < 8) { window.alert('Please write a few words about how the approval arrived — it goes on the file’s audit trail.'); return; }
+    if (String(note).trim().length < 8) { showMessage('Please write a few words about how the approval arrived — it goes on the file’s audit trail.'); return; }
     setRecording(true); setRecErr('');
     try {
       await api.post(`/api/sitewire/files/${appId}/findings/${finding.id}/mark-accepted`, { note: String(note).trim() });

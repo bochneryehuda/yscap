@@ -32,6 +32,8 @@
 const db = require('../db');
 const cfg = require('../config');
 const { applicationIdFromRecipient, UUID_RE } = require('./file-address');
+// The ONE definition of where a reply ends and the quoted history begins.
+const quote = require('./email/quote');
 
 const MAX_BODY = 500 * 1024;   // cap a stored HTML body (a pathological inline-image email won't bloat the row)
 const MAX_TEXT = 200 * 1024;
@@ -89,16 +91,65 @@ function toRecipients(to) {
   return out.filter((r) => r.email && !seen.has(r.email) && seen.add(r.email));
 }
 
-/** Short plain-text snippet for the list row. */
-function previewOf(text, html) {
+/** Short plain-text snippet for the list row. `inbound` strips the quoted history
+    first — a thread's every row showed the same first line of the ORIGINAL message
+    otherwise, because that is what sits at the top of the quote every reply carries
+    (owner-reported 2026-08-07). */
+function previewOf(text, html, inbound) {
   let s = String(text || '');
   if (!s && html) {
-    s = String(html)
+    // Cut on the client's own quote container BEFORE flattening the markup — a
+    // fact rather than a guess about where the history starts.
+    const h = inbound ? quote.splitQuotedHtml(html).reply : html;
+    s = String(h)
       .replace(/<style[\s\S]*?<\/style>/gi, ' ')
       .replace(/<[^>]+>/g, ' ')
       .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
   }
+  if (inbound) s = quote.stripQuoted(s);
   return s.replace(/\s+/g, ' ').trim().slice(0, 240);
+}
+
+/**
+ * SPLIT A STORED INBOUND MESSAGE into what the sender typed and the conversation
+ * quoted underneath it — AT READ TIME, deliberately.
+ *
+ * The stored body is never rewritten: computing this on the way out means every
+ * message ALREADY in the system reads correctly on the next page load (the standing
+ * "previous AND future" rule) with no migration and nothing to back-fill, and the
+ * full original stays on the row for the audit trail and for the day a boundary
+ * pattern turns out to be wrong. Nothing is hidden either — the caller is handed the
+ * quoted half too, so the screen can offer it behind one control.
+ *
+ * @returns {{replyText:string|null, replyHtml:string|null, quotedText:string|null, trimmed:boolean}}
+ */
+function splitStoredBody(row) {
+  const out = { replyText: null, replyHtml: null, quotedText: null, trimmed: false };
+  try {
+    if (!row || row.direction !== 'inbound') return out;
+    if (row.body_html) {
+      const h = quote.splitQuotedHtml(row.body_html);
+      out.replyHtml = h.reply;
+      if (h.trimmed) { out.trimmed = true; out.quotedText = htmlToPlain(h.quoted); }
+    }
+    if (row.body_text) {
+      const t = quote.splitQuoted(row.body_text);
+      out.replyText = t.reply;
+      if (t.trimmed) { out.trimmed = true; out.quotedText = out.quotedText || t.quoted; }
+    }
+  } catch (_) { /* a split that throws must never cost the reader the message */ }
+  return out;
+}
+
+/** Flatten markup for the quoted half's plain-text copy. Deliberately blunt — this
+    is a secondary view of history, not the message being read. */
+function htmlToPlain(h) {
+  return String(h || '')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<(br|\/p|\/div|\/tr|\/blockquote)\b[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim();
 }
 
 /** Derive a file id from an explicit value or from a `file+<uuid>@` reply-to. */
@@ -284,7 +335,7 @@ async function captureInbound(p = {}) {
                      cc_emails = COALESCE(EXCLUDED.cc_emails, email_messages.cc_emails),
                      sender_auth = COALESCE(EXCLUDED.sender_auth, email_messages.sender_auth)`,
       [applicationId, p.threadKey || threadKeyFor(applicationId, subject), p.inboundId || null,
-       from, subject, previewOf(text, html), html, text,
+       from, subject, previewOf(text, html, true), html, text,
        (cfg.emailProvider || null), p.providerId || null, p.status || 'received',
        Object.keys(meta).length ? JSON.stringify(meta) : null,
        p.reconstructed === true, msgType, category,
@@ -429,5 +480,6 @@ module.exports = {
   captureOutbound, captureInbound, renderHistoricalBody,
   ensureFileBackfilled, backfillEmailHistoryOnce,
   normalizeSubject, threadKeyFor, toRecipients, categoryOf, previewOf,
+  splitStoredBody,
   INBOUND_MSG_TYPES,
 };

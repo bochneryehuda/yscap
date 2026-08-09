@@ -155,6 +155,15 @@ const SCENARIO = {
       { program: 'standard', overrides: { ...SCENARIO, manualPricing: true, ovrLTCPct: 92 } });
     assert(rNoMonths.status === 422 && rNoMonths.body.code === 'manual_asset_months_required',
       `a manual program from an LO asks for the liquidity months (got ${rNoMonths.status})`);
+    /* …and SUGGESTS the company default with it. A file created from the Term
+       Sheet Generator carries its manual scenario through to the exception rather
+       than dropping it (owner-directed 2026-08-06: "it should still travel along
+       and wait for the exception as it goes"), and the New-file screen does that
+       by retrying ONCE with this exact number — the company default, which is
+       what the studio prefills the field with, so nothing is invented client-side.
+       Without it that hand-off silently loses the manual product. */
+    assert(Number(rNoMonths.body.suggestedAssetMonths) >= 1 && Number(rNoMonths.body.suggestedAssetMonths) <= 24,
+      `…and suggests the company default months, which the new-file hand-off retries with (got ${JSON.stringify(rNoMonths.body.suggestedAssetMonths)})`);
     const rManual = await call(server, 'POST', reg(appB), loTok,
       { program: 'standard', assetMonths: 3, overrides: { ...SCENARIO, manualPricing: true, ovrLTCPct: 92 } });
     assert(rManual.status === 201, `a loan officer CAN register a manual program (got ${rManual.status} ${JSON.stringify(rManual.body && rManual.body.error || '')})`);

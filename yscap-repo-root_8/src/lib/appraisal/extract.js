@@ -11,7 +11,14 @@
  * Pure + dependency-free. Input is the raw XML string. Output is a plain object.
  */
 const X = require('./xml');
+// The UAD 3.6 / MISMO 3.6 reader. It returns THIS module's output shape (see the contract
+// at the top of extract36.js) and shares this module's downstream helpers, so `extract()`
+// stays the single door every caller already uses.
+const { extract36, COMP_CONTAINERS } = require('./extract36');
 const { splitComps } = require('./comp-grid');
+// The comparable-grid containers, as one namespace-tolerant tag test. Built from the
+// 3.6 reader's list, which is a superset of the 2.6 spellings.
+const COMP_GRID_RE = new RegExp(`<(?:[A-Za-z_][\\w.-]*:)?(?:${COMP_CONTAINERS.join('|')})[\\s>/]`, 'i');
 const { derivePropertyCategory } = require('./property-category');
 const UAD = require('./uad-rating');
 
@@ -1511,10 +1518,11 @@ function zip(v) { const s = clean(v); return s && /^\d{5}(-\d{4})?$/.test(s) ? s
 function year(v) { const n = toNum(v); return n != null && n >= 1700 && n <= CUR_YEAR ? String(n) : null; }
 
 // ---- top-level extract ------------------------------------------------------
-// Detect the appraisal dataset format from the raw XML. PILOT's parser reads UAD 2.6 (MISMO 2.6,
-// the attribute-heavy VALUATION_RESPONSE). The GSE redesign — UAD 3.6 / MISMO 3.x (URAR) — uses a
-// MESSAGE root + the 2009+ schema and a totally different shape; we must recognise it and fail
-// LOUDLY with a clear reason, never extract nulls from a file we don't actually understand.
+// Detect the appraisal dataset format from the raw XML. PILOT reads BOTH standards now:
+// UAD 2.6 (MISMO 2.6 — the attribute-heavy VALUATION_RESPONSE) below, and UAD 3.6 /
+// MISMO 3.6 (the redesigned URAR — a MESSAGE root on the 2009+ schema, element-text
+// shaped) via `extract36`. What this function still has to do is tell them apart, and
+// tell BOTH apart from a MISMO 3.x file that is not an appraisal at all.
 function detectMismo(xml) {
   const s = String(xml || '');
   const ref = /MISMOReferenceModelIdentifier\s*=\s*"?(\d+\.\d+)/i.exec(s);
@@ -1529,7 +1537,12 @@ function detectMismo(xml) {
   // reader would fix that is wrong twice — the reader would not import it, and
   // the honest problem (they attached the wrong document) goes unsaid.
   const isIlad = /\bILAD\b/i.test(s) || /datamodelextension\.org\/Schema\/ILAD/i.test(s);
-  const hasGrid = /<(?:[A-Za-z_][\w.-]*:)?(?:SALES_COMPARISON|COMPARABLE_SALE|SALES_COMPARISON_APPROACH)[\s>/]/i.test(s);
+  // ONE definition of "there is a comparable grid in here", shared with the 3.6 reader.
+  // The research warehouse's catch (`lib/research/xml-catch.js`) reuses THIS function to
+  // decide whether an uploaded XML is an appraisal at all, so a container spelling that
+  // only one of the two knew about would mean a report the reader can read being ignored
+  // by the warehouse, or the reverse.
+  const hasGrid = COMP_GRID_RE.test(s);
   return { model: isV3 ? '3.x' : '2.x', ref: ref ? ref[1] : null, uad36, isIlad, hasGrid };
 }
 
@@ -1537,19 +1550,23 @@ function extract(xml) {
   const root = X.parse(xml);
   const rep = X.find(root, 'REPORT');
   if (!rep) {
-    // Give the officer the real reason. A UAD 3.6 / MISMO 3.x file is a KNOWN, named format we
-    // don't yet read — say so, rather than a generic "not a REPORT".
     const d = detectMismo(xml);
+    // A MISMO 3.x envelope with no comparable grid is not an appraisal at all — most
+    // often an Encompass iLAD loan-application export attached by mistake. That is a
+    // different problem with a different answer (no reader fixes it), so it is named
+    // before the version question is even asked.
     if (!d.hasGrid && (d.isIlad || d.model === '3.x')) {
       return { ok: false, format: { model: d.model, notAnAppraisal: true, ilad: d.isIlad, ref: d.ref },
         error: d.isIlad
           ? 'This file is a loan-application data export (iLAD), not an appraisal report — it contains no comparable sales grid. Please upload the appraisal XML the appraiser delivered.'
           : 'This file contains no comparable sales grid, so it is not an appraisal report. Please upload the appraisal XML the appraiser delivered.' };
     }
-    if (d.model === '3.x' || d.uad36) {
-      return { ok: false, format: { model: '3.x', uad36: true, ref: d.ref },
-        error: `This appraisal is in the UAD 3.6 / MISMO 3.x format${d.ref ? ` (reference model ${d.ref})` : ''}. PILOT currently reads UAD 2.6 (MISMO 2.6) appraisals — a 3.6 reader is required, so this file was not imported. Please provide the UAD 2.6 export, or import the PDF.` };
-    }
+    // UAD 3.6 / MISMO 3.x — READ IT. This used to be where the file was turned away with
+    // an honest sentence; from 2 November 2026 that sentence would have been the answer
+    // to every new GSE appraisal. `extract36` returns THIS function's exact output shape,
+    // so nothing downstream of here knows or cares which standard the report was written
+    // to. The 2.6 path below is untouched and still handles every file it handled before.
+    if (d.model === '3.x' || d.uad36) return extract36(xml);
     return { ok: false, error: 'not a MISMO VALUATION_RESPONSE / REPORT' };
   }
   const formType = clean(X.attr(rep, 'AppraisalFormType'));
@@ -1835,4 +1852,8 @@ function extract(xml) {
   };
 }
 
-module.exports = { extract, _internals: { toNum, money, clean, normDate, upState, zip, year } };
+// `detectMismo` is exposed because it is this repo's ONE definition of "is there an
+// appraisal in this file at all" — the research-warehouse catch (db/462) has to answer
+// exactly that question on every uploaded XML, and a second opinion living somewhere
+// else would eventually disagree with the parser about what an appraisal is.
+module.exports = { extract, _internals: { toNum, money, clean, normDate, upState, zip, year, detectMismo } };

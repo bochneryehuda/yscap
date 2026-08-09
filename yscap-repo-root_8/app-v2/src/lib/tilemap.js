@@ -133,7 +133,60 @@ export function pointInView(lat, lng, centerLat, centerLng, zoom, width, height)
   return { left: p.x - c.x + width / 2, top: p.y - c.y + height / 2 };
 }
 
-/** OpenStreetMap's standard raster tile. Swap this one line for a paid provider. */
-export const tileUrl = (t) => `https://tile.openstreetmap.org/${t.z}/${t.x}/${t.y}.png`;
+/* THE TWO BASE MAPS, AND WHY NEITHER OF THEM IS GOOGLE.
+ *
+ * The owner asked for "real Google maps … so you can see actually where around
+ * you have things". Two thirds of that is buildable and one third is not, and the
+ * distinction is a licensing one worth writing down rather than rediscovering:
+ *
+ *  · GOOGLE'S MAP TILES MAY NOT BE DRAWN BY OUR RENDERER. Google's terms require
+ *    their imagery to be displayed through the Google Maps JavaScript API — you
+ *    may not pull their raster tiles into a third-party map. This file IS a
+ *    third-party renderer (256px Web Mercator tiles, 44 assertions,
+ *    `scripts/test-tilemap-pure.mjs`), so pointing `tileUrl` at Google would be a
+ *    terms breach, not a one-line upgrade. Using their JS API instead means
+ *    handing the key to the browser and replacing this renderer wholesale, which
+ *    is a real project rather than a switch.
+ *
+ *  · THE AERIAL VIEW THE OWNER ACTUALLY WANTS IS FREE AND UNRESTRICTED. USGS
+ *    National Map imagery is US federal government work, PUBLIC DOMAIN, no key, no
+ *    account, no cap on use — and for US property it is genuinely good: recent
+ *    high-resolution orthoimagery of exactly the country we lend in. That is what
+ *    the satellite toggle draws.
+ *
+ *  · STREET VIEW IS ALLOWED AND ALREADY WIRED. The Street View Static API is
+ *    served through our own `/api/address/photo`, so the key stays on the server
+ *    and nothing is stored. It shows the moment a key exists and shows nothing
+ *    before that.
+ *
+ * `basemap` is 'street' | 'satellite'. An unknown value falls back to the street
+ * map rather than to a blank screen.
+ */
+export const BASEMAPS = Object.freeze({
+  street: {
+    key: 'street',
+    label: 'Map',
+    url: (t) => `https://tile.openstreetmap.org/${t.z}/${t.x}/${t.y}.png`,
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 19,
+  },
+  satellite: {
+    key: 'satellite',
+    label: 'Satellite',
+    // USGS National Map — public domain, keyless. Its tile grid is the same Web
+    // Mercator scheme, so nothing else in this file changes.
+    url: (t) => 'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/'
+      + `${t.z}/${t.y}/${t.x}`,
+    attribution: 'Imagery: USGS The National Map (public domain)',
+    // It stops at 16 over much of the country; asking for 19 returns nothing at
+    // all, which reads as a broken map rather than as the edge of the imagery.
+    maxZoom: 16,
+  },
+});
 
-export const ATTRIBUTION = '© OpenStreetMap contributors';
+export const basemapFor = (key) => BASEMAPS[key] || BASEMAPS.street;
+
+/** The tile URL for a basemap. Defaults to the street map, as it always did. */
+export const tileUrl = (t, basemap) => basemapFor(basemap).url(t);
+
+export const ATTRIBUTION = BASEMAPS.street.attribution;

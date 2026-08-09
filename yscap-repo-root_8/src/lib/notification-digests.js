@@ -22,6 +22,7 @@
 const db = require('../db');
 const notify = require('./notify');
 const workflow = require('./workflow');
+const workflowQueues = require('./email/workflow-queues');
 const loanExceptions = require('./loan-exceptions');
 const { outstandingItems } = require('./reminders');
 const { claimOncePerPeriod } = require('./throttle-claim');
@@ -58,8 +59,19 @@ const DIGEST_ACTION = Object.freeze({
   BORROWER_OUTSTANDING: 'borrower_outstanding_digest',
   STALE_FILE: 'stale_file_alert',
   DRAW_FINDINGS_REMINDER: 'draw_findings_reminder',
+  // After the borrower has been nudged CAP times and still not accepted, we STOP
+  // emailing them (owner-directed: "the borrower should not get these repeating
+  // emails again and again") and hand off to the draw coordinator to follow up.
+  DRAW_BORROWER_STUCK: 'draw_borrower_stuck',
   TRUSTPOINT_UNRELEASED: 'trustpoint_unreleased',
   DRAW_RELEASE_OVERDUE: 'draw_release_overdue',
+  // Increment C — the four missing per-status draw COORDINATOR reminders (owner-directed 2026-08-04,
+  // blueprint docs/DRAW-WORKFLOW-STATUS-RESEARCH.md): every stage that waits on US / the coordinator
+  // gets its own self-gated nudge, so a draw never sits silently between borrower approval and funding.
+  ORDER_TRUSTPOINT: 'order_trustpoint_reminder',          // 2b: enter the submitted draw into TrustPoint
+  ORDER_TRINITY: 'order_trinity_reminder',                // 2p: order the physical inspection on Trinity
+  INVESTOR_PENDING_DELIVERY: 'investor_pending_delivery', // 7a: borrower approved, not yet sent to the investor
+  WITH_INVESTOR: 'draw_with_investor_reminder',           // 7b: sent to the investor, still awaiting funding
   ORDER_OVERDUE: 'order_overdue_nudge',
   // Per-FILE stamp for the direct-source sweep (the sweep's other stamp,
   // `direct_source_sweep_daily`, is global and only prevents overlapping runs).
@@ -325,6 +337,133 @@ async function dailyPipelineDigestOnce() {
       await _stamp('pipeline_digest_daily', st.id, { files: files.rows.length });
       sent++;
     } catch (e) { console.error('[digest] pipeline', st.id, e && e.message); }
+  }
+  return sent;
+}
+
+/* 2b) WEEKLY LOAN-OFFICER PIPELINE SNAPSHOT (owner-directed 2026-08-07: *"we also need to set up
+   a nice email every week to only the loan officers with a snapshot of their pipeline, active
+   files, funded files, totals, and details."*).
+
+   Deliberately NOT a second copy of the daily digest above. The daily one is a to-do list —
+   oldest-at-stage first, so the top row is the thing to chase today. This one is a WEEK's read:
+   the totals first (what is in flight, what closed), then the file-by-file detail.
+
+   ONLY LOAN OFFICERS, by the owner's word. `role='loan_officer'` is the test, so a processor or
+   a closer who happens to be assigned to files does not receive it — they have their own Workflow
+   nudge, and an officer's book is a sales read, not a task list.
+
+   Every figure is a plain count/sum over the officer's own assigned, non-deleted files. Nothing
+   here is a pricing number — `loan_amount` is the registered amount already stored on the row. */
+async function weeklyOfficerPipelineOnce() {
+  let sent = 0;
+  let officers = [];
+  try {
+    officers = (await db.query(
+      `SELECT id, email, full_name FROM staff_users
+        WHERE is_active = true AND role = 'loan_officer'
+          AND COALESCE(notifications_enabled, true) = true
+          AND email IS NOT NULL AND btrim(email) <> ''
+        ORDER BY full_name`)).rows;
+  } catch (_) { return 0; }
+
+  const money0 = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
+
+  for (const st of officers) {
+    try {
+      /* ONE query for the officer's whole book — active AND funded — so the totals and the detail
+         table can never be computed off two different snapshots taken a moment apart. Funded is
+         windowed to the last 90 days: "funded files" on a weekly snapshot means recent closings,
+         and an all-time total would grow forever and stop being news. */
+      const r = await db.query(
+        `SELECT a.id, a.ys_loan_number, a.property_address, a.status, a.status_changed_at,
+                a.loan_amount, a.expected_closing, a.funded_date,
+                (SELECT count(*)::int FROM checklist_items ci
+                  WHERE ci.application_id = a.id AND ci.audience IN ('borrower','both')
+                    AND ci.status IN ('outstanding','requested','issue')) AS open_borrower
+           FROM applications a
+           JOIN application_assignees aa ON aa.application_id = a.id
+                AND aa.staff_id = $1 AND aa.removed_at IS NULL AND aa.role = 'loan_officer'
+          WHERE a.deleted_at IS NULL
+            AND (a.status <> ALL($2)
+                 OR (a.status = 'funded' AND a.funded_date IS NOT NULL
+                     AND a.funded_date >= (now() - interval '90 days')::date))
+          ORDER BY a.status_changed_at ASC NULLS FIRST, a.id
+          LIMIT 200`, [st.id, TERMINAL]);
+
+      const all = r.rows;
+      const active = all.filter((f) => f.status !== 'funded');
+      const funded = all.filter((f) => f.status === 'funded');
+      // Nothing in flight AND nothing closed recently → there is no snapshot to send. A weekly
+      // email that says "you have no files" every week is the noise this is meant to avoid.
+      if (!active.length && !funded.length) continue;
+      if (!(await _gateRecipient('officer_pipeline_weekly', st.id, '6 days'))) continue;
+
+      const sum = (rows) => rows.reduce((t, f) => t + (Number(f.loan_amount) || 0), 0);
+      const activeVol = sum(active);
+      const fundedVol = sum(funded);
+      const openItems = active.reduce((t, f) => t + (Number(f.open_borrower) || 0), 0);
+
+      const table = active.length ? {
+        title: 'Your active files — longest at their current stage first',
+        head: ['Property / file', 'Stage', 'Days', 'Loan amount', 'Borrower items'],
+        align: ['left', 'left', 'right', 'right', 'right'],
+        rows: active.slice(0, 25).map((f) => {
+          const d = daysAt(f.status_changed_at);
+          return [
+            `${addrOf(f.property_address)}${f.ys_loan_number ? ` · ${String(f.ys_loan_number).toUpperCase()}` : ''}`,
+            STATUS_LABEL[f.status] || f.status,
+            d != null ? String(d) : '—',
+            f.loan_amount != null ? money0(f.loan_amount) : '—',
+            f.open_borrower ? String(f.open_borrower) : '—',
+          ];
+        }),
+        note: active.length > 25 ? `…and ${active.length - 25} more active files in your pipeline.` : null,
+      } : null;
+
+      const fundedTable = funded.length ? {
+        title: 'Funded in the last 90 days',
+        head: ['Property / file', 'Funded', 'Loan amount'],
+        align: ['left', 'left', 'right'],
+        rows: funded.slice(0, 15).map((f) => [
+          `${addrOf(f.property_address)}${f.ys_loan_number ? ` · ${String(f.ys_loan_number).toUpperCase()}` : ''}`,
+          f.funded_date ? String(f.funded_date).slice(0, 10) : '—',
+          f.loan_amount != null ? money0(f.loan_amount) : '—',
+        ]),
+        note: funded.length > 15 ? `…and ${funded.length - 15} more funded in the window.` : null,
+      } : null;
+
+      const first = (st.full_name || '').trim().split(/\s+/)[0];
+      await notify.notifyStaff(st.id, {
+        type: 'digest',
+        title: `Your week: ${active.length} active file${active.length === 1 ? '' : 's'}`,
+        badge: { text: 'Weekly snapshot', tone: 'teal' },
+        body: `${active.length} active (${money0(activeVol)}) · ${funded.length} funded in 90 days (${money0(fundedVol)})`,
+        emailBody: `Here is your book as it stands${first ? `, ${first}` : ''} — what is in flight, what has closed, and where each file is sitting.`,
+        figures: {
+          primary: { label: 'Active pipeline', value: money0(activeVol), sub: `across ${active.length} file${active.length === 1 ? '' : 's'}`, tone: 'teal' },
+          secondary: [
+            { label: 'Funded (90 days)', value: money0(fundedVol), tone: 'positive' },
+            { label: 'Files funded', value: String(funded.length), tone: 'positive' },
+            { label: 'Borrower items open', value: String(openItems) },
+          ],
+        },
+        // Two tables cannot both ride the single `table` slot, so the funded list goes in as a
+        // second block through `sections` — a titled block whose body is one line per file. The
+        // active list is the one that gets the real table, because it is the one people scan.
+        table,
+        sections: fundedTable ? [{
+          title: fundedTable.title,
+          body: [
+            ...fundedTable.rows.map((row) => `${row[0]} — funded ${row[1]} · ${row[2]}`),
+            ...(fundedTable.note ? [fundedTable.note] : []),
+          ],
+        }] : null,
+        link: '/internal/pipeline', ctaLabel: 'Open your pipeline', emailTo: st.email,
+      });
+      await _stamp('officer_pipeline_weekly', st.id, { active: active.length, funded: funded.length });
+      sent++;
+    } catch (e) { console.error('[digest] officer-pipeline-weekly', st.id, e && e.message); }
   }
   return sent;
 }
@@ -759,38 +898,84 @@ async function drawFindingsAwaitingBorrowerOnce() {
   // and silently disable the nudge).
   const wh = Number(process.env.DRAW_FINDINGS_REMINDER_HOURS || 4);
   const waitHours = Number.isFinite(wh) ? Math.max(1, wh) : 4;
+  // BORROWER NUDGE CAP (owner-directed: "the borrower keeps receiving these emails …
+  // prevent it from being sent to him again and again … the borrower should not get
+  // these repeating emails again and again for every draw"). The old sweep had a
+  // rate limiter but NO stop — a borrower who never acts was emailed every few
+  // business hours forever. After CAP nudges we STOP emailing the borrower and hand
+  // the draw off to the draw coordinator to follow up (call them / mark approved).
+  const cn = Number(process.env.DRAW_FINDINGS_BORROWER_CAP || 5);
+  const CAP = Number.isFinite(cn) ? Math.max(1, Math.round(cn)) : 5;
   const rows = (await db.query(
-    `SELECT f.application_id, count(*)::int AS n, min(f.delivered_at) AS oldest
-       FROM draw_findings f
-       JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
-      WHERE f.status='delivered' AND f.delivered_at IS NOT NULL
-        AND f.delivered_at < now() - ($1 || ' hours')::interval
-        AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
-                      AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
-        -- Nudged inside the last waitHours → not due, so it must not consume a slot. delivered_at
-        -- only moves when the BORROWER acts, so without this the longest-stuck borrowers hold the
-        -- front of the queue indefinitely and a newer delivery past the cap is never nudged at all.
-        AND ${notThrottled('f.application_id', DIGEST_ACTION.DRAW_FINDINGS_REMINDER, "($1 || ' hours')::interval")}
-      GROUP BY f.application_id
-      -- Deterministic order (same defect class as the borrower digest): an unordered LIMIT lets
-      -- Postgres return an arbitrary 300 of the waiting files, so past the cap a borrower could be
-      -- skipped on every single pass and never nudged. Oldest-waiting first, id as the tie-break.
-      ORDER BY oldest ASC, f.application_id
+    // The candidate set is delivered findings on an active PILOT-managed file that are NOT already
+    // inside EITHER throttle: the borrower waitHours throttle (under-cap nudges) OR the coordinator
+    // 2-day hand-off throttle (over-cap). Including both keeps an already-handled file from holding a
+    // LIMIT slot — delivered_at never advances, so without it the most-stuck files starve the queue
+    // (the exact defect the ORDER BY + notThrottled were added to prevent).
+    `WITH due AS (
+       SELECT f.application_id, count(*)::int AS n, min(f.delivered_at) AS oldest
+         FROM draw_findings f
+         JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+        WHERE f.status='delivered' AND f.delivered_at IS NOT NULL
+          AND f.delivered_at < now() - ($1 || ' hours')::interval
+          AND EXISTS (SELECT 1 FROM sitewire_property_links pl WHERE pl.application_id=f.application_id
+                        AND pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active')='active')
+          AND ${notThrottled('f.application_id', DIGEST_ACTION.DRAW_FINDINGS_REMINDER, "($1 || ' hours')::interval")}
+          AND ${notThrottled('f.application_id', DIGEST_ACTION.DRAW_BORROWER_STUCK, "interval '2 days'")}
+        GROUP BY f.application_id
+     )
+     -- nudges = how many borrower reminders were already sent THIS delivered episode (since the
+     -- oldest currently-delivered finding). Stamps from a prior, already-accepted draw are before
+     -- that oldest delivery, so a new delivery always starts the borrower over with a fresh CAP.
+     SELECT d.application_id, d.n, d.oldest,
+            (SELECT count(*) FROM audit_log l
+               WHERE l.entity_type='application' AND l.action='${DIGEST_ACTION.DRAW_FINDINGS_REMINDER}'
+                 AND l.entity_id=d.application_id AND l.created_at >= d.oldest)::int AS nudges
+       FROM due d
+      -- Deterministic order: an unordered LIMIT lets Postgres return an arbitrary 300 of the waiting
+      -- files, so past the cap a borrower could be skipped on every pass. Oldest-waiting first.
+      ORDER BY d.oldest ASC, d.application_id
       LIMIT 300`, [String(waitHours)])).rows;
   for (const r of rows) {
     try {
-      // At most one nudge per `waitHours` per file (the atomic gate), so within the
-      // business-hours window the borrower is reminded every few hours until they act.
-      if (!(await _gate(DIGEST_ACTION.DRAW_FINDINGS_REMINDER, r.application_id, `${waitHours} hours`))) continue;
-      await notify.notifyAppBorrowers(r.application_id, {
-        type: 'draw_findings',
-        title: r.n === 1 ? 'Your draw inspection result is waiting for you' : `${r.n} draw inspection results are waiting for you`,
-        badge: { text: 'Action needed', tone: 'action' },
-        body: `Your inspection result${r.n === 1 ? ' is' : 's are'} ready and waiting for you. Your draw is released once you review and accept ${r.n === 1 ? 'it' : 'them'} — please take a moment to review ${r.n === 1 ? 'it' : 'them'} (or dispute a line) in your portal.`,
-        callout: { title: 'Why this matters', body: 'The release clock for your draw only starts once you accept — reviewing promptly gets your money to you sooner.', tone: 'action' },
-        applicationId: r.application_id, link: `/app/${r.application_id}`, ctaLabel: 'Review your draw' });
-      await _stamp(DIGEST_ACTION.DRAW_FINDINGS_REMINDER, r.application_id, { awaiting: r.n, hours: waitHours });
-      sent++;
+      if (r.nudges < CAP) {
+        // Still under the cap: nudge the BORROWER, at most once per `waitHours` (the atomic gate).
+        if (!(await _gate(DIGEST_ACTION.DRAW_FINDINGS_REMINDER, r.application_id, `${waitHours} hours`))) continue;
+        await notify.notifyAppBorrowers(r.application_id, {
+          type: 'draw_findings',
+          title: r.n === 1 ? 'Your draw inspection result is waiting for you' : `${r.n} draw inspection results are waiting for you`,
+          badge: { text: 'Action needed', tone: 'action' },
+          body: `Your inspection result${r.n === 1 ? ' is' : 's are'} ready and waiting for you. Your draw is released once you review and accept ${r.n === 1 ? 'it' : 'them'} — please take a moment to review ${r.n === 1 ? 'it' : 'them'} (or dispute a line) in your portal.`,
+          callout: { title: 'Why this matters', body: 'The release clock for your draw only starts once you accept — reviewing promptly gets your money to you sooner.', tone: 'action' },
+          applicationId: r.application_id, link: `/app/${r.application_id}`, ctaLabel: 'Review your draw' });
+        await _stamp(DIGEST_ACTION.DRAW_FINDINGS_REMINDER, r.application_id, { awaiting: r.n, hours: waitHours, nudge: r.nudges + 1, cap: CAP });
+        sent++;
+      } else {
+        // Cap reached: STOP emailing the borrower. Hand off to the draw coordinator(s) to follow up,
+        // at most once / 2 days (the coordinator gate). This is what turns an endless borrower nudge
+        // into a single "please call them or mark it approved" for the person who owns the file's draws.
+        if (!(await _gate(DIGEST_ACTION.DRAW_BORROWER_STUCK, r.application_id, '2 days'))) continue;
+        const drawRecipients = require('./draw-recipients');
+        const coords = await drawRecipients.coordinatorsOrDesk(r.application_id);
+        const stuckTitle = r.n === 1 ? 'A borrower hasn’t accepted their draw — please follow up' : `A borrower hasn’t accepted ${r.n} draws — please follow up`;
+        const stuckBody = `We reminded the borrower ${CAP} times and their draw inspection result${r.n === 1 ? ' is' : 's are'} still waiting to be accepted — so we’ve stopped emailing them. Please reach out to the borrower, or mark the draw approved on their behalf if they’ve already agreed.`;
+        const stuckOpts = { type: 'draw', badge: { text: 'Follow up', tone: 'action' }, title: stuckTitle, body: stuckBody, applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' };
+        if (coords.length) {
+          for (const c of coords) {
+            try { await notify.notifyStaff(c.id, { ...stuckOpts, emailTo: c.email }); }
+            catch (e) { console.error('[digest] draw-borrower-stuck notify', c.id, e && e.message); }
+          }
+        } else {
+          // No draw coordinator on the file AND an empty desk — never silently drop the follow-up
+          // (audit LOW; owner's "don't leave things silent" theme). Reach the file's own staff team
+          // so a stuck draw is always covered by someone. Same 2-day throttle already claimed above.
+          console.warn('[digest] draw-borrower-stuck: no draw coordinator/desk for', r.application_id, '— falling back to the file team');
+          try { await notify.notifyAppStaff(r.application_id, stuckOpts); }
+          catch (e) { console.error('[digest] draw-borrower-stuck fallback', r.application_id, e && e.message); }
+        }
+        await _stamp(DIGEST_ACTION.DRAW_BORROWER_STUCK, r.application_id, { awaiting: r.n, nudges: r.nudges, cap: CAP, coordinators: coords.length });
+        sent++;
+      }
     } catch (e) { console.error('[digest] draw-findings-await', r.application_id, e && e.message); }
   }
   return sent;
@@ -884,6 +1069,241 @@ async function drawReleaseOverdueOnce() {
       await _stamp(DIGEST_ACTION.DRAW_RELEASE_OVERDUE, r.application_id, { overdue: r.n, days: d });
       sent++;
     } catch (e) { console.error('[digest] draw-release-overdue', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* ══ Increment C — the four missing per-status COORDINATOR reminders (owner-directed 2026-08-04;
+ *    blueprint docs/DRAW-WORKFLOW-STATUS-RESEARCH.md) ══
+ *
+ * The draw workflow now knows, for every status, WHO it is waiting for and WHO to remind. Increment B
+ * capped the borrower nudge; these four cover the stages that wait on US / the draw coordinator, so a
+ * draw never sits silently between the borrower approving and the money moving. Each is a self-gated
+ * sweep in the exact shape of drawFindingsAwaitingBorrowerOnce: scope to an ACTIVE PILOT-managed
+ * (matched_by='created') link, put the throttle in the WHERE (not only the gate — a per-file digest
+ * whose sort key does not advance starves its tail otherwise), deterministic oldest-first ORDER, and
+ * the atomic _gate claim. Every query is wrapped so a phantom column never silently disables the
+ * sweep from inside a swallowing catch (the #248 class); the DB test exercises the real columns. */
+
+// Send a coordinator-facing draw reminder to the file's OWN draw coordinator(s) when one is assigned,
+// else the whole active draw desk, and — never silent — the file's own staff team when even the desk
+// is empty (the same hand-off shape Increment B's over-cap branch uses). ONE definition, so all four
+// sweeps route "who owns this file's draws" through draw-recipients.coordinatorsOrDesk. Best-effort
+// per recipient.
+async function notifyCoordinators(appId, opts, tag) {
+  const coords = await require('./draw-recipients').coordinatorsOrDesk(appId).catch(() => []);
+  if (coords.length) {
+    for (const c of coords) {
+      try { await notify.notifyStaff(c.id, { ...opts, emailTo: c.email }); }
+      catch (e) { console.error(`[digest] ${tag} notify`, c.id, e && e.message); }
+    }
+    return coords.length;
+  }
+  console.warn(`[digest] ${tag}: no draw coordinator/desk for`, appId, '— falling back to the file team');
+  try { await notify.notifyAppStaff(appId, opts); }
+  catch (e) { console.error(`[digest] ${tag} fallback`, appId, e && e.message); }
+  return 0;
+}
+
+// The go-forward-only + not-finished/paid-off guard every draw sweep shares (CLAUDE.md Sitewire rules
+// 2 + 10): the file has a PILOT-created Sitewire link whose project is still active. Inlined per query
+// so each keeps its own $-numbering; `appIdExpr` is the outer table's application-id column.
+function activeManagedLink(appIdExpr) {
+  return `EXISTS (SELECT 1 FROM sitewire_property_links pl
+                   WHERE pl.application_id = ${appIdExpr}
+                     AND pl.matched_by = 'created' AND COALESCE(pl.lifecycle_state,'active') = 'active')`;
+}
+
+/* 7) order_trustpoint (blueprint 2b) — a draw submitted through the portal composer on a TrustPoint
+   (Blue Lake physical) file that the coordinator has NOT yet hand-entered into TrustPoint. The
+   portal_draw_requests row IS the state: platform 'trustpoint' + status 'submitted' + no tp_draw_id
+   means "waiting to be entered". The status leaves 'submitted' the moment the coordinator enters it,
+   so the reminder stops on its own. Remind daily. */
+async function orderTrustpointOnce() {
+  let sent = 0;
+  let rows = [];
+  try {
+    rows = (await db.query(
+      `SELECT p.application_id, count(*)::int AS n, min(p.created_at) AS oldest
+         FROM portal_draw_requests p
+         JOIN applications a ON a.id=p.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+        WHERE p.platform='trustpoint' AND p.status='submitted' AND p.tp_draw_id IS NULL
+          AND ${activeManagedLink('p.application_id')}
+          AND ${notThrottled('p.application_id', DIGEST_ACTION.ORDER_TRUSTPOINT, "interval '20 hours'")}
+        GROUP BY p.application_id
+        ORDER BY oldest ASC, p.application_id
+        LIMIT 200`)).rows;
+  } catch (e) { console.error('[digest] order-trustpoint query', e && e.message); return 0; }
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.ORDER_TRUSTPOINT, r.application_id, '20 hours'))) continue;
+      await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'A draw is waiting to be entered into TrustPoint' : `${r.n} draws are waiting to be entered into TrustPoint`,
+        badge: { text: 'Enter in TrustPoint', tone: 'action' },
+        body: `The borrower submitted ${r.n === 1 ? 'a draw' : `${r.n} draws`} on this file and ${r.n === 1 ? 'it has' : 'they have'} not been entered into TrustPoint yet. Please enter ${r.n === 1 ? 'it' : 'them'} so the inspection can be ordered and the borrower's draw can move forward.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' }, 'order-trustpoint');
+      await _stamp(DIGEST_ACTION.ORDER_TRUSTPOINT, r.application_id, { pending: r.n });
+      sent++;
+    } catch (e) { console.error('[digest] order-trustpoint', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* 8) order_trinity (blueprint 2p) — a physical inspection ordered from Trinity that is still at
+   'requested' (the coordinator has not placed the order yet). The trinity_inspection_orders row IS the
+   state; it leaves 'requested' the moment the order is placed, so the reminder stops on its own.
+   Remind daily. */
+async function orderTrinityOnce() {
+  let sent = 0;
+  let rows = [];
+  try {
+    rows = (await db.query(
+      `SELECT t.application_id, count(*)::int AS n, min(t.created_at) AS oldest
+         FROM trinity_inspection_orders t
+         JOIN applications a ON a.id=t.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+        WHERE t.status='requested'
+          AND ${activeManagedLink('t.application_id')}
+          AND ${notThrottled('t.application_id', DIGEST_ACTION.ORDER_TRINITY, "interval '20 hours'")}
+        GROUP BY t.application_id
+        ORDER BY oldest ASC, t.application_id
+        LIMIT 200`)).rows;
+  } catch (e) { console.error('[digest] order-trinity query', e && e.message); return 0; }
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.ORDER_TRINITY, r.application_id, '20 hours'))) continue;
+      await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'A physical inspection is waiting to be ordered on Trinity' : `${r.n} physical inspections are waiting to be ordered on Trinity`,
+        badge: { text: 'Order on Trinity', tone: 'action' },
+        body: `${r.n === 1 ? 'A physical inspection has' : `${r.n} physical inspections have`} been requested on this file but not yet ordered from Trinity. Please place the order so the borrower's draw can move forward.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' }, 'order-trinity');
+      await _stamp(DIGEST_ACTION.ORDER_TRINITY, r.application_id, { pending: r.n });
+      sent++;
+    } catch (e) { console.error('[digest] order-trinity', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* 9) investor_pending_delivery (blueprint 7a) — the borrower AGREED to a draw (accepted or resolved)
+   and it has NOT been delivered to the investor yet. Once the borrower agrees, the draw goes to the
+   note buyer (investor-delivery.js); until a delivery is actually SENT (an errored delivery does not
+   count), remind the coordinator every 2 days. Scoped to files that HAVE a note buyer — with no
+   investor there is nobody to deliver to, and nagging "deliver to the investor" on such a file is noise
+   (the missing-note-buyer condition surfaces that gap separately). A draw already at final approval is
+   done. */
+async function investorPendingDeliveryOnce() {
+  let sent = 0;
+  let rows = [];
+  try {
+    rows = (await db.query(
+      `SELECT f.application_id, count(*)::int AS n, min(COALESCE(f.accepted_at, f.delivered_at)) AS oldest
+         FROM draw_findings f
+         JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+        WHERE f.status IN ('accepted','resolved')
+          AND NULLIF(btrim(a.lender), '') IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM draw_investor_deliveries dd
+                            WHERE dd.sitewire_draw_id=f.sitewire_draw_id AND dd.status='sent')
+          AND NOT EXISTS (SELECT 1 FROM sitewire_draws sd
+                            WHERE sd.sitewire_draw_id=f.sitewire_draw_id AND sd.status='approved')
+          AND ${activeManagedLink('f.application_id')}
+          AND ${notThrottled('f.application_id', DIGEST_ACTION.INVESTOR_PENDING_DELIVERY, "interval '2 days'")}
+        GROUP BY f.application_id
+        ORDER BY oldest ASC, f.application_id
+        LIMIT 300`)).rows;
+  } catch (e) { console.error('[digest] investor-pending query', e && e.message); return 0; }
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.INVESTOR_PENDING_DELIVERY, r.application_id, '2 days'))) continue;
+      await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'A draw is approved and ready to send to the investor' : `${r.n} draws are approved and ready to send to the investor`,
+        badge: { text: 'Deliver to investor', tone: 'action' },
+        body: `The borrower has agreed to ${r.n === 1 ? 'a draw' : `${r.n} draws`} on this file and ${r.n === 1 ? 'it is' : 'they are'} waiting to be delivered to the investor. Please send the delivery so the borrower's funds are not held up.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' }, 'investor-pending');
+      await _stamp(DIGEST_ACTION.INVESTOR_PENDING_DELIVERY, r.application_id, { pending: r.n });
+      sent++;
+    } catch (e) { console.error('[digest] investor-pending', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* 10) with_investor (blueprint 7b) — the draw WAS delivered to the investor and we are waiting on their
+   funding. Remind the coordinator starting +48h after the delivery, then every 2 days, until the draw
+   reaches final approval (sitewire_draws.status='approved', approval.FINAL_STATUSES). A re-send is a new
+   delivery row, so the +48h clock is measured from the LATEST send.
+
+   OVERLAP WITH drawReleaseOverdueOnce — considered and accepted (audit 2026-08-05), deliberately NOT
+   coupled. A draw can be past its wire SLA (release-overdue fires "record the release") AND delivered to
+   the investor >48h with no funding back (this fires "chase the investor"). In the DEFAULT reimbursement
+   mode those are two DIFFERENT actions — WE release the net to the borrower, the investor reimburses US —
+   so both nudges are legitimately distinct and must not be merged (suppressing either would drop a real
+   follow-up). In investor_direct mode they are adjacent (the investor makes the release), but both still
+   point the coordinator at the same next step, so nobody is ever misled. This is unlike Increment B's
+   borrower bombardment (the SAME email repeated forever); here it is at most two distinct actionable
+   items on the internal desk. Left decoupled to avoid mode-dependent suppression logic in the existing,
+   already-tested release sweep. */
+async function withInvestorOnce() {
+  let sent = 0;
+  let rows = [];
+  try {
+    rows = (await db.query(
+      // The +48h test is PER DRAW, not per file. A file can carry several draws with the investor at
+      // different ages, so `max(sent_at)` across the whole file would let a FRESH delivery hide an OLDER
+      // overdue one — a 6-day-overdue draw #1 masked by a 3-hour-old draw #2, and the coordinator is
+      // never reminded to chase #1 (audit 2026-08-05). The CTE takes each DRAW's latest send (so a
+      // re-send still measures from the newest row); the outer query keeps only the draws whose latest
+      // send is already past +48h, counts those overdue draws, and reports the OLDEST of them (so the
+      // message's "delivered N days ago" and the oldest-first ordering both name the worst one).
+      // `latest` picks each draw's MOST-RECENT sent delivery and its funding_mode; a re-send still
+      // measures from the newest row. A draw whose latest delivery is MANUAL is handled by the
+      // coordinator outside PILOT (owner-directed) — it is excluded so PILOT never nags about a
+      // step somebody is already doing off-platform.
+      `WITH latest AS (
+         SELECT DISTINCT ON (dd.application_id, dd.sitewire_draw_id)
+                dd.application_id, dd.sitewire_draw_id, dd.sent_at AS last_send, dd.funding_mode
+           FROM draw_investor_deliveries dd
+          WHERE dd.status='sent'
+          ORDER BY dd.application_id, dd.sitewire_draw_id, dd.sent_at DESC
+       ),
+       with_inv AS (
+         -- NB: the outer CTE is aliased dl, NOT l -- the shared notThrottled() helper builds its
+         -- subquery as "FROM audit_log l", so an outer l here would be shadowed inside that subquery
+         -- and l.application_id would bind to audit_log (which has no such column), throwing 42703 and
+         -- silently killing this reminder for every draw (caught in the #11 pre-merge audit, 2026-08-05).
+         SELECT dl.application_id, dl.sitewire_draw_id, dl.last_send
+           FROM latest dl
+           JOIN applications a ON a.id=dl.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+          WHERE dl.funding_mode <> 'manual'
+            -- still waiting on the investor: the borrower's agreement is still standing AND the draw has
+            -- not reached final approval. A finding that left accepted/resolved is no longer with them.
+            AND EXISTS (SELECT 1 FROM draw_findings f
+                          WHERE f.sitewire_draw_id=dl.sitewire_draw_id AND f.status IN ('accepted','resolved'))
+            AND NOT EXISTS (SELECT 1 FROM sitewire_draws sd
+                              WHERE sd.sitewire_draw_id=dl.sitewire_draw_id AND sd.status='approved')
+            AND ${activeManagedLink('dl.application_id')}
+            AND ${notThrottled('dl.application_id', DIGEST_ACTION.WITH_INVESTOR, "interval '2 days'")}
+       )
+       SELECT application_id, count(*)::int AS n, min(last_send) AS delivered
+         FROM with_inv
+        WHERE last_send < now() - interval '48 hours'
+        GROUP BY application_id
+        ORDER BY delivered ASC, application_id
+        LIMIT 300`)).rows;
+  } catch (e) { console.error('[digest] with-investor query', e && e.message); return 0; }
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.WITH_INVESTOR, r.application_id, '2 days'))) continue;
+      const d = daysAt(r.delivered);
+      await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'A draw is with the investor awaiting funding' : `${r.n} draws are with the investor awaiting funding`,
+        badge: { text: 'Awaiting investor', tone: 'action' },
+        body: `${r.n === 1 ? 'A draw was' : `${r.n} draws were`} delivered to the investor ${d != null && d > 0 ? `${d} day${d === 1 ? '' : 's'} ago ` : ''}and no funding has come back yet. Please follow up with the investor so the borrower is not left waiting.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' }, 'with-investor');
+      await _stamp(DIGEST_ACTION.WITH_INVESTOR, r.application_id, { pending: r.n, days: d });
+      sent++;
+    } catch (e) { console.error('[digest] with-investor', r.application_id, e && e.message); }
   }
   return sent;
 }
@@ -1133,11 +1553,35 @@ async function workflowAgingOnce() {
   for (const r of rows) {
     try {
       if (!r.to_staff_id || !(await _gateRecipient('workflow_overdue', r.to_staff_id, '20 hours'))) continue;
+      /* NAME THE FILES, ONE CARD PER WORKFLOW (owner-directed 2026-08-07: *"emails like this
+         should have a list of the files and the status of each and every file and whose loan
+         officer in every single file … nicely design every workflow separately"*). The old body
+         was a count and a link — everything it knew, it made the reader go and look up again; the
+         first pass at the fix was one merged list, which reads as ONE job arbitrarily split.
+         `workflowQueues.buildQueueTables` (pure) splits the rows by workflow family so a
+         processor's queue, a closer's queue and a draw coordinator's queue arrive as three
+         separate cards, each saying what that queue is for, and — for draws only — carrying only
+         the files where somebody is actually waiting on money.
+
+         Best-effort: if the detail query fails the nudge still goes with its count, because a
+         person with overdue work being told nothing is the worse outcome. */
+      let items = [];
+      try { items = await workflow.overdueItemsFor(r.to_staff_id); } catch (_) { items = []; }
+      let queues = { tables: [], shown: 0, parked: 0 };
+      try {
+        queues = workflowQueues.buildQueueTables(items, workflow.typeConfig, { perTable: 8 });
+      } catch (e) { console.error('[digest] workflow-queues', e && e.message); }
+      /* The count in the headline is the recipient's REAL overdue total. The cards can hold fewer
+         (the per-card cap, and the parked draw files) — so when they do, say so rather than let the
+         two numbers silently disagree. */
+      const unlisted = Math.max(0, (Number(r.overdue) || 0) - queues.shown - queues.parked);
       await notify.notifyStaff(r.to_staff_id, {
         type: 'workflow_ready',
         title: r.overdue === 1 ? 'A file in your Workflow is overdue' : `${r.overdue} files in your Workflow are overdue`,
         badge: { text: 'Overdue', tone: 'action' },
-        body: `You have ${r.overdue} file${r.overdue === 1 ? '' : 's'} in your Workflow past ${r.overdue === 1 ? 'its' : 'their'} target time. Open your Workflow to pick ${r.overdue === 1 ? 'it' : 'them'} up or send ${r.overdue === 1 ? 'it' : 'them'} back.`,
+        body: `You have ${r.overdue} file${r.overdue === 1 ? '' : 's'} in your Workflow past ${r.overdue === 1 ? 'its' : 'their'} target time.`,
+        emailBody: `These hand-offs are past the target time they were meant to be picked up or sent back in. They are grouped below by the queue they belong to — pick one up, or send it back to whoever submitted it.${unlisted ? ` ${unlisted} more ${unlisted === 1 ? 'is' : 'are'} waiting in your Workflow.` : ''}`,
+        tables: queues.tables.length ? queues.tables : null,
         link: '/internal/workflow', ctaLabel: 'Open my Workflow' });
       await _stamp('workflow_overdue', r.to_staff_id, { overdue: r.overdue });
       sent++;
@@ -1634,14 +2078,32 @@ async function exceptionAgingOnce() {
   if (!rows.length) return 0;
   if (!(await _gate('exception_aging_digest', null, '20 hours'))) return 0;
   const labels = Object.fromEntries(Object.entries(loanExceptions.EXCEPTION_TYPES).map(([k, v]) => [k, v.label]));
-  const lines = rows.slice(0, 10).map((r) => {
+  /* THE LIST IS A TABLE, NOT A PARAGRAPH OF BULLETS (owner-directed 2026-08-07: *"e-mails like
+     this should be much nicer designed"*). The old body packed every waiting exception into one
+     newline-joined run of "• Send before clear-to-close — 276 Blake St, New Haven · waiting 10d"
+     inside a single paragraph — which mail clients reflow, so on a phone the bullets wrapped into
+     each other and the ages ran together. Each row now has its own line and its own age column,
+     and the OLDEST is first: the whole point of a review-target digest is that the top row is the
+     one hurting most. The plain-text body keeps a readable list for any client that strips HTML. */
+  const shown = rows.slice(0, 12);
+  const ageOf = (r) => {
     const days = Math.floor(Number(r.open_hours || 0) / 24);
-    const age = days >= 1 ? `${days}d` : `${Math.round(Number(r.open_hours || 0))}h`;
+    return days >= 1 ? `${days}d` : `${Math.round(Number(r.open_hours || 0))}h`;
+  };
+  const addrOf = (r) => {
     const a = r.property_address;
     const addr1 = !a ? '' : (typeof a === 'string' ? a : [a.line1 || a.address, a.city].filter(Boolean).join(', '));
-    return `• ${labels[r.exception_type] || r.exception_type} — ${addr1 || r.ys_loan_number || 'a file'} · waiting ${age}`;
-  });
-  if (rows.length > 10) lines.push(`…and ${rows.length - 10} more.`);
+    return addr1 || r.ys_loan_number || 'a file';
+  };
+  const table = {
+    title: 'Waiting on a decision — oldest first',
+    head: ['Property / file', 'Exception', 'Waiting'],
+    align: ['left', 'left', 'right'],
+    rows: shown.map((r) => [addrOf(r), labels[r.exception_type] || r.exception_type, ageOf(r)]),
+    note: rows.length > shown.length
+      ? `…and ${rows.length - shown.length} more in the Exceptions box.`
+      : null,
+  };
   const supers = await db.query(`SELECT id FROM staff_users WHERE role='super_admin' AND is_active=true`);
   let sent = 0;
   for (const su of supers.rows) {
@@ -1651,7 +2113,10 @@ async function exceptionAgingOnce() {
         title: rows.length === 1 ? 'An exception request is waiting past its review target'
           : `${rows.length} exception requests are waiting past their review target`,
         badge: { text: 'Review due', tone: 'action' },
-        body: `These policy-exception requests have been open longer than the review target. The requester can’t move them — only a super-admin can approve or deny:\n\n${lines.join('\n')}`,
+        // The in-app row keeps a short summary; the email gets the sentence + the table.
+        body: `${rows.length} policy-exception request${rows.length === 1 ? ' has' : 's have'} been open longer than the review target.`,
+        emailBody: 'These policy-exception requests have been open longer than the review target. The person who raised them cannot move them — only an approver can decide.',
+        table,
         link: '/internal/exceptions', ctaLabel: 'Open the Exceptions box',
       });
       sent++;
@@ -1819,6 +2284,13 @@ async function runDue() {
     await exceptionAgingOnce().catch((e) => console.error('[digests] exception-aging', e && e.message));
     await drawReleaseOverdueOnce().catch((e) => console.error('[digests] draw-release', e && e.message));
     await trustpointUnreleasedOnce().catch((e) => console.error('[digests] trustpoint-unreleased', e && e.message));
+    // Increment C — the four per-status draw COORDINATOR reminders. TrustPoint/Trinity nudge daily;
+    // investor delivery / awaiting-investor every 2 days. Each self-gates, so a steady morning tick
+    // gives the intended cadence without a manager having to chase.
+    await orderTrustpointOnce().catch((e) => console.error('[digests] order-trustpoint', e && e.message));
+    await orderTrinityOnce().catch((e) => console.error('[digests] order-trinity', e && e.message));
+    await investorPendingDeliveryOnce().catch((e) => console.error('[digests] investor-pending', e && e.message));
+    await withInvestorOnce().catch((e) => console.error('[digests] with-investor', e && e.message));
     await trainingRunOnce().catch((e) => console.error('[digests] training-run', e && e.message));
     await certificateSurveyOnce().catch((e) => console.error('[digests] cert-survey', e && e.message));
     await directSourceSweepOnce().catch((e) => console.error('[digests] direct-source-sweep', e && e.message));
@@ -1832,6 +2304,10 @@ async function runDue() {
     if (weekday === 'Mon') await weeklyAdminAiQuestionsOnce().catch((e) => console.error('[digests] admin-ai-questions', e && e.message));
     if (weekday === 'Mon') await weeklyTopRiskyFilesOnce().catch((e) => console.error('[digests] admin-top-risky', e && e.message));
     if (weekday === 'Mon') await weeklyLoAiDigestOnce().catch((e) => console.error('[digests] lo-weekly-ai', e && e.message));
+    // The loan officers' own weekly book snapshot (owner-directed 2026-08-07). Monday morning,
+    // alongside the other weeklies; it self-gates on a 6-day window so a Monday that misses the
+    // window (a deploy, an outage) still catches up on the Tuesday rather than skipping a week.
+    if (weekday === 'Mon') await weeklyOfficerPipelineOnce().catch((e) => console.error('[digests] officer-pipeline-weekly', e && e.message));
   }
   if (hour >= 8 && hour < 18) {
     await weeklyBorrowerOutstandingOnce().catch((e) => console.error('[digests] borrower', e && e.message));
@@ -2023,9 +2499,11 @@ module.exports = {
   start, runDue, nyParts,
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, trustpointUnreleasedOnce, workflowAgingOnce, conditionFreshnessReopenOnce,
+  orderTrustpointOnce, orderTrinityOnce, investorPendingDeliveryOnce, withInvestorOnce,
   orderOverdueOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, unfundedRereadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
   qaDeskAuditOnce, exceptionAgingOnce, exceptionExpirySweepOnce, closingChainCatchupOnce,
+  weeklyOfficerPipelineOnce,
   backupFreshnessWatchOnce,
 };

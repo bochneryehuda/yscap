@@ -35,6 +35,12 @@ const full = { loanNumber: 'YS-1', loanAmount: 500000, bFirst: 'Pat', bLast: 'B'
   throws({ ...full, propStreet: '', propCity: '', propState: '', propZip: '' }, /property/, 'blank property throws');
   throws({ ...full, bFirst: '', bLast: '' }, /borrower name/, 'nameless borrower throws');
   throws({ ...full, hasCoBorrower: true, cbFirst: '', cbLast: '' }, /co-borrower name/, 'nameless co-borrower throws');
+  // A co-borrower who SIGNS a package (term sheet) needs an email — a co-borrower
+  // may now be added without one (#22), so a name-but-no-email co-borrower is caught
+  // up front with a friendly field-named refusal instead of a raw DocuSign-arg error.
+  throws({ ...full, hasCoBorrower: true, cbFirst: 'Chris', cbLast: 'Co' }, /co-borrower email/, 'a co-borrower with a name but no email throws');
+  assert.doesNotThrow(() => orchestrate.validateGenerated(TS, { ...full, hasCoBorrower: true, cbFirst: 'Chris', cbLast: 'Co', cbEmail: 'chris@co.com' }),
+    'a co-borrower with a name AND email passes'); n++;
   // The Heter Iska prints the amount + names but NOT the loan number / property.
   assert.doesNotThrow(() => orchestrate.validateGenerated(IS, { loanAmount: 1, bFirst: 'A', bLast: 'B', hasCoBorrower: false }),
     'iska package does not require loan number / property'); n++;

@@ -26,7 +26,7 @@
   // /api/pricing-defaults so a company fee/markup change reaches every new term
   // sheet on the marketing generator AND the portal studio. The admin studio
   // fields still override per session; a per-file registration still snapshots.
-  var CO = { markupStd: 0.5, markupGold: 0.5, markupSilver: 0.5, origStd: 1.25, origGold: 1.25, origSilver: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [] };
+  var CO = { markupStd: 0.5, markupGold: 0.5, markupSilver: 0.5, origStd: 1.25, origGold: 1.25, origSilver: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [], markupTiers: null };
 
   var el = function (id) { return document.getElementById(id); };
   var $ = function (s, c) { return (c || document).querySelector(s); };
@@ -45,7 +45,13 @@
   // Otherwise an LTC bucket the borrower has dialled down to for a better rate.
   var chosenLTC = null;
   var goldChosenLTC = null;   // admin leverage slider for Gold (targetLTC); Gold rate is flat across leverage
-  var silverChosenLTC = null; // leverage slider for Silver (targetLTC); Silver's grid rate varies by LTC band like Standard
+  // SILVER IS SELECTED BY RUNG KEY, NOT BY A LEVERAGE VALUE. EMCAP prices on the ARV
+  // band AND the LTC band, so its ladder carries two families of rungs and two of them
+  // can legitimately land on the same LTC — a value picks the wrong rung, and applying
+  // it as targetLTC would cut the wrong axis entirely. The key ('ltc:0.875' / 'arv:0.7',
+  // null = the deal's true maximum) says which lever the rung IS, so the selection, the
+  // pricing and the highlighted row on a signable document can never disagree.
+  var silverChosenRung = null;
   var lastDeal = null;   // tracks deal-type changes (to default the ground-up term/reserve once)
   var chosenProgram = null;   // null = offers view; "standard" | "gold" | "silver" | "manual" = drilled into that program's detail
                               // ("manual" = the admin-priced scenario — prices on the Standard engine with the
@@ -59,8 +65,33 @@
   }
 
   /* ---------------- deal helpers ---------------- */
+  /* NOTE RATE display — up to 3 decimals, never fewer than 2, one trailing zero
+     trimmed, so 10.625% prints as 10.625 (not 10.63) and 10.30% stays 10.30
+     (owner-directed 2026-08-04). Takes a PERCENT number (e.g. d.rate = 10.625, or
+     noteRate*100). Changes no pricing number — the engine still produces the rate;
+     this only stops the display from throwing away its third decimal. Mirrors the
+     server helper src/lib/rate-format.js so every surface shows the SAME rate. */
+  function fmtRate3(pctNum) {
+    var n = Number(pctNum);
+    if (!isFinite(n)) return "";
+    var s = n.toFixed(3);
+    if (s.charAt(s.length - 1) === "0") s = s.slice(0, -1);
+    return s;
+  }
   function purpose() { return val("dealPurpose") || "Purchase"; }
   function isRefi() { return purpose().indexOf("refinance") > -1 || purpose().indexOf("Refinance") > -1; }
+  /* CASH TO CLOSE ON A REFINANCE (owner-directed 2026-08-04). A purchase brings a
+     down payment plus closing costs. A refinance has no down payment; instead the
+     borrower brings whatever the funds that advance at closing (the INITIAL ADVANCE
+     — the rehab holdback funds later in draws) do NOT cover of the existing-loan
+     payoff PLUS the closing costs. This is the exact mirror of the "cash to you"
+     figure (structuralCashOut = funded − payoff − closing): exactly one of {cash to
+     you, cash you bring} is greater than zero. On the owner's example (initial
+     173,550, payoff 220,000, closing 10,254.38) it is
+     max(0, 220,000 + 10,254.38 − 173,550) = 56,704.38. No pricing number moves. */
+  function refiCashToClose(initialAdvance, closing) {
+    return Math.max(0, Math.max(0, num("payoff")) + (closing || 0) - (initialAdvance || 0));
+  }
   function isCashOut() { return purpose().toLowerCase().indexOf("cash-out") > -1; }
   /* WHO the payoff goes to, as a sentence fragment — "" when nobody was named, so
      every caller reads the same whether or not the officer filled it in. */
@@ -325,6 +356,14 @@
     // in calc()/normalize() as a pure transform of the already-sized structure.
     var oopReq = adminNumRaw("tsOopRehab"); if (oopReq != null && oopReq > 0) o.oopRehab = oopReq;
     if (chk("tsOopRehabMax")) o.oopRehabMax = true;
+    /* A TYPED LOAN AMOUNT (owner-directed 2026-08-06). Read on EVERY program — the box
+       lives in the admin zone, like the out-of-pocket rehab above. It reaches the
+       frozen engines as a voluntary ceiling on the tier's own dollar wall, so it can
+       only ever REDUCE and needs no approval: the same class as a ladder rung. Going
+       ABOVE the maximum is structurally impossible here BY DESIGN — that is what the
+       manual basis (LTV / LTC / ARV) is for, and it already routes to admin approval.
+       Blank/0 sends nothing at all, so an untouched box changes no number anywhere. */
+    var tgtLoan = adminNumRaw("tsTargetLoan"); if (tgtLoan != null && tgtLoan > 0) o.targetLoan = tgtLoan;
     return o;
   }
 
@@ -554,12 +593,19 @@
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();      // + company extra fees (NY settlement etc.); appraisal is POC (excluded)
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
-    var cashToClose = _sl.downPayment + excessOOP + closing;   // reserve is never brought to the table; OOP rehab is funded over construction, not here
+    var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_sl.downPayment + excessOOP + closing);   // reserve is never brought to the table; OOP rehab is funded over construction, not here
     var reserves = fullPayment * reserveMonths(totalLoan);  // Standard liquidity buffer: months of interest on top of cash to close
     var closingBuffer = liqBufferWaived() ? 0 : Math.round(totalLoan * 0.01 * 100) / 100;   // 1% closing-cost buffer (owner-authorized 2026-07-31); waivable per file
     var liquidity = cashToClose + reserves + _sl.oopRehab + closingBuffer;  // OOP rehab is part of the liquidity the borrower must show (+0 by default)
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
-    var displayCost = basisPrice + num("construction") + financedIRr;
+    // TOTAL COST goes by the LOWER of the acquisition price and the as-is value
+    // (owner-directed 2026-08-05) — the engine's own acqDenom (min(price, as-is) on a
+    // purchase, the as-is value on a refi). basisPrice stays the REAL price shown as
+    // "Purchase price"; only the total-cost/LTC basis drops to the as-is value when it
+    // is lower. Falls back to basisPrice if the deal did not size. Byte-identical when
+    // the as-is value is >= the price (acqDenom === basisPrice).
+    var costAcq = (s.acqDenom > 0) ? s.acqDenom : basisPrice;
+    var displayCost = costAcq + num("construction") + financedIRr;
 
     return {
       R: R, inp: inp, eff: (inp.loanType === "Purchase" ? effPurchase() : num("asIs")), basisPrice: basisPrice,
@@ -614,12 +660,15 @@
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
-    var cashToClose = _g.downPayment + excessOOP + closing;
+    var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_g.downPayment + excessOOP + closing);
     var goldReservePct = R.liquidityPct || 0.05;
     var goldReserve = totalLoan * goldReservePct;            // Gold reserve = 5% of the loan, shown ON TOP of cash to close
     var closingBuffer = liqBufferWaived() ? 0 : Math.round(totalLoan * 0.01 * 100) / 100;   // 1% closing-cost buffer (owner-authorized 2026-07-31); waivable per file
     var asg = R.assignment;
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
+    // Total cost goes by the LOWER of the acquisition price and the as-is value
+    // (owner-directed 2026-08-05) — the engine's acqDenom. See calc().
+    var costAcq = (s.acqDenom > 0) ? s.acqDenom : basisPrice;
     return {
       R: R, inp: inp, gold: true, eff: basisPrice, basisPrice: basisPrice,
       constr: num("construction"), asg: asg, pricingReady: !!R.pricingReady,
@@ -630,7 +679,7 @@
       maxReserve: s.maxReserve || 0, reserveCapped: !!s.reserveCapped, reserveCapBy: s.reserveCapBy || "",
       maxReserveMonths: s.maxReserveMonths || 0, desiredReserve: s.desiredReserve || 0,
       initialPayment: (_g.oopRehab > 0 ? (initialAdvance * rFrac) : (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac)), fullPayment: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac), monthlyInterest: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
-      totalCost: basisPrice + num("construction") + financedIRr,
+      totalCost: costAcq + num("construction") + financedIRr,
       downPayment: _g.downPayment, excessOOP: excessOOP,
       oopRehab: _g.oopRehab, maxOopRehab: _g.maxOopRehab, initialCut: _g.initialCut, maxInitial: _g.maxInitial,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
@@ -649,11 +698,24 @@
   // like Standard mechanically: reserve financed + in cost + full-term cap, the
   // same liquidity-to-show months, the same fee stack — only the guideline
   // engine (window.SVP) differs. Returns null when the engine isn't loaded.
+  /* Apply the Silver ladder rung the user picked, as the lever the rung's OWN key
+     names — the cost side (targetLTC) or the value side (targetARLTV). This is the
+     ONE place a rung key becomes an engine input, so no caller can cut the wrong
+     axis. Both levers are voluntary REDUCTIONS in the engine (Math.min against the
+     cap), so a malformed or stale key can only ever fall through to the deal's
+     maximum, never raise a cap. Returns the same object it was handed. */
+  function applySilverRung(inp) {
+    var k = silverChosenRung; if (!k) return inp;
+    var m = /^(ltc|arv):(.+)$/.exec(String(k)); if (!m) return inp;
+    var v = parseFloat(m[2]); if (!(v > 0)) return inp;
+    if (m[1] === "arv") inp.targetARLTV = v; else inp.targetLTC = v;
+    return inp;
+  }
+
   function calcSilver() {
     var SV = (typeof SVP !== "undefined" && SVP) ? SVP : null;
     if (!SV) return null;
-    var inp = gather();
-    if (silverChosenLTC) inp.targetLTC = silverChosenLTC;
+    var inp = applySilverRung(gather());
     var R = SV.evaluate(inp);
     if (manualOn()) { if (R.status === "INELIGIBLE") R.status = "MANUAL"; R.exitShortfall = 0; }   // admin-priced basis
     var s = R.sizing || {};
@@ -675,10 +737,13 @@
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
-    var cashToClose = _sv.downPayment + excessOOP + closing;
+    var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_sv.downPayment + excessOOP + closing);
     var reserves = (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac) * reserveMonths(totalLoan);   // same liquidity buffer as Standard
     var closingBuffer = liqBufferWaived() ? 0 : Math.round(totalLoan * 0.01 * 100) / 100;   // 1% closing-cost buffer (owner-authorized 2026-07-31); waivable per file
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
+    // Total cost goes by the LOWER of the acquisition price and the as-is value
+    // (owner-directed 2026-08-05) — the engine's acqDenom. See calc().
+    var costAcq = (s.acqDenom > 0) ? s.acqDenom : basisPrice;
     return {
       R: R, inp: inp, silver: true, eff: basisPrice, basisPrice: basisPrice,
       constr: num("construction"), asg: asg, pricingReady: !!R.pricingReady,
@@ -690,7 +755,7 @@
       initialPayment: (_sv.oopRehab > 0 ? (initialAdvance * rFrac) : (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac)),
       fullPayment: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
       monthlyInterest: s.monthlyInterest || (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
-      totalCost: basisPrice + num("construction") + financedIRr,
+      totalCost: costAcq + num("construction") + financedIRr,
       downPayment: _sv.downPayment, excessOOP: excessOOP,
       oopRehab: _sv.oopRehab, maxOopRehab: _sv.maxOopRehab, initialCut: _sv.initialCut, maxInitial: _sv.maxInitial,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
@@ -771,7 +836,7 @@
     var stdCity = ready && !!d.cityReview;
     var stdSized = ready && d.totalLoan > 0 && d.status !== "INELIGIBLE" && !stdExit && !stdCity;
     YS.put("stdLoanBig", (stdExit || stdCity) ? "Manual" : (stdSized ? YS.fmtUSD(d.totalLoan) : ((ready && d.status !== "INELIGIBLE") ? "$0" : EM)));
-    YS.put("stdRateBig", (stdSized && d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
+    YS.put("stdRateBig", (stdSized && d.pricingReady && d.rate > 0) ? fmtRate3(d.rate) + "%" : EM);
     YS.put("stdOrigBig", stdSized ? cardUSD(d.origFee) : EM);
     YS.put("stdOrigPts", origPtStr(liveOrigPct()));
     setBadge("stdBadge", d.status, ready);
@@ -801,7 +866,7 @@
       var goldExit = ready && (G.exitShortfall > 0);   // costs>ARV is INELIGIBLE (kept for the explanatory sub-line)
       var gSized = ready && (gs.totalLoan > 0) && G.status !== "INELIGIBLE" && !goldExit;
       YS.put("goldLoanBig", gSized ? YS.fmtUSD(Math.floor(gs.totalLoan)) : ((ready && G.status !== "INELIGIBLE") ? "$0" : EM));
-      YS.put("goldRateBig", (gSized && G.pricingReady && G.noteRate > 0) ? (G.noteRate * 100).toFixed(2) + "%" : EM);
+      YS.put("goldRateBig", (gSized && G.pricingReady && G.noteRate > 0) ? fmtRate3(G.noteRate * 100) + "%" : EM);
       YS.put("goldOrigBig", gSized ? cardUSD(Math.floor(gs.totalLoan || 0) * adminOrigPct("gold")) : EM);
       YS.put("goldOrigPts", origPtStr(adminOrigPct("gold")));
       setBadge("goldBadge", G.status, ready);
@@ -811,7 +876,7 @@
 
     // ---- Silver card ----
     var SV = (typeof SVP !== "undefined" && SVP) ? SVP : null;
-    var sInp = gather(); if (silverChosenLTC) sInp.targetLTC = silverChosenLTC;
+    var sInp = applySilverRung(gather());
     var S = SV ? SV.evaluate(sInp) : null;
     var silverCard = el("pcardSilver");
     if (!S) {
@@ -826,7 +891,7 @@
       var silverGeo = ready && !!S.geoReview;
       var sSized = ready && (ss.totalLoan > 0) && S.status !== "INELIGIBLE" && !silverExit && !silverGeo;
       YS.put("silverLoanBig", silverGeo ? "Manual" : (sSized ? YS.fmtUSD(Math.floor(ss.totalLoan)) : ((ready && S.status !== "INELIGIBLE") ? "$0" : EM)));
-      YS.put("silverRateBig", (sSized && S.pricingReady && S.noteRate > 0) ? (S.noteRate * 100).toFixed(2) + "%" : EM);
+      YS.put("silverRateBig", (sSized && S.pricingReady && S.noteRate > 0) ? fmtRate3(S.noteRate * 100) + "%" : EM);
       YS.put("silverOrigBig", sSized ? cardUSD(Math.floor(ss.totalLoan || 0) * adminOrigPct("silver")) : EM);
       YS.put("silverOrigPts", origPtStr(adminOrigPct("silver")));
       setBadge("silverBadge", S.status, ready);
@@ -861,7 +926,7 @@
     } else {
       var mSized = ready && d.totalLoan > 0 && d.status !== "INELIGIBLE";
       YS.put("manLoanBig", mSized ? YS.fmtUSD(d.totalLoan) : ((ready && d.status !== "INELIGIBLE") ? "$0" : EM));
-      YS.put("manRateBig", (mSized && d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
+      YS.put("manRateBig", (mSized && d.pricingReady && d.rate > 0) ? fmtRate3(d.rate) + "%" : EM);
       YS.put("manOrigBig", mSized ? cardUSD(d.origFee) : EM);
       YS.put("manOrigPts", origPtStr(adminOrigPct("manual")));
       setBadge("manBadge", d.status, ready);
@@ -918,7 +983,7 @@
     var byLoan = live.slice().sort(function (a, b) { return b.loan - a.loan; });
     var parts = [];
     if (byRate.length > 1 && (byRate[1].rate - byRate[0].rate) > 0.00005)
-      parts.push("<strong>" + byRate[0].name + "</strong> has the <strong>lowest rate</strong> (" + (byRate[0].rate * 100).toFixed(2) + "%)");
+      parts.push("<strong>" + byRate[0].name + "</strong> has the <strong>lowest rate</strong> (" + fmtRate3(byRate[0].rate * 100) + "%)");
     if (byLoan.length > 1 && (byLoan[0].loan - byLoan[1].loan) > 500)
       parts.push("<strong>" + byLoan[0].name + "</strong> lends the <strong>most</strong> (" + YS.fmtUSD(byLoan[0].loan) + ")");
     var manuals = live.filter(function (p) { return p.manual; }).map(function (p) { return p.name; });
@@ -964,10 +1029,15 @@
     var ladder = isGold ? goldLadder() : (isSilver ? SVP.priceLadder(gather()) : YSP.priceLadder(gather()));
     if (!ladder.eligible || !ladder.rows.length) { wrap.style.display = "none"; return; }
     var rows = ladder.rows;
-    var ltcs = rows.map(function (r) { return r.ltc; });
-    var chosen = isGold ? goldChosenLTC : (isSilver ? silverChosenLTC : chosenLTC);
-    if (chosen && ltcs.indexOf(chosen) < 0) { if (isGold) goldChosenLTC = null; else if (isSilver) silverChosenLTC = null; else chosenLTC = null; chosen = null; }
-    var effIdx = chosen ? ltcs.indexOf(chosen) : 0;
+    // Silver is keyed on the RUNG, everything else on the LTC value (see silverChosenRung).
+    // The clamp matters on every recompute: a rung is only offered while it still buys a
+    // better rate, so changing a deal input can retire the very rung that was selected —
+    // an unfindable selection falls back to the deal's maximum rather than silently
+    // pricing on a step the ladder no longer offers.
+    var keys = rows.map(function (r) { return isSilver ? r.key : r.ltc; });
+    var chosen = isGold ? goldChosenLTC : (isSilver ? silverChosenRung : chosenLTC);
+    if (chosen && keys.indexOf(chosen) < 0) { if (isGold) goldChosenLTC = null; else if (isSilver) silverChosenRung = null; else chosenLTC = null; chosen = null; }
+    var effIdx = chosen ? keys.indexOf(chosen) : 0;
     if (effIdx < 0) effIdx = 0;
     var maxV = rows.length - 1, row = rows[effIdx];
     var slider = el("rLevSlider");
@@ -976,17 +1046,34 @@
     slider.disabled = rows.length <= 1;
     var lv = el("rLevVal"), hint = el("rLevHint");
     var progEl = el("rLevProg"); if (progEl) progEl.textContent = isGold ? "\u00b7 Gold Standard" : (isSilver ? "\u00b7 Silver" : (chosenProgram === "manual" ? "\u00b7 Manual" : "\u00b7 Standard"));
+    // On Silver the LOAN is the subject \u2014 the rung may have been earned on the value
+    // side, where the LTC is an OUTCOME rather than the thing that was dialled, so
+    // labelling every step "x% LTC" would name a number the borrower never chose.
     if (effIdx === 0) {
-      lv.textContent = "Maximum \u00b7 " + pctLbl(row.targetLtcPct) + " LTC";
+      lv.textContent = isSilver
+        ? ("Maximum \u00b7 " + YS.fmtUSD(Math.floor(row.totalLoan)))
+        : ("Maximum \u00b7 " + pctLbl(row.targetLtcPct) + " LTC");
       if (rows.length <= 1) {
         hint.innerHTML = isGold
           ? "This deal is already at its maximum leverage \u2014 there's no lower step to issue."
-          : ("This deal is already at its lowest (best-priced) tier" + (ladder.binding ? (" \u2014 leverage is capped by " + ladder.binding) : "") + ", so lowering leverage further won't reduce the rate.");
+          : (isSilver
+            ? ("This deal is already priced at its best available step" + (ladder.binding ? (" \u2014 the loan is capped by " + ladder.binding) : "") + ", so taking a smaller loan won't reduce the rate.")
+            : ("This deal is already at its lowest (best-priced) tier" + (ladder.binding ? (" \u2014 leverage is capped by " + ladder.binding) : "") + ", so lowering leverage further won't reduce the rate."));
       } else {
         hint.innerHTML = isGold
           ? "You're at <b>maximum leverage</b>. Drag left to issue a term sheet with <b>less leverage</b> \u2014 a smaller loan and more cash down. Gold's rate is the same at every step."
-          : "You're at <b>maximum leverage</b> \u2014 the largest loan this deal supports. Drag the slider left to take less leverage and earn a lower rate.";
+          : (isSilver
+            ? "You're at the <b>largest loan this deal supports</b>. Drag the slider left to step down to a smaller loan that prices better \u2014 every step is a real price break, earned on cost or on value."
+            : "You're at <b>maximum leverage</b> \u2014 the largest loan this deal supports. Drag the slider left to take less leverage and earn a lower rate.");
       }
+    } else if (isSilver) {
+      var sMax = rows[0], sDelta = (sMax.noteRate - row.noteRate) * 100;
+      var sSide = row.cut === "arv" ? "Value cut" : "Cost cut";
+      lv.textContent = YS.fmtUSD(Math.floor(row.totalLoan)) + " \u00b7 " + sSide.toLowerCase();
+      hint.innerHTML = "<b>" + sSide + " \u2014 smaller loan, lower rate.</b> The loan is <b>" + YS.fmtUSD(Math.floor(row.totalLoan)) +
+        "</b> at <b>" + fmtRate3(row.noteRate * 100) + "%</b> \u2014 " + sDelta.toFixed(2) + "% below the maximum. Cost (LTC) " +
+        pctLbl(row.targetLtcPct) + ", value (ARV) " + pctLbl(row.arvPct) + ", cash down " + YS.fmtUSD(Math.floor(row.downPayment)) +
+        ". Drag right for a bigger loan.";
     } else {
       lv.textContent = pctLbl(row.targetLtcPct) + " LTC";
       if (isGold) {
@@ -995,7 +1082,7 @@
       } else {
         var maxRow = rows[0], delta = (maxRow.noteRate - row.noteRate) * 100;
         hint.innerHTML = "<b>Lower leverage, lower rate.</b> At " + pctLbl(row.targetLtcPct) +
-          " LTC your rate is <b>" + (row.noteRate * 100).toFixed(2) + "%</b> \u2014 " + delta.toFixed(2) +
+          " LTC your rate is <b>" + fmtRate3(row.noteRate * 100) + "%</b> \u2014 " + delta.toFixed(2) +
           "% below the maximum-leverage rate. Loan " + YS.fmtUSD(Math.floor(row.totalLoan)) +
           ", cash down " + YS.fmtUSD(Math.floor(row.downPayment)) + ". Drag right for more leverage.";
       }
@@ -1082,12 +1169,38 @@
     } catch (e) { finish(false); }
   }
   function adminNum(id, dflt) { var e = el(id); if (!e) return dflt; var v = parseFloat(String(e.value).replace(/,/g, "")); return (isFinite(v) && v >= 0) ? v : dflt; }
-  // Read the admin markup fields (default 0.5% each; Gold Tier 1 is exempt in-engine) and push into both engines.
+  // Build the per-tier markup map (fractions) for a program from the company
+  // defaults (percents in CO.markupTiers). Returns null when nothing is set for
+  // that program → the engine keeps its historic per-tier behavior for it.
+  function tierMapFor(prog) {
+    var src = (CO.markupTiers && CO.markupTiers[prog]) || null;
+    var out = null;
+    if (src) {
+      for (var t = 1; t <= 3; t++) {
+        var v = src[t] != null ? src[t] : src[String(t)];
+        if (v != null && v !== "" && isFinite(Number(v)) && Number(v) >= 0) { out = out || {}; out[t] = Number(v) / 100; }
+      }
+    }
+    return out;
+  }
+  // Read the admin markup fields (default 0.5% each) and push into every engine.
+  // Item 15: ALSO push the per-experience-tier markup overlay — the company
+  // per-tier defaults, plus the studio's manual GOLD top-tier field — so the
+  // studio prices exactly what would register. null keeps the historic per-tier
+  // behavior (Gold Tier 1 = 0). setMarkupTiers is set on EVERY sync (never left
+  // stale), so an unconfigured studio prices byte-for-byte as before.
   function syncAdminMarkup() {
     var std = adminNum("tsYspStd", CO.markupStd), gold = adminNum("tsYspGold", CO.markupGold), silver = adminNum("tsYspSilver", CO.markupSilver);
     try { if (typeof YSP !== "undefined" && YSP.setMarkup) YSP.setMarkup(std / 100); } catch (e) {}
     try { if (typeof GSP !== "undefined" && GSP && GSP.setMarkup) GSP.setMarkup(gold / 100); } catch (e) {}
     try { if (typeof SVP !== "undefined" && SVP && SVP.setMarkup) SVP.setMarkup(silver / 100); } catch (e) {}
+    var stdT = tierMapFor("standard"), goldT = tierMapFor("gold"), silvT = tierMapFor("silver");
+    // The studio's manual Gold top-tier field overlays the company default for Gold Tier 1.
+    var goldT1 = adminNumRaw("tsYspGoldT1");
+    if (goldT1 != null) { goldT = goldT || {}; goldT[1] = goldT1 / 100; }
+    try { if (typeof YSP !== "undefined" && YSP.setMarkupTiers) YSP.setMarkupTiers(stdT); } catch (e) {}
+    try { if (typeof GSP !== "undefined" && GSP && GSP.setMarkupTiers) GSP.setMarkupTiers(goldT); } catch (e) {}
+    try { if (typeof SVP !== "undefined" && SVP && SVP.setMarkupTiers) SVP.setMarkupTiers(silvT); } catch (e) {}
   }
   // Admin fee/origination overrides. Defaults reproduce current behavior exactly.
   // MANUAL has its own knob (owner-reported 2026-07-30: "we don't have a word to
@@ -1324,10 +1437,20 @@
       }
     }
     var ovrOn = (adminNumRaw("tsMLtc") != null || adminNumRaw("tsMLtv") != null || adminNumRaw("tsMArv") != null);
-    var chosen = d && d.silver ? silverChosenLTC : (d && d.gold ? goldChosenLTC : chosenLTC);
+    var chosen = d && d.silver ? silverChosenRung : (d && d.gold ? goldChosenLTC : chosenLTC);
+    // A Silver step can be earned on EITHER axis, so ask whether the ceiling moved on
+    // the axis this rung actually cut — testing only the LTC would stay silent about a
+    // value-side step the user deliberately picked, and fall through to the generic
+    // "the program prices a lower band" sentence, which credits the program for the
+    // borrower's own choice.
+    var choseLower = !!chosen && !!eff && !!tier &&
+      ((eff.maxLTC < tier.maxLTC - 1e-9) ||
+       (d && d.silver && eff.maxARLTV < tier.maxARLTV - 1e-9));
     if (ovrOn) out.push("An approved exception sets the leverage basis for this deal, so it is priced on that basis rather than the program maximum.");
-    else if (chosen && eff && tier && eff.maxLTC < tier.maxLTC - 1e-9)
-      out.push("You have chosen to take less leverage than the program allows (the leverage slider), which is what lowered this deal's ceiling.");
+    else if (choseLower)
+      out.push(d && d.silver
+        ? "You have chosen a smaller loan than the program allows (the pricing ladder), which is what lowered this deal's ceiling."
+        : "You have chosen to take less leverage than the program allows (the leverage slider), which is what lowered this deal's ceiling.");
     if (!out.length) out.push("On this deal the program prices a lower leverage band than the tier maximum. The tier maximum itself has not changed.");
     out.push("The program maximum above is set by the tier (your FICO and experience) and does not change when you change the deal — including the interest reserve.");
     return out.join(" ");
@@ -1404,6 +1527,7 @@
     function lockDown() {
       if (panel) panel.hidden = true; if (lock) lock.hidden = true; trig.hidden = false; trig.setAttribute("aria-expanded", "false");
       setVal("tsYspStd", String(CO.markupStd)); setVal("tsYspGold", String(CO.markupGold)); setVal("tsYspSilver", String(CO.markupSilver)); setVal("tsOrigStd", String(CO.origStd)); setVal("tsOrigGold", String(CO.origGold)); setVal("tsOrigSilver", String(CO.origSilver)); setVal("tsOrigManual", "");   // blank = follow Standard (it has no default of its own)
+      setVal("tsYspGoldT1", "");   // blank = Gold top tier keeps its normal (0 / company-default) markup
       setVal("tsFeeUW", String(CO.lender)); setVal("tsFeeCredit", String(CO.credit)); setVal("tsFeeAppr", String(CO.appraisal)); setVal("tsFeeTitle", CO.title != null ? String(CO.title) : "");
       var mo = el("tsManualOn"); if (mo) mo.checked = false;
       setVal("tsMLtv", ""); setVal("tsMArv", ""); setVal("tsMLtc", ""); setVal("tsMRate", ""); setVal("tsMIr", "");
@@ -1424,7 +1548,40 @@
     var mOn = el("tsManualOn"); if (mOn) mOn.addEventListener("change", manualVis);   // recompute comes from the form auto-wiring
   }
 
+  /* THE LADDER RUNG SURVIVES A REOPEN (owner-directed 2026-08-07).
+     The chosen rung lives ONLY in the module-scope vars above, which reset to null
+     every time this iframe loads — so reopening a registered file put the slider back
+     at MAXIMUM, and the mandatory post-appraisal re-register (esign/gate.js requires
+     one before a term sheet may issue) then registered that maximum. Measured: a
+     signed $1,794,000 at 8.500% came back as $2,070,000 at 9.125% — +$276,000 and
+     +62.5bps above the paper, with no approval and no record.
+
+     So the portal hands the selection back in a hidden field and it is adopted ONCE.
+     The field is BLANKED on adoption: without that, dragging the slider to maximum
+     would be undone on the next recompute, which is the same class of bug pointing
+     the other way. A rung the current ladder no longer offers is simply not found by
+     renderLeverage's clamp and falls back to the maximum, which is correct. */
+  var ladderPickAdopted = false;
+  function adoptLadderPick() {
+    var e = el("tsLadderPick");
+    if (!e || !e.value) return;
+    var raw = String(e.value).trim();
+    e.value = "";                                   // one-shot: never fight the user
+    ladderPickAdopted = true;
+    if (!raw) return;
+    var m = /^(ltc|arv):(.+)$/.exec(raw);
+    if (m) {                                        // Silver is keyed by rung
+      silverChosenRung = raw;
+      var v = parseFloat(m[2]);
+      if (m[1] === "ltc" && v > 0) { chosenLTC = v; goldChosenLTC = v; }
+      return;
+    }
+    var n = parseFloat(raw);                        // Standard / Gold carry an LTC value
+    if (n > 0) { chosenLTC = n; goldChosenLTC = n; silverChosenRung = "ltc:" + n; }
+  }
+
   function recompute() {
+    adoptLadderPick();
     syncAdminMarkup();
     syncManualOrigHint();          // a blank Manual field hints the Standard value it will use
     updateConditionals();
@@ -1488,7 +1645,7 @@
     }
     YS.put("rHoldback", sized ? YS.fmtUSD(d.rehabHoldback) : EM);
     var hbTag = el("rHoldbackTag"); if (hbTag) hbTag.textContent = (d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "(capped \u2014 see eligibility)" : ((sized && d.oopRehab > 0) ? "(financed portion, in draws)" : "(= rehab, in draws)");
-    YS.put("rRate", (sized && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
+    YS.put("rRate", (sized && d.rate > 0) ? fmtRate3(d.rate) + "%" : EM);
     // two interest-only payment lines: initial-advance payment + fully-drawn payment
     YS.put("rPmtInit", (sized && d.initialPayment > 0) ? YS.fmtUSD(d.initialPayment) + "/mo" : EM);
     YS.put("rPmtFull", (sized && d.fullPayment > 0) ? YS.fmtUSD(d.fullPayment) + "/mo" : EM);
@@ -1507,6 +1664,23 @@
       if (w) { if (xf.length) { w.style.display = ""; var t = xf.reduce(function (a2, f) { return a2 + f.amount; }, 0);
         YS.put("rExtraLbl", xf.length === 1 ? xf[0].name : "Additional fees"); YS.put("rExtra", YS.fmtUSD2(t)); } else { w.style.display = "none"; } } })();
     YS.put("rCash", sized ? YS.fmtUSD2(d.cashToClose) : EM);
+    /* ON-SCREEN refinance cash-to-close, matching the PDF: hide the purchase
+       "Down payment" row on a refi, and on a RATE-AND-TERM show the existing-loan
+       payoff and the funds advanced so the visible line items sum to the shown
+       cash-to-close (the PDF/xlsx already reconcile; the panel did not). A cash-out
+       shows neither row — cash-to-close is $0 and the "cash to you" figure lives in
+       the refinance note below (owner-directed 2026-08-04). */
+    (function () {
+      var refi = isRefi(), rt = refi && !isCashOut() && num("payoff") > 0;
+      var row = function (wrapId, valId, show, v) {
+        var w = el(wrapId); if (!w) return;
+        w.style.display = show ? "" : "none";
+        if (show && valId) YS.put(valId, v);
+      };
+      row("rDownWrap", null, !refi);
+      row("rRefiPayoffWrap", "rRefiPayoff", sized && rt, YS.fmtUSD(num("payoff")));
+      row("rRefiAdvWrap", "rRefiAdv", sized && rt, "−" + YS.fmtUSD(fundedAtClose(d)));
+    })();
     YS.put("rLiquidity", sized ? YS.fmtUSD2(d.liquidity) : EM);
     // 1% closing-cost buffer inside the liquidity to show (owner-authorized
     // 2026-07-31) — the amount, or "Waived" when the portal host waived it.
@@ -1730,7 +1904,10 @@
            states the payoff and stops \u2014 quoting a "cash to you" figure there would
            invite exactly the cash-out the structure is not. */
         if (payoff > 0) {
-          var netOut = structuralCashOut(d);
+          // cashOutOfRecord (typed override, else structural) — the SAME figure the
+          // PDF and the cash-out box print, so the on-screen note can never show a
+          // different "cash to you" than the sheet (owner-directed 2026-08-04).
+          var netOut = cashOutOfRecord(d);
           refiTxt += " On this deal, the new loan of " + YS.fmtUSD(d.totalLoan) + " pays off " + YS.fmtUSD(payoff) + payoffWhoTxt() + ".";
           if (isCashOut()) {
             refiTxt += " Of that loan, " + YS.fmtUSD(fundedAtClose(d)) + " funds at the closing table; after the payoff and " + YS.fmtUSD(d.closing || 0) + " of closing costs, cash to you \u2248 <strong>" + YS.fmtUSD(netOut) + "</strong>.";
@@ -1861,7 +2038,12 @@
       ["Borrower / entity", borrowerOfRecord() || EM]
     ];
     var costs = [
-      ["Purchase price", num("price") ? money(num("price")) : EM],
+      // A REFINANCE has no purchase price — it is sized on the as-is value (shown on
+      // the next row). Every other surface (studio detail, PDF, deal-profile) drops
+      // the purchase-price row on a refi; the xlsx alone kept it, and because `price`
+      // is not cleared on switching to refinance it could print a stale figure
+      // (owner-directed 2026-08-04).
+      isRefi() ? null : ["Purchase price", num("price") ? money(num("price")) : EM],
       ["Construction / rehab budget", money(num("construction"))],
       ["As-is value", num("asIs") ? money(num("asIs")) : EM],
       ["After-repair value (ARV)", num("arv") ? money(num("arv")) : EM],
@@ -1886,7 +2068,7 @@
     var std = [
       ["Status", statusLabel(d.status)],
       ["Loan amount", (stdExit || stdCity) ? "Manual review" : (stdOk && d.totalLoan ? money(d.totalLoan) : EM)],
-      ["Note rate", (stdOk && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM],
+      ["Note rate", (stdOk && d.rate > 0) ? fmtRate3(d.rate) + "%" : EM],
       minInterestOn("standard") ? ["Minimum interest", MIN_INTEREST_ROW] : null,
       ["Interest accrual", accrualLabel()],
       (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("standard").join("; ")],
@@ -1897,7 +2079,7 @@
       // the derivation page and the registration all carry. It is NOT months x payment, and
       // it differs per program, which is why every section states its own (2026-07-30).
       ["Financed interest reserve", stdOk ? money(d.financedIR) : EM],
-      ["Down payment (equity)", stdOk ? money(d.downPayment) : EM],
+      isRefi() ? null : ["Down payment (equity)", stdOk ? money(d.downPayment) : EM],
       ["Leverage \u2014 LTC / as-is / ARV", stdOk ? (pct(d.ltcPct) + " / " + pct(d.ltvPct) + " / " + pct(d.arvPct)) : EM],
       xlsxTierMaxRow(d, pct), xlsxPricedRow(d, pct),
       ["Origination (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")", (stdOk && d.totalLoan) ? money2(d.origFee) : EM],
@@ -1918,7 +2100,7 @@
         ["Status", statusLabel(gd.status)],
         ["Product", (gd.productLabel || EM) + (gd.tierLabel ? " \u00b7 " + gd.tierLabel : "")],
         ["Loan amount", gExit ? "Manual review" : (gOk && gd.totalLoan ? money(gd.totalLoan) : EM)],
-        ["Note rate", (gOk && gd.rate > 0) ? gd.rate.toFixed(2) + "%" : EM],
+        ["Note rate", (gOk && gd.rate > 0) ? fmtRate3(gd.rate) + "%" : EM],
         minInterestOn("gold") ? ["Minimum interest", MIN_INTEREST_ROW] : null,
         ["Interest accrual", accrualLabel()],
         (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("gold").join("; ")],
@@ -1926,7 +2108,7 @@
         ["Rehab / construction holdback", gOk ? money(gd.rehabHoldback) : EM],
         (gOk && gd.oopRehab > 0) ? ["Out-of-pocket rehab (funded over construction)", money(gd.oopRehab)] : null,
         ["Financed interest reserve", gOk ? money(gd.financedIR) : EM],
-        ["Down payment (equity)", gOk ? money(gd.downPayment) : EM],
+        isRefi() ? null : ["Down payment (equity)", gOk ? money(gd.downPayment) : EM],
         ["Leverage \u2014 LTC / as-is / ARV", gOk ? (pct(gd.ltcPct) + " / " + pct(gd.ltvPct) + " / " + pct(gd.arvPct)) : EM],
         xlsxTierMaxRow(gd, pct), xlsxPricedRow(gd, pct),
         ["Origination (" + origPctStr((gd.origPct != null ? gd.origPct : 0.0125)) + ")", (gOk && gd.totalLoan) ? money2(gd.origFee) : EM],
@@ -1961,7 +2143,7 @@
       silver = [
         ["Status", statusLabel(sd.status)],
         ["Loan amount", (sExit || sGeo) ? "Manual review" : (sOk && sd.totalLoan ? money(sd.totalLoan) : EM)],
-        ["Note rate", (sOk && sd.rate > 0) ? sd.rate.toFixed(2) + "%" : EM],
+        ["Note rate", (sOk && sd.rate > 0) ? fmtRate3(sd.rate) + "%" : EM],
         minInterestOn("silver") ? ["Minimum interest", MIN_INTEREST_ROW] : null,
         ["Interest accrual", accrualLabel()],
         (YSP.normStrategy(dealType()) === "BR") ? null : ["Draw fee", drawFeeLines("silver").join("; ")],
@@ -1969,7 +2151,7 @@
         ["Rehab / construction holdback", sOk ? money(sd.rehabHoldback) : EM],
         (sOk && sd.oopRehab > 0) ? ["Out-of-pocket rehab (funded over construction)", money(sd.oopRehab)] : null,
         ["Financed interest reserve", sOk ? money(sd.financedIR) : EM],
-        ["Down payment (equity)", sOk ? money(sd.downPayment) : EM],
+        isRefi() ? null : ["Down payment (equity)", sOk ? money(sd.downPayment) : EM],
         ["Leverage — LTC / as-is / ARV", sOk ? (pct(sd.ltcPct) + " / " + pct(sd.ltvPct) + " / " + pct(sd.arvPct)) : EM],
         xlsxTierMaxRow(sd, pct), xlsxPricedRow(sd, pct),
         ["Origination (" + origPctStr((sd.origPct != null ? sd.origPct : 0.0125)) + ")", (sOk && sd.totalLoan) ? money2(sd.origFee) : EM],
@@ -1987,6 +2169,21 @@
         if (svi > -1) Array.prototype.splice.apply(silver, [svi, 0].concat(sd.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
       }
     }
+    // REFINANCE: reconcile each block's fee list to cash-to-close by naming the
+    // existing-loan payoff and the funds advanced at closing (owner-directed
+    // 2026-08-04) — otherwise a refi's fees sum to closing costs while cash-to-close
+    // includes the payoff shortfall, which looks like an error.
+    if (isRefi() && !isCashOut() && num("payoff") > 0) {
+      [[std, d, stdOk], [gold, gd, (gd && !gd.unavailable && gOk)], [silver, sd, (sd && sOk)]].forEach(function (pr) {
+        var rows = pr[0], dd = pr[1], ok = pr[2];
+        if (!ok || !dd) return;
+        var i = rows.findIndex(function (r) { return r && r[0] === "Estimated cash to close"; });
+        if (i > -1) Array.prototype.splice.apply(rows, [i, 0].concat([
+          ["Existing loan payoff", money(num("payoff"))],
+          ["Less funds advanced at closing (initial advance)", "−" + money(fundedAtClose(dd))]
+        ]));
+      });
+    }
     // Some rows are conditional (min-interest, deferred fee) and come through as
     // null — drop them so the Excel writer never dereferences a null pair.
     // With a structural manual basis engaged, the "Standard" block IS the Manual
@@ -1994,7 +2191,7 @@
     // the admin basis) — title it honestly so the export never claims a Standard
     // registration the server wouldn't record.
     var stdTitle = manualBasisOn() ? "Manual Program (admin-set basis)" : "Standard Program";
-    return [{ title: "Deal & property", items: deal.filter(Boolean) }, { title: "Purchase & project costs", items: costs.filter(Boolean) },
+    return [{ title: "Deal & property", items: deal.filter(Boolean) }, { title: isRefi() ? "Property & project costs" : "Purchase & project costs", items: costs.filter(Boolean) },
             { title: stdTitle, items: std.filter(Boolean) }, { title: "Gold Standard Program", items: gold.filter(Boolean) },
             { title: "Silver Program", items: silver.filter(Boolean) }];
   }
@@ -2105,6 +2302,36 @@
       lines[k] = t + "...";
     }
     return { fs: fs, lines: lines };
+  }
+  /* ---------- a ONE-LINE slot: keep the meaning, shorten only the address -----
+     The recipient block's "Property: <address>   .   Valid through <date>" is a
+     single baseline that cannot stack (the "Prepared by" block sits 10.5pt
+     under it), so the fix here is the other half of the same family: shorten
+     the ADDRESS and keep the head and the "Valid through" tail WHOLE, because
+     the expiry is the legally meaningful part of that line.
+     The ladder mirrors the blessed one in src/lib/esign/orchestrate.js
+     fitAddress (drop the ZIP -> drop trailing parts -> ellipsis), measured in
+     PIXELS here rather than characters. A line that already fits is returned
+     byte-for-byte unchanged. */
+  function fitOneLine(doc, head, addr, tail, maxW, font, style, size) {
+    doc.setFont(font, style); doc.setFontSize(size);
+    var line = function (a) { return head + a + tail; };
+    if (doc.getTextWidth(line(addr)) <= maxW) return line(addr);
+    var parts = String(addr || "").split(",").map(function (p) { return p.trim(); }).filter(Boolean);
+    var cands = [];
+    if (parts.length > 1) {
+      var last = parts[parts.length - 1].replace(/\s+\d{5}(?:-\d{4})?$/, "").trim();   // the ZIP goes first
+      cands.push(parts.slice(0, -1).concat(last ? [last] : []).join(", "));
+      for (var n = parts.length - 1; n >= 1; n--) cands.push(parts.slice(0, n).join(", "));
+    }
+    for (var i = 0; i < cands.length; i++) if (doc.getTextWidth(line(cands[i])) <= maxW) return line(cands[i]);
+    var t = parts[0] || String(addr || "");                                            // last resort: clamp the street
+    while (t.length > 1 && doc.getTextWidth(line(t + "...")) > maxW) t = t.slice(0, -1);
+    var out = line(t + "...");
+    if (doc.getTextWidth(out) <= maxW) return out;
+    var w = line("");                                                                  // even the head + tail overflow
+    while (w.length > 1 && doc.getTextWidth(w + "...") > maxW) w = w.slice(0, -1);
+    return w + "...";
   }
   function flash(msg) {
     var t = el("ts-toast"); if (!t) { t = document.createElement("div"); t.id = "ts-toast"; t.className = "ys-toast"; document.body.appendChild(t); }
@@ -2357,14 +2584,15 @@
             ? (_gi.waived ? ("Borrower: " + _tsIndiv0 + "  \u00b7  Co-borrower (non-guarantor member): " + _tsCo0) : ("Borrower & co-borrower: " + _gi.list))
             : "Individual borrower");
       var purposeLabel = isRefi() ? (isCashOut() ? "Cash-out refinance" : "Rate & term refinance") : "Purchase";
-      var where = chk("addrTBD") ? "Property: To be determined" : ("Property: " + (val("propAddr") || "\u2014") + (val("propState") ? ", " + val("propState") : ""));
+      var whereHead = chk("addrTBD") ? "Property: To be determined" : "Property: ";
+      var whereAddr = chk("addrTBD") ? "" : ((val("propAddr") || "\u2014") + (val("propState") ? ", " + val("propState") : ""));
       doc.setFont("helvetica", "bold"); doc.setFontSize(11.5); doc.setTextColor.apply(doc, DARK); doc.text(pdfSafe(primaryName), M, y);
       doc.setFont("helvetica", "bold"); doc.setFontSize(8.3); doc.setTextColor.apply(doc, GOLD); doc.text(pdfSafe(progName), W - M, y, { align: "right" });
       y += 12.5;
       doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(partiesSub), M, y);
       doc.text(pdfSafe(purposeLabel + "  \u00b7  " + prettyStrategy(d.inp.strategy)), W - M, y, { align: "right" });
       y += 12.5;
-      doc.text(pdfSafe(where + "   \u00b7   Valid through " + fmtD(exp)), M, y);
+      doc.text(fitOneLine(doc, pdfSafe(whereHead), pdfSafe(whereAddr), pdfSafe("   \u00b7   Valid through " + fmtD(exp)), W - 2 * M, "helvetica", "normal", 8), M, y);
       // Loan-officer branding (owner-directed 2026-07-31): a "Prepared by" block
       // as the right column of the recipient area \u2014 name (bold), role, NMLS,
       // phone, email at 7pt GRAY. Only when window.YSBRAND carries a name; an
@@ -2415,7 +2643,7 @@
       doc.setFont("helvetica", "bold"); doc.setFontSize(8.4); doc.setTextColor.apply(doc, d.pricingReady ? pillC : [150, 156, 150]); doc.text(pdfSafe(d.pricingReady ? stTxt : "Awaiting FICO score"), M + 16, y + 55);
       var rx = W - M - 16;
       doc.setFont("helvetica", "normal"); doc.setFontSize(7.2); doc.setTextColor(176, 184, 186); doc.text("NOTE RATE (INTEREST-ONLY)", rx, y + 17, { align: "right", charSpace: 0.5 });
-      doc.setFont("times", "bold"); doc.setFontSize(17); doc.setTextColor(244, 240, 231); doc.text((d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : "\u2014", rx, y + 40, { align: "right" });
+      doc.setFont("times", "bold"); doc.setFontSize(17); doc.setTextColor(244, 240, 231); doc.text((d.pricingReady && d.rate > 0) ? fmtRate3(d.rate) + "%" : "\u2014", rx, y + 40, { align: "right" });
       doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(176, 184, 186); doc.text(d.term + "-month term \u00b7 " + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + " origination", rx, y + 55, { align: "right" });
       y += heroH + 16;
 
@@ -2487,6 +2715,19 @@
       yR = rowIn(xR, colW, "Appraisal (est., POC)", sized ? money2(d.apprFee) : "\u2014", yR);
       yR = rowIn(xR, colW, "Title / escrow / settlement (est.)", sized && d.titleCost > 0 ? money2(d.titleCost) : "\u2014", yR);
       if (sized && d.extraFees) d.extraFees.forEach(function (f) { yR = rowIn(xR, colW, f.name, money2(f.amount), yR); });
+      // REFINANCE: the borrower brings the existing-loan payoff, less the funds that
+      // advance at closing (the initial advance), on top of the closing costs above.
+      // These two rows make the section reconcile to the cash-to-close total
+      // (fees + payoff \u2212 funds advanced). Owner-directed 2026-08-04.
+      // ONLY rate-and-term: there the borrower brings a positive shortfall, so
+      // "fees + payoff \u2212 funds advanced = cash to close" reconciles. On a CASH-OUT
+      // the funds advanced exceed payoff + closing, so cash-to-close is $0 and these
+      // two rows would sum NEGATIVE against it; the cash-out already carries its own
+      // "cash to you" line in the loan-structure column (owner-directed 2026-08-04).
+      if (isRefi() && !isCashOut() && sized && num("payoff") > 0) {
+        yR = rowIn(xR, colW, "Existing loan payoff", money(num("payoff")), yR);
+        yR = rowIn(xR, colW, "Less funds advanced at closing (initial advance)", "\u2212" + money(fundedAtClose(d)), yR);
+      }
       if (!isRefi()) yR = rowIn(xR, colW, "Down payment (equity)", sized ? money(d.downPayment) : "\u2014", yR, { bold: true });
       if (d.excessOOP > 0) yR = rowIn(xR, colW, ((d.asg && d.asg.dollarCap) ? "Assignment over cap (out of pocket)" : "Assignment over 15% (out of pocket)"), money(d.excessOOP), yR);
       yR = rowIn(xR, colW, "Estimated cash to close", sized ? money2(d.cashToClose) : "\u2014", yR, { bold: true, accent: true });
@@ -2633,7 +2874,9 @@
         y += 92; footer();
       }
 
-      // ---------------- FINAL PAGE: leverage / pricing ladder (STANDARD PROGRAM ONLY) ----------------
+      // ---------------- FINAL PAGE: the pricing ladder (STANDARD *and* SILVER) ----------------
+      // Silver joined this page on 2026-08-06 and renders its OWN columns below — the
+      // heading said "STANDARD PROGRAM ONLY" for a while after that was no longer true.
       // The Gold Standard Program prices a flat rate that does NOT vary by leverage, so there is no
       // per-LTC pricing ladder and this page must never render for Gold.
       // Suppress the ladder on a manual admin exception too — the overridden basis
@@ -2644,12 +2887,28 @@
       if (!d.gold && !ladderOverridden && lad.eligible && lad.rows.length) {
         doc.addPage(); header(); y = 92;
         doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor.apply(doc, DARK);
-        doc.text("Your pricing at every leverage level", M, y);
+        doc.text(d.silver ? "Your pricing at every step down" : "Your pricing at every leverage level", M, y);
         doc.setDrawColor.apply(doc, GOLD); doc.setLineWidth(1.3); doc.line(M, y + 5.5, M + 42, y + 5.5);   // gold rule under the heading
         y += 16;
-        para("Lower leverage means less risk to the lender \u2014 so it earns a lower rate. The table shows the loan amount, cash to close and note rate at each leverage step this scenario supports. The highlighted row is the option you selected; taking less leverage trades a smaller loan for a better rate.");
+        /* SILVER READS DIFFERENTLY BECAUSE IT PRICES DIFFERENTLY (owner-directed
+           2026-08-06). EMCAP prices on BOTH the cost ratio and the value ratio, so a
+           step down can be earned on either side and each row must show both — a row
+           that displayed only the LTC would misrepresent what bought the rate. Every
+           row is a REAL price improvement (the ladder never offers a step that buys
+           nothing), and each is the LARGEST loan at that rate. */
+        para(d.silver
+          ? "A smaller loan earns a better rate. Each row below is a real price improvement \u2014 and is the largest loan that earns that rate, so you never give up more than you have to. A step can come from the cost side or the value side; the \u201cStep\u201d column says which, and both ratios are shown because moving one moves the other. The highlighted row is the option you selected."
+          : "Lower leverage means less risk to the lender \u2014 so it earns a lower rate. The table shows the loan amount, cash to close and note rate at each leverage step this scenario supports. The highlighted row is the option you selected; taking less leverage trades a smaller loan for a better rate.");
         var tW = W - 2 * M;
-        var cols = [
+        var cols = d.silver ? [
+          { t: "Step", w: 0.15, a: "l" },
+          { t: "Loan amount", w: 0.17, a: "r" },
+          { t: "Initial advance", w: 0.17, a: "r" },
+          { t: "Cost (LTC)", w: 0.12, a: "r" },
+          { t: "Value (ARV)", w: 0.12, a: "r" },
+          { t: "Payment / mo", w: 0.14, a: "r" },
+          { t: "Note rate", w: 0.13, a: "r" }
+        ] : [
           { t: "Leverage (LTC)", w: 0.26, a: "l" },
           { t: "Loan amount", w: 0.20, a: "r" },
           { t: "Cash down", w: 0.18, a: "r" },
@@ -2664,22 +2923,35 @@
         var cx = M;
         cols.forEach(function (c) { var w = c.w * tW; doc.text(c.t, c.a === "r" ? cx + w - 7 : cx + 7, hy + 14, { align: c.a === "r" ? "right" : "left", charSpace: 0.3 }); cx += w; });
         var ry = hy + 22;
-        // The highlighted rung must be the one THIS program's slider selected —
-        // reading the Standard slider's chosenLTC on a Silver sheet highlighted a
-        // row the borrower never picked (and vice versa). Dispatch exactly like
-        // renderLeverage does. Silver's top rung carries ltc 0 (its "no targetLTC
-        // / true maximum" marker), which is also what an unset slider resolves to.
-        var selLtc = (d.silver ? silverChosenLTC : (d.gold ? goldChosenLTC : chosenLTC)) || lad.rows[0].ltc;
+        /* WHICH ROW IS HIGHLIGHTED IS A CLAIM ON A DOCUMENT THAT GOES OUT FOR
+           SIGNATURE, so it is matched on the rung's own IDENTITY, never on a number
+           two rungs can share. Silver's slider stores the rung KEY, so its selected
+           row is an exact string match (an unset slider = the top rung). Standard
+           and Gold still store an LTC value and are matched numerically, exactly as
+           before. Dispatching by program also matters on its own: reading the
+           Standard slider's chosenLTC on a Silver sheet used to highlight a row the
+           borrower never picked, and vice versa. */
+        var selKey = d.silver ? (silverChosenRung || lad.rows[0].key) : null;
+        var selLtc = d.silver ? null : ((d.gold ? goldChosenLTC : chosenLTC) || lad.rows[0].ltc);
         lad.rows.forEach(function (r, i) {
-          var rowH = 20, isSel = Math.abs(r.ltc - selLtc) < 1e-9;
+          var rowH = 20;
+          var isSel = d.silver
+            ? (r.key === selKey)
+            : (r.ltc == null ? false : Math.abs(r.ltc - selLtc) < 1e-9);
           if (isSel) { doc.setFillColor.apply(doc, GOLD); doc.rect(M, ry, tW, rowH, "F"); }
           else if (i % 2) { doc.setFillColor(244, 240, 231); doc.rect(M, ry, tW, rowH, "F"); }
           doc.setFont("helvetica", isSel ? "bold" : "normal"); doc.setFontSize(8.6);
           doc.setTextColor.apply(doc, isSel ? [20, 27, 34] : DARK);
-          var vals = [
+          var vals = d.silver ? [
+            r.isMax ? "Maximum" : (r.cut === "arv" ? "Value cut" : "Cost cut"),
+            money(Math.floor(r.totalLoan)), money(Math.floor(r.initialAdvance)),
+            pc(r.targetLtcPct), pc(r.arvPct),
+            money(Math.floor(r.totalLoan) * (r.noteRate / 12)) + "/mo",
+            fmtRate3(r.noteRate * 100) + "%"
+          ] : [
             pc(r.targetLtcPct) + (r.isMax ? "  (maximum)" : ""),
             money(Math.floor(r.totalLoan)), money(Math.floor(r.downPayment)), money(Math.floor(r.totalLoan) * (r.noteRate / 12)) + "/mo",
-            (r.noteRate * 100).toFixed(2) + "%"
+            fmtRate3(r.noteRate * 100) + "%"
           ];
           var cx2 = M;
           cols.forEach(function (c, ci) { var w = c.w * tW; doc.text(vals[ci], c.a === "r" ? cx2 + w - 7 : cx2 + 7, ry + 13, { align: c.a === "r" ? "right" : "left" }); cx2 += w; });
@@ -2914,7 +3186,7 @@
       { label: "Borrower / entity", value: (borrowerOfRecord() || "").trim() },
       { label: "Property", value: (chk("addrTBD") ? "TBD" : (val("propAddr") || "")) + (val("propState") ? ", " + val("propState") : "") },
       { label: "Loan amount", value: (d && d.totalLoan) ? YS.fmtUSD(d.totalLoan) : "" },
-      { label: "Note rate", value: (d && d.pricingReady && d.rate) ? d.rate.toFixed(2) + "%" : "" },
+      { label: "Note rate", value: (d && d.pricingReady && d.rate) ? fmtRate3(d.rate) + "%" : "" },
       { label: "Term", value: (d && d.term) ? d.term + " months" : "" },
       { label: "Purchase price", value: num("price") ? YS.fmtUSD(num("price")) : "" },
       { label: "Rehab budget", value: num("construction") ? YS.fmtUSD(num("construction")) : "" },
@@ -2922,6 +3194,71 @@
       { label: "Eligibility", value: (d && d.status) || "" }
     ];
   }
+  /* ONE BROWSER SESSION, ONE LOAN OFFICER (owner-directed 2026-08-07).
+     Every submission from this page carries the same opaque id, so the server can hand a repeat
+     visit to the officer it already chose instead of walking the round-robin again — the owner's
+     *"the same term sheet … was on the same browser session and went to a different loan officer
+     … It should go to one loan officer if it's on one browser session."*
+
+     sessionStorage, deliberately, not localStorage: the unit is ONE VISIT. A person who comes back
+     next week is a fresh visitor and the rotation should get its turn. It carries no personal data
+     — it is a random string that means nothing outside this table — and if storage is unavailable
+     (private mode, a locked-down browser) it falls back to a per-page-load id, which still keeps
+     one page's several exports together. */
+  var LEAD_SESSION = (function () {
+    var KEY = "ys_lead_session";
+    var mk = function () {
+      try {
+        if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID().replace(/-/g, "");
+      } catch (e) {}
+      return String(Date.now().toString(36) + Math.random().toString(36).slice(2, 12));
+    };
+    try {
+      var v = window.sessionStorage.getItem(KEY);
+      if (!v) { v = mk(); window.sessionStorage.setItem(KEY, v); }
+      return v;
+    } catch (e) { return mk(); }
+  })();
+
+  /* WHO IS DRIVING THIS TOOL, and WHERE FROM.
+     The tool reads its officer from window.YSBRAND, which brand.js fills from the
+     ?lo= link parameter on the marketing site. Inside the PILOT portal there is no
+     ?lo=, so the host stamps both of these onto our window instead
+     (app-v2/src/lib/toolOfficer.js) — otherwise this tool is anonymous there, every
+     lead it posts carries no officer, and the server's round-robin hands a staffer's
+     own work to a different officer (owner-reported 2026-08-07).
+     `fromStaffPortal` is the SAFETY half: the server never round-robins a lead that
+     declares it, so an unresolved identity falls to the sales desk rather than to a
+     stranger. It is sent as `undefined` (omitted) off the portal, so a public
+     visitor's submission is byte-identical to before. */
+  function officerCodeNow() {
+    var ob = window.YSBRAND || {};
+    return ob.email ? String(ob.email).split("@")[0].toLowerCase().replace(/[^a-z0-9._-]/g, "") : "";
+  }
+  function fromStaffPortal() {
+    try { return window.YS_FROM_STAFF_PORTAL === true ? true : undefined; } catch (e) { return undefined; }
+  }
+
+  /* The subject property in the shape `leads.property_address` stores (`{oneLine,...}`),
+     so the lead screen and the convert-to-file flow read it the way they read a
+     hand-typed lead. "TBD" is a real answer here — a visitor may price a deal before
+     it is under contract — and it is recorded rather than dropped. */
+  function dealPropertyAddress() {
+    try {
+      if (chk("addrTBD")) return { oneLine: "TBD" };
+      var line = (val("propAddr") || "").trim();
+      var st = (val("propState") || "").trim();
+      if (!line && !st) return undefined;
+      return { oneLine: [line, st].filter(Boolean).join(", "), line1: line || undefined, state: st || undefined };
+    } catch (e) { return undefined; }
+  }
+  /* The whole entered form, for the officer to read on the lead. Never lets a state
+     snapshot failure cost us the lead — the capture matters more than the detail. */
+  function collectStateSafe() {
+    try { return (window.YS && typeof YS.collectState === "function") ? YS.collectState() : undefined; }
+    catch (e) { return undefined; }
+  }
+
   var _lastGen = null;   // {leadId, contactToken} \u2192 lets the optional contact ask attach to the same lead
   // fileArg: a Blob (PDF path) OR a ready {dataBase64, filename, contentType}
   // (the Excel path) OR null \u2014 the notification sends with whatever it gets.
@@ -2946,11 +3283,28 @@
         }
         attsP.then(function (atts) {
           return fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ tool: "term_sheet_generated", formToken: FORM_TOKEN.t,
-              officerCode: code || undefined, subject: subject,
+            body: JSON.stringify({ tool: "term_sheet_generated", formToken: FORM_TOKEN.t, sessionId: LEAD_SESSION,
+              officerCode: code || undefined, fromStaffPortal: fromStaffPortal(), subject: subject,
               message: "A visitor generated a " + kind.toLowerCase() + " in the Term Sheet Studio. The exact figures are below" + (atts.length ? " and the PDF is attached." : "."),
               attachments: atts,
-              payload: { kind: kind, metaRows: dealMetaRows(d, kind), loanAmount: (d && d.totalLoan) || 0, program: chosenProgram } }) });
+              /* EVERYTHING THEY TYPED, so an anonymous generation is a WORKABLE lead
+                 (owner-directed 2026-08-07: "he wants that person to be added into his
+                 account as a lead with the phone number, the LLC property, and
+                 everything that that person entered with all the information he used to
+                 enter the term sheet"). These are the fields the lead row itself stores —
+                 the entity, the property, the type, the program and the loan amount —
+                 which is what makes the lead show something instead of appearing as a
+                 nameless row; `state` carries the FULL form for the officer to read.
+                 `name` gives the lead an identity when no email or phone was left. */
+              name: (borrowerOfRecord() || "").trim() || undefined,
+              company: (val("entityName") || "").trim() || undefined,
+              borrowerName: (val("borrowerName") || "").trim() || undefined,
+              propertyAddress: dealPropertyAddress(),
+              propertyType: (val("propType") || "").trim() || undefined,
+              program: chosenProgramName(false) || undefined,
+              loanAmount: (d && d.totalLoan) || undefined,
+              payload: { kind: kind, metaRows: dealMetaRows(d, kind), loanAmount: (d && d.totalLoan) || 0,
+                program: chosenProgram, state: collectStateSafe() } }) });
         }).then(function (r) { return (r && r.ok) ? r.json() : null; })
           .then(function (resp) {
             if (resp && resp.leadId && resp.contactToken) { _lastGen = { leadId: resp.leadId, contactToken: resp.contactToken }; offerContactAsk(); }
@@ -3023,7 +3377,7 @@
       var sbtn = document.getElementById("tsExcSend");
       sbtn.disabled = true; sbtn.textContent = "Sending\u2026";
       fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tool: "term_sheet_exception", officerCode: code || undefined,
+        body: JSON.stringify({ tool: "term_sheet_exception", sessionId: LEAD_SESSION, officerCode: code || undefined, fromStaffPortal: fromStaffPortal(),
           name: nm || undefined, email: em || undefined, phone: ph || undefined,
           subject: "Exception request \u2014 " + (sum.subject.replace(/^Manual review request \u2014 /, "")),
           message: sum.body + (extra ? "\n\nVisitor note:\n" + extra : ""),
@@ -3043,7 +3397,7 @@
       "Reply-to: " + s.email, "Program: " + s.program,
       "Property: " + (s.property || "TBD") + (s.state ? ", " + s.state : ""),
       "Loan amount: " + (s.loanAmount ? YS.fmtUSD(s.loanAmount) : "\u2014"),
-      "Note rate: " + (s.rate ? s.rate.toFixed(2) + "%" : "\u2014"),
+      "Note rate: " + (s.rate ? fmtRate3(s.rate) + "%" : "\u2014"),
       "Term: " + (s.term ? s.term + " months" : "\u2014"),
       "Eligibility: " + (s.status || "\u2014"), "", "The term sheet PDF is attached. Please follow up."].join("\n");
   }
@@ -3056,7 +3410,7 @@
     var atts = [];
     try { var blob = await exportPdf(null, true); if (blob) atts.push({ filename: fileStem() + ".pdf", contentType: "application/pdf", dataBase64: await blobToB64(blob) }); } catch (e) { /* send without the attachment if the PDF engine failed */ }
     var r = await fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tool: "term_sheet", officerCode: code || undefined, name: summary.borrower || undefined, email: summary.email,
+      body: JSON.stringify({ tool: "term_sheet", sessionId: LEAD_SESSION, officerCode: code || undefined, fromStaffPortal: fromStaffPortal(), name: summary.borrower || undefined, email: summary.email,
         subject: "Term sheet request \u2014 " + (summary.borrower || summary.program), message: leadBody(summary),
         attachments: atts, payload: summary }) });
     if (!r.ok) throw new Error("send " + r.status);
@@ -3217,7 +3571,7 @@
       (d.ltcPct > 0 && !isBridge) ? ["Loan-to-cost (LTC)", pc(d.ltcPct)] : null,
       ["Initial / as-is LTV", pc(d.ltvPct)],
       (d.arvPct > 0) ? ["Loan-to-ARV", pc(d.arvPct)] : null,
-      ["Note rate (interest-only)", (d.rate > 0 ? d.rate.toFixed(2) + "%" : "\u2014")],
+      ["Note rate (interest-only)", (d.rate > 0 ? fmtRate3(d.rate) + "%" : "\u2014")],
       ["Interest accrual", accrualLabel()],
       minInterestOn(_dpProg) ? ["Minimum interest", MIN_INTEREST_ROW] : null,
       deferredOrigPct() > 0 ? ["Deferred origination fee (paid at payoff)", pcFull(deferredOrigPct() / 100) + " of loan"] : null,
@@ -3245,7 +3599,11 @@
   // entered), so digit-grouping is all that's needed. Count/percent/FICO/term
   // inputs are deliberately excluded — they aren't dollar amounts.
   var MONEY_IDS = ["price", "origPrice", "assignFee", "construction", "asIs", "arv",
-    "payoff", "irAmount", "tsFeeUW", "tsFeeCredit", "tsFeeTitle", "tsFeeAppr", "tsEffPrice"];
+    "payoff", "irAmount", "tsFeeUW", "tsFeeCredit", "tsFeeTitle", "tsFeeAppr", "tsEffPrice",
+    // A typed loan amount is the largest number anyone enters in the admin zone, so
+    // it groups like every other money box — 1,207,500 rather than 1207500, which is
+    // genuinely hard to read at a glance and easy to mistype by a factor of ten.
+    "tsTargetLoan"];
   function isMoneyInput(inp) { return inp && inp.id && MONEY_IDS.indexOf(inp.id) !== -1; }
   function groupDigits(s) {
     var d = String(s == null ? "" : s).replace(/[^\d]/g, "");
@@ -3310,8 +3668,9 @@
       var maxV = rows.length - 1;
       var idx = maxV - parseInt(slider.value, 10);
       if (idx < 0) idx = 0; if (idx > maxV) idx = maxV;
-      var chosen = (idx === 0) ? null : rows[idx].ltc;             // top of range = max leverage
-      if (isGold) goldChosenLTC = chosen; else if (isSilver) silverChosenLTC = chosen; else chosenLTC = chosen;
+      // Silver stores the rung's KEY (which side the cut is on); the others store the LTC value.
+      var chosen = (idx === 0) ? null : (isSilver ? rows[idx].key : rows[idx].ltc);   // top of range = max leverage
+      if (isGold) goldChosenLTC = chosen; else if (isSilver) silverChosenRung = chosen; else chosenLTC = chosen;
       recompute();
     });
     // Fetch the anti-bot form token at load — by the time a sheet is generated
@@ -3400,6 +3759,10 @@
             if (d.appraisalFee != null) CO.appraisal = Number(d.appraisalFee);
             CO.title = (d.titleFee != null ? Number(d.titleFee) : null);
             CO.extraFees = Array.isArray(d.extraFees) ? d.extraFees : [];
+            // Per-tier markup company defaults (item 15) — { standard:{1,2,3},
+            // gold, silver } of percents, or null (feature off). syncAdminMarkup
+            // pushes it into the engines; null keeps the historic per-tier markup.
+            CO.markupTiers = (d.markupTiers && typeof d.markupTiers === "object") ? d.markupTiers : null;
           }
         }).catch(function(){}).then(function(){ seedAdminDefaults(); recompute(); });
       } catch (e) { recompute(); }

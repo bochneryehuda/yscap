@@ -21,6 +21,12 @@ const SYSTEM_DEFAULTS = Object.freeze({
   // files; a 2-letter code = that state only. Default carries the NY settlement
   // fee so a cold cache still applies it (matches the seeded DB row).
   extraFees: [{ name: 'Settlement agent fee', amount: 2000, state: 'NY' }],
+  // Per-experience-tier markup control (owner-directed item 15). null = OFF —
+  // every program/tier keeps its historic markup (Gold Tier 1 = 0, etc.). When
+  // set, shaped { standard:{1?,2?,3?}, gold, silver } of PERCENTS. pricing.js
+  // reads it in markupTiersFor(). Default null so behavior is byte-identical
+  // until an admin fills a tier in the Pricing Center.
+  markupTiers: null,
 });
 
 // Normalize an extra-fees value (from a jsonb column or an API body) into a clean
@@ -55,7 +61,34 @@ function shape(row) {
     // title_fee NULL means auto-estimate — preserve null (don't coerce to 0).
     titleFee:      row.title_fee == null || row.title_fee === '' ? null : Number(row.title_fee),
     extraFees:     cleanExtraFees(row.extra_fees),
+    markupTiers:   cleanMarkupTiers(row.markup_tiers),
   };
+}
+
+// Normalize a per-tier markup map (jsonb column or an API body) into
+// { standard:{1?,2?,3?}, gold, silver } of numeric PERCENTS (e.g. 0.75). A tier
+// left blank/absent is simply omitted (that program/tier keeps its historic
+// markup). Returns null when nothing valid remains, so an unconfigured company
+// prices byte-for-byte as before. Keys are kept as strings ('1'/'2'/'3'); a
+// numeric lookup (comp[1]) still resolves them since JS coerces the index.
+function cleanMarkupTiers(v) {
+  let obj = v;
+  if (typeof obj === 'string') { try { obj = JSON.parse(obj); } catch (_) { return null; } }
+  if (!obj || typeof obj !== 'object') return null;
+  const out = {};
+  for (const prog of ['standard', 'gold', 'silver']) {
+    const src = obj[prog];
+    if (!src || typeof src !== 'object') continue;
+    const tiers = {};
+    for (const t of ['1', '2', '3']) {
+      const raw = src[t] != null ? src[t] : src[Number(t)];
+      if (raw == null || raw === '') continue;
+      const num = Number(raw);
+      if (isFinite(num) && num >= 0) tiers[t] = num;
+    }
+    if (Object.keys(tiers).length) out[prog] = tiers;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 // The subset of extra fees that apply to a file in `state` (empty state = all).
@@ -71,7 +104,7 @@ async function load() {
   try {
     const r = await db.query(
       `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct,
-              lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees
+              lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers
          FROM company_pricing_settings WHERE is_current LIMIT 1`);
     _cache = { at: Date.now(), val: shape(r.rows[0]) };
   } catch (e) {
@@ -90,4 +123,4 @@ function current() {
 
 function bust() { _cache = { at: 0, val: _cache.val || SYSTEM_DEFAULTS }; }
 
-module.exports = { current, load, bust, SYSTEM_DEFAULTS, cleanExtraFees, extraFeesForState, extraFeesTotalForState };
+module.exports = { current, load, bust, SYSTEM_DEFAULTS, cleanExtraFees, cleanMarkupTiers, extraFeesForState, extraFeesTotalForState };

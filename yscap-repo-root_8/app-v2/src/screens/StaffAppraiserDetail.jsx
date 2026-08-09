@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { INK, MUTED, GOLD, S, money, sqft, num, day, pct } from '../lib/research.js';
+import ResearchNav from '../components/ResearchNav.jsx';
 
 /* ONE APPRAISER — their profile, everything we have ever been told about how to
    reach them, every file they appraised for us, every report of theirs we hold,
@@ -28,8 +29,13 @@ export default function StaffAppraiserDetail() {
     api.researchAppraiser(id).then(setD).catch((e) => setErr(e.message || 'Could not load that appraiser'));
   }, [id]);
 
-  if (err) return <div className="card" style={{ borderColor: '#B4423A', color: '#B4423A' }}>{err}</div>;
-  if (!d) return <div className="card" style={{ color: MUTED }}>Loading…</div>;
+  /* THE SECTION'S PAGE STRIP SURVIVES LOADING AND FAILURE. It used to sit below
+     these early returns, so it flickered out on every navigation here and vanished
+     entirely on an error — leaving somebody on a dead-end page with no way back
+     into the section except the sidebar. The strip is not about this page's data,
+     so it does not wait for it. */
+  if (err) return (<div><ResearchNav /><div className="card" style={{ borderColor: '#B4423A', color: '#B4423A' }}>{err}</div></div>);
+  if (!d) return (<div><ResearchNav /><div className="card" style={{ color: MUTED }}>Loading…</div></div>);
 
   const a = d.appraiser;
   const w = d.work || {};
@@ -37,6 +43,7 @@ export default function StaffAppraiserDetail() {
 
   return (
     <div>
+      <ResearchNav />
       <div style={{ marginBottom: 10 }}>
         <Link to="/internal/research/appraisers" style={{ color: MUTED, fontSize: 13 }}>← Back to Appraisers</Link>
       </div>

@@ -121,15 +121,16 @@ async function census(address) {
 // OSM's public service has a HARD published limit of one request per second, and
 // exceeding it is a policy breach that gets a user agent blocked — for everyone
 // using it, not just this sweep. The main pace (350ms) is set for Census, which has
-// no such limit, so the OSM call has to hold its own floor. This is a module-level
-// clock on purpose: it is the process's shared budget, not one sweep's.
-let lastOsmAt = 0;
-const OSM_MIN_GAP_MS = 1100;
+// no such limit, so the OSM call has to hold its own floor.
+//
+// THE CLOCK IS SHARED (`lib/osm-gate`), and it has to be: this module used to keep
+// its own, as did the address autocomplete and the ClickUp canonicaliser, so any
+// two of them running together fired twice inside one second while each looked
+// correct in isolation. One clock, one budget.
+const osmGate = require('../osm-gate').osmGate;
 
 async function osm(address) {
-  const wait = OSM_MIN_GAP_MS - (Date.now() - lastOsmAt);
-  if (wait > 0) await sleep(wait);
-  lastOsmAt = Date.now();
+  await osmGate();
   const url = 'https://nominatim.openstreetmap.org/search'
     + `?q=${encodeURIComponent(address)}&format=json&addressdetails=1&limit=1&countrycodes=us`;
   const j = await getJson(url);
@@ -142,6 +143,23 @@ async function osm(address) {
   return { lat, lng, source: 'osm', precision: 'address', matched: txt(m.display_name) };
 }
 
+/* THE PROVIDERS, AND THE ONE THAT MAY NEVER JOIN THEM.
+ *
+ * Google Maps Platform caps a STORED latitude/longitude at 30 consecutive days
+ * unless the cache is isolated to a single end user, and this warehouse is
+ * permanent and shared by the whole company. So Google may SUGGEST an address
+ * (the autocomplete uses it when a key is set) and may DRAW a map; it may never
+ * place a property here.
+ *
+ * That rule is enforced in three independent places on purpose, because it is the
+ * one a well-meaning future change is most likely to break — once a Places key is
+ * configured, "we already have the place_id, just ask for the geometry" is a
+ * single line and a genuine improvement in every respect except the one that
+ * matters. The three: this list; a source-level assertion in
+ * `scripts/test-address-position.js`; and a CHECK constraint on the table itself
+ * (db/459), which is the only one that catches a write nobody reviewed.
+ */
+const FORBIDDEN_SOURCE = /google/i;
 const PROVIDERS = [census, osm];
 
 /** The one-line address the services are asked about. */
@@ -195,6 +213,14 @@ async function geocodeProperty(p, { providers = PROVIDERS } = {}) {
     if (hit.matched && !ADDR.geocodeRewriteIsSafe(line, hit.matched)) {
       rejected = rejected || { source: hit.source, matched: hit.matched };
       continue;
+    }
+    // Belt and braces with db/459: refused HERE it is a named answer a caller can
+    // read; refused only by the constraint it is a 500 three layers up, at the
+    // moment of a write, on a background sweep nobody is watching.
+    if (FORBIDDEN_SOURCE.test(String(hit.source || ''))) {
+      return { ok: false, query: line, forbiddenSource: hit.source,
+        why: `a ${hit.source} coordinate may not be stored in the property warehouse — that vendor's `
+          + 'terms cap a stored position at 30 days, and this warehouse is permanent' };
     }
     return { ok: true, ...hit, query: line };
   }
@@ -330,5 +356,5 @@ async function geocodeStatus(db) {
 
 module.exports = {
   geocodeProperty, backfillGeocodes, geocodeStatus,
-  _internals: { addressLine, census, osm, inUS, MAX_ATTEMPTS },
+  _internals: { addressLine, census, osm, inUS, MAX_ATTEMPTS, FORBIDDEN_SOURCE },
 };

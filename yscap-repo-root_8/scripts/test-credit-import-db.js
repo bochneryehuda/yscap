@@ -383,6 +383,50 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
   await db.query('DELETE FROM credit_reports WHERE borrower_id=$1', [co.id]).catch(() => {});
   await db.query('DELETE FROM borrowers WHERE id=$1', [co.id]).catch(() => {});
 
+  // ── FICO write-back contract (owner-directed 2026-08-05) ────────────────────
+  // The imported MIDDLE SCORE must reach borrowers.fico — the ONE field Products &
+  // Pricing / the Term Sheet Studio / the investor tapes / the whole-loan context /
+  // the application all read (as the higher-of-two) — even when there is NO SSN on
+  // file to confirm identity (previously WITHHELD, which left pricing on the stale
+  // estimate while the credit condition showed the real score). The ONE refusal is
+  // a report whose SSN names a DIFFERENT person than the borrower on file.
+  {
+    const wb = (await db.query(
+      `INSERT INTO borrowers (first_name,last_name,email,fico) VALUES ('Noa','Nossn',$1,600) RETURNING id`,
+      [`creditwb_${process.pid}@example.com`])).rows[0];
+    const wbApp = (await db.query(`INSERT INTO applications (borrower_id) VALUES ($1) RETURNING id`, [wb.id])).rows[0];
+
+    // Case A — NO SSN on file: the report (SSN …6789, middle 705) is WRITTEN.
+    const uv = await store.storeImport({
+      file: { id: wbApp.id }, borrower: { id: wb.id, ssn_last4: null },
+      parsed: parseCreditXml(XML), xml: XML, pdfBase64: PDF_B64,
+      request: { pullType: 'soft', requestType: 'new', bureaus: ['Equifax', 'Experian', 'TransUnion'], version: '3.4' },
+      actorId: staff.id, source: 'upload' });
+    ok(uv.ficoWritten === 705, `no-SSN import WRITES the middle score (ficoWritten=705, got ${uv.ficoWritten})`);
+    ok(uv.ficoUnverified === true, 'no-SSN import flags ficoUnverified (identity not SSN-confirmed) but still writes');
+    ok(uv.ficoMismatch === false, 'no-SSN import is not a mismatch');
+    ok((await db.query('SELECT fico FROM borrowers WHERE id=$1', [wb.id])).rows[0].fico === 705,
+      'borrowers.fico updated to the report middle score despite no SSN on file (so pricing/tapes/term sheet see 705)');
+
+    // Case B — a DIFFERENT SSN on file: a different person, so the score is REFUSED
+    // and the estimate is left intact (a stranger's score never prices the deal).
+    await db.query('UPDATE borrowers SET fico=600 WHERE id=$1', [wb.id]);
+    const mm = await store.storeImport({
+      file: { id: wbApp.id }, borrower: { id: wb.id, ssn_last4: '1111' },
+      parsed: parseCreditXml(XML), xml: XML, pdfBase64: PDF_B64,
+      request: { pullType: 'soft', requestType: 'new', bureaus: ['Equifax', 'Experian', 'TransUnion'], version: '3.4' },
+      actorId: staff.id, source: 'upload' });
+    ok(mm.ficoMismatch === true, 'a report whose SSN names a different person is a mismatch');
+    ok(mm.ficoWritten == null, 'a mismatched report never writes fico');
+    ok((await db.query('SELECT fico FROM borrowers WHERE id=$1', [wb.id])).rows[0].fico === 600,
+      'borrowers.fico left at the estimate on a mismatch (stranger’s score never prices the deal)');
+
+    await db.query('DELETE FROM credit_reports WHERE application_id=$1', [wbApp.id]).catch(() => {});
+    await db.query('DELETE FROM documents WHERE application_id=$1', [wbApp.id]).catch(() => {});
+    await db.query('DELETE FROM applications WHERE id=$1', [wbApp.id]).catch(() => {});
+    await db.query('DELETE FROM borrowers WHERE id=$1', [wb.id]).catch(() => {});
+  }
+
   // cleanup (throwaway DB, but be tidy)
   await db.query(`DELETE FROM applications WHERE id=$1`, [app.id]).catch(() => {});
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [bor.id]).catch(() => {});

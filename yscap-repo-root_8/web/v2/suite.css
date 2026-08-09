@@ -31,10 +31,18 @@
     --good:#7FB08A; --warn:#C9A86A; --bad:#C98A6A;
 }
 *{ box-sizing:border-box; }
-html{ scroll-behavior:smooth; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+/* MOBILE SCROLL: the horizontal clip lives on <html>, using `clip` (not `hidden`).
+   `overflow-x:hidden` on <body> silently forces overflow-y to `auto`, which turns
+   <body> into a second scroll container with no momentum scrolling — on iOS that
+   is the "can barely scroll, only when you grab the right spot" bug. `clip` pins
+   the layout viewport to the device width (so the phone media queries apply) WITHOUT
+   creating a scroll container, and keeps position:sticky working. Mirrors the portal
+   fix in app-v2/src/styles.css. `hidden` stays first as the fallback for the rare
+   engine that doesn't support `clip`. */
+html{ scroll-behavior:smooth; -webkit-text-size-adjust:100%; text-size-adjust:100%; overflow-x:hidden; overflow-x:clip; }
 body{
     margin:0; font-family:var(--font-b); background:var(--ink); color:var(--ivory);
-    line-height:1.6; -webkit-font-smoothing:antialiased; overflow-x:hidden;
+    line-height:1.6; -webkit-font-smoothing:antialiased; overflow-x:hidden; overflow-x:clip;
 }
 button,a,select,[role=button]{ -webkit-tap-highlight-color:transparent; touch-action:manipulation; }
 /* iOS Safari zooms the page in when a focused field is < 16px. Force 16px on

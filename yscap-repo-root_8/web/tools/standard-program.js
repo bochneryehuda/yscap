@@ -38,7 +38,17 @@
      --------------------------------------------------------------------- */
   var MARKUP = 0.005;          // YS markup applied to the program buy rate (borrower pays buy + 0.5%)
   var MARKUP_OVR = null;       // admin-set markup override (fraction); null = use default MARKUP
-  function effMarkup() { return (MARKUP_OVR == null) ? MARKUP : MARKUP_OVR; }
+  // Per-experience-tier markup (owner-directed item 15): { 1:frac, 2:frac, 3:frac },
+  // each tier OPTIONAL. A tier absent here falls back to the per-program override/
+  // default below — so an UNSET map (setMarkupTiers never called, or null) prices
+  // byte-identically to before. tier 1 = the program's TOP experience tier.
+  var MARKUP_TIERS = null;
+  function setMarkupTiers(m) { MARKUP_TIERS = (m && typeof m === "object") ? m : null; }
+  function effMarkup(tier) {
+    if (MARKUP_TIERS && tier != null && typeof MARKUP_TIERS[tier] === "number"
+        && isFinite(MARKUP_TIERS[tier]) && MARKUP_TIERS[tier] >= 0) return MARKUP_TIERS[tier];
+    return (MARKUP_OVR == null) ? MARKUP : MARKUP_OVR;
+  }
   function setMarkup(f) { MARKUP_OVR = (typeof f === "number" && isFinite(f) && f >= 0) ? f : null; }
   var ORIG_PCT = 0.0125;       // origination fee — always 1.25% of the total loan
   var RA = {
@@ -208,7 +218,7 @@
       + (o.foreclosure === "Judicial" ? RA.judicial : RA.nonjudicial)
       + (o.heavy ? RA.heavy : 0);
     buy = Math.max(RA.floor, Math.min(RA.cap, buy));   // floor/cap applies to the buy rate
-    return buy + effMarkup();                          // borrower note rate (only this leaves the module)
+    return buy + effMarkup(o.tier);                    // borrower note rate (only this leaves the module)
   }
 
   /* ---------------------------------------------------------------------
@@ -251,7 +261,20 @@
     // value bases
     var acqDenom = purchase ? Math.min(pp || aiv, aiv || pp) : aiv;     // lower of [PP, AIV] for purchase; AIV for refi
     if (!(acqDenom > 0)) acqDenom = purchase ? pp : aiv;
-    var costBasis0 = (purchase ? pp : aiv) + rehab;                    // [PP or AIV] + rehab, WITHOUT reserve
+    // THE TOTAL COST (and the LTC) GO BY THE LOWER OF THE PURCHASE PRICE AND THE
+    // AS-IS VALUE (owner-directed 2026-08-05): "we should always use the purchase
+    // price. If the as-is value is more than the purchase price we should not use
+    // the as-is value, we should use the purchase price. If the as-is value is less
+    // than the purchase price then we can't use the default purchase price, we need
+    // to use that as-is value. This is for all the programs." That figure is exactly
+    // `acqDenom` (min(PP, AIV) for a purchase; the AIV for a refi) — the SAME number
+    // the acquisition (initial) advance is already capped on — so the cost basis and
+    // the initial-advance cap now read one value, and the total cost can never claim
+    // the property is worth more than the appraisal says. The interest reserve is
+    // untouched (added below exactly as before). Byte-identical whenever AIV >= PP
+    // (acqDenom === PP), on a refi, and on any product with no LTC cap (the acq-LTV
+    // cap A = maxAcqLTV x acqDenom binds before the LTC term either way).
+    var costBasis0 = acqDenom + rehab;                                 // min(PP, AIV) + rehab, WITHOUT reserve
 
     var rehabLoan = rehab;                       // 100% financed, no OOP
     var A = c.maxAcqLTV * acqDenom;              // cap on the acquisition (initial) advance
@@ -341,6 +364,30 @@
         totalLoan = acquisition + rehabLoan + financedIR;
         fullPmt = totalLoan * (rate / 12);
         rehabOverCap = true;
+        /* RE-FIT THE RESERVE TO THE SMALLER PAYMENT (owner-directed 2026-08-07).
+           The reserve was sized above against `capDesired(val, pmt)` = the term cap
+           times the payment BEFORE this guard cut the loan. The cut lowers the
+           payment and never re-ran that fit, so the financed reserve could exceed
+           its own documented ceiling — measured $76,713 (18.67 months) on an
+           18-month Gold ground-up whose 75%-of-term cap is $55,455, and LARGER in
+           dollars on the smaller loan. The borrower financed, and paid origination
+           and interest on, money that can never accrue as interest within the term,
+           and the note buyer's workbook cap was exceeded.
+           Only reachable inside this guard (a rehab-over-cap deal), only when a term
+           cap exists, and it can only ever REDUCE — each pass lowers the reserve,
+           which lowers the basis, the loan and the payment, so it converges downward
+           and is bounded. Every documented month cap is honoured because `capMo` IS
+           that cap (full term on Standard, the frozen 75%-of-term on Gold ground-up,
+           zero on Gold reno / bridge, where no reserve exists to re-fit). */
+        if (capMo > 0) {
+          for (var gFit = 0; gFit < 40 && financedIR > capMo * fullPmt + 0.005; gFit++) {
+            financedIR = capMo * fullPmt;
+            ltcBasisG = costBasis0 + (reserveInCost ? financedIR : 0);
+            rehabLoan = Math.max(0, m * ltcBasisG - acquisition - financedIR);
+            totalLoan = acquisition + rehabLoan + financedIR;
+            fullPmt = totalLoan * (rate / 12);
+          }
+        }
       }
     }
 
@@ -530,6 +577,16 @@
     // optional leverage choice: borrower may take LESS than the program max LTC for better pricing
     if (input.targetLTC && input.targetLTC > 0) maxLTC = Math.min(maxLTC, input.targetLTC);
     var capsEff = { maxLoan: c.maxLoan, minFico: c.minFico, maxAcqLTV: c.maxAcqLTV, maxARLTV: c.maxARLTV, maxLTC: maxLTC };
+    /* A TYPED LOAN AMOUNT IS A VOLUNTARY CEILING, NOT A NEW WAY TO SIZE A LOAN
+       (owner-directed 2026-08-06). It is a MIN against the tier's own dollar wall, so
+       it can only ever REDUCE — an amount ABOVE what the caps allow is unreachable
+       here BY DESIGN, and the only way up is the admin basis below (ovrAcqLTV /
+       ovrARLTV / ovrLTC), which already routes to approval. Because sizeLoan finances
+       the rehab first and gives the remainder to the initial advance, and the loan
+       grows monotonically to the nearest wall, capping the wall lands the structure on
+       the typed amount with the owner's own split intact — no sizing math changes.
+       Inert when unset. */
+    if (input.targetLoan && input.targetLoan > 0) capsEff.maxLoan = Math.min(capsEff.maxLoan, input.targetLoan);
     // ---- admin manual override: set the qualifying basis directly (only when > 0; default untouched) ----
     if (input.ovrAcqLTV > 0) capsEff.maxAcqLTV = input.ovrAcqLTV;
     if (input.ovrARLTV > 0) capsEff.maxARLTV = input.ovrARLTV;
@@ -673,7 +730,7 @@
   return {
     evaluate: evaluate,
     priceLadder: priceLadder,
-    setMarkup: setMarkup,
+    setMarkup: setMarkup, setMarkupTiers: setMarkupTiers,
     // exposed for tooling / tests
     regimeOf: regimeOf, normStrategy: normStrategy, foreclosureType: foreclosureType,
     cityIneligible: cityIneligible, cityCheck: cityCheck, exitShortfall: exitShortfall,

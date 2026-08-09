@@ -80,8 +80,8 @@ const PACING_MS = 300;             // between uploads — keeps Graph bursts pol
 // isRegenKind() below and NEVER_MIRROR_SQL, so a doc_kind-NULL doc is correctly
 // non-regen (FALSE) and the guard becomes `NOT(FALSE AND …)=TRUE` → selected +
 // mirrored within seconds. Every consumer derives from this ONE constant.
-const REGEN_KIND_SQL = `(COALESCE(d.doc_kind,'') = 'track_record_html' OR COALESCE(d.doc_kind,'') = 'tpr_export' OR COALESCE(d.doc_kind,'') = 'draw_inspection_report' OR COALESCE(d.doc_kind,'') LIKE '%\\_export')`;
-function isRegenKind(k) { return k === 'track_record_html' || k === 'tpr_export' || k === 'draw_inspection_report' || /_export$/.test(String(k || '')); }
+const REGEN_KIND_SQL = `(COALESCE(d.doc_kind,'') = 'track_record_html' OR COALESCE(d.doc_kind,'') = 'tpr_export' OR COALESCE(d.doc_kind,'') = 'draw_inspection_report' OR COALESCE(d.doc_kind,'') = 'draw_packet' OR COALESCE(d.doc_kind,'') LIKE '%\\_export')`;
+function isRegenKind(k) { return k === 'track_record_html' || k === 'tpr_export' || k === 'draw_inspection_report' || k === 'draw_packet' || /_export$/.test(String(k || '')); }
 // ONE definition of "deliberately NEVER mirrored to SharePoint" (owner-directed).
 // The drain-exclusion SQL, the settle pass, AND the upload chokepoint ALL derive
 // from this single map so they can never diverge. ROOT of the appraisal_photo
@@ -357,15 +357,59 @@ function isClosingDoc(row) {
 // condition-attached or loose — files under the SAME clean category folder the
 // TPR export uses, so the "Synced by Pilot" tree reads like the TPR package
 // instead of one folder per long condition label (owner-directed 2026-07-30).
+// Draw documents file into a PER-DRAW folder tree (owner-directed 2026-08-06):
+// each draw gets its own "Draw N" folder holding the packet Excel + a subfolder
+// per report SOURCE (Our report / TrustPoint / Inspector / Sitewire), instead of
+// one flat "Draw Reports" bin. `documents` has no draw column, so the draw number
+// and the source are read from the system-generated FILENAME; an unrecognized
+// draw doc falls to a safe "Draws/Unfiled draw/Reports" bucket — never lost.
+function drawInfoFromName(name) {
+  const s = String(name || '');
+  let m;
+  if ((m = /^pilot-draw-(\d+)-packet-/i.exec(s)))                    return { num: +m[1], packet: true };
+  if ((m = /^pilot-draw-(\d+)-report-(?:staff|borrower)-/i.exec(s))) return { num: +m[1], sub: 'Our report' };
+  if (/^pilot-project-report-/i.test(s))                             return { project: true, sub: 'Our report' };
+  if ((m = /^trustpoint-draw-(\d+)-inspection-result/i.exec(s)))     return { num: +m[1], sub: 'Inspector' };
+  // TrustPoint's OWN report PDF (trustpoint/mirror.js) is named by TrustPoint's
+  // draw id, not the draw NUMBER, so it can't file per-draw from the filename —
+  // group it under one clear TrustPoint folder (honest, and out of "Unfiled").
+  // Checked before the generic trustpoint-draw-<n> case (which needs a digit).
+  if (/^trustpoint-draw-report-/i.test(s))                           return { flat: 'TrustPoint reports' };
+  if ((m = /^trustpoint-draw-(\d+)-/i.exec(s)))                      return { num: +m[1], sub: 'TrustPoint' };
+  if ((m = /^sitewire-draw-(\d+)-/i.exec(s)))                        return { num: +m[1], sub: 'Sitewire' };
+  // The PILOT-branded TrustPoint ("trinary") report (trustpoint/report.js) is
+  // `draw-<N>-<tag>-report-<mode>-<ver>.pdf` — it carries the draw number, so it
+  // files per-draw alongside the inspector's own TrustPoint documents.
+  if ((m = /^draw-(\d+)-[a-z0-9]+-report-/i.exec(s)))                return { num: +m[1], sub: 'TrustPoint' };
+  return { sub: 'Reports' };
+}
+// The per-draw folder PATH for a draw document (the packet Excel, or any report).
+// All segments are literal folder names (no address/slug), so the path is short
+// and stable, and the existing multi-segment resolver creates each level.
+function drawFolderPathFor(row) {
+  const info = drawInfoFromName(row.filename);
+  if (info.flat) return ['Draws', info.flat];   // a draw report with no draw number in its filename
+  const drawSeg = info.project ? 'All draws (project)'
+    : (info.num != null ? `Draw ${info.num}` : 'Unfiled draw');
+  const path = ['Draws', drawSeg];
+  if (info.packet) return path;                 // the Excel packet sits at the Draw N root — the anchor
+  path.push(info.sub || 'Reports');
+  return path;
+}
+
 function categoryPathFor(row) {
   if (row.llc_resolved_id) return [row.llc_name || 'LLC', llcSubfolder(row)];
   if (row.doc_kind === 'photo_id') return ['Photo ID'];               // always profile-level
   if (row.doc_kind === 'term_sheet') return ['Term Sheet', 'Unsigned'];
   if (row.doc_kind === 'term_sheet_signed') return ['Term Sheet', 'Signed'];
   if (row.doc_kind === 'tpr_export') return ['TPR Exports'];
-  // Draw Management phase 2b — the PILOT-branded inspection reports get their own category so their
-  // frequent version-hashed supersedes never shuffle other (uncategorized) file documents.
-  if (row.doc_kind === 'draw_inspection_report') return ['Draw Reports'];
+  // Draw Management — per-draw folders (owner-directed 2026-08-06): each draw's
+  // documents (our PILOT reports, TrustPoint/trinary reports, the inspector's own
+  // report, the Sitewire virtual-inspection PDF) file under Draws/Draw N/<source>,
+  // and the draw-packet Excel sits at the Draw N root — instead of one flat
+  // "Draw Reports" bin. The frequent version-hashed supersedes still land in their
+  // own per-draw/per-source folder (their own version stream — see stateKeyFor).
+  if (row.doc_kind === 'draw_inspection_report' || row.doc_kind === 'draw_packet') return drawFolderPathFor(row);
   // Everything that arrives on the closing email chain — its own folder, so the
   // team's drive mirrors the same separation the file makes: the running closing
   // correspondence is NOT the final executed closing package.
@@ -890,11 +934,11 @@ async function uploadAndRecord({ row, driveId, parentId, version, bytes, content
 // composite provider (the dual-read wrapper: S3, falling back to local disk for a
 // doc still mid-migration). storage._local is exported by src/lib/storage.js in
 // BOTH modes; in local mode it IS storage, so this is a no-op there.
-function providerForRow(row) {
-  const prov = (row && row.storage_provider) || 'local';
-  if (prov === 'local' && storage._local) return storage._local;
-  return storage;
-}
+// The rule itself now lives in storage.js as `forRow` (db/462 needed the same
+// decision for the research-warehouse sweep, and two copies of "which disk holds
+// this document" is exactly the drift this repo keeps paying for). Behaviour is
+// unchanged — this is the same three lines, in one place.
+function providerForRow(row) { return storage.forRow(row); }
 
 // `retried` guards the one self-heal: when a cached folder id has gone stale
 // (a human deleted/moved the folder in SharePoint → Graph itemNotFound), the

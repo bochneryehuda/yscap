@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './lib/auth.jsx';
 import { engineReport } from './lib/engines.js';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 import RouteChrome from './components/RouteChrome.jsx';
+import AppDialogHost from './components/AppDialog.jsx';
 import Layout from './components/Layout.jsx';
 import StaffLayout from './components/StaffLayout.jsx';
 import Login from './screens/Login.jsx';
@@ -11,10 +12,15 @@ import Verify from './screens/Verify.jsx';
 import Forgot from './screens/Forgot.jsx';
 import Reset from './screens/Reset.jsx';
 import Accept from './screens/Accept.jsx';
+import AssistantAccept from './screens/AssistantAccept.jsx';
+import AssistantLogin from './screens/AssistantLogin.jsx';
+import Helpers from './screens/Helpers.jsx';
 import GuestChat from './screens/GuestChat.jsx';
 import DrawAccept from './screens/DrawAccept.jsx';
+import AcceptTerms from './screens/AcceptTerms.jsx';
 import EsignDone from './screens/EsignDone.jsx';
 import Dashboard from './screens/Dashboard.jsx';
+import Tasks from './screens/Tasks.jsx';
 import Apply from './screens/Apply.jsx';
 import Application from './screens/Application.jsx';
 import Profile from './screens/Profile.jsx';
@@ -63,6 +69,7 @@ import StaffAppraiserDetail from './screens/StaffAppraiserDetail.jsx';
 import StaffValuation from './screens/StaffValuation.jsx';
 import StaffCompReportScreen from './screens/StaffCompReportScreen.jsx';
 import StaffQuickAnswer from './screens/StaffQuickAnswer.jsx';
+import StaffMarketAreas from './screens/StaffMarketAreas.jsx';
 import StaffChat from './screens/StaffChat.jsx';
 import StaffClickup from './screens/StaffClickup.jsx';
 import StaffApiHealth from './screens/StaffApiHealth.jsx';
@@ -132,6 +139,13 @@ export default function App() {
     <AuthProvider>
       <HashRouter>
         <RouteChrome />
+        {/* PILOT's own message box. Mounted ONCE, here, for two reasons: it
+            covers every screen including the public ones (login, e-sign, guest
+            chat), and it sits OUTSIDE the ErrorBoundary so a screen that
+            crashes cannot take the dialog down with it. Without a mounted host
+            lib/dialog falls back to the browser's native box, so a message is
+            never swallowed — see the note in that file. */}
+        <AppDialogHost />
         <ErrorBoundary>
         <Routes>
           {/* public */}
@@ -140,9 +154,15 @@ export default function App() {
           <Route path="/forgot" element={<Forgot scope="borrower" />} />
           <Route path="/reset" element={<Reset />} />
           <Route path="/accept" element={<Accept />} />
+          <Route path="/assistant/accept" element={<AssistantAccept />} />
+          <Route path="/assistant/login" element={<AssistantLogin />} />
           {/* #75 — magic-link guest chat for external email participants (no login). */}
           <Route path="/guest/:key" element={<GuestChat />} />
           <Route path="/draw-accept/:token" element={<DrawAccept />} />
+          {/* An officer's emailed term sheet: see the terms, create a password,
+              answer two questions, and land in a file already carrying them
+              (owner-directed 2026-08-07). PUBLIC — nobody has an account yet. */}
+          <Route path="/accept-terms/:token" element={<AcceptTerms />} />
           {/* Where a borrower lands after signing from PILOT's branded e-sign email —
               exchanges the one-time login code so they return INSIDE their file logged in. */}
           <Route path="/esign/done" element={<EsignDone />} />
@@ -153,10 +173,12 @@ export default function App() {
 
           {/* borrower */}
           <Route path="/dashboard" element={<Private><Dashboard /></Private>} />
+          <Route path="/tasks" element={<Private><Tasks /></Private>} />
           <Route path="/apply" element={<Private><Apply /></Private>} />
           <Route path="/apply/:draftId" element={<Private><Apply /></Private>} />
           <Route path="/app/:id" element={<Private><Application /></Private>} />
           <Route path="/profile" element={<Private><Profile /></Private>} />
+          <Route path="/helpers" element={<Private><Helpers /></Private>} />
           <Route path="/entities" element={<Private><EntitiesScreen /></Private>} />
           <Route path="/track-record" element={<Private><TrackRecordScreen /></Private>} />
           <Route path="/pricing" element={<Private><PricingStudio /></Private>} />
@@ -219,6 +241,7 @@ export default function App() {
           <Route path="/internal/research/appraisers" element={<StaffPrivate><StaffAppraisers /></StaffPrivate>} />
           <Route path="/internal/research/appraiser/:id" element={<StaffPrivate><StaffAppraiserDetail /></StaffPrivate>} />
           <Route path="/internal/research/quick" element={<StaffPrivate><StaffQuickAnswer /></StaffPrivate>} />
+          <Route path="/internal/research/areas" element={<StaffPrivate><StaffMarketAreas /></StaffPrivate>} />
           <Route path="/internal/research/valuation/:id" element={<StaffPrivate><StaffValuation /></StaffPrivate>} />
           <Route path="/internal/research/valuation/:id/report" element={<StaffPrivate><StaffCompReportScreen /></StaffPrivate>} />
           <Route path="/internal/chat" element={<StaffPrivate><StaffChat /></StaffPrivate>} />

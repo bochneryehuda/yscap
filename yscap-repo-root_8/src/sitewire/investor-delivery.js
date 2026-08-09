@@ -12,10 +12,14 @@
  *                   of the money we already netted, so the investor sends ONE number and never
  *                   has to send the fee separately.
  *   investor_direct — the INVESTOR wires the net to the borrower and our fee to us. Two payments.
+ *   manual          — the delivery is handled entirely OUTSIDE PILOT (a phone call, the investor's
+ *                   own portal, an off-platform arrangement). PILOT sends NO email and needs no
+ *                   saved investor contacts; it only RECORDS that the coordinator delivered the
+ *                   draw, so the "deliver to the investor" reminders stop and the history shows it.
  *
- * In BOTH modes the investor funds the same total (what was approved) — only who receives it
- * differs. The email always states the three figures the owner asked for by name: what was
- * approved, what reaches the borrower, and what comes to us.
+ * In the two EMAILED modes the investor funds the same total (what was approved) — only who
+ * receives it differs. The email always states the three figures the owner asked for by name: what
+ * was approved, what reaches the borrower, and what comes to us. `manual` sends no email at all.
  *
  * PURE — no DB, no network, integer cents. The IO half (contacts, attachments, sending, the
  * delivery record) lives in ./investor-delivery-send.js so this whole file unit-tests with no
@@ -24,12 +28,19 @@
 
 const N = (x) => Number(x || 0) || 0;
 
-const MODES = ['reimbursement', 'investor_direct'];
-const DEFAULT_MODE = 'reimbursement';
+const MODES = ['reimbursement', 'investor_direct', 'manual'];
+// The DEFAULT is that the INVESTOR releases the money directly to the borrower
+// (owner-directed 2026-08-05: "the default should always be that the investor is
+// releasing the money to the borrower"). A per-draw or per-file choice still wins;
+// this is only the fallback when neither is set. (Was 'reimbursement'.)
+const DEFAULT_MODE = 'investor_direct';
+// The modes that actually send an email to the investor (manual does not).
+const EMAILED_MODES = ['reimbursement', 'investor_direct'];
 
 const MODE_LABEL = {
   reimbursement: 'We release — investor reimburses us',
   investor_direct: 'Investor releases the money',
+  manual: 'Delivered manually (outside PILOT)',
 };
 
 // What each mode means, in one plain sentence, for the desk screen.
@@ -39,6 +50,9 @@ const MODE_HELP = {
     + 'amount. Our draw fee stays with us — the investor never sends it separately.',
   investor_direct:
     'The investor wires the borrower their net amount directly and sends our draw fee to us.',
+  manual:
+    'You handle the delivery to the investor yourself — PILOT sends no email. It just records that '
+    + 'this draw was delivered, so the reminders stop.',
 };
 
 /**
@@ -192,7 +206,7 @@ function composeRecipients({ investorEmails = [], coordinatorEmails = [], office
  */
 const AGREED_STATUSES = ['accepted', 'resolved'];
 
-function deliveryBlockers({ finding = null, investorContacts = [], noteBuyer = null } = {}) {
+function deliveryBlockers({ finding = null, investorContacts = [], noteBuyer = null, mode = null, wireForm = null } = {}) {
   const out = [];
   if (!finding) {
     out.push('The inspection findings have not been delivered to the borrower yet.');
@@ -203,16 +217,35 @@ function deliveryBlockers({ finding = null, investorContacts = [], noteBuyer = n
       ? 'The borrower pushed back on this draw — decide the disputed lines first, then it can go to the investor.'
       : 'The borrower has not agreed to the inspection findings yet. Once they accept — or you record that they agreed by phone or email — this can go to the investor.');
   }
+  // THE SIGNED WIRE FORM MUST BE ACCEPTED before the borrower's money moves (owner-directed
+  // 2026-08-05: "fully accept before investor delivery of the first draw"). The borrower's
+  // DocuSign wire form files onto the draw wire condition; the coordinator reviews it, accepts
+  // ONE correct version and rejects the rest — because on an investor_direct delivery the
+  // investor wires the borrower off THIS exact form, and on a reimbursement delivery WE wired
+  // them off it. A MANUAL delivery is handled entirely outside PILOT (the coordinator verifies
+  // the wire themselves), so it is not gated on the in-PILOT acceptance. `wireForm` is only
+  // supplied by the DB callers; when it is null the check is skipped (back-compat / pure tests).
+  if (String(mode || '') !== 'manual' && wireForm && !wireForm.accepted) {
+    if (!wireForm.present) {
+      out.push('The borrower has not signed the wire instructions form yet, so PILOT cannot confirm where the money goes. Send the draw request for signature and accept the signed form first.');
+    } else if (wireForm.rejectedOnly) {
+      out.push('The signed wire form was rejected. The borrower needs to re-sign it and the correct version must be accepted before this draw can go to the investor.');
+    } else {
+      out.push('The signed wire form has not been accepted yet — review it and accept the correct version before delivering this draw to the investor (in case something was filled in wrong).');
+    }
+  }
+  // Every mode records WHICH investor the draw went to, so the note buyer must be set.
   if (!String(noteBuyer || '').trim()) {
     out.push('This file has no note buyer set, so PILOT does not know which investor to send it to.');
-  } else if (!(investorContacts || []).length) {
+  } else if (String(mode || '') !== 'manual' && !(investorContacts || []).length) {
+    // A MANUAL delivery is handled outside PILOT — no email is sent, so it needs no saved contacts.
     out.push(`No investor contacts are saved for ${String(noteBuyer).trim()} yet — add the people who should receive draw deliveries.`);
   }
   return out;
 }
 
 module.exports = {
-  MODES, DEFAULT_MODE, MODE_LABEL, MODE_HELP, AGREED_STATUSES,
+  MODES, DEFAULT_MODE, EMAILED_MODES, MODE_LABEL, MODE_HELP, AGREED_STATUSES,
   resolveFundingMode, investorMoney, deliveryEmail, composeRecipients, deliveryBlockers,
   _internals: { clean, usd },
 };

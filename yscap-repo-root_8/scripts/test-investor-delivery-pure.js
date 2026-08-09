@@ -14,12 +14,14 @@ const ok = (cond, what) => { assert.ok(cond, what); n++; };
 const eq = (a, b, what) => { assert.strictEqual(a, b, `${what} (got ${JSON.stringify(a)}, want ${JSON.stringify(b)})`); n++; };
 
 // ---------------------------------------------------------------- A. the funding mode
-eq(ID.DEFAULT_MODE, 'reimbursement', 'A1 the default is reimbursement (we release, the investor reimburses us)');
-eq(ID.resolveFundingMode({}), 'reimbursement', 'A2 nothing set anywhere → the default');
-eq(ID.resolveFundingMode({ fileMode: 'investor_direct' }), 'investor_direct', 'A3 the file default is used when the draw has none');
+// The DEFAULT is INVESTOR_DIRECT (owner-directed 2026-08-05: "the default should
+// always be that the investor is releasing the money to the borrower").
+eq(ID.DEFAULT_MODE, 'investor_direct', 'A1 the default is investor_direct (the investor releases directly to the borrower)');
+eq(ID.resolveFundingMode({}), 'investor_direct', 'A2 nothing set anywhere → the default');
+eq(ID.resolveFundingMode({ fileMode: 'reimbursement' }), 'reimbursement', 'A3 the file default is used when the draw has none');
 eq(ID.resolveFundingMode({ drawMode: 'reimbursement', fileMode: 'investor_direct' }), 'reimbursement', 'A4 the per-draw choice beats the file default');
-eq(ID.resolveFundingMode({ drawMode: 'nonsense', fileMode: 'investor_direct' }), 'investor_direct', 'A5 an unrecognised stored value falls through — never takes effect');
-eq(ID.resolveFundingMode({ drawMode: 'nonsense', fileMode: 'rubbish' }), 'reimbursement', 'A6 two bad values still land on the default');
+eq(ID.resolveFundingMode({ drawMode: 'nonsense', fileMode: 'reimbursement' }), 'reimbursement', 'A5 an unrecognised stored value falls through — never takes effect');
+eq(ID.resolveFundingMode({ drawMode: 'nonsense', fileMode: 'rubbish' }), 'investor_direct', 'A6 two bad values still land on the default');
 
 // ---------------------------------------------------------------- B. the money split
 // The owner's own worked example: $25,000 approved, our $299 fee, $24,701 to the borrower.
@@ -139,5 +141,52 @@ ok(ID.deliveryBlockers({ finding: { status: 'accepted' }, investorContacts: [], 
 ok(ID.deliveryBlockers({ finding: { status: 'accepted' }, investorContacts: [], noteBuyer: '' }).some((b) => /no note buyer/.test(b)), 'E7 a file with no note buyer says so');
 ok(ID.AGREED_STATUSES.includes('accepted') && ID.AGREED_STATUSES.includes('resolved') && ID.AGREED_STATUSES.length === 2,
   'E8 only accepted and resolved count as the borrower agreeing');
+
+// ---------------------------------------------------------------- F. the MANUAL mode (#11)
+ok(ID.MODES.includes('manual'), 'F1 manual is a funding/delivery mode');
+eq(ID.MODES.length, 3, 'F2 there are exactly three modes now');
+ok(!ID.EMAILED_MODES.includes('manual') && ID.EMAILED_MODES.length === 2, 'F3 manual is NOT one of the emailed modes');
+ok(typeof ID.MODE_LABEL.manual === 'string' && ID.MODE_LABEL.manual.length > 0, 'F4 manual has a label for the desk');
+ok(/no email/i.test(ID.MODE_HELP.manual), 'F5 the manual help says no email is sent');
+eq(ID.resolveFundingMode({ drawMode: 'manual' }), 'manual', 'F6 a stored manual choice resolves to manual');
+// A MANUAL delivery is handled outside PILOT — it needs the note buyer set (so we record WHICH
+// investor) but NO saved contacts (no email is sent). The borrower must still have agreed.
+eq(ID.deliveryBlockers({ finding: { status: 'accepted' }, investorContacts: [], noteBuyer: 'Fidelis', mode: 'manual' }).length, 0,
+  'F7 manual with a note buyer and NO contacts is ready — no email, so no contacts needed');
+ok(ID.deliveryBlockers({ finding: { status: 'accepted' }, investorContacts: [], noteBuyer: '', mode: 'manual' }).some((b) => /no note buyer/.test(b)),
+  'F8 manual still needs the note buyer set — the record must name which investor');
+ok(ID.deliveryBlockers({ finding: { status: 'delivered' }, investorContacts: [], noteBuyer: 'Fidelis', mode: 'manual' })[0].includes('not agreed'),
+  'F9 manual still requires the borrower to have agreed');
+// An EMAILED mode with no contacts is still blocked (the manual carve-out must not leak to it).
+ok(ID.deliveryBlockers({ finding: { status: 'accepted' }, investorContacts: [], noteBuyer: 'Fidelis', mode: 'reimbursement' }).some((b) => /No investor contacts/.test(b)),
+  'F10 an EMAILED mode with no contacts is still blocked (the carve-out is manual-only)');
+
+// ---------------------------------------------------------------- G. the WIRE FORM gate (Task 4)
+// The signed wire form must be ACCEPTED before an emailed delivery — the investor wires the
+// borrower off it (investor_direct) or we did (reimbursement). Owner: "fully accept before
+// investor delivery of the first draw."
+const OKF = { finding: { status: 'accepted' }, investorContacts: CONTACTS, noteBuyer: 'Fidelis' };
+const acceptedWire = { present: true, accepted: true, rejectedOnly: false };
+const pendingWire = { present: true, accepted: false, rejectedOnly: false };
+const rejectedWire = { present: true, accepted: false, rejectedOnly: true };
+const missingWire = { present: false, accepted: false, rejectedOnly: false };
+
+eq(ID.deliveryBlockers({ ...OKF, mode: 'investor_direct', wireForm: acceptedWire }).length, 0,
+  'G1 an accepted wire form clears the gate');
+ok(ID.deliveryBlockers({ ...OKF, mode: 'investor_direct', wireForm: pendingWire }).some((b) => /wire form has not been accepted/.test(b)),
+  'G2 a wire form present but not accepted blocks the send');
+ok(ID.deliveryBlockers({ ...OKF, mode: 'investor_direct', wireForm: rejectedWire }).some((b) => /wire form was rejected/.test(b)),
+  'G3 a rejected-only wire form blocks and says the borrower must re-sign');
+ok(ID.deliveryBlockers({ ...OKF, mode: 'investor_direct', wireForm: missingWire }).some((b) => /has not signed the wire/.test(b)),
+  'G4 no wire form at all blocks and says the borrower must sign');
+// reimbursement is ALSO gated (we wired the borrower off the same form).
+ok(ID.deliveryBlockers({ ...OKF, mode: 'reimbursement', wireForm: pendingWire }).some((b) => /wire form has not been accepted/.test(b)),
+  'G5 reimbursement mode is gated on the wire form too');
+// manual delivery is handled outside PILOT — the wire gate does NOT apply.
+eq(ID.deliveryBlockers({ ...OKF, mode: 'manual', wireForm: pendingWire }).filter((b) => /wire form/.test(b)).length, 0,
+  'G6 a MANUAL delivery is not gated on the in-PILOT wire acceptance');
+// back-compat: no wireForm supplied → the gate is silent.
+eq(ID.deliveryBlockers({ ...OKF, mode: 'investor_direct' }).length, 0,
+  'G7 with no wireForm supplied the gate is skipped (pure/legacy callers)');
 
 console.log(`test-investor-delivery-pure: all ${n} investor-delivery rule checks passed.`);

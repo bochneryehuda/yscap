@@ -160,21 +160,39 @@ async function storeImport({ file, borrower, parsed, xml, pdfBase64, request, ac
     } catch (_) { /* condition update is best-effort */ }
   }
 
-  // 4) FICO write-back: middle score → this borrower's fico (auto-reopens P&P via
-  //    db/126). SAFETY: if the returned report names a different last-4 than the
-  //    borrower on file, DON'T auto-overwrite FICO — surface a mismatch instead.
+  // 4) FICO write-back: this borrower's MIDDLE SCORE → borrowers.fico. That is the
+  //    ONE field Products & Pricing, the Term Sheet Studio, the investor tapes, the
+  //    whole-loan underwriting context AND the application all read (each as the
+  //    HIGHER-OF-TWO across the file's borrowers — the score that prices the deal),
+  //    so writing the report's middle score HERE is what makes the imported credit
+  //    score flow EVERYWHERE, and it auto-reopens P&P via the db/126 trigger — so
+  //    importing / re-importing / updating credit directly updates the file
+  //    (owner-directed 2026-08-05: "everywhere should be updated according to the
+  //    imported credit score … the middle score of one borrower and the higher
+  //    middle score of two borrowers … directly when you import, re-import, and
+  //    update").
+  //    SAFETY: the ONE case we still refuse is a report whose SSN names a DIFFERENT
+  //    person than the borrower on file — that is someone else's score and must never
+  //    price this deal (the isg_fico_mismatch finding still flags it). A report for a
+  //    borrower with NO SSN on file IS now written — the staff imported it for THIS
+  //    borrower and the credit condition already shows it as theirs, and previously
+  //    withholding it left pricing on the stale estimate while the condition showed
+  //    the real score (owner-reported). It is flagged `ficoUnverified` ONLY so the
+  //    import result can note the identity wasn't SSN-confirmed; the score still flows.
   let ficoWritten = null, ficoMismatch = false, ficoUnverified = false;
   const returned4 = parsed.borrower && parsed.borrower.ssnLast4;
   const onFile4 = borrower.ssn_last4 || null;
   if (returned4 && onFile4 && String(returned4) !== String(onFile4)) {
     ficoMismatch = true;                    // report names a DIFFERENT person — never auto-set
-  } else if (returned4 && !onFile4) {
-    ficoUnverified = true;                  // no SSN on file to confirm identity — don't silently overwrite FICO
   } else if (borrowerId && parsed.middleScore != null) {
     const f = sanitizeFico(parsed.middleScore);
     if (f != null) {
       await db.query('UPDATE borrowers SET fico=$1, updated_at=now() WHERE id=$2', [f, borrowerId]);
       ficoWritten = f;
+      // Wrote it, but there was no SSN on file to confirm the report is this
+      // borrower's — carry that caveat to the import result (the score still flows
+      // into pricing/tapes/term sheet exactly like a confirmed one).
+      if (returned4 && !onFile4) ficoUnverified = true;
     }
   }
 

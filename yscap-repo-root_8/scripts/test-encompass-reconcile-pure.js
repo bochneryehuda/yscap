@@ -76,7 +76,9 @@ const loan = {
 
 // theirs from the real extract pipeline + the vesting name (1859 loanPath is
 // wired in WO-C; here we supply it so the name compare is exercised).
-const theirs = Object.assign(map.extractFields(loan), { vesting_llc: 'ABC Holdings, LLC' });
+// vesting_llc (1859) and vesting_title_role (4008) are fieldReader/loanPath reads;
+// on a FULL loan Encompass carries both, so supply them the way the reader would.
+const theirs = Object.assign(map.extractFields(loan), { vesting_llc: 'ABC Holdings, LLC', vesting_title_role: 'Officer' });
 
 // ── buildOurValues ──────────────────────────────────────────────────────────
 const ours = recon.buildOurValues(app, quote, llcName);
@@ -89,6 +91,7 @@ assert.strictEqual(ours.origination_pct, 1.25, 'origPct fraction → percent');
 assert.strictEqual(ours.term_months, 12, 'text term → int');
 assert.strictEqual(ours.total_experience_deals, 10);
 assert.strictEqual(ours.loan_to_be_vested, 'Entity', 'llc_id present → entity');
+assert.strictEqual(ours.vesting_title_role, 'Officer', 'llc_id present → field 4008 = Officer');
 assert.strictEqual(ours.vesting_llc, 'ABC Holdings LLC');
 // Engine FRACTIONS are converted to Encompass's PERCENT vocabulary (the 0.67425
 // vs 67.425 root cause). The frozen engine math is untouched — only the value we
@@ -245,5 +248,51 @@ const applyFieldExceptions = recon._internals.applyFieldExceptions;
   assert.ok(recon.summarize(cmp.fields).notPassingKeys.includes('loan_amount'), 'a pending request still blocks until granted');
 }
 ok('field exceptions: a granted exception passes the gate; auto-voids on a data change; a pending request still blocks');
+
+// ── Property address is compared by PLACE, not by letters ────────────────────
+// Owner-reported: our "407 Graves Street Syracuse NY 13203" vs Encompass's
+// "407 GRAVES ST SYRACUSE NY 13203" read "Doesn't match" and escalated to super
+// admin. The address identity row is BLOCK-gated, so a false mismatch held the
+// term sheet on a file where nothing was actually wrong. The compare now runs
+// through address.sameAddress (Street≡St, case, ordinals, ZIP+4, units).
+const compareIdentity = recon._internals.compareIdentity;
+const addrRow = (ours, theirs) => {
+  const row = { property_address: ours, b_first_name: 'A', b_last_name: 'B' };
+  const loan = { property: theirs, applications: [{ borrower: { firstName: 'A', lastName: 'B' } }] };
+  return compareIdentity(row, loan).find((f) => f.key === 'id_property_address');
+};
+{
+  // The exact reported pair — suffix abbreviation + case only.
+  const f = addrRow('407 Graves Street Syracuse NY 13203', '407 GRAVES ST SYRACUSE NY 13203');
+  assert.strictEqual(f.status, 'match', '"Graves Street" ≡ "GRAVES ST" — same place');
+  assert.strictEqual(f.gate, map.GATE.BLOCK, 'still a block-gated identity row');
+  assert.strictEqual(f.open, false, 'a match never holds the term sheet');
+}
+{
+  // A comma-formatted variant + Avenue/Ave still matches.
+  const f = addrRow('12 Main Avenue, Brooklyn, NY 11201', '12 MAIN AVE, BROOKLYN, NY 11201');
+  assert.strictEqual(f.status, 'match', '"Main Avenue" ≡ "MAIN AVE"');
+}
+{
+  // A structured-object Encompass side (line1/city/state/zip) still matches ours.
+  const f = addrRow('407 Graves Street Syracuse NY 13203',
+    { street: '407 Graves St', city: 'Syracuse', state: 'NY', zip: '13203' });
+  assert.strictEqual(f.status, 'match', 'a structured Encompass address ≡ our one-line');
+}
+{
+  // Negative controls — a REAL difference must still mismatch (never a false match).
+  assert.strictEqual(addrRow('407 Graves St Syracuse NY 13203', '409 Graves St Syracuse NY 13203').status,
+    'mismatch', 'a different house number still mismatches');
+  assert.strictEqual(addrRow('407 Graves St Syracuse NY 13203', '407 Oak St Syracuse NY 13203').status,
+    'mismatch', 'a different street still mismatches');
+  assert.strictEqual(addrRow('407 Graves St Syracuse NY 13203', '407 Graves St Syracuse NY 13210').status,
+    'mismatch', 'a different ZIP still mismatches');
+}
+{
+  // A blank side stays "no data to compare" — never a spurious match/mismatch.
+  assert.strictEqual(addrRow('407 Graves St Syracuse NY 13203', '').status, 'incomparable',
+    'a blank Encompass address is incomparable, not a mismatch');
+}
+ok('property address compares by place (Street≡St, case, ZIP+4) — the reported false mismatch is fixed');
 
 console.log(`\nWO-B Encompass reconcile pure — ${passed} checks passed`);

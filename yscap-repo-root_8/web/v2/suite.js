@@ -265,53 +265,84 @@ window.YS = (function () {
     return { headers: head, rows: rows, foot: foot };
   }
 
+  // Read the live tool's title, inputs, headline result and metric grid into ONE
+  // structured model, so the Excel snapshot and the PDF export always show exactly
+  // the same content. Handles every result shape the suite uses: the `.result`
+  // grid (deal analyzer, equity compare, portfolio, qualifier, refi), the flip
+  // analyzer's `.result-mini` + `.kpi` grid, and the shared `.result-hero`.
+  function gatherReport() {
+    const clean = function (s) { return String(s == null ? "" : s).replace(/\s+/g, " ").trim(); };
+    const h1 = document.querySelector(".tool-hero h1");
+    const name = (h1 ? h1.textContent : "YS Investor Suite").replace(/™/g, "").trim();
+
+    const inputs = [];
+    // walk inputs in document order, tracking the current panel heading + sub-heading
+    // so each field is labelled with its group (e.g. "Option 1 — Interest rate (%)").
+    let grp = "", sub = "";
+    document.querySelectorAll(".inputs-col h2, .inputs-col .subhead, .inputs-col .field").forEach(function (node) {
+      if (node.tagName === "H2") {
+        let g = clean(node.textContent);
+        const pn = node.querySelector(".panel-num");
+        if (pn) g = g.slice(pn.textContent.length).trim();
+        grp = g; sub = "";
+        return;
+      }
+      if (node.classList.contains("subhead")) { sub = clean(node.textContent); return; }
+      const lab = node.querySelector("label");
+      if (!lab) return;
+      let nm = clean(lab.textContent);
+      const prefix = sub || grp;
+      if (prefix) nm = prefix + " — " + nm;
+      inputs.push([nm, inputDisplay(node)]);
+    });
+
+    const results = [];
+    let hero = null;
+    const heroEl = document.querySelector(".result-hero");
+    if (heroEl) {
+      const hl = heroEl.querySelector(".rh-label"), hv = heroEl.querySelector(".rh-value");
+      const hs = heroEl.querySelector(".rh-sub"), vd = heroEl.querySelector(".verdict");
+      hero = { label: hl ? clean(hl.textContent) : "Result",
+               value: hv ? clean(hv.textContent) : "",
+               note: hs ? clean(hs.textContent) : "",
+               verdict: vd ? clean(vd.textContent) : "" };
+      results.push({ hero: true, label: hero.label, value: hero.value, note: hero.note });
+      if (hero.verdict) results.push({ label: "Assessment", value: hero.verdict, note: "" });
+    }
+    // `.result` grid (most tools)
+    document.querySelectorAll(".result").forEach(function (r) {
+      if (r.classList.contains("result-hero-wrap") || r.querySelector(".result-hero")) return;
+      const l = r.querySelector(".r-label"), v = r.querySelector(".r-value"), hint = r.querySelector(".r-hint");
+      if (!l && !v) return;
+      results.push({ label: l ? clean(l.textContent) : "", value: v ? clean(v.textContent) : "",
+        note: hint ? clean(hint.textContent) : "" });
+    });
+    // flip analyzer: the two `.result-mini` figures + the `.kpi` grid
+    document.querySelectorAll(".result-mini .m").forEach(function (m) {
+      const k = m.querySelector(".mk"), v = m.querySelector(".mv");
+      if (k || v) results.push({ label: k ? clean(k.textContent) : "", value: v ? clean(v.textContent) : "", note: "" });
+    });
+    document.querySelectorAll(".kpi").forEach(function (k) {
+      const lab = k.querySelector(".k"), val = k.querySelector(".v"), d = k.querySelector(".d");
+      if (!lab && !val) return;
+      results.push({ label: lab ? clean(lab.textContent) : "", value: val ? clean(val.textContent) : "",
+        note: d ? clean(d.textContent) : "" });
+    });
+
+    const cmp = document.querySelector(".cmp-table");
+    const pf  = document.querySelector(".pf-table");
+    return { name: name, inputs: inputs, results: results, hero: hero,
+             cmpTable: cmp ? readTable(cmp, false) : null,
+             pfTable:  pf ? readTable(pf, true) : null };
+  }
+
   // FALLBACK: build a clean branded snapshot from the live page (used only if the
   // template can't be fetched — e.g. opened from disk with no web server).
   function buildSnapshot(X) {
-      // ---- gather content from the page ----
-      const h1 = document.querySelector(".tool-hero h1");
-      const name = (h1 ? h1.textContent : "YS Investor Suite").replace(/™/g, "").trim();
-
-      const inputs = [];
-      // walk inputs in document order, tracking the current panel heading + sub-heading
-      // so each field is labelled with its group (e.g. "Option 1 — Interest rate (%)").
-      let grp = "", sub = "";
-      document.querySelectorAll(".inputs-col h2, .inputs-col .subhead, .inputs-col .field").forEach(function (node) {
-        if (node.tagName === "H2") {
-          let g = node.textContent.replace(/\s+/g, " ").trim();
-          const pn = node.querySelector(".panel-num");
-          if (pn) g = g.slice(pn.textContent.length).trim();
-          grp = g; sub = "";
-          return;
-        }
-        if (node.classList.contains("subhead")) { sub = node.textContent.replace(/\s+/g, " ").trim(); return; }
-        const lab = node.querySelector("label");
-        if (!lab) return;
-        let nm = lab.textContent.replace(/\s+/g, " ").trim();
-        const prefix = sub || grp;
-        if (prefix) nm = prefix + " — " + nm;
-        inputs.push([nm, inputDisplay(node)]);
-      });
-
-      const results = [];
-      const hero = document.querySelector(".result-hero");
-      if (hero) {
-        const hl = hero.querySelector(".rh-label"), hv = hero.querySelector(".rh-value");
-        const hs = hero.querySelector(".rh-sub"), vd = hero.querySelector(".verdict");
-        results.push({ hero: true, label: hl ? hl.textContent.trim() : "Result",
-          value: hv ? hv.textContent.trim() : "", note: hs ? hs.textContent.trim() : "" });
-        if (vd) results.push({ label: "Assessment", value: vd.textContent.trim(), note: "" });
-      }
-      document.querySelectorAll(".result").forEach(function (r) {
-        const l = r.querySelector(".r-label"), v = r.querySelector(".r-value"), hint = r.querySelector(".r-hint");
-        results.push({ label: l ? l.textContent.replace(/\s+/g, " ").trim() : "",
-          value: v ? v.textContent.trim() : "", note: hint ? hint.textContent.trim() : "" });
-      });
-
-      const cmp = document.querySelector(".cmp-table");
-      const pf  = document.querySelector(".pf-table");
-      const cmpTable = cmp ? readTable(cmp, false) : null;
-      const pfTable  = pf ? readTable(pf, true) : null;
+      // ---- gather content from the page (shared with the PDF export) ----
+      const _R = gatherReport();
+      const name = _R.name, inputs = _R.inputs, results = _R.results,
+            cmpTable = _R.cmpTable, pfTable = _R.pfTable;
 
       // ---- styles ----
       const INK="141B22", IVORY="F4F0E7", GOLD="AE8746", LIGHT="EAF1F1", HERO="E1ECEC",
@@ -620,6 +651,232 @@ window.YS = (function () {
     }
   }
 
-  return { monthlyPayment, num, opt, raw, fmtUSD, fmtUSD2, fmtPct, fmtX, fmtNum, put, signClass, live, el, exportXLSX,
+  /* ===========================================================
+     PDF EXPORT — a branded one-page (or multi-page) summary built
+     with jsPDF's vector API from the SAME `gatherReport()` model the
+     Excel export uses, so the two never disagree. Self-contained: no
+     html2canvas, no fonts to embed, offline-safe (vendored jsPDF).
+     =========================================================== */
+  const haveJsPDF = function () { return !!(window.jspdf && window.jspdf.jsPDF); };
+  async function ensurePDF() {
+    if (haveJsPDF()) return;
+    const srcs = ["vendor/jspdf.umd.min.js",
+      "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js",
+      "https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"];
+    for (let i = 0; i < srcs.length; i++) {
+      try { await loadScript(srcs[i]); } catch (e) { continue; }
+      if (haveJsPDF()) return;
+    }
+    throw new Error("pdf library failed to load");
+  }
+
+  function renderReportPDF(doc, R) {
+    // PILOT / YS palette (matches the site + the Excel export)
+    const INK=[20,27,34], IVORY=[244,240,231], GOLD=[174,135,70], TEAL=[47,127,134],
+          DEEP=[31,58,64], LIGHT=[234,241,241], GRAY=[75,88,92], LINE=[220,225,226], WHITE=[255,255,255];
+    const PW = doc.internal.pageSize.getWidth();   // 612
+    const PH = doc.internal.pageSize.getHeight();   // 792
+    const M = 48, CW = PW - M * 2;                   // margins + content width
+    const FOOT = 40;                                 // bottom reserve for the footer
+    let y = 0;
+    const setFill = (c) => doc.setFillColor(c[0], c[1], c[2]);
+    const setText = (c) => doc.setTextColor(c[0], c[1], c[2]);
+    const setDraw = (c) => doc.setDrawColor(c[0], c[1], c[2]);
+
+    // ---- header band ----
+    setFill(INK); doc.rect(0, 0, PW, 104, "F");
+    // gold navigation-chevron mark
+    setDraw(GOLD); doc.setLineWidth(2.4);
+    doc.line(M, 30, M + 8, 37); doc.line(M + 8, 37, M, 44);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(10); setText(GOLD);
+    doc.text("YS CAPITAL GROUP", M + 18, 38, { charSpace: 1.4 });
+    doc.setFont("times", "bold"); doc.setFontSize(22); setText(IVORY);
+    doc.text(R.name || "YS Investor Suite", M, 70);
+    doc.setFont("times", "italic"); doc.setFontSize(10); setText(GOLD);
+    doc.text("The tool serious investors say YES to.", M, 88);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8); setText([200, 205, 208]);
+    const dstr = "Generated " + new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+    doc.text(dstr, PW - M, 38, { align: "right" });
+    y = 104;
+
+    function footers() {
+      const n = doc.getNumberOfPages();
+      for (let p = 1; p <= n; p++) {
+        doc.setPage(p);
+        setDraw(LINE); doc.setLineWidth(0.6); doc.line(M, PH - 30, PW - M, PH - 30);
+        doc.setFont("helvetica", "bold"); doc.setFontSize(8); setText(DEEP);
+        doc.text("YS Capital Group  ·  NMLS ID 2609746  ·  Equal Housing Lender", M, PH - 18);
+        doc.setFont("helvetica", "normal"); setText(GRAY);
+        doc.text("718-831-2168  ·  sales@yscapgroup.com", M, PH - 8);
+        doc.text("Page " + p + " of " + n, PW - M, PH - 18, { align: "right" });
+      }
+    }
+    function need(h) {
+      if (y + h <= PH - FOOT) return;
+      doc.addPage(); y = M;
+    }
+    function sectionHead(t) {
+      need(30);
+      y += 6; setFill(LIGHT); doc.rect(M, y, CW, 20, "F");
+      setDraw(TEAL); doc.setLineWidth(0.8); doc.line(M, y + 20, M + CW, y + 20);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); setText(DEEP);
+      doc.text(String(t).toUpperCase(), M + 8, y + 14, { charSpace: 0.8 });
+      y += 28;
+    }
+
+    // ---- hero result ----
+    if (R.hero && (R.hero.value || R.hero.label)) {
+      need(72);
+      setFill([225, 236, 236]); doc.rect(M, y, CW, 64, "F");
+      setDraw(GOLD); doc.setLineWidth(2); doc.line(M, y, M, y + 64);   // gold accent bar
+      doc.setFont("helvetica", "bold"); doc.setFontSize(9); setText(DEEP);
+      doc.text(String(R.hero.label || "Result").toUpperCase(), M + 14, y + 18, { charSpace: 0.6 });
+      doc.setFont("times", "bold"); doc.setFontSize(26); setText(INK);
+      doc.text(R.hero.value || "—", M + 14, y + 44);
+      if (R.hero.note) {
+        doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); setText(GRAY);
+        doc.text(doc.splitTextToSize(R.hero.note, CW - 200), M + 14, y + 56);
+      }
+      if (R.hero.verdict) {
+        doc.setFont("helvetica", "bold"); doc.setFontSize(9); setText(TEAL);
+        doc.text(R.hero.verdict, PW - M - 14, y + 20, { align: "right" });
+      }
+      y += 72;
+    }
+
+    // ---- metric cards (2-up) ----
+    const metrics = (R.results || []).filter((r) => !r.hero && r.label && r.label !== "Assessment" && r.value);
+    if (metrics.length) {
+      sectionHead("Results");
+      const gap = 12, cardW = (CW - gap) / 2, cardH = 44;
+      for (let i = 0; i < metrics.length; i++) {
+        const col = i % 2, rowStart = col === 0;
+        if (rowStart) need(cardH + 8);
+        const x = M + col * (cardW + gap);
+        setFill([250, 250, 248]); setDraw(LINE); doc.setLineWidth(0.6);
+        doc.rect(x, y, cardW, cardH, "FD");
+        doc.setFont("helvetica", "bold"); doc.setFontSize(7.5); setText(GRAY);
+        doc.text(doc.splitTextToSize(String(metrics[i].label).toUpperCase(), cardW - 16)[0], x + 10, y + 15, { charSpace: 0.4 });
+        doc.setFont("times", "bold"); doc.setFontSize(14); setText(INK);
+        doc.text(String(metrics[i].value), x + 10, y + 32);
+        if (metrics[i].note) {
+          doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); setText(GRAY);
+          doc.text(doc.splitTextToSize(metrics[i].note, cardW - 16)[0], x + 10, y + 40);
+        }
+        if (col === 1 || i === metrics.length - 1) y += cardH + 8;
+      }
+    }
+
+    // ---- a simple label/value list (inputs, tables) ----
+    function kvList(title, rows) {
+      if (!rows || !rows.length) return;
+      sectionHead(title);
+      doc.setFontSize(9);
+      rows.forEach(function (kv) {
+        const label = String(kv[0] || ""), value = String(kv[1] || "");
+        const labelLines = doc.splitTextToSize(label, CW - 150);
+        const h = Math.max(16, labelLines.length * 11 + 4);
+        need(h);
+        doc.setFont("helvetica", "normal"); setText(GRAY);
+        doc.text(labelLines, M + 2, y + 11);
+        doc.setFont("helvetica", "bold"); setText(INK);
+        doc.text(doc.splitTextToSize(value, 150), PW - M - 2, y + 11, { align: "right" });
+        setDraw(LINE); doc.setLineWidth(0.4); doc.line(M, y + h - 3, PW - M, y + h - 3);
+        y += h;
+      });
+    }
+    kvList("Your inputs", R.inputs);
+
+    function drawTable(title, tb) {
+      if (!tb || !tb.headers || !tb.headers.length) return;
+      sectionHead(title);
+      const cols = tb.headers.length, colW = CW / cols;
+      need(22);
+      setFill(DEEP); doc.rect(M, y, CW, 20, "F");
+      doc.setFont("helvetica", "bold"); doc.setFontSize(8); setText(IVORY);
+      tb.headers.forEach(function (h, c) {
+        const align = c === 0 ? "left" : "right";
+        const tx = c === 0 ? M + 6 : M + (c + 1) * colW - 6;
+        doc.text(doc.splitTextToSize(String(h), colW - 10)[0], tx, y + 13, { align: align });
+      });
+      y += 20;
+      (tb.rows || []).forEach(function (cells) {
+        need(16);
+        doc.setFont("helvetica", "normal"); doc.setFontSize(8); setText([51, 51, 51]);
+        cells.forEach(function (cell, c) {
+          const align = c === 0 ? "left" : "right";
+          const tx = c === 0 ? M + 6 : M + (c + 1) * colW - 6;
+          doc.text(doc.splitTextToSize(String(cell), colW - 10)[0], tx, y + 11, { align: align });
+        });
+        setDraw(LINE); doc.setLineWidth(0.4); doc.line(M, y + 15, PW - M, y + 15);
+        y += 16;
+      });
+      if (tb.foot && tb.foot.length) {
+        need(16);
+        doc.setFont("helvetica", "bold"); doc.setFontSize(8); setText(INK);
+        tb.foot.forEach(function (cell, c) {
+          if (!String(cell).trim()) return;
+          const align = c === 0 ? "left" : "right";
+          const tx = c === 0 ? M + 6 : M + (c + 1) * colW - 6;
+          doc.text(String(cell), tx, y + 11, { align: align });
+        });
+        y += 16;
+      }
+    }
+    drawTable("Rate options", R.cmpTable);
+    drawTable("Properties", R.pfTable);
+
+    // ---- disclaimer ----
+    sectionHead("Disclaimer");
+    doc.setFont("helvetica", "italic"); doc.setFontSize(7.5); setText(GRAY);
+    const disc = "For estimation and education only. Outputs are estimates based on your inputs and are not a quote, an approval, or a commitment to lend, nor financial, legal or tax advice. Final terms depend on full underwriting. YS Capital Group assumes no liability for use of this tool. Use is at your own risk.";
+    const dl = doc.splitTextToSize(disc, CW);
+    need(dl.length * 10 + 6);
+    doc.text(dl, M, y + 9);
+    y += dl.length * 10 + 6;
+
+    footers();
+  }
+
+  async function exportPDF(btn) {
+    const original = btn ? btn.textContent : null;
+    if (btn) { btn.textContent = "Preparing…"; btn.disabled = true; }
+    try {
+      await ensurePDF();
+      const jsPDF = window.jspdf.jsPDF;
+      const doc = new jsPDF({ unit: "pt", format: "letter", orientation: "portrait" });
+      const R = gatherReport();
+      renderReportPDF(doc, R);
+      const fname = (R.name || "YS_Investor_Suite").replace(/[^\w]+/g, "_").replace(/^_|_$/g, "") +
+        "_" + new Date().toISOString().slice(0, 10) + ".pdf";
+      doc.save(fname);
+    } catch (err) {
+      alert("Sorry — the PDF couldn't be generated. If you opened this page directly from a file on your computer, try it on the published website instead.");
+      if (window.console) console.error(err);
+    } finally {
+      if (btn) { btn.textContent = original; btn.disabled = false; }
+    }
+  }
+
+  // Add a "PDF" button next to every tool's existing Export (Excel) button, so a
+  // branded PDF is one click away with no per-tool markup to maintain.
+  function injectPdfButtons() {
+    try {
+      document.querySelectorAll('[onclick*="exportXLSX"]').forEach(function (x) {
+        if (x.__ysPdf) return; x.__ysPdf = true;
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = x.className;
+        b.textContent = "PDF";
+        b.title = "Download a branded PDF summary";
+        b.addEventListener("click", function () { exportPDF(b); });
+        x.parentNode.insertBefore(b, x.nextSibling);
+      });
+    } catch (e) { if (window.console) console.warn("PDF button inject failed", e); }
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", injectPdfButtons);
+  else injectPdfButtons();
+
+  return { monthlyPayment, num, opt, raw, fmtUSD, fmtUSD2, fmtPct, fmtX, fmtNum, put, signClass, live, el, exportXLSX, exportPDF,
            readState, syncURL, shareLink, collectState, applyState };
 })();

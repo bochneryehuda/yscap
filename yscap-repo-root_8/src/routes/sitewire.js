@@ -22,6 +22,7 @@ const orchestrator = require('../sitewire/orchestrator');
 const sowLineEdit = require('../sitewire/sow-line-edit');
 const reconcile = require('../sitewire/reconcile');
 const rollupMod = require('../sitewire/rollup');
+const drawTimeline = require('../sitewire/draw-timeline');
 const { drawEmailBlocks } = require('../sitewire/draw-email-blocks');
 const { planReallocation } = require('../sitewire/reallocation');
 const M = require('../sitewire/mapper');
@@ -963,11 +964,20 @@ router.get('/files/:id/draw-request', requirePermission('manage_draws'), async (
       routing_number: w.routing_number, bank_address: w.bank_address, account_address: w.account_address,
       name_kind: w.name_kind, name_matches: w.name_matches, captured_at: w.captured_at,
     } : null;
-    // The fatal operating-agreement condition, when a new entity.
+    // The fatal operating-agreement condition, when a new entity — with its document progress so the
+    // card can say whether an agreement has been pulled/uploaded and whether it has been accepted.
     let oaCondition = null;
     if (w && w.operating_agreement_item_id) {
       const oa = (await db.query(`SELECT id, status, label FROM checklist_items WHERE id=$1`, [w.operating_agreement_item_id])).rows[0];
-      if (oa) oaCondition = { id: oa.id, status: oa.status, label: oa.label, satisfied: oa.status === 'satisfied' };
+      if (oa) {
+        const docs = (await db.query(
+          `SELECT count(*) FILTER (WHERE review_status='accepted') AS accepted, count(*) AS total
+             FROM documents WHERE checklist_item_id=$1 AND is_current`, [oa.id])).rows[0] || {};
+        oaCondition = {
+          id: oa.id, status: oa.status, label: oa.label, satisfied: oa.status === 'satisfied',
+          doc_total: Number(docs.total || 0), doc_accepted: Number(docs.accepted || 0),
+        };
+      }
     }
     // The signed PDF, once filed back to the condition.
     const signed = (await db.query(
@@ -1782,6 +1792,10 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     // merge risk flags onto the rollup draw summaries
     const riskByDraw = new Map(draws.map((d) => [Number(d.sitewire_draw_id), { level: d.risk_level, flags: d.risk_flags, pdf_src: d.pdf_src, quick_notify_status_id: d.quick_notify_status_id, coordinator_id: d.coordinator_id }]));
     for (const d of rollup.draws) { const r = riskByDraw.get(d.sitewire_draw_id); if (r) { d.risk_level = r.level; d.risk_flags = r.flags; d.pdf_src = r.pdf_src; d.quick_notify_status_id = r.quick_notify_status_id; d.coordinator_id = r.coordinator_id; } }
+    // The per-draw STAGE TIMELINE (owner-directed: "a timestamp on every step … a unified status like
+    // a loan file's stages"). Staff voice — includes the capital-partner step. The resolved shape is
+    // attached here so the desk renders it without re-deriving; `stage_times` come off the rollup.
+    for (const d of rollup.draws) d.timeline = drawTimeline.stageTimeline(d.stage_times, d.approval_stage, { borrower: false });
     // retainage held vs released + the lien-waiver register (roadmap money model)
     const held = Number((await db.query(`SELECT COALESCE(sum(retainage_held_cents),0) h FROM draw_disbursements WHERE application_id=$1 AND kind='draw'`, [appId])).rows[0].h) || 0;
     const rlsd = Number((await db.query(`SELECT COALESCE(sum(net_release_cents),0) r FROM draw_disbursements WHERE application_id=$1 AND kind='retainage_release'`, [appId])).rows[0].r) || 0;
@@ -2613,10 +2627,13 @@ router.post('/files/:id/draws/:drawId/investor-delivery', requirePermission('man
     const out = await investorSend.sendInvestorDelivery(appId, drawId, {
       staffId: req.actor.id, staffName: who.full_name || null,
       mode: (req.body && req.body.mode) || null,
+      note: (req.body && req.body.note) || null,
     });
     try { await orchestrator.journal({ appId, entity: 'draw', entityId: Number(drawId), field: 'investor_delivery', oldValue: null, newValue: { to: out.to, mode: out.funding_mode, total: out.money.investor_total_cents, actor: req.actor.id }, source: 'money_override' }); } catch (_) {}
-    await notify.notifyAppStaff(appId, { type: 'draw', title: 'Draw delivered to the investor', inAppOnly: true,
-      body: `Draw request sent to ${app.lender || 'the investor'} (${out.to.join(', ')}).`,
+    await notify.notifyAppStaff(appId, { type: 'draw', title: out.manual ? 'Draw delivery recorded (handled manually)' : 'Draw delivered to the investor', inAppOnly: true,
+      body: out.manual
+        ? `A coordinator recorded that this draw was delivered to ${app.lender || 'the investor'} outside PILOT${out.note ? ` — ${String(out.note).slice(0, 160)}` : ''}.`
+        : `Draw request sent to ${app.lender || 'the investor'} (${out.to.join(', ')}).`,
       applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     res.json({ ok: true, ...out });
   } catch (e) {

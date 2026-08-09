@@ -3,9 +3,10 @@ import { Link, useParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import ValuationQc from '../components/ValuationQc.jsx';
 import {
-  INK, MUTED, GOLD, S, money, sqft, num, saleMonth, day, baths,
+  INK, MUTED, GOLD, TEAL, S, money, sqft, num, saleMonth, day, baths,
   conditionLabel, compSetShort, severityColor,
 } from '../lib/research.js';
+import ResearchNav from '../components/ResearchNav.jsx';
 
 /* BUILD YOUR OWN VALUATION — pick the comparable sales you believe in, adjust
    each one to the subject by hand, and see what the property would appraise for.
@@ -91,8 +92,13 @@ export default function StaffValuation() {
     finally { setBusy(''); }
   }
 
-  if (err && !d) return <div className="card" style={{ borderColor: '#B4423A', color: '#B4423A' }}>{err}</div>;
-  if (!d) return <div className="card" style={{ color: MUTED }}>Loading…</div>;
+  /* THE SECTION'S PAGE STRIP SURVIVES LOADING AND FAILURE. It used to sit below
+     these early returns, so it flickered out on every navigation here and vanished
+     entirely on an error — leaving somebody on a dead-end page with no way back
+     into the section except the sidebar. The strip is not about this page's data,
+     so it does not wait for it. */
+  if (err && !d) return (<div><ResearchNav /><div className="card" style={{ borderColor: '#B4423A', color: '#B4423A' }}>{err}</div></div>);
+  if (!d) return (<div><ResearchNav /><div className="card" style={{ color: MUTED }}>Loading…</div></div>);
 
   const v = d.valuation;
   const g = d.grid;
@@ -101,6 +107,7 @@ export default function StaffValuation() {
 
   return (
     <div>
+      <ResearchNav />
       <div style={{ marginBottom: 10, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <Link to="/internal/research" style={{ color: MUTED, fontSize: 13 }}>← Property Research</Link>
         {v.property_id && (
@@ -214,6 +221,9 @@ export default function StaffValuation() {
         )}
       </section>
 
+      {/* ---- what this value rests on, and whether anybody checked ---- */}
+      <ConfirmFacts review={d.subjectReview} valuationId={id} isFinal={isFinal} onDone={(r) => setD(r)} />
+
       {/* ---- the subject ---- */}
       <SubjectBlock v={v} isFinal={isFinal} onSave={(patch) => act('subject', () => api.valuationUpdate(id, { subject: patch }))} />
 
@@ -270,6 +280,132 @@ export default function StaffValuation() {
 }
 
 /* ---------------------------------------------------------------------- */
+
+/* "THE SYSTEM SAYS" → "I CHECKED" — the confirm-the-facts step.
+ *
+ * The subject's facts came out of somebody else's appraisal. Usually right, never
+ * confirmed — and a number an officer is about to quote rests on them. This panel
+ * walks the handful the grid is genuinely sensitive to, lets any be corrected, and
+ * the value is rebuilt before the panel closes: a correction that does not visibly
+ * move the number is a correction nobody trusts they made.
+ *
+ * IT LEADS WITH WHAT IS NOT HAPPENING, not with what is blank. A missing living
+ * area does not make a wrong adjustment, it removes FOUR of them — the size line
+ * and the multiplier under the bedroom, bathroom and condition lines — so the
+ * value quietly becomes a plain average of the sale prices and still prints
+ * confidently. "Living area: blank" does not tell anybody that; "no size,
+ * room-count or condition adjustment is being made at all" does.
+ */
+function ConfirmFacts({ review, valuationId, isFinal, onDone }) {
+  const [edits, setEdits] = useState({});
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [saved, setSaved] = useState(null);
+  if (!review) return null;
+
+  const blind = review.facts.filter((f) => f.gap && f.critical);
+  const soft = review.facts.filter((f) => f.gap && !f.critical);
+  const tone = review.stale && review.stale.stale ? GOLD
+    : blind.length ? '#B4423A'
+      : review.confirmed ? TEAL : GOLD;
+
+  async function confirm() {
+    setBusy(true); setErr(''); setSaved(null);
+    try {
+      const r = await api.valuationConfirmSubject(valuationId, edits);
+      setEdits({});
+      setSaved(r.changed || []);
+      setOpen(false);
+      onDone && onDone(r);
+    } catch (e) { setErr(e.message || 'That did not save'); }
+    setBusy(false);
+  }
+
+  const set = (k) => (e) => setEdits((d) => ({ ...d, [k]: e.target.value }));
+  const shown = (f) => (Object.prototype.hasOwnProperty.call(edits, f.key)
+    ? edits[f.key] : (f.value == null ? '' : String(f.value)));
+
+  return (
+    <section style={{ ...S.panel, marginBottom: 14, borderLeft: `3px solid ${tone}` }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        <h2 style={{ margin: 0, fontSize: 15, color: INK }}>What this value rests on</h2>
+        {review.confirmed && (
+          <span style={{ fontSize: 12, color: TEAL }}>✓ checked by a person</span>
+        )}
+        <button type="button" className="btn ghost small" style={{ marginLeft: 'auto' }}
+          onClick={() => setOpen((o) => !o)}>
+          {open ? 'Close' : review.confirmed ? 'Check again' : 'Check these facts'}
+        </button>
+      </div>
+      <div style={{ fontSize: 13.5, color: INK, marginTop: 6 }}>{review.headline}</div>
+
+      {/* THE BLIND SPOTS, SAID AS CONSEQUENCES. This is the part that earns the
+          panel: an absent adjustment line reads exactly like "no adjustment was
+          needed", and nothing else on the screen says otherwise. */}
+      {blind.length > 0 && (
+        <ul style={{ margin: '8px 0 0 18px', padding: 0, fontSize: 13, color: '#B4423A' }}>
+          {blind.map((f) => <li key={f.key}><b>{f.label}</b> is not stated — {f.without}.</li>)}
+        </ul>
+      )}
+      {soft.length > 0 && (
+        <ul style={{ margin: '6px 0 0 18px', padding: 0, fontSize: 12.5, color: '#8A5A00' }}>
+          {soft.map((f) => <li key={f.key}><b>{f.label}</b> is not stated — {f.without}.</li>)}
+        </ul>
+      )}
+      {review.stale && review.stale.stale && (
+        <ul style={{ margin: '8px 0 0 18px', padding: 0, fontSize: 13, color: '#8A5A00' }}>
+          {review.stale.changed.map((c) => (
+            <li key={c.key}>
+              <b>{c.label}</b> was {c.was == null ? 'not stated' : String(c.was)} when it was checked,
+              and is {c.now == null ? 'not stated' : String(c.now)} now.
+            </li>
+          ))}
+        </ul>
+      )}
+      {saved && (
+        <div style={{ fontSize: 13, color: TEAL, marginTop: 8 }}>
+          {saved.length
+            ? <>Checked, and {saved.length === 1 ? 'one fact was' : `${saved.length} facts were`} corrected
+              ({saved.map((c) => c.label).join(', ')}) — the value above has been rebuilt from them.</>
+            : <>Checked. Everything already matched, so the value is unchanged.</>}
+        </div>
+      )}
+      {err && <div style={{ fontSize: 13, color: '#B4423A', marginTop: 8 }}>{err}</div>}
+
+      {open && (
+        <div style={{ marginTop: 12, borderTop: '1px solid #EFE9DA', paddingTop: 10 }}>
+          <div style={{ display: 'grid', gap: 10 }}>
+            {review.facts.map((f) => (
+              <label key={f.key} style={{ display: 'grid', gridTemplateColumns: '190px 130px 1fr',
+                gap: 10, alignItems: 'baseline' }}>
+                <span style={{ fontSize: 13, color: INK, fontWeight: f.critical ? 600 : 400 }}>
+                  {f.label}
+                  {f.gap && <span style={{ color: f.critical ? '#B4423A' : '#8A5A00' }}> · not stated</span>}
+                </span>
+                <input style={{ ...S.input, width: '100%' }} value={shown(f)} onChange={set(f.key)}
+                  disabled={isFinal} placeholder={f.gap ? 'not stated' : ''} />
+                <span style={{ fontSize: 12, color: MUTED }}>
+                  {f.gap ? f.without : `drives ${f.drives}`}
+                </span>
+              </label>
+            ))}
+          </div>
+          <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center' }}>
+            <button className="btn btn-gold small" disabled={busy || isFinal} onClick={confirm}>
+              {busy ? 'Saving…' : 'These are right — re-value'}
+            </button>
+            <span style={{ fontSize: 12, color: MUTED }}>
+              {isFinal
+                ? 'This valuation was finalized — it is a record of what was said. Duplicate it to change anything.'
+                : 'Leave a box blank to say we do not know it. The value is rebuilt from these before this closes.'}
+            </span>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
 
 function SubjectBlock({ v, isFinal, onSave }) {
   const s = v.subject_snapshot || {};

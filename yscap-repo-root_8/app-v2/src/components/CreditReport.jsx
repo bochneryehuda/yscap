@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import { fileToBase64 } from '../lib/files.js';
+import DocPreview from './DocPreview.jsx';
 
 /**
  * Credit report (Xactus import) — the internal "Credit report" condition
@@ -763,6 +764,13 @@ function CreditHero({ report }) {
 // The entire report, laid out with the whole screen (owner-directed 2026-07-23):
 // opens on import and from the condition's "Open full report" button, closeable.
 function CreditReportOverlay({ report, history, justImported, onClose, onDownload }) {
+  // "Open PDF" DOWNLOADED the file (owner-reported 2026-08-06 about the manual
+  // upload: "you only have a button open that does not preview the document — it
+  // downloads it. It should be a regular preview button"). The manual-upload panel
+  // was fixed first; this is the SAME class on the imported-report overlay, so it
+  // reads the report inline through the same DocPreview and keeps Download as its
+  // own explicit action. Local state — the overlay owns its own preview.
+  const [previewDoc, setPreviewDoc] = useState(null);
   // Scroll-locked + position-preserving + Escape-to-close (see useScrollLock).
   useScrollLock(onClose);
 
@@ -779,7 +787,8 @@ function CreditReportOverlay({ report, history, justImported, onClose, onDownloa
             </p>
           </div>
           <div className="crx-overlay-tools">
-            {report.pdfDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.pdfDocumentId, 'credit-report.pdf')}>📄 Open PDF</button>}
+            {report.pdfDocumentId && <button className="crx-btn ghost sm" onClick={() => setPreviewDoc({ id: report.pdfDocumentId, filename: 'credit-report.pdf', content_type: 'application/pdf' })}>Preview</button>}
+            {report.pdfDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.pdfDocumentId, 'credit-report.pdf')}>Download PDF</button>}
             {report.xmlDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.xmlDocumentId, 'credit-report.xml')}>Download data (XML)</button>}
             <button className="crx-x" onClick={onClose} aria-label="Close">✕</button>
           </div>
@@ -801,6 +810,15 @@ function CreditReportOverlay({ report, history, justImported, onClose, onDownloa
           )}
         </div>
       </div>
+      {previewDoc && (
+        <DocPreview
+          title="Credit report"
+          filename={previewDoc.filename}
+          contentType={previewDoc.content_type}
+          load={() => api.staffDownloadDoc(previewDoc.id)}
+          onDownload={() => onDownload(previewDoc.id, previewDoc.filename)}
+          onClose={() => setPreviewDoc(null)} />
+      )}
     </div>
   );
 }
@@ -832,6 +850,7 @@ function ExternalCreditPanel({ appId, itemId, scopeKind, onChanged, onDownload, 
   const [asking, setAsking] = useState(false);
   const [reason, setReason] = useState('report_from_elsewhere');
   const [note, setNote] = useState('');
+  const [preview, setPreview] = useState(null);   // doc being previewed inline
 
   const q = itemId ? { itemId } : { scope: scopeKind === 'co' ? 'co' : 'primary' };
   const load = useCallback(() => api.creditWaiverGet(appId, q)
@@ -883,6 +902,21 @@ function ExternalCreditPanel({ appId, itemId, scopeKind, onChanged, onDownload, 
       await load();
       onChanged && onChanged();
     } catch (e) { setErr(e.message || 'Could not update the document.'); }
+    setBusy(false);
+  }
+
+  // Permanent delete — for a document uploaded by mistake. Removes it for good
+  // (bytes + row) and keeps it out of SharePoint, exactly like the file screen's
+  // own delete. Distinct from Reject, which keeps a rejected copy on the file.
+  async function del(doc) {
+    if (!window.confirm(`Permanently delete "${doc.filename || 'this credit report'}"?\n\nThis removes it for good and it will NOT be synced to SharePoint. Use this only for a document uploaded by mistake.`)) return;
+    setErr(''); setBusy(true);
+    try {
+      await api.staffDeleteDoc(doc.id);
+      if (preview && preview.id === doc.id) setPreview(null);
+      await load();
+      onChanged && onChanged();
+    } catch (e) { setErr(e.message || 'Could not delete the document.'); }
     setBusy(false);
   }
 
@@ -948,13 +982,15 @@ function ExternalCreditPanel({ appId, itemId, scopeKind, onChanged, onDownload, 
             <div className="crx-ext-doc" key={d.id}>
               <span className="crx-ext-doc-name" title={d.filename}>{d.filename}</span>
               <span className={'crx-pill crx-rev-' + d.review_status}>{d.review_status}</span>
-              <button className="crx-btn ghost sm" onClick={() => onDownload(d.id, d.filename)}>Open</button>
+              <button className="crx-btn ghost sm" onClick={() => setPreview(d)}>Preview</button>
+              <button className="crx-btn ghost sm" onClick={() => onDownload(d.id, d.filename)}>Download</button>
               {d.review_status !== 'accepted' && (
                 <button className="crx-btn ghost sm" disabled={busy} onClick={() => review(d, 'accept')}>Accept</button>
               )}
               {d.review_status !== 'rejected' && (
                 <button className="crx-btn ghost sm" disabled={busy} onClick={() => review(d, 'reject')}>Reject</button>
               )}
+              <button className="crx-btn ghost sm danger" disabled={busy} onClick={() => del(d)}>Delete</button>
             </div>
           ))}
           <div className="crx-ext-note">
@@ -1011,6 +1047,16 @@ function ExternalCreditPanel({ appId, itemId, scopeKind, onChanged, onDownload, 
           </button>
           {!docs.length && <span className="crx-muted small">Upload the PDF first.</span>}
         </div>
+      )}
+
+      {preview && (
+        <DocPreview
+          title="Credit report"
+          filename={preview.filename}
+          contentType={preview.content_type}
+          load={() => api.staffDownloadDoc(preview.id)}
+          onDownload={() => onDownload(preview.id, preview.filename)}
+          onClose={() => setPreview(null)} />
       )}
     </section>
   );
@@ -1071,7 +1117,7 @@ export function CreditCondition({ appId, canPull, onChanged, fieldKey, itemId })
       if (out.ficoWritten != null) bits.push(`FICO set to ${out.ficoWritten}`);
       const tone = (out.ficoMismatch || out.ficoUnverified) ? 'warn' : 'ok';
       if (out.ficoMismatch) bits.push('FICO not auto-set — the report named a different person');
-      if (out.ficoUnverified) bits.push('FICO not auto-set — no SSN on file to confirm identity');
+      if (out.ficoUnverified) bits.push('identity not confirmed by SSN (no SSN on file) — add the borrower’s SSN to verify');
       showFlash('Reused the borrower’s existing credit report ✓ — no new pull' + (bits.length ? ' — ' + bits.join(' · ') : ''), tone);
       setJustImported(true);
       loadCredit().then(() => setShowOverlay(true));
@@ -1102,7 +1148,7 @@ export function CreditCondition({ appId, canPull, onChanged, fieldKey, itemId })
         if (out.middleScore != null) bits.push(`middle score ${out.middleScore}`);
         if (out.ficoWritten != null) bits.push(`FICO set to ${out.ficoWritten}`);
         if (out.ficoMismatch) bits.push('FICO not auto-set — the report named a different person');
-        if (out.ficoUnverified) bits.push('FICO not auto-set — no SSN on file to confirm identity');
+        if (out.ficoUnverified) bits.push('identity not confirmed by SSN (no SSN on file) — add the borrower’s SSN to verify');
       }
       // A merged report is one document read for several people — say who it covered,
       // and name anyone it did NOT (never let that pass silently).

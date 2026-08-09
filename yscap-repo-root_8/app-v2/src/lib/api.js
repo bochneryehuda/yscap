@@ -309,6 +309,26 @@ export const api = {
   forgotPassword:     (email, scope) => req('POST', '/auth/borrower/forgot', scope ? { email, scope } : { email }),
   resetPassword:      (token, password) => req('POST', '/auth/borrower/reset', { token, password }),
   acceptInvite:       (b) => req('POST', '/auth/accept', b),                   // {token,password,fullName?}
+  /* An officer's emailed term sheet (owner-directed 2026-08-07). The READ is public —
+     the borrower has no account yet when they click the link, and the token is the
+     authorization — so it must not be filed under the borrower routes. `start` needs
+     the session /auth/accept just handed out. */
+  termSheetOffer:     (token) => req('GET', `/api/term-sheet-offers/${encodeURIComponent(token)}`),
+  startFromTermSheetOffer: (token, initial) =>
+    req('POST', `/api/term-sheet-offers/${encodeURIComponent(token)}/start`, { initial }),
+  // Staff side: send a term sheet built in the Investor Suite to a borrower.
+  sendTermSheetOffer: (b) => req('POST', '/api/staff/term-sheet-offers', b),
+  termSheetOffersSent: () => req('GET', '/api/staff/term-sheet-offers'),
+  // Borrower HELPER (assistant) login — a standing second login a borrower
+  // authorized (can do everything but see personal info / sign). Its own creds.
+  assistantAccept:    (token, password) => req('POST', '/auth/assistant/accept', { token, password }),
+  assistantLogin:     (email, password) => req('POST', '/auth/assistant/login', { email, password }),
+  assistantLogout:    () => req('POST', '/auth/assistant/logout'),
+  // Borrower self-service: manage the helpers on my own account.
+  assistantsList:     () => req('GET', '/api/borrower/assistants'),
+  assistantInvite:    (email, name) => req('POST', '/api/borrower/assistants', { email, name }),
+  assistantResend:    (id) => req('POST', `/api/borrower/assistants/${id}/resend`),
+  assistantDisable:   (id) => req('POST', `/api/borrower/assistants/${id}/disable`),
   // E-sign magic-link session handoff: exchange the one-time login code (from the
   // /api/esign/return redirect) for a real borrower session, so a borrower who
   // signed from PILOT's branded email lands back inside their file already logged in.
@@ -484,6 +504,27 @@ export const api = {
   // Change WHICH email the Sitewire borrower invite goes to (borrower / GC / partner). Replaces the
   // pending invite (Sitewire keeps one email per property) + stores it so the push/resend honor it.
   setDrawInviteEmail: (appId, email) => req('POST', `/api/sitewire/files/${appId}/invite-email`, { email }),
+
+  // ---- AMC appraisal ordering (AppraisalScope / CoreLogic Digital Gateway) ----
+  amcConfig:        () => req('GET', '/api/amc/config'),
+  amcPreview:       (appId) => req('GET', `/api/amc/files/${appId}/preview`),
+  amcOrders:        (appId) => req('GET', `/api/amc/files/${appId}/orders`),
+  amcPlaceOrder:    (appId, body) => req('POST', `/api/amc/files/${appId}/order`, body),
+  amcSaveCard:      (appId, body) => req('POST', `/api/amc/files/${appId}/card`, body),
+  amcOrder:         (orderId) => req('GET', `/api/amc/orders/${orderId}`),
+  amcComments:      (orderId) => req('GET', `/api/amc/orders/${orderId}/comments`),
+  amcPostComment:   (orderId, body) => req('POST', `/api/amc/orders/${orderId}/comments`, { body }),
+  amcReadComment:   (orderId, commentId) => req('POST', `/api/amc/orders/${orderId}/comments/${commentId}/read`),
+  amcRevisions:     (orderId) => req('GET', `/api/amc/orders/${orderId}/revisions`),
+  amcPostRevision:  (orderId, b) => req('POST', `/api/amc/orders/${orderId}/revisions`, b),
+  amcRovComps:      (appId) => req('GET', `/api/amc/files/${appId}/rov-comps`),
+  amcRovCompSearch: (appId, query) => {
+    const qs = new URLSearchParams(Object.entries(query || {}).filter(([, v]) => v != null && v !== '')).toString();
+    return req('GET', `/api/amc/files/${appId}/rov-comp-search${qs ? '?' + qs : ''}`);
+  },
+  amcPostRov:       (orderId, b) => req('POST', `/api/amc/orders/${orderId}/rov`, b),
+  amcDocuments:     (appId, orderId) => req('GET', `/api/amc/files/${appId}/documents${orderId ? '?orderId=' + orderId : ''}`),
+  amcUploadDocs:    (orderId, documentIds) => req('POST', `/api/amc/orders/${orderId}/documents`, { documentIds }),
   staffBorrowerResetPassword: (id) => req('POST', `/api/staff/borrowers/${id}/reset-password`),
   staffBorrowerSetPassword: (id, password) => req('POST', `/api/staff/borrowers/${id}/set-password`, { password }),
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),
@@ -540,12 +581,12 @@ export const api = {
   staffVerifyTrackRecord:    (id, body) => req('POST', `/api/staff/track-records/${id}/verify`, body),
   // Raise an issue/request against a track-record line item or a vesting LLC — it
   // becomes a named internal+external condition on the file (applicationId).
-  staffRaiseTrackRecordIssue: (id, applicationId, reason) => req('POST', `/api/staff/track-records/${id}/raise-issue`, { applicationId, reason }),
+  staffRaiseTrackRecordIssue: (id, applicationId, reason, postCondition) => req('POST', `/api/staff/track-records/${id}/raise-issue`, { applicationId, reason, postCondition: !!postCondition }),
   // Request a DOCUMENT for one track-record line item — becomes a condition
   // tagged with the line item; uploads land on the line + its REO folder.
   staffRequestTrackRecordDoc: (id, applicationId, label) => req('POST', `/api/staff/track-records/${id}/request-doc`, { applicationId, label }),
   staffTrackRecordDocs: (id) => req('GET', `/api/staff/track-records/${id}/documents`),
-  staffRaiseLlcIssue:         (id, applicationId, reason) => req('POST', `/api/staff/llcs/${id}/raise-issue`, { applicationId, reason }),
+  staffRaiseLlcIssue:         (id, applicationId, reason, postCondition) => req('POST', `/api/staff/llcs/${id}/raise-issue`, { applicationId, reason, postCondition: !!postCondition }),
   staffPatchItem:   (itemId, b) => req('PATCH', `/api/staff/checklist/${itemId}`, b),
   staffRequestDoc:  (appId, b) => req('POST', `/api/staff/applications/${appId}/checklist`, b),
   staffAddCondition:(appId, b) => req('POST', `/api/staff/applications/${appId}/conditions`, b),
@@ -596,7 +637,9 @@ export const api = {
   staffClosingPrep:         (appId) => req('GET', `/api/staff/applications/${appId}/closing-prep`),
   staffPlaceClosingPrep:    (appId, body) => req('POST', `/api/staff/applications/${appId}/closing-prep/place`, body || {}),
   staffClosingPrepFollowup: (appId, body) => req('POST', `/api/staff/applications/${appId}/closing-prep/followup`, body || {}),
-  staffCancelClosingPrep:   (appId, reopen) => req('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, reopen ? { reopen: true } : {}),
+  // `reason` rides only on a CANCEL — it goes into the email outside counsel receives. A reopen
+  // emails nobody, so it carries none.
+  staffCancelClosingPrep:   (appId, reopen, reason) => req('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, reopen ? { reopen: true } : (reason ? { reason } : {})),
   staffSetLoanNumber: (appId, loanNumber) => req('POST', `/api/staff/applications/${appId}/loan-number`, { loanNumber }),
   staffPostClosing: (appId) => req('GET', `/api/staff/applications/${appId}/post-closing`),
   staffSeedPostClosing: (appId) => req('POST', `/api/staff/applications/${appId}/post-closing/seed`),
@@ -683,6 +726,8 @@ export const api = {
   requestEsignBeforeCtc:     (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/esign-before-ctc`, body || {}),
   // Ask a super admin to allow the data tape out before Encompass matches (owner-directed 2026-08-02).
   requestTapeException:      (appId, body) => req('POST', `/api/staff/applications/${appId}/exceptions/tape-encompass`, body || {}),
+  // Ask an admin/super-admin to waive a specific condition (owner-directed 2026-08-04).
+  requestConditionWaiver:    (appId, itemId, body) => req('POST', `/api/staff/applications/${appId}/conditions/${itemId}/request-waiver`, body || {}),
   withdrawException:         (appId, eid) => req('POST', `/api/staff/applications/${appId}/exceptions/${eid}/withdraw`, {}),
   loanExceptions:            (status, type) => req('GET', `/api/admin/exceptions${qs({ status, type })}`),
   loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),
@@ -918,6 +963,9 @@ export const api = {
   // ---- ClickUp Control Center (admin / platform_setup) ----
   // API Health — status of every external API / integration.
   integrationsHealth: () => req('GET', '/api/admin/integrations/health'),
+  // The Google-coordinate licensing rule, in full. /api/health carries only the
+  // verdict (it is public); the explanation lives behind this one.
+  researchLicensing: () => req('GET', '/api/admin/research-licensing'),
   integrationTest:    (key) => req('POST', `/api/admin/integrations/${encodeURIComponent(key)}/test`),
   // Read-only Sitewire TEST-environment capability explorer (super_admin). Lists every field/button
   // Sitewire exposes so new integrations use confirmed names. Uses SITEWIRE_TEST_* creds; never writes.
@@ -928,6 +976,15 @@ export const api = {
   sharepointReconciliation: () => req('GET', '/api/admin/sharepoint/reconciliation'),
   sharepointRunSweep:  () => req('POST', '/api/admin/sharepoint/mirror', {}),
   sharepointRetryStuck: () => req('POST', '/api/admin/sharepoint/retry-exhausted', {}),
+  // Elementix (recorded deeds / mortgages). The connection is approved ONCE in a
+  // browser and then renews itself. `elementixConnect` returns the sign-in URL as
+  // JSON rather than a redirect ON PURPOSE — a 302 inside fetch() is followed
+  // invisibly, and this hand-off has to happen in the address bar so the person
+  // actually sees Elementix's own sign-in page.
+  elementixStatus:     () => req('GET', '/api/admin/elementix/status'),
+  elementixDiscover:   () => req('GET', '/api/admin/elementix/discover'),
+  elementixConnect:    () => req('GET', '/api/admin/elementix/connect'),
+  elementixDisconnect: () => req('POST', '/api/admin/elementix/disconnect', {}),
   integrationSwitches: () => req('GET', '/api/admin/integrations/switches'),
   integrationToggleSwitch: (key, enabled, confirm) => req('POST', `/api/admin/integrations/switches/${encodeURIComponent(key)}`, { enabled, confirm }),
   integrationResetSwitch:  (key) => req('POST', `/api/admin/integrations/switches/${encodeURIComponent(key)}/reset`),
@@ -1088,6 +1145,12 @@ export const api = {
   staffConditionMeta:        () => req('GET', '/api/staff/conditions/meta'),
   staffAddCustomCondition:   (appId, b) => req('POST', `/api/staff/applications/${appId}/conditions/custom`, b),
   staffAttachCondition:      (appId, templateId) => req('POST', `/api/staff/applications/${appId}/conditions/attach`, { templateId }),
+  // Manual-condition deletion (owner-directed 2026-08-04). Delete works for the
+  // adder / an admin; otherwise the server returns 403 code needs_delete_request
+  // and the caller offers to ask the adder instead.
+  staffDeleteCondition:      (appId, itemId) => req('DELETE', `/api/staff/applications/${appId}/conditions/${itemId}`),
+  staffRequestDeleteCondition:(appId, itemId, reason) => req('POST', `/api/staff/applications/${appId}/conditions/${itemId}/request-delete`, { reason }),
+  staffDismissDeleteRequest: (appId, itemId) => req('POST', `/api/staff/applications/${appId}/conditions/${itemId}/dismiss-delete-request`),
   staffReevaluateConditions: (appId) => req('POST', `/api/staff/applications/${appId}/conditions/reevaluate`),
 
   // ---- Condition Center: borrower answers an information condition ----
@@ -1177,6 +1240,10 @@ export const api = {
   researchAdjustmentRates: (f) => req('GET', '/api/research/adjustment-rates' + qs(f)),
   researchQuick:         (f) => req('GET', '/api/research/quick' + qs(f)),
   researchVariance:      (f) => req('GET', '/api/research/variance' + qs(f)),
+  marketAreas:           (f) => req('GET', '/api/research/market-areas' + qs(f)),
+  marketAreaCreate:      (b) => req('POST', '/api/research/market-areas', b),
+  marketAreaArchive:     (id) => req('POST', `/api/research/market-areas/${id}/archive`, {}),
+  marketAreaProperties:  (id) => req('GET', `/api/research/market-areas/${id}/properties`),
   researchMarketReports: (f) => req('GET', '/api/research/market/reports' + qs(f)),
   researchFlips:         (f) => req('GET', '/api/research/flips' + qs(f)),
   researchBackfill:    (b) => req('POST', '/api/research/backfill', b || {}),
@@ -1196,6 +1263,8 @@ export const api = {
   valuationDropComp:   (id, compId) => req('DELETE', `/api/research/valuations/${id}/comps/${compId}`),
   valuationSuggest:    (id, b) => req('POST', `/api/research/valuations/${id}/suggest`, b || {}),
   valuationFinalize:   (id, b) => req('POST', `/api/research/valuations/${id}/finalize`, b || {}),
+  // The confirm-the-facts step: corrections in, a re-valued grid straight back.
+  valuationConfirmSubject: (id, corrections) => req('POST', `/api/research/valuations/${id}/confirm-subject`, { corrections }),
   valuationDuplicate:  (id) => req('POST', `/api/research/valuations/${id}/duplicate`, {}),
   valuationDelete:     (id) => req('DELETE', `/api/research/valuations/${id}`),
 

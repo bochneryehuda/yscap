@@ -64,7 +64,7 @@ export default function StaffTapes() {
       const q = await api.staffTapeQuestions(loanId, active);
       const questions = (q && q.questions) || [];
       const seasoned = q && q.seasoned && q.seasoned.isSeasoned ? q.seasoned : null;
-      if (questions.length || seasoned) { setPending({ loanId, tapeName, questions, seasoned }); setBusyRow(null); return; }
+      if (questions.length || seasoned) { setPending({ loanId, tapeName, questions, seasoned, supplementalMissing: (q && q.supplementalMissing) || 0 }); setBusyRow(null); return; }
       await exportRow(loanId, tapeName, undefined);
     } catch (e) { setErr((e.data && e.data.message) || e.message || 'Export failed'); setBusyRow(null); }
   }
@@ -237,7 +237,11 @@ export default function StaffTapes() {
       {pending && (
         <TapeQuestionsModal
           title={pending.questions.length ? `${activeTape ? activeTape.name : ''} tape — a few details` : `${activeTape ? activeTape.name : ''} tape — confirm current numbers`}
-          subtitle={pending.questions.length ? "This is a ground-up loan. Fill these in and they'll be saved on the file, so we won't ask again." : undefined}
+          subtitle={pending.questions.length
+            ? (pending.supplementalMissing > 0
+                ? "This is a ground-up loan. Fill in these details — they're saved on the file and pre-filled here every time you export."
+                : "These details are saved on the file and pre-filled here. Review or change anything, then export.")
+            : undefined}
           questions={pending.questions}
           seasoned={pending.seasoned}
           busy={busyRow === pending.loanId}

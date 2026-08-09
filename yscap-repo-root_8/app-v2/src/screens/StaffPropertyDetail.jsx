@@ -8,6 +8,7 @@ import {
 import NearbyComps from '../components/NearbyComps.jsx';
 import ResearchPhoto from '../components/ResearchPhoto.jsx';
 import { uadWords } from '../lib/uadWords.js';
+import ResearchNav from '../components/ResearchNav.jsx';
 
 /* ONE PROPERTY — everything every appraisal ever said about it.
 
@@ -54,8 +55,13 @@ export default function StaffPropertyDetail() {
     } catch (e) { setErr(e.message || 'Could not start a valuation'); setBusy(false); }
   }
 
-  if (err) return <div className="card" style={{ borderColor: '#B4423A', color: '#B4423A' }}>{err}</div>;
-  if (!data) return <div className="card" style={{ color: MUTED }}>Loading…</div>;
+  /* THE SECTION'S PAGE STRIP SURVIVES LOADING AND FAILURE. It used to sit below
+     these early returns, so it flickered out on every navigation here and vanished
+     entirely on an error — leaving somebody on a dead-end page with no way back
+     into the section except the sidebar. The strip is not about this page's data,
+     so it does not wait for it. */
+  if (err) return (<div><ResearchNav /><div className="card" style={{ borderColor: '#B4423A', color: '#B4423A' }}>{err}</div></div>);
+  if (!data) return (<div><ResearchNav /><div className="card" style={{ color: MUTED }}>Loading…</div></div>);
 
   const p = data.property;
   const photos = data.photos || [];
@@ -63,17 +69,19 @@ export default function StaffPropertyDetail() {
 
   return (
     <div>
+      <ResearchNav />
       <div style={{ marginBottom: 10 }}>
         <Link to="/internal/research" style={{ color: MUTED, fontSize: 13 }}>← Back to Property Research</Link>
       </div>
 
       <header style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 16 }}>
-        {hero && (
-          <ResearchPhoto documentId={hero.document_id} alt={p.display_address}
-            onClick={() => setShot(hero)}
-            style={{ width: 240, height: 170, objectFit: 'cover', borderRadius: 10, cursor: 'zoom-in',
-              border: '1px solid #E4DECF' }} />
-        )}
+        {/* The appraiser's own photograph when the warehouse holds one; otherwise
+            the street, clearly labelled as the street (see ResearchPhoto). */}
+        <ResearchPhoto documentId={hero && hero.document_id} alt={p.display_address}
+          streetAddress={[p.display_address, p.city, p.state].filter(Boolean).join(', ')}
+          onClick={hero ? () => setShot(hero) : undefined}
+          style={{ width: 240, height: 170, objectFit: 'cover', borderRadius: 10,
+            cursor: hero ? 'zoom-in' : 'default', border: '1px solid #E4DECF' }} />
         <div style={{ flex: '1 1 320px' }}>
           <h1 style={{ margin: '0 0 4px', color: INK, fontSize: 24 }}>{p.display_address}</h1>
           <div style={{ color: MUTED, fontSize: 14 }}>

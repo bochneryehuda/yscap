@@ -53,7 +53,7 @@ function batchBySize(files, cap = BATCH_BYTES) {
   return out;
 }
 
-const EMPTY_SUM = { total: 0, ok: 0, skipped: 0, failed: 0, properties: 0, observations: 0, sales: 0, comparables: 0 };
+const EMPTY_SUM = { total: 0, ok: 0, skipped: 0, failed: 0, properties: 0, observations: 0, sales: 0, comparables: 0, salvaged: 0 };
 
 export default function ResearchImportPanel({ onDone }) {
   const [open, setOpen] = useState(false);
@@ -228,7 +228,8 @@ export default function ResearchImportPanel({ onDone }) {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ textAlign: 'left', color: MUTED }}>
-                    <th style={TH}>File</th><th style={TH}>Property</th><th style={TH}>Appraiser</th>
+                    <th style={TH}>File</th><th style={TH}>Came from</th>
+                    <th style={TH}>Property</th><th style={TH}>Appraiser</th>
                     <th style={TH}>Comps</th><th style={TH}>Result</th>
                   </tr>
                 </thead>
@@ -236,6 +237,15 @@ export default function ResearchImportPanel({ onDone }) {
                   {history.map((h) => (
                     <tr key={h.id} style={{ borderTop: '1px solid #F0ECE2' }}>
                       <td style={TD}>{h.filename || '—'}</td>
+                      {/* WHERE IT CAME FROM (db/462). Every appraisal XML that enters
+                          PILOT now feeds this database — a borrower attaching the data
+                          file, a staffer filing it on any condition, a vendor emailing
+                          it back on an order, the sweep over what was already on the
+                          files — and without this column the one question that makes
+                          that visible ("did the reports on our loan files come in?")
+                          cannot be answered from the screen. NULL on every row that
+                          predates the column, and on the Encompass catcher's rows. */}
+                      <td style={{ ...TD, color: MUTED }}>{h.source || '—'}</td>
                       <td style={TD}>
                         {h.subject_property_id
                           ? <Link to={`/internal/research/property/${h.subject_property_id}`} style={{ color: INK }}>
@@ -249,7 +259,15 @@ export default function ResearchImportPanel({ onDone }) {
                           ? <Link to={`/internal/research/appraiser/${h.appraiser_id}`} style={{ color: INK }}>{h.appraiser_name}</Link>
                           : (h.appraiser_name || '—')}
                       </td>
-                      <td style={TD}>{h.comparables_seen == null ? '—' : num(h.comparables_seen)}</td>
+                      <td style={TD}>
+                        {h.comparables_seen == null ? '—' : num(h.comparables_seen)}
+                        {h.rows_skipped
+                          ? <div style={{ color: GOLD, fontSize: 12, cursor: h.skip_reasons ? 'help' : 'default' }}
+                              title={skipTip(h.skip_reasons)}>
+                            {num(h.rows_skipped)} left out
+                          </div>
+                          : null}
+                      </td>
                       <td style={TD}><Outcome status={h.status} reason={h.error} /></td>
                     </tr>
                   ))}
@@ -266,6 +284,83 @@ export default function ResearchImportPanel({ onDone }) {
 const TH = { padding: '4px 8px 6px', fontWeight: 600, whiteSpace: 'nowrap' };
 const TD = { padding: '6px 8px', color: INK, verticalAlign: 'top' };
 
+/* WHAT WAS LEFT OUT, AND WHY — never just a count.
+   A comparable is left out only when its address cannot identify a property (no
+   house number, no state, or no town/ZIP). The reviewer needs to see WHICH sale
+   and WHAT was missing so they can open the appraisal and fix it — so each one is
+   named with its stated address and the exact reason. Other, internal skips (a
+   roll-up that could not recompute) carry no address and are only counted. */
+function SkippedList({ items }) {
+  const rows = Array.isArray(items) ? items : [];
+  if (!rows.length) return null;
+  const addr = rows.filter((s) => s && (s.role === 'comparable' || s.role === 'rental_comparable') && s.address);
+  const other = rows.length - addr.length;
+  if (!addr.length && !other) return null;
+  return (
+    <div style={{ color: GOLD, fontSize: 12.5, marginTop: 3 }}>
+      {addr.length > 0 && (
+        <>
+          <div style={{ fontWeight: 600 }}>
+            {addr.length} comparable{addr.length === 1 ? '' : 's'} left out — the address could not be used:
+          </div>
+          <ul style={{ margin: '2px 0 0', paddingLeft: 16 }}>
+            {addr.map((s, i) => (
+              <li key={i} style={{ marginTop: 1 }}>
+                <span style={{ color: INK }}>{s.address}</span>
+                {s.why ? <span style={{ color: MUTED }}> — {s.why}</span> : null}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {other > 0 && (
+        <div style={{ marginTop: addr.length ? 3 : 0, color: MUTED }}>
+          {other} other item{other === 1 ? '' : 's'} on this report could not be filed.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* WHAT WE KEPT DESPITE A THIN ADDRESS.
+   A comparable is no longer dropped just because the appraiser wrote a short
+   address: one missing only its town borrows the subject's town (kind
+   'inherited_town'); one we still cannot pin down is saved for review (kind
+   'needs_review'). The reviewer sees these were KEPT, not lost. */
+const TEAL_OK = '#2F7F86';
+function KeptList({ items }) {
+  const rows = Array.isArray(items) ? items : [];
+  const kept = rows.filter((s) => s && s.address && (s.kind === 'inherited_town' || s.kind === 'needs_review'));
+  if (!kept.length) return null;
+  const label = (k) => (k === 'inherited_town'
+    ? 'town filled in from the subject'
+    : 'saved for review — held out of the comp search until the address is checked');
+  return (
+    <div style={{ color: TEAL_OK, fontSize: 12.5, marginTop: 3 }}>
+      <div style={{ fontWeight: 600 }}>
+        {kept.length} comparable{kept.length === 1 ? '' : 's'} kept despite a thin address:
+      </div>
+      <ul style={{ margin: '2px 0 0', paddingLeft: 16 }}>
+        {kept.map((s, i) => (
+          <li key={i} style={{ marginTop: 1 }}>
+            <span style={{ color: INK }}>{s.address}</span>
+            <span style={{ color: MUTED }}> — {label(s.kind)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** A one-line-per-skip summary for a hover tooltip in the compact history table. */
+function skipTip(rows) {
+  if (!Array.isArray(rows)) return '';
+  return rows
+    .filter((s) => s && s.address)
+    .map((s) => `${s.address}${s.why ? ' — ' + s.why : ''}`)
+    .join('\n');
+}
+
 function Summary({ s }) {
   const line = (n, word) => `${num(n)} ${word}${n === 1 ? '' : 's'}`;
   return (
@@ -277,6 +372,7 @@ function Summary({ s }) {
       </div>
       <div style={{ fontSize: 13, color: MUTED }}>
         {s.skipped > 0 && <span>{line(s.skipped, 'file')} skipped — already in the database. </span>}
+        {s.salvaged > 0 && <span style={{ color: '#2F7F86' }}>{line(s.salvaged, 'comparable')} kept despite a thin address (details below). </span>}
         {s.failed > 0 && <span style={{ color: '#B4423A' }}>{line(s.failed, 'file')} could not be read (listed below). </span>}
         {s.dropped > 0 && <span style={{ color: GOLD }}>{s.note}</span>}
       </div>
@@ -315,11 +411,8 @@ function ResultList({ rows }) {
               <td style={TD}>
                 {r.subjectAddress || '—'}
                 {r.comparables ? <span style={{ color: MUTED }}> · {num(r.comparables)} comps</span> : null}
-                {r.skipped && r.skipped.length
-                  ? <div style={{ color: GOLD, fontSize: 12.5, marginTop: 2 }}>
-                    {r.skipped.length} comparable{r.skipped.length === 1 ? '' : 's'} on this report had an address we could not use, so {r.skipped.length === 1 ? 'it was' : 'they were'} left out.
-                  </div>
-                  : null}
+                <KeptList items={r.salvaged} />
+                <SkippedList items={r.skipped} />
               </td>
               <td style={{ ...TD, width: '32%' }}><Outcome status={r.status} reason={r.reason} /></td>
             </tr>

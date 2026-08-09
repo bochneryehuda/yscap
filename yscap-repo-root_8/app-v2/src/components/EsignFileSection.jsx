@@ -54,9 +54,10 @@ function Recipient({ r }) {
   );
 }
 
-export default function EsignFileSection({ appId, role, onChanged }) {
+export default function EsignFileSection({ appId, role, onChanged, onFinalizeTermSheet }) {
   const { actor } = useAuth();
   const isAdmin = role === 'admin' || role === 'super_admin';
+  const isSuper = role === 'super_admin';
   const [data, setData] = useState(null);   // { gate, packages, envelopes, loanNumber }
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
@@ -68,6 +69,8 @@ export default function EsignFileSection({ appId, role, onChanged }) {
   const [excNote, setExcNote] = useState('');
   const [encOvrOpen, setEncOvrOpen] = useState(false);  // Encompass-mismatch override form open
   const [encOvrNote, setEncOvrNote] = useState('');     // the admin's recorded reason
+  const [tsOvrOpen, setTsOvrOpen] = useState(false);    // term-sheet-not-final override form open (super-admin)
+  const [tsOvrNote, setTsOvrNote] = useState('');       // the super-admin's recorded reason
   const seq = useRef(0);
 
   const load = useCallback(async (quiet) => {
@@ -127,6 +130,37 @@ export default function EsignFileSection({ appId, role, onChanged }) {
     if (r && (r.dead || r.terminal || r.ok === false)) throw new Error(r.error || 'The document could not be sent — check the file and try again.');
     setEncOvrOpen(false); setEncOvrNote('');
   }, 'Sent for signature.');
+  // FINALIZE, then SEND (owner-directed 2026-08-04): "that button to send out the
+  // term sheet and package should be the button that is generating the final term
+  // sheet after all the conditions are met." When the sheet on file still prints
+  // "NOT FINAL" but the file is ready to issue, the Send button first regenerates
+  // + attaches the FINAL sheet (via the studio, over in Products & Pricing — the
+  // ONLY place the sheet can be drawn), then sends it. If the finalize can't be
+  // done, nothing is sent and the reason is shown.
+  const finalizeAndSend = (purpose, reissue) => act(`send:${purpose}`, async () => {
+    const r = await (onFinalizeTermSheet ? onFinalizeTermSheet() : Promise.resolve({ ok: false, reason: 'Open Products & Pricing to finalize the term sheet.' }));
+    if (!r || !r.ok) throw new Error((r && r.reason) || 'Could not generate the final term sheet.');
+    // The sheet is now stamped FINAL on the file — send it.
+    const sr = await api.post(`/api/staff/applications/${appId}/esign/send`, { purpose, reissue: !!reissue });
+    if (sr && (sr.dead || sr.terminal || sr.ok === false)) throw new Error(sr.error || 'The document could not be sent — check the file and try again.');
+  }, 'Term sheet finalized and sent for signature.', onChanged);
+  // Finalize WITHOUT sending — regenerate + attach the FINAL sheet now, so the send
+  // button then just works. Same generation as above, minus the send.
+  const finalizeNow = () => act('ts:finalize', async () => {
+    const r = await (onFinalizeTermSheet ? onFinalizeTermSheet() : Promise.resolve({ ok: false, reason: 'Open Products & Pricing to finalize the term sheet.' }));
+    if (!r || !r.ok) throw new Error((r && r.reason) || 'Could not generate the final term sheet.');
+  }, 'Term sheet regenerated as the final version — you can send it now.', onChanged);
+  // Super-admin OVERRIDE (owner-directed 2026-08-04): send the term-sheet package
+  // even though the sheet on file is not recorded FINAL. A reason is required and
+  // recorded; the sheet may still print "NOT FINAL" — the warning says so. The
+  // server refuses this for anyone who is not a super-admin.
+  const overrideSend = (purpose, reissue) => act(`send:${purpose}`, async () => {
+    const reason = String(tsOvrNote || '').trim();
+    if (!reason) throw new Error('Add a short reason for the override.');
+    const sr = await api.post(`/api/staff/applications/${appId}/esign/send`, { purpose, reissue: !!reissue, termSheetFinalOverrideReason: reason });
+    if (sr && (sr.dead || sr.terminal || sr.ok === false)) throw new Error(sr.error || 'The document could not be sent — check the file and try again.');
+    setTsOvrOpen(false); setTsOvrNote('');
+  }, 'Sent for signature (super-admin override).', onChanged);
   // Inline YS loan-number backfill — a term-sheet package can't send without a loan
   // number (it prints on the disclosure). Validate the "YSCAP" prefix on the client
   // for instant feedback; the server enforces prefix + uniqueness for real.
@@ -203,6 +237,16 @@ export default function EsignFileSection({ appId, role, onChanged }) {
   const reasonOpts = data.exceptionReasonCodes || {};
   const envelopes = data.envelopes || [];
   const hasLoanNumber = !!(data.loanNumber && String(data.loanNumber).trim());
+  // The non-owner-occupied certification is offered ONLY on an individual-vesting
+  // file (the server reports nooApplicable = the cond_noo_affidavit_individual
+  // condition is on the file). It is a prior-to-docs certification — NOT an
+  // origination document — so it is NOT held by the term-sheet send gate, the
+  // Encompass match, the loan-number requirement, or the "term sheet not final"
+  // stamp; its only prerequisites (property + borrower name) are enforced server-side.
+  const nooApplicable = !!data.nooApplicable;
+  const visiblePackages = nooApplicable
+    ? PACKAGES.concat([{ purpose: 'noo_affidavit', label: 'Non-owner-occupied certification', hint: 'Borrower (+ co-borrower) certify they will not occupy the property. Sign only — no counter-signature, no notary. Clears the non-owner-occupied condition.' }])
+    : PACKAGES;
 
   // The SECOND gate on a term-sheet send (owner-reported 2026-07-27). The gate
   // above covers the appraisal / P&P / closing-date prerequisites ONLY; the
@@ -228,6 +272,11 @@ export default function EsignFileSection({ appId, role, onChanged }) {
   // this safe against an older server payload with no `termSheet`.
   const tsDoc = data.termSheet || { onFile: false, final: false, block: false };
   const tsStampBlocks = !!tsDoc.block;
+  // The file is ready to issue a FINAL sheet RIGHT NOW — so the Send button can
+  // regenerate + attach it in place, rather than dead-ending at "re-register"
+  // (owner-directed 2026-08-04). When it is NOT ready, tsBlockers says why.
+  const tsCanFinalize = tsStampBlocks && !!tsDoc.canFinalize;
+  const tsBlockers = tsDoc.blockers || [];
   const termSheetStarted = envelopes.some((e) => e.purpose === 'term_sheet_package');
   // Everything that must be true before the override button can actually send.
   const encOvrSendable = sendAllowed && hasLoanNumber && !termSheetStarted;
@@ -237,11 +286,24 @@ export default function EsignFileSection({ appId, role, onChanged }) {
   // voided needs its own way past the Encompass check — asked for right here,
   // the same way Void asks for its reason.
   const reissueSend = (e) => {
-    // A re-issue mails the term sheet stored on the file right now, so it meets
-    // the same "the sheet that goes out is the final one" rule as a first send —
-    // and there is no override for it, because the fix is one re-registration.
+    // A re-issue mails the term sheet stored on the file right now, so it meets the
+    // same "the sheet that goes out is the final one" rule as a first send. When the
+    // file is ready, the re-issue FINALIZES the sheet first (owner-directed
+    // 2026-08-04); a super-admin may override past the check even when it isn't.
     if (tsStampBlocks && e.purpose === 'term_sheet_package') {
-      setErr('The term sheet on this file still prints “INITIAL TERM SHEET — NOT FINAL”. Re-register the product in Products & Pricing — that regenerates it as the final version — then re-issue.');
+      if (tsCanFinalize) return finalizeAndSend(e.purpose, true);
+      if (isSuper) {
+        const reason = window.prompt(
+          'The term sheet on file still prints “NOT FINAL”, and the file isn’t ready to finalize.\n\n'
+          + 'Send it anyway as a super-admin override? Say why — it is recorded on the file:');
+        if (!reason || !reason.trim()) return;
+        const rr = reason.trim();
+        return act(`send:${e.purpose}`, async () => {
+          const sr = await api.post(`/api/staff/applications/${appId}/esign/send`, { purpose: e.purpose, reissue: true, termSheetFinalOverrideReason: rr });
+          if (sr && (sr.dead || sr.terminal || sr.ok === false)) throw new Error(sr.error || 'The document could not be sent — check the file and try again.');
+        }, 'Sent for signature (super-admin override).', onChanged);
+      }
+      setErr('The term sheet on this file still prints “INITIAL TERM SHEET — NOT FINAL”, and it isn’t ready to finalize yet. Re-register the product in Products & Pricing — that regenerates it as the final version — then re-issue. (A super-admin can override.)');
       return;
     }
     if (encBlocks && e.purpose === 'term_sheet_package') {
@@ -574,19 +636,62 @@ export default function EsignFileSection({ appId, role, onChanged }) {
             one-step fix — re-register, which regenerates and re-attaches the
             sheet stamped FINAL. */}
         {tsStampBlocks && (
-          <div className="notice err" style={{ margin: '2px 0 10px' }}>
-            <div>
-              <strong>The term sheet on this file is still the initial one.</strong>{' '}
-              It prints “INITIAL TERM SHEET — NOT FINAL”, so it can’t go out for signature — the sheet everyone
-              signs has to be the final one. Re-register the product in Products &amp; Pricing: that regenerates
-              the term sheet and attaches it as the final version, and nothing else about the deal changes.
-              {' '}<span className="muted small">(The Heter Iska is not affected.)</span>
-            </div>
+          <div className={`notice ${tsCanFinalize ? 'info' : 'err'}`} style={{ margin: '2px 0 10px' }}>
+            {tsCanFinalize ? (
+              <div>
+                <strong>The term sheet on file still prints “INITIAL — NOT FINAL”, but this file is ready to issue.</strong>{' '}
+                Sending the term-sheet package below generates and attaches the FINAL sheet automatically — the version
+                that goes out on DocuSign — and nothing else about the deal changes. You can also finalize it now, then send.
+                {' '}<span className="muted small">(The Heter Iska is not affected.)</span>
+              </div>
+            ) : (
+              <div>
+                <strong>The term sheet on this file is still the initial one.</strong>{' '}
+                It prints “INITIAL TERM SHEET — NOT FINAL”, so it can’t go out for signature — the sheet everyone
+                signs has to be the final one.
+                {tsBlockers.length
+                  ? <> It isn’t ready to finalize yet — still outstanding: {tsBlockers.map((b) => b.label).filter(Boolean).join(', ')}. Finish those, then send.</>
+                  : <> Re-register the product in Products &amp; Pricing: that regenerates the term sheet and attaches it as the final version, and nothing else about the deal changes.</>}
+                {' '}<span className="muted small">(The Heter Iska is not affected.)</span>
+              </div>
+            )}
             <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+              {tsCanFinalize && (
+                <button className="btn primary btn-sm" disabled={busy === 'ts:finalize'} onClick={finalizeNow}>
+                  {busy === 'ts:finalize' ? 'Generating the final term sheet…' : 'Finalize the term sheet now'}
+                </button>
+              )}
               <button className="btn ghost btn-sm" onClick={() => goToSection('sec-pricing')}>
                 Open Products &amp; Pricing
               </button>
+              {/* Super-admin escape hatch (owner-directed 2026-08-04): force the send
+                  past this check even when finalizing can't be done — "the super
+                  admin should always be able to override anything and send if he
+                  wants." A reason is required and recorded; the warning is loud. */}
+              {isSuper && !tsOvrOpen && (
+                <button className="btn ghost btn-sm" onClick={() => { setTsOvrOpen(true); setErr(''); }}>
+                  Override — send anyway
+                </button>
+              )}
             </div>
+            {isSuper && tsOvrOpen && (
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--line, #e4e0d6)' }}>
+                <div className="small" style={{ color: 'var(--danger)', marginBottom: 6 }}>
+                  ⚠ Warning: this sends the term sheet exactly as it is on file. If it wasn’t regenerated, the borrower
+                  signs a sheet that may still read “NOT FINAL”. Only do this if you understand and accept that.
+                </div>
+                <textarea className="input" rows={2} style={{ width: '100%', maxWidth: 520 }}
+                  placeholder="Reason for overriding (required — saved on the file)"
+                  value={tsOvrNote} onChange={(e) => setTsOvrNote(e.target.value)} />
+                <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                  <button className="btn primary btn-sm" disabled={!tsOvrNote.trim() || busy === 'send:term_sheet_package'}
+                    onClick={() => overrideSend('term_sheet_package')}>
+                    {busy === 'send:term_sheet_package' ? 'Sending…' : 'Override and send now'}
+                  </button>
+                  <button className="btn ghost btn-sm" onClick={() => { setTsOvrOpen(false); setTsOvrNote(''); }}>Cancel</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
         {/* Inline loan-number backfill — the term-sheet package prints the loan number
@@ -606,7 +711,11 @@ export default function EsignFileSection({ appId, role, onChanged }) {
           </div>
         )}
         <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-          {PACKAGES.map((p) => {
+          {visiblePackages.map((p) => {
+            // The NOO certification is a prior-to-docs occupancy certification — it is
+            // NOT held by the term-sheet gate, Encompass, the loan number, or the
+            // "not final" stamp. Its only block is "already started" (manage it below).
+            const isNoo = p.purpose === 'noo_affidavit';
             // The term-sheet package additionally needs a loan number; Heter Iska does not.
             const needsLoan = p.purpose === 'term_sheet_package' && !hasLoanNumber;
             // Once a package has ANY envelope on the file, the top Send is retired for it —
@@ -624,18 +733,33 @@ export default function EsignFileSection({ appId, role, onChanged }) {
             // send can only ever fail while it does — so point at the fix above
             // instead of firing a doomed send.
             const tsHeld = tsStampBlocks && p.purpose === 'term_sheet_package';
-            const blocked = !sendAllowed || needsLoan || already || encHeld || tsHeld;
+            // When the file is READY to issue a final sheet, the term-sheet Send
+            // button is NOT held — clicking it generates + attaches the FINAL sheet,
+            // then sends (owner-directed 2026-08-04). It stays held only when the
+            // file genuinely isn't ready to finalize (the fix is re-registering).
+            const tsFinalizeHere = p.purpose === 'term_sheet_package' && tsCanFinalize;
+            const tsHardHeld = tsHeld && !tsCanFinalize;
+            const blocked = !sendAllowed || needsLoan || already || encHeld || tsHardHeld;
+            // The NOO certification is a prior-to-docs occupancy cert — not held by any
+            // origination gate (readiness / loan number / Encompass / not-final); its
+            // only block is "already started". Everything else keeps `blocked` above.
+            const sendBlocked = isNoo ? already : blocked;
             const title = already ? 'This package is already started — manage it on its envelope below (Resend / Void / Re-issue)'
+              : isNoo ? p.hint
               : needsLoan ? 'Enter the YS loan number above first'
-              : tsHeld ? 'The term sheet on file still prints “NOT FINAL” — re-register the product to regenerate it as the final one'
+              : tsHardHeld ? 'The term sheet on file still prints “NOT FINAL” and the file isn’t ready to finalize yet — see the note above'
+              : tsFinalizeHere ? 'Generates the FINAL term sheet, then sends it for signature'
               : encHeld ? (isAdmin
                 ? 'Encompass doesn’t match yet — use “Send anyway — make an exception for this send” above'
                 : 'Encompass doesn’t match yet — fix the fields, or ask an admin to make an exception for this send')
               : (sendAllowed ? (gate.ready ? p.hint : `${p.hint} (approved by super-admin exception)`) : 'Complete the outstanding requirements above first — or request a super-admin exception to send now');
+            const onSend = tsFinalizeHere ? () => finalizeAndSend(p.purpose) : () => send(p.purpose);
             return (
-              <button key={p.purpose} className="btn primary btn-sm" disabled={blocked || busy === `send:${p.purpose}`}
-                title={title} onClick={() => send(p.purpose)}>
-                {busy === `send:${p.purpose}` ? 'Sending…' : already ? `${p.label} — see below` : `Send ${p.label}`}
+              <button key={p.purpose} className="btn primary btn-sm" disabled={sendBlocked || busy === `send:${p.purpose}`}
+                title={title} onClick={onSend}>
+                {busy === `send:${p.purpose}`
+                  ? (tsFinalizeHere ? 'Finalizing & sending…' : 'Sending…')
+                  : already ? `${p.label} — see below` : `Send ${p.label}`}
               </button>
             );
           })}

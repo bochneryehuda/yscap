@@ -299,6 +299,41 @@ app.get('/api/health', async (req, res) => {
     storageHealth: storageCard,
     // `protected:false` means the nightly off-site backup has not succeeded recently — act on it.
     backup: backupStatus,
+    // `ok:false` means the database-level rule that keeps a Google-sourced coordinate
+    // out of the permanent property warehouse (db/459) is not confirmed installed.
+    // A licensing control, so it is reported rather than assumed.
+    //
+    // DELIBERATELY ONLY THE VERDICT. This endpoint is PUBLIC (see the storage and
+    // backup blocks above, scrubbed for the same reason), and the guard's own
+    // `why` carries a database error verbatim — host, port, role name — plus a
+    // count of violating rows. "The licensing control is OFF and 37 rows breach
+    // it" is a sentence for the boot log and for staff, not for anonymous callers.
+    //
+    // BUT A QUALIFIED YES MUST NOT READ AS A PLAIN ONE. `ok:true` alone is
+    // published for two different states: the database was ASKED to store a Google
+    // coordinate and refused, and the constraint's TEXT merely reads right while
+    // the write probe could not run (an unrelated CHECK, a new NOT NULL column, a
+    // read-only replica). The boot log and the staff card already distinguish
+    // them — this endpoint flattened both to green, which was measured on a
+    // shadowed `lower()` where a Google coordinate was in fact being STORED.
+    // `confirmedByWrite` is one boolean and leaks nothing: no `why`, no counts, no
+    // host names, no constraint names.
+    researchGeoLicensing: (() => {
+      try {
+        const h = require('./lib/research/licensing-guard').health();
+        // `confirmedByWrite` answers ONE question — "did the database itself confirm
+        // the rule is on?" — so it is only ever true alongside `ok`. The probe ran on
+        // the NOT-INSTALLED path too (that is how it proves nothing stops a Google
+        // coordinate), and reporting `confirmedByWrite:true` there said a write had
+        // confirmed a warehouse that has no licensing constraint at all. `ok:false`
+        // already dominates every screen, so nobody was shown green — but the boolean
+        // itself was untrue, and a boolean nobody can read literally is worse than no
+        // boolean.
+        return { ok: !!h.ok, checked: !!h.checked,
+          confirmedByWrite: h.ok === true && h.probeTested === true,
+          at: h.at || null };
+      } catch (_e) { return { ok: false, checked: false, confirmedByWrite: false, at: null }; }
+    })(),
     // SharePoint one-way sync status (config + last reconciliation pass; cheap —
     // no live Graph call on the health path).
     sharepointSync: (() => { try { return require('./lib/sharepoint-backup').health(); } catch (e) { return { enabled: false, error: e.message }; } })(),
@@ -331,6 +366,12 @@ app.get('/api/health', async (req, res) => {
 // the first line unless the bearer token actually carries a borrower-view
 // envelope. See src/lib/borrower-view.js.
 app.use(require('./lib/borrower-view').guard);
+// Same shape for a BORROWER ASSISTANT — a standing helper login the borrower
+// authorized. Mounted above /auth so it can refuse the borrower credential
+// routes (/auth/logout bumps the BORROWER's token_version; /auth/mfa changes the
+// borrower's second factor). Inert unless the bearer token carries the assistant
+// envelope. See src/lib/borrower-assistant.js.
+app.use(require('./lib/borrower-assistant').guard);
 app.use('/auth', require('./auth').router);
 app.use('/api/roster', require('./routes/roster'));   // public team roster (site dropdown + ?lo branding)
 // Public company pricing defaults — the marketing term-sheet generator + the
@@ -382,6 +423,14 @@ app.use('/api/esign', require('./routes/esign-public'));
 // Public token-authenticated draw-findings accept (the one-click "Accept" link we email the
 // borrower — the reply_token is the capability; no login needed to release their own money).
 app.use('/api/public/draw-findings', rateLimit({ bucket: 'draw-public', windowMs: 60000, max: 60 }), require('./routes/draw-findings-public'));
+// An emailed term sheet's own two doors (owner-directed 2026-08-07). Mounted OUTSIDE
+// /api/borrower because the read is public — the borrower clicking the officer's link
+// has no account yet, which is the whole point — and the token is the authorization.
+// Rate-limited like every other public token door: the token is 24 random bytes, so
+// guessing is hopeless, but a probe should still not be free.
+app.use('/api/term-sheet-offers',
+  rateLimit({ bucket: 'term-sheet-offer', windowMs: 60000, max: 60 }),
+  require('./routes/term-sheet-offers'));
 // Start / leave / audit a borrower view. Mounted outside /api/staff because the
 // leave + status calls are made while holding a BORROWER-kind token.
 app.use('/api/borrower-view', require('./routes/borrower-view'));
@@ -398,6 +447,11 @@ app.use('/api/trustpoint', require('./routes/trustpoint'));
 // Appraisal desk: import the appraisal XML, reconcile it against the file, and resolve
 // PILOT findings. The router applies requireAuth + requireStaff + per-file scoping itself.
 app.use('/api/appraisal', require('./routes/appraisal'));
+// AMC appraisal-ordering desk (AppraisalScope / CoreLogic Digital Gateway): the new
+// "Order an appraisal" section beside the Title / Insurance / Attorney orders. Same
+// auth wall + per-file scoping as the draw desk. Inert until the AMC switches are on
+// (src/amc/**, db/480); RTL only.
+app.use('/api/amc', require('./routes/amc'));
 // The research desk: the cross-file property / comparable / appraiser database built
 // out of every appraisal XML we have ever imported (db/415), its search engine, and
 // the build-your-own valuation grid (db/410). Staff-wide by design — it holds
@@ -434,6 +488,10 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   // API Health — the status of every external API / integration (config presence + live reach).
   // The router applies its own requireAuth + platform_setup guards.
   app.use('/api/admin/integrations', requireAuth, requireStaff, require('./routes/admin-integrations'));
+  // Elementix (recorded deeds / mortgages over MCP) — the one-time OAuth approval,
+  // the read-only capability probe, and the connection status. READ-ONLY vendor:
+  // there is no write path to Elementix anywhere in this codebase.
+  app.use('/api/admin/elementix', requireAuth, requireStaff, require('./routes/admin-elementix'));
   // Encompass READ-ONLY admin routes (owner-directed 2026-07-22): the cached
   // tenant field catalog + per-file cached raw loan JSON + refresh triggers.
   // The router applies its own requireAuth + platform_setup guards, and every
@@ -675,6 +733,15 @@ if (require.main === module) {
       try {
         const { ensureSchema, bootstrapAdmin } = require('./migrate-boot');
         await ensureSchema();
+        // ensureSchema NEVER throws — a failed migration logs and continues, which
+        // is right for a schema change and wrong for a CONTROL. Ask the database
+        // out loud whether the Google-coordinate licensing rule (db/459) is
+        // actually installed, so it can never be silently absent. Reports only;
+        // never blocks the boot — and its OWN try/catch, because a throw from the
+        // `require` itself would otherwise skip bootstrapAdmin() and every boot
+        // backfill queued after it.
+        try { await require('./lib/research/licensing-guard').assertGeoLicensing(); }
+        catch (e) { console.error('[research] licensing check could not run:', e.message); }
         await bootstrapAdmin();   // opt-in: seeds first admin when ADMIN_EMAIL/PASSWORD set
         // One-shot: ensure every active/closed RTL file (imported or manual) has
         // its full condition set + internal checklist. Idempotent + marker-guarded,
@@ -773,6 +840,18 @@ if (require.main === module) {
         require('./lib/research/ingest').backfill(require('./db'), { limit: 400 })
           .then((r) => r && r.ingested && console.log('[boot] research warehouse backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] research warehouse backfill failed:', e.message));
+        // THE XMLs THAT ARE ALREADY ON THE FILES (db/462, owner-directed 2026-08-04).
+        // The backfill above walks `appraisals` — reports that imported CLEANLY onto a
+        // loan file. It cannot see an appraisal data file that only ever existed as a
+        // stored document: attached by a borrower, filed on a condition other than the
+        // appraisal one, dropped in an unnamed slot, or belonging to an import that
+        // failed. Every one of those still carries a full grid of comparable sales we
+        // have already paid for. `xml-catch` closes those doors going forward; this is
+        // the previous half. Bounded, self-draining (each document is stamped whatever
+        // the verdict — but NEVER when the read itself failed), never touches a loan
+        // file, never throws. Off with RESEARCH_XML_SWEEP_DISABLED=1.
+        require('./lib/research/xml-sweep').sweepOnBoot(require('./db'))
+          .catch((e) => console.error('[boot] research XML sweep failed:', e.message));
         // PUTTING THOSE PROPERTIES ON THE MAP (db/412) — what makes "find me every
         // comparable within half a mile" possible. Only comparables the appraiser's
         // own software happened to geocode carry coordinates, and a SUBJECT property
@@ -937,6 +1016,24 @@ if (require.main === module) {
         require('./lib/underwriting/investor-guidelines/desk-sync').backfillGuidelineRetractions()
           .then((r) => r && r.retracted && console.log('[boot] guideline-retraction backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] guideline-retraction backfill failed:', e.message));
+        // Retire stale "fatal AI finding" NOTIFICATIONS on previous files (owner-reported
+        // 2026-08-06, seen "on a lot of files"). #1034 fixed the loan_amount / silver
+        // findings in the grounding, and the findings self-heal on the next file view — but
+        // the notification each one wrote had no link to the finding's lifecycle and lived
+        // on forever as an unread fatal. This marks those read (never deletes). Bounded,
+        // self-draining, idempotent; never blocks boot.
+        require('./lib/underwriting/ai-finding-notify').retireStaleFatalNotificationsOnce()
+          .then((r) => r && (r.retiredStale || r.retiredSettled) && console.log('[boot] stale AI-fatal notifications retired:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] stale AI-fatal notification retire failed:', e.message));
+        // Previous AND future draws (owner-directed 2026-08-06): the draw-packet Excel
+        // is now filed as a document so it mirrors into the per-draw SharePoint folder
+        // ("Draws/Draw N") alongside the inspection reports. This files a packet for any
+        // draw that doesn't already carry a current one, so previous draws get theirs on
+        // the next boot. Bounded, best-effort, self-draining; never blocks boot.
+        // Off-switch: DRAW_PACKET_BACKFILL_DISABLED=1.
+        require('./sitewire/draw-packet').backfillDrawPacketsOnce()
+          .then((r) => r && r.filed && console.log('[boot] draw-packet documents filed:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] draw-packet backfill failed:', e.message));
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }
@@ -991,6 +1088,12 @@ if (require.main === module) {
     // only). Runs independently of ENCOMPASS_ENABLED; self-gates on the
     // ENCOMPASS_FLOOD_ENABLED switch, so an idle tick is a cheap no-op.
     try { require('./sync/encompass-sync').startFloodPoller(); } catch (e) { console.warn('encompass flood poller not started:', e.message); }
+    // AMC appraisal-order poll worker (AppraisalScope / CoreLogic Digital Gateway is a
+    // PULL API — CDG never pushes, so status + finished documents are polled). Self-gates
+    // on AMC_ENABLED per tick, so an idle tick is a cheap no-op and flipping the switch on
+    // starts polling with no redeploy. On product-available it files the report back into
+    // the Document Center and runs the appraisal import automatically.
+    try { require('./amc/sync').start(); } catch (e) { console.warn('amc sync not started:', e.message); }
     // Scheduled notification digests (owner-directed 2026-07-20): weekly borrower
     // "what's still needed", daily per-officer pipeline snapshot, stale-file
     // alerts, and the Monday admin summary. Each self-gates via audit_log so it

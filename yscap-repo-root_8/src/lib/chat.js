@@ -42,8 +42,22 @@ const URGENT_MAX_ATTEMPTS = 10;       // ... for at most 20 minutes
 // thread. CHAT_REPLY_MARKER_PHRASE is the exact token both sides key on — the
 // outbound copy embeds it and inbound-chat.js imports it for the cut, so the two
 // genuinely can't drift apart.
-const CHAT_REPLY_MARKER_PHRASE = 'Reply above this line';
-const CHAT_REPLY_MARKER = `— — — — —  ${CHAT_REPLY_MARKER_PHRASE} and it posts straight into the chat  — — — — —`;
+// RE-EXPORTED, NOT RE-DECLARED (2026-08-07). The phrase is now the shared contract
+// in lib/email/quote.js — every inbound family cuts on the same token, not just the
+// chat one — so declaring a second copy here is the one thing that could re-open the
+// drift this comment warns about. Same string as before, so a chat thread already in
+// flight is unaffected.
+//
+// TWO SESSIONS CENTRALIZED THIS PHRASE AT ONCE, into `email/quote.js` and into
+// `email/reply-cut.js`, which is exactly the drift both were built to prevent. `quote.js`
+// owns the token (it is the broader module — it also renders the quote block the template
+// prints and backs the inbound cut for every family), and `reply-cut.js` now DERIVES its
+// phrase from here rather than declaring a second one. `replyMarker(tail)` was verified
+// byte-identical to the string this file printed before, so a chat thread mid-flight is
+// unaffected. Do not re-declare the phrase in either module.
+const emailQuote = require('./email/quote');
+const CHAT_REPLY_MARKER_PHRASE = emailQuote.REPLY_MARKER_PHRASE;
+const CHAT_REPLY_MARKER = emailQuote.replyMarker('and it posts straight into the chat');
 
 /* ---------------------------------------------------------------- ensure */
 

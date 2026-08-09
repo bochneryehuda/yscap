@@ -42,8 +42,13 @@ const { classifyReturnAttachment } = require('./order-return-filter');
 
 const DOC_KIND = 'closing_correspondence';
 // A closing chain genuinely carries big multi-document sends (a full draft package),
-// so this is higher than the Orders desk's 20 — but still bounded.
-const MAX_DOCS_PER_EMAIL = 30;
+// so this is bounded but generous. IT MUST NOT BE BELOW the inbound RETRIEVAL cap
+// (file-inbox.MAX_ATTACH_COUNT): retrieval reports whatever it drops (droppedByCap →
+// "N could not be filed"), but a slice HERE below that number would truncate SILENTLY —
+// re-introducing the very "documents lost with no sign" failure this module exists to
+// prevent. Kept equal to the retrieval cap so retrieval is the single, reported bound
+// (guarded by scripts/test-inbound-attachment-cap.js).
+const MAX_DOCS_PER_EMAIL = 60;
 
 /**
  * IS THIS EXACT DOCUMENT ALREADY ON THIS FILE'S CLOSING CORRESPONDENCE?
@@ -174,6 +179,15 @@ async function saveChainDocs({ applicationId, attachments, fromEmail, subject } 
          a.contentType || 'application/octet-stream', buf.length, provider, ref, DOC_KIND, sha256 || null]);
       saved += 1;
       names.push(String(a.filename));
+      // An appraisal data file forwarded onto the closing chain feeds the warehouse
+      // like any other (db/462) — warehouse-only, fire-and-forget, and it can neither
+      // affect the chain nor fail this filing.
+      try {
+        require('./research/xml-catch').fireCatch({
+          bytes: buf, filename: a.filename, contentType: a.contentType,
+          why: 'a closing-chain email',
+        });
+      } catch (_) { /* never let the warehouse touch the closing chain */ }
     } catch (e) {
       // A storage or DB failure IS transient and IS recoverable — but only if
       // somebody knows, AND only if the caller is allowed to try again. Swallowed and

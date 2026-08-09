@@ -14,6 +14,9 @@
  * can never leak a key. Every probe is time-boxed and NEVER throws.
  */
 const cfg = require('../../config');
+// The USPS credential NAMES (never values). Required here so the environment chips
+// below are built from the same lists the reader uses — see envPresence().
+const USPS_ENV = require('../usps-env');
 
 const PROBE_TIMEOUT_MS = 8000;
 
@@ -26,6 +29,26 @@ function timebox(promise, ms = PROBE_TIMEOUT_MS) {
 }
 // Is an env var present (non-empty)? Presence only — the value is never read out.
 function envSet(name) { const v = process.env[name]; return !!(v && String(v).trim()); }
+
+/**
+ * A CREDENTIAL SET UNDER A NAME WE ALSO ACCEPT IS *SET*, AND THE CHIP MUST SAY SO.
+ *
+ * Some connectors read a credential under more than one name because the vendor
+ * itself labels it two ways (USPS calls the same v3 OAuth pair "Client ID" on one
+ * screen and "Consumer Key" on another). The READER accepts both — but this list
+ * checked only the canonical name, so a working connector rendered a red
+ * "required — not set" chip and the screen's `missingRequired` count claimed a key
+ * was missing that is right there and working. That is the same "not connected"
+ * ambiguity the alternate-name reader exists to remove, moved one screen over.
+ *
+ * An entry declares `alsoAccepts: [...]`; the pill reports WHICH name carried it,
+ * so nobody has to guess. Names only, never values.
+ */
+function envPresence(e) {
+  if (envSet(e.name)) return { set: true, setAs: null };
+  for (const alt of e.alsoAccepts || []) if (envSet(alt)) return { set: true, setAs: alt };
+  return { set: false, setAs: null };
+}
 
 // A tiny direct client-credentials token check for Microsoft Graph (SharePoint / Outlook email).
 // Proves the tenant + client id + secret authenticate. Only attempted when a client SECRET is set
@@ -197,6 +220,45 @@ const INTEGRATIONS = [
         await timebox(c.call('/projects/', { query: { page_size: 1 } }));
         return { configured: true, enabled: true, live: true, detail: 'Reached TrustPoint.' };
       } catch (e) { return { configured: true, enabled: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching TrustPoint.' : (e.message || 'Not reachable — the key may be wrong.') }; }
+    },
+  },
+  {
+    key: 'elementix', name: 'Elementix (recorded deeds / mortgages)', group: 'data',
+    purpose: 'Looks up recorded deeds and mortgages to research a property, an owner, or a borrower’s claimed track record. Read-only — PILOT never writes anything to Elementix.',
+    direction: 'One-way (read)', auth: 'Sign-in approved once in a browser (no key to buy)',
+    // No required key: the endpoint is signed in to on the seat the owner already
+    // pays for, so a missing CLIENT_ID is normal and must not read as misconfigured.
+    env: [{ name: 'ELEMENTIX_URL', required: false }, { name: 'ELEMENTIX_CLIENT_ID', required: false },
+      { name: 'ELEMENTIX_TOKEN_KEY', required: false }],
+    switches: [{ name: 'ELEMENTIX_ENABLED', label: 'Lookups' }, { name: 'ELEMENTIX_DRYRUN', label: 'Dry run' }],
+    // DELIBERATELY NOT a live probe. Every reach counts against a ceiling of
+    // 1,000 requests/hour that is shared by the WHOLE organization, so probing on
+    // each page load would spend the team's allowance to tell us what the stored
+    // authorization already says. "Can we actually reach it?" is answered on
+    // demand by GET /api/admin/elementix/discover instead.
+    liveProbe: false,
+    async probe() {
+      const oauth = require('../../elementix/oauth');
+      let s;
+      try { s = await oauth.status(); }
+      catch (e) { return { configured: true, live: null, detail: `Could not read the stored connection: ${e && e.message}` }; }
+      if (!s.configured) return { configured: false, live: null, detail: s.detail || 'The Elementix address is not set.' };
+      const on = require('./switches').on('ELEMENTIX_ENABLED');
+      if (!s.connected) {
+        return { configured: true, enabled: on, live: null,
+          detail: 'Not connected yet — somebody has to approve PILOT once in a browser (Connect on this page).' };
+      }
+      // Whether it RENEWS ITSELF is the fact that decides if this keeps working
+      // unattended, so it is the thing worth saying out loud on the status line.
+      const renew = s.selfRenewing
+        ? 'and renews itself, so nobody has to approve again'
+        : 'but did NOT get a renewal token, so somebody will have to approve again when it expires';
+      if (!on) {
+        return { configured: true, enabled: false, live: null,
+          detail: `Connected (${s.scopedTo}-wide) ${renew}. Lookups are switched off, so nothing is being read yet.` };
+      }
+      return { configured: true, enabled: true, live: null,
+        detail: `Connected (${s.scopedTo}-wide) ${renew}.${s.lastError ? ` Last problem: ${s.lastError}` : ''}` };
     },
   },
   {
@@ -422,12 +484,63 @@ const INTEGRATIONS = [
     key: 'usps', name: 'USPS (address validation)', group: 'data',
     purpose: 'Official USPS address standardization + ZIP+4. Verifies every address after the autocomplete pick, and backfills existing files (developer.usps.com; see docs/USPS-ADDRESS-VERIFICATION.md).',
     direction: 'Outbound', auth: 'OAuth2 client credentials',
-    env: [{ name: 'USPS_CLIENT_ID', required: true }, { name: 'USPS_CLIENT_SECRET', required: true }],
+    // Read first under these names; `lib/usps-env` also accepts the alternates USPS
+    // itself uses on its portal (USPS_CONSUMER_KEY / _SECRET and a couple more), so
+    // a key set under one of those is not invisible. The alternates come from that
+    // module's OWN lists rather than a second copy here, so the chip can never say
+    // "not set" about a name the reader is happily using.
+    env: [
+      { name: USPS_ENV.ID_NAMES[0], required: true, alsoAccepts: USPS_ENV.ID_NAMES.slice(1) },
+      { name: USPS_ENV.SECRET_NAMES[0], required: true, alsoAccepts: USPS_ENV.SECRET_NAMES.slice(1) },
+    ],
     switches: [], liveProbe: true,
     async probe() {
       const m = require('./usps');
-      if (!m.configured()) return { configured: false, live: null, detail: 'Not connected. The USPS connector is built and WIRED into the address forms — add the two keys (USPS_CLIENT_ID / USPS_CLIENT_SECRET from a USPS developer account) to turn on official USPS verification. A signed Addressing API License Agreement + a paid Enhanced Addresses tier is required for production volume as of Aug 2026. Until connected, address lookup runs through Google / OpenStreetMap.' };
-      try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'USPS credentials authenticate — official address verification is active.' : (p.reason || 'Not reachable.') }; }
+      if (!m.configured()) {
+        /* SAY WHAT WE CAN SEE, NOT JUST THAT WE SEE NOTHING. The owner's own words
+           were "USPS credentials are already in Render" — and if they are there
+           under a name this does not read, "not connected" is indistinguishable
+           from "never configured" and the five-second fix is invisible. The
+           diagnostic names VARIABLES, never values. */
+        const env = require('../usps-env').describe();
+        return { configured: false, live: null,
+          detail: `${env.detail} The connector itself is built and WIRED into the address forms — with the `
+            + 'two keys in place, official USPS verification turns on with no further work. A signed '
+            + 'Addressing API License Agreement + a paid Enhanced Addresses tier is required for production '
+            + 'volume as of Aug 2026. Until connected, address lookup runs through Google / OpenStreetMap.' };
+      }
+      try {
+        // 1) SIGN-IN. A green token used to be the WHOLE check — which is exactly why
+        //    this chip read healthy while every real verify failed: the OAuth sign-in
+        //    can authenticate while the account is not licensed for the Addresses API.
+        const p = await timebox(m.ping());
+        if (!p.ok) {
+          return { configured: true, live: false,
+            detail: 'USPS sign-in failed' + (p.reason ? `: ${p.reason}` : '.') + ' The keys may be wrong, expired, or turned off.' };
+        }
+        // 2) THE ADDRESS SERVICE ITSELF. Standardize a fixed, well-known address so the
+        //    chip reflects real capability, not just the login. Routed through the cache,
+        //    so a HEALTHY result costs one USPS call about every 90 days (then free);
+        //    a FORBIDDEN result is never cached, so a broken account keeps showing red
+        //    with the real reason. `force` keeps the burst cap from starving the check.
+        const V = require('../usps-verify');
+        const CANARY = { line1: '1600 Pennsylvania Ave NW', city: 'Washington', state: 'DC', zip: '20500' };
+        const out = await timebox(V.standardize(CANARY, { force: true }));
+        if (out.status === 'error') {
+          const ex = V.explainError(out.detail);
+          return { configured: true, live: false,
+            detail: `USPS sign-in works, but a test address lookup was refused. ${ex.reason}`
+              + (ex.technical ? ` (USPS said: ${ex.technical})` : '') };
+        }
+        if (out.status === 'rate_limited') {
+          return { configured: true, live: null,
+            detail: 'USPS sign-in works; the hourly USPS lookup limit is currently reached, so the address service could not be tested this moment.' };
+        }
+        // Any real answer (verified / corrected / unverified) means the service is
+        // licensed and responding — which is what "live" is asking.
+        return { configured: true, live: true,
+          detail: 'USPS sign-in works AND a test address lookup succeeded — official address verification is active.' };
+      }
       catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching USPS.' : (e.message || 'Not reachable.') }; }
     },
   },
@@ -443,6 +556,23 @@ const INTEGRATIONS = [
       if (!m.configured()) return { configured: false, live: null, detail: 'Not connected. The connector is built — add your Encompass Developer Connect credentials (client id + secret + instance id) to authenticate. The loan field-mapping is the next step, finalized against your instance. (Today an Encompass status field only rides in read-only via ClickUp.)' };
       try { const p = await timebox(m.ping()); return { configured: true, live: !!p.ok, detail: p.ok ? 'Encompass credentials authenticate — loan field-mapping is the next step.' : (p.reason || 'Not reachable.') }; }
       catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching Encompass.' : (e.message || 'Not reachable.') }; }
+    },
+  },
+  {
+    key: 'amc', name: 'AppraisalScope / CoreLogic (appraisal ordering)', group: 'framework',
+    purpose: 'Order appraisals directly from the AMC, track the order, message the AMC back and forth, request revisions / ROV reconsiderations, and pull the finished report back into the file. The connector foundation is built; it needs the CoreLogic credentials, then later build phases add the ordering screens.',
+    direction: 'Two-way (planned)', auth: 'OAuth2 (CoreLogic Digital Gateway) + AppraisalScope login',
+    env: [{ name: 'AMC_CLIENT_ID', required: true }, { name: 'AMC_CLIENT_SECRET', required: true },
+      { name: 'AMC_LOGIN_ACCOUNT', required: true }, { name: 'AMC_LOGIN_PASSWORD', required: true },
+      { name: 'AMC_SUBDOMAIN', required: true }, { name: 'AMC_LENDER_IDENTIFIER', required: true },
+      { name: 'AMC_SOURCE_CLIENT_ID', required: true }],
+    switches: [{ name: 'AMC_ENABLED', label: 'Reading + polling' }, { name: 'AMC_OUTBOUND_ENABLED', label: 'Ordering + writing' }],
+    liveProbe: false,
+    async probe() {
+      const c = require('../../amc/client').configured();
+      if (!c.ready) return { configured: false, live: null, detail: 'Not connected — the appraisal-ordering connector is built and off by default. Add the CoreLogic / AppraisalScope credentials (AMC_CLIENT_ID/SECRET, AMC_LOGIN_ACCOUNT/PASSWORD, AMC_SUBDOMAIN, AMC_LENDER_IDENTIFIER, AMC_SOURCE_CLIENT_ID) to turn it on. Ordering screens are added by later build phases.' };
+      if (!c.enabled) return { configured: true, enabled: false, live: null, detail: 'Credentials are set, but the master switch (AMC_ENABLED) is off, so nothing talks to the AMC yet.' };
+      return { configured: true, enabled: true, live: null, detail: 'Credentials set and enabled. Live ordering is delivered by later build phases; use TEST MODE (AMC_DRYRUN) to verify the request before going live.' };
     },
   },
 ];
@@ -494,7 +624,7 @@ async function resolveOne(entry, opts) {
   return {
     key: entry.key, name: entry.name, group: entry.group, purpose: entry.purpose, model,
     direction: entry.direction, auth: entry.auth, liveProbe: !!entry.liveProbe, notBuilt: !!entry.notBuilt,
-    env: (entry.env || []).map((e) => ({ name: e.name, required: !!e.required, set: envSet(e.name) })),
+    env: (entry.env || []).map((e) => ({ name: e.name, required: !!e.required, ...envPresence(e) })),
     switches: runtimeSwitches,
     // Read-only env pills are ONLY for flags that are NOT already a live toggle above (e.g.
     // DOCUSIGN_TEST_MODE, which has no runtime switch). A flag that HAS a runtime switch must never
@@ -519,4 +649,4 @@ async function probeOne(key) {
   return resolveOne(entry, { live: true });
 }
 
-module.exports = { INTEGRATIONS, probeAll, probeOne, _internals: { computeState, envSet } };
+module.exports = { INTEGRATIONS, probeAll, probeOne, _internals: { computeState, envSet, envPresence } };

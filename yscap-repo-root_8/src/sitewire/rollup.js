@@ -13,13 +13,37 @@
  *                     mirrors Sitewire total_released_cents = gross approved of approved draws)
  *   approved_pending— approved_cents on draws NOT yet lender-approved (in the pipeline)
  *   requested_open  — requested_cents on open (non-approved) draws
+ *   pending_exposure— what an open draw is expected to take off the line: the inspector's approved
+ *                     figure once they have spoken, otherwise the amount the borrower REQUESTED.
+ *                     See the note under `committed`.
  *   remaining       — budgeted − drawn (what is still available to draw)
- *   committed       — drawn + approved_pending: money that is SPOKEN FOR. Owner-directed
+ *   committed       — drawn + pending_exposure: money that is SPOKEN FOR. Owner-directed
  *                     2026-08-03: "we should treat a draw that is not fully approved, even if it's
  *                     halfway approved, as if it is approved… we can still decline it, and
  *                     everything goes back to fully available." An inspector-approved amount is a
  *                     commitment against the line the moment it is proposed, so every surface a
  *                     human reads shows AVAILABLE, not the pre-draw remaining.
+ *
+ *                     WIDENED owner-directed 2026-08-07, on a brand-new Draw #1 for $6,450 whose
+ *                     notification read "Still available (this draw counted) $135,000" and
+ *                     "Construction budget used 0%": *"the 'Still Available' and all the
+ *                     notifications say this draw is counted, and it's still available in the
+ *                     entire rehab budget. You need to reduce the amount that he requested … Make
+ *                     believe, imagine that the requested amount is being approved. If potentially
+ *                     it will not get approved, then the 'Still Available' will be more, but you
+ *                     messed up. And also, the construction budget used percentage should be the
+ *                     percentage of this draw as well, included already."*
+ *
+ *                     ROOT CAUSE: `committed` counted only `approved_pending`, which is 0 for the
+ *                     whole stretch between the borrower submitting a draw and the inspector
+ *                     finishing — exactly the state every "a draw came in" notification describes.
+ *                     So the one email whose subject is a $6,450 request told the reader the whole
+ *                     budget was still free. The exposure is now taken PER REQUEST ROW as
+ *                     `approved > 0 ? approved : requested`, never `approved + requested` (a draw
+ *                     the inspector has trimmed would otherwise be counted twice) and never a
+ *                     per-line `max` (a line carrying one inspected draw and one fresh request
+ *                     would lose the smaller of the two). Once the inspector has answered, THEIR
+ *                     number governs — the request no longer describes what will move.
  *   available       — budgeted − committed (what is genuinely still free to draw)
  *   pct_complete    — drawn / budgeted (0 when budget is 0; media lines excluded)
  *   pct_committed   — committed / budgeted (the same line, with this draw counted)
@@ -84,7 +108,7 @@ function computeRollup({ links = [], draws = [], requests = [], findingLines = [
         sow_line_key: key,
         kind: isMedia ? 'media' : (key === SENTINEL.CONTINGENCY ? 'contingency' : key === SENTINEL.GC ? 'gc' : 'line'),
         label: nameByKey[key] || (isMedia ? 'Media / photos' : baseLabelFromName(l.name)),
-        budgeted: 0, drawn: 0, approved_pending: 0, requested_open: 0, remaining: 0, pct_complete: 0,
+        budgeted: 0, drawn: 0, approved_pending: 0, requested_open: 0, pending_exposure: 0, remaining: 0, pct_complete: 0,
         committed: 0, available: 0, pct_committed: 0,
         job_item_ids: [], units: {},
       };
@@ -97,7 +121,7 @@ function computeRollup({ links = [], draws = [], requests = [], findingLines = [
     if (line.kind === 'media') continue; // media anchors carry no budget
     line.budgeted += N(l.budgeted_cents);
     if (l.unit_index != null) {
-      const u = (line.units[l.unit_index] = line.units[l.unit_index] || { unit_index: N(l.unit_index), budgeted: 0, drawn: 0, approved_pending: 0, requested_open: 0, remaining: 0, pct_complete: 0, committed: 0, available: 0, pct_committed: 0 });
+      const u = (line.units[l.unit_index] = line.units[l.unit_index] || { unit_index: N(l.unit_index), budgeted: 0, drawn: 0, approved_pending: 0, requested_open: 0, pending_exposure: 0, remaining: 0, pct_complete: 0, committed: 0, available: 0, pct_committed: 0 });
       u.budgeted += N(l.budgeted_cents);
     }
   }
@@ -112,19 +136,24 @@ function computeRollup({ links = [], draws = [], requests = [], findingLines = [
     const appr = N(r.approved_cents);
     const req = N(r.requested_cents);
     const approvedDraw = drawApproved.get(N(r.sitewire_draw_id)) === true;
+    // The exposure THIS request row puts on the line while the draw is still open. The
+    // inspector's figure governs once they have answered; before that the borrower's request is
+    // the only statement of what this draw will take, and treating it as $0 is what made a live
+    // draw invisible in every budget figure we show.
+    const exposure = appr > 0 ? appr : req;
     if (approvedDraw) line.drawn += appr;
-    else { line.approved_pending += appr; line.requested_open += req; }
+    else { line.approved_pending += appr; line.requested_open += req; line.pending_exposure += exposure; }
     if (l.unit_index != null) {
-      const u = (line.units[l.unit_index] = line.units[l.unit_index] || { unit_index: N(l.unit_index), budgeted: 0, drawn: 0, approved_pending: 0, requested_open: 0, remaining: 0, pct_complete: 0, committed: 0, available: 0, pct_committed: 0 });
+      const u = (line.units[l.unit_index] = line.units[l.unit_index] || { unit_index: N(l.unit_index), budgeted: 0, drawn: 0, approved_pending: 0, requested_open: 0, pending_exposure: 0, remaining: 0, pct_complete: 0, committed: 0, available: 0, pct_committed: 0 });
       if (approvedDraw) u.drawn += appr;
-      else { u.approved_pending += appr; u.requested_open += req; }
+      else { u.approved_pending += appr; u.requested_open += req; u.pending_exposure += exposure; }
     }
   }
 
   // ---- finalize remaining + pct ----
   const pct = (drawn, budget) => (budget > 0 ? Math.round((drawn / budget) * 1000) / 10 : 0); // 1-decimal %
   const lineList = [];
-  const project = { budget: 0, drawn: 0, approved_pending: 0, requested_open: 0, remaining: 0, pct_complete: 0,
+  const project = { budget: 0, drawn: 0, approved_pending: 0, requested_open: 0, pending_exposure: 0, remaining: 0, pct_complete: 0,
     committed: 0, available: 0, pct_committed: 0,
     contingency: null, gc: null, line_count: 0, unit_count: 0 };
   const physicalUnits = new Set(); // distinct unit indices = physical unit count (not per-unit cells)
@@ -132,17 +161,18 @@ function computeRollup({ links = [], draws = [], requests = [], findingLines = [
     const line = lines[key];
     line.remaining = line.budgeted - line.drawn;
     line.pct_complete = pct(line.drawn, line.budgeted);
-    line.committed = line.drawn + line.approved_pending;
+    line.committed = line.drawn + line.pending_exposure;
     line.available = line.budgeted - line.committed;
     line.pct_committed = pct(line.committed, line.budgeted);
     line.units = Object.values(line.units).sort((a, b) => a.unit_index - b.unit_index);
     for (const u of line.units) {
       u.remaining = u.budgeted - u.drawn; u.pct_complete = pct(u.drawn, u.budgeted);
-      u.committed = u.drawn + u.approved_pending; u.available = u.budgeted - u.committed; u.pct_committed = pct(u.committed, u.budgeted);
+      u.committed = u.drawn + u.pending_exposure; u.available = u.budgeted - u.committed; u.pct_committed = pct(u.committed, u.budgeted);
     }
     if (line.kind !== 'media') {
       project.budget += line.budgeted; project.drawn += line.drawn;
       project.approved_pending += line.approved_pending; project.requested_open += line.requested_open;
+      project.pending_exposure += line.pending_exposure;
       if (line.kind === 'contingency') project.contingency = { budgeted: line.budgeted, drawn: line.drawn, remaining: line.remaining };
       else if (line.kind === 'gc') project.gc = { budgeted: line.budgeted, drawn: line.drawn, remaining: line.remaining };
       else { project.line_count++; for (const u of line.units) physicalUnits.add(u.unit_index); }
@@ -151,7 +181,7 @@ function computeRollup({ links = [], draws = [], requests = [], findingLines = [
   }
   project.remaining = project.budget - project.drawn;
   project.pct_complete = pct(project.drawn, project.budget);
-  project.committed = project.drawn + project.approved_pending;
+  project.committed = project.drawn + project.pending_exposure;
   project.available = project.budget - project.committed;
   project.pct_committed = pct(project.committed, project.budget);
   project.unit_count = physicalUnits.size; // distinct physical units, not per-unit cells
@@ -266,10 +296,23 @@ async function loadRollup(db, appId, { sowState = null } = {}) {
   // PROJECT it here and mark it as a projection until the release makes it final.
   const projected = await projectedFee(db, appId);
   const findingByDraw = new Map();
+  // The latest finding per draw carries the borrower-facing step times (delivered/accepted/disputed/
+  // resolved) — the source for the per-stage draw timeline (owner-directed: a timestamp on every step).
   for (const f of (await db.query(
-    `SELECT sitewire_draw_id, status FROM draw_findings WHERE application_id=$1 ORDER BY delivered_at DESC NULLS LAST`, [appId])).rows) {
+    `SELECT sitewire_draw_id, status, delivered_at, accepted_at, disputed_at, resolved_at
+       FROM draw_findings WHERE application_id=$1 ORDER BY delivered_at DESC NULLS LAST`, [appId])).rows) {
     if (!findingByDraw.has(N(f.sitewire_draw_id))) findingByDraw.set(N(f.sitewire_draw_id), f);
   }
+  // When a draw was FIRST delivered to the investor (the `with_investor` stage's time). Best-effort:
+  // the investor-delivery table is recent, and a draw never sent to an investor simply has no time.
+  const investorByDraw = new Map();
+  try {
+    for (const r of (await db.query(
+      `SELECT sitewire_draw_id, min(sent_at) AS sent_at FROM draw_investor_deliveries
+        WHERE application_id=$1 GROUP BY sitewire_draw_id`, [appId])).rows) {
+      investorByDraw.set(N(r.sitewire_draw_id), r.sent_at);
+    }
+  } catch (_) { /* no investor-delivery record → the timeline simply omits that stage's date */ }
   const drawRowById = new Map(draws.map((d) => [N(d.sitewire_draw_id), d]));
   const reqRowsByDraw = new Map();
   for (const r of requests) { const k = N(r.sitewire_draw_id); const a = reqRowsByDraw.get(k) || []; a.push(r); reqRowsByDraw.set(k, a); }
@@ -307,6 +350,22 @@ async function loadRollup(db, appId, { sowState = null } = {}) {
     d.is_final_approved = m.is_final_approved;
     d.is_released = m.is_released;
     d.net_explanation = APPROVAL.netExplanation(m);
+    // The recorded time of each ladder step, gathered from the tables that own it. `draw-timeline.js`
+    // (pure) turns this into the ordered done/current/upcoming timeline; a stage with no recorded
+    // time is shown blank, never guessed. Timestamps only — no labels — so it is audience-neutral and
+    // the borrower route can strip it (the with_investor time is never borrower-facing).
+    const dr = drawRowById.get(d.sitewire_draw_id) || {};
+    const fnd = findingByDraw.get(d.sitewire_draw_id) || null;
+    d.stage_times = {
+      submitted_at: dr.submitted_at || null,
+      delivered_at: fnd ? fnd.delivered_at : null,
+      accepted_at: fnd ? fnd.accepted_at : null,
+      disputed_at: fnd ? fnd.disputed_at : null,
+      resolved_at: fnd ? fnd.resolved_at : null,
+      investor_delivered_at: investorByDraw.get(d.sitewire_draw_id) || null,
+      approved_at: dr.approved_at || null,
+      released_at: (l && l.release_date) || null,
+    };
     if (l) feesCharged += m.fee_cents; else feesProjected += m.fee_cents;
   }
   // OUR fees on this project, kept separately from the borrower's money (owner-directed 2026-08-03:
@@ -320,7 +379,58 @@ async function loadRollup(db, appId, { sowState = null } = {}) {
     inspection_method: projected ? projected.method : null,
     overridden: projected ? projected.overridden : false,
   };
+
+  // THE BUDGET PICTURE MUST SURVIVE A FILE WITH NO LINE CROSSWALK (owner-reported 2026-08-07, on
+  // the "your draw is approved" email for 105-107 N 10th St: *"How much is the total construction
+  // budget? How much was drawn already, including this amount that was approved? What percentage
+  // was drawn already? … Include how much is still available after this draw."*).
+  //
+  // ROOT CAUSE: every project figure is summed off `sitewire_job_item_links`, so a file whose
+  // Scope of Work was never exploded into Sitewire job items — a TrustPoint-administered file, or
+  // one set up before the crosswalk existed — rolls up a budget of ZERO. `drawFacts` then omits
+  // the whole block (a row reading "Rehab budget —" is worse than none), which is why that email
+  // carried the draw's money and nothing else. The FALLBACK is not a second arithmetic path: the
+  // budget is read from `applications.rehab_budget`, which is the SAME frozen figure the crosswalk
+  // is required to sum to exactly (G-RECON), and the drawn/committed figures are summed off the
+  // per-draw money `approval.drawMoney()` already produced above — the one money source. It only
+  // ever runs when the crosswalk answered zero, so a real Sitewire-managed file is untouched.
+  if (N(rollup.project.budget) <= 0) {
+    const fb = await projectFromFileBudget(db, appId, rollup);
+    if (fb) rollup.project = Object.assign(rollup.project, fb, { budget_source: 'file' });
+  } else {
+    rollup.project.budget_source = 'crosswalk';
+  }
   return rollup;
+}
+
+/**
+ * The project's budget picture derived from the file's frozen rehab budget + the per-draw money,
+ * for a file whose line crosswalk carries no budget. Returns null (and the caller changes nothing)
+ * when the file states no rehab budget — a budget we cannot prove is never guessed at.
+ */
+async function projectFromFileBudget(db, appId, rollup) {
+  try {
+    const r = (await db.query(`SELECT rehab_budget FROM applications WHERE id=$1`, [appId])).rows[0];
+    const budget = Math.round(N(r && r.rehab_budget) * 100);
+    if (!(budget > 0)) return null;
+    let drawn = 0, exposure = 0;
+    for (const d of (rollup.draws || [])) {
+      if (d.is_released || d.is_final_approved) {
+        drawn += N(d.final_approved_cents) > 0 ? N(d.final_approved_cents) : N(d.approved_cents);
+      } else {
+        // Same rule as the per-line exposure: the inspector's figure once they have answered,
+        // the borrower's request until then.
+        exposure += N(d.approved_cents) > 0 ? N(d.approved_cents) : N(d.requested_cents);
+      }
+    }
+    const committed = drawn + exposure;
+    const pct = (a, b) => (b > 0 ? Math.round((a / b) * 1000) / 10 : 0);
+    return {
+      budget, drawn, pending_exposure: exposure, committed,
+      remaining: budget - drawn, available: budget - committed,
+      pct_complete: pct(drawn, budget), pct_committed: pct(committed, budget),
+    };
+  } catch (_) { return null; }
 }
 
 /**

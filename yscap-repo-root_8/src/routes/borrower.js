@@ -28,6 +28,7 @@ const numberBounds = require('../lib/number-bounds');     // ONE definition of e
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const pricing = require('../lib/pricing');
+const stickyOverrides = require('../lib/pricing-sticky');
 const manualProgram = require('../lib/manual-program');
 const termOpts = require('../lib/term-options');
 const workflowAuto = require('../lib/workflow-automation');
@@ -51,6 +52,8 @@ const PAYOFF_BODY_KEY = Object.freeze({
 });
 const changeRequests = require('../lib/change-requests');
 const { enqueueChecklistStatusPush } = require('../clickup/enqueue');
+const borrowerAssistant = require('../lib/borrower-assistant');
+const personName = require('../lib/person-name');
 
 router.use(requireAuth, requireBorrower);
 const me = (req) => req.actor.id;
@@ -198,6 +201,117 @@ router.get('/profile', async (req, res) => {
     out.locked = !!lk.rows[0];
   } catch (_) { out.locked = false; }
   res.json(out);
+});
+
+// ---------------- HELPER (assistant) logins ----------------
+// A borrower may authorize a HELPER with their own login — they can work the loan
+// in the portal but CANNOT see personal details or sign documents (owner-directed;
+// src/lib/borrower-assistant.js). Self-service: only the borrower manages their
+// own helpers. An assistant session (req.assistant) can never create or manage a
+// helper — that would be a privilege escalation.
+function assistantMgmtBlocked(req, res) {
+  if (req.assistant) { res.status(403).json({ error: 'A helper can’t manage other helpers — ask the borrower.' }); return true; }
+  return false;
+}
+async function emailAssistantInvite(borrowerId, email, name, token) {
+  try {
+    const b = (await db.query(`SELECT first_name, last_name, full_name FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
+    const r = await mail.send('assistantInvite', email, {
+      name, borrowerName: b ? personName.displayName(b) : null,
+      acceptUrl: mail.link('/assistant/accept?token=' + token), days: 7 });
+    return !!(r && r.ok);
+  } catch (_) { return false; }
+}
+
+router.get('/assistants', async (req, res, next) => {
+  if (assistantMgmtBlocked(req, res)) return;
+  try {
+    const r = await db.query(
+      `SELECT id, name, email, (password_hash IS NOT NULL) AS has_pw, last_login_at, created_at
+         FROM borrower_assistants WHERE borrower_id=$1 AND disabled_at IS NULL
+        ORDER BY created_at DESC`, [me(req)]);
+    res.json({ assistants: r.rows.map((a) => ({
+      id: a.id, name: a.name, email: a.email,
+      status: a.has_pw ? 'active' : 'invited',
+      lastLoginAt: a.last_login_at, createdAt: a.created_at })) });
+  } catch (e) { next(e); }
+});
+
+router.post('/assistants', async (req, res, next) => {
+  if (assistantMgmtBlocked(req, res)) return;
+  const email = String((req.body && req.body.email) || '').trim().toLowerCase();
+  const name = String((req.body && req.body.name) || '').trim().slice(0, 120) || null;
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))
+    return res.status(400).json({ error: 'Enter a valid email address for your helper.' });
+  try {
+    const token = C.randomToken(24);
+    const inviteHash = C.sha256(token);
+    // Refresh an existing invite to the SAME helper of THIS borrower; otherwise
+    // refuse an email already live as someone's helper (the partial unique index
+    // would refuse it too — answer nicely).
+    const mine = await db.query(
+      `SELECT id FROM borrower_assistants WHERE borrower_id=$1 AND lower(email)=$2 AND disabled_at IS NULL LIMIT 1`,
+      [me(req), email]);
+    let id;
+    if (mine.rows[0]) {
+      id = mine.rows[0].id;
+      await db.query(
+        `UPDATE borrower_assistants
+            SET name=COALESCE($2,name), invite_token_hash=$3,
+                invite_expires_at = now() + ($4 || ' seconds')::interval
+          WHERE id=$1`,
+        [id, name, inviteHash, String(borrowerAssistant.INVITE_TTL_SEC)]);
+    } else {
+      const clash = await db.query(
+        `SELECT 1 FROM borrower_assistants WHERE lower(email)=$1 AND disabled_at IS NULL LIMIT 1`, [email]);
+      if (clash.rows[0]) return res.status(409).json({ error: 'That email is already set up as a helper.' });
+      const ins = await db.query(
+        `INSERT INTO borrower_assistants
+           (borrower_id, email, name, invited_by_self, invite_token_hash, invite_expires_at)
+         VALUES ($1,$2,$3,true,$4, now() + ($5 || ' seconds')::interval) RETURNING id`,
+        [me(req), email, name, inviteHash, String(borrowerAssistant.INVITE_TTL_SEC)]);
+      id = ins.rows[0].id;
+    }
+    const emailed = await emailAssistantInvite(me(req), email, name, token);
+    res.status(201).json({ ok: true, id, emailed });
+  } catch (e) {
+    // A concurrent double-invite can pass the clash pre-check and then race into
+    // the partial unique index — answer the same friendly 409, not a raw 500.
+    if (e && e.code === '23505') return res.status(409).json({ error: 'That email is already set up as a helper.' });
+    next(e);
+  }
+});
+
+router.post('/assistants/:id/resend', async (req, res, next) => {
+  if (assistantMgmtBlocked(req, res)) return;
+  try {
+    const token = C.randomToken(24);
+    const r = await db.query(
+      `UPDATE borrower_assistants
+          SET invite_token_hash=$3, invite_expires_at = now() + ($4 || ' seconds')::interval
+        WHERE id=$1 AND borrower_id=$2 AND disabled_at IS NULL
+        RETURNING email, name`,
+      [req.params.id, me(req), C.sha256(token), String(borrowerAssistant.INVITE_TTL_SEC)]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    const emailed = await emailAssistantInvite(me(req), r.rows[0].email, r.rows[0].name, token);
+    res.json({ ok: true, emailed });
+  } catch (e) { next(e); }
+});
+
+router.post('/assistants/:id/disable', async (req, res, next) => {
+  if (assistantMgmtBlocked(req, res)) return;
+  try {
+    // Bumping token_version kills any live helper session immediately (authenticate
+    // re-checks it every request); clearing the invite kills any pending link.
+    const r = await db.query(
+      `UPDATE borrower_assistants
+          SET disabled_at=now(), token_version=token_version+1,
+              invite_token_hash=NULL, invite_expires_at=NULL
+        WHERE id=$1 AND borrower_id=$2 AND disabled_at IS NULL
+        RETURNING id`, [req.params.id, me(req)]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true });
+  } catch (e) { next(e); }
 });
 
 // Update the borrower's canonical profile. The client sends camelCase keys and
@@ -514,7 +628,7 @@ router.get('/applications', async (req, res) => {
 // nag here — their items wait inside the file. Borrower-SAFE: only borrower_* wording,
 // scrubbed of any capital-partner name.
 const ACTION_QUIET_STATUSES = ['funded', 'closed', 'on_hold', 'declined', 'withdrawn', 'cancelled', 'file_intake'];
-const ACTION_PKG_LABEL = { term_sheet_package: 'term sheet, application & disclosure', heter_iska: 'Heter Iska' };
+const ACTION_PKG_LABEL = { term_sheet_package: 'term sheet, application & disclosure', heter_iska: 'Heter Iska', noo_affidavit: 'non-owner-occupied certification' };
 function propLabelOf(j) {
   if (!j) return '';
   if (typeof j === 'string') return j.trim();
@@ -811,7 +925,7 @@ function stripQuoteInternal(q) {
 }
 function stripInputsInternal(inp) {
   if (!inp || typeof inp !== 'object') return inp;
-  const { markupStdPct, markupGoldPct, markupSilverPct, fico, ...rest } = inp;
+  const { markupStdPct, markupGoldPct, markupSilverPct, markupGoldT1Pct, fico, ...rest } = inp;
   return rest;
 }
 // Make a full quoteAll bundle ({inputs, standard, gold, silver}) borrower-safe.
@@ -896,6 +1010,13 @@ function borrowerPricingOverrides(raw) {
   const clamp = (v, lo, hi) => { const n = Number(v); return isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null; };
   const targetLTC = Number(raw && raw.targetLTC);
   if (isFinite(targetLTC) && targetLTC > 0) out.targetLTC = targetLTC;
+  // The Silver ladder's value-side rung. Same class as targetLTC — a voluntary
+  // REDUCTION the studio lets a borrower pick, and one the engine can only ever
+  // apply as a MIN against the cap, so it can never enlarge a loan. It is clamped
+  // to a real ratio: a tampered client sending 5 (i.e. 500%) would simply be
+  // inert, but bounding it keeps a nonsense value out of the persisted inputs.
+  const targetARLTV = Number(raw && raw.targetARLTV);
+  if (isFinite(targetARLTV) && targetARLTV > 0 && targetARLTV <= 1) out.targetARLTV = targetARLTV;
   // An explicit blank clears the reserve: pass '' through so buildInputs resolves
   // it to 0 (its blank-clears contract). Dropping the blank left the prior reserve
   // sticking, so a borrower couldn't zero it on re-register (final audit 2026-07-17).
@@ -938,7 +1059,11 @@ router.get('/applications/:id/pricing', async (req, res) => {
     const current = history.find((x) => x.is_current) || null;
     let quote = null;
     // The live what-if quote embeds adminPricing too — strip it before it leaves.
-    if (pricing.enginesReady()) { try { quote = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp)); quote.experience = f.exp; } catch (_) {} }
+    // The panel's live quote is what the borrower READS, so it is priced with the
+    // file's own carried values too — otherwise the screen advertises a loan that
+    // registering cannot produce (owner-directed 2026-08-07).
+    const effPanel = await stickyOverrides.effectiveOverrides(f.app.id, {}, db);
+    if (pricing.enginesReady()) { try { quote = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, effPanel)); quote.experience = f.exp; } catch (_) {} }
     // If the borrower's registration is a manual-review exception waiting on a
     // super-admin, surface that state so the studio shows "registered but NOT
     // confirmed — waiting for approval" on reload (not just the transient submit
@@ -969,7 +1094,10 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     const f = await loadFileForPricing(req.params.id, me(req));
     if (!f) return res.status(404).json({ error: 'not found' });
     const overrides = borrowerPricingOverrides((req.body && req.body.overrides) || {});
-    const out = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, overrides));
+    // The SAME effective overrides the register will use — a what-if that ignores
+    // what the file carries would quote a loan the register cannot produce.
+    const effQ = await stickyOverrides.effectiveOverrides(f.app.id, overrides, db);
+    const out = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, effQ));
     res.json({ ...out, experience: f.exp });
   } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
@@ -1015,7 +1143,23 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // economics here — see src/lib/pricing-overrides.js). The what-if /quote path
     // may keep them; the registered basis uses the file's experience of record.
     delete overrides.expFlips; delete overrides.expHolds; delete overrides.expGround;
-    const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    /* A STAFF-SET LOAN AMOUNT IS STICKY ACROSS A BORROWER RE-REGISTER (owner-directed
+       2026-08-06 typed loan amount). `targetLoan` lives in the studio's ADMIN zone,
+       which is removed from the DOM for a borrower — so their studio cannot show it,
+       cannot restore it, and their allowlist rightly refuses to accept one from the
+       client. The consequence, without this, is a silent way to UNDO an officer's
+       ceiling: staff register a file at a typed $500,000, the borrower opens their
+       own Products & Pricing, sees the deal at its maximum, presses Register, and the
+       file re-registers at the full amount — a bigger loan at a worse rate, with no
+       approval, no escalation and no record that a ceiling was ever removed.
+       So it is carried forward from the file's own last registration, exactly as the
+       per-file markup is (pricing.js) and for exactly the same stated reason: a
+       borrower can never reprice away the basis the file was structured at. STAFF
+       still change it freely — they can see the box, and their own door never runs
+       this. Best-effort: an unreadable prior registration must never block a
+       borrower's register, and it can only ever make the loan SMALLER. */
+    const effReg = await stickyOverrides.effectiveOverrides(f.app.id, overrides, db);
+    const inputs = pricing.buildInputs(f.app, f.exp, effReg);
     /* A refinance is sized on the as-is value, so with none on file there is no
        denominator and nothing to register (owner-directed 2026-08-02). Same
        refusal as the staff door — the studio blocks it client-side, this stops a
@@ -1075,7 +1219,20 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const submitException = !!b.submitException;
     const manualReasons = (quote.reasons || [])
       .filter((r) => r && r.level === 'MANUAL').map((r) => r.msg).filter(Boolean);
-    if (quote.status === 'MANUAL' && !submitException) {
+    // EXCEPTION STICKINESS (owner-directed 2026-08-05): if this exact exception was
+    // already approved for the file, a borrower re-register of the identical terms
+    // reuses the standing grant instead of demanding a fresh approval. A borrower can
+    // never set an override, so the only exception a borrower re-registers is a
+    // MANUAL-review one — covered only while no NEW guideline reason has appeared.
+    const wouldEscalate = manualProgram.needsSuperAdminApproval({ program, status: quote.status });
+    let exceptionCoverage = { covered: false, reason: 'not_evaluated' };
+    if (wouldEscalate) {
+      const approvedGrant = await manualProgram.latestApprovedGrant(appId).catch(() => null);
+      exceptionCoverage = manualProgram.exceptionCoveredByGrant({
+        program, status: quote.status, overrideChanges: [], loanAmount: total, manualReasons,
+      }, approvedGrant);
+    }
+    if (quote.status === 'MANUAL' && !submitException && !exceptionCoverage.covered) {
       return refuse(422, {
         error: 'exception_required',
         code: 'exception_required',
@@ -1084,7 +1241,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         exceptionRequired: true, manualReasons,
       }, 'exception_required', { program, manualReasons });
     }
-    const needsEscalation = manualProgram.needsSuperAdminApproval({ program, status: quote.status });
+    const needsEscalation = wouldEscalate && !exceptionCoverage.covered;
 
     // Superseded terms, captured before the new registration lands — so the
     // audit trail / Activity feed can say exactly what the reprice changed.
@@ -1114,6 +1271,12 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       const reg = await persistProductRegistration(client, {
         appId, program, inputs, quote, registeredByStaffId: null,
         termOptions: resolvedTermOptions,
+        // Pass the resolved escalation decision explicitly so a covered re-register of an
+        // already-approved MANUAL exception stores needs_approval=FALSE. Without it the
+        // fallback re-derives it from quote.status==='MANUAL' and writes a misleading
+        // TRUE (the issuance gate keys on the pending escalation, so it never leaked
+        // terms — but the stored flag drove the /pricing history display).
+        needsApproval: needsEscalation,
       });
       regId = reg.id;
       economicsChanged = reg.economicsChanged;
@@ -1202,7 +1365,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     try {
       const t = await db.query(`SELECT loan_officer_id, processor_id, ys_loan_number FROM applications WHERE id=$1`, [appId]);
       const row = t.rows[0] || {};
-      const rate = quote.noteRate != null ? (quote.noteRate * 100).toFixed(2) + '%' : 'n/a';
+      const rate = quote.noteRate != null ? require('../lib/rate-format').fmtRatePct(quote.noteRate) + '%' : 'n/a';
       const sz = quote.sizing || {}, ccQ = quote.closingCosts || {};
       const ctx = await notify.fileContext(appId, [
         { label: 'Registered product', value: [quote.programLabel, quote.productLabel].filter(Boolean).join(' - ') || pricing.PROGRAM_LABEL[program] },
@@ -1540,7 +1703,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
       it.tool_payload = (it.field_value === null || it.field_value === undefined) ? null : { value: it.field_value };
     }
     if (it.tool_payload && typeof it.tool_payload === 'object') {
-      const { adminPricing, markupStdPct, markupGoldPct, markupSilverPct, ...rest } = it.tool_payload; // eslint-disable-line no-unused-vars
+      const { adminPricing, markupStdPct, markupGoldPct, markupSilverPct, markupGoldT1Pct, ...rest } = it.tool_payload; // eslint-disable-line no-unused-vars
       it.tool_payload = rest;
     }
   }
@@ -1560,6 +1723,11 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
   if (!it.rows[0]) return res.status(404).json({ error: 'information item not found' });
   const item = it.rows[0];
   if (!item.field_key) return res.status(400).json({ error: 'this item is not linked to a field' });
+  // A HELPER (assistant) may answer deal/property conditions but not one that
+  // writes the borrower's own personal detail (e.g. the credit-score condition
+  // writes `borrowers.fico`) — those are the borrower's to provide.
+  if (req.assistant && borrowerAssistant.isProtectedWriteKey(item.field_key))
+    return res.status(403).json({ error: 'A helper can’t provide the borrower’s personal details (like the credit score). Ask the borrower to answer this one.' });
   if ((req.body || {}).value === undefined || req.body.value === null || req.body.value === '')
     return res.status(400).json({ error: 'a value is required' });
   /* THREE GOVERNANCES MEET AT THIS DOOR, AND THE ORDER IS THE WHOLE THING
@@ -2168,6 +2336,12 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const bid = own.rows[0].borrower_id;
   const b = req.body || {};
+  // A HELPER (assistant) may complete DEAL fields but never the borrower's own
+  // PERSONAL details (date of birth, credit score, citizenship, phone) — those
+  // are the borrower's to change, exactly as on the profile editor. One shared
+  // definition strips them so the deal fields still save; the personal ones are
+  // ignored.
+  if (req.assistant) borrowerAssistant.stripProtectedWrites(b);
   try {
     // S5-03: once a product is registered, the borrower can no longer write the
     // deal economics straight onto the live record — each proposed change becomes
@@ -2811,10 +2985,28 @@ function trackRecordCols(b) {
    `verification_status = 'pending'` next to `is_verified = true`, which every
    count reads as verified and every screen reads as pending. Staff stamp who and
    when; a new staff-entered line is pending by the column default anyway. */
+/**
+ * The "somebody entered this" stamp every track-record create carries.
+ *
+ * `verification_status` IS SET FOR EVERY KIND (2026-08-07). It used to read
+ * `if (kind === 'borrower')`, so the STAFF door got no status at all — while the comment
+ * at that call site stated it "lands pending review exactly as the borrower's does".
+ * A helper that takes the actor as an argument and then behaves differently per actor is
+ * not a shared rule; it is two rules sharing a function, and this is exactly the gap the
+ * owner reported ("staff are entering track records, since it's coming up as verified").
+ *
+ * `is_verified` is stated explicitly for the same reason: relying on the column default
+ * is right on a plain INSERT and WRONG on the create doors' `ON CONFLICT … DO UPDATE`
+ * branch, where a retried save lands on an existing — possibly already verified — row.
+ * db/485's trigger is the belt behind all of it, for every writer including the imports.
+ */
 function trackRecordEnteredCols(kind) {
-  const cols = { entered_by_kind: kind, entered_at: new Date().toISOString() };
-  if (kind === 'borrower') cols.verification_status = 'pending';
-  return cols;
+  return {
+    entered_by_kind: kind,
+    entered_at: new Date().toISOString(),
+    verification_status: 'pending',
+    is_verified: false,
+  };
 }
 router.post('/track-records', async (req, res) => {
   const b = req.body || {};
@@ -3146,6 +3338,25 @@ router.post('/documents', async (req, res) => {
   if (b.llcId) { try { await llcLib.syncLlcConditions(b.llcId); } catch (_) { /* best-effort */ } }
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename });
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
+
+  // EVERY APPRAISAL XML FEEDS THE RESEARCH WAREHOUSE (owner-directed 2026-08-04,
+  // db/462). This door had NO appraisal detection whatsoever, so a borrower attaching
+  // the appraiser's data file — which is exactly what many of them do, because it came
+  // in the same email as the PDF — filed the bytes and threw every comparable sale in
+  // it away. Nothing about the LOAN FILE changes: the catch writes only into the
+  // research warehouse, never an appraisal row, a condition, a finding or a value.
+  // `uploadedByStaffId` is null and must stay null — the actor here is a borrower, and
+  // `research_imports.uploaded_by` points at the staff roster.
+  require('../lib/research/xml-catch').fireCatch({
+    bytes: buf, filename: b.filename, contentType: b.contentType,
+    documentId: r.rows[0].id, uploadedByStaffId: null,
+    // UNTRUSTED PROVENANCE. The report's property facts land exactly as they do from
+    // any other door — a comparable sale that happened, happened. What a borrower's
+    // file may not do is REWRITE the shared, every-staff-user appraiser roster, which
+    // until now only staff could write to. See ingest.upsertAppraiser's `fillOnly`.
+    untrusted: true,
+    why: 'a loan file (borrower upload)',
+  });
   // Live cross-user refresh (#112): a doc answering a track-record line-item
   // request lands on the line — staff viewing it reload to see the new evidence.
   if (trackRecordId) require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
@@ -3383,13 +3594,15 @@ router.get('/messages', async (req, res) => {
   }
   // Opening the thread clears the "new message" badge for staff replies —
   // legacy read_at plus the new per-member watermark (035).
-  // NOT inside a borrower view (owner-directed 2026-07-26): a staffer opening
-  // the thread to see what the borrower sees must not mark the borrower's
-  // messages as READ — that would tell the rest of the team the borrower has
-  // seen a reply they have never opened, and clear the borrower's own unread
-  // badge from under them. Everything is still DISPLAYED identically; only the
+  // NOT inside a borrower view (owner-directed 2026-07-26) OR a borrower's
+  // assistant (#15): a staffer or a helper opening the thread to see what the
+  // borrower sees must not mark the borrower's messages as READ — that would
+  // tell the rest of the team the borrower has seen a reply they have never
+  // opened, and clear the borrower's own unread badge from under them. The
+  // assistant mirrors borrower-view's "never corrupt borrower state" rule, so
+  // it is skipped here too. Everything is still DISPLAYED identically; only the
   // receipt write is skipped.
-  if (req.query.applicationId && !req.impersonation) {
+  if (req.query.applicationId && !req.impersonation && !req.assistant) {
     await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND borrower_id=$2 AND sender_kind='staff' AND read_at IS NULL`,
       [req.query.applicationId, me(req)]);
     try {
@@ -3833,6 +4046,12 @@ router.post('/drafts/:id/submit', async (req, res) => {
   if (d.rows[0].submitted_application_id)
     return res.status(409).json({ error: 'already submitted', applicationId: d.rows[0].submitted_application_id });
   const b = { ...(d.rows[0].data || {}), ...(req.body || {}) };
+  // A HELPER (assistant) may submit a draft to help create the file, but the
+  // borrower's own personal identity must not ride in on it — the submit syncs
+  // those onto the profile (fill-only). Strip them from the merged body (the
+  // top-level SSN and the nested `personal` block); the deal/property fields
+  // still submit. The borrower fills their own personal details.
+  if (req.assistant) { borrowerAssistant.stripProtectedWrites(b); if (b.personal) borrowerAssistant.stripProtectedWrites(b.personal); }
   if (!b.propertyAddress) return res.status(400).json({ error: 'propertyAddress required' });
   /* A number too big for its column is a bad request, not a 500 (see
      fields.applicationNumberProblem). This is the door the audit reproduced it

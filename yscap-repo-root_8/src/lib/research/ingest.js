@@ -85,7 +85,15 @@ const ID = require('./identity');
 //     `design_style`. Without this bump every stored observation keeps
 //     `identity_basis` NULL, which scores 0 in `identityRank` and collapses the
 //     new best-sourced roll-up back into plain recency on the whole back book.
-const INGEST_VERSION = 5;
+// 6 — a comparable with a thin address is no longer DROPPED (see
+//     `fileComparableProperty`): a comp missing only its town borrows the subject's,
+//     and one with no house number is kept for review. Without this bump the whole
+//     back book keeps the comparable sales it already over-dropped — which is the
+//     owner's actual complaint ("way too many skipped") — so the boot back-fill
+//     must re-ingest every report to salvage them (re-ingest retires + re-files, so
+//     it is idempotent and self-draining). Manual uploads do not store their bytes,
+//     so those are healed by re-dropping the same files (idempotent on the sha).
+const INGEST_VERSION = 6;
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -330,7 +338,18 @@ const AS_IS_ONLY = new Set([
  * Upsert the appraiser who signed this report and record every contact detail it
  * carries. Returns the appraiser id, or null when the report names nobody.
  */
-async function upsertAppraiser(db, a) {
+/**
+ * @param {object} [opts]
+ * @param {boolean} [opts.fillOnly]  the report's provenance is UNTRUSTED (db/462) — it
+ *   may CREATE an appraiser and FILL a column nobody has filled, and it may never
+ *   OVERWRITE one. `appraisers` is a shared, cross-file, every-staff-user roster, and
+ *   since every XML entering PILOT feeds this warehouse, a BORROWER's uploaded file
+ *   reaches it. Without this a borrower could rewrite a real appraiser's company,
+ *   phone and email for the whole company by attaching one document — measured. The
+ *   report still lands: its comparables, its sales and its observations are facts
+ *   about property, which is what the warehouse is for.
+ */
+async function upsertAppraiser(db, a, opts = {}) {
   const identity = ID.appraiserIdentity({
     name: a.appraiser_name, company: a.appraiser_company,
     licenseId: a.license_id, licenseState: a.license_state,
@@ -348,7 +367,10 @@ async function upsertAppraiser(db, a) {
   const existing = (await db.query(
     `SELECT id, last_report_date FROM appraisers WHERE identity_key = $1`, [identity.key])).rows[0];
   const prevDate = existing ? dateOnly(existing.last_report_date) : null;
-  const newer = !existing || !prevDate || (reportDate && reportDate >= prevDate);
+  // `fillOnly` forces this false: every scalar below is then COALESCE-guarded against
+  // the value already on the row, so an untrusted report can add but never replace.
+  const newer = !opts.fillOnly
+    && (!existing || !prevDate || (reportDate && reportDate >= prevDate));
 
   const vals = [identity.key, name, identity.nameKey, txt(a.appraiser_company), identity.companyKey,
     txt(a.appraiser_phone), txt(a.appraiser_email), txt(a.appraiser_company_address),
@@ -452,10 +474,19 @@ async function recountAppraiser(db, appraiserId) {
 // ---------------------------------------------------------------------------
 // PROPERTY
 // ---------------------------------------------------------------------------
-/** Upsert the property for an address. Returns its id, or null when unidentifiable. */
-async function upsertProperty(db, parts, extra = {}) {
-  const key = K.propertyKey(parts);
+/**
+ * Upsert the property for an address. Returns its id, or null when unidentifiable.
+ *
+ * `opts.keyOverride` files a comparable we could NOT identify from its address
+ * under a caller-supplied, per-report key (see `fileComparableProperty`) — the
+ * strict null check is skipped and the row is flagged `needs_review` so the search
+ * keeps it out of the way. A normal call (no override) is byte-for-byte unchanged.
+ */
+async function upsertProperty(db, parts, extra = {}, opts = {}) {
+  const key = opts.keyOverride || K.propertyKey(parts);
   if (!key) return null;
+  const needsReview = !!opts.needsReview;
+  const reviewReason = needsReview ? (txt(opts.reviewReason) || 'address incomplete') : null;
   const p = K.normalizeParts(parts);
   const display = K.displayAddress(parts);
 
@@ -470,7 +501,9 @@ async function upsertProperty(db, parts, extra = {}) {
   //
   // Best-effort: if the lookup fails the ordinary upsert still runs, so a
   // database blip can never stop a report being filed.
-  try {
+  // An override (kept-for-review) key is per-report and is never a merge target,
+  // so the lookup is meaningless for it — skip it.
+  if (!opts.keyOverride) try {
     const m = (await db.query(
       `SELECT survivor_id FROM property_merges WHERE merged_key = $1
         ORDER BY created_at DESC LIMIT 1`, [key])).rows[0];
@@ -494,8 +527,8 @@ async function upsertProperty(db, parts, extra = {}) {
   } catch (e) { /* fall through to the ordinary upsert */ }
   const r = await db.query(
     `INSERT INTO properties (address_key, display_address, street, unit, city, state, zip, county, apn,
-                             first_seen_at, last_seen_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now(), now())
+                             needs_review, review_reason, first_seen_at, last_seen_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now(), now())
      ON CONFLICT (address_key) DO UPDATE SET
        -- The address columns are FILL-ONLY: a later report that omits the ZIP or
        -- the county must never blank one we already learned.
@@ -504,11 +537,75 @@ async function upsertProperty(db, parts, extra = {}) {
        zip    = COALESCE(properties.zip, EXCLUDED.zip),
        county = COALESCE(properties.county, EXCLUDED.county),
        apn    = COALESCE(properties.apn, EXCLUDED.apn),
+       -- The review flag is set only by an override key, whose namespace is
+       -- disjoint from every strict key — so a normal upsert can never touch it.
+       needs_review  = EXCLUDED.needs_review,
+       review_reason = EXCLUDED.review_reason,
        last_seen_at = now(), updated_at = now()
      RETURNING id`,
     [key, display, p.street || null, p.unit || null, K.titleCity(p.city) || null,
-     p.state || null, p.zip || null, txt(extra.county) || p.county || null, txt(extra.apn)]);
+     p.state || null, p.zip || null, txt(extra.county) || p.county || null, txt(extra.apn),
+     needsReview, reviewReason]);
   return r.rows[0].id;
+}
+
+/**
+ * FILE A COMPARABLE'S PROPERTY — keeping the sale even when the address is thin.
+ *
+ * The report CHOSE this sale as a comparable, so it is a real transaction worth
+ * recording even when the appraiser wrote a short address. Three tiers, tried in
+ * order, so the strict identity of a full address is never weakened:
+ *
+ *   1. STRICT — a full address keys and folds exactly as it always has. No flag.
+ *   2. TOWN BORROWED — a comp that named a house number and street but no town or
+ *      ZIP is, by the very definition of a comparable, near the subject, so it
+ *      takes the subject's town and keys as a NORMAL property (folding with the
+ *      real one if we already hold it). This is the fix for the over-skipping the
+ *      owner reported: a comp with no town AND no ZIP used to be dropped outright.
+ *   3. KEPT FOR REVIEW — a comp we still cannot identify (no house number) is NOT
+ *      dropped: it is filed as its OWN row, flagged `needs_review` so the ordinary
+ *      comparable search leaves it out, keyed PER REPORT so two of them never
+ *      collide and a re-import updates it in place instead of piling up.
+ *
+ * Only a comp with no street text at all is truly skipped — there is nothing to
+ * file. Returns `{ pid, kind, why, missing }`: `kind` is null (strict),
+ * 'inherited_town' or 'needs_review'; `pid` is null only on a true skip.
+ */
+async function fileComparableProperty(db, { parts, subject = {}, reportId = null, seq = null, extra = {} }) {
+  const strict = await upsertProperty(db, parts, extra);
+  if (strict) return { pid: strict, kind: null };
+
+  const problem = K.keyProblem(parts);
+
+  // Tier 2 — borrow the subject's town when the town is the ONLY thing missing.
+  if (problem && problem.missing === 'locality' && (txt(subject.city) || txt(subject.zip))) {
+    const borrowed = Object.assign({}, parts, {
+      fallbackCity: txt(subject.city) || txt(parts.fallbackCity) || null,
+      zip: txt(parts.zip) || txt(subject.zip) || null,
+    });
+    const pid = await upsertProperty(db, borrowed, extra);
+    if (pid) {
+      return { pid, kind: 'inherited_town',
+        why: 'the report gave no town for this comparable, so the subject property’s town was used' };
+    }
+  }
+
+  // Tier 3 — keep it for review rather than drop it, as long as there is a street
+  // to show and a report to key it to.
+  if (txt(parts.street) && reportId) {
+    const reviewKey = `review:${reportId}:${seq == null ? 'x' : seq}`;
+    const pid = await upsertProperty(db, parts, extra,
+      { keyOverride: reviewKey, needsReview: true, reviewReason: problem ? problem.reason : 'address incomplete' });
+    if (pid) {
+      return { pid, kind: 'needs_review',
+        why: problem ? problem.reason : 'the address could not be fully identified',
+        missing: problem ? problem.missing : null };
+    }
+  }
+
+  return { pid: null, kind: null,
+    why: problem ? problem.reason : 'the report wrote no address for this comparable',
+    missing: problem ? problem.missing : null };
 }
 
 /**
@@ -1481,7 +1578,7 @@ function digits(v) {
  * @param {string} appraisalId
  */
 async function ingestAppraisal(db, appraisalId) {
-  const out = { ok: false, appraisalId, properties: 0, observations: 0, sales: 0, photos: 0, skipped: [], error: null };
+  const out = { ok: false, appraisalId, properties: 0, observations: 0, sales: 0, photos: 0, skipped: [], salvaged: [], error: null };
   if (!appraisalId) { out.error = 'appraisalId required'; return out; }
   try {
     const a = (await db.query(`SELECT * FROM appraisals WHERE id = $1`, [appraisalId])).rows[0];
@@ -1596,7 +1693,7 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
   const appraisalId = link.appraisalId || null;
   const importId = link.importId || null;
 
-  const appraiserId = await upsertAppraiser(db, a);
+  const appraiserId = await upsertAppraiser(db, a, { fillOnly: !!(link && link.untrusted) });
   out.appraiserId = appraiserId;
   if (appraiserId && appraisalId) {
     await db.query(`UPDATE appraisals SET appraiser_id = $2 WHERE id = $1`, [appraisalId, appraiserId]);
@@ -1935,14 +2032,34 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
     const inheritedCity = K._internals.zip5(c.zip)
       && K._internals.zip5(c.zip) === K._internals.zip5(a.subject_zip)
       ? txt(a.subject_city) : null;
-    const pid = await upsertProperty(db, {
+    const compParts = {
       street: c.address, city: txt(c.city), fallbackCity: inheritedCity,
       state: c.state || a.subject_state, zip: c.zip,
+    };
+    // KEEP THE SALE unless the address is truly unusable — borrow the subject's
+    // town for a comp that named none, and file a comp we still cannot identify as
+    // its own kept-for-review row rather than dropping it (see fileComparableProperty).
+    const statedAddress = [txt(c.address), txt(c.city), txt(c.state), txt(c.zip)].filter(Boolean).join(', ') || txt(c.address);
+    const filed = await fileComparableProperty(db, {
+      parts: compParts,
+      subject: { city: a.subject_city, zip: a.subject_zip, state: a.subject_state },
+      reportId: appraisalId || importId, seq: c.seq,
     });
+    const pid = filed.pid;
     if (!pid) {
-      out.skipped.push({ role: 'comparable', seq: c.seq, address: txt(c.address),
-        why: 'the report did not write enough of this address to identify the property (needs a house number, a state, and a city or ZIP)' });
+      // SAY WHICH PIECE IS MISSING, not just "we could not use this address": a
+      // reviewer opens the appraisal and sees exactly what the appraiser left off
+      // the grid, with the full stated address shown verbatim.
+      out.skipped.push({ role: 'comparable', seq: c.seq, address: statedAddress,
+        missing: filed.missing || null,
+        why: filed.why || 'the report did not write enough of this address to identify the property (needs a house number, a state, and a town or ZIP)' });
       continue;
+    }
+    if (filed.kind) {
+      // KEPT, not lost — record what we did so the screen can reassure the owner
+      // rather than let a fixed comp read as a dropped one.
+      (out.salvaged || (out.salvaged = [])).push({ role: 'comparable', seq: c.seq,
+        address: statedAddress, kind: filed.kind, missing: filed.missing || null, why: filed.why });
     }
     touched.add(pid);
     out.properties++;
@@ -2044,7 +2161,11 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
     out.observations++;
     // The adjustment lines as rows (db/440) — the market benchmark's raw material.
     // Its own savepoint: a derived index must never fail the ingest that feeds it.
-    await bestEffort(db, 'adj_rows', async () => {
+    // A KEPT-FOR-REVIEW comp (unverifiable address) must never price the market:
+    // adjustmentRate/adjustmentBenchmark read property_adjustments directly (no join
+    // to properties), so its lines are simply not written. A town-borrowed comp is a
+    // normal property and does feed the benchmark, like any other.
+    if (filed.kind !== 'needs_review') await bestEffort(db, 'adj_rows', async () => {
       // ONE definition of where and when, shared with the back-fill — see
       // `adjustmentPlaceAndDate`. Deriving them here independently is what made
       // the two writers disagree on 15,909 of 17,431 rows.
@@ -2109,14 +2230,29 @@ async function writeReport(db, { a, comps, rentals, link, out }) {
       const rentInheritedCity = K._internals.zip5(rc.zip)
         && K._internals.zip5(rc.zip) === K._internals.zip5(a.subject_zip)
         ? txt(a.subject_city) : null;
-      const pid = await upsertProperty(db, {
+      const rentParts = {
         street: rc.address, city: txt(rc.city), fallbackCity: rentInheritedCity,
         state: txt(rc.state) || a.subject_state, zip: rc.zip,
+      };
+      // Same salvage path as a sales comparable — borrow the subject's town, or
+      // keep it for review, rather than drop a rent comp for a thin address.
+      const rentStated = [txt(rc.address), txt(rc.city), txt(rc.state), txt(rc.zip)].filter(Boolean).join(', ') || txt(rc.address);
+      const rfiled = await fileComparableProperty(db, {
+        parts: rentParts,
+        subject: { city: a.subject_city, zip: a.subject_zip, state: a.subject_state },
+        reportId: appraisalId || importId, seq: `r${txt(rc.seq) || ''}`,
       });
+      const pid = rfiled.pid;
       if (!pid) {
-        out.skipped.push({ role: 'rental_comparable', seq: txt(rc.seq), address: txt(rc.address),
-          why: 'the rent schedule did not write enough of this address to identify the property (needs a house number, a state, and a city or ZIP)' });
+        out.skipped.push({ role: 'rental_comparable', seq: txt(rc.seq), address: rentStated,
+          missing: rfiled.missing || null,
+          why: rfiled.why ? `${rfiled.why} (rent-schedule comparable)`
+            : 'the rent schedule did not write enough of this address to identify the property (needs a house number, a state, and a town or ZIP)' });
         return false;
+      }
+      if (rfiled.kind) {
+        (out.salvaged || (out.salvaged = [])).push({ role: 'rental_comparable', seq: txt(rc.seq),
+          address: rentStated, kind: rfiled.kind, missing: rfiled.missing || null, why: rfiled.why });
       }
       touched.add(pid);
       await upsertObservation(db, {
@@ -2577,7 +2713,9 @@ async function ingestStatus(db) {
     `SELECT (SELECT count(*)::int FROM appraisals) AS appraisals,
             (SELECT count(*)::int FROM property_ingest_log WHERE status='ok' AND ingest_version >= $1) AS ingested,
             (SELECT count(*)::int FROM property_ingest_log WHERE status='error') AS failed,
-            (SELECT count(*)::int FROM properties) AS properties,
+            -- Searchable properties only, so "warehouse size" matches what a search
+            -- over the same corpus returns (kept-for-review rows are excluded there).
+            (SELECT count(*)::int FROM properties WHERE needs_review = false) AS properties,
             (SELECT count(*)::int FROM property_observations) AS observations,
             (SELECT count(*)::int FROM property_sales) AS sales,
             (SELECT count(*)::int FROM appraisers) AS appraisers`, [INGEST_VERSION]);

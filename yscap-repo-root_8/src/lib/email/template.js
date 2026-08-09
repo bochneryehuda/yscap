@@ -101,6 +101,10 @@ function brandHeader() {
  *          meta[{label,value}], cta{label,url}, note, replyable, audience })
  *   -> { subject, html, text }
  *
+ * heading     — the big in-body H1 (and the plaintext headline). Defaults to `title`;
+ *               set it to decouple the visible headline from the SUBJECT — e.g. on a
+ *               threaded chain where every message shares one subject but each says
+ *               what it is about.
  * subjectTag  — a short file identifier (e.g. "YS-1042 · 123 Main St") appended
  *               to the SUBJECT line (never to the in-body H1) so the recipient
  *               sees WHICH file the email is about straight from their inbox.
@@ -113,6 +117,14 @@ function brandHeader() {
 function render(p) {
   p = p || {};
   var title    = p.title || 'Notification';
+  // The big in-body headline (the H1). Defaults to `title`, so every existing caller is
+  // byte-identical — but a caller may set it INDEPENDENTLY of `title` when the two must
+  // differ. The one place that needs this is a threaded chain: every message keeps ONE
+  // subject (derived from `title`, below) so it stays on the conversation, while the H1
+  // says what THAT particular message is actually about (owner-directed 2026-08-05:
+  // a closing-date update on the closing chain should not headline "File ready for
+  // closing prep").
+  var heading  = (p.heading != null && String(p.heading).trim()) ? String(p.heading).trim() : title;
   var subjectTag = (p.subjectTag != null && String(p.subjectTag).trim()) ? String(p.subjectTag).trim() : '';
   var kicker   = (p.kicker != null && String(p.kicker).trim()) ? String(p.kicker).trim() : '';
   var pre      = p.preheader || p.intro || title;
@@ -139,6 +151,40 @@ function render(p) {
   var figures  = (p.figures && p.figures.primary && p.figures.primary.value) ? p.figures : null;
   // The facts that belong to THIS event rather than to the file. {rows:[{label,value}], progress}
   var facts    = (p.facts && ((Array.isArray(p.facts.rows) && p.facts.rows.length) || p.facts.progress)) ? p.facts : null;
+  // A CHANGE LEDGER — "what is different from the standard", one row per moved value, each showing
+  // what it WAS and what it is BEING ASKED FOR. Owner-directed 2026-08-07, on the pricing-override
+  // and manual-product approval emails: *"this email is so [confusing] I can't even see what they
+  // want from me… What exactly is the exception request for? Nicely laid out."* Those emails were
+  // packing every change into one run-on sentence ("Rate markup / YSP — Gold: 0.4% → 0%; Rate
+  // markup / YSP — Silver: 0.4% → 0.5%; Origination points — Standard: 1.25% → 1%; …"), which is
+  // unreadable at exactly the moment somebody has to make an approve/decline decision.
+  // {title, rows:[{label, from, to, note}], note}
+  var changes  = (p.changes && Array.isArray(p.changes.rows) && p.changes.rows.length) ? p.changes : null;
+  // A LIST — the files/items an email is about, one row each, with their own columns. A digest that
+  // says "7 files in your Workflow are overdue" and then makes the reader go and find out WHICH is
+  // not a notification, it is a chore (owner-directed 2026-08-07).
+  // {title, head:[…], rows:[[…]], note, align:[…]}
+  var table    = (p.table && Array.isArray(p.table.rows) && p.table.rows.length) ? p.table : null;
+  // SEVERAL lists in one email. Owner-directed 2026-08-07: *"nicely design every workflow
+  // separately"* — a person who holds two different queues (a processor's hand-offs and a draw
+  // coordinator's) is doing two different jobs, and one merged list forces them to sort it out
+  // themselves. `tables` is the plural of `table`; a caller may pass either, and both render in
+  // order. Each entry is its OWN card with its own heading and its own columns, because two
+  // queues rarely want the same columns.
+  var tables   = []
+    .concat(table ? [table] : [])
+    .concat(Array.isArray(p.tables) ? p.tables.filter(function (t) {
+      return t && Array.isArray(t.rows) && t.rows.length;
+    }) : []);
+  // THE EARLIER CONVERSATION, quoted the way every mail client quotes — a
+  // `gmail_quote` container that clients render as the little three-dots "show
+  // trimmed content" control instead of pages of visible text (owner-reported
+  // 2026-08-07: "it has every reply in the bottom in lines… it shouldn't sound so
+  // outdated with all this text from all the previous emails"). NOTHING IS DROPPED:
+  // the history still travels, indented and quiet, one click from the reply. Built
+  // by lib/email/quote.js, which owns the markup so this template and the inbound
+  // parser agree on what a quote container is. {attribution, body}
+  var quoted   = (p.quoted && p.quoted.body && String(p.quoted.body).trim()) ? p.quoted : null;
 
   /* ---------------- STATUS PILL ---------------- */
   function pill(b) {
@@ -218,6 +264,99 @@ function render(p) {
       out += '<tr><td style="padding:2px 20px 18px;">' + meter(fx.progress) + '</td></tr>';
     }
     out += '</table>';
+    return out;
+  }
+
+  /* ---------------- CHANGE LEDGER (what is different, and from what) ----------------
+     One row per moved value: the label, then the standard it moved OFF (quiet, struck through)
+     and the value being ASKED FOR (bold, in the accent). The arrow between them is a real text
+     character in its own cell, never a background image or a pseudo-element — Outlook renders
+     neither. Each row is its own table row with a hairline above, so a long label wraps under
+     itself instead of pushing the values off the card. */
+  function changeBox(c) {
+    var t = tone(c.tone || 'gold');
+    var rows = c.rows.filter(function (r) { return r && r.label; });
+    var out = '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:6px 0 20px;border:1px solid ' + BRAND.line + ';border-radius:12px;background:' + BRAND.card + ';">' +
+      '<tr><td style="padding:16px 20px 6px;">';
+    out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:' + BRAND.gold + ';margin:0 0 4px;">' +
+      esc(c.title || 'What is being changed') + '</div>';
+    if (c.subtitle) {
+      out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:12.5px;line-height:1.5;color:' + BRAND.muted + ';margin:0 0 6px;">' + esc(c.subtitle) + '</div>';
+    }
+    out += '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' + rows.map(function (r, i) {
+      var bt = i === 0 ? '' : 'border-top:1px solid ' + BRAND.line + ';';
+      var hasFrom = r.from != null && r.from !== '';
+      var hasTo = r.to != null && r.to !== '';
+      var valueCells = '';
+      if (hasFrom || hasTo) {
+        valueCells =
+          '<table role="presentation" cellpadding="0" cellspacing="0" style="margin:5px 0 0;"><tr>' +
+            (hasFrom
+              ? '<td style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:' + BRAND.soft2 + ';text-decoration:line-through;white-space:nowrap;">' + esc(r.from) + '</td>' +
+                '<td style="padding:0 9px;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:' + BRAND.soft2 + ';">&rarr;</td>'
+              : '') +
+            (hasTo
+              ? '<td style="font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:700;color:' + t.fg + ';white-space:nowrap;">' + esc(r.to) + '</td>'
+              : '') +
+          '</tr></table>';
+      }
+      return '<tr><td style="' + bt + 'padding:11px 0;">' +
+        '<div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.45;color:' + BRAND.ink + ';font-weight:600;">' + esc(r.label) + '</div>' +
+        valueCells +
+        (r.note ? '<div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.5;color:' + BRAND.muted + ';margin:5px 0 0;">' + esc(r.note) + '</div>' : '') +
+      '</td></tr>';
+    }).join('') + '</table>';
+    out += '</td></tr>';
+    if (c.note) {
+      out += '<tr><td style="padding:0 20px 16px;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.5;color:' + BRAND.muted + ';">' + esc(c.note) + '</td></tr>';
+    } else {
+      out += '<tr><td style="padding:0 20px 10px;font-size:0;line-height:0;">&nbsp;</td></tr>';
+    }
+    out += '</table>';
+    return out;
+  }
+
+  /* ---------------- LIST TABLE (the items this email is actually about) ----------------
+     A plain bordered table. Deliberately NOT scrollable and NOT more than a handful of columns:
+     an email body is ~520px of usable width on a phone, so a caller that needs six columns should
+     be sending three and a link. The first column carries the identity (the property, the file) at
+     full ink; the rest are secondary. Long cells WRAP — never `nowrap`, which is what makes a
+     table push a phone body sideways. */
+  function listTable(tb) {
+    var head = Array.isArray(tb.head) ? tb.head : [];
+    var align = Array.isArray(tb.align) ? tb.align : [];
+    var cellAlign = function (i) { return align[i] === 'right' ? 'right' : 'left'; };
+    var out = '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:6px 0 20px;border:1px solid ' + BRAND.line + ';border-radius:12px;background:' + BRAND.card + ';">' +
+      '<tr><td style="padding:16px 18px 14px;">';
+    if (tb.title) {
+      out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:' + BRAND.gold + ';margin:0 0 ' + (tb.subtitle ? '4px' : '10px') + ';">' + esc(tb.title) + '</div>';
+    }
+    // What this particular queue IS — the line that makes two lists in one email read as two
+    // different jobs rather than one list that was arbitrarily split.
+    if (tb.subtitle) {
+      out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:12.5px;line-height:1.5;color:' + BRAND.muted + ';margin:0 0 10px;">' + esc(tb.subtitle) + '</div>';
+    }
+    out += '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">';
+    if (head.length) {
+      out += '<tr>' + head.map(function (h, i) {
+        return '<td align="' + cellAlign(i) + '" style="padding:0 8px 7px 0;font-family:Arial,Helvetica,sans-serif;font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:' + BRAND.muted + ';border-bottom:1px solid ' + BRAND.line + ';">' + esc(h) + '</td>';
+      }).join('') + '</tr>';
+    }
+    out += tb.rows.map(function (r) {
+      var cells = Array.isArray(r) ? r : [r];
+      return '<tr>' + cells.map(function (v, i) {
+        var first = i === 0;
+        return '<td align="' + cellAlign(i) + '" valign="top" style="padding:10px 8px 10px 0;border-top:1px solid ' + BRAND.line + ';' +
+          'font-family:Arial,Helvetica,sans-serif;font-size:' + (first ? '13px' : '12.5px') + ';line-height:1.45;' +
+          'color:' + (first ? BRAND.ink : BRAND.muted) + ';font-weight:' + (first ? '700' : '400') + ';">' +
+          esc(v == null ? '' : v) + '</td>';
+      }).join('') + '</tr>';
+    }).join('');
+    out += '</table>';
+    if (tb.note) {
+      out += '<div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.5;color:' + BRAND.muted + ';margin:12px 0 0;">' + esc(tb.note) + '</div>';
+    }
+    out += '</td></tr></table>';
     return out;
   }
 
@@ -424,6 +563,20 @@ function render(p) {
       '</table>'
     : '';
 
+  /* ---------------- THE QUOTED EARLIER CONVERSATION ----------------
+     Rendered LAST in the content cell, which is where a client's trimming heuristic
+     expects a quote container to sit — that is what turns it into the three-dots
+     control rather than a wall of text. The markup itself comes from
+     lib/email/quote.js so this template and the inbound parser can never disagree
+     about what a quote container looks like. Escaping happens there too: this is
+     text an outside party sent us. */
+  var quotedHtml = quoted
+    ? '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:20px 0 0;">' +
+        '<tr><td style="padding-top:14px;border-top:1px solid ' + BRAND.line + ';">' +
+          require('./quote').quoteBlockHtml(quoted.attribution || '', quoted.body) +
+        '</td></tr></table>'
+    : '';
+
   var greetHtml = greeting
     ? '<p style="margin:0 0 14px;font-family:Arial,Helvetica,sans-serif;font-size:15px;' +
       'color:' + BRAND.ink + ';">' + esc(greeting) + '</p>'
@@ -460,6 +613,8 @@ function render(p) {
   var heroHtml     = hero ? heroBand(hero) : '';
   var figuresHtml  = figures ? figureBand(figures) : '';
   var factsHtml    = facts ? factsBox(facts) : '';
+  var changesHtml  = changes ? changeBox(changes) : '';
+  var tableHtml    = tables.map(function (t) { return listTable(t); }).join('');
   var sections = Array.isArray(p.sections) ? p.sections.filter(function (s) { return s && (s.title || s.body); }) : [];
   var sectionsHtml = sections.length ? sectionBlocks(sections) : '';
   var stepsHtml    = steps.length ? stepper(steps) : '';
@@ -492,10 +647,13 @@ function render(p) {
           eyebrowHtml +
           heroHtml +
           '<h1 style="margin:0 0 16px;font-family:Georgia,\'Times New Roman\',serif;font-size:23px;' +
-            'line-height:1.28;font-weight:700;color:' + BRAND.ink + ';">' + esc(title) + '</h1>' +
+            'line-height:1.28;font-weight:700;color:' + BRAND.ink + ';">' + esc(heading) + '</h1>' +
           // figures then facts, both ABOVE the generic file meta: the money is the answer, the
           // draw's own details are the supporting read, and the file identity block is reference.
-          greetHtml + body + figuresHtml + factsHtml + sectionsHtml + stepsHtml + progressHtml + calloutHtml + codeHtml + metaHtml + officerHtml + filesHtml + ctaHtml + noteHtml +
+          // `quotedHtml` stays LAST, after everything this message itself says: it is the EARLIER
+          // conversation, and a mail client collapses it behind the three dots only when it is the
+          // tail of the body. `changesHtml`/`tableHtml` sit with the facts — they are this message.
+          greetHtml + body + figuresHtml + factsHtml + changesHtml + tableHtml + sectionsHtml + stepsHtml + progressHtml + calloutHtml + codeHtml + metaHtml + officerHtml + filesHtml + ctaHtml + noteHtml + quotedHtml +
         '</td></tr>' +
         /* footer */
         '<tr><td style="padding:22px 34px 26px;background:' + BRAND.soft + ';border-top:1px solid ' + BRAND.line + ';">' +
@@ -536,7 +694,9 @@ function render(p) {
   // and keeps only what the recipient typed.
   var t = [];
   if (marker) t.push(marker, '');
-  t.push('PILOT · by YS Capital', '', title, '');
+  // The plaintext body headline mirrors the HTML H1 (`heading`), not the subject —
+  // otherwise a chain update would read one thing in HTML and another in text/plain.
+  t.push('PILOT · by YS Capital', '', heading, '');
   if (greeting) t.push(greeting, '');
   if (intro) t.push(intro, '');
   lines.forEach(function (l) { t.push(l, ''); });
@@ -567,6 +727,34 @@ function render(p) {
     }
     t.push('');
   }
+  // The change ledger and the list table MUST survive text/plain — on an approval email the
+  // ledger IS the decision, and a reader on a plaintext client would otherwise be asked to
+  // approve something the email never states. Same defect the callout had.
+  if (changes) {
+    t.push(String(changes.title || 'What is being changed').toUpperCase());
+    if (changes.subtitle) t.push(changes.subtitle);
+    changes.rows.forEach(function (r) {
+      if (!r || !r.label) return;
+      var from = (r.from != null && r.from !== '') ? String(r.from) : null;
+      var to = (r.to != null && r.to !== '') ? String(r.to) : null;
+      var val = from && to ? (from + ' -> ' + to) : (to || from || '');
+      t.push('  ' + r.label + (val ? ': ' + val : ''));
+      if (r.note) t.push('    ' + r.note);
+    });
+    if (changes.note) t.push(changes.note);
+    t.push('');
+  }
+  tables.forEach(function (tb) {
+    if (tb.title) t.push(String(tb.title).toUpperCase());
+    if (tb.subtitle) t.push(tb.subtitle);
+    if (Array.isArray(tb.head) && tb.head.length) t.push('  ' + tb.head.join(' | '));
+    tb.rows.forEach(function (r) {
+      var cells = Array.isArray(r) ? r : [r];
+      t.push('  ' + cells.map(function (v) { return v == null ? '' : String(v); }).join(' | '));
+    });
+    if (tb.note) t.push(tb.note);
+    t.push('');
+  });
   sections.forEach(function (s) {
     if (s.title) t.push(String(s.title).toUpperCase());
     (Array.isArray(s.body) ? s.body : (s.body ? [s.body] : [])).forEach(function (b) { t.push(b); });
@@ -591,6 +779,15 @@ function render(p) {
   if (note) t.push(note, '');
   if (replyable) t.push('You can reply directly to this email to reach your '
     + (p.audience === 'borrower' ? 'loan team.' : 'YS Capital team.'), '');
+  // The quoted history, `>`-prefixed — the plaintext form of the same container. A
+  // reader on a text-only client must not lose the conversation just because their
+  // client cannot draw the three dots.
+  if (quoted) {
+    if (quoted.attribution) t.push(String(quoted.attribution));
+    String(quoted.body).replace(/\r\n/g, '\n').split('\n').slice(0, 400)
+      .forEach(function (l) { t.push('> ' + l); });
+    t.push('');
+  }
   t.push('—', COMPANY.name + ' · NMLS #' + COMPANY.nmls, COMPANY.phone + ' · ' + COMPANY.email + ' · yscapgroup.com');
 
   // Subject carries the file tag ("<title> · <loan# · borrower · property>") so

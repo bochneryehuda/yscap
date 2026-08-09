@@ -171,6 +171,53 @@ async function testStandardize() {
   ok(b.zip5 === '08701' && b.zip4 === '' && b.zip === '08701', 'a 5-digit-only ZIP leaves +4 empty');
 }
 
+// ── 3d. explainError: raw failure → plain language + technical detail ──────
+{
+  // Every branch keeps the raw detail AND says what to do in plain words.
+  const timeout = V.explainError('The operation was aborted');
+  ok(/in time|slow moment/i.test(timeout.reason) && timeout.retryable === true, 'a timeout reads as a slow moment, retryable — got ' + timeout.reason);
+  ok(timeout.technical === 'The operation was aborted', 'the raw detail is kept for "exactly why"');
+
+  const badAddr = V.explainError('USPS 400: {"error":"Invalid address"}');
+  ok(/could not read this address/i.test(badAddr.reason) && badAddr.retryable === false, 'a 400 reads as a bad address, not retryable — got ' + badAddr.reason);
+
+  const notFound = V.explainError('USPS 404: not found');
+  ok(/no record of this exact address/i.test(notFound.reason), 'a 404 reads as address not found — got ' + notFound.reason);
+
+  const auth = V.explainError('USPS token 401: unauthorized');
+  ok(/sign-in|credentials|keys/i.test(auth.reason) && auth.retryable === false, 'a token/401 reads as a sign-in problem, not the address — got ' + auth.reason);
+
+  // THE OWNER'S ACTUAL ERROR: a RESOURCE 403 (sign-in worked, the address lookup is
+  // forbidden) must read as an authorization/license problem on USPS's side, NOT as
+  // "keys expired" — that is the whole point of splitting it from the token case.
+  const forbidden = V.explainError('USPS 403: { "apiVersion": "/addresses/v3/", "error": { "code": "403", "message": "The requested resource is forbidden" } }');
+  ok(/not authorized|licen|Business Portal|403/i.test(forbidden.reason) && forbidden.retryable === false,
+    'a resource 403 reads as a USPS authorization/license problem — got ' + forbidden.reason);
+  ok(!/expired/i.test(forbidden.reason), 'a resource 403 does NOT claim the keys expired (that is the sign-in case)');
+  ok(/sign in|signed us in|let us sign in|log/i.test(forbidden.reason), 'a resource 403 says the sign-in worked but the lookup was forbidden');
+  ok(forbidden.technical.includes('/addresses/v3/'), 'the full USPS 403 body is kept as the technical detail');
+
+  const rate = V.explainError('USPS 429: too many requests');
+  ok(/hourly lookup limit/i.test(rate.reason) && rate.retryable === true, 'a 429 reads as the hourly limit — got ' + rate.reason);
+
+  // A RESOURCE error whose BODY happens to contain the word "token" must NOT be
+  // misread as a sign-in failure — only the "USPS token …" prefix means sign-in.
+  const bodyToken = V.explainError('USPS 429: {"message":"rate limit token bucket exhausted"}');
+  ok(/hourly lookup limit/i.test(bodyToken.reason), 'a 429 whose body says "token" still reads as the rate limit, not a sign-in problem — got ' + bodyToken.reason);
+
+  const down = V.explainError('USPS 503: service unavailable');
+  ok(/temporary problem on their end/i.test(down.reason) && down.retryable === true, 'a 5xx reads as a temporary USPS problem — got ' + down.reason);
+
+  const net = V.explainError('fetch failed: ECONNREFUSED');
+  ok(/could not reach USPS/i.test(net.reason), 'a network error reads as unreachable — got ' + net.reason);
+
+  const blank = V.explainError('');
+  ok(/did not say why|try again/i.test(blank.reason) && blank.technical === '', 'an empty detail still gives a plain sentence');
+
+  const long = V.explainError('x'.repeat(600));
+  ok(long.technical.length === 400, 'the technical detail is capped at 400 chars — got ' + long.technical.length);
+}
+
 // ── 4. backfill componentsOf reads every stored shape ──────────────────────
 {
   const a = backfill.componentsOf({ line1: '26 S 10th St', city: 'Brooklyn', state: 'NY', zip: '11249' });

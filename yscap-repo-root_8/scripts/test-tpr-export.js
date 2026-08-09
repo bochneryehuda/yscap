@@ -106,6 +106,11 @@ async function main() {
     const dProfile = await doc('photo-id.pdf', { borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'staff_upload' });
     const dCoProfile = await doc('co-photo-id.pdf', { borrower_id: CB, review_status: 'accepted', is_current: true, source_type: 'staff_upload' });
     const dPriorZip = await doc('TPR_old.zip', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'system', doc_kind: 'tpr_export', visibility: 'internal' });
+    // The draw-packet Excel is a staff-only construction-draw financials artifact —
+    // it mirrors to SharePoint but must NEVER ship in the investor TPR data-tape
+    // (nor, via the shared selector, the closing-attorney package). doc_kind is in
+    // the NOT-IN exclusion in step with sharepoint-backup.isRegenKind.
+    const dDrawPacket = await doc('pilot-draw-1-packet-YS123-abcdef012345.xlsx', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'system', doc_kind: 'draw_packet', visibility: 'staff_only', content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     // Scope-of-Work tool exports (branded PDF + Excel + HTML). The main selection
     // drops every '*_export' kind; the PDF + Excel must nonetheless land in the
     // Scope of Work folder, and the HTML must NOT ship (owner-directed 2026-07-30).
@@ -145,6 +150,7 @@ async function main() {
     ok(!got.has(dChat), 'excluded: chat attachment');
     ok(!got.has(dIska), 'excluded: tpr_exclude item doc (ISKA stays out)');
     ok(!got.has(dPriorZip), 'excluded: prior TPR export zip (no recursion)');
+    ok(!got.has(dDrawPacket), 'excluded: draw-packet Excel (staff-only draw financials never ship to the investor)');
     ok(!got.has(dTrSnap), 'excluded: autosaved track-record snapshot artifact');
     ok(!got.has(dTrDoc), 'excluded from subject set: track-record doc (ships via track section)');
     ok(!got.has(dIskaSigned), 'FREEZE: signed Heter Iska excluded (doc_kind heter_iska_signed)');

@@ -458,6 +458,18 @@ async function decide(client, id, decision = {}) {
     }
   } catch (_) { /* ledger is additive — never blocks a human's decision */ }
 
+  // Retire the `ai_fatal_finding` notification when a human SETTLES the finding
+  // (owner-reported 2026-08-06). A no-op for a non-fatal suggestion (only fatal
+  // findings ever wrote a notification) and for a NON-settling move (escalate /
+  // mark-important / ask-admin keep the notification — the finding still needs
+  // handling). Best-effort — never blocks the decision.
+  try {
+    const notif = require('./ai-finding-notify');
+    if (notif.SETTLED_STATUSES.includes(newStatus)) {
+      await notif.retireForSuggestions(c, cur.application_id, [id]);
+    }
+  } catch (_) { /* additive */ }
+
   // R3.42 — a suggestion the human dismissed / converted / noted / signed off in
   // ANY terminal way no longer needs the super-admin's answer. Auto-close every
   // still-open ai_admin_questions row that references this suggestion, marking

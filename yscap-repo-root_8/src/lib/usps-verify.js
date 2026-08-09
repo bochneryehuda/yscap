@@ -229,7 +229,10 @@ async function standardize(addressInput, opts = {}) {
     result = await usps.verifyAddress({ street: input.line1, secondary: input.unit, city: input.city, state: input.state, zip: input.zip });
   } catch (e) {
     // A hard USPS failure is NOT cached (so it re-tries next time) and never breaks the caller.
-    return { ...base, status: 'error', detail: String(e && e.message || e).slice(0, 200) };
+    // Keep the whole USPS message (400, matching integrations/usps.js) so the reason at the
+    // END of a longer body survives to explainError + the screen — a 200 slice here was the
+    // last place still cutting it off.
+    return { ...base, status: 'error', detail: String(e && e.message || e).slice(0, 400) };
   }
   const c = classify(input, result);
   const out = { ...base, status: c.status, address: c.address, dpv: c.dpv, changed: c.changed };
@@ -239,6 +242,78 @@ async function standardize(addressInput, opts = {}) {
 
 // Test hook: clear the in-process rate window (so a test can assert the cap fires).
 function _resetRateWindow() { hits.length = 0; }
+
+/**
+ * TURN A RAW USPS FAILURE INTO PLAIN LANGUAGE — and keep the technical detail.
+ *
+ * When a live lookup fails, `standardize()` returns `{ status:'error', detail }`
+ * where `detail` is the raw error (a "USPS 400: …" body, a token failure, a
+ * timeout). The generic "try again in a moment" that used to reach the screen
+ * told a non-developer nothing, so they could not tell a slow moment on USPS's
+ * side (retry) from a wrong ZIP (fix the address) from expired keys (call an
+ * admin). This classifies the raw detail into one plain sentence the owner can
+ * act on, and returns the technical detail alongside it so "we can see exactly
+ * why" is answerable.
+ *
+ * WHY THE HEALTH PAGE CAN STILL BE GREEN: the API Health check only proves the
+ * USPS SIGN-IN works (an OAuth token). The address lookup is a different call
+ * that can fail on its own — a USPS 400/404 for this specific address, a USPS
+ * 5xx, or a timeout — so "USPS looks healthy" and "this lookup failed" are not a
+ * contradiction. The auth-error branch below is the one case where the sign-in
+ * itself is the problem.
+ *
+ * PURE + unit-testable. Returns { reason, technical, retryable }.
+ */
+function explainError(detail) {
+  const raw = String(detail == null ? '' : detail).trim();
+  const low = raw.toLowerCase();
+  let reason;
+  let retryable = true;
+  const m = /usps(?:\s+token)?\s+(\d{3})/i.exec(raw);   // "USPS 400: …" / "USPS token 401: …"
+  const code = m ? Number(m[1]) : null;
+  // The failure is at the SIGN-IN step, not the address lookup. Match the "USPS token …"
+  // PREFIX that getToken() mints — never a bare "token" that might appear inside a resource
+  // error's body (e.g. a rate-limit message), which would misclassify a lookup error as a
+  // sign-in error.
+  const isToken = /^\s*usps token\b/i.test(raw);
+  if (!raw) {
+    reason = 'USPS could not verify this address right now, and did not say why. Try again in a moment.';
+  } else if (/abort|timed out|timeout|etimedout|operation was aborted/.test(low)) {
+    reason = 'USPS did not answer in time (we wait about 10 seconds, then give up). This is usually a slow moment on USPS’s side — try again in a moment.';
+  } else if (isToken || code === 401) {
+    // The SIGN-IN itself failed — bad/expired/revoked keys. (An expired key fails
+    // here, never on the address lookup, so a resource 403 below is a different thing.)
+    reason = 'USPS rejected our sign-in to their system — the USPS keys may be wrong, expired, or turned off. This is not about the address; an admin needs to check the USPS credentials.';
+    retryable = false;
+  } else if (code === 403) {
+    // AUTHORIZED SIGN-IN, FORBIDDEN LOOKUP. The keys logged in fine (which is why the
+    // API-health page can look green), but this USPS account is not licensed to use
+    // the Address-verification service — USPS made the Addresses API license mandatory
+    // in 2026 and enforces it with a 403. This is a USPS ACCOUNT SETTING, not the
+    // address and not our code: the fix is on USPS's side (add the Addresses API
+    // license + accept its terms). See docs/USPS-ADDRESS-VERIFICATION.md (Troubleshooting).
+    reason = 'USPS let us sign in but will not allow the address lookup (a “403 — not authorized”). '
+      + 'This USPS account isn’t licensed for the address-verification service. It’s a one-time setting on '
+      + 'USPS’s side — add the Addresses API license to the account and accept its terms in the USPS '
+      + 'Business Portal. It is not about the address, and re-trying won’t change it.';
+    retryable = false;
+  } else if (code === 400 || code === 422) {
+    reason = 'USPS could not read this address. Check the street, city, state and ZIP for a typo or a missing piece, then verify again.';
+    retryable = false;
+  } else if (code === 404) {
+    reason = 'USPS has no record of this exact address. Double-check the house number, street and ZIP, then verify again.';
+    retryable = false;
+  } else if (code === 429) {
+    reason = 'USPS’s hourly lookup limit was reached. Wait a few minutes, then try again.';
+  } else if (code && code >= 500) {
+    reason = 'USPS is having a temporary problem on their end. Try again in a little while.';
+  } else if (/enotfound|econnrefused|econnreset|network|fetch failed|getaddrinfo|socket/.test(low)) {
+    reason = 'We could not reach USPS just now (a network hiccup). Try again in a moment.';
+  } else {
+    reason = 'USPS could not verify this address right now. Try again in a moment.';
+  }
+  return { reason, technical: raw.slice(0, 400), retryable };
+}
 
 /**
  * Return the address that is safe to send to a financing counterparty.
@@ -262,5 +337,5 @@ function preferredFinancingAddress(app = {}) {
 
 module.exports = {
   configured, standardize, classify, toCanonical, pickDpv, deliverability, normInput, hashInput,
-  preferredFinancingAddress, _resetRateWindow,
+  preferredFinancingAddress, explainError, _resetRateWindow,
 };

@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<script src="../theme.js?v=n7"></script>
-<script src="../brand.js?v=n3"></script>
+<script src="../theme.js?v=tsprog1"></script>
+<script src="../brand.js?v=tsprog1"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>YS Term Sheet Studio — A Signable Fix &amp; Flip Term Sheet in About a Minute</title>
 <meta name="description" content="Build a signable YS Capital preliminary term sheet for fix & flip, bridge, and ground-up deals in about a minute: loan structure, fees, cash to close, liquidity and eligibility — instantly.">
@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../suite.css?v=pilot3">
+<link rel="stylesheet" href="../suite.css?v=tsprog1">
 <!-- This tool is WHITE-FIRST always (owner-directed): it must match the portal it
      embeds into (Products & Pricing / Term Sheet Studio), so we force the light
      theme before first paint regardless of any stale saved 'dark' preference. The
@@ -683,7 +683,11 @@
                     <div class="field"><label for="tsYspGold">Gold (%)</label><div class="input"><input id="tsYspGold" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0.5"></div></div>
                     <div class="field"><label for="tsYspSilver">Silver (%, max 1.00)</label><div class="input"><input id="tsYspSilver" data-noshare type="number" inputmode="decimal" step="0.05" min="0" max="1" placeholder="0.5"></div></div>
                 </div>
-                <p class="ts-admin-mnote">Gold’s top-experience tier — Fix&nbsp;&amp;&nbsp;Flip / Bridge with 10+ deals, or Ground-up with 8+ — always prices at <strong>zero markup</strong>, regardless of the Gold value above. Enter <strong>0</strong> to waive the markup entirely; leave a field blank to use the 0.5% default. On the <strong>Silver</strong> program the note buyer’s buy rate is floored at the note rate minus 1.00 point — markup above 1.00% is never earned, so the Silver markup is <strong>hard-capped at 1.00%</strong> (a larger value prices exactly as 1.00%).
+                <div class="ts-admin-group">Gold top tier — manual markup</div>
+                <div class="ts-admin-grid2">
+                    <div class="field"><label for="tsYspGoldT1">Gold top tier (%)</label><div class="input"><input id="tsYspGoldT1" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0 (no markup)"></div></div>
+                </div>
+                <p class="ts-admin-mnote">Gold’s top-experience tier — Fix&nbsp;&amp;&nbsp;Flip / Bridge with 10+ deals, or Ground-up with 8+ — <strong>normally carries no markup (0%)</strong>. To add one for <em>this file</em>, type it in <strong>Gold top tier</strong> above; leave it blank to keep the top tier at zero. The <strong>Gold (%)</strong> field applies to every other Gold tier. For company-wide markup per tier across all programs, use the <strong>Pricing Admin Center</strong>. Enter <strong>0</strong> in any field to waive that markup entirely; leave a field blank to use the 0.5% default. On the <strong>Silver</strong> program the note buyer’s buy rate is floored at the note rate minus 1.00 point — markup above 1.00% is never earned, so the Silver markup is <strong>hard-capped at 1.00%</strong> (a larger value prices exactly as 1.00%).
 
                 <div class="ts-admin-group">Origination points</div>
                 <div class="ts-admin-grid2">
@@ -715,6 +719,16 @@
                     <div class="field"><label for="tsOopRehab">Out-of-pocket rehab ($)</label><div class="input"><span class="adorn">$</span><input id="tsOopRehab" data-noshare type="text" inputmode="numeric" placeholder="0"></div></div>
                 </div>
                 <p class="ts-admin-mnote">Off by default — all rehab is financed. Any amount here (or the toggle above) needs the same admin approval as any pricing override. The total loan, rate and every cap stay the same; the amount is capped at the maximum shown, and the initial advance never exceeds its own cap.</p>
+
+                <div class="ts-admin-group">Loan amount <span class="ts-admin-note">— type an exact amount</span></div>
+                <div class="ts-admin-grid2">
+                    <!-- The ladder rung the file was REGISTERED at, handed back by the portal so a
+                         reopened file re-registers the same loan it was signed at rather than
+                         jumping to the maximum. Adopted once by adoptLadderPick(), then blanked. -->
+                    <input id="tsLadderPick" data-noshare type="hidden">
+                    <div class="field"><label for="tsTargetLoan">Loan amount ($)</label><div class="input"><span class="adorn">$</span><input id="tsTargetLoan" data-noshare type="text" inputmode="numeric" placeholder="maximum"></div></div>
+                </div>
+                <p class="ts-admin-mnote" id="tsTargetLoanHint">Blank = the deal's maximum. A <strong>smaller</strong> amount is simply taking less: no approval needed, exactly like a step on the pricing ladder. The construction budget stays fully financed and the reduction comes off the initial advance. To go <strong>above</strong> the maximum, set the basis below (LTV / LTC / ARV) — that is an exception and goes to an admin for approval.</p>
 
                 <div class="ts-admin-group">Manual scenario <span class="ts-admin-note">— set the basis yourself</span></div>
                 <label class="ts-admin-check"><input type="checkbox" id="tsManualOn" data-noshare> Price as a manual scenario (admin-set basis)</label>
@@ -912,7 +926,13 @@
                 <div class="ts-line"><span class="k">Appraisal (est.)</span><span class="v" id="rAppr">$800 POC</span></div>
                 <div class="ts-line"><span class="k">Title / escrow (est.)<span class="tip" tabindex="0" role="note" aria-label="A rough estimate only, used to approximate your cash to close — your actual title cost depends on your title vendor. It scales with the loan amount, your state and the transaction type (transfer and mortgage taxes are separate).">i<span class="tip-bub">A rough estimate only, used to approximate your cash to close — your actual title cost depends on your title vendor. It scales with the loan amount, your state and the transaction type (transfer and mortgage taxes are separate).</span></span></span><span class="v" id="rTitle">—</span></div>
                 <div class="ts-line" id="rExtraWrap" style="display:none"><span class="k" id="rExtraLbl">Additional fees</span><span class="v" id="rExtra">—</span></div>
-                <div class="ts-line"><span class="k">Down payment<span class="tip" tabindex="0" role="note" aria-label="The part of the purchase price the loan doesn’t cover — your cash in the deal, or “skin in the game.”">i<span class="tip-bub">The part of the purchase price the loan doesn’t cover — your cash in the deal, or “skin in the game.”</span></span></span><span class="v" id="rDown">$0</span></div>
+                <!-- REFINANCE reconciliation (rate-and-term only): the existing loan
+                     payoff the borrower brings, less the funds that advance at closing,
+                     so the fee list adds up to the cash-to-close total. Shown by the JS
+                     only on a rate-and-term refi with a payoff (owner-directed 2026-08-04). -->
+                <div class="ts-line" id="rRefiPayoffWrap" style="display:none"><span class="k">Existing loan payoff</span><span class="v" id="rRefiPayoff">—</span></div>
+                <div class="ts-line" id="rRefiAdvWrap" style="display:none"><span class="k">Less funds advanced at closing (initial advance)</span><span class="v" id="rRefiAdv">—</span></div>
+                <div class="ts-line" id="rDownWrap"><span class="k">Down payment<span class="tip" tabindex="0" role="note" aria-label="The part of the purchase price the loan doesn’t cover — your cash in the deal, or “skin in the game.”">i<span class="tip-bub">The part of the purchase price the loan doesn’t cover — your cash in the deal, or “skin in the game.”</span></span></span><span class="v" id="rDown">$0</span></div>
             </div>
             <div class="ts-line em gold"><span class="k">Estimated cash to close<span class="tip" tabindex="0" role="note" aria-label="What you actually bring to the closing table — your down payment plus closing fees, including the estimated title and escrow charge.">i<span class="tip-bub">What you actually bring to the closing table — your down payment plus closing fees, including the estimated title and escrow charge.</span></span></span><span class="v" id="rCash">$0</span></div>
             <div class="ts-line"><span class="k">Estimated liquidity to show<span class="tip" tabindex="0" role="note" aria-label="Cash reserves you need to show you have on hand to carry the project. This is demonstrated, not money brought to closing.">i<span class="tip-bub">Cash reserves you need to show you have on hand to carry the project. This is demonstrated, not money brought to closing.</span></span></span><span class="v" id="rLiquidity">$0</span></div>
@@ -990,12 +1010,12 @@
 </footer>
 </main>
 
-<script src="../suite.js?v=admin8"></script>
-<script src="rb-logo.js?v=admin8"></script>
-<script src="standard-program.js?v=asgseller18-asgelig"></script>
-<script src="gold-standard.js?v=asgseller19"></script>
-<script src="silver-program.js?v=silver9-bandeps"></script>
-<script src="title-cost.js?v=admin8"></script>
+<script src="../suite.js?v=tsprog1"></script>
+<script src="rb-logo.js?v=tsprog1"></script>
+<script src="standard-program.js?v=tsprog1"></script>
+<script src="gold-standard.js?v=tsprog1"></script>
+<script src="silver-program.js?v=tsprog1"></script>
+<script src="title-cost.js?v=tsprog1"></script>
 <!-- Where the numbers come from (issue #7). Loads AFTER the engines on purpose:
      with the switch off it installs nothing and the four engines above are what
      the page uses, exactly as before; with ?engine=server (or YS_ENGINE_SOURCE)
@@ -1133,9 +1153,9 @@
 }
 </style>
 
-<script src="address-autocomplete.js?v=admin9"></script>
-<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1"></script>
-<script src="../float-actions.js?v=admin10-applyfix"></script>
+<script src="address-autocomplete.js?v=tsprog1"></script>
+<script src="termsheet.js?v=tsprog1-propline1"></script>
+<script src="../float-actions.js?v=tsprog1"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr
    typeahead the loan application and rehab budget use — suggestions from our own
@@ -1183,6 +1203,17 @@
     if (v.propAddr) out.v.pStreet = v.propAddr;
     if (v.propState) out.v.pState = v.propState;
     if (!refi && v.price) out.v.price = s(v.price);
+    // THE PAYOFF TRAVELS WITH THE REFINANCE (owner-directed). The borrower typed the
+    // payoff that drove the cash-to-them figure they were quoted here — carry it (and
+    // who/which loan when the studio has them) into the application so it opens
+    // pre-filled instead of asking again, matching the borrower-portal and staff
+    // new-file hand-offs. The field ids are the same on both tools (payoff /
+    // payoffLender / payoffLoanNo). Refinance-only.
+    if (refi) {
+      if (v.payoff) out.v.payoff = s(v.payoff);
+      if (v.payoffLender) out.v.payoffLender = v.payoffLender;
+      if (v.payoffLoanNo) out.v.payoffLoanNo = v.payoffLoanNo;
+    }
     if (c.isAssign) { out.c.isAssign = true; if (v.origPrice) out.v.origPrice = s(v.origPrice); }
     if (v.asIs) out.v.asIs = s(v.asIs);
     if (v.arv) out.v.arv = s(v.arv);
@@ -1196,6 +1227,28 @@
     if (v.expGround) out.v.expGround = s(v.expGround);
     if (v.borrowerName) { out.v.b1First = firstWord(v.borrowerName); out.v.b1Last = restWords(v.borrowerName); }
     if (v.entityName) { out.c.vestEntity = true; out.v.eName = v.entityName; }
+    /* THE PRODUCT THEY CHOSE TRAVELS TOO (owner-directed 2026-08-06: "it should
+       come with all the registered details when he started the application — it
+       should feed automatically into the products and pricing that he'd
+       chosen"). Everything above is the DEAL; this is the ELECTION, and without
+       it the application arrived with no idea which of the four cards was open,
+       so the file could not register itself and the team re-picked by hand.
+
+       Read from the active program CARD rather than from collectState(), for two
+       reasons: the elected program is not an input, so it is not in that state at
+       all; and the card class is exactly how the portal's own studio reader
+       determines it (TermSheetStudio readSnapshot), so the marketing site and the
+       portal can never disagree about which product is showing.
+
+       MANUAL is deliberately NOT carried. A manual basis is an admin, approval-
+       bearing product; it must never register itself off a public form. Leaving
+       it out means such an application simply arrives unregistered, which is
+       exactly today's behaviour. */
+    try {
+      var card = function (id) { var e = document.getElementById(id); return !!(e && e.classList.contains("pcard-active")); };
+      var prog = card("pcardGold") ? "gold" : card("pcardSilver") ? "silver" : card("pcardStd") ? "standard" : "";
+      if (prog) out.v.tsProgram = prog;
+    } catch (_) { /* no election carried — the application still opens pre-filled */ }
     return out;
   }
   function go(e) {

@@ -26,24 +26,28 @@ const { preferBorough, osmComponentsToAddress, compactFormattedAddress } = ADDR;
 // small TTL cache + a min-interval throttle (Nominatim asks for <=1 req/sec)
 const cache = new Map();
 const TTL = 5 * 60 * 1000;
-function cget(k) { const v = cache.get(k); if (v && Date.now() - v.at < TTL) return v.val; if (v) cache.delete(k); return null; }
-function cset(k, val) { cache.set(k, { at: Date.now(), val }); if (cache.size > 2000) cache.delete(cache.keys().next().value); }
-let osmChain = Promise.resolve(); let osmLast = 0;
-function osmThrottle(fn) {
-  // Serialize calls ~1.1s apart (Nominatim asks for <=1 req/sec). The promise
-  // returned to the caller carries fn()'s success/failure, but the internal
-  // `osmChain` gate must always RESOLVE — a rejection propagating into it would
-  // make every future call chain off a rejected promise, permanently breaking
-  // address autocomplete until the process restarted.
-  const run = osmChain.then(async () => {
-    const wait = 1100 - (Date.now() - osmLast);
-    if (wait > 0) await new Promise(r => setTimeout(r, wait));
-    osmLast = Date.now();
-    return fn();
-  });
-  osmChain = run.then(() => {}, () => {});   // gate swallows the outcome; never carries a rejection forward
-  return run;
-}
+function cget(k) { const v = cache.get(k); if (v && Date.now() - v.at < (v.ttl || TTL)) return v.val; if (v) cache.delete(k); return null; }
+// `ttl` is per entry: a coordinate does not move, but "nobody could place it" is
+// often a service having a bad minute, and pinning that for the full window means
+// a person who retries is answered by a cache rather than by a lookup.
+function cset(k, val, ttl) { cache.set(k, { at: Date.now(), val, ttl }); if (cache.size > 2000) cache.delete(cache.keys().next().value); }
+// Nominatim asks for at most 1 request/second — for the PROCESS, not per module.
+// The clock is SHARED with the research geocoder and the ClickUp canonicaliser
+// (`lib/osm-gate`): each of the three used to keep its own, so any two running
+// together could fire twice inside one second while every one of them looked
+// correct in isolation. The gate never carries a rejection forward — a failed
+// lookup poisoning the chain would break address autocomplete until restart.
+const OSM = require('../lib/osm-gate');
+const osmThrottle = OSM.osmRun;
+/* HOW LONG SOMEBODY WILL WAIT FOR A SUGGESTION BEFORE IT IS NOT A SUGGESTION.
+ * Past this, answering with nothing is kinder than a spinner: the field still
+ * works as plain typing, which is what it does when the provider is down. */
+const SUGGEST_MAX_WAIT_MS = 2500;
+/* EVERY QUERY VALUE IS COERCED, AT EVERY DOOR. Express's extended query parser
+ * turns `?q[x]=1` into an OBJECT; `String(obj)` is "[object Object]", which is
+ * three characters long and therefore spent a real provider request and a slot of
+ * OpenStreetMap's process-wide budget on garbage. A non-string is not a query. */
+const qstr = (v) => (typeof v === 'string' ? v.trim() : '');
 
 async function fetchJson(url, opts = {}) {
   const ac = new AbortController();
@@ -76,7 +80,19 @@ async function osmSuggest(q) {
     // suggestion copies the label into the field, and that is one of the ways
     // the long "…, Kings County, New York, 11249, United States" form got into
     // files in the first place (2026-07-26).
-    return { id: 'osm:' + r.place_id, label: cleanLabel(address) || compactFormattedAddress(r.display_name), address };
+    const out = { id: 'osm:' + r.place_id, label: cleanLabel(address) || compactFormattedAddress(r.display_name), address };
+    // THE POSITION RIDES ALONG FREE. Nominatim's search response already carries
+    // lat/lon on every row, and a screen that wants to run a distance search from
+    // the address needs it — so throwing it away meant a second lookup (or, as
+    // the owner found, a half-mile search with nothing to measure from). Only an
+    // answer that actually placed the HOUSE is carried: a road-level match puts
+    // every house on the street at one point, which is worse than no position.
+    const house = r.address && (r.address.house_number || r.address.housenumber);
+    const lat = Number(r.lat), lng = Number(r.lon);
+    if (house && Number.isFinite(lat) && Number.isFinite(lng)) {
+      out.position = { lat, lng, source: 'osm', precision: 'address' };
+    }
+    return out;
   });
 }
 
@@ -121,7 +137,7 @@ async function smartySuggest(q) {
 }
 
 router.get('/suggest', async (req, res) => {
-  const q = String(req.query.q || '').trim();
+  const q = qstr(req.query.q);
   res.set('Cache-Control', 'public, max-age=60');
   if (q.length < 3) return res.json({ provider: cfg.addressProvider, suggestions: [] });
   const key = cfg.addressProvider + ':' + q.toLowerCase();
@@ -131,7 +147,14 @@ router.get('/suggest', async (req, res) => {
     let suggestions = [];
     if (cfg.addressProvider === 'google' && cfg.googlePlacesKey) suggestions = await googleSuggest(q);
     else if (cfg.addressProvider === 'smarty' && cfg.smartyAuthId) suggestions = await smartySuggest(q);
-    else suggestions = await osmSuggest(q);
+    else if (OSM.osmWouldWait() > SUGGEST_MAX_WAIT_MS) {
+      // A BACKGROUND SWEEP MUST NOT MAKE SOMEBODY'S TYPING STALL. OpenStreetMap's
+      // one-per-second limit is per process and correctly shared, but that means a
+      // 25-address backfill tick parks ~27 seconds in front of the next keystroke.
+      // Not cached: this is about this moment, not about this address.
+      res.set('Cache-Control', 'no-store');
+      return res.json({ provider: cfg.addressProvider, suggestions: [], busy: true });
+    } else suggestions = await osmSuggest(q);
     cset(key, suggestions);
     res.json({ provider: cfg.addressProvider, suggestions });
   } catch (e) {
@@ -141,7 +164,7 @@ router.get('/suggest', async (req, res) => {
 });
 
 router.get('/details', async (req, res) => {
-  const id = String(req.query.id || '');
+  const id = qstr(req.query.id);
   try {
     if (id.startsWith('g:')) return res.json({ address: await googleDetails(id.slice(2)) });
     // osm/smarty embed the address in /suggest, so /details is only needed for
@@ -153,7 +176,141 @@ router.get('/details', async (req, res) => {
 // Parse a free-text address into components (manual entry, imports, etc.).
 router.get('/parse', (req, res) => {
   res.set('Cache-Control', 'public, max-age=300');
-  res.json({ address: parseAddress(String(req.query.q || '')) });
+  res.json({ address: parseAddress(qstr(req.query.q)) });
+});
+
+/**
+ * WHERE IS THIS ADDRESS? — the position, so a distance search can actually run.
+ *
+ * The owner reported that a half-mile search "comes up properties from different
+ * states". It did: the search measures from a point, the typed subject had no
+ * point, and a radius with nothing to measure from is unanswerable (the search
+ * now refuses instead of quietly answering with the country). This endpoint is
+ * the other half of that fix — it gives a typed address the position the radius
+ * needs, so the search can be answered rather than refused.
+ *
+ * KEYLESS SOURCES ONLY, AND THAT IS A RULE, NOT A COST SAVING. Google Maps
+ * Platform caps a stored latitude/longitude at 30 days unless the cache belongs
+ * to a single end user, and a shared comparable warehouse is not that — so a
+ * Google coordinate can never be written into this system (the full comparison,
+ * with the terms quoted, is in docs/research/GEOCODING-DISTANCE-VENDOR-RESEARCH.md).
+ * Google may SUGGEST the address; the coordinate always comes from the US Census
+ * geocoder (a federal service, no key, no term on the answer) or OpenStreetMap.
+ * That way a position from this endpoint is safe to store anywhere, and nothing
+ * downstream has to know which provider the address came from.
+ *
+ * IT GOES THROUGH `geocodeProperty`, NOT THE PROVIDERS DIRECTLY — and that is the
+ * whole safety of it. Calling `census()`/`osm()` here would have skipped the two
+ * refusals written after the 2026-07-28 Piscataway incident, both of which live
+ * inside that function:
+ *
+ *   · `geocodeRewriteIsSafe` — a geocoder answers a DIFFERENT HOUSE rather than
+ *     admit it cannot find yours. Verified live: Census answers "26 S 10th St,
+ *     Piscataway NJ" with "26 10TH ST" — the directional dropped, a different
+ *     street, `precision: 'address'`, full confidence. Adopting that pin puts the
+ *     subject on the wrong street and every distance measured from it is wrong
+ *     WITHOUT LOOKING WRONG, which is precisely the class this endpoint exists to
+ *     close, re-armed one layer up.
+ *   · "A STATE IS NOT A PLACE" — "26 S 10th St, NJ" has a house number and a
+ *     state and still names nothing; there are dozens of them and both services
+ *     will happily return the first. `addressLine` refuses it; a bare length
+ *     check does not.
+ *
+ * So the components are handed over as COMPONENTS and that function decides what
+ * is lookup-able. Its refusals already carry a plain-language reason.
+ */
+const RG = require('../lib/research/geocode');
+
+/* THE PUBLIC DOOR GETS ITS OWN QUEUE, AND IT SHEDS RATHER THAN GROWS.
+ *
+ * `/api/address/*` is public and unauthenticated (it backs the marketing loan
+ * application), rate-limited only per IP. A position lookup can cost a second or
+ * more of OpenStreetMap's process-wide one-per-second budget, so running it on
+ * the SAME chain as `/suggest` meant a burst from one visitor queued behind
+ * itself and stalled the address autocomplete for everybody — measured at 67 ms
+ * on an empty chain against 10,989 ms behind ten queued lookups, and the backlog
+ * grows without bound because the arrival rate can exceed the drain rate.
+ *
+ * Two separate limits, because they answer different questions: how many of these
+ * may be in flight at once (`POS_MAX_INFLIGHT`), and how many may be WAITING
+ * (`POS_MAX_QUEUE`). Past the queue limit the request is answered immediately
+ * with no position — which is a truthful answer this endpoint already has to be
+ * able to give, and infinitely better than a queue that never drains. */
+const POS_MAX_INFLIGHT = 2;
+const POS_MAX_QUEUE = 8;
+let posInflight = 0, posQueued = 0;
+const posBusy = () => posQueued >= POS_MAX_QUEUE;
+async function posSlot(fn) {
+  posQueued++;
+  try {
+    while (posInflight >= POS_MAX_INFLIGHT) await new Promise((r) => setTimeout(r, 120));
+    posInflight++;
+    try { return await fn(); } finally { posInflight--; }
+  } finally { posQueued--; }
+}
+
+const NO_POSITION = (why) => ({ lat: null, lng: null, source: null, precision: null, matched: null, why });
+// A POSITIVE ANSWER KEEPS; A NEGATIVE ONE EXPIRES SOON. A coordinate does not
+// move, but "nobody could place it" is often a service having a bad minute — and
+// pinning that for the full window means a person who retries is told the same
+// thing by a cache rather than by a lookup.
+const POS_NEG_TTL = 45 * 1000;
+
+router.get('/position', async (req, res) => {
+  res.set('Cache-Control', 'public, max-age=600');
+  // EVERY QUERY VALUE IS COERCED. Express's extended query parser turns
+  // `?state[x]=1` into an OBJECT, and handing that to the address helpers threw
+  // out of the handler as a 500 on a public endpoint — the same "a value must fit
+  // what reads it, and the door refuses politely" discipline as everywhere else.
+  const str = (v) => (typeof v === 'string' ? v.trim() : '');
+  const q = str(req.query.q);
+  // NORMALIZED, NOT TAKEN AS TYPED. `geocodeProperty` reads `street` verbatim —
+  // right for a warehouse row, where the unit lives in its own column and the
+  // state is already a code, and wrong for a query string, where they arrive
+  // however a person typed them. Two things had to be handled here:
+  //   · A GEOCODER RESOLVES A BUILDING, NOT AN APARTMENT. "Apt 4D" on the end of
+  //     the street line is a common cause of a match failing outright, and every
+  //     unit of one building sharing a coordinate is correct — they ARE at the
+  //     same place. `normalizeAddress` splits the unit off into its own field,
+  //     which `geocodeProperty` then simply never asks about.
+  //   · A SPELLED-OUT STATE is not what either service is asked for elsewhere;
+  //     `stateAbbr` inside the same helper turns "New York" into "NY".
+  const parts = normalizeAddress(q ? parseAddress(q) : {
+    line1: str(req.query.line1) || str(req.query.street),
+    city: str(req.query.city), state: str(req.query.state), zip: str(req.query.zip),
+  });
+  const subject = {
+    street: ADDR.abbreviateStreet(parts.line1 || ''),
+    city: ADDR.normalizeCityName(parts.city || ''),
+    state: parts.state || '', zip: parts.zip || '',
+  };
+  const key = 'pos:' + [subject.street, subject.city, subject.state, subject.zip].join('|').toLowerCase();
+  const hit = cget(key);
+  if (hit) return res.json(hit);
+  if (posBusy()) {
+    // Never cached, and the HEADER has to say so too — the handler sets a
+    // ten-minute cache up front, so a browser would answer "busy, try again" for
+    // the next ten minutes without ever asking again. This says nothing about the
+    // address, only about this moment.
+    res.set('Cache-Control', 'no-store');
+    return res.json(NO_POSITION('the address lookup is busy right now — try again in a moment'));
+  }
+  try {
+    const p = await posSlot(() => RG.geocodeProperty(subject));
+    const out = p && p.ok
+      ? { lat: p.lat, lng: p.lng, source: p.source, precision: p.precision, matched: p.matched || null, why: null }
+      : NO_POSITION((p && p.why) || 'we could not place that address on the map');
+    cset(key, out, out.lat == null ? POS_NEG_TTL : undefined);
+    // THE BROWSER'S CACHE MUST NOT OUTLIVE OURS. A short server-side TTL on a
+    // negative answer is pointless if the response tells the browser to keep it
+    // for ten minutes — the person who retries is answered by their own cache.
+    if (out.lat == null) res.set('Cache-Control', `public, max-age=${Math.round(POS_NEG_TTL / 1000)}`);
+    res.json(out);
+  } catch (e) {
+    // Never break the form, and never quote a provider's error text to a caller
+    // — this endpoint is public. No position simply means no distance search.
+    res.json(NO_POSITION('the address lookup is not answering right now'));
+  }
 });
 
 // Verify / standardize an address against USPS — the authoritative standardizer.
@@ -178,12 +335,14 @@ async function handleVerify(input, res) {
 // only the address label). A free-text `q` (or a bare string) is parsed into
 // components server-side so USPS has something to match on.
 const verifyInput = (src) => {
-  if (src && (src.q || typeof src === 'string') && !src.line1 && !src.street) {
-    return parseAddress(String(src.q || src));
-  }
+  if (typeof src === 'string') return parseAddress(src.trim());
+  const o = src || {};
+  // Same coercion as every other door: a non-string query value is not an address,
+  // and `String({})` is "[object Object]", which USPS is then asked about.
+  if (qstr(o.q) && !qstr(o.line1) && !qstr(o.street)) return parseAddress(qstr(o.q));
   return {
-    line1: src.line1 || src.street, unit: src.unit || src.secondary,
-    city: src.city, state: src.state, zip: src.zip || src.zipcode,
+    line1: qstr(o.line1) || qstr(o.street), unit: qstr(o.unit) || qstr(o.secondary),
+    city: qstr(o.city), state: qstr(o.state), zip: qstr(o.zip) || qstr(o.zipcode),
   };
 };
 router.get('/verify', (req, res) => handleVerify(verifyInput(req.query), res));

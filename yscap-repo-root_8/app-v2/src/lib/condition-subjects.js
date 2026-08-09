@@ -84,6 +84,12 @@ export const CODE_SUBJECT = {
   rtl_cond_feasibility: 'construction', draw_cond_signed_request: 'construction',
   // title
   title_commitment: 'title', rtl_cond_title: 'title',
+  // db/464 — the REFINANCE payoff conditions (external = the borrower's current
+  // mortgage/payoff statement, internal = the official payoff letter ordered &
+  // the figure/lender/loan-number verified). Both are about clearing the
+  // existing lien on the property, which is a title matter — matching the
+  // LABEL_RULES below, where "payoff" already reads as title.
+  cond_payoff_external: 'title', cond_payoff_internal: 'title',
   // insurance
   insurance_binder: 'insurance', rtl_cond_insurance: 'insurance', rtl_cond_flood: 'insurance',
   // db/378 (#909) seeds the flood-INSURANCE policy condition — distinct from

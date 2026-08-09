@@ -81,7 +81,7 @@ async function buildDrawPacket(appId, drawId) {
   }
   rows.push(['TOTAL', c(rollup.project.budget), c(rollup.project.drawn), c(money.requested_cents), c(money.approved_cents), c(avail(rollup.project)), usedPct(rollup.project)]);
   rows.push([]);
-  rows.push(['\u201CStill available\u201D counts this draw as spent from the moment the inspector approves it. If the draw is amended or declined, that money goes straight back to available.']);
+  rows.push(['\u201CStill available\u201D counts this draw as spent from the moment it is REQUESTED \u2014 the requested amount until the inspector answers, their figure afterwards. If the draw is amended or declined, that money goes straight back to available.']);
   rows.push([]);
   rows.push(['THIS DRAW \u2014 WHAT IS RELEASED, AND WHAT IS NETTED OUT']);
   rows.push(['Requested by the borrower', c(money.requested_cents)]);
@@ -112,4 +112,95 @@ async function buildDrawPacket(appId, drawId) {
   return rows;
 }
 
-module.exports = { buildDrawPacket };
+// ---------------------------------------------------------------------------
+// FILE THE PACKET EXCEL AS A MIRRORED DOCUMENT (owner-directed 2026-08-06).
+// The packet was only ever streamed on download (routes/sitewire.js), never
+// persisted — so it never reached SharePoint. The owner wants every draw's
+// documents in per-draw folders "beside the Excel sheets of the draw packet",
+// so the packet is now filed as a `documents` row. It categorizes to
+// Draws/Draw N (the anchor) via sharepoint-backup.drawFolderPathFor, and the
+// SharePoint mirror carries it there like any other staff document.
+//
+// Born ACCEPTED + staff_only + system (same treatment as the branded draw
+// reports — a PILOT-generated artifact from data we already hold, not a human
+// upload awaiting review; see draw-report.storeDrawReport + document-acceptance).
+// Idempotent by a content-hashed filename with the 23505 backstop, and it
+// supersedes the prior current packet of the SAME draw (identity prefix) so a
+// refreshed packet never churns Version-N folders (draw_packet is a regen kind).
+const crypto = require('crypto');
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+async function storeDrawPacketDoc(appId, sitewireDrawId) {
+  const { buildXlsx } = require('../lib/xlsx');
+  const storage = require('../lib/storage');
+  const meta = (await db.query(
+    `SELECT d.number, a.ys_loan_number, a.borrower_id
+       FROM sitewire_draws d JOIN applications a ON a.id = d.application_id
+      WHERE d.sitewire_draw_id = $1 AND d.application_id = $2`, [sitewireDrawId, appId])).rows[0];
+  if (!meta) return null;
+  const num = meta.number != null ? meta.number : String(sitewireDrawId).slice(0, 8);
+  const rows = await buildDrawPacket(appId, sitewireDrawId);
+  const bytes = Buffer.from(buildXlsx(rows, `Draw ${num}`));
+  const version = crypto.createHash('sha256').update(JSON.stringify(rows)).digest('hex').slice(0, 12);
+  const loanSlug = String(meta.ys_loan_number || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 20) || 'file';
+  const filename = `pilot-draw-${num}-packet-${loanSlug}-${version}.xlsx`;
+
+  const existing = await db.query(
+    `SELECT id FROM documents WHERE application_id=$1 AND doc_kind='draw_packet' AND filename=$2 LIMIT 1`, [appId, filename]);
+  if (existing.rows.length) return existing.rows[0].id;
+  const saved = await storage.save(bytes, { filename, contentType: XLSX_MIME });
+  try {
+    const ins = await db.query(
+      `INSERT INTO documents
+         (application_id, borrower_id, filename, content_type, size_bytes,
+          storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind,
+          source_type, visibility, is_current, review_status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'staff',NULL,'draw_packet','system','staff_only',true,'accepted')
+       RETURNING id`,
+      [appId, meta.borrower_id || null, filename, XLSX_MIME, bytes.length, saved.provider, saved.ref]);
+    // Supersede only the prior current packet of THIS draw (identity prefix = the
+    // filename minus the -<12hex>.xlsx version), never another draw's packet.
+    const identityPrefix = filename.replace(/-[0-9a-f]{12}\.xlsx$/i, '-');
+    await db.query(
+      `UPDATE documents SET is_current=false,
+          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+        WHERE application_id=$1 AND doc_kind='draw_packet' AND filename LIKE $2 || '%' AND id<>$3 AND is_current=true`,
+      [appId, identityPrefix, ins.rows[0].id]);
+    return ins.rows[0].id;
+  } catch (e) {
+    if (e && e.code === '23505') {
+      const again = await db.query(
+        `SELECT id FROM documents WHERE application_id=$1 AND doc_kind='draw_packet' AND filename=$2 LIMIT 1`, [appId, filename]);
+      if (again.rows.length) return again.rows[0].id;
+    }
+    throw e;
+  }
+}
+
+// Boot backfill: file a packet for every draw that doesn't already carry one, so
+// PREVIOUS draws get their packet in SharePoint (and any new draw is picked up on
+// the next boot). Bounded + best-effort — a single draw's failure never stops the
+// pass, and it never throws to the caller. Off-switch: DRAW_PACKET_BACKFILL_DISABLED=1.
+async function backfillDrawPacketsOnce(limit = 50) {
+  if (process.env.DRAW_PACKET_BACKFILL_DISABLED === '1') return { filed: 0, skipped: 0 };
+  let filed = 0, skipped = 0;
+  try {
+    const due = (await db.query(
+      `SELECT d.application_id, d.sitewire_draw_id
+         FROM sitewire_draws d
+        WHERE NOT EXISTS (
+          SELECT 1 FROM documents doc
+           WHERE doc.application_id = d.application_id AND doc.doc_kind = 'draw_packet'
+             AND doc.is_current = true
+             AND doc.filename LIKE 'pilot-draw-' || COALESCE(d.number::text, substr(d.sitewire_draw_id::text, 1, 8)) || '-packet-%')
+        ORDER BY d.sitewire_draw_id
+        LIMIT $1`, [limit])).rows;
+    for (const r of due) {
+      try { if (await storeDrawPacketDoc(r.application_id, r.sitewire_draw_id)) filed++; else skipped++; }
+      catch (e) { skipped++; console.warn(`[draw-packet] backfill failed (draw=${r.sitewire_draw_id}): ${e && e.message}`); }
+    }
+  } catch (e) { console.warn(`[draw-packet] backfill query failed: ${e && e.message}`); }
+  return { filed, skipped };
+}
+
+module.exports = { buildDrawPacket, storeDrawPacketDoc, backfillDrawPacketsOnce };

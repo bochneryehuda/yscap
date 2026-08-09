@@ -68,6 +68,26 @@ const list = (v) => {
   const arr = (Array.isArray(v) ? v : String(v).split(',')).map((s) => String(s).trim()).filter(Boolean);
   return arr.length ? arr : null;
 };
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * A list of property ids, or null for "the caller named none".
+ *
+ * An EMPTY ARRAY is deliberately NOT null: it means the caller resolved a filter
+ * and it came back empty, which is an answer. Every id is checked against the uuid
+ * shape before it reaches a bind — a malformed one makes Postgres raise 22P02 and
+ * the route answer 500, and the cap is here because this is the one filter whose
+ * size the caller controls.
+ */
+const uuidList = (v) => {
+  if (v == null || v === '') return null;
+  // ANYTHING SUPPLIED IS A FILTER THAT WAS ASKED FOR, even if nothing usable
+  // survives it. `list(',')` and `list(' ')` return null because every segment
+  // filters out, so the predicate VANISHED and the search answered with the whole
+  // town — the "a filter that cannot run silently widens" class this exists to
+  // close, on the query-string surface rather than the market-area one.
+  const arr = list(v) || [];
+  return arr.filter((x) => UUID_RE.test(x)).slice(0, 20000);
+};
 
 /**
  * A typed phrase → a `to_tsquery` string of AND-ed prefix terms.
@@ -136,6 +156,16 @@ function buildQuery(input = {}) {
     if (terms) where.push(`p.address_tsv @@ to_tsquery('simple', ${P(terms)})`);
     else where.push(`p.display_address ILIKE ${P('%' + q + '%')}`);   // punctuation-only input
   }
+  // ADDRESSES KEPT FOR REVIEW ARE OUT OF THE ORDINARY SEARCH.
+  // A comparable whose address the report left too thin to identify (no house
+  // number, say) is still recorded — the owner wanted nothing dropped — but it is
+  // filed with needs_review=true and kept out of the normal answer so an
+  // unverifiable address never pads a facet-only ("all 3-bed in NJ") result. It
+  // could never match an address search anyway. `include_review` opts back in.
+  // The `hits` CTE in facets() reuses this WHERE, so both the list and the sidebar
+  // counts exclude these together.
+  if (!f.include_review) where.push('COALESCE(p.needs_review, false) = false');
+
   const state = str(f.state);
   if (state) where.push(`p.state = ${P(state.toUpperCase())}`);
   const cities = list(f.city);
@@ -321,6 +351,35 @@ function buildQuery(input = {}) {
   const excludeId = str(f.exclude_property_id);
   if (excludeId) where.push(`p.id <> ${P(excludeId)}`);
 
+  /* AN EXPLICIT SET OF PROPERTIES — how a DRAWN MARKET AREA cuts the search.
+   *
+   * "Is this house inside that shape" is ray casting, and it lives in ONE tested
+   * place (`lib/research/market-area.js`, 68 assertions). Re-implementing it in
+   * SQL to run it here would give this codebase two answers to the same question,
+   * and the wrong one would be invisible: the search still returns houses, they
+   * still look plausible, and nobody can tell that the two on the far side of the
+   * highway were included. So the CALLER resolves the shape to the properties
+   * inside it — bounding box in SQL, exact test in JavaScript — and hands the ids
+   * over.
+   *
+   * IT MUST HAPPEN IN SQL RATHER THAN AFTER, which is why it is a filter here and
+   * not a `.filter()` on the rows. The LIMIT and the `count(*) OVER ()` total both
+   * run inside this query; cutting afterwards leaves the page short and the total
+   * overstated, which is the exact bug the radius refine was written to avoid.
+   *
+   * AN EMPTY SET IS AN ANSWER, NOT AN ABSENT FILTER. A market area that contains
+   * none of our properties must return nothing — dropping the filter because the
+   * list came back empty would answer with the whole town while the screen still
+   * said the search was cut to a neighbourhood, which is the "a filter that
+   * cannot run silently widens" class this whole area exists to close.
+   */
+  const onlyIds = uuidList(f.property_ids);
+  if (onlyIds) {
+    where.push(onlyIds.length
+      ? `p.id = ANY(${P(onlyIds)}::uuid[])`
+      : 'false');   // resolved, and it resolved to nothing
+  }
+
   // ---- radius (no PostGIS) ------------------------------------------------
   // A bounding box on the indexed lat/lng columns does the cutting; the haversine
   // refine only ever runs on what the box already narrowed to. A degree of
@@ -344,6 +403,18 @@ function buildQuery(input = {}) {
   let distanceSelect = 'NULL::numeric AS distance_miles';
   const lat = num(f.lat), lng = num(f.lng), radius = num(f.radius_miles);
   let distanceExpr = null;
+  /* A FILTER THAT CANNOT RUN IS A REFUSAL, NEVER A WIDER SEARCH.
+     Reported by the owner and reproduced exactly: asking for half a mile from a
+     TYPED address — which carries no coordinates — returned 955 properties
+     across NINE STATES with a null distance, because the radius predicate is
+     built inside this lat/lng guard and was simply never added. Anchored on a
+     real position the same half mile returns 9, all in one state, furthest 0.449
+     miles, so the arithmetic was never the problem.
+     That is the worst shape a bug can take here: the screen looks like it
+     answered. Silently dropping the one filter the user actually cared about and
+     handing back the whole country is not a wider search, it is a wrong one — so
+     the caller is TOLD, and `searchProperties` refuses rather than widening. */
+  const radiusUnusable = radius != null && radius > 0 && (lat == null || lng == null);
   if (lat != null && lng != null) {
     const pLat = P(lat), pLng = P(lng);
     distanceExpr =
@@ -420,6 +491,9 @@ function buildQuery(input = {}) {
   return {
     where: where.length ? 'WHERE ' + where.join('\n  AND ') : '',
     params, distanceSelect, sort: SORTS[sortKey], sortKey, limit, offset: (page - 1) * limit, page,
+    // Named so a caller cannot mistake "we could not apply your distance" for
+    // "there was no distance to apply".
+    radiusUnusable,
   };
 }
 
@@ -480,6 +554,18 @@ const LIST_COLUMNS = `p.id, p.display_address, p.street, p.unit, p.city, p.state
 /** Run a search. Returns { rows, total, page, limit, pages }. */
 async function searchProperties(db, filters = {}) {
   const b = buildQuery(filters);
+  // See `radiusUnusable` in buildQuery: a distance filter with nothing to
+  // measure from cannot be honoured, and answering with every property we hold
+  // is a wrong answer wearing a right one's clothes.
+  if (b.radiusUnusable) {
+    return {
+      rows: [], total: 0, page: b.page, limit: b.limit, pages: 1, sort: b.sortKey,
+      refused: 'radius_without_position',
+      why: 'A distance search needs a position to measure from, and this subject has none — so this '
+        + 'is not a wider search, it is one that cannot be answered. Pick the address from the '
+        + 'suggestions so it carries a position, or search by town instead.',
+    };
+  }
   const sql =
     `SELECT ${LIST_COLUMNS},
             ${b.distanceSelect},

@@ -45,6 +45,31 @@ function findByKey(key) {
   } catch (_) { return null; }
 }
 
+/* Which file SECTION is the reader looking at right now — the `.file-section[id]`
+   nearest the read line, or null when none is on screen (or we're at the very
+   top). Used to REMEMBER a place across a full browser refresh (file-place.js):
+   a section id is stable and always re-findable after remount, unlike a pixel
+   offset. Section-level on purpose — coarser than captureScrollAnchor's condition
+   rows, but it survives a collapsed section and re-opens deterministically. */
+export function nearestFileSectionId(line = LINE) {
+  if (typeof document === 'undefined' || typeof window === 'undefined') return null;
+  try {
+    const y = window.scrollY || window.pageYOffset || 0;
+    if (y <= 0) return null;                        // at the top — nothing to remember
+    let id = null, best = Infinity;
+    const els = document.querySelectorAll('.file-section[id]');
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i];
+      if (!el.id) continue;
+      const top = el.getBoundingClientRect().top;
+      if (top > window.innerHeight) continue;        // below the fold
+      const d = Math.abs(top - line);
+      if (d < best) { best = d; id = el.id; }
+    }
+    return id;
+  } catch (_) { return null; }
+}
+
 /* Snapshot what the reader is looking at. Call it right BEFORE the state change
    that re-renders the page (not before the network call — the reader may scroll
    while a request is in flight, and yanking them back to where they were a

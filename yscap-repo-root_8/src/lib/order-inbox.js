@@ -48,7 +48,12 @@ const { classifyReturnAttachment } = require('./order-return-filter');
 const { CONDITION_CODE, RETURN_DOC_KIND } = require('./order-slots');
 
 const DOC_KIND = RETURN_DOC_KIND;
-const MAX_RETURN_DOCS = 20;
+// Bounded but generous. MUST NOT be below the inbound RETRIEVAL cap
+// (file-inbox.MAX_ATTACH_COUNT): retrieval REPORTS whatever it drops, but a slice below
+// that number here would truncate a returned-document set SILENTLY. Kept at the
+// retrieval cap so retrieval stays the single, reported bound (guarded by
+// scripts/test-inbound-attachment-cap.js).
+const MAX_RETURN_DOCS = 60;
 
 /**
  * The document condition an order files into (rtl_cond_title / rtl_cond_insurance),
@@ -254,6 +259,18 @@ async function saveReturnedDocs({ applicationId, orderType, attachments, fromEma
         [applicationId, borrowerId, itemId, String(a.filename).slice(0, 300),
          a.contentType || 'application/octet-stream', buf.length, provider, ref, kind, sha256 || null]);
       saved += 1;
+      /* AND IF THE APPRAISER JUST EMAILED US THE DATA FILE, THE MARKET DATA IN IT GOES
+         TO THE RESEARCH WAREHOUSE (db/462). This is the door the report most often
+         arrives through — the vendor replies to the order with the PDF and the MISMO
+         XML attached — and it was filing the bytes and throwing every comparable sale
+         away. Fire-and-forget, warehouse-only: it cannot affect the order, the
+         condition or the loan file, and it cannot fail this filing. */
+      try {
+        require('./research/xml-catch').fireCatch({
+          bytes: buf, filename: a.filename, contentType: a.contentType,
+          why: 'a vendor emailed it back on an order',
+        });
+      } catch (_) { /* never let the warehouse touch an order return */ }
     } catch (e) {
       // A storage or DB failure IS transient and IS recoverable — but only if somebody
       // knows, AND only if the caller is allowed to try again. Swallowed and uncounted,
@@ -323,4 +340,4 @@ async function saveReturnedDocs({ applicationId, orderType, attachments, fromEma
   return { saved, deduped, failed, failedPermanent, failedTransient, suspect, skipped };
 }
 
-module.exports = { saveReturnedDocs, alreadyFiled, conditionItemFor, DOC_KIND, CONDITION_CODE };
+module.exports = { saveReturnedDocs, alreadyFiled, conditionItemFor, DOC_KIND, CONDITION_CODE, MAX_RETURN_DOCS };

@@ -93,10 +93,17 @@ function fileBorrowerIds(app) {
  * to-do list. Two of them disagreeing would show an officer a list of work that
  * does not match what the gate actually refuses on.
  *
- * Falls back to the caller's value (the application's own claim) when nothing is
- * registered yet; in that state the gate blocks sign-off outright, so the
- * fallback is never what decides anything. Never throws — a read failure is the
- * same fallback.
+ * Falls back to the caller's value — the application's own CLAIM — when nothing
+ * is registered yet, and since 2026-08-06 that fallback genuinely DECIDES: the
+ * gate used to refuse an unregistered file outright ("Register a product
+ * first"), which is a dead end on a condition about the track record. An
+ * officer who generated a term sheet claiming 10 stabilized rentals is now told
+ * to verify the ten deals (owner-directed: "the condition should require
+ * verifying 10 — you should not be able to sign it off till you verify 10"),
+ * and a file whose claim IS verified may be signed off without a registration.
+ * The separate Products & Pricing condition is what requires a registration.
+ *
+ * Never throws — a read failure is the same fallback.
  */
 async function registeredExperienceNeed(appId, client = db, fallback = null) {
   const base = fallback || { flips: 0, holds: 0, ground: 0 };

@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import ChatBubble from './ChatBubble.jsx';
 import BorrowerViewBanner from './BorrowerViewBanner.jsx';
+import AssistantBanner from './AssistantBanner.jsx';
 import { useStaleBuild, StaleBuildBanner } from '../lib/useStaleBuild.jsx';
 
 export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashboard', ariaLabel = 'PILOT by YS Capital', external = false }) {
@@ -52,9 +53,10 @@ export function BrandLockup() {
 }
 
 export default function Layout({ children }) {
-  const { signOut, isBorrowerView, exitBorrowerView } = useAuth();
+  const { signOut, isBorrowerView, exitBorrowerView, isAssistant } = useAuth();
   const nav = useNavigate();
   const [unread, setUnread] = useState(0);
+  const [taskCount, setTaskCount] = useState(0);   // outstanding to-dos → Tasks nav badge
   const [menuOpen, setMenuOpen] = useState(false);
   // Stale-build watchdog — EVERY layout shell mounts it (CLAUDE.md rule; the
   // borrower shell was missed when the staff shell got it — mega-audit #2).
@@ -65,6 +67,13 @@ export default function Layout({ children }) {
     api.notifications().then(r => {
       if (live) setUnread((r || []).filter(n => !n.read_at).length);
     }).catch(() => {});
+    // The Tasks nav carries a live count of what's waiting on the borrower
+    // (owner-directed: the task list moved off the home page into its own Tasks
+    // section, so the nav is now the at-a-glance signal). Fails quiet — a bad
+    // load just hides the badge, never blanks the shell.
+    api.actionItems().then(d => {
+      if (live) setTaskCount(d && Array.isArray(d.items) ? d.items.length : 0);
+    }).catch(() => {});
     return () => { live = false; };
   }, []);
 
@@ -72,6 +81,7 @@ export default function Layout({ children }) {
     <div className={`shell${isBorrowerView ? ' shell-bview' : ''}`}>
       {/* Pinned above everything: whose portal am I in, and the way out. */}
       <BorrowerViewBanner />
+      <AssistantBanner />
       <StaleBuildBanner stale={staleBuild} />
       <header className="header">
         <div className="wrap">
@@ -81,9 +91,13 @@ export default function Layout({ children }) {
           {menuOpen && <div className="nav-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
           <nav className={`nav ${menuOpen ? 'open' : ''}`} onClick={() => setMenuOpen(false)}>
             <NavLink to="/dashboard">Dashboard</NavLink>
+            <NavLink to="/tasks" title="Everything waiting on you, across all your loans">
+              Tasks{taskCount > 0 && <span className="nav-count" aria-hidden="true">{taskCount}</span>}
+            </NavLink>
             <NavLink to="/apply">New application</NavLink>
             <NavLink to="/pricing" title="Price a loan and save scenarios — build a term sheet from your own numbers">Price a loan</NavLink>
             <NavLink to="/profile">Profile</NavLink>
+            {!isAssistant && <NavLink to="/helpers" title="Give someone their own login to help with your loan">Helpers</NavLink>}
             <NavLink to="/entities" title="Your LLCs — set up once, verified, reused on every loan">Entities</NavLink>
             <NavLink to="/track-record" title="Your investment experience — one record, linked to every file">Track record</NavLink>
             <NavLink to="/settings/notifications" title="Notification settings">Alerts</NavLink>

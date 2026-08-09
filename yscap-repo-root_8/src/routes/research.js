@@ -28,6 +28,26 @@
  * licensed professional's published business contact information, printed on
  * every report they sign.
  *
+ * TWO THINGS THAT PARAGRAPH HAS TO BE PRECISE ABOUT (db/462, 2026-08-04).
+ *
+ * FIRST, `owner_of_record` ON A SUBJECT PROPERTY IS THE BORROWER or their entity. It
+ * always was — nothing about this changed it — and it is the one field in here that
+ * names a person connected to a deal. It is a fact the appraiser read off the public
+ * record, which is what makes it defensible; it is not "no borrower name", which is
+ * why it is now said out loud rather than left to the reader.
+ *
+ * SECOND, WHO CAN PUT DATA HERE CHANGED. Until db/462 only STAFF could feed this
+ * warehouse — a desk import or the hand-upload screen. Now every appraisal XML that
+ * enters PILOT does, INCLUDING one a borrower attaches to their own condition, and
+ * nothing checks that the report's subject has anything to do with their file. So a
+ * borrower can seed rows other staff read. Three things bound it: only the report's
+ * PROPERTY facts are taken (a comparable sale that happened, happened, which is the
+ * whole point of the warehouse); an untrusted report may FILL but never REWRITE the
+ * shared appraiser roster (`ingest.upsertAppraiser`'s `fillOnly`, threaded from the
+ * borrower door); and the document BYTES stay unreachable, because `property_photos`
+ * is written only for a report that came in on a loan file, so `GET
+ * /photos/:documentId` can never serve one of these.
+ *
  * BORROWERS NEVER REACH ANY OF THIS. It is mounted behind requireStaff as a whole
  * router, not per-endpoint, so there is no path in without a staff session.
  */
@@ -43,7 +63,9 @@ const FLIPS = require('../lib/research/flips');
 const V = require('../lib/research/valuation');
 const QA = require('../lib/research/quick-answer');
 const BR = require('../lib/research/bracketing');
+const MA = require('../lib/research/market-area');
 const K = require('../lib/research/property-key');
+const SF = require('../lib/research/subject-facts');
 const ingest = require('../lib/research/ingest');
 // db/438 — the UAD 3.6 exposure count, so "how many did we turn away?" is answerable.
 const { formatRefusalCounts } = require('../lib/appraisal/import');
@@ -157,12 +179,15 @@ router.get('/stats', async (req, res, next) => {
   try {
     const status = await ingest.ingestStatus(db);
     const spread = (await db.query(
+      // A kept-for-review property (a comp with an unusable address) is out of the
+      // ordinary search, so it must be out of the warehouse-size counts too — else
+      // the headline total is larger than any search over the same corpus.
       `SELECT count(*) FILTER (WHERE last_sale_price IS NOT NULL)::int AS with_sale,
               count(*) FILTER (WHERE photo_count > 0)::int AS with_photo,
               count(DISTINCT state)::int AS states,
               count(DISTINCT (state || '|' || lower(coalesce(city,''))))::int AS cities,
               min(last_sale_date) AS earliest_sale, max(last_sale_date) AS latest_sale
-         FROM properties`)).rows[0];
+         FROM properties WHERE needs_review = false`)).rows[0];
     const skipped = (await db.query(
       `SELECT COALESCE(sum(rows_skipped),0)::int AS n FROM property_ingest_log`)).rows[0].n;
     res.json({ ...status, ...spread, rows_skipped: skipped });
@@ -387,7 +412,11 @@ router.get('/appraisers/:id', async (req, res, next) => {
 async function ratesFor(query) {
   const params = [];
   const where = ["o.role = 'comparable'", "COALESCE(o.sale_status,'closed') = 'closed'",
-    'o.sale_price IS NOT NULL'];
+    'o.sale_price IS NOT NULL',
+    // A kept-for-review property has an unverified address; its sale must not feed
+    // the per-foot rate math (and could otherwise double-count a sale that also
+    // exists under a real key). Same exclusion the property search applies.
+    'COALESCE(p.needs_review, false) = false'];
   const P = (v) => { params.push(v); return '$' + params.length; };
   // A MARKET HAS TO BE NAMED. Every geographic predicate below is appended only
   // when supplied, so with none of them the WHERE degrades to the three base
@@ -485,7 +514,13 @@ router.get('/comps', async (req, res, next) => {
         baths_full: K.int(req.query.baths_full, { max: 99 }), baths_half: K.int(req.query.baths_half, { max: 99 }),
         year_built: K.yearBuilt(req.query.year_built), condition_uad: txt(req.query.condition_uad),
         property_type: txt(req.query.property_type), units: K.int(req.query.units, { max: 999 }),
-        latitude: K.num(req.query.lat), longitude: K.num(req.query.lng),
+        // A COORDINATE THAT IS NOT ON EARTH IS NOT A COORDINATE. Unbounded, a
+        // typed `?lat=1e9` reached the haversine — harmless in that it matches
+        // nothing, but a filter that silently matches nothing is the shape of the
+        // bug this whole area exists to close. Out of range reads as "no
+        // position", which the search already answers honestly.
+        latitude: K.num(req.query.lat, { min: -90, max: 90 }),
+        longitude: K.num(req.query.lng, { min: -180, max: 180 }),
       };
     }
     // A 2-4 UNIT PROPERTY IS COMPARED WITH 2-4 UNIT PROPERTIES. The owner's first
@@ -563,7 +598,12 @@ router.get('/comps', async (req, res, next) => {
       const c = stripEmpty(req.query);
       for (const k of ['want', 'relaxable', 'application_id', 'property_id',
         'address', 'gla', 'beds', 'baths_full', 'baths_half', 'year_built',
-        'condition_uad', 'property_type', 'units', 'lat', 'lng']) delete c[k];
+        'condition_uad', 'property_type', 'units', 'lat', 'lng',
+        // `market_area_id` names a SHAPE, not a column. It is resolved to the
+        // properties inside it below and passed as `property_ids`; left here it
+        // would reach `buildQuery` as an unknown key and be silently ignored,
+        // which is a filter the screen claims to have applied and did not.
+        'market_area_id']) delete c[k];
       return c;
     })());
     // A VALUE WE OFFER IS A VALUE WE ACCEPT. The screen offers "sold at any time",
@@ -583,6 +623,33 @@ router.get('/comps', async (req, res, next) => {
       if (v === '' || v === '0' || Number(v) === 0) delete filters[k];
     }
     if (subject.id) filters.exclude_property_id = subject.id;
+
+    /* THE DRAWN NEIGHBOURHOOD, IF ONE WAS PICKED — and it is never relaxed.
+     *
+     * A radius is a bad model of a neighbourhood and every appraiser knows it: a
+     * mile in one direction crosses a river or a town line, a mile in another is
+     * the same houses on the same streets. When an officer has drawn the boundary
+     * themselves, that judgement is the most specific thing the search has, so it
+     * is honoured EXACTLY — it never appears on the relaxation ladder, for the
+     * same reason `comp_set` does not. Widening past a boundary a person drew
+     * would answer a different question than the one on screen.
+     *
+     * A shape that names nothing live is a REFUSAL, not a silently-dropped filter:
+     * the screen said the search was cut to a neighbourhood, and answering with
+     * the whole town instead is the class of bug this area exists to close.
+     */
+    let marketArea = null;
+    if (req.query.market_area_id) {
+      marketArea = await resolveMarketArea(String(req.query.market_area_id));
+      if (!marketArea) {
+        return res.json({
+          rows: [], total: 0, subject, refused: 'market_area_not_found',
+          why: 'That market area is not there any more — it may have been archived. Pick another, '
+            + 'or search without one.',
+        });
+      }
+      filters.property_ids = marketArea.ids;      // [] means "it contains none of ours"
+    }
     // WHERE THE SUBJECT IS — the looked-up coordinate first, the appraiser's second
     // (db/412). A stored subject property has `eff_latitude`; a typed one carries
     // whatever the caller sent as lat/lng. Distance is always computed when we know
@@ -717,7 +784,12 @@ router.get('/comps', async (req, res, next) => {
         }
       }
       const got = await S.searchProperties(db, active);
-      ladder.push({ step: rung.id, label: rung.label, found: got.total });
+      /* "FOUND NOTHING" AND "COULD NOT MEASURE" ARE DIFFERENT ANSWERS, and a
+         ladder that reports the second as the first tells an officer the town is
+         thin when the truth is we never placed their subject. A rung whose
+         radius could not run is marked, so the screen can say which happened. */
+      ladder.push({ step: rung.id, label: rung.label, found: got.total,
+        unmeasurable: got.refused === 'radius_without_position' || undefined });
       if (!best || got.total > best.total) {
         best = got; bestRung = rung.id; bestFilters = Object.assign({}, active);
       } else if (got.total === 0 && change) {
@@ -760,10 +832,14 @@ router.get('/comps', async (req, res, next) => {
       const town = subject.city || null, st = subject.state || null, zp = subject.zip || null;
       if (town || st || zp) {
         const c = (await db.query(
+          // Count only searchable properties, so this "how much do we hold here"
+          // figure matches what the comp search over the same area would return —
+          // kept-for-review rows are excluded there and must be excluded here.
           `SELECT count(*)::int AS properties,
                   count(*) FILTER (WHERE last_sale_price IS NOT NULL)::int AS with_sale
              FROM properties
-            WHERE ($1::text IS NULL OR state = $1)
+            WHERE needs_review = false
+              AND ($1::text IS NULL OR state = $1)
               AND ($2::text IS NULL OR lower(city) = lower($2))
               AND ($3::text IS NULL OR zip = $3)`, [st, town, zp])).rows[0];
         coverage = { town, state: st, zip: zp,
@@ -788,6 +864,16 @@ router.get('/comps', async (req, res, next) => {
       // know where your property is yet".
       subject_located: sLat != null && sLng != null,
       radius_dropped: !!(req.query.radius_miles && (sLat == null || sLng == null)),
+      // THE DRAWN BOUNDARY, AND WHAT IT ACTUALLY CUT. Both numbers, because "12 of
+      // the 40 in its bounding box" is a boundary doing real work and "40 of the
+      // 40" means the shape is a rectangle that is cutting nothing — which the
+      // person relying on it should know. `truncated` says the box held more than
+      // one reading holds, so the answer rests on a large sample rather than on
+      // all of it; a silent cap would read as completeness.
+      market_area: marketArea ? {
+        id: marketArea.area.id, name: marketArea.area.name,
+        inArea: marketArea.inArea, inBox: marketArea.inBox, truncated: marketArea.truncated,
+      } : null,
     });
   } catch (e) { next(e); }
 });
@@ -1086,7 +1172,20 @@ async function loadValuation(id) {
     bracketing = BR.assessBracketing(subject, (grid.comps || []).filter((c) => c.include !== false),
       { indicatedValue: grid.value && grid.value.indicatedValue });
   } catch (e) { bracketing = null; }
-  return { valuation: v, comps, grid, bracketing };
+  /* THE FACTS THE VALUE LEANS ON, AND WHETHER ANYBODY HAS LOOKED AT THEM.
+     Returned on every read rather than behind its own call, because the point of
+     it is that it is impossible to look at the number without also seeing what it
+     rests on — a blind spot the officer has to go and ASK about is a blind spot.
+     Advisory and never allowed to break the screen it sits on. */
+  let subjectReview = null;
+  try {
+    subjectReview = SF.reviewSubject(subject, {
+      confirmedAt: v.subject_confirmed_at || null,
+      confirmedBy: v.subject_confirmed_by || null,
+      confirmedSnapshot: v.subject_confirmed_snapshot || null,
+    });
+  } catch (e) { subjectReview = null; }
+  return { valuation: v, comps, grid, bracketing, subjectReview };
 }
 
 router.get('/valuations', async (req, res, next) => {
@@ -1204,6 +1303,122 @@ router.patch('/valuations/:id', async (req, res, next) => {
     await db.query(`UPDATE property_valuations SET ${sets.join(', ')}, updated_at = now() WHERE id = $1`, params);
     await saveComputed(req.params.id);
     res.json(await loadValuation(req.params.id));
+  } catch (e) { next(e); }
+});
+
+/**
+ * CONFIRM THE SUBJECT'S FACTS, AND RE-VALUE ON THE SPOT.
+ *
+ * The step that turns "the system says" into "I checked". A person walks the
+ * handful of facts the grid is genuinely sensitive to, corrects any that are
+ * wrong, and the value is rebuilt before they look away — because a correction
+ * that does not visibly move the number is a correction nobody trusts they made.
+ *
+ * THREE THINGS IT REFUSES TO DO:
+ *
+ *  - IT DOES NOT COERCE. A living area of "about 2400" is not a number, and
+ *    quietly reading it as 2400 (or as 0) is how a typo becomes a valuation.
+ *    Every correction is checked and the whole request is refused, naming the
+ *    field, rather than filing the good ones and losing the bad one silently
+ *    (the "returned 200 but did not save" class this codebase keeps meeting).
+ *  - IT DOES NOT CONFIRM A FINALIZED VALUATION. That one is a record of what was
+ *    said; changing its subject would rewrite history.
+ *  - IT DOES NOT PRETEND A BLANK IS AN ANSWER. Clearing a fact is allowed - "we
+ *    do not actually know" is a legitimate thing for a person to say - and it
+ *    then shows up as a blind spot, which is exactly right.
+ */
+router.post('/valuations/:id/confirm-subject', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const v = (await db.query('SELECT * FROM property_valuations WHERE id=$1', [req.params.id])).rows[0];
+    if (!v) return res.status(404).json({ error: 'not found' });
+    if (v.status === 'final') {
+      return res.status(409).json({ error: 'This valuation was finalized - it is a record of what was said. Duplicate it to change anything.' });
+    }
+    const { values, problems } = SF.cleanCorrections((req.body && req.body.corrections) || {});
+    if (problems.length) {
+      return res.status(400).json({
+        error: problems.map((p) => `${p.label}: ${p.why}`).join('; '),
+        problems,
+      });
+    }
+    const before = Object.assign({}, v.subject_snapshot || {});
+    // A null CLEARS the fact; `subjectSnapshot` drops empties, so merging first
+    // and cleaning after is what makes "I do not know" storable.
+    const merged = subjectSnapshot(Object.assign({}, before, values));
+    // WHAT THE CHECK ACTUALLY CHANGED. A confirmation that corrected the living
+    // area is a different event from one that agreed with everything, and the
+    // difference is the evidence that the step is worth doing.
+    // SAMENESS IS BY MEANING, AND THERE IS ONE DEFINITION OF IT. Comparing with
+    // String() here while `confirmationStale` compared numerically and
+    // case-insensitively meant "Single Family" -> "single family" counted as a
+    // CHANGE at this door (a full re-derive, market rates rewritten, the officer
+    // told a fact was corrected) and as IDENTICAL one function away.
+    const changes = [];
+    for (const f of SF.FACTS) {
+      const a = SF._internals.readValue(before, f.key);
+      const b = SF._internals.readValue(merged, f.key);
+      if (!SF.sameFactValue(f, a, b)) changes.push({ key: f.key, label: f.label, was: a, now: b });
+    }
+    await db.query(
+      `UPDATE property_valuations
+          SET subject_snapshot = $2,
+              subject_address = COALESCE($3, subject_address),
+              subject_confirmed_at = now(),
+              subject_confirmed_by = $4,
+              subject_confirmed_snapshot = $5,
+              subject_confirmed_changes = $6,
+              updated_at = now()
+        WHERE id = $1`,
+      [req.params.id, JSON.stringify(merged), txt(merged.display_address),
+        (req.actor && req.actor.id) || null,
+        JSON.stringify(SF.confirmedSnapshotOf(merged)),
+        JSON.stringify(changes)]);
+    /* RE-VALUE BEFORE ANSWERING, AND THAT MEANS RE-DERIVING THE ADJUSTMENTS.
+       The whole promise of this step is that the number already reflects the
+       correction by the time the panel closes. Storing the fact is not enough: the
+       grid is rebuilt from the STORED adjustment lines, and those were derived from
+       the OLD fact — so a corrected living area moved nothing at all until this ran
+       (the value was identical before and after, which is exactly the "correction
+       nobody trusts they made" this step exists to avoid).
+       Only when something actually CHANGED: a confirmation that agreed with
+       everything has nothing to re-derive, and re-running the market rates for it
+       would be work bought for nothing. Best-effort — a rates lookup failing must
+       not lose the confirmation itself. */
+    /* A FAILURE HERE MUST NOT COME BACK AS A CONFIDENT SUCCESS. `resuggestAll`
+       rewrites each comparable in its own statement with no transaction, so a
+       throw partway leaves a grid half-derived from the old fact and half from the
+       new — and an empty catch then let `saveComputed` STORE a value off that and
+       the panel print "the value above has been rebuilt from them". Swallowing is
+       still right (the confirmation itself is recorded and must not be lost to a
+       rates lookup), but it is now LOUD and the answer says the value was not
+       rebuilt, so the screen can tell somebody to re-suggest rather than quoting
+       a number nobody should quote.
+       The rate WINDOW comes from what this valuation was last derived with, so a
+       12-month derivation is not silently overwritten with the 24-month default —
+       `market_rates` is the provenance record for "where did $119 a foot come
+       from?" and re-deriving it on a different window destroys that. */
+    let revalued = true, revalueWhy = null;
+    if (changes.length) {
+      try {
+        await resuggestAll(req.params.id, merged, ratesMonthsOf(v));
+      } catch (e) {
+        revalued = false;
+        revalueWhy = 'the market rates could not be re-read, so the adjustments still reflect the old facts — '
+          + 'press "Re-suggest" once to rebuild them';
+        console.error('[research] confirm-subject: re-suggest failed for', req.params.id, e && e.message);
+      }
+    }
+    await saveComputed(req.params.id);
+    // WHO CHECKED WHAT, on the file's own trail. For a feature whose whole point
+    // is accountability, one overwritable column was thin: two people checking the
+    // same valuation left only the second.
+    try {
+      await audit(req.actor && req.actor.id, 'valuation_subject_confirmed', req.params.id,
+        { changed: changes.map((c) => c.key), revalued });
+    } catch (e) { /* the trail is best-effort; the confirmation is not */ }
+    const out = await loadValuation(req.params.id);
+    res.json(Object.assign({ changed: changes, revalued, revalueWhy }, out));
   } catch (e) { next(e); }
 });
 
@@ -1458,31 +1673,58 @@ router.delete('/valuations/:id/comps/:compId', async (req, res, next) => {
  * every line the human typed. A user's number is never overwritten by a formula —
  * that is the whole contract of this tool.
  */
+/**
+ * RE-DERIVE EVERY SUGGESTED ADJUSTMENT FOR A VALUATION, and never touch a human's.
+ *
+ * Extracted so the explicit "re-suggest" button and the confirm-the-facts step run
+ * the SAME code. They must: correcting the subject's living area changes what every
+ * suggestion should be — the size line, and the multiplier under the bedroom,
+ * bathroom and condition lines — and a confirm step that stored the fact without
+ * re-deriving them left the screen showing a value computed from the OLD fact. The
+ * grid is rebuilt from the STORED adjustments, so nothing moves until these are
+ * rewritten (caught by `scripts/test-subject-facts-db.js`, which is why it exists).
+ *
+ * A SUGGESTION NEVER OVERWRITES A HUMAN. A line somebody typed is `source:'user'`
+ * and is kept exactly; only the suggested ones are re-derived, and a fresh
+ * suggestion for a key a person has already answered is dropped rather than
+ * arguing with them.
+ */
+/** The rate window this valuation's stored rates were derived with, else the default. */
+function ratesMonthsOf(v) {
+  const m = v && v.market_rates && Number(v.market_rates.months);
+  return Number.isFinite(m) && m > 0 ? m : 24;
+}
+
+async function resuggestAll(valuationId, subject, months = 24) {
+  const derived = await ratesFor({ state: subject.state, city: subject.city, months });
+  const rates = derived.rates;
+  const comps = (await db.query(
+    `SELECT * FROM property_valuation_comps WHERE valuation_id=$1`, [valuationId])).rows;
+  for (const c of comps) {
+    const mine = (c.adjustments || []).filter((l) => l && l.source === 'user');
+    const keys = new Set(mine.map((l) => l.key));
+    const fresh = V.suggestAdjustments(subject, c.snapshot || {}, rates, { today: todayNY() })
+      .filter((l) => !keys.has(l.key));
+    const adj = V.normalizeAdjustments(mine.concat(fresh));
+    const a = V.adjustComp(c.snapshot || {}, adj);
+    await db.query(
+      `UPDATE property_valuation_comps SET adjustments=$2, adjusted_price=$3, net_adjustment=$4,
+         gross_adjustment=$5, net_adj_pct=$6, gross_adj_pct=$7, updated_at=now() WHERE id=$1`,
+      [c.id, JSON.stringify(adj), a.adjustedPrice, a.netAdjustment, a.grossAdjustment,
+       a.netAdjPct, a.grossAdjPct]);
+  }
+  await storeRates(valuationId, derived);
+  return comps.length;
+}
+
 router.post('/valuations/:id/suggest', async (req, res, next) => {
   try {
     if (!isUuid(req.params.id)) return res.status(404).json({ error: 'not found' });
     const v = (await db.query(`SELECT * FROM property_valuations WHERE id=$1`, [req.params.id])).rows[0];
     if (!v) return res.status(404).json({ error: 'not found' });
     if (v.status === 'final') return res.status(409).json({ error: 'This valuation was finalized. Duplicate it to make changes.' });
-    const derived = await ratesFor({ state: v.subject_snapshot.state, city: v.subject_snapshot.city,
-      months: req.body && req.body.months ? req.body.months : 24 });
-    const rates = derived.rates;
-    const comps = (await db.query(
-      `SELECT * FROM property_valuation_comps WHERE valuation_id=$1`, [req.params.id])).rows;
-    for (const c of comps) {
-      const mine = (c.adjustments || []).filter((l) => l && l.source === 'user');
-      const keys = new Set(mine.map((l) => l.key));
-      const fresh = V.suggestAdjustments(v.subject_snapshot, c.snapshot || {}, rates, { today: todayNY() })
-        .filter((l) => !keys.has(l.key));
-      const adj = V.normalizeAdjustments(mine.concat(fresh));
-      const a = V.adjustComp(c.snapshot || {}, adj);
-      await db.query(
-        `UPDATE property_valuation_comps SET adjustments=$2, adjusted_price=$3, net_adjustment=$4,
-           gross_adjustment=$5, net_adj_pct=$6, gross_adj_pct=$7, updated_at=now() WHERE id=$1`,
-        [c.id, JSON.stringify(adj), a.adjustedPrice, a.netAdjustment, a.grossAdjustment,
-         a.netAdjPct, a.grossAdjPct]);
-    }
-    await storeRates(req.params.id, derived);
+    await resuggestAll(req.params.id, v.subject_snapshot,
+      req.body && req.body.months ? req.body.months : 24);
     await saveComputed(req.params.id);
     res.json(await loadValuation(req.params.id));
   } catch (e) { next(e); }
@@ -1729,7 +1971,7 @@ router.post('/imports', async (req, res, next) => {
     let dropped = 0;
     if (files.length > MAX_BULK) { dropped = files.length - MAX_BULK; files = files.slice(0, MAX_BULK); }
 
-    const out = await XI.importMany(db, files, { uploadedBy: req.actor.id });
+    const out = await XI.importMany(db, files, { uploadedBy: req.actor.id, source: 'hand upload' });
     if (dropped) {
       out.summary.dropped = dropped;
       out.summary.note = `Only the first ${MAX_BULK} files were read this time — ${dropped} more were left out. Send them in another batch.`;
@@ -1749,11 +1991,15 @@ router.get('/imports', async (req, res, next) => {
     const status = txt(req.query.status);
     if (status && ['ok', 'skipped', 'error', 'pending'].includes(status)) where.push(`i.status = ${P(status)}`);
     const r = await db.query(
-      `SELECT i.id, i.filename, i.status, i.error, i.form_type, i.effective_date,
+      // `source` (db/462) is how the report ARRIVED — a hand upload, a loan file, the
+      // back-book sweep. Without it the list showed a filename and nothing else, so
+      // "did the ones on our loan files actually come in?" could not be answered from
+      // the screen at all. NULL on every row that predates the column.
+      `SELECT i.id, i.filename, i.status, i.error, i.form_type, i.effective_date, i.source,
               i.subject_address, i.subject_city, i.subject_state, i.subject_zip,
               i.subject_property_id, i.appraiser_id, i.appraisal_id,
               i.comparables_seen, i.properties_written, i.observations_written, i.sales_written,
-              i.rows_skipped, i.created_at, i.ran_at,
+              i.rows_skipped, i.skip_reasons, i.created_at, i.ran_at,
               ap.name AS appraiser_name,
               s.full_name AS uploaded_by_name,
               count(*) OVER ()::int AS total
@@ -1791,7 +2037,13 @@ router.get('/quick', async (req, res, next) => {
         zip: txt(req.query.zip), gla: K.num(req.query.gla),
         condition_uad: txt(req.query.condition_uad), property_type: txt(req.query.property_type),
         units: K.int(req.query.units, { max: 999 }),
-        latitude: K.num(req.query.lat), longitude: K.num(req.query.lng),
+        // A COORDINATE THAT IS NOT ON EARTH IS NOT A COORDINATE. Unbounded, a
+        // typed `?lat=1e9` reached the haversine — harmless in that it matches
+        // nothing, but a filter that silently matches nothing is the shape of the
+        // bug this whole area exists to close. Out of range reads as "no
+        // position", which the search already answers honestly.
+        latitude: K.num(req.query.lat, { min: -90, max: 90 }),
+        longitude: K.num(req.query.lng, { min: -180, max: 180 }),
       };
     }
     // A QUICK ANSWER STILL NEEDS A MARKET. Nationwide is about nowhere — the same
@@ -1856,6 +2108,152 @@ router.get('/quick', async (req, res, next) => {
       answer,
       matched: found.rows.slice(0, 25),
       disclaimer: V.DISCLAIMER,
+    });
+  } catch (e) { next(e); }
+});
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * MARKET AREAS — the boundary a person drew (db/461).
+ *
+ * A radius cannot say "this side of the highway". These can, and because the
+ * shape decides which comparables an officer is shown, every one of them
+ * records WHO drew it. The geometry — and every refusal — lives in
+ * `lib/research/market-area`, pure and tested; these routes only store and
+ * fetch.
+ * ─────────────────────────────────────────────────────────────────────────── */
+router.get('/market-areas', async (req, res, next) => {
+  try {
+    const params = [];
+    const where = ['a.archived_at IS NULL'];
+    const P = (v) => { params.push(v); return '$' + params.length; };
+    if (txt(req.query.state)) where.push(`upper(a.state) = ${P(String(req.query.state).toUpperCase())}`);
+    if (txt(req.query.city)) where.push(`lower(a.city) = ${P(String(req.query.city).toLowerCase())}`);
+    const r = await db.query(
+      `SELECT a.*, s.full_name AS created_by_name
+         FROM market_areas a LEFT JOIN staff_users s ON s.id = a.created_by
+        WHERE ${where.join(' AND ')}
+        ORDER BY a.updated_at DESC LIMIT 200`, params);
+    res.json({ rows: r.rows });
+  } catch (e) { next(e); }
+});
+
+router.post('/market-areas', async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const name = txt(b.name);
+    if (!name) return res.status(400).json({ error: 'give the area a name — a boundary nobody can refer to is a boundary nobody will use' });
+    // THE GEOMETRY REFUSES, NOT THE ROUTE. One definition of what a usable shape
+    // is, shared with the search that will later ask "is this house inside it".
+    const shape = MA.describeArea(b.ring);
+    if (!shape.ok) return res.status(400).json({ error: shape.why, problem: shape.problem });
+    const ring = MA.cleanRing(b.ring);
+    const kind = ['neighborhood', 'working', 'exclusion'].includes(b.kind) ? b.kind : 'neighborhood';
+    const r = await db.query(
+      `INSERT INTO market_areas (name, kind, state, city, ring,
+         min_lat, max_lat, min_lng, max_lng, area_sq_mi, created_by, note)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [name, kind, txt(b.state) ? String(b.state).toUpperCase() : null, txt(b.city),
+        JSON.stringify(ring), shape.bounds.minLat, shape.bounds.maxLat,
+        shape.bounds.minLng, shape.bounds.maxLng, shape.areaSqMi, req.actor.id, txt(b.note)]);
+    res.status(201).json({ area: r.rows[0], shape });
+  } catch (e) {
+    // The partial-unique index: two live shapes with one name in one town is a
+    // filing mistake nobody can untangle later.
+    if (e && e.code === '23505') {
+      return res.status(409).json({ error: 'an area with that name already exists in that town — '
+        + 'give this one its own name, or archive the old one' });
+    }
+    next(e);
+  }
+});
+
+router.post('/market-areas/:id/archive', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'not found' });
+    // ARCHIVED, NEVER DELETED. A valuation may have been built inside this
+    // boundary, and deleting it would leave that work resting on a shape nobody
+    // can look at.
+    const r = await db.query(
+      'UPDATE market_areas SET archived_at = now(), updated_at = now() WHERE id=$1 AND archived_at IS NULL RETURNING id',
+      [req.params.id]);
+    if (!r.rowCount) return res.status(404).json({ error: 'not found, or already archived' });
+    res.json({ ok: true, id: r.rows[0].id });
+  } catch (e) { next(e); }
+});
+
+/** Which of a market's properties fall inside a drawn area. */
+/**
+ * A DRAWN MARKET AREA, RESOLVED TO THE PROPERTIES INSIDE IT.
+ *
+ * The owner's reason for drawing one in the first place: a mile in one direction
+ * crosses a river, a rail line or a school-district boundary; a mile in another is
+ * the same houses on the same streets. So the boundary decides which comparables
+ * an officer is shown — which means resolving it has to be exact, and it has to be
+ * the SAME exactness everywhere. `market-area.pointInRing` is that one definition
+ * (68 assertions, including a 61x61 grid scan); nothing here re-implements it.
+ *
+ * The box comes first because it is indexed and throws away almost everything;
+ * the exact test then runs on what survives, because the box includes the corners
+ * a drawn shape deliberately cuts off. `truncated` is reported rather than
+ * swallowed — a shape big enough to hit the cap has been answered from a large
+ * sample rather than from all of it, and the screen says so.
+ *
+ * Returns null when the id names no live area, so a caller can tell "the shape
+ * contains nothing" (ids: []) from "there is no such shape" (null). Those are
+ * different answers and must never collapse into one.
+ */
+const MARKET_AREA_SCAN_CAP = 5000;
+async function resolveMarketArea(id) {
+  if (!isUuid(id)) return null;
+  const a = (await db.query('SELECT * FROM market_areas WHERE id=$1 AND archived_at IS NULL', [id])).rows[0];
+  if (!a) return null;
+  const near = (await db.query(
+    `SELECT p.id, p.eff_latitude, p.eff_longitude
+       FROM properties p
+      WHERE COALESCE(p.needs_review, false) = false
+        AND p.eff_latitude BETWEEN $1 AND $2
+        AND p.eff_longitude BETWEEN $3 AND $4
+      -- ORDERED, so the cap is DETERMINISTIC. An unordered LIMIT means which rows
+      -- come back is up to the planner, and two identical comparable searches
+      -- could resolve the same boundary to different properties.
+      ORDER BY p.id
+      LIMIT ${MARKET_AREA_SCAN_CAP}`, [a.min_lat, a.max_lat, a.min_lng, a.max_lng])).rows;
+  const ring = Array.isArray(a.ring) ? a.ring : [];
+  const inside = near.filter((p) => MA.pointInRing(p.eff_latitude, p.eff_longitude, ring));
+  return {
+    area: { id: a.id, name: a.name, city: a.city, state: a.state, area_sq_mi: a.area_sq_mi },
+    ids: inside.map((p) => p.id),
+    inBox: near.length,
+    inArea: inside.length,
+    truncated: near.length >= MARKET_AREA_SCAN_CAP,
+  };
+}
+
+router.get('/market-areas/:id/properties', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const a = (await db.query('SELECT * FROM market_areas WHERE id=$1', [req.params.id])).rows[0];
+    if (!a) return res.status(404).json({ error: 'not found' });
+    // THE BOX FIRST, IN SQL — it is indexed and throws away almost everything.
+    // Then the EXACT test in JavaScript on what survives, because the box
+    // includes the corners a drawn shape deliberately cuts off.
+    const near = (await db.query(
+      `SELECT ${S.LIST_COLUMNS}
+         FROM properties p
+        WHERE COALESCE(p.needs_review, false) = false
+          AND p.eff_latitude BETWEEN $1 AND $2
+          AND p.eff_longitude BETWEEN $3 AND $4
+        LIMIT 5000`, [a.min_lat, a.max_lat, a.min_lng, a.max_lng])).rows;
+    const ring = Array.isArray(a.ring) ? a.ring : [];
+    const inside = near.filter((p) => MA.pointInRing(p.eff_latitude, p.eff_longitude, ring));
+    res.json({
+      area: a,
+      rows: inside,
+      // BOTH NUMBERS, because "we hold 40 in the box and 12 in your shape" is
+      // the useful reading — it says how much the boundary actually cut.
+      inBox: near.length,
+      inArea: inside.length,
+      truncated: near.length >= 5000,
     });
   } catch (e) { next(e); }
 });
