@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { subscribeChat } from '../lib/chatEvents.js';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
+import ConfirmFoundProperties from '../components/ConfirmFoundProperties.jsx';
 
 // Ask every embedded Track Record tool on the page to pull the server's fresh
 // truth in (#112 live cross-user refresh). The tool ignores this while the local
@@ -154,6 +155,21 @@ export default function TrackRecordScreen() {
       )}
       <div className="toolsheet-body scroll">
         <div className="toolsheet-inner">
+          {/* Properties our team found in the public records, for the borrower
+              to confirm (§9.4). It sits ABOVE the builder and the builder is
+              NOT touched — blueprint §12 keeps the borrower's own tool as it is,
+              so this is an addition alongside it, never a rewrite. Answering
+              writes a line server-side, so the tool below is told to re-read
+              rather than being edited from here. It renders nothing at all when
+              there is nothing to confirm, which is the ordinary case. */}
+          <ConfirmFoundProperties onChanged={() => {
+            reloadTrackRecordFrames();
+            api.trackRecords().then((rows) => {
+              const c = { flips: 0, holds: 0, ground: 0, total: 0 };
+              for (const r of rows || []) { c[bucketOf(r.deal_type)]++; c.total++; }
+              setCounts(c);
+            }).catch(() => {});
+          }} />
           <StaticToolFrame
             title="Borrower track record"
             src="/tools/track-record.html?portal=1&embed=1"

@@ -401,6 +401,11 @@ export const api = {
   addTrackRecord:  (b) => req('POST', '/api/borrower/track-records', b),
   deleteTrackRecord: (id) => req('DELETE', `/api/borrower/track-records/${id}`),
   trackRecordSnapshot: () => req('GET', '/api/borrower/track-record/snapshot'),
+  // Properties our team found in the public records, for the borrower to confirm
+  // (blueprint §9.4). A "yes" is a CLAIM — it lands pending and staff verify it.
+  trackRecordCandidates: () => req('GET', '/api/borrower/track-record-candidates'),
+  answerTrackRecordCandidate: (id, b) => req('POST', `/api/borrower/track-record-candidates/${id}/answer`, b),
+  undoTrackRecordCandidate: (id) => req('POST', `/api/borrower/track-record-candidates/${id}/undo`),
 
   // reusable partners (co-borrowers)
   partners:     () => req('GET', '/api/borrower/partners'),
