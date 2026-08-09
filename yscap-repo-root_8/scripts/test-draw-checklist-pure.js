@@ -149,4 +149,34 @@ for (const bad of [undefined, null, {}, { hasFindings: 'yes' }]) {
   ok(Array.isArray(c.steps) && c.steps.length > 0, `F2 buildChecklist(${JSON.stringify(bad)}) still answers`);
 }
 
+// ─────────────────────────────────────────────── G. expected dates — and never a guess
+{
+  const now = Date.now(), D = (d) => new Date(now + d * 86400000);
+  eq(CL.expectedDates({}, { inspection_sla_days: 5 }), { inspection: null, decision: null, release: null },
+    'G1 no start date means no expected date — "expected" with nothing to count from is a guess');
+
+  const pending = CL.expectedDates({ inspectionStartedAt: D(-2) }, { inspection_sla_days: 5 });
+  eq(pending.inspection.actual, false, 'G2 a date still ahead is an ESTIMATE');
+  eq(pending.inspection.late, false, 'G3 …and is not late yet');
+
+  const late = CL.expectedDates({ inspectionStartedAt: D(-20) }, { inspection_sla_days: 5 });
+  eq(late.inspection.late, true, 'G4 an estimate in the past is late');
+
+  const settled = CL.expectedDates({ reportReceived: true, findingsCreatedAt: D(-3), inspectionStartedAt: D(-20) }, { inspection_sla_days: 5 });
+  eq(settled.inspection.actual, true, 'G5 something that HAPPENED reports the real date, not the estimate');
+  ok(!('late' in settled.inspection), 'G6 …and something that already happened can never be "late"');
+
+  const released = CL.expectedDates({ releaseRecordedAt: D(-1), wireDueAt: D(-5) }, {});
+  eq(released.release.actual, true, 'G7 a recorded release beats its own due date');
+
+  // `wire_due_at` is what the overdue alert measures, so the expected date must agree with it.
+  const due = CL.expectedDates({ wireDueAt: D(3), investorSentAt: D(-1) }, { investor_funding_sla_days: 3 });
+  eq(due.release.date, new Date(now + 3 * 86400000).toISOString().slice(0, 10),
+    'G8 the wire due date wins over the SLA estimate, so the date and the alert never disagree');
+
+  // An SLA of 0 turns the estimate off entirely rather than predicting "today".
+  eq(CL.expectedDates({ inspectionStartedAt: D(-2) }, { inspection_sla_days: 0 }).inspection, null,
+    'G9 an SLA of 0 produces no estimate at all');
+}
+
 console.log(`test-draw-checklist-pure: all ${n} draw-checklist checks passed.`);

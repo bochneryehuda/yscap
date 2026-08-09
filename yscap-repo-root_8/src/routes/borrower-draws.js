@@ -30,6 +30,7 @@ const borrowerSafe = require('../lib/borrower-safe');
 const drawReport = require('../sitewire/draw-report');
 const { serveDocument } = require('../lib/serve-document');
 const drawAttachments = require('../sitewire/draw-attachments');   // photos/invoices/receipts on a draw
+const drawChecklist = require('../sitewire/draw-checklist');       // expected dates + the booked visit
 const storage = require('../lib/storage');
 const { decodeUploadBase64, sniffKind } = require('../lib/upload-bytes');
 const { stripLocationExif } = require('../lib/image-exif');
@@ -147,7 +148,25 @@ router.get('/draws/:appId/rollup', async (req, res) => {
     }
     // Our fee income on this project is never borrower-facing.
     delete rollup.fees;
-    res.json({ rollup });
+    // WHAT HAPPENS NEXT, AND WHEN (owner-directed 2026-08-09). The borrower could see the stage and
+    // the money but never a DATE — and the booked inspection visit was mirrored, turned into "Visit
+    // scheduled" by draw-status, and then simply never shown to the person waiting at the property.
+    //
+    // BORROWER-SAFE BY CONSTRUCTION: only the three dates and the visit are taken from the
+    // checklist — never its steps, which name our internal work and the capital-partner rung.
+    const dates = {};
+    try {
+      for (const d of (rollup.draws || []).slice(0, 12)) {
+        const c = await drawChecklist.checklistFor(db, req.params.appId, d.sitewire_draw_id, { stage: d.approval_stage });
+        if (!c) continue;
+        dates[d.sitewire_draw_id] = {
+          inspection: c.dates && c.dates.inspection, decision: c.dates && c.dates.decision,
+          release: c.dates && c.dates.release,
+          visit_scheduled_at: (c.facts && c.facts.visitScheduledAt) || null,
+        };
+      }
+    } catch (_) { /* dates are additive — the screen stands without them */ }
+    res.json({ rollup, dates });
   } catch (e) { res.status(500).json({ error: 'Something went wrong — please try again.' }); }
 });
 

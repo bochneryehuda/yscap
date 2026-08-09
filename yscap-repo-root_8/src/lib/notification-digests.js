@@ -77,6 +77,16 @@ const DIGEST_ACTION = Object.freeze({
   // Per-FILE stamp for the direct-source sweep (the sweep's other stamp,
   // `direct_source_sweep_daily`, is global and only prevents overlapping runs).
   DIRECT_SOURCE_FILE: 'direct_source_file_verified',
+  // The gaps in the draw workflow that had NO reminder at all (owner-directed 2026-08-09).
+  // Every one covers a stretch where a draw could sit silently: between ordering an inspection and
+  // the report arriving, between the report arriving and somebody reading it, between reading it
+  // and the borrower being told, after a final approval on a file WE release, an investor fee we
+  // are owed, and retainage that is releasable at the end of the job.
+  DRAW_INSPECTION_LATE: 'draw_inspection_late',
+  DRAW_FINDINGS_UNREVIEWED: 'draw_findings_unreviewed',
+  DRAW_APPROVED_UNRECORDED: 'draw_approved_unrecorded',
+  INVESTOR_FEE_OWED: 'investor_fee_owed_chase',
+  RETAINAGE_RELEASABLE: 'retainage_releasable',
 });
 
 /**
@@ -1134,6 +1144,238 @@ function activeManagedLink(appIdExpr) {
   return `EXISTS (SELECT 1 FROM sitewire_property_links pl
                    WHERE pl.application_id = ${appIdExpr}
                      AND pl.matched_by = 'created' AND COALESCE(pl.lifecycle_state,'active') = 'active')`;
+}
+
+/* ══ The stretches of the draw workflow that had NO reminder at all (owner-directed 2026-08-09) ══
+ *
+ * Each is the same shape as the Increment C sweeps above — scope to an ACTIVE PILOT-managed link,
+ * put the throttle in the WHERE as well as the gate (a per-file digest whose sort key does not
+ * advance starves its tail otherwise), deterministic oldest-first ORDER, and the atomic _gate claim.
+ * Every one is self-gating, so it can never bombard, and every one names the ONE action that clears
+ * it. They all read their "how long is too long" from the draw settings, so an admin changes the
+ * cadence on the settings screen rather than in code.
+ */
+
+/** One company-level day count from the draw settings, with the catalog's own fallback. Never throws. */
+async function settingDays(key) {
+  try {
+    const DS = require('../sitewire/draw-settings');
+    const e = DS.BY_KEY[key];
+    const row = (await db.query(`SELECT value FROM sitewire_settings WHERE key=$1`, [e && e.company ? e.company : key])).rows[0];
+    const v = Number(row && row.value);
+    if (Number.isFinite(v) && v >= 0) return v;
+    return Number((e && e.fallback) || 0);
+  } catch (_) { return 0; }
+}
+
+/* A) INSPECTION ORDERED, NO REPORT. A draw sitting in an inspecting state past the inspection SLA
+   with no findings row — nobody was chasing the inspector, because nothing anywhere knew it was
+   late. Clears itself the moment the findings land. */
+async function drawInspectionLateOnce() {
+  let sent = 0;
+  const days = await settingDays('inspection_sla_days');
+  if (!(days > 0)) return 0;                       // 0 turns the reminder off entirely
+  const rows = (await db.query(
+    `SELECT d.application_id, count(*)::int AS n, min(d.submitted_at) AS oldest,
+            array_agg(d.sitewire_draw_id) AS draw_ids
+       FROM sitewire_draws d
+       JOIN applications a ON a.id=d.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+      WHERE d.status IN ('inspecting','pending','pending_capital_partner')
+        AND d.submitted_at IS NOT NULL
+        AND d.submitted_at < now() - (($1)::text || ' days')::interval
+        AND NOT EXISTS (SELECT 1 FROM draw_findings f WHERE f.sitewire_draw_id = d.sitewire_draw_id)
+        AND ${activeManagedLink('d.application_id')}
+        AND ${notThrottled('d.application_id', DIGEST_ACTION.DRAW_INSPECTION_LATE, "interval '2 days'")}
+      GROUP BY d.application_id
+      ORDER BY oldest ASC, d.application_id
+      LIMIT 300`, [String(days)])).rows;
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.DRAW_INSPECTION_LATE, r.application_id, '2 days'))) continue;
+      const age = daysAt(r.oldest);
+      sent += await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'Inspection report is late' : `${r.n} inspection reports are late`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids),
+        badge: { text: 'Chase the inspector', tone: 'action' },
+        body: `${r.n === 1 ? 'A draw has been' : `${r.n} draws have been`} waiting on the inspection for ${age != null ? `${age} day${age === 1 ? '' : 's'}` : 'longer than expected'} — the report was expected within ${days} day${days === 1 ? '' : 's'}. Chase the inspector, or record the report if it has already arrived.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk',
+      }, 'draw-inspection-late');
+      await _stamp(DIGEST_ACTION.DRAW_INSPECTION_LATE, r.application_id, { draws: r.n, days: age });
+    } catch (e) { console.error('[digest] draw-inspection-late', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* B) THE REPORT IS IN AND NOBODY HERE HAS CONFIRMED THEY READ IT.
+   This is the gap the review stamp was built for. Note WHAT the state actually is, because it is
+   not what it first looks like: a `draw_findings` row is created BY the delivery (reconcile.js
+   inserts it with status='delivered' and delivered_at=now()), so "findings exist but have not gone
+   to the borrower" is structurally impossible and a sweep looking for it could never fire. The
+   real, common state is the opposite and worse — the results have ALREADY reached the borrower and
+   nobody at the company ever confirmed they read the inspector's report. So this chases the review
+   itself, and its wording says so. */
+async function drawFindingsUnreviewedOnce() {
+  let sent = 0;
+  const days = await settingDays('decision_sla_days');
+  if (!(days > 0)) return 0;
+  const rows = (await db.query(
+    `SELECT f.application_id, count(*)::int AS n, min(f.created_at) AS oldest,
+            array_agg(f.sitewire_draw_id) AS draw_ids
+       FROM draw_findings f
+       JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+      WHERE f.reviewed_at IS NULL
+        AND f.created_at < now() - (($1)::text || ' days')::interval
+        -- A draw the borrower has already settled needs no retrospective review chase; the money
+        -- question has moved on and a nudge there is noise.
+        AND f.status = 'delivered'
+        AND ${activeManagedLink('f.application_id')}
+        AND ${notThrottled('f.application_id', DIGEST_ACTION.DRAW_FINDINGS_UNREVIEWED, "interval '2 days'")}
+      GROUP BY f.application_id
+      ORDER BY oldest ASC, f.application_id
+      LIMIT 300`, [String(days)])).rows;
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.DRAW_FINDINGS_UNREVIEWED, r.application_id, '2 days'))) continue;
+      const age = daysAt(r.oldest);
+      sent += await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'Nobody has reviewed this inspection' : `${r.n} inspections have not been reviewed`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids),
+        badge: { text: 'Read it', tone: 'action' },
+        body: `The inspector's results went to the borrower ${age != null ? `${age} day${age === 1 ? '' : 's'} ago` : 'a while ago'} and nobody here has confirmed they read them. Open the draw, check the amounts and the photos against the report, and mark it reviewed — if something is wrong, it is far cheaper to catch now than after the money moves.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk',
+      }, 'draw-findings-unreviewed');
+      await _stamp(DIGEST_ACTION.DRAW_FINDINGS_UNREVIEWED, r.application_id, { draws: r.n, days: age });
+    } catch (e) { console.error('[digest] draw-findings-unreviewed', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* C) DELIBERATELY ABSENT — "reviewed but not yet delivered to the borrower" CANNOT HAPPEN.
+   The plan for this batch listed it, and reading the schema disproved it: `draw_findings` rows are
+   created BY the delivery (reconcile.js inserts status='delivered', delivered_at=now()), so a
+   review stamp can only ever be written on an already-delivered row. A sweep for that state would
+   have executed cleanly, matched nothing forever, and looked like a working reminder. Recorded here
+   rather than silently dropped, so nobody re-adds it. If findings ever start being persisted BEFORE
+   delivery, this is the reminder to write. */
+
+/* D) FINALLY APPROVED, MONEY NEVER RECORDED — on a file WE release.
+   On an investor-released file PILOT writes the ledger itself at final approve, so a missing row
+   there means the automatic write did not run and the same nudge is the right answer. The one case
+   this must NOT nag about is a MANUAL delivery, where the money genuinely moved outside PILOT.
+   `wire_due_at` already drives the separate overdue alert, so this is scoped to draws that have NO
+   findings row to carry one (a draw approved without the borrower-accept path). */
+async function drawApprovedUnrecordedOnce() {
+  let sent = 0;
+  const rows = (await db.query(
+    `SELECT d.application_id, count(*)::int AS n, min(d.approved_at) AS oldest,
+            array_agg(d.sitewire_draw_id) AS draw_ids
+       FROM sitewire_draws d
+       JOIN applications a ON a.id=d.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+      WHERE d.status = 'approved' AND d.approved_at IS NOT NULL
+        AND d.approved_at < now() - interval '2 days'
+        AND NOT EXISTS (SELECT 1 FROM draw_disbursements dd WHERE dd.kind='draw' AND dd.sitewire_draw_id = d.sitewire_draw_id)
+        -- the accepted-findings path has its own overdue alert keyed on wire_due_at; do not double up
+        AND NOT EXISTS (SELECT 1 FROM draw_findings f WHERE f.sitewire_draw_id = d.sitewire_draw_id AND f.wire_due_at IS NOT NULL)
+        -- a MANUAL delivery moved the money outside PILOT on purpose
+        AND COALESCE((SELECT pl.investor_funding_mode FROM sitewire_property_links pl
+                       WHERE pl.application_id = d.application_id AND pl.matched_by='created'), '') <> 'manual'
+        AND ${activeManagedLink('d.application_id')}
+        AND ${notThrottled('d.application_id', DIGEST_ACTION.DRAW_APPROVED_UNRECORDED, "interval '3 days'")}
+      GROUP BY d.application_id
+      ORDER BY oldest ASC, d.application_id
+      LIMIT 300`)).rows;
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.DRAW_APPROVED_UNRECORDED, r.application_id, '3 days'))) continue;
+      const age = daysAt(r.oldest);
+      sent += await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'An approved draw has no money recorded' : `${r.n} approved draws have no money recorded`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids),
+        badge: { text: 'Record it', tone: 'action' },
+        body: `${r.n === 1 ? 'A draw was' : `${r.n} draws were`} finally approved ${age != null ? `${age} day${age === 1 ? '' : 's'} ago` : 'a while ago'} but nothing has been recorded in the money ledger. Record the release on the draw desk — until it is there, the loan's data tape understates what has been drawn.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk',
+      }, 'draw-approved-unrecorded');
+      await _stamp(DIGEST_ACTION.DRAW_APPROVED_UNRECORDED, r.application_id, { draws: r.n, days: age });
+    } catch (e) { console.error('[digest] draw-approved-unrecorded', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* E) AN INVESTOR STILL OWES US OUR DRAW FEE. Only ever a report and a nudge — nothing anywhere waits
+   on it. Scoped per FILE so the reminder lands with the people who know that deal. */
+async function investorFeeOwedOnce() {
+  let sent = 0;
+  const days = await settingDays('fee_owed_chase_days');
+  if (!(days > 0)) return 0;
+  const rows = (await db.query(
+    `SELECT dd.application_id, count(*)::int AS n, sum(dd.fee_receivable_cents)::bigint AS owed,
+            min(COALESCE(dd.release_date, dd.created_at::date)) AS oldest,
+            max(dd.note_buyer_label) AS buyer,
+            array_agg(dd.sitewire_draw_id) AS draw_ids
+       FROM draw_disbursements dd
+       JOIN applications a ON a.id=dd.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined')
+      WHERE dd.fee_status = 'owed'
+        AND COALESCE(dd.release_date, dd.created_at::date) <= CURRENT_DATE - (($1)::text || ' days')::interval
+        AND ${notThrottled('dd.application_id', DIGEST_ACTION.INVESTOR_FEE_OWED, "interval '7 days'")}
+      GROUP BY dd.application_id
+      ORDER BY oldest ASC, dd.application_id
+      LIMIT 300`, [String(days)])).rows;
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.INVESTOR_FEE_OWED, r.application_id, '7 days'))) continue;
+      const age = daysAt(r.oldest);
+      const amt = '$' + (Number(r.owed || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      sent += await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: `${r.buyer || 'The investor'} still owes us ${amt}`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids),
+        badge: { text: 'Chase the fee', tone: 'action' },
+        body: `${r.buyer || 'The investor'} released ${r.n === 1 ? 'a draw' : `${r.n} draws`} on this property directly to the borrower and still owes us ${amt} in draw fees${age != null ? `, the oldest from ${age} day${age === 1 ? '' : 's'} ago` : ''}. Chase it, then mark it received on the fees-owed list.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk',
+      }, 'investor-fee-owed');
+      await _stamp(DIGEST_ACTION.INVESTOR_FEE_OWED, r.application_id, { draws: r.n, owed_cents: Number(r.owed || 0), days: age });
+    } catch (e) { console.error('[digest] investor-fee-owed', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* F) RETAINAGE IS RELEASABLE. A project marked finished or paid off that is still holding retainage
+   — the borrower's own money, sitting with us because nobody pressed the button. Deliberately keyed
+   on the LIFECYCLE state rather than a guess about completion: a human said the job is done. */
+async function retainageReleasableOnce() {
+  let sent = 0;
+  const rows = (await db.query(
+    `SELECT pl.application_id, pl.lifecycle_at,
+            (COALESCE((SELECT sum(dd.retainage_held_cents) FROM draw_disbursements dd
+                        WHERE dd.application_id=pl.application_id AND dd.kind='draw'), 0)
+             - COALESCE((SELECT sum(dd2.net_release_cents) FROM draw_disbursements dd2
+                        WHERE dd2.application_id=pl.application_id AND dd2.kind='retainage_release'), 0))::bigint AS holding
+       FROM sitewire_property_links pl
+       JOIN applications a ON a.id=pl.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined')
+      WHERE pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active') IN ('finished','paid_off')
+        AND ${notThrottled('pl.application_id', DIGEST_ACTION.RETAINAGE_RELEASABLE, "interval '7 days'")}
+      ORDER BY pl.lifecycle_at ASC NULLS LAST, pl.application_id
+      LIMIT 300`)).rows;
+  for (const r of rows) {
+    const holding = Number(r.holding || 0);
+    if (holding <= 0) continue;                    // nothing held — never a reminder about $0
+    try {
+      if (!(await _gate(DIGEST_ACTION.RETAINAGE_RELEASABLE, r.application_id, '7 days'))) continue;
+      const amt = '$' + (holding / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      sent += await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: `${amt} of retainage is ready to release`,
+        badge: { text: 'Release it', tone: 'action' },
+        body: `This project is marked complete and we are still holding ${amt} of the borrower's retainage. Release it on the draw desk.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk',
+      }, 'retainage-releasable');
+      await _stamp(DIGEST_ACTION.RETAINAGE_RELEASABLE, r.application_id, { holding_cents: holding });
+    } catch (e) { console.error('[digest] retainage-releasable', r.application_id, e && e.message); }
+  }
+  return sent;
 }
 
 /* 7) order_trustpoint (blueprint 2b) — a draw submitted through the portal composer on a TrustPoint
@@ -2321,6 +2563,13 @@ async function runDue() {
     await orderTrinityOnce().catch((e) => console.error('[digests] order-trinity', e && e.message));
     await investorPendingDeliveryOnce().catch((e) => console.error('[digests] investor-pending', e && e.message));
     await withInvestorOnce().catch((e) => console.error('[digests] with-investor', e && e.message));
+    // The six stretches that had no reminder at all (owner-directed 2026-08-09). Each self-gates on
+    // its own period, so a steady morning tick gives the intended cadence.
+    await drawInspectionLateOnce().catch((e) => console.error('[digests] draw-inspection-late', e && e.message));
+    await drawFindingsUnreviewedOnce().catch((e) => console.error('[digests] draw-findings-unreviewed', e && e.message));
+    await drawApprovedUnrecordedOnce().catch((e) => console.error('[digests] draw-approved-unrecorded', e && e.message));
+    await investorFeeOwedOnce().catch((e) => console.error('[digests] investor-fee-owed', e && e.message));
+    await retainageReleasableOnce().catch((e) => console.error('[digests] retainage-releasable', e && e.message));
     await trainingRunOnce().catch((e) => console.error('[digests] training-run', e && e.message));
     await certificateSurveyOnce().catch((e) => console.error('[digests] cert-survey', e && e.message));
     await directSourceSweepOnce().catch((e) => console.error('[digests] direct-source-sweep', e && e.message));
@@ -2530,6 +2779,8 @@ module.exports = {
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, trustpointUnreleasedOnce, workflowAgingOnce, conditionFreshnessReopenOnce,
   orderTrustpointOnce, orderTrinityOnce, investorPendingDeliveryOnce, withInvestorOnce,
+  drawInspectionLateOnce, drawFindingsUnreviewedOnce,
+  drawApprovedUnrecordedOnce, investorFeeOwedOnce, retainageReleasableOnce,
   orderOverdueOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, unfundedRereadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,

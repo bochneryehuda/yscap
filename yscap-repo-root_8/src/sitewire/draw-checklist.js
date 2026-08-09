@@ -228,12 +228,15 @@ async function factsFor(db, appId, drawId, { fundingMode = null } = {}) {
   const q = async (sql, params) => { try { return (await db.query(sql, params)).rows; } catch (_) { return null; } };
   const f = {};
 
-  const draw = (await q(`SELECT status, total_approved_cents, tp_import_task_opened_at FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId]) || [])[0] || null;
+  const draw = (await q(`SELECT status, total_approved_cents, submitted_at, approved_at FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId]) || [])[0] || null;
+  // The inspection clock starts when the draw was submitted for it — the same timestamp the
+  // late-inspection reminder measures, so the expected date and the chase can never disagree.
+  f.inspectionStartedAt = draw ? draw.submitted_at : null;
   f.rawStatus = draw ? draw.status : null;
   f.finalApproved = draw ? APPROVAL.FINAL_STATUSES.has(String(draw.status || '')) : null;
 
   const finding = (await q(
-    `SELECT id, status, delivered_at, accepted_at, reviewed_at, funding_mode
+    `SELECT id, status, delivered_at, accepted_at, reviewed_at, funding_mode, created_at, wire_due_at
        FROM draw_findings WHERE application_id=$1 AND sitewire_draw_id=$2
       ORDER BY id DESC LIMIT 1`, [appId, drawId]) || [])[0] || null;
   f.hasFindings = !!finding;
@@ -241,6 +244,8 @@ async function factsFor(db, appId, drawId, { fundingMode = null } = {}) {
   f.findingsDeliveredAt = finding ? finding.delivered_at : null;
   f.findingsReviewedAt = finding ? finding.reviewed_at : null;
   f.borrowerAgreed = finding ? ['accepted', 'resolved'].includes(String(finding.status || '')) : false;
+  f.findingsCreatedAt = finding ? finding.created_at : null;
+  f.wireDueAt = finding ? finding.wire_due_at : null;
   // The report has arrived once the inspector's findings exist for this draw — that IS the report.
   f.reportReceived = finding ? true : (draw ? false : null);
 
@@ -317,11 +322,70 @@ async function factsFor(db, appId, drawId, { fundingMode = null } = {}) {
   f.expectedFundingDate = del ? del.expected_funding_date : null;
   f.investorDaysWaiting = del ? Number(del.days_waiting) : null;
 
-  const disb = (await q(`SELECT funded_status FROM draw_disbursements WHERE sitewire_draw_id=$1 AND kind='draw' LIMIT 1`, [drawId]) || [])[0] || null;
+  const disb = (await q(`SELECT funded_status, release_date, created_at FROM draw_disbursements WHERE sitewire_draw_id=$1 AND kind='draw' LIMIT 1`, [drawId]) || [])[0] || null;
   f.releaseRecorded = !!disb;
   f.releaseHeld = !!(disb && disb.funded_status === 'held');
+  // A HELD release has not moved the money, so it is not the "actual" release date.
+  f.releaseRecordedAt = (disb && disb.funded_status === 'released') ? (disb.release_date || disb.created_at) : null;
 
   return f;
+}
+
+// ---------------------------------------------------------------------------
+// WHEN SHOULD EACH STEP HAPPEN — expected dates, from the settings
+// ---------------------------------------------------------------------------
+
+/** Add whole days to a calendar day, as a 'YYYY-MM-DD' string. Calendar arithmetic only. */
+function addDays(from, days) {
+  const t = from ? new Date(from).getTime() : NaN;
+  if (!Number.isFinite(t) || !Number.isFinite(Number(days))) return null;
+  return new Date(t + Number(days) * 86400000).toISOString().slice(0, 10);
+}
+
+/**
+ * The three dates a coordinator and a borrower both want: when the inspection should be in, when
+ * we should have answered, and when the money should move.
+ *
+ * PURE. Each is derived from the step that STARTED the clock plus the matching SLA — and each is
+ * `null` when that step has not happened, because "expected" with no start date is a guess. A date
+ * that is already SETTLED (the report arrived, the findings went out, the money moved) reports the
+ * real date instead of the estimate, marked as actual, so nobody is shown a prediction about
+ * something that already happened.
+ */
+function expectedDates(facts = {}, sla = {}) {
+  const f = facts || {};
+  const d = (v) => (v ? String(new Date(v).toISOString()).slice(0, 10) : null);
+  const out = {};
+
+  out.inspection = f.reportReceived && f.findingsCreatedAt
+    ? { date: d(f.findingsCreatedAt), actual: true }
+    : (f.inspectionStartedAt && sla.inspection_sla_days > 0
+      ? { date: addDays(f.inspectionStartedAt, sla.inspection_sla_days), actual: false }
+      : null);
+
+  out.decision = f.findingsDeliveredAt
+    ? { date: d(f.findingsDeliveredAt), actual: true }
+    : (f.findingsCreatedAt && sla.decision_sla_days > 0
+      ? { date: addDays(f.findingsCreatedAt, sla.decision_sla_days), actual: false }
+      : null);
+
+  // The release clock starts when the money question is genuinely live: the borrower has agreed.
+  // `wire_due_at` is the authority when there is one — it is what the overdue alert measures — so
+  // the expected date and the alert can never disagree.
+  out.release = f.releaseRecordedAt
+    ? { date: d(f.releaseRecordedAt), actual: true }
+    : (f.wireDueAt ? { date: d(f.wireDueAt), actual: false }
+      : (f.investorSentAt && sla.investor_funding_sla_days > 0
+        ? { date: addDays(f.investorSentAt, sla.investor_funding_sla_days), actual: false }
+        : null));
+
+  // Late is a plain comparison against today, and only ever on an ESTIMATE — something that has
+  // already happened cannot be late.
+  const today = new Date().toISOString().slice(0, 10);
+  for (const k of Object.keys(out)) {
+    if (out[k] && !out[k].actual && out[k].date) out[k].late = out[k].date < today;
+  }
+  return out;
 }
 
 /** The convenience every caller wants: the facts read and the checklist built. Never throws. */
@@ -329,12 +393,23 @@ async function checklistFor(db, appId, drawId, opts = {}) {
   try {
     const facts = await factsFor(db, appId, drawId, opts);
     const list = buildChecklist(facts);
-    return { ...list, status: statusInWords(facts.rawStatus, opts.stage), facts };
+    let dates = null;
+    try {
+      const DS = require('./draw-settings');
+      const rows = (await db.query(`SELECT key, value FROM sitewire_settings`)).rows;
+      const company = DS.companyMapFrom(rows);
+      const sla = {};
+      for (const k of ['inspection_sla_days', 'decision_sla_days', 'investor_funding_sla_days']) {
+        sla[k] = Number(DS.resolveOne(DS.BY_KEY[k], { company }).value) || 0;
+      }
+      dates = expectedDates(facts, sla);
+    } catch (_) { /* dates are additive — the checklist stands without them */ }
+    return { ...list, status: statusInWords(facts.rawStatus, opts.stage), dates, facts };
   } catch (_) { return null; }
 }
 
 module.exports = {
   STEPS, DONE, WAITING, UNKNOWN,
-  buildChecklist, statusInWords, factsFor, checklistFor,
-  _internals: { day, investorAnswerDetail },
+  buildChecklist, statusInWords, expectedDates, factsFor, checklistFor,
+  _internals: { day, investorAnswerDetail, addDays },
 };
