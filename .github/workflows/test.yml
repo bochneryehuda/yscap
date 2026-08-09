@@ -45,7 +45,16 @@ jobs:
   # ---------------------------------------------------------------------------
   test-db:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # NO job-level timeout-minutes — deliberately. A JOB's clock starts when the
+    # job is QUEUED, not when it gets a runner, so the old `timeout-minutes: 30`
+    # here was spent waiting in line: on 2026-08-09 (main, sha f9cb8a17) this job
+    # was cancelled at 28 minutes with `runner_id: 0` — it never received a runner
+    # at all — which made `deploy` (needs: [test, test-db]) SKIP, so a green merge
+    # silently stopped publishing to Render. That is the exact "fixed in code but
+    # still broken on the site" gap this workflow exists to close.
+    #
+    # The hang protection it was there for now lives on the STEPS below, whose
+    # clocks only count actual execution. Same safety, minus the queue time.
     defaults:
       run:
         working-directory: yscap-repo-root_8
@@ -75,7 +84,9 @@ jobs:
       - run: npm ci
       - name: Apply every migration to the fresh database
         run: npm run migrate
+        timeout-minutes: 15
       - run: npm test
+        timeout-minutes: 30
 
   # ---------------------------------------------------------------------------
   # Auto-publish to Render. Runs ONLY:
