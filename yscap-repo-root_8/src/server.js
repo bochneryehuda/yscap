@@ -817,6 +817,14 @@ if (require.main === module) {
         require('./lib/esign/draw-wire').backfillWireReclassifyOnce()
           .then((r) => r && (r.fixed || r.linked) && console.log('[boot] draw-wire reclassify backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] draw-wire reclassify backfill failed:', e.message));
+        // PREVIOUS FILES for iPhone photos (owner-reported 2026-08-10: the draw inspection
+        // photos are HEIC, "we need to add our site to be able to read this format"). New
+        // archives convert at the door; this ONE forward-only sweep converts what is already
+        // in the draw-media archive so the galleries, accept page and branded reports can
+        // finally show them. Cursor-driven, bounded per boot, self-terminating.
+        require('./sitewire/media-archive').backfillHeicMediaOnce(Number(process.env.DRAW_MEDIA_HEIC_BOOT || 40))
+          .then((r) => r && r.converted && console.log('[boot] draw-media HEIC backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] draw-media HEIC backfill failed:', e.message));
         // PREVIOUS FILES for the email-signature filter (owner-reported 2026-08-03:
         // the tiny pictures out of a title / insurance agent's signature "still
         // coming in as documents … we still need to manually reject it on every

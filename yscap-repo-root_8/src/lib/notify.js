@@ -83,6 +83,7 @@ const KICKER_OF = {
   draw_setup: 'Construction draws are open',
   draw_accepted: 'Construction draw', draw_disputed: 'Construction draw', draw_dispute_resolved: 'Draw inspection',
   draw_message: 'Message from your loan team', draw_started: 'Construction draw', draw_inbound: 'Construction draw',
+  draw_docs_pulled: 'Construction draw',
   trustpoint_import: 'Construction draw',
   sow_reallocation: 'Budget change', sow_change_request: 'Budget change',
   change_request: 'Change request', assignment: 'File assignment',
@@ -438,7 +439,7 @@ async function _mark(id, status) {
 // These types are ONLY ever suppressed for STAFF — the borrower-facing versions
 // (condition_added / doc_requested / doc_rejected) go through notifyBorrower,
 // which has its own BORROWER_MAJOR_EMAIL policy and is untouched by this set.
-const STAFF_INAPP_TYPES = new Set(['tool_submitted', 'doc_uploaded', 'condition_added']);
+const STAFF_INAPP_TYPES = new Set(['tool_submitted', 'doc_uploaded', 'condition_added', 'draw_docs_pulled']);
 
 // Escape hatch (used by the Notification Center's Send-now action) — bypasses
 // the LO gate for this single call so a hand-reviewed draft actually goes out.
@@ -603,6 +604,7 @@ const CATEGORY_OF = {
   // Sitewire draw-management events (findings delivery, accept/dispute, SOW reallocations)
   draw_findings: 'draws', draw_accepted: 'draws', draw_disputed: 'draws', draw_dispute_resolved: 'draws',
   draw_message: 'draws', draw_started: 'draws', draw_inbound: 'draws',
+  draw_docs_pulled: 'draws',
   // Action-needed (a submitted draw must be hand-entered into TrustPoint) — deliberately
   // NOT in STAFF_INAPP_TYPES, so it emails the coordinator.
   trustpoint_import: 'draws',

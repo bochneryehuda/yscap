@@ -13,6 +13,7 @@ const net = require('net');
 const db = require('../db');
 const storage = require('../lib/storage');
 const { stripLocationExif } = require('../lib/image-exif');
+const heic = require('../lib/heic');
 
 const MAX_ITEMS = 80;                 // hard cap on media pulled per archive run
 const PER_FILE_CAP = 30 * 1024 * 1024; // 30 MB per photo/video/PDF
@@ -217,12 +218,20 @@ async function archiveDrawMedia(appId, sitewireDrawId) {
     if (totalBytes >= RUN_TOTAL_CAP) { failed++; continue; } // disk guard — stop pulling once the run cap is hit
     try {
       const fetched = await fetchBinary(it.source_url);
+      // An iPhone photo (HEIC) is converted to JPEG BEFORE hashing/storing (owner-directed
+      // 2026-08-10): the durable copy is what the galleries render, the branded reports embed
+      // (jsPDF reads only JPEG/PNG), and the accept page serves — and none of them can read HEIC.
+      // A failed conversion keeps the original bytes; the photo is never lost to gain a preview.
+      let raw = fetched.buf, contentType = fetched.contentType;
+      if (it.kind === 'image' && heic.isHeic(raw)) {
+        const c = await heic.maybeConvert(raw);
+        if (c.converted) { raw = c.buf; contentType = 'image/jpeg'; }
+      }
       // Strip GPS/location EXIF from photos BEFORE we hash + store, so the durable copy (gallery, staff +
       // borrower reports) never carries the embedded capture location, and so the content hash is taken over
       // the SAME clean bytes on every delivery (a rotated URL for the same photo hashes identically →
       // dedup catches it). Non-images / undecodable bytes come back unchanged. (audit F-3.)
-      const buf = it.kind === 'image' ? stripLocationExif(fetched.buf) : fetched.buf;
-      const contentType = fetched.contentType;
+      const buf = it.kind === 'image' ? stripLocationExif(raw) : raw;
       const contentHash = sha256(buf);
       if (seenHashes.has(contentHash)) { deduped++; continue; } // same bytes already archived under another URL
       seenHashes.add(contentHash);
@@ -257,4 +266,67 @@ async function archivedMediaFor(appId, sitewireDrawId) {
     [appId, drawId])).rows;
 }
 
-module.exports = { planArchive, archiveDrawMedia, archivedMediaFor, fetchBinary, assertPublicHttps, isPrivateIp, sha256, extFor, PER_FILE_CAP, MAX_ITEMS };
+/* ONE-SWEEP BACKFILL — convert the HEIC photos already in the archive to JPEG (owner-directed
+ * 2026-08-10: the accept-page photos were iPhone HEIC files no browser can render, and the
+ * branded reports can only embed JPEG/PNG — so every already-archived HEIC is a photo nobody
+ * can see). New archives convert at the door (above); this walks the back book ONCE.
+ *
+ * Shape: a durable CURSOR in sync_runtime_state ('draw_media_heic_backfill' → {lastId}) that
+ * only ever moves FORWARD, so an unreadable row can never wedge the sweep or make it re-scan
+ * forever — the sweep visits every row exactly once and self-terminates at the end. Bounded per
+ * call; the ORIGINAL stored bytes are never deleted (storage never deletes) — the row is simply
+ * re-pointed at the JPEG copy, with content_type/bytes/sha256 updated to describe what it now
+ * points at. Never throws.
+ */
+async function backfillHeicMediaOnce(limit = 40) {
+  const out = { scanned: 0, converted: 0, done: false };
+  try {
+    const st = (await db.query(`SELECT value FROM sync_runtime_state WHERE key='draw_media_heic_backfill'`)).rows[0];
+    if (st && st.value && st.value.finished) { out.done = true; return out; }
+    const lastId = Number(st && st.value && st.value.lastId) || 0;
+    const rows = (await db.query(
+      `SELECT id, storage_ref, storage_provider, content_type FROM draw_media
+        WHERE id > $1 AND kind='image' AND storage_ref IS NOT NULL
+        ORDER BY id ASC LIMIT $2`, [lastId, Math.max(1, limit)])).rows;
+    if (!rows.length) {
+      await db.query(
+        `INSERT INTO sync_runtime_state (key, value, updated_at) VALUES ('draw_media_heic_backfill', $1::jsonb, now())
+         ON CONFLICT (key) DO UPDATE SET value=$1::jsonb, updated_at=now()`,
+        [JSON.stringify({ lastId, finished: true, finishedAt: new Date().toISOString() })]);
+      out.done = true; return out;
+    }
+    let cursor = lastId;
+    for (const r of rows) {
+      cursor = Number(r.id); out.scanned++;
+      try {
+        // Read from the row's OWN provider — on an s3 deployment a 'local' row would otherwise
+        // cost a wasted S3 GET before the dual-read fallback found it on disk.
+        const buf = await storage.forRow(r).read(r.storage_ref);
+        if (!buf || !heic.isHeic(buf)) continue;
+        // The WASM decode is CPU-bound and blocks the event loop for ~1–2s per photo. Pace the
+        // sweep so a boot-time backlog can never freeze the request path or a health probe —
+        // one conversion, then a real pause, repeat.
+        await new Promise((res) => setTimeout(res, 1500));
+        const c = await heic.maybeConvert(buf);
+        if (!c.converted) continue;
+        const clean = stripLocationExif(c.buf) || c.buf;
+        const saved = await storage.save(clean, { filename: `draw-media-${r.id}.jpg` });
+        // Re-point ONLY if the row still points where we read from — a concurrent re-archive wins.
+        await db.query(
+          `UPDATE draw_media SET storage_provider=$2, storage_ref=$3, content_type='image/jpeg', bytes=$4, sha256=$5
+            WHERE id=$1 AND storage_ref=$6`,
+          [r.id, saved.provider, saved.ref, clean.length, sha256(clean), r.storage_ref]);
+        out.converted++;
+      } catch (_) { /* the cursor still advances — one bad row never wedges the sweep */ }
+    }
+    await db.query(
+      `INSERT INTO sync_runtime_state (key, value, updated_at) VALUES ('draw_media_heic_backfill', $1::jsonb, now())
+       ON CONFLICT (key) DO UPDATE SET value=$1::jsonb, updated_at=now()`,
+      [JSON.stringify({ lastId: cursor })]);
+  } catch (e) {
+    try { console.warn(`[sitewire] HEIC media backfill: ${(e && e.message) || e}`); } catch (_) {}
+  }
+  return out;
+}
+
+module.exports = { planArchive, archiveDrawMedia, archivedMediaFor, fetchBinary, assertPublicHttps, isPrivateIp, sha256, extFor, backfillHeicMediaOnce, PER_FILE_CAP, MAX_ITEMS };

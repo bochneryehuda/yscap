@@ -749,6 +749,10 @@ export const api = {
     try { const { blob, filename } = await download(`/api/sitewire/files/${appId}/draws/${drawId}/attachments/${attId}/file`); openBlob(blob, filename, win); }
     catch (e) { try { if (win) win.close(); } catch (_) {} throw e; }
   },
+  // Accept / reject a supporting document right on the draw card — only an accepted document
+  // travels with the investor delivery.
+  sitewireReviewDrawAttachment: (appId, drawId, attId, action, reason) =>
+    req('POST', `/api/sitewire/files/${appId}/draws/${drawId}/attachments/${attId}/review`, reason ? { action, reason } : { action }),
   // PILOT-branded inspection report (phase 2b) — opens the PDF in a tab (`win` is opened synchronously in the
   // click handler so the popup blocker doesn't eat it; closed here on error). mode 'staff' (full) | 'borrower'
   // (borrower-safe: no partner name / fee / net / GPS). Per-draw and whole-project variants.

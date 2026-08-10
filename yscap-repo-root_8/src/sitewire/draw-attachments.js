@@ -39,6 +39,7 @@ const storage = require('../lib/storage');
 const { decodeUploadBase64, sniffKind } = require('../lib/upload-bytes');
 const { stripLocationExif } = require('../lib/image-exif');
 const { recentDuplicateDocId } = require('../lib/doc-dedup');
+const heic = require('../lib/heic');
 
 const DOC_KIND = 'draw_support';
 const CATEGORIES = ['invoice', 'receipt', 'photo', 'other'];
@@ -137,9 +138,21 @@ async function attach(appId, ref, items, { by = { kind: 'staff', id: null }, sup
 
     // The type comes from the BYTES. A client-declared content type is never trusted — that is how
     // an HTML page ends up stored as a PDF and served back inline.
-    const ct = sniffDocMime(buf);
+    let ct = sniffDocMime(buf);
     if (!ct) { out.skipped.push({ what: name, reason: 'that file type is not accepted here — attach a PDF, a photo, or an invoice document' }); continue; }
+    // An iPhone photo (HEIC) is converted to JPEG at the door (owner-directed 2026-08-10) so the
+    // stored copy previews in every browser, embeds in the branded reports, and opens for the
+    // investor. A failed conversion keeps the original — the photo is evidence either way.
+    let name2 = name;
+    if (ct === 'image/heic') {
+      const c = await heic.maybeConvert(buf);
+      if (c.converted) { buf = c.buf; ct = 'image/jpeg'; name2 = heic.jpegName(name); }
+    }
     if (isImage(ct)) { try { buf = stripLocationExif(buf, ct) || buf; } catch (_) { /* keep the original */ } }
+    // Hash the bytes AS STORED — the HEIC conversion and the EXIF strip both change them, and a
+    // stored hash that describes bytes we did not store would silently break every content-dedupe
+    // that reads it (SharePoint, the Sitewire document pull).
+    try { sha256 = require('crypto').createHash('sha256').update(buf).digest('hex'); } catch (_) { /* keep the decode hash */ }
 
     // A double-submit, or a retry after a timeout, must not send the investor two copies of one
     // invoice. The shared duplicate guard answers on the file; the unique index on
@@ -149,7 +162,7 @@ async function attach(appId, ref, items, { by = { kind: 'staff', id: null }, sup
       // same shape every other upload path passes it. `sizeBytes` is required: without it the
       // helper answers null and the guard silently does nothing.
       const dupId = await recentDuplicateDocId({
-        applicationId: appId, filename: name, sizeBytes: buf.length,
+        applicationId: appId, filename: name2, sizeBytes: buf.length,
         uploadedByKind: byKind, uploadedById: (by && by.id) || null, docKind: DOC_KIND,
       });
       if (dupId) {
@@ -159,7 +172,7 @@ async function attach(appId, ref, items, { by = { kind: 'staff', id: null }, sup
     } catch (_) { /* the guard is an optimisation; the index below is the guarantee */ }
 
     let saved;
-    try { saved = await storage.save(buf, { filename: name }); }
+    try { saved = await storage.save(buf, { filename: name2 }); }
     catch (_) { out.skipped.push({ what: name, reason: 'the file could not be stored — please try again' }); continue; }
 
     const category = CATEGORIES.includes(String(it.category || '')) ? String(it.category) : (isImage(ct) ? 'photo' : 'other');
@@ -174,19 +187,23 @@ async function attach(appId, ref, items, { by = { kind: 'staff', id: null }, sup
            (application_id, filename, content_type, size_bytes, storage_provider, storage_ref,
             uploaded_by_kind, uploaded_by_id, doc_kind, review_status, sha256, source_type, visibility)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
-        [appId, name, ct, buf.length, saved.provider, saved.ref, byKind, by && by.id ? by.id : null,
+        [appId, name2, ct, buf.length, saved.provider, saved.ref, byKind, by && by.id ? by.id : null,
           DOC_KIND, byKind === 'staff' ? 'accepted' : 'pending', sha256 || null,
           // `source_type` is a governed enum (documents_source_type_check) — a value outside it
           // fails the whole insert, which the caller would only ever see as "it could not be filed".
           byKind === 'staff' ? 'staff_upload' : 'borrower_upload',
           byKind === 'staff' ? 'staff_only' : 'borrower'])).rows[0];
       const att = (await client.query(
-        `INSERT INTO draw_attachments (application_id, ${r.col}, document_id, category, note, supports, uploaded_by_kind, uploaded_by_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+        `INSERT INTO draw_attachments (application_id, ${r.col}, document_id, category, note, supports, uploaded_by_kind, uploaded_by_id, source, source_key)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
         [appId, r.value, doc.id, category, it.note ? String(it.note).slice(0, 1000) : null,
-          supports ? String(supports).slice(0, 500) : null, byKind, by && by.id ? by.id : null])).rows[0];
+          supports ? String(supports).slice(0, 500) : null, byKind, by && by.id ? by.id : null,
+          // The Sitewire pull stamps its provenance + durable identity here; a human upload
+          // carries neither (NULL), which is what tells the two apart on every screen.
+          it.source ? String(it.source).slice(0, 40) : null,
+          it.sourceKey ? String(it.sourceKey).slice(0, 300) : null])).rows[0];
       await client.query('COMMIT');
-      out.added.push({ id: att.id, document_id: doc.id, filename: name, category, content_type: ct, size_bytes: buf.length });
+      out.added.push({ id: att.id, document_id: doc.id, filename: name2, category, content_type: ct, size_bytes: buf.length });
     } catch (e) {
       try { await client.query('ROLLBACK'); } catch (_) {}
       out.skipped.push({ what: name, reason: e && e.code === '23505' ? 'that file is already attached to this draw' : 'it could not be filed — please try again' });
@@ -204,7 +221,7 @@ async function listFor(appId, ref) {
     const r = drawRef(ref);
     if (!appId || !r) return [];
     return (await db.query(
-      `SELECT da.id, da.document_id, da.category, da.note, da.supports, da.uploaded_by_kind, da.created_at,
+      `SELECT da.id, da.document_id, da.category, da.note, da.supports, da.uploaded_by_kind, da.created_at, da.source,
               d.filename, d.content_type, d.size_bytes, d.review_status, d.is_current
          FROM draw_attachments da JOIN documents d ON d.id = da.document_id
         WHERE da.application_id=$1 AND da.${r.col}=$2 AND d.is_current
@@ -218,7 +235,7 @@ async function listForFile(appId) {
     if (!appId) return [];
     return (await db.query(
       `SELECT da.id, da.document_id, da.sitewire_draw_id, da.portal_request_id, da.category, da.note,
-              da.supports, da.uploaded_by_kind, da.created_at,
+              da.supports, da.uploaded_by_kind, da.created_at, da.source,
               d.filename, d.content_type, d.size_bytes, d.review_status,
               sd.number AS draw_number
          FROM draw_attachments da
