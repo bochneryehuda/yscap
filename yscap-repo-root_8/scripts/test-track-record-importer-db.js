@@ -307,27 +307,50 @@ const found = (name) => {
     await db.query(`DELETE FROM track_records WHERE borrower_id=$1`, [borrowerId]);
   }
 
-  console.log('\n6. "Not theirs" is durable — the next search must not raise it again');
+  console.log('\n6. "Not theirs" — the reason is DERIVED (no type-in box), and the decline is durable');
   {
-    // Stage something fresh, then decline it.
+    // Stage something fresh, then decline it WITH NO TYPED REASON.
     await db.query(`DELETE FROM track_record_candidates WHERE borrower_id=$1`, [borrowerId]);
     await db.query(`DELETE FROM track_records WHERE borrower_id=$1`, [borrowerId]);
     reply = found;
     await call(`/api/staff/borrowers/${borrowerId}/track-record-search`, { method: 'POST', body: '{}' });
     const c = (await cands())[0];
 
+    /* THE OWNER'S #7: a decline no longer needs a typed reason. The system
+       figures out WHY from the #11 match basis — so an EMPTY body succeeds, and
+       what used to be a 400 "say why" is now a real, recorded reason. */
     const noReason = await call(`/api/staff/track-record-candidates/${c.id}/decide`, {
       method: 'POST', body: JSON.stringify({ action: 'decline' }) });
-    ok(noReason.status === 400, 'declining with no reason is refused — the next search reads that reason');
+    ok(noReason.status === 200, 'declining needs NO typed reason — the system derives WHY itself');
+    const out0 = await noReason.json();
+    ok(out0.reason && out0.reason.length > 0,
+      '…and it records a real, human-readable reason rather than nothing');
+    const stored = (await db.query(
+      `SELECT status, resolution_note FROM track_record_candidates WHERE id=$1`, [c.id])).rows[0];
+    ok(stored.status === 'declined' && /company/i.test(stored.resolution_note || ''),
+      'the derived reason reflects the match basis — this was a company-only match, so it names the same-name-company risk');
 
-    const r = await call(`/api/staff/track-record-candidates/${c.id}/decide`, {
-      method: 'POST', body: JSON.stringify({ action: 'decline', note: 'a different Moses Weil' }) });
-    ok(r.status === 200, 'declining with a reason is accepted');
+    // The declined list carries that reason, so it explains itself.
+    const q = await (await call(`/api/staff/borrowers/${borrowerId}/track-record-candidates`)).json();
+    const dec = (q.declined || []).find((x) => String(x.id) === String(c.id));
+    ok(dec && dec.resolutionNote && /company/i.test(dec.resolutionNote),
+      'the declined list surfaces the derived reason rather than a bare address');
+
+    // A GUIDED reason code is honored over the system's suggestion.
+    const c2 = (await cands()).find((x) => x.status === 'staged');
+    if (c2) {
+      const g = await call(`/api/staff/track-record-candidates/${c2.id}/decide`, {
+        method: 'POST', body: JSON.stringify({ action: 'decline', reasonCode: 'same_name_different_person' }) });
+      ok(g.status === 200, 'a guided reason code is accepted');
+      const s2 = (await db.query(`SELECT resolution_note FROM track_record_candidates WHERE id=$1`, [c2.id])).rows[0];
+      ok(/different person/i.test(s2.resolution_note || ''),
+        '…and its plain-language text is what lands — the reviewer picked, never typed');
+    } else { ok(true, 'only one candidate staged to decline (fixture)'); }
 
     reply = found;
     const out = await (await call(`/api/staff/borrowers/${borrowerId}/track-record-search`, { method: 'POST', body: '{}' })).json();
     ok(out.skips.some((s) => s.reason === 'declined_before'),
-      'and the next search does NOT raise it again — the partial unique index alone would have, because it only blocks while the first row is still staged');
+      'and the next search does NOT raise it again — the durable decline still holds');
     ok((await cands()).filter((x) => x.status === 'staged').length <= 1,
       'the declined property is not back in the queue');
   }

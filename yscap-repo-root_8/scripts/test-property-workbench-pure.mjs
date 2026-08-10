@@ -77,13 +77,22 @@ console.log('\n1. There is no bulk import, and the tick imports nothing');
     '…and startRun calls no decide at all — the tick genuinely imports nothing');
 }
 
-console.log('\n2. Bulk DECLINE is allowed, and still needs a reason');
+console.log('\n2. Bulk DECLINE is allowed, and the reason is DERIVED, never typed');
 {
   const d = between('async function declineTicked', 'async function decide(');
   ok(/for \(const id of ids\)/.test(d) && /'decline'/.test(d),
     'declining IS done in bulk — it can only ever withhold credit, never add it');
-  ok(/askPrompt/.test(d) && /Add a short reason/.test(d),
-    '…but never without a reason: the next search reads it to avoid re-raising the property');
+  /* #7 (owner-directed 2026-08-10) removed the type-in reason box: the server
+     DERIVES each property's WHY from its OWN match basis, so a bulk decline
+     records the right reason for every one with nothing typed. The guarantee the
+     old "Add a short reason" prompt protected — a decline always records a WHY,
+     so the next search will not re-raise the property — still holds, now enforced
+     server-side (decline-reason.resolve() is never empty; see
+     test-track-record-decline-reason-pure.js §2). What the workbench must NOT do
+     is put a free-text reason box back, and it must tell the reviewer the system
+     records the WHY for each so the next search will not raise them again. */
+  ok(!/askPrompt/.test(d) && /records why for each/.test(d) && /not raise them again/.test(d),
+    '…the reason is DERIVED server-side, not typed: no reason box, and the copy says the next search will not re-raise them');
   ok(/failed\.length/.test(d) && /did not save/.test(d),
     '…and a partial failure is REPORTED, never silent — the rest stay in the list');
 }
