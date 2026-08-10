@@ -108,6 +108,13 @@ const money = (v) => {
    does not — that would silently re-order itself on a machine set to en-GB. */
 const day = (d) => fmtDay(d) || null;
 
+/* HOW A RECORD MATCHED, in words + a colour (owner-directed 2026-08-10, the
+   "MAJOR enhancement"). A personal-name match reads confident (teal); a company
+   whose people don't include the borrower reads as a warning (amber); a plain
+   company match is neutral. The colour is never the only signal — the label and
+   the sentence carry the meaning too. */
+const basisTone = (mb) => (!mb ? MUTED : (mb.warn ? AMBER : (mb.personalMatched ? TEAL : MUTED)));
+
 /** The band, in words. Never a number — see the header. */
 const BAND = {
   exact: { label: 'Already on the record', color: TEAL,
@@ -485,6 +492,29 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
                 </div>
               ) : null}
 
+              {/* HOW THIS ONE MATCHED (owner-directed 2026-08-10) — the personal
+                  name, the company, or the company only, and WHY. When it matched
+                  a company on the profile but NOT the borrower's own name, a
+                  high-level PENDING warning: it may be a different company with
+                  the same name. Advisory — the reviewer still decides. */}
+              {current.matchBasis ? (
+                <div style={{ marginTop: 10 }}>
+                  <span style={{ display: 'inline-block', fontSize: 12, color: basisTone(current.matchBasis),
+                    border: `1px solid ${basisTone(current.matchBasis)}`, borderRadius: 999, padding: '1px 9px', fontWeight: 600 }}>
+                    {current.matchBasis.label}
+                  </span>
+                  {current.matchBasis.warn ? (
+                    <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 8, fontSize: 13.5,
+                      color: INK, background: '#FDF6E3', border: `1px solid ${GOLD}` }}>
+                      <strong style={{ color: INK }}>Check this before importing.</strong>{' '}
+                      {current.matchBasis.why}
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 5, color: MUTED, fontSize: 13 }}>{current.matchBasis.why}</div>
+                  )}
+                </div>
+              ) : null}
+
               {/* The side-by-side, for a match. Conflicts are the decision; a
                   one-sided fill is informational. Rendered from the server's own
                   per-row note so the screen never re-decides one. */}
@@ -631,8 +661,24 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
                           border: `1px solid ${band.color}`, borderRadius: 999, padding: '1px 8px' }}>
                           {band.label}
                         </span>
+                        {/* HOW IT MATCHED — a compact chip beside the band, so a
+                            reviewer scanning the list sees the company-only ones. */}
+                        {r.matchBasis ? (
+                          <span style={{ display: 'inline-block', marginLeft: 6, marginTop: 5, fontSize: 12,
+                            color: basisTone(r.matchBasis), border: `1px solid ${basisTone(r.matchBasis)}`,
+                            borderRadius: 999, padding: '1px 8px' }}>
+                            {r.matchBasis.warn ? '⚠ ' : ''}{r.matchBasis.label}
+                          </span>
+                        ) : null}
                         {r.matchConfidence === 'near' ? (
                           <span style={{ display: 'block', color: AMBER, fontSize: 12, marginTop: 4 }}>{band.hint}</span>
+                        ) : null}
+                        {/* The pending warning, in the list too — the owner's
+                            "high-level warning to select". */}
+                        {r.matchBasis && r.matchBasis.warn ? (
+                          <span style={{ display: 'block', color: AMBER, fontSize: 12, marginTop: 4 }}>
+                            Matched by the company name only — the borrower&rsquo;s own name isn&rsquo;t on these records. Confirm before importing.
+                          </span>
                         ) : null}
                         {/* SOMEBODY ELSE IS ON IT — advisory, and it names them:
                             "another reviewer" sends you hunting, a name ends it.

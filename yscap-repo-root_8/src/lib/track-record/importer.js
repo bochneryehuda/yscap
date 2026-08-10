@@ -47,6 +47,11 @@ const entityLib = require('../track-record-entity');
 const lookups = require('../elementix/lookups');
 const MATCH = require('./match');
 const NB = require('../number-bounds');
+const MB = require('./match-basis');
+/* The blessed person-name matcher — order-insensitive, conservative (it will
+   not call "Moshe Weil" and "Moses Weil" the same person). Injected into the
+   pure `computeMatchBasis` so that stays testable with no comparer/DB. */
+const namesMatchLoose = (a, b) => { try { return require('../underwriting/compare').namesMatchLoose(a, b); } catch (_) { return false; } };
 
 const str = (v) => String(v == null ? '' : v).trim();
 const ymd = (v) => {
@@ -485,10 +490,10 @@ async function runSearch({ borrowerId, staffId, states }, client) {
      row — permanently truncate the results behind it. A row that cannot be
      staged is a SKIP with a reason, like every other row that cannot be
      staged. */
-  const stageAll = async (candidates, proposedLlcId, tagName) => {
+  const stageAll = async (candidates, proposedLlcId, tagName, basisCtx) => {
     for (const c of candidates) {
       try {
-        const staged1 = await stageOne(db, { borrowerId, searchId: search.id, candidate: c, proposedLlcId });
+        const staged1 = await stageOne(db, { borrowerId, searchId: search.id, candidate: c, proposedLlcId, basisCtx });
         if (staged1.staged) staged += 1;
         else skips.push({ address: addressLabel(c.property_address), reason: staged1.reason, why: staged1.why });
       } catch (err) {
@@ -542,7 +547,14 @@ async function runSearch({ borrowerId, staffId, states }, client) {
       const { candidates, skips: theirSkips } = candidatesFrom(research, allNames);
       for (const s of theirSkips) skips.push({ entity: ent.llc_name, ...s });
       found += candidates.length;
-      await stageAll(candidates, ent.id, ent.llc_name);
+      /* THE ENTITY BRANCH: matched by the company name. Whether the borrower is
+         actually behind it is answered by the entity's OWN people list (from
+         get_entity_associated_people) — if their personal name is not there and
+         other people are, it may be a different company with the same name. */
+      await stageAll(candidates, ent.id, ent.llc_name, {
+        branch: 'entity', personalName: b.name || '', entityName: ent.llc_name,
+        entityPeople: research.people || [],
+      });
     }
   }
 
@@ -583,7 +595,9 @@ async function runSearch({ borrowerId, staffId, states }, client) {
       const { candidates, skips: theirSkips } = candidatesFrom(research, allNames);
       for (const s of theirSkips) skips.push({ entity: b.name, ...s });
       found += candidates.length;
-      await stageAll(candidates, null, b.name);
+      /* THE PERSON BRANCH: the deed named the borrower's PERSONAL name — the
+         vendor resolved the person and returned that person's deeds. Confident. */
+      await stageAll(candidates, null, b.name, { branch: 'person', personalName: b.name || '' });
     }
   }
 
@@ -657,8 +671,32 @@ async function runSearch({ borrowerId, staffId, states }, client) {
  * quietly drops six of nine results reads as "we only found three", and the
  * three that were dropped for a fixable reason are never fixed.
  */
-async function stageOne(db, { borrowerId, searchId, candidate, proposedLlcId }) {
+async function stageOne(db, { borrowerId, searchId, candidate, proposedLlcId, basisCtx }) {
   const key = candidate.dedupe_key || dedupeKeyFor(candidate);
+
+  /* HOW THIS CANDIDATE MATCHED THE BORROWER (owner-directed 2026-08-10, the
+     "MAJOR enhancement"): by their personal name, by a company on the profile,
+     or by a company whose people do NOT include them (the same-name-different-
+     company case that gets a high-level pending warning). Computed once at stage
+     time from the search branch + the entity's associated people, stored on the
+     candidate, and rendered on every record. Advisory — never an auto-decline. */
+  const matchBasis = basisCtx
+    ? MB.computeMatchBasis({
+      branch: basisCtx.branch,
+      personalName: basisCtx.personalName,
+      /* NEVER let the borrower's OWN name serve as "the company". `firstOurName`
+         is fed the borrower's personal name too (allNames = [b.name, …entities]),
+         so a deal bought in their own name sets candidate.entity_name to THAT
+         name — and the person branch would then read a non-empty entity as
+         "+ company", printing the person as their own company. Fall back to the
+         branch's real entity: the searched LLC on the entity branch, or nothing
+         on the person branch (→ a plain personal-name match). */
+      entityName: (candidate.entity_name && !namesMatchLoose(candidate.entity_name, basisCtx.personalName))
+        ? candidate.entity_name : basisCtx.entityName,
+      entityPeople: basisCtx.entityPeople,
+      namesMatch: namesMatchLoose,
+    })
+    : null;
 
   /* A VALUE MUST FIT ITS COLUMN, AND THIS DOOR HAS NO HUMAN AT IT — so an
      unstorable figure is DROPPED with a note, never a refusal and never the
@@ -766,8 +804,8 @@ async function stageOne(db, { borrowerId, searchId, candidate, proposedLlcId }) 
         purchase_price, purchase_date, sale_price, sale_date, entity_name,
         rent_amount, rent_date, refi_amount, refi_date,
         proposed_llc_id, dedupe_key, match_track_record_id, match_confidence, match_why, status,
-        internal_notes)
-     VALUES ($1,$2,'elementix',$3::jsonb,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::uuid,$16,$17::uuid,$18,$19::jsonb,'staged',$20)
+        internal_notes, match_basis)
+     VALUES ($1,$2,'elementix',$3::jsonb,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::uuid,$16,$17::uuid,$18,$19::jsonb,'staged',$20,$21::jsonb)
      RETURNING id`,
     [borrowerId, searchId, JSON.stringify(candidate.raw || {}),
       JSON.stringify(candidate.property_address || null), candidate.deal_type,
@@ -780,7 +818,8 @@ async function stageOne(db, { borrowerId, searchId, candidate, proposedLlcId }) 
       JSON.stringify(why),
       dropped.length
         ? `[auto] ${dropped.join(', ')} could not be stored as a real figure and was left blank — the raw record still holds what the vendor sent.`
-        : null]);
+        : null,
+      matchBasis ? JSON.stringify(matchBasis) : null]);
 
   return { staged: true, id: ins.rows[0].id };
 }
@@ -828,6 +867,10 @@ async function loadQueue(borrowerId, client, opts) {
     rentAmount: r.rent_amount, rentDate: r.rent_date,
     dealTypeDerived: sugg.type || null,
     dealTypeWhy: sugg.why,
+    /* HOW IT MATCHED — personal name / company / company-only-with-a-warning
+       (owner-directed 2026-08-10). Computed at stage time (db/513); NULL on a
+       candidate staged before that. See src/lib/track-record/match-basis.js. */
+    matchBasis: r.match_basis || null,
     entityName: r.entity_name, proposedLlcId: r.proposed_llc_id,
     status: r.status,
     matchTrackRecordId: r.match_track_record_id,
