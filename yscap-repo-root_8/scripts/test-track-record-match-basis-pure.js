@@ -40,6 +40,15 @@ console.log('\n1. THE PERSON branch — matched to the personal name');
   const both = MB.computeMatchBasis({ branch: 'person', personalName: 'Moses Weil', entityName: 'MW Trading LLC', namesMatch: nm });
   ok(both.basis === 'both' && both.entityMatched && both.personalMatched,
     'a person-branch deed that also names a company on the profile → both');
+
+  /* A DEAL BOUGHT IN THE BORROWER'S OWN NAME. The importer's firstOurName returns
+     the personal name as the "entity" (the deed granted to the person), so the
+     person branch must NOT read it as a company — a person is never their own
+     company. This is the defect the pre-merge audit caught. */
+  const ownName = MB.computeMatchBasis({ branch: 'person', personalName: 'Moses Weil', entityName: 'MOSES WEIL', namesMatch: nm });
+  ok(ownName.basis === 'personal' && ownName.entityMatched === false && ownName.warn === false,
+    'when the "company" is really the borrower\'s OWN name, it is a plain personal match — never "+ company"');
+  ok(!/company/i.test(ownName.why), '…and the reason never calls the person their own company');
 }
 
 console.log('\n2. THE ENTITY branch — the borrower IS among the company\'s people → confirmed (both)');

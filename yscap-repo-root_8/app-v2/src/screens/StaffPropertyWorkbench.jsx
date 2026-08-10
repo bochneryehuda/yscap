@@ -506,7 +506,7 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
                   {current.matchBasis.warn ? (
                     <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 8, fontSize: 13.5,
                       color: INK, background: '#FDF6E3', border: `1px solid ${GOLD}` }}>
-                      <strong style={{ color: AMBER }}>Check this before importing.</strong>{' '}
+                      <strong style={{ color: INK }}>Check this before importing.</strong>{' '}
                       {current.matchBasis.why}
                     </div>
                   ) : (

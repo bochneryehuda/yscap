@@ -684,7 +684,15 @@ async function stageOne(db, { borrowerId, searchId, candidate, proposedLlcId, ba
     ? MB.computeMatchBasis({
       branch: basisCtx.branch,
       personalName: basisCtx.personalName,
-      entityName: candidate.entity_name || basisCtx.entityName,
+      /* NEVER let the borrower's OWN name serve as "the company". `firstOurName`
+         is fed the borrower's personal name too (allNames = [b.name, …entities]),
+         so a deal bought in their own name sets candidate.entity_name to THAT
+         name — and the person branch would then read a non-empty entity as
+         "+ company", printing the person as their own company. Fall back to the
+         branch's real entity: the searched LLC on the entity branch, or nothing
+         on the person branch (→ a plain personal-name match). */
+      entityName: (candidate.entity_name && !namesMatchLoose(candidate.entity_name, basisCtx.personalName))
+        ? candidate.entity_name : basisCtx.entityName,
       entityPeople: basisCtx.entityPeople,
       namesMatch: namesMatchLoose,
     })

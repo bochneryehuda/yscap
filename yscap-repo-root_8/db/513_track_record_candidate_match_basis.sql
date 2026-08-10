@@ -30,6 +30,6 @@ ALTER TABLE track_record_candidates
 
 COMMENT ON COLUMN track_record_candidates.match_basis IS
   'How this candidate matched the borrower: {personalMatched, entityMatched, personalName, '
-  'entityName, basis (personal|both|entity_only), warn, why}. Computed at stage time from the '
-  'search branch + the entity''s associated people. Advisory — a warning is shown, never an '
-  'auto-decline. NULL on candidates staged before db/513.';
+  'entityName, basis (personal|both|entity_only), label, warn, peopleKnown, otherPeopleCount, '
+  'why}. Computed at stage time from the search branch + the entity''s associated people. '
+  'Advisory — a warning is shown, never an auto-decline. NULL on candidates staged before db/513.';

@@ -551,6 +551,26 @@ const found = (name) => {
       'no people to check → NO warning — an absent people-list is never treated as "the borrower is not there"');
     ok(unknownQ && !/different company/i.test(unknownQ.why || ''),
       '…and the reason stays neutral, not alarming, when we simply could not check');
+
+    // (d) THE PERSON BRANCH must never call the borrower's OWN name a company.
+    //     firstOurName is fed the borrower's personal name, so a deal bought in
+    //     their own name sets candidate.entity_name to THAT name — stageOne must
+    //     fall back to the branch's real entity (none, on the person branch) so
+    //     it reads as a plain personal match, not "matched by personal name +
+    //     company" printing the person as their own company. (Pre-merge audit #1.)
+    await db.query(`DELETE FROM track_record_candidates WHERE borrower_id=$1`, [borrowerId]);
+    const personStaged = await IMP._internals.stageOne(db, {
+      borrowerId, searchId: null,
+      candidate: { property_address: { line1: '7 Solo St', city: 'Lakewood', state: 'NJ', zip: '08701' },
+        entity_name: 'Imp Tester', dedupe_key: 'person_own_name_1', raw: {} },
+      basisCtx: { branch: 'person', personalName: 'Imp Tester' },
+    });
+    const personBasis = (await db.query(
+      `SELECT match_basis FROM track_record_candidates WHERE id=$1`, [personStaged.id])).rows[0].match_basis;
+    ok(personBasis && personBasis.basis === 'personal' && personBasis.entityMatched === false,
+      'a deal bought in the borrower\'s OWN name is a plain personal match — never "+ company" naming the person as their own company (audit #1)');
+    ok(personBasis && !/company/i.test(personBasis.why || ''),
+      '…and the stored reason never calls the borrower\'s own name a company');
   }
 
   await db.query('DELETE FROM track_record_candidates WHERE borrower_id=$1', [borrowerId]).catch(() => {});

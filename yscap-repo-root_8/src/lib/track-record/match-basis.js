@@ -60,7 +60,12 @@ function computeMatchBasis({ branch, personalName, entityName, entityPeople, nam
     .filter(Boolean);
 
   if (branch === 'person') {
-    const both = !!entity;
+    /* A non-empty entity means "also matched a company on the profile" — UNLESS
+       that "entity" is really the borrower's OWN personal name (a deal bought in
+       their own name, where firstOurName returned the person). Never call a
+       person their own company. Belt-and-suspenders: the importer already
+       resolves this at stage time, but the pure rule must hold on its own. */
+    const both = !!entity && !safeMatch(entity);
     return {
       personalMatched: true,
       entityMatched: both,
