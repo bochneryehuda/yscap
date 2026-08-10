@@ -18,6 +18,7 @@ convention.
 
 | If you want to… | Read |
 |---|---|
+| Know where the integration actually stands, today | **`DOCLAB-AUDIT.md`** — then run `node scripts/doclab-audit.js`, which computes every figure rather than quoting one |
 | Understand the whole thing and what happens next | **`DOCLAB-INTEGRATION-BLUEPRINT.md`** |
 | Know what to change in PILOT's own data model | **`DOCLAB-DATA-MODEL-GAPS.md`** |
 | Know what a partnership or a trust needs | **`DOCLAB-ENTITY-TYPES.md`** — the answer is *nothing new from DocLab*; the real gap was ours |
@@ -36,6 +37,7 @@ convention.
 | `src/doclab/client.js` | The guarded transport |
 | `db/509_doclab.sql` | Requests, their history, the cached catalogues |
 | `scripts/test-doclab-*.js` | 59 checks, in `npm test` |
+| `scripts/doclab-audit.js` | The standing readiness audit. A diagnostic, not a test — run it by hand |
 
 **Status: foundations only.** Nothing is wired to a screen and nothing can reach DocLab — there are
 no credentials yet. All three switches default off.
