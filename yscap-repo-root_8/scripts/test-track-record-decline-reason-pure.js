@@ -51,6 +51,21 @@ const ok = (c, m) => { if (c) console.log(`  ok  ${m}`); else { fail++; console.
     // A junk reasonCode is ignored (falls through to a real derivation), never stored raw.
     const r4 = DR.resolve({ reasonCode: 'nonsense_code', matchBasis: { warn: true, basis: 'entity_only', entityMatched: true } });
     ok(/different company/i.test(r4), 'an unknown reasonCode is ignored and the basis derivation is used');
+    // A reasonCode that COLLIDES with an Object.prototype key must be ignored the
+    // same way — bracket access reads the prototype chain, so an own-property
+    // check is the only thing that keeps 'toString'/'constructor'/'__proto__'
+    // from resolving to a non-reason and throwing a 500 with the decline unsaved.
+    for (const proto of ['toString', 'constructor', '__proto__', 'valueOf', 'hasOwnProperty', 'isPrototypeOf']) {
+      let threw = false; let out = '';
+      try { out = DR.resolve({ reasonCode: proto, matchBasis: { warn: true, basis: 'entity_only', entityMatched: true } }); }
+      catch (_) { threw = true; }
+      ok(!threw && /different company/i.test(out),
+        `a reasonCode of "${proto}" (a prototype key) is ignored, never thrown — the basis derivation is used`);
+    }
+    ok(DR.resolve({ reasonCode: 'toString', note: 'a real typed note' }) === 'a real typed note',
+      'a prototype-key reasonCode with a typed note falls through to the note, never throws');
+    ok(DR.resolve({ reasonCode: 'toString' }) === DR.REASONS.not_theirs.text,
+      'a prototype-key reasonCode with nothing else still records a real reason, never empty');
   }
 
   console.log('\n3. THE GUIDED OPTIONS put the suggestion first-flagged, every code known');

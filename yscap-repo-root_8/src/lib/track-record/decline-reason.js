@@ -81,13 +81,26 @@ function optionsFor(matchBasis) {
  * the entity name when we have it. Always returns a NON-EMPTY string ≤ 500 chars.
  */
 function resolve({ reasonCode, matchBasis, note } = {}) {
-  const code = REASONS[str(reasonCode)] ? str(reasonCode) : null;
+  /* OWN-property check only. Bracket access reads the PROTOTYPE chain, so a
+     reasonCode of 'toString' / 'constructor' / '__proto__' / 'valueOf' /
+     'hasOwnProperty' would resolve to an Object.prototype member (truthy), skip
+     the note fallback below, and then throw on `.text` of a non-reason — a 500
+     with the decline UNRECORDED. staff.js whitelists reasonCode as any string,
+     so that input is reachable. hasOwnProperty closes it; an unknown
+     NON-prototype code (e.g. 'nonsense_code') still falls through to derive from
+     the basis. */
+  const rc = str(reasonCode);
+  const code = Object.prototype.hasOwnProperty.call(REASONS, rc) ? rc : null;
   if (!code) {
     const typed = str(note);
     if (typed) return typed.slice(0, 500);
   }
   const eff = code || suggestFromBasis(matchBasis);
-  let text = REASONS[eff].text;
+  /* Belt-and-suspenders: `eff` is always an own key here (a whitelisted code or
+     a suggestFromBasis result from ORDER), but fall back to not_theirs so this
+     function can NEVER throw — the invariant the next search's declined_before
+     relies on. */
+  let text = (REASONS[eff] || REASONS.not_theirs).text;
   const entity = matchBasis && str(matchBasis.entityName);
   if (eff === 'not_our_company' && entity) {
     text = `Matched by the company name "${entity}" only — the borrower's own name is not among the people behind it, so this is most likely a different company with the same name.`;
