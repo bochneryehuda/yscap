@@ -2085,7 +2085,7 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
             // (owner-reported 2026-08-10: the borrower was never looped in and nothing said so).
             if (r.borrower_emailed === false) {
               const why = r.borrower_email_reason === 'no_borrower_email'
-                ? 'there is no email address on the borrower’s profile — add one and re-send'
+                ? 'no email address on their profile, draw emails turned off in their settings, or the file is parked — fix that and re-send'
                 : 'their copy was blocked or could not be sent — reach them another way';
               return { msg: `⚠️ Findings recorded (${r.lines} items), but the borrower did NOT receive the email: ${why}.` };
             }

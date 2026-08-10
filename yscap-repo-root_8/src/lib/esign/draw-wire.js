@@ -278,8 +278,12 @@ async function retractOperatingAgreementCondition(db, appId) {
     `SELECT ci.id, ci.status,
             (SELECT count(*) FROM documents d
               WHERE d.checklist_item_id = ci.id
+                -- PILOT's own copies: pending (not yet retired) OR superseded (retired by an
+                -- earlier retract whose DELETE then failed — audit 2026-08-10: counting those as
+                -- a human's would make a half-finished retract permanently un-retractable).
+                -- 'superseded' is only ever written by retire paths, never a human decision.
                 AND NOT (d.source_type = 'system' AND d.source_document_id IS NOT NULL
-                         AND COALESCE(d.review_status,'pending') = 'pending')) AS human_docs
+                         AND COALESCE(d.review_status,'pending') IN ('pending','superseded'))) AS human_docs
        FROM checklist_items ci
       WHERE ci.application_id=$1 AND ci.field_key=$2 AND ci.origin_kind='manual_custom'
         AND ci.status IN ('outstanding','received') AND ci.signed_off_at IS NULL

@@ -1131,12 +1131,21 @@ async function notifyAppThread(appId, opts = {}) {
   // is checked directly first. Fails toward SENDING: an unreadable file emails the team.
   let mailable = true;
   try {
+    // A borrower who MUTED this category's email is not mailable either (audit 2026-08-10):
+    // `notifyBorrower` still writes their in-app row and returns its id, so counting rows alone
+    // read a muted borrower as "emailed" — the team's copy was suppressed and the event went out
+    // to nobody, with the caller told it was delivered. The pref join mirrors notifyBorrower's own
+    // rule: an explicit pref wins, else the type's major-email default.
+    const emailDefault = (typeof opts.major === 'boolean') ? opts.major : BORROWER_MAJOR_EMAIL.has(opts.type);
     const r = await db.query(
       `SELECT count(*)::int AS n
          FROM applications a
          JOIN borrowers b ON b.id IN (a.borrower_id, a.co_borrower_id)
+         LEFT JOIN notification_prefs np ON np.borrower_id = b.id AND np.category = $3
         WHERE a.id=$1 AND COALESCE(b.email,'') <> ''
-          AND (a.status <> 'on_hold' OR $2::bool)`, [appId, !!opts.evenIfOnHold]);
+          AND (a.status <> 'on_hold' OR $2::bool)
+          AND COALESCE(np.email, $4::bool)`,
+      [appId, !!opts.evenIfOnHold, categoryOf(opts.type), emailDefault]);
     mailable = (r.rows[0] && r.rows[0].n > 0);
   } catch (_) { mailable = true; }
 
@@ -1174,8 +1183,8 @@ async function notifyAppThread(appId, opts = {}) {
   // borrower has NOT seen this. Say so on the team's copy, with the reason class.
   if (!emailed) {
     staffOpts.note = mailable
-      ? 'Heads up: the borrower’s copy of this email was NOT sent — it was held or muted (their notification settings, or a pending review). The borrower has not seen this; reach them another way.'
-      : 'Heads up: the borrower could NOT be emailed — no email address on file, or the file is parked. The borrower has not seen this; reach them another way.';
+      ? 'Heads up: the borrower’s copy of this email was NOT sent — it was held or muted (a pending review, or their settings). The borrower has not seen this; reach them another way.'
+      : 'Heads up: the borrower could NOT be emailed — no email address on file, these emails turned off in their settings, or the file is parked. The borrower has not seen this; reach them another way.';
   }
   const staff = await notifyAppStaff(appId, staffOpts);
   return { borrowers: rows, staff, emailedTogether: emailed, borrowerMailable: mailable };

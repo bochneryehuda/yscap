@@ -2832,8 +2832,11 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
         _bypassLoGate: true, evenIfOnHold: true,
         // The staff copy is STAFF-voiced with a STAFF destination — never the borrower's no-login
         // accept/dispute magic link (audit L1; enforced by notifyAppThread's staffLink handling).
-        staffTitle: 'Inspection results sent to the borrower — awaiting their confirmation',
-        staffBody: `The inspection results for ${addr} went to the borrower to accept or dispute. The draw releases once they confirm.`,
+        // NEUTRAL wording on purpose: this same copy is the FALLBACK email when the borrower could
+        // not be reached, so it must not claim the results "went to the borrower" (the note the
+        // fallback appends says what actually happened).
+        staffTitle: 'Inspection results ready for the borrower — awaiting their confirmation',
+        staffBody: `The inspection results for ${addr} are ready for the borrower to accept or dispute. The draw releases once they confirm.`,
         staffLink: `/internal/app/${appId}`, staffCtaLabel: 'Open the file',
         // "Draw 2 · Your inspection is complete …" — the borrower and the coordinator are both
         // on this thread and a property with three draws otherwise sends three identical subjects.

@@ -282,12 +282,42 @@ async function ensureWireEntityOnProfile(db, appId, { actorId = null } = {}) {
     }
 
     const clean = drawWire.displayEntityName(entityName) || entityName;
-    const made = await require('../llc').findOrCreateLlc(app.borrower_id, { llcName: clean }, db);
-    const created = !made.existed;
+    // A name that is ONLY a legal designator ("LLC", "Inc") has no descriptive base — it can never
+    // match anything and would put a nonsense entity on the profile. State nothing instead.
+    if (!drawWire.splitEntity(clean).base) return { linked: false, reason: 'no_entity_base' };
+
+    // CREATE + ADOPTED-STAMP ATOMICALLY (audit 2026-08-10). These are two statements, and the
+    // stamp is a SAFETY property: an entity created but left unstamped would pass the wire
+    // classifier's known-entities filter (`adopted_from_application_id IS NULL` clears) and the
+    // next re-classification would retract the fatal with no operating agreement ever collected —
+    // the exact failure the fatal exists to prevent. The reuse branch above cannot repair a
+    // missing stamp (it cannot tell "our create that lost its stamp" from a human's library
+    // entity, which must never be stamped), so the window is closed at the source: when handed
+    // the POOL, both statements run in one transaction; a caller already inside a transaction
+    // (a client) owns its own atomicity.
+    // Pool vs client: a pg Client ALSO has .connect, so the discriminator is the Pool's own
+    // counter getter (`totalCount` exists on pg.Pool only). A client caller (a test transaction,
+    // a future transactional adopter) owns its own atomicity and is used as-is.
+    const isPool = typeof db.connect === 'function' && typeof db.totalCount === 'number';
+    const c = isPool ? await db.connect() : db;
+    let made, created = false;
+    try {
+      if (isPool) await c.query('BEGIN');
+      made = await require('../llc').findOrCreateLlc(app.borrower_id, { llcName: clean }, c);
+      created = !made.existed;
+      if (created) {
+        await c.query(
+          `UPDATE llcs SET adopted_from_application_id=$2, adopted_at=now(), adopted_source='draw_wire_form', updated_at=now()
+            WHERE id=$1 AND adopted_at IS NULL`, [made.id, appId]);
+      }
+      if (isPool) await c.query('COMMIT');
+    } catch (e) {
+      if (isPool) { try { await c.query('ROLLBACK'); } catch (_) {} }
+      throw e;   // the outer catch reports { linked:false }
+    } finally {
+      if (isPool) c.release();
+    }
     if (created) {
-      await db.query(
-        `UPDATE llcs SET adopted_from_application_id=$2, adopted_at=now(), adopted_source='draw_wire_form', updated_at=now()
-          WHERE id=$1 AND adopted_at IS NULL`, [made.id, appId]);
       try {
         await db.query(
           `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
