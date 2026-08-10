@@ -27,8 +27,29 @@ function token() {
 // removed, that must be a conscious human action outside this sync — never an
 // automatic consequence of a portal change.
 const TASK_PATH_RE = /(^|\/)task\/[^/?]+/; // any endpoint addressing a specific task
+
+// THE ONE SANCTIONED FIELD-VALUE CLEAR (owner-directed 2026-08-10, in the
+// owner's own words: "when we are deleting the assignment fee from the file,
+// the assignment fee should also be deleted from the ClickUp file"). Removing
+// an assignment in PILOT nulls the two money columns and un-ticks the card's
+// checkbox — but the push skips empty values by design, so the card kept the
+// old dollar figures forever and the inbound pull kept restoring them (the
+// stuck-fee loop, YSCAP258134769). ClickUp's remove-custom-field-value
+// endpoint is `DELETE /task/{id}/field/{fieldId}`, which the task-deletion
+// guard below would otherwise refuse. The carve-out is EXACTLY these two
+// enumerated currency fields on exactly that path shape — never a task, never
+// a list membership, never any other field. Do NOT widen this list without
+// the owner saying so in their own words; the general no-clearing rule
+// (guardNoFieldClearing) is untouched and still refuses every empty setField.
+const ASSIGNMENT_CLEAR_FIELD_IDS = Object.freeze([
+  '273c41d1-10ee-4b02-aa74-7007f8023574', // currency 'Contract assignment/flip fee' (F.EXTRA.contractAssignFee)
+  'de81ad3e-572e-4e83-b9d9-c284400c9df1', // currency 'Contract assignment underlying purchase price' (F.EXTRA.contractAssignUnderlying)
+]);
+const ASSIGNMENT_CLEAR_PATH_RE = new RegExp(`^/task/[^/?]+/field/(?:${ASSIGNMENT_CLEAR_FIELD_IDS.join('|')})$`);
+
 function guardNoTaskDeletion(method, path) {
   if (String(method).toUpperCase() !== 'DELETE') return;
+  if (ASSIGNMENT_CLEAR_PATH_RE.test(String(path))) return; // the one sanctioned field clear — see above
   if (TASK_PATH_RE.test(String(path))) {
     const e = new Error(
       `BLOCKED: ClickUp task deletion is permanently disabled (DELETE ${path}). ` +
@@ -258,6 +279,22 @@ const setField = (taskId, fieldId, value) => {
   return call(`/task/${taskId}/field/${fieldId}`, { method: 'POST', body: { value }, idempotent: true });
 };
 
+// Remove the VALUE of one of the two assignment money fields — the ONE
+// owner-sanctioned clear (see ASSIGNMENT_CLEAR_FIELD_IDS above for the whole
+// story). Refuses any other field id BEFORE the wire; the caller (the
+// orchestrator's assignmentClearPlan step) additionally requires a scoped
+// human-edit push, a null portal value, is_assignment=false, and a before-image
+// proving the card holds something. Idempotent (a repeat delete of an empty
+// field is a no-op at ClickUp).
+const clearAssignmentMoneyField = (taskId, fieldId) => {
+  if (!ASSIGNMENT_CLEAR_FIELD_IDS.includes(fieldId)) {
+    const e = new Error(`BLOCKED: field ${fieldId} is not one of the two assignment money fields — the sync clears nothing else, ever.`);
+    e.code = 'CLICKUP_CLEAR_FORBIDDEN';
+    throw e;
+  }
+  return call(`/task/${taskId}/field/${fieldId}`, { method: 'DELETE' });
+};
+
 // Workspaces (teams) the token can see, each with its `members[].user` (id +
 // email). Read-only. Used to resolve a staffer's ClickUp numeric user id by email
 // when staff_users.clickup_user_id isn't populated — so the officer/processor
@@ -332,7 +369,7 @@ function verifyWebhookSignature(rawBody, signature, secret) {
 }
 
 module.exports = {
-  call, createTask, updateTask, setField, getFolderLists, addComment, getTeams,
+  call, createTask, updateTask, setField, clearAssignmentMoneyField, ASSIGNMENT_CLEAR_FIELD_IDS, getFolderLists, addComment, getTeams,
   getTask, getListFields, getFilteredTeamTasks,
   addTaskToList, removeTaskFromList,
   createWebhook, listWebhooks, updateWebhook, deleteWebhook, verifyWebhookSignature,

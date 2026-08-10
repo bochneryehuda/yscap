@@ -12359,7 +12359,21 @@ router.patch('/applications/:id/details', async (req, res) => {
     // still blocks everyone equally once the file is locked.
     const upd = await db.query(`UPDATE applications SET ${sets.join(',')} WHERE id=$${i}`, vals);
     if (upd.rowCount === 0) return res.status(404).json({ error: 'application not found' });
-    enqueueClickupPush(req.params.id, touchedCols).catch(() => {}); // propagate ONLY the edited columns to ClickUp promptly
+    // A deliberate removal of the assignment must ALSO clear the two money
+    // fields on the ClickUp card (owner-directed 2026-08-10: "when we are
+    // deleting the assignment fee from the file, the assignment fee should
+    // also be deleted from the ClickUp file"). The push skips empty values by
+    // design, so without this the card kept the old fee forever and the pull
+    // kept restoring it. humanEditKeys is the deliberate-human channel (the
+    // staff-typed-DOB pattern): it is set ONLY here, for a column THIS
+    // authenticated save explicitly blanked — never by an automated caller —
+    // and the orchestrator's assignmentClearPlan + the client's field-id
+    // allowlist gate everything else.
+    const blankReq = (v) => v == null || String(v).trim() === '';
+    const clearedAsgCols = [];
+    if ('assignmentFee' in b && blankReq(b.assignmentFee) && touchedCols.includes('assignment_fee')) clearedAsgCols.push('assignment_fee');
+    if ('underlyingContractPrice' in b && blankReq(b.underlyingContractPrice) && touchedCols.includes('underlying_contract_price')) clearedAsgCols.push('underlying_contract_price');
+    enqueueClickupPush(req.params.id, touchedCols, clearedAsgCols.length ? { humanEditKeys: clearedAsgCols } : undefined).catch(() => {}); // propagate ONLY the edited columns to ClickUp promptly
     if ('requestedExpFlips' in b || 'requestedExpHolds' in b || 'requestedExpGround' in b) {
       try { await syncExperienceChecklistForApplication(req.params.id); } catch (_) { /* best-effort */ }
     }
