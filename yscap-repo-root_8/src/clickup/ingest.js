@@ -1582,6 +1582,28 @@ function dropUnstorableCols(cols, taskId) {
   });
 }
 
+/* AN ASSIGNMENT'S MONEY TRAVELS WITH ITS CHECKBOX (the same group rule as
+   fields.assignmentFields / #96: an assignment is one concept, never loose
+   numbers). The card's two currency fields — "Contract assignment/flip fee" and
+   the underlying purchase price — can never be CLEARED by our push: the no-wipe
+   guard skips empty values by design. So when a team removes an assignment in
+   PILOT (the details door NULLs both columns and pushes the checkbox off), the
+   card keeps the old dollar figures forever — and this pull was writing them
+   straight back over the file's deliberate NULL on every sync, invisibly (the
+   inbound change audit skips null→value fills). Owner-reported 2026-08-10,
+   YSCAP258134769: the fee was removed three times and came back within minutes
+   each time. The rule: a card whose assignment CHECKBOX is not ticked cannot
+   assert assignment money. Decline to import — cols[k]=null makes the COALESCE
+   keep the file's own value; nothing is ever cleared by this. A card whose
+   checkbox IS ticked imports both figures exactly as before. Pure, exported for
+   the unit test. */
+function dropAssignmentMoneyWithoutCheckbox(cols) {
+  if (!cols || cols.is_assignment === true) return cols;
+  if ('assignment_fee' in cols) cols.assignment_fee = null;
+  if ('underlying_contract_price' in cols) cols.underlying_contract_price = null;
+  return cols;
+}
+
 async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) {
   const { allowCreate = false, forceCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null, coBorrowerId = null, coBorrowerTaskId = null, options: cuOptions = {} } = ctx;
   const a = read.app || {};
@@ -2041,6 +2063,11 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     } catch (_) { /* best-effort — a lookup failure just leaves the pull as it was */ }
   }
 
+  // A card whose assignment checkbox is off cannot assert assignment money —
+  // see dropAssignmentMoneyWithoutCheckbox for the whole story (the stuck-fee
+  // resurrection loop, owner-reported 2026-08-10).
+  dropAssignmentMoneyWithoutCheckbox(cols);
+
   const vals = Object.values(cols);
   const set = Object.keys(cols).map((k, i) => `${k}=COALESCE($${i + 2}, ${k})`).join(', ');
   // Set when THIS pull moves the expected closing date, so the closing chain can be
@@ -2269,5 +2296,5 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
 module.exports = {
   ingestTask, resolveBorrower, upsertLlc, upsertTrackRecord, linkOrCreateApplication,
   applyChecklistStatuses, identityFrom, RTL_PROGRAMS, decideInboundProcessor,
-  descopeFlipped, dropUnstorableCols,
+  descopeFlipped, dropUnstorableCols, dropAssignmentMoneyWithoutCheckbox,
 };

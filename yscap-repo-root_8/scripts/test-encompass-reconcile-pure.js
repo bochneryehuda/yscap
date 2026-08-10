@@ -23,6 +23,11 @@ const app = {
   ys_loan_number: 'YSCAP1', property_type: 'SFR', units: 2,
   program: 'Fix & Flip w/ Construction', loan_type: 'Purchase', // deal_type is derived from these
   llc_id: 'llc-1', borrower_id: 'b-1',
+  // is_assignment is the REAL column that says what these two figures mean — the
+  // fixture omitted it while the old code read the money unconditionally, which
+  // is exactly the stuck-fee bug (owner-reported 2026-08-10): buildOurValues now
+  // reads assignment money ONLY on an assignment, so the fixture states it.
+  is_assignment: true,
   loan_amount: 525450, purchase_price: 450500, underlying_contract_price: 425000, assignment_fee: 25500,
   rehab_budget: 120000, as_is_value: 500000, arv: 750000, ltv: 90, rate_pct: 8.0, term: '12 months', maturity_date: '2027-06-22',
   rehab_type: 'Cosmetic', accrual_type: 'non_dutch', lender: 'Fidelis',

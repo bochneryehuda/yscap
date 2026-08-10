@@ -180,8 +180,19 @@ function buildOurValues(app, quote, llcName) {
     effective_purchase: nz(q.assignment && q.assignment.recognizedPrice) !== undefined
       ? q.assignment.recognizedPrice
       : nz(a.purchase_price),
-    contract_price: nz(a.underlying_contract_price) !== undefined ? a.underlying_contract_price : nz(a.purchase_price),
-    assignment_fee: nz(a.assignment_fee),
+    // A file that is NOT an assignment has an assignment fee of ZERO — a real
+    // statement, never "missing data" — and its seller/contract price is simply
+    // the purchase price. The two columns can hold STALE assignment numbers on a
+    // non-assignment file (removing an assignment clears them in PILOT, but the
+    // ClickUp card's currency fields can never be cleared by the push — the
+    // no-wipe guard skips empty values — so the inbound pull kept re-importing
+    // the old fee over the file's deliberate NULL; owner-reported 2026-08-10,
+    // YSCAP258134769). is_assignment gates BOTH reads, so a stale column can
+    // never make the panel claim a fee on a deal that has none: our 0 meets
+    // Encompass's blank/0 through the entry's own zeroMeansNone and MATCHES,
+    // while a real fee in Encompass against our 0 is an honest MISMATCH.
+    contract_price: (a.is_assignment && nz(a.underlying_contract_price) !== undefined) ? a.underlying_contract_price : nz(a.purchase_price),
+    assignment_fee: a.is_assignment ? nz(a.assignment_fee) : 0,
     financed_interest_reserve: nz(sizing.financedReserve),
     total_cost: nz(sizing.costBasis),
 
@@ -993,7 +1004,7 @@ async function computeFindings(appId, dbc, opts) {
   const row = (await c.query(
     `SELECT a.id, a.ys_loan_number, a.encompass_loan_guid, a.encompass_extra,
             a.encompass_last_pulled_at, a.encompass_last_error, a.borrower_id, a.llc_id,
-            a.loan_amount, a.purchase_price, a.underlying_contract_price, a.assignment_fee,
+            a.loan_amount, a.purchase_price, a.is_assignment, a.underlying_contract_price, a.assignment_fee,
             a.rehab_budget, a.as_is_value, a.arv, a.ltv, a.rate_pct, a.term, a.maturity_date, a.funded_date,
             a.program, a.loan_type, a.rehab_type, a.accrual_type, a.property_type,
             a.units, a.property_address, a.co_borrower_id, a.sqft_pre, a.sqft_post, a.lender,
