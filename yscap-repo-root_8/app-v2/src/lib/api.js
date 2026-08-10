@@ -655,6 +655,10 @@ export const api = {
      verification (db/485 stays the one judge). Inline editing on the Track
      Record Center (2026-08-09) instead of opening the embedded tool. */
   staffUpdateTrackRecord:    (id, body) => req('PUT', `/api/staff/track-records/${id}`, body || {}),
+  /* Delete a whole track-record line (a duplicate, or a deal that isn't theirs).
+     The server re-checks access and recomputes the borrower's tier. Deleting a
+     line cascade-removes any documents on it, so the caller warns twice (#32). */
+  staffDeleteTrackRecord:    (id) => req('DELETE', `/api/staff/track-records/${id}`),
   /* CHECK THE RECORDS — the per-line public-records research (verify-run.js).
      This is the button the owner expected "Verify" to be (2026-08-09): it reads
      the county's own records for THIS property and fills the three pillars; it
