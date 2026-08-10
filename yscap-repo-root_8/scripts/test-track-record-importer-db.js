@@ -470,6 +470,21 @@ const found = (name) => {
     ok(bad.status === 400, `a refinance amount too big for the column is a plain 400, not a 500 (${bad.status})`);
     ok((await db.query(`SELECT status FROM track_record_candidates WHERE id=$1`, [flip.id])).rows[0].status === 'staged',
       '…and the refusal wrote nothing — the candidate is still waiting');
+
+    /* A flip NEVER takes a refinance/lease exit — its exit is the sale. This is
+       the belt to the workbench, which only shows the exit step for a hold /
+       ground-up; a stale figure from a type the reviewer switched away from must
+       not land on the line. */
+    const rf = await call(`/api/staff/track-record-candidates/${flip.id}/decide`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'import_new', dealType: 'flip',
+        exit: { refiAmount: 240000, refiDate: '2025-09-01' } }) });
+    ok(rf.status === 200, 'the flip is brought on');
+    const fl = (await db.query(
+      `SELECT deal_type, refi_amount, refi_date FROM track_records
+        WHERE borrower_id=$1 ORDER BY created_at DESC LIMIT 1`, [borrowerId])).rows[0];
+    ok(fl && fl.deal_type === 'flip' && fl.refi_amount == null && fl.refi_date == null,
+      '…and the refinance was IGNORED — an exit figure never rides onto a flip');
   }
 
   await db.query('DELETE FROM track_record_candidates WHERE borrower_id=$1', [borrowerId]).catch(() => {});

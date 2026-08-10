@@ -67,11 +67,23 @@ const canonDealType = (v) => {
    whatever the records already implied. `??` (not `||`) so an explicit "Choose…"
    clears the default instead of snapping back to it. */
 const chosenTypeOf = (c, dealChoice) => dealChoice[c.id] ?? c.dealTypeDerived ?? canonDealType(c.dealType);
-/* Does the records-carried data already say how it exited? A sale (the flip's
-   exit) OR a refinance OR a lease (the hold's exit). When none is on record and
-   the deal is a hold/ground-up, the workbench asks the reviewer for one. */
-const hasExitFigure = (c) => !!(c.saleDate || money(c.salePrice) || c.refiDate || money(c.refiAmount)
-  || c.rentDate || money(c.rentAmount));
+/* Does the record already carry an exit DATE — the one thing the frozen 36-month
+   rule actually counts (it reads the sale / refi / lease DATE, never the amount)?
+   A sale is the flip's exit; a refinance or lease date is the hold's. When none
+   is on record and the deal is a hold/ground-up, the workbench asks for one —
+   and an amount with no date is treated as "no exit yet" so the guided step can
+   complete it. */
+const hasRecordedExit = (c) => !!(c.saleDate || c.refiDate || c.rentDate);
+/* THE GUIDED EXIT applies only where its prompt is shown — a hold / ground-up the
+   records carry no exit date for. ONE predicate for both the prompt's visibility
+   AND whether the import carries an exit, so the two can never diverge: if the
+   prompt is not showing (e.g. the reviewer switched the type to flip after typing
+   a refinance), no exit is submitted, and a stale figure can never ride onto the
+   wrong line. */
+const exitApplies = (c, dealChoice) => {
+  const t = chosenTypeOf(c, dealChoice);
+  return (t === 'hold' || t === 'ground-up') && !hasRecordedExit(c);
+};
 
 const money = (v) => {
   const n = Number(v);
@@ -136,6 +148,7 @@ function ExitPrompt({ draft, setDraft }) {
     <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 13, color: INK }}>
       <span style={{ color: MUTED }}>{label}</span>
       <input className="input" type={type} value={val || ''} placeholder={placeholder || ''}
+        {...(type === 'number' ? { min: 0, step: 'any', inputMode: 'decimal' } : {})}
         onChange={(e) => onChange(e.target.value)}
         style={{ minHeight: 40, fontSize: 16, minWidth: 150, color: INK, background: '#fff' }} />
     </label>
@@ -516,15 +529,18 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
                     {DEAL_TYPES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
                   </select>
                 </label>
-                {/* WHY the default was chosen — the server's own plain sentence,
-                    so the reviewer confirms a suggestion, not a black box. */}
-                {current.dealTypeWhy ? (
+                {/* WHY the default was chosen — the server's own plain sentence.
+                    Shown only while the reviewer is on the suggestion; once they
+                    override the dropdown, the suggestion's reason no longer
+                    describes their choice, so it is hidden rather than left to
+                    contradict the selection. */}
+                {current.dealTypeWhy && chosenTypeOf(current, dealChoice) === current.dealTypeDerived ? (
                   <div style={{ marginTop: 6, color: MUTED, fontSize: 13 }}>{current.dealTypeWhy}</div>
                 ) : null}
                 {/* THE GUIDED EXIT — only for a rental / ground-up the records did
                     not already show an exit for. A hold with no exit counts toward
                     nothing, so this is where a refinance or lease is added. */}
-                {(chosenTypeOf(current, dealChoice) === 'hold' || chosenTypeOf(current, dealChoice) === 'ground-up') && !hasExitFigure(current) ? (
+                {exitApplies(current, dealChoice) ? (
                   <ExitPrompt
                     draft={exitDraft[current.id]}
                     setDraft={(patch) => setExitDraft((m) => ({ ...m, [current.id]: { ...(m[current.id] || {}), ...patch } }))} />
@@ -544,7 +560,10 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
                   title={chosenTypeOf(current, dealChoice) ? '' : 'Pick the kind of deal first'}
                   onClick={() => decide(current.id, 'import_new', {
                     dealType: chosenTypeOf(current, dealChoice),
-                    exit: exitPayloadOf(exitDraft[current.id]),
+                    /* Only ever the exit the reviewer can currently SEE — the
+                       same predicate that shows the prompt (never a stale draft
+                       from a type they since switched away from). */
+                    exit: exitApplies(current, dealChoice) ? exitPayloadOf(exitDraft[current.id]) : null,
                   })}
                   style={{ minHeight: 44 }}>
                   Bring it on as a new one

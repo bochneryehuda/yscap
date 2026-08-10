@@ -1045,11 +1045,16 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
      county record always wins — and a figure that cannot fit its column is
      refused at the door (there is a human at this screen). */
   const exitFill = {};
-  if (exit && typeof exit === 'object') {
+  /* A refinance or a lease is a HOLD / GROUND-UP exit — a flip exits on its sale
+     — so an exit figure is never applied to a flip. This mirrors the workbench,
+     which only shows the guided exit step for those two types; belt-and-suspenders
+     so a stale figure from a type the reviewer switched away from can never land. */
+  const wantsExit = effectiveDealType === 'fix-and-hold' || effectiveDealType === 'ground-up';
+  if (wantsExit && exit && typeof exit === 'object') {
     for (const [key, col] of [['refiAmount', 'refi_amount'], ['rentAmount', 'rent_amount']]) {
       if (c[col] != null) continue;                 // the records already carry it
       const n = num(exit[key]);
-      if (n == null) continue;
+      if (!(n > 0)) continue;                        // blank / zero / negative = not given
       const problem = NB.tableColumnProblem('track_records', col, n);
       if (problem) { const e = new Error(problem); e.status = 400; e.code = 'exit_figure_too_big'; throw e; }
       exitFill[col] = n;
