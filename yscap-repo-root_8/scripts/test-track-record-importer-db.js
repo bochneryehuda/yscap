@@ -487,6 +487,72 @@ const found = (name) => {
       '…and the refinance was IGNORED — an exit figure never rides onto a flip');
   }
 
+  console.log('\n11. MATCH TRANSPARENCY — every candidate says HOW it matched, and a company-only match WARNS');
+  {
+    /* The owner's "MAJOR enhancement" (2026-08-10): every pulled record carries a
+       personal-name AND an entity-name match basis, and when a company on the
+       profile matched but the borrower's OWN name is NOT among the people the
+       records show behind that company, a HIGH-LEVEL PENDING WARNING — it may be
+       a different company with the same name. Advisory only; nothing is ever
+       auto-declined. The pure logic is proven in test-track-record-match-basis-
+       pure.js; this proves the THREADING — the basis is computed with the REAL
+       namesMatchLoose at stage time, STORED on the candidate (db/513), and
+       surfaced in the staff queue. A pure test cannot catch a wrong column name
+       in the INSERT or a queue shape that never selects it. */
+    const foundWithPeople = (people) => (name, args) => {
+      if (name === 'get_entity_associated_people') return { ok: true, data: { results: people } };
+      return found(name, args);
+    };
+    const latestBasis = async () => (await db.query(
+      `SELECT match_basis FROM track_record_candidates
+        WHERE borrower_id=$1 ORDER BY created_at DESC LIMIT 1`, [borrowerId])).rows[0];
+    const queuedBasis = async () => {
+      const q = await (await call(`/api/staff/borrowers/${borrowerId}/track-record-candidates`)).json();
+      const c = (q.toReview || []).find((r) => r.matchBasis);
+      return c ? c.matchBasis : null;
+    };
+
+    // (a) THE COMPANY matched, but the people behind it are STRANGERS — the
+    //     borrower's own name is not among them → the pending warning.
+    await db.query(`DELETE FROM track_record_candidates WHERE borrower_id=$1`, [borrowerId]);
+    await db.query(`DELETE FROM track_records WHERE borrower_id=$1`, [borrowerId]);
+    reply = foundWithPeople([{ name: 'Travis Tran', type: 'PERSON' }, { name: 'Hatran Jillian', type: 'PERSON' }]);
+    await call(`/api/staff/borrowers/${borrowerId}/track-record-search`, { method: 'POST', body: '{}' });
+
+    const warnQ = await queuedBasis();
+    ok(warnQ, 'every candidate carries a matchBasis — the queue surfaces how it matched');
+    ok(warnQ && warnQ.warn === true && warnQ.basis === 'entity_only',
+      'the company matched but the borrower is not among its people → a PENDING WARNING (basis entity_only)');
+    ok(warnQ && /company only/i.test(warnQ.label || ''),
+      '…labelled "Matched by company only" in plain words');
+    ok(warnQ && /different company with the same name/i.test(warnQ.why || ''),
+      '…and the reason names the same-name-company risk the owner asked to be flagged');
+    ok(warnQ && warnQ.otherPeopleCount === 2 && warnQ.peopleKnown === true,
+      '…and it counts the other people it actually saw');
+    const warnStored = await latestBasis();
+    ok(warnStored && warnStored.match_basis && warnStored.match_basis.warn === true,
+      'the basis is STORED on the candidate (db/513), computed once at stage time — not derived on every read');
+
+    // (b) THE SAME company, but the borrower IS one of its people → confirmed
+    //     theirs, no warning. And the match is order/case-insensitive.
+    await db.query(`DELETE FROM track_record_candidates WHERE borrower_id=$1`, [borrowerId]);
+    reply = foundWithPeople([{ name: 'IMP TESTER', type: 'PERSON' }, { name: 'Sarah Weil', type: 'PERSON' }]);
+    await call(`/api/staff/borrowers/${borrowerId}/track-record-search`, { method: 'POST', body: '{}' });
+    const bothQ = await queuedBasis();
+    ok(bothQ && bothQ.warn === false && bothQ.basis === 'both' && bothQ.personalMatched === true,
+      'when the borrower IS among the company\'s people it is confirmed theirs (basis both, no warning) — matched with the REAL matcher, order/case-insensitive (IMP TESTER ≡ Imp Tester)');
+
+    // (c) NO people to check → we NEVER warn (an absent list is not "not there").
+    await db.query(`DELETE FROM track_record_candidates WHERE borrower_id=$1`, [borrowerId]);
+    reply = found; // get_entity_associated_people → [] (the fixture default)
+    await call(`/api/staff/borrowers/${borrowerId}/track-record-search`, { method: 'POST', body: '{}' });
+    const unknownQ = await queuedBasis();
+    ok(unknownQ && unknownQ.warn === false && unknownQ.peopleKnown === false && unknownQ.basis === 'entity_only',
+      'no people to check → NO warning — an absent people-list is never treated as "the borrower is not there"');
+    ok(unknownQ && !/different company/i.test(unknownQ.why || ''),
+      '…and the reason stays neutral, not alarming, when we simply could not check');
+  }
+
   await db.query('DELETE FROM track_record_candidates WHERE borrower_id=$1', [borrowerId]).catch(() => {});
   await db.query('DELETE FROM track_record_searches WHERE borrower_id=$1', [borrowerId]).catch(() => {});
   await db.query('DELETE FROM track_records WHERE borrower_id=$1', [borrowerId]).catch(() => {});
