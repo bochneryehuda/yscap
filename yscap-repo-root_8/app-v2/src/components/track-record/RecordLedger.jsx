@@ -125,7 +125,8 @@ export default function RecordLedger({
         {isOpen && (
           <div style={{ padding: '8px 0 4px 0' }}>
             <LineDetail trackRecordId={t.id} maySignOff={maySignOff} canDelete={canDelete} role={role}
-              onChanged={onChanged} extraActions={lineActions ? (ln) => lineActions(t, addr, ln) : null} />
+              onChanged={onChanged} onProfileScreen={lens === 'borrower'}
+              extraActions={lineActions ? (ln) => lineActions(t, addr, ln) : null} />
           </div>
         )}
       </div>
