@@ -22,8 +22,15 @@
  *   • the WHOLE entity is SNAPSHOTTED into `entity_removals` first (row + members
  *     + slots + the metadata of its documents + the files/track-records that
  *     referenced it), so nothing is unrecoverable;
- *   • it is gated on `super_admin` + a typed reason (the caller enforces the role;
- *     this module refuses without a reason);
+ *   • WHO may remove it is TIERED by usage (owner-directed 2026-08-10): an entity
+ *     committed to a CLOSED (funded) loan or a TRACK RECORD is super-admin-only;
+ *     an entity that is a pure orphan, or sits only on an IN-PROGRESS loan, may be
+ *     removed by ANY staffer who can see the borrower (the screen shows two
+ *     warnings first). This module ENFORCES the tier itself (never trusts the
+ *     caller) and always requires a typed reason;
+ *   • removing an entity from an IN-PROGRESS file un-vests that file, so its
+ *     vesting-entity condition (rtl_p1_llc) is reopened in the SAME transaction —
+ *     the file cannot clear to close until a new entity replaces it;
  *   • the DATABASE'S own CASCADE / SET NULL rules do the referential cleanup — we
  *     never hand-delete a child table (that is how borrower-merge once deleted a
  *     real row with a "clever" generic query; here Postgres owns it).
@@ -46,6 +53,26 @@ const httpError = (status, message) => Object.assign(new Error(message), { statu
 // A loan file whose status is one of these is over; un-vesting it is far less
 // consequential than un-vesting a live deal, so the preview does not shout about it.
 const TERMINAL_STATUSES = new Set(['funded', 'declined', 'withdrawn', 'cancelled']);
+
+// "Closed mortgage" = a FUNDED loan (the money moved). declined/withdrawn/cancelled
+// are terminal but DEAD, not closed — nothing to protect. A live (in-progress) file
+// is anything that is not terminal.
+const CLOSED_STATUSES = new Set(['funded']);
+const isClosedApp = (s) => CLOSED_STATUSES.has(String(s || ''));
+const isLiveApp = (s) => !TERMINAL_STATUSES.has(String(s || ''));   // in progress
+
+// The OWNER'S TIER RULE (2026-08-10): an entity committed to a CLOSED (funded)
+// loan or a TRACK RECORD may only be removed by a super-admin; a pure orphan, or
+// an entity sitting only on IN-PROGRESS loans, may be removed by ANY staffer who
+// can see the borrower. `vesting` is any array of rows carrying a `status`;
+// `trackRecords`/`pillarRefs` are counts of track-record usage. ONE definition,
+// used by both the preview and the removal, so the two can never disagree.
+function classifyUsage({ vesting = [], trackRecords = 0, pillarRefs = 0 }) {
+  const closedApps = vesting.filter((v) => isClosedApp(v.status));
+  const liveApps = vesting.filter((v) => isLiveApp(v.status));
+  const onRecord = closedApps.length > 0 || Number(trackRecords) > 0 || Number(pillarRefs) > 0;
+  return { requiredLevel: onRecord ? 'super_admin' : 'anybody', closedApps, liveApps };
+}
 
 /** Load the entity as it sits on this profile, or throw a clean 404/400. */
 async function loadOnProfile(borrowerId, llcId, client = db) {
@@ -105,15 +132,23 @@ async function previewRemoval(borrowerId, llcId, client = db) {
     `SELECT count(*)::int n FROM documents WHERE llc_id=$1`, [llcId])).rows[0].n);
   const trackRecords = Number((await client.query(
     `SELECT count(*)::int n FROM track_records WHERE llc_id=$1`, [llcId])).rows[0].n);
+  // The entity used as EVIDENCE for a verified track-record pillar is track-record
+  // usage too (it proved the borrower owned that property), so it locks the same way.
+  const pillarRefs = Number((await client.query(
+    `SELECT count(*)::int n FROM track_record_pillars WHERE satisfied_by_llc_id=$1`, [llcId])).rows[0].n);
+
+  const { requiredLevel, closedApps, liveApps } = classifyUsage({ vesting, trackRecords, pillarRefs });
+  // A DELETE un-vests every file it sits on; the LIVE (in-progress) ones have their
+  // entity requirement reopened afterward, so name them so the confirm can say so.
+  const reopensFiles = action === 'deleted' ? liveApps : [];
 
   const warnings = [];
   if (entity.is_verified) warnings.push({ code: 'verified', message: 'This entity has been verified.' });
-  const liveVesting = vesting.filter((v) => v.live);
-  if (action === 'deleted' && liveVesting.length) {
+  if (action === 'deleted' && reopensFiles.length) {
     warnings.push({
       code: 'vesting_live',
-      message: `It is the vesting entity on ${liveVesting.length} active loan file${liveVesting.length === 1 ? '' : 's'} — removing it will take the entity off ${liveVesting.length === 1 ? 'that file' : 'those files'}.`,
-      files: liveVesting,
+      message: `It is the vesting entity on ${reopensFiles.length} active loan file${reopensFiles.length === 1 ? '' : 's'} — removing it takes the entity off ${reopensFiles.length === 1 ? 'that file' : 'those files'} and reopens the entity requirement, so ${reopensFiles.length === 1 ? 'it' : 'they'} cannot clear to close until a new entity is added.`,
+      files: reopensFiles,
     });
   }
   if (action === 'deleted' && docCount) {
@@ -132,6 +167,11 @@ async function previewRemoval(borrowerId, llcId, client = db) {
     docCount,
     trackRecords,
     warnings,
+    // Who may remove it, and what a DELETE reopens — so the screen shows the right
+    // flow (two warnings for anybody; a "super-admin only" message otherwise).
+    requiredLevel,
+    usage: { closedFiles: closedApps.length, liveFiles: liveApps.length, trackRecords: trackRecords + pillarRefs },
+    reopensFiles,
   };
 }
 
@@ -155,12 +195,13 @@ async function snapshotEntity(llcId, client) {
  * super-admin (the ROLE is enforced by the route). Returns what happened.
  * One transaction; any failure rolls back and leaves the entity untouched.
  */
-async function removeEntity({ borrowerId, llcId, actorId = null, reason }) {
+async function removeEntity({ borrowerId, llcId, actorId = null, actorRole = null, reason }) {
   const why = String(reason == null ? '' : reason).trim();
   if (!why) throw httpError(400, 'a reason is required to remove an entity');
 
   const client = await db.pool.connect();
   const affectedAppIds = [];
+  const reopenedAppIds = [];
   try {
     await client.query('BEGIN');
     // Lock the entity row so two removals of the same entity can't interleave.
@@ -191,6 +232,19 @@ async function removeEntity({ borrowerId, llcId, actorId = null, reason }) {
       clickupTaskIndex: await idsOf(`SELECT task_id FROM clickup_task_index WHERE llc_id=$1`, 'task_id'),
     };
 
+    // ENFORCE THE TIER, under the lock, BEFORE any write. An entity committed to a
+    // CLOSED (funded) loan or a track record is super-admin-only; a pure orphan or
+    // an in-progress-only entity is open to any staffer who reached this door. The
+    // module never trusts the caller for the tier (the route no longer hard-gates).
+    const { requiredLevel, liveApps } = classifyUsage({
+      vesting: vestingApps,
+      trackRecords: trackRecordRows.length,
+      pillarRefs: backReferences.trackRecordPillarsSatisfiedBy.length,
+    });
+    if (requiredLevel === 'super_admin' && actorRole !== 'super_admin') {
+      throw httpError(403, 'Only a super-admin can remove this entity — it is used on a closed loan or a track record.');
+    }
+
     const affected = {
       vestingApplications: vestingApps.map((a) => ({ id: a.id, loanNumber: a.ys_loan_number || null, status: a.status })),
       trackRecords: trackRecordRows.map((t) => ({ id: t.id })),
@@ -219,6 +273,39 @@ async function removeEntity({ borrowerId, llcId, actorId = null, reason }) {
       action = 'deleted';
       for (const a of vestingApps) affectedAppIds.push(a.id);
       await client.query(`DELETE FROM llcs WHERE id=$1`, [llcId]);
+      // The DELETE just un-vested every file (applications.llc_id → NULL). For files
+      // still IN PROGRESS, reopen the vesting-entity condition (rtl_p1_llc) in THIS
+      // transaction so a new entity must be added before clear-to-close (owner-directed
+      // 2026-08-10). A funded/terminal file is never reopened. rtl_p1_llc is an
+      // application-scoped condition, so its row survives the entity's deletion.
+      const reopenIds = liveApps.map((a) => a.id);
+      if (reopenIds.length) {
+        // Reopen the vesting condition on EVERY in-progress file, whatever state it was
+        // in: the entity is gone, so the only correct end state is "outstanding — needs
+        // a new entity", and a signed-off one must have its sign-off cleared (the owner's
+        // "if the LLC condition is clear already … it should not let the file be cleared
+        // to close"). There is DELIBERATELY no prior-cleared guard like the db/071/072
+        // hot-path triggers use: this is a one-shot admin action (churn is a non-issue),
+        // and reopenedAppIds is meant to name EVERY file that now needs a new entity, so
+        // the confirmation's count is accurate — not only the ones that were signed off.
+        // RETURNING so a live file with no such condition reports nothing.
+        const rr = await client.query(
+          `UPDATE checklist_items ci
+              SET status='outstanding', signed_off_by=NULL, signed_off_at=NULL,
+                  notes=CASE WHEN ci.notes IS NULL OR ci.notes LIKE '[auto]%'
+                             THEN '[auto] The vesting entity was removed — add a new entity before this file can clear to close.'
+                             ELSE ci.notes END,
+                  updated_at=now()
+             FROM checklist_templates t
+            WHERE t.id=ci.template_id AND t.code='rtl_p1_llc'
+              AND ci.application_id = ANY($1::uuid[])
+          RETURNING ci.application_id`,
+          [reopenIds]);
+        for (const r of rr.rows) {
+          const id = String(r.application_id);
+          if (!reopenedAppIds.includes(id)) reopenedAppIds.push(id);
+        }
+      }
     }
 
     await client.query(
@@ -229,7 +316,7 @@ async function removeEntity({ borrowerId, llcId, actorId = null, reason }) {
         jsonbText(snapshot), jsonbText(affected), actorId]);
 
     await client.query('COMMIT');
-    return { ok: true, action, entityName: entity.llc_name || null, transferredTo, affected, affectedAppIds };
+    return { ok: true, action, entityName: entity.llc_name || null, transferredTo, affected, affectedAppIds, reopenedAppIds };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     throw e;
@@ -238,4 +325,4 @@ async function removeEntity({ borrowerId, llcId, actorId = null, reason }) {
   }
 }
 
-module.exports = { previewRemoval, removeEntity, _internals: { loadOnProfile, otherOwners, snapshotEntity } };
+module.exports = { previewRemoval, removeEntity, _internals: { loadOnProfile, otherOwners, snapshotEntity, classifyUsage } };
