@@ -505,50 +505,13 @@ function fileLabel(a) {
 
 function TrackRecord({ id, onOpenEntities }) {
   const [rows, err, reload] = useLoad(() => api.staffBorrowerTrackRecords(id), [id]);
-  const [busy, setBusy] = useState('');
-  /* TWO DIFFERENT "VERIFY"s, kept apart on purpose (owner-directed 2026-08-09:
-     "I thought that button is to verify the details in Elementix. If that's
-     not the button, then we should do a separate button for that"). CHECK THE
-     RECORDS reads the county's own records for this one property and works on
-     ANY line — no exit date needed, because it verifies whatever facts exist
-     (they owned it, what they paid). VERIFY is the final sign-off that makes
-     the deal COUNT toward the tier, and it stays gated on a completed
-     in-window exit — a "verified" line that counts toward nothing is the
-     misleading state that gate exists to prevent. */
-  async function research(t) {
-    setBusy(t.id);
-    try {
-      const out = await api.staffResearchTrackRecord(t.id);
-      const errs = (out.errors || []).map((e) => e.detail || e.reason).filter(Boolean);
-      await showMessage(
-        (out.summary || 'The records were checked.')
-        + (errs.length ? `\n\n${errs.join('\n')}` : '')
-        + '\n\nOpen the Track record workspace to see each check and the evidence.',
-        { title: 'Public records check' });
-      reload();
-    } catch (e) { showMessage((e && e.message) || 'Could not check the records'); }
-    finally { setBusy(''); }
-  }
-  async function verify(t) {
-    setBusy(t.id);
-    try { await api.staffVerifyTrackRecord(t.id, { status: 'verified' }); reload(); } catch (e) { showMessage(e.message || 'Could not verify'); }
-    finally { setBusy(''); }
-  }
-  async function revoke(t) {
-    const reason = await askPrompt('Revoke this project’s verification. The borrower is notified with this reason:');
-    if (reason == null) return;                       // cancelled
-    if (!reason.trim()) { showMessage('A reason is required to revoke verification.'); return; }
-    setBusy(t.id);
-    try { await api.staffVerifyTrackRecord(t.id, { status: 'pending', reason: reason.trim() }); reload(); }
-    catch (e) { showMessage(e.message || 'Could not revoke verification'); }
-    finally { setBusy(''); }
-  }
   /* THE SHARED TRACK RECORD CENTER, BORROWER LENS (mega-workspace phase D,
      owner-directed 2026-08-09 "continue with phases D E and F"): the profile
      renders the SAME ledger + header the loan file renders — one arrangement
-     of the person's record, wherever it is read — with the profile's OWN
-     verbs (check the records / verify / revoke) as the per-line actions and
-     NO file verbs (there is no file here to mint a condition on). */
+     of the person's record, wherever it is read. The per-line verbs (check
+     the records / verify / revoke / documents / edit) live natively in the
+     shared <LineDetail>, so the profile passes no line actions — only the
+     entity cross-link (there is no file here to mint a condition on). */
   const [view, setView] = useState(null);       // { lines, verified } — the lens payload
   const [viewKey, setViewKey] = useState(0);
   useEffect(() => {
@@ -569,32 +532,14 @@ function TrackRecord({ id, onOpenEntities }) {
   const [files] = useLoad(() => api.staffBorrowerApplications(id), [id]);
   const liveFiles = (files || []).filter((a) => !/declined|withdrawn|cancel/i.test(String(a.status || '')));
 
-  // Doc review, same verbs as the loan file's ledger (accept needs a completer,
-  // delete needs the delete permission — the shared rules).
+  // The shared ledger gates its own doc-review verbs on the viewer's role
+  // (accept needs a completer, delete needs the delete permission) — passed
+  // straight through as maySignOff / canDelete / role below.
   const { actor } = useAuth();
   const role = (actor && actor.role) || '';
-  async function reviewDoc(doc, action) {
-    let reason;
-    if (action === 'delete') {
-      if (!(await askConfirm(`Permanently delete "${doc.filename || 'this document'}"?\n\nThis removes it for good. Use this only for a document uploaded by mistake.`))) return;
-    }
-    if (action === 'reject') {
-      reason = await askPrompt('Why is this document being rejected? The borrower is notified and the line is un-verified until a new document is accepted.');
-      if (reason == null || !reason.trim()) return;
-    }
-    setBusy(doc.id);
-    try {
-      if (action === 'delete') await api.staffDeleteDoc(doc.id);
-      else await api.staffReviewDoc(doc.id, action, reason);
-      reloadAll();
-    } catch (e) { showMessage(e.message || 'Could not review the document'); }
-    finally { setBusy(''); }
-  }
 
   if (err) return <div className="notice err">{err}</div>;
   if (!rows) return <Empty t="Loading…" />;
-  const docsMap = {};
-  for (const t of rows) docsMap[t.id] = Array.isArray(t.docs) ? t.docs : [];
   return (
     <>
     {/* THE WORKBENCH RENDERS EVEN WITH AN EMPTY RECORD — that is precisely the
