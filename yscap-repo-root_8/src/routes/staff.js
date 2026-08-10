@@ -11391,7 +11391,12 @@ router.post('/track-record-candidates/:id/decide', async (req, res) => {
       rentAmount: b.exit.rentAmount, rentDate: b.exit.rentDate,
     } : null;
     const out = await require('../lib/track-record/importer').decideCandidate(req.params.id, {
-      action: b.action, staffId: req.actor.id, note: b.note, snoozeDays: b.snoozeDays,
+      action: b.action, staffId: req.actor.id, note: b.note,
+      /* THE GUIDED "not theirs" reason (owner-directed 2026-08-10) — one of the
+         known reason codes; the importer derives the stored text from it and the
+         #11 match basis, so no free-text reason is ever required. */
+      reasonCode: typeof b.reasonCode === 'string' ? b.reasonCode : null,
+      snoozeDays: b.snoozeDays,
       dealType: b.dealType, confirmReopen: b.confirmReopen === true, exit,
     });
     await audit(req, 'track_record_candidate_decided', 'borrower', own.rows[0].borrower_id,

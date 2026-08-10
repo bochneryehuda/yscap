@@ -48,6 +48,7 @@ const lookups = require('../elementix/lookups');
 const MATCH = require('./match');
 const NB = require('../number-bounds');
 const MB = require('./match-basis');
+const declineReason = require('./decline-reason');
 /* The blessed person-name matcher — order-insensitive, conservative (it will
    not call "Moshe Weil" and "Moses Weil" the same person). Injected into the
    pure `computeMatchBasis` so that stays testable with no comparer/DB. */
@@ -880,6 +881,10 @@ async function loadQueue(borrowerId, client, opts) {
        the queue never acts on its own recommendation. */
     suggested: r.match_track_record_id ? 'match_existing' : 'import_new',
     internalNotes: r.internal_notes,
+    /* WHY it was declined — the system-derived reason (owner-directed 2026-08-10),
+       surfaced so the declined list shows what the reviewer's "not theirs" recorded
+       rather than leaving it a bare address. Only ever set on a declined row. */
+    resolutionNote: r.resolution_note || null,
     /* WHO ANSWERED. db/504. A borrower's "not mine" is weaker evidence than a
        staffer's and is meant to be reviewable — the `declined` list is the one
        place a wrong answer quietly REMOVES experience rather than adding it. */
@@ -964,7 +969,7 @@ async function decideCandidate(candidateId, opts, client) {
   }
 }
 
-async function decideLocked(db, candidateId, { action, staffId, note, snoozeDays, dealType, confirmReopen, exit }) {
+async function decideLocked(db, candidateId, { action, staffId, note, reasonCode, snoozeDays, dealType, confirmReopen, exit }) {
   const c = (await db.query(
     `SELECT * FROM track_record_candidates WHERE id=$1 FOR UPDATE`, [candidateId])).rows[0];
   if (!c) { const e = new Error('not found'); e.status = 404; throw e; }
@@ -973,9 +978,16 @@ async function decideLocked(db, candidateId, { action, staffId, note, snoozeDays
   }
 
   if (action === 'decline') {
-    if (!str(note)) { const e = new Error('Say why this is not their property — the next search reads it.'); e.status = 400; throw e; }
-    await settle(db, candidateId, 'declined', staffId, note);
-    return { ok: true, action, status: 'declined' };
+    /* THE REASON IS DERIVED, NOT TYPED (owner-directed 2026-08-10). The reviewer
+       confirms, or picks one of the guided reasons; the system figures out WHY
+       from the #11 match basis (a company-only match with the borrower absent is
+       a same-name company; a personal match is a namesake). A free-text note is
+       still honored for back-compat but is never required — so a decline can no
+       longer be refused for "no reason given", and the next search always has a
+       reason to read. See src/lib/track-record/decline-reason.js. */
+    const why = declineReason.resolve({ reasonCode, matchBasis: c.match_basis, note });
+    await settle(db, candidateId, 'declined', staffId, why);
+    return { ok: true, action, status: 'declined', reason: why };
   }
 
   if (action === 'snooze') {

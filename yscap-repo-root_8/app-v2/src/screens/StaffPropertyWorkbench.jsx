@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
-import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
+import { showMessage, askConfirm } from '../lib/dialog.js';
 import { fmtDay } from '../lib/dates.js';
 import { US_STATES } from '../components/LlcManager.jsx';
+import { optionsFor as declineOptionsFor, REASON_LABELS as DECLINE_LABELS } from '../lib/declineReason.js';
 
 /**
  * THE BULK PROPERTY WORKBENCH (blueprint §9.5, owner-directed 2026-08-09)
@@ -208,6 +209,10 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
      date counts toward nothing (the frozen rule), so collecting it here is what
      lets a refinanced or leased rental actually reach the tier. */
   const [exitDraft, setExitDraft] = useState({});
+  /* THE GUIDED "not theirs" reason, per candidate (owner-directed 2026-08-10) —
+     a picked reason CODE, never typed. Absent = use the system's suggestion,
+     which the server derives from the #11 match basis. */
+  const [declinePick, setDeclinePick] = useState({});
   /* WHICH STATES TO PULL (owner-directed 2026-08-09: "make a drop-down to
      select which states we want to pull in — we should be able to pull each
      and every state separately for that person"). The records service files
@@ -262,6 +267,12 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
     if (!t) return true;
     return `${r.address} ${r.entityName || ''}`.toLowerCase().includes(t);
   });
+
+  /* THE "not theirs" REASON, DERIVED not typed (owner-directed 2026-08-10). The
+     system suggests one from the #11 match basis; the reviewer confirms it or
+     picks another from the guided list — never a text box. */
+  const declineOpts = current ? declineOptionsFor(current.matchBasis) : null;
+  const declineReasonCode = current && declineOpts ? (declinePick[current.id] || declineOpts.suggested) : null;
 
   /* SEARCHING SPENDS THE OFFICE'S SHARED HOURLY ALLOWANCE, so it is a deliberate
      click and never a page load, and the button says what it will do. */
@@ -322,21 +333,22 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
     } catch { /* advisory — a failed claim never stops the review */ }
   }
 
-  /* BULK DECLINE IS ALLOWED — it can only ever WITHHOLD credit. It still needs
-     a reason, because the next search reads that reason to avoid re-raising the
-     property, and "no reason given" would make the suppression unexplainable. */
+  /* BULK DECLINE IS ALLOWED — it can only ever WITHHOLD credit. NO type-in reason
+     box (owner-directed 2026-08-10): the system records WHY for each property from
+     its own #11 match basis, so a bulk decline is a single confirm, and the next
+     search still has a reason to read for every one. */
   async function declineTicked() {
     const ids = rows.filter((r) => ticked.has(r.id)).map((r) => r.id);
     if (!ids.length) return;
-    const why = await askPrompt(
-      `Why are these ${ids.length} not this borrower's? The next search reads this, so it will not raise them again.`,
-      { placeholder: 'e.g. a different Moses Weil', confirmLabel: 'Mark them not theirs' });
-    if (why === null) return;
-    if (!String(why).trim()) { await showMessage('Add a short reason — the next search reads it.'); return; }
+    if (!(await askConfirm(
+      `Mark these ${ids.length} as not this borrower's? The system records why for each — usually a company or a person with the same name — and the next search will not raise them again.`,
+      { confirmLabel: 'Mark them not theirs', cancelLabel: 'Not now' }))) return;
     setBusy(true);
     let done = 0; const failed = [];
     for (const id of ids) {
-      try { await api.staffDecideCandidate(id, { action: 'decline', note: why }); done += 1; }
+      /* No reason sent — the server derives each property's reason from ITS OWN
+         match basis, so a bulk decline records the right WHY for every one. */
+      try { await api.staffDecideCandidate(id, { action: 'decline' }); done += 1; }
       catch { failed.push(id); }
     }
     setBusy(false); setTicked(new Set());
@@ -598,16 +610,30 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
                   style={{ minHeight: 44 }}>
                   Bring it on as a new one
                 </button>
-                <button type="button" className="btn ghost" disabled={busy} style={{ minHeight: 44, color: INK }}
-                  onClick={async () => {
-                    const why = await askPrompt('Why is this not their property? The next search reads this.',
-                      { confirmLabel: 'Not theirs' });
-                    if (why === null) return;
-                    if (!String(why).trim()) { await showMessage('Add a short reason — the next search reads it.'); return; }
-                    decide(current.id, 'decline', { note: why });
-                  }}>
-                  Not theirs
-                </button>
+                {/* NOT THEIRS — the reason is a guided pick, never typed. The
+                    system pre-selects what it read off the match basis; the
+                    reviewer confirms or chooses another. */}
+                <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 4, alignItems: 'stretch' }}>
+                  <select
+                    value={declineReasonCode || 'not_theirs'}
+                    onChange={(e) => setDeclinePick((s) => ({ ...s, [current.id]: e.target.value }))}
+                    title="If this is not theirs, the reason the system records"
+                    style={{ fontSize: 13, padding: '4px 8px', border: '1px solid #EAE4D7',
+                      borderRadius: 8, color: INK, background: '#fff', maxWidth: 240 }}>
+                    {(declineOpts ? declineOpts.options : []).map((o) => (
+                      <option key={o.code} value={o.code}>{o.label}{o.suggested ? ' (suggested)' : ''}</option>
+                    ))}
+                  </select>
+                  <button type="button" className="btn ghost" disabled={busy} style={{ minHeight: 44, color: INK }}
+                    onClick={async () => {
+                      if (!(await askConfirm(
+                        `Mark as not this borrower's? The system will record: "${DECLINE_LABELS[declineReasonCode] || 'Not this borrower\'s'}". The next search will not raise it again.`,
+                        { confirmLabel: 'Not theirs', cancelLabel: 'Keep it' }))) return;
+                      decide(current.id, 'decline', { reasonCode: declineReasonCode });
+                    }}>
+                    Not theirs
+                  </button>
+                </span>
                 <button type="button" className="btn soft" disabled={busy} style={{ minHeight: 44, color: INK }}
                   onClick={() => setRunAt((n) => n + 1)}>
                   Decide later
@@ -722,10 +748,15 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
               </summary>
               <ul style={{ margin: '8px 0 0 18px', padding: 0, color: MUTED, fontSize: 13 }}>
                 {q.declined.map((d) => (
-                  <li key={d.id} style={{ marginBottom: 3 }}>
+                  <li key={d.id} style={{ marginBottom: 5 }}>
                     {d.address}
                     {d.decidedByBorrower ? (
                       <strong style={{ color: AMBER }}> — the borrower said this one is not theirs</strong>
+                    ) : null}
+                    {/* WHY it was declined — the system's derived reason, so the
+                        list explains itself rather than being a bare address. */}
+                    {d.resolutionNote ? (
+                      <span style={{ display: 'block', color: MUTED, fontSize: 12, marginTop: 1 }}>{d.resolutionNote}</span>
                     ) : null}
                   </li>
                 ))}
