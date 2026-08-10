@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api, saveBlob } from '../../lib/api.js';
 import { askConfirm, askPrompt } from '../../lib/dialog.js';
 import DocPreview from '../DocPreview.jsx';
+import { TR_STATUS_LABEL, TR_REVIEW_OUTCOMES, trStatusShort } from '../../lib/trackRecordStatus.js';
 
 /* ONE LINE'S WHOLE STORY, IN ONE COMPONENT (mega-workspace "one screen"
    enhancement, owner-directed 2026-08-09: "every single option available on the
@@ -153,12 +154,40 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
     setBusy('verify');
     try {
       const out = await api.staffVerifyTrackRecord(trackRecordId, { status });
-      flash(true, status === 'limited' ? 'Verified from public records.' : 'Verified — this project counts toward experience.');
+      flash(true, 'Fully verified — this project counts toward experience.');
       if (out && out.requestError) flash(false, out.requestError);
       changed();
     } catch (e) {
       // Real underwriting refusals — no completed exit, a future exit, an exit
       // outside the 3-year window, or not having sign-off. Shown word for word.
+      const t = (e && e.message) || 'that did not save'; flash(false, t); rowError('verify', t);
+    } finally { setBusy(''); }
+  }
+
+  /* Record a NON-COUNTING review outcome (owner-directed 2026-08-10, #40): not
+     verified, rejected, or one of the two "unable to verify" reasons — and the
+     way back to pending. Only "Fully verified" counts, so none of these sets
+     is_verified. Moving a line that IS verified to any of these REVOKES it, which
+     the server refuses without a reason (the borrower is notified), so prompt for
+     one exactly as revoke() does. Setting it back to what it already is is a
+     no-op we skip so a stray pick never fires a needless write. */
+  async function setReviewStatus(status) {
+    if (!status || status === (line.verificationStatus || 'pending')) return;
+    const body = { status };
+    if (line.isVerified) {
+      const reason = await askPrompt(
+        `This project is fully verified. Marking it “${TR_STATUS_LABEL[status] || status}” revokes that — the borrower is notified with this reason:`,
+        { multiline: true });
+      if (reason == null) return;
+      if (!reason.trim()) { flash(false, 'A reason is required to revoke verification.'); return; }
+      body.reason = reason.trim();
+    }
+    setBusy('verify');
+    try {
+      await api.staffVerifyTrackRecord(trackRecordId, body);
+      flash(true, `Marked “${TR_STATUS_LABEL[status] || status}”.`);
+      changed();
+    } catch (e) {
       const t = (e && e.message) || 'that did not save'; flash(false, t); rowError('verify', t);
     } finally { setBusy(''); }
   }
@@ -390,8 +419,11 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
           {line.ownedPersonally
             ? <span className="pill small" title="Held under the borrower's personal name — no LLC">Personal name</span>
             : (line.entityName ? <span className="pill small" title={line.entityDocsVerified ? 'The company’s documents are complete' : 'The company’s documents are not complete yet'}>{line.entityName}{line.entityDocsVerified ? ' ✓' : ''}</span> : null)}
-          {line.verificationStatus && <span className="pill small">{line.verificationStatus}</span>}
-          {line.isVerified && <span className="ts-badge ok">Verified</span>}
+          {/* Fully verified shows the green badge below; any other outcome shows
+              its friendly label (Pending / Not verified / Rejected / the two
+              "unable to verify" reasons) — never the raw stored value. */}
+          {line.verificationStatus && !line.isVerified && <span className="pill small">{trStatusShort(line.verificationStatus)}</span>}
+          {line.isVerified && <span className="ts-badge ok">Fully verified</span>}
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: 10, margin: '10px 0 2px' }}>
@@ -419,9 +451,20 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
             <button className="btn primary small" disabled={busy === 'verify'} onClick={() => verify('verified')}
               title="The final sign-off — this project counts toward experience. Needs a completed exit within 3 years.">Verify this project</button>
           )}
-          {maySignOff && !line.isVerified && (
-            <button className="btn small" disabled={busy === 'verify'} onClick={() => verify('limited')}
-              title="Confirmed from public records only, with no documents on file — still counts.">Public records only</button>
+          {/* The review OUTCOME control (owner-directed 2026-08-10, #40): a
+              non-counting status — Pending / Not verified / Rejected / the two
+              "unable to verify" reasons. "Fully verified" is the primary button
+              above (it counts and carries the readiness warning); this never
+              counts. On a fully-verified line, picking one of these revokes the
+              verification (setReviewStatus prompts for the borrower's reason). */}
+          {maySignOff && (
+            <select className="input small" style={{ maxWidth: 240, height: 32 }} disabled={busy === 'verify'}
+              value={(!line.isVerified && TR_REVIEW_OUTCOMES.includes(line.verificationStatus)) ? line.verificationStatus : ''}
+              onChange={(e) => setReviewStatus(e.target.value)}
+              title="Record a review outcome — none of these count toward experience. On a verified line, this revokes verification.">
+              <option value="" disabled>Mark review outcome…</option>
+              {TR_REVIEW_OUTCOMES.map((s) => <option key={s} value={s}>{TR_STATUS_LABEL[s]}</option>)}
+            </select>
           )}
           {maySignOff && !line.isVerified && detail.bulk && (
             <button className="btn small" disabled={busy === 'verify' || !detail.bulk.ok} title={detail.bulk.ok ? 'Confirm all three at once — only offered when the records already prove every one' : detail.bulk.reason} onClick={bulkConfirm}>

@@ -40,11 +40,20 @@
    never internal_notes, never a note-buyer name. Everything is HTML-escaped;
    an address is attacker-typed text. */
 
+// Per-line verification statuses (owner-directed 2026-08-10, #40; db/518). Kept
+// in step with the React module + the tool bridges + the verify route — the
+// pure test test-track-record-status-pure asserts they do not drift. 'rejected'
+// never reaches here (it is filtered out of the borrower's saved copy below),
+// but its label is kept so the map stays complete.
 const STATUS_LABEL = {
   pending: 'Pending review',
+  verified: 'Fully verified',
+  not_verified: 'Not verified',
+  unable_docs: 'Unable to verify — waiting on documents',
+  unable_mismatch: 'Unable to verify — records don’t match',
+  rejected: 'Rejected',
   docs: 'Documentation required',
-  verified: 'Verified',
-  limited: 'Limited verification',
+  limited: 'Public records only',
 };
 
 const esc = (s) => String(s == null ? '' : s)
@@ -116,7 +125,10 @@ function sectionHtml(title, list) {
  * injected so the builder needs no clock (and the test can pin the output).
  */
 function buildSavedCopyHtml({ borrowerName, rows, generatedAt, portalUrl }) {
-  const props = Array.isArray(rows) ? rows : [];
+  // REJECTED lines are hidden from the borrower's saved copy, exactly as the
+  // live tool hides them (owner-directed 2026-08-10, #40) — the saved copy is a
+  // static mirror of the live record, and a rejected deal is not part of it.
+  const props = (Array.isArray(rows) ? rows : []).filter((r) => String(r.verification_status || '') !== 'rejected');
   const flips = props.filter((r) => bucketOf(r.deal_type) === 'flip');
   const holds = props.filter((r) => bucketOf(r.deal_type) === 'hold');
   const ground = props.filter((r) => bucketOf(r.deal_type) === 'ground');

@@ -568,11 +568,16 @@ async function buildTprExport(appId) {
   // The borrower's (and co-borrower's) operational track record.
   const borrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
   const records = (await db.query(
+    // A REJECTED line (the team decided it is not the borrower's, a duplicate, or
+    // wrong) is not part of their track record and never ships to the investor
+    // (owner-directed 2026-08-10, #40; db/518). Every other status still ships,
+    // each with its own review-status stamp.
     `SELECT id, borrower_id, property_address, deal_type, purchase_price, sale_price, rehab_amount,
             purchase_date, sale_date, rent_amount, rent_date, refi_amount, refi_date, current_value,
             is_verified, verified_at, verification_status, entered_by_kind, notes
        FROM track_records
       WHERE borrower_id = ANY($1::uuid[])
+        AND COALESCE(verification_status, '') <> 'rejected'
       ORDER BY COALESCE(sale_date, refi_date, rent_date, purchase_date) DESC NULLS LAST, created_at DESC`,
     [borrowerIds])).rows;
 

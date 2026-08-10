@@ -350,7 +350,7 @@ const tag = `trkp0_${process.pid}`;
         `INSERT INTO track_records (borrower_id, property_address, verification_status)
          VALUES ($1,$2::jsonb,'totally-made-up')`, [borrowerId, JSON.stringify(addr)]);
     } catch (e) { refused = /verification_status/.test(String(e.message)); }
-    ok(refused, 'a value outside pending|docs|verified|limited is refused by the database, not just by app code');
+    ok(refused, 'a value outside the allowed verification-status set is refused by the database, not just by app code (widened by db/518)');
     await db.query('DELETE FROM track_records WHERE borrower_id=$1', [borrowerId]).catch(() => {});
   }
 
