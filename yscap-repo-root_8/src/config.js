@@ -1030,11 +1030,14 @@ module.exports = {
     outboundEnabled: process.env.AMC_OUTBOUND_ENABLED === '1',  // write gate (default OFF)
     dryrun:         process.env.AMC_DRYRUN === '1',             // build + log, send nothing
 
-    // ---- endpoints (UAT vs PROD). CoreLogic assigns these; overridable so an env
+    // ---- endpoints (UAT vs PROD). The vendor assigns these; overridable so an env
     // flip needs no redeploy. Defaults are the documented UAT hosts. ----
-    // OAuth2 token endpoint (client_credentials grant).
+    // OAuth2 token endpoint (client_credentials grant). Cotality is CoreLogic's new
+    // name — the vendor (Tony Pham, 2026-08-10) directed the token call at the
+    // cotality.com host. The old corelogic.com host still answers identically, so a
+    // stale AMC_OAUTH_URL override keeps working, but this default follows the vendor.
     oauthUrl:  (process.env.AMC_OAUTH_URL
-                 || 'https://api-uat.corelogic.com/order-gateway-oauth2/token?grant_type=client_credentials')
+                 || 'https://api-uat.cotality.com/order-gateway-oauth2/token?grant_type=client_credentials')
                  .trim(),
     // DoLogin endpoint (returns the AppraisalScope api_key).
     loginUrl:  (process.env.AMC_LOGIN_URL

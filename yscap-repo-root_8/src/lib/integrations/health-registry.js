@@ -606,20 +606,73 @@ const INTEGRATIONS = [
     },
   },
   {
-    key: 'amc', name: 'AppraisalScope / CoreLogic (appraisal ordering)', group: 'framework',
-    purpose: 'Order appraisals directly from the AMC, track the order, message the AMC back and forth, request revisions / ROV reconsiderations, and pull the finished report back into the file. The connector foundation is built; it needs the CoreLogic credentials, then later build phases add the ordering screens.',
-    direction: 'Two-way (planned)', auth: 'OAuth2 (CoreLogic Digital Gateway) + AppraisalScope login',
+    key: 'amc', name: 'AppraisalScope / Cotality (appraisal ordering)', group: 'framework',
+    purpose: 'Order appraisals directly from the AMC, track the order, message the AMC back and forth, request revisions / ROV reconsiderations, and pull the finished report back into the file. Runs on Cotality\'s Digital Gateway (Cotality is CoreLogic\'s new name). The connector foundation is built; later build phases add the ordering screens.',
+    direction: 'Two-way (planned)', auth: 'OAuth2 (Cotality Digital Gateway) + AppraisalScope login',
     env: [{ name: 'AMC_CLIENT_ID', required: true }, { name: 'AMC_CLIENT_SECRET', required: true },
       { name: 'AMC_LOGIN_ACCOUNT', required: true }, { name: 'AMC_LOGIN_PASSWORD', required: true },
       { name: 'AMC_SUBDOMAIN', required: true }, { name: 'AMC_LENDER_IDENTIFIER', required: true },
       { name: 'AMC_SOURCE_CLIENT_ID', required: true }],
     switches: [{ name: 'AMC_ENABLED', label: 'Reading + polling' }, { name: 'AMC_OUTBOUND_ENABLED', label: 'Ordering + writing' }],
-    liveProbe: false,
+    liveProbe: true,
     async probe() {
       const c = require('../../amc/client').configured();
-      if (!c.ready) return { configured: false, live: null, detail: 'Not connected — the appraisal-ordering connector is built and off by default. Add the CoreLogic / AppraisalScope credentials (AMC_CLIENT_ID/SECRET, AMC_LOGIN_ACCOUNT/PASSWORD, AMC_SUBDOMAIN, AMC_LENDER_IDENTIFIER, AMC_SOURCE_CLIENT_ID) to turn it on. Ordering screens are added by later build phases.' };
-      if (!c.enabled) return { configured: true, enabled: false, live: null, detail: 'Credentials are set, but the master switch (AMC_ENABLED) is off, so nothing talks to the AMC yet.' };
-      return { configured: true, enabled: true, live: null, detail: 'Credentials set and enabled. Live ordering is delivered by later build phases; use TEST MODE (AMC_DRYRUN) to verify the request before going live.' };
+      if (!c.hasOauth && !c.hasLogin) return { configured: false, live: null, detail: 'Not connected — the appraisal-ordering connector is built and off by default. Add the Cotality / AppraisalScope credentials (AMC_CLIENT_ID/SECRET, AMC_LOGIN_ACCOUNT/PASSWORD, AMC_SUBDOMAIN, AMC_LENDER_IDENTIFIER, AMC_SOURCE_CLIENT_ID) in Render, then press “Test now” to check them. Ordering screens are added by later build phases.' };
+      if (!c.ready) return { configured: false, live: null, detail: 'Partly connected — some credentials are still missing (the red chips below name them). “Test now” checks the sign-in key that is already set.' };
+      if (!c.enabled) return { configured: true, enabled: false, live: null, detail: 'Credentials are set, but the master switch (AMC_ENABLED) is off, so nothing talks to the AMC yet. “Test now” still checks the sign-in key without turning anything on.' };
+      return { configured: true, enabled: true, live: null, detail: 'Credentials set and enabled — press “Test now” to run the full read-only credential check (nothing is ordered). Live ordering is delivered by later build phases; use TEST MODE (AMC_DRYRUN) to verify the request before going live.' };
+    },
+    /* "Test now" = the REAL credential check, run where the credentials actually live
+       (the deployed service's Render env) — the same read-only preflight as
+       `npm run amc:preflight`, so the owner never needs a shell to answer "do the new
+       credentials work?". Never on page load (probeAll stays cheap via probe()).
+
+       The master-switch discipline holds: while AMC_ENABLED is off, ONLY the OAuth
+       sign-in key is checked (a token call to the gateway — it can neither read nor
+       write anything at the AMC tenant); DoLogin + the read-only lookup run only once
+       the switch is on. Both caches are invalidated first so every press is a fresh
+       check, never yesterday's cached token. Places no order, uploads nothing. */
+    async test() {
+      const client = require('../../amc/client');
+      const session = require('../../amc/session');
+      const preflight = require('../../amc/preflight');
+      const amc = cfg.amc || {};
+      let host = ''; try { host = new URL(amc.oauthUrl).host; } catch { host = String(amc.oauthUrl || '(unset)'); }
+      const c = client.configured();
+      if (!amc.clientId || !amc.clientSecret) {
+        return { configured: !!(c.hasOauth || c.hasLogin), live: null,
+          detail: 'The sign-in key is not set — add AMC_CLIENT_ID + AMC_CLIENT_SECRET (the client id + secret from Cotality) in the hosting settings (Render env), then press “Test now” again. Credentials are never pasted into PILOT itself.' };
+      }
+      client.invalidateToken();
+      try { session.invalidate(); } catch (_) { /* token-only checks don't need the session */ }
+      if (!require('./switches').on('AMC_ENABLED')) {
+        try {
+          await timebox(client.getAccessToken(), 15000);
+          return { configured: true, enabled: false, live: true,
+            detail: `The credentials WORK — ${host} accepted the client id + secret and issued a sign-in token. To also test the AppraisalScope login, turn on “Reading + polling” below and press “Test now” again.` };
+        } catch (e) {
+          const why = e && e.message === 'timed out'
+            ? { detail: `Timed out reaching ${host}.`, fix: 'Try again; if it keeps timing out it is a network problem, not the credentials.' }
+            : preflight.classify('token', e);
+          return { configured: true, enabled: false, live: false,
+            detail: `The sign-in key was NOT accepted at ${host} — ${why.detail}${why.fix ? ` ${why.fix}` : ''}` };
+        }
+      }
+      // Master switch ON → the full read-only preflight: token → DoLogin → one lookup.
+      try {
+        const result = await timebox(preflight.run(), 30000);
+        if (result.ok) {
+          return { configured: true, enabled: true, live: true,
+            detail: `Everything works — ${host} issued a sign-in token, the AppraisalScope login was accepted, and the tenant answered a read-only test lookup. Nothing was ordered.` };
+        }
+        const labels = { token: 'The sign-in key (AMC_CLIENT_ID / AMC_CLIENT_SECRET)', login: 'The AppraisalScope login (AMC_LOGIN_ACCOUNT / AMC_LOGIN_PASSWORD / AMC_SUBDOMAIN)', lookup: 'The read-only test lookup' };
+        const first = result.steps.find((s) => !s.ok) || {};
+        return { configured: true, enabled: true, live: false,
+          detail: `${labels[first.step] || 'A step'} failed — ${first.detail || first.cause || 'no recognizable cause'}${first.fix ? ` ${first.fix}` : ''}` };
+      } catch (e) {
+        return { configured: true, enabled: true, live: false,
+          detail: e && e.message === 'timed out' ? 'The check timed out — try again in a minute.' : `The check failed to run: ${(e && e.message) || e}` };
+      }
     },
   },
   {
