@@ -2614,22 +2614,15 @@ function StaffTrackRecordPanel({ app, role }) {
   // Per-line-item list so staff can raise an issue/request against a SPECIFIC
   // past project — it becomes a named condition on this file the borrower answers.
   const [trs, setTrs] = useState([]);
-  const [trDocs, setTrDocs] = useState({});   // { [trackRecordId]: [docs] } — per-line-item uploaded docs
   const [trBusy, setTrBusy] = useState('');
-  const [trMsg, setTrMsg] = useState('');
   const completerTR = canComplete(role);
+  // Per-line documents and their review now live inside <LineDetail> (it fetches
+  // its own line and owns preview / accept / reject / delete), so this only needs
+  // to refresh the list of lines.
   const refreshTrs = useCallback(() => {
-    api.staffBorrowerTrackRecords(borrowerId).then(async rows => {
-      const list = Array.isArray(rows) ? rows : [];
-      setTrs(list);
-      // Pull each line item's uploaded documents so staff can accept/reject them
-      // per line item (#126). Best-effort; a failed fetch just shows no docs.
-      const docMap = {};
-      await Promise.all(list.map(async (t) => {
-        try { const d = await api.staffTrackRecordDocs(t.id); docMap[t.id] = Array.isArray(d) ? d : []; } catch (_) { docMap[t.id] = []; }
-      }));
-      setTrDocs(docMap);
-    }).catch(() => { setTrs([]); setTrDocs({}); });
+    api.staffBorrowerTrackRecords(borrowerId)
+      .then((rows) => setTrs(Array.isArray(rows) ? rows : []))
+      .catch(() => setTrs([]));
   }, [borrowerId]);
   // Anything that CHANGES the record also re-asks the server what is left. The
   // plain mount path deliberately does NOT bump this — the to-do panel already
@@ -2663,52 +2656,32 @@ function StaffTrackRecordPanel({ app, role }) {
     return m;
   }, [todo]);
   // The three per-line asks, exactly as the flat list carried them — now handed
-  // to the ledger so the arrangement changed and the actions did not.
+  // to the ledger's expanded detail as extra actions. Feedback goes through the
+  // app's own message box so a confirmation or a refusal is always visible.
   const trRequestDoc = useCallback(async (t, addr) => {
     const label = await askPrompt(`Request a document for "${addr}" — which document do you need? (the borrower will see this)`);
     if (label == null || !label.trim()) return;
-    setTrBusy(t.id); setTrMsg('');
-    try { await api.staffRequestTrackRecordDoc(t.id, app.id, label.trim()); setTrMsg(`Document requested on ${addr} — added as a condition on this file.`); reloadAll(); }
-    catch (e) { setTrMsg(e.message || 'Could not request the document'); }
+    setTrBusy(t.id);
+    try { await api.staffRequestTrackRecordDoc(t.id, app.id, label.trim()); reloadAll(); showMessage(`Document requested on ${addr} — added as a condition on this file.`); }
+    catch (e) { showMessage(e.message || 'Could not request the document'); }
     finally { setTrBusy(''); }
   }, [app.id, reloadAll]);
   const trRaiseIssue = useCallback(async (t, addr) => {
     const reason = await askPrompt(`Raise an internal issue about "${addr}" — what's the concern?\n\nThis is INTERNAL only: the borrower is NOT notified. Use "Post a condition" if you need the borrower to act.`);
     if (reason == null || !reason.trim()) return;
-    setTrBusy(t.id); setTrMsg('');
-    try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — recorded internally for review (the borrower was not notified).`); reloadAll(); }
-    catch (e) { setTrMsg(e.message || 'Could not raise the issue'); }
+    setTrBusy(t.id);
+    try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); reloadAll(); showMessage(`Issue raised on ${addr} — recorded internally for review (the borrower was not notified).`); }
+    catch (e) { showMessage(e.message || 'Could not raise the issue'); }
     finally { setTrBusy(''); }
   }, [app.id, reloadAll]);
   const trPostCondition = useCallback(async (t, addr) => {
     const reason = await askPrompt(`Post a condition on this loan about the track-record property "${addr}" — what does the borrower need to provide?\n\nThe borrower WILL be notified. It appears on their loan as a track-record item (never as a condition on ${addr}).`);
     if (reason == null || !reason.trim()) return;
-    setTrBusy(t.id); setTrMsg('');
-    try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim(), true); setTrMsg(`Condition posted about ${addr} — the borrower was notified.`); reloadAll(); }
-    catch (e) { setTrMsg(e.message || 'Could not post the condition'); }
+    setTrBusy(t.id);
+    try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim(), true); reloadAll(); showMessage(`Condition posted about ${addr} — the borrower was notified.`); }
+    catch (e) { showMessage(e.message || 'Could not post the condition'); }
     finally { setTrBusy(''); }
   }, [app.id, reloadAll]);
-  // Accept / reject a document uploaded against a track-record line item. Reject
-  // requires a reason and un-verifies the line item (its evidence no longer stands).
-  const reviewTrDoc = useCallback(async (doc, action) => {
-    let reason;
-    if (action === 'delete') {
-      if (!(await askConfirm(`Permanently delete "${doc.filename || 'this document'}"?\n\nThis removes it for good and it will NOT be synced to SharePoint. Use this only for a document uploaded by mistake.`))) return;
-      setTrBusy(doc.id); setTrMsg('');
-      try { await api.staffDeleteDoc(doc.id); setTrMsg('Document deleted for good.'); reloadAll(); }
-      catch (e) { setTrMsg(e.message || 'Could not delete the document'); }
-      finally { setTrBusy(''); }
-      return;
-    }
-    if (action === 'reject') {
-      reason = await askPrompt('Why is this document being rejected? The borrower is notified and the line item is un-verified until a new document is accepted.');
-      if (reason == null || !reason.trim()) return;
-    }
-    setTrBusy(doc.id); setTrMsg('');
-    try { await api.staffReviewDoc(doc.id, action, reason); setTrMsg(action === 'reject' ? 'Document rejected — the borrower was notified.' : 'Document accepted ✓'); reloadAll(); }
-    catch (e) { setTrMsg(e.message || 'Could not review the document'); }
-    finally { setTrBusy(''); }
-  }, [reloadAll]);
   const refreshSnap = useCallback(() => {
     api.staffTrackRecordSnapshot(borrowerId).then(setSnap).catch(() => {});
   }, [borrowerId]);
@@ -2795,14 +2768,28 @@ function StaffTrackRecordPanel({ app, role }) {
         findingsOpen={((todo && todo.findings) || []).length}
         multiBorrower={people.length > 1} />
       {/* THE RECORD, AS A LEDGER — grouped the way the tool has always grouped
-          it, with the REO band carrying every not-counting line AND its reason
-          ("nothing entered is ever lost"). Same rows, same per-line handlers as
-          the flat list this replaces — the arrangement changed, the actions
-          did not. */}
-      <RecordLedger lines={trs} docs={trDocs} todoByLine={todoByLine}
-        busyId={trBusy} msg={trMsg} completer={completerTR} canDelete={canDeleteDoc(role)}
-        onRequestDoc={trRequestDoc} onRaiseIssue={trRaiseIssue}
-        onPostCondition={trPostCondition} onReviewDoc={reviewTrDoc} />
+          it, with the REO band carrying every not-counting line AND its reason.
+          Every line OPENS IN PLACE into the shared <LineDetail> (the same
+          component the full screen renders): the Elementix check, the three
+          verdicts + override, verify, documents with preview/download, and edit
+          — all here (owner-directed 2026-08-09 "one screen, everything"). The
+          loan file injects its file verbs (request/raise/post a condition on
+          THIS file) via `lineActions`; the doc review + verify are native. */}
+      <RecordLedger lines={trs} todoByLine={todoByLine} lens="file"
+        maySignOff={completerTR} canDelete={canDeleteDoc(role)} role={role} onChanged={reloadAll}
+        lineActions={(t, addr) => (
+          <>
+            <button className="btn ghost small" disabled={trBusy === t.id}
+              title="Ask the borrower for a specific document on this past project — it becomes a condition on this file"
+              onClick={() => trRequestDoc(t, addr)}>Request a document</button>
+            <button className="btn ghost small" disabled={trBusy === t.id}
+              title="Flag an internal issue about this past project — the borrower is NOT notified"
+              onClick={() => trRaiseIssue(t, addr)}>Raise an issue</button>
+            <button className="btn ghost small" disabled={trBusy === t.id}
+              title="Post a borrower-facing condition on THIS loan about this past project — the borrower is notified"
+              onClick={() => trPostCondition(t, addr)}>Post a condition</button>
+          </>
+        )} />
       {/* THE PUBLIC-RECORDS WORKBENCH, IN THE LOAN FILE (owner-directed
           2026-08-09: "the Elementix stuff is still missing from the actual track
           record within the loan file … merge together, old information lives in

@@ -160,15 +160,26 @@ console.log('\nD2. the queue has a SCREEN, in the hub for things waiting on a de
    future screen replaces this one, do the same rather than deleting a line. */
 {
   const screen = read('app-v2', 'src', 'screens', 'StaffTrackRecordWorkspace.jsx');
+  /* THE PER-LINE WORK MOVED INTO A SHARED COMPONENT (owner-directed 2026-08-09,
+     "one screen, everything"): the workspace renders <LineDetail>, the SAME
+     component the inline Track Record Center renders, so the full screen and the
+     default screen can never drift. The verdict + request-doc capabilities are
+     therefore asserted on the component that now carries them, and the workspace
+     is proven to MOUNT it — the property is intact, only its home moved. This is
+     the "re-point, do not relax" rule the D2 header states, applied to a
+     component extraction instead of a screen swap. */
+  const detail = read('app-v2', 'src', 'components', 'track-record', 'LineDetail.jsx');
   const hub = read('app-v2', 'src', 'screens', 'StaffApprovals.jsx');
   const layout = read('app-v2', 'src', 'components', 'StaffLayout.jsx');
   ok(/staffTrackRecordWorkspace\(/.test(screen), 'the screen reads the queue');
-  ok(/staffVerifyTrackRecord\(/.test(screen), '…and sets a verdict through the ONE audited verify route');
-  ok(/staffRequestTrackRecordDoc/.test(screen), '…and can ask for the documentation that is missing');
+  ok(/<LineDetail\b/.test(screen),
+    '…and renders the shared per-line detail, so the full screen and the inline center can never drift');
+  ok(/staffVerifyTrackRecord\(/.test(detail), '…and sets a verdict through the ONE audited verify route');
+  ok(/staffRequestTrackRecordDoc/.test(detail), '…and can ask for the documentation that is missing');
   // The refusals here are real underwriting rules (no exit, a stale exit, not a
   // processor) and each names the way forward — summarising them loses that.
-  ok(/e && e\.message/.test(screen), '…and shows the server\'s own refusal wording, never a summary');
-  ok(/maySignOff/.test(screen) && /sign_off_conditions/.test(screen),
+  ok(/e && e\.message/.test(detail), '…and shows the server\'s own refusal wording, never a summary');
+  ok(/maySignOff/.test(detail) && /sign_off_conditions/.test(screen),
     'verifying is offered only to somebody with sign-off — the same rule the route enforces');
   ok(/StaffTrackRecordWorkspace/.test(hub) && /'track-record'/.test(hub),
     'it is a TAB of the Approvals hub, not another top-level nav link');

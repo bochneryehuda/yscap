@@ -45,6 +45,24 @@ const GOLD = '#AE8746';
 const TEAL = '#2F7F86';
 const AMBER = '#8A6D1F';
 
+/* The three deal types, worded plainly, for the deal-type dropdown. The values
+   are the canonical forms the server's `canonicalDealType` accepts. */
+const DEAL_TYPES = [
+  ['flip', 'Fix & flip — bought, fixed, sold'],
+  ['hold', 'Fix & hold / rental — kept it'],
+  ['ground-up', 'Ground-up — built it'],
+];
+/* Map whatever the records happen to carry to one of the three dropdown values
+   (the SAME buckets the server sorts by), so a candidate that already implies a
+   type pre-selects it; anything unrecognised leaves the dropdown on "Choose…". */
+const canonDealType = (v) => {
+  const s = String(v || '').toLowerCase();
+  if (s.includes('ground') || s.includes('construction')) return 'ground-up';
+  if (s.includes('hold') || s.includes('rental') || s.includes('rent')) return 'hold';
+  if (s.includes('flip')) return 'flip';
+  return '';
+};
+
 const money = (v) => {
   const n = Number(v);
   if (!Number.isFinite(n) || n <= 0) return null;
@@ -86,6 +104,11 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
   const [run, setRun] = useState(null);      // the review run: ids, in order
   const [runAt, setRunAt] = useState(0);     // where we are in it
   const [compare, setCompare] = useState(null);
+  /* THE DEAL TYPE IS A DROPDOWN, NEVER A TYPE-IN (owner-directed 2026-08-10:
+     "we should not need to type because then it can be a mess"). Kept per
+     candidate id (like ConfirmFoundProperties' `kind`), so moving between
+     properties never carries one property's answer onto another. */
+  const [dealChoice, setDealChoice] = useState({});
   /* WHICH STATES TO PULL (owner-directed 2026-08-09: "make a drop-down to
      select which states we want to pull in — we should be able to pull each
      and every state separately for that person"). The records service files
@@ -400,14 +423,23 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
                     Join it to the line we have
                   </button>
                 ) : null}
-                <button type="button" className={current.matchTrackRecordId ? 'btn ghost' : 'btn primary'} disabled={busy}
-                  onClick={async () => {
-                    const k = await askPrompt('What kind of deal was it? Type flip, hold, or ground-up.',
-                      { defaultValue: current.dealType || '', confirmLabel: 'Bring it on' });
-                    if (k === null) return;
-                    if (!String(k).trim()) { await showMessage('A deal type is needed — without one the property counts toward nothing.'); return; }
-                    decide(current.id, 'import_new', { dealType: String(k).trim() });
-                  }} style={{ minHeight: 44 }}>
+                {/* THE DEAL TYPE IS A DROPDOWN, not a type-in (owner-directed
+                    2026-08-10). Pre-selected from the records when they imply a
+                    kind; otherwise the reviewer picks before bringing it on. */}
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: INK, fontSize: 14 }}>
+                  <span style={{ color: MUTED }}>Deal type</span>
+                  <select className="input" style={{ minHeight: 44, minWidth: 220 }}
+                    value={dealChoice[current.id] ?? canonDealType(current.dealType)}
+                    onChange={(e) => setDealChoice((m) => ({ ...m, [current.id]: e.target.value }))}>
+                    <option value="">Choose…</option>
+                    {DEAL_TYPES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+                  </select>
+                </label>
+                <button type="button" className={current.matchTrackRecordId ? 'btn ghost' : 'btn primary'}
+                  disabled={busy || !(dealChoice[current.id] ?? canonDealType(current.dealType))}
+                  title={(dealChoice[current.id] ?? canonDealType(current.dealType)) ? '' : 'Pick the kind of deal first'}
+                  onClick={() => decide(current.id, 'import_new', { dealType: dealChoice[current.id] ?? canonDealType(current.dealType) })}
+                  style={{ minHeight: 44 }}>
                   Bring it on as a new one
                 </button>
                 <button type="button" className="btn ghost" disabled={busy} style={{ minHeight: 44, color: INK }}
