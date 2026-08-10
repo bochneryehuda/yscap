@@ -11158,10 +11158,17 @@ router.get('/llcs/:id/track-records', async (req, res) => {
   });
 });
 
-// Verification statuses mirror the static Track Record tool: pending review,
-// documentation required, verified (with docs), limited (public record only).
-// 'verified' and 'limited' both count toward the borrower's experience tier.
-const TR_STATUSES = ['pending', 'docs', 'verified', 'limited'];
+// Verification statuses (db/519, owner-directed 2026-08-10). A line carries a
+// real review OUTCOME: pending review, fully verified, not verified, rejected,
+// and two "unable to verify" reasons (waiting on documents / records don't
+// match). ONLY 'verified' (Fully verified) counts toward the experience tier.
+//   · 'docs'    — the explicit document-request status (the D16 workflow below);
+//                 kept for that path, not offered as a plain review outcome.
+//   · 'limited' — legacy "public records only". It NO LONGER counts for a new
+//                 review; existing 'limited' rows keep their is_verified (the
+//                 change is going-forward only, no back-book sweep — db/519).
+const TR_STATUSES = ['pending', 'docs', 'verified', 'limited',
+  'not_verified', 'unable_docs', 'unable_mismatch', 'rejected'];
 router.post('/track-records/:id/verify', async (req, res) => {
   const tr = await db.query(
     `SELECT t.borrower_id, t.is_verified, t.property_address
@@ -11169,7 +11176,9 @@ router.post('/track-records/:id/verify', async (req, res) => {
   if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
   const status = TR_STATUSES.includes(req.body && req.body.status) ? req.body.status : 'verified';
-  const counts = status === 'verified' || status === 'limited';
+  // ONLY "Fully verified" counts toward experience now (owner-directed 2026-08-10).
+  // 'limited' used to count too; it no longer does for a new review.
+  const counts = status === 'verified';
   const wasVerified = tr.rows[0].is_verified === true;
   // Moving a currently-verified line item to a non-counting status is a REVOKE:
   // it pulls the project out of the experience tier and reopens the experience

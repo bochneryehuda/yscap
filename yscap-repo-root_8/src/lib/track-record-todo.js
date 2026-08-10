@@ -107,7 +107,18 @@ function addressOf(pa) {
  */
 function lineTodo(row) {
   const r = row || {};
+  const status = String(r.verification_status || '');
+  // A REJECTED line is settled — the team decided it is not the borrower's, a
+  // duplicate, or wrong — so it carries NO outstanding work (owner-directed
+  // 2026-08-10, #40). It never nags anyone.
+  if (status === 'rejected') return [];
   const verified = r.is_verified === true;
+  // A recorded non-counting review outcome — "not verified" or one of the two
+  // "unable to verify" reasons — is a DECISION: the reviewer has looked, so the
+  // line never generates a "verify me" nag (matches the "waiting for review"
+  // banner, which counts only genuinely-pending lines). Real outstanding items
+  // (a document waiting to be reviewed, an open request) still surface below.
+  const reviewDecided = status === 'not_verified' || status === 'unable_docs' || status === 'unable_mismatch';
   const codes = [];
 
   // Only ONE exit verdict can be true, and each is terminal for verification —
@@ -117,7 +128,7 @@ function lineTodo(row) {
   if (int(r.docs_waiting) > 0) codes.push('documents_waiting');
   if (int(r.open_request_count) > 0) codes.push('open_request');
 
-  if (!verified) {
+  if (!verified && !reviewDecided) {
     if (exitProblem) codes.push(exitProblem);
     if (int(r.docs_rejected) > 0) codes.push('document_rejected');
     else if (int(r.doc_count) === 0 && !exitProblem) codes.push('no_documents');
@@ -127,7 +138,7 @@ function lineTodo(row) {
     if (!exitProblem && int(r.docs_accepted) > 0 && int(r.docs_waiting) === 0 && int(r.docs_rejected) === 0) {
       codes.push('ready_to_verify');
     }
-  } else if (exitProblem === 'exit_expired') {
+  } else if (verified && exitProblem === 'exit_expired') {
     // A verified line whose exit has aged out still shows as verified but counts
     // toward nothing — the exact "verified but counts toward nothing" confusion
     // the verify gate exists to prevent, so say it plainly.

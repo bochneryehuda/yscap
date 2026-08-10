@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import LineDetail from './LineDetail.jsx';
+import { trStatusShort, trIsPendingReview } from '../../lib/trackRecordStatus.js';
 
 /* THE RECORD, AS A LEDGER (mega-workspace phase B/C, owner-directed 2026-08-09).
    One scroll, grouped the way the tool has always grouped it — Fix & flip /
@@ -41,16 +42,23 @@ const GROUPS = [
 ];
 
 /* Why a line is in the REO band, in the SERVER's words when it gave any. The
-   exit-problem codes come from track-record-todo (EXIT_PROBLEM_MSG family). */
+   exit-problem codes come from track-record-todo (EXIT_PROBLEM_MSG family). The
+   review-OUTCOME reasons (owner-directed 2026-08-10, #40) say plainly what the
+   reviewer decided — never the raw stored value. */
 function reoReason(line, todo) {
   const codes = (todo && todo.map((t) => t.code)) || [];
   if (codes.includes('exit_expired')) return 'exit older than 3 years — outside the experience window';
   if (codes.includes('future_exit')) return 'exit date is in the future — counts once it closes';
   if (codes.includes('no_exit')) return 'no completed exit recorded yet';
-  if (!line.is_verified) return (line.verification_status || 'pending') === 'limited'
-    ? 'public records only — not verified from documents'
-    : 'waiting for review — not verified yet';
-  return null; // counting
+  if (line.is_verified) return null; // fully verified — counting
+  switch (line.verification_status) {
+    case 'rejected': return 'rejected by your loan team';
+    case 'not_verified': return 'reviewed — not verified';
+    case 'unable_docs': return 'unable to verify — waiting on documents';
+    case 'unable_mismatch': return 'unable to verify — records don’t match what was entered';
+    case 'limited': return 'public records only — not verified from documents'; // legacy
+    default: return 'waiting for review — not verified yet'; // pending / docs
+  }
 }
 
 /* The headline figures shown on the collapsed row, so the money the owner
@@ -81,16 +89,23 @@ export default function RecordLedger({
 }) {
   const all = Array.isArray(lines) ? lines : [];
   const [open, setOpen] = useState(() => new Set());
+  // Rejected lines are HIDDEN by default (owner-directed 2026-08-10, #40); a
+  // "Show rejected" toggle reveals them in their own band. Nothing is lost.
+  const [showRejected, setShowRejected] = useState(false);
   if (!all.length) return null;
   const toggle = (id) => setOpen((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
 
-  const waiting = all.filter((t) => !t.is_verified && (t.verification_status || 'pending') !== 'limited').length;
+  // "Waiting for review" = not yet decided (pending). A reviewed-but-not-counting
+  // outcome (not verified / rejected / an "unable to verify" reason) is NOT waiting.
+  const waiting = all.filter((t) => !t.is_verified && trIsPendingReview(t.verification_status)).length;
+  const isRejected = (t) => String(t.verification_status || '') === 'rejected';
   const rows = all.map((t) => {
     const todo = (todoByLine && todoByLine[String(t.id)]) || null;
     return { t, todo, reo: reoReason(t, todo) };
   });
   const counting = rows.filter((r) => !r.reo);
-  const reo = rows.filter((r) => r.reo);
+  const rejected = rows.filter((r) => isRejected(r.t));
+  const reo = rows.filter((r) => r.reo && !isRejected(r.t)); // REO band excludes rejected
 
   const line = (r) => {
     const t = r.t;
@@ -114,7 +129,9 @@ export default function RecordLedger({
                 ? <button type="button" className="pill small" style={{ cursor: 'pointer' }} title="Entity on record — open the borrower's entities" onClick={() => onOpenEntity(t)}>{t.entity_name}</button>
                 : <span className="pill small" title="Entity on record">{t.entity_name}</span>)
               : null)}
-          {t.verification_status && <span className="pill small">{t.verification_status}</span>}
+          {t.is_verified
+            ? <span className="pill small" title="Fully verified — counts toward experience">Fully verified</span>
+            : (t.verification_status && <span className="pill small">{trStatusShort(t.verification_status)}</span>)}
           {!isOpen && <button type="button" className="btn ghost small" onClick={() => toggle(t.id)}>Open</button>}
         </div>
         {figs && <div className="small" style={{ color: MUTED, padding: '2px 0 0 16px' }}>{figs}</div>}
@@ -167,6 +184,26 @@ export default function RecordLedger({
             REO / not currently counting <span style={{ color: MUTED, fontWeight: 400 }}>· {reo.length} — each says why; nothing entered is ever lost</span>
           </div>
           {reo.map(line)}
+        </div>
+      )}
+      {/* REJECTED — hidden by default, revealed by a toggle (owner-directed
+          2026-08-10, #40: "hide it from the list and make an option to sort and
+          see also the rejected ones"). Nothing is deleted; it is out of the way. */}
+      {rejected.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <button type="button" className="btn link small" style={{ padding: 0, color: MUTED, fontWeight: 600 }}
+            aria-expanded={showRejected} onClick={() => setShowRejected((v) => !v)}
+            title={showRejected ? 'Hide the rejected projects again' : 'Show the projects your team rejected'}>
+            {showRejected ? '▾ ' : '▸ '}{showRejected ? 'Hide' : 'Show'} rejected ({rejected.length})
+          </button>
+          {showRejected && (
+            <div style={{ marginTop: 2 }}>
+              <div className="small" style={{ fontWeight: 650, color: INK, margin: '4px 0 2px' }}>
+                Rejected <span style={{ color: MUTED, fontWeight: 400 }}>· {rejected.length} — not counting; kept on the record</span>
+              </div>
+              {rejected.map(line)}
+            </div>
+          )}
         </div>
       )}
     </div>
