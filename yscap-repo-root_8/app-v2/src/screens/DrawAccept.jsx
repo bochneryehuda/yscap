@@ -149,13 +149,18 @@ export default function DrawAccept() {
             {/* per-line detail */}
             <div style={{ marginTop: 14, display: 'grid', gap: 10 }}>
               {lines.map((l) => {
-                const notAppr = Number(l.not_approved_cents) > 0;
+                // A NULL approved amount means the inspector has not answered this line (db/518)
+                // — say "not reviewed yet", never "$0", which reads as denied.
+                const answered = l.approved_cents != null;
+                const notAppr = answered && Number(l.not_approved_cents) > 0;
                 const d = disp[l.id] || {};
                 return (
                   <div key={l.id} style={{ border: '1px solid var(--line)', borderRadius: 12, padding: '13px 15px', background: 'var(--ink-1, #fff)' }}>
                     <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }}>
                       <div style={{ fontWeight: 700, color: 'var(--text)' }}>{l.name || 'Line item'}</div>
-                      <div style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: notAppr ? 'var(--text)' : 'var(--success)' }}>{usd0(l.approved_cents)}<span style={{ color: 'var(--text-muted)', fontWeight: 500 }}> / {usd0(l.requested_cents)}</span></div>
+                      {answered
+                        ? <div style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: notAppr ? 'var(--text)' : 'var(--success)' }}>{usd0(l.approved_cents)}<span style={{ color: 'var(--text-muted)', fontWeight: 500 }}> / {usd0(l.requested_cents)}</span></div>
+                        : <div style={{ fontWeight: 600, color: '#4B585C' }}>Not reviewed yet<span style={{ color: 'var(--text-muted)', fontWeight: 500 }}> · asked {usd0(l.requested_cents)}</span></div>}
                     </div>
                     {notAppr && <div className="small" style={{ color: 'var(--danger)', marginTop: 3 }}>{usd0(l.not_approved_cents)} not approved</div>}
                     {l.inspector_comments && <div className="small" style={{ color: 'var(--text-muted)', marginTop: 6, fontStyle: 'italic' }}>“{l.inspector_comments}”</div>}
