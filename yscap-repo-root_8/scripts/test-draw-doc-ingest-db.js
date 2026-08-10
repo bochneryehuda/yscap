@@ -196,6 +196,21 @@ const FAKE_HEIC = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftyphe
     const rm2 = await ingest.ingestForProperty(appId, propRm, { _fetch: fetcher(PDF2), _safeUrl: su });
     ok('H3c the next poll does NOT resurrect it (removal remembered)', rm2.pulled === 0 && fetches.length === 0);
 
+    // H5: the GENERAL staff document-delete door (not the draw card's Remove) also remembers a
+    // pulled document's removal — the FK cascade kills the draw_attachments row (and its
+    // source_key) with the documents row, so without the ledger write the next poll resurrects
+    // it (re-audit 2026-08-10, D2-secondary).
+    fetches.length = 0;
+    const PDF3 = Buffer.from('%PDF-1.4\n3 0 obj<<>>endobj\ntrailer<<>>\n%%EOF-third\n');
+    const propRm2 = { documents: [{ draw_id: D1, created_at: '2026-08-08T15:00:00Z', src: 'https://app.sitewire.co/rails/x/general-delete.pdf' }] };
+    await ingest.ingestForProperty(appId, propRm2, { _fetch: fetcher(PDF3), _safeUrl: su });
+    const gdDoc = (await db.query(`SELECT d.id FROM documents d WHERE d.application_id=$1 AND d.filename='general-delete.pdf'`, [appId])).rows[0];
+    const gdel = await call(server, 'DELETE', `/api/staff/documents/${gdDoc.id}`, tok);
+    ok('H5a deleted through the general document door', gdel.status === 200);
+    fetches.length = 0;
+    const gd2 = await ingest.ingestForProperty(appId, propRm2, { _fetch: fetcher(PDF3), _safeUrl: su });
+    ok('H5b the next poll does NOT resurrect it either', gd2.pulled === 0 && fetches.length === 0);
+
     // H4: the review audit trail — the accept above wrote the same vocabulary as the main door.
     const auditRows = (await db.query(`SELECT detail FROM audit_log WHERE action='accept_document' AND actor_id=$1`, [superId])).rows;
     ok('H4 accepting on the draw card writes the accept_document audit row', auditRows.some((a) => a.detail && a.detail.via === 'draw_attachment_review'));

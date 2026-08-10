@@ -16100,9 +16100,23 @@ router.delete('/documents/:id', async (req, res) => {
     // storage hiccup). local unlinks; s3/sharepoint providers are no-op removes.
     try { if (doc.storage_ref) await storage.remove(doc.storage_ref); } catch (_) { /* orphan bytes are acceptable */ }
 
-    // Hard-delete the row. FKs into documents are ON DELETE SET NULL
-    // (borrowers.photo_id_document_id) so this never cascades unexpectedly.
+    // A document PULLED from Sitewire onto a draw (draw_attachments.source_key) must have its
+    // removal REMEMBERED before the row dies — the delete below CASCADES the draw_attachments
+    // row away (db/507), and without the ledger entry the next Sitewire poll re-downloads and
+    // re-files the document forever (re-audit 2026-08-10: the draw card's own Remove was fixed;
+    // this general door reaches the same rows). Best-effort, never blocks the delete.
+    let swSourceKey = null, swAppId = null;
+    try {
+      const da = (await db.query(`SELECT application_id, source_key FROM draw_attachments WHERE document_id=$1 AND source_key IS NOT NULL LIMIT 1`, [doc.id])).rows[0];
+      if (da) { swSourceKey = da.source_key; swAppId = da.application_id; }
+    } catch (_) {}
+
+    // Hard-delete the row. Most FKs into documents are ON DELETE SET NULL
+    // (borrowers.photo_id_document_id); draw_attachments.document_id CASCADES (db/507) — a
+    // binding to a deleted document is meaningless — which is exactly why the source_key was
+    // captured above before the delete.
     await db.query(`DELETE FROM documents WHERE id=$1`, [doc.id]);
+    if (swSourceKey) { try { await require('../sitewire/property-doc-ingest').rememberRemoved(swAppId, swSourceKey); } catch (_) {} }
 
     // If this was the current document on a checklist condition and nothing
     // accepted remains, reopen the condition so it's re-requested (unless it was
