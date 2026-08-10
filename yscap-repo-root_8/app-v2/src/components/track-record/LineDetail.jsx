@@ -79,7 +79,7 @@ function Fig({ label, value, hint, strong }) {
    action row — the LOAN FILE injects its file verbs (request a document / raise
    an issue / post a condition on THIS file) here; the borrower PROFILE passes
    none, because its verbs (Check the records / Verify / Revoke) are native. */
-export default function LineDetail({ trackRecordId, maySignOff, canDelete, role, keyboard = false, onChanged, extraActions = null }) {
+export default function LineDetail({ trackRecordId, maySignOff, canDelete, role, keyboard = false, onChanged, onDeleted = null, onProfileScreen = false, extraActions = null }) {
   const [detail, setDetail] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState('');
@@ -299,6 +299,35 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
     finally { setBusy(''); }
   }
 
+  /* DELETE THE WHOLE LINE (owner-directed #32) — a destructive cleanup for a
+     duplicate line or a deal that plainly isn't theirs. TWO confirmations,
+     because deleting a line also cascade-removes any documents attached to it
+     and drops the deal from the borrower's experience count; a VERIFIED line is
+     underwriting evidence, so that is called out. The server re-checks access
+     (canSeeBorrowerId) and recomputes the tier. After the delete this line is
+     gone, so we tell the PARENT to refresh and never reload() a dead line. */
+  async function deleteLine() {
+    const l = detail.line;
+    const addr = l.address || 'this property';
+    const docs = (detail.documents || []).length;
+    const first = ['Delete this deal from the track record?', '', addr];
+    if (docs) first.push('', `This also removes ${docs} document${docs === 1 ? '' : 's'} attached to this line.`);
+    if (l.isVerified) first.push('', 'This line is VERIFIED — it is underwriting evidence, and deleting it lowers the borrower’s experience count.');
+    if (!(await askConfirm(first.join('\n'), { title: 'Delete this line', tone: 'error', confirmLabel: 'Continue', cancelLabel: 'Keep it' }))) return;
+    if (!(await askConfirm(`This cannot be undone.\n\nPermanently delete “${addr}”?`, { title: 'Delete permanently', tone: 'error', confirmLabel: 'Delete permanently', cancelLabel: 'Cancel' }))) return;
+    setBusy('delete');
+    try {
+      await api.staffDeleteTrackRecord(trackRecordId);
+      flash(true, 'Deleted.');
+      if (onChanged) onChanged();
+      // The line is gone. In a two-pane lens (the full-screen workspace) that
+      // holds its own selection, tell it to drop this now-dead id so the detail
+      // pane doesn't keep showing the deleted line until the user clicks away.
+      if (onDeleted) onDeleted();
+    } catch (ex) { flash(false, (ex && ex.message) || 'could not delete the line'); }
+    finally { setBusy(''); }
+  }
+
   /* THE PILLAR KEYBOARD (full-screen only): 1/2/3 focus a check, C/X confirm or
      reject the FOCUSED check, D asks for a document, ? shows the map. A key only
      ever fires an action the card's own buttons offer — never a way around a
@@ -405,7 +434,15 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
           <button className="btn soft small" disabled={busy === 'edit'} onClick={editing ? () => setEditing(null) : startEdit}
             title="Correct the deal’s own figures — editing a figure re-opens the review.">{editing ? 'Cancel edit' : 'Edit details'}</button>
           <button className="btn ghost small" onClick={addNote}>Add an internal note</button>
-          <Link className="btn ghost small" to={`/internal/borrowers/${line.borrowerId}`}>Open their profile</Link>
+          {/* Useful from a loan file or the full-screen workspace, but redundant
+              ON the borrower profile itself (it would link to the page you are
+              already on), so it is hidden there (#33). */}
+          {!onProfileScreen && <Link className="btn ghost small" to={`/internal/borrowers/${line.borrowerId}`}>Open their profile</Link>}
+          {canDelete && (
+            <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={busy === 'delete'}
+              title="Permanently delete this whole line from the track record — for a duplicate or a deal that isn’t theirs."
+              onClick={deleteLine}>{busy === 'delete' ? 'Deleting…' : 'Delete this line'}</button>
+          )}
           {extraActions && extraActions(line)}
         </div>
         {detail.bulk && !detail.bulk.ok && <p className="small" style={{ color: MUTED, margin: '6px 0 0' }}>{detail.bulk.reason}</p>}

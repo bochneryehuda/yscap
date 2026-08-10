@@ -187,7 +187,8 @@ export default function StaffTrackRecordWorkspace() {
           {!selected
             ? <div className="panel"><p className="muted small" style={{ margin: 0 }}>Pick a project on the left.</p></div>
             : <LineDetail trackRecordId={selected} keyboard maySignOff={maySignOff}
-                canDelete={canDeleteDoc(role)} role={role} onChanged={loadQueue} />}
+                canDelete={canDeleteDoc(role)} role={role} onChanged={loadQueue}
+                onDeleted={() => setSelected(null)} />}
         </div>
       </div>
     </div>
