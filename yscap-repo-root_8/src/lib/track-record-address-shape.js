@@ -48,12 +48,14 @@ async function healTrackRecordAddressShapeOnce({ limit = 2000 } = {}) {
     try {
       // Re-check the value is still the same string inside the UPDATE, so a
       // concurrent human edit between the read and the write is never clobbered.
-      await db.query(
+      const w = await db.query(
         `UPDATE track_records SET property_address = $2::jsonb, updated_at = now()
           WHERE id = $1 AND jsonb_typeof(property_address) = 'string'
             AND property_address #>> '{}' = $3`,
         [r.id, JSON.stringify(obj), r.s]);
-      fixed += 1;
+      // Only count an actual write — a concurrent sibling instance may have
+      // reshaped this row between the read and here (the guard matched 0 rows).
+      fixed += w.rowCount || 0;
     } catch (_) { /* best effort, row by row */ }
   }
   return { fixed };

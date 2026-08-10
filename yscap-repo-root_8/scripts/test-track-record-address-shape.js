@@ -132,6 +132,33 @@ const tag = `trshape_${process.pid}`;
   const after = (await db.query(`SELECT property_address AS pa FROM track_records WHERE id=$1`, [objId])).rows[0].pa;
   ok(JSON.stringify(before) === JSON.stringify(after), 'the object row is byte-for-byte unchanged');
 
+  console.log('\nDB 3. the heal NEVER un-verifies a reviewed line (db/516 shape-repair guard)');
+  // A public-records line the importer wrote as a bare string, that a reviewer then
+  // VERIFIED, is the normal steady state. db/485 forces a line back to pending on any
+  // material change and lists property_address as material — but a string->object reshape
+  // is a repair with identical address text, not a restatement, so it must NOT un-verify.
+  const bare2 = '208 Verified Ln, Lakewood, NJ 08701';
+  const vId = (await db.query(
+    `INSERT INTO track_records (borrower_id, property_address, address_key, deal_type, entered_by_kind, origin)
+     VALUES ($1, $2::jsonb, $3, 'flip', 'staff', 'public_records') RETURNING id`,
+    [borrowerId, JSON.stringify(bare2), TRK.trackRecordKey(bare2) || ''])).rows[0].id;
+  // A verification touches ONLY the verification columns, so the guard leaves it alone.
+  await db.query(
+    `UPDATE track_records SET is_verified=true, verification_status='verified', verified_at=now() WHERE id=$1`, [vId]);
+  const pre = (await db.query(
+    `SELECT is_verified, verification_status FROM track_records WHERE id=$1`, [vId])).rows[0];
+  ok(pre.is_verified === true && pre.verification_status === 'verified',
+    'precondition: the bare-string line is VERIFIED (a reviewer clicked Verify)');
+
+  const res3 = await SHAPE.healTrackRecordAddressShapeOnce();
+  ok(res3.fixed >= 1, 'the heal reshaped the bare-string row');
+  const post = (await db.query(
+    `SELECT is_verified, verification_status, jsonb_typeof(property_address) AS t
+       FROM track_records WHERE id=$1`, [vId])).rows[0];
+  ok(post.t === 'object', 'the address is now an object');
+  ok(post.is_verified === true && post.verification_status === 'verified',
+    'and the human verification SURVIVED the reshape — a shape repair is not a restatement (db/516)');
+
   await db.query(`DELETE FROM track_records WHERE borrower_id=$1`, [borrowerId]);
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [borrowerId]);
 

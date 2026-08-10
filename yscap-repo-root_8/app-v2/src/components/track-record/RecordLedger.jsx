@@ -94,7 +94,9 @@ export default function RecordLedger({
 
   const line = (r) => {
     const t = r.t;
-    const pa = t.property_address || {};
+    // A row stored as a bare one-line string (public-records import before the shape
+    // fix / boot heal) still reads as the address, not "Past project".
+    const pa = typeof t.property_address === 'string' ? { oneLine: t.property_address } : (t.property_address || {});
     const addr = pa.oneLine || [pa.line1 || pa.street || pa.address, pa.city, pa.state].filter(Boolean).join(', ') || 'Past project';
     const isOpen = open.has(t.id);
     const figs = figures(t);
