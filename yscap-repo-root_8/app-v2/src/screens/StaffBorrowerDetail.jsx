@@ -428,6 +428,41 @@ function Files({ id }) {
 /* ---------------- entities ---------------- */
 function Entities({ id }) {
   const [rows, err, reload] = useLoad(() => api.staffBorrowerLlcs(id), [id]);
+  const { actor } = useAuth();
+  const isSuper = ((actor && actor.role) || '') === 'super_admin';
+  const [busy, setBusy] = useState('');
+  /* SUPER-ADMIN: take an entity off this profile — for one added by mistake
+     (owner-directed 2026-08-10). We ask the server what would happen FIRST so the
+     confirm names the consequences (deleted vs moved to a co-owner, files it
+     vests, documents it holds), then require a typed reason. All the safety +
+     the snapshot live server-side in src/lib/entity-remove.js. */
+  async function removeEntity(l) {
+    let preview;
+    try { preview = await api.staffEntityRemovalPreview(id, l.id); }
+    catch (e) { showMessage((e && e.message) || 'Could not check that entity.'); return; }
+    const lines = [];
+    if (preview.action === 'transferred') {
+      const to = (preview.transferTo && preview.transferTo.name) || 'the other owner';
+      lines.push(`"${l.llc_name}" is also on another borrower's profile, so it will be MOVED to ${to}. It leaves THIS profile but is not deleted.`);
+    } else {
+      lines.push(`"${l.llc_name}" will be permanently removed from this profile.`);
+    }
+    for (const w of (preview.warnings || [])) lines.push('• ' + w.message);
+    lines.push('');
+    lines.push('Type a short reason to confirm (this is recorded).');
+    const reason = await askPrompt(lines.join('\n'), { title: 'Remove entity', confirmLabel: 'Remove', cancelLabel: 'Keep it' });
+    if (reason == null) return;                       // cancelled
+    if (!reason.trim()) { showMessage('A reason is required to remove an entity.'); return; }
+    setBusy(l.id);
+    try {
+      const out = await api.staffRemoveEntity(id, l.id, reason.trim());
+      showMessage(out.action === 'transferred'
+        ? `"${out.entityName}" was moved to the other owner's profile.`
+        : `"${out.entityName}" was removed from this profile.`, { title: 'Done' });
+      reload();
+    } catch (e) { showMessage((e && e.message) || 'Could not remove the entity.'); }
+    finally { setBusy(''); }
+  }
   if (err) return <div className="notice err">{err}</div>;
   if (!rows) return <Empty t="Loading…" />;
   if (!rows.length) return <div className="panel"><Empty t="No entities on this borrower." /></div>;
@@ -439,6 +474,16 @@ function Entities({ id }) {
             <h3 style={{ margin: 0 }}>{l.llc_name}
               {l.is_verified ? <span className="pill ok" style={{ marginLeft: 8 }}>Verified ✓</span> : <span className="pill" style={{ marginLeft: 8 }}>Unverified</span>}
             </h3>
+            {isSuper && (
+              <>
+                <div className="spacer" />
+                <button className="btn ghost small" disabled={busy === l.id}
+                  title="Super-admin: take this entity off the profile — for one added by mistake."
+                  onClick={() => removeEntity(l)}>
+                  {busy === l.id ? 'Removing…' : 'Remove entity'}
+                </button>
+              </>
+            )}
           </div>
           <LlcManager llcId={l.id} onChanged={reload} compactHeader staff />
         </div>

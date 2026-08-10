@@ -10433,6 +10433,43 @@ router.get('/borrowers/:id/llcs', async (req, res) => {
   res.json(out);
 });
 
+// SUPER-ADMIN: remove an entity from a borrower profile (owner-directed
+// 2026-08-10 — "clean up ones added by error"). The preview names the
+// consequences so the confirm can show them BEFORE anything is removed; the
+// removal itself snapshots the whole entity into entity_removals, runs in one
+// transaction, and is audited. All the logic + safety lives in
+// src/lib/entity-remove.js. requireRole('super_admin') is the hard gate.
+router.get('/borrowers/:id/llcs/:llcId/removal-preview', requireRole('super_admin'), async (req, res) => {
+  try {
+    const preview = await require('../lib/entity-remove').previewRemoval(req.params.id, req.params.llcId);
+    res.json(preview);
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message || 'could not preview that removal' });
+  }
+});
+
+router.post('/borrowers/:id/llcs/:llcId/remove', requireRole('super_admin'), async (req, res) => {
+  const reason = (req.body && req.body.reason) || '';
+  try {
+    const out = await require('../lib/entity-remove').removeEntity({
+      borrowerId: req.params.id, llcId: req.params.llcId, actorId: req.actor.id, reason,
+    });
+    await audit(req, 'entity_removed_from_profile', 'llc', req.params.llcId, {
+      borrowerId: req.params.id, action: out.action, entityName: out.entityName,
+      transferredTo: out.transferredTo, reason: String(reason).trim().slice(0, 500), affected: out.affected,
+    });
+    // A DELETE un-vests every file that vested to the entity — re-derive those
+    // files' conditions so the vesting/LLC condition reopens. Best-effort, after
+    // the removal has committed; it can never fail the action.
+    for (const appId of out.affectedAppIds || []) {
+      try { await conditionEngine.evaluateApplication(appId); } catch (_) {}
+    }
+    res.json(out);
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message || 'could not remove the entity' });
+  }
+});
+
 // Create a borrower entity on their behalf — full parity with the borrower's
 // own POST /llcs. Same validators (src/lib/llc.js), same requirement pull. A
 // staffer standing up the LLC for a borrower who can't lands them the exact
