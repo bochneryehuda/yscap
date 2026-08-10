@@ -1,28 +1,32 @@
 'use strict';
 /**
- * THE TRACK RECORD TOOL MAY NOT DESTROY WHAT IT ONLY DISPLAYED.
+ * THE TRACK RECORD TOOL MAY NOT DESTROY WHAT IT ONLY DISPLAYED — AND GROUND-UP
+ * IS NOW A FIRST-CLASS KIND (#39).
  *
  * Both copies of `track-record-portal.js` map a stored row into a tool "prop"
- * and back again. The tool shows a property as flip OR hold; the DATA has three
- * real deal types (flip / hold / ground-up) and any of them can carry any of the
- * dates. So `propFromRow` assigns a `kind` the user never chose, and the save
- * used to treat that self-assigned kind as permission to blank every field
- * outside it.
+ * and back again. The DATA has three real deal types (flip / hold / ground-up)
+ * and a ground-up can carry ANY of the exit dates. The tool now models all
+ * three: a ground/construction row loads as its own kind 'ground', and
+ * `payloadFromProp` sends EVERY exit field for it — so none is ever blanked.
  *
- * Two measured consequences, both of which change what a loan prices at:
+ * This test guards the fix AND the historical bug it closed. Before ground was
+ * first-class, `propFromRow` collapsed every ground-up into flip-or-hold and the
+ * save treated that self-assigned kind as permission to blank every field
+ * outside it, with two measured consequences that change what a loan prices at:
  *
- *  1. A ground-up rented in 2022 and sold in 2026 loads as kind 'flip'. Opening
+ *  1. A ground-up rented in 2022 and sold in 2026 loaded as kind 'flip'. Opening
  *     the tool and pressing save — changing NOTHING by hand — sent rentDate:''.
  *     `experience.EXIT_DATE_SQL` then falls through its base rule to the ground
  *     branch and the exit moves from 2022 to 2026: an aged-out deal is carried
  *     back INSIDE the 36-month window and counts toward the tier. experience.js
  *     names that exact drift as the reason its SQL is a COALESCE and not a CASE.
- *     The SQL held. The tool destroyed the data underneath it.
+ *     Now a ground-up loads as 'ground' and every exit survives a no-op save.
  *
  *  2. 'new construction' matches neither 'hold' nor the old `/ground/i` label
  *     test, so it was rewritten to 'flip' on save — while `experience.bucketOf`
  *     counts it as GROUND (it reads '%ground%' OR '%construction%'). The ground
- *     requirement could never be met and the flip count was inflated.
+ *     requirement could never be met and the flip count was inflated. Now the
+ *     row's own label is preserved verbatim whenever the toggle did not move.
  *
  * ═══ WHY THIS TEST EVALUATES THE SHIPPED SOURCE ════════════════════════════
  * These files are browser IIFEs with no exports, and they return early without
@@ -94,25 +98,35 @@ for (const rel of COPIES) {
 
   /* ── 1. THE NO-OP SAVE. Load it, save it, change nothing. ─────────────── */
   {
-    /* The measured case: a ground-up that was rented AND later sold. */
-    const p = roundTrip(row({
+    /* The measured case: a ground-up that was rented AND later sold. It loads
+       as its own kind 'ground', and every exit survives the round-trip. */
+    const gr = row({
       deal_type: 'ground-up',
       rent_amount: 3200, rent_date: '2022-10-09',
       sale_price: 690000, sale_date: '2026-06-10',
-    }));
+    });
+    eq(M.propFromRow(gr).kind, 'ground', 'a ground-up (rented + sold) loads as kind "ground"');
+    const p = roundTrip(gr);
     eq(p.rentDate, '2022-10-09', 'ground-up + sale: a no-op save keeps rent_date');
     eq(p.rentAmount, '3200', 'ground-up + sale: a no-op save keeps rent_amount');
     eq(p.saleDate, '2026-06-10', 'ground-up + sale: a no-op save keeps sale_date');
+    eq(p.salePrice, '690000', 'ground-up + sale: a no-op save keeps sale_price');
     eq(p.dealType, 'ground-up', 'ground-up + sale: a no-op save keeps the deal type');
 
-    /* The same property BEFORE it sold — this one loads as kind 'hold', so the
-       sale side is the one at risk. Both directions must be safe. */
-    const q = roundTrip(row({
+    /* The same property BEFORE it sold — still kind 'ground'. Both the sale and
+       the lease side must survive whether or not either is present. */
+    const grU = row({
       deal_type: 'ground-up', sale_price: null, sale_date: null,
       rent_amount: 3200, rent_date: '2022-10-09',
-    }));
+    });
+    eq(M.propFromRow(grU).kind, 'ground', 'a ground-up (unsold) still loads as kind "ground"');
+    const q = roundTrip(grU);
     eq(q.rentDate, '2022-10-09', 'ground-up, unsold: keeps rent_date');
     eq(q.dealType, 'ground-up', 'ground-up, unsold: keeps the deal type');
+
+    /* "new construction" is a ground-up too — it must NOT collapse to flip/hold. */
+    eq(M.propFromRow(row({ deal_type: 'new construction' })).kind, 'ground',
+      '"new construction" loads as kind "ground"');
 
     /* A hold carrying a stale sale date keeps it — the tool is not the place a
        value the user cannot see gets deleted. */
@@ -178,6 +192,48 @@ for (const rel of COPIES) {
       '"new construction" still counts as ground after a no-op save');
     eq(bucketOf(roundTrip(row({ deal_type: 'ground-up' })).dealType), 'ground',
       '"ground-up" still counts as ground after a no-op save');
+  }
+
+  /* ── 6. A BRAND-NEW GROUND-UP sends its exits DIRECTLY, whichever way it
+     finished — and is labelled ground-up. ────────────────────────────────── */
+  {
+    /* Built and SOLD (no lease, no refi). */
+    const sold = M.payloadFromProp({ kind: 'ground', address: '10 Build St',
+      salePrice: '620000', saleDate: '2026-03-01' });
+    eq(sold.dealType, 'ground-up', 'a new ground-up is labelled ground-up');
+    eq(sold.saleDate, '2026-03-01', 'a new ground-up keeps its sale date');
+    eq(sold.salePrice, '620000', 'a new ground-up keeps its sale price');
+    eq(sold.rentDate, '', 'a new ground-up with only a sale sends no rent date');
+    eq(sold.refiDate, '', 'a new ground-up with only a sale sends no refi date');
+    eq(bucketOf(sold.dealType), 'ground', 'a new ground-up counts in the ground bucket');
+
+    /* Built and KEPT (rented + refinanced), no sale. */
+    const kept = M.payloadFromProp({ kind: 'ground', address: '12 Build St',
+      rent: '2900', rentDate: '2025-08-01', refiAmount: '480000', refiDate: '2025-09-15' });
+    eq(kept.dealType, 'ground-up', 'a rented+refi ground-up is labelled ground-up');
+    eq(kept.rentDate, '2025-08-01', 'a rented ground-up keeps its rent date');
+    eq(kept.refiDate, '2025-09-15', 'a refinanced ground-up keeps its refi date');
+    eq(kept.saleDate, '', 'a kept ground-up with no sale sends no sale date');
+  }
+
+  /* ── 7. SWITCHING FLIP ↔ GROUND. flip→ground keeps the sale AND lets you add
+     a lease; ground→flip clears the lease side. ──────────────────────────── */
+  {
+    const prop = M.propFromRow(row({ deal_type: 'flip' }));   // has sale 415000/2024-02-20
+    prop.kind = 'ground';                                     // "actually a ground-up"
+    prop.rent = '2100'; prop.rentDate = '2025-01-01';
+    const p = M.payloadFromProp(prop);
+    eq(p.dealType, 'ground-up', 'flip→ground re-labels the deal ground-up');
+    eq(p.saleDate, '2024-02-20', 'flip→ground keeps the sale it already had');
+    eq(p.rentDate, '2025-01-01', 'flip→ground lets you add a lease');
+
+    const prop2 = M.propFromRow(row({ deal_type: 'ground-up',
+      rent_amount: 3200, rent_date: '2022-10-09', sale_price: 690000, sale_date: '2026-06-10' }));
+    prop2.kind = 'flip';                                      // "actually just a flip"
+    const q = M.payloadFromProp(prop2);
+    eq(q.dealType, 'flip', 'ground→flip re-labels the deal flip');
+    eq(q.rentDate, '', 'ground→flip clears the lease side');
+    eq(q.saleDate, '2026-06-10', 'ground→flip keeps the sale');
   }
 }
 

@@ -58,16 +58,14 @@
     var a = r.property_address || {};
     var dt = String(r.deal_type || "").toLowerCase();
     var kind = (dt.indexOf("hold") >= 0 || dt.indexOf("rental") >= 0) ? "hold" : "flip";
-    if (dt.indexOf("ground") >= 0) kind = (r.sale_price || r.sale_date) ? "flip" : "hold";
+    if (dt.indexOf("ground") >= 0 || dt.indexOf("construction") >= 0) kind = "ground";
     return {
-      /* `kind` IS A VIEW, NOT THE DEAL TYPE — see the long note on the V2 copy
-         (web/v2/tools/track-record-portal.js). In short: this tool shows a
-         property as flip OR hold while the data has three real types, so the
-         line above assigns a kind the user never chose. `_kind0` records the
-         kind the row LOADED as, so the save can tell a kind the USER switched
-         from one this function assigned — without it, merely opening a ground-up
-         and pressing save wiped its rent/refi dates and carried an aged-out deal
-         back inside the 36-month experience window. */
+      /* GROUND-UP IS NOW A FIRST-CLASS KIND — see the fuller note on the V2 copy
+         (web/v2/tools/track-record-portal.js). The data has three real types
+         (flip / hold / ground-up); a ground-up loads as its own 'ground' kind
+         and `payloadFromProp` sends every exit field for it. `_kind0` records the
+         kind the row LOADED as, so a save can tell a DELIBERATE switch (the user
+         pressed "Switch to …") from a row saved unchanged. */
       id: r.id, kind: kind, _kind0: kind,
       address: a.street || a.line1 || a.oneLine || "", city: a.city || "", state: a.state || "", zip: a.zip || "",
       entity: r.entity_name || "", ownedPersonally: !!r.owned_personally, propType: r.property_type || "", seller: "",
@@ -92,18 +90,21 @@
        stops 'new construction' becoming 'flip'; (3) a field the current view
        does not show keeps what the row held, instead of being blanked. */
     var switched = !p.id || (p._kind0 && p.kind !== p._kind0);
-    var dealType = p.kind === "hold" ? "fix-and-hold" : "flip";
+    var dealType = p.kind === "ground" ? "ground-up" : (p.kind === "hold" ? "fix-and-hold" : "flip");
     if (p._dealType && !switched) dealType = p._dealType;
     var keep = function (mine, stored) { return switched ? "" : (mine || stored || ""); };
+    // A GROUND-UP CAN FINISH ANY WAY (sale, lease, refinance) — send ALL its exit
+    // fields directly, never through `keep`, so none is ever blanked.
+    var g = p.kind === "ground";
     var out = {
       dealType: dealType, propertyAddress: addr,
       purchasePrice: p.purchasePrice || "", purchaseDate: p.purchaseDate || "", rehabAmount: p.rehab || "",
-      salePrice: p.kind === "flip" ? (p.salePrice || "") : keep("", p.salePrice),
-      saleDate: p.kind === "flip" ? (p.saleDate || "") : keep("", p.saleDate),
-      rentAmount: p.kind === "hold" ? (p.rent || "") : keep("", p.rent),
-      rentDate: p.kind === "hold" ? (p.rentDate || "") : keep("", p.rentDate),
-      refiAmount: p.kind === "hold" ? (p.refiAmount || "") : keep("", p.refiAmount),
-      refiDate: p.kind === "hold" ? (p.refiDate || "") : keep("", p.refiDate),
+      salePrice: (p.kind === "flip" || g) ? (p.salePrice || "") : keep("", p.salePrice),
+      saleDate: (p.kind === "flip" || g) ? (p.saleDate || "") : keep("", p.saleDate),
+      rentAmount: (p.kind === "hold" || g) ? (p.rent || "") : keep("", p.rent),
+      rentDate: (p.kind === "hold" || g) ? (p.rentDate || "") : keep("", p.rentDate),
+      refiAmount: (p.kind === "hold" || g) ? (p.refiAmount || "") : keep("", p.refiAmount),
+      refiDate: (p.kind === "hold" || g) ? (p.refiDate || "") : keep("", p.refiDate),
       currentValue: p.currentValue || "", notes: p.notes || "",
       propertyType: p.propType || "", entityName: p.ownedPersonally ? "" : (p.entity || ""),
       ownedPersonally: !!p.ownedPersonally,
@@ -334,7 +335,10 @@
     var when = new Date().toLocaleString("en-US");
     function exitCell(p) {
       if (p.kind === "flip") return "Sold " + fmtMoney(p.salePrice) + (p.saleDate ? " · " + escH(p.saleDate) : "");
+      // hold OR ground-up: show whichever exit(s) it carries (a ground-up can be
+      // sold, rented, refinanced — or any combination).
       var bits = [];
+      if (p.salePrice || p.saleDate) bits.push("Sold " + fmtMoney(p.salePrice) + (p.saleDate ? " · " + escH(p.saleDate) : ""));
       if (p.rent) bits.push("Rents " + fmtMoney(p.rent) + "/mo" + (p.rentDate ? " since " + escH(p.rentDate) : ""));
       if (p.refiAmount) bits.push("Refi " + fmtMoney(p.refiAmount) + (p.refiDate ? " · " + escH(p.refiDate) : ""));
       return bits.join("<br>") || "—";
