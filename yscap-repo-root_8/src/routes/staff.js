@@ -10433,13 +10433,15 @@ router.get('/borrowers/:id/llcs', async (req, res) => {
   res.json(out);
 });
 
-// SUPER-ADMIN: remove an entity from a borrower profile (owner-directed
-// 2026-08-10 — "clean up ones added by error"). The preview names the
-// consequences so the confirm can show them BEFORE anything is removed; the
-// removal itself snapshots the whole entity into entity_removals, runs in one
-// transaction, and is audited. All the logic + safety lives in
-// src/lib/entity-remove.js. requireRole('super_admin') is the hard gate.
-router.get('/borrowers/:id/llcs/:llcId/removal-preview', requireRole('super_admin'), async (req, res) => {
+// Remove an entity from a borrower profile (owner-directed 2026-08-10 — "clean up
+// ones added by error"). WHO may do it is TIERED by usage inside
+// src/lib/entity-remove.js: an entity on a CLOSED loan or a track record is
+// super-admin-only; an orphan or an in-progress-only entity is open to ANY staffer
+// who can see the borrower. The route therefore gates on borrower access only and
+// hands the actor's role to the module, which enforces the tier itself. The preview
+// names the consequences + the required level so the screen shows the right flow.
+router.get('/borrowers/:id/llcs/:llcId/removal-preview', async (req, res) => {
+  if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
   try {
     const preview = await require('../lib/entity-remove').previewRemoval(req.params.id, req.params.llcId);
     res.json(preview);
@@ -10448,19 +10450,23 @@ router.get('/borrowers/:id/llcs/:llcId/removal-preview', requireRole('super_admi
   }
 });
 
-router.post('/borrowers/:id/llcs/:llcId/remove', requireRole('super_admin'), async (req, res) => {
+router.post('/borrowers/:id/llcs/:llcId/remove', async (req, res) => {
+  if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
   const reason = (req.body && req.body.reason) || '';
   try {
     const out = await require('../lib/entity-remove').removeEntity({
-      borrowerId: req.params.id, llcId: req.params.llcId, actorId: req.actor.id, reason,
+      borrowerId: req.params.id, llcId: req.params.llcId,
+      actorId: req.actor.id, actorRole: (req.actor && req.actor.role) || null, reason,
     });
     await audit(req, 'entity_removed_from_profile', 'llc', req.params.llcId, {
       borrowerId: req.params.id, action: out.action, entityName: out.entityName,
       transferredTo: out.transferredTo, reason: String(reason).trim().slice(0, 500), affected: out.affected,
     });
-    // A DELETE un-vests every file that vested to the entity — re-derive those
-    // files' conditions so the vesting/LLC condition reopens. Best-effort, after
-    // the removal has committed; it can never fail the action.
+    // A DELETE un-vests every file that vested to the entity. The vesting-entity
+    // condition (rtl_p1_llc) on the IN-PROGRESS files was already reopened inside
+    // the removal's transaction (out.reopenedAppIds); here we also re-derive each
+    // affected file's RULE-driven conditions so anything that depended on the
+    // entity settles too. Best-effort, after the commit; it can never fail the action.
     for (const appId of out.affectedAppIds || []) {
       try { await conditionEngine.evaluateApplication(appId); } catch (_) {}
     }

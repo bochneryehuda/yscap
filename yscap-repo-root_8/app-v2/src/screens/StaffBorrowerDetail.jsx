@@ -431,15 +431,26 @@ function Entities({ id }) {
   const { actor } = useAuth();
   const isSuper = ((actor && actor.role) || '') === 'super_admin';
   const [busy, setBusy] = useState('');
-  /* SUPER-ADMIN: take an entity off this profile — for one added by mistake
-     (owner-directed 2026-08-10). We ask the server what would happen FIRST so the
-     confirm names the consequences (deleted vs moved to a co-owner, files it
-     vests, documents it holds), then require a typed reason. All the safety +
+  /* Take an entity off this profile — for one added by mistake (owner-directed
+     2026-08-10). WHO may do it is tiered by the server: an entity used on a CLOSED
+     loan or a track record is super-admin-only; a pure orphan or an in-progress-only
+     entity is open to any staffer here. We ask the server what would happen FIRST,
+     then show TWO warnings (the consequences, then a typed reason). All the safety +
      the snapshot live server-side in src/lib/entity-remove.js. */
   async function removeEntity(l) {
     let preview;
     try { preview = await api.staffEntityRemovalPreview(id, l.id); }
     catch (e) { showMessage((e && e.message) || 'Could not check that entity.'); return; }
+
+    // Tier: an entity committed to a closed loan or a track record needs a super-admin.
+    if (preview.requiredLevel === 'super_admin' && !isSuper) {
+      await showMessage(
+        `"${l.llc_name}" is used on a closed loan or a track record, so only a super-admin can remove it. Ask a super-admin if it really needs to come off this profile.`,
+        { title: 'Super-admin only' });
+      return;
+    }
+
+    // WARNING 1 — the consequences, in plain language.
     const lines = [];
     if (preview.action === 'transferred') {
       const to = (preview.transferTo && preview.transferTo.name) || 'the other owner';
@@ -449,16 +460,25 @@ function Entities({ id }) {
     }
     for (const w of (preview.warnings || [])) lines.push('• ' + w.message);
     lines.push('');
-    lines.push('Type a short reason to confirm (this is recorded).');
-    const reason = await askPrompt(lines.join('\n'), { title: 'Remove entity', confirmLabel: 'Remove', cancelLabel: 'Keep it' });
+    lines.push('Do you want to continue?');
+    if (!(await askConfirm(lines.join('\n'), { title: 'Remove entity', confirmLabel: 'Continue', cancelLabel: 'Keep it' }))) return;
+
+    // WARNING 2 — a typed reason is the final confirmation (recorded).
+    const reason = await askPrompt(
+      'This cannot be easily undone. Type a short reason to confirm — it is recorded.',
+      { title: 'Confirm removal', confirmLabel: 'Remove', cancelLabel: 'Back' });
     if (reason == null) return;                       // cancelled
     if (!reason.trim()) { showMessage('A reason is required to remove an entity.'); return; }
+
     setBusy(l.id);
     try {
       const out = await api.staffRemoveEntity(id, l.id, reason.trim());
-      showMessage(out.action === 'transferred'
+      const reopened = (out.reopenedAppIds || []).length;
+      let msg = out.action === 'transferred'
         ? `"${out.entityName}" was moved to the other owner's profile.`
-        : `"${out.entityName}" was removed from this profile.`, { title: 'Done' });
+        : `"${out.entityName}" was removed from this profile.`;
+      if (reopened) msg += ` ${reopened} active file${reopened === 1 ? '' : 's'} now need${reopened === 1 ? 's a' : ' a'} new entity before ${reopened === 1 ? 'it' : 'they'} can clear to close.`;
+      showMessage(msg, { title: 'Done' });
       reload();
     } catch (e) { showMessage((e && e.message) || 'Could not remove the entity.'); }
     finally { setBusy(''); }
@@ -474,16 +494,12 @@ function Entities({ id }) {
             <h3 style={{ margin: 0 }}>{l.llc_name}
               {l.is_verified ? <span className="pill ok" style={{ marginLeft: 8 }}>Verified ✓</span> : <span className="pill" style={{ marginLeft: 8 }}>Unverified</span>}
             </h3>
-            {isSuper && (
-              <>
-                <div className="spacer" />
-                <button className="btn ghost small" disabled={busy === l.id}
-                  title="Super-admin: take this entity off the profile — for one added by mistake."
-                  onClick={() => removeEntity(l)}>
-                  {busy === l.id ? 'Removing…' : 'Remove entity'}
-                </button>
-              </>
-            )}
+            <div className="spacer" />
+            <button className="btn ghost small" disabled={busy === l.id}
+              title="Take this entity off the profile — for one added by mistake."
+              onClick={() => removeEntity(l)}>
+              {busy === l.id ? 'Removing…' : 'Remove entity'}
+            </button>
           </div>
           <LlcManager llcId={l.id} onChanged={reload} compactHeader staff />
         </div>
