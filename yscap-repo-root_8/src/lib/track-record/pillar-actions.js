@@ -309,8 +309,14 @@ function lineReadiness(pillars) {
       message: 'All three checks are confirmed — this project can be verified.' };
   }
   const left = PILLARS.filter((n) => !list.some((p) => p.pillar === n && p.human_verdict === 'confirmed'));
+  /* ADVISORY, NOT A BLOCK (#9, owner-directed HARD RULE): verifying is ALWAYS
+     allowed — a human can sign a line off even without all three checks, and gets
+     a clear warning at the moment of verify (LineDetail.verify). So this sentence
+     must NOT claim the line cannot be verified; it only names what is still
+     unconfirmed. The one real block stays the frozen 36-month exit rule, which the
+     verify route enforces server-side. */
   return { ready: false, answered: answered.length, of: PILLARS.length,
-    message: `Still waiting on ${left.join(', ')}. All three have to be confirmed before this project can be verified.` };
+    message: `Still waiting on ${left.join(', ')} — not all three checks are confirmed yet.` };
 }
 
 module.exports = {

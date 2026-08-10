@@ -140,6 +140,16 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
   }
 
   async function verify(status) {
+    /* #9 (owner-directed, HARD RULE): a human can ALWAYS verify a project, even
+       when the three checks are not all confirmed — but with a CLEAR WARNING at
+       the click, so nobody signs one off believing it was fully checked. This is
+       advisory only and never blocks; the one real block is the frozen 36-month
+       exit rule, which the server still enforces and returns word-for-word below. */
+    if (detail && detail.readiness && !detail.readiness.ready) {
+      if (!(await askConfirm(
+        `${detail.readiness.message}\n\nVerify ${detail.line.address} anyway? It goes on the record as verified even though the three checks are not all confirmed.`,
+        { confirmLabel: 'Verify anyway', cancelLabel: 'Not yet' }))) return;
+    }
     setBusy('verify');
     try {
       const out = await api.staffVerifyTrackRecord(trackRecordId, { status });
