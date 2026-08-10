@@ -158,6 +158,48 @@ const FAKE_HEIC = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftyphe
     const badAction = await call(server, 'POST', `/api/sitewire/files/${appId}/draws/${D1}/attachments/${attId}/review`, tok, { action: 'shred' });
     ok('E6 an unknown action is refused', badAction.status === 400);
 
+    // ---- H. the pre-merge audit's two defects stay fixed -----------------------------------
+    // H1: an in-between-size document (over the 25 MB loan-document cap, under the 30 MB
+    // download cap) is refused DURABLY — never re-downloaded every poll forever.
+    fetches.length = 0;
+    const BIG = Buffer.concat([PDF, Buffer.alloc(26 * 1024 * 1024)]);
+    const propBig = { documents: [{ draw_id: D1, created_at: '2026-08-08T12:00:00Z', src: 'https://app.sitewire.co/rails/x/huge-scan.pdf' }] };
+    await ingest.ingestForProperty(appId, propBig, { _fetch: fetcher(BIG), _safeUrl: su });
+    ok('H1a an oversize document is refused', fetches.length === 1);
+    fetches.length = 0;
+    await ingest.ingestForProperty(appId, propBig, { _fetch: fetcher(BIG), _safeUrl: su });
+    ok('H1b …and never downloaded again', fetches.length === 0);
+    const skipsH = (await db.query(`SELECT raw->'doc_ingest_skips' AS s FROM sitewire_property_links WHERE application_id=$1`, [appId])).rows[0].s || {};
+    ok('H1c the refusal names the size', Object.values(skipsH).some((v) => /larger than 25 MB/.test(v.reason || '')));
+
+    // H2: a document whose blob is GONE from Sitewire (404) is remembered, not re-asked forever.
+    fetches.length = 0;
+    const prop404 = { documents: [{ draw_id: D1, created_at: '2026-08-08T13:00:00Z', src: 'https://app.sitewire.co/rails/x/deleted.pdf' }] };
+    const fetch404 = async (u) => { fetches.push(u); throw new Error('fetch 404'); };
+    await ingest.ingestForProperty(appId, prop404, { _fetch: fetch404, _safeUrl: su });
+    fetches.length = 0;
+    await ingest.ingestForProperty(appId, prop404, { _fetch: fetch404, _safeUrl: su });
+    ok('H2 a 404\'d blob is remembered, never re-asked', fetches.length === 0);
+
+    // H3: a staff REMOVE of a pulled document STICKS — the next poll does not resurrect it.
+    // The pulled photo case is the one the audit reproduced (stored bytes ≠ downloaded bytes,
+    // so the sha256 belt cannot catch it); a PDF pins the ledger mechanism just as well.
+    fetches.length = 0;
+    const PDF2 = Buffer.from('%PDF-1.4\n2 0 obj<<>>endobj\ntrailer<<>>\n%%EOF-second\n');
+    const propRm = { documents: [{ draw_id: D1, created_at: '2026-08-08T14:00:00Z', src: 'https://app.sitewire.co/rails/x/removable.pdf' }] };
+    const rm1 = await ingest.ingestForProperty(appId, propRm, { _fetch: fetcher(PDF2), _safeUrl: su });
+    ok('H3a pulled once', rm1.pulled === 1);
+    const rmAtt = (await db.query(`SELECT da.id FROM draw_attachments da JOIN documents d ON d.id=da.document_id WHERE da.application_id=$1 AND d.filename='removable.pdf'`, [appId])).rows[0];
+    const del = await call(server, 'DELETE', `/api/sitewire/files/${appId}/draws/${D1}/attachments/${rmAtt.id}`, tok);
+    ok('H3b removed through the real route', del.status === 200);
+    fetches.length = 0;
+    const rm2 = await ingest.ingestForProperty(appId, propRm, { _fetch: fetcher(PDF2), _safeUrl: su });
+    ok('H3c the next poll does NOT resurrect it (removal remembered)', rm2.pulled === 0 && fetches.length === 0);
+
+    // H4: the review audit trail — the accept above wrote the same vocabulary as the main door.
+    const auditRows = (await db.query(`SELECT detail FROM audit_log WHERE action='accept_document' AND actor_id=$1`, [superId])).rows;
+    ok('H4 accepting on the draw card writes the accept_document audit row', auditRows.some((a) => a.detail && a.detail.via === 'draw_attachment_review'));
+
     // ---- G. the amount doctrine's last gap: numbers change AFTER findings delivery ---------
     // The inspector's approved amount moves in Sitewire after the results email went out — the
     // coordinator is told to re-deliver so the borrower stops looking at a stale figure. An

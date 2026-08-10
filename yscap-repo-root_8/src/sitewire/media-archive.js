@@ -285,7 +285,7 @@ async function backfillHeicMediaOnce(limit = 40) {
     if (st && st.value && st.value.finished) { out.done = true; return out; }
     const lastId = Number(st && st.value && st.value.lastId) || 0;
     const rows = (await db.query(
-      `SELECT id, storage_ref, content_type FROM draw_media
+      `SELECT id, storage_ref, storage_provider, content_type FROM draw_media
         WHERE id > $1 AND kind='image' AND storage_ref IS NOT NULL
         ORDER BY id ASC LIMIT $2`, [lastId, Math.max(1, limit)])).rows;
     if (!rows.length) {
@@ -299,7 +299,9 @@ async function backfillHeicMediaOnce(limit = 40) {
     for (const r of rows) {
       cursor = Number(r.id); out.scanned++;
       try {
-        const buf = await storage.read(r.storage_ref);
+        // Read from the row's OWN provider — on an s3 deployment a 'local' row would otherwise
+        // cost a wasted S3 GET before the dual-read fallback found it on disk.
+        const buf = await storage.forRow(r).read(r.storage_ref);
         if (!buf || !heic.isHeic(buf)) continue;
         // The WASM decode is CPU-bound and blocks the event loop for ~1–2s per photo. Pace the
         // sweep so a boot-time backlog can never freeze the request path or a health probe —

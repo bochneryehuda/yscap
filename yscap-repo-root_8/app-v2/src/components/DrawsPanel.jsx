@@ -2579,9 +2579,14 @@ function DrawAttachments({ appId, drawId }) {
   // Review a pending document right on the draw card — a pulled Sitewire document (and a
   // borrower upload) only travels to the investor once somebody accepts it.
   async function review(att, action) {
-    if (action === 'reject' && !(await askConfirm(`Reject “${att.filename}”?\n\nIt stays on the file but will NOT travel to the investor.`))) return;
+    let reason;
+    if (action === 'reject') {
+      // window.prompt contract: a string (possibly '') = proceed, null = they backed out.
+      reason = await askPrompt(`Reject “${att.filename}”?\n\nIt stays on the file but will NOT travel to the investor. Why is it being rejected? (optional)`, { title: 'Reject this document', confirmLabel: 'Reject' });
+      if (reason === null) return;
+    }
     setBusy(true); setErr('');
-    try { await api.sitewireReviewDrawAttachment(appId, drawId, att.id, action); load(); }
+    try { await api.sitewireReviewDrawAttachment(appId, drawId, att.id, action, reason || undefined); load(); }
     catch (ex) { setErr(ex?.data?.error || 'Could not record that.'); }
     finally { setBusy(false); }
   }

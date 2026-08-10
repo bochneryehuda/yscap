@@ -1694,8 +1694,14 @@ router.delete('/files/:id/draws/:drawId/attachments/:attId', requirePermission('
   if (ref === 'forbidden') return res.status(403).json({ error: 'forbidden' });
   if (!ref) return res.status(404).json({ error: 'draw not found on this file' });
   if (!/^\d+$/.test(String(req.params.attId))) return res.status(404).json({ error: 'not found' });
+  // A PULLED document's identity is remembered as removed BEFORE the row (and its source_key)
+  // is gone, or the next Sitewire poll re-pulls it — the resurrection loop the pre-merge audit
+  // reproduced on every removed phone photo.
+  let srcKey = null;
+  try { srcKey = ((await db.query(`SELECT source_key FROM draw_attachments WHERE id=$1 AND application_id=$2`, [req.params.attId, req.params.id])).rows[0] || {}).source_key || null; } catch (_) {}
   const r = await drawAttachments.detach(req.params.id, req.params.attId);
   if (!r.removed) return res.status(404).json({ error: 'not found' });
+  if (srcKey) { try { await require('../sitewire/property-doc-ingest').rememberRemoved(req.params.id, srcKey); } catch (_) {} }
   // The BYTES are not deleted — the document stays on the file (and in SharePoint, which never
   // deletes). Only the binding to this draw is removed, so it stops travelling to the investor.
   res.json({ ok: true, attachments: await drawAttachments.listFor(req.params.id, ref) });
@@ -1706,6 +1712,10 @@ router.delete('/files/:id/draws/:drawId/attachments/:attId', requirePermission('
 // travels to the investor (db/424) — so the person looking at the draw must be able to accept or
 // reject it right there, not hunt for it elsewhere. Writes the ordinary documents review fields
 // (db/013), so every other surface that reads review_status agrees.
+// DELIBERATE SCOPE: gated on manage_draws — the draw COORDINATOR is exactly who reviews draw
+// proof, and the main /documents review door's sign_off_conditions gate would lock them out of
+// their own desk. Audited like the main door (accept_document / reject_document), and only a
+// CURRENT document can be decided (a superseded copy is not on any screen).
 router.post('/files/:id/draws/:drawId/attachments/:attId/review', requirePermission('manage_draws'), async (req, res) => {
   const ref = await ownedDraw(req, req.params.id, req.params.drawId);
   if (ref === 'forbidden') return res.status(403).json({ error: 'forbidden' });
@@ -1720,10 +1730,19 @@ router.post('/files/:id/draws/:drawId/attachments/:attId/review', requirePermiss
           SET review_status=$4, reviewed_by=$5, reviewed_at=now(),
               rejection_reason=CASE WHEN $4='rejected' THEN $6 ELSE NULL END
          FROM draw_attachments da
-        WHERE da.id=$1 AND da.application_id=$2 AND da.sitewire_draw_id=$3 AND d.id=da.document_id
+        WHERE da.id=$1 AND da.application_id=$2 AND da.sitewire_draw_id=$3 AND d.id=da.document_id AND d.is_current
         RETURNING d.id`,
       [req.params.attId, req.params.id, req.params.drawId, action === 'accept' ? 'accepted' : 'rejected', req.actor.id, reason]);
     if (!r.rowCount) return res.status(404).json({ error: 'not found' });
+    // Same audit vocabulary as the main /documents review door, so "who accepted this?" has one
+    // answer wherever the click happened. Best-effort — a logging write never fails the action.
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+         VALUES ('staff',$1,$2,'document',$3,$4,$5,$6)`,
+        [req.actor.id, action === 'accept' ? 'accept_document' : 'reject_document', r.rows[0].id,
+          req.ip, req.get('user-agent') || null, JSON.stringify({ via: 'draw_attachment_review', drawId: req.params.drawId, applicationId: req.params.id, reason: reason || undefined })]);
+    } catch (_) {}
     res.json({ ok: true, attachments: await drawAttachments.listFor(req.params.id, ref) });
   } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });

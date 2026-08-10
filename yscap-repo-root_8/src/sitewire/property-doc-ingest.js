@@ -48,7 +48,11 @@ const drawAttachments = require('./draw-attachments');
 
 const MAX_PER_PASS = 8;            // new documents pulled per file per reconcile — the poll cycles
 const MAX_SKIP_LEDGER = 300;       // remembered refusals per file (oldest dropped first)
-const PERMANENT_REASON = /not accepted here|file type|too large|was empty|could not be read/i;
+// A refusal that will refuse IDENTICALLY next pass is remembered; anything else retries. The
+// `larger than` arm matches attach()'s own oversize wording ("it is larger than 25 MB") — the
+// pre-merge audit proved a 26 MB PDF was re-downloaded on EVERY poll forever without it, each
+// failed attempt burning one of the per-pass slots.
+const PERMANENT_REASON = /not accepted here|file type|too large|larger than|was empty|could not be read/i;
 
 /** The durable identity of one Sitewire-side document on this file. */
 function sourceKeyOf(d) {
@@ -120,9 +124,11 @@ async function ingestForProperty(appId, prop, opts = {}) {
     const fetchBinary = opts._fetch || media.fetchBinary;
 
     // Which Sitewire draws are mirrored on THIS file — the map that puts each document on the
-    // right draw and keeps another property's draw id from ever landing here.
-    const drawRows = (await db.query(`SELECT sitewire_draw_id FROM sitewire_draws WHERE application_id=$1`, [appId])).rows;
+    // right draw and keeps another property's draw id from ever landing here. The number rides
+    // along so the desk cue can say "draw #1" (what the panel shows), never the platform id.
+    const drawRows = (await db.query(`SELECT sitewire_draw_id, number FROM sitewire_draws WHERE application_id=$1`, [appId])).rows;
     const ourDraws = new Set(drawRows.map((r) => String(r.sitewire_draw_id)));
+    const drawNumberOf = new Map(drawRows.map((r) => [String(r.sitewire_draw_id), r.number]));
     if (!ourDraws.size) return out;
 
     const candidates = docs.filter((d) => d && d.draw_id != null && ourDraws.has(String(d.draw_id)));
@@ -147,15 +153,33 @@ async function ingestForProperty(appId, prop, opts = {}) {
         skips[key] = { reason: 'link not on an allowed host', at: new Date().toISOString() };
         skipsDirty = true; out.failed++; continue;
       }
+      // safeSitewireDocUrl tolerates http:// (it exists to render links), but the SSRF-guarded
+      // download is https-only — so an http link would read as a transient failure and be
+      // re-tried every poll forever. It is a permanent property of the URL: remember it.
+      if (/^http:/i.test(url)) {
+        skips[key] = { reason: 'link is not https', at: new Date().toISOString() };
+        skipsDirty = true; out.failed++; continue;
+      }
 
       let bytes;
       try { bytes = await fetchBinary(url); }
       catch (e) {
-        // A transient network failure retries next pass; a hard size refusal is remembered.
-        if (/too large/i.test(String(e && e.message))) { skips[key] = { reason: 'too large to pull', at: new Date().toISOString() }; skipsDirty = true; }
+        // A transient network failure retries next pass; a refusal that will repeat identically
+        // is remembered — the size cap, and a 404/410 (the blob is gone from Sitewire's storage;
+        // re-asking every poll forever answers 404 every poll forever).
+        const msg = String(e && e.message);
+        if (/too large/i.test(msg)) { skips[key] = { reason: 'too large to pull', at: new Date().toISOString() }; skipsDirty = true; }
+        else if (/fetch (404|410)/.test(msg)) { skips[key] = { reason: 'the file is gone from Sitewire', at: new Date().toISOString() }; skipsDirty = true; }
         out.failed++; continue;
       }
       pulledThisPass++;
+      // The download cap (30 MB) is wider than the loan-document cap (25 MB). Refuse the
+      // in-between sizes HERE, durably, instead of round-tripping the bytes through attach()
+      // to be refused there every pass.
+      if (bytes.buf.length > drawAttachments.MAX_BYTES) {
+        skips[key] = { reason: `larger than ${Math.round(drawAttachments.MAX_BYTES / 1024 / 1024)} MB`, at: new Date().toISOString() };
+        skipsDirty = true; out.failed++; continue;
+      }
 
       // Bytes already on the loan file under any name (PILOT pushed it, or somebody uploaded the
       // same file by hand)? Record the key as done — never file a second copy.
@@ -196,7 +220,11 @@ async function ingestForProperty(appId, prop, opts = {}) {
         const notify = require('../lib/notify');
         const byDraw = new Map();
         for (const a of out.added) byDraw.set(a.drawId, (byDraw.get(a.drawId) || 0) + 1);
-        const what = [...byDraw.entries()].map(([id, n]) => `${n} document${n === 1 ? '' : 's'} on draw #${id}`).join(', ');
+        // Name each draw by its NUMBER (what the panel shows), never the platform id.
+        const what = [...byDraw.entries()].map(([id, n]) => {
+          const num = drawNumberOf.get(String(id));
+          return `${n} document${n === 1 ? '' : 's'} on draw #${num != null ? num : id}`;
+        }).join(', ');
         await notify.notifyAppStaff(appId, {
           type: 'draw_docs_pulled',
           title: 'Documents pulled from Sitewire onto a draw',
@@ -211,4 +239,22 @@ async function ingestForProperty(appId, prop, opts = {}) {
   return out;
 }
 
-module.exports = { ingestForProperty, _internals: { sourceKeyOf, filenameOf, provenanceNote, PERMANENT_REASON, MAX_PER_PASS } };
+/**
+ * A staff REMOVE of a pulled document is a decision, and it must stick (pre-merge audit defect 2:
+ * detach deletes the draw_attachments row — and with it the source_key the "already pulled" set
+ * reads — so the next poll re-pulled the document; the sha256 belt misses any image whose stored
+ * bytes were transformed on the way in, i.e. every HEIC conversion and every GPS-EXIF strip, so a
+ * removed phone photo resurrected as a NEW documents row on every remove/poll cycle, each copy
+ * mirrored to SharePoint, which never deletes). The DELETE route calls this with the removed
+ * attachment's source_key BEFORE the poll can run again. Best-effort, never throws.
+ */
+async function rememberRemoved(appId, sourceKey) {
+  try {
+    if (!appId || !sourceKey) return;
+    const skips = await readSkips(appId);
+    skips[String(sourceKey)] = { reason: 'removed from the draw by staff', at: new Date().toISOString() };
+    await writeSkips(appId, skips);
+  } catch (_) { /* worst case the document is re-pulled once more and removed again */ }
+}
+
+module.exports = { ingestForProperty, rememberRemoved, _internals: { sourceKeyOf, filenameOf, provenanceNote, PERMANENT_REASON, MAX_PER_PASS } };
