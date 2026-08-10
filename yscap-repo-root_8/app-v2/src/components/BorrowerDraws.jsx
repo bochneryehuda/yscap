@@ -587,7 +587,9 @@ function FindingCard({ finding, appId, onChanged, money }) {
               <tr key={l.id}>
                 <td style={{ fontWeight: 600 }}>{l.name}</td>
                 <td className="num">{usd2(l.requested_cents)}</td>
-                <td className="num">{usd2(l.approved_cents)}{l.not_approved_cents > 0 ? <span className="muted small"> (−{usd2(l.not_approved_cents)})</span> : null}</td>
+                <td className="num">{l.approved_cents == null
+                  ? <span className="muted small">Not reviewed yet</span>
+                  : <>{usd2(l.approved_cents)}{l.not_approved_cents > 0 ? <span className="muted small"> (−{usd2(l.not_approved_cents)})</span> : null}</>}</td>
                 <td className="muted small">{l.inspector_comments || '—'}</td>
                 <td><MediaStrip line={l} /></td>
                 {mode === 'dispute' && (

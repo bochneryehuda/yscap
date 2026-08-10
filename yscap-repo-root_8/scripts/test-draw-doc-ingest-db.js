@@ -215,6 +215,25 @@ const FAKE_HEIC = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftyphe
     const auditRows = (await db.query(`SELECT detail FROM audit_log WHERE action='accept_document' AND actor_id=$1`, [superId])).rows;
     ok('H4 accepting on the draw card writes the accept_document audit row', auditRows.some((a) => a.detail && a.detail.via === 'draw_attachment_review'));
 
+    // ---- I. the per-line tri-state lands in the DATABASE (db/518) --------------------------
+    // A finding line the inspector never answered stores NULL — and the money ladder reads it
+    // as "no inspector answer yet", never a confident $0 (the same null-skip the live request
+    // mirror has always had).
+    const triFinding = (await db.query(
+      `INSERT INTO draw_findings (application_id, sitewire_draw_id, status, reply_token) VALUES ($1,$2,'delivered',$3) RETURNING id`,
+      [appId2, D_OTHER, crypto.randomBytes(10).toString('hex')])).rows[0];
+    await db.query(
+      `INSERT INTO draw_finding_lines (finding_id, name, requested_cents, approved_cents, not_approved_cents) VALUES ($1,'Roof',2475000,NULL,NULL)`,
+      [triFinding.id]);
+    const triRow = (await db.query(`SELECT approved_cents, not_approved_cents FROM draw_finding_lines WHERE finding_id=$1`, [triFinding.id])).rows[0];
+    ok('I1 an unanswered line stores NULL, not 0 (db/518)', triRow.approved_cents === null && triRow.not_approved_cents === null);
+    const APPROVAL = require('../src/sitewire/approval');
+    const m = APPROVAL.drawMoney({
+      draw: { total_requested_cents: 2475000, total_approved_cents: 0, status: 'pending' },
+      requests: [], findingLines: [{ approved_cents: null }],
+    });
+    ok('I2 the money ladder reads it as no-inspector-answer, never $0', m.has_inspector_amounts === false);
+
     // ---- G. the amount doctrine's last gap: numbers change AFTER findings delivery ---------
     // The inspector's approved amount moves in Sitewire after the results email went out — the
     // coordinator is told to re-deliver so the borrower stops looking at a stale figure. An

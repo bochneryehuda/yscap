@@ -2887,8 +2887,11 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
       // number twice in two shapes.
       if (releaseLine && !(blocks && blocks.figures)) meta.push(releaseLine);
       for (const l of flines.slice(0, CAP)) {
+        // TRI-STATE (db/518): a NULL approved amount is "the inspector has not answered this
+        // line" — the email says so, never "$0 approved", which reads as denied.
         meta.push({ label: scrub(l.name) || 'Line item',
-          value: Number(l.not_approved_cents) > 0 ? `${usd(l.approved_cents)} approved of ${usd(l.requested_cents)}` : `${usd(l.approved_cents)} approved` });
+          value: l.approved_cents == null ? `${usd(l.requested_cents)} requested — not yet reviewed`
+            : Number(l.not_approved_cents) > 0 ? `${usd(l.approved_cents)} approved of ${usd(l.requested_cents)}` : `${usd(l.approved_cents)} approved` });
       }
       if (flines.length > CAP) meta.push({ label: `+ ${flines.length - CAP} more line item(s)`, value: 'open the results to see them all' });
       const pv = [];

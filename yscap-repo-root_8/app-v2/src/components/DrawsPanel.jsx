@@ -2914,15 +2914,20 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
         // Only show approved/not-approved once the DRAW is actually approved (decided). Before that every
         // line is under review — an undecided line must NOT read as a red "Not approved" rejection.
         const decided = draw.status === 'approved';
-        const notAppr = l.not_approved_cents != null ? l.not_approved_cents : Math.max(0, (l.requested_cents || 0) - (l.approved_cents || 0));
+        // TRI-STATE (db/518): a NULL approved amount means the inspector never answered this
+        // line — never render it as "Approved $0.00" or a red full-amount "Not approved".
+        const answered = l.approved_cents != null;
+        const notAppr = !answered ? 0 : (l.not_approved_cents != null ? l.not_approved_cents : Math.max(0, (l.requested_cents || 0) - (l.approved_cents || 0)));
         return (
           <div key={l.id || l.request_id || i} style={{ borderTop: '1px dashed var(--line,#e6e0d4)', paddingTop: 8, marginTop: 8 }}>
             <div className="row between" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
               <div className="small"><b>{l.name || `Line ${l.job_item_id || l.sitewire_job_item_id || ''}`}</b></div>
               <div className="small muted" style={{ fontVariantNumeric: 'tabular-nums' }}>
                 Requested {usd2(l.requested_cents)}{decided
-                  ? <> · Approved {usd2(l.approved_cents)}{notAppr > 0 ? <span style={{ color: 'var(--bad,#b04a3f)' }}> · Not approved {usd2(notAppr)}</span> : null}</>
-                  : <> · {l.approved_cents ? `Approved ${usd2(l.approved_cents)}` : 'Awaiting your decision'}</>}
+                  ? (answered
+                    ? <> · Approved {usd2(l.approved_cents)}{notAppr > 0 ? <span style={{ color: 'var(--bad,#b04a3f)' }}> · Not approved {usd2(notAppr)}</span> : null}</>
+                    : <> · not reviewed by the inspector</>)
+                  : <> · {answered ? `Approved ${usd2(l.approved_cents)}` : 'Awaiting your decision'}</>}
               </div>
             </div>
             {l.inspector_comments && <div className="small" style={{ marginTop: 3, fontStyle: 'italic' }}>Inspector: “{l.inspector_comments}”</div>}

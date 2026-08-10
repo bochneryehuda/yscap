@@ -849,12 +849,15 @@ async function fetchDrawFindings(sitewireDrawId) {
       src: (i.media && i.media.src) || null, thumbnail: (i.media && i.media.thumbnail) || null,
       type: (i.media && i.media.media_type) || null, lat: i.latitude, lng: i.longitude, captured_at: i.captured_at, note: i.note,
     })).filter((m) => m.src);
-    const req = r.requested_cents || 0; const appr = r.approved_cents == null ? 0 : r.approved_cents;
-    treq += req; tappr += appr;
+    // TRI-STATE (owner doctrine 2026-08-10, db/518): a NULL approved amount is "the inspector has
+    // not answered this line", never a confident $0 — the coercion here was the root that made the
+    // accept page print "Approved $0" on unreviewed work. Totals still sum the answered lines only.
+    const req = r.requested_cents || 0; const appr = r.approved_cents == null ? null : r.approved_cents;
+    treq += req; tappr += appr || 0;
     lines.push({
       request_id: r.id, job_item_id: (r.job_item && r.job_item.id) || (detail.job_item && detail.job_item.id) || null,
       name: (r.job_item && r.job_item.name) || (detail.job_item && detail.job_item.name) || null,
-      requested_cents: req, approved_cents: appr, not_approved_cents: Math.max(0, req - appr),
+      requested_cents: req, approved_cents: appr, not_approved_cents: appr == null ? null : Math.max(0, req - appr),
       inspector_comments: detail.inspector_comments || r.inspector_comments || null,
       lender_comments: detail.lender_comments || r.lender_comments || null,
       photo_count: media.filter((m) => m.type === 'image').length, video_count: media.filter((m) => m.type === 'video').length,
@@ -945,10 +948,12 @@ async function persistDrawFindings(appId, sitewireDrawId, deliveredTo = null) {
     const cur = existing.get(key);
     // approved_cents is the NEGOTIATED figure once a dispute has been decided (dispute_status !== 'open').
     // Preserve the coordinator-decided amount so a fresh Sitewire read doesn't overwrite it; when the
-    // dispute is still 'open' or absent, the Sitewire amount wins (source of truth).
+    // dispute is still 'open' or absent, the Sitewire amount wins (source of truth). A NULL from
+    // Sitewire is STORED as NULL (db/518): the inspector has not answered this line, and writing 0
+    // would tell the borrower it was denied.
     const disputeDecided = cur && cur.dispute_status && cur.dispute_status !== 'open';
-    const approvedCents = disputeDecided ? Number(cur.approved_cents || 0) : (ln.approved_cents || 0);
-    const notApprovedCents = Math.max(0, (ln.requested_cents || 0) - approvedCents);
+    const approvedCents = disputeDecided ? Number(cur.approved_cents || 0) : (ln.approved_cents == null ? null : ln.approved_cents);
+    const notApprovedCents = approvedCents == null ? null : Math.max(0, (ln.requested_cents || 0) - approvedCents);
     if (cur) {
       await db.query(
         `UPDATE draw_finding_lines

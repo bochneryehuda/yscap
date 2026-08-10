@@ -102,7 +102,9 @@ async function buildDrawPacket(appId, drawId) {
   if (findings.length) {
     rows.push([]); rows.push(['INSPECTION FINDINGS']);
     rows.push(['Line item', 'Requested', 'Approved by inspector', 'Not approved', 'Photos', 'Videos', 'Inspector note']);
-    for (const f of findings) rows.push([f.name || '', c(f.requested_cents), c(f.approved_cents), c(f.not_approved_cents), Number(f.photo_count) || 0, Number(f.video_count) || 0, f.inspector_comments || '']);
+    // A NULL approved amount is "the inspector has not answered this line" (db/518) — the cell is
+    // left BLANK, never 0.00, which an accountant reads as a denied line.
+    for (const f of findings) rows.push([f.name || '', c(f.requested_cents), f.approved_cents == null ? '' : c(f.approved_cents), f.not_approved_cents == null ? '' : c(f.not_approved_cents), Number(f.photo_count) || 0, Number(f.video_count) || 0, f.inspector_comments || '']);
   }
   if (waivers.length) {
     rows.push([]); rows.push(['LIEN WAIVERS']);
