@@ -73,6 +73,7 @@
 .tr-secicon svg{ width:24px; height:24px; }
 .tr-secicon.flip{ color:var(--gold-ink); }
 .tr-secicon.hold{ color:var(--teal-br); }
+.tr-secicon.ground{ color:#3A4550; }
 
 /* grouped (by entity) */
 .tr-group{ margin-bottom:1rem; }
@@ -100,6 +101,7 @@
 .tr-badge{ font-size:.7rem; font-weight:700; letter-spacing:.05em; text-transform:uppercase; padding:.28rem .6rem; border-radius:100px; border:1px solid; white-space:nowrap; }
 .tr-badge.flip{ color:var(--gold-ink); border-color:color-mix(in srgb,var(--gold) 50%,transparent); background:color-mix(in srgb,var(--gold) 12%,transparent); }
 .tr-badge.hold{ color:var(--teal-br); border-color:var(--teal-dp); background:rgba(47,127,134,.1); }
+.tr-badge.ground{ color:#3A4550; border-color:rgba(58,69,80,.5); background:rgba(58,69,80,.1); }
 .tr-badge-2{ font-size:.7rem; font-weight:600; color:var(--muted); border:1px solid var(--line); border-radius:100px; padding:.24rem .6rem; white-space:nowrap; }
 
 .tr-status{ font-size:.7rem; font-weight:700; letter-spacing:.03em; padding:.26rem .6rem; border-radius:100px; border:1px solid; white-space:nowrap; }
@@ -169,6 +171,7 @@
 .tr-choose-ic svg{ width:30px; height:30px; }
 .tr-choose-ic.flip{ color:var(--gold-ink); background:color-mix(in srgb,var(--gold) 12%,transparent); }
 .tr-choose-ic.hold{ color:var(--teal-br); background:rgba(47,127,134,.1); }
+.tr-choose-ic.ground{ color:#3A4550; background:rgba(58,69,80,.1); }
 .tr-choose-t{ font-family:var(--font-d); font-size:1.2rem; font-weight:500; color:var(--ivory); }
 .tr-choose-d{ font-size:.86rem; color:var(--muted); line-height:1.45; }
 .tr-choose-d b{ color:var(--ivory); font-weight:600; }

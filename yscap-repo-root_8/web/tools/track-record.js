@@ -23,7 +23,9 @@ const TR=(function(){
     flip:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.3 12 4l9 7.3"/><path d="M5.4 9.6V20h13.2V9.6"/><path d="M15 5.6a4.4 4.4 0 0 1 .2 8M14.4 16.2 16 13.9l2.3 1"/></svg>',
     edit:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L18.5 9.5l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>',
     dup:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>',
-    del:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9.5 7V4.5h5V7"/><path d="M6.5 7l1 12.5h9l1-12.5"/><path d="M10 10.5v6M14 10.5v6"/></svg>'
+    del:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9.5 7V4.5h5V7"/><path d="M6.5 7l1 12.5h9l1-12.5"/><path d="M10 10.5v6M14 10.5v6"/></svg>',
+    // ground-up construction: a tower crane (universal build-in-progress mark)
+    ground:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4h10"/><path d="M5 8h10"/><path d="M15 4l4 1.7-4 1.7"/><path d="M10 8v3.6"/><path d="M3 21h9"/></svg>'
   };
 
   /* ---------- state ---------- */
@@ -56,6 +58,9 @@ const TR=(function(){
   // The entity a deal was held under, for display/exports: the LLC name, or
   // "Personal name" when the borrower held it personally (no LLC).
   function entityLabel(p){ return p.ownedPersonally ? "Personal name" : (p.entity||""); }
+  // The three deal types, in plain words. Returned with a literal "&" — HTML call
+  // sites run it through esc() so it becomes "&amp;".
+  function kindLabel(k){ return k==="flip" ? "Fix & Flip" : (k==="hold" ? "Fix & Hold" : "Ground-Up"); }
   /* A GROUND-UP EXITS ON WHICHEVER COMPLETION IT HAS (owner-authorized 2026-08-09:
      a ground-up is finished when the building is done AND they "Sold OR
      rented/refinanced"). Same shape as the server's exitDateOf in
@@ -73,7 +78,11 @@ const TR=(function(){
     if(base) return base;
     return isGround(p.kind) ? (p.saleDate||p.rentDate||p.refiDate) : base;
   }
-  function exitLabel(p){ return p.kind==="flip" ? "Sold" : (p.rentDate?"Leased":(p.refiDate?"Refinanced":"Exit")); }
+  function exitLabel(p){
+    if(p.kind==="flip") return "Sold";
+    if(isGround(p.kind)) return p.saleDate?"Sold":(p.rentDate?"Leased":(p.refiDate?"Refinanced":"Exit"));
+    return p.rentDate?"Leased":(p.refiDate?"Refinanced":"Exit");
+  }
   function holdMonths(p){ return monthsBetween(p.purchaseDate, exitDate(p)); }
 
   function validate(p){
@@ -85,6 +94,11 @@ const TR=(function(){
     if(p.kind==="flip"){
       if(!num(p.salePrice)) errs.push("Sale price is required for a flip.");
       if(!p.saleDate) errs.push("Sale date is required for a flip.");
+    } else if(isGround(p.kind)){
+      // A ground-up finishes on ANY completion — sold OR rented OR refinanced
+      // (owner-authorized 2026-08-09). Require at least one exit, not a specific one.
+      const anyExit = num(p.salePrice)||p.saleDate||num(p.rent)||p.rentDate||num(p.refiAmount)||p.refiDate;
+      if(!anyExit) errs.push("Enter how the ground-up finished — a sale, a lease, or a refinance.");
     } else {
       if(!num(p.rent) && !num(p.refiAmount)) errs.push("Enter the monthly rent (or a refinance amount) for a hold.");
       if(!p.rentDate && !p.refiDate) errs.push("Enter the date it was rented out (or refinanced).");
@@ -93,7 +107,7 @@ const TR=(function(){
     if(pd && ex){
       const hm=monthsBetween(pd,ex);
       if(hm!=null && hm<0) errs.push("The exit date is before the purchase date.");
-      else if(hm!=null && hm>MAX_HOLD_MO) alerts.push("More than 12 months between purchase and exit ("+hm+" mo) — long for a "+(p.kind==="flip"?"flip":"value-add hold")+"; underwriting will likely ask about this.");
+      else if(hm!=null && hm>MAX_HOLD_MO) alerts.push("More than 12 months between purchase and exit ("+hm+" mo) — long for a "+(p.kind==="flip"?"flip":(isGround(p.kind)?"ground-up":"value-add hold"))+"; underwriting will likely ask about this.");
       const ma=monthsAgo(ex);
       if(ma!=null && ma>EXIT_WINDOW_MO) warns.push("Exit is older than 3 years ("+(Math.floor(ma/12))+" yr ago) — it does NOT count toward your experience tier or brackets.");
       else if(ma!=null && ma<0) warns.push("Exit date is in the future — it won't count toward your experience tier until it actually closes.");
@@ -116,7 +130,7 @@ const TR=(function(){
   /* ---------- portfolio summary ---------- */
   function summary(){
     const ps=S.props;
-    const flips=ps.filter(p=>p.kind==="flip"), holds=ps.filter(p=>p.kind==="hold");
+    const flips=ps.filter(p=>p.kind==="flip"), holds=ps.filter(p=>p.kind==="hold"), grounds=ps.filter(p=>p.kind==="ground");
     const valid=ps.filter(recordOK);
     const qual=ps.filter(qualifies);
     const verified=ps.filter(p=>p.status==="verified"||p.status==="limited");
@@ -131,7 +145,7 @@ const TR=(function(){
     else if(qn>=5){ tier="Seasoned"; tcls="t3"; tnext=(10-qn)+" more qualifying exits to reach Expert."; }
     else if(qn>=3){ tier="Experienced"; tcls="t2"; tnext=(5-qn)+" more to reach Seasoned."; }
     else if(qn>=1){ tier="Emerging"; tcls="t1"; tnext=(3-qn)+" more to reach Experienced."; }
-    return {total:ps.length, flips:flips.length, holds:holds.length, valid:valid.length, qual:qn,
+    return {total:ps.length, flips:flips.length, holds:holds.length, ground:grounds.length, valid:valid.length, qual:qn,
       verified:verified.length, issues:issues.length, vol, rehab, avgHold, tier, tcls, tnext};
   }
 
@@ -159,6 +173,7 @@ const TR=(function(){
         stat(s.total, "Deals on record")+
         stat(s.flips, "Fix &amp; flips")+
         stat(s.holds, "Fix &amp; holds")+
+        stat(s.ground, "Ground-up")+
         stat(money(s.vol), "Acquisition volume")+
         stat(money(s.rehab), "Rehab invested")+
         stat(s.avgHold!=null?(s.avgHold+" mo"):"—", "Avg hold")+
@@ -171,7 +186,7 @@ const TR=(function(){
     const fbtn=(v,l)=>'<button class="tr-chip'+(S.filterKind===v?" on":"")+'" data-filter="'+v+'">'+l+'</button>';
     return '<section class="tr-toolbar">'+
       '<button class="tr-btn primary" data-add="1">+ Add a property</button>'+
-      '<div class="tr-filters">'+fbtn("all","All")+fbtn("flip","Fix & flips")+fbtn("hold","Fix & holds")+'</div>'+
+      '<div class="tr-filters">'+fbtn("all","All")+fbtn("flip","Fix & flips")+fbtn("hold","Fix & holds")+fbtn("ground","Ground-up")+'</div>'+
       '<div class="tr-toolbar-right">'+
         '<button class="tr-chip'+(S.groupBy==="entity"?" on":"")+'" data-group="'+(S.groupBy==="entity"?"none":"entity")+'" title="Group records by the LLC / entity on record">'+(S.groupBy==="entity"?"Ungroup":"Group by entity")+'</button>'+
       '</div>'+
@@ -201,12 +216,18 @@ const TR=(function(){
       out+='<section class="tr-section"><div class="tr-section-h"><h2><span class="tr-secicon hold">'+IC.hold+'</span>Fix &amp; Hold / Rental experience</h2><span class="tr-section-sub">'+n+' propert'+(n===1?"y":"ies")+' · exit = lease-up / refinance</span></div>'+
         (n?sectionList("hold"):emptyState("hold"))+'</section>';
     }
+    if(show("ground")){
+      const n=S.props.filter(p=>p.kind==="ground").length;
+      out+='<section class="tr-section"><div class="tr-section-h"><h2><span class="tr-secicon ground">'+IC.ground+'</span>Ground-Up Construction experience</h2><span class="tr-section-sub">'+n+' propert'+(n===1?"y":"ies")+' · exit = sale / lease / refinance</span></div>'+
+        (n?sectionList("ground"):emptyState("ground"))+'</section>';
+    }
     return out;
   }
 
   function emptyState(kind){
-    const t=kind==="flip"?"fix &amp; flip":"fix &amp; hold";
-    return '<div class="tr-empty"><div class="tr-empty-ic">'+(kind==="flip"?IC.flip:IC.hold)+'</div><p>No '+t+' deals yet.</p><button class="tr-btn line" data-add="'+kind+'">+ Add a '+t+' deal</button></div>';
+    const t=kind==="flip"?"fix &amp; flip":(kind==="hold"?"fix &amp; hold":"ground-up");
+    const ic=kind==="flip"?IC.flip:(kind==="hold"?IC.hold:IC.ground);
+    return '<div class="tr-empty"><div class="tr-empty-ic">'+ic+'</div><p>No '+t+' deals yet.</p><button class="tr-btn line" data-add="'+kind+'">+ Add a '+t+' deal</button></div>';
   }
 
   function card(p){
@@ -215,11 +236,20 @@ const TR=(function(){
     const figs=[];
     figs.push(["Purchase", (num(p.purchasePrice)?money(p.purchasePrice):"—")+(p.purchaseDate?(" · "+fmtDate(p.purchaseDate)):"")]);
     if(num(p.rehab)) figs.push(["Rehab", money(p.rehab)]);
-    if(p.kind==="flip") figs.push(["Sold", (num(p.salePrice)?money(p.salePrice):"—")+(p.saleDate?(" · "+fmtDate(p.saleDate)):"")]);
-    else { if(num(p.rent)||p.rentDate) figs.push(["Rented", (num(p.rent)?money(p.rent)+"/mo":"—")+(p.rentDate?(" · "+fmtDate(p.rentDate)):"")]);
-           if(num(p.refiAmount)||p.refiDate) figs.push(["Refinanced", (num(p.refiAmount)?money(p.refiAmount):"—")+(p.refiDate?(" · "+fmtDate(p.refiDate)):"")]); }
+    const soldFig=()=>["Sold", (num(p.salePrice)?money(p.salePrice):"—")+(p.saleDate?(" · "+fmtDate(p.saleDate)):"")];
+    const rentedFig=()=>["Rented", (num(p.rent)?money(p.rent)+"/mo":"—")+(p.rentDate?(" · "+fmtDate(p.rentDate)):"")];
+    const refiFig=()=>["Refinanced", (num(p.refiAmount)?money(p.refiAmount):"—")+(p.refiDate?(" · "+fmtDate(p.refiDate)):"")];
+    if(p.kind==="flip") figs.push(soldFig());
+    else if(isGround(p.kind)){
+      // A ground-up can carry any/all of the three exits — show each one it has.
+      if(num(p.salePrice)||p.saleDate) figs.push(soldFig());
+      if(num(p.rent)||p.rentDate) figs.push(rentedFig());
+      if(num(p.refiAmount)||p.refiDate) figs.push(refiFig());
+    }
+    else { if(num(p.rent)||p.rentDate) figs.push(rentedFig());
+           if(num(p.refiAmount)||p.refiDate) figs.push(refiFig()); }
     if(hm!=null && hm>=0) figs.push(["Hold period", hm+" mo"]);
-    if(p.kind==="flip"&&num(p.salePrice)&&num(p.purchasePrice)){ const profit=num(p.salePrice)-num(p.purchasePrice)-num(p.rehab); figs.push(["Gross spread", (profit<0?"-":"")+money(Math.abs(profit))]); }
+    if((p.kind==="flip"||isGround(p.kind))&&num(p.salePrice)&&num(p.purchasePrice)){ const profit=num(p.salePrice)-num(p.purchasePrice)-num(p.rehab); figs.push(["Gross spread", (profit<0?"-":"")+money(Math.abs(profit))]); }
 
     const chips=v.errs.concat(v.alerts).map(e=>'<span class="tr-chip-err">⚠ '+esc(e)+'</span>').join("")+v.warns.map(w=>'<span class="tr-chip-warn">⚠ '+esc(w)+'</span>').join("");
     const hasErr=v.errs.length||v.alerts.length;
@@ -228,7 +258,7 @@ const TR=(function(){
     return '<article class="tr-card'+(hasErr?" has-err":(v.warns.length?" has-warn":""))+(qual?" qual":"")+'" data-card="'+p.id+'">'+
       '<div class="tr-card-main">'+
         '<div class="tr-card-head">'+
-          '<span class="tr-badge '+p.kind+'">'+(p.kind==="flip"?"Fix &amp; Flip":"Fix &amp; Hold")+'</span>'+
+          '<span class="tr-badge '+p.kind+'">'+esc(kindLabel(p.kind))+'</span>'+
           (p.propType?'<span class="tr-badge-2">'+esc(p.propType)+'</span>':'')+
           (qual?'<span class="tr-qual" title="Counts toward your 3-year experience tier">Recent exit</span>':(ex&&recordOK(p)?'<span class="tr-qual out" title="Older than 3 years — outside the experience window">Outside 3-yr window</span>':''))+
         '</div>'+
@@ -247,7 +277,7 @@ const TR=(function(){
 
   function viewExportBar(){
     return '<section class="tr-exportbar">'+
-      '<div class="tr-export-txt"><b>Export your track record.</b> A branded PDF report and an Excel workbook with separate Fix &amp; Flip and Fix &amp; Hold sections. Re-import the Excel here anytime to keep editing.</div>'+
+      '<div class="tr-export-txt"><b>Export your track record.</b> A branded PDF report and an Excel workbook with separate Fix &amp; Flip, Fix &amp; Hold and Ground-up sections. Re-import the Excel here anytime to keep editing.</div>'+
       '<div class="tr-export-btns">'+
         '<button class="tr-btn primary" data-exp="pdf">Export branded PDF ⤓</button>'+
         '<button class="tr-btn line" data-exp="xlsx">Export Excel ⤓</button>'+
@@ -265,6 +295,7 @@ const TR=(function(){
       '<div class="tr-choose">'+
         '<button class="tr-choose-card" data-kind="flip"><span class="tr-choose-ic flip">'+IC.flip+'</span><span class="tr-choose-t">Fix &amp; Flip</span><span class="tr-choose-d">You bought, renovated, and <b>sold</b> it. We\'ll ask for the sale price and date.</span></button>'+
         '<button class="tr-choose-card" data-kind="hold"><span class="tr-choose-ic hold">'+IC.hold+'</span><span class="tr-choose-t">Fix &amp; Hold / Rental</span><span class="tr-choose-d">You bought, renovated, and <b>kept it as a rental</b>. We\'ll ask for the rent and lease date.</span></button>'+
+        '<button class="tr-choose-card" data-kind="ground"><span class="tr-choose-ic ground">'+IC.ground+'</span><span class="tr-choose-t">Ground-Up Construction</span><span class="tr-choose-d">You built it from the ground up, then <b>sold, rented, or refinanced</b> it. We\'ll ask for whichever exit happened.</span></button>'+
       '</div>';
     ov.querySelector(".tr-ov-x").onclick=ov._close;
     ov.querySelectorAll("[data-kind]").forEach(b=> b.onclick=()=> openForm(blankProp(b.dataset.kind)) );
@@ -273,12 +304,32 @@ const TR=(function(){
   function openForm(p){
     addKind=p.kind; editingId=p.id;
     const ov=$("#tr-ov")||mkOverlay();
-    const isFlip=p.kind==="flip";
+    const isFlip=p.kind==="flip", isGnd=p.kind==="ground";
     const opt=(sel)=>PROP_TYPES.map(t=>'<option'+(sel===t?" selected":"")+'>'+t+'</option>').join("");
+    // Offer a switch to EACH of the other two deal types (the data has three).
+    const switchBtns=["flip","hold","ground"].filter(k=>k!==p.kind)
+      .map(k=>'<button class="tr-switch" data-switch="'+k+'">Switch to '+esc(kindLabel(k))+'</button>').join("");
+    // Exit fields by deal type: a flip has a Sale, a hold has a Lease-up /
+    // Refinance, and a ground-up can finish ANY of those ways — so it shows BOTH
+    // groups with every exit optional (validate() requires at least one).
+    const saleG=grp("Exit — Sale",[
+      fld("Sale price","salePrice",p.salePrice,"money",isGnd?"Optional":"",isGnd?"opt":""),
+      fld("Sale date","saleDate",p.saleDate,"date","",isGnd?"opt":"")
+    ]);
+    const leaseG=grp("Exit — Lease-up / Refinance",[
+      fld("Monthly rent","rent",p.rent,"money",isGnd?"Optional":"",isGnd?"opt":""),
+      fld("Date rented out (lease date)","rentDate",p.rentDate,"date","",isGnd?"opt":""),
+      fld("Cash-out refinance amount","refiAmount",p.refiAmount,"money","Optional","opt"),
+      fld("Refinance date","refiDate",p.refiDate,"date","","opt"),
+      fld("Current / appraised value","currentValue",p.currentValue,"money","Optional","opt")
+    ]);
+    const exitSection = isFlip ? saleG
+      : isGnd ? ('<div class="tr-exit-note" style="font-size:.85rem;color:#4B585C;margin:2px 0 4px;padding:9px 13px;border-left:3px solid #3A4550;background:rgba(58,69,80,.07);border-radius:6px">Fill in whichever way the project finished — a <b>sale</b>, a <b>lease</b>, or a <b>refinance</b>. Enter at least one.</div>'+saleG+leaseG)
+      : leaseG;
     ov.querySelector(".tr-ov-box").innerHTML=
       '<button class="tr-ov-x" aria-label="Close">✕</button>'+
-      '<div class="tr-form-head"><span class="tr-badge '+p.kind+'">'+(isFlip?"Fix &amp; Flip":"Fix &amp; Hold")+'</span><h3>'+(editingId&&S.props.some(x=>x.id===p.id)?"Edit property":"Add property")+'</h3>'+
-        '<button class="tr-switch" data-switch="'+(isFlip?"hold":"flip")+'">Switch to '+(isFlip?"Fix &amp; Hold":"Fix &amp; Flip")+'</button></div>'+
+      '<div class="tr-form-head"><span class="tr-badge '+p.kind+'">'+esc(kindLabel(p.kind))+'</span><h3>'+(editingId&&S.props.some(x=>x.id===p.id)?"Edit property":"Add property")+'</h3>'+
+        switchBtns+'</div>'+
       '<div class="tr-form">'+
         grp("Property",[
           fld("Property address","address",p.address,"text","123 Main St","wide"),
@@ -294,20 +345,7 @@ const TR=(function(){
           fld("Purchase date","purchaseDate",p.purchaseDate,"date"),
           fld("Rehab budget","rehab",p.rehab,"money")
         ])+
-        (isFlip?
-          grp("Exit — Sale",[
-            fld("Sale price","salePrice",p.salePrice,"money"),
-            fld("Sale date","saleDate",p.saleDate,"date")
-          ])
-          :
-          grp("Exit — Lease-up / Refinance",[
-            fld("Monthly rent","rent",p.rent,"money"),
-            fld("Date rented out (lease date)","rentDate",p.rentDate,"date"),
-            fld("Cash-out refinance amount","refiAmount",p.refiAmount,"money","Optional","opt"),
-            fld("Refinance date","refiDate",p.refiDate,"date","","opt"),
-            fld("Current / appraised value","currentValue",p.currentValue,"money","Optional","opt")
-          ])
-        )+
+        exitSection+
         grp("Notes",[ fld("Notes","notes",p.notes,"text","Anything the underwriter should know (optional)","wide opt") ])+
         '<div class="tr-form-msg" id="tr-form-msg"></div>'+
       '</div>'+
@@ -379,7 +417,7 @@ const TR=(function(){
       if(el.dataset.f==="ownedPersonally") syncPersonal();
       clearTimeout(_t); _t=setTimeout(()=>{ commit(); paintMsg(); }, 450);
     }));
-    const sw=ov.querySelector("[data-switch]"); if(sw) sw.onclick=()=>{ readInputs(); commit(); ov._work.kind=sw.dataset.switch; openForm(ov._work); };
+    ov.querySelectorAll("[data-switch]").forEach(sw=> sw.onclick=()=>{ readInputs(); commit(); ov._work.kind=sw.dataset.switch; openForm(ov._work); });
     ov.querySelector("[data-save]").onclick=()=>{
       readInputs(); const p=ov._work;
       if(!String(p.address||"").trim()){ msg.className="tr-form-msg err"; msg.innerHTML="A property address is required to save this line."; msg.scrollIntoView({behavior:"smooth",block:"center"}); return; }
@@ -392,7 +430,7 @@ const TR=(function(){
 
   /* ===================== WIRE MAIN ===================== */
   function wire(){
-    $$("[data-add]").forEach(b=> b.onclick=()=>{ const k=b.dataset.add; if(k==="flip"||k==="hold") openForm(blankProp(k)); else openChooser(); });
+    $$("[data-add]").forEach(b=> b.onclick=()=>{ const k=b.dataset.add; if(k==="flip"||k==="hold"||k==="ground") openForm(blankProp(k)); else openChooser(); });
     $$("[data-filter]").forEach(b=> b.onclick=()=>{ S.filterKind=b.dataset.filter; render(); });
     $$("[data-group]").forEach(b=> b.onclick=()=>{ S.groupBy=b.dataset.group; render(); });
     $$("[data-edit]").forEach(b=> b.onclick=()=>{ const p=S.props.find(x=>x.id===b.dataset.edit); if(p) openForm(Object.assign({},p)); });
@@ -439,7 +477,7 @@ const TR=(function(){
   async function exportXlsx(btn,opts){ opts=opts||{}; const o=btn?btn.textContent:null; if(btn){ btn.textContent="Preparing…"; btn.disabled=true; }
     try{
       await ensureXLSX(); const X=window.XLSX;
-      const INK="0B1014",IVORY="F3EFE6",GOLD="9A7518",TEAL="4E777F",TEALD="1F3A40",LIGHT="EAF1F1",LINE="DCE1E2",DARK="1F2A30",FLIPBG="6E5417",HOLDBG="1F3A40";
+      const INK="0B1014",IVORY="F3EFE6",GOLD="9A7518",TEAL="4E777F",TEALD="1F3A40",LIGHT="EAF1F1",LINE="DCE1E2",DARK="1F2A30",FLIPBG="6E5417",HOLDBG="1F3A40",GROUNDBG="3A4550";
       const flipCols=[
         {h:"Entity / LLC",get:p=>entityLabel(p),w:20},
         {h:"Property address",get:p=>addrLine(p),w:34,al:"left"},
@@ -467,7 +505,22 @@ const TR=(function(){
         {h:"Current value",get:p=>num(p.currentValue)||"",money:true,al:"right",w:14},
         {h:"Recent (3yr)",get:p=>qualifies(p)?"Yes":(exitDate(p)?"No":""),al:"center",w:12}
       ];
-      const N=Math.max(flipCols.length, holdCols.length);
+      // Ground-up exits ANY way (sale / lease / refinance), so its columns report
+      // the exit generically: type, value, date — 11 columns, flip-section parity.
+      const groundCols=[
+        {h:"Entity / LLC",get:p=>entityLabel(p),w:20},
+        {h:"Property address",get:p=>addrLine(p),w:34,al:"left"},
+        {h:"Property type",get:p=>p.propType,w:16},
+        {h:"Purchase price",get:p=>num(p.purchasePrice)||"",money:true,sum:true,al:"right",w:14},
+        {h:"Purchase date",get:p=>fmtDate(p.purchaseDate),al:"center",w:13},
+        {h:"Rehab budget",get:p=>num(p.rehab)||"",money:true,sum:true,al:"right",w:13},
+        {h:"Exit type",get:p=>exitLabel(p),al:"center",w:12},
+        {h:"Exit value",get:p=>{ if(num(p.salePrice)) return money(p.salePrice); if(num(p.rent)) return money(p.rent)+"/mo"; if(num(p.refiAmount)) return money(p.refiAmount); return ""; },al:"right",w:14},
+        {h:"Exit date",get:p=>fmtDate(exitDate(p)),al:"center",w:13},
+        {h:"Hold (mo)",get:p=>{const h=holdMonths(p);return h==null?"":h;},al:"center",w:10},
+        {h:"Recent (3yr)",get:p=>qualifies(p)?"Yes":(exitDate(p)?"No":""),al:"center",w:12}
+      ];
+      const N=Math.max(flipCols.length, holdCols.length, groundCols.length);
       const aoa=[], merges=[], rowH={}, styleMap={}; const A=(r,c)=>X.utils.encode_cell({r:r,c:c});
       const setRow=r=>{ if(!aoa[r])aoa[r]=[]; };
       const put=(r,c,v,st)=>{ setRow(r); aoa[r][c]=(v==null?"":v); if(st) styleMap[A(r,c)]=st; };
@@ -500,7 +553,7 @@ const TR=(function(){
         list.forEach(p=>{ for(let c=0;c<N;c++){ const col=cols[c]; if(col){ const val=col.get(p); put(R,c,val==null?"":val, col.money?stMoney:stCell(col.al||"left")); if(col.sum) totals[c]=(totals[c]||0)+num(val); } else put(R,c,"",stCell(cols[lastC].al||"left")); }
           if(pad) merge(R,lastC,N-1);
           R++; });
-        if(!list.length){ put(R,0,"No "+(kind==="flip"?"fix & flip":"fix & hold")+" deals entered.",stCell("left")); span(R,0,N-1,stCell("left")); merge(R,0,N-1); R++; }
+        if(!list.length){ put(R,0,"No "+(kind==="flip"?"fix & flip":(kind==="hold"?"fix & hold":"ground-up"))+" deals entered.",stCell("left")); span(R,0,N-1,stCell("left")); merge(R,0,N-1); R++; }
         else { const firstSum=cols.findIndex(c=>c.sum); const mEnd=Math.max(0,firstSum-1);
           put(R,0,"TOTALS ("+list.length+")",stTot("left")); span(R,0,mEnd,stTot("left")); merge(R,0,mEnd);
           for(let c=mEnd+1;c<N;c++){ if(totals[c]!=null) put(R,c,totals[c],stTotM); else put(R,c,"",stTot("right")); }
@@ -511,10 +564,11 @@ const TR=(function(){
       }
       block("FIX & FLIP EXPERIENCE   (exit = sale)","flip",flipCols,FLIPBG);
       block("FIX & HOLD / RENTAL EXPERIENCE   (exit = lease-up / refinance)","hold",holdCols,HOLDBG);
+      block("GROUND-UP CONSTRUCTION EXPERIENCE   (exit = sale / lease / refinance)","ground",groundCols,GROUNDBG);
 
       const ws=X.utils.aoa_to_sheet(aoa); ws["!merges"]=merges;
       const rowsArr=[]; Object.keys(rowH).forEach(k=>{ rowsArr[+k]=rowH[k]; }); ws["!rows"]=rowsArr;
-      const colW=[]; for(let c=0;c<N;c++){ const f=flipCols[c],h=holdCols[c]; colW.push({wch:Math.max(f?f.w:10,h?h.w:10)||14}); } ws["!cols"]=colW;
+      const colW=[]; for(let c=0;c<N;c++){ const f=flipCols[c],h=holdCols[c],g=groundCols[c]; colW.push({wch:Math.max(f?f.w:10,h?h.w:10,g?g.w:10)||14}); } ws["!cols"]=colW;
       Object.keys(styleMap).forEach(addr=>{ if(!ws[addr]) ws[addr]={t:"s",v:""}; ws[addr].s=styleMap[addr]; });
       const wb=X.utils.book_new();
       X.utils.book_append_sheet(wb,ws,"Track Record");
@@ -599,7 +653,7 @@ const TR=(function(){
       doc.text(s.qual+" qualifying exit(s) in the last 3 years   ·   "+s.total+" total deals   ·   "+s.flips+" flips / "+s.holds+" holds   ·   "+money(s.vol)+" acquisition volume   ·   "+money(s.rehab)+" rehab", M+14, y+36);
       y+=62;
 
-      const PROJ={flip:"Fix & Flip",hold:"Fix & Hold"};
+      const PROJ={flip:"Fix & Flip",hold:"Fix & Hold",ground:"Ground-Up"};
       // SECTION WIDTH PARITY (owner-directed 2026-07-13): both section tables
       // share ONE fixed column layout (widths sum to the printable width), so
       // the Fix & Flip and Fix & Hold sections are exactly the same width with
@@ -611,11 +665,14 @@ const TR=(function(){
         doc.setFont("helvetica","bold"); doc.setFontSize(11); doc.setTextColor(INK[0],INK[1],INK[2]); doc.text(pdfSafe(title)+" ("+list.length+")", M, y); y+=6;
         const head = kind==="flip"
           ? [["#","Entity","Property","Type","Purchase","Pur. date","Rehab","Sale","Sale date","Hold","Recent"]]
+          : kind==="ground"
+          ? [["#","Entity","Property","Type","Purchase","Pur. date","Rehab","Exit","Exit date","Hold","Recent"]]
           : [["#","Entity","Property","Type","Purchase","Pur. date","Rehab","Rent/mo","Rented","Refi","Recent"]];
         const body=list.map((p,i)=>{ const hm=holdMonths(p);
           const common=[String(i+1),pdfSafe(entityLabel(p)||"—"),pdfSafe(addrLine(p)),pdfSafe(p.propType||"—"),num(p.purchasePrice)?money(p.purchasePrice):"—",fmtDate(p.purchaseDate)||"—",num(p.rehab)?money(p.rehab):"—"];
           const tail=[qualifies(p)?"Yes":(exitDate(p)?"No":"—")];
           if(kind==="flip") return common.concat([num(p.salePrice)?money(p.salePrice):"—",fmtDate(p.saleDate)||"—",(hm!=null&&hm>=0)?(hm+"mo"):"—"]).concat(tail);
+          if(kind==="ground"){ const ev=num(p.salePrice)?money(p.salePrice):(num(p.rent)?money(p.rent)+"/mo":(num(p.refiAmount)?money(p.refiAmount):"—")); return common.concat([ev,fmtDate(exitDate(p))||"—",(hm!=null&&hm>=0)?(hm+"mo"):"—"]).concat(tail); }
           return common.concat([num(p.rent)?money(p.rent):"—",fmtDate(p.rentDate)||"—",num(p.refiAmount)?money(p.refiAmount):"—"]).concat(tail);
         });
         if(!list.length) body.push(["—","No "+title.toLowerCase()+" deals entered.","","","","","","","","",""]);
@@ -630,6 +687,8 @@ const TR=(function(){
       section("flip","Fix & Flip experience");
       if(y>H-120){ doc.addPage(); y=96; }
       section("hold","Fix & Hold / Rental experience");
+      if(y>H-120){ doc.addPage(); y=96; }
+      section("ground","Ground-Up Construction experience");
 
       // footer compliance on last page
       doc.setFont("helvetica","normal"); doc.setFontSize(7); doc.setTextColor(120,128,134);
