@@ -1,5 +1,5 @@
 -- ============================================================================
--- 516_draw_attachment_source.sql — WHERE a draw attachment came from
+-- 517_draw_attachment_source.sql — WHERE a draw attachment came from
 -- (owner-directed 2026-08-10: a PDF the borrower EMAILED to Sitewire as proof for
 -- draw 1 — "CCF_000016.pdf, From inbound email" — sat in Sitewire's Documents tab
 -- and never reached the PILOT draw, so it never reached the investor either.

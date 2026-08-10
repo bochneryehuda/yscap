@@ -43,6 +43,7 @@
  */
 
 const TRK = require('../track-record-key');
+const ADDR = require('../address');
 const entityLib = require('../track-record-entity');
 const lookups = require('../elementix/lookups');
 const MATCH = require('./match');
@@ -1137,7 +1138,15 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
         origin, entered_by_kind, entered_at, notes, seller_name)
      VALUES ($1,$2::uuid,$3::jsonb,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'public_records',$16,now(),$15,$17)
      RETURNING id, is_verified, verification_status`,
-    [c.borrower_id, llcId, JSON.stringify(c.property_address || null),
+    /* THE CANONICAL OBJECT SHAPE, never a bare string. `candidate.property_address`
+       arrives as the one-line STRING elementix shapes.js flattens the deed's
+       `addresses[{addressFull}]` into, but every track-record reader (the tool
+       bridge `propFromRow`, the to-do `addressOf`) expects `{ line1, city, state,
+       zip, oneLine }` — so an imported line rendered "(no address)". The tool /
+       ClickUp / Encompass writers already store the object; this is the one door
+       that did not. address_key is still keyed off the original value (identical
+       text, so the same key) and left in step with the address. */
+    [c.borrower_id, llcId, JSON.stringify(ADDR.parseToAddressObject(c.property_address)),
       TRK.trackRecordKey(c.property_address) || '', effectiveDealType,
       c.purchase_price, c.purchase_date, c.sale_price, c.sale_date, c.entity_name,
       exitFill.rent_amount ?? c.rent_amount ?? null, exitFill.rent_date ?? c.rent_date ?? null,
@@ -1233,7 +1242,7 @@ async function matchExisting(db, c, { staffId, note, confirmReopen }) {
       i += 1;
       // Only ever where OURS IS STILL BLANK — re-checked inside the statement,
       // so a value typed between the read and the write is never clobbered.
-      if (f === 'property_address') { sets.push(`property_address = CASE WHEN property_address IS NULL THEN $${i}::jsonb ELSE property_address END`); vals.push(JSON.stringify(v)); }
+      if (f === 'property_address') { sets.push(`property_address = CASE WHEN property_address IS NULL THEN $${i}::jsonb ELSE property_address END`); vals.push(JSON.stringify(ADDR.parseToAddressObject(v))); }
       else { sets.push(`${f} = COALESCE(${f}, $${i})`); vals.push(v); }
     }
     sets.push('updated_at = now()');

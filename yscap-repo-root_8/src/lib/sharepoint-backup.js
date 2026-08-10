@@ -568,7 +568,11 @@ const ENRICH_SELECT = `
            l.id                                                                AS llc_resolved_id,
            l.llc_name,
            COALESCE(tr.property_address->>'oneLine',
-                    tr.property_address->>'street', tr.property_address->>'line1') AS tr_address,
+                    tr.property_address->>'street', tr.property_address->>'line1',
+                    -- A legacy bare one-line string (public-records import before the shape
+                    -- heal) names the REO folder by the address, not "Project <id>".
+                    CASE WHEN jsonb_typeof(tr.property_address) = 'string'
+                         THEN tr.property_address #>> '{}' END) AS tr_address,
            a.ys_loan_number,
            COALESCE(a.property_address->>'oneLine',
                     NULLIF(TRIM(CONCAT_WS(', ',

@@ -94,6 +94,33 @@ function parseAddress(raw) {
   return out;
 }
 
+/**
+ * Coerce a track-record address VALUE into the canonical stored object shape
+ * `{ line1, unit, city, state, zip, oneLine }` that every reader expects
+ * (the tool bridge `propFromRow` reads `.street||.line1||.oneLine`; the to-do
+ * `addressOf` and `trackRecordAddressText` read `.oneLine` first).
+ *
+ * The public-records importer feeds this a bare one-line STRING (elementix
+ * `shapes.js` flattens `addresses[{addressFull}]` to a one-liner), which is why
+ * an imported line showed "(no address)": a JS string has no `.line1`/`.city`.
+ * A string is PARSED into parts, and its verbatim text is kept as `oneLine` —
+ * the authoritative display form, so display fidelity never depends on the
+ * parse. An object is returned unchanged (the tool / ClickUp / Encompass writers
+ * already produce the canonical shape). Null/blank → null.
+ */
+function parseToAddressObject(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'object') return Array.isArray(v) ? null : v;
+  const s = String(v).trim();
+  if (!s) return null;
+  const p = parseAddress(s);
+  return {
+    line1: p.line1 || '', unit: p.unit || '',
+    city: p.city || '', state: p.state || '', zip: p.zip || '',
+    oneLine: s,
+  };
+}
+
 /** Normalize a partial address object (autocomplete-sourced) — extract a unit
  *  embedded in line1 and 2-letter the state. */
 function normalizeAddress(a) {
@@ -783,7 +810,7 @@ function addressCompareKey(v) {
 }
 
 module.exports = {
-  parseAddress, normalizeAddress, splitUnit, stateAbbr, stateCompareKey,
+  parseAddress, parseToAddressObject, normalizeAddress, splitUnit, stateAbbr, stateCompareKey,
   parseAddressParts, sameAddress, addressCompareKey, addressTextOf,
   abbreviateStreet, normalizeCityName, preferBorough, osmComponentsToAddress,
   canonicalOneLine, withoutUnit, withUnit, looksLikeProviderLongForm, parseProviderLongForm,

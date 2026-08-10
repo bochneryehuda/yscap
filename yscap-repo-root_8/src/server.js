@@ -963,6 +963,19 @@ if (require.main === module) {
         require('./lib/address-heal').healProviderLongAddressesOnce()
           .then((r) => r && r.fixed && console.log('[boot] address format repair:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] address format repair failed:', e.message));
+        // Previous-files fix: a public-records track-record import stored its address
+        // as a bare one-line STRING (elementix shapes.js flattens the deed's
+        // addresses[{addressFull}]), so the line showed "(no address)" — every reader
+        // expects the canonical { line1, city, state, zip, oneLine } object. The
+        // importer is fixed at the source; this reshapes the rows it already wrote. It
+        // runs concurrently with the heals around it (all fire-and-forget) — order does
+        // not matter, because a bare string and its reshaped object key IDENTICALLY, so
+        // the dedupe heal reads the same key either way. db/516 makes the reshape
+        // non-material to the verify guard, so a verified line stays verified. Bounded,
+        // resumable, idempotent; never blocks boot.
+        require('./lib/track-record-address-shape').healTrackRecordAddressShapeOnce()
+          .then((r) => r && r.fixed && console.log('[boot] track-record address shape repair:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] track-record address shape repair failed:', e.message));
         // Previous-files fix (owner-reported 2026-08-02: "one track record has twice
         // the same address"). Four writers each invented their own dedupe key, so the
         // same property arriving from two sources became two lines. The CAUSE is fixed

@@ -32,7 +32,7 @@
  *    hop, size-capped streaming read).
  *  - NEVER TWICE. Each Sitewire document has a durable identity — draw + upload time + the
  *    filename off its redirect URL — recorded as `draw_attachments.source_key` (unique per
- *    file, db/516). A document whose BYTES are already on the loan file under any name
+ *    file, db/517). A document whose BYTES are already on the loan file under any name
  *    (sha256) is recorded as done without filing a second copy.
  *  - A REFUSAL IS REMEMBERED. A document Sitewire holds that PILOT will not file (a file type
  *    a loan file doesn't carry, bytes that never download) is written into the link's

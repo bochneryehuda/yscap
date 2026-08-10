@@ -65,6 +65,9 @@ function bucketOf(dealType) {
 }
 
 function addrLine(pa) {
+  // A row stored as a bare one-line string (public-records import before the
+  // shape fix) reads as the address, not "—".
+  if (typeof pa === 'string') return pa.trim() || '—';
   const a = pa || {};
   return a.oneLine
     || [a.line1 || a.street || a.address, a.city, a.state, a.zip].filter(Boolean).join(', ')
