@@ -259,6 +259,52 @@ const foundReply = (name) => {
       '…and it is the ONLY writer — the research module deliberately does not record a second time');
   }
 
+  console.log('\n8. A NOT-verified entity link is NO DATA, never a REJECTION (the on-screen bug)');
+  {
+    /* The exact property the owner screenshotted: "They owned it → the borrower
+       doesn't control the company" showing up while NOBODY had reviewed the
+       ownership yet. `ownership_verified` is boolean NOT NULL DEFAULT false, so
+       `false` means "not verified" (never-reviewed OR revoked), NOT an active
+       statement that the borrower does not control the company. It must read as
+       no-data (null), never as 'rejected' — which checks.js would turn into a
+       CONTRADICTED property. */
+    const cv = VR._internals.controlVerdictFor;
+
+    ok(await cv(db, llcId, borrowerId) === 'confirmed',
+      'a human-verified entity link reads as confirmed control');
+
+    await db.query(
+      `UPDATE llc_borrowers SET ownership_verified=false WHERE llc_id=$1 AND borrower_id=$2`, [llcId, borrowerId]);
+    const notVerified = await cv(db, llcId, borrowerId);
+    ok(notVerified === null,
+      'a NOT-verified link is null (no Check-A data) — NEVER \'rejected\', which would wrongly contradict the property');
+    ok(notVerified !== 'rejected',
+      '…the boolean cannot express a genuine rejection, so it must never produce one');
+
+    const freshLlc = (await db.query(
+      `INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,'Unlinked Holdings LLC') RETURNING id`, [borrowerId])).rows[0].id;
+    ok(await cv(db, freshLlc, borrowerId) === null,
+      'no entity-link row at all is also no data, never a rejection');
+    ok(await cv(db, null, borrowerId) === null && await cv(db, llcId, null) === null,
+      'a missing id on either side is no data');
+
+    /* END TO END: with the link unreviewed, the ownership pillar reads NO_DATA —
+       the proved Check B (the company holds the deed) rides along flagged as
+       needing the control check — and NEVER 'contradicted'. */
+    reply = foundReply;
+    await VR.runVerify(trId, { staffId, force: true });
+    const own = (await pillars()).find((x) => x.pillar === 'ownership');
+    ok(own.auto_verdict === 'no_data',
+      'the company holding the deed while the link is unreviewed is NO_DATA — the borrower is never told they don\'t control the company just because nobody reviewed it yet');
+    ok(own.auto_evidence && own.auto_evidence.needsControlCheck === true,
+      '…and NOTHING is lost: the proved Check B is flagged as needing the control check');
+
+    // Restore the verified link so the file ends where it started.
+    await db.query(
+      `UPDATE llc_borrowers SET ownership_verified=true WHERE llc_id=$1 AND borrower_id=$2`, [llcId, borrowerId]);
+    await db.query('DELETE FROM llcs WHERE id=$1', [freshLlc]).catch(() => {});
+  }
+
   await db.query('DELETE FROM elementix_lookup_cache WHERE query_key LIKE $1', [`trv1:${trId}:%`]).catch(() => {});
   await db.query('DELETE FROM elementix_calls WHERE staff_id=$1', [staffId]).catch(() => {});
   await db.query('DELETE FROM track_records WHERE borrower_id=$1', [borrowerId]).catch(() => {});

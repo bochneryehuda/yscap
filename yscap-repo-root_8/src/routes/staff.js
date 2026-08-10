@@ -10284,7 +10284,7 @@ router.put('/track-records/:id', async (req, res) => {
   const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
   if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
-  const bad = trackRecordErrors(b);
+  const bad = trackRecordErrors(b, { isEdit: true });
   if (bad) return res.status(400).json({ error: bad });
   // Same stamp as the create door: whoever last put these figures on the line is
   // recorded, so "who typed this?" is answerable on an edit and not only on a create.
@@ -10310,8 +10310,13 @@ router.put('/track-records/:id', async (req, res) => {
   }
   const names = Object.keys(cols);
   const vals = Object.values(cols);
+  // A blank-address edit keeps the stored address (#29), so `cols` can be empty
+  // (e.g. a notes-only or entity-only edit). Build the SET clause as a list so an
+  // empty column set yields `SET updated_at=now()` rather than a stray comma.
+  const setParts = names.map((n, i) => `${n}=$${i + 2}`);
+  setParts.push('updated_at=now()');
   await db.query(
-    `UPDATE track_records SET ${names.map((n, i) => `${n}=$${i + 2}`).join(', ')}, updated_at=now() WHERE id=$1`,
+    `UPDATE track_records SET ${setParts.join(', ')} WHERE id=$1`,
     [req.params.id, ...vals]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
   await audit(req, 'staff_edit_track_record', 'track_record', req.params.id);
@@ -10433,13 +10438,15 @@ router.get('/borrowers/:id/llcs', async (req, res) => {
   res.json(out);
 });
 
-// SUPER-ADMIN: remove an entity from a borrower profile (owner-directed
-// 2026-08-10 — "clean up ones added by error"). The preview names the
-// consequences so the confirm can show them BEFORE anything is removed; the
-// removal itself snapshots the whole entity into entity_removals, runs in one
-// transaction, and is audited. All the logic + safety lives in
-// src/lib/entity-remove.js. requireRole('super_admin') is the hard gate.
-router.get('/borrowers/:id/llcs/:llcId/removal-preview', requireRole('super_admin'), async (req, res) => {
+// Remove an entity from a borrower profile (owner-directed 2026-08-10 — "clean up
+// ones added by error"). WHO may do it is TIERED by usage inside
+// src/lib/entity-remove.js: an entity on a CLOSED loan or a track record is
+// super-admin-only; an orphan or an in-progress-only entity is open to ANY staffer
+// who can see the borrower. The route therefore gates on borrower access only and
+// hands the actor's role to the module, which enforces the tier itself. The preview
+// names the consequences + the required level so the screen shows the right flow.
+router.get('/borrowers/:id/llcs/:llcId/removal-preview', async (req, res) => {
+  if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
   try {
     const preview = await require('../lib/entity-remove').previewRemoval(req.params.id, req.params.llcId);
     res.json(preview);
@@ -10448,19 +10455,23 @@ router.get('/borrowers/:id/llcs/:llcId/removal-preview', requireRole('super_admi
   }
 });
 
-router.post('/borrowers/:id/llcs/:llcId/remove', requireRole('super_admin'), async (req, res) => {
+router.post('/borrowers/:id/llcs/:llcId/remove', async (req, res) => {
+  if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
   const reason = (req.body && req.body.reason) || '';
   try {
     const out = await require('../lib/entity-remove').removeEntity({
-      borrowerId: req.params.id, llcId: req.params.llcId, actorId: req.actor.id, reason,
+      borrowerId: req.params.id, llcId: req.params.llcId,
+      actorId: req.actor.id, actorRole: (req.actor && req.actor.role) || null, reason,
     });
     await audit(req, 'entity_removed_from_profile', 'llc', req.params.llcId, {
       borrowerId: req.params.id, action: out.action, entityName: out.entityName,
       transferredTo: out.transferredTo, reason: String(reason).trim().slice(0, 500), affected: out.affected,
     });
-    // A DELETE un-vests every file that vested to the entity — re-derive those
-    // files' conditions so the vesting/LLC condition reopens. Best-effort, after
-    // the removal has committed; it can never fail the action.
+    // A DELETE un-vests every file that vested to the entity. The vesting-entity
+    // condition (rtl_p1_llc) on the IN-PROGRESS files was already reopened inside
+    // the removal's transaction (out.reopenedAppIds); here we also re-derive each
+    // affected file's RULE-driven conditions so anything that depended on the
+    // entity settles too. Best-effort, after the commit; it can never fail the action.
     for (const appId of out.affectedAppIds || []) {
       try { await conditionEngine.evaluateApplication(appId); } catch (_) {}
     }
@@ -16151,14 +16162,18 @@ async function canSeeDocument(req, doc) {
     return !!r.rows[0];
   }
   if (doc.borrower_id) {
-    // Only borrower/llc-scoped documents (no application_id) use the
-    // borrower-wide fallback.
-    const r = await db.query(
-      `SELECT 1 FROM applications a WHERE a.borrower_id=$1 AND a.deleted_at IS NULL
-          AND ${VISIBLE_OFFICERS_SQL('a', '$2')}
-        LIMIT 1`,
-      [doc.borrower_id, req.actor.id]);
-    if (r.rows[0]) return true;
+    // A borrower/llc-scoped document (no application_id) is authorized by whether
+    // the actor may see that PERSON — so it delegates to canSeeBorrowerId, the ONE
+    // borrower-visibility gate (VISIBLE_BORROWER_SQL + the seesAllBorrowers
+    // shortcut), and can never drift from "may I open this borrower's profile?".
+    // The old query re-inlined a NARROWER scope — a file whose PRIMARY borrower is
+    // this person and which the staffer can see — so it 403'd (a) a staffer
+    // assigned only to a file where this person is the CO-borrower, and (b) the
+    // officer who OWNS the profile (primary_officer_id / borrower_officers) with no
+    // matching file — the ClickUp-sourced client with only non-RTL business. Those
+    // are exactly the people who should be able to open the document; a re-inlined
+    // copy is how a scope loses a branch (see VISIBLE_BORROWER_SQL's own note).
+    if (await canSeeBorrowerId(req, doc.borrower_id)) return true;
   }
   if (doc.llc_id) {
     // The file's own VESTING ENTITY (audit 2026-07-26). PILOT now reads the entity's operating
@@ -16180,6 +16195,9 @@ async function canSeeDocument(req, doc) {
   }
   return false;
 }
+// Exported so the document-authorization scope can be tested directly against a
+// real database, the way routes/underwriting exposes fileDocById.
+router.canSeeDocument = canSeeDocument;
 
 // ── THE DOCUMENT DOSSIER ────────────────────────────────────────────────────
 // Everything the system knows about ONE document: where it landed, why it was

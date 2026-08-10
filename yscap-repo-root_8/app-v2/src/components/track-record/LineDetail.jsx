@@ -278,10 +278,6 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
     setBusy('edit');
     try {
       const body = {
-        // Required by the door on every save; the raw stored object unless the
-        // user typed a new address (never degrade the structured line to a bare
-        // one-line for an edit that isn't about the address).
-        propertyAddress: e.addressText.trim() ? { oneLine: e.addressText.trim() } : (detail.line.propertyAddressRaw || { oneLine: detail.line.address }),
         dealType: e.dealType,
         ownedPersonally: !!e.ownedPersonally,
         entityName: e.ownedPersonally ? '' : e.entityName,
@@ -291,6 +287,11 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
         rentAmount: e.rentAmount, rentDate: e.rentDate,
         refiAmount: e.refiAmount, refiDate: e.refiDate,
       };
+      // THE ADDRESS IS OMITTED UNLESS THE USER TYPED A NEW ONE. A blank field
+      // means "keep the stored address" (#29) — the PUT door preserves it, so we
+      // never re-send (or have to reconstruct from the loaded line) an address the
+      // edit isn't changing.
+      if (e.addressText.trim()) body.propertyAddress = { oneLine: e.addressText.trim() };
       await api.staffUpdateTrackRecord(trackRecordId, body);
       flash(true, 'Saved. Editing a figure re-opens the review — verify it again when you’re ready.');
       setEditing(null); changed();

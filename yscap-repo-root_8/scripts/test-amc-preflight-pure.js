@@ -29,6 +29,10 @@ ok(preflight.mask('') === null && preflight.mask(null) === null, 'empty and null
 ok(preflight.environmentOf('https://api-uat.corelogic.com/x') === 'UAT', 'api-uat host reads as UAT');
 ok(preflight.environmentOf('https://uat1.globalgateway.corelogic.com/x') === 'UAT', 'uat1 host reads as UAT');
 ok(preflight.environmentOf('https://globalgateway.corelogic.com/x') === 'PRODUCTION', 'the bare gateway host reads as PRODUCTION');
+// Cotality is CoreLogic's new name (the token host moved there, vendor-directed 2026-08)
+// — both domains must read the same way, or the mixed-environment warning goes blind.
+ok(preflight.environmentOf('https://api-uat.cotality.com/order-gateway-oauth2/token') === 'UAT', 'the new cotality UAT token host reads as UAT');
+ok(preflight.environmentOf('https://api-prod.cotality.com/x') === 'PRODUCTION', 'a non-UAT cotality host reads as PRODUCTION');
 ok(preflight.environmentOf('') === 'unset', 'an unset url reads as unset');
 
 // ---- inventory --------------------------------------------------------------

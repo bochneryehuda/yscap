@@ -2926,7 +2926,8 @@ router.get('/track-records', async (req, res) => {
             t.rent_amount, t.rent_date, t.refi_amount, t.refi_date, t.current_value, t.notes,
             t.is_verified, t.docs_status, t.owned_personally, t.created_at, t.updated_at,
             COALESCE(t.entity_name, l.llc_name) AS entity_name,
-            (SELECT count(*)::int FROM documents d WHERE d.track_record_id=t.id) AS doc_count,
+            (SELECT count(*)::int FROM documents d
+              WHERE d.track_record_id=t.id AND d.visibility='borrower' AND d.is_current) AS doc_count,
             (SELECT COALESCE(json_agg(json_build_object(
                     'id', d.id, 'filename', d.filename, 'review_status', d.review_status,
                     'created_at', d.created_at) ORDER BY d.created_at), '[]'::json)
@@ -2967,9 +2968,21 @@ router.get('/track-records', async (req, res) => {
 // recent exit, in track-record.js qualifies()) — an incomplete row saves fine, it
 // just doesn't count yet. `trackRecordErrors` keeps its name (imported elsewhere)
 // but is now the minimal save gate.
-function trackRecordErrors(b) {
-  const addressText = b.propertyAddress && (b.propertyAddress.oneLine || b.propertyAddress.street || b.propertyAddress.line1);
-  if (!addressText) return 'property address is required';
+// The one reading of "does this body carry a real property address" — shared by
+// the save gate below and the sent-only guard, so the two can never disagree
+// about what counts as a blank address.
+function trackRecordAddressText(b) {
+  const a = b && b.propertyAddress;
+  return !!(a && (a.oneLine || a.street || a.line1));
+}
+function trackRecordErrors(b, opts) {
+  // The address is the line's IDENTITY, so it is required to CREATE a line. On an
+  // EDIT a blank/absent address means "keep the previous address" (owner-directed
+  // #29: "leave the address blank to keep the previous address") — the line
+  // already has one and `trackRecordSentOnly` preserves it — so an edit is never
+  // blocked for want of an address it is not changing.
+  if (opts && opts.isEdit) return null;
+  if (!trackRecordAddressText(b)) return 'property address is required';
   return null;
 }
 // What this entry still needs to be COMPLETE (count toward experience). Returned
@@ -3065,9 +3078,13 @@ function trackRecordSentOnly(cols, b) {
     // not restated — the flag is the statement about the entity.
     if (b[key] === undefined && !(col === 'entity_name' && b.ownedPersonally)) delete out[col];
   }
-  // The dedupe key follows the address: only a request that SPOKE about the
-  // address may rewrite it (an absent address would have nulled the key too).
-  if (b.propertyAddress === undefined) delete out.address_key;
+  /* THE ADDRESS IS THE LINE'S IDENTITY AND AN EDIT CAN NEVER CLEAR IT (#29,
+     owner-directed). A blank OR absent address on a PUT means "keep the previous
+     address", so drop the column AND its dedupe key unless the request carried a
+     REAL address to change it to — otherwise an edit that leaves the address
+     blank to keep it would overwrite the stored address (and its key) with a
+     blank. A genuine address change (real text) still rewrites both. */
+  if (!trackRecordAddressText(b)) { delete out.property_address; delete out.address_key; }
   /* THE REVIEW RESET BELONGS TO db/485, NOT TO THIS ROUTE. The entered stamp
      (`trackRecordEnteredCols`) force-writes is_verified=false + 'pending' —
      right on the CREATE doors (entering a line is pending review, and their
@@ -3207,21 +3224,29 @@ router.put('/track-records/:id', async (req, res) => {
     const l = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]);
     if (!l.rows[0]) return res.status(404).json({ error: 'llc not found' });
   }
-  const bad = trackRecordErrors(b);
+  const bad = trackRecordErrors(b, { isEdit: true });
   if (bad) return res.status(400).json({ error: bad });
   const cols = trackRecordSentOnly({ ...trackRecordCols(b), ...trackRecordEnteredCols('borrower') }, b);
-  const names = Object.keys(cols);
-  const vals = Object.values(cols);
-  /* llc_id only moves when the request SPOKE about it — `b.llcId || null` used
-     to clear the entity link on any body that simply omitted the field. */
-  const llcSet = (b.llcId !== undefined || b.ownedPersonally)
-    ? 'llc_id=$3, ' : '';
-  const llcVals = llcSet ? [b.ownedPersonally ? null : (b.llcId || null)] : [];
-  const off = 3 + llcVals.length;
+  /* Build the SET clause incrementally so it stays valid however few columns the
+     edit touched. Now that a blank-address edit keeps the stored address (#29),
+     `cols` can be empty — an entity-only edit, or a blank-address save that
+     changed nothing else — and the old positional `$off` scheme would emit a
+     stray comma (`SET , updated_at=now()`). llc_id only moves when the request
+     SPOKE about it — a body that simply omits the field must not clear it. */
+  const params = [req.params.id, me(req)];
+  const setParts = [];
+  if (b.llcId !== undefined || b.ownedPersonally) {
+    params.push(b.ownedPersonally ? null : (b.llcId || null));
+    setParts.push(`llc_id=$${params.length}`);
+  }
+  for (const [name, val] of Object.entries(cols)) {
+    params.push(val);
+    setParts.push(`${name}=$${params.length}`);
+  }
+  setParts.push('updated_at=now()');
   await db.query(
-    `UPDATE track_records SET ${llcSet}${names.map((n, i) => `${n}=$${i + off}`).join(', ')}, updated_at=now()
-      WHERE id=$1 AND borrower_id=$2`,
-    [req.params.id, me(req), ...llcVals, ...vals]);
+    `UPDATE track_records SET ${setParts.join(', ')} WHERE id=$1 AND borrower_id=$2`,
+    params);
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
   await audit(req, 'edit_track_record', 'track_record', req.params.id, { address: b.propertyAddress || null, dealType: b.dealType || null });
   require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});

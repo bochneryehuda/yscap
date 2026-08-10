@@ -79,7 +79,9 @@ function environmentOf(url) {
   const u = String(url || '').toLowerCase();
   if (!u) return 'unset';
   if (/\buat\b|-uat|uat\d/.test(u)) return 'UAT';
-  if (/corelogic\.com/.test(u)) return 'PRODUCTION';
+  // cotality.com is CoreLogic's new name (rebrand, 2026) — both domains serve the
+  // same gateway, so a non-UAT host on either one reads as PRODUCTION.
+  if (/corelogic\.com|cotality\.com/.test(u)) return 'PRODUCTION';
   return 'custom';
 }
 
