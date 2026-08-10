@@ -39,6 +39,7 @@
  * Nothing here is borrower-facing and nothing touches a frozen pricing number.
  */
 const db = require('../db');
+const { jsonbText } = require('./fields');
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 
@@ -97,8 +98,11 @@ async function previewRemoval(borrowerId, llcId, client = db) {
       live: !TERMINAL_STATUSES.has(String(a.status || '')),
     }));
 
+  // Count EVERY document — a DELETE cascades all of them (current AND superseded
+  // versions), so the "will be removed" warning must not undercount by hiding
+  // the old versions (NIT-1).
   const docCount = Number((await client.query(
-    `SELECT count(*)::int n FROM documents WHERE llc_id=$1 AND COALESCE(is_current,true)=true`, [llcId])).rows[0].n);
+    `SELECT count(*)::int n FROM documents WHERE llc_id=$1`, [llcId])).rows[0].n);
   const trackRecords = Number((await client.query(
     `SELECT count(*)::int n FROM track_records WHERE llc_id=$1`, [llcId])).rows[0].n);
 
@@ -175,12 +179,25 @@ async function removeEntity({ borrowerId, llcId, actorId = null, reason }) {
     const trackRecordRows = (await client.query(
       `SELECT id, property_address FROM track_records WHERE llc_id=$1`, [llcId])).rows;
 
+    // The SET-NULL back-references — rows that POINT AT this entity from elsewhere
+    // and get unhooked by the delete (as opposed to the entity's own children,
+    // which the snapshot already holds). Recorded so a restore from the snapshot
+    // can rewire them; each column verified to exist (LOW-2). Cheap and rare.
+    const idsOf = async (sql, col) => (await client.query(sql, [llcId])).rows.map((r) => r[col]);
+    const backReferences = {
+      trackRecordPillarsSatisfiedBy: await idsOf(`SELECT id FROM track_record_pillars WHERE satisfied_by_llc_id=$1`, 'id'),
+      layeredMemberRows: await idsOf(`SELECT id FROM llc_members WHERE owner_llc_id=$1`, 'id'),
+      candidatesProposed: await idsOf(`SELECT id FROM track_record_candidates WHERE proposed_llc_id=$1`, 'id'),
+      clickupTaskIndex: await idsOf(`SELECT task_id FROM clickup_task_index WHERE llc_id=$1`, 'task_id'),
+    };
+
     const affected = {
       vestingApplications: vestingApps.map((a) => ({ id: a.id, loanNumber: a.ys_loan_number || null, status: a.status })),
       trackRecords: trackRecordRows.map((t) => ({ id: t.id })),
       documentCount: snapshot.documents.length,
       slotCount: snapshot.slots.length,
       memberCount: snapshot.members.length,
+      backReferences,
     };
 
     let action;
@@ -209,7 +226,7 @@ async function removeEntity({ borrowerId, llcId, actorId = null, reason }) {
          (llc_id, borrower_id, entity_name, action, transferred_to, reason, entity_snapshot, affected, removed_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9)`,
       [llcId, borrowerId, entity.llc_name || null, action, transferredTo, why,
-        JSON.stringify(snapshot), JSON.stringify(affected), actorId]);
+        jsonbText(snapshot), jsonbText(affected), actorId]);
 
     await client.query('COMMIT');
     return { ok: true, action, entityName: entity.llc_name || null, transferredTo, affected, affectedAppIds };

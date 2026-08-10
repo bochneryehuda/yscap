@@ -83,6 +83,10 @@ function call(server, method, p, token, body) {
     const doc1 = (await db.query(
       `INSERT INTO documents (borrower_id, llc_id, filename, storage_provider, storage_ref, uploaded_by_kind, is_current)
        VALUES ($1,$2,'oa.pdf','local','er-ref-1',$3,true) RETURNING id`, [A, e1, 'staff'])).rows[0].id;
+    // A SET-NULL back-reference (a row that POINTS AT e1 from another table) — must
+    // be captured in the snapshot for recovery AND unhooked by the delete (LOW-2).
+    const tixKey = `er-tix-${sfx}`;
+    await db.query(`INSERT INTO clickup_task_index (task_id, llc_id) VALUES ($1,$2)`, [tixKey, e1]);
 
     // ---- E2: primary A, co-owned by B (llc_borrowers) → transfer case.
     const e2 = await mkEntity(A, `Beta Holdings ${sfx} LLC`, false);
@@ -124,6 +128,11 @@ function call(server, method, p, token, body) {
     ok(snap && snap.action === 'deleted' && snap.reason.length > 0, 'a snapshot row was written with the reason');
     ok(snap && snap.entity_snapshot && snap.entity_snapshot.entity && snap.entity_snapshot.entity.llc_name,
       'the snapshot captured the entity row for recovery');
+    ok(snap && snap.affected && snap.affected.backReferences
+      && (snap.affected.backReferences.clickupTaskIndex || []).includes(tixKey),
+      'the snapshot records the SET-NULL back-references for recovery (LOW-2)');
+    const tixAfter = (await db.query(`SELECT llc_id FROM clickup_task_index WHERE task_id=$1`, [tixKey])).rows[0];
+    ok(tixAfter && tixAfter.llc_id === null, 'the back-referencing row was unhooked (llc_id SET NULL), not deleted');
     ok((await db.query(
       `SELECT 1 FROM audit_log WHERE action='entity_removed_from_profile' AND entity_id=$1`, [e1])).rowCount === 1,
       'the removal was audited');
@@ -146,6 +155,7 @@ function call(server, method, p, token, body) {
     fail++; console.log('FAIL threw', e && e.stack || e);
   } finally {
     // Cleanup: entities cascade from borrowers; entity_removals has no FK in, so clear it explicitly.
+    await db.query(`DELETE FROM clickup_task_index WHERE task_id LIKE $1`, [`er-tix-%${sfx}`]).catch(() => {});
     await db.query(`DELETE FROM entity_removals WHERE borrower_id IN (SELECT id FROM borrowers WHERE email LIKE $1)`, [`er-b%-${sfx}@test.local`]).catch(() => {});
     await db.query(`DELETE FROM applications WHERE borrower_id IN (SELECT id FROM borrowers WHERE email LIKE $1)`, [`er-b%-${sfx}@test.local`]).catch(() => {});
     await db.query(`DELETE FROM borrowers WHERE email LIKE $1`, [`er-b%-${sfx}@test.local`]).catch(() => {});
