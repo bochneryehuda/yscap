@@ -292,15 +292,25 @@ const VISIBLE_BORROWER_SQL = (alias, p) =>
   ` AND ${VISIBLE_OFFICERS_SQL('a2', p)}))`;
 
 // An APPLICATION-LESS review row (a borrower-level DOB, a non-materialized task,
-// or an Encompass row — db/328) hangs on a BORROWER and never on a file, and the
-// borrower may have no loan file at all (a DSCR-only client the officer closed
-// with in ClickUp) or the officer may be only a CO-borrower on it. So it follows
-// the BORROWER-visibility gate — VISIBLE_BORROWER_SQL: owner / delegate /
-// borrower_officers / co-borrower files, the #15 gate — NOT the file-officer gate
-// on the borrower's own applications, which hid the card from the one person who
-// can answer it (owner-directed #15 class; flagged by the findings-bundle audit).
-// This is the ONE scope for every application-less review row and it subsumes the
-// old Encompass-only carve-out.
+// or an Encompass row that never linked to a file — db/328) hangs on a BORROWER,
+// not a file, and the borrower may have no loan file at all (a DSCR-only client
+// the officer closed with in ClickUp) or the officer may be only a CO-borrower on
+// it. So it follows the BORROWER-visibility gate — VISIBLE_BORROWER_SQL: owner /
+// delegate / borrower_officers / co-borrower files, the #15 gate — NOT the
+// file-officer gate on the borrower's own applications, which hid the card from
+// the one person who can answer it (owner-directed #15 class; flagged by the
+// findings-bundle audit).
+//
+// The discriminator is q.application_id, NOT source. An Encompass row that DID
+// link to a file (encompass_loan_snapshot.application_id, set in reader.js and
+// carried through enrich.js) has a non-null q.application_id, so it falls OUT of
+// this borrower arm and follows the FILE arm (VISIBLE_OFFICERS_SQL) like any other
+// application-tied row. That is deliberate: the resolve gate (canSeeReviewRow)
+// likewise routes a file-tied row through VISIBLE_OFFICERS_SQL, so visibility
+// matches resolvability on both kinds. This subsumes the old Encompass-only
+// carve-out, which additionally showed a file-linked Encompass row to a
+// borrower-visible-but-not-file officer who then got 403 on resolve — a
+// see-but-can't-resolve drift this removes.
 const REVIEW_BORROWER_SCOPE = (p) =>
   ` OR (q.application_id IS NULL AND q.borrower_id IS NOT NULL AND EXISTS (
         SELECT 1 FROM borrowers eb WHERE eb.id = q.borrower_id AND ${VISIBLE_BORROWER_SQL('eb', p)}))`;

@@ -4,13 +4,22 @@
  * the findings-bundle audit).
  *
  * An APPLICATION-LESS review row (a borrower-level DOB, a non-materialized task,
- * an Encompass row) hangs on a BORROWER, not a file. The old scope — the list,
- * the count, and every resolve door — only matched a borrower who had a VISIBLE
- * FILE, so it hid the row from, and 403'd, the very officer who can answer it:
- * one who OWNS the borrower's profile but has no RTL file for them (a DSCR-only
- * client), or is only a CO-borrower on the file. All four paths now use the #15
- * borrower gate (VISIBLE_BORROWER_SQL), so a row an officer can SEE is one they
- * can RESOLVE, and an unrelated officer still sees/resolves neither.
+ * an Encompass row that never linked to a file) hangs on a BORROWER, not a file.
+ * The old scope — the list, the count, and every resolve door — only matched a
+ * borrower who had a VISIBLE FILE, so it hid the row from, and 403'd, the very
+ * officer who can answer it: one who OWNS the borrower's profile but has no RTL
+ * file for them (a DSCR-only client), or is only a CO-borrower on the file. All
+ * four paths now use the #15 borrower gate (VISIBLE_BORROWER_SQL), so a row an
+ * officer can SEE is one they can RESOLVE, and an unrelated officer still
+ * sees/resolves neither.
+ *
+ * The discriminator is q.application_id, NOT source: a file-LINKED Encompass row
+ * (encompass_loan_snapshot.application_id, carried through enrich.js) carries an
+ * application_id and follows the FILE gate (VISIBLE_OFFICERS_SQL) on both the list
+ * and the resolve door — so the profile owner, who is not on that file, neither
+ * sees nor resolves it, while the file's own officer does both (section 5). This
+ * is the deliberate narrowing vs the old Encompass-only carve-out, which showed
+ * such a row to a borrower-visible officer who then 403'd on resolve.
  *
  * Each "owner can see/resolve the application-less row" assertion BITES on the
  * pre-fix code (it was a 403 / an empty list).
@@ -136,6 +145,35 @@ const ok = (cond, what) => { if (cond) { pass++; console.log(`  ok  ${what}`); }
     ok(!(await listHasRow(stranger.tok, id)), 'an unrelated officer still does not');
     const r = await call(owner.tok, 'POST', `/sync-reviews/${id}/reject`);
     ok(r.status === 200, `the profile owner resolves the Encompass row (got ${r.status})`);
+  }
+
+  console.log('\n5. A FILE-LINKED Encompass row follows the FILE, not the borrower (the narrowing)');
+  {
+    // An Encompass row CAN carry a linked application_id (reader.js sets
+    // encompass_loan_snapshot.application_id; enrich.js carries it into queueReview).
+    // Such a row is application-TIED, so REVIEW_BORROWER_SCOPE (which gates on
+    // application_id IS NULL) does NOT match it — it follows VISIBLE_OFFICERS_SQL
+    // (the file) on the list AND canSeeReviewRow. So the FILE officer sees + resolves
+    // it, and the profile owner — who owns the borrower but is not on THIS file —
+    // neither sees nor resolves (visibility matches resolvability). This is the
+    // deliberate narrowing vs the old Encompass-only carve-out, which showed the row
+    // to the profile owner who then 403'd on resolve.
+    const fileLo = await mkStaff('File LO', 'loan_officer');   // the officer on the linked file
+    const linkedApp = (await db.query(
+      `INSERT INTO applications (borrower_id, loan_officer_id, status) VALUES ($1,$2,'file_intake') RETURNING id`,
+      [borrower, fileLo.id])).rows[0].id;
+    const id = (await db.query(
+      `INSERT INTO sync_review_queue (application_id, borrower_id, task_id, source, direction, field_key, reason, status, clickup_value, portal_value)
+       VALUES ($1,$2,$3,'encompass','inbound','current_address','addr_test','open','A St','B Ave') RETURNING id`,
+      [linkedApp, borrower, `encompass:${tag}-linked`])).rows[0].id;
+    ok(await listHasRow(fileLo.tok, id), 'the file officer sees the file-linked Encompass row');
+    ok(!(await listHasRow(owner.tok, id)), 'the profile owner (not on this file) does NOT see it — the narrowing');
+    const fc = await (await call(fileLo.tok, 'GET', '/sync-reviews/count')).json();
+    ok((fc.open || 0) >= 1, `the file officer's badge counts it (open=${fc.open})`);
+    const orr = await call(owner.tok, 'POST', `/sync-reviews/${id}/reject`);
+    ok(orr.status === 403, `the profile owner is refused resolution (got ${orr.status})`);
+    const fr = await call(fileLo.tok, 'POST', `/sync-reviews/${id}/reject`);
+    ok(fr.status === 200, `the file officer resolves it (got ${fr.status})`);
   }
 
   server.close();
