@@ -1,5 +1,5 @@
 -- ============================================================================
--- 518 — RICH PER-LINE VERIFICATION STATUSES; ONLY "FULLY VERIFIED" COUNTS.
+-- 519 — RICH PER-LINE VERIFICATION STATUSES; ONLY "FULLY VERIFIED" COUNTS.
 --
 -- The owner (2026-08-10, with screenshots): a track-record line should carry a
 -- real review OUTCOME, not just "pending / verified". The set they named:
@@ -38,10 +38,10 @@
 --
 -- ── WHY IT REPLACES db/493's CONSTRAINT IN PLACE (same name) ────────────────
 -- Every numbered migration re-runs on every boot. db/493's block re-adds
--- `track_records_verification_status_check` whenever it is ABSENT, so if db/518
+-- `track_records_verification_status_check` whenever it is ABSENT, so if db/519
 -- dropped it and used a different name, db/493 would re-create the NARROW
--- constraint (and re-scan to VALIDATE it) on every boot, then db/518 would drop
--- it again — pure churn. Instead db/518 REPLACES the same-named constraint with
+-- constraint (and re-scan to VALIDATE it) on every boot, then db/519 would drop
+-- it again — pure churn. Instead db/519 REPLACES the same-named constraint with
 -- the widened set, guarded on the constraint's own definition (does it already
 -- allow 'rejected'?). db/493's existence guard is then satisfied and never
 -- re-adds anything. NOT VALID + a separate VALIDATE avoids a blocking scan; the
@@ -50,7 +50,7 @@
 -- KNOWN, HARMLESS ARTIFACT: db/493's OWN second DO-block counts rows against its
 -- hard-coded four-value list and RAISES a NOTICE once any new-value row exists
 -- ("… carry an unknown verification_status; leaving … NOT VALID"). That NOTICE
--- is now stale — the authority is db/518's widened constraint, which IS valid
+-- is now stale — the authority is db/519's widened constraint, which IS valid
 -- and DOES allow the new values — and it cannot be silenced without editing
 -- db/493 (forbidden). It is a log line only; nothing is left invalid.
 --
@@ -90,7 +90,7 @@ BEGIN
   IF bad = 0 THEN
     ALTER TABLE track_records VALIDATE CONSTRAINT track_records_verification_status_check;
   ELSE
-    RAISE NOTICE 'db/518: % track_records row(s) carry an unknown verification_status; '
+    RAISE NOTICE 'db/519: % track_records row(s) carry an unknown verification_status; '
                  'leaving track_records_verification_status_check NOT VALID. '
                  'Fix the rows, then run: ALTER TABLE track_records VALIDATE CONSTRAINT '
                  'track_records_verification_status_check;', bad;
@@ -100,6 +100,6 @@ END $$;
 COMMENT ON COLUMN track_records.verification_status IS
   'pending | docs | verified | limited | not_verified | unable_docs | unable_mismatch | rejected. '
   'Only ''verified'' (Fully verified) COUNTS toward experience for a NEW review; the legacy '
-  '''limited''/''verified'' back book keeps its is_verified going forward (db/518, no sweep). '
+  '''limited''/''verified'' back book keeps its is_verified going forward (db/519, no sweep). '
   'The authority on whether a line counts is is_verified, which only POST /track-records/:id/verify sets. '
   '''rejected'' is hidden by default in the portal, with a filter to show it.';

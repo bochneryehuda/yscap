@@ -11158,7 +11158,7 @@ router.get('/llcs/:id/track-records', async (req, res) => {
   });
 });
 
-// Verification statuses (db/518, owner-directed 2026-08-10). A line carries a
+// Verification statuses (db/519, owner-directed 2026-08-10). A line carries a
 // real review OUTCOME: pending review, fully verified, not verified, rejected,
 // and two "unable to verify" reasons (waiting on documents / records don't
 // match). ONLY 'verified' (Fully verified) counts toward the experience tier.
@@ -11166,7 +11166,7 @@ router.get('/llcs/:id/track-records', async (req, res) => {
 //                 kept for that path, not offered as a plain review outcome.
 //   · 'limited' — legacy "public records only". It NO LONGER counts for a new
 //                 review; existing 'limited' rows keep their is_verified (the
-//                 change is going-forward only, no back-book sweep — db/518).
+//                 change is going-forward only, no back-book sweep — db/519).
 const TR_STATUSES = ['pending', 'docs', 'verified', 'limited',
   'not_verified', 'unable_docs', 'unable_mismatch', 'rejected'];
 router.post('/track-records/:id/verify', async (req, res) => {

@@ -1,4 +1,4 @@
-/* THE PER-LINE VERIFICATION STATUS MODEL (owner-directed 2026-08-10, #40; db/518).
+/* THE PER-LINE VERIFICATION STATUS MODEL (owner-directed 2026-08-10, #40; db/519).
    ONE definition of what each track-record verification status means, so the
    React Track Record Center (RecordLedger + LineDetail) and the static tool
    bridges (web/(v2/)tools/track-record-portal.js) never label the same status

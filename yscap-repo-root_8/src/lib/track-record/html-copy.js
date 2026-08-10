@@ -40,7 +40,7 @@
    never internal_notes, never a note-buyer name. Everything is HTML-escaped;
    an address is attacker-typed text. */
 
-// Per-line verification statuses (owner-directed 2026-08-10, #40; db/518). Kept
+// Per-line verification statuses (owner-directed 2026-08-10, #40; db/519). Kept
 // in step with the React module + the tool bridges + the verify route — the
 // pure test test-track-record-status-pure asserts they do not drift. 'rejected'
 // never reaches here (it is filtered out of the borrower's saved copy below),

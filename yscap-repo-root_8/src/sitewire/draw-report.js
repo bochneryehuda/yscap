@@ -516,10 +516,15 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
       // line title + economics
       doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor.apply(doc, DARK);
       doc.text(pdfSafe(fit(clean(l.name) || 'Line item', 58)), M + 3, y + 9);
-      const notAppr = l.not_approved_cents != null ? Number(l.not_approved_cents) : Math.max(0, Number(l.requested_cents || 0) - Number(l.approved_cents || 0));
+      // TRI-STATE (db/518): a NULL approved amount means the inspector has not answered this
+      // line — say so, never "Approved $0", which reads as denied. An unanswered line also has
+      // no not-approved figure (requested minus an unknown answer is unknown).
+      const answered = l.approved_cents != null;
+      const notAppr = !answered ? 0
+        : (l.not_approved_cents != null ? Number(l.not_approved_cents) : Math.max(0, Number(l.requested_cents || 0) - Number(l.approved_cents || 0)));
       const econ = borrower
-        ? 'Requested ' + usd(l.requested_cents) + ' · Approved ' + usd(l.approved_cents)
-        : 'Req ' + usd(l.requested_cents) + ' · Appr ' + usd(l.approved_cents);
+        ? 'Requested ' + usd(l.requested_cents) + ' · ' + (answered ? 'Approved ' + usd(l.approved_cents) : 'not yet reviewed')
+        : 'Req ' + usd(l.requested_cents) + ' · ' + (answered ? 'Appr ' + usd(l.approved_cents) : 'not reviewed');
       doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor.apply(doc, GRAY);
       doc.text(pdfSafe(econ), W - M - 3, y + 9, { align: 'right' });
       y += 14;

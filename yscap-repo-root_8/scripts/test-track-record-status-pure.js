@@ -2,7 +2,7 @@
 'use strict';
 /**
  * THE PER-LINE VERIFICATION STATUS MODEL — pure. No database, no network.
- * (owner-directed 2026-08-10, #40; db/518.)
+ * (owner-directed 2026-08-10, #40; db/519.)
  *
  * The one thing that must never drift: what a track-record verification status
  * MEANS. It is defined in four places that a user sees at once —

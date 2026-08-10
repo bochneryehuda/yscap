@@ -570,7 +570,7 @@ async function buildTprExport(appId) {
   const records = (await db.query(
     // A REJECTED line (the team decided it is not the borrower's, a duplicate, or
     // wrong) is not part of their track record and never ships to the investor
-    // (owner-directed 2026-08-10, #40; db/518). Every other status still ships,
+    // (owner-directed 2026-08-10, #40; db/519). Every other status still ships,
     // each with its own review-status stamp.
     `SELECT id, borrower_id, property_address, deal_type, purchase_price, sale_price, rehab_amount,
             purchase_date, sale_date, rent_amount, rent_date, refi_amount, refi_date, current_value,

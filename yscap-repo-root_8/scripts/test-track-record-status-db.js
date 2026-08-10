@@ -1,7 +1,7 @@
 'use strict';
 /**
  * RICH PER-LINE VERIFICATION STATUSES — real HTTP, real Postgres.
- * (owner-directed 2026-08-10, #40; db/518.)
+ * (owner-directed 2026-08-10, #40; db/519.)
  *
  * What must hold, and each was a decision:
  *   §1  Only "Fully verified" (status 'verified') sets is_verified — the real
