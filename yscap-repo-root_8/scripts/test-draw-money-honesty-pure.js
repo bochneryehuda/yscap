@@ -114,7 +114,8 @@ ok('D4 …and no heads-up row', !counted.rows.some((r) => /isn’t counted|isn't
   // "not reviewed" instead of "Approved $0". Source contracts, same style as section F.
   const rec = src('src/sitewire/reconcile.js');
   ok('G1 fetchDrawFindings keeps a missing inspector answer as NULL',
-    /const appr = r\.approved_cents == null \? null : r\.approved_cents;/.test(rec));
+    /const appr = rawAppr == null \? null : rawAppr;/.test(rec)
+    && !/const appr = r\.approved_cents == null \? 0 :/.test(rec));
   ok('G2 …and the persist stores it as NULL, never a denied-$0',
     /ln\.approved_cents == null \? null : ln\.approved_cents/.test(rec));
   ok('G3 an unanswered line has no not-approved figure either',
@@ -134,6 +135,16 @@ ok('D4 …and no heads-up row', !counted.rows.some((r) => /isn’t counted|isn't
   const deliver = src('src/routes/sitewire.js');
   ok('G8 the findings email\'s per-line grid too',
     /not yet reviewed/.test(deliver) && /l\.approved_cents == null \?/.test(deliver));
+  // The dispute lifecycle must not leak the denied-$0 lie either (pre-merge audit of db/518):
+  ok('G9 a rejected dispute on an unreviewed line never emails "kept at $0"',
+    /still awaiting the inspector/.test(deliver)
+    && /l\.dispute_desired_cents != null && l\.approved_cents != null \?/.test(deliver));
+  ok('G10 the decided-dispute preserve arm keeps NULL as NULL, never a stamped 0',
+    /cur\.approved_cents == null \? null : Number\(cur\.approved_cents\)/.test(rec));
+  ok('G11 an omitted per-request amount falls back to the request DETAIL before reading as unanswered',
+    /detail\.approved_cents != null \? detail\.approved_cents : null/.test(rec));
+  ok('G12 retired lines never join the findings email grid',
+    /FROM draw_finding_lines WHERE finding_id=\$1 AND retired_at IS NULL ORDER BY id/.test(deliver));
 
   console.log(`test-draw-money-honesty-pure: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

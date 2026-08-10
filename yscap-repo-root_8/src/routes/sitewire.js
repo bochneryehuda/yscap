@@ -2842,8 +2842,10 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
       // borrower-safe: line names scrubbed here (defense-in-depth) and again in notifyBorrower.
       const scrub = require('../lib/borrower-safe').scrubText;
       const usd = (c) => '$' + (Math.round(Number(c) || 0) / 100).toLocaleString('en-US');
+      // retired_at IS NULL — a soft-retired line (db/242, Sitewire removed the request) must not
+      // join the borrower's email grid or its sums; the public + borrower routes already filter.
       const flines = (await db.query(
-        `SELECT name, requested_cents, approved_cents, not_approved_cents, photo_count, video_count FROM draw_finding_lines WHERE finding_id=$1 ORDER BY id`, [result.id])).rows;
+        `SELECT name, requested_cents, approved_cents, not_approved_cents, photo_count, video_count FROM draw_finding_lines WHERE finding_id=$1 AND retired_at IS NULL ORDER BY id`, [result.id])).rows;
       const totReq = flines.reduce((s, l) => s + (Number(l.requested_cents) || 0), 0);
       const totAppr = flines.reduce((s, l) => s + (Number(l.approved_cents) || 0), 0);
       const photos = flines.reduce((s, l) => s + (Number(l.photo_count) || 0), 0);
@@ -3084,7 +3086,7 @@ router.post('/findings/:findingId/lines/:lineId/decide', requirePermission('mana
       try {
         await orchestrator.park({ appId: f.application_id, dedupe: `disputepush:${line.sitewire_request_id}`,
           reason: `sitewire_dispute_push_failed: could not push the negotiated approved amount ${T.usd(target)} for draw line ${line.sitewire_request_id} back to Sitewire (${pushNote || 'unknown'}). PILOT held the previous approved amount so nothing diverges — retry the decision when Sitewire is back or the push flag is on.`,
-          pilotValue: String(line.approved_cents || 0), sitewireValue: String(target) });
+          pilotValue: line.approved_cents == null ? 'not reviewed' : String(line.approved_cents), sitewireValue: String(target) });
       } catch (_) { /* best-effort park */ }
     }
   }
@@ -3114,8 +3116,10 @@ router.post('/findings/:findingId/lines/:lineId/decide', requirePermission('mana
       // isn't scrubbed by the notify chokepoint) and only say "now $X" when the amount actually changed.
       const meta = decided.map((l) => ({ label: scrub(l.name) || 'Line item',
         value: l.dispute_status === 'approved'
-          ? (l.dispute_desired_cents != null ? `Approved — now ${usd(l.approved_cents)}` : 'Approved on review')
-          : `Reviewed — kept at ${usd(l.approved_cents)}` }));
+          ? (l.dispute_desired_cents != null && l.approved_cents != null ? `Approved — now ${usd(l.approved_cents)}` : 'Approved on review')
+          // TRI-STATE (db/518): a rejected dispute on a line the inspector never answered must not
+          // read "kept at $0" — the old denied-$0 lie on the one email a disputing borrower reads.
+          : (l.approved_cents == null ? 'Reviewed — still awaiting the inspector\'s figure' : `Reviewed — kept at ${usd(l.approved_cents)}`) }));
       // The OUTCOME as a headline, not a paragraph (draw rule 15): the decision moved the draw's
       // approved amount, so the figure band leads with what the borrower is now getting. Read from
       // the rollup AFTER the per-line write above, so it reflects the decision just made.
