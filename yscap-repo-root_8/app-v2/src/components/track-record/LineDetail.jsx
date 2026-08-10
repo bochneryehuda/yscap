@@ -28,7 +28,11 @@ const MUTED = '#4B585C';
 
 const day = (d) => (d ? String(d).slice(0, 10) : null);
 const money = (n) => (n == null || n === '' ? null : '$' + Math.round(Number(n)).toLocaleString('en-US'));
-const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+/* A PARSER, not a formatter — answers `number | null` (the money() formatter
+   below turns that into a string). Named `readNum`, matching the valuation
+   screen's parser, so it never collides with the app-v2 `num` FORMATTER the
+   research screens use (test-research-formatters-pure guards that boundary). */
+const readNum = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
 
 const dealLabel = (t) => {
   const s = String(t || '').toLowerCase();
@@ -51,7 +55,7 @@ const TONE_STYLE = {
 const PILLAR_TITLE = { recency: 'Finished in the last 3 years', ownership: 'They owned it', exit: 'The exit really happened' };
 
 const holdText = (days) => {
-  const n = num(days);
+  const n = readNum(days);
   if (n == null) return null;
   if (n < 45) return `${n} day${n === 1 ? '' : 's'}`;
   const mo = Math.round(n / 30.44);
@@ -322,9 +326,9 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
   if (!detail) return <div className="panel"><p className="muted small" style={{ margin: 0 }}>Loading…</p></div>;
 
   const line = detail.line;
-  const pp = num(line.purchasePrice);
-  const sp = num(line.salePrice);
-  const rehab = num(line.rehabAmount);
+  const pp = readNum(line.purchasePrice);
+  const sp = readNum(line.salePrice);
+  const rehab = readNum(line.rehabAmount);
   const grossSpread = (sp != null && pp != null) ? sp - pp - (rehab || 0) : null;
   const exitFig = line.dealType && /hold|rental/i.test(line.dealType)
     ? (line.rentAmount != null

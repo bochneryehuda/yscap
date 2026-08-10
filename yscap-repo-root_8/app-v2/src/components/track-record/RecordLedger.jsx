@@ -22,7 +22,11 @@ const MUTED = '#4B585C';
 
 const money = (n) => (n == null || n === '' || !Number.isFinite(Number(n)) ? null : '$' + Math.round(Number(n)).toLocaleString('en-US'));
 const day = (d) => (d ? String(d).slice(0, 10) : null);
-const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+/* A PARSER, not a formatter — answers `number | null` (money() below formats
+   it). Named `readNum` (like the valuation screen's parser) so it never
+   collides with the app-v2 `num` FORMATTER the research screens use, which
+   test-research-formatters-pure guards against. */
+const readNum = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
 
 function bucketOf(dealType) {
   const s = String(dealType || '').toLowerCase();
@@ -53,14 +57,14 @@ function reoReason(line, todo) {
    listed (purchase / exit / gross spread) is visible RIGHT AWAY without opening
    the line. Computed from the row we already have — no fetch. */
 function figures(t) {
-  const pp = num(t.purchase_price);
-  const sp = num(t.sale_price);
-  const rehab = num(t.rehab_amount);
+  const pp = readNum(t.purchase_price);
+  const sp = readNum(t.sale_price);
+  const rehab = readNum(t.rehab_amount);
   const bucket = bucketOf(t.deal_type);
   const bits = [];
   if (pp != null) bits.push(`Bought ${money(pp)}${day(t.purchase_date) ? ` · ${day(t.purchase_date)}` : ''}`);
-  if (bucket === 'hold' && num(t.rent_amount) != null) bits.push(`Rents ${money(t.rent_amount)}/mo`);
-  else if (bucket === 'hold' && num(t.refi_amount) != null) bits.push(`Refi ${money(t.refi_amount)}`);
+  if (bucket === 'hold' && readNum(t.rent_amount) != null) bits.push(`Rents ${money(t.rent_amount)}/mo`);
+  else if (bucket === 'hold' && readNum(t.refi_amount) != null) bits.push(`Refi ${money(t.refi_amount)}`);
   else if (sp != null) bits.push(`Sold ${money(sp)}${day(t.sale_date) ? ` · ${day(t.sale_date)}` : ''}`);
   if (sp != null && pp != null) bits.push(`Spread ${money(sp - pp - (rehab || 0))}`);
   return bits.join('  ·  ');
