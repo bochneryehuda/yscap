@@ -157,6 +157,22 @@ const FAKE_HEIC = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftyphe
     ok('E5 another file\'s attachment id 404s (IDOR)', bad.status === 404);
     const badAction = await call(server, 'POST', `/api/sitewire/files/${appId}/draws/${D1}/attachments/${attId}/review`, tok, { action: 'shred' });
     ok('E6 an unknown action is refused', badAction.status === 400);
+
+    // ---- G. the amount doctrine's last gap: numbers change AFTER findings delivery ---------
+    // The inspector's approved amount moves in Sitewire after the results email went out — the
+    // coordinator is told to re-deliver so the borrower stops looking at a stale figure. An
+    // accepted finding (being worked at the number the borrower saw) raises nothing.
+    const reconcile = require('../src/sitewire/reconcile');
+    await db.query(`INSERT INTO draw_findings (application_id, sitewire_draw_id, status, reply_token, delivered_at) VALUES ($1,$2,'delivered',$3,now())`, [appId, D1, crypto.randomBytes(10).toString('hex')]);
+    const drawObj = { sitewire_draw_id: D1, number: 1, status: 'pending', total_approved_cents: 1200000, historical: false };
+    const prevRow = { status: 'pending', status_synced: 'pending', total_approved_cents: 2475000, first_seen_at: new Date() };
+    await reconcile._reactToInboundDraw(appId, drawObj, prevRow, false, '392 Columbia Ave', { platform: 'sitewire', method: 'mobile' });
+    const stale = (await db.query(`SELECT title, body FROM notifications WHERE application_id=$1 AND type='draw_inbound' AND title LIKE '%changed after the findings%'`, [appId])).rows;
+    ok('G1 a delivered finding whose amount moved raises the re-deliver cue', stale.length >= 1 && /old number/.test(stale[0].body) && /\$12,000/.test(stale[0].body));
+    await db.query(`UPDATE draw_findings SET status='accepted' WHERE application_id=$1 AND sitewire_draw_id=$2`, [appId, D1]);
+    await reconcile._reactToInboundDraw(appId, { ...drawObj, total_approved_cents: 1100000 }, { ...prevRow, total_approved_cents: 1200000 }, false, '392 Columbia Ave', { platform: 'sitewire', method: 'mobile' });
+    const stale2 = (await db.query(`SELECT count(*)::int AS n FROM notifications WHERE application_id=$1 AND type='draw_inbound' AND title LIKE '%changed after the findings%'`, [appId])).rows[0].n;
+    ok('G2 an accepted finding raises nothing (it is being worked at the seen number)', stale2 === stale.length);
   } catch (e) {
     fail++; console.log('FAIL (threw):', e && e.stack || e);
   } finally {

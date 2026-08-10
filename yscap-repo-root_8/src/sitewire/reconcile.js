@@ -336,6 +336,31 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
     try { released = (await db.query(
       `SELECT approved_cents FROM draw_disbursements WHERE application_id=$1 AND sitewire_draw_id=$2 AND kind='draw' AND funded_status='released' ORDER BY created_at LIMIT 1`, [appId, drawId])).rows[0] || null; } catch (_) {}
     await recordInboundChange(appId, drawId, 'draw', drawId, released ? 'release_drift' : 'total_approved_cents', String(prev.total_approved_cents || 0), String(newAppr), !!released);
+    // THE AMOUNT DOCTRINE'S LAST GAP (owner-directed 2026-08-10: one amount travels the draw and
+    // keeps updating, and every message must reflect the CURRENT one). If the findings were
+    // already DELIVERED to the borrower and the inspector's number then moves in Sitewire, the
+    // borrower is sitting on a results email quoting a stale figure. PILOT never re-emails the
+    // borrower on its own (re-delivering is the coordinator's judgement — the findings snapshot
+    // itself must be re-pulled first) — it tells the coordinator to re-deliver. Fires once per
+    // change by construction: the mirror upsert above already stored the new amount, so the next
+    // poll sees no difference. Only an UNDECIDED delivery ('delivered') is stale-able — an
+    // accepted/disputed finding is being worked at the number the borrower actually saw.
+    if (!released) {
+      try {
+        const delivered = (await db.query(
+          `SELECT id FROM draw_findings WHERE application_id=$1 AND sitewire_draw_id=$2 AND status='delivered' LIMIT 1`,
+          [appId, drawId])).rows[0];
+        if (delivered) {
+          const usd0 = (c) => require('./transforms').usdExact(c);
+          await notify.notifyAppStaff(appId, {
+            type: 'draw_inbound',
+            title: 'The inspector\'s numbers changed after the findings went out',
+            body: `Draw #${draw.number == null ? '—' : draw.number} on ${addrText}: the approved amount in Sitewire moved from ${usd0(prev.total_approved_cents || 0)} to ${usd0(newAppr)} AFTER the findings were delivered to the borrower — the results they are looking at quote the old number. Open the draw and deliver the findings again so everybody sees the current amount.`,
+            applicationId: appId, link: `/internal/app/${appId}/draws`, inAppOnly: false,
+          }).catch(() => {});
+        }
+      } catch (_) { /* best-effort — the audit row above already recorded the change */ }
+    }
     if (released) {
       const usd0 = (c) => require('./transforms').usdExact(c);   // cent-exact: these messages report exact-cents comparisons
       try {
@@ -973,4 +998,4 @@ async function persistDrawFindings(appId, sitewireDrawId, deliveredTo = null) {
     preserved_dispute_status: !promotable };
 }
 
-module.exports = { syncCapitalPartners, syncStaffUsers, reconcileOne, reconcileAll, fetchDrawFindings, deriveTimes, assessAndStoreRisk, persistDrawFindings, settingsMap, verifyBudgetDrift, _reactFor: reactFor };
+module.exports = { syncCapitalPartners, syncStaffUsers, reconcileOne, reconcileAll, fetchDrawFindings, deriveTimes, assessAndStoreRisk, persistDrawFindings, settingsMap, verifyBudgetDrift, _reactFor: reactFor, _reactToInboundDraw: reactToInboundDraw };
