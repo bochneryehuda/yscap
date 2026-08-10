@@ -68,7 +68,9 @@ module.exports = {
     // lists the file and the doc is available in the portal.)
     const atts = (Array.isArray(attachments) ? attachments : [])
       .filter((a) => a && a.filename && a.content)
-      .map((a) => ({ '@odata.type': '#microsoft.graph.fileAttachment', name: String(a.filename), contentType: a.contentType || 'application/octet-stream', contentBytes: String(a.content) }));
+      // A Buffer must be ENCODED, never stringified — `String(Buffer)` is a lossy UTF-8 decode
+      // of binary and produced an unopenable PDF (owner-reported 2026-08-10). Same belt as resend.js.
+      .map((a) => ({ '@odata.type': '#microsoft.graph.fileAttachment', name: String(a.filename), contentType: a.contentType || 'application/octet-stream', contentBytes: Buffer.isBuffer(a.content) ? a.content.toString('base64') : String(a.content) }));
     if (atts.length) message.attachments = atts;
     // Custom internet headers. Graph's `internetMessageHeaders` accepts ONLY
     // `X-`-prefixed names — it silently rejects the standard threading headers
