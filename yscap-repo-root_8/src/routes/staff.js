@@ -10284,7 +10284,7 @@ router.put('/track-records/:id', async (req, res) => {
   const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
   if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
-  const bad = trackRecordErrors(b);
+  const bad = trackRecordErrors(b, { isEdit: true });
   if (bad) return res.status(400).json({ error: bad });
   // Same stamp as the create door: whoever last put these figures on the line is
   // recorded, so "who typed this?" is answerable on an edit and not only on a create.
@@ -10310,8 +10310,13 @@ router.put('/track-records/:id', async (req, res) => {
   }
   const names = Object.keys(cols);
   const vals = Object.values(cols);
+  // A blank-address edit keeps the stored address (#29), so `cols` can be empty
+  // (e.g. a notes-only or entity-only edit). Build the SET clause as a list so an
+  // empty column set yields `SET updated_at=now()` rather than a stray comma.
+  const setParts = names.map((n, i) => `${n}=$${i + 2}`);
+  setParts.push('updated_at=now()');
   await db.query(
-    `UPDATE track_records SET ${names.map((n, i) => `${n}=$${i + 2}`).join(', ')}, updated_at=now() WHERE id=$1`,
+    `UPDATE track_records SET ${setParts.join(', ')} WHERE id=$1`,
     [req.params.id, ...vals]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
   await audit(req, 'staff_edit_track_record', 'track_record', req.params.id);

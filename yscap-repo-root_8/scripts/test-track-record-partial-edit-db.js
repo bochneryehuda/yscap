@@ -27,7 +27,7 @@ const ok = (cond, what) => { if (cond) { pass++; console.log(`  ok  ${what}`); }
 
   console.log('\n0. The shared guard itself (pure half)');
   {
-    const { trackRecordSentOnly } = require('../src/routes/borrower');
+    const { trackRecordSentOnly, trackRecordErrors } = require('../src/routes/borrower');
     const full = { property_address: {}, deal_type: 'flip', sale_price: null, entity_name: null, owned_personally: false, address_key: 'k', entered_by_kind: 'staff' };
     const out = trackRecordSentOnly(full, { propertyAddress: { oneLine: 'x' } });
     ok(!('sale_price' in out) && !('deal_type' in out) && !('entity_name' in out) && !('owned_personally' in out),
@@ -36,6 +36,17 @@ const ok = (cond, what) => { if (cond) { pass++; console.log(`  ok  ${what}`); }
     ok('entered_by_kind' in out, 'the who-typed-this stamp always rides');
     const p = trackRecordSentOnly({ entity_name: null, owned_personally: true }, { ownedPersonally: true });
     ok('entity_name' in p, '"owned personally" still clears the entity even without entityName restated');
+    // #29: a blank OR absent address on an edit drops property_address + its key,
+    // so the stored address is kept rather than overwritten with a blank.
+    const noAddr = trackRecordSentOnly(full, { salePrice: 1 });
+    ok(!('property_address' in noAddr) && !('address_key' in noAddr), 'an absent address drops the column and its key (keep the stored one)');
+    const blankAddr = trackRecordSentOnly(full, { propertyAddress: {} });
+    ok(!('property_address' in blankAddr) && !('address_key' in blankAddr), 'a BLANK address object drops them too — never clears the identity');
+    // #29: the save gate requires an address to CREATE but not to EDIT.
+    ok(trackRecordErrors({}) === 'property address is required', 'CREATE with no address is refused by the gate');
+    ok(trackRecordErrors({}, { isEdit: true }) === null, 'EDIT with no address passes the gate (keep-existing)');
+    ok(trackRecordErrors({ propertyAddress: {} }, { isEdit: true }) === null, 'EDIT with a blank address object passes the gate');
+    ok(trackRecordErrors({ propertyAddress: { oneLine: 'x' } }) === null, 'a real address always passes');
   }
 
   const app = require('../src/server');
@@ -80,6 +91,76 @@ const ok = (cond, what) => { if (cond) { pass++; console.log(`  ok  ${what}`); }
     const row = (await db.query(`SELECT is_verified, sale_price FROM track_records WHERE id=$1`, [trId])).rows[0];
     ok(Number(row.sale_price) === 400000, 'the changed figure landed');
     ok(row.is_verified === false, 'a real material change still un-verifies for re-review');
+  }
+
+  console.log('\n3. A blank/absent address on an EDIT keeps the stored address (#29)');
+  {
+    const A = { oneLine: '11 Keep Ave, Toms River, NJ 08753' };
+    const cr = await call('POST', `/borrowers/${borrowerId}/track-records`, { propertyAddress: A, dealType: 'flip', purchasePrice: 100000 });
+    const id = (await cr.json()).trackRecordId;
+    const before = (await db.query(`SELECT property_address, address_key FROM track_records WHERE id=$1`, [id])).rows[0];
+
+    // (a) OMIT the address entirely, change a figure.
+    const r1 = await call('PUT', `/track-records/${id}`, { salePrice: 175000 });
+    ok(r1.status === 200, `an edit with NO propertyAddress saves (got HTTP ${r1.status})`);
+    let row = (await db.query(`SELECT property_address, address_key, sale_price FROM track_records WHERE id=$1`, [id])).rows[0];
+    ok(JSON.stringify(row.property_address) === JSON.stringify(before.property_address), 'the stored address is kept, not nulled');
+    ok(row.address_key === before.address_key, 'the dedupe key is kept in step with the address');
+    ok(Number(row.sale_price) === 175000, 'the field the edit DID send landed');
+
+    // (b) a BLANK address object also means "keep existing".
+    const r2 = await call('PUT', `/track-records/${id}`, { propertyAddress: {}, rehabAmount: 20000 });
+    ok(r2.status === 200, `an edit with a BLANK propertyAddress saves (got HTTP ${r2.status})`);
+    row = (await db.query(`SELECT property_address, rehab_amount FROM track_records WHERE id=$1`, [id])).rows[0];
+    ok(JSON.stringify(row.property_address) === JSON.stringify(before.property_address), 'a blank address never overwrites the stored one');
+    ok(Number(row.rehab_amount) === 20000, 'the other field still landed alongside the blank address');
+
+    // (c) a REAL new address DOES change it.
+    const B = { oneLine: '22 Move Rd, Jackson, NJ 08527' };
+    await call('PUT', `/track-records/${id}`, { propertyAddress: B });
+    row = (await db.query(`SELECT property_address, address_key FROM track_records WHERE id=$1`, [id])).rows[0];
+    ok(row.property_address && row.property_address.oneLine === B.oneLine, 'a genuine address change still rewrites the address');
+    ok(row.address_key && row.address_key !== before.address_key, '…and its dedupe key moves with it');
+
+    // (d) an edit that touches ZERO columns still returns 200, not a SQL error.
+    const r3 = await call('PUT', `/track-records/${id}`, { propertyAddress: {} });
+    ok(r3.status === 200, `an edit that changes nothing returns 200 (SET clause stays valid) — got HTTP ${r3.status}`);
+  }
+
+  console.log('\n4. A CREATE still requires an address');
+  {
+    const r = await call('POST', `/borrowers/${borrowerId}/track-records`, { dealType: 'flip', purchasePrice: 50000 });
+    ok(r.status === 400, `create with no address is refused (got HTTP ${r.status})`);
+    ok(/address is required/i.test((await r.json()).error || ''), 'the refusal names the address');
+  }
+
+  console.log('\n5. The borrower door keeps the stored address on a blank edit too');
+  {
+    const bId = (await db.query(
+      `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Blank','Borrower',$1) RETURNING id`,
+      [`blankborrower+${tag}@x.test`])).rows[0].id;
+    // The login row carries token_version, re-read on every request.
+    await db.query(`INSERT INTO borrower_auth (borrower_id, password_hash, token_version) VALUES ($1,'x',0) ON CONFLICT (borrower_id) DO NOTHING`, [bId]);
+    const btoken = C.signJwt({ sub: bId, kind: 'borrower', tv: 0 });
+    const bcall = (method, path, body) => fetch(`${base}/api/borrower${path}`, {
+      method, headers: { 'content-type': 'application/json', authorization: `Bearer ${btoken}` },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const A = { oneLine: '3 Borrower Blvd, Lakewood, NJ 08701' };
+    const cr = await bcall('POST', '/track-records', { propertyAddress: A, dealType: 'flip', purchasePrice: 120000 });
+    const id = (await cr.json()).trackRecordId;
+    const before = (await db.query(`SELECT property_address FROM track_records WHERE id=$1`, [id])).rows[0];
+    const r1 = await bcall('PUT', `/track-records/${id}`, { salePrice: 200000 });
+    ok(r1.status === 200, `borrower edit with no address saves (got HTTP ${r1.status})`);
+    let row = (await db.query(`SELECT property_address, sale_price FROM track_records WHERE id=$1`, [id])).rows[0];
+    ok(JSON.stringify(row.property_address) === JSON.stringify(before.property_address), 'borrower door keeps the stored address');
+    ok(Number(row.sale_price) === 200000, 'the borrower edit still landed the field it sent');
+    // The incremental SET builder must survive an edit that touches zero columns.
+    const r2 = await bcall('PUT', `/track-records/${id}`, { propertyAddress: {} });
+    ok(r2.status === 200, `a borrower edit that changes nothing returns 200, not a SQL error (got HTTP ${r2.status})`);
+    // A borrower CREATE still requires the address.
+    const r3 = await bcall('POST', '/track-records', { dealType: 'flip' });
+    ok(r3.status === 400, `borrower create with no address is refused (got HTTP ${r3.status})`);
   }
 
   server.close();
