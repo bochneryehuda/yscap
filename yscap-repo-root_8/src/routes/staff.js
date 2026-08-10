@@ -291,13 +291,18 @@ const VISIBLE_BORROWER_SQL = (alias, p) =>
   ` WHERE (a2.borrower_id=${alias}.id OR a2.co_borrower_id=${alias}.id) AND a2.deleted_at IS NULL` +
   ` AND ${VISIBLE_OFFICERS_SQL('a2', p)}))`;
 
-// An ENCOMPASS review row (db/328) hangs on a BORROWER and never on a file, and
-// the borrower it is about may have no loan file at all — a DSCR-only client the
-// officer closed with in ClickUp. Scoping it the file way would hide the card
-// from the ONE person who can answer it. It follows the borrower scope instead,
-// which is exactly who is allowed to see that person's profile anyway.
-const ENCOMPASS_REVIEW_SCOPE = (p) =>
-  ` OR (q.source = 'encompass' AND q.borrower_id IS NOT NULL AND EXISTS (
+// An APPLICATION-LESS review row (a borrower-level DOB, a non-materialized task,
+// or an Encompass row — db/328) hangs on a BORROWER and never on a file, and the
+// borrower may have no loan file at all (a DSCR-only client the officer closed
+// with in ClickUp) or the officer may be only a CO-borrower on it. So it follows
+// the BORROWER-visibility gate — VISIBLE_BORROWER_SQL: owner / delegate /
+// borrower_officers / co-borrower files, the #15 gate — NOT the file-officer gate
+// on the borrower's own applications, which hid the card from the one person who
+// can answer it (owner-directed #15 class; flagged by the findings-bundle audit).
+// This is the ONE scope for every application-less review row and it subsumes the
+// old Encompass-only carve-out.
+const REVIEW_BORROWER_SCOPE = (p) =>
+  ` OR (q.application_id IS NULL AND q.borrower_id IS NOT NULL AND EXISTS (
         SELECT 1 FROM borrowers eb WHERE eb.id = q.borrower_id AND ${VISIBLE_BORROWER_SQL('eb', p)}))`;
 
 // Guard every /applications/:id* route: a non-privileged staffer may only touch
@@ -17253,11 +17258,7 @@ router.get('/sync-reviews', async (req, res) => {
          LEFT JOIN borrowers b ON b.id = COALESCE(q.borrower_id, a.borrower_id)
         WHERE q.status = $1
           ${scoped ? `AND ((a.id IS NOT NULL AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')})
-                       OR (q.application_id IS NULL AND q.borrower_id IS NOT NULL AND EXISTS (
-                             SELECT 1 FROM applications a2
-                              WHERE a2.borrower_id = q.borrower_id AND a2.deleted_at IS NULL
-                                AND ${VISIBLE_OFFICERS_SQL('a2', '$2')}))
-                       ${ENCOMPASS_REVIEW_SCOPE('$2')})` : ''}
+                       ${REVIEW_BORROWER_SCOPE('$2')})` : ''}
         ORDER BY q.created_at DESC LIMIT 500`,
       scoped ? [status, req.actor.id] : [status]);
     res.json({ reviews: r.rows });
@@ -17276,35 +17277,41 @@ router.get('/sync-reviews/count', async (req, res) => {
          LEFT JOIN applications a ON a.id = q.application_id
         WHERE q.status = 'open'
           ${scoped ? `AND ((a.id IS NOT NULL AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$1')})
-                       OR (q.application_id IS NULL AND q.borrower_id IS NOT NULL AND EXISTS (
-                             SELECT 1 FROM applications a2
-                              WHERE a2.borrower_id = q.borrower_id AND a2.deleted_at IS NULL
-                                AND ${VISIBLE_OFFICERS_SQL('a2', '$1')}))
-                       ${ENCOMPASS_REVIEW_SCOPE('$1')})` : ''}`,
+                       ${REVIEW_BORROWER_SCOPE('$1')})` : ''}`,
       scoped ? [req.actor.id] : []);
     res.json({ open: r.rows[0].n });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
+
+// Who may SEE/RESOLVE ONE sync-review row — the per-row mirror of the list scope
+// above, kept in one place so the list, the count and every resolve door can
+// never drift. Same `seesAll` gate; a file-tied row uses the file-officer gate
+// (VISIBLE_OFFICERS_SQL), and an application-less row uses the #15 borrower gate
+// (VISIBLE_BORROWER_SQL) — the same widening REVIEW_BORROWER_SCOPE applies to the
+// list, so a row an officer can SEE is a row they can RESOLVE (the old per-row
+// check was file-officer-only, so it 403'd a profile-owner / co-borrower officer
+// on a row the widened list would show them).
+async function canSeeReviewRow(req, row) {
+  if (seesAll(req)) return true;
+  if (row.application_id) {
+    return !!(await db.query(
+      `SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`,
+      [row.application_id, req.actor.id])).rows[0];
+  }
+  if (row.borrower_id) {
+    return !!(await db.query(
+      `SELECT 1 FROM borrowers eb WHERE eb.id=$1 AND ${VISIBLE_BORROWER_SQL('eb', '$2')}`,
+      [row.borrower_id, req.actor.id])).rows[0];
+  }
+  return false;
+}
 
 async function loadReviewFor(req, res) {
   const r = await db.query(`SELECT * FROM sync_review_queue WHERE id=$1`, [req.params.id]);
   const row = r.rows[0];
   if (!row) { res.status(404).json({ error: 'not found' }); return null; }
   if (row.status !== 'open') { res.status(409).json({ error: 'already resolved' }); return null; }
-  if (!seesAll(req)) {
-    // Same scope as the list: their file, or (application-less row) a
-    // borrower any of whose active files is theirs.
-    const ok = row.application_id
-      ? await db.query(
-          `SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`,
-          [row.application_id, req.actor.id])
-      : (row.borrower_id
-          ? await db.query(
-              `SELECT 1 FROM applications a WHERE a.borrower_id=$1 AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')} LIMIT 1`,
-              [row.borrower_id, req.actor.id])
-          : { rows: [] });
-    if (!ok.rows[0]) { res.status(403).json({ error: 'forbidden' }); return null; }
-  }
+  if (!(await canSeeReviewRow(req, row))) { res.status(403).json({ error: 'forbidden' }); return null; }
   return row;
 }
 
@@ -17557,14 +17564,7 @@ router.post('/sync-reviews/bulk', async (req, res) => {
         const row = r.rows[0];
         if (!row) { results.push({ id, ok: false, error: 'not found' }); continue; }
         if (row.status !== 'open') { results.push({ id, ok: false, error: 'already resolved' }); continue; }
-        if (!seesAll(req)) {
-          const ok = row.application_id
-            ? await db.query(`SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`, [row.application_id, req.actor.id])
-            : (row.borrower_id
-                ? await db.query(`SELECT 1 FROM applications a WHERE a.borrower_id=$1 AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')} LIMIT 1`, [row.borrower_id, req.actor.id])
-                : { rows: [] });
-          if (!ok.rows[0]) { results.push({ id, ok: false, error: 'forbidden' }); continue; }
-        }
+        if (!(await canSeeReviewRow(req, row))) { results.push({ id, ok: false, error: 'forbidden' }); continue; }
         if (action === 'reject') {
           await db.query(
             `UPDATE sync_review_queue SET status='rejected', resolved_by=$2, resolved_at=now(), resolution_note='bulk dismiss' WHERE id=$1 AND status='open'`,
