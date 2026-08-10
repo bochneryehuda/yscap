@@ -48,7 +48,10 @@ module.exports = {
     // filename); here we just map whatever survived that gate.
     const atts = (Array.isArray(attachments) ? attachments : [])
       .filter((a) => a && a.filename && a.content)
-      .map((a) => ({ filename: String(a.filename), content: String(a.content) }));
+      // A Buffer must be ENCODED, never stringified — `String(Buffer)` is a lossy UTF-8 decode
+      // of binary and produced an unopenable PDF (owner-reported 2026-08-10). The convention is
+      // base64 strings at the producer; this is the chokepoint belt for any future Buffer.
+      .map((a) => ({ filename: String(a.filename), content: Buffer.isBuffer(a.content) ? a.content.toString('base64') : String(a.content) }));
 
     const hdrs = cleanHeaders(headers);
 

@@ -2697,11 +2697,35 @@ async function borrowerFindingAttachments(appId, sitewireDrawId) {
       // in the body plus on the file in their mail client — the frozen never-name-the-note-buyer
       // rule (borrower-safe.js lists "trust point" explicitly). Renamed to a neutral, factual
       // name; the stored document keeps its own filename for staff.
-      out.push({ filename: borrowerSafeAttachmentName(r.filename, drawNo), content, contentType: 'application/pdf' });
+      // BASE64, NEVER A RAW BUFFER (owner-reported 2026-08-10: the attached PDF was corrupted
+      // and unopenable). Both mail providers do `String(a.content)` expecting base64 — a Buffer
+      // stringifies as a lossy UTF-8 decode of PDF binary, which can never open. This was the
+      // repo's ONE producer passing a Buffer; the providers now also normalize (belt), but the
+      // convention is base64 strings at the producer (the shape every other call site uses).
+      out.push({ filename: borrowerSafeAttachmentName(r.filename, drawNo), content: content.toString('base64'), contentType: 'application/pdf' });
       seen.add(kind);
       budget -= content.length;
     } catch (e) { /* a missing file never blocks the findings email */ }
   }
+  // THE SITEWIRE INSPECTOR'S OWN PER-DRAW PDF IS NEVER A `documents` ROW — it lives only in the
+  // durable draw_media archive (kind='draw_pdf'), which is where the investor delivery already
+  // reads it. Without this arm, a virtual-inspection file could attach at most OUR report while
+  // the owner's requirement is BOTH ("we always need our PDF, the Sitewire PDF, and/or the
+  // Trinity PDF"). Distinctly named so it never collides with our branded report's name.
+  try {
+    const m = (await db.query(
+      `SELECT storage_ref FROM draw_media
+        WHERE application_id=$1 AND sitewire_draw_id=$2 AND kind='draw_pdf' AND storage_ref IS NOT NULL
+        ORDER BY archived_at DESC LIMIT 1`, [appId, sitewireDrawId])).rows[0];
+    if (m) {
+      const buf = await storage.read(m.storage_ref);
+      if (buf && buf.length && buf.length <= budget) {
+        out.push({ filename: `inspector-report${drawNo != null ? `-draw-${drawNo}` : ''}.pdf`,
+          content: buf.toString('base64'), contentType: 'application/pdf' });
+        budget -= buf.length;
+      }
+    }
+  } catch (_) { /* best-effort — the findings email still goes with whatever attached */ }
   return out;
 }
 
@@ -2785,11 +2809,20 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
       // numbers now come from the SAME rollup the report is built from, so the email and its own
       // attachment can never quote different figures. Best-effort: an unreadable rollup simply
       // omits the release line rather than delaying the borrower's results.
+      // A RELEASE FIGURE EXISTS ONLY WHEN THE INSPECTOR HAS ANSWERED (owner-reported 2026-08-10,
+      // YSCAP258134746: the inspector approved NOTHING and this callout still promised "$0 is
+      // wired to you" under a "Requested $24,750" headline). `net_release_cents` is ALWAYS a
+      // number (drawMoney computes max(0, approved − fee) even off an unknown approval), so
+      // gating on `!= null` promised a wire on every draw. The gate is the SAME predicate the
+      // figures band uses — has_inspector_amounts — so the hero and the callout can never again
+      // tell two different stories about one draw. An explicit $0 gets its own honest wording.
       let releaseLine = null;
+      let inspectorZero = false;
       try {
         const rl = await rollupMod.loadRollup(db, appId);
         const d = (rl.draws || []).find((x) => Number(x.sitewire_draw_id) === Number(drawId));
-        if (d && d.net_release_cents != null) {
+        if (d && d.has_inspector_amounts && Number(d.approved_cents) <= 0) inspectorZero = true;
+        if (d && d.has_inspector_amounts && d.net_release_cents != null && Number(d.net_release_cents) > 0) {
           const deductions = [];
           if (Number(d.fee_cents) > 0) deductions.push(`${usd(d.fee_cents)} draw fee`);
           if (Number(d.retainage_held_cents) > 0) deductions.push(`${usd(d.retainage_held_cents)} retainage held`);
@@ -2850,7 +2883,16 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
           : { label: 'Approved by the inspector', value: usd(totAppr), sub: `of ${usd(totReq)} requested`, tone: 'positive' },
         body: `Your inspection is complete${pv.length ? ` — ${pv.join(' and ')} on file` : ''}. Here is what the inspector approved on each line. When you’re ready, confirm to release your draw — or push back on any line you disagree with.`,
         meta,
-        callout: { title: 'What happens when you confirm', body: `Confirming releases your draw${releaseLine ? ` — ${releaseLine.value.split(' (')[0]} is wired to you` : ''} — funds are typically sent within a day or two. Want to look first? Open the results to see every photo and download your inspection report (PDF).`, tone: 'action' },
+        // The callout tells the SAME story as the headline: a real release when one is known, an
+        // honest "nothing releases this time" on an inspector's $0, and NO wire promise when the
+        // inspector has not answered yet.
+        callout: {
+          title: 'What happens when you confirm',
+          body: inspectorZero
+            ? 'The inspector approved $0 this time, so confirming accepts the results — nothing is wired, and the amounts stay on your budget to draw once the work is done. Disagree? Push back on any line below. Want to look first? Open the results to see every photo and download your inspection report (PDF).'
+            : `Confirming ${releaseLine ? `releases your draw — ${releaseLine.value.split(' (')[0]} is wired to you — funds are typically sent within a day or two` : 'accepts the inspection results'}. Want to look first? Open the results to see every photo and download your inspection report (PDF).`,
+          tone: 'action',
+        },
         applicationId: appId, link: acceptLink, ctaLabel: 'Review & confirm',
         cta2Label: 'Push back on a line', cta2Link: disputeLink,
         attachments: findingAttachments,

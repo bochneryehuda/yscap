@@ -87,7 +87,15 @@ function drawFigures(m, { borrower = false } = {}) {
   const moving = !!(m.is_released || m.is_final_approved);
   // The inspector's amounts are what make an "approved" figure meaningful. Without them the
   // draw is still just a request, whatever its status column says.
-  const hasApproval = !!m.has_inspector_amounts && approved > 0;
+  //
+  // KNOWN vs ZERO (owner-reported 2026-08-10, YSCAP258134746: the inspector approved NOTHING
+  // and the borrower's email still led "Requested $24,750 — under review" while its callout
+  // promised "$0 is wired to you"). `approved > 0` was standing in for "is the approval
+  // KNOWN?" — the repo's documented missing-vs-zero class. An inspector's explicit $0 is an
+  // ANSWER, and the doctrine (one amount that keeps updating at every step) says the email
+  // must state it: "$0 approved this time", never a stale request presented as the expected
+  // amount. Only a genuinely unanswered draw keeps the request as its headline.
+  const hasApproval = !!m.has_inspector_amounts;
 
   const fee = N(m.fee_cents);
 
@@ -106,6 +114,17 @@ function drawFigures(m, { borrower = false } = {}) {
       sub: fee > 0
         ? `${usd(approved)} approved − ${usd(fee)} draw fee${borrower ? ' — wired to you' : ''}`
         : (borrower ? 'wired to you' : 'no draw fee on this release'),
+    };
+  } else if (hasApproval && approved <= 0) {
+    // The inspector's explicit $0 — stated as the answer it is. The money is never "lost":
+    // it stays on the line and can be drawn once the work is done (the same wording rule the
+    // "Held back" row follows), and NOTHING is promised as wiring.
+    primary = {
+      label: 'Approved on this draw',
+      value: usd(0),
+      sub: requested > 0
+        ? `nothing approved this time — the ${usd(requested)} requested stays on the budget${borrower ? ' and can be drawn once the work is done' : ''}`
+        : 'nothing approved this time',
     };
   } else if (hasApproval) {
     primary = {
@@ -179,7 +198,18 @@ function drawFacts({ money = null, rollup = null, draw = null, dates = {}, borro
     if (N(p.committed) !== N(p.drawn)) {
       add(borrower ? 'Drawn including this draw' : 'Drawn including draws in flight', usd(p.committed));
     }
-    add(borrower ? 'Still available to draw' : 'Still available (this draw counted)', usd(p.available));
+    // "(this draw counted)" is a CLAIM about the math, not decoration (owner-reported
+    // 2026-08-10: a staff email printed "Still available (this draw counted) $91,300" — the
+    // FULL budget — while the same email's headline said $24,750 was requested; the draw's
+    // line detail had not mirrored, so `committed` genuinely excluded it and the label
+    // asserted the opposite of what the figure showed). The claim is only made when the
+    // headline draw's money actually landed in the committed figure; otherwise the label
+    // stays plain and a heads-up row says the detail has not synced yet.
+    const headlineCounted = !money || !!money.is_released || (N(p.committed) - N(p.drawn)) > 0;
+    add(borrower ? 'Still available to draw' : (headlineCounted ? 'Still available (this draw counted)' : 'Still available'), usd(p.available));
+    if (!headlineCounted && money && N(money.requested_cents) > 0) {
+      add('Heads up', `the ${usd(N(money.requested_cents))} on this draw isn’t counted in the figures above yet — its line detail hasn’t synced`);
+    }
   }
 
   // The meter measures COMMITTED against the budget — this draw included, which is exactly what

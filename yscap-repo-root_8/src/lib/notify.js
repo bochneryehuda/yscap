@@ -133,7 +133,13 @@ async function enrichFileOpts(opts, audience) {
   const out = { ...opts, _enriched: true };
   if (out.subjectTag == null) out.subjectTag = (audience === 'borrower' ? (ctx.borrowerSubjectTag || ctx.subjectTag) : ctx.subjectTag) || null;
   if (!Array.isArray(out.meta) || !out.meta.length) {
-    out.meta = audience === 'borrower' ? ctx.borrowerMeta : ctx.meta;
+    // A DRAW email that carries its own FACTS box does not get the generic identity block
+    // stapled on beside it (owner-reported 2026-08-10, the "A draw was inspected" email:
+    // purchase price / ARV / loan amount are "the wrong facts" — the exact ruling the
+    // 2026-08-03 redesign already made for the borrower draw emails, which pass their own
+    // meta). The subject tag still carries the file identity; the facts box carries the draw.
+    const drawWithFacts = out.facts && categoryOf(out.type) === 'draws';
+    if (!drawWithFacts) out.meta = audience === 'borrower' ? ctx.borrowerMeta : ctx.meta;
   }
   // ONE EMAIL'S OWN EXTRA FACTS — appended here rather than threaded through `fileContext` so it
   // works on BOTH paths, including the fan-out helpers that pre-fetch `_fileCtx` once and would
