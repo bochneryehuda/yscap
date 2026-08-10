@@ -1151,13 +1151,34 @@ async function notifyAppThread(appId, opts = {}) {
   // with a different reader: the desk's feed reading "YOUR construction draw has been released" is
   // written in the borrower's voice about the desk's own file. So a caller may pass `staffTitle` /
   // `staffBody` for the rows the team sees. Absent, the shared wording is used unchanged.
-  const staff = await notifyAppStaff(appId, {
-    ...shared,
-    ...(opts.staffTitle ? { title: opts.staffTitle } : {}),
-    ...(opts.staffBody ? { body: opts.staffBody } : {}),
-    inAppOnly: emailed,
-  });
-  return { borrowers: rows, staff, emailedTogether: emailed };
+  const staffOpts = { ...shared, inAppOnly: emailed };
+  if (opts.staffTitle) staffOpts.title = opts.staffTitle;
+  if (opts.staffBody) staffOpts.body = opts.staffBody;
+  // A BORROWER-ACTION LINK NEVER RIDES TO STAFF (owner-reported 2026-08-10, the Malky Katz
+  // delivery). The findings email's CTA is the borrower's NO-LOGIN accept/dispute magic link
+  // (`/draw-accept/<reply_token>`) — the borrower's own legal capability. The staff fan-out used
+  // to carry the shared opts verbatim, so every staff in-app row linked to it, and on the
+  // no-mailable-borrower FALLBACK the whole borrower-voiced email (magic link included) was
+  // EMAILED to the file's assignees — a staffer could accept findings AS the borrower (the same
+  // rule audit L1 already enforces on the API: "never hand the borrower's reply_token to a staff
+  // client"). A caller with a borrower-action CTA passes `staffLink` (+ optional `staffCtaLabel`);
+  // with one present the borrower CTAs are replaced wholesale on the staff copy.
+  if (opts.staffLink) {
+    staffOpts.link = opts.staffLink;
+    staffOpts.ctaLabel = opts.staffCtaLabel || 'Open the file';
+    delete staffOpts.cta2Label; delete staffOpts.cta2Link;
+  }
+  // THE FALLBACK IS NEVER SILENT ABOUT WHY IT FIRED. When the team's copy goes out with email
+  // enabled it is because the BORROWER'S copy did not — and a staff email that reads exactly like
+  // the borrower's ("please confirm the amount") hides the one fact the team must act on: the
+  // borrower has NOT seen this. Say so on the team's copy, with the reason class.
+  if (!emailed) {
+    staffOpts.note = mailable
+      ? 'Heads up: the borrower’s copy of this email was NOT sent — it was held or muted (their notification settings, or a pending review). The borrower has not seen this; reach them another way.'
+      : 'Heads up: the borrower could NOT be emailed — no email address on file, or the file is parked. The borrower has not seen this; reach them another way.';
+  }
+  const staff = await notifyAppStaff(appId, staffOpts);
+  return { borrowers: rows, staff, emailedTogether: emailed, borrowerMailable: mailable };
 }
 
 /**

@@ -165,6 +165,37 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ok('C1 with no borrower to address, the team is emailed directly rather than nobody', outbox.length >= 1);
   ok('C2 and the coordinator is on it', outbox.some((m) => [].concat(m.to || []).map(String).some((e) => e.toLowerCase() === coordEmail)));
 
+  // ---- C3+ THE FALLBACK NEVER LEAKS THE BORROWER'S MAGIC LINK, AND NEVER LIES (owner-reported
+  // 2026-08-10, the Malky Katz delivery: the borrower-voiced findings email — carrying the
+  // borrower's no-login /draw-accept/<reply_token> capability — was emailed to a staff assignee,
+  // and nothing anywhere said the borrower had NOT received it).
+  outbox.length = 0;
+  const MAGIC = 'SECRETTOKEN' + rnd;
+  const thread = await notify.notifyAppThread(app2, {
+    type: 'draw_findings', title: 'Your inspection is complete — please confirm the amount',
+    body: 'confirm to release your draw', applicationId: app2,
+    link: `/draw-accept/${MAGIC}`, ctaLabel: 'Review & confirm',
+    cta2Label: 'Push back on a line', cta2Link: `/draw-accept/${MAGIC}?tab=dispute`,
+    staffTitle: 'Inspection results sent to the borrower — awaiting their confirmation',
+    staffBody: 'the results went to the borrower to accept or dispute',
+    staffLink: `/internal/app/${app2}`, staffCtaLabel: 'Open the file',
+  });
+  await sleep(900);
+  ok('C3 the fallback still emails the team (an event never goes dark)', outbox.length >= 1);
+  ok('C4 but NO email carries the borrower\'s magic accept link',
+    outbox.every((m) => !String(m.html || '').includes(MAGIC) && !String(m.text || '').includes(MAGIC)));
+  ok('C5 the fallback email is STAFF-voiced, not "please confirm the amount"',
+    outbox.every((m) => !/please confirm the amount/i.test(String(m.subject || ''))));
+  ok('C6 and it SAYS the borrower has not seen this',
+    outbox.some((m) => /borrower could NOT be emailed|has not seen this/i.test(String(m.html || '') + String(m.text || ''))));
+  const staffLinkRow = (await db.query(
+    `SELECT link FROM notifications
+      WHERE application_id=$1 AND recipient_kind='staff' AND type='draw_findings'
+      ORDER BY created_at DESC LIMIT 1`, [app2])).rows[0];
+  eq('C7 the staff in-app row links to the FILE, never the magic link', staffLinkRow && staffLinkRow.link, `/internal/app/${app2}`);
+  ok('C8 the thread reports the borrower was NOT reached (so the route can warn the coordinator)',
+    !!thread && thread.emailedTogether === false && thread.borrowerMailable === false);
+
   // ================================================ D. a NON-draw email is untouched
   outbox.length = 0;
   // `doc_rejected` is a borrower ACTION item, so it genuinely emails (unlike status_change, which

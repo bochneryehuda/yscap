@@ -72,6 +72,32 @@ async function matchingBorrowerLlc(db, borrowerId, entityName) {
 }
 
 /**
+ * The FILE's entity that matches `entityName` — the SAME population the wire classifier's
+ * known-entities check reads (primary owner via llcs.borrower_id AND the many-to-many
+ * llc_borrowers, for the borrower AND the co-borrower). `matchingBorrowerLlc` reads only the
+ * primary borrower's own rows, so an entity living on the co-borrower's profile (or linked
+ * through llc_borrowers) was invisible here while the classifier could see it — the two would
+ * then DISAGREE about the same name (classifier: known entity; autofill/adopt: create a
+ * duplicate). One matcher for everything that asks "does this file's borrower already have
+ * this entity?". Returns { id, llc_name, is_verified } or null.
+ */
+async function matchingFileEntity(db, appId, entityName) {
+  if (!appId || !entityName) return null;
+  const llcs = (await db.query(
+    `SELECT DISTINCT x.id, x.llc_name, x.is_verified
+       FROM applications a
+       JOIN llcs x ON ( x.borrower_id IN (a.borrower_id, a.co_borrower_id)
+                     OR EXISTS (SELECT 1 FROM llc_borrowers lb
+                                 WHERE lb.llc_id = x.id
+                                   AND lb.borrower_id IN (a.borrower_id, a.co_borrower_id)) )
+      WHERE a.id = $1 AND NULLIF(btrim(x.llc_name),'') IS NOT NULL`, [appId])).rows;
+  for (const l of llcs) {
+    if (drawWire.entityMatch(entityName, l.llc_name) === true) return l;
+  }
+  return null;
+}
+
+/**
  * Copy a document's BYTES onto a target checklist item as a fresh document row. The bytes are
  * copied, never shared (a shared storage_ref would take the profile copy down when the file is
  * purged — the same rule copyDocumentIntoSlot documents). Lands 'received' (awaiting the
@@ -133,7 +159,9 @@ async function autofillFromProfile(db, appId, actorId = null) {
     const entityName = await wireEntityName(db, appId);
     if (!entityName) return { filled: false, reason: 'no_wire_entity' };
 
-    const llc = await matchingBorrowerLlc(db, app.borrower_id, entityName);
+    // The FILE-wide matcher (borrower + co-borrower + llc_borrowers) — the same population the
+    // wire classifier reads, so a co-borrower's entity with an accepted OA autofills too.
+    const llc = await matchingFileEntity(db, appId, entityName);
     if (!llc) return { filled: false, reason: 'no_matching_profile_entity' };
 
     const oa = (await db.query(
@@ -181,8 +209,9 @@ async function onAccepted(db, { itemId, documentId, actorId = null } = {}) {
   const llcLib = require('../llc');
   // Reuse a matching profile entity (its clean, human-set name), else create one from a CLEAN
   // display name (never the full legal description, which would not match on the next lookup).
+  // FILE-wide matcher — an entity on the co-borrower's profile is reused, never duplicated.
   let llcId, created = false, llcName;
-  const match = await matchingBorrowerLlc(db, app.borrower_id, entityName);
+  const match = await matchingFileEntity(db, appId, entityName);
   if (match) { llcId = match.id; llcName = match.llc_name; created = false; }
   else {
     const clean = drawWire.displayEntityName(entityName) || entityName;
@@ -214,6 +243,68 @@ async function onAccepted(db, { itemId, documentId, actorId = null } = {}) {
   return { adopted: true, llcId: String(llcId), entityName: llcName, created, savedToSlot, slotReason };
 }
 
+/**
+ * PUT THE WIRE'S ENTITY ON THE BORROWER'S PROFILE (owner-directed 2026-08-10: "the LLC name
+ * should automatically be linked to the profile LLC section — either link it to an existing
+ * LLC that is there already in the entity section of the borrower profile or create a new
+ * entity slot for this"). Runs at wire CAPTURE and on re-classification, for a new-entity
+ * wire — the moment PILOT learns money is headed to a company, that company gets its durable
+ * home on the profile (document slots included) instead of waiting for a coordinator's accept.
+ *
+ * GUARDS, each load-bearing:
+ *   · COMPANY NAMES ONLY (`hasEntityDesignator`) — a third-party PERSON's name also classifies
+ *     'new_entity' (it failed the borrower test), and creating an "entity" named after a human
+ *     would corrupt the library. A personal-name wire keeps its fatal condition; no slot.
+ *   · REUSE FIRST (`matchingFileEntity`, the classifier's own population) — a matching entity
+ *     anywhere on the borrower's / co-borrower's profile is linked, never duplicated.
+ *   · A CREATED entity is ADOPTED-STAMPED (`adopted_source='draw_wire_form'`, db/400), so the
+ *     wire classifier and the liquidity engine keep treating it as UNVETTED until its operating
+ *     agreement is on file or a human verifies it — creating the slot must never be the thing
+ *     that clears the fatal it exists to resolve.
+ *
+ * Idempotent; never throws (returns { linked:false, reason } instead).
+ */
+async function ensureWireEntityOnProfile(db, appId, { actorId = null } = {}) {
+  try {
+    const app = (await db.query(
+      `SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+    if (!app || !app.borrower_id) return { linked: false, reason: 'no_borrower' };
+
+    const entityName = await wireEntityName(db, appId);
+    if (!entityName) return { linked: false, reason: 'no_wire_entity' };
+    if (!drawWire.hasEntityDesignator(entityName)) return { linked: false, reason: 'not_an_entity_name' };
+
+    const match = await matchingFileEntity(db, appId, entityName);
+    if (match) {
+      // Already on the profile — make sure its document slots exist (idempotent) and report it.
+      try { await require('../../routes/borrower').generateLlcChecklist(match.id, db); } catch (_) { /* best-effort */ }
+      return { linked: true, existed: true, created: false, llcId: String(match.id), llcName: match.llc_name };
+    }
+
+    const clean = drawWire.displayEntityName(entityName) || entityName;
+    const made = await require('../llc').findOrCreateLlc(app.borrower_id, { llcName: clean }, db);
+    const created = !made.existed;
+    if (created) {
+      await db.query(
+        `UPDATE llcs SET adopted_from_application_id=$2, adopted_at=now(), adopted_source='draw_wire_form', updated_at=now()
+          WHERE id=$1 AND adopted_at IS NULL`, [made.id, appId]);
+      try {
+        await db.query(
+          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+           VALUES ($1, $2, 'draw_wire_entity_added_to_profile', 'application', $3, $4)`,
+          [actorId ? 'staff' : 'system', actorId || null, appId,
+           JSON.stringify({ llcId: String(made.id), llcName: clean })]);
+      } catch (_) { /* audit best-effort */ }
+    }
+    try { await require('../../routes/borrower').generateLlcChecklist(made.id, db); } catch (_) { /* best-effort */ }
+    try { await require('../llc-borrowers').linkBorrower(made.id, app.borrower_id, null, db); } catch (_) { /* additive */ }
+    try { await require('../llc').syncLlcConditions(made.id); } catch (_) { /* best-effort */ }
+    return { linked: true, existed: !created, created, llcId: String(made.id), llcName: clean };
+  } catch (e) {
+    return { linked: false, reason: 'error', detail: (e && e.message) || 'error' };
+  }
+}
+
 /** The side effects that must run AFTER the accept's transaction commits (condition sync + mirror). */
 async function afterAcceptCommit(llcId) {
   if (!llcId) return;
@@ -241,7 +332,8 @@ async function acceptedOaForInvestor(db, appId) {
 
 module.exports = {
   OA_MARKER, LLC_OA_SLOT, OA_TEMPLATE,
-  drawOaConditionOf, wireEntityName, matchingBorrowerLlc,
+  drawOaConditionOf, wireEntityName, matchingBorrowerLlc, matchingFileEntity,
   autofillFromProfile, onAccepted, afterAcceptCommit, acceptedOaForInvestor,
+  ensureWireEntityOnProfile,
   _internals: { copyDocumentToItem },
 };

@@ -21,6 +21,7 @@
  * same row + the same condition state.
  */
 const cryptoLib = require('../crypto');
+const ACCEPT = require('../document-acceptance');
 const { WIRE_KEYS } = require('./wire-tabs');
 
 // ---- name classification (pure — unit-tested) -------------------------------
@@ -248,20 +249,53 @@ async function raiseOperatingAgreementCondition(db, appId, entityName) {
 
 /**
  * Retract the auto-raised operating-agreement condition when the wire name now matches
- * the borrower / subject LLC. UNTOUCHED-only: the auto condition is DELETED (the clean
- * retract — it simply no longer applies) ONLY while it is still outstanding, auto-origin,
- * and carries NO uploaded/attached document. A human who has already collected a doc /
- * moved it forward keeps their condition (it is left exactly as-is). The wire row's FK is
- * ON DELETE SET NULL, so its operating_agreement_item_id clears automatically.
+ * the borrower / subject LLC / a known entity. UNTOUCHED-only: the auto condition is
+ * DELETED (the clean retract — it simply no longer applies) ONLY while no HUMAN has
+ * worked it. "Untouched" has TWO shapes, both PILOT's own state (owner-reported
+ * 2026-08-10, the 69 Bassett re-classification that could not clear):
+ *
+ *   (a) still 'outstanding' with no document at all (the original definition); or
+ *   (b) 'received' where the ONLY documents on it are PILOT'S OWN AUTOFILL COPIES —
+ *       draw-oa.autofillFromProfile copies the profile's operating agreement onto the
+ *       condition (source_type='system' + source_document_id) and bumps the status to
+ *       'received' itself, so an autofilled condition was never retractable even though
+ *       no human ever touched it. A system copy nobody has DECIDED on (review_status
+ *       still 'pending') is retired (is_current=false, review_status='superseded' — the
+ *       order-signature-retire semantics: set aside, never deleted, Accept restores) so
+ *       it does not float on the file as a loose pending document.
+ *
+ * A human's work always keeps the condition: any non-system document (whatever its
+ * state), any ACCEPTED/REJECTED document (a decision), any status past 'received', a
+ * sign-off. The wire row's FK is ON DELETE SET NULL, so its operating_agreement_item_id
+ * clears automatically.
  */
 async function retractOperatingAgreementCondition(db, appId) {
   const marker = `draw:wire_oa:${appId}`;
+  // Decide first: the item, and whether anything on it is a human's (docs are judged across
+  // ALL rows on the item, current or not — a superseded human upload still proves a human
+  // worked this condition).
+  const item = (await db.query(
+    `SELECT ci.id, ci.status,
+            (SELECT count(*) FROM documents d
+              WHERE d.checklist_item_id = ci.id
+                AND NOT (d.source_type = 'system' AND d.source_document_id IS NOT NULL
+                         AND COALESCE(d.review_status,'pending') = 'pending')) AS human_docs
+       FROM checklist_items ci
+      WHERE ci.application_id=$1 AND ci.field_key=$2 AND ci.origin_kind='manual_custom'
+        AND ci.status IN ('outstanding','received') AND ci.signed_off_at IS NULL
+      LIMIT 1`, [appId, marker])).rows[0];
+  if (!item || Number(item.human_docs) > 0) return null;
+  // Retire PILOT's own undecided autofill copies (bytes kept; Accept restores).
+  await db.query(
+    `UPDATE documents SET is_current=false, review_status='superseded'
+      WHERE checklist_item_id=$1 AND source_type='system' AND source_document_id IS NOT NULL
+        AND COALESCE(review_status,'pending') = 'pending'`, [item.id]);
   const r = await db.query(
     `DELETE FROM checklist_items ci
-      WHERE ci.application_id=$1 AND ci.field_key=$2 AND ci.status='outstanding'
-        AND ci.origin_kind='manual_custom'
-        AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id = ci.id)
-      RETURNING ci.id`, [appId, marker]);
+      WHERE ci.id=$1 AND ci.status IN ('outstanding','received') AND ci.signed_off_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM documents d
+                         WHERE d.checklist_item_id = ci.id AND d.is_current)
+      RETURNING ci.id`, [item.id]);
   return r.rows[0] ? r.rows[0].id : null;
 }
 
@@ -279,6 +313,68 @@ function wireValuesFromEnvelope(docusign, envelope) {
     for (const k of WIRE_KEYS) { if (tv[k] != null && tv[k] !== '' && out[k] == null) out[k] = tv[k]; }
   }
   return out;
+}
+
+/**
+ * The file's name-classification context — the borrower + co-borrower personal names, the
+ * LINKED vesting entity, and every KNOWN entity on the borrower's / co-borrower's profile.
+ * ONE definition, used by the capture AND by `reclassifyWire` (a classification stored at
+ * capture time goes stale the moment the rule or the profile changes — the class the
+ * 69 Bassett re-report exposed — so both readers must ask the identical question).
+ */
+async function fileNameContext(db, appId) {
+  return (await db.query(
+    `SELECT b.first_name, b.last_name,
+            TRIM(COALESCE(b.first_name,'')||' '||COALESCE(b.last_name,'')) AS bname,
+            NULLIF(TRIM(COALESCE(cb.first_name,'')||' '||COALESCE(cb.last_name,'')),'') AS cbname,
+            l.llc_name,
+            -- Every entity already on the borrower's / co-borrower's profile (their llcs
+            -- library), via the primary owner (llcs.borrower_id) AND the many-to-many
+            -- (llc_borrowers). A wire to any of these is a KNOWN entity of the file's
+            -- borrower — not the unknown third party the fatal check is for. This is what
+            -- clears the file's OWN vesting entity even when it was never the linked
+            -- a.llc_id (owner-directed 2026-08-06, "69 Bassett LLC").
+            ARRAY(
+              SELECT DISTINCT x.llc_name
+                FROM llcs x
+                LEFT JOIN llc_borrowers lb ON lb.llc_id = x.id
+               WHERE NULLIF(btrim(x.llc_name),'') IS NOT NULL
+                 AND ( x.borrower_id = a.borrower_id
+                    OR x.borrower_id = a.co_borrower_id
+                    OR lb.borrower_id = a.borrower_id
+                    OR lb.borrower_id = a.co_borrower_id )
+                 -- SAFETY: an entity ADOPTED onto the profile (entity-adopt.js, db/400 — e.g. because
+                 -- the borrower's bank statements came from it) whose operating agreement is NOT yet
+                 -- on file is exactly the entity whose control documents the wire fatal exists to
+                 -- collect BEFORE money goes out. It does NOT clear a draw wire — it still escalates.
+                 -- A normal library entity (the vesting entity, a ClickUp-synced or manually-added
+                 -- one — adopted_from_application_id IS NULL), a VERIFIED entity, or an adopted
+                 -- entity whose operating agreement IS on its profile slot and ACCEPTED (the stated
+                 -- intent of the db/400 hold — "whose operating agreement is NOT yet on file" —
+                 -- owner-reported 2026-08-10: "it already has all the LLC documents") clears.
+                 AND ( x.adopted_from_application_id IS NULL OR x.is_verified = true
+                    OR EXISTS (SELECT 1 FROM checklist_items oci
+                                 JOIN checklist_templates ot ON ot.id = oci.template_id
+                                 JOIN documents od ON od.checklist_item_id = oci.id
+                                WHERE oci.llc_id = x.id AND ot.code = 'rtl_llc_opagmt'
+                                  AND od.is_current AND ${ACCEPT.ACCEPTED_SQL('od')}) )
+            ) AS known_entities
+       FROM applications a
+       JOIN borrowers b ON b.id = a.borrower_id
+       LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+       LEFT JOIN llcs l ON l.id = a.llc_id
+      WHERE a.id = $1`, [appId])).rows[0] || null;
+}
+
+/** Run `classifyAccountName` against the file's LIVE context. */
+async function classifyForFile(db, appId, accountName) {
+  const file = (await fileNameContext(db, appId)) || {};
+  return classifyAccountName(accountName, {
+    borrowerName: file.bname,
+    borrowerNames: file.cbname ? [file.cbname] : [],
+    llcName: file.llc_name,
+    knownEntities: Array.isArray(file.known_entities) ? file.known_entities : [],
+  });
 }
 
 /**
@@ -302,39 +398,7 @@ async function captureWireFromEnvelope(db, docusign, envelopeRow, opts = {}) {
   const hasAny = WIRE_KEYS.some((k) => wire[k] != null && String(wire[k]).trim() !== '');
   if (!hasAny) return null;   // no wire fields on this envelope (not a draw_request, or blank)
 
-  const file = (await db.query(
-    `SELECT b.first_name, b.last_name,
-            TRIM(COALESCE(b.first_name,'')||' '||COALESCE(b.last_name,'')) AS bname,
-            NULLIF(TRIM(COALESCE(cb.first_name,'')||' '||COALESCE(cb.last_name,'')),'') AS cbname,
-            l.llc_name,
-            -- Every entity already on the borrower's / co-borrower's profile (their llcs
-            -- library), via the primary owner (llcs.borrower_id) AND the many-to-many
-            -- (llc_borrowers). A wire to any of these is a KNOWN entity of the file's
-            -- borrower — not the unknown third party the fatal check is for. This is what
-            -- clears the file's OWN vesting entity even when it was never the linked
-            -- a.llc_id (owner-directed 2026-08-06, "69 Bassett LLC").
-            ARRAY(
-              SELECT DISTINCT x.llc_name
-                FROM llcs x
-                LEFT JOIN llc_borrowers lb ON lb.llc_id = x.id
-               WHERE NULLIF(btrim(x.llc_name),'') IS NOT NULL
-                 AND ( x.borrower_id = a.borrower_id
-                    OR x.borrower_id = a.co_borrower_id
-                    OR lb.borrower_id = a.borrower_id
-                    OR lb.borrower_id = a.co_borrower_id )
-                 -- SAFETY: an entity ADOPTED onto the profile (entity-adopt.js, db/400 — e.g. because
-                 -- the borrower's bank statements came from it) whose operating agreement is NOT yet
-                 -- on file (is_verified=false) is exactly the entity whose control documents the wire
-                 -- fatal exists to collect BEFORE money goes out. It does NOT clear a draw wire — it
-                 -- still escalates. A normal library entity (the vesting entity, a ClickUp-synced or
-                 -- manually-added one — adopted_from_application_id IS NULL) or a VERIFIED entity clears.
-                 AND ( x.adopted_from_application_id IS NULL OR x.is_verified = true )
-            ) AS known_entities
-       FROM applications a
-       JOIN borrowers b ON b.id = a.borrower_id
-       LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
-       LEFT JOIN llcs l ON l.id = a.llc_id
-      WHERE a.id = $1`, [appId])).rows[0] || {};
+  const file = (await fileNameContext(db, appId)) || {};
   const accountName = (wire.account_name || '').trim();
   const cls = classifyAccountName(accountName, {
     borrowerName: file.bname,
@@ -383,6 +447,15 @@ async function captureWireFromEnvelope(db, docusign, envelopeRow, opts = {}) {
      acctLast4, wire.routing_number || null, wire.bank_address || null, wire.account_address || null,
      cls.kind, cls.matches, oaItemId, JSON.stringify(rawSafe)]);
 
+  // THE WIRE ENTITY GOES ON THE PROFILE (owner-directed 2026-08-10: "the LLC name should
+  // automatically be linked to the profile LLC section — either link it to an existing LLC that is
+  // there already in the entity section of the borrower profile or create a new entity slot").
+  // A company-designated account name that matched nothing gets its OWN entity slot on the
+  // borrower's profile (adopted-stamped, document slots generated) so the operating agreement has a
+  // durable home "for always" — the entity-adopt discipline. Best-effort — never blocks the capture.
+  if (cls.kind === 'new_entity') {
+    try { await require('./draw-oa').ensureWireEntityOnProfile(db, appId, {}); } catch (_) { /* best-effort */ }
+  }
   // If the new entity is one the borrower ALREADY has on their profile with an operating agreement
   // on file, pull that agreement onto the condition so the coordinator has a head start (Task 5,
   // owner-directed 2026-08-05). Best-effort — never blocks the capture. Lazy-require avoids a cycle.
@@ -416,11 +489,118 @@ async function captureWireFromEnvelope(db, docusign, envelopeRow, opts = {}) {
   return { captured: true, name_kind: cls.kind, name_matches: cls.matches, operating_agreement_item_id: oaItemId };
 }
 
+// ---- re-classification ---------------------------------------------------------
+
+/**
+ * RE-CLASSIFY the stored wire row against the file's LIVE context (owner-reported
+ * 2026-08-10: "the entity name is the same but it still shows New Entity").
+ *
+ * THE CLASS THIS CLOSES: `name_kind` is written ONCE, at capture. The db/478 rule fix
+ * (known entities clear) and every later change to the borrower's profile (an entity
+ * added, verified, or its operating agreement accepted) never reached an
+ * already-captured row — so the 69 Bassett wire, captured 08/05 under the OLD rule,
+ * kept its 'new_entity' verdict and its fatal condition forever, however right the
+ * profile became. This re-runs the ONE classifier on the STORED account name:
+ *
+ *   · now matches (borrower / subject LLC / known entity) → retract the auto
+ *     operating-agreement condition (untouched-only — a human's work always stands)
+ *     and clear the stored fatal;
+ *   · still / newly a new entity → keep (or idempotently re-raise) the condition,
+ *     make sure the entity has its profile slot, and re-try the profile OA autofill.
+ *
+ * SILENT BY DESIGN: no email ever fires from here (the capture-time notification
+ * already went when the wire first landed; a boot pass must never blast the team).
+ * The update is PINNED to the account name it read, so a concurrent re-capture (a
+ * webhook re-drive with a fresh signature) is never clobbered. Never throws.
+ */
+async function reclassifyWire(db, appId, opts = {}) {
+  try {
+    const w = (await db.query(
+      `SELECT account_name, name_kind, name_matches, operating_agreement_item_id
+         FROM draw_wire_instructions WHERE application_id=$1`, [appId])).rows[0];
+    if (!w) return { reclassified: false, reason: 'no_wire' };
+    const accountName = String(w.account_name || '').trim();
+    if (!accountName) return { reclassified: false, reason: 'no_account_name' };
+
+    const cls = await classifyForFile(db, appId, accountName);
+    let oaItemId = w.operating_agreement_item_id;
+    let profile = null;
+
+    if (cls.kind === 'new_entity') {
+      // Idempotent re-raise, the profile slot (owner-directed 2026-08-10), and the profile-OA
+      // head start — same order as capture. A pointer that is still set proves the item exists
+      // (the FK is ON DELETE SET NULL), so an unchanged new-entity row skips the raise rather
+      // than re-writing the same [auto] note on every boot pass.
+      oaItemId = (w.name_kind === 'new_entity' && w.operating_agreement_item_id)
+        ? w.operating_agreement_item_id
+        : await raiseOperatingAgreementCondition(db, appId, accountName);
+      try { profile = await require('./draw-oa').ensureWireEntityOnProfile(db, appId, { actorId: opts.actorId || null }); } catch (_) { /* best-effort */ }
+      try { await require('./draw-oa').autofillFromProfile(db, appId, opts.actorId || null); } catch (_) { /* best-effort */ }
+    } else if (cls.matches) {
+      await retractOperatingAgreementCondition(db, appId);
+      // The retract may have REFUSED (a human worked the condition) — the pointer then keeps
+      // naming the surviving item; only a genuinely deleted item clears it (FK is SET NULL,
+      // but this row is re-written below, so re-check rather than trust the in-memory copy).
+      if (oaItemId) {
+        const still = (await db.query(`SELECT 1 FROM checklist_items WHERE id=$1`, [oaItemId])).rows[0];
+        if (!still) oaItemId = null;
+      }
+    }
+
+    const changed = cls.kind !== w.name_kind || cls.matches !== w.name_matches
+      || String(oaItemId || '') !== String(w.operating_agreement_item_id || '');
+    if (changed) {
+      await db.query(
+        `UPDATE draw_wire_instructions
+            SET name_kind=$2, name_matches=$3, operating_agreement_item_id=$4, updated_at=now()
+          WHERE application_id=$1 AND account_name IS NOT DISTINCT FROM $5`,
+        [appId, cls.kind, cls.matches, oaItemId, w.account_name]);
+      try {
+        await db.query(
+          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+           VALUES ('system', NULL, 'draw_wire_reclassified', 'application', $1, $2)`,
+          [appId, JSON.stringify({ accountName: accountName.slice(0, 120), from: w.name_kind, to: cls.kind })]);
+      } catch (_) { /* audit best-effort */ }
+    }
+    return { reclassified: changed, kind: cls.kind, matches: cls.matches, was: w.name_kind, profile };
+  } catch (e) {
+    return { reclassified: false, reason: 'error', detail: (e && e.message) || 'error' };
+  }
+}
+
+/**
+ * PREVIOUS FILES (the standing rule): re-classify every stored wire still carrying the
+ * fatal 'new_entity' verdict — the rows a rule fix or a later profile change can only
+ * ever IMPROVE. Deliberately scoped to 'new_entity': a boot pass must fix false fatals,
+ * never mint brand-new ones across the back book unwatched (a wire that stopped
+ * matching resurfaces the moment anyone opens its draw screen, where the live re-check
+ * runs). Bounded, silent, never throws. Booted from server.js.
+ */
+async function backfillWireReclassifyOnce(opts = {}) {
+  const db = opts.db || require('../../db');
+  const limit = Math.max(1, Number(opts.limit) || 200);
+  const out = { scanned: 0, fixed: 0, linked: 0 };
+  try {
+    const rows = (await db.query(
+      `SELECT application_id FROM draw_wire_instructions
+        WHERE name_kind='new_entity'
+        ORDER BY captured_at DESC NULLS LAST LIMIT $1`, [limit])).rows;
+    for (const r of rows) {
+      out.scanned += 1;
+      const res = await reclassifyWire(db, r.application_id);
+      if (res && res.reclassified) out.fixed += 1;
+      if (res && res.profile && res.profile.created) out.linked += 1;
+    }
+  } catch (e) { out.error = (e && e.message) || 'error'; }
+  return out;
+}
+
 module.exports = {
   // pure classifiers (tests)
   normEntity, splitEntity, displayEntityName, entityMatch, nameTokens, hasEntityDesignator, personalMatch, classifyAccountName, last4,
   // conditions
   ensureDrawRequestCondition, raiseOperatingAgreementCondition, retractOperatingAgreementCondition,
-  // capture
-  wireValuesFromEnvelope, captureWireFromEnvelope,
+  // capture + re-classification
+  fileNameContext, classifyForFile, wireValuesFromEnvelope, captureWireFromEnvelope,
+  reclassifyWire, backfillWireReclassifyOnce,
 };

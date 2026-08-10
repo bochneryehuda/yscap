@@ -809,6 +809,14 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillNoteBuyerFindingsOnce()
           .then((r) => r && r.synced && console.log('[boot] note-buyer appraisal checks backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] note-buyer appraisal checks backfill failed:', e.message));
+        // PREVIOUS FILES for the draw-wire name check (owner-reported 2026-08-10, 69 Bassett):
+        // `name_kind` is stored at capture, so the db/478 known-entity rule fix never reached
+        // already-captured wires — a wire to the borrower's own entity kept its fatal "new
+        // entity" verdict forever. Re-classify the stored new-entity rows against the LIVE rule
+        // (and give a still-new entity its profile slot). Bounded, silent, idempotent.
+        require('./lib/esign/draw-wire').backfillWireReclassifyOnce()
+          .then((r) => r && (r.fixed || r.linked) && console.log('[boot] draw-wire reclassify backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] draw-wire reclassify backfill failed:', e.message));
         // PREVIOUS FILES for the email-signature filter (owner-reported 2026-08-03:
         // the tiny pictures out of a title / insurance agent's signature "still
         // coming in as documents … we still need to manually reject it on every
