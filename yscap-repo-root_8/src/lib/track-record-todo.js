@@ -87,6 +87,9 @@ const TODO_ORDER = [
 function int(v) { const n = parseInt(v, 10); return Number.isFinite(n) && n > 0 ? n : 0; }
 
 function addressOf(pa) {
+  // A row stored as a bare one-line string (public-records import before the
+  // shape fix) still reads correctly rather than as "A past project".
+  if (typeof pa === 'string') return pa.trim() || 'A past project';
   if (!pa || typeof pa !== 'object') return 'A past project';
   return pa.oneLine
     || [pa.line1 || pa.street || pa.address, pa.city, pa.state].filter(Boolean).join(', ')

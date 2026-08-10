@@ -103,7 +103,13 @@
   function dstr(v) { return v ? String(v).slice(0, 10) : ""; }
   function nstr(v) { return v == null || v === "" ? "" : String(Math.round(Number(v))); }
   function propFromRow(r) {
-    var a = r.property_address || {};
+    /* A row stored before the shape fix (or by any writer that still hands us a
+       bare one-line string) has no .street/.line1/.city, which rendered
+       "(no address)". Coerce a string to { oneLine } so it lands in the address
+       box; the server-side heal converts the stored rows to the full object. */
+    var a = r.property_address;
+    if (typeof a === "string") a = { oneLine: a };
+    a = a || {};
     var dt = String(r.deal_type || "").toLowerCase();
     var kind = (dt.indexOf("hold") >= 0 || dt.indexOf("rental") >= 0) ? "hold" : "flip";
     if (dt.indexOf("ground") >= 0) kind = (r.sale_price || r.sale_date) ? "flip" : "hold";
