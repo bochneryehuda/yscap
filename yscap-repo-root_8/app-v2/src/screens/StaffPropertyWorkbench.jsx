@@ -62,6 +62,16 @@ const canonDealType = (v) => {
   if (s.includes('flip')) return 'flip';
   return '';
 };
+/* THE CHOSEN deal type: the reviewer's own pick if they made one (including a
+   deliberate blank), else the server's Elementix-derived SUGGESTION, else
+   whatever the records already implied. `??` (not `||`) so an explicit "Choose…"
+   clears the default instead of snapping back to it. */
+const chosenTypeOf = (c, dealChoice) => dealChoice[c.id] ?? c.dealTypeDerived ?? canonDealType(c.dealType);
+/* Does the records-carried data already say how it exited? A sale (the flip's
+   exit) OR a refinance OR a lease (the hold's exit). When none is on record and
+   the deal is a hold/ground-up, the workbench asks the reviewer for one. */
+const hasExitFigure = (c) => !!(c.saleDate || money(c.salePrice) || c.refiDate || money(c.refiAmount)
+  || c.rentDate || money(c.rentAmount));
 
 const money = (v) => {
   const n = Number(v);
@@ -95,6 +105,67 @@ const BAND = {
   none: { label: 'New', color: MUTED, hint: 'Nothing on the record looks like this one.' },
 };
 
+/* The exit the reviewer entered, in the shape the import route whitelists. Null
+   when they picked no exit or nothing was typed — importNew fills a blank only,
+   so a null / empty pair is a safe no-op. */
+const exitPayloadOf = (draft) => {
+  if (!draft || !draft.mode) return null;
+  if (draft.mode === 'refi') return { refiAmount: draft.refiAmount || null, refiDate: draft.refiDate || null };
+  if (draft.mode === 'rent') return { rentAmount: draft.rentAmount || null, rentDate: draft.rentDate || null };
+  return null;
+};
+
+/**
+ * THE GUIDED EXIT (owner-directed 2026-08-10) — for a rental / ground-up the
+ * county records did not carry an exit for. A hold counts toward experience only
+ * once it has an exit date, so this is where a refinance or a lease is entered.
+ * GUIDED, not a free-text box (#8): buttons pick the path; the two fields are a
+ * dollar amount and a date, which genuinely have to be typed. Optional — the
+ * reviewer can leave it and fill it in on the line later.
+ */
+function ExitPrompt({ draft, setDraft }) {
+  const mode = (draft && draft.mode) || null;
+  const seg = (m, label) => (
+    <button type="button" className={mode === m ? 'btn primary small' : 'btn ghost small'}
+      style={{ minHeight: 38, color: mode === m ? undefined : INK }}
+      onClick={() => setDraft({ mode: mode === m ? null : m })}>
+      {label}
+    </button>
+  );
+  const field = (label, val, onChange, type, placeholder) => (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 13, color: INK }}>
+      <span style={{ color: MUTED }}>{label}</span>
+      <input className="input" type={type} value={val || ''} placeholder={placeholder || ''}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ minHeight: 40, fontSize: 16, minWidth: 150, color: INK, background: '#fff' }} />
+    </label>
+  );
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed #EAE4D7' }}>
+      <div style={{ color: INK, fontSize: 13, marginBottom: 6 }}>
+        The records don’t show how this one exited. A rental counts toward experience once it’s been
+        leased up or refinanced — add it now, or leave it and fill it in later.
+      </div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {seg('refi', 'It was refinanced')}
+        {seg('rent', 'It was leased up')}
+      </div>
+      {mode === 'refi' ? (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 8 }}>
+          {field('Refinance amount ($)', draft && draft.refiAmount, (v) => setDraft({ refiAmount: v }), 'number', 'e.g. 240000')}
+          {field('Refinance date', draft && draft.refiDate, (v) => setDraft({ refiDate: v }), 'date')}
+        </div>
+      ) : null}
+      {mode === 'rent' ? (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 8 }}>
+          {field('Monthly rent ($)', draft && draft.rentAmount, (v) => setDraft({ rentAmount: v }), 'number', 'e.g. 2200')}
+          {field('Date it was leased', draft && draft.rentDate, (v) => setDraft({ rentDate: v }), 'date')}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
   const [q, setQ] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -109,6 +180,14 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
      candidate id (like ConfirmFoundProperties' `kind`), so moving between
      properties never carries one property's answer onto another. */
   const [dealChoice, setDealChoice] = useState({});
+  /* THE EXIT the reviewer confirms for a hold the records did not carry one for
+     (owner-directed 2026-08-10: "if refinanced, collect missing details … when
+     it was leased and for how much"). Kept per candidate id, shape
+     { mode:'refi'|'rent', refiAmount, refiDate, rentAmount, rentDate }, so a
+     figure typed for one property never rides onto another. A hold with no exit
+     date counts toward nothing (the frozen rule), so collecting it here is what
+     lets a refinanced or leased rental actually reach the tier. */
+  const [exitDraft, setExitDraft] = useState({});
   /* WHICH STATES TO PULL (owner-directed 2026-08-09: "make a drop-down to
      select which states we want to pull in — we should be able to pull each
      and every state separately for that person"). The records service files
@@ -376,9 +455,15 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
           ) : (
             <>
               <div style={{ fontSize: 18, fontWeight: 650, color: INK }}>{current.address}</div>
+              {/* EVERY FIGURE THE RECORDS CARRIED, pre-filled for the reviewer to
+                  confirm (owner-directed 2026-08-10) — the purchase and sale a DEED
+                  states, and the refinance and lease a MORTGAGE / MLS row states,
+                  which are the hold's exit. */}
               <div style={{ marginTop: 5, color: MUTED, fontSize: 14 }}>
                 {[current.purchaseDate ? `Bought ${day(current.purchaseDate)}${money(current.purchasePrice) ? ` for ${money(current.purchasePrice)}` : ''}` : null,
                   current.saleDate ? `sold ${day(current.saleDate)}${money(current.salePrice) ? ` for ${money(current.salePrice)}` : ''}` : null,
+                  (current.refiDate || money(current.refiAmount)) ? `refinanced${current.refiDate ? ` ${day(current.refiDate)}` : ''}${money(current.refiAmount) ? ` for ${money(current.refiAmount)}` : ''}` : null,
+                  (current.rentDate || money(current.rentAmount)) ? `leased${money(current.rentAmount) ? ` for ${money(current.rentAmount)}/mo` : ''}${current.rentDate ? ` (${day(current.rentDate)})` : ''}` : null,
                 ].filter(Boolean).join(' · ') || 'The records did not give dates or figures.'}
               </div>
               {current.entityName ? (
@@ -416,29 +501,51 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
                 </div>
               ) : null}
 
-              <div style={{ display: 'flex', gap: 9, flexWrap: 'wrap', marginTop: 14 }}>
+              {/* ── CONFIRM THE DEAL (owner-directed 2026-08-10) — the type is
+                  pre-selected from the records and the exit is pre-filled; the
+                  reviewer confirms or changes it before bringing it on. ────── */}
+              <div style={{ marginTop: 14, padding: 12, borderRadius: 10, border: '1px solid #EAE4D7', background: '#FAFAF7' }}>
+                {/* THE DEAL TYPE IS A DROPDOWN, not a type-in (owner-directed
+                    2026-08-10), pre-selected from the Elementix reading. */}
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: INK, fontSize: 14, flexWrap: 'wrap' }}>
+                  <span style={{ color: MUTED }}>Deal type</span>
+                  <select className="input" style={{ minHeight: 44, minWidth: 240 }}
+                    value={chosenTypeOf(current, dealChoice)}
+                    onChange={(e) => setDealChoice((m) => ({ ...m, [current.id]: e.target.value }))}>
+                    <option value="">Choose…</option>
+                    {DEAL_TYPES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+                  </select>
+                </label>
+                {/* WHY the default was chosen — the server's own plain sentence,
+                    so the reviewer confirms a suggestion, not a black box. */}
+                {current.dealTypeWhy ? (
+                  <div style={{ marginTop: 6, color: MUTED, fontSize: 13 }}>{current.dealTypeWhy}</div>
+                ) : null}
+                {/* THE GUIDED EXIT — only for a rental / ground-up the records did
+                    not already show an exit for. A hold with no exit counts toward
+                    nothing, so this is where a refinance or lease is added. */}
+                {(chosenTypeOf(current, dealChoice) === 'hold' || chosenTypeOf(current, dealChoice) === 'ground-up') && !hasExitFigure(current) ? (
+                  <ExitPrompt
+                    draft={exitDraft[current.id]}
+                    setDraft={(patch) => setExitDraft((m) => ({ ...m, [current.id]: { ...(m[current.id] || {}), ...patch } }))} />
+                ) : null}
+              </div>
+
+              {/* ── THE ACTIONS ──────────────────────────────────────────────── */}
+              <div className="act-bar" style={{ display: 'flex', gap: 9, flexWrap: 'wrap', marginTop: 12 }}>
                 {current.matchTrackRecordId ? (
                   <button type="button" className="btn primary" disabled={busy}
                     onClick={() => decide(current.id, 'match_existing')} style={{ minHeight: 44 }}>
                     Join it to the line we have
                   </button>
                 ) : null}
-                {/* THE DEAL TYPE IS A DROPDOWN, not a type-in (owner-directed
-                    2026-08-10). Pre-selected from the records when they imply a
-                    kind; otherwise the reviewer picks before bringing it on. */}
-                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: INK, fontSize: 14 }}>
-                  <span style={{ color: MUTED }}>Deal type</span>
-                  <select className="input" style={{ minHeight: 44, minWidth: 220 }}
-                    value={dealChoice[current.id] ?? canonDealType(current.dealType)}
-                    onChange={(e) => setDealChoice((m) => ({ ...m, [current.id]: e.target.value }))}>
-                    <option value="">Choose…</option>
-                    {DEAL_TYPES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
-                  </select>
-                </label>
                 <button type="button" className={current.matchTrackRecordId ? 'btn ghost' : 'btn primary'}
-                  disabled={busy || !(dealChoice[current.id] ?? canonDealType(current.dealType))}
-                  title={(dealChoice[current.id] ?? canonDealType(current.dealType)) ? '' : 'Pick the kind of deal first'}
-                  onClick={() => decide(current.id, 'import_new', { dealType: dealChoice[current.id] ?? canonDealType(current.dealType) })}
+                  disabled={busy || !chosenTypeOf(current, dealChoice)}
+                  title={chosenTypeOf(current, dealChoice) ? '' : 'Pick the kind of deal first'}
+                  onClick={() => decide(current.id, 'import_new', {
+                    dealType: chosenTypeOf(current, dealChoice),
+                    exit: exitPayloadOf(exitDraft[current.id]),
+                  })}
                   style={{ minHeight: 44 }}>
                   Bring it on as a new one
                 </button>
