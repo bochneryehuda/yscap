@@ -18,8 +18,8 @@
  * Design guarantees (owner spec + round-2 audit):
  *  - IDEMPOTENT, RETRY-SAFE: the Resend email_id is a unique claim in
  *    inbound_file_emails. TERMINAL outcomes (forwarded, unknown_app, archived_app,
- *    no_recipients, self_reply, auto_reply, rate_limited, chat_posted) never
- *    reprocess.
+ *    no_recipients, self_reply, auto_reply, rate_limited, chat_posted, on_chain)
+ *    never reprocess.
  *    RETRYABLE failures (retrieval_failed / forward_failed / lookup_failed) and
  *    claims stuck at 'received' (crash mid-processing, >10 min old) are RECLAIMED
  *    by a webhook redelivery, up to 8 attempts — a transient failure never
@@ -45,6 +45,15 @@
  *    continues the shared thread; the original sender is excluded (no self-echo);
  *    every forwarded assignee also gets an IN-APP notification (bell), so a
  *    spam-filtered forward still leaves a portal trace.
+ *  - ONE EVENT, ONE COPY (owner-directed 2026-08-09): an assignee who was on the
+ *    inbound email THEMSELVES (To/Cc — the sender did reply-all) is NOT emailed
+ *    the forward: their own inbox already holds the message. They keep the
+ *    in-app row (worded to say so), the Email Center keeps the reply, and
+ *    assignees who were NOT on it are forwarded exactly as before. When EVERY
+ *    remaining assignee was on the email, nothing is sent and the delivery ends
+ *    in the terminal status `on_chain`. The same rule rides `alreadyEmailed`
+ *    into the order-return ("documents came back") and chat notifications —
+ *    see src/lib/looped-in.js for the shared vocabulary.
  */
 const cfg = require('../config');
 const db = require('../db');
@@ -54,6 +63,9 @@ const { fileReplyTo, applicationIdFromRecipient, orderRefFromRecipient, closingT
 // The ONE definition of where a person's own reply ends and the quoted history
 // begins — shared with the chat family, the Email Center and the outbound marker.
 const emailQuote = require('./email/quote');
+// One event, one copy (owner-directed 2026-08-09): who the inbound email
+// already reached, so nobody on it is sent a duplicate by us.
+const loopedIn = require('./looped-in');
 
 const RESEND_BASE = 'https://api.resend.com';
 
@@ -574,14 +586,19 @@ async function forwardToAssignees({ applicationId, fromEmail, subject, text, htm
 /** In-app bell for each forwarded assignee — email-only delivery would be
     invisible in the portal if the forward lands in spam. emailTo:[] makes
     notifyStaff write the in-app row and skip the email (the branded forward
-    IS the email; a second one would be a duplicate). Best-effort. */
-async function notifyForwardedInApp({ applicationId, staffIds, fromEmail, subject }) {
+    IS the email; a second one would be a duplicate). Best-effort.
+    `onEmail: true` = this assignee was on the inbound email THEMSELVES
+    (owner-directed 2026-08-09), so no forward was sent to them — the row says
+    so, and it is their portal record of the reply. */
+async function notifyForwardedInApp({ applicationId, staffIds, fromEmail, subject, onEmail }) {
   for (const id of staffIds) {
     try {
       await notify.notifyStaff(id, {
         type: 'inbound_reply',
         title: 'New reply on a loan file',
-        body: `${fromEmail || 'Someone'} replied${subject ? ` — “${String(subject).slice(0, 140)}”` : ''}. The full message was forwarded to your email.`,
+        body: onEmail
+          ? `${fromEmail || 'Someone'} replied${subject ? ` — “${String(subject).slice(0, 140)}”` : ''}. You were on that email yourself, so no extra copy was sent — it is saved on the file.`
+          : `${fromEmail || 'Someone'} replied${subject ? ` — “${String(subject).slice(0, 140)}”` : ''}. The full message was forwarded to your email.`,
         applicationId,
         link: `/internal/app/${applicationId}`,
         ctaLabel: 'Open the loan file',
@@ -794,6 +811,16 @@ async function processReceivedEvent(event) {
   const fromEmail = extractAddress(full.from);
   const subject = full.subject || '';
 
+  // WHO THIS EMAIL ALREADY REACHED — the sender plus every recipient the event
+  // names (To + Cc + Bcc + envelope). Owner-directed 2026-08-09: anybody in this
+  // set already has the message in their own inbox, so every notification THIS
+  // delivery fires (the courtesy forward, "documents came back", a chat post)
+  // skips them as an EMAIL recipient — their in-app rows still write, so the
+  // portal record stays complete. Someone who was NOT on the email (the sender
+  // hit plain Reply, not Reply-All) is notified exactly as before.
+  const alreadyOn = loopedIn.alreadyOnEmailSet({ from: fromEmail, recipients: recips });
+  const alreadyOnList = [...alreadyOn];
+
   // An order reply (title+/insurance+) is tagged so the order-scoped Email Center
   // shows the vendor's reply directly (belt on top of subject threading).
   // orderRefFromRecipient matches only title|insurance, so those are the only two
@@ -927,6 +954,9 @@ async function processReceivedEvent(event) {
               const res = await orderInbox.saveReturnedDocs({
                 applicationId: ref.applicationId, orderType: ref.orderType,
                 attachments: orderAtts, fromEmail,
+                // "Documents came back" must not re-email whoever was on the
+                // vendor's reply themselves (a reply-all order chain).
+                alreadyEmailed: alreadyOnList,
               });
               // A NEW document filed means order-inbox emailed the team "documents
               // came back" (order_docs_in fires only on res.saved > 0). Record it so
@@ -991,6 +1021,7 @@ async function processReceivedEvent(event) {
                     link: `/internal/app/${ref.applicationId}${ref.orderType === 'title' ? '#sec-order-title' : '#sec-order-insurance'}`,
                     ctaLabel: 'Open the loan file',
                     inAppOnly: false,
+                    alreadyEmailed: alreadyOnList,
                   } : {
                     // Nothing for a person to do yet — say so, but never silently.
                     type: 'order_docs_in',
@@ -1106,6 +1137,7 @@ async function processReceivedEvent(event) {
               body: `${onFile} of ${full.attachments.length} document(s) from the closing chain were filed. ${humanMustAsk} could not be — ask the closing attorney to send ${humanMustAsk === 1 ? 'it' : 'them'} again, on the same email chain.`
                 + (retrying ? ` (A further ${retrying} hit a temporary problem on our side; the system is retrying ${retrying === 1 ? 'that one' : 'those'} on its own.)` : '') + sigNote,
               inAppOnly: false,
+              alreadyEmailed: alreadyOnList,
             } : {
               // Nothing for a person to do yet — say so, but never silently.
               type: 'closing_docs_in',
@@ -1139,8 +1171,10 @@ async function processReceivedEvent(event) {
       const text = topReply(full.text || htmlToText(full.html));
       // #144 — resolve the key against BOTH an external guest (#75) AND an
       // internal/borrower member, so ANY chat member's email reply posts back
-      // into the thread (not just guests').
-      const msg = text ? await chat.postInboundReply(chatKey, text) : null;
+      // into the thread (not just guests'). Who the reply already reached rides
+      // along so a member the sender Cc'd directly is not emailed a duplicate
+      // chat notification (their bell row still writes).
+      const msg = text ? await chat.postInboundReply(chatKey, text, { alreadyEmailed: alreadyOnList }) : null;
       appResults.__chat = 'posted';     // unknown/removed key is silently done, like the legacy route
       if (msg) forwardedTotal += 1;
     } catch (e) {
@@ -1155,6 +1189,9 @@ async function processReceivedEvent(event) {
   let forwardedRecipients = [];
   for (const applicationId of applicationIds) {
     if (appResults[applicationId] === 'forwarded') { anyForwarded = true; continue; }
+    // A prior delivery already decided everyone left was on the email itself —
+    // stay quiet on the redelivery, exactly like the 'forwarded' skip above.
+    if (appResults[applicationId] === 'on_chain') { lastTerminal = lastTerminal || 'on_chain'; continue; }
 
     // ORDER-RETURN DE-DUPLICATION (#13, owner-reported: an insurance return sent
     // THREE emails — "documents came back" + "New reply on a loan file" + the
@@ -1263,6 +1300,25 @@ async function processReceivedEvent(event) {
       }
     }
 
+    // ONE EVENT, ONE COPY (owner-directed 2026-08-09): whoever was on the
+    // inbound email THEMSELVES (the sender did reply-all) already holds the
+    // message — forwarding it to them is the exact duplicate the owner flagged.
+    // They keep an in-app row (worded to say so); only the people the email did
+    // NOT reach get the forward. The split runs on whichever audience survived
+    // above — the assigned team or the admin fallback — so both are covered.
+    const onEmailTargets = targets.filter((t) => alreadyOn.has(t.email));
+    const forwardTargets = targets.filter((t) => !alreadyOn.has(t.email));
+    if (!forwardTargets.length) {
+      // EVERYONE left was on the email itself. Nothing to send — and that is the
+      // success case, not a failure: the reply reached the whole team on its own
+      // chain. Quiet, terminal ('on_chain'), with the in-app rows keeping the
+      // portal record complete and the Email Center already holding the message.
+      appResults[applicationId] = 'on_chain';
+      lastTerminal = 'on_chain';
+      await notifyForwardedInApp({ applicationId, staffIds: onEmailTargets.map((t) => t.staff_id).filter(Boolean), fromEmail, subject, onEmail: true });
+      continue;
+    }
+
     const attachments = attachmentsForForward(await attachmentsOnce());
     // On a file that is in a draw process, loop the draw coordinator + loan officer + draws@ desk
     // in on the reply, VISIBLY (owner-directed 2026-08-06). Empty on a non-draw file, so an
@@ -1270,10 +1326,13 @@ async function processReceivedEvent(event) {
     let drawCc = [];
     try { drawCc = await require('./draw-recipients').drawReplyLoopIn(applicationId); }
     catch (_) { /* best-effort: the reply still forwards */ }
+    // The draw loop-in obeys the same one-copy rule: a coordinator the sender
+    // already Cc'd must not get the forward's Cc on top of the email itself.
+    drawCc = drawCc.filter((e) => !alreadyOn.has(String(e || '').trim().toLowerCase()));
     try {
       await forwardToAssignees({
         applicationId, fromEmail, subject,
-        text: full.text, html: full.html, attachments, toEmails: targets.map((t) => t.email),
+        text: full.text, html: full.html, attachments, toEmails: forwardTargets.map((t) => t.email),
         noTeam, cc: drawCc,
       });
     } catch (e) {
@@ -1283,9 +1342,14 @@ async function processReceivedEvent(event) {
     }
     appResults[applicationId] = 'forwarded';
     anyForwarded = true;
-    forwardedTotal += targets.length;
-    forwardedRecipients = forwardedRecipients.concat(targets.map((t) => t.email));
-    await notifyForwardedInApp({ applicationId, staffIds: targets.map((t) => t.staff_id).filter(Boolean), fromEmail, subject });
+    forwardedTotal += forwardTargets.length;
+    forwardedRecipients = forwardedRecipients.concat(forwardTargets.map((t) => t.email));
+    await notifyForwardedInApp({ applicationId, staffIds: forwardTargets.map((t) => t.staff_id).filter(Boolean), fromEmail, subject });
+    // The on-the-email assignees still get their portal trace of the reply —
+    // just no second email. Best-effort, after the forward like the rows above.
+    if (onEmailTargets.length) {
+      await notifyForwardedInApp({ applicationId, staffIds: onEmailTargets.map((t) => t.staff_id).filter(Boolean), fromEmail, subject, onEmail: true });
+    }
   }
 
   // ---- aggregate outcome ----

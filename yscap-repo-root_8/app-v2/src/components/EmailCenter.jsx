@@ -77,6 +77,9 @@ function StatusPill({ row }) {
       auto_reply: ['Auto-reply', 'muted'], no_recipients: ['No one to receive it', 'danger'], failed_permanent: ['Could not process', 'danger'],
       rate_limited: ['Rate limited', 'muted'], archived_app: ['Archived file', 'muted'],
       self_reply: ['On file (sender was its only recipient)', 'muted'],
+      // One event, one copy (2026-08-09): every assignee was on the email itself,
+      // so no forward was sent — the reply reached the team on its own chain.
+      on_chain: ['Team was on the email — no extra copy sent', 'ok'],
     };
     const [label, tone] = map[row.status] || (['retrieval_failed', 'forward_failed', 'lookup_failed', 'error'].includes(row.status)
       ? ['Delivery issue — retrying', 'muted'] : ['Processing', 'muted']);

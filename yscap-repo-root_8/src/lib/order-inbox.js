@@ -170,10 +170,13 @@ async function alreadyFiled({ applicationId, sha256, filename, kind }) {
  *   · failedTransient — storage or the database threw. Retrying can genuinely
  *     succeed, so the caller must NOT mark the order handled.
  *
- * @param {object} p { applicationId, orderType, attachments:[{filename,contentType,content(base64)}], fromEmail }
+ * @param {object} p { applicationId, orderType, attachments:[{filename,contentType,content(base64)}], fromEmail,
+ *                     alreadyEmailed?: string[]  — who the vendor's reply itself already reached (sender + To/Cc);
+ *                     the "documents came back" notice keeps their in-app row but never re-emails them
+ *                     (owner-directed 2026-08-09 — one event, one copy; see lib/looped-in.js) }
  * @returns {Promise<{saved:number, deduped:number, failed:number, failedPermanent:number, failedTransient:number, suspect:number, skipped:number}>}
  */
-async function saveReturnedDocs({ applicationId, orderType, attachments, fromEmail }) {
+async function saveReturnedDocs({ applicationId, orderType, attachments, fromEmail, alreadyEmailed }) {
   const empty = { saved: 0, deduped: 0, failed: 0, failedPermanent: 0, failedTransient: 0, suspect: 0, skipped: 0 };
   const kind = DOC_KIND[orderType];
   if (!kind) return { ...empty };
@@ -334,6 +337,9 @@ async function saveReturnedDocs({ applicationId, orderType, attachments, fromEma
         // survived a green suite once already.
         link: `/internal/app/${applicationId}${orderType === 'title' ? '#sec-order-title' : '#sec-order-insurance'}`,
         ctaLabel: 'Open the loan file',
+        // A staffer who was on the vendor's reply-all already has the documents
+        // in their own inbox — in-app row yes, second email no.
+        alreadyEmailed: alreadyEmailed || undefined,
       });
     } catch (_) { /* best-effort */ }
   }

@@ -25,6 +25,11 @@ const loGate = require('./lo-notification-gate');
 // above. See src/lib/lo-self-gate.js + db/368_lo_self_notification_prefs.sql.
 const loSelfGate = require('./lo-self-gate');
 const notifCatalog = require('./notification-catalog');
+// One event, one copy (owner-directed 2026-08-09): a notification fired BECAUSE
+// an inbound email arrived carries `opts.alreadyEmailed` — who that email
+// already reached — and any recipient on it keeps the in-app row but is never
+// sent a duplicate email. See src/lib/looped-in.js for the rule.
+const loopedIn = require('./looped-in');
 
 /**
  * What `notifyStaff` returns when the message was HELD rather than delivered or
@@ -522,6 +527,21 @@ async function notifyStaff(staffId, opts) {
   if (inAppOnly) emailOn = false;
   // Self gate: 'inapp' forces in-app-only for the LO's own inbox.
   if (selfChannel === 'inapp') emailOn = false;
+  // ALREADY IN THEIR OWN INBOX (owner-directed 2026-08-09): when this
+  // notification is ABOUT an inbound email, `opts.alreadyEmailed` names who that
+  // email already reached — and a recipient who was on it (To, Cc, or the
+  // sender) gets NO second email from us, because their inbox holds the message
+  // itself. The in-app row below still writes, so the portal record stays
+  // complete. Resolved HERE, before the batch-defer branch, so a suppressed
+  // email can neither send live nor park in a batch digest — a digest repeating
+  // a message they already read is the same bombardment arriving later.
+  let emailAddrs = null;
+  if (emailOn) {
+    emailAddrs = opts.emailTo ? [].concat(opts.emailTo) : await _staffEmail(staffId);
+    const kept = loopedIn.withoutAlreadyEmailed(emailAddrs, opts.alreadyEmailed);
+    if (emailAddrs.length && !kept.length) emailOn = false;
+    emailAddrs = kept;
+  }
   // enrichFileOpts already ran at the top of notifyStaff (so the LO gate + the
   // self gate see the same fully-composed payload the send path uses). It sets
   // _enriched=true so a second call would be a no-op, but we don't run it —
@@ -555,7 +575,9 @@ async function notifyStaff(staffId, opts) {
     } catch (_) { /* fall through to live send */ }
     if (queued) return id;
   }
-  const to = emailOn ? (opts.emailTo ? [].concat(opts.emailTo) : await _staffEmail(staffId)) : [];
+  // The address list was already resolved (and the already-on-the-email people
+  // removed) above, before the defer branch — never re-fetch it here.
+  const to = emailOn ? (emailAddrs || []) : [];
   _track(_emailRow(id, to, opts, 'staff')).catch(() => {});   // fire-and-forget (marks 'skipped' when `to` is empty); never let a stray rejection crash the process
   return id;
 }
@@ -923,7 +945,12 @@ async function notifyBorrower(borrowerId, opts) {
      VALUES ('borrower',$1,$2,$3,$4,$5,$6) RETURNING id`,
     [borrowerId, opts.type, sopts.title, sopts.body || null, opts.applicationId || null, opts.link || null]);
   const id = rows[0].id;
-  const to = pref.email ? (opts.emailTo ? [].concat(opts.emailTo) : await _borrowerEmail(borrowerId)) : [];
+  // ALREADY IN THEIR OWN INBOX — same rule as notifyStaff (owner-directed
+  // 2026-08-09): a borrower who was on the very email this notification is
+  // about keeps the in-app row and is never emailed a duplicate of it.
+  const to = loopedIn.withoutAlreadyEmailed(
+    pref.email ? (opts.emailTo ? [].concat(opts.emailTo) : await _borrowerEmail(borrowerId)) : [],
+    opts.alreadyEmailed);
   _track(_emailRow(id, to, sopts, 'borrower')).catch(() => {});   // fire-and-forget; swallow any stray rejection so it can't crash the process
   return id;
 }
@@ -1184,6 +1211,12 @@ async function notifyAppStaffThread(appId, opts = {}) {
       try { loopIn = await require('./draw-recipients').drawLoopInBcc(appId); } catch (_) { /* best-effort */ }
     }
     recipients = _staffThreadRecipients({ assignees, loopIn, explicit: Array.isArray(opts.to) ? opts.to : [] });
+    // Anybody already on the inbound email this event is about holds the
+    // message itself — drop them from the one shared email. Their in-app row
+    // still writes below, and if EVERYONE was on it the fallback fan-out runs
+    // with email enabled but notifyStaff re-applies the same rule per person,
+    // so nobody is double-mailed and nobody not-on-the-email goes dark.
+    recipients = loopedIn.withoutAlreadyEmailed(recipients, opts.alreadyEmailed);
   } catch (e) {
     console.error('[notify] app-staff-thread recipients', appId, (e && e.message) || e);
   }
@@ -1265,9 +1298,14 @@ async function notifyAdmins(opts) {
   // email went to the sales desk) must not email this list either — the whole
   // point of inAppOnly is "rows yes, emails no" (audit 2026-07-24).
   if (cfg.notifyAdmins.length && opts.inAppOnly !== true && opts.skipSharedInbox !== true) {
-    const msg = buildEmail(opts, 'staff');
-    _track(email.sendMail({ to: cfg.notifyAdmins, subject: msg.subject, text: msg.text, html: msg.html,
-      replyTo: opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null }).catch(() => {}));
+    // The shared-inbox list honors the already-on-the-email rule too — a
+    // monitored inbox that was Cc'd on the reply itself needs no second copy.
+    const adminTo = loopedIn.withoutAlreadyEmailed(cfg.notifyAdmins, opts.alreadyEmailed);
+    if (adminTo.length) {
+      const msg = buildEmail(opts, 'staff');
+      _track(email.sendMail({ to: adminTo, subject: msg.subject, text: msg.text, html: msg.html,
+        replyTo: opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null }).catch(() => {}));
+    }
   }
   return ids;
 }
