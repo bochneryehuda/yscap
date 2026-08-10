@@ -1016,6 +1016,14 @@ router.get('/files/:id/draw-request', requirePermission('manage_draws'), async (
         `SELECT role, name, email, status, signed_at, delivered_at
            FROM esign_recipients WHERE envelope_row_id=$1 ORDER BY routing_order, role`, [env.id])).rows;
     }
+    // SELF-HEAL the stored classification BEFORE reading it (owner-reported 2026-08-10: "the
+    // entity name is the same but it still shows New Entity"). `name_kind` is written once at
+    // capture, so the db/478 known-entity rule fix — and any later profile change (an entity
+    // added, verified, or its operating agreement accepted) — never reached already-captured
+    // rows: the card kept showing a fatal verdict the live rule no longer holds. Re-running the
+    // ONE classifier here (two reads + a pure match) makes the card state the LIVE answer every
+    // time it is opened. Best-effort — an error still renders the stored row.
+    try { await require('../lib/esign/draw-wire').reclassifyWire(db, appId); } catch (_) { /* best-effort */ }
     // Captured wire — NEVER the raw account number (masked to last-4).
     const w = (await db.query(
       `SELECT account_name, bank_name, account_last4, routing_number, bank_address, account_address,
@@ -2689,11 +2697,35 @@ async function borrowerFindingAttachments(appId, sitewireDrawId) {
       // in the body plus on the file in their mail client — the frozen never-name-the-note-buyer
       // rule (borrower-safe.js lists "trust point" explicitly). Renamed to a neutral, factual
       // name; the stored document keeps its own filename for staff.
-      out.push({ filename: borrowerSafeAttachmentName(r.filename, drawNo), content, contentType: 'application/pdf' });
+      // BASE64, NEVER A RAW BUFFER (owner-reported 2026-08-10: the attached PDF was corrupted
+      // and unopenable). Both mail providers do `String(a.content)` expecting base64 — a Buffer
+      // stringifies as a lossy UTF-8 decode of PDF binary, which can never open. This was the
+      // repo's ONE producer passing a Buffer; the providers now also normalize (belt), but the
+      // convention is base64 strings at the producer (the shape every other call site uses).
+      out.push({ filename: borrowerSafeAttachmentName(r.filename, drawNo), content: content.toString('base64'), contentType: 'application/pdf' });
       seen.add(kind);
       budget -= content.length;
     } catch (e) { /* a missing file never blocks the findings email */ }
   }
+  // THE SITEWIRE INSPECTOR'S OWN PER-DRAW PDF IS NEVER A `documents` ROW — it lives only in the
+  // durable draw_media archive (kind='draw_pdf'), which is where the investor delivery already
+  // reads it. Without this arm, a virtual-inspection file could attach at most OUR report while
+  // the owner's requirement is BOTH ("we always need our PDF, the Sitewire PDF, and/or the
+  // Trinity PDF"). Distinctly named so it never collides with our branded report's name.
+  try {
+    const m = (await db.query(
+      `SELECT storage_ref FROM draw_media
+        WHERE application_id=$1 AND sitewire_draw_id=$2 AND kind='draw_pdf' AND storage_ref IS NOT NULL
+        ORDER BY archived_at DESC LIMIT 1`, [appId, sitewireDrawId])).rows[0];
+    if (m) {
+      const buf = await storage.read(m.storage_ref);
+      if (buf && buf.length && buf.length <= budget) {
+        out.push({ filename: `inspector-report${drawNo != null ? `-draw-${drawNo}` : ''}.pdf`,
+          content: buf.toString('base64'), contentType: 'application/pdf' });
+        budget -= buf.length;
+      }
+    }
+  } catch (_) { /* best-effort — the findings email still goes with whatever attached */ }
   return out;
 }
 
@@ -2750,6 +2782,10 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
       drawReport.autoDeliverArtifacts(appId, drawId).catch(() => ({ archived: 0, reports: [] })),
       Number(process.env.DRAW_AUTODELIVER_BUDGET_MS) || 20000);
     const findingAttachments = await borrowerFindingAttachments(appId, drawId).catch(() => []);
+    // The one-email-thread result — read after the send so the response (and the desk marker
+    // below) can say whether the BORROWER actually received their copy, instead of reporting
+    // "delivered" when only the team was reached (owner-reported 2026-08-10).
+    let sentThread = null;
     // notifyAppBorrowers (not notifyBorrower) so a co-borrower who can see the file
     // ALSO gets the "results ready" email — the primary-only send made the
     // co-borrower first hear of it via the later reminder (owner-reported audit).
@@ -2773,11 +2809,20 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
       // numbers now come from the SAME rollup the report is built from, so the email and its own
       // attachment can never quote different figures. Best-effort: an unreadable rollup simply
       // omits the release line rather than delaying the borrower's results.
+      // A RELEASE FIGURE EXISTS ONLY WHEN THE INSPECTOR HAS ANSWERED (owner-reported 2026-08-10,
+      // YSCAP258134746: the inspector approved NOTHING and this callout still promised "$0 is
+      // wired to you" under a "Requested $24,750" headline). `net_release_cents` is ALWAYS a
+      // number (drawMoney computes max(0, approved − fee) even off an unknown approval), so
+      // gating on `!= null` promised a wire on every draw. The gate is the SAME predicate the
+      // figures band uses — has_inspector_amounts — so the hero and the callout can never again
+      // tell two different stories about one draw. An explicit $0 gets its own honest wording.
       let releaseLine = null;
+      let inspectorZero = false;
       try {
         const rl = await rollupMod.loadRollup(db, appId);
         const d = (rl.draws || []).find((x) => Number(x.sitewire_draw_id) === Number(drawId));
-        if (d && d.net_release_cents != null) {
+        if (d && d.has_inspector_amounts && Number(d.approved_cents) <= 0) inspectorZero = true;
+        if (d && d.has_inspector_amounts && d.net_release_cents != null && Number(d.net_release_cents) > 0) {
           const deductions = [];
           if (Number(d.fee_cents) > 0) deductions.push(`${usd(d.fee_cents)} draw fee`);
           if (Number(d.retainage_held_cents) > 0) deductions.push(`${usd(d.retainage_held_cents)} retainage held`);
@@ -2806,8 +2851,26 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
       const disputeLink = result.reply_token ? `/draw-accept/${result.reply_token}?tab=dispute` : `/app/${appId}`;
       // ONE email with the whole team visibly on it (owner-directed 2026-08-03) — the separate
       // in-app-only staff marker below stays, so nobody on the file loses the event.
-      await notify.notifyAppThread(appId, {
+      // DELIVERING FINDINGS IS AN EXPLICIT HUMAN ACTION, NOT AN AUTOMATED NOTIFICATION
+      // (owner-reported 2026-08-10: the borrower never received the findings email; the fallback
+      // emailed the borrower-voiced copy to a staff assignee instead). The coordinator pressed
+      // "Deliver findings to the borrower", and the wire SLA starts running the moment the finding
+      // persists — so this send takes the same two escape hatches the notify layer documents for
+      // exactly this shape: `_bypassLoGate` (the Notification Center's Send-now hatch — a human
+      // already decided this goes out, the LO curation gate must not silently park it in Drafts)
+      // and `evenIfOnHold` ("the rare message that must go out anyway" — a parked file's draw is
+      // still being worked by the desk). Borrower notification PREFERENCES still apply.
+      sentThread = await notify.notifyAppThread(appId, {
         type: 'draw_findings', title: 'Your inspection is complete — please confirm the amount',
+        _bypassLoGate: true, evenIfOnHold: true,
+        // The staff copy is STAFF-voiced with a STAFF destination — never the borrower's no-login
+        // accept/dispute magic link (audit L1; enforced by notifyAppThread's staffLink handling).
+        // NEUTRAL wording on purpose: this same copy is the FALLBACK email when the borrower could
+        // not be reached, so it must not claim the results "went to the borrower" (the note the
+        // fallback appends says what actually happened).
+        staffTitle: 'Inspection results ready for the borrower — awaiting their confirmation',
+        staffBody: `The inspection results for ${addr} are ready for the borrower to accept or dispute. The draw releases once they confirm.`,
+        staffLink: `/internal/app/${appId}`, staffCtaLabel: 'Open the file',
         // "Draw 2 · Your inspection is complete …" — the borrower and the coordinator are both
         // on this thread and a property with three draws otherwise sends three identical subjects.
         drawTag: await drawLabel.drawTagForRef(db, appId, { sitewireDrawId: drawId }),
@@ -2820,19 +2883,41 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
           : { label: 'Approved by the inspector', value: usd(totAppr), sub: `of ${usd(totReq)} requested`, tone: 'positive' },
         body: `Your inspection is complete${pv.length ? ` — ${pv.join(' and ')} on file` : ''}. Here is what the inspector approved on each line. When you’re ready, confirm to release your draw — or push back on any line you disagree with.`,
         meta,
-        callout: { title: 'What happens when you confirm', body: `Confirming releases your draw${releaseLine ? ` — ${releaseLine.value.split(' (')[0]} is wired to you` : ''} — funds are typically sent within a day or two. Want to look first? Open the results to see every photo and download your inspection report (PDF).`, tone: 'action' },
+        // The callout tells the SAME story as the headline: a real release when one is known, an
+        // honest "nothing releases this time" on an inspector's $0, and NO wire promise when the
+        // inspector has not answered yet.
+        callout: {
+          title: 'What happens when you confirm',
+          body: inspectorZero
+            ? 'The inspector approved $0 this time, so confirming accepts the results — nothing is wired, and the amounts stay on your budget to draw once the work is done. Disagree? Push back on any line below. Want to look first? Open the results to see every photo and download your inspection report (PDF).'
+            : `Confirming ${releaseLine ? `releases your draw — ${releaseLine.value.split(' (')[0]} is wired to you — funds are typically sent within a day or two` : 'accepts the inspection results'}. Want to look first? Open the results to see every photo and download your inspection report (PDF).`,
+          tone: 'action',
+        },
         applicationId: appId, link: acceptLink, ctaLabel: 'Review & confirm',
         cta2Label: 'Push back on a line', cta2Link: disputeLink,
         attachments: findingAttachments,
         // The team now rides a VISIBLE Cc, applied for every 'draws' notification at the notify
         // chokepoint — so the reply-all thread includes them. No Bcc needed here any more.
-      }).catch(() => {});
+      }).catch(() => null);
     }
+    // Did the borrower actually receive their copy? `emailedTogether` is the thread's own answer
+    // (mailable AND at least one borrower row written). The reason class tells the coordinator
+    // what to fix: no address on file vs. a held/muted copy.
+    const borrowerEmailed = !!(sentThread && sentThread.emailedTogether);
+    const borrowerEmailReason = borrowerEmailed ? null
+      : (!f.borrower_id ? 'no_borrower'
+        : (sentThread && sentThread.borrowerMailable === false ? 'no_borrower_email'
+          : (sentThread ? 'suppressed' : 'send_failed')));
     // In-app only (owner-directed 2026-07-20): a confirmation that the coordinator
     // just delivered findings is not a whole-team EMAIL — the borrower's own
     // "results ready" email (above) is the real send; this is a desk marker.
+    // The marker TELLS THE TRUTH about the borrower's copy — "delivered to the borrower" on an
+    // event whose borrower email never went out is how this bug stayed invisible.
     await notify.notifyAppStaff(appId, { type: 'draw_findings', title: 'Draw findings delivered to borrower', inAppOnly: true,
-      body: `Inspection findings for ${addr} were delivered to the borrower to accept or dispute.`, applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
+      body: borrowerEmailed
+        ? `Inspection findings for ${addr} were delivered to the borrower to accept or dispute.`
+        : `Inspection findings for ${addr} were recorded, but the borrower could NOT be emailed (${borrowerEmailReason === 'no_borrower_email' ? 'no email address on file' : 'their copy was blocked or failed'}). Reach them another way — the draw is waiting on their confirmation.`,
+      applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     // Auto-deliver artifacts: durably archive the inspector's (expiring) media NOW and pre-build the PILOT +
     // borrower-safe reports, so the durable photos + both branded PDFs are ready the instant findings land —
     // never dependent on a later manual "archive" click (a report built pre-archive had zero photos). Fully
@@ -2842,7 +2927,8 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
     // a sequential per-item fetch with only a per-item timeout). Past the budget the work keeps running in the
     // background to completion (every step is idempotent + independently caught) — we just answer promptly.
     res.json({ ok: true, ...result, media_archived: artifacts.archived, reports_ready: artifacts.reports,
-      reports_pending: !!artifacts.pending, attachments_sent: findingAttachments.map((a) => a.filename) });
+      reports_pending: !!artifacts.pending, attachments_sent: findingAttachments.map((a) => a.filename),
+      borrower_emailed: borrowerEmailed, borrower_email_reason: borrowerEmailReason });
   } catch (e) { console.warn('[sitewire] upstream error:', e && e.message); res.status(502).json({ error: 'the draw service is temporarily unavailable — nothing was changed; try again shortly' }); }
 });
 

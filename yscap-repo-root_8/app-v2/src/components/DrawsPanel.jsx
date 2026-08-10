@@ -2077,7 +2077,20 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
           </span>
         )}
         <button className="btn btn-sm ghost" title={readTip} disabled={readsOff || busy === 'deliver' + draw.sitewire_draw_id}
-          onClick={() => act('deliver' + draw.sitewire_draw_id, async () => { const r = await api.post(`/api/sitewire/files/${appId}/findings/${draw.sitewire_draw_id}/deliver`, {}); const ready = Array.isArray(r.reports_ready) && r.reports_ready.length; return { msg: `Findings delivered to the borrower (${r.lines} items).${ready ? ' Photos archived + PILOT reports ready.' : (r.reports_pending ? ' Archiving photos + preparing reports…' : '')}` }; })}>
+          onClick={() => act('deliver' + draw.sitewire_draw_id, async () => {
+            const r = await api.post(`/api/sitewire/files/${appId}/findings/${draw.sitewire_draw_id}/deliver`, {});
+            const ready = Array.isArray(r.reports_ready) && r.reports_ready.length;
+            // The whole point of this button is the BORROWER receiving the results — if their
+            // email did not go out, say so loudly instead of reporting a clean delivery
+            // (owner-reported 2026-08-10: the borrower was never looped in and nothing said so).
+            if (r.borrower_emailed === false) {
+              const why = r.borrower_email_reason === 'no_borrower_email'
+                ? 'no email address on their profile, draw emails turned off in their settings, or the file is parked — fix that and re-send'
+                : 'their copy was blocked or could not be sent — reach them another way';
+              return { msg: `⚠️ Findings recorded (${r.lines} items), but the borrower did NOT receive the email: ${why}.` };
+            }
+            return { msg: `Findings delivered to the borrower (${r.lines} items).${ready ? ' Photos archived + PILOT reports ready.' : (r.reports_pending ? ' Archiving photos + preparing reports…' : '')}` };
+          })}>
           {finding ? 'Re-send findings' : 'Deliver findings to borrower'}
         </button>
 

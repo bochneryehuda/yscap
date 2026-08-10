@@ -128,7 +128,19 @@ router.get('/:token/media/:mediaId', tokenThrottleReadMedia, async (req, res) =>
   if (!m || !m.storage_ref) return res.status(404).end();
   let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
   if (!buf || !buf.length) return res.status(404).end();
-  setMediaHeaders(res, m.content_type);   // safe-type allowlist + sandbox CSP
+  // THE BYTES DECIDE THE TYPE, never the CDN's archived header (owner-reported 2026-08-10:
+  // every photo tile rendered as a broken image). media-archive stores the content type the
+  // Sitewire CDN happened to send — often `application/octet-stream` or nothing — and under
+  // setMediaHeaders' nosniff a non-image type makes the browser REFUSE to render perfectly
+  // good JPEG bytes in an <img>. Sniffing the magic bytes is the same "vendor header is not
+  // evidence" rule draw-report.js already applies to these very rows for the PDF embeds.
+  const SNIFF_MIME = { jpg: 'image/jpeg', png: 'image/png', gif: 'image/gif', heic: 'image/heic', tiff: 'image/tiff', pdf: 'application/pdf' };
+  let ctype = m.content_type;
+  try {
+    const kind = require('../lib/upload-bytes').sniffKind(buf);
+    if (kind && SNIFF_MIME[kind]) ctype = SNIFF_MIME[kind];
+  } catch (_) { /* fall back to the stored type */ }
+  setMediaHeaders(res, ctype);   // safe-type allowlist + sandbox CSP
   return res.end(buf);
 });
 
