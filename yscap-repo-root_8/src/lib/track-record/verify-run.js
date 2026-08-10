@@ -173,8 +173,19 @@ async function runVerify(trackRecordId, opts = {}, client) {
 
 /**
  * Check A, as a human recorded it: does this borrower control that company?
- * `null` when nobody has been asked — which the checks module reads as "no data
- * on the borrower's side", never as a pass.
+ * Returns 'confirmed' ONLY when a human verified it; otherwise `null` — which the
+ * checks module reads as "no data on the borrower's side", never as a pass and
+ * never as a contradiction.
+ *
+ * IT NEVER RETURNS 'rejected'. `llc_borrowers.ownership_verified` is boolean NOT NULL
+ * DEFAULT false (db/495) and its only writer TOGGLES it — verify → true, revoke →
+ * false — so a `false` means "not verified" (a link nobody has reviewed yet OR one a
+ * reviewer un-confirmed), NOT an active statement that the borrower does not control
+ * the company. Reading `false` as 'rejected' made a NEVER-REVIEWED link mark the
+ * borrower's property CONTRADICTED (checks.js), which is the exact false-rejection
+ * this fixes and which the authoritative track-record-ownership.js already avoids
+ * (it treats `!verified` as cleared/neutral, never a contradiction). This boolean
+ * cannot express a genuine rejection, so it must never produce one.
  */
 async function controlVerdictFor(db, llcId, borrowerId) {
   if (!llcId || !borrowerId) return null;
@@ -182,8 +193,7 @@ async function controlVerdictFor(db, llcId, borrowerId) {
     const r = (await db.query(
       `SELECT ownership_verified FROM llc_borrowers WHERE llc_id=$1 AND borrower_id=$2`,
       [llcId, borrowerId])).rows[0];
-    if (!r || r.ownership_verified == null) return null;
-    return r.ownership_verified === true ? 'confirmed' : 'rejected';
+    return r && r.ownership_verified === true ? 'confirmed' : null;
   } catch (_) { return null; }
 }
 

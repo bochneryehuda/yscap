@@ -373,6 +373,14 @@ function ownershipPillar(line, recs, ctx, today) {
       };
     }
 
+    // CHECK A EXPLICITLY REJECTED — an active human statement that the borrower does
+    // NOT control this company, so the deed does not carry to them. NOTE: the only
+    // current source of controlVerdict (verify-run.controlVerdictFor, reading the
+    // boolean llc_borrowers.ownership_verified) can no longer produce 'rejected' — a
+    // not-verified link (never-reviewed OR revoked) is 'no data' (null), never a
+    // rejection. This branch is therefore currently unreachable and kept defensively
+    // for a future explicit Check-A rejection signal; do NOT resurrect the old
+    // false==rejected reading that made a never-reviewed link contradict the property.
     if (ctx.controlVerdict === 'rejected') {
       return {
         ...base,
