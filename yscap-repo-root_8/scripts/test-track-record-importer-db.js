@@ -147,6 +147,19 @@ const found = (name) => {
       'the importer names itself in `origin` and a staffer is recorded as who put it there — db/458\'s own convention, since its CHECK refuses "staff_import"');
     ok(String(l.llc_id) === String((await db.query(`SELECT id FROM llcs WHERE borrower_id=$1`, [borrowerId])).rows[0].id),
       'and the line is LINKED to the company — the entity chokepoint ran');
+
+    /* THE ADDRESS IS THE CANONICAL OBJECT, never the bare one-line STRING that
+       elementix shapes.js flattens a deed's `addresses[{addressFull}]` into. A
+       string has no `.line1`/`.oneLine`, so the tool bridge (propFromRow reads
+       `.street||.line1||.oneLine`) rendered "(no address)". This asserts the read
+       the tool actually performs succeeds. */
+    const pa = l.property_address;
+    ok(pa && typeof pa === 'object' && !Array.isArray(pa),
+      'the imported address is stored as an object, not a bare string');
+    ok(pa && typeof pa.oneLine === 'string' && (pa.oneLine === A1 || pa.oneLine === A2),
+      'the verbatim vendor one-line is preserved as .oneLine');
+    ok(pa && String(pa.line1 || pa.street || '').length > 0 && pa.oneLine.indexOf(pa.line1) === 0,
+      'and the street is parsed into .line1, so the tool bridge reads a real address — never "(no address)"');
     ok(l.deal_type === 'flip', 'the reviewer\'s answer to the deal-type question is what lands');
   }
 

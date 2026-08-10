@@ -167,6 +167,39 @@ console.log('\n3. The database refuses to be wrong regardless (db/485)');
     await db.query(`UPDATE track_records SET sale_price=400000 WHERE id=$1`, [a.id]);   // already 400000
     ok((await state(a.id)).is_verified === true,
       're-writing an identical value is not a change (IS DISTINCT FROM), so a verified row is left alone');
+
+    // THE THREE RULES LATER MIGRATIONS ADDED TO THIS GUARD — asserted HERE so a
+    // future partial-read rebuild of the function (the db/497 class, which db/501's
+    // header records, and which db/516 v1 repeated by omitting db/500/db/501) is
+    // caught by the guard's OWN test, not only by a sibling suite.
+
+    // db/516 — A PURE STORAGE-SHAPE REPAIR IS NOT A RESTATEMENT. A bare one-line
+    // string reshaped to the canonical object (SAME canonical text) must stay
+    // verified — the reason db/516 exists (the public-records "(no address)" fix).
+    // The address is changed then re-verified in SEPARATE statements, because
+    // changing it correctly un-verifies until a reviewer re-verifies the new line.
+    await db.query(`UPDATE track_records SET property_address='"14 Reshape Ave, Lakewood, NJ 08701"'::jsonb WHERE id=$1`, [a.id]);
+    await db.query(`UPDATE track_records SET verification_status='verified', is_verified=true, verified_at=now() WHERE id=$1`, [a.id]);
+    await db.query(`UPDATE track_records SET property_address='{"line1":"14 Reshape Ave","city":"Lakewood","state":"NJ","zip":"08701","oneLine":"14 Reshape Ave, Lakewood, NJ 08701"}'::jsonb WHERE id=$1`, [a.id]);
+    ok((await state(a.id)).is_verified === true,
+      'db/516: a bare-string address reshaped to the canonical object (same text) stays verified');
+    // db/493 — the SAME PLACE respelled (different text, same house/zip) stays verified.
+    await db.query(`UPDATE track_records SET property_address='{"line1":"14 Reshape Avenue","city":"Lakewood","state":"NJ","zip":"08701","oneLine":"14 Reshape Avenue, Lakewood, NJ 08701"}'::jsonb WHERE id=$1`, [a.id]);
+    ok((await state(a.id)).is_verified === true,
+      'db/493: the same place respelled (Ave -> Avenue) stays verified');
+
+    // db/500 — pillars_met is material in the WITHDRAWAL direction ONLY. A confirmed
+    // pillar being withdrawn (true -> false) re-opens the line; FINISHING the checks
+    // (false -> true) must NOT un-verify the line being finished. (The llc_id NULL->
+    // value backfill exemption, db/501, is covered by test-track-record-entity-backfill-db.)
+    await db.query(`UPDATE track_records SET verification_status='verified', is_verified=true, verified_at=now(), pillars_met=true WHERE id=$1`, [a.id]);
+    await db.query(`UPDATE track_records SET pillars_met=false WHERE id=$1`, [a.id]);
+    ok((await state(a.id)).is_verified === false,
+      'db/500: withdrawing pillars_met (true -> false) re-opens the line');
+    await db.query(`UPDATE track_records SET verification_status='verified', is_verified=true, verified_at=now(), pillars_met=false WHERE id=$1`, [a.id]);
+    await db.query(`UPDATE track_records SET pillars_met=true WHERE id=$1`, [a.id]);
+    ok((await state(a.id)).is_verified === true,
+      'db/500: FINISHING pillars (false -> true) does NOT un-verify — asymmetric on purpose');
   } catch (e) {
     fails++; console.error('  ✗ DB section threw:', e.message);
   } finally {
