@@ -123,6 +123,21 @@ const ok = (cond, what) => { if (cond) { pass++; console.log(`  ok  ${what}`); }
     ok(ar.status === 200, `an admin resolves it (got ${ar.status})`);
   }
 
+  console.log('\n4. An Encompass-source row is reached the SAME way (the old carve-out is subsumed)');
+  {
+    // REVIEW_BORROWER_SCOPE gates on application_id IS NULL, source-agnostic — so
+    // an Encompass row (which the old ENCOMPASS_REVIEW_SCOPE special-cased) is now
+    // covered by the one general branch. Prove it still reaches the profile owner.
+    const id = (await db.query(
+      `INSERT INTO sync_review_queue (application_id, borrower_id, task_id, source, direction, field_key, reason, status, clickup_value, portal_value)
+       VALUES (NULL,$1,$2,'encompass','inbound','current_address','addr_test','open','A St','B Ave') RETURNING id`,
+      [borrower, `encompass:${tag}-enc`])).rows[0].id;
+    ok(await listHasRow(owner.tok, id), 'the profile owner sees the Encompass row too');
+    ok(!(await listHasRow(stranger.tok, id)), 'an unrelated officer still does not');
+    const r = await call(owner.tok, 'POST', `/sync-reviews/${id}/reject`);
+    ok(r.status === 200, `the profile owner resolves the Encompass row (got ${r.status})`);
+  }
+
   server.close();
   console.log(`\n${fail ? 'FAILED' : 'OK'}  sync-review scope follows borrower visibility — ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

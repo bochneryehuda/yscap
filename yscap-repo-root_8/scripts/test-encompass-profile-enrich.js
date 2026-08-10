@@ -167,11 +167,13 @@ const I = enrich._internals;
 
   // An Encompass row hangs on a BORROWER, never a file — and that borrower may
   // have no loan file at all (a DSCR-only client). Scoping it the file way would
-  // hide the card from the one officer who can answer it.
+  // hide the card from the one officer who can answer it. As of #37 the
+  // Encompass-only carve-out was generalized to EVERY application-less review row
+  // (REVIEW_BORROWER_SCOPE, gated on q.application_id IS NULL), which subsumes it.
   const staff = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'staff.js'), 'utf8');
-  ok(/ENCOMPASS_REVIEW_SCOPE = \(p\) =>[\s\S]{0,300}VISIBLE_BORROWER_SQL\('eb', p\)/.test(staff),
-    'the reviews scope reaches an Encompass row through the BORROWER scope, not the file scope');
-  ok((staff.match(/\$\{ENCOMPASS_REVIEW_SCOPE\(/g) || []).length === 2,
+  ok(/REVIEW_BORROWER_SCOPE = \(p\) =>[\s\S]{0,400}VISIBLE_BORROWER_SQL\('eb', p\)/.test(staff),
+    'the reviews scope reaches an application-less (incl. Encompass) row through the BORROWER scope, not the file scope');
+  ok((staff.match(/\$\{REVIEW_BORROWER_SCOPE\(/g) || []).length === 2,
     'and both the list AND the sidebar count use it — a card you cannot count is a card you never look for');
 }
 
