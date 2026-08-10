@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
-import { api } from '../lib/api.js';
+import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import EmailCenter from './EmailCenter.jsx';
 import FileSections, { Section } from './FileSections.jsx';
@@ -2544,6 +2544,7 @@ function DrawAttachments({ appId, drawId }) {
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const [cat, setCat] = useState('invoice');
+  const [preview, setPreview] = useState(null);
   const load = useCallback(() => {
     api.get(`/api/sitewire/files/${appId}/draws/${drawId}/attachments`).then(setD).catch(() => setD(null));
   }, [appId, drawId]);
@@ -2575,20 +2576,43 @@ function DrawAttachments({ appId, drawId }) {
     finally { setBusy(false); }
   }
 
+  // Review a pending document right on the draw card — a pulled Sitewire document (and a
+  // borrower upload) only travels to the investor once somebody accepts it.
+  async function review(att, action) {
+    if (action === 'reject' && !(await askConfirm(`Reject “${att.filename}”?\n\nIt stays on the file but will NOT travel to the investor.`))) return;
+    setBusy(true); setErr('');
+    try { await api.sitewireReviewDrawAttachment(appId, drawId, att.id, action); load(); }
+    catch (ex) { setErr(ex?.data?.error || 'Could not record that.'); }
+    finally { setBusy(false); }
+  }
+
   const rows = (d && d.attachments) || [];
   return (
     <div style={{ marginTop: 12 }}>
       <div className="act-label" style={{ display: 'block', marginBottom: 5 }}>Supporting documents</div>
       <div className="act-card-sub" style={{ marginTop: 0 }}>
         Invoices, receipts and extra photos for this draw — they go to the investor with the reports.
+        Documents the borrower emails to Sitewire are pulled in here automatically; accept them so they travel.
       </div>
       {rows.length > 0 && (
         <ul style={{ listStyle: 'none', padding: 0, margin: '8px 0 0' }}>
           {rows.map((a) => (
-            <li key={a.id} className="small" style={{ display: 'flex', gap: 8, alignItems: 'baseline', padding: '3px 0', color: '#3A4550' }}>
+            <li key={a.id} className="small" style={{ display: 'flex', gap: 8, alignItems: 'baseline', padding: '3px 0', color: '#3A4550', flexWrap: 'wrap' }}>
               <b style={{ color: '#141B22' }}>{(d.categories || []).find((c) => c.value === a.category)?.label || 'Document'}</b>
-              <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{a.filename}</span>
-              {a.review_status !== 'accepted' && <span className="chip">awaiting review</span>}
+              <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13, flex: 1, minWidth: 120, textAlign: 'left', overflowWrap: 'anywhere' }}
+                title="Preview it here" onClick={() => setPreview(preview && preview.id === a.id ? null : a)}>{a.filename}</button>
+              {a.source === 'sitewire_property_doc' && <span className="chip" title={a.note || ''}>from Sitewire</span>}
+              {a.review_status === 'rejected'
+                ? <span className="chip" style={{ color: '#B4453C' }}>rejected</span>
+                : a.review_status !== 'accepted' && <span className="chip">awaiting review</span>}
+              {a.review_status !== 'accepted' && (
+                <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13, color: '#2F7F53' }} disabled={busy}
+                  onClick={() => review(a, 'accept')}>Accept</button>
+              )}
+              {a.review_status === 'pending' && (
+                <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13, color: '#B4453C' }} disabled={busy}
+                  onClick={() => review(a, 'reject')}>Reject</button>
+              )}
               <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13 }}
                 onClick={() => api.sitewireOpenDrawAttachment(appId, drawId, a.id, window.open('', '_blank'))}>Open</button>
               <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13, color: '#B4453C' }} disabled={busy}
@@ -2597,17 +2621,63 @@ function DrawAttachments({ appId, drawId }) {
           ))}
         </ul>
       )}
+      {preview && <AttachmentPreview key={preview.id} appId={appId} drawId={drawId} att={preview} onClose={() => setPreview(null)} />}
       <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <select className="input" style={{ maxWidth: 190 }} value={cat} onChange={(e) => setCat(e.target.value)} aria-label="What kind of document">
           {((d && d.categories) || [{ value: 'invoice', label: 'Invoice' }]).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
         </select>
         <label className="btn btn-sm soft" style={{ cursor: busy ? 'default' : 'pointer' }}>
-          {busy ? 'Attaching…' : 'Attach a file'}
+          {busy ? 'Attaching…' : 'Add a document'}
           <input type="file" multiple disabled={busy} onChange={onPick} style={{ display: 'none' }} />
         </label>
       </div>
       {msg ? <div className="act-card-sub" style={{ color: 'var(--primary,#2F7F86)' }}>{msg}</div> : null}
       {err ? <div className="act-card-sub" style={{ color: 'var(--danger,#B4453C)' }}>{err}</div> : null}
+    </div>
+  );
+}
+
+/* Inline preview of one supporting document — an image or a PDF renders right here on the draw
+   card (owner-directed 2026-08-10: "I want to be able to preview it regularly", not a forced
+   download). The bytes come through the authed download helper (an <img>/<iframe> src cannot
+   carry the Bearer token) and are shown from a local object URL, revoked on close. A type the
+   browser cannot render degrades to a plain download row — never a broken frame. */
+function AttachmentPreview({ appId, drawId, att, onClose }) {
+  const [url, setUrl] = useState(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let alive = true; let objUrl = null;
+    api.authedBlob(`/api/sitewire/files/${appId}/draws/${drawId}/attachments/${att.id}/file`)
+      .then((blob) => { if (!alive) return; objUrl = URL.createObjectURL(blob); setUrl(objUrl); })
+      .catch(() => { if (alive) setFailed(true); });
+    return () => { alive = false; if (objUrl) URL.revokeObjectURL(objUrl); };
+  }, [appId, drawId, att.id]);
+
+  const ct = String(att.content_type || '');
+  const isImg = /^image\/(png|jpe?g|gif|webp|bmp)/i.test(ct);
+  const isPdf = /^application\/pdf/i.test(ct);
+  const kb = att.size_bytes ? `${Math.max(1, Math.round(att.size_bytes / 1024)).toLocaleString('en-US')} KB` : '';
+  return (
+    <div style={{ marginTop: 8, border: '1px solid var(--line,#E4DFD3)', borderRadius: 10, padding: 10, background: '#fff' }}>
+      <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        <b className="small" style={{ color: '#141B22', flex: 1, minWidth: 140, overflowWrap: 'anywhere' }}>{att.filename}</b>
+        <span className="small" style={{ color: '#4B585C' }}>{kb}</span>
+        <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13 }}
+          onClick={async () => { try { const b = await api.authedBlob(`/api/sitewire/files/${appId}/draws/${drawId}/attachments/${att.id}/file`); saveBlob(b, att.filename); } catch { /* the row's Open still works */ } }}>Download</button>
+        <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13 }} onClick={onClose}>Close</button>
+      </div>
+      {(att.note || att.supports) && (
+        <div className="small" style={{ color: '#4B585C', marginTop: 4 }}>
+          {att.supports ? <span>Backs up: {att.supports}. </span> : null}{att.note || ''}
+        </div>
+      )}
+      <div style={{ marginTop: 8 }}>
+        {failed ? <div className="small" style={{ color: '#B4453C' }}>The file could not be loaded — try Open or Download.</div>
+          : !url ? <div className="small" style={{ color: '#4B585C' }}>Loading preview…</div>
+          : isImg ? <img src={url} alt={att.filename} style={{ maxWidth: '100%', maxHeight: 420, borderRadius: 8, display: 'block' }} />
+          : isPdf ? <iframe title={att.filename} src={url} style={{ width: '100%', height: 460, border: '1px solid var(--line,#E4DFD3)', borderRadius: 8, background: '#fff' }} />
+          : <div className="small" style={{ color: '#4B585C' }}>This file type has no in-page preview — use Open or Download.</div>}
+      </div>
     </div>
   );
 }

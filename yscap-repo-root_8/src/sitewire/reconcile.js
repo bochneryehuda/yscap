@@ -669,6 +669,12 @@ async function reconcileOne(appId) {
   // for the escalate path — pushDocuments itself uses escalate:false to avoid recursing into its
   // own retry.
   try { await require('./doc-push').verifyPushedDocsOnce(appId, link.sitewire_property_id, null, { escalate: true }); } catch (_) {}
+  // Pull borrower-emailed proof off the property's Documents tab onto the matching PILOT draw
+  // (owner-directed 2026-08-10 — "CCF_000016.pdf, From inbound email" never reached the draw or
+  // the investor). Runs on the property payload this reconcile already fetched — no extra
+  // Sitewire call — AFTER the draws loop so the mirror rows the draw match needs exist.
+  // Best-effort: never fails the reconcile.
+  try { await require('./property-doc-ingest').ingestForProperty(appId, prop); } catch (_) {}
   return { draws: n };
 }
 

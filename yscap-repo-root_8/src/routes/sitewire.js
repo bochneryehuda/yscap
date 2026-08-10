@@ -1701,6 +1701,33 @@ router.delete('/files/:id/draws/:drawId/attachments/:attId', requirePermission('
   res.json({ ok: true, attachments: await drawAttachments.listFor(req.params.id, ref) });
 });
 
+// Review a supporting document IN PLACE on the draw card (owner-directed 2026-08-10). A pulled
+// Sitewire document and a borrower upload are born 'pending', and only an ACCEPTED document
+// travels to the investor (db/424) — so the person looking at the draw must be able to accept or
+// reject it right there, not hunt for it elsewhere. Writes the ordinary documents review fields
+// (db/013), so every other surface that reads review_status agrees.
+router.post('/files/:id/draws/:drawId/attachments/:attId/review', requirePermission('manage_draws'), async (req, res) => {
+  const ref = await ownedDraw(req, req.params.id, req.params.drawId);
+  if (ref === 'forbidden') return res.status(403).json({ error: 'forbidden' });
+  if (!ref) return res.status(404).json({ error: 'draw not found on this file' });
+  if (!/^\d+$/.test(String(req.params.attId))) return res.status(404).json({ error: 'not found' });
+  const action = String((req.body && req.body.action) || '');
+  if (action !== 'accept' && action !== 'reject') return res.status(400).json({ error: 'action must be accept or reject' });
+  const reason = req.body && req.body.reason ? String(req.body.reason).slice(0, 500) : null;
+  try {
+    const r = await db.query(
+      `UPDATE documents d
+          SET review_status=$4, reviewed_by=$5, reviewed_at=now(),
+              rejection_reason=CASE WHEN $4='rejected' THEN $6 ELSE NULL END
+         FROM draw_attachments da
+        WHERE da.id=$1 AND da.application_id=$2 AND da.sitewire_draw_id=$3 AND d.id=da.document_id
+        RETURNING d.id`,
+      [req.params.attId, req.params.id, req.params.drawId, action === 'accept' ? 'accepted' : 'rejected', req.actor.id, reason]);
+    if (!r.rowCount) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true, attachments: await drawAttachments.listFor(req.params.id, ref) });
+  } catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
 // Stream one attachment back. Scoped through the same draw ownership check, so an attachment id
 // from another file can never be fetched by guessing.
 router.get('/files/:id/draws/:drawId/attachments/:attId/file', requirePermission('manage_draws'), async (req, res) => {
