@@ -600,6 +600,9 @@ export const api = {
   staffElementixUsage: () => req('GET', '/api/staff/elementix/usage'),
   staffTrackRecordSnapshot:  (id) => req('GET', `/api/staff/borrowers/${id}/track-record/snapshot`),
   staffBorrowerLlcs: (id) => req('GET', `/api/staff/borrowers/${id}/llcs`),
+  // Super-admin: preview + remove an entity added to a profile by mistake.
+  staffEntityRemovalPreview: (borrowerId, llcId) => req('GET', `/api/staff/borrowers/${borrowerId}/llcs/${llcId}/removal-preview`),
+  staffRemoveEntity: (borrowerId, llcId, reason) => req('POST', `/api/staff/borrowers/${borrowerId}/llcs/${llcId}/remove`, { reason }),
   // Deals a BORROWER typed that nobody has reviewed yet — the track-record
   // review queue (db/458). Scoped server-side to the borrowers this staffer sees.
   staffTrackRecordReviews: () => req('GET', '/api/staff/track-record-reviews'),
