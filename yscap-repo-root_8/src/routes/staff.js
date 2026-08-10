@@ -16157,14 +16157,18 @@ async function canSeeDocument(req, doc) {
     return !!r.rows[0];
   }
   if (doc.borrower_id) {
-    // Only borrower/llc-scoped documents (no application_id) use the
-    // borrower-wide fallback.
-    const r = await db.query(
-      `SELECT 1 FROM applications a WHERE a.borrower_id=$1 AND a.deleted_at IS NULL
-          AND ${VISIBLE_OFFICERS_SQL('a', '$2')}
-        LIMIT 1`,
-      [doc.borrower_id, req.actor.id]);
-    if (r.rows[0]) return true;
+    // A borrower/llc-scoped document (no application_id) is authorized by whether
+    // the actor may see that PERSON — so it delegates to canSeeBorrowerId, the ONE
+    // borrower-visibility gate (VISIBLE_BORROWER_SQL + the seesAllBorrowers
+    // shortcut), and can never drift from "may I open this borrower's profile?".
+    // The old query re-inlined a NARROWER scope — a file whose PRIMARY borrower is
+    // this person and which the staffer can see — so it 403'd (a) a staffer
+    // assigned only to a file where this person is the CO-borrower, and (b) the
+    // officer who OWNS the profile (primary_officer_id / borrower_officers) with no
+    // matching file — the ClickUp-sourced client with only non-RTL business. Those
+    // are exactly the people who should be able to open the document; a re-inlined
+    // copy is how a scope loses a branch (see VISIBLE_BORROWER_SQL's own note).
+    if (await canSeeBorrowerId(req, doc.borrower_id)) return true;
   }
   if (doc.llc_id) {
     // The file's own VESTING ENTITY (audit 2026-07-26). PILOT now reads the entity's operating
@@ -16186,6 +16190,9 @@ async function canSeeDocument(req, doc) {
   }
   return false;
 }
+// Exported so the document-authorization scope can be tested directly against a
+// real database, the way routes/underwriting exposes fileDocById.
+router.canSeeDocument = canSeeDocument;
 
 // ── THE DOCUMENT DOSSIER ────────────────────────────────────────────────────
 // Everything the system knows about ONE document: where it landed, why it was

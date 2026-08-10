@@ -240,7 +240,60 @@ async function line(borrowerId, oneLine, extra = {}) {
   ok(!seenOnB.includes('subject_property_on_record'),
     '…while the other file’s subject-property finding correctly does NOT appear here');
 
-  for (const b of [b1, b2, b3, b4, b5, b6]) {
+  console.log('\nJ. A FINDING CAN ONLY BE SETTLED FROM THE FILE IT IS ON (IDOR)');
+  /* resolveFinding loads the finding by id; the route behind it only proved the
+     actor may work THIS file (appId). A finding must belong to the file being
+     named — one of its borrowers, and either scoped to this file or borrower-wide
+     — the SAME set openForFile shows. Otherwise a staffer on their own file could
+     pass a stranger's findingId and merge away / remove that borrower's lines. */
+  const bShared = await borrower('IdorShared');
+  const appA = (await db.query(
+    `INSERT INTO applications (borrower_id, property_address, status)
+     VALUES ($1,$2::jsonb,'underwriting') RETURNING id`,
+    [bShared, JSON.stringify({ oneLine: '1 Alpha St, Lakewood, NJ 08701' })])).rows[0].id;
+  const appX = (await db.query(
+    `INSERT INTO applications (borrower_id, property_address, status)
+     VALUES ($1,$2::jsonb,'underwriting') RETURNING id`,
+    [bShared, JSON.stringify({ oneLine: '2 Xray St, Lakewood, NJ 08701' })])).rows[0].id;
+  const xrayLine = await line(bShared, '2 Xray Street, Lakewood, NJ 08701, USA');   // file X's subject property
+  await TRF.syncForFile(appX);
+  const fX = (await openFor(bShared)).find((f) => f.code === 'subject_property_on_record');
+  ok(fX && fX.application_id === appX, 'a subject-property finding on file X is stamped with file X');
+
+  // The SAME borrower is on file A, but this finding belongs to file X — the
+  // application_id half of the guard must refuse settling it from file A.
+  let idorApp = false;
+  try { await TRF.resolveFinding({ findingId: fX.id, action: 'remove_line', actorId: staffId, appId: appA }); }
+  catch (e) { idorApp = !!(e && e.status === 403); }
+  ok(idorApp, 'settling file X’s finding from file A is refused (403) even though both files share the borrower');
+  ok((await db.query(`SELECT count(*)::int n FROM track_records WHERE id=$1`, [xrayLine])).rows[0].n === 1,
+    '…and the line it pointed at is untouched');
+  ok((await openFor(bShared)).some((f) => f.id === fX.id), '…the finding is still open');
+
+  // A DIFFERENT borrower entirely — their borrower-level duplicate (application_id NULL).
+  const bOther = await borrower('IdorOther');
+  const appO = (await db.query(
+    `INSERT INTO applications (borrower_id, property_address, status)
+     VALUES ($1,$2::jsonb,'underwriting') RETURNING id`,
+    [bOther, JSON.stringify({ oneLine: '9 Other Rd, Monsey, NY 10952' })])).rows[0].id;
+  await line(bOther, '50 Pine St, Monsey, NY 10952');
+  await line(bOther, '50 Pine Street, Monsey, NY 10952, USA');
+  await TRF.syncForBorrower(bOther);
+  const fO = (await openFor(bOther)).find((f) => f.code === 'duplicate_line');
+  ok(fO && fO.application_id === null, 'the other borrower has a borrower-level duplicate finding');
+
+  let idorBorrower = false;
+  try { await TRF.resolveFinding({ findingId: fO.id, action: 'keep_both', actorId: staffId, appId: appA }); }
+  catch (e) { idorBorrower = !!(e && e.status === 403); }
+  ok(idorBorrower, 'settling ANOTHER borrower’s finding from file A is refused (403)');
+  ok((await openFor(bOther)).some((f) => f.id === fO.id), '…their finding is untouched');
+
+  // Positive control: the finding’s OWN file settles it normally.
+  await TRF.resolveFinding({ findingId: fO.id, action: 'keep_both', actorId: staffId, appId: appO });
+  ok(!(await openFor(bOther)).some((f) => f.id === fO.id),
+    'the finding’s own file settles it normally — the guard only refuses the wrong file');
+
+  for (const b of [b1, b2, b3, b4, b5, b6, bShared, bOther]) {
     await db.query('DELETE FROM track_record_findings WHERE borrower_id=$1', [b]).catch(() => {});
     await db.query('DELETE FROM applications WHERE borrower_id=$1', [b]).catch(() => {});
     await db.query('DELETE FROM track_records WHERE borrower_id=$1', [b]).catch(() => {});

@@ -2926,7 +2926,8 @@ router.get('/track-records', async (req, res) => {
             t.rent_amount, t.rent_date, t.refi_amount, t.refi_date, t.current_value, t.notes,
             t.is_verified, t.docs_status, t.owned_personally, t.created_at, t.updated_at,
             COALESCE(t.entity_name, l.llc_name) AS entity_name,
-            (SELECT count(*)::int FROM documents d WHERE d.track_record_id=t.id) AS doc_count,
+            (SELECT count(*)::int FROM documents d
+              WHERE d.track_record_id=t.id AND d.visibility='borrower' AND d.is_current) AS doc_count,
             (SELECT COALESCE(json_agg(json_build_object(
                     'id', d.id, 'filename', d.filename, 'review_status', d.review_status,
                     'created_at', d.created_at) ORDER BY d.created_at), '[]'::json)
