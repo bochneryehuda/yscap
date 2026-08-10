@@ -108,5 +108,56 @@ const healedRow = buildOurValues({ is_assignment: false, assignment_fee: null, u
 eq('D2 the healed file compares MATCH against Encompass\'s empty fee field',
   map.compareField('assignment_fee', healedRow.assignment_fee, '').status, 'match');
 
+// ── E. the ClickUp-side DELETION (owner-directed 2026-08-10: "when we are
+// deleting the assignment fee from the file, the assignment fee should also be
+// deleted from the ClickUp file") — the ONE sanctioned field clear, and every
+// guard around it.
+const client = require('../src/clickup/client');
+const mapper = require('../src/clickup/mapper');
+const FEE_ID = '273c41d1-10ee-4b02-aa74-7007f8023574';
+const UND_ID = 'de81ad3e-572e-4e83-b9d9-c284400c9df1';
+
+const throws = (name, fn, code) => {
+  try { fn(); fail++; console.log(`FAIL ${name} — did not throw`); }
+  catch (e) { if (!code || e.code === code) pass++; else { fail++; console.log(`FAIL ${name} — code ${e.code}`); } }
+};
+const okFn = (name, fn) => { try { fn(); pass++; } catch (e) { fail++; console.log(`FAIL ${name} — threw ${e.message}`); } };
+
+// E1-E5: the delete guard's carve-out is EXACTLY the two field ids — tasks,
+// list memberships and every other field stay permanently un-deletable.
+throws('E1 task deletion still blocked', () => client.guardNoTaskDeletion('DELETE', '/task/868k9qxuh'), 'CLICKUP_DELETE_FORBIDDEN');
+throws('E2 remove-from-list still blocked', () => client.guardNoTaskDeletion('DELETE', '/list/1/task/868k9qxuh'), 'CLICKUP_DELETE_FORBIDDEN');
+okFn('E3 the fee field clear passes the guard', () => client.guardNoTaskDeletion('DELETE', `/task/868k9qxuh/field/${FEE_ID}`));
+okFn('E4 the underlying field clear passes the guard', () => client.guardNoTaskDeletion('DELETE', `/task/868k9qxuh/field/${UND_ID}`));
+throws('E5 any OTHER field delete stays blocked', () => client.guardNoTaskDeletion('DELETE', '/task/868k9qxuh/field/6d62e510-9ef7-4d96-b81f-fa1251b11c26'), 'CLICKUP_DELETE_FORBIDDEN');
+throws('E6 clearAssignmentMoneyField refuses a non-allowlisted field before the wire',
+  () => client.clearAssignmentMoneyField('t1', 'some-other-field'), 'CLICKUP_CLEAR_FORBIDDEN');
+eq('E7 the allowlist is exactly the two fields', [...client.ASSIGNMENT_CLEAR_FIELD_IDS].sort(), [FEE_ID, UND_ID].sort());
+
+// E8+: the pure decision — every condition is load-bearing.
+const GOOD = {
+  humanEditKeys: ['assignment_fee', 'underlying_contract_price'],
+  only: ['assignment_fee', 'underlying_contract_price', 'is_assignment'],
+  app: { is_assignment: false, assignment_fee: null, underlying_contract_price: null },
+  before: { [FEE_ID]: '7500', [UND_ID]: '75000' },
+};
+eq('E8 all conditions met → both fields cleared', mapper.assignmentClearPlan(GOOD).map((p) => p.fieldId).sort(), [FEE_ID, UND_ID].sort());
+eq('E9 no before-image → never clear blind (fail closed)', mapper.assignmentClearPlan({ ...GOOD, before: null }), []);
+eq('E10 a live assignment keeps its money', mapper.assignmentClearPlan({ ...GOOD, app: { ...GOOD.app, is_assignment: true } }), []);
+eq('E11 a real portal value is a write, never a clear',
+  mapper.assignmentClearPlan({ ...GOOD, app: { ...GOOD.app, assignment_fee: 7500 } }).map((p) => p.col), ['underlying_contract_price']);
+eq('E12 an already-blank card field is a no-op', mapper.assignmentClearPlan({ ...GOOD, before: { [FEE_ID]: null, [UND_ID]: '' } }), []);
+eq('E13 no humanEditKeys → an automated push can never clear', mapper.assignmentClearPlan({ ...GOOD, humanEditKeys: [] }), []);
+eq('E14 not in the scoped only-set → no clear', mapper.assignmentClearPlan({ ...GOOD, only: ['loan_amount'] }), []);
+
+// E15-E17: source guards — the wiring cannot be silently reverted while the
+// pure pieces survive (the repo's established wiring-guard idiom).
+const orch = fs.readFileSync(path.join(__dirname, '..', 'src', 'clickup', 'orchestrator.js'), 'utf8');
+eq('E15 orchestrator consults assignmentClearPlan on the scoped push', orch.includes('mapper.assignmentClearPlan(') , true);
+eq('E16 orchestrator clears through the guarded client function', orch.includes('clickup.clearAssignmentMoneyField('), true);
+const staff = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'staff.js'), 'utf8');
+eq('E17 the details door passes humanEditKeys for the explicitly-blanked columns',
+  /clearedAsgCols[\s\S]{0,400}enqueueClickupPush\(req\.params\.id, touchedCols, clearedAsgCols\.length \? \{ humanEditKeys: clearedAsgCols \}/.test(staff), true);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

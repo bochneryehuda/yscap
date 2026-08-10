@@ -523,6 +523,36 @@ async function pushApplication(appId, opts = {}) {
         console.error('[clickup] setField failed', c.id, e.message);
       }
     }
+    // THE ONE SANCTIONED FIELD CLEAR — assignment money off a card whose
+    // assignment a HUMAN removed (owner-directed 2026-08-10: "when we are
+    // deleting the assignment fee from the file, the assignment fee should
+    // also be deleted from the ClickUp file"). The push skips empty values by
+    // design, so the card kept the old fee forever and the inbound pull kept
+    // restoring it (the stuck-fee loop, YSCAP258134769). The whole decision is
+    // the PURE mapper.assignmentClearPlan — scoped push only, humanEditKeys
+    // naming these exact columns (the details door's deliberate-human channel,
+    // like a staff-typed DOB), portal columns null, is_assignment=false, and a
+    // before-image proving the card holds a value (fail closed) — and
+    // client.clearAssignmentMoneyField refuses any field id outside the two
+    // enumerated ones before the wire. Journaled + breaker-counted like every
+    // write; a failure is recorded and thrown after the loop so the queue
+    // retries, exactly like a setField failure.
+    const clearPlan = scoped
+      ? mapper.assignmentClearPlan({ humanEditKeys: opts.humanEditKeys, only: opts.only, app: ctx.app, before })
+      : [];
+    for (const p of clearPlan) {
+      try {
+        circuitCheck(appId, id, 1);
+        await clickup.clearAssignmentMoneyField(id, p.fieldId);
+        journalStats.written++;
+        await journalFieldWrite(appId, id, p.fieldId, p.old, null, source, { fieldKey: p.col });
+        await logSync('assignment_money_cleared', appId, id, { fieldId: p.fieldId, col: p.col });
+      } catch (e) {
+        if (e && e.code === 'CLICKUP_CIRCUIT_OPEN') throw e;
+        recordFieldFailure(journalStats, failures, p.fieldId, e);
+        console.error('[clickup] assignment-money clear failed', p.fieldId, e.message);
+      }
+    }
     // OVERWRITE-STORM ALARM: one push rewriting many existing values is the
     // signature of the incident class (a wrong-file link / bulk clobber). Not
     // blocked — a legitimate admin repush after big portal edits exists — but

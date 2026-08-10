@@ -213,6 +213,49 @@ function isBlankClickupValue(v) {
   return Object.keys(v).length === 0;
 }
 
+/* THE ONE SANCTIONED FIELD CLEAR — the decision, PURE (owner-directed
+ * 2026-08-10: "when we are deleting the assignment fee from the file, the
+ * assignment fee should also be deleted from the ClickUp file"). Removing an
+ * assignment nulls the two money columns in PILOT, but the push skips empty
+ * values by design, so the card kept the old figures forever and the inbound
+ * pull kept restoring them (the stuck-fee loop, YSCAP258134769). This decides
+ * which of the two enumerated fields a push may CLEAR on the card. Every
+ * condition is a guard, none decorative:
+ *   · humanEditKeys must name the column — set ONLY by the details door when
+ *     an authenticated human's save explicitly blanked it (the same
+ *     deliberate-human channel as a staff-typed DOB); no automated caller may
+ *     ever pass it, so a sweep or repush can never clear.
+ *   · `only` must carry the column too — a scoped push of exactly this edit.
+ *   · the file must say is_assignment=false with NOTHING in the column — a
+ *     live assignment's money is never stripped, and a real value pushes
+ *     normally instead of clearing.
+ *   · `before` (the pre-write card read) must exist and show a real value —
+ *     no before-image, no clear (fail closed); an already-blank field is a
+ *     no-op, never a wire call.
+ * client.clearAssignmentMoneyField additionally refuses any field id outside
+ * the two, before the wire. Returns [{col, fieldId, old}]. */
+const ASSIGNMENT_CLEAR_COLS = Object.freeze({
+  assignment_fee: F.EXTRA.contractAssignFee,
+  underlying_contract_price: F.EXTRA.contractAssignUnderlying,
+});
+function assignmentClearPlan({ humanEditKeys, only, app, before } = {}) {
+  const hk = Array.isArray(humanEditKeys) ? humanEditKeys : [];
+  const scope = Array.isArray(only) ? only : [];
+  const a = app || {};
+  if (!before) return [];                      // fail closed: never clear blind
+  if (a.is_assignment === true) return [];     // a live assignment keeps its money
+  const out = [];
+  for (const [col, fieldId] of Object.entries(ASSIGNMENT_CLEAR_COLS)) {
+    if (!hk.includes(col) || !scope.includes(col)) continue;
+    const ours = a[col];
+    if (!(ours === null || ours === undefined || ours === '')) continue; // a real value is a write, never a clear
+    const old = before[fieldId];
+    if (isBlankClickupValue(old)) continue;    // nothing on the card — nothing to do
+    out.push({ col, fieldId, old });
+  }
+  return out;
+}
+
 function addressField(id, addr) {
   // Only emit a location field when we have REAL coordinates (ClickUp requires
   // lat/lng). Reject null AND non-finite (NaN/Infinity) explicitly: Number(null)
@@ -762,4 +805,4 @@ function isSuspectDobShift(fieldId, oldVal, newVal) {
   return diff === 86400000;
 }
 
-module.exports = { FIELD_MAP, KNOWN, buildTaskFields, readTaskFields, writeValue, readValue, normalizeClickupLocation, resolveOnly, fieldValueEquivalent, isSuspectDobShift, isDobChange, isBlankClickupValue };
+module.exports = { FIELD_MAP, KNOWN, buildTaskFields, readTaskFields, writeValue, readValue, normalizeClickupLocation, resolveOnly, fieldValueEquivalent, isSuspectDobShift, isDobChange, isBlankClickupValue, assignmentClearPlan };
