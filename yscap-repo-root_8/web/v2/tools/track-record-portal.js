@@ -112,27 +112,24 @@
     a = a || {};
     var dt = String(r.deal_type || "").toLowerCase();
     var kind = (dt.indexOf("hold") >= 0 || dt.indexOf("rental") >= 0) ? "hold" : "flip";
-    if (dt.indexOf("ground") >= 0) kind = (r.sale_price || r.sale_date) ? "flip" : "hold";
+    if (dt.indexOf("ground") >= 0 || dt.indexOf("construction") >= 0) kind = "ground";
     return {
-      /* `kind` IS A VIEW, NOT THE DEAL TYPE — and `_kind0` is what makes that
-         distinction safe. This tool shows a property as flip OR hold, but the
-         data has three real types (flip / hold / ground-up) and ANY of them can
-         carry any of the dates. So `propFromRow` assigns a kind the user never
-         chose, and `payloadFromProp` used to treat that self-assigned kind as
-         permission to blank every field outside it.
+      /* GROUND-UP IS NOW A FIRST-CLASS KIND. `kind` is the tool's view of a row,
+         and the data has three real types (flip / hold / ground-up). A flip
+         shows a sale, a hold shows a lease/refi, and a ground-up can carry ANY
+         of the three exits — so `payloadFromProp` sends every exit field for a
+         ground kind and never blanks one.
 
-         Measured, on a real row: a ground-up rented in 2022 and sold in 2026
-         loads as kind 'flip' (the line above), and merely opening the tool and
-         pressing save wiped `rent_date` — which moved the deal's exit from 2022
-         to 2026 and carried an aged-out deal back INSIDE the 36-month window,
-         where it counted toward the tier that prices the loan. Nobody typed
-         anything. `src/lib/experience.js` names that exact drift as the reason
-         its SQL is a COALESCE and not a CASE; the SQL held, and this destroyed
-         the data underneath it instead.
-
-         `_kind0` records the kind the row LOADED as, so the save can tell a kind
-         the USER switched (a real "this was actually a rental" correction, where
-         clearing the other side is right) from one this function assigned. */
+         `_kind0` records the kind the row LOADED as, so a save can tell a
+         DELIBERATE switch (the user pressed "Switch to …" — a real "this was
+         actually a rental / a ground-up" correction, where clearing the other
+         side is right) from a row that merely loaded and was saved unchanged.
+         Before ground was first-class, propFromRow collapsed every ground-up
+         into flip-or-hold, and saving one silently wiped the exit it didn't show
+         (a ground-up rented in 2022 and sold in 2026 loaded as 'flip' and lost
+         its 2022 rent_date on save) — that whole class is gone now that a
+         ground-up loads as 'ground'. `src/lib/experience.js` names that exact
+         drift as the reason its SQL is a COALESCE and not a CASE. */
       id: r.id, kind: kind, _kind0: kind,
       address: a.street || a.line1 || a.oneLine || "", city: a.city || "", state: a.state || "", zip: a.zip || "",
       entity: r.entity_name || "", ownedPersonally: !!r.owned_personally, propType: r.property_type || "", seller: "",
@@ -168,7 +165,7 @@
        spelling and every other one, including spellings nobody here thought of.
        A label is only rewritten when the user actually says the deal was
        something else. */
-    var dealType = p.kind === "hold" ? "fix-and-hold" : "flip";
+    var dealType = p.kind === "ground" ? "ground-up" : (p.kind === "hold" ? "fix-and-hold" : "flip");
     if (p._dealType && !switched) dealType = p._dealType;
 
     /* A FIELD THE CURRENT VIEW DOES NOT SHOW KEEPS WHAT THE ROW HELD. Sending ''
@@ -177,15 +174,19 @@
        "I mislabelled this" cleanup, and it is the only case where a blank is
        something a person actually asked for. */
     var keep = function (mine, stored) { return switched ? "" : (mine || stored || ""); };
+    // A GROUND-UP CAN FINISH ANY WAY (sale, lease, refinance) — send ALL its exit
+    // fields directly, never through `keep`, so none is ever blanked. A flip owns
+    // only its sale, a hold only its lease/refi; the other side is kept-or-cleared.
+    var g = p.kind === "ground";
     var out = {
       dealType: dealType, propertyAddress: addr,
       purchasePrice: p.purchasePrice || "", purchaseDate: p.purchaseDate || "", rehabAmount: p.rehab || "",
-      salePrice: p.kind === "flip" ? (p.salePrice || "") : keep("", p.salePrice),
-      saleDate: p.kind === "flip" ? (p.saleDate || "") : keep("", p.saleDate),
-      rentAmount: p.kind === "hold" ? (p.rent || "") : keep("", p.rent),
-      rentDate: p.kind === "hold" ? (p.rentDate || "") : keep("", p.rentDate),
-      refiAmount: p.kind === "hold" ? (p.refiAmount || "") : keep("", p.refiAmount),
-      refiDate: p.kind === "hold" ? (p.refiDate || "") : keep("", p.refiDate),
+      salePrice: (p.kind === "flip" || g) ? (p.salePrice || "") : keep("", p.salePrice),
+      saleDate: (p.kind === "flip" || g) ? (p.saleDate || "") : keep("", p.saleDate),
+      rentAmount: (p.kind === "hold" || g) ? (p.rent || "") : keep("", p.rent),
+      rentDate: (p.kind === "hold" || g) ? (p.rentDate || "") : keep("", p.rentDate),
+      refiAmount: (p.kind === "hold" || g) ? (p.refiAmount || "") : keep("", p.refiAmount),
+      refiDate: (p.kind === "hold" || g) ? (p.refiDate || "") : keep("", p.refiDate),
       currentValue: p.currentValue || "", notes: p.notes || "",
       propertyType: p.propType || "", entityName: p.ownedPersonally ? "" : (p.entity || ""),
       ownedPersonally: !!p.ownedPersonally,
@@ -416,7 +417,10 @@
     var when = new Date().toLocaleString("en-US");
     function exitCell(p) {
       if (p.kind === "flip") return "Sold " + fmtMoney(p.salePrice) + (p.saleDate ? " · " + escH(p.saleDate) : "");
+      // hold OR ground-up: show whichever exit(s) it carries (a ground-up can be
+      // sold, rented, refinanced — or any combination).
       var bits = [];
+      if (p.salePrice || p.saleDate) bits.push("Sold " + fmtMoney(p.salePrice) + (p.saleDate ? " · " + escH(p.saleDate) : ""));
       if (p.rent) bits.push("Rents " + fmtMoney(p.rent) + "/mo" + (p.rentDate ? " since " + escH(p.rentDate) : ""));
       if (p.refiAmount) bits.push("Refi " + fmtMoney(p.refiAmount) + (p.refiDate ? " · " + escH(p.refiDate) : ""));
       return bits.join("<br>") || "—";
