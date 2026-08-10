@@ -79,7 +79,7 @@ function Fig({ label, value, hint, strong }) {
    action row — the LOAN FILE injects its file verbs (request a document / raise
    an issue / post a condition on THIS file) here; the borrower PROFILE passes
    none, because its verbs (Check the records / Verify / Revoke) are native. */
-export default function LineDetail({ trackRecordId, maySignOff, canDelete, role, keyboard = false, onChanged, extraActions = null }) {
+export default function LineDetail({ trackRecordId, maySignOff, canDelete, role, keyboard = false, onChanged, onDeleted = null, onProfileScreen = false, extraActions = null }) {
   const [detail, setDetail] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState('');
@@ -320,6 +320,10 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
       await api.staffDeleteTrackRecord(trackRecordId);
       flash(true, 'Deleted.');
       if (onChanged) onChanged();
+      // The line is gone. In a two-pane lens (the full-screen workspace) that
+      // holds its own selection, tell it to drop this now-dead id so the detail
+      // pane doesn't keep showing the deleted line until the user clicks away.
+      if (onDeleted) onDeleted();
     } catch (ex) { flash(false, (ex && ex.message) || 'could not delete the line'); }
     finally { setBusy(''); }
   }
@@ -430,7 +434,10 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
           <button className="btn soft small" disabled={busy === 'edit'} onClick={editing ? () => setEditing(null) : startEdit}
             title="Correct the deal’s own figures — editing a figure re-opens the review.">{editing ? 'Cancel edit' : 'Edit details'}</button>
           <button className="btn ghost small" onClick={addNote}>Add an internal note</button>
-          <Link className="btn ghost small" to={`/internal/borrowers/${line.borrowerId}`}>Open their profile</Link>
+          {/* Useful from a loan file or the full-screen workspace, but redundant
+              ON the borrower profile itself (it would link to the page you are
+              already on), so it is hidden there (#33). */}
+          {!onProfileScreen && <Link className="btn ghost small" to={`/internal/borrowers/${line.borrowerId}`}>Open their profile</Link>}
           {canDelete && (
             <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={busy === 'delete'}
               title="Permanently delete this whole line from the track record — for a duplicate or a deal that isn’t theirs."
