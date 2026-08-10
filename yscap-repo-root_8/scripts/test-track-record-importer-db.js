@@ -424,6 +424,69 @@ const found = (name) => {
     await db.query('DELETE FROM staff_users WHERE id=$1', [stranger.id]).catch(() => {});
   }
 
+  console.log('\n10. The SMART DEAL-TYPE default is surfaced, and the reviewer-confirmed EXIT is filled');
+  {
+    await db.query(`DELETE FROM track_record_candidates WHERE borrower_id=$1`, [borrowerId]);
+    await db.query(`DELETE FROM track_records WHERE borrower_id=$1`, [borrowerId]);
+    reply = found;
+    await call(`/api/staff/borrowers/${borrowerId}/track-record-search`, { method: 'POST', body: '{}' });
+    const q = await (await call(`/api/staff/borrowers/${borrowerId}/track-record-candidates`)).json();
+
+    /* A1 was bought AND sold → the dropdown should default to flip. A2 was
+       bought only → it should default to a hold whose reason asks the reviewer
+       to confirm how it exited (the owner's "not sold → default fix & hold"). */
+    const flip = (q.toReview || []).find((r) => /Highland/.test(r.address));
+    const hold = (q.toReview || []).find((r) => /Oak Ave/.test(r.address));
+    ok(flip && flip.dealTypeDerived === 'flip',
+      'a bought-and-sold property surfaces dealTypeDerived="flip" — the dropdown pre-selects it');
+    ok(hold && hold.dealTypeDerived === 'hold',
+      'a bought-but-never-sold property surfaces dealTypeDerived="hold" (owner: "not sold → default fix & hold")');
+    ok(hold && /confirm below how it exited/i.test(hold.dealTypeWhy || ''),
+      '…and dealTypeWhy asks the reviewer to confirm the exit, since the records carried none');
+    ok(hold && hold.refiAmount == null && hold.rentAmount == null,
+      '…and the exit figures are blank on this candidate (the shape carries refi/rent for the reviewer to see when present)');
+
+    /* Bring the hold on WITH a refinance the reviewer entered — a hold with no
+       exit date counts toward nothing, so this is the figure that makes it real.
+       importNew fills the blank; the county record is not overwritten (there was
+       none here). */
+    const r = await call(`/api/staff/track-record-candidates/${hold.id}/decide`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'import_new', dealType: 'hold',
+        exit: { refiAmount: 244000, refiDate: '2025-09-01' } }) });
+    ok(r.status === 200, 'the hold is brought on');
+    const line = (await db.query(
+      `SELECT deal_type, refi_amount, refi_date FROM track_records
+        WHERE borrower_id=$1 ORDER BY created_at DESC LIMIT 1`, [borrowerId])).rows[0];
+    ok(line && line.deal_type === 'fix-and-hold', '…as a fix-and-hold (the dropdown value canonicalized)');
+    ok(line && Number(line.refi_amount) === 244000 && String(line.refi_date).slice(0, 10) === '2025-09-01',
+      '…and the reviewer-entered refinance landed on the line — the hold now has an exit the tier can read');
+
+    /* A figure that cannot fit its column is REFUSED at the door, never a 500. */
+    const bad = await call(`/api/staff/track-record-candidates/${flip.id}/decide`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'import_new', dealType: 'hold',
+        exit: { refiAmount: 9e14, refiDate: '2025-09-01' } }) });
+    ok(bad.status === 400, `a refinance amount too big for the column is a plain 400, not a 500 (${bad.status})`);
+    ok((await db.query(`SELECT status FROM track_record_candidates WHERE id=$1`, [flip.id])).rows[0].status === 'staged',
+      '…and the refusal wrote nothing — the candidate is still waiting');
+
+    /* A flip NEVER takes a refinance/lease exit — its exit is the sale. This is
+       the belt to the workbench, which only shows the exit step for a hold /
+       ground-up; a stale figure from a type the reviewer switched away from must
+       not land on the line. */
+    const rf = await call(`/api/staff/track-record-candidates/${flip.id}/decide`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'import_new', dealType: 'flip',
+        exit: { refiAmount: 240000, refiDate: '2025-09-01' } }) });
+    ok(rf.status === 200, 'the flip is brought on');
+    const fl = (await db.query(
+      `SELECT deal_type, refi_amount, refi_date FROM track_records
+        WHERE borrower_id=$1 ORDER BY created_at DESC LIMIT 1`, [borrowerId])).rows[0];
+    ok(fl && fl.deal_type === 'flip' && fl.refi_amount == null && fl.refi_date == null,
+      '…and the refinance was IGNORED — an exit figure never rides onto a flip');
+  }
+
   await db.query('DELETE FROM track_record_candidates WHERE borrower_id=$1', [borrowerId]).catch(() => {});
   await db.query('DELETE FROM track_record_searches WHERE borrower_id=$1', [borrowerId]).catch(() => {});
   await db.query('DELETE FROM track_records WHERE borrower_id=$1', [borrowerId]).catch(() => {});

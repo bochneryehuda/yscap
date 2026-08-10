@@ -11382,9 +11382,17 @@ router.post('/track-record-candidates/:id/decide', async (req, res) => {
     if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
     if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
     const b = req.body || {};
+    /* THE EXIT the reviewer confirmed on the workbench — a refinance or a lease
+       for a hold the records did not carry one for (owner-directed 2026-08-10).
+       Whitelisted keys only; importNew fills a blank and bounds-checks each
+       figure, so an unstorable number is refused rather than escaping as a 500. */
+    const exit = (b.exit && typeof b.exit === 'object') ? {
+      refiAmount: b.exit.refiAmount, refiDate: b.exit.refiDate,
+      rentAmount: b.exit.rentAmount, rentDate: b.exit.rentDate,
+    } : null;
     const out = await require('../lib/track-record/importer').decideCandidate(req.params.id, {
       action: b.action, staffId: req.actor.id, note: b.note, snoozeDays: b.snoozeDays,
-      dealType: b.dealType, confirmReopen: b.confirmReopen === true,
+      dealType: b.dealType, confirmReopen: b.confirmReopen === true, exit,
     });
     await audit(req, 'track_record_candidate_decided', 'borrower', own.rows[0].borrower_id,
       { candidateId: req.params.id, action: b.action, trackRecordId: out.trackRecordId || null });

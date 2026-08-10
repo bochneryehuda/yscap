@@ -129,6 +129,50 @@ function dealTypeFromRecords(c) {
       : 'The records show a purchase but no sale, so they do not say what the plan was.' };
 }
 
+/**
+ * THE SUGGESTED DEAL TYPE — a default for the DROPDOWN, never a value written on
+ * its own (owner-directed 2026-08-10). `dealTypeFromRecords` above is the strict
+ * reading `importNew` uses when nobody picks: it only ever calls a bought-and-
+ * sold pair a flip and otherwise says nothing, so an import can never silently
+ * guess a type. THIS is the softer reading the reviewer sees pre-selected and
+ * then confirms — the owner's own rule:
+ *
+ *   "If you see that it was flipped, then it should populate as a fixed and
+ *    flip … If you see that it was not sold, then the default should select as
+ *    a fixed hold."
+ *
+ * A SALE on record looks like a flip. NO sale looks like a rental they kept —
+ * refinanced or leased if the county record says so (that is the hold's exit,
+ * and it is why the tier can count it), and otherwise a plain hold whose exit
+ * the reviewer is asked to confirm. GROUND-UP is never suggested: nothing in the
+ * deeds or mortgages distinguishes new construction, so guessing it would put a
+ * word on the record the records never supported — the reviewer picks it.
+ *
+ * The returned `type` is one of the DROPDOWN's own values ('flip' | 'hold'),
+ * so the screen pre-selects it directly; null means no suggestion.
+ */
+function suggestedDealType(c) {
+  const sold = ymd(c && c.sale_date);
+  if (sold) {
+    return { type: 'flip',
+      why: ymd(c && c.purchase_date)
+        ? 'The records show it was bought and then sold — that looks like a flip.'
+        : 'The records show a sale — that looks like a flip.' };
+  }
+  const refi = ymd(c && c.refi_date) || (c && c.refi_amount != null);
+  const rent = ymd(c && c.rent_date) || (c && c.rent_amount != null);
+  if (refi) {
+    return { type: 'hold',
+      why: 'No sale on record, and a refinance is — that looks like a rental they kept and refinanced.' };
+  }
+  if (rent) {
+    return { type: 'hold',
+      why: 'No sale on record, and a lease is — that looks like a rental they kept.' };
+  }
+  return { type: 'hold',
+    why: 'No sale on record, so it looks like a rental they kept — confirm below how it exited.' };
+}
+
 /** Fields a candidate can carry onto a line. `rent_*`/`refi_*` joined
  *  2026-08-09 (db/505) — the hold's exit, read off the county mortgage record
  *  and the MLS lease outcome; without them every imported hold counted toward
@@ -765,12 +809,25 @@ async function loadQueue(borrowerId, client, opts) {
        FROM track_record_searches s LEFT JOIN staff_users u ON u.id = s.run_by
       WHERE s.borrower_id=$1 ORDER BY s.run_at DESC LIMIT 1`, [borrowerId])).rows[0] || null;
 
-  const shape = (r) => ({
+  const shape = (r) => {
+    /* THE SUGGESTED default for the deal-type dropdown, and WHY — a suggestion the
+       reviewer confirms, never a value written on its own (owner-directed
+       2026-08-10). See `suggestedDealType`. Computed once per row. */
+    const sugg = suggestedDealType(r);
+    return {
     id: String(r.id),
     address: addressLabel(r.property_address),
     dealType: r.deal_type,
     purchasePrice: r.purchase_price, purchaseDate: r.purchase_date,
     salePrice: r.sale_price, saleDate: r.sale_date,
+    /* THE HOLD'S EXIT the records carried (db/505) — the refinance and the lease.
+       Surfaced so the reviewer sees the figures pre-filled and confirms them, and
+       so the screen knows whether to ASK for a refinance it could not find (the
+       owner's "if it wasn't refinanced you can ask him: was this refinanced?"). */
+    refiAmount: r.refi_amount, refiDate: r.refi_date,
+    rentAmount: r.rent_amount, rentDate: r.rent_date,
+    dealTypeDerived: sugg.type || null,
+    dealTypeWhy: sugg.why,
     entityName: r.entity_name, proposedLlcId: r.proposed_llc_id,
     status: r.status,
     matchTrackRecordId: r.match_track_record_id,
@@ -789,7 +846,8 @@ async function loadQueue(borrowerId, client, opts) {
     /* WHO IS ON IT — advisory, and never a reason a decision is refused. A
        claim older than the expiry reads as no claim at all. */
     claim: require('./claims').claimStateOf(r, viewerStaffId),
-  });
+    };
+  };
 
   return {
     /* An EXPIRED snooze is back in the queue — the SQL only ever returns a
@@ -863,7 +921,7 @@ async function decideCandidate(candidateId, opts, client) {
   }
 }
 
-async function decideLocked(db, candidateId, { action, staffId, note, snoozeDays, dealType, confirmReopen }) {
+async function decideLocked(db, candidateId, { action, staffId, note, snoozeDays, dealType, confirmReopen, exit }) {
   const c = (await db.query(
     `SELECT * FROM track_record_candidates WHERE id=$1 FOR UPDATE`, [candidateId])).rows[0];
   if (!c) { const e = new Error('not found'); e.status = 404; throw e; }
@@ -891,7 +949,7 @@ async function decideLocked(db, candidateId, { action, staffId, note, snoozeDays
   }
 
   if (action === 'match_existing') return matchExisting(db, c, { staffId, note, confirmReopen });
-  return importNew(db, c, { staffId, note, dealType });
+  return importNew(db, c, { staffId, note, dealType, exit });
 }
 
 /* THE UNDECIDED STATES. A settle may only ever move a candidate OUT of one of
@@ -935,7 +993,7 @@ async function settle(db, id, status, staffId, note) {
    own answer would make the audit trail say something untrue and would hide
    the line from the queue built to surface self-reported ones. It defaults to
    'staff' so every existing caller is unchanged. */
-async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staff', borrowerActor = null }) {
+async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staff', borrowerActor = null, exit = null }) {
   /* A DEAL TYPE IS REQUIRED TO IMPORT, because a line without one counts toward
      NOTHING and is filed under holds — see `dealTypeFromRecords`. The explicit
      answer wins; the candidate's own value is next; the records' reading is the
@@ -978,6 +1036,36 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
   const contradictionNote = contradicted
     ? ` [auto] The records read this as a ${derived.dealType} (${derived.why}) but it was recorded as a ${typed} by the ${enteredByKind === 'borrower' ? 'borrower' : 'reviewer'} — confirm which is right when verifying.`
     : '';
+
+  /* THE EXIT THE REVIEWER CONFIRMED — the refinance or the lease (owner-directed
+     2026-08-10: "if refinanced, collect missing details … when it was leased and
+     for how much"). A hold counts toward experience only once it has an exit date
+     (the frozen rule reads COALESCE(rent_date, refi_date)), so the workbench asks
+     for one when the records did not carry it. This FILLS a blank only — the
+     county record always wins — and a figure that cannot fit its column is
+     refused at the door (there is a human at this screen). */
+  const exitFill = {};
+  /* A refinance or a lease is a HOLD / GROUND-UP exit — a flip exits on its sale
+     — so an exit figure is never applied to a flip. This mirrors the workbench,
+     which only shows the guided exit step for those two types; belt-and-suspenders
+     so a stale figure from a type the reviewer switched away from can never land. */
+  const wantsExit = effectiveDealType === 'fix-and-hold' || effectiveDealType === 'ground-up';
+  if (wantsExit && exit && typeof exit === 'object') {
+    for (const [key, col] of [['refiAmount', 'refi_amount'], ['rentAmount', 'rent_amount']]) {
+      if (c[col] != null) continue;                 // the records already carry it
+      const n = num(exit[key]);
+      if (!(n > 0)) continue;                        // blank / zero / negative = not given
+      const problem = NB.tableColumnProblem('track_records', col, n);
+      if (problem) { const e = new Error(problem); e.status = 400; e.code = 'exit_figure_too_big'; throw e; }
+      exitFill[col] = n;
+    }
+    for (const [key, col] of [['refiDate', 'refi_date'], ['rentDate', 'rent_date']]) {
+      if (c[col] != null) continue;
+      const v = ymd(exit[key]);
+      if (v) exitFill[col] = v;
+    }
+  }
+
   let llcId = c.proposed_llc_id || null;
   let entityCreated = false;
   if (!llcId && str(c.entity_name)) {
@@ -997,7 +1085,8 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
     [c.borrower_id, llcId, JSON.stringify(c.property_address || null),
       TRK.trackRecordKey(c.property_address) || '', effectiveDealType,
       c.purchase_price, c.purchase_date, c.sale_price, c.sale_date, c.entity_name,
-      c.rent_amount ?? null, c.rent_date ?? null, c.refi_amount ?? null, c.refi_date ?? null,
+      exitFill.rent_amount ?? c.rent_amount ?? null, exitFill.rent_date ?? c.rent_date ?? null,
+      exitFill.refi_amount ?? c.refi_amount ?? null, exitFill.refi_date ?? c.refi_date ?? null,
       /* NOTE: borrower-confirm's undo pristine test pins the borrower wording
          VERBATIM — a contradiction note counts as "worked" there, correctly:
          a line whose deal type contradicts the records should never be
@@ -1182,6 +1271,7 @@ module.exports = {
   candidatesFrom,
   dedupeKeyFor,
   dealTypeFromRecords,
+  suggestedDealType,
   addressLabel,
   ACTIONS,
   MATERIAL,
