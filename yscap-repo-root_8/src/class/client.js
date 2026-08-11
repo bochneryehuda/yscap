@@ -283,6 +283,50 @@ function backoff(attempt, retryAfterSec) {
   return Math.min(BASE_BACKOFF_MS * 2 ** (attempt - 1), 8000) + Math.floor(Math.random() * 250);
 }
 
+// ---------------------------------------------------------------------------
+// RAW read path — for fetching a document's BYTES.
+//
+// `request()` above JSON-parses every response, which is exactly right for the
+// order/status/notes calls and exactly WRONG for downloading a PDF or a MISMO XML
+// (JSON.parse would corrupt the bytes). So a document fetch goes through here: same
+// master-switch gate, same token lifecycle, same 401-refresh-once and 5xx/429 retry,
+// but the body is returned VERBATIM as a Buffer with its content-type header. It is a
+// READ (no write gate — fetching a returned document changes nothing at Class).
+//
+// `auth:false` fetches a link WITHOUT our bearer — a download URL that lives on a
+// storage host carries its own credential in the query string, and some stores reject
+// a request that also carries an Authorization header.
+async function rawFetch(url, { auth = true, label = 'fetch' } = {}) {
+  if (!switches.on('CLASS_ENABLED')) throw gateError('CLASS_DISABLED', 'the Class Valuation integration master switch is off');
+  let refreshed = false;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
+    let res, buf;
+    try {
+      const headers = {};
+      if (auth) headers.Authorization = `Bearer ${await getAccessToken()}`;
+      ({ res, buf } = await fetchWithTimeout(url, { method: 'GET', headers }, CLASS().timeoutMs));
+    } catch (netErr) {
+      netErr.retryable = true; lastErr = netErr;
+      if (attempt < MAX_TRIES) { await sleep(backoff(attempt)); continue; }
+      throw netErr;
+    }
+    if (res.status === 401 && auth && !refreshed) { refreshed = true; invalidateToken(); continue; }
+    if ((res.status === 429 || res.status >= 500) && attempt < MAX_TRIES) {
+      const ra = parseInt(res.headers.get('retry-after') || '0', 10);
+      await sleep(backoff(attempt, ra));
+      continue;
+    }
+    if (!res.ok) {
+      // Keep the (possibly plain-text) body so a firewall refusal is distinguishable
+      // from a credential rejection — the same lesson the JSON path preserves.
+      throw httpError(label, res.status, readBody(buf));
+    }
+    return { status: res.status, bytes: buf, contentType: res.headers.get('content-type') || '' };
+  }
+  throw lastErr || new Error(`Class ${label} failed after ${MAX_TRIES} attempts`);
+}
+
 // Mask anything that looks like a secret before it reaches a log line. The order
 // body carries borrower names and contact details, so this is deliberately about
 // CREDENTIALS, not PII — a dry-run log is a staff-only diagnostic, and the loan
@@ -328,6 +372,20 @@ module.exports = {
   attachments: (orderId, query) => get(`/orders/${encodeURIComponent(orderId)}/attachments`, query, 'attachments'),
   attachment: (orderId, attachmentId, query) =>
     get(`/orders/${encodeURIComponent(orderId)}/attachments/${encodeURIComponent(attachmentId)}`, query, 'attachment'),
+  // The BYTES of one attachment. Kept separate from `attachment` above because that
+  // one JSON-parses (right for metadata, wrong for a PDF). Whether this endpoint
+  // returns the file directly or a JSON envelope pointing at it is resolved by the
+  // caller (src/class/documents.js) — this only fetches, verbatim.
+  attachmentBytes: (orderId, attachmentId) =>
+    rawFetch(`${hosts().ordersUrl}/orders/${encodeURIComponent(orderId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { label: 'attachmentBytes' }),
+  // Follow a download URL an attachment response hands us. Our OWN Class host gets the
+  // bearer; a presigned storage link (a different host) does not — see rawFetch.
+  fetchUrl: (url, opts = {}) => {
+    let sameHost = false;
+    try { sameHost = new URL(url).host === new URL(hosts().ordersUrl).host; } catch { sameHost = false; }
+    return rawFetch(url, { auth: opts.auth != null ? opts.auth : sameHost, label: 'attachmentUrl' });
+  },
   // CALLBACKS ARE REGISTERED PER ORGANIZATION, NOT PER ORDER OR PER VERSION. Their
   // registration body carries an event name and a URL and nothing else — so ONE
   // registration covers orders on both UAD versions, and the event that arrives does

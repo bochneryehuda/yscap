@@ -292,6 +292,20 @@ async function processEvent(row, { dbc } = {}) {
             [order.id, order.application_id, a.name, a.contentType, a.attachmentId]);
         }
       }
+
+      // Auto-download the finished appraisal (PDF + MISMO XML) the moment Class
+      // announces an attachment or completes the order — the db/490 work list, made
+      // real (src/class/documents.js). Best-effort and off the request path (this runs
+      // from the receiver's setImmediate drain and the poller). Their order id may have
+      // reached us for the first time on THIS delivery (`row.class_order_id`), so use it
+      // when the row we loaded predates it. Lazy-required to avoid a load-order cycle.
+      const effClassId = order.class_order_id || row.class_order_id;
+      if (effClassId &&
+          (eventName === 'NewAttachments'
+            || (eventName === 'StatusChanged' && changes.status === 'completed'))) {
+        try { await require('./documents').ingestForOrder(q, { ...order, class_order_id: effClassId }); }
+        catch (e) { console.error('[class] attachment ingest failed for order', order.id, (e && e.message) || e); }
+      }
     }
 
     await q.query(
