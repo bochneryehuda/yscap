@@ -150,6 +150,19 @@ const liveCodes = async (appId) => (await db.query(
     assert(fid && /2 months/.test(((fid.requirements || []).find((r) => r.key === 'bank_statements') || {}).text || ''),
       'Fidelis also shows the program count of 2 months (every program is 2)');
 
+    // A file stored under the CANONICAL LONG label ("Blue Lake Capital" — the form
+    // db/535 and the register auto-link now write) must resolve its OWN requirements:
+    // current.key is the CANONICAL key, so effects[current.key] is the buyer's panel.
+    // (Regression guard: a long-label file used to show the name but no requirements,
+    // because current.key was the exact norm 'bluelakecapital' and matched no effect.)
+    const blLong = (await db.query(
+      `INSERT INTO applications (borrower_id,status,lender) VALUES ($1,'processing','Blue Lake Capital') RETURNING id`, [borrowerId])).rows[0].id;
+    slot = await NB.noteBuyerSlot(blLong);
+    assert(slot.current.key === 'bluelake', 'a "Blue Lake Capital" file reports the CANONICAL key, not the long norm');
+    assert(!!slot.effects[slot.current.key], 'a long-label file resolves its OWN effects (current.key matches an effects entry)');
+    assert(!!(slot.effects[slot.current.key].requirements || []).find((r) => r.key === 'sow_contingency'),
+      'and the 5% SOW requirement panel is present for the current buyer');
+
     // A GOLD-registered file requires the 5% for the PROGRAM's sake — the line must
     // say so rather than let a note-buyer switch read as removing the requirement.
     const gold = (await db.query(

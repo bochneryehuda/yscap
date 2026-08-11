@@ -40,20 +40,24 @@
  */
 
 const { providerForProgram } = require('./tapes/program-provider');
-const { normNoteBuyer } = require('./conditions/field-registry');   // used by the load-time self-check only
+const { normNoteBuyer, NOTE_BUYER_CANONICAL_LABEL } = require('./conditions/field-registry');
 
 /**
  * The buyer-key → the REAL note-buyer label to write onto the file.
  *
- * Each label is the owner's own production spelling (the ClickUp dropdown value
- * the rest of the system records). They are asserted against the live tape
- * registry at module load — see `verifyLabels()` — so a label that drifts out of
- * step with the export gate cannot ship silently.
+ * Each label is the owner's own production spelling (the ClickUp dropdown value the
+ * rest of the system records) — and it is the SAME canonical label the note-buyer
+ * PICKER offers, sourced from `field-registry.NOTE_BUYER_CANONICAL_LABEL` so "the one
+ * we keep is linked everywhere" (owner-directed 2026-08-11): a Silver file's derived
+ * EMCAP and a hand-picked EMCAP are byte-identical strings. They are asserted against
+ * the live tape registry at module load — see `verifyLabels()` — so a label that
+ * drifts out of step with the export gate cannot ship silently. Only the three
+ * program-paired providers carry a derived label (manual is an open selection).
  */
 const LABEL_FOR_PROVIDER = Object.freeze({
-  fidelis: 'Fidelis Investors LLC',
-  bluelake: 'Blue Lake Capital',
-  emcap: 'EMCAP Financial',
+  fidelis: NOTE_BUYER_CANONICAL_LABEL.fidelis,
+  bluelake: NOTE_BUYER_CANONICAL_LABEL.bluelake,
+  emcap: NOTE_BUYER_CANONICAL_LABEL.emcap,
 });
 
 /**
