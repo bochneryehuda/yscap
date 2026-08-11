@@ -96,8 +96,9 @@ async function withCoords(addr, opts) {
       //
       // Only `formatted_address` (+ coords/place_id) becomes Google's here — the
       // STRUCTURED fields and `oneLine` are spread through UNCHANGED (`...addr`), so
-      // they, the portal display (every addrLine reads `oneLine`), and the
-      // authoritative `usps_address` stamp all stay USPS. That split is deliberate
+      // they, the portal display (addrLine helpers read `oneLine` or the structured
+      // fields — both USPS here), and the authoritative `usps_address` stamp all stay
+      // USPS. That split is deliberate
       // and load-bearing: the returned object is BOTH pushed to ClickUp AND cached
       // back onto property_address (the coord write-back below), so a Google
       // `formatted_address` is exactly what lets ClickUp keep holding the Google form
