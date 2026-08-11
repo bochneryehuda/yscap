@@ -730,6 +730,10 @@ function buildPipelineFilter(req, q) {
   const params = [...s.params];
   const add = (val) => { params.push(val); return `$${params.length}`; };
   const where = ['a.deleted_at IS NULL'];
+  // Remove-from-this-view (owner-directed 2026-08-11): a file removed from the row
+  // coordinator's pipeline view is hidden here but NOT deleted — it stays on every
+  // other surface. `?removed=1` lists the removed ones (so they can be restored).
+  where.push(q.removed === '1' ? 'a.pipeline_removed_at IS NOT NULL' : 'a.pipeline_removed_at IS NULL');
   if (s.where) where.push(s.where.replace(/\$SCOPE/g, '$1').replace(/^AND\s+/, ''));
 
     // status GROUP — same predicates the dashboard uses. An EXACT status filter
@@ -14322,6 +14326,9 @@ router.get('/closing', async (req, res) => {
     const params = [];
     let scope = '';
     if (!seesAll(req)) { params.push(req.actor.id); scope = ` AND ${VISIBLE_OFFICERS_SQL('a', '$' + params.length)}`; }
+    // Remove-from-this-view: hidden from the closing desk by default (not deleted);
+    // `?removed=1` lists the removed ones so they can be restored.
+    const removedClause = req.query.removed === '1' ? ' AND cw.removed_at IS NOT NULL' : ' AND cw.removed_at IS NULL';
     const r = await db.query(
       `SELECT a.id, a.ys_loan_number, a.property_address, a.status, a.lender, a.funded_date, a.expected_closing,
               b.first_name, b.last_name,
@@ -14335,7 +14342,7 @@ router.get('/closing', async (req, res) => {
          JOIN applications a ON a.id = cw.application_id AND a.deleted_at IS NULL
          JOIN borrowers b ON b.id = a.borrower_id
          LEFT JOIN staff_users s ON s.id = a.closer_id
-        WHERE 1=1 ${scope}
+        WHERE 1=1 ${scope}${removedClause}
         ORDER BY COALESCE(cw.est_closing_date, a.expected_closing) NULLS LAST, a.updated_at DESC`,
       params);
     res.json(r.rows);
@@ -14351,7 +14358,7 @@ router.get('/closing/count', async (req, res) => {
     const r = await db.query(
       `SELECT count(*)::int AS n FROM closing_workflow cw
          JOIN applications a ON a.id = cw.application_id AND a.deleted_at IS NULL
-        WHERE NOT ${closing.CLOSING_RETIRED_SQL('cw')} ${scope}`, params);
+        WHERE NOT ${closing.CLOSING_RETIRED_SQL('cw')} AND cw.removed_at IS NULL ${scope}`, params);
     res.json({ count: r.rows[0].n });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -14380,6 +14387,9 @@ router.get('/purchasing', purchasingGate, async (req, res) => {
     let statusClause = ` AND p.status='outstanding'`;
     if (req.query.status === 'complete') statusClause = ` AND p.status='complete'`;
     else if (req.query.status === 'all') statusClause = '';
+    // Remove-from-this-view: hidden from the purchasing desk by default (not
+    // deleted); `?removed=1` lists the removed ones so they can be restored.
+    statusClause += req.query.removed === '1' ? ' AND p.removed_at IS NOT NULL' : ' AND p.removed_at IS NULL';
     const r = await db.query(
       `SELECT p.application_id AS id, p.status, p.entered_at, p.completed_at,
               a.ys_loan_number, a.property_address, a.status AS app_status, a.lender, a.funded_date,
@@ -14419,10 +14429,55 @@ router.get('/purchasing/count', purchasingGate, async (req, res) => {
     const r = await db.query(
       `SELECT count(*)::int AS n FROM purchasing_workflow p
          JOIN applications a ON a.id = p.application_id AND a.deleted_at IS NULL
-        WHERE p.status='outstanding' ${scope}`, params);
+        WHERE p.status='outstanding' AND p.removed_at IS NULL ${scope}`, params);
     res.json({ count: r.rows[0].n });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
+
+// ===========================================================================
+// REMOVE A FILE FROM A WORKFLOW VIEW — never deletes it (owner-directed
+// 2026-08-11). Works for the row coordinator's PIPELINE, the CLOSING desk and
+// the PURCHASING desk. File-scoped by the /applications/:id middleware, so
+// ANYBODY who can see the file may remove it from a view (not gated on
+// manage_closings / manage_purchasing — the desk lists are already file-scoped).
+// It only sets a per-view marker; the file, its documents, its conditions, its
+// status and every other surface are untouched. Reversible via …/restore. The
+// double warning is enforced on the client. Audited.
+// ===========================================================================
+const WORKFLOW_VIEWS = new Set(['pipeline', 'closing', 'purchasing']);
+async function setWorkflowRemoval(req, res, removing) {
+  const wf = String(req.params.workflow || '');
+  if (!WORKFLOW_VIEWS.has(wf)) return res.status(400).json({ error: 'unknown workflow view' });
+  const reason = removing ? (String((req.body && req.body.reason) || '').trim().slice(0, 500) || null) : null;
+  try {
+    if (wf === 'pipeline') {
+      await db.query(
+        removing
+          ? `UPDATE applications SET pipeline_removed_at=now(), pipeline_removed_by=$2, pipeline_removed_reason=$3 WHERE id=$1`
+          : `UPDATE applications SET pipeline_removed_at=NULL, pipeline_removed_by=NULL, pipeline_removed_reason=NULL WHERE id=$1`,
+        removing ? [req.params.id, req.actor.id, reason] : [req.params.id]);
+    } else {
+      const table = wf === 'closing' ? 'closing_workflow' : 'purchasing_workflow';
+      // Only touches an EXISTING membership row; a file not on that desk has none,
+      // so removing is a harmless no-op (never creates a row).
+      await db.query(
+        removing
+          ? `UPDATE ${table} SET removed_at=now(), removed_by=$2, removed_reason=$3, updated_at=now() WHERE application_id=$1`
+          : `UPDATE ${table} SET removed_at=NULL, removed_by=NULL, removed_reason=NULL, updated_at=now() WHERE application_id=$1`,
+        removing ? [req.params.id, req.actor.id, reason] : [req.params.id]);
+      // Removing from the CLOSING desk must also close the closer's personal
+      // hand-off item, or the file lingers in their Workflow queue. Best-effort.
+      if (wf === 'closing' && removing) {
+        try { await require('../lib/workflow').resolveClosingItem(db, req.params.id, req.actor.id, 'Removed from the closing workflow'); }
+        catch (e) { console.warn('[workflow-remove] closing item resolve failed:', db.describeError(e)); }
+      }
+    }
+    await audit(req, removing ? 'workflow_view_remove' : 'workflow_view_restore', 'application', req.params.id, { workflow: wf, reason });
+    res.json({ ok: true, workflow: wf, removed: removing });
+  } catch (e) { console.warn('[workflow-remove] error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+}
+router.post('/applications/:id/workflow/:workflow/remove', (req, res) => setWorkflowRemoval(req, res, true));
+router.post('/applications/:id/workflow/:workflow/restore', (req, res) => setWorkflowRemoval(req, res, false));
 
 // Per-file purchasing detail (status + notes + tasks). File-scoped by the
 // /applications/:id path middleware.

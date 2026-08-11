@@ -649,6 +649,11 @@ export const api = {
   staffUploadLlcDoc: (llcId, b) => coalesceUpload('llcDoc:' + llcId, b, () => req('POST', `/api/staff/llcs/${llcId}/documents`, normalizeUpload(b))),
   staffVerifyLlc:    (id, b) => req('POST', `/api/staff/llcs/${id}/verify`, b || {}),
   staffVerifyTrackRecord:    (id, body) => req('POST', `/api/staff/track-records/${id}/verify`, body),
+  /* Remove a file from ONE workflow view (pipeline | closing | purchasing) —
+     hides it from that desk without deleting it (owner-directed 2026-08-11). The
+     double warning is enforced at the call site. Reversible via …/restore. */
+  staffRemoveFromWorkflow:  (id, workflow, reason) => req('POST', `/api/staff/applications/${id}/workflow/${workflow}/remove`, { reason: reason || null }),
+  staffRestoreToWorkflow:   (id, workflow) => req('POST', `/api/staff/applications/${id}/workflow/${workflow}/restore`, {}),
   /* Edit a line's own fields (address/entity/prices/dates/deal type) — the PUT
      door writes ONLY the columns the body sent (trackRecordSentOnly guard), so
      a partial edit never nulls what it did not touch, and never stamps a
