@@ -199,7 +199,7 @@ variables only.
 | `AMC_LOGIN_ACCOUNT` | the AppraisalScope **user** orders are placed as | DoLogin → everything |
 | `AMC_LOGIN_PASSWORD` | that user's password | DoLogin → everything |
 | `AMC_SUBDOMAIN` | our AppraisalScope tenant, e.g. `integrations.uat` | DoLogin → everything |
-| `AMC_SOURCE_CLIENT_ID` | our client/user id inside AppraisalScope | placing an order |
+| `AMC_SOURCE_CLIENT_ID` | *optional* — our client/user id inside AppraisalScope; the vendor confirmed this tenant has none, and the order builder omits it when unset | — |
 
 The OAuth pair and the login pair are **two different credentials for two different
 systems** — the first authenticates *the software* to CoreLogic's gateway, the second
@@ -242,10 +242,12 @@ cannot be finalized until a lookup call actually returns this tenant's form cata
 
 ## 8. Owner decisions (2026-08-05)
 
-- **Credentials:** *(updated 2026-08-06)* the UAT OAuth pair and the GGID have arrived;
-  the AppraisalScope login (`AMC_LOGIN_ACCOUNT`/`PASSWORD`), the `AMC_SUBDOMAIN` and
-  `AMC_SOURCE_CLIENT_ID` are still outstanding. Full status and the check command are in
-  section 7.
+- **Credentials:** *(updated 2026-08-11)* the UAT OAuth pair, the GGID, the AppraisalScope
+  login (`AMC_LOGIN_ACCOUNT`/`PASSWORD`) and `AMC_SUBDOMAIN` have arrived and
+  authenticate. `AMC_SOURCE_CLIENT_ID` is **optional and not issued for this tenant** —
+  the vendor (Tony Pham, 2026-08-11) confirmed there is no such credential; DoLogin and
+  every read work without it and the order builder omits it, so PILOT no longer treats it
+  as required. Full status and the check command are in section 7.
 - **Payment stays MANUAL**, but the appraisal-fee card must be **linked** to the
   existing payment-card condition (`application_payment_cards` / the `appraisal_card`
   condition, `src/lib/appraisal-card.js`): entering the card **at the order fills the

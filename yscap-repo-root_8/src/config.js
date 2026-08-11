@@ -1022,9 +1022,10 @@ module.exports = {
   //   AMC_DRYRUN           build + log the exact request body, send nothing
   // Credentials come from Render env ONLY (never source, never chat). CoreLogic/the
   // vendor provide: the OAuth client id/secret (GetToken), the DoLogin account
-  // id/password, the ServiceProviderSubDomain, the DigitalGatewayLenderIdentifier
-  // (a CoreLogic reporting id), and the sourceClientIdentifier. Nothing talks to the
-  // AMC until AMC_ENABLED=1 and these are set.
+  // id/password, the ServiceProviderSubDomain and the DigitalGatewayLenderIdentifier
+  // (a CoreLogic reporting id / GGID). The sourceClientIdentifier is OPTIONAL — the
+  // vendor confirmed this tenant has none, and the order builder omits it when unset.
+  // Nothing talks to the AMC until AMC_ENABLED=1 and these are set.
   amc: {
     enabled:        process.env.AMC_ENABLED === '1',            // master (default OFF)
     outboundEnabled: process.env.AMC_OUTBOUND_ENABLED === '1',  // write gate (default OFF)
