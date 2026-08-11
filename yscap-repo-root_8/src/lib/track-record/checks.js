@@ -85,6 +85,18 @@ const DATE_TOLERANCE_DAYS = 120;
  *  read from two sides, and a test pins them together. */
 const PERM_TERM_MIN_MONTHS = 120;
 
+/** How close to the purchase a mortgage is still the PURCHASE financing rather
+ *  than a refinance. A first mortgage — or a SECOND mortgage taken at closing —
+ *  is recorded with the deed (same day, or inside the recording lag); a
+ *  refinance replaces an earlier loan and is recorded meaningfully later. A
+ *  mortgage recorded on or within this window of the purchase (or before it) is
+ *  purchase money, so it is NEVER a refinance exit — "a same-day refinance is not
+ *  an exit". Set wider than RECORDING_LAG_DAYS on purpose: over-counting purchase
+ *  money as a refinance fabricates an exit (the bug), while missing a rare very
+ *  fast refinance only sends that one deal to a human, so we err toward the
+ *  window. */
+const PURCHASE_FINANCING_DAYS = 60;
+
 const VERDICT = {
   PROVED: 'proved',
   CONTRADICTED: 'contradicted',
@@ -800,11 +812,28 @@ function findRefinance(line, recs, ctx) {
   const mortgages = forProperty(recs.mortgages, line.property_address);
 
   let best = null;
+  let sawPurchaseFinancing = false;
   for (const m of mortgages) {
     if (m.isExtension === true) continue;
     if (!anyOurs(mortgageHolders(m), ctx).hit) continue;
     const term = Number(m.termMonths);
     if (!Number.isFinite(term) || term < PERM_TERM_MIN_MONTHS) continue;
+
+    /* #30 — A SAME-DAY / AT-PURCHASE MORTGAGE IS NOT A REFINANCE EXIT. It is the
+       purchase financing (a first mortgage, or a second taken at closing), so it
+       never counts as a refinance. A refinance is recorded meaningfully AFTER the
+       purchase; the real later refinance is what corroborates the exit. When we
+       cannot date the mortgage against the purchase (no purchase date on the
+       line), require the record itself to call it a refinance, rather than
+       fabricate a refinance from a mortgage we cannot classify. */
+    const sincePurchase = purchase ? daysBetween(purchase, m.date) : null;
+    const saysRefi = m.isRefinance === true || /refi/i.test(String(m.loanPurpose || ''));
+    if (sincePurchase != null) {
+      if (sincePurchase <= PURCHASE_FINANCING_DAYS) { sawPurchaseFinancing = true; continue; }
+    } else if (!saysRefi) {
+      continue;
+    }
+
     if (claimed) {
       const gap = daysBetween(claimed, m.date);
       if (gap == null || Math.abs(gap) > DATE_TOLERANCE_DAYS) continue;
@@ -830,6 +859,9 @@ function findRefinance(line, recs, ctx) {
       monthsAfterPurchase,
       isExtension: false,
       recordedSatisfaction: !!satisfaction,
+      /* True when a mortgage recorded at/near the purchase was seen and correctly
+         NOT counted as the refinance — this is the later, real refinance. */
+      excludedPurchaseFinancing: sawPurchaseFinancing,
     },
   };
 }
@@ -917,5 +949,6 @@ module.exports = {
   RECORDING_LAG_DAYS,
   DATE_TOLERANCE_DAYS,
   PERM_TERM_MIN_MONTHS,
+  PURCHASE_FINANCING_DAYS,
   _internals: { ymd, daysBetween, monthsBetween, whoIsThis, normalizeContext, normalizeRecords, gradeOf },
 };
