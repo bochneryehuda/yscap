@@ -193,12 +193,14 @@ function dealFacts(deal = {}, { skip = null } = {}) {
   add('Initial / as-is LTV', pct(deal.acqLtvPct));
   add('ARV LTV', pct(deal.arvPct));
   add('Loan-to-cost', pct(deal.ltcPct));
-  // Every program requires exactly two months of bank statements (owner-directed 2026-08-11), so a
-  // manual product's stated "months of liquidity" can never ask for more — cap the display at 2 so
-  // this internal approval email never states a 3-month requirement the file will not enforce.
-  const liqMonths = deal.assetMonths != null && isFinite(Number(deal.assetMonths))
-    ? Math.min(2, Math.round(Number(deal.assetMonths))) : null;
-  add('Liquidity months required', liqMonths != null && liqMonths > 0 ? `${liqMonths} month${liqMonths === 1 ? '' : 's'}` : null);
+  // A manual product's "months of liquidity" is how many months of RESERVES the
+  // borrower must SHOW in the ending balance of the most recent statement
+  // (owner-directed 2026-08-11) — NOT the bank-statement count (always two). It can
+  // legitimately exceed two, so this internal approval email shows the real value
+  // uncapped so the approver sees exactly how many months of reserves are required.
+  const reserveMonthsReq = deal.assetMonths != null && isFinite(Number(deal.assetMonths))
+    ? Math.round(Number(deal.assetMonths)) : null;
+  add('Reserve months to show', reserveMonthsReq != null && reserveMonthsReq > 0 ? `${reserveMonthsReq} month${reserveMonthsReq === 1 ? '' : 's'}` : null);
 
   return rows.length ? { title: 'The deal', rows } : null;
 }

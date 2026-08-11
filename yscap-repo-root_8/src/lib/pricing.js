@@ -679,6 +679,22 @@ function normalize(program, input, ev, ladder, opts) {
       liquidityPct = num(ev.liquidityPct) || 0.05;
       reserveRequirement = round2(totalLoan * liquidityPct);
       reserveBasis = `${(liquidityPct * 100).toFixed(1)}% of loan amount`;
+    } else if (program === 'manual' && Math.round(num(input.assetMonths)) > 0) {
+      // MANUAL PROGRAM — the "months of liquidity" the registrant states
+      // (product_registrations.asset_months) is how many months of RESERVES the
+      // borrower must SHOW in the ending balance of the most recent statement
+      // (owner-directed 2026-08-11: "how many months of reserves you need to show
+      // for the manual program, which needs to be visible in the ending balance of
+      // the last statement"). It is NOT the bank-statement count (always two —
+      // liquidity.js) and it is NOT the Standard 2/4-month-by-loan-size rule; the
+      // manual program states its reserve months explicitly. This drives ONLY the
+      // required-liquidity dollar the borrower must show — never loan sizing, rate
+      // or a cap (those come from the frozen engine `s`). Threaded server-side on
+      // the manual register / accept-counter path only (staff.js); never a client
+      // override.
+      reserveMo = Math.round(num(input.assetMonths));
+      reserveRequirement = round2(num(s.fullPayment) * reserveMo);
+      reserveBasis = `${reserveMo} months of full-payment reserves (manual program)`;
     } else {
       reserveMo = reserveMonths(totalLoan);
       reserveRequirement = round2(num(s.fullPayment) * reserveMo);

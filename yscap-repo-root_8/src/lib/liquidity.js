@@ -25,9 +25,14 @@ const money2 = (n) => (n == null || isNaN(Number(n))) ? '—' : '$' + Number(n).
 // TWO MONTHS OF BANK STATEMENTS ON EVERY FILE (owner-directed 2026-08-11 — SUPERSEDES the old
 // per-program / note-buyer / manual-stated table). Every program requires exactly two months of
 // bank statements: the program, the manual "months of liquidity" input and the note buyer no
-// longer change the count. `bankStatementMonths` always returns 2. Borrower-facing — never names a
-// capital partner. The (program, assetMonths, noteBuyer) signature is kept so every caller is
-// unchanged; the last two arguments are now ignored (nothing can raise or lower the count).
+// longer change THE STATEMENT COUNT. `bankStatementMonths` always returns 2. Borrower-facing —
+// never names a capital partner. The (program, assetMonths, noteBuyer) signature is kept so every
+// caller is unchanged; the last two arguments no longer affect the COUNT here.
+//
+// NOTE: the manual "months of liquidity" (product_registrations.asset_months) is NOT vestigial — it
+// is how many months of RESERVES the borrower must SHOW in the ending balance of the most recent
+// statement (owner-directed 2026-08-11). That is a separate concept from the statement count and is
+// consumed by pricing.js normalize (the required-liquidity dollar for a manual program), NOT here.
 function bankStatementMonths(program, assetMonths, noteBuyer) {
   return 2;
 }
