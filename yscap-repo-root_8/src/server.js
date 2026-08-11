@@ -757,6 +757,14 @@ if (require.main === module) {
         require('./lib/liquidity').backfillLiquidityConditions()
           .then((n) => n && console.log('[boot] liquidity condition backfill:', n))
           .catch((e) => console.error('[boot] liquidity backfill failed:', e.message));
+        // One-shot: a TPO broker's file is created at `file_intake`, which the engine
+        // now admits (owner-directed 2026-08-11) so a broker's brand-new file carries
+        // its rule-driven conditions right away. Existing TPO intake files created
+        // before that never picked them up — run the engine over each once. Idempotent
+        // (per-file duplicate suppression), bounded, fire-and-forget.
+        require('./lib/conditions/engine').backfillTpoIntakeConditionsOnce()
+          .then((r) => r && r.added && console.log('[boot] TPO intake condition backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] TPO intake condition backfill failed:', e.message));
         // One-shot: recompute the experience condition on co-borrower files so it
         // carries the per-borrower breakdown + each borrower's track-record link
         // (#103). Idempotent, preserves sign-offs; fire-and-forget.

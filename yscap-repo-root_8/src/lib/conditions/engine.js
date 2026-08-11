@@ -32,6 +32,26 @@ const { countBorrowersExperience, fileBorrowerIds } = require('../experience');
 
 const OPEN_STATUSES = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close'];
 
+// A TPO broker's brand-new file is created at `file_intake` (outside OPEN_STATUSES).
+// The owner wants a broker's file to carry its rule-driven conditions RIGHT AWAY —
+// like an active file — instead of waiting for our team to move it into an OPEN
+// status (owner-directed 2026-08-11: "a broker's brand-new file should get the
+// conditions right away"). So the engine treats a TPO file at `file_intake` as open.
+// Non-TPO files are unaffected: a retail file is born at `new`, and a non-TPO file
+// that happens to sit at `file_intake` stays gated exactly as before.
+const TPO_INTAKE_STATUS = 'file_intake';
+function engineOpenStatus(app) {
+  if (!app) return false;
+  if (OPEN_STATUSES.includes(app.status)) return true;
+  return app.is_tpo === true && app.status === TPO_INTAKE_STATUS;
+}
+// The SQL twin of engineOpenStatus(), for the bulk sweeps. `p` is the placeholder
+// bound to OPEN_STATUSES (e.g. '$1'). Keep the two in step — a divergence would let a
+// TPO intake file evaluate per-file but never in a sweep, or vice-versa.
+function openStatusSql(p) {
+  return `(status = ANY(${p}::text[]) OR (is_tpo = true AND status = '${TPO_INTAKE_STATUS}'))`;
+}
+
 function num(v) {
   // NULL/absent must stay null (not 0) — "is empty" tests and comparisons
   // against missing data both depend on it.
@@ -309,8 +329,9 @@ async function evaluateApplicationLocked(appId, opts = {}) {
   const loaded = await loadRuleContext(appId);
   if (!loaded) return out;
   const { ctx, app } = loaded;
-  // Terminal / deleted files are frozen — no new automatic conditions.
-  if (app.deleted_at || !OPEN_STATUSES.includes(app.status)) return out;
+  // Terminal / deleted files are frozen — no new automatic conditions. A TPO broker's
+  // intake file counts as open (engineOpenStatus) so it carries its conditions right away.
+  if (app.deleted_at || !engineOpenStatus(app)) return out;
 
   const tpls = await db.query(
     `SELECT * FROM checklist_templates
@@ -410,7 +431,7 @@ async function evaluateApplicationLocked(appId, opts = {}) {
 async function evaluateAllOpen(opts = {}) {
   const apps = await db.query(
     `SELECT id FROM applications
-      WHERE deleted_at IS NULL AND status = ANY($1::text[])
+      WHERE deleted_at IS NULL AND ${openStatusSql('$1')}
       ORDER BY created_at DESC LIMIT 2000`, [OPEN_STATUSES]);
   const totals = { files: apps.rows.length, filesTouched: 0, added: 0, removed: 0 };
   for (const row of apps.rows) {
@@ -428,11 +449,36 @@ async function evaluateAllOpen(opts = {}) {
 async function evaluateBorrowerApplications(borrowerId, opts = {}) {
   const apps = await db.query(
     `SELECT id FROM applications
-      WHERE (borrower_id = $1 OR co_borrower_id = $1) AND deleted_at IS NULL AND status = ANY($2::text[])`,
+      WHERE (borrower_id = $1 OR co_borrower_id = $1) AND deleted_at IS NULL AND ${openStatusSql('$2')}`,
     [borrowerId, OPEN_STATUSES]);
   for (const row of apps.rows) {
     try { await evaluateApplication(row.id, opts); } catch (_) {}
   }
+}
+
+/**
+ * Backfill (previous AND future): a TPO file created at `file_intake` BEFORE the engine
+ * admitted it never picked up its rule-driven conditions. Run the engine over each one
+ * once at boot so existing broker files get their conditions too — not only files
+ * created from now on. Idempotent (the engine suppresses per-(file,template) duplicates),
+ * bounded, best-effort; one bad file never stops the pass.
+ */
+async function backfillTpoIntakeConditionsOnce(limit = 500) {
+  let apps;
+  try {
+    apps = await db.query(
+      `SELECT id FROM applications
+        WHERE is_tpo = true AND status = '${TPO_INTAKE_STATUS}' AND deleted_at IS NULL
+        ORDER BY created_at DESC LIMIT $1`, [limit]);
+  } catch (_) { return { skipped: true }; }
+  const totals = { files: apps.rows.length, filesTouched: 0, added: 0 };
+  for (const row of apps.rows) {
+    try {
+      const r = await evaluateApplication(row.id, { reason: 'tpo_intake_backfill', notify: false });
+      if (r.added.length) { totals.filesTouched++; totals.added += r.added.length; }
+    } catch (_) {}
+  }
+  return totals;
 }
 
 /* The details door speaks camelCase and the field registry speaks snake_case,
@@ -623,10 +669,12 @@ async function writeFieldValue(appId, borrowerId, fieldKey, rawValue, by = {}) {
 
 module.exports = {
   OPEN_STATUSES,
+  engineOpenStatus,
   loadRuleContext,
   instantiateTemplate,
   evaluateApplication,
   evaluateAllOpen,
   evaluateBorrowerApplications,
+  backfillTpoIntakeConditionsOnce,
   writeFieldValue,
 };

@@ -569,6 +569,118 @@ async function sendOrderMail({ appId, kind, data, to, cc, replyTo, built, fromNa
   return { ok: true, to: toList, cc: ccList, messageId };
 }
 
+/**
+ * Place (or force-resend) a title/insurance order — the exactly-once claim → send →
+ * settle CORE, shared by the staff Orders desk AND the TPO broker order route so this
+ * money-adjacent logic lives in ONE place and can never drift between the two doors.
+ * The CALLER owns auth, blockers, recipients, the audit row and the HTTP response;
+ * this owns only the atomic claim, the send, the rollback-on-failure and the tracking.
+ *
+ * @param opts {{ appId, kind, data, to, cc, replyTo, built, vendor, actorId,
+ *                actorName, ccBorrower, force, existing }}
+ * @returns Promise resolving to one of (NEVER throws):
+ *   { ok:true }                                   — sent + recorded
+ *   { ok:true, ambiguous:true, warning }          — provider stopped responding mid-send
+ *   { ok:false, httpStatus, code, error, sent_to?, cc? } — the caller relays verbatim
+ */
+async function placeOrder(opts) {
+  const { appId, kind, data, to, cc, replyTo, built, vendor,
+          actorId, actorName, ccBorrower, force, existing } = opts;
+  const orderTracking = require('./order-tracking');
+  let claimed = null;
+  let sendRes = null;
+  try {
+    // CLAIM FIRST, SEND SECOND — inside ONE transaction, which is what makes an order
+    // exactly-once. A failed send ROLLS IT BACK, so nothing is recorded that did not
+    // happen and nothing that happened goes unrecorded. (The full reasoning lives with
+    // the staff Orders desk, which this was extracted from.)
+    const claim = await db.query(
+      `INSERT INTO file_orders (application_id, order_type, status, vendor_contact_id, vendor_email, vendor_name, subject, ordered_at, ordered_by, send_count, meta)
+       VALUES ($1,$2,'ordered',$3,$4,$5,$6,now(),$7,1, jsonb_build_object('ccBorrower', $8::boolean))
+       ON CONFLICT (application_id, order_type)
+       DO UPDATE SET status='ordered', vendor_contact_id=EXCLUDED.vendor_contact_id, vendor_email=EXCLUDED.vendor_email,
+                     vendor_name=EXCLUDED.vendor_name, subject=EXCLUDED.subject, ordered_at=now(),
+                     ordered_by=EXCLUDED.ordered_by, send_count=file_orders.send_count+1,
+                     meta=COALESCE(file_orders.meta,'{}'::jsonb) || jsonb_build_object('ccBorrower', $8::boolean), updated_at=now()
+         -- THE REAL GUARD, atomic: a second concurrent click blocks on this row,
+         -- re-reads 'ordered', matches nothing, and answers 409 instead of sending the
+         -- vendor a second copy. A FORCED re-send is allowed past, but only once every
+         -- 10 seconds, so a double-click on "force" is one order rather than two.
+         WHERE file_orders.status IN ('not_ordered','cancelled')
+            OR ($9::boolean AND COALESCE(file_orders.ordered_at, 'epoch'::timestamptz) < now() - interval '10 seconds')
+       RETURNING id, status, ordered_at::text AS claim_token`,
+      [appId, kind, vendor ? vendor.id : null, (vendor && vendor.email) || null,
+       (vendor && (vendor.company_name || vendor.contact_name)) || null, built.subject, actorId, ccBorrower, !!force]);
+    if (!claim.rows[0]) {
+      return { ok: false, httpStatus: 409, code: force ? 'too_soon' : 'already_ordered',
+        error: force
+          ? `That ${kind} order has just gone out — give it a moment before sending it again.`
+          : `This ${kind} order was already sent. Use Follow-up, or force a re-send.` };
+    }
+    claimed = claim.rows[0];
+    sendRes = await sendOrderMail({
+      appId, kind, data, to, cc, replyTo, built,
+      fromName: actorName, type: `${kind}_order`,
+    });
+    if (!sendRes.ok && !sendRes.ambiguous) {
+      // NOTHING REACHED THE VENDOR — a compare-and-swap unwind of exactly the row we
+      // just claimed (same id, same ordered_at, still 'ordered'), restoring the prior
+      // snapshot so the aging clock is not reset by a send that never happened.
+      await db.query(
+        `UPDATE file_orders
+            SET status = $3, ordered_at = $4, ordered_by = $5, send_count = $6, updated_at = now()
+          WHERE id = $1 AND status = 'ordered' AND ordered_at = $2::timestamptz`,
+        [claimed.id, claimed.claim_token,
+         (existing && existing.status) || 'not_ordered',
+         (existing && existing.ordered_at) || null,
+         (existing && existing.ordered_by) || null,
+         Number((existing && existing.send_count) || 0)])
+        .catch(() => { /* best-effort — the refusal is what matters */ });
+      return { ok: false, httpStatus: sendRes.reason === 'contact' ? 400 : 502, code: sendRes.reason, error: sendRes.message };
+    }
+    // The order now has an owner and a history. AFTER the send, because a failure above
+    // releases the claim. An AMBIGUOUS send keeps the claim on purpose.
+    await orderTracking.ensureAssignee(appId, kind);
+    if (sendRes.messageId) {
+      await db.query(
+        `UPDATE file_orders
+            SET meta = COALESCE(meta,'{}'::jsonb) || jsonb_build_object('rootMessageId', $3::text, 'lastMessageId', $3::text)
+          WHERE application_id=$1 AND order_type=$2`,
+        [appId, kind, sendRes.messageId]).catch(() => {});
+    }
+    // Re-sending a FINISHED order is a reopen and must be recorded as one (else the
+    // retire sweep puts it straight back to 'completed' and it falls off the desk).
+    const wasFinished = !!(existing && existing.status === 'completed');
+    await orderTracking.recordEvent({
+      applicationId: appId, orderType: kind,
+      kind: wasFinished ? 'reopened' : (existing && existing.send_count ? 'resent' : 'placed'),
+      actorId, orderId: claimed.id,
+      detail: {
+        vendor: (vendor && (vendor.company_name || vendor.contact_name)) || null,
+        to: (to || []).length, cc: (cc || []).length, force: !!force, unconfirmed: !!sendRes.ambiguous,
+        ...(wasFinished ? { reopenedBy: 'resend' } : {}),
+      },
+    });
+    if (wasFinished) {
+      await db.query(
+        `UPDATE file_orders SET completed_at = NULL, updated_at = now()
+          WHERE id = $1 AND status <> 'completed'`, [claimed.id]).catch(() => {});
+    }
+  } catch (e) {
+    // sendOrderMail + recordEvent never throw, so reaching here after a successful send
+    // means the BOOKKEEPING failed — never report that as "could not send", or somebody
+    // re-sends an order the vendor already has.
+    if (sendRes && (sendRes.ok || sendRes.ambiguous)) {
+      return { ok: false, httpStatus: 500, code: 'recorded_failed',
+        error: 'The order was sent to the vendor, but part of recording it on the file failed. Do NOT re-send — check the Email Center, and tell an administrator.',
+        sent_to: to, cc };
+    }
+    return { ok: false, httpStatus: 500, code: 'send_failed', error: 'Could not send the order.' };
+  }
+  if (sendRes.ambiguous) return { ok: true, ambiguous: true, warning: sendRes.message };
+  return { ok: true };
+}
+
 module.exports = {
   ORDER_TYPES, VENDOR_TYPE, ORDER_LABEL,
   getOrderData, blockers, buildOrderEmail, recipientsFor, ccBorrowerDefault, ccBorrowerSettingKey,
@@ -577,4 +689,5 @@ module.exports = {
   mortgageeClauseFor, isRcnNoteBuyer, MORTGAGEE_CLAUSE, MORTGAGEE_CLAUSE_RCN,
   sendOrderMail, sendVerdict, isAmbiguousSendFailure,
   newOrderMessageId, replyOrderSubject,
+  placeOrder,
 };

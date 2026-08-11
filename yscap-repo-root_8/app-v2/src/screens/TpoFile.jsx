@@ -5,6 +5,7 @@ import { askConfirm } from '../lib/dialog.js';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import TpoDraws from '../components/TpoDraws.jsx';
+import TpoOrders from '../components/TpoOrders.jsx';
 import TpoMessages from '../components/TpoMessages.jsx';
 
 /* A single TPO file — the loan's basics, PRICE & register the deal (the Term
@@ -255,6 +256,17 @@ export default function TpoFile() {
           {credit.configured && credit.recentlyPulled && <div className="muted small" style={{ marginTop: 8 }}>Credit was pulled for this file recently — your loan team is reviewing it. You can order again later if needed.</div>}
         </div>
       )}
+
+      {/* Orders — the broker orders title & insurance for this file. Never flood; when the
+          note buyer is RCN the option reads "your loan team handles this" (never why). The
+          order email shows OUR mortgage clause, never the investor's. */}
+      <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>Title &amp; insurance orders</div>
+        <p className="muted small" style={{ marginTop: 0, marginBottom: 8, color: '#4B585C' }}>
+          Add your title company and insurance agent, then order. The order goes out under YS Capital’s mortgage clause.
+        </p>
+        <TpoOrders appId={id} />
+      </div>
 
       {/* Appraisal — the read-only "property profile report": the same clean report the borrower
           sees. Our internal review notes and any capital-partner names are never included. The

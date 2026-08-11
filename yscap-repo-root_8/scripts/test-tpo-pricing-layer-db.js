@@ -50,6 +50,7 @@ const num = (v) => (v == null ? null : Number(v));
   const tpoTok = (id) => C.signJwt({ sub: id, kind: 'tpo', role: 'tpo_officer', tv: 0 });
   const addr = JSON.stringify({ line1: '9 Oak St', city: 'Lakewood', state: 'NJ', zip: '08701' });
   const norm = (s) => registry.normNoteBuyer(s);
+  const nbForProgram = require(R + '/src/lib/note-buyer-for-program').noteBuyerForProgram;
 
   // Snapshot the retail TPO-channel row so we can restore it (shared singleton).
   const chanBefore = (await db.query(`SELECT * FROM tpo_pricing_settings WHERE id=1`)).rows[0];
@@ -176,7 +177,9 @@ const num = (v) => (v == null ? null : Number(v));
       { program: 'standard', econVersion: ev, overrides: {} });
     if (regStd.status === 201) {
       const lender = (await db.query(`SELECT lender FROM applications WHERE id=$1`, [appA])).rows[0].lender;
-      ok(norm(lender) === 'fidelis', `registering Standard auto-set the capital provider to Fidelis (lender="${lender}")`);
+      // The stored value is the buyer's real production spelling ("Fidelis Investors LLC"),
+      // same as the retail path — compare normalized against the program's derived label.
+      ok(norm(lender) === norm(nbForProgram('standard')), `registering Standard auto-set the capital provider to Fidelis (lender="${lender}")`);
       // and it is NOT leaked to the broker: the TPO app view omits lender
       const av = await call(server, 'GET', `/api/tpo/applications/${appA}`, tokA);
       ok(av.status === 200 && !/fidelis/i.test(JSON.stringify(av.body)), 'the auto-set note buyer is NEVER exposed to the broker');
@@ -186,7 +189,7 @@ const num = (v) => (v == null ? null : Number(v));
         { program: 'gold', econVersion: gp2.body && gp2.body.econVersion, overrides: {} });
       if (regGold.status === 201) {
         const lender2 = (await db.query(`SELECT lender FROM applications WHERE id=$1`, [appA])).rows[0].lender;
-        ok(norm(lender2) === 'bluelake', `re-registering Gold moved the capital provider to Blue Lake (lender="${lender2}")`);
+        ok(norm(lender2) === norm(nbForProgram('gold')), `re-registering Gold moved the capital provider to Blue Lake (lender="${lender2}")`);
       } else {
         console.log(`  ~~ note: Gold register returned ${regGold.status} (${regGold.body && regGold.body.error || ''}) — skipping the Blue Lake sub-check`);
       }
