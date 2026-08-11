@@ -162,7 +162,7 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
       <ChecklistsSection appId={appId} checklists={ws.checklists || []} isCloser={isCloser} onChanged={refresh} setErr={setErr} />
 
       {/* Sign-offs + reconciliation */}
-      <SignoffSection appId={appId} cw={cw} rec={rec} isCloser={isCloser} busy={busy} run={run} setWarn={setWarn} />
+      <SignoffSection appId={appId} cw={cw} rec={rec} isCloser={isCloser} busy={busy} run={run} setWarn={setWarn} say={say} hasLoan={!!ws.ys_loan_number} />
 
       {/* Notes */}
       <NotesSection appId={appId} notes={ws.notes || []} onChanged={refresh} setErr={setErr} />
@@ -573,7 +573,7 @@ function AddItem({ onAdd }) {
   );
 }
 
-function SignoffSection({ appId, cw, rec, isCloser, busy, run, setWarn }) {
+function SignoffSection({ appId, cw, rec, isCloser, busy, run, setWarn, say, hasLoan }) {
   const recOk = rec && rec.ok;
   return (
     <div className="panel" style={{ marginBottom: 14 }}>
@@ -617,7 +617,24 @@ function SignoffSection({ appId, cw, rec, isCloser, busy, run, setWarn }) {
         </div>
 
         <div className="cl-recon" style={{ marginTop: 12 }}>
-          <div className="cl-recon-head"><b>Funded date reconciliation</b></div>
+          <div className="cl-recon-head" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+            <b>Funded date reconciliation</b>
+            {/* If the closer just filled the funded date in Encompass, re-pull it here
+                — the reconciliation reads a stored snapshot, so a fresh value is
+                invisible until we pull again. Read-only pull; nothing is written to
+                Encompass. Shown only when there's a loan number to pull by. */}
+            {hasLoan && (
+              <button className="btn ghost small" disabled={busy === 'reconrefresh'}
+                title="Re-pull the funded date from Encompass (read-only — nothing is written to Encompass)"
+                onClick={() => run('reconrefresh', async () => {
+                  const r = await api.closingReconcileRefresh(appId);
+                  if (r && r.pulled) { if (say) say('Pulled the latest funded date from Encompass.'); }
+                  else setWarn(r && r.reason ? `Couldn’t refresh from Encompass: ${r.reason}` : 'Couldn’t reach Encompass to refresh — try again in a moment.');
+                })}>
+                {busy === 'reconrefresh' ? 'Refreshing…' : '↻ Refresh from Encompass'}
+              </button>
+            )}
+          </div>
           <div className="cl-recon-grid">
             <ReconCell k="PILOT" v={day(rec.ours)} />
             <ReconCell k="ClickUp" v={day(rec.clickup)} />
