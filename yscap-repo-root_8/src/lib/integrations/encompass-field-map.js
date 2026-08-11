@@ -209,18 +209,35 @@ const REGISTRY = Object.freeze([
   // extraction), so closing.js `readEncompassFundedDate` + the closing
   // reconciliation gate read it.
   //
-  // THE FIELD IS THE CUSTOM FIELD CX.FUNDEDDATE, NOT the standard field 1401
+  // THE TENANT FILLS THE CUSTOM FIELD CX.FUNDEDDATE, not the standard field 1401
   // (owner-reported 2026-08-11: "the funded date was filled in Encompass … the
-  // field that we should be using is cx.fundeddate"). This tenant records the
-  // funded date in CX.FUNDEDDATE (live custom-field catalog: "Funded Date") and
-  // leaves standard field 1401 empty, so the reconciliation panel showed Encompass
-  // blank even after the closer filled it in. CX.FUNDEDDATE is the primary read
-  // (BY NUMBER via the fieldReader, and passed through customFields[]); the standard
-  // field 1401 stays as a FALLBACK through its loanPath closingDocument.fundingDate,
-  // so a loan that carries the standard funded date is still read. Dates arrive from
-  // the fieldReader in the tenant display format (MM/DD/YYYY) — readEncompassFundedDate
-  // normalizes with normDate, which handles both that and ISO.
-  pull({ key: 'funded_date', encompassFieldId: 'CX.FUNDEDDATE', loanPath: 'closingDocument.fundingDate', type: 'date', category: 'loan', compare: 'reference', gate: GATE.REFERENCE, our: 'column:funded_date', note: 'Funded date — CX.FUNDEDDATE (the tenant\'s field; standard field 1401 / closingDocument.fundingDate is the fallback loanPath). Read-only reference; shown for info, never gates the term sheet (empty until funding); the closing reconciliation gate reads the value separately' }),
+  // field that we should be using is cx.fundeddate"). This tenant records the funded
+  // date in CX.FUNDEDDATE (live custom-field catalog: "Funded Date") and leaves
+  // standard field 1401 empty, so the reconciliation panel showed Encompass blank
+  // even after the closer filled it in.
+  //
+  // CX.FUNDEDDATE IS READ AS `altFieldId`, NOT `encompassFieldId` — this is the
+  // load-bearing part (regression fix, owner-reported 2026-08-11: after #1131 the
+  // "regular screen of Encompass Sync" showed ~23 fields "no data to compare").
+  // `allFieldIds()` — the batch of ids the fieldReader is asked for BY NUMBER, on
+  // every pull AND on the panel self-heal — is built from `encompassFieldId` ONLY.
+  // #1131 set encompassFieldId='CX.FUNDEDDATE', which swapped 1401 OUT of that batch
+  // and CX.FUNDEDDATE IN. If a single requested id is invalid/unpermitted the
+  // fieldReader fails the WHOLE call (ICE 24.2); client.readFields only split-recovers
+  // a clean invalid-field 400, so any other failure shape (a 500, an odd body) throws
+  // the whole read and leaves `_fieldValues` UNSET — which drops every by-number field
+  // (1859, 388, and the ~20 CX.* economics that have no reliable JSON path) back to
+  // guessed loanPaths = "no data to compare". The fix keeps the fragile custom id OUT
+  // of the shared authoritative batch: `encompassFieldId:'1401'` restores the batch
+  // byte-for-byte to its pre-#1131 state, and CX.FUNDEDDATE rides `altFieldId`, which
+  // is NOT in allFieldIds() but IS in KNOWN_FIELD_IDS — so flattenLoan passes it
+  // through from customFields[] (its canonical home in the loan JSON) and extractFields
+  // falls back to it when the standard 1401 (closingDocument.fundingDate) is empty.
+  // The funded-date read is therefore location-independent of the fieldReader and can
+  // never again poison the 40 economics fields. Dates arrive in the tenant display
+  // format (MM/DD/YYYY) — readEncompassFundedDate normalizes with normDate (MM/DD/YYYY
+  // AND ISO).
+  pull({ key: 'funded_date', encompassFieldId: '1401', altFieldId: 'CX.FUNDEDDATE', loanPath: 'closingDocument.fundingDate', type: 'date', category: 'loan', compare: 'reference', gate: GATE.REFERENCE, our: 'column:funded_date', note: 'Funded date — the tenant fills CX.FUNDEDDATE (read as altFieldId, via customFields[]); standard field 1401 / closingDocument.fundingDate is the primary/fallback. CX.FUNDEDDATE is deliberately NOT in the fieldReader batch (allFieldIds) so an unreadable custom id can never blank the whole by-number read. Read-only reference; shown for info, never gates the term sheet (empty until funding); the closing reconciliation gate reads the value separately' }),
   // THE PURCHASE ADVICE (PA) DATE — the SOLD signal (owner-directed 2026-08-09: "I'm going to
   // give you the exact field ID that you should use from Encompass, which is the PA date, and
   // that's going to tell you if it was sold or not. If a file doesn't have a PA date yet, it

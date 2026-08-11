@@ -88,20 +88,32 @@ assert.strictEqual(ex.note_rate, 8.0);
 assert.strictEqual(ex.property_type, '2-4 Family');
 ok('flattenLoan + extractFields read a full loan (customFields[] + standard paths)');
 
-// ── Funded date is the tenant's CX.FUNDEDDATE, standard field 1401 as fallback ──
+// ── Funded date: the tenant fills CX.FUNDEDDATE, read as altFieldId (OUT of batch) ──
 // (owner-reported 2026-08-11: the funded date was filled in Encompass but the
-// reconciliation showed blank — PILOT read standard field 1401, empty on this
-// tenant, instead of the CX.FUNDEDDATE custom field the closer actually fills.)
-assert.strictEqual(m.BY_KEY.funded_date.encompassFieldId, 'CX.FUNDEDDATE', 'funded_date reads CX.FUNDEDDATE (the tenant\'s field), not std 1401');
-assert.ok(m.allFieldIds().includes('CX.FUNDEDDATE'), 'CX.FUNDEDDATE is read BY NUMBER via the fieldReader');
-// From customFields[] (its canonical home).
+// closing reconciliation showed blank — PILOT read standard field 1401, empty on
+// this tenant, instead of the CX.FUNDEDDATE custom field the closer actually fills.)
+//
+// REGRESSION GUARD (owner-reported 2026-08-11, after #1131): CX.FUNDEDDATE must be an
+// `altFieldId`, NOT the `encompassFieldId`. allFieldIds() (the fieldReader BY-NUMBER
+// batch) is built from encompassFieldId only; putting a fragile custom id in it meant
+// one unreadable id could fail the WHOLE fieldReader call and blank `_fieldValues`,
+// dropping ~23 by-number fields on the Encompass Sync screen to "no data to compare".
+// So: the batch carries the standard 1401, and CX.FUNDEDDATE rides altFieldId (read via
+// customFields[]) — location-independent of the fieldReader, so it can never poison the
+// economics read again.
+assert.strictEqual(m.BY_KEY.funded_date.encompassFieldId, '1401', 'funded_date batch id is the standard field 1401 (keeps allFieldIds byte-identical to pre-#1131)');
+assert.strictEqual(m.BY_KEY.funded_date.altFieldId, 'CX.FUNDEDDATE', 'funded_date reads the tenant\'s CX.FUNDEDDATE as the altFieldId (out of the fieldReader batch)');
+assert.ok(!m.allFieldIds().includes('CX.FUNDEDDATE'), 'CX.FUNDEDDATE is NOT in the fieldReader batch — a fragile custom id can never blank the by-number read');
+assert.ok(m.allFieldIds().includes('1401'), '1401 IS in the fieldReader batch (the standard funded-date field)');
+assert.ok(m._internals.KNOWN_FIELD_IDS.has('CX.FUNDEDDATE'), 'CX.FUNDEDDATE is a KNOWN_FIELD_ID (so flattenLoan passes it through from customFields[])');
+// From customFields[] (its canonical home in the loan JSON) — the primary path now.
 assert.strictEqual(m.extractFields({ customFields: [{ fieldName: 'CX.FUNDEDDATE', value: '07/27/2026' }] }).funded_date, '07/27/2026', 'funded_date from CX.FUNDEDDATE customFields[]');
-// From the authoritative by-number read (_fieldValues), which wins over a path.
-assert.strictEqual(m.extractFields({ _fieldValues: { 'CX.FUNDEDDATE': '07/27/2026' }, closingDocument: { fundingDate: '2026-01-01' } }).funded_date, '07/27/2026', 'CX.FUNDEDDATE by-number beats the standard-field path');
-// FALLBACK: the standard funded date (field 1401 = closingDocument.fundingDate)
-// is still read when CX.FUNDEDDATE is absent, so a loan that uses the standard
-// field keeps reconciling.
-assert.strictEqual(m.extractFields({ customFields: [], closingDocument: { fundingDate: '2026-07-10' } }).funded_date, '2026-07-10', 'funded_date falls back to std 1401 (closingDocument.fundingDate)');
+// From a by-number value stashed on _fieldValues (kept because CX.FUNDEDDATE is a
+// KNOWN_FIELD_ID) — still read, even though it is no longer REQUESTED by number.
+assert.strictEqual(m.extractFields({ _fieldValues: { 'CX.FUNDEDDATE': '07/27/2026' } }).funded_date, '07/27/2026', 'funded_date reads CX.FUNDEDDATE from _fieldValues when present');
+// The standard funded date (field 1401 = closingDocument.fundingDate) reads when the
+// loan carries it, so a loan that uses the standard field keeps reconciling.
+assert.strictEqual(m.extractFields({ customFields: [], closingDocument: { fundingDate: '2026-07-10' } }).funded_date, '2026-07-10', 'funded_date reads std 1401 (closingDocument.fundingDate)');
 // The reconciliation normalizes the fieldReader's MM/DD/YYYY display format AND
 // ISO down to a comparable 'YYYY-MM-DD' (a plain ISO-only parse would drop the
 // US-format date — exactly why the Encompass leg read blank).
@@ -109,7 +121,7 @@ assert.strictEqual(m.normDate('07/27/2026'), '2026-07-27', 'normDate handles MM/
 assert.strictEqual(m.normDate('2026-07-27'), '2026-07-27', 'normDate handles ISO');
 assert.strictEqual(m.normDate('2026-07-27T00:00:00Z'), '2026-07-27', 'normDate handles an ISO datetime');
 assert.strictEqual(m.normDate(''), null, 'normDate on a blank is null (never a guess)');
-ok('funded date reads CX.FUNDEDDATE (std 1401 fallback) and normalizes MM/DD/YYYY + ISO');
+ok('funded date reads CX.FUNDEDDATE via altFieldId (out of the batch), std 1401 in the batch, normalizes MM/DD/YYYY + ISO');
 
 // ── Money: whole-dollar figures absorb cents-rounding; input fields stay exact ──
 assert.strictEqual(m.compareField('loan_amount', 450000, '450000.0000').status, 'match');
