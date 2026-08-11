@@ -1013,9 +1013,11 @@ router.get('/files/:id/draw-request', requirePermission('manage_draws'), async (
     let recipients = [];
     if (env) {
       recipients = (await db.query(
-        `SELECT role, name, email, status, signed_at, delivered_at
+        `SELECT id, role, name, email, borrower_id, status, signed_at, delivered_at, declined_at
            FROM esign_recipients WHERE envelope_row_id=$1 ORDER BY routing_order, role`, [env.id])).rows;
     }
+    // The envelope is re-addressable while it is out for signature (sent, not terminal).
+    const envLive = !!(env && env.envelope_id && !['completed', 'declined', 'voided'].includes(String(env.status || '')));
     // SELF-HEAL the stored classification BEFORE reading it (owner-reported 2026-08-10: "the
     // entity name is the same but it still shows New Entity"). `name_kind` is written once at
     // capture, so the db/478 known-entity rule fix — and any later profile change (an entity
@@ -1061,10 +1063,19 @@ router.get('/files/:id/draw-request', requirePermission('manage_draws'), async (
       prereqs,
       can_send: switches.on('DOCUSIGN_SEND_ENABLED') && Object.values(prereqs).every(Boolean),
       envelope: env ? {
-        status: env.status, sent_at: env.sent_at, completed_at: env.completed_at, created_at: env.created_at,
+        row_id: env.id, status: env.status, sent_at: env.sent_at, completed_at: env.completed_at, created_at: env.created_at,
         terminal: ['completed', 'declined', 'voided'].includes(String(env.status || '')),
+        // Live = out for signature, so its recipient's email can still be corrected + re-sent.
+        live: envLive,
       } : null,
-      recipients: recipients.map((r) => ({ role: r.role, name: r.name, status: r.status, signed_at: r.signed_at, viewed_at: r.delivered_at })),
+      // `id` + `can_change_email` let the panel offer "change email & re-send" per signer
+      // (a signed/declined signer can't be re-addressed). `has_file_email_mismatch` drives
+      // the "also update the email on the file" warning without exposing the raw file email.
+      recipients: recipients.map((r) => ({
+        id: r.id, role: r.role, name: r.name, email: r.email, status: r.status,
+        signed_at: r.signed_at, viewed_at: r.delivered_at,
+        can_change_email: envLive && !r.signed_at && !r.declined_at && r.status !== 'signed' && r.status !== 'completed' && r.status !== 'declined',
+      })),
       // Who the wire form CAN be sent to (borrower / co-borrower) so the UI can offer the choice.
       recipient_options: await require('../lib/draw-recipients').drawRecipients(appId).catch(() => ({ borrower: null, coBorrower: null })),
       wire,
@@ -1126,6 +1137,51 @@ router.post('/files/:id/draw-request/send', requirePermission('manage_draws'), a
     if (e && e.retryable === false && e.message) return res.status(422).json({ error: e.message });
     console.warn('[sitewire] draw-request send error:', e && e.message);
     res.status(502).json({ error: 'The signing service is temporarily unavailable — nothing was sent; try again shortly.' });
+  }
+});
+
+// ---- POST /files/:id/draw-request/recipient-email — change the wire form's email + re-send ----
+// The wire form went out to a wrong email? Correct the signer's email on the in-flight
+// DocuSign envelope and re-send the invitation to the new address (owner-directed), without
+// voiding + re-issuing. The wire form is a solo-signer package, so with no recipientRowId in
+// the body we correct that single signer. Reuses the shared esign recipient-email helper.
+router.post('/files/:id/draw-request/recipient-email', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const env = (await db.query(
+      `SELECT id FROM esign_envelopes WHERE application_id=$1 AND purpose='draw_request'
+        ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0] || null;
+    if (!env) return res.status(404).json({ error: 'No draw request form has been sent for this file yet.' });
+    let recipientRowId = String((req.body && req.body.recipientRowId) || '').trim();
+    if (!recipientRowId) {
+      // Solo package — the single borrower signer, if any is still awaiting.
+      const r = (await db.query(
+        `SELECT id FROM esign_recipients WHERE envelope_row_id=$1 AND role='borrower'
+          ORDER BY routing_order LIMIT 1`, [env.id])).rows[0];
+      if (!r) return res.status(404).json({ error: 'That signer isn’t on this form — refresh and try again.' });
+      recipientRowId = r.id;
+    }
+    const out = await require('../lib/esign/recipient-email').changeRecipientEmail({
+      envelopeRowId: env.id, recipientRowId,
+      email: (req.body && req.body.email) || '', name: (req.body && req.body.name) || '',
+      actorId: req.actor && req.actor.id, db,
+    });
+    // Best-effort audit — an irreversible re-address must be recorded, but the logging
+    // write can never fail the action.
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+         VALUES ('staff',$1,'esign_recipient_email_changed','application',$2,$3,$4,$5)`,
+        [req.actor && req.actor.id, appId, req.ip, req.get('user-agent') || null,
+         { purpose: 'draw_request', role: out.role, from: out.prevEmail, to: out.email, differsFromFile: out.differsFromFile }]);
+    } catch (_) { /* logging is best-effort */ }
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    if (e && e.status && e.expose) return res.status(e.status).json({ error: e.message });
+    if (e && e.retryable === false && e.message) return res.status(400).json({ error: e.message });
+    console.warn('[sitewire] draw-request recipient-email error:', e && e.message);
+    res.status(500).json({ error: 'server error' });
   }
 });
 
