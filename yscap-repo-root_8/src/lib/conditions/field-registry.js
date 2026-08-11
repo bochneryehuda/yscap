@@ -213,6 +213,80 @@ function isRcnNoteBuyer(raw) {
   return !!key && key.startsWith(RCN_KEY_PREFIX);
 }
 
+// THE ONE NOTE BUYER, HOWEVER IT IS SPELLED — canonical identity (owner-directed
+// 2026-08-11: "EMCAP Financial and EMCAP are the same note buyer — combine them,
+// everything should understand them as the same, and the one we keep should be
+// linked everywhere; the one available in ClickUp is canonical").
+//
+// A buyer with a short registry spelling ("EMCAP", "Fidelis", "Blue Lake") AND a
+// long production/ClickUp label ("EMCAP Financial", "Fidelis Investors LLC", "Blue
+// Lake Capital") normalizes to TWO different keys under the EXACT `normNoteBuyer`
+// ('emcap' vs 'emcapfinancial'), so it showed up as TWO picker options and read as
+// two different buyers to the ClickUp bounce-back guard. This is the SINGLE place a
+// buyer's canonical identity lives, so the picker (listNoteBuyers), the Silver→EMCAP
+// auto-link (note-buyer-for-program), and the inbound bounce-back guard all agree on
+// "the one we keep" and treat every spelling as the same buyer.
+//
+// NOTE_BUYER_CANONICAL_LABEL = the production label the picker offers + stores. Keyed
+// by the buyer's canonical key (the tape buyerKey / prefix). A note buyer NOT here
+// (CorrFirst, and anything the picker has never seen) keeps its own normalized key +
+// trimmed label — it already collapses under normNoteBuyer (no differently-normalizing
+// long form), so it needs no entry.
+const NOTE_BUYER_CANONICAL_LABEL = Object.freeze({
+  emcap: 'EMCAP Financial',
+  fidelis: 'Fidelis Investors LLC',
+  bluelake: 'Blue Lake Capital',
+  rcn: 'RCN Capital',
+});
+
+// Buyer matchers, reusing the existing prefix helpers so "same buyer" has ONE
+// definition. Order does not matter — the four prefixes are disjoint.
+const CANONICAL_NOTE_BUYER_MATCHERS = [
+  { key: 'emcap', is: isEmcapNoteBuyer },
+  { key: 'fidelis', is: isFidelisNoteBuyer },
+  { key: 'bluelake', is: isBlueLakeNoteBuyer },
+  { key: 'rcn', is: isRcnNoteBuyer },
+];
+
+/**
+ * The canonical identity of a note buyer, however it is spelled → { key, label }.
+ * For a KNOWN buyer (EMCAP / Fidelis / Blue Lake / RCN — matched by the prefix
+ * helpers above) it returns that buyer's canonical key + production ClickUp label,
+ * so "EMCAP" and "EMCAP Financial" collapse to ONE { key:'emcap', label:'EMCAP
+ * Financial' }. For an UNRECOGNIZED buyer it keeps its own normalized key + trimmed
+ * label (so a note buyer the picker has never seen is still offerable, just not
+ * canonicalized). Returns null for a blank/absent value.
+ *
+ * This does NOT loosen `normNoteBuyer` (which stays EXACT for the tape-export gate,
+ * where an over-match ships the wrong buyer's data tape) — it is a SEPARATE identity,
+ * used by the picker / bounce-back guard, that deliberately collapses the known
+ * two-spelling buyers. PURE. Never throws.
+ */
+function canonicalNoteBuyer(raw) {
+  const key = normNoteBuyer(raw);
+  if (!key) return null;
+  for (const m of CANONICAL_NOTE_BUYER_MATCHERS) {
+    if (m.is(raw)) return { key: m.key, label: NOTE_BUYER_CANONICAL_LABEL[m.key] };
+  }
+  return { key, label: String(raw).trim() };
+}
+
+/**
+ * True when two note-buyer labels name the SAME buyer by canonical identity, so
+ * "EMCAP" ≡ "EMCAP Financial" and "Blue Lake" ≡ "Blue Lake Capital". A null/blank on
+ * either side is "same" (nothing to compare — the caller decides what a blank means).
+ * Used by the ClickUp inbound bounce-back guard so a spelling difference is never read
+ * as ClickUp trying to change the note buyer (which caused an endless keep+re-push
+ * churn). PURE. Never throws.
+ */
+function sameNoteBuyer(a, b) {
+  if (a == null || b == null) return true;
+  const ca = canonicalNoteBuyer(a);
+  const cb = canonicalNoteBuyer(b);
+  if (!ca || !cb) return !ca && !cb;          // both blank → same; one blank → different
+  return ca.key === cb.key;
+}
+
 const stateOptions = US_STATES.map((v) => ({ v, label: v }));
 
 // ---------------------------------------------------------------------------
@@ -537,4 +611,5 @@ module.exports = {
   EMCAP_KEY_PREFIX, isEmcapNoteBuyer,
   BLUELAKE_KEY_PREFIX, isBlueLakeNoteBuyer,
   RCN_KEY_PREFIX, isRcnNoteBuyer,
+  NOTE_BUYER_CANONICAL_LABEL, canonicalNoteBuyer, sameNoteBuyer,
 };

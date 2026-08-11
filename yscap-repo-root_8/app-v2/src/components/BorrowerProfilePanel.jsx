@@ -468,11 +468,17 @@ export default function BorrowerProfilePanel({ borrowerId, heading = 'Borrower p
 
   return (
     <div className="panel" style={{ marginTop: 14 }}>
+      {/* Header: heading on the left, the two actions grouped on the right. The
+          buttons are wrapped in ONE flex group so they behave as a single wrap
+          unit — on a narrow (half-width, side-by-side) card they drop TOGETHER to
+          the next line and stay side by side, instead of one button stranding on
+          its own line while the other sits by the heading (owner-reported 2026-08-11:
+          the co-borrower card's "Edit borrower profile" wrapped awkwardly). */}
       <div className="row" style={{ alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <h3 style={{ margin: 0, color: '#141B22' }}>{heading}{b && fullName(b) ? ` — ${fullName(b)}` : ''}</h3>
+        <h3 style={{ margin: 0, color: '#141B22', minWidth: 0 }}>{heading}{b && fullName(b) ? ` — ${fullName(b)}` : ''}</h3>
         <div className="spacer" />
         {b && (
-          <>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <Link className="btn ghost small" to={`/internal/borrowers/${b.id}`}
               title="Open this person's full profile screen — their other files, entities, track record and documents">
               Open full profile ↗
@@ -481,7 +487,7 @@ export default function BorrowerProfilePanel({ borrowerId, heading = 'Borrower p
               title="Edit this person's own record — legal name, date of birth, contact details, home address, housing and employment">
               {editing ? 'Close editor' : 'Edit borrower profile'}
             </button>
-          </>
+          </div>
         )}
       </div>
       {err && <div role="alert" className="notice err" style={{ marginTop: 8 }}>{err}</div>}

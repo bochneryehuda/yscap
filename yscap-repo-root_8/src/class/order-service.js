@@ -219,7 +219,7 @@ function fieldRows(built) {
 // ---------------------------------------------------------------------------
 // Product (form) auto-pick — the Class mirror of the AMC form-selection rules.
 // Reads the admin-editable class_form_map, matches a rule to the deal, and returns the
-// chosen Class productId. INERT until class_form_map is seeded (db/535 ships it EMPTY):
+// chosen Class productId. INERT until class_form_map is seeded (db/537 ships it EMPTY):
 // with no rows chooseProduct returns null and staff pick from Class's live catalog —
 // exactly today's behaviour. When the owner names the Class product ids and a later
 // migration seeds the rows, the auto-pick lights up with no code change here.

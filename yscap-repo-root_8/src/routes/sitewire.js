@@ -152,9 +152,13 @@ router.get('/draws', requirePermission('manage_draws'), async (req, res) => {
       `SELECT d.sitewire_draw_id, d.application_id, d.number, d.status, d.total_requested_cents, d.total_approved_cents,
               -- What the INSPECTOR approved. total_approved_cents is Sitewire's FINAL-approval
               -- field and stays 0 from the inspection until we press Final approve, so the desk list
-              -- showed $0 on fully-inspected draws (owner-reported 2026-08-03). Same precedence as
-              -- sitewire/approval.js: the live request mirror first, the draw total as the fallback.
+              -- showed $0 on fully-inspected draws (owner-reported 2026-08-03). SAME precedence as
+              -- approval.inspectorApproved so this column equals the report/email headline: the live
+              -- request mirror first, then the delivered-findings snapshot (the inspector's per-line
+              -- figure lands there BEFORE the mirror catches up — owner-reported 2026-08-10, 109
+              -- Chapel St, where this column read $0 while the report read $7,700), then the draw total.
               COALESCE((SELECT sum(r.approved_cents) FROM sitewire_draw_requests r WHERE r.sitewire_draw_id = d.sitewire_draw_id),
+                       (SELECT sum(fl.approved_cents) FROM draw_finding_lines fl JOIN draw_findings df ON df.id = fl.finding_id WHERE df.sitewire_draw_id = d.sitewire_draw_id AND fl.retired_at IS NULL),
                        d.total_approved_cents) AS inspector_approved_cents,
               d.submitted_at, d.approved_at, d.updated_at, d.pdf_src,
               a.ys_loan_number, ${addrExpr('a')} AS address,

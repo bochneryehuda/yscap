@@ -134,7 +134,12 @@ async function registeredProgram(appId, client = db) {
  * buyer name here is fine — this whole surface is staff-only).
  */
 function requirementsFor(label, { program, assetMonths }) {
-  const key = registry.normNoteBuyer(label) || '';
+  // The CANONICAL key, so a buyer's long production label ("Blue Lake Capital",
+  // "EMCAP Financial") resolves to the same key as its short form — otherwise
+  // `key === 'bluelake'` and `tapesForBuyer(key)` would silently miss the very
+  // labels the picker now offers. Identical to the old `normNoteBuyer(label)||''`
+  // for an unknown/blank buyer.
+  const key = (registry.canonicalNoteBuyer(label) || {}).key || '';
   const out = [];
   const prog = String((program || '')).trim();
 
@@ -237,7 +242,14 @@ async function noteBuyerSlot(appId, client = db, opts = {}) {
     app = (await client.query(`SELECT lender FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0] || null;
   } catch (_) { app = null; }
   if (!app) return out;
-  out.current = { label: app.lender || null, key: registry.normNoteBuyer(app.lender) || null };
+  // `key` is the CANONICAL buyer key (not the exact normNoteBuyer), so it matches the
+  // canonical `value` on the options + the `effects` map keys below. Otherwise a file
+  // whose stored lender is a long label ("EMCAP Financial" → 'emcapfinancial', "Blue
+  // Lake Capital" → 'bluelakecapital') — which db/535 and the register auto-link now
+  // make the norm — would have a current.key that matches NO effects entry, and the
+  // card's "what this note buyer requires" panel + the (current) marker would vanish.
+  // `label` stays the RAW stored name (what the file actually holds).
+  out.current = { label: app.lender || null, key: (registry.canonicalNoteBuyer(app.lender) || {}).key || null };
 
   try { out.options = await require('./note-buyers').listNoteBuyers(); } catch (_) { out.options = []; }
   // The file's own note buyer is always offerable, even if ClickUp has never heard of
@@ -245,9 +257,12 @@ async function noteBuyerSlot(appId, client = db, opts = {}) {
   // ClickUp dropdown), so a typed name gets a real preview instead of a shrug.
   const extra = [out.current.label, opts.candidate].filter((x) => x && String(x).trim());
   for (const label of extra) {
-    const key = registry.normNoteBuyer(label);
-    if (!key || out.options.some((o) => o.value === key)) continue;
-    out.options.push({ value: key, label: String(label).trim() });
+    // Canonical identity, so the file's own "EMCAP" (short) collapses onto the
+    // list's canonical "EMCAP Financial" option instead of re-appearing as a
+    // second row — the exact duplicate the owner asked to merge.
+    const canon = registry.canonicalNoteBuyer(label);
+    if (!canon || out.options.some((o) => o.value === canon.key)) continue;
+    out.options.push({ value: canon.key, label: canon.label });
   }
   out.options.sort((a, b) => String(a.label).localeCompare(String(b.label)));
 

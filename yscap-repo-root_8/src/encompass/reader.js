@@ -229,6 +229,31 @@ async function refreshFieldCatalog() {
 
 // ── Per-loan pull ──────────────────────────────────────────────────────────
 
+// Is this getLoan error a DEFINITIVE "that loan no longer exists" (HTTP 404/410)
+// — as opposed to a transient hiccup (401/403 auth, 5xx server, a timeout)? Only
+// a definitive not-found may clear a cached GUID; clearing on a transient error
+// would throw away a perfectly good link on every Encompass blip. The error text
+// is `Encompass <status>: <body>` (see integrations/encompass.js apiGet), so a
+// leading `Encompass 404`/`Encompass 410` is the reliable signal.
+function _isLoanNotFound(e) {
+  return /^Encompass 4(?:04|10)\b/.test(String((e && e.message) || ''));
+}
+
+// Pipeline-search for a loan by loan number and resolve the single matching GUID.
+// Returns { guid } on a clean single match, or { reason } (plain language) on no
+// match / an ambiguous match / a search error / a row without a GUID. Shared by
+// the first-time search AND the stale-GUID self-heal so both behave identically.
+async function _searchGuid(loanNumber) {
+  let hits;
+  try { hits = await client.findLoanByLoanNumber(loanNumber, { extraFields: PIPELINE_SEARCH_FIELDS.filter((f) => f !== 'Loan.LoanNumber') }); }
+  catch (e) { return { reason: `pipeline search: ${e.message}` }; }
+  if (!hits.length) return { reason: `no Encompass loan for loan# ${loanNumber}` };
+  if (hits.length > 1) return { reason: `ambiguous Encompass match: ${hits.length} loans share loan# ${loanNumber}` };
+  const guid = _rowGuid(hits[0]);
+  if (!guid) return { reason: `pipeline search returned a row without a GUID (${_rowShape(hits[0])})` };
+  return { guid };
+}
+
 // Given a PILOT application id, find the Encompass loan and stash the full raw
 // JSON. Uses the cached GUID if we have one; otherwise pipeline-searches by
 // ys_loan_number, saves the GUID, then GETs the loan.
@@ -249,14 +274,11 @@ async function pullLoanForApplication(appId) {
   if (!row.ys_loan_number) return _stampError(appId, 'ys_loan_number not set on the file');
 
   let guid = row.encompass_loan_guid;
+  const hadCachedGuid = !!guid;
   if (!guid) {
-    let hits;
-    try { hits = await client.findLoanByLoanNumber(row.ys_loan_number, { extraFields: PIPELINE_SEARCH_FIELDS.filter((f) => f !== 'Loan.LoanNumber') }); }
-    catch (e) { return _stampError(appId, `pipeline search: ${e.message}`); }
-    if (!hits.length) return _stampError(appId, `no Encompass loan for loan# ${row.ys_loan_number}`);
-    if (hits.length > 1) return _stampError(appId, `ambiguous Encompass match: ${hits.length} loans share loan# ${row.ys_loan_number}`);
-    guid = _rowGuid(hits[0]);
-    if (!guid) return _stampError(appId, `pipeline search returned a row without a GUID (${_rowShape(hits[0])})`);
+    const s = await _searchGuid(row.ys_loan_number);
+    if (s.reason) return _stampError(appId, s.reason);
+    guid = s.guid;
     await db.query(
       `UPDATE applications SET encompass_loan_guid=$1, updated_at=now() WHERE id=$2 AND encompass_loan_guid IS NULL`,
       [guid, appId],
@@ -265,7 +287,34 @@ async function pullLoanForApplication(appId) {
 
   let loan;
   try { loan = await client.getLoan(guid); }
-  catch (e) { return _stampError(appId, `getLoan: ${e.message}`); }
+  catch (e) {
+    // STALE-GUID SELF-HEAL (owner-reported 2026-08: a file "read from Encompass
+    // 9d ago" that keeps failing to refresh even after pressing Refresh). The GUID
+    // we cache can go DEAD — a loan deleted / merged / renumbered in Encompass, or
+    // a hand-edited row — and a dead GUID makes getLoan 404/410 on every pull, so
+    // the timestamp freezes and the file never matches, forever, with no way out.
+    // The fix: on a DEFINITIVE not-found (404/410) AND only when we started from a
+    // CACHED guid (a guid we JUST searched for this call is not stale), clear the
+    // bad link and re-search by loan number ONCE — so the very next pull self-heals
+    // instead of dead-ending. A transient error (401/403 auth, 5xx, a timeout) is
+    // NEVER treated as "gone" — clearing on those would throw away a good guid on
+    // every Encompass hiccup. Mirrors the same-loan guard below, which already
+    // clears the guid when it resolves to a DIFFERENT loan.
+    if (hadCachedGuid && _isLoanNotFound(e)) {
+      await db.query('UPDATE applications SET encompass_loan_guid=NULL WHERE id=$1', [appId]).catch(() => {});
+      const s = await _searchGuid(row.ys_loan_number);
+      if (s.reason) return _stampError(appId, `the saved Encompass link was out of date, so we searched again by loan# ${row.ys_loan_number} — ${s.reason}`);
+      guid = s.guid;
+      await db.query(
+        `UPDATE applications SET encompass_loan_guid=$1, updated_at=now() WHERE id=$2`,
+        [guid, appId],
+      );
+      try { loan = await client.getLoan(guid); }
+      catch (e2) { return _stampError(appId, `re-read after fixing the out-of-date Encompass link failed: ${e2.message}`); }
+    } else {
+      return _stampError(appId, `getLoan: ${e.message}`);
+    }
+  }
 
   // Read every mapped field BY FIELD NUMBER (owner sign-off 2026-07-26). The same
   // field number lives at a DIFFERENT JSON path from loan to loan — 1859 sat in
@@ -591,4 +640,8 @@ module.exports = {
   // narrower copy elsewhere would silently drop every row.
   _rowGuid,
   _rowField,
+  // Stale-GUID self-heal internals — exported so a unit test can pin the
+  // definitive-not-found classifier (only 404/410 may clear a cached guid).
+  _isLoanNotFound,
+  _searchGuid,
 };

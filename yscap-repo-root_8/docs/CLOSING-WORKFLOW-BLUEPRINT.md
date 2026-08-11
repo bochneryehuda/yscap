@@ -79,7 +79,7 @@ Before `fully_reconciled` may be set, all three must be present AND equal (calen
 
 - **our system** — `applications.funded_date`
 - **ClickUp** — `applications.actual_closing` (pull from field `0846edc7…`)
-- **Encompass** — field `1401` Funded Date (read from `applications.encompass_extra` via the
+- **Encompass** — custom field `CX.FUNDEDDATE` Funded Date (NOT field `1401`, which is the loan program; read from `applications.encompass_extra` via the
   read-only field map; a new advisory `pull()` registry entry — Encompass stays READ-ONLY).
 
 A missing or disagreeing value blocks the reconcile with a plain-language reason
