@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import { fmtDate } from '../lib/dates.js';
+import { confirmRemoveFromWorkflow } from '../lib/workflowRemove.js';
 
 /* THE CLOSING QUEUE (owner-directed 2026-07-26). Every file in the closing
    workflow, for the closer + the file's officer. Closers land here on login. */
@@ -26,15 +27,22 @@ export default function StaffClosing() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
   const [filter, setFilter] = useState('active');
+  const [busy, setBusy] = useState(null);
 
-  useEffect(() => {
-    let dead = false;
-    api.closingQueue().then((d) => { if (!dead) setRows(Array.isArray(d) ? d : []); }).catch((e) => { if (!dead) setErr((e && e.message) || 'Could not load the closing queue.'); });
-    return () => { dead = true; };
-  }, []);
+  function load() {
+    setRows(null); setErr('');
+    const params = filter === 'removed' ? { removed: '1' } : undefined;
+    return api.closingQueue(params)
+      .then((d) => setRows(Array.isArray(d) ? d : []))
+      .catch((e) => setErr((e && e.message) || 'Could not load the closing queue.'));
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [filter]);
 
   const shown = useMemo(() => {
     const all = rows || [];
+    // The 'removed' tab is a SERVER-side list (?removed=1) — show all of it.
+    if (filter === 'removed') return all;
     // `closing_retired` is computed SERVER-side by the one shared predicate
     // (closing.CLOSING_RETIRED_SQL), so this screen, the desk query and the nav
     // badge can never disagree. Re-deriving it here from the stage alone is what
@@ -44,6 +52,19 @@ export default function StaffClosing() {
     if (filter === 'all') return all;
     return all.filter((r) => !r.closing_retired);
   }, [rows, filter]);
+
+  async function removeRow(r) {
+    setBusy(r.id);
+    const ok = await confirmRemoveFromWorkflow(r.id, 'closing', fullNameOf(r));
+    if (ok) await load();
+    setBusy(null);
+  }
+  async function restoreRow(r) {
+    setBusy(r.id);
+    try { await api.staffRestoreToWorkflow(r.id, 'closing'); await load(); }
+    catch (e) { setErr((e && e.message) || 'Could not restore the file.'); }
+    finally { setBusy(null); }
+  }
 
   const canManage = can('manage_closings');
 
@@ -55,12 +76,12 @@ export default function StaffClosing() {
           <p className="muted small" style={{ margin: '4px 0 0' }}>Files that have been submitted to closing. {canManage ? 'Open a file to run its closing.' : 'Open a file to update its closing details.'}</p>
         </div>
         <div className="row" style={{ gap: 6 }}>
-          {['active', 'purchasing', 'all'].map((f) => (
+          {['active', 'purchasing', 'all', 'removed'].map((f) => (
             <button key={f} className={`btn small ${filter === f ? 'primary' : 'ghost'}`} onClick={() => setFilter(f)}>
               {/* "Completed", not "In purchasing": this tab holds every finished
                   closing, and a TABLE FUNDED loan was sold at closing and never
                   goes to purchasing at all. */}
-              {f === 'active' ? 'In closing' : f === 'purchasing' ? 'Completed' : 'All'}
+              {f === 'active' ? 'In closing' : f === 'purchasing' ? 'Completed' : f === 'removed' ? 'Removed' : 'All'}
             </button>
           ))}
         </div>
@@ -93,7 +114,14 @@ export default function StaffClosing() {
                   <td>{r.actual_cash_to_close == null ? <span className="muted small">—</span> : (r.liquidity_ok ? <span className="pill ok">OK</span> : <span className="pill err">Short</span>)}</td>
                   <td>{r.reconciled_ok ? <span className="pill ok">Yes</span> : yn(false)}</td>
                   <td>{r.closer_name || '—'}</td>
-                  <td><Link className="btn ghost small" to={`/internal/app/${r.id}#sec-closing`}>Open</Link></td>
+                  <td>
+                    <div className="row" style={{ gap: 6, justifyContent: 'flex-end' }}>
+                      <Link className="btn ghost small" to={`/internal/app/${r.id}#sec-closing`}>Open</Link>
+                      {filter === 'removed'
+                        ? <button className="btn ghost small" disabled={busy === r.id} onClick={() => restoreRow(r)}>Restore</button>
+                        : <button className="btn ghost small" disabled={busy === r.id} title="Remove this file from the closing view (does not delete it)" onClick={() => removeRow(r)}>Remove</button>}
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>

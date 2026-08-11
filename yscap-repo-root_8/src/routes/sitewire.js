@@ -3136,6 +3136,18 @@ router.post('/findings/:findingId/lines/:lineId/decide', requirePermission('mana
         meta, applicationId: f.application_id, link: `/app/${f.application_id}`, ctaLabel: 'View your draw' }).catch(() => {});
     } catch (_) { /* notification is best-effort — the decision is already recorded */ }
   }
+  // A dispute approval that LANDED in Sitewire changed its figures, so Sitewire
+  // regenerated its report/PDF. Pull the new figures + PDF back and rebuild our
+  // reports (owner-directed 2026-08-11) — in the BACKGROUND so it never slows the
+  // decision. Only when the push actually confirmed (`pushed`): with writes off /
+  // a failed push nothing changed in Sitewire. The authoritative refresh also runs
+  // at Deliver-to-Investor, so a missed one here is never the last word.
+  if (pushed) {
+    setImmediate(() => {
+      require('../sitewire/draw-report').refreshDrawFromSitewire(f.application_id, f.sitewire_draw_id)
+        .catch((e) => console.warn(`[sitewire] post-dispute refresh failed (draw=${f.sitewire_draw_id}): ${e && e.message}`));
+    });
+  }
   res.json({ ok: true, decision, pushed, note: pushNote, disputes_open: openLeft });
 });
 

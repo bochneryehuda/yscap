@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import { fullNameOf } from '../lib/personName.js';
 import { fmtDate } from '../lib/dates.js';
 import { askConfirm } from '../lib/dialog.js';
+import { confirmRemoveFromWorkflow } from '../lib/workflowRemove.js';
 
 /* THE PURCHASING DESK (owner-directed 2026-07-26).
 
@@ -27,6 +28,7 @@ const FILTERS = [
   { key: 'outstanding', label: 'Outstanding' },
   { key: 'complete', label: 'Completed' },
   { key: 'all', label: 'All' },
+  { key: 'removed', label: 'Removed' },
 ];
 
 export default function StaffPurchasing() {
@@ -34,14 +36,29 @@ export default function StaffPurchasing() {
   const [err, setErr] = useState('');
   const [filter, setFilter] = useState('outstanding');
   const [openId, setOpenId] = useState(null);
+  const [busy, setBusy] = useState(null);
 
   const load = useCallback(() => {
     setRows(null);
-    api.purchasingQueue({ status: filter })
+    const params = filter === 'removed' ? { status: 'all', removed: '1' } : { status: filter };
+    api.purchasingQueue(params)
       .then((d) => setRows(Array.isArray(d) ? d : []))
       .catch((e) => setErr((e && e.message) || 'Could not load the purchasing desk.'));
   }, [filter]);
   useEffect(() => { load(); }, [load]);
+
+  const removeRow = async (r) => {
+    setBusy(r.id);
+    const ok = await confirmRemoveFromWorkflow(r.id, 'purchasing', fullNameOf(r));
+    if (ok) load();
+    setBusy(null);
+  };
+  const restoreRow = async (r) => {
+    setBusy(r.id);
+    try { await api.staffRestoreToWorkflow(r.id, 'purchasing'); load(); }
+    catch (e) { setErr((e && e.message) || 'Could not restore the file.'); }
+    finally { setBusy(null); }
+  };
 
   const totals = useMemo(() => {
     const all = rows || [];
@@ -125,10 +142,15 @@ export default function StaffPurchasing() {
                         <td><span className={`pill ${r.status === 'complete' ? 'ok' : ''}`}>
                           {r.status === 'complete' ? 'Complete' : 'Outstanding'}</span></td>
                         <td>
-                          <button className="btn ghost small"
-                            onClick={() => setOpenId(openId === r.id ? null : r.id)}>
-                            {openId === r.id ? 'Hide' : 'Open'}
-                          </button>
+                          <div className="row" style={{ gap: 6, justifyContent: 'flex-end' }}>
+                            <button className="btn ghost small"
+                              onClick={() => setOpenId(openId === r.id ? null : r.id)}>
+                              {openId === r.id ? 'Hide' : 'Open'}
+                            </button>
+                            {filter === 'removed'
+                              ? <button className="btn ghost small" disabled={busy === r.id} onClick={() => restoreRow(r)}>Restore</button>
+                              : <button className="btn ghost small" disabled={busy === r.id} title="Remove this file from the purchasing view (does not delete it)" onClick={() => removeRow(r)}>Remove</button>}
+                          </div>
                         </td>
                       </tr>
                       {openId === r.id && (
