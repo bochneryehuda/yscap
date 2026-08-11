@@ -54,6 +54,40 @@ function loanPurposeFor(loanPurpose) {
   return /refi|refinance/.test(k) ? 'Refinance' : 'Purchase';
 }
 
+// THE RTL STRATEGY the form defaults key on — one of the exact tokens db/481 seeds:
+// `fix_and_flip` / `bridge` / `dscr` / `ground_up` (or null = can't tell, so the desk
+// asks a human rather than guess a wrong form).
+//
+// WHY THIS EXISTS (the live bug, 2026-08-11): the amc_form_map `loan_type` dimension
+// carries the RTL strategy, but the loan file has NO single column that spells it the
+// way the seed does. It lives in the DEAL/PROJECT TYPE (applications.program, e.g.
+// "Fix & Flip" / "Bridge / Stabilized" / "Ground-up Construction" / "Fix & Hold
+// (BRRRR)") and the rehab tier (applications.rehab_type), NEVER in applications.loan_type
+// — that column is the loan PURPOSE (Purchase/Refinance), the one thing this dimension
+// was added precisely because it could NOT express. dealShapeFor used to feed loanType
+// from loanPurpose, so every deal's strategy read as "Purchase"/"Refinance" and matched
+// NONE of the nine seeded rules — the "no form default for NAN" report. So the strategy
+// is DERIVED from the real signals, by keyword, into the seed's own tokens. norm() then
+// makes both sides equal ('fix_and_flip' → 'fixandflip'), so emitting the token string
+// is what makes chooseForm match. A property with no product word AND no rehab tier is
+// genuinely unknown → null → the full catalog + a human pick (never a wrong report).
+function dealStrategyKey(ctx) {
+  const c = ctx || {};
+  // The product word can arrive in the deal type (program), the rehab tier, or a legacy
+  // keyword an old file stored in the loan_type column (exposed here as loanPurpose).
+  // "Purchase"/"Refinance" match none of the patterns below, so reading the purpose can
+  // only ever HELP (catch a legacy "Ground up") — never false-classify a normal deal.
+  const has = (re) => [c.program, c.rehabType, c.loanPurpose, c.loanType].some((v) => re.test(norm(v)));
+  if (has(/ground|construction/)) return 'ground_up';               // deliberately unseeded → asks a human
+  if (has(/dscr|rental|30year|thirtyyear|longterm/)) return 'dscr';
+  // A renovation of any depth (flip, BRRRR/hold, or a rehab tier) has a scope of work,
+  // so it needs the "Completed Subject to (w/As Is Value)" form — the seed's fix_and_flip.
+  if (has(/flip|brrrr|fixhold|fixandhold|\bhold\b/)) return 'fix_and_flip';
+  if (has(/cosmetic|light|moderate|heavy|renovation|reno|rehab/)) return 'fix_and_flip';
+  if (has(/bridge|stabil/)) return 'bridge';
+  return null;
+}
+
 // The deal shape form selection keys on.
 //
 // `loanType` and `propertyKey` (2026-08-07) are what the owner's real form defaults
@@ -61,20 +95,20 @@ function loanPurposeFor(loanPurpose) {
 //   • loanPurpose is deliberately collapsed to Purchase/Refinance — that IS the CDG
 //     field — so it can never distinguish a fix & flip from a bridge, which is the
 //     whole basis of choosing between the "Completed Subject to (w/As Is Value)"
-//     forms and the plain ones.
+//     forms and the plain ones. So `loanType` here is the DERIVED RTL strategy
+//     (dealStrategyKey), NOT the CDG loan purpose.
 //   • propertyCategory carries the RAW stored label, so "Condominium" and "Condo"
 //     are different strings for one thing. propertyKey is the repo's canonical key
 //     (property-type.propertyTypeKey), reused rather than re-derived so the appraisal
 //     desk and the loan file can never disagree about what a property IS.
-// Both are additive: the original three are untouched, so an existing rule matches
-// exactly as before.
 function dealShapeFor(ctx) {
-  const rawType = ctx.loanType || ctx.loanPurpose || null;
   return {
     program: ctx.program || null,
     propertyCategory: ctx.property && ctx.property.category || ctx.propertyCategory || null,
     loanPurpose: loanPurposeFor(ctx.loanPurpose) || (ctx.loanPurpose || null),
-    loanType: rawType,
+    // The RTL strategy (fix_and_flip / bridge / dscr / ground_up), derived — see above.
+    // A caller that already knows it can pass ctx.loanType to override the derivation.
+    loanType: ctx.loanType || dealStrategyKey(ctx),
     propertyKey: propertyTypeKey(ctx.property && ctx.property.category || ctx.propertyCategory || null),
   };
 }
@@ -189,6 +223,6 @@ function missingRequired(spec) {
 }
 
 module.exports = {
-  buildOrderSpec, dealShapeFor, missingRequired,
+  buildOrderSpec, dealShapeFor, dealStrategyKey, missingRequired,
   titleCategoryFor, occupancyFor, loanPurposeFor,
 };

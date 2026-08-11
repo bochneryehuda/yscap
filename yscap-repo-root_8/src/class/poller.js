@@ -30,6 +30,16 @@ async function tick() {
   } catch (e) {
     console.warn('[class] callback drain tick failed:', e && e.message);
   }
+  // Backstop the document fetch: an attachment announced but never downloaded (the
+  // fetch failed, or the callback arrived before their order id had been written back)
+  // is re-attempted here. Same reason the drain exists — a quiet file may otherwise
+  // never see another callback. Bounded and never throws.
+  try {
+    const sw = await require('./documents').sweepPendingOnce();
+    if (sw && sw.swept) console.log(`[class] attachment sweep: ${sw.swept} order(s)`);
+  } catch (e) {
+    console.warn('[class] attachment sweep tick failed:', e && e.message);
+  }
 }
 
 function start() {

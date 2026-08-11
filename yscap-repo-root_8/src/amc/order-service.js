@@ -125,6 +125,9 @@ async function loadContext(db, appId) {
     notifyEmails,
     program: a.program || null,
     loanPurpose: a.loan_type || null,
+    // The rehab tier — a signal for the RTL strategy (a renovation → the fix & flip
+    // "Completed Subject to (w/As Is Value)" form). See order-build.dealStrategyKey.
+    rehabType: a.rehab_type || null,
     loanAmount: a.loan_amount != null ? Number(a.loan_amount) : null,
     estimatedClosingDate: a.est_closing_date ? String(a.est_closing_date).slice(0, 10) : null,
     entityName: a.entity_name || null,
