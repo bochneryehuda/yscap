@@ -254,6 +254,19 @@ const ROLLUP = rollupMod.computeRollup({
   const REQ3 = [{ sitewire_draw_id: 9001, sitewire_job_item_id: 900, sitewire_request_id: 7002, requested_cents: REQ, approved_cents: null }];
   const roll2 = rollupMod.computeRollup({ links: LINKS2, draws: [DRAW2], requests: REQ3, findingLines: [], nameByKey: { 'cat:roof': 'Roof' } });
   eq('D14f a not-yet-inspected line still commits the request', roll2.lines.find((l) => l.sow_line_key === 'cat:roof').committed, REQ);
+  /* D14g — the POSITIVE-ONLY findings fallback (adversarial-audit Finding 1). Before db/518,
+     `draw_finding_lines.approved_cents` was NOT NULL DEFAULT 0 with NO backfill, so a legacy 0 there is
+     ambiguous between "inspector denied it" and "the line was never answered". A findings-0 must NOT
+     collapse an in-flight draw to $0 (that over-states available) — it falls back to the request mirror,
+     exactly like a not-yet-inspected line. A recorded mirror-0, by contrast, is an honest denial and is
+     honoured as $0 (the mirror is authoritative for 0). */
+  const legacyFinding0 = [{ sitewire_draw_id: 9001, sitewire_request_id: 7001, sow_line_key: 'cat:roof', requested_cents: REQ, approved_cents: 0 }];
+  const rollLegacy = rollupMod.computeRollup({ links: LINKS2, draws: [DRAW2], requests: REQ2, findingLines: legacyFinding0, nameByKey: { 'cat:roof': 'Roof' } });
+  eq('D14g an ambiguous legacy findings-0 falls back to the request, never $0 exposure', rollLegacy.lines.find((l) => l.sow_line_key === 'cat:roof').committed, REQ);
+  const mirrorDenied = [{ sitewire_draw_id: 9001, sitewire_job_item_id: 900, sitewire_request_id: 7001, requested_cents: REQ, approved_cents: 0 }];
+  const rollDenied = rollupMod.computeRollup({ links: LINKS2, draws: [DRAW2], requests: mirrorDenied, findingLines: [], nameByKey: { 'cat:roof': 'Roof' } });
+  eq('D14h a RECORDED mirror-0 is an honest denial — committed reads $0, not the request', rollDenied.lines.find((l) => l.sow_line_key === 'cat:roof').committed, 0);
+  eq('D14i …and the denied money returns to available', rollDenied.lines.find((l) => l.sow_line_key === 'cat:roof').available, B);
 }
 {
   // a RELEASED draw is drawn, not merely committed

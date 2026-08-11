@@ -138,16 +138,25 @@ function computeRollup({ links = [], draws = [], requests = [], findingLines = [
   // while the report headline (drawMoney, findings-aware) correctly said $7,700 (owner-reported
   // 2026-08-10, 109 Chapel St draw #1). Never anticipate the higher requested amount once the
   // inspector has answered — the whole amount was not approved.
+  // The request MIRROR is authoritative for both an approved amount AND a genuine denied $0 — the
+  // reconcile binds NULL only when Sitewire is silent and a real 0 when a denial is recorded — so a
+  // non-null mirror value (including 0) is used as-is. The delivered-findings snapshot is a fallback,
+  // and it is deliberately POSITIVE-ONLY: `draw_finding_lines.approved_cents` was `NOT NULL DEFAULT 0`
+  // before db/518 (which added the tristate and did NOT backfill), so a legacy 0 there is AMBIGUOUS
+  // between "inspector denied it" and "the line was never answered". Collapsing a still-in-flight line
+  // to $0 off an ambiguous historical 0 would OVER-state available — the exact bug class this fixes —
+  // so a 0/absent finding falls back to the request instead, and the mirror (honest about a denied 0)
+  // corrects a going-forward denial within one reconcile. NULL request/finding = "not answered yet".
   const findingApprovedByReq = new Map();
   for (const fl of (Array.isArray(findingLines) ? findingLines : [])) {
-    if (fl && fl.sitewire_request_id != null && fl.approved_cents != null) {
+    if (fl && fl.sitewire_request_id != null && N(fl.approved_cents) > 0) {
       findingApprovedByReq.set(N(fl.sitewire_request_id), N(fl.approved_cents));
     }
   }
   const inspectorApprovedFor = (r) => {
-    if (r && r.approved_cents != null) return N(r.approved_cents);              // the request mirror has it
-    const k = r ? N(r.sitewire_request_id) : null;                             // else the delivered findings
-    return (k != null && findingApprovedByReq.has(k)) ? findingApprovedByReq.get(k) : null; // null = not answered
+    if (r && r.approved_cents != null) return N(r.approved_cents);              // the request mirror has it (incl. a denied 0)
+    const k = r && r.sitewire_request_id != null ? N(r.sitewire_request_id) : null; // else a POSITIVE delivered-findings figure
+    return (k != null && findingApprovedByReq.has(k)) ? findingApprovedByReq.get(k) : null; // null = not answered → falls back to the request
   };
   const unknown = [];
   for (const r of requests) {
@@ -441,11 +450,17 @@ async function projectFromFileBudget(db, appId, rollup) {
       if (d.is_released || d.is_final_approved) {
         drawn += N(d.final_approved_cents) > 0 ? N(d.final_approved_cents) : N(d.approved_cents);
       } else {
-        // Same rule as the per-line exposure: the inspector's figure once they have answered (even a
-        // trimmed-to-$0 line), the borrower's request until then — never the higher requested amount
-        // after the inspector has answered. `has_inspector_amounts` is drawMoney's own findings-aware
-        // "did the inspector put a number on this draw", so this path and the per-line path agree.
-        exposure += d.has_inspector_amounts ? N(d.approved_cents) : N(d.requested_cents);
+        // POSITIVE-PREFERENCE, matching the `drawn` line above and the per-line exposure's positive-only
+        // findings fallback: the inspector's figure once it is POSITIVE, the borrower's request until then —
+        // never the higher requested amount once the inspector has approved a real amount. Why not
+        // drawMoney's `has_inspector_amounts` here: that flag is true for a pre-db/518 legacy findings-0
+        // (approved_cents was NOT NULL DEFAULT 0, so an unanswered line reads as a confident $0), which
+        // would collapse an in-flight draw to $0 exposure and OVER-state available. This path has only
+        // drawMoney's collapsed `approved_cents`, so it cannot tell a recorded denied-0 (mirror) from an
+        // ambiguous legacy findings-0 — so it falls back to the request on any 0, which is lender-safe in
+        // both directions (never over-states available). The per-line path, which DOES see the mirror,
+        // honours a recorded denied-0; this fallback runs only when the crosswalk budget is 0.
+        exposure += N(d.approved_cents) > 0 ? N(d.approved_cents) : N(d.requested_cents);
       }
     }
     const committed = drawn + exposure;
