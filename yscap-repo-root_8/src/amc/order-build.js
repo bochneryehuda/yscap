@@ -103,7 +103,10 @@ function buildOrderSpec(ctx, form, opts = {}) {
     jobFee: opts.jobFee != null ? opts.jobFee : null,
     managementFee: opts.managementFee != null ? opts.managementFee : null,
     requestComment: opts.requestComment || null,
-    notifyEmails: Array.isArray(opts.notifyEmails) ? opts.notifyEmails.filter(Boolean) : [],
+    // The order-update email recipients (loan officer + processor + borrower(s)) — from
+    // the file context by default (loadContext), overridable per order. → products[].notifications.
+    notifyEmails: Array.isArray(opts.notifyEmails) ? opts.notifyEmails.filter(Boolean)
+      : (Array.isArray(ctx.notifyEmails) ? ctx.notifyEmails.filter(Boolean) : []),
 
     loan: {
       loanNumber: ctx.loanNumber || null,

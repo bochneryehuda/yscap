@@ -586,7 +586,7 @@ export const api = {
 
   // ---- AMC appraisal ordering (AppraisalScope / CoreLogic Digital Gateway) ----
   amcConfig:        () => req('GET', '/api/amc/config'),
-  amcPreview:       (appId) => req('GET', `/api/amc/files/${appId}/preview`),
+  amcPreview:       (appId, params) => req('GET', `/api/amc/files/${appId}/preview${params && Object.keys(params).length ? ('?' + new URLSearchParams(params).toString()) : ''}`),
   amcOrders:        (appId) => req('GET', `/api/amc/files/${appId}/orders`),
   amcPlaceOrder:    (appId, body) => req('POST', `/api/amc/files/${appId}/order`, body),
   amcSaveCard:      (appId, body) => req('POST', `/api/amc/files/${appId}/card`, body),

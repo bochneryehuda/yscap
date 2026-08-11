@@ -83,11 +83,14 @@ async function loadContext(db, appId) {
             cb.first_name AS co_first, cb.middle_name AS co_middle, cb.last_name AS co_last,
             cb.full_name AS co_full, cb.email AS co_email, cb.cell_phone AS co_cell,
             cb.current_address AS co_current_address,
-            l.llc_name AS entity_name
+            l.llc_name AS entity_name,
+            lo.email AS lo_email, pr.email AS pr_email
        FROM applications a
        JOIN borrowers b ON b.id = a.borrower_id
        LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
        LEFT JOIN llcs l ON l.id = a.llc_id
+       LEFT JOIN staff_users lo ON lo.id = a.loan_officer_id AND lo.is_active = true
+       LEFT JOIN staff_users pr ON pr.id = a.processor_id AND pr.is_active = true
       WHERE a.id = $1 AND a.deleted_at IS NULL`, [appId]);
   const a = r.rows[0];
   if (!a) return null;
@@ -103,10 +106,23 @@ async function loadContext(db, appId) {
       : null,
   ].filter(Boolean);
 
+  // Everyone who should receive the AMC's order-update emails: the loan officer, the
+  // processor, and the borrower(s). The vendor carries these as products[].notifications
+  // (see cdg.js) so NAN emails all of them when the appraisal comes back — owner-directed.
+  const notifyEmails = [];
+  const addEmail = (e) => {
+    const v = String(e == null ? '' : e).trim().toLowerCase();
+    if (v && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v) && !notifyEmails.includes(v)) notifyEmails.push(v);
+  };
+  addEmail(a.lo_email);
+  addEmail(a.pr_email);
+  for (const b of borrowers) addEmail(b.email);
+
   return {
     appId: a.id,
     loanNumber: a.ys_loan_number || null,
     clientOrderNumber: a.ys_loan_number || null,
+    notifyEmails,
     program: a.program || null,
     loanPurpose: a.loan_type || null,
     loanAmount: a.loan_amount != null ? Number(a.loan_amount) : null,
@@ -156,13 +172,61 @@ async function cardStatus(db, appId) {
 // Form-selection rules (admin-editable amc_form_map rows).
 // ---------------------------------------------------------------------------
 async function formRules(db) {
+  // Read the columns chooseForm actually matches on. loan_type / property_key /
+  // product_name were added by db/481 but never selected here, so every rule's
+  // loan_type/property_key came back undefined (a wildcard) and every deal collapsed
+  // to the lowest-id rule (always "Form 56634"), with no name to show. Also scope to
+  // the tenant environment — the seeded ids are environment-specific, so a UAT service
+  // must never auto-pick a PRODUCTION form id.
+  const env = (cfg.amc && cfg.amc.environment) || 'production';
   const r = await db.query(
-    `SELECT id, program, property_category, loan_purpose, product_code, subproduct_codes,
-            amc_identifier, priority, active
+    `SELECT id, program, property_category, loan_purpose, loan_type, property_key, product_code,
+            product_name, subproduct_codes, amc_identifier, priority, active
        FROM amc_form_map
-      WHERE active = true
-      ORDER BY priority ASC, id ASC`);
+      WHERE active = true AND (environment = $1 OR environment IS NULL)
+      ORDER BY priority ASC, id ASC`, [env]);
   return r.rows;
+}
+
+// The full list of forms staff can pick from, as [{id, name}]. Robust to the cache
+// being keyed under a different subdomain than the live tenant (the seed lives under
+// 'nan' while cfg.amc.subdomain may be something else): try the live subdomain, fall
+// back to the freshest cached catalog under ANY subdomain, and always union in the
+// mapped forms (amc_form_map) so a mapped form is never left without a name.
+async function formsCatalog(db, ctx, rules) {
+  const byId = new Map();   // id -> name, first non-blank name wins
+  const add = (id, name) => {
+    const k = String(id == null ? '' : id).trim();
+    if (!k) return;
+    const nm = String(name == null ? '' : name).trim();
+    if (!byId.has(k)) byId.set(k, nm);
+    else if (!byId.get(k) && nm) byId.set(k, nm);
+  };
+  let live = [];
+  try { live = await lookups.forms(db, ctx && ctx.subdomain); } catch (_) { live = []; }
+  if (!live.length) {
+    // No catalog under our subdomain — take the freshest one cached under any subdomain.
+    try {
+      const r = await db.query(
+        `SELECT payload FROM amc_lookup_cache
+          WHERE lookup_type IN ('Get_JobTypes_By_LoanType','GetJobType')
+          ORDER BY fetched_at DESC LIMIT 1`);
+      if (r.rows[0] && Array.isArray(r.rows[0].payload)) live = r.rows[0].payload;
+    } catch (_) { /* no catalog cached yet */ }
+  }
+  for (const f of live) add(f.id, f.name);
+  for (const rule of (rules || [])) add(rule.product_code, rule.product_name);
+  return Array.from(byId.entries())
+    .map(([id, name]) => ({ id, name: name || null }))
+    .sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
+}
+
+// The human name for a form id: the chosen rule's own name, else the catalog.
+function formNameFor(catalog, code, chosen) {
+  if (code == null || code === '') return null;
+  if (chosen && String(chosen.productCode) === String(code) && chosen.productName) return chosen.productName;
+  const hit = (catalog || []).find((f) => String(f.id) === String(code));
+  return hit && hit.name ? hit.name : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,20 +237,21 @@ async function buildPreview(db, appId, opts = {}) {
   if (!ctx) return null;
   const rules = await formRules(db);
   const deal = orderBuild.dealShapeFor(ctx);
-  // Staff can override the auto-picked form; opts.productCode wins in buildOrderSpec.
+  // Staff can override the auto-picked form; opts.overrides.productCode wins in buildOrderSpec.
   const chosen = formSelect.chooseForm(deal, rules);
   const spec = orderBuild.buildOrderSpec(ctx, chosen, opts.overrides || {});
   const missing = orderBuild.missingRequired(spec);
-  let forms = [];
-  try { forms = await lookups.forms(db, ctx.subdomain); } catch (_) { forms = []; }
+  const forms = await formsCatalog(db, ctx, rules);
   return {
     context: ctx,
     deal,
     chosenForm: chosen,
+    chosenFormName: formNameFor(forms, spec.productCode, chosen),   // the full name to SHOW
     spec,
     missing,
     canPlace: missing.length === 0,
-    forms,        // the cached form catalog, for a staff override dropdown
+    forms,            // the form catalog [{id,name}], for the staff override dropdown
+    notifyEmails: ctx.notifyEmails,   // who NAN will email order updates to
     card: ctx.card,
     config: client.configured(),
   };
@@ -425,5 +490,5 @@ module.exports = {
   loadContext, cardStatus, formRules, buildPreview,
   createOrder, listOrders, getOrder, journal,
   // exported for tests
-  addrParts, borrowerCtx, describeSendFailure, readGatewayBody,
+  addrParts, borrowerCtx, describeSendFailure, readGatewayBody, formsCatalog, formNameFor,
 };
