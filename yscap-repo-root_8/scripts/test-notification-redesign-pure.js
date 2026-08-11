@@ -35,7 +35,10 @@ const links = [
 const freshDraw = {
   links,
   draws: [{ sitewire_draw_id: 10, number: 1, status: 'submitted', total_requested_cents: 645000, total_approved_cents: 0 }],
-  requests: [{ sitewire_draw_id: 10, sitewire_job_item_id: 1, requested_cents: 645000, approved_cents: 0 }],
+  // approved_cents NULL = the inspector has not answered yet (the production semantic — the reconcile
+  // binds null when Sitewire is silent; a real 0 means the inspector approved $0, per
+  // approval.inspectorApproved), so the exposure falls back to the requested amount.
+  requests: [{ sitewire_draw_id: 10, sitewire_job_item_id: 1, requested_cents: 645000, approved_cents: null }],
 };
 
 ok('a draw with nothing approved yet still takes its REQUESTED amount off available', () => {
@@ -76,7 +79,7 @@ ok('a line carrying one inspected draw AND one fresh request keeps both — a pe
     ],
     requests: [
       { sitewire_draw_id: 10, sitewire_job_item_id: 1, requested_cents: 645000, approved_cents: 400000 },
-      { sitewire_draw_id: 11, sitewire_job_item_id: 1, requested_cents: 200000, approved_cents: 0 },
+      { sitewire_draw_id: 11, sitewire_job_item_id: 1, requested_cents: 200000, approved_cents: null }, // fresh: inspector not answered
     ],
   });
   assert.strictEqual(r.project.pending_exposure, 400000 + 200000);
