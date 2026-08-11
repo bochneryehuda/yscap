@@ -245,6 +245,11 @@ async function loadProductRules(db) {
     `SELECT ${PRODUCT_RULE_COLS} FROM class_form_map
       WHERE active = true
       ORDER BY priority ASC, id ASC`);
+  if (anyEnv.rows.length) {
+    console.warn(`[class] no product-map rules for environment='${env}'; falling back to ` +
+      `${anyEnv.rows.length} rule(s) from another environment so a product still auto-picks — ` +
+      `set CLASS_ENVIRONMENT correctly or seed '${env}' rules to silence this`);
+  }
   return anyEnv.rows;
 }
 
