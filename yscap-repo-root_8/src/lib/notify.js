@@ -451,6 +451,21 @@ function _bypassLoSelfGate(opts) { return !!(opts && opts._bypassLoSelfGate); }
 
 /** Notify one staff user. opts: {type,title,body,applicationId,link,emailTo,meta,lines,ctaLabel,greeting,note} */
 async function notifyStaff(staffId, opts) {
+  // An EXTERNAL (TPO / broker) user is a staff_users row but must NEVER receive
+  // an INTERNAL staff notification — not an in-app row on the console they can't
+  // reach, and above all not an internal-format email. A broker IS the loan
+  // officer on their firm's files, so notifyAppStaff (SQL-filtered above), the
+  // scheduled digests, and any DIRECT notifyStaff call could otherwise reach
+  // them. Guarded at the chokepoint so every path is covered; done before the LO
+  // gate so a broker never lands a parked draft either. Fails OPEN (a lookup
+  // error notifies as before — the same philosophy as the is_active gate below,
+  // and dropping every staffer's alert on a transient error is the worse harm).
+  if (staffId) {
+    try {
+      const ext = await db.query(`SELECT is_external FROM staff_users WHERE id=$1`, [staffId]);
+      if (ext.rows[0] && ext.rows[0].is_external === true) return null;
+    } catch (_) { /* fail open — notify as before */ }
+  }
   // Enrich UP FRONT so the payload the LO gate stores in Drafts is the same
   // fully-composed one the send path would render — the preview then shows the
   // real PILOT-branded email (with file identity meta + CTA), not a bare shell.
@@ -1055,11 +1070,16 @@ async function notifyAppStaff(appId, opts = {}) {
     // reassigns the file (this module's own notes say so), so without this the
     // team fan-out could consist entirely of people who cannot sign in — and any
     // caller asking "did this reach anybody?" was told yes.
+    // is_external=false: an EXTERNAL (TPO / broker) user IS the loan-officer
+    // assignee on their firm's files, so without this the internal-staff fan-out
+    // would email them every internal file event (note-buyer names, internal
+    // contacts). A broker's visibility comes through the /api/tpo surface, never
+    // the internal notification stream (TPO PORTAL invariant, CLAUDE.md).
     // Roles aggregated per person: one staffer can hold several roles on a file,
     // and seeing the notification through ANY of them is enough.
     `SELECT aa.staff_id, array_agg(DISTINCT aa.role) AS roles
        FROM application_assignees aa
-       JOIN staff_users su ON su.id = aa.staff_id AND su.is_active = true
+       JOIN staff_users su ON su.id = aa.staff_id AND su.is_active = true AND su.is_external = false
       WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND aa.staff_id IS NOT NULL
       GROUP BY aa.staff_id`, [appId]);
   // ROLE SCOPE (owner-directed 2026-08-10): a part-of-the-file assignee (closer, draw
@@ -1300,9 +1320,14 @@ async function notifyAppStaffThread(appId, opts = {}) {
       // ACTIVE assignees only, with a real address — the same roster notifyAppStaff fans out to.
       // Roles ride along for the role-scope filter (owner-directed 2026-08-10): a closer's
       // address must not be a visible To recipient on every internal draw thread.
+      // is_external=false: an EXTERNAL (TPO / broker) user IS the loan-officer assignee on their
+      // firm's files, and this path emails a DIRECT To list (not per-recipient notifyStaff, whose
+      // external early-return would otherwise catch it), so without this the broker would receive
+      // internal-format staff threads (note-buyer names, internal money). A broker's visibility is
+      // the /api/tpo surface only (TPO PORTAL invariant, CLAUDE.md) — same filter as notifyAppStaff.
       `SELECT su.email, array_agg(DISTINCT aa.role) AS roles
          FROM application_assignees aa
-         JOIN staff_users su ON su.id = aa.staff_id AND su.is_active = true
+         JOIN staff_users su ON su.id = aa.staff_id AND su.is_active = true AND su.is_external = false
         WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND aa.staff_id IS NOT NULL
           AND COALESCE(su.email,'') <> ''
         GROUP BY su.email`, [appId])).rows

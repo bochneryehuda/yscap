@@ -409,7 +409,7 @@ export default function StaffEscalations() {
                   {' · '}{money(s.totalLoan != null ? s.totalLoan : r.loan_amount)} loan
                   {s.noteRate != null ? ` @ ${fmtRatePct(s.noteRate)}%` : ''}
                   {r.asset_months != null ? ` · ${r.asset_months} month${r.asset_months === 1 ? '' : 's'} liquidity` : ''}
-                  {r.requested_by_name ? ` · requested by ${r.requested_by_name}` : (s.requestedByBorrower ? ' · requested by the borrower' : '')}
+                  {r.requested_by_name ? ` · requested by ${r.requested_by_name}` : (s.requestedByBorrower ? ' · requested by the borrower' : (s.requestedByTpo ? ' · requested by a broker' : ''))}
                 </div>
 
                 {Array.isArray(s.manualReasons) && s.manualReasons.length > 0 && (

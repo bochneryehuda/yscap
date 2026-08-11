@@ -968,7 +968,7 @@ router.get('/search', async (req, res) => {
     // ---- officers / team (the roster is visible to all staff) ----
     const officers = await db.query(
       `SELECT id, full_name, title, role, email FROM staff_users
-        WHERE is_active=true AND (full_name ILIKE $1 OR COALESCE(email,'') ILIKE $1 OR COALESCE(title,'') ILIKE $1)
+        WHERE is_active=true AND is_external=false AND (full_name ILIKE $1 OR COALESCE(email,'') ILIKE $1 OR COALESCE(title,'') ILIKE $1)
         ORDER BY sort_order NULLS LAST, full_name LIMIT 6`, [like]);
 
     // ---- tasks / reminders (title), scoped to files the staffer can reach ----
@@ -7949,14 +7949,22 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
         { field: applied.field, from: applied.oldValue, to: applied.newValue });
     } catch (_) {}
     // Tell the borrower their requested change was accepted (borrower-safe copy),
-    // spelling out the exact before → after that is now on file.
-    try {
-      const change = changeRequests.describeChange(cr);
-      await notify.notifyAppBorrowers(cr.application_id, {
-        type: 'change_request', title: 'Your requested change was approved', badge: { text: 'Approved', tone: 'positive' },
-        body: `Your loan team approved your update to ${cr.field_label}. ${change} is now on file.`,
-        applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
-    } catch (_) {}
+    // spelling out the exact before → after that is now on file. ONLY when the
+    // BORROWER made the request: a TPO broker's change request rides the same
+    // change_requests flow (requested_by_kind='staff', via:'tpo'), and the borrower
+    // did not ask for it — "Your requested change was approved" would misattribute
+    // it, and on a portal-disabled TPO file the borrower must not be emailed at all.
+    // The broker sees the result reflected on their file (a dedicated broker
+    // notification channel is future TPO work).
+    if (cr.requested_by_kind === 'borrower') {
+      try {
+        const change = changeRequests.describeChange(cr);
+        await notify.notifyAppBorrowers(cr.application_id, {
+          type: 'change_request', title: 'Your requested change was approved', badge: { text: 'Approved', tone: 'positive' },
+          body: `Your loan team approved your update to ${cr.field_label}. ${change} is now on file.`,
+          applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
+      } catch (_) {}
+    }
     res.json({ ok: true, applied });
   } catch (e) {
     try { await client.query('ROLLBACK'); } catch (_) {}
@@ -7968,7 +7976,7 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
 router.post('/change-requests/:cid/reject', async (req, res) => {
   const note = String((req.body || {}).note || '').trim() || null;
   try {
-    const cr = (await db.query(`SELECT application_id, field, field_label, old_value, new_value, status FROM change_requests WHERE id=$1`, [req.params.cid])).rows[0];
+    const cr = (await db.query(`SELECT application_id, field, field_label, old_value, new_value, status, requested_by_kind FROM change_requests WHERE id=$1`, [req.params.cid])).rows[0];
     if (!cr) return res.status(404).json({ error: 'not found' });
     if (!(await canTouchApp(req, cr.application_id))) return res.status(403).json({ error: 'forbidden' });
     if (cr.status !== 'pending') return res.status(409).json({ error: `this request is already ${cr.status}` });
@@ -7981,13 +7989,18 @@ router.post('/change-requests/:cid/reject', async (req, res) => {
         WHERE id=$1 AND status='pending' RETURNING id`, [req.params.cid, req.actor.id, note]);
     if (!upd.rows[0]) return res.status(409).json({ error: 'this request was just decided by someone else' });
     await audit(req, 'reject_change_request', 'application', cr.application_id, { field: cr.field_label });
-    try {
-      const change = changeRequests.describeChange(cr);
-      await notify.notifyAppBorrowers(cr.application_id, {
-        type: 'change_request', title: 'Update on your requested change', badge: { text: 'Reviewed', tone: 'neutral' },
-        body: `Your loan team reviewed your requested change (${change}) and it was not applied${note ? `: ${note}` : '. Reach out if you have questions.'}`,
-        applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
-    } catch (_) {}
+    // Borrower-facing outcome only for a BORROWER-originated request (see the
+    // approve handler) — a broker's request must not tell the borrower "your
+    // requested change" and must not reach a portal-disabled TPO borrower.
+    if (cr.requested_by_kind === 'borrower') {
+      try {
+        const change = changeRequests.describeChange(cr);
+        await notify.notifyAppBorrowers(cr.application_id, {
+          type: 'change_request', title: 'Update on your requested change', badge: { text: 'Reviewed', tone: 'neutral' },
+          body: `Your loan team reviewed your requested change (${change}) and it was not applied${note ? `: ${note}` : '. Reach out if you have questions.'}`,
+          applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
+      } catch (_) {}
+    }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -14808,7 +14821,7 @@ router.get('/chat/inbox', async (req, res) => {
 router.get('/applications/:id/mentionables', async (req, res) => {
   try {
     const [users, tasks, docs, apps] = await Promise.all([
-      db.query(`SELECT id, full_name AS label FROM staff_users WHERE is_active=true ORDER BY full_name`),
+      db.query(`SELECT id, full_name AS label FROM staff_users WHERE is_active=true AND is_external=false ORDER BY full_name`),
       db.query(`SELECT id, label, status FROM checklist_items WHERE application_id=$1 ORDER BY sort_order LIMIT 300`, [req.params.id]),
       db.query(`SELECT id, filename AS label FROM documents WHERE application_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.params.id]),
       // S3-11: the borrower's OTHER files are only mentionable if THIS officer can
@@ -16611,7 +16624,7 @@ router.post('/notifications/:id/read', async (req, res) => {
 router.get('/team', async (req, res) => {
   const r = await db.query(
     `SELECT id, full_name, email, role, title, department FROM staff_users
-      WHERE is_active=true ORDER BY department NULLS LAST, sort_order, full_name`);
+      WHERE is_active=true AND is_external=false ORDER BY department NULLS LAST, sort_order, full_name`);
   res.json(r.rows);
 });
 
@@ -17108,7 +17121,7 @@ router.get('/audit-log/facets', async (req, res) => {
   try {
     const [acts, staff] = await Promise.all([
       db.query(`SELECT action, count(*)::int AS n FROM audit_log GROUP BY action ORDER BY n DESC`),
-      db.query(`SELECT id, full_name, role FROM staff_users WHERE is_active IS NOT FALSE ORDER BY full_name`),
+      db.query(`SELECT id, full_name, role FROM staff_users WHERE is_active IS NOT FALSE AND is_external=false ORDER BY full_name`),
     ]);
     const actions = acts.rows.map((a) => {
       const meta = describeAuditAction(a.action);
@@ -17414,7 +17427,7 @@ router.get('/sync-reviews', async (req, res) => {
     // file yet — a non-materialized task, a borrower-level DOB) any of the
     // row's borrower's active files is theirs. Matches the notifyLoanOfficer
     // fan-out, so the emailed LO always finds the row behind the deep link.
-    // `changed_by` = the staff member whose PILOT edit produced the disagreement (db/523),
+    // `changed_by` = the staff member whose PILOT edit produced the disagreement (db/532),
     // shown so the team can see WHOSE change it was; null for an unattributed row.
     const r = await db.query(
       `SELECT q.*, a.deleted_at,
@@ -17914,6 +17927,11 @@ const TERM_SHEET_ESIGN_PURPOSES = new Set(['term_sheet_package']);
 router.post('/applications/:id/esign/send', async (req, res) => {
   const purpose = String((req.body && req.body.purpose) || '');
   if (!esignOrchestrate.PACKAGES[purpose]) return res.status(400).json({ error: 'unknown package' });
+  // LENDER-ONLY (owner-locked TPO decision): sending a DocuSign package requires
+  // send_term_sheet. Every internal staff role holds it, so internal behavior is
+  // unchanged; an external broker (kind 'tpo') never can — `can()` is false for a
+  // non-staff actor — so a broker can never send the signable term sheet.
+  if (!can(req.actor, 'send_term_sheet')) return res.status(403).json({ error: 'You do not have permission to send documents for signature.' });
   const reissue = !!(req.body && req.body.reissue);
   // Owner-directed 2026-07-26: the Encompass match gates EXACTLY ONE action — sending
   // the TERM-SHEET DocuSign package. Registering a product and issuing/printing a term
@@ -18013,6 +18031,8 @@ router.post('/applications/:id/esign/send', async (req, res) => {
 // Resend (nudge) the current pending recipient(s).
 router.post('/esign/:rowId/resend', async (req, res) => {
   try {
+    // Re-dispatching a package is a send — same lender-only gate as /esign/send.
+    if (!can(req.actor, 'send_term_sheet')) return res.status(403).json({ error: 'You do not have permission to send documents for signature.' });
     const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
     if (!row) return res.status(status).json({ error });
     if (!row.envelope_id) return res.status(409).json({ error: 'envelope not sent yet' });

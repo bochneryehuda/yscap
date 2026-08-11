@@ -428,6 +428,77 @@ export const api = {
   unarchiveDraft: (id) => req('POST', `/api/borrower/drafts/${id}/unarchive`),
   submitDraft:    (id, b) => req('POST', `/api/borrower/drafts/${id}/submit`, b),
 
+  // ---- TPO portal (external brokerage users — the third front door) ----
+  // A broker signs in ONLY here; the token carries kind='tpo' and every /api/tpo
+  // call is firm-scoped server-side. Mirrors the staff login shape (mfaRequired /
+  // challenge). The invite-accept reuses the shared /auth/accept (the invite's
+  // stored kind routes it), so `acceptInvite` above is used for a tpo invite too.
+  tpoLogin:       (email, password) => req('POST', '/auth/tpo/login', { email, password }),
+  tpoMfaVerify:   (challenge, code) => req('POST', '/auth/tpo/mfa/verify', { challenge, code }),
+  tpoMe:          () => req('GET', '/api/tpo/me'),
+  tpoApplications:() => req('GET', '/api/tpo/applications'),
+  tpoApplication: (id) => req('GET', `/api/tpo/applications/${id}`),
+  tpoEnterLoan:   (b) => req('POST', '/api/tpo/applications', b),
+  tpoSetBorrowerPortal: (id, enabled) => req('POST', `/api/tpo/applications/${id}/borrower-portal`, { enabled }),
+  tpoTeam:        () => req('GET', '/api/tpo/team'),
+  tpoTeamInvite:  (b) => req('POST', '/api/tpo/team/invite', b),   // {email, fullName?, role?}
+  // The firm's OWN broker origination fee — the ONLY pricing control a broker has
+  // (never the rate). GET returns { isFirmAdmin, brokerFeePct, maxBrokerFeePct }.
+  tpoBrokerFee:    () => req('GET', '/api/tpo/pricing/broker-fee'),
+  tpoBrokerFeeSet: (brokerFeePct) => req('PUT', '/api/tpo/pricing/broker-fee', { brokerFeePct }),
+  // Phase 3 — the firm's borrowers + full PII.
+  tpoBorrowers:      () => req('GET', '/api/tpo/borrowers'),
+  tpoBorrower:       (id) => req('GET', `/api/tpo/borrowers/${id}`),
+  tpoBorrowerSsn:    (id) => req('GET', `/api/tpo/borrowers/${id}/ssn`),      // reveal (audited)
+  tpoSetBorrowerSsn: (id, ssn) => req('POST', `/api/tpo/borrowers/${id}/ssn`, { ssn }),
+  tpoUpdateBorrower: (id, b) => req('PATCH', `/api/tpo/borrowers/${id}`, b),
+  // Phase 4 — the file's conditions + documents.
+  tpoChecklist:      (id) => req('GET', `/api/tpo/applications/${id}/checklist`),
+  tpoDocuments:      (id) => req('GET', `/api/tpo/applications/${id}/documents`),
+  tpoUploadDocument: (b) => req('POST', '/api/tpo/documents', normalizeUpload(b)),
+  // Answer an information condition (a deal field). A person field (fico) is
+  // redirected to the borrower's profile by the server.
+  tpoAnswerInfoCondition: (appId, itemId, value) => req('POST', `/api/tpo/applications/${appId}/checklist/${itemId}/info`, { value }),
+  // Phase 5a — order a credit pull (borrower-safe: readiness in, "pulled" out; no scores).
+  tpoCreditStatus: (appId) => req('GET', `/api/tpo/applications/${appId}/credit`),
+  tpoOrderCredit: (appId, body) => req('POST', `/api/tpo/applications/${appId}/credit/order`, body),   // { consent:true, borrowerIds? }
+  // Phase 6a — the read-only appraisal ("property profile report"); same borrower-safe scrub.
+  tpoAppraisal: (appId) => req('GET', `/api/tpo/applications/${appId}/appraisal`),
+  tpoAppraisalPhotoBlob: async (docId) => (await download(`/api/tpo/appraisal-photo/${docId}?inline=1`)).blob,
+  // Phase 6b — the read-only DRAW view (construction-draw progress); same borrower-safe scrub.
+  tpoDraws: (appId) => req('GET', `/api/tpo/applications/${appId}/draws`),
+  // A photo url from the draws payload is a firm-scoped /api/tpo/draw-media path — blob-fetched WITH
+  // auth (an <img src> can't send the token), exactly like the appraisal photos.
+  tpoDrawMediaBlob: async (url) => (await download(url)).blob,
+  tpoDrawReport: async (appId, drawId, win) => {
+    try { const { blob, filename } = await download(`/api/tpo/applications/${appId}/draws/report${drawId ? `?drawId=${drawId}` : ''}`); openBlob(blob, filename, win); }
+    catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
+  },
+  // Phase 6d — the broker ACCEPTS / DISPUTES an inspection result (owner-locked: "like a borrower").
+  // Authenticated + firm-scoped; mirrors the borrower's authenticated accept/dispute server-side —
+  // never the borrower's public reply_token. Accept MOVES MONEY (starts the wire SLA).
+  tpoDrawAccept:  (appId, findingId) => req('POST', `/api/tpo/applications/${appId}/findings/${findingId}/accept`, {}),
+  tpoDrawDispute: (appId, findingId, lines) => req('POST', `/api/tpo/applications/${appId}/findings/${findingId}/dispute`, { lines }),
+  // Phase 6e — broker ↔ team messaging (reuses ChatThread with surface='tpo'; firm-scoped, borrower-safe).
+  tpoConversations:  (appId) => req('GET', `/api/tpo/chat/conversations${appId ? `?applicationId=${appId}` : ''}`),
+  tpoConversation:   (cid) => req('GET', `/api/tpo/chat/conversations/${cid}`),
+  tpoConvMessages:   (cid, before) => req('GET', `/api/tpo/chat/conversations/${cid}/messages${before ? `?before=${before}` : ''}`),
+  tpoConvSend:       (cid, b) => req('POST', `/api/tpo/chat/conversations/${cid}/messages`, b),
+  tpoConvRead:       (cid, seq) => req('POST', `/api/tpo/chat/conversations/${cid}/read`, { seq }),
+  tpoConvMarkUnread: (cid, seq) => req('POST', `/api/tpo/chat/conversations/${cid}/unread`, { seq }),
+  tpoConvDelivered:  (cid, seq) => req('POST', `/api/tpo/chat/conversations/${cid}/delivered`, { seq }),
+  tpoConvTyping:     (cid, connId) => req('POST', `/api/tpo/chat/conversations/${cid}/typing`, { connId }),
+  tpoConvOpen:       (cid, connId) => req('POST', `/api/tpo/chat/conversations/${cid}/open`, { connId }),
+  tpoConvDraft:      (cid, body) => req('PUT', `/api/tpo/chat/conversations/${cid}/draft`, { body }),
+  tpoConvShared:     (cid) => req('GET', `/api/tpo/chat/conversations/${cid}/shared`),
+  tpoDownloadChatAttachment: (id) => download(`/api/tpo/chat/attachment/${id}`),
+  // Phase 4b — the TPO Term Sheet Studio: price, register, generate the term
+  // sheet (borrower-safe; sending the DocuSign package stays lender-only).
+  tpoPricing:      (appId) => req('GET', `/api/tpo/applications/${appId}/pricing`),
+  tpoPricingQuote: (appId, overrides) => req('POST', `/api/tpo/applications/${appId}/pricing/quote`, { overrides }),
+  tpoRegisterProduct: (appId, program, overrides, econVersion, submitException, termOptions) =>
+    req('POST', `/api/tpo/applications/${appId}/pricing/register`, { program, overrides, econVersion, submitException, termOptions }),
+
   // ---- staff portal (loan officer / processor / underwriter / admin) ----
   staffLogin:     (email, password) => req('POST', '/auth/staff/login', { email, password }),
   staffMfaVerify: (challenge, code) => req('POST', '/auth/staff/mfa/verify', { challenge, code }),
@@ -1228,6 +1299,23 @@ export const api = {
   adminTestEmail:    (to) => req('POST', '/api/admin/test-email', { to }),
   roster:            () => req('GET', '/api/roster'),
 
+  // ---- TPO firms: internal admin onboarding + per-firm own-Xactus credit account ----
+  adminTpoFirms:        () => req('GET', '/api/admin/tpo/firms'),
+  adminTpoFirm:         (id) => req('GET', `/api/admin/tpo/firms/${id}`),
+  adminCreateTpoFirm:   (b) => req('POST', '/api/admin/tpo/firms', b),
+  adminTpoFirmStatus:   (id, status) => req('PATCH', `/api/admin/tpo/firms/${id}`, { status }),
+  adminInviteTpoUser:   (id, b) => req('POST', `/api/admin/tpo/firms/${id}/invite`, b),
+  adminTpoFirmCredit:       (id) => req('GET', `/api/admin/tpo/firms/${id}/credit-credentials`),
+  adminTpoFirmCreditSet:    (id, b) => req('PUT', `/api/admin/tpo/firms/${id}/credit-credentials`, b),
+  adminTpoFirmCreditActive: (id, active) => req('POST', `/api/admin/tpo/firms/${id}/credit-credentials/active`, { active }),
+  adminTpoFirmCreditClear:  (id) => req('DELETE', `/api/admin/tpo/firms/${id}/credit-credentials`),
+  adminTpoFirmCreditTest:   (id) => req('POST', `/api/admin/tpo/firms/${id}/credit-credentials/test`, {}),
+  // Per-firm PRICING overrides (special pricing for one broker firm) — markup/orig
+  // that override the TPO channel defaults for that firm. broker fee is read-only here.
+  adminTpoFirmPricing:      (id) => req('GET', `/api/admin/tpo/firms/${id}/pricing`),
+  adminTpoFirmPricingSet:   (id, b) => req('PUT', `/api/admin/tpo/firms/${id}/pricing`, b),
+  adminTpoFirmPricingClear: (id) => req('DELETE', `/api/admin/tpo/firms/${id}/pricing`),
+
   // ---- Condition Center: admin studio (global condition library + rules) ----
   adminConditionFields:    () => req('GET', '/api/admin/conditions/fields'),
   adminConditionDefs:      () => req('GET', '/api/admin/conditions/definitions'),
@@ -1260,6 +1348,10 @@ export const api = {
   // ---- Pricing Admin Center (manage_pricing): company-wide markup/fee defaults ----
   adminPricingGet: () => req('GET', '/api/admin/pricing'),
   adminPricingPut: (b) => req('PUT', '/api/admin/pricing', b),
+  // TPO (broker/wholesale) channel pricing controls — separate markup + origination
+  // defaults for the TPO channel (blank = same as retail). manage_pricing-gated.
+  adminTpoPricingGet: () => req('GET', '/api/admin/pricing/tpo'),
+  adminTpoPricingPut: (b) => req('PUT', '/api/admin/pricing/tpo', b),
 
   // ---- Loan-Officer Notification Center: per-notification prefs + draft queue ----
   loNotifCatalog:      () => req('GET',  '/api/staff/notification-center/catalog'),
@@ -1303,6 +1395,13 @@ export const api = {
   borrowerViewSession:  () => req('GET', '/api/borrower-view/session'),
   borrowerViewExit:     () => req('POST', '/api/borrower-view/exit'),
   borrowerViewHistory:  (limit) => req('GET', '/api/borrower-view/history' + qs({ limit })),
+  // TPO VIEW — the mirror of borrower view for the external brokerage portal: an
+  // AE/AM/admin steps into a broker's login. See src/lib/tpo-view.js.
+  tpoViewEligible: (q) => req('GET', '/api/tpo-view/eligible' + qs({ q })),
+  tpoViewStart:    (tpoUserId, applicationId) => req('POST', '/api/tpo-view/start', { tpoUserId, applicationId: applicationId || null }),
+  tpoViewSession:  () => req('GET', '/api/tpo-view/session'),
+  tpoViewExit:     () => req('POST', '/api/tpo-view/exit'),
+  tpoViewHistory:  (limit) => req('GET', '/api/tpo-view/history' + qs({ limit })),
 
   // ---- Research desk: the property / comparable / appraiser database ----------
   // Built out of every appraisal XML we have ever imported (db/409). Staff-wide —

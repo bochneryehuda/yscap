@@ -140,4 +140,51 @@ function hasPartnerName(value) {
   return PARTNER_PATTERNS.some((re) => { re.lastIndex = 0; return re.test(value); });
 }
 
-module.exports = { scrubText, scrubTextExcept, scrubFields, hasPartnerName, PROGRAM, PARTNER_PATTERNS };
+// ---------------------------------------------------------------------------
+// Borrower-safe PRICING scrub — the ONE place internal lender margin is removed
+// before a quote/registration leaves for a NON-LENDER surface (a borrower OR an
+// external broker). A borrower/broker may see loan STRUCTURE (rate, loan amount,
+// values, LTC/LTV/ARV, cash-to-close, liquidity) but never the internal markup /
+// spread. Kept here (single definition) so a change can never reach one surface
+// and leak on another — routes/borrower.js AND routes/tpo.js both consume these.
+// (moved out of routes/borrower.js unchanged; the `fico` drop is deliberate — the
+// pricing FICO is the higher-of-two internal figure, not the borrower's to re-read
+// from a quote result.)
+function stripQuoteInternal(q) {
+  if (!q || typeof q !== 'object') return q;
+  const { adminPricing, ...rest } = q;
+  return rest;
+}
+function stripInputsInternal(inp) {
+  if (!inp || typeof inp !== 'object') return inp;
+  // Remove the internal markup/spread, the pricing FICO, and EVERY admin OVERRIDE
+  // knob — the manual leverage caps (ovrAcqLTV / ovrLTC / ovrARLTV…), the approved
+  // effective-price exception (ovrEffPrice), the forced rate (ovrRate), the
+  // interest-reserve override (ovrIrMonths) and the flags that say the lender
+  // priced this file PAST its own guidelines (forcePrice / manualPricing). Those
+  // are internal underwriting disclosure a non-lender (a borrower OR an external
+  // broker) must never read off a staff-created registration's stored inputs.
+  // Prefix-strip `markup*` and `ovr*` so a NEW admin knob can never leak by drift
+  // (an allowlist-by-construction for that whole class — no borrower-safe engine
+  // input starts with either prefix). Kept: the scenario itself (price / values /
+  // budget / term / reserve / experience / program / loan type) and the
+  // borrower-DISCLOSED costs (origination points, lender / credit / appraisal /
+  // title fees) — those already print on the term sheet.
+  const out = {};
+  for (const [k, v] of Object.entries(inp)) {
+    if (k === 'fico' || k === 'forcePrice' || k === 'manualPricing') continue;
+    if (k.startsWith('markup') || k.startsWith('ovr')) continue;
+    out[k] = v;
+  }
+  return out;
+}
+// Make a full quoteAll bundle ({inputs, standard, gold, silver}) borrower-safe.
+function borrowerSafeQuoteBundle(out) {
+  if (!out || typeof out !== 'object') return out;
+  return { ...out, inputs: stripInputsInternal(out.inputs),
+    standard: stripQuoteInternal(out.standard), gold: stripQuoteInternal(out.gold),
+    silver: stripQuoteInternal(out.silver) };
+}
+
+module.exports = { scrubText, scrubTextExcept, scrubFields, hasPartnerName, PROGRAM, PARTNER_PATTERNS,
+  stripQuoteInternal, stripInputsInternal, borrowerSafeQuoteBundle };

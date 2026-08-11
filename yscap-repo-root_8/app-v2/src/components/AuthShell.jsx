@@ -18,9 +18,12 @@ const Check = () => (
 
 export default function AuthShell({ title, subtitle, children, variant = 'borrower' }) {
   const staff = variant === 'staff';
+  const tpo   = variant === 'tpo';
   const ticks = staff
     ? ['Full pipeline & production', 'Condition Center', 'Audited PII access']
-    : ['Live loan status', 'Secure document vault', 'Message your team'];
+    : tpo
+      ? ['Price & register your deals', 'Order title, credit & appraisal', 'Track every file to funding']
+      : ['Live loan status', 'Secure document vault', 'Message your team'];
 
   return (
     <div className="auth-split">
@@ -29,19 +32,24 @@ export default function AuthShell({ title, subtitle, children, variant = 'borrow
         <div className="auth-brand-top">
           <BrandLockup />
           {staff && <span className="auth-brand-badge">Internal console</span>}
+          {tpo && <span className="auth-brand-badge">Broker portal</span>}
         </div>
 
         <div className="auth-brand-core">
           <div className="auth-eyebrow">
-            {staff ? 'Staff & loan officers' : 'The borrower & staff platform'}
+            {staff ? 'Staff & loan officers' : tpo ? 'Broker & wholesale partners' : 'The borrower & staff platform'}
           </div>
           {staff
             ? <div className="auth-headline">The desk that keeps every deal <em>on course</em>.</div>
-            : <div className="auth-headline">Navigate <em>every</em> deal.</div>}
+            : tpo
+              ? <div className="auth-headline">Originate <em>every</em> deal with us.</div>
+              : <div className="auth-headline">Navigate <em>every</em> deal.</div>}
           <p className="auth-support">
             {staff
               ? 'Sign in to the internal console — pipeline, conditions, documents and closing.'
-              : 'Price, submit, and manage your financing in one place — with a clear line of sight from term sheet to funding.'}
+              : tpo
+                ? 'Sign in to the broker portal — price, register, and manage the loans you bring to YS Capital.'
+                : 'Price, submit, and manage your financing in one place — with a clear line of sight from term sheet to funding.'}
           </p>
           <ul className="auth-ticks">
             {ticks.map((t) => (
@@ -53,7 +61,7 @@ export default function AuthShell({ title, subtitle, children, variant = 'borrow
         <div className="auth-brand-foot">
           <span className="auth-tag">“Navigate every deal.”</span>
           <div className="auth-legal">
-            <b>{staff ? 'by YS Capital' : 'YS Capital'}</b>
+            <b>{staff || tpo ? 'by YS Capital' : 'YS Capital'}</b>
             Equal Housing Lender · NMLS #2609746
           </div>
         </div>

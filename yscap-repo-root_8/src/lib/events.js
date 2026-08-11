@@ -103,10 +103,14 @@ function addClient(res, actor, { teamKeys = null } = {}) {
 }
 
 /** A client telling us which conversation it has on screen (drives typing
-    fan-out for seesAll staff who aren't members, and read-context). */
-function setOpenConversation(connId, conversationId) {
+    fan-out for seesAll staff who aren't members, and read-context). connId is a
+    guessable sequential integer that the client hands back, so we VERIFY the
+    connection belongs to the requesting user (its stored actor id must match) —
+    otherwise anyone could push one of THEIR conversations onto another user's
+    connection and make it start receiving that conversation's live events. */
+function setOpenConversation(connId, conversationId, ownerId) {
   const c = conns.get(connId);
-  if (c) c.openConv = conversationId || null;
+  if (c && c.id === ownerId) c.openConv = conversationId || null;
 }
 
 /**
@@ -114,7 +118,8 @@ function setOpenConversation(connId, conversationId) {
  * staffer typed with the program name, in the chat message body, its
  * quoted-reply preview, and a top-level toast `body` (urgent pings). Returns the
  * original object untouched when there is nothing to scrub (so staff payloads
- * are never cloned/altered). Only applied to BORROWER recipients.
+ * are never cloned/altered). Applied to recipients EXTERNAL to the lender —
+ * BORROWER and TPO (broker) — never to internal staff.
  */
 function borrowerSafeEvent(data) {
   if (!data || typeof data !== 'object') return data;
@@ -145,15 +150,18 @@ async function publishToConversation(conversationId, event, data, { excludeKey =
         WHERE conversation_id=$1 AND removed_at IS NULL`, [conversationId]);
     memberKeys = new Set(r.rows.map(m => keyOf(m.member_kind, m.member_id)));
   } catch (_) { /* fall back to open-conv fan-out only */ }
-  // A borrower must never receive a capital-partner name a staffer typed into a
-  // chat message. Scrub the body + quoted-reply preview for BORROWER connections
-  // only; staff connections get the real text. Body-less events
-  // (receipts/presence/typing) pass through untouched.
-  const borrowerData = borrowerSafeEvent(data);
+  // A borrower — OR a TPO broker — must never receive a capital-partner name a
+  // staffer typed into a chat message. Both are EXTERNAL to the lender, so the
+  // live SSE body/quoted-reply/entity-ref/attachment-name get the borrower-safe
+  // scrub for BOTH 'borrower' and 'tpo' connections; internal staff connections
+  // get the real text. Body-less events (receipts/presence/typing) pass through
+  // untouched. This must match the REST scrub in borrower-chat.js / tpo-chat.js —
+  // SSE is the broker's PRIMARY delivery channel in v1, so a gap here is a leak.
+  const safeData = borrowerSafeEvent(data);
   for (const c of conns.values()) {
     if (c.key === excludeKey) continue;
     if (memberKeys.has(c.key) || c.openConv === conversationId) {
-      write(c, event, c.kind === 'borrower' ? borrowerData : data);
+      write(c, event, (c.kind === 'borrower' || c.kind === 'tpo') ? safeData : data);
     }
   }
 }
@@ -218,9 +226,12 @@ async function publishTrackRecordUpdate(borrowerId, actor = null) {
 /** Direct fan-out to one user's connections (badges, urgent pings). */
 function publishToUser(kind, id, event, data) {
   const key = keyOf(kind, id);
-  // Borrower-bound toasts (urgent chat pings) carry a raw body — scrub for
-  // borrower recipients; staff get the real text.
-  const out = kind === 'borrower' ? borrowerSafeEvent(data) : data;
+  // Toasts/pings can carry a raw body — scrub for recipients EXTERNAL to the
+  // lender (borrower AND tpo broker); internal staff get the real text. (A tpo
+  // member is skipped by queueMessageNotifications, so no raw-body ping reaches
+  // one today — but scrubbing here keeps a future raw-body user-push from
+  // reopening the capital-partner leak.)
+  const out = (kind === 'borrower' || kind === 'tpo') ? borrowerSafeEvent(data) : data;
   for (const c of conns.values()) if (c.key === key) write(c, event, out);
 }
 

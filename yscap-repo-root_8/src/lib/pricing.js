@@ -548,9 +548,15 @@ function attachRateBuildUp(quote, program, input, ev, m, tiers) {
 }
 
 /* ---- normalize an engine result into one UI-agnostic quote shape ---- */
-function normalize(program, input, ev, ladder) {
+// `opts.settings` (optional) is a pre-resolved cd — the SAME shape
+// pricingSettings.current() returns, plus an optional brokerFeePct. It lets the
+// TPO (wholesale) channel price a file with its own markup/origination defaults +
+// per-firm overrides + a broker origination fee WITHOUT any TPO branch in the
+// frozen engine. When absent (every retail caller) this reads current() exactly as
+// before, so a retail quote is byte-identical. See src/lib/tpo-pricing.js.
+function normalize(program, input, ev, ladder, opts) {
   const s = ev.sizing || {};
-  const cd = pricingSettings.current();   // company-wide defaults (or literals)
+  const cd = (opts && opts.settings) || pricingSettings.current();   // company-wide defaults (or literals)
   // Origination default: per-file override → COMPANY default → engine constant.
   const engineOrigPct = (program === 'gold' ? (GSP.constants && GSP.constants.ORIG_PCT)
     : program === 'silver' ? (SVP && SVP.constants && SVP.constants.ORIG_PCT)
@@ -626,13 +632,23 @@ function normalize(program, input, ev, ladder) {
   const creditFee = numberOverride(input, 'creditFee', cd.creditFee != null ? cd.creditFee : FEES.credit);
   const appraisalFee = numberOverride(input, 'appraisalFee', cd.appraisalFee != null ? cd.appraisalFee : FEES.appraisal);
   const origination = totalLoan > 0 ? round2(totalLoan * origPct) : 0;
+  /* TPO BROKER ORIGINATION FEE (owner-directed 2026-08-06) — a NEW additive closing
+     cost the BROKER (firm admin) sets on their OWN files, never a rate markup. It is
+     present ONLY on a resolved TPO settings object (cd.brokerFeePct, from
+     tpo-pricing.js); retail's pricingSettings.current() never carries it, so
+     brokerFeePct is 0 for every retail quote and this is inert (closingDueAtClose
+     adds 0 → byte-identical). Points on the loan, like origination; folded into
+     what's due at close so it cascades into cash-to-close + the liquidity to show,
+     which is what a real borrower closing cost does. */
+  const brokerFeePct = (cd.brokerFeePct != null && num(cd.brokerFeePct) > 0) ? num(cd.brokerFeePct) / 100 : 0;
+  const brokerFee = brokerFeePct > 0 && totalLoan > 0 ? round2(totalLoan * brokerFeePct) : 0;
   const assignmentExcess = num(s.assignmentExcessOOP) || num(ev.assignment && ev.assignment.excessOOP);
   // Admin-managed extra closing fees (e.g. the NY settlement-agent fee) that apply
   // to this file's state — a real closing cost, so it's part of what's due at
   // close AND the liquidity to show (owner-directed 2026-07-17).
   const extraFeeList = pricingSettings.extraFeesForState(cd.extraFees, state);
   const extraFeesTotal = extraFeeList.reduce((a, f) => a + (num(f.amount) || 0), 0);
-  const closingDueAtClose = round2(origination + lenderFee + creditFee + titleTotal + extraFeesTotal);
+  const closingDueAtClose = round2(origination + brokerFee + lenderFee + creditFee + titleTotal + extraFeesTotal);
   /* REFINANCE CASH TO CLOSE (owner-directed 2026-08-04). On a purchase this is the
      down payment (equity) plus the closing costs. On a REFINANCE there is no down
      payment (the frozen engine returns downPayment=0 for a refi), and instead the
@@ -732,6 +748,10 @@ function normalize(program, input, ev, ladder) {
     noteRate: ev.noteRate != null ? ev.noteRate : null,
     origPct,
     origination,
+    // Top-level broker fee (present only on a TPO file with a broker fee set), so a
+    // studio/term-sheet surface can show the "Broker origination fee" line alongside
+    // origination without digging into closingCosts. Retail: absent → byte-identical.
+    ...(brokerFee > 0 ? { brokerFee, brokerFeePct: round2(brokerFeePct * 100) } : {}),
     sizing: {
       totalLoan,
       initialAdvance,
@@ -764,6 +784,10 @@ function normalize(program, input, ev, ladder) {
       autoTotal: titleAutoTotal, overridden: titleOverridden },
     closingCosts: {
       origination,
+      // TPO broker origination fee — a disclosed borrower closing cost the broker
+      // sets. Added ONLY when > 0 (i.e. only on a TPO file whose firm set a broker
+      // fee), so the retail closingCosts object is byte-identical.
+      ...(brokerFee > 0 ? { brokerFee, brokerFeePct: round2(brokerFeePct * 100) } : {}),
       lenderFee,
       creditFee,
       titleAndSettlement: titleTotal,
@@ -841,12 +865,14 @@ function normalize(program, input, ev, ladder) {
    reserve / markup / origination defaults follow the Standard program (the
    normalize()/markup helpers all treat any non-'gold' program as Standard). Only
    the program TAG and label differ, so the guidelines stay Standard's. */
-function quoteProgram(program, input) {
+function quoteProgram(program, input, opts) {
   if (!enginesReady()) throw new Error('pricing engines unavailable' + (loadErr ? ': ' + loadErr : ''));
   // Markup: per-file override → COMPANY default → engine's built-in markup.
   // Applied through the SAME frozen setMarkup hook and reset in finally — the
   // engine math is never changed, only which markup input it runs with.
-  const cd = pricingSettings.current();
+  // `opts.settings` (TPO channel/firm defaults) overrides the retail company `cd`
+  // for a TPO file only; absent for every retail caller → current() → unchanged.
+  const cd = (opts && opts.settings) || pricingSettings.current();
   let m = markupOverride(input, program);
   if (m == null) {
     const companyMarkup = program === 'gold' ? cd.markupGoldPct : program === 'silver' ? cd.markupSilverPct : cd.markupStdPct;
@@ -871,7 +897,7 @@ function quoteProgram(program, input) {
           ladder = { maxLtc: pl.maxLtc, binding: pl.binding, rows: pl.rows };
         }
       } catch (_) { /* ladder is best-effort */ }
-      return attachRateBuildUp(normalize('silver', input, ev, ladder), 'silver', input, ev, m, tiers);
+      return attachRateBuildUp(normalize('silver', input, ev, ladder, opts), 'silver', input, ev, m, tiers);
     } finally {
       if (m != null) setEngineMarkup(program, null);
       if (tiers) setEngineMarkupTiers(program, null);
@@ -881,7 +907,7 @@ function quoteProgram(program, input) {
     try {
       const ev = GSP.evaluate(input);
       if (input.forcePrice && ev.status === 'INELIGIBLE') { ev.status = 'MANUAL'; ev.exitShortfall = 0; }
-      return attachRateBuildUp(normalize('gold', input, ev, null), 'gold', input, ev, m, tiers);
+      return attachRateBuildUp(normalize('gold', input, ev, null, opts), 'gold', input, ev, m, tiers);
     } finally {
       if (m != null) setEngineMarkup(program, null);
       if (tiers) setEngineMarkupTiers(program, null);
@@ -901,7 +927,7 @@ function quoteProgram(program, input) {
     // prices on this Standard engine but is labeled/recorded as Manual.
     // The build-up passes the ORIGINAL program so it probes the same engine that
     // just priced this deal (a manual product prices on Standard's).
-    return attachRateBuildUp(normalize(program === 'manual' ? 'manual' : 'standard', input, ev, ladder),
+    return attachRateBuildUp(normalize(program === 'manual' ? 'manual' : 'standard', input, ev, ladder, opts),
       program, input, ev, m, tiers);
   } finally {
     if (m != null) setEngineMarkup(program, null);
@@ -909,17 +935,21 @@ function quoteProgram(program, input) {
   }
 }
 
-/* ---- quote both programs for a file (panel default) ---- */
-function quoteAll(app, experience, overrides) {
+/* ---- quote both programs for a file (panel default) ----
+   `opts.settings` (optional) resolves the wholesale-channel defaults + per-firm
+   overrides + broker fee for a TPO file (src/lib/tpo-pricing.js). Absent for every
+   retail caller → each program prices on the retail company defaults exactly as
+   before. */
+function quoteAll(app, experience, overrides, opts) {
   const input = buildInputs(app, experience, overrides);
-  const standard = safeQuote('standard', input);
-  const gold = safeQuote('gold', input);
-  const silver = safeQuote('silver', input);
+  const standard = safeQuote('standard', input, opts);
+  const gold = safeQuote('gold', input, opts);
+  const silver = safeQuote('silver', input, opts);
   return { inputs: input, standard, gold, silver };
 }
 
-function safeQuote(program, input) {
-  try { return quoteProgram(program, input); }
+function safeQuote(program, input, opts) {
+  try { return quoteProgram(program, input, opts); }
   catch (e) { return { program, programLabel: PROGRAM_LABEL[program], status: 'ERROR', eligible: false, reasons: [{ level: 'INELIGIBLE', msg: e.message || 'pricing error' }], sizing: null }; }
 }
 

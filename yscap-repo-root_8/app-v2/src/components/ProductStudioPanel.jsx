@@ -403,6 +403,12 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
               it in would overstate what the borrower brings to the table. */}
           <Sec title="Closing costs" note="Everything charged at the closing table, then the appraisal, which is paid separately.">
             <Row k={`Origination (${q.origPct != null ? (q.origPct * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—'})`} v={money2(q.origination)} />
+            {/* TPO broker origination fee (owner-directed 2026-08-06) — only present on
+                a broker-registered file where a broker fee is set; retail registrations
+                never carry it, so this row never renders on them. */}
+            {Number(cc.brokerFee) > 0 && (
+              <Row k={`Broker origination fee${cc.brokerFeePct != null ? ` (${cc.brokerFeePct}%)` : ''}`} v={money2(cc.brokerFee)} />
+            )}
             <Row k="UW / processing / legal" v={money2(cc.lenderFee)} />
             <Row k="Credit report" v={money2(cc.creditFee)} />
             <Row k="Title / escrow (est.)" v={money2(cc.titleAndSettlement)} />
@@ -526,6 +532,13 @@ function studioStateFromFields(f) {
 
 const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, mode = 'borrower', onRegistered, toolItemId, staffRole }, ref) {
   const isStaff = mode === 'staff';
+  // A TPO (broker) prices EXACTLY like a borrower — the same frozen engine, the
+  // same borrower-safe override allowlist, the admin pricing zone hidden, deal
+  // inputs locked — differing only in (a) which API the data-load / register /
+  // upload call and (b) the parties' names come from the FILE (`app`) like staff,
+  // since a broker has no "own profile". Everything gated on `isStaff` stays
+  // borrower-side for a broker; only the seams below branch.
+  const isTpo = mode === 'tpo';
   // The studio's admin PRICING ZONE (markup, origination points, closing-cost
   // fees, the approved effective price, and the manual LTV/LTC/ARV/rate basis) is
   // open to EVERY staff role again — owner-directed 2026-07-27, after a loan
@@ -607,7 +620,11 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   // imperative handle below never calls a stale one (the E-sign Send button reaches
   // it through this handle).
   const finalizeRef = useRef(null);
-  const stateUrl = toolItemId
+  // Scenario autosave onto the pricing condition — staff/borrower only. A broker
+  // has no tool-state endpoint (and TpoFile passes no toolItemId), so a broker's
+  // studio simply doesn't autosave a draft; the register still captures the exact
+  // scenario. Never build a /api/borrower URL for a tpo session.
+  const stateUrl = (toolItemId && !isTpo)
     ? `${isStaff ? '/api/staff' : '/api/borrower'}/applications/${appId}/checklist/${toolItemId}/tool-state`
     : null;
 
@@ -673,7 +690,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     } else setErr('Incorrect admin password.');
   }
 
-  const loadPricing = () => (isStaff ? api.staffPricing(appId) : api.borrowerPricing(appId));
+  const loadPricing = () => (isStaff ? api.staffPricing(appId) : isTpo ? api.tpoPricing(appId) : api.borrowerPricing(appId));
 
   useEffect(() => {
     let alive = true;
@@ -690,7 +707,9 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       .catch((e) => alive && setErr(e.message || 'Could not load product registration'));
     if (stateUrl) api.get(stateUrl).then((d) => alive && setSavedStudio((d && d.state && d.state.v) ? d.state : null)).catch(() => alive && setSavedStudio(null));
     else setSavedStudio(null);
-    if (!isStaff) api.profile().then((p) => alive && setProfile(p)).catch(() => {});
+    // A broker has no borrower "own profile" — the parties' names come from the
+    // file (`app`), like staff. Only a borrower loads api.profile() for the prefill.
+    if (!isStaff && !isTpo) api.profile().then((p) => alive && setProfile(p)).catch(() => {});
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId, mode]);
@@ -928,15 +947,18 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       if (filePricingFico) v.fico = String(filePricingFico);
       return { v, c };
     }
-    const name = isStaff
+    // Staff AND a broker read the parties off the FILE; a borrower reads their
+    // own profile. `fromApp` is that split (a broker has no borrower profile).
+    const fromApp = isStaff || isTpo;
+    const name = fromApp
       ? (fullNameOf(app) || '')
       : ([profile && profile.first_name, profile && profile.last_name].filter(Boolean).join(' ') || '');
     // #104: the borrowing ENTITY (vesting name) prefills its own slot, separate
     // from the individual borrower name — no longer folded into borrowerName.
-    const entity = isStaff ? (app.entity_name || '') : ((profile && profile.entity_name) || '');
-    // Co-borrower name (staff view has it on the app) → prefills the term
-    // sheet's second signature line (#137).
-    const coName = (isStaff && app.co_borrower_id)
+    const entity = fromApp ? (app.entity_name || '') : ((profile && profile.entity_name) || '');
+    // Co-borrower name (the file carries it) → prefills the term sheet's second
+    // signature line (#137).
+    const coName = (fromApp && app.co_borrower_id)
       ? (fullNameOf(app, 'co_') || '')
       : '';
     // #143 — the stored engine inputs ARE the exact registered scenario, but
@@ -993,7 +1015,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         expFlips: app.requested_exp_flips ?? inp.expFlips,
         expHolds: app.requested_exp_holds ?? inp.expHolds,
         expGround: app.requested_exp_ground ?? inp.expGround,
-        fico: filePricingFico || inp.fico || (profile && profile.fico) || '',
+        // main's file-pricing FICO wins; then the studio input; then the borrower
+        // profile; then — for a broker's TPO quote, which strips the internal FICO
+        // and has no borrower profile — the file's own higher-of-two FICO (`app.fico`).
+        fico: filePricingFico || inp.fico || (profile && profile.fico) || app.fico || '',
         estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived,
         ...econFallback(inp), ...filePayoff(),
       }));
@@ -1107,7 +1132,9 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       const termOptions = termOptionsFromSnapshot(s);
       const resp = isStaff
         ? await api.staffRegisterProduct(appId, s.program, overrides, econVersion, manual ? months : undefined, submitException, termOptions, opts.encompassOverrideReason || undefined)
-        : await api.borrowerRegisterProduct(appId, s.program, overrides, adminKey || undefined, econVersion, submitException, termOptions);
+        : isTpo
+          ? await api.tpoRegisterProduct(appId, s.program, overrides, econVersion, submitException, termOptions)
+          : await api.borrowerRegisterProduct(appId, s.program, overrides, adminKey || undefined, econVersion, submitException, termOptions);
       setExceptionInfo(null);
       const pendingApproval = !!(resp && resp.pendingApproval);
       const changed = (resp && Array.isArray(resp.overrideLines)) ? resp.overrideLines : [];
@@ -1143,6 +1170,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
           const body = { filename: pdf.filename, contentType: 'application/pdf', dataBase64, docKind: 'term_sheet',
             termSheetFinal: stampFinal && stamped };
           if (isStaff) await api.staffUploadAppDoc(appId, body);
+          else if (isTpo) await api.tpoUploadDocument({ ...body, applicationId: appId });
           else await api.uploadDoc({ ...body, applicationId: appId });
         } catch (_) { note = 'Product registered. The term sheet PDF could not be attached — download it from the studio instead.'; }
       } else {
@@ -1671,6 +1699,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
                     showAdmin={staffAdmin} adminCapable={isStaff} onState={onStudioState}
                     issueHold={(data && data.termSheetHold) || null}
                     provenance={data && data.termSheetFinal ? 'file_final' : 'file'}
+                    /* TPO only: the resolved firm pricing (channel/firm markup +
+                       origination + broker fee) so the broker sheet prices exactly
+                       what registers. Null on staff/borrower (route omits it). */
+                    pricingDefaults={(isTpo && data && data.pricingDefaults) || null}
                     officer={isStaff && app && (app.loan_officer_name || app.loan_officer_email)
                       ? { name: app.loan_officer_name || '', email: app.loan_officer_email || '', nmls: app.loan_officer_nmls || '', role: 'Loan officer' }
                       : null} />

@@ -80,6 +80,115 @@ function Field({ form, set, k, label, hint }) {
   );
 }
 
+// ── TPO (broker/wholesale) channel pricing controls (owner-directed 2026-08-06) ──
+// A SEPARATE markup + origination control set for the broker channel, in the same
+// Pricing Center. Every box is OPTIONAL: blank = the same number as retail above.
+// Brokers never see these controls (manage_pricing-gated). Their own broker fee is
+// set per firm by each firm — not here.
+const TPO_KEYS = ['markupStdPct', 'markupGoldPct', 'markupSilverPct', 'origStdPct', 'origGoldPct', 'origSilverPct'];
+const toTpoForm = (o) => { const f = {}; for (const k of TPO_KEYS) f[k] = (o && o[k] != null) ? String(o[k]) : ''; return f; };
+
+function TpoField({ form, set, k, label, retailVal }) {
+  const rv = (retailVal == null || retailVal === '') ? null : Number(retailVal);
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <input className="input" inputMode="decimal" value={form[k]}
+        placeholder={rv != null ? `same as retail (${rv}%)` : 'same as retail'}
+        onChange={(e) => set(k, e.target.value)} />
+      {rv != null && <div className="hint">Blank = same as retail ({rv}%)</div>}
+    </div>
+  );
+}
+
+function TpoChannelPricing({ isAdmin }) {
+  const [data, setData] = useState(null);       // { tpo, retail }
+  const [form, setForm] = useState(toTpoForm(null));
+  const [tiers, setTiers] = useState(tiersToForm(null));
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const flash = (ok, text) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 7000); };
+  const load = () => api.adminTpoPricingGet()
+    .then((d) => { setData(d); setForm(toTpoForm(d.tpo)); setTiers(tiersToForm(d.tpo)); })
+    .catch((e) => flash(false, e.message || 'could not load TPO pricing'));
+  useEffect(() => { if (isAdmin) load(); /* eslint-disable-next-line */ }, [isAdmin]);
+  if (!isAdmin || !data) return null;
+  const tpo = data.tpo || {};
+  const retail = data.retail || {};
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: String(v).replace(/[^0-9.]/g, '') }));
+  const setTier = (prog, t, v) => setTiers((tt) => ({ ...tt, [prog]: { ...tt[prog], [t]: String(v).replace(/[^0-9.]/g, '') } }));
+  const tiersDirty = JSON.stringify(tiersToBody(tiers)) !== JSON.stringify(tiersToBody(tiersToForm(tpo)));
+  const dirty = tiersDirty || TPO_KEYS.some((k) => String(tpo[k] == null ? '' : tpo[k]) !== String(form[k] == null ? '' : form[k]));
+  async function save() {
+    setBusy(true);
+    try {
+      const body = { markupTiers: tiersToBody(tiers) };
+      for (const k of TPO_KEYS) body[k] = form[k] === '' ? null : Number(form[k]);
+      await api.adminTpoPricingPut(body);
+      await load();
+      flash(true, 'TPO (broker) pricing updated. Broker files now use these numbers; a blank box uses the retail default.');
+    } catch (e) { flash(false, e.message || 'could not save TPO pricing'); }
+    setBusy(false);
+  }
+  return (
+    <div className="panel">
+      <h2 style={{ margin: '0 0 4px' }}>TPO (broker) pricing controls</h2>
+      <p className="muted small" style={{ maxWidth: 640, margin: 0 }}>
+        Separate markup and origination for the <strong>broker (TPO) channel</strong> — our wholesale
+        side. Leave a box <strong>blank</strong> to use the same number as retail above. Brokers never
+        see these controls; each broker firm sets their own broker fee separately.
+      </p>
+      {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`} role="alert" style={{ marginTop: 12 }}>{msg.text}</div>}
+
+      <h3 style={{ margin: '18px 0 0' }}>Broker markup over the note-buyer rate</h3>
+      <p className="muted small" style={{ margin: '2px 0 8px' }}>The spread on a broker file, per program.</p>
+      <div className="grid cols-2">
+        <TpoField form={form} set={set} k="markupStdPct" label="Standard markup (%)" retailVal={retail.markupStdPct} />
+        <TpoField form={form} set={set} k="markupGoldPct" label="Gold Standard markup (%)" retailVal={retail.markupGoldPct} />
+        <TpoField form={form} set={set} k="markupSilverPct" label="Silver markup (%, max 1.00)" retailVal={retail.markupSilverPct} />
+      </div>
+
+      <h3 style={{ margin: '18px 0 0' }}>Broker markup by experience tier (optional)</h3>
+      <p className="muted small" style={{ margin: '2px 0 8px', maxWidth: 640 }}>
+        Fine-tune the broker markup per tier. <strong>Tier 1 is the most-experienced tier.</strong>
+        {' '}Leave a cell blank to use the broker per-program markup above (or retail if that is blank too).
+      </p>
+      <div className="tbl-scroll">
+        <table className="tbl">
+          <thead><tr><th>Program</th><th>Tier 1 (top)</th><th>Tier 2</th><th>Tier 3</th></tr></thead>
+          <tbody>
+            {PROGRAMS.map((p) => (
+              <tr key={p.key}>
+                <td style={{ whiteSpace: 'nowrap' }}>{p.label}</td>
+                {TIERS.map((t) => (
+                  <td key={t}>
+                    <input className="input" inputMode="decimal" style={{ maxWidth: 120 }}
+                      value={tiers[p.key][t]} placeholder="—"
+                      onChange={(e) => setTier(p.key, t, e.target.value)} />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <h3 style={{ margin: '18px 0 0' }}>Broker origination points</h3>
+      <p className="muted small" style={{ margin: '2px 0 8px' }}>Origination on a broker file, per program. Cut this to leave room for the broker’s own fee.</p>
+      <div className="grid cols-2">
+        <TpoField form={form} set={set} k="origStdPct" label="Standard origination (%)" retailVal={retail.origStdPct} />
+        <TpoField form={form} set={set} k="origGoldPct" label="Gold Standard origination (%)" retailVal={retail.origGoldPct} />
+        <TpoField form={form} set={set} k="origSilverPct" label="Silver origination (%)" retailVal={retail.origSilverPct} />
+      </div>
+
+      <div className="row" style={{ gap: 8, marginTop: 14, alignItems: 'center' }}>
+        <button className="btn primary" disabled={busy || !dirty} onClick={save}>{busy ? 'Saving…' : 'Save TPO pricing'}</button>
+        {dirty && <span className="muted small">Unsaved changes</span>}
+      </div>
+    </div>
+  );
+}
+
 export default function StaffCompanyPricing() {
   const { can } = useAuth();
   const isAdmin = can('manage_pricing');
@@ -283,6 +392,8 @@ export default function StaffCompanyPricing() {
           </table>
         </div>
       </div>
+
+      <TpoChannelPricing isAdmin={isAdmin} />
     </div>
   );
 }
