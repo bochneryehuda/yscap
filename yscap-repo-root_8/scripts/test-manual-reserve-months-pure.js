@@ -87,11 +87,17 @@ for (const prog of ['standard', 'gold', 'silver']) {
   }
 }
 
-// ── (4) manual with NO assetMonths falls back to reserveMonths(totalLoan) ────
+// ── (4) manual with NO assetMonths DEFAULTS to 3 (owner-directed 2026-08-11) ──
+// "on the manual program, the default should be three months' reserves, but that
+// manual box should override" — the manual program NEVER uses the Standard 2/4
+// rule; with no stated box value it uses the manual default of THREE months.
 const mNone = quoteManual(null);
-const total = mNone.sizing.totalLoan;
-eq(mNone.reserveMonths, total > 1000000 ? 4 : 2, 'manual with no assetMonths falls back to the 2/4 rule');
-// …and for a sub-$1M loan, that fallback equals the assetMonths=2 case exactly.
-if (total <= 1000000) eq(mNone.reserveRequirement, m2.reserveRequirement, 'no-months fallback == assetMonths=2 for a sub-$1M loan');
+eq(mNone.reserveMonths, 3, 'manual with no assetMonths defaults to 3 months (never the 2/4 rule)');
+const m3 = quoteManual(3);
+eq(mNone.reserveRequirement, m3.reserveRequirement, 'the no-box default equals an explicit 3 months exactly');
+// The box overrides the default: 6 was asked above and honored; a value of 0/blank
+// is treated as "no box" and uses the default 3, not a $0 reserve.
+eq(quoteManual(0).reserveMonths, 3, 'a blank/zero box uses the default 3, never a zero reserve');
+eq(m6.reserveMonths, 6, 'a stated box value (6) overrides the default of 3');
 
 console.log(`test-manual-reserve-months-pure: OK (${passed} assertions)`);

@@ -48,6 +48,13 @@ function num(v) { const n = Number(String(v == null ? '' : v).replace(/,/g, ''))
 function clean(s) { return String(s == null ? '' : s).trim(); }
 function round2(n) { return Math.round(num(n) * 100) / 100; }
 function reserveMonths(totalLoan) { return num(totalLoan) > 1000000 ? 4 : 2; }
+// The MANUAL program's default reserve months when the stated "months of liquidity"
+// box is empty (owner-directed 2026-08-11: "on the manual program, the default
+// should be three months' reserves, but that manual box should override the months
+// of reserves you need for the manual"). Kept in step with manual-program.js
+// SETTINGS_DEFAULTS.assetMonths (the company-default that pre-fills the box) — this
+// is only the engine-side fallback for a manual quote that carries no box value.
+const MANUAL_RESERVE_DEFAULT_MONTHS = 3;
 
 // Parse a free-text term ("12 months", "12", "18-month") into a month count.
 function parseTermMonths(t) {
@@ -679,20 +686,23 @@ function normalize(program, input, ev, ladder, opts) {
       liquidityPct = num(ev.liquidityPct) || 0.05;
       reserveRequirement = round2(totalLoan * liquidityPct);
       reserveBasis = `${(liquidityPct * 100).toFixed(1)}% of loan amount`;
-    } else if (program === 'manual' && Math.round(num(input.assetMonths)) > 0) {
+    } else if (program === 'manual') {
       // MANUAL PROGRAM — the "months of liquidity" the registrant states
       // (product_registrations.asset_months) is how many months of RESERVES the
       // borrower must SHOW in the ending balance of the most recent statement
       // (owner-directed 2026-08-11: "how many months of reserves you need to show
       // for the manual program, which needs to be visible in the ending balance of
       // the last statement"). It is NOT the bank-statement count (always two —
-      // liquidity.js) and it is NOT the Standard 2/4-month-by-loan-size rule; the
-      // manual program states its reserve months explicitly. This drives ONLY the
-      // required-liquidity dollar the borrower must show — never loan sizing, rate
-      // or a cap (those come from the frozen engine `s`). Threaded server-side on
-      // the manual register / accept-counter path only (staff.js); never a client
+      // liquidity.js) and it is NEVER the Standard 2/4-month-by-loan-size rule. The
+      // manual program defaults to MANUAL_RESERVE_DEFAULT_MONTHS (3) and the stated
+      // box value OVERRIDES that default when provided ("that manual box should
+      // override the months of reserves you need for the manual"). This drives ONLY
+      // the required-liquidity dollar the borrower must show — never loan sizing,
+      // rate or a cap (those come from the frozen engine `s`). The box is threaded
+      // server-side on the register / accept-counter / offer paths; never a client
       // override.
-      reserveMo = Math.round(num(input.assetMonths));
+      const statedMonths = Math.round(num(input.assetMonths));
+      reserveMo = statedMonths > 0 ? statedMonths : MANUAL_RESERVE_DEFAULT_MONTHS;
       reserveRequirement = round2(num(s.fullPayment) * reserveMo);
       reserveBasis = `${reserveMo} months of full-payment reserves (manual program)`;
     } else {
