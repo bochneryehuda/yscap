@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { askConfirm } from '../lib/dialog.js';
 import { useAuth } from '../lib/auth.jsx';
 import { InfoTip } from '../components/FileSections.jsx';
 
@@ -144,7 +145,7 @@ function FirmDetail({ firm, onChanged }) {
 
   async function setStatus(status) {
     const verb = status === 'active' ? 'reactivate' : status === 'suspended' ? 'suspend' : 'close';
-    if (status !== 'active' && !window.confirm(`${verb[0].toUpperCase() + verb.slice(1)} ${firm.name}? Their brokers are signed out immediately.`)) return;
+    if (status !== 'active' && !(await askConfirm(`${verb[0].toUpperCase() + verb.slice(1)} ${firm.name}? Their brokers are signed out immediately.`))) return;
     setErr('');
     try { await api.adminTpoFirmStatus(firm.id, status); load(); onChanged && onChanged(); }
     catch (e) { setErr(e?.data?.error || e.message || 'Could not change the firm status.'); }
@@ -299,7 +300,7 @@ function CreditAccountCard({ firmId, firmName, canSet }) {
     finally { setBusy(false); }
   }
   async function clearAccount() {
-    if (!window.confirm(`Remove ${firmName}'s own credit account? Their files will go back to our shared account.`)) return;
+    if (!(await askConfirm(`Remove ${firmName}'s own credit account? Their files will go back to our shared account.`))) return;
     setBusy(true); setMsg(''); setErr(''); setTest(null);
     try { const d = await api.adminTpoFirmCreditClear(firmId); setStatus(d.credit); setMsg('Removed — this firm now uses our shared account.'); }
     catch (e) { setErr(e?.data?.error || e.message || 'Could not remove it.'); }
@@ -448,7 +449,7 @@ function FirmPricingCard({ firmId, firmName, canSet }) {
     finally { setBusy(false); }
   }
   async function clearAll() {
-    if (!window.confirm(`Clear ${firmName}'s special pricing? Their files go back to the TPO channel defaults.`)) return;
+    if (!(await askConfirm(`Clear ${firmName}'s special pricing? Their files go back to the TPO channel defaults.`))) return;
     setBusy(true); setMsg(''); setErr('');
     try { const d = await api.adminTpoFirmPricingClear(firmId); setForm(fpToForm(d.firm)); setMsg('Cleared — back to the channel defaults.'); load(); }
     catch (e) { setErr(e?.data?.error || e.message || 'Could not clear.'); }

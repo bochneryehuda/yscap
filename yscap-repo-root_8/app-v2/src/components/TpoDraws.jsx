@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { askConfirm } from '../lib/dialog.js';
 import { moneyCents } from '../lib/money.js';
 
 /* Phase 6b/6d — the broker's draw view. A broker SEES the same borrower-safe construction-draw
@@ -191,7 +192,7 @@ function TpoFindingCard({ finding, appId, money, onChanged }) {
   const badge = { delivered: { label: 'Awaiting response', cls: 'sw-pending' }, accepted: { label: 'Accepted', cls: 'sw-approved' }, disputed: { label: 'Disputed — under review', cls: 'sw-insp' }, resolved: { label: 'Resolved', cls: 'sw-approved' } }[finding.status] || { label: finding.status, cls: 'sw-insp' };
 
   async function accept() {
-    if (!window.confirm('Accept these inspection results? This confirms the approved amounts and starts the release to the borrower.')) return;
+    if (!(await askConfirm('Accept these inspection results? This confirms the approved amounts and starts the release to the borrower.'))) return;
     setBusy(true); setErr('');
     try { await api.tpoDrawAccept(appId, finding.id); if (onChanged) onChanged(); }
     catch (e) { setErr(e?.data?.error || 'Could not accept — please try again.'); }

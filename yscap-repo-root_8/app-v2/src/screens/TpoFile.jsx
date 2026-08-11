@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { askConfirm } from '../lib/dialog.js';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import TpoDraws from '../components/TpoDraws.jsx';
@@ -67,7 +68,7 @@ export default function TpoFile() {
   useEffect(() => { loadFile(); loadChecklist(); loadDocuments(); loadCredit(); /* eslint-disable-next-line */ }, [id]);
 
   async function orderCredit() {
-    if (!window.confirm('Confirm the borrower authorized a credit pull. This orders their credit report.')) return;
+    if (!(await askConfirm('Confirm the borrower authorized a credit pull. This orders their credit report.'))) return;
     setErr(''); setMsg(''); setOrderingCredit(true);
     try {
       const r = await api.tpoOrderCredit(id, { consent: true });
