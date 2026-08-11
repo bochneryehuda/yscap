@@ -256,8 +256,11 @@ function OrderDetail({ appId, orderId, order, onChange }) {
   const [tab, setTab] = useState('messages');
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelErr, setCancelErr] = useState('');
-  // Cancellable = it reached the AMC and isn't already done/cancelling.
-  const canCancel = !!(order && (order.cdg_order_number || order.sp_order_number)
+  // Cancellable = it reached the AMC and isn't already done/cancelling. Key on the
+  // ServiceProviderOrderNumber ONLY, matching the backend's not_placed guard (a cancel
+  // needs the sp number for the envelope AND the poll confirmation) — so the button never
+  // shows on an order the backend would refuse with "never placed".
+  const canCancel = !!(order && order.sp_order_number
     && order.status !== 'cancelled' && order.status !== 'completed' && order.status !== 'cancel_requested');
 
   const doCancel = async () => {

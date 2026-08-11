@@ -126,6 +126,26 @@ const nackResp = { message: { statusResponses: [
       ok(!res.ok && res.error === 'not_cancellable', `a ${term} order is not_cancellable`);
     }
 
+    // ---- guard: a cancel already in flight is not re-sent -------------------
+    // A second requestCancel on a cancel_requested order must NOT send another
+    // CancelOrder to the vendor and must NOT overwrite the original cancel audit
+    // metadata (who/when first asked). The poll worker is already waiting for the
+    // vendor's confirmation.
+    const inFlight = await c.query(
+      `INSERT INTO amc_orders (application_id, cdg_order_number, sp_order_number, status,
+          cancel_reason, cancel_requested_at, cancel_requested_by)
+       VALUES ($1,'CLG-INFLIGHT','SP-INFLIGHT','cancel_requested','the first reason',
+          now() - interval '1 hour', $2) RETURNING *`, [appId, staffId]);
+    let sentDuringInFlight = false;
+    writeImpl = async () => { sentDuringInFlight = true; return acceptedResp; };
+    const dbl = await cancel.requestCancel(c, inFlight.rows[0], { reason: 'a different reason', staffId });
+    ok(!dbl.ok && dbl.error === 'not_cancellable', 'a cancel already in flight is not_cancellable');
+    ok(sentDuringInFlight === false, 'in-flight cancel: nothing is re-sent to the vendor');
+    const afterDbl = await reload(inFlight.rows[0].id);
+    ok(afterDbl.cancel_reason === 'the first reason', 'in-flight cancel: the original reason is preserved');
+    const dblJ = await journalRows(inFlight.rows[0].id);
+    ok(dblJ.length === 0, 'in-flight cancel: no new journal row (never reached the transport)');
+
     // ---- DRY-RUN: the transport short-circuits without sending ---------------
     writeImpl = async () => ({ __dryrun: true });
     const dry = await cancel.requestCancel(c, order, { reason: 'Borrower withdrew from the deal', staffId });

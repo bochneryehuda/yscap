@@ -45,6 +45,13 @@ async function requestCancel(db, order, opts = {}) {
   if (order.status === 'cancelled' || order.status === 'completed') {
     return { ok: false, error: 'not_cancellable', message: `This order is already ${order.status}.` };
   }
+  // A cancel is already in flight — don't re-send another CancelOrder to the vendor and,
+  // more importantly, don't overwrite the original cancel_reason / cancel_requested_by /
+  // cancel_requested_at with a second request's values (who/when first asked is the audit
+  // trail). The poll worker is already waiting for the vendor's Cancellation confirmation.
+  if (order.status === 'cancel_requested') {
+    return { ok: false, error: 'not_cancellable', message: 'A cancellation has already been requested for this order — waiting for the AMC to confirm.' };
+  }
 
   const authCtx = await session.authContext();   // DoLogin (needs AMC_ENABLED); throws if off
   const built = cdg.buildCancelOrder({
