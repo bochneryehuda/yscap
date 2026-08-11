@@ -126,6 +126,47 @@ async function main() {
   await db.query(`INSERT INTO application_assignees (application_id, staff_id, role)
                   VALUES ($1,$2,'loan_officer') ON CONFLICT DO NOTHING`, [appId, officer]);
 
+  // ==========================================================================
+  // THE NOTIFY LIST — the NAN parity gap. Class must email the loan officer, the
+  // processor AND the borrower(s) as the appraisal moves, the same set NAN carries
+  // as products[].notifications. loadContext builds it and the preview surfaces it.
+  // ==========================================================================
+  const processor = (await db.query(
+    `INSERT INTO staff_users (email, full_name, role, is_active) VALUES ($1,$2,'processor',true) RETURNING id`,
+    [`cls-pr-${tag}@example.test`, 'Percy Processor'])).rows[0].id;
+  const cob = (await db.query(
+    `INSERT INTO borrowers (first_name, last_name, email, cell_phone)
+     VALUES ($1,$2,$3,$4) RETURNING id`,
+    ['Cody', 'Coborrow-' + tag, `cody.${tag}@example.com`, '5559990000'])).rows[0].id;
+  await db.query('UPDATE applications SET processor_id=$2, co_borrower_id=$3 WHERE id=$1', [appId, processor, cob]);
+
+  const ctxN = await orderService.loadContext(db, appId);
+  const wantEmails = [`cls-lo-${tag}@example.test`, `cls-pr-${tag}@example.test`,
+                      `ada.${tag}@example.com`, `cody.${tag}@example.com`];
+  ok(wantEmails.every((e) => ctxN.notifyEmails.includes(e)),
+     'notifyEmails carries the loan officer, the processor AND both borrowers');
+  ok(ctxN.notifyEmails.length === 4, 'and nobody appears twice');
+
+  // The preview surfaces the list, and the built body turns each into a BorrowerInfo
+  // notification — an array, which fieldRows() skips, so surfacing it is the ONLY
+  // way the screen sees who will be emailed before the order goes out.
+  const pvN = await orderService.buildPreview(db, appId, { overrides: { productId: 42 } });
+  ok(Array.isArray(pvN.notifyEmails) && pvN.notifyEmails.length === 4,
+     'the preview surfaces the notify list so the screen shows who gets emailed');
+  ok((pvN.body.notificationList || []).length === 4 &&
+     pvN.body.notificationList.every((n) => n.Type === 'BorrowerInfo'),
+     'and each recipient becomes a BorrowerInfo entry on the order body');
+
+  // A DEACTIVATED processor drops out — an appraiser notice must never chase a
+  // staffer who has left, exactly as the AMC desk does.
+  await db.query('UPDATE staff_users SET is_active=false WHERE id=$1', [processor]);
+  const ctxOff = await orderService.loadContext(db, appId);
+  ok(!ctxOff.notifyEmails.includes(`cls-pr-${tag}@example.test`),
+     'a deactivated processor is dropped from the notify list');
+  ok(ctxOff.notifyEmails.includes(`cls-lo-${tag}@example.test`),
+     'while the active loan officer stays on it');
+  await db.query('UPDATE staff_users SET is_active=true WHERE id=$1', [processor]);
+
   const jwtFor = (id) => signJwt({ sub: id, kind: 'staff', role: 'loan_officer', tv: 0, sid: 'test' });
   const call = async (method, path, body, jwt) => {
     const r = await fetch(`${base}${path}`, {
@@ -215,8 +256,8 @@ async function main() {
   // --- cleanup ------------------------------------------------------------
   server.close();
   await db.query('DELETE FROM applications WHERE id=$1', [appId]);
-  await db.query('DELETE FROM borrowers WHERE id=$1', [borrowerId]);
-  await db.query('DELETE FROM staff_users WHERE id = ANY($1::uuid[])', [[officer, outsider]]);
+  await db.query('DELETE FROM borrowers WHERE id = ANY($1::uuid[])', [[borrowerId, cob]]);
+  await db.query('DELETE FROM staff_users WHERE id = ANY($1::uuid[])', [[officer, outsider, processor]]);
 
   console.log(`\ntest-class-preview-db: ${pass} passed, ${fail} failed`);
   // NOTE for whoever reads this output next: a trailing
