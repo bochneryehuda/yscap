@@ -107,6 +107,11 @@ export default function AmcAppraisalPanel({ appId }) {
                   <div style={{ fontSize: 12, color: MUTED }}>
                     {o.cdg_order_number ? ('AMC #' + o.cdg_order_number + ' · ') : ''}Ordered {fmtDate(o.ordered_at || o.created_at)}{o.dryrun ? ' · test' : ''}
                   </div>
+                  {o.status === 'error' && o.last_error ? (
+                    <div style={{ fontSize: 12, color: '#B4453B', marginTop: 4 }}>
+                      <strong>Why it didn’t go through:</strong> {o.last_error}
+                    </div>
+                  ) : null}
                 </div>
                 <span style={{ color: TEAL, fontSize: 13 }}>{selected === o.id ? 'Hide' : 'Open'}</span>
               </div>
@@ -115,7 +120,7 @@ export default function AmcAppraisalPanel({ appId }) {
         </div>
       ) : null}
 
-      {selected ? <OrderDetail appId={appId} orderId={selected} onChange={load} /> : null}
+      {selected ? <OrderDetail appId={appId} orderId={selected} order={orders.find((o) => o.id === selected) || null} onChange={load} /> : null}
 
       {/* Place a new order */}
       {!notConfigured && preview ? (
@@ -168,10 +173,43 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound }) {
   );
 }
 
-function OrderDetail({ appId, orderId, onChange }) {
+// Shows the vendor's real rejection on a failed order + copyable technical detail,
+// so the reason is visible on the file and easy to hand off for a deeper look.
+function OrderError({ order }) {
+  const [showRaw, setShowRaw] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const raw = order.last_status_response;
+  const rawText = raw ? (typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2)) : '';
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(rawText); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch (_) { /* ignore */ }
+  };
+  return (
+    <div style={{ border: '1px solid #E7C4C0', background: '#FCF4F3', borderRadius: 10, padding: 12, marginBottom: 12 }}>
+      <div style={{ fontWeight: 700, color: '#8A322B' }}>This order didn’t go through</div>
+      <div style={{ color: '#8A322B', marginTop: 4 }}>{order.last_error || 'The appraisal gateway did not accept the order.'}</div>
+      {rawText ? (
+        <div style={{ marginTop: 8 }}>
+          <button onClick={() => setShowRaw((v) => !v)}
+            style={{ border: 'none', background: 'none', color: TEAL, cursor: 'pointer', padding: 0, fontSize: 13 }}>
+            {showRaw ? 'Hide technical details' : 'Show technical details'}
+          </button>
+          {showRaw ? (
+            <div style={{ marginTop: 6 }}>
+              <pre style={{ maxHeight: 200, overflow: 'auto', background: '#fff', border: `1px solid ${LINE}`, borderRadius: 8, padding: 8, fontSize: 11, color: INK, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{rawText}</pre>
+              <button className="btn soft" onClick={copy} style={{ marginTop: 4 }}>{copied ? 'Copied' : 'Copy details'}</button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function OrderDetail({ appId, orderId, order, onChange }) {
   const [tab, setTab] = useState('messages');
   return (
     <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 12, marginBottom: 14, background: '#fff' }}>
+      {order && order.status === 'error' ? <OrderError order={order} /> : null}
       <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
         {[['messages', 'Messages'], ['revisions', 'Revisions & disputes'], ['documents', 'Documents']].map(([k, lbl]) => (
           <button key={k} onClick={() => setTab(k)}
