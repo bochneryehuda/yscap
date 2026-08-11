@@ -57,7 +57,7 @@ Encompass tracks lifecycle via **milestones** (`Started`, `Processing`, `Approva
 | `Resubmittal` | `resubmitted (4-em)` | `underwriting` | Re-sub after conditions |
 | `Cleared to Close` | `ctc (4-email)` | `clear_to_close` | Docs cleared |
 | `Docs Signing` / `Closing` | `active closing` | `clear_to_close` | At closing table |
-| `Funding` / `Funded` | `closed (6-email funded)` | `funded` | Funded (`funded_date` also lands from field `1401`) |
+| `Funding` / `Funded` | `closed (6-email funded)` | `funded` | Funded (`funded_date` lands from the custom field `CX.FUNDEDDATE`) |
 | `Purchased` | `closed reconciled` | `funded` | Investor purchase settled |
 | `Adverse` / `Withdrawn` / `Cancelled` | `declined` / `cancelled` | `declined` / `withdrawn` | End-of-life exits |
 
@@ -149,8 +149,8 @@ Read the Encompass roles for display parity ONLY. PILOT's assignee model (`db/10
 |---|---|---|---|
 | `submitted_at` | `LOG.MS.Date.File Started` (or `748`) | date | Landed when PILOT column is null; otherwise `encompass_extra.file_started_at` |
 | `expected_closing` | `763` Estimated Closing Date | date | Landed when PILOT column is null; otherwise `encompass_extra.estimated_closing` |
-| `actual_closing` | `1400` Closing Date | date | ⚠︎ verify — quality-excellence docs list `1400`/`1401` |
-| `funded_date` (new column) | `1401` Funded Date | date | Adds `applications.funded_date` in a new migration |
+| `actual_closing` | `1400` Closing Date | date | ⚠︎ verify — NOTE field `1401` is the loan PROGRAM, not a date |
+| `funded_date` (new column) | `CX.FUNDEDDATE` Funded Date | date | Custom field (NOT `1401`, which is the loan program); read via `customFields[]`, kept out of the by-number batch |
 | `encompass_status` | `LOG.Milestone.Current` | text | Reconciled against the ClickUp-sourced value; a mismatch shows on the staff panel |
 | `encompass_loan_guid` (new column) | `Loan.Guid` (top-level `guid`) | text | Adds `applications.encompass_loan_guid` — the immutable join key (analog of `applications.clickup_pipeline_task_id`) |
 
