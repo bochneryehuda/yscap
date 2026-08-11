@@ -223,6 +223,12 @@ export default function ClassAppraisalPanel({ appId }) {
 
           <Contacts contacts={(preview.body && preview.body.contacts) || []} />
 
+          {(preview.notifyEmails || []).length ? (
+            <div style={{ marginTop: 10, fontSize: 12, color: MUTED }}>
+              Update emails from Class will go to: <span style={{ color: INK }}>{(preview.notifyEmails || []).join(', ')}</span>
+            </div>
+          ) : null}
+
           {missing.length ? (
             <div style={{ marginTop: 12, color: '#8A2F27', fontSize: 13 }}>
               <strong>Still needed before this can be ordered:</strong>

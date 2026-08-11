@@ -154,7 +154,8 @@ async function main() {
   ok(Array.isArray(pvN.notifyEmails) && pvN.notifyEmails.length === 4,
      'the preview surfaces the notify list so the screen shows who gets emailed');
   ok((pvN.body.notificationList || []).length === 4 &&
-     pvN.body.notificationList.every((n) => n.Type === 'BorrowerInfo'),
+     // The key is `Type` on UAD 2.6 and `type` on 3.6 — read whichever this version emitted.
+     pvN.body.notificationList.every((n) => (n.Type != null ? n.Type : n.type) === 'BorrowerInfo'),
      'and each recipient becomes a BorrowerInfo entry on the order body');
 
   // A DEACTIVATED processor drops out — an appraiser notice must never chase a
