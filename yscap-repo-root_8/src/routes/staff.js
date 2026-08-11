@@ -730,6 +730,10 @@ function buildPipelineFilter(req, q) {
   const params = [...s.params];
   const add = (val) => { params.push(val); return `$${params.length}`; };
   const where = ['a.deleted_at IS NULL'];
+  // Remove-from-this-view (owner-directed 2026-08-11): a file removed from the row
+  // coordinator's pipeline view is hidden here but NOT deleted — it stays on every
+  // other surface. `?removed=1` lists the removed ones (so they can be restored).
+  where.push(q.removed === '1' ? 'a.pipeline_removed_at IS NOT NULL' : 'a.pipeline_removed_at IS NULL');
   if (s.where) where.push(s.where.replace(/\$SCOPE/g, '$1').replace(/^AND\s+/, ''));
 
     // status GROUP — same predicates the dashboard uses. An EXACT status filter
@@ -11198,6 +11202,16 @@ router.post('/track-records/:id/verify', async (req, res) => {
   // condition, so — exactly like the LLC unverify (#125/#147) — it REQUIRES a
   // reason the borrower is shown and it notifies them.
   const isRevoke = wasVerified && !counts;
+  // QUIET REVOKE (owner-directed 2026-08-11): a line marked "verified" BY MISTAKE
+  // should be flippable back to pending review WITHOUT emailing the borrower —
+  // there is nothing for them to act on, so a "your verification was revoked"
+  // notice would only confuse them. `silent` is an EXPLICIT opt-in the caller
+  // must ASK for (never inferred from the role — mirrors the adminOverride
+  // pattern), and only ever applies on a revoke. The tier recompute + experience-
+  // condition reopen still run: a mistakenly-verified line genuinely should not
+  // count, so the file must reflect that; only the borrower NOTIFICATION is
+  // suppressed.
+  const silent = isRevoke && !!(req.body && req.body.silent === true);
   // Marking a line item verified/limited COUNTS toward the experience tier and
   // drives the experience condition to satisfied — a sign-off, so processor-only
   // (#126). A non-counting status (pending/docs) is a review action anyone may set.
@@ -11229,7 +11243,10 @@ router.post('/track-records/:id/verify', async (req, res) => {
     }
   }
   const reason = String((req.body && req.body.reason) || '').trim().slice(0, 500);
-  if (isRevoke && !reason) {
+  // A loud revoke needs a reason (the borrower is shown it). A QUIET revoke does
+  // not — the borrower never sees it — so the reason is optional there and, when
+  // given, becomes an internal note on the audit trail only.
+  if (isRevoke && !reason && !silent) {
     return res.status(400).json({ error: 'a reason is required to revoke verification — the borrower is told why' });
   }
   /* D16 — THE ORPHAN. Setting a line to "needs documents" used to write ONE
@@ -11268,14 +11285,18 @@ router.post('/track-records/:id/verify', async (req, res) => {
   // Tier / verified-experience counts are rule-engine fields.
   try { await conditionEngine.evaluateBorrowerApplications(tr.rows[0].borrower_id, { actor: req.actor, reason: isRevoke ? 'track_record_unverified' : 'track_record_verified' }); } catch (_) {}
   if (isRevoke) {
-    await audit(req, 'unverify_track_record', 'track_record', req.params.id, { status, reason });
-    const addr = (tr.rows[0].property_address && (tr.rows[0].property_address.oneLine || tr.rows[0].property_address.line1)) || 'a property';
-    try {
-      await notify.notifyBorrower(tr.rows[0].borrower_id, {
-        type: 'track_record_unverified', title: 'A track-record project needs attention', badge: { text: 'Action needed', tone: 'action' },
-        body: `Verification of your project at ${addr} was revoked: ${reason}. Please review it and its documents on your track record.`,
-        link: '/track-record', ctaLabel: 'Review your track record' });
-    } catch (_) { /* best-effort */ }
+    await audit(req, 'unverify_track_record', 'track_record', req.params.id, { status, reason, silent });
+    // A quiet revoke skips the borrower notification entirely (see `silent`
+    // above) — the audit row still records that the action happened, and why.
+    if (!silent) {
+      const addr = (tr.rows[0].property_address && (tr.rows[0].property_address.oneLine || tr.rows[0].property_address.line1)) || 'a property';
+      try {
+        await notify.notifyBorrower(tr.rows[0].borrower_id, {
+          type: 'track_record_unverified', title: 'A track-record project needs attention', badge: { text: 'Action needed', tone: 'action' },
+          body: `Verification of your project at ${addr} was revoked: ${reason}. Please review it and its documents on your track record.`,
+          link: '/track-record', ctaLabel: 'Review your track record' });
+      } catch (_) { /* best-effort */ }
+    }
   } else {
     await audit(req, 'verify_track_record', 'track_record', req.params.id, { status });
   }
@@ -11312,7 +11333,7 @@ router.post('/track-records/:id/verify', async (req, res) => {
   // Live cross-user refresh (#112): the borrower + other staff see the new
   // verification badge / revoke on the line item immediately.
   require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
-  res.json({ ok: true, status, revoked: isRevoke, request, requestError });
+  res.json({ ok: true, status, revoked: isRevoke, silent, request, requestError });
 });
 
 // ---------------- raise an issue against a track-record line item / an LLC ----------------
@@ -12878,6 +12899,19 @@ router.post('/applications/:id/closing-date', async (req, res) => {
         await db.query(
           `UPDATE applications SET est_closing_date=$2, first_payment_date=$3, maturity_date=$4, updated_at=now() WHERE id=$1`,
           [req.params.id, kd.estClosing, kd.firstPayment, kd.maturity]);
+        // Keep the CLOSING DESK's own copy in lock-step too (owner-reported
+        // 2026-08-11: "I changed the estimated closing to 08/13 and the Closing
+        // status panel still shows 07/29"). closing_workflow.est_closing_date is
+        // set once at the closing hand-off (workflow.openClosing, COALESCE-
+        // preserved) and was NEVER updated by this edit — yet the Closing status
+        // panel (ClosingPanel.jsx) and DocLab both PREFER it over
+        // applications.expected_closing, so a later edit here never showed. The
+        // file's expected closing is the one authoritative date, so it propagates
+        // to the desk copy. UPDATE-only: it never creates a closing_workflow row
+        // (a file not yet submitted to closing has none). Best-effort.
+        await db.query(
+          `UPDATE closing_workflow SET est_closing_date=$2, updated_at=now() WHERE application_id=$1`,
+          [req.params.id, normExpected]);
       } catch (e) { console.error('[set-closing] term-sheet date mirror failed:', db.describeError(e)); }
     }
     if (b.expectedClosing) {
@@ -14305,6 +14339,9 @@ router.get('/closing', async (req, res) => {
     const params = [];
     let scope = '';
     if (!seesAll(req)) { params.push(req.actor.id); scope = ` AND ${VISIBLE_OFFICERS_SQL('a', '$' + params.length)}`; }
+    // Remove-from-this-view: hidden from the closing desk by default (not deleted);
+    // `?removed=1` lists the removed ones so they can be restored.
+    const removedClause = req.query.removed === '1' ? ' AND cw.removed_at IS NOT NULL' : ' AND cw.removed_at IS NULL';
     const r = await db.query(
       `SELECT a.id, a.ys_loan_number, a.property_address, a.status, a.lender, a.funded_date, a.expected_closing,
               b.first_name, b.last_name,
@@ -14318,7 +14355,7 @@ router.get('/closing', async (req, res) => {
          JOIN applications a ON a.id = cw.application_id AND a.deleted_at IS NULL
          JOIN borrowers b ON b.id = a.borrower_id
          LEFT JOIN staff_users s ON s.id = a.closer_id
-        WHERE 1=1 ${scope}
+        WHERE 1=1 ${scope}${removedClause}
         ORDER BY COALESCE(cw.est_closing_date, a.expected_closing) NULLS LAST, a.updated_at DESC`,
       params);
     res.json(r.rows);
@@ -14334,7 +14371,7 @@ router.get('/closing/count', async (req, res) => {
     const r = await db.query(
       `SELECT count(*)::int AS n FROM closing_workflow cw
          JOIN applications a ON a.id = cw.application_id AND a.deleted_at IS NULL
-        WHERE NOT ${closing.CLOSING_RETIRED_SQL('cw')} ${scope}`, params);
+        WHERE NOT ${closing.CLOSING_RETIRED_SQL('cw')} AND cw.removed_at IS NULL ${scope}`, params);
     res.json({ count: r.rows[0].n });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -14363,6 +14400,9 @@ router.get('/purchasing', purchasingGate, async (req, res) => {
     let statusClause = ` AND p.status='outstanding'`;
     if (req.query.status === 'complete') statusClause = ` AND p.status='complete'`;
     else if (req.query.status === 'all') statusClause = '';
+    // Remove-from-this-view: hidden from the purchasing desk by default (not
+    // deleted); `?removed=1` lists the removed ones so they can be restored.
+    statusClause += req.query.removed === '1' ? ' AND p.removed_at IS NOT NULL' : ' AND p.removed_at IS NULL';
     const r = await db.query(
       `SELECT p.application_id AS id, p.status, p.entered_at, p.completed_at,
               a.ys_loan_number, a.property_address, a.status AS app_status, a.lender, a.funded_date,
@@ -14402,10 +14442,55 @@ router.get('/purchasing/count', purchasingGate, async (req, res) => {
     const r = await db.query(
       `SELECT count(*)::int AS n FROM purchasing_workflow p
          JOIN applications a ON a.id = p.application_id AND a.deleted_at IS NULL
-        WHERE p.status='outstanding' ${scope}`, params);
+        WHERE p.status='outstanding' AND p.removed_at IS NULL ${scope}`, params);
     res.json({ count: r.rows[0].n });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
+
+// ===========================================================================
+// REMOVE A FILE FROM A WORKFLOW VIEW — never deletes it (owner-directed
+// 2026-08-11). Works for the row coordinator's PIPELINE, the CLOSING desk and
+// the PURCHASING desk. File-scoped by the /applications/:id middleware, so
+// ANYBODY who can see the file may remove it from a view (not gated on
+// manage_closings / manage_purchasing — the desk lists are already file-scoped).
+// It only sets a per-view marker; the file, its documents, its conditions, its
+// status and every other surface are untouched. Reversible via …/restore. The
+// double warning is enforced on the client. Audited.
+// ===========================================================================
+const WORKFLOW_VIEWS = new Set(['pipeline', 'closing', 'purchasing']);
+async function setWorkflowRemoval(req, res, removing) {
+  const wf = String(req.params.workflow || '');
+  if (!WORKFLOW_VIEWS.has(wf)) return res.status(400).json({ error: 'unknown workflow view' });
+  const reason = removing ? (String((req.body && req.body.reason) || '').trim().slice(0, 500) || null) : null;
+  try {
+    if (wf === 'pipeline') {
+      await db.query(
+        removing
+          ? `UPDATE applications SET pipeline_removed_at=now(), pipeline_removed_by=$2, pipeline_removed_reason=$3 WHERE id=$1`
+          : `UPDATE applications SET pipeline_removed_at=NULL, pipeline_removed_by=NULL, pipeline_removed_reason=NULL WHERE id=$1`,
+        removing ? [req.params.id, req.actor.id, reason] : [req.params.id]);
+    } else {
+      const table = wf === 'closing' ? 'closing_workflow' : 'purchasing_workflow';
+      // Only touches an EXISTING membership row; a file not on that desk has none,
+      // so removing is a harmless no-op (never creates a row).
+      await db.query(
+        removing
+          ? `UPDATE ${table} SET removed_at=now(), removed_by=$2, removed_reason=$3, updated_at=now() WHERE application_id=$1`
+          : `UPDATE ${table} SET removed_at=NULL, removed_by=NULL, removed_reason=NULL, updated_at=now() WHERE application_id=$1`,
+        removing ? [req.params.id, req.actor.id, reason] : [req.params.id]);
+      // Removing from the CLOSING desk must also close the closer's personal
+      // hand-off item, or the file lingers in their Workflow queue. Best-effort.
+      if (wf === 'closing' && removing) {
+        try { await require('../lib/workflow').resolveClosingItem(db, req.params.id, req.actor.id, 'Removed from the closing workflow'); }
+        catch (e) { console.warn('[workflow-remove] closing item resolve failed:', db.describeError(e)); }
+      }
+    }
+    await audit(req, removing ? 'workflow_view_remove' : 'workflow_view_restore', 'application', req.params.id, { workflow: wf, reason });
+    res.json({ ok: true, workflow: wf, removed: removing });
+  } catch (e) { console.warn('[workflow-remove] error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+}
+router.post('/applications/:id/workflow/:workflow/remove', (req, res) => setWorkflowRemoval(req, res, true));
+router.post('/applications/:id/workflow/:workflow/restore', (req, res) => setWorkflowRemoval(req, res, false));
 
 // Per-file purchasing detail (status + notes + tasks). File-scoped by the
 // /applications/:id path middleware.

@@ -160,7 +160,7 @@ function png() {
     // ── SECURITY (FUNC audit): the STAFF chat inbox has its OWN copy of the member-seeding SQL (it is
     // NOT routed through ensureConversationsForApp). A see-all admin loading it seeds rosters UNSCOPED
     // across every file, so without the same external-staffer guard it would re-seat the external
-    // broker (loan_officer_id on a TPO file) as a 'staff' member on EVERY inbox load — undoing db/525's
+    // broker (loan_officer_id on a TPO file) as a 'staff' member on EVERY inbox load — undoing db/528's
     // cleanup and re-opening the internal-chat → broker email leak. Drive that exact route and re-assert.
     const inbox = await call(server, 'GET', `/api/staff/chat/conversations`, staffTok(admin, 'super_admin'));
     ok(inbox.status === 200, `staff (admin) chat inbox loads (got ${inbox.status})`);

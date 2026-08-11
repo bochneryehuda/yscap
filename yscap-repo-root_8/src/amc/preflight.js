@@ -49,8 +49,13 @@ const CREDENTIALS = [
     what: 'our AppraisalScope tenant, e.g. "integrations.uat" (ServiceProviderSubDomain)' },
   { env: 'AMC_LENDER_IDENTIFIER', cfgKey: 'lenderIdentifier', step: 'order', required: true,
     what: 'the GGID — CoreLogic\'s lender id, e.g. GG000000 (DigitalGatewayLenderIdentifier)' },
-  { env: 'AMC_SOURCE_CLIENT_ID', cfgKey: 'sourceClientId', step: 'order', required: true,
-    what: 'our client/user id inside AppraisalScope (sourceInformation.sourceClientIdentifier)' },
+  // OPTIONAL: the vendor (Tony Pham, 2026-08-11) confirmed there is no such credential
+  // for this tenant — DoLogin issues an api_key without it and no auth / lookup / status /
+  // comment / revision / document call carries it. Only CreateAppraisal references it, and
+  // the builder (src/amc/cdg.js) omits sourceInformation entirely when it is unset, so an
+  // order is valid without it. Left settable in case a future tenant is issued one.
+  { env: 'AMC_SOURCE_CLIENT_ID', cfgKey: 'sourceClientId', step: 'order', required: false,
+    what: 'OPTIONAL — our client/user id inside AppraisalScope (sourceInformation.sourceClientIdentifier); not issued for this tenant' },
   { env: 'AMC_FALLBACK_APIKEY', cfgKey: 'fallbackApiKey', step: 'login', required: false, secret: true,
     what: 'UAT-only: a pre-issued api_key that skips DoLogin entirely' },
 ];
@@ -124,8 +129,10 @@ function inventory(amc) {
     canLogin,
     // A lookup needs a token (or the fallback key) AND a session.
     canLookup: canLogin && (canToken || hasFallback),
-    // Ordering additionally needs the two identifiers that ride on every order message.
-    canOrder: isSet('AMC_LENDER_IDENTIFIER') && isSet('AMC_SOURCE_CLIENT_ID'),
+    // Ordering additionally needs the GGID (DigitalGatewayLenderIdentifier) that rides on
+    // every order message. AMC_SOURCE_CLIENT_ID is OPTIONAL (the tenant is not issued one),
+    // so it does not gate ordering — the builder omits it when unset.
+    canOrder: isSet('AMC_LENDER_IDENTIFIER'),
   };
 }
 

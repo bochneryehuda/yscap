@@ -47,11 +47,20 @@ const asIssued = preflight.inventory({ ...UAT, clientId: 'abc', clientSecret: SE
 ok(asIssued.canToken === true, 'the OAuth pair alone is enough to attempt GetToken');
 ok(asIssued.canLogin === false, 'DoLogin cannot be attempted without the account/password/subdomain');
 ok(asIssued.canLookup === false, 'a lookup cannot be attempted without a session');
-ok(asIssued.canOrder === false, 'ordering is blocked while AMC_SOURCE_CLIENT_ID is unset');
-ok(asIssued.missing.includes('AMC_LOGIN_ACCOUNT') && asIssued.missing.includes('AMC_SUBDOMAIN')
-   && asIssued.missing.includes('AMC_SOURCE_CLIENT_ID'), 'missing names every still-needed variable');
+// AMC_SOURCE_CLIENT_ID is OPTIONAL (the tenant has none), so the GGID alone completes the
+// order-message identifiers — ordering is not blocked on a credential that does not exist.
+ok(asIssued.canOrder === true, 'ordering identifiers are complete once the GGID is set (source-client id is optional)');
+ok(asIssued.missing.includes('AMC_LOGIN_ACCOUNT') && asIssued.missing.includes('AMC_SUBDOMAIN'),
+   'missing names every still-needed variable');
+ok(!asIssued.missing.includes('AMC_SOURCE_CLIENT_ID'), 'the optional source-client id is never reported as missing');
 ok(!asIssued.missing.includes('AMC_LENDER_IDENTIFIER'), 'the GGID counts as AMC_LENDER_IDENTIFIER');
 ok(!asIssued.missing.includes('AMC_FALLBACK_APIKEY'), 'the optional fallback key is never reported as missing');
+// canOrder must NOT depend on the source-client id: a set with the GGID and no source-client
+// id still unblocks ordering.
+const noSourceClient = preflight.inventory({ ...UAT, clientId: 'a', clientSecret: 'b', loginAccount: 'u',
+  loginPassword: 'p', subdomain: 'integrations.uat', lenderIdentifier: 'GG000000' });
+ok(noSourceClient.canOrder === true, 'canOrder does not depend on the optional AMC_SOURCE_CLIENT_ID');
+ok(noSourceClient.missing.length === 0, 'a set without the optional source-client id reports nothing missing');
 const secretRow = asIssued.credentials.find((c) => c.env === 'AMC_CLIENT_SECRET');
 ok(secretRow.set === true && !String(secretRow.display).includes(SECRET), 'the inventory reports the secret masked');
 const idRow = asIssued.credentials.find((c) => c.env === 'AMC_CLIENT_ID');

@@ -180,6 +180,9 @@ router.post('/', async (req, res) => {
     }
   }
 
+  // Per-prospect assignment lock (released right after the row is written, or in
+  // the catch). Declared out here so the catch can always let it go.
+  let assignLock = null;
   try {
     // Dedup — LOW-SIGNAL tools ONLY (audit-caught 2026-07-17): a repeat
     // subscribe/waitlist for the same address inside 30 days is the SAME lead —
@@ -273,47 +276,47 @@ router.post('/', async (req, res) => {
        resolve must reach the sales desk, never an officer who had nothing to do with it (the
        rule directly above). Letting a session id assign one would re-open exactly that bug
        through a second door. */
-    let viaSession = false;
-    if (!officerId && sessionId && !fromStaffPortal) {
-      try {
-        const prior = (await db.query(
-          `SELECT l.officer_id, s.full_name, s.email
-             FROM leads l JOIN staff_users s ON s.id = l.officer_id AND s.is_active = true
-            WHERE l.session_id = $1 AND l.officer_id IS NOT NULL
-            ORDER BY l.created_at DESC LIMIT 1`, [sessionId])).rows[0];
-        if (prior) {
-          officerId = prior.officer_id;
-          officerRow = { id: prior.officer_id, full_name: prior.full_name, email: prior.email };
-          viaSession = true;
-        }
-      } catch (_) { /* fall through to the rotation */ }
-    }
-
-    // Decided AFTER the session lookup, so an officer the session resolved is seen as a real
-    // owner and the rotation is correctly skipped. `viaSession` then names the REASON, which
-    // `decideLeadOfficer` would otherwise report as an `?lo=` link.
+    /* WHO GETS THIS LEAD — the over-assignment fix (owner-reported 2026-08-11:
+       "everyone who clicks Generate Term Sheet gets a lead again and goes to
+       someone; a few loan officers get the same thing if he exports a few times").
+       Two changes, both here:
+         (a) REUSE the officer this prospect already has, broadened from the old
+             session-only match to email / phone / session / IP+name — so a repeat
+             export in another format, another tab, or the next day sticks to the
+             SAME officer instead of round-robining onto a second one.
+         (b) hold a per-prospect ADVISORY LOCK across the lookup → pick → INSERT, so
+             a near-simultaneous burst (the PDF + Excel + proof-of-funds each POST)
+             can never each round-robin onto a DIFFERENT officer (the first-in-
+             session race). Best-effort; released right after the row is written. */
     const decision = leadAssign.decideLeadOfficer({ officerId, tool, fromStaffPortal });
-    let assignedVia = viaSession ? 'session' : decision.assignedVia;
+    let assignedVia = decision.assignedVia;
+    let viaSession = false;   // reused an EXISTING assignment (suppresses re-notify below)
+    const ident = { email, phone, sessionId, ip: req.ip, name };
+    // Only a lead that would otherwise round-robin needs this — a branded ?lo=
+    // link, a staff-portal lead, a newsletter and a nameless export never do.
+    const routable = !officerId && decision.mayRoundRobin && hasContact;
+    if (routable) {
+      assignLock = await leadAssign.acquireAssignmentLock(leadAssign.assignmentKey(ident));
+      const prior = await leadAssign.findRecentAssignment(db, ident);
+      if (prior) {
+        officerId = prior.officer_id;
+        officerRow = { id: prior.officer_id, full_name: prior.full_name, email: prior.email };
+        assignedVia = 'session'; viaSession = true;
+      } else {
+        // #29 round-robin: fair rotation onto the next loan officer. An empty pool
+        // falls through to the sales-desk / admin routing below — a lead is never lost.
+        const rr = await leadAssign.pickRoundRobinOfficer();
+        if (rr) { officerRow = rr; officerId = rr.id; assignedVia = 'round_robin'; }
+      }
+    }
     if (!officerId && fromStaffPortal) {
       // Stated to be somebody's own work, but we could not resolve who. Say so —
       // this is a wiring fault worth seeing, not a lead to hand out.
       console.warn(`[leads] ${tool} declared a staff-portal origin but its officer code ` +
         `${code ? `"${code}" did not resolve` : 'was missing'} — routing to the sales desk, NOT the rotation`);
     }
-    // #29 round-robin: with no branded officer, assign the lead to the next loan officer in fair
-    // rotation so it gets an OWNER instead of sitting unowned on the sales desk. An empty pool
-    // falls through to the sales-desk / admin routing below, so a lead is never lost.
-    //
-    // TWO independent restrictions, and BOTH must hold. `decision.mayRoundRobin` covers the
-    // newsletter and the staff-portal cases; `hasContact` covers the owner's other rule
-    // (2026-08-07) — a submission that names NOBODY is not a lead, and rotating an anonymous
-    // export onto an officer's desk hands them something they cannot act on. It still reaches
-    // sales below, so nothing is lost either way.
+    // A submission that names NOBODY is not a lead (owner-directed 2026-08-07).
     const anonymous = !hasContact && !officerId;
-    if (decision.mayRoundRobin && hasContact) {
-      const rr = await leadAssign.pickRoundRobinOfficer();
-      if (rr) { officerRow = rr; officerId = rr.id; assignedVia = 'round_robin'; }
-    }
     if (anonymous) assignedVia = 'anonymous';
 
     const label = TOOL_LABEL[tool] || tool;
@@ -368,6 +371,10 @@ router.post('/', async (req, res) => {
        facts.company, facts.propertyAddress ? F.jsonbText(facts.propertyAddress) : null,
        facts.propertyType, facts.program, facts.loanAmount]);
     const leadId = ins.rows[0].id;
+    // The assignment decision + the row are written — release the per-prospect
+    // lock now so the slow tail (filing the PDF, sending email) never serializes
+    // another visitor's submission.
+    if (assignLock) { await leadAssign.releaseAssignmentLock(assignLock); assignLock = null; }
 
     // Build a compact summary for the internal notification.
     const meta = [];
@@ -486,7 +493,10 @@ router.post('/', async (req, res) => {
       // lead with contact info). Only the newsletter subscription keeps its own
       // quiet pilot@ inbox. All the waitlist's bot defenses stay untouched.
       const wantsSales = !!salesTo && !officerId && tool !== 'subscribe';
-      if (officerId) { await notify.notifyStaff(officerId, { ...notifyOpts, emailTo: officerRow.email }); }
+      // Do NOT re-notify on a REUSED assignment (viaSession): the officer already
+      // heard about this prospect on the first export, so a burst of exports must
+      // not bombard them with a copy each — the crux of the owner's report.
+      if (officerId && !viaSession) { await notify.notifyStaff(officerId, { ...notifyOpts, emailTo: officerRow.email }); }
       if (wantsSales) {
         // An anonymous export says so on its face, so nobody on the sales desk spends a minute
         // hunting for a name that was never given (owner-directed 2026-08-07). It is a signal that
@@ -531,7 +541,7 @@ router.post('/', async (req, res) => {
     // tools (#153): a bot can enter any victim's address, and the confirmation
     // becomes backscatter that burns the sending domain's reputation. A real
     // newsletter signup needs no "we received your inquiry" letter.
-    if (email && !LOW_SIGNAL_TOOLS.has(tool)) {
+    if (email && !LOW_SIGNAL_TOOLS.has(tool) && !viaSession) {
       try {
         // The body promises "just reply to this email" — when the lead routed to
         // an officer, replies go to that officer instead of the no-reply sender.
@@ -553,6 +563,7 @@ router.post('/', async (req, res) => {
       // ask) — nothing but contact info can be written with it.
       contactToken: CONTACTLESS_TOOLS.has(tool) ? signContactToken(leadId) : undefined });
   } catch (e) {
+    if (assignLock) { await require('../lib/lead-assignment').releaseAssignmentLock(assignLock).catch(() => {}); assignLock = null; }
     console.error('[leads] submit failed:', db.describeError(e));
     res.status(500).json({ error: 'could not submit — please try again' });
   }

@@ -1,5 +1,5 @@
--- 526_reassert_assignee_trigger.sql — re-assert the application_assignees
--- pointer-sync trigger AFTER db/521, so a boot-replay that skips db/392 can no
+-- 529_reassert_assignee_trigger.sql — re-assert the application_assignees
+-- pointer-sync trigger AFTER db/524, so a boot-replay that skips db/392 can no
 -- longer break the closer / draw-coordinator workflow.
 --
 -- THE BUG (found via CI test-db, reproduced deterministically):
@@ -7,11 +7,11 @@
 --     with the NARROW list ('loan_officer','processor','closer','draw_coordinator')
 --     and THEN, later in the SAME file, re-creates the sync_primary_assignee
 --     function + trigger with the closer block.
---   • db/521 (Phase 3 / TPO) widens that SAME-named constraint to also allow
+--   • db/524 (Phase 3 / TPO) widens that SAME-named constraint to also allow
 --     'account_executive' / 'account_manager' (our LO/processor on a TPO file).
 --   • Once an account_executive/account_manager assignee ROW exists, db/392's
 --     boot-replay of the NARROW constraint ADD fails ("violated by some row").
---     migrate-boot's superseded-constraint detection recognizes it (db/521 re-adds
+--     migrate-boot's superseded-constraint detection recognizes it (db/524 re-adds
 --     the same name at a higher number) and SKIPS THE REST OF db/392 quietly — so
 --     db/392's function+trigger re-creation (statement 3) never runs on that boot.
 --   • sync_primary_assignee therefore reverts to db/103's older 2-block version
@@ -26,7 +26,7 @@
 -- CREATE OR REPLACE FUNCTION + DROP/CREATE TRIGGER, which cannot fail on any row),
 -- and re-installs db/392's full 3-block function + the closer_id trigger. So even
 -- on a boot where db/392's own re-creation was skipped, the correct trigger is
--- restored. The constraint itself is already left WIDE by db/521 (its wide re-add
+-- restored. The constraint itself is already left WIDE by db/524 (its wide re-add
 -- can never fail on data), so only the trigger needed repair. The function body
 -- below is byte-for-byte db/392's (keep them in lock-step; a future migration that
 -- extends the trigger further must be numbered above this file and re-assert its

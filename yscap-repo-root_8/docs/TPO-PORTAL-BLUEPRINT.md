@@ -106,8 +106,8 @@ internal workflow condition.
 ## 5. Phased build
 
 1. **Foundation** ✅ (this PR) — firm + TPO identity + firm scoping + the curated
-   API seam. `db/520` (tpo_firms + staff_users external flags + role CHECK +
-   external-firm invariant), `db/521` (applications `is_tpo`/`tpo_firm_id`/
+   API seam. `db/523` (tpo_firms + staff_users external flags + role CHECK +
+   external-firm invariant), `db/524` (applications `is_tpo`/`tpo_firm_id`/
    `borrower_portal_enabled` + assignee roles `account_executive`/
    `account_manager` + TPO-firm invariant). `permissions.tpoFirmScopeSql`/
    `tpoBorrowerScopeSql`/`isTpoActor`. Auth `kind='tpo'` (login `/auth/tpo/login`,
@@ -119,7 +119,7 @@ internal workflow condition.
    `/api/admin/tpo`): create a firm, invite the lead broker, list/detail firms,
    suspend/close (atomically revokes broker sessions). The firm admin invites
    their own processors (`/api/tpo/team` + `/team/invite`). Invite machinery reuses
-   `invite_tokens` + `/auth/accept` (`db/522` carries the firm + firm-admin flag +
+   `invite_tokens` + `/auth/accept` (`db/525` carries the firm + firm-admin flag +
    the `tpo` invite kind); `tpoInvite` email. The `app-v2` third door: `TpoLogin`,
    `TpoAccept`, `TpoLayout`, firm-scoped `TpoPipeline`, `TpoTeam`; `isTpo` in the
    auth context + route guards (`TpoPrivate`; borrower/staff areas bounce a tpo
@@ -239,7 +239,7 @@ internal workflow condition.
        encrypted at rest via `crypto.encryptSecret` and NEVER returned — `status()`
        reports presence only, `hasPassword` boolean). `credit/index.js` threads the
        resolved credentials into `provider.pull` on every import path.
-     · **db/527** `tpo_firm_credit_credentials` (PK `tpo_firm_id`, `password_encrypted
+     · **db/530** `tpo_firm_credit_credentials` (PK `tpo_firm_id`, `password_encrypted
        bytea`, `auth_mode` basic|query, `is_active`, audit columns + touch trigger).
      · **The internal admin surface** — `admin-tpo.js` routes `GET/PUT/POST active/
        DELETE/POST test /firms/:id/credit-credentials` (view = manage_team; SET /
@@ -332,7 +332,7 @@ internal workflow condition.
      `actor_kind='staff'`). `src/lib/tpo-view.js` + `src/routes/tpo-view.js`
      (`/api/tpo-view/{eligible,start,session,exit,history}`, mounted outside
      /api/staff so session/exit work with a tpo token) + `tpoView.guard` +
-     `db/523_tpo_view_sessions.sql`. Auth: the tpo-view impersonation block in
+     `db/526_tpo_view_sessions.sql`. Auth: the tpo-view impersonation block in
      `authenticate()`, `req.impersonation.surface` distinguishing the two view
      surfaces so the sliding refresh re-mints a tpo-view token into another tpo-view
      token (never a borrower one). Front end: `StaffTpoView.jsx` picker at
@@ -344,11 +344,11 @@ internal workflow condition.
      Owner-locked decision 2: brokers "view / accept / dispute … like a borrower".
      This completes the draw surface Phase 6b left read-only — it is the ONE broker
      draw action that MOVES MONEY. `POST /api/tpo/applications/:id/findings/:findingId/
-     {accept,dispute}` (db/524) runs the SAME server-side transitions as the borrower's
+     {accept,dispute}` (db/527) runs the SAME server-side transitions as the borrower's
      AUTHENTICATED accept/dispute (`routes/borrower-draws.js`) but firm-scoped
      (`appInFirm` + the finding PINNED to the named file — a finding on another file
      404s) and NEVER via the borrower's public `reply_token` (these take a `findingId`,
-     not a token). Attributed: db/524 widens `accepted_via`/`disputed_via` to `'tpo'` +
+     not a token). Attributed: db/527 widens `accepted_via`/`disputed_via` to `'tpo'` +
      adds `disputed_by_staff_id`; accept stamps `accepted_via='tpo'` +
      `accepted_by_staff_id`, dispute stamps `disputed_via='tpo'` +
      `disputed_by_staff_id`, and both audit `tpo_accept_draw`/`tpo_dispute_draw`
@@ -370,8 +370,8 @@ internal workflow condition.
      `ChatThread`) — no second chat system. A broker IS a `staff_users` row but must
      be DISTINCT from our team in the roster + attribution, so they post/join as a
      NEW kind **`tpo`** (`messages.sender_kind`, `conversation_members.member_kind`,
-     `conversations.kind`), never as `staff`. db/525 widens the three CHECKs to admit
-     `'tpo'` IN-PLACE under each constraint's OWN name (the db/524 replay-idempotency
+     `conversations.kind`), never as `staff`. db/528 widens the three CHECKs to admit
+     `'tpo'` IN-PLACE under each constraint's OWN name (the db/527 replay-idempotency
      lesson) + a SECURITY DELETE cleanup (below). **THE ONE SECURITY-CRITICAL
      INVARIANT: a staff reply's RAW body must NEVER be emailed to the external
      broker.** The broker gets it LIVE (SSE + unread badge) and always through the
@@ -389,7 +389,7 @@ internal workflow condition.
      `ensureConversationsForApp` no longer seats an external staffer (the broker, who
      IS the `loan_officer_id` on a TPO file) as a `staff` member of the internal/
      borrower/lo_processor chats — that would have emailed our internal messages to
-     the broker; db/525's DELETE removes any already-seated. `src/routes/tpo-chat.js`
+     the broker; db/528's DELETE removes any already-seated. `src/routes/tpo-chat.js`
      is the firm-scoped borrower-safe router (mirrors `borrower-chat.js`, `scrubText`
      on all outbound, actor `{kind:'tpo', roleLabel:'Broker'}`, firm-scoped
      `/chat/attachment/:docId`); `routes/events.js` treats `kind ∈ staff|tpo` as

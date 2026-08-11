@@ -105,5 +105,38 @@ assert(G.PROTECTED_KEYS.includes('loan_type') && G.PROTECTED_KEYS.includes('prog
   && G.PROTECTED_KEYS.includes('purchase_price') && G.PROTECTED_KEYS.includes('property_type'),
   'the protected set covers the two-way deal fields');
 
+// ---- expected closing date: the 2026-08-11 bounce-back --------------------
+// It is protected too (mapped dir:'both'), but is NOT an economics field.
+assert(G.PROTECTED_KEYS.includes('expected_closing'),
+  'the expected closing date is in the protected set');
+
+// THE REPORTED BUG: staff moved the closing date to 08/13, the outbound push
+// hasn't landed (or is off), ClickUp still holds 07/29 → the file changed,
+// ClickUp is stale → KEEP the edit + re-push. Never bounce back to 07/29.
+r = G.classifyConflicts(
+  { expected_closing: '2026-07-29' }, { expected_closing: '2026-08-13' }, { expected_closing: '2026-07-29' });
+assert(eq(keys(r.kept), ['expected_closing']) && eq(keys(r.conflicts), []),
+  'closing date: the portal edit (08/13) is KEPT, ClickUp\'s stale 07/29 never bounces back');
+assert(r.kept[0].from === '2026-08-13' && r.kept[0].to === '2026-07-29',
+  'closing date: the kept item carries the file value (08/13) and ClickUp\'s stale value (07/29)');
+
+// both moved the closing date to different days → a real two-sided conflict.
+r = G.classifyConflicts(
+  { expected_closing: '2026-08-20' }, { expected_closing: '2026-08-13' }, { expected_closing: '2026-07-29' });
+assert(eq(keys(r.conflicts), ['expected_closing']) && eq(keys(r.kept), []),
+  'closing date: both sides changed to different days → a two-sided CONFLICT (goes to review)');
+
+// same calendar day, different representation (a trailing time) → NOT a change.
+r = G.classifyConflicts(
+  { expected_closing: '2026-08-13' }, { expected_closing: '2026-08-13T00:00:00' }, { expected_closing: '2026-08-13' });
+assert(eq(keys(r.kept), []) && eq(keys(r.conflicts), []),
+  'closing date: the same day in a different shape is never read as a change');
+
+// only ClickUp moved the closing date (file == last-seen) → normal pull, nothing held.
+r = G.classifyConflicts(
+  { expected_closing: '2026-09-01' }, { expected_closing: '2026-07-29' }, { expected_closing: '2026-07-29' });
+assert(eq(keys(r.kept), []) && eq(keys(r.conflicts), []),
+  'closing date: only ClickUp changed → ClickUp wins as before (the team moves it there too)');
+
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL PASS');
 process.exit(failures ? 1 : 0);

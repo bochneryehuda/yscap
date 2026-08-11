@@ -121,10 +121,15 @@ async function gatherAttachments(appId, drawId, mode) {
   // --- 1. the inspector's own report -------------------------------------------------
   let inspectorFound = false;
   try {
+    // Only the NEWEST Sitewire report (owner-directed 2026-08-11): a refresh runs
+    // before this send, so after a dispute a NEW draw_media 'draw_pdf' row exists
+    // alongside the old one — we deliver the most recent version, never the stale
+    // pre-dispute PDF. (An unchanged draw dedups by content hash, so there is only
+    // one row anyway.)
     const pdfs = (await db.query(
       `SELECT id, storage_ref, storage_provider, content_type FROM draw_media
         WHERE application_id=$1 AND sitewire_draw_id=$2 AND kind='draw_pdf'
-        ORDER BY archived_at DESC LIMIT 2`, [appId, drawId])).rows;
+        ORDER BY archived_at DESC LIMIT 1`, [appId, drawId])).rows;
     for (const m of pdfs) {
       const buf = await readDoc(m);
       if (!buf) { skipped.push({ what: 'Inspection report', reason: 'the stored copy could not be read' }); continue; }
@@ -411,6 +416,16 @@ async function deliveryPreview(appId, drawId) {
  * borrower could have been un-accepted, or the contacts edited, between the two calls.
  */
 async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName = null, mode = null, note = null } = {}) {
+  // REFRESH FROM SITEWIRE FIRST (owner-directed 2026-08-11: "when we click Deliver
+  // to Investor, that button — before actually delivering — should run a refresh
+  // from Sitewire: refresh our figures, pull the new Sitewire PDF, and THAT PDF is
+  // what's delivered"). A dispute may have changed the approved figures, which
+  // regenerates Sitewire's report; without this the investor got the stale
+  // pre-dispute copy. Best-effort: if Sitewire is unreachable we deliver the
+  // freshest we already hold rather than block the delivery.
+  try { await drawReport.refreshDrawFromSitewire(appId, drawId); }
+  catch (e) { console.warn(`[sitewire] pre-delivery refresh failed (draw=${drawId}): ${e && e.message}`); }
+
   const pre = await deliveryPreview(appId, drawId);
 
   // An explicit mode on the request wins for THIS send (the desk offers the switch right beside

@@ -142,7 +142,35 @@ const tag = `trstatus_${process.pid}`;
       'but they CAN record a non-counting review outcome');
   }
 
+  console.log('\n§7  a QUIET revoke needs no reason and does NOT notify the borrower (owner 2026-08-11)');
+  {
+    const notifCount = async () => (await db.query(
+      `SELECT count(*)::int AS n FROM notifications WHERE borrower_id=$1 AND type='track_record_unverified'`,
+      [borrowerId])).rows[0].n;
+    const h = await mkLine('H');
+    // A LOUD revoke DOES notify.
+    await verify(h, { status: 'verified' });
+    const before = await notifCount();
+    const loud = await verify(h, { status: 'pending', reason: 'wrong borrower' });
+    ok(loud.status === 200, 'a loud revoke is applied');
+    ok((await notifCount()) === before + 1, 'the LOUD revoke wrote a borrower notification');
+
+    // A QUIET revoke: no reason required, and no notification.
+    await verify(h, { status: 'verified' });
+    ok((await rowOf(h)).is_verified === true, 're-verified for the quiet test');
+    const beforeQuiet = await notifCount();
+    const quiet = await verify(h, { status: 'pending', silent: true });   // NO reason
+    ok(quiet.status === 200, 'a quiet revoke needs no reason — 200 (not the 400 a loud revoke gives)');
+    const body = await quiet.json().catch(() => ({}));
+    ok(body.silent === true && body.revoked === true, 'the response reports it as a silent revoke');
+    const row = await rowOf(h);
+    ok(row.verification_status === 'pending' && row.is_verified === false,
+      'the line is back to pending and no longer counts');
+    ok((await notifCount()) === beforeQuiet, 'the QUIET revoke wrote NO borrower notification');
+  }
+
   // Cleanup.
+  await db.query(`DELETE FROM notifications WHERE borrower_id=$1`, [borrowerId]).catch(() => {});
   await db.query(`DELETE FROM track_records WHERE borrower_id=$1`, [borrowerId]);
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [borrowerId]);
   await db.query(`DELETE FROM staff_users WHERE email LIKE $1`, [`${tag}_%@example.com`]);

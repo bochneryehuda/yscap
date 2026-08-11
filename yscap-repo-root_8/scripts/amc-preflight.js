@@ -74,8 +74,9 @@ function printInventory(inv) {
     console.log(color(YELLOW, `\n  Still needed: ${inv.missing.join(', ')}`));
   }
   if (!inv.canOrder) {
-    console.log(color(DIM, '  (AMC_LENDER_IDENTIFIER + AMC_SOURCE_CLIENT_ID are not needed to authenticate,'));
-    console.log(color(DIM, '   but every order message carries them — ordering stays blocked until both are set.)'));
+    console.log(color(DIM, '  (AMC_LENDER_IDENTIFIER — the GGID — is not needed to authenticate, but every'));
+    console.log(color(DIM, '   order message carries it, so ordering stays blocked until it is set.'));
+    console.log(color(DIM, '   AMC_SOURCE_CLIENT_ID is OPTIONAL — this tenant is not issued one.)'));
   }
 }
 
@@ -122,7 +123,7 @@ function printStep(s) {
     console.log(color(GREEN, '\nAll checks passed — the credentials authenticate and the tenant answers.'));
     console.log(inv.canOrder
       ? 'Next: turn AMC_ENABLED on in the service, refresh the lookups cache, then build an order in TEST MODE (AMC_DRYRUN=1).\n'
-      : color(YELLOW, 'Next: AMC_LENDER_IDENTIFIER / AMC_SOURCE_CLIENT_ID still need to be set before an order can be built.\n'));
+      : color(YELLOW, 'Next: AMC_LENDER_IDENTIFIER (the GGID) still needs to be set before an order can be built.\n'));
   } else {
     const first = result.steps.find((s) => !s.ok);
     console.log(color(RED, `\nPreflight failed at "${first.step}" — ${first.cause}.`));

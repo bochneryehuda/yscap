@@ -88,4 +88,95 @@ function decideLeadOfficer({ officerId = null, tool = '', fromStaffPortal = fals
   return { assignedVia: null, mayRoundRobin: true };
 }
 
-module.exports = { pickRoundRobinOfficer, enabled, decideLeadOfficer };
+/**
+ * HAS THIS PROSPECT ALREADY BEEN ASSIGNED TO AN OFFICER RECENTLY? (owner-reported
+ * 2026-08-11: "everyone who clicks Generate Term Sheet gets a lead again and goes
+ * to someone; a few loan officers get the same thing if he exports a few times").
+ *
+ * A repeat term-sheet export — another FORMAT (the PDF, the Excel and the
+ * proof-of-funds each POST), another tab, the next day — must STICK to the officer
+ * the prospect already has instead of round-robining onto a SECOND one. The old
+ * guard matched the visit SESSION only, so a session-less / cross-session / raced
+ * export walked the roster. This matches the strongest identity available:
+ *   email  →  phone  →  session  →  IP + the deal NAME
+ * IP is never matched on its own (a shared office / NAT would collapse two real
+ * prospects), only paired with the entity/property name the export carries. Only a
+ * NON-archived lead that already has an officer counts. Returns
+ * { officer_id, full_name, email, lead_id } or null. Never throws — a lookup
+ * hiccup just falls through to the rotation, exactly as before.
+ */
+async function findRecentAssignment(client, ident = {}, windowDays = 30) {
+  const email = ident.email ? String(ident.email).trim().toLowerCase() : '';
+  const phone = ident.phone ? String(ident.phone).replace(/\D/g, '') : '';
+  const phoneKey = phone.length >= 7 ? phone : '';
+  const sessionId = ident.sessionId ? String(ident.sessionId) : '';
+  const ip = ident.ip ? String(ident.ip) : '';
+  const name = ident.name ? String(ident.name).trim().toLowerCase() : '';
+  // Nothing that could identify one visitor from another → never reuse.
+  if (!email && !phoneKey && !sessionId && !(ip && name)) return null;
+  try {
+    const r = await (client || db).query(
+      `SELECT l.officer_id, s.full_name, s.email, l.id AS lead_id
+         FROM leads l JOIN staff_users s ON s.id = l.officer_id AND s.is_active = true
+        WHERE l.officer_id IS NOT NULL
+          AND l.status <> 'archived'
+          AND l.created_at > now() - (($1 || ' days')::interval)
+          AND ( ($2 <> '' AND lower(l.email) = $2)
+             OR ($3 <> '' AND regexp_replace(coalesce(l.phone,''), '\\D', '', 'g') = $3)
+             OR ($4 <> '' AND l.session_id = $4)
+             OR ($5 <> '' AND $6 <> '' AND host(l.ip_address) = $5 AND lower(coalesce(l.name,'')) = $6) )
+        ORDER BY l.created_at DESC
+        LIMIT 1`,
+      [String(windowDays), email, phoneKey, sessionId, ip, ip ? name : '']);
+    return r.rows[0] || null;
+  } catch (e) {
+    console.warn('[leads] recent-assignment lookup failed:', e && e.message);
+    return null;
+  }
+}
+
+// The lock key for one prospect — the strongest identity we hold, so the burst of
+// exports from one visitor all compute the SAME key and serialize (below).
+function assignmentKey(ident = {}) {
+  const email = ident.email ? String(ident.email).trim().toLowerCase() : '';
+  if (email) return 'lead:e:' + email;
+  const phone = ident.phone ? String(ident.phone).replace(/\D/g, '') : '';
+  if (phone.length >= 7) return 'lead:p:' + phone;
+  if (ident.sessionId) return 'lead:s:' + String(ident.sessionId);
+  const name = ident.name ? String(ident.name).trim().toLowerCase() : '';
+  if (ident.ip && name) return 'lead:i:' + String(ident.ip) + '|' + name;
+  return null;
+}
+
+/**
+ * Serialize concurrent submissions from the SAME prospect around the
+ * lookup→pick→insert, so a near-simultaneous burst (PDF + Excel + proof-of-funds,
+ * or a double-click) can never each round-robin onto a DIFFERENT officer — the
+ * first-in-session race. A SESSION-level advisory lock on a dedicated connection,
+ * held until releaseAssignmentLock. Best-effort: if the lock can't be taken the
+ * code still runs (it just loses the race protection), it never throws, and the
+ * lock always releases (a returned/closed connection drops it anyway).
+ */
+async function acquireAssignmentLock(key) {
+  if (!key || !db.pool || !db.pool.connect) return null;
+  let client = null;
+  try {
+    client = await db.pool.connect();
+    await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [String(key)]);
+    return { client, key };
+  } catch (e) {
+    if (client) { try { client.release(); } catch (_) {} }
+    return null;   // never block public lead capture on a lock hiccup
+  }
+}
+async function releaseAssignmentLock(held) {
+  if (!held || !held.client) return;
+  try { await held.client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [String(held.key)]); }
+  catch (_) { /* the lock also releases when the connection returns to the pool */ }
+  finally { try { held.client.release(); } catch (_) {} }
+}
+
+module.exports = {
+  pickRoundRobinOfficer, enabled, decideLeadOfficer,
+  findRecentAssignment, assignmentKey, acquireAssignmentLock, releaseAssignmentLock,
+};

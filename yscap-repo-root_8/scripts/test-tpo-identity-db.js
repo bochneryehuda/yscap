@@ -1,7 +1,7 @@
 'use strict';
 /**
  * TPO PORTAL — the identity + onboarding + firm-isolation proof against the REAL
- * schema (db/520 + db/521 + db/522). DB-gated (skips with no DATABASE_URL), in
+ * schema (db/523 + db/524 + db/525). DB-gated (skips with no DATABASE_URL), in
  * `npm test`. Cleans up every row it creates.
  *
  * Proves end-to-end over real HTTP:
