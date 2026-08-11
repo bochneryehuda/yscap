@@ -11470,6 +11470,11 @@ router.post('/track-record-candidates/:id/decide', async (req, res) => {
       reasonCode: typeof b.reasonCode === 'string' ? b.reasonCode : null,
       snoozeDays: b.snoozeDays,
       dealType: b.dealType, confirmReopen: b.confirmReopen === true, exit,
+      /* #23 — the rehab budget the reviewer typed on the import screen. The public
+         records never carry a rehab figure, so this is the one deal figure the
+         import screen lets a human enter; importNew bounds it and refuses an
+         unstorable number rather than escaping as a 500. */
+      rehab: b.rehab,
     });
     await audit(req, 'track_record_candidate_decided', 'borrower', own.rows[0].borrower_id,
       { candidateId: req.params.id, action: b.action, trackRecordId: out.trackRecordId || null });

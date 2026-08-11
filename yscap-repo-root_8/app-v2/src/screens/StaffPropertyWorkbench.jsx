@@ -209,6 +209,11 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
      date counts toward nothing (the frozen rule), so collecting it here is what
      lets a refinanced or leased rental actually reach the tier. */
   const [exitDraft, setExitDraft] = useState({});
+  /* #23 — THE REHAB BUDGET the reviewer types on the import screen. The public
+     records (deeds, mortgages) never carry a rehab figure, so a human enters it
+     here. Kept per candidate id (like every other draft above) so a figure typed
+     for one property never rides onto another. Optional; the server bounds it. */
+  const [rehabDraft, setRehabDraft] = useState({});
   /* THE GUIDED "not theirs" reason, per candidate (owner-directed 2026-08-10) —
      a picked reason CODE, never typed. Absent = use the system's suggestion,
      which the server derives from the #11 match basis. */
@@ -587,6 +592,19 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
                     draft={exitDraft[current.id]}
                     setDraft={(patch) => setExitDraft((m) => ({ ...m, [current.id]: { ...(m[current.id] || {}), ...patch } }))} />
                 ) : null}
+                {/* #23 — THE REHAB BUDGET, typed here (owner-directed). The public
+                    records never carry a rehab figure, so this is the one deal figure
+                    the reviewer enters on import. Shown for every deal type — a flip,
+                    a hold and a ground-up all carry a renovation / construction
+                    budget. Optional; the server bounds it and leaves the column blank
+                    when nothing is typed. */}
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 13, color: INK, marginTop: 10 }}>
+                  <span style={{ color: MUTED }}>Rehab budget ($) <em style={{ color: MUTED }}>(optional)</em></span>
+                  <input className="input" type="number" min={0} step="any" inputMode="decimal"
+                    placeholder="e.g. 60000" value={rehabDraft[current.id] || ''}
+                    onChange={(e) => setRehabDraft((m) => ({ ...m, [current.id]: e.target.value }))}
+                    style={{ minHeight: 40, fontSize: 16, minWidth: 180, color: INK, background: '#fff' }} />
+                </label>
               </div>
 
               {/* ── THE ACTIONS ──────────────────────────────────────────────── */}
@@ -606,6 +624,9 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
                        same predicate that shows the prompt (never a stale draft
                        from a type they since switched away from). */
                     exit: exitApplies(current, dealChoice) ? exitPayloadOf(exitDraft[current.id]) : null,
+                    /* #23 — the typed rehab budget (the public records never carry
+                       one); the server bounds it and ignores a blank / zero. */
+                    rehab: rehabDraft[current.id] || null,
                   })}
                   style={{ minHeight: 44 }}>
                   Bring it on as a new one

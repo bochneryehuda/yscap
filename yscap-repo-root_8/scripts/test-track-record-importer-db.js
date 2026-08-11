@@ -609,6 +609,48 @@ const found = (name) => {
       '…and the stored reason never calls the borrower\'s own name a company');
   }
 
+  console.log('\n12. #23 — THE REHAB BUDGET typed on the import screen lands on the line, and an unstorable figure is refused');
+  {
+    /* The public records (deeds, mortgages) never carry a rehab figure, so the
+       reviewer types one on the import screen — it must reach the new line's
+       rehab_amount. A figure too big for the money column is a plain 400 (there is
+       a human at this screen), never a 500; a blank leaves the column NULL, never
+       a fabricated 0. */
+    const stagedR = await IMP._internals.stageOne(db, {
+      borrowerId, searchId: null,
+      candidate: { property_address: { line1: '9 Rehab Rd', city: 'Lakewood', state: 'NJ', zip: '08701' },
+        dedupe_key: 'rehab_case_1', raw: {},
+        purchase_price: 300000, purchase_date: '2024-01-10', sale_price: 400000, sale_date: '2024-11-01' },
+      basisCtx: { branch: 'person', personalName: 'Imp Tester' },
+    });
+    const badRehab = await call(`/api/staff/track-record-candidates/${stagedR.id}/decide`, {
+      method: 'POST', body: JSON.stringify({ action: 'import_new', dealType: 'flip', rehab: 9e14 }) });
+    ok(badRehab.status === 400, `a rehab budget too big for the column is a plain 400, not a 500 (${badRehab.status})`);
+    ok((await db.query(`SELECT status FROM track_record_candidates WHERE id=$1`, [stagedR.id])).rows[0].status === 'staged',
+      '…and the refusal wrote nothing — the candidate is still waiting');
+    const okRehab = await call(`/api/staff/track-record-candidates/${stagedR.id}/decide`, {
+      method: 'POST', body: JSON.stringify({ action: 'import_new', dealType: 'flip', rehab: '62000' }) });
+    ok(okRehab.status === 200, 'the deal is brought on with a typed rehab budget');
+    const rline = (await db.query(
+      `SELECT rehab_amount FROM track_records WHERE borrower_id=$1 ORDER BY created_at DESC LIMIT 1`, [borrowerId])).rows[0];
+    ok(rline && Number(rline.rehab_amount) === 62000,
+      '…and the reviewer-typed rehab budget landed on the line (the public records never carry one)');
+
+    const stagedR2 = await IMP._internals.stageOne(db, {
+      borrowerId, searchId: null,
+      candidate: { property_address: { line1: '11 Blank Rehab Rd', city: 'Lakewood', state: 'NJ', zip: '08701' },
+        dedupe_key: 'rehab_case_2', raw: {},
+        purchase_price: 250000, purchase_date: '2024-02-01', sale_price: 330000, sale_date: '2024-10-01' },
+      basisCtx: { branch: 'person', personalName: 'Imp Tester' },
+    });
+    const okBlank = await call(`/api/staff/track-record-candidates/${stagedR2.id}/decide`, {
+      method: 'POST', body: JSON.stringify({ action: 'import_new', dealType: 'flip' }) });
+    ok(okBlank.status === 200, 'a deal with no rehab typed is brought on');
+    const bline = (await db.query(
+      `SELECT rehab_amount FROM track_records WHERE borrower_id=$1 ORDER BY created_at DESC LIMIT 1`, [borrowerId])).rows[0];
+    ok(bline && bline.rehab_amount == null, '…and a blank rehab leaves the column NULL — never a fabricated 0');
+  }
+
   await db.query('DELETE FROM track_record_candidates WHERE borrower_id=$1', [borrowerId]).catch(() => {});
   await db.query('DELETE FROM track_record_searches WHERE borrower_id=$1', [borrowerId]).catch(() => {});
   await db.query('DELETE FROM track_records WHERE borrower_id=$1', [borrowerId]).catch(() => {});
