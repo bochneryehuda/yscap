@@ -9,7 +9,7 @@ import { fmtRatePct } from '../lib/rateFormat.js';
  * 2026-07-20; page redesign 2026-07-26).
  *
  * TOP — the Manual Program config (manage_pricing): the default LTV/LTC/ARV
- * ceilings and the REQUIRED default months of assets/liquidity a manual product
+ * ceilings and the REQUIRED default months of RESERVES a manual product
  * must show. A manual product is created when a staffer overrides the deal
  * structure (LTV/LTC/ARV) in the Term Sheet Studio — it prices on the Standard
  * Program guidelines but carries the manual leverage and ALWAYS requires the
@@ -268,21 +268,22 @@ export default function StaffEscalations() {
             <div>
               A manual product is created when someone overrides the LTV, LTC or ARV in the studio. It follows the
               Standard Program guidelines for everything else, always requires the flood certificate, and must be
-              approved below. Set how many months of assets/liquidity a manual product requires before it can be
-              registered — this can be raised per file at registration.
+              approved below. Set the default months of reserves a manual product requires — the reserves the borrower
+              must show in the ending balance of their most recent statement — before it can be registered. This can be
+              changed per file at registration.
             </div>
           </div>
 
           {/* Primary, required setting */}
           <div className="esc-primary-field">
             <div className="field" style={{ marginBottom: 0, maxWidth: 260 }}>
-              <label>Required months of assets / liquidity *</label>
+              <label>Required months of reserves *</label>
               <div className="inp-suffix">
                 <input className="input" inputMode="numeric" value={form.assetMonths}
-                  onChange={(e) => setF('assetMonths', e.target.value.replace(/[^0-9]/g, ''))} placeholder="e.g. 2" />
+                  onChange={(e) => setF('assetMonths', e.target.value.replace(/[^0-9]/g, ''))} placeholder="e.g. 3" />
                 <span className="sfx">months</span>
               </div>
-              <div className="hint">Required. 1–24. The default a manual product must show; the registrant can raise it.</div>
+              <div className="hint">Required. 1–24. The default months of reserves a manual product must show; the registrant can change it per file.</div>
             </div>
           </div>
 
@@ -408,7 +409,7 @@ export default function StaffEscalations() {
                   {kindLabel}
                   {' · '}{money(s.totalLoan != null ? s.totalLoan : r.loan_amount)} loan
                   {s.noteRate != null ? ` @ ${fmtRatePct(s.noteRate)}%` : ''}
-                  {r.asset_months != null ? ` · ${r.asset_months} month${r.asset_months === 1 ? '' : 's'} liquidity` : ''}
+                  {r.asset_months != null ? ` · ${r.asset_months} month${r.asset_months === 1 ? '' : 's'} reserves` : ''}
                   {r.requested_by_name ? ` · requested by ${r.requested_by_name}` : (s.requestedByBorrower ? ' · requested by the borrower' : (s.requestedByTpo ? ' · requested by a broker' : ''))}
                 </div>
 
