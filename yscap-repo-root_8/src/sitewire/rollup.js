@@ -147,6 +147,12 @@ function computeRollup({ links = [], draws = [], requests = [], findingLines = [
   // to $0 off an ambiguous historical 0 would OVER-state available — the exact bug class this fixes —
   // so a 0/absent finding falls back to the request instead, and the mirror (honest about a denied 0)
   // corrects a going-forward denial within one reconcile. NULL request/finding = "not answered yet".
+  // DELIBERATE divergence from the per-draw drawMoney "approved" DISPLAY figure: approval.inspectorApproved
+  // treats a findings-0 as an answered $0 (inclusive), because a column LABELLED "Approved" should show
+  // what the inspector answered. This EXPOSURE figure is a different question — how much of the budget is
+  // spoken for — so it is deliberately more conservative (positive-only), which never over-states
+  // available. On an ambiguous legacy findings-0 the two can differ (headline "$0 approved" vs this line
+  // reserving the request); both are lender-safe and both converge once the request mirror lands.
   const findingApprovedByReq = new Map();
   for (const fl of (Array.isArray(findingLines) ? findingLines : [])) {
     if (fl && fl.sitewire_request_id != null && N(fl.approved_cents) > 0) {
@@ -450,16 +456,19 @@ async function projectFromFileBudget(db, appId, rollup) {
       if (d.is_released || d.is_final_approved) {
         drawn += N(d.final_approved_cents) > 0 ? N(d.final_approved_cents) : N(d.approved_cents);
       } else {
-        // POSITIVE-PREFERENCE, matching the `drawn` line above and the per-line exposure's positive-only
-        // findings fallback: the inspector's figure once it is POSITIVE, the borrower's request until then —
-        // never the higher requested amount once the inspector has approved a real amount. Why not
-        // drawMoney's `has_inspector_amounts` here: that flag is true for a pre-db/518 legacy findings-0
-        // (approved_cents was NOT NULL DEFAULT 0, so an unanswered line reads as a confident $0), which
-        // would collapse an in-flight draw to $0 exposure and OVER-state available. This path has only
-        // drawMoney's collapsed `approved_cents`, so it cannot tell a recorded denied-0 (mirror) from an
-        // ambiguous legacy findings-0 — so it falls back to the request on any 0, which is lender-safe in
-        // both directions (never over-states available). The per-line path, which DOES see the mirror,
-        // honours a recorded denied-0; this fallback runs only when the crosswalk budget is 0.
+        // POSITIVE-PREFERENCE, matching the `drawn` line above: the inspector's figure once it is
+        // POSITIVE, the borrower's request until then — never the higher requested amount once a real
+        // amount is approved. Why not drawMoney's `has_inspector_amounts` here: that flag is true for a
+        // pre-db/518 legacy findings-0 (approved_cents was NOT NULL DEFAULT 0, so an unanswered line
+        // reads as a confident $0), which would collapse a whole-draw-$0 in-flight draw to $0 exposure
+        // and over-state available. This is a FALLBACK path (only when the crosswalk budget is 0 — a
+        // TrustPoint/pre-crosswalk file): it has only drawMoney's PER-DRAW aggregate `approved_cents`,
+        // not per-line data, so it is strictly less precise than the per-line `computeRollup` path and
+        // does NOT match it in every case. It is lender-safe for the whole-draw-$0 case this fixes; on
+        // a MIXED legacy-findings-0 draw (one ambiguous 0 line + one positive line) the aggregate is
+        // already positive, so the 0 line's request is not re-added and available can be OVER-stated —
+        // an inherent limit of a crosswalk-less fallback on pre-db/518 data, matching drawMoney's own
+        // headline. The precise per-line path handles both the ambiguous 0 and a recorded denied-0.
         exposure += N(d.approved_cents) > 0 ? N(d.approved_cents) : N(d.requested_cents);
       }
     }
