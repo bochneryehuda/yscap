@@ -109,25 +109,31 @@ function fmtAgo(iso) {
 function plainReason(raw) {
   const r = String(raw || '').trim();
   if (!r) return '';
-  // Loan gone in Encompass (deleted / merged / renumbered) — a 404/410, or a
-  // self-heal re-search that found nothing.
-  if (/\b4(?:04|10)\b/.test(r) || /no longer exists|loan not found|no Encompass loan/i.test(r)) {
-    return 'Encompass can’t find this loan anymore — it looks like it was deleted, merged, or given a new number in Encompass. Check the loan number in Encompass, then try Refresh again.';
-  }
-  // Login / permission problem (e.g. the loan moved to a folder our connection can’t read).
-  if (/\b40[13]\b|unauthorized|forbidden|permission/i.test(r)) {
-    return 'PILOT couldn’t reach this loan in Encompass just now — it may be a login or permission issue. Try again in a few minutes; if it keeps happening, this loan’s access may need checking in Encompass.';
-  }
-  // Encompass briefly unreachable / rate-limited — a temporary hiccup.
-  if (/\b(?:429|5\d\d)\b|timeout|timed out|ECONN|network/i.test(r)) {
-    return 'Encompass didn’t answer just now — a temporary hiccup. Try Refresh again in a few minutes.';
-  }
-  if (/not configured/i.test(r)) return 'The Encompass connection isn’t set up yet.';
+  // KEYWORD cases first, so a loan number that happens to contain a 3-digit token
+  // (e.g. "loan# YS-404") can never be misread as an HTTP status code below.
+  if (/not configured/i.test(r)) return 'The Encompass connection isn’t set up yet — this is a setup step on our end.';
   if (/ys_loan_number|loan number not set|not set on the file/i.test(r)) {
     return 'Add the Encompass loan number to this file first — type it in the box below.';
   }
   if (/ambiguous/i.test(r)) {
     return 'More than one Encompass loan has this loan number — someone needs to check which one is right.';
+  }
+  // The numeric branches are ANCHORED to the "Encompass <code>" the API actually
+  // produces — `Encompass (?:\w+ )?` allows a "pipeline"/"fieldReader" wrapper word
+  // but never lets a loose loan-number digit trip the branch (mirrors reader.js's
+  // own /^Encompass 4(?:04|10)\b/). Each is paired with plain-English fallbacks.
+  // Loan gone in Encompass (deleted / merged / renumbered) — a 404/410, or a
+  // self-heal re-search that found nothing.
+  if (/Encompass (?:\w+ )?4(?:04|10)\b/.test(r) || /no longer exists|loan not found|no Encompass loan/i.test(r)) {
+    return 'Encompass can’t find this loan anymore — it looks like it was deleted, merged, or given a new number in Encompass. Check the loan number in Encompass, then try again.';
+  }
+  // Login / permission problem (e.g. the loan moved to a folder our connection can’t read).
+  if (/Encompass (?:\w+ )?40[13]\b/.test(r) || /unauthorized|forbidden|permission/i.test(r)) {
+    return 'PILOT couldn’t reach this loan in Encompass just now — it may be a login or permission issue. Try again in a few minutes; if it keeps happening, this loan’s access may need checking in Encompass.';
+  }
+  // Encompass briefly unreachable / rate-limited / timed out — a temporary hiccup.
+  if (/Encompass (?:\w+ )?(?:429|5\d\d)\b/.test(r) || /timeout|timed out|ETIMEDOUT|aborted|fetch failed|ECONN|network/i.test(r)) {
+    return 'Encompass didn’t answer just now — a temporary hiccup. Try again in a few minutes.';
   }
   return r;  // already plain (our self-heal wording) or an unrecognized reason — show as-is.
 }
