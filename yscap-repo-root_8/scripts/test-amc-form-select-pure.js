@@ -70,5 +70,26 @@ ok(chooseForm({ program: 'bridge' }, null) === null, 'null rules → null');
   ok(r.productCode === '6' && r.subproductCodes.length === 2 && r.subproductCodes[0] === '5' && r.amcIdentifier === '426', 'form shape is stringified');
 }
 
+// the chosen form carries its human NAME (product_name) — so the UI can show it
+{
+  const rules = [{ id: 1, program: 'bridge', product_code: '5', product_name: 'Bridge SFR appraisal', priority: 10, active: true }];
+  const r = chooseForm({ program: 'bridge' }, rules);
+  ok(r.productName === 'Bridge SFR appraisal', 'chosenForm returns product_name');
+  ok(chooseForm({ program: 'bridge' }, [{ id: 2, program: 'bridge', product_code: '5', priority: 10, active: true }]).productName === null, 'no product_name → null (never undefined)');
+}
+
+// loan_type + property_key are real match dimensions (db/481) — a rule specific on
+// them only matches the right deal (the bug was these were never selected, so every
+// deal collapsed to the lowest-id rule).
+{
+  const rules = [
+    { id: 1, program: null, loan_type: 'fix_and_flip', property_key: 'sfr', product_code: 'FLIP', priority: 10, active: true },
+    { id: 2, program: null, loan_type: 'bridge', property_key: 'sfr', product_code: 'BRIDGE', priority: 10, active: true },
+  ];
+  ok(chooseForm({ loanType: 'Fix and Flip', propertyKey: 'sfr' }, rules).productCode === 'FLIP', 'matches on loan_type + property_key');
+  ok(chooseForm({ loanType: 'bridge', propertyKey: 'sfr' }, rules).productCode === 'BRIDGE', 'the OTHER loan_type picks the other form (no collapse to lowest id)');
+  ok(chooseForm({ loanType: 'ground_up', propertyKey: 'sfr' }, rules) === null, 'a loan_type no rule covers → null (human picks)');
+}
+
 console.log(`\n[test-amc-form-select-pure] ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
