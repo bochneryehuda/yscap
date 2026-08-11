@@ -99,6 +99,39 @@ function fmtAgo(iso) {
   return `${Math.round(h / 24)}d ago`;
 }
 
+// Turn a technical pull/sync reason into plain language for the owner, who reads
+// this screen directly and is not a developer (STRICT plain-language rule). The
+// raw reasons come from reader.js _stampError + the live Encompass error text
+// ("getLoan: Encompass 404: {json}", "Encompass 403: ...", "Encompass not
+// configured (env)", "ys_loan_number not set on the file"). ANYTHING we don't
+// recognize falls through UNCHANGED, so a staffer can still see the raw detail —
+// this only rewrites the handful of common cases into a sentence + a next step.
+function plainReason(raw) {
+  const r = String(raw || '').trim();
+  if (!r) return '';
+  // Loan gone in Encompass (deleted / merged / renumbered) — a 404/410, or a
+  // self-heal re-search that found nothing.
+  if (/\b4(?:04|10)\b/.test(r) || /no longer exists|loan not found|no Encompass loan/i.test(r)) {
+    return 'Encompass can’t find this loan anymore — it looks like it was deleted, merged, or given a new number in Encompass. Check the loan number in Encompass, then try Refresh again.';
+  }
+  // Login / permission problem (e.g. the loan moved to a folder our connection can’t read).
+  if (/\b40[13]\b|unauthorized|forbidden|permission/i.test(r)) {
+    return 'PILOT couldn’t reach this loan in Encompass just now — it may be a login or permission issue. Try again in a few minutes; if it keeps happening, this loan’s access may need checking in Encompass.';
+  }
+  // Encompass briefly unreachable / rate-limited — a temporary hiccup.
+  if (/\b(?:429|5\d\d)\b|timeout|timed out|ECONN|network/i.test(r)) {
+    return 'Encompass didn’t answer just now — a temporary hiccup. Try Refresh again in a few minutes.';
+  }
+  if (/not configured/i.test(r)) return 'The Encompass connection isn’t set up yet.';
+  if (/ys_loan_number|loan number not set|not set on the file/i.test(r)) {
+    return 'Add the Encompass loan number to this file first — type it in the box below.';
+  }
+  if (/ambiguous/i.test(r)) {
+    return 'More than one Encompass loan has this loan number — someone needs to check which one is right.';
+  }
+  return r;  // already plain (our self-heal wording) or an unrecognized reason — show as-is.
+}
+
 // The status pill for one field. Owner-directed 2026-07-26: everything must MATCH,
 // so a difference OR a "no data to compare" both read as attention-needed — only a
 // real match is green.
@@ -299,7 +332,7 @@ export default function EncompassSyncPanel({ appId }) {
       // date stays 9 days ago and it still doesn't match"). Say plainly that the
       // read didn't go through and give Encompass's own reason.
       if (d && d.pull && d.pull.ok === false) {
-        setErr(`Couldn’t read this loan from Encompass just now${d.pull.reason ? ` — ${d.pull.reason}` : ''}. The comparison below is still the last successful read${d.pulledAt ? ` (${fmtAgo(d.pulledAt)})` : ''} — your latest Encompass changes are not in yet.`);
+        setErr(`Couldn’t read this loan from Encompass just now${d.pull.reason ? ` — ${plainReason(d.pull.reason)}` : ''}. The comparison below is still the last successful read${d.pulledAt ? ` (${fmtAgo(d.pulledAt)})` : ''} — your latest Encompass changes are not in yet.`);
       } else {
         setFlash('Refreshed from Encompass — read just now.');
       }
@@ -401,7 +434,7 @@ export default function EncompassSyncPanel({ appId }) {
               and name a button that isn't on screen. */}
           {hasLoan && data.lastError && (
             <div style={{ fontSize: 12, color: V.crit, fontWeight: 600, marginTop: 3 }}>
-              ⚠ The last read from Encompass didn’t go through — {data.lastError}. The comparison below shows the last values we successfully read; press “Refresh from Encompass” to try again.
+              ⚠ The last read from Encompass didn’t go through — {plainReason(data.lastError)}. The comparison below shows the last values we successfully read; press “Refresh from Encompass” to try again.
             </div>
           )}
         </div>
@@ -441,7 +474,7 @@ export default function EncompassSyncPanel({ appId }) {
               {busy === 'loan' ? 'Syncing…' : 'Sync with Encompass'}
             </button>
           </div>
-          {data.lastError ? <div style={{ marginTop: 8, color: V.crit, fontSize: 12 }}>Last attempt: {data.lastError}</div> : null}
+          {data.lastError ? <div style={{ marginTop: 8, color: V.crit, fontSize: 12 }}>Last attempt: {plainReason(data.lastError)}</div> : null}
         </div>
       )}
 
