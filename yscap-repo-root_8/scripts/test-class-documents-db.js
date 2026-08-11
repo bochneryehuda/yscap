@@ -19,6 +19,9 @@ if (!process.env.DATABASE_URL) {
 
 const { Pool } = require('pg');
 const doc = require(path.join(ROOT, 'src/class/documents'));
+// The SAME db module documents.js uses — so ingestForOrder(appDb, ...) takes the
+// per-order advisory lock (its `dbc === db` pool-path test). Connects to DATABASE_URL.
+const appDb = require(path.join(ROOT, 'src/db'));
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:', m); } };
@@ -189,6 +192,67 @@ function fakeImporter() {
     ok(noIdOut.skipped === 'no_class_order_id', 'gate: no class order id → skipped');
 
     await c.query('ROLLBACK');
+
+    // ================= concurrency: the per-order advisory lock prevents double-filing =================
+    // The pool path takes a REAL advisory lock, invisible to a rollback transaction, so
+    // this uses COMMITTED rows through the app db pool and cleans them up in a finally.
+    // Two ingests race the SAME order; the lock serializes them, so the second sees
+    // document_id already set and files nothing — exactly two documents, not four.
+    let raceApp = null, raceBorrower = null;
+    try {
+      const st = Date.now();
+      raceBorrower = (await appDb.query(
+        `INSERT INTO borrowers (first_name,last_name,email,current_address)
+         VALUES ('Race','Klein',$1,'{"line1":"1 St","city":"NYC","state":"NY","zip":"10001"}') RETURNING id`,
+        [`class-race-${st}@example.com`])).rows[0].id;
+      raceApp = (await appDb.query(
+        `INSERT INTO applications (borrower_id,ys_loan_number,program,loan_type,property_address,property_type,purchase_price,loan_amount)
+         VALUES ($1,$2,'bridge','Purchase','{"street":"1 St","city":"NYC","state":"NY","zip":"10001"}','SFR',1,1) RETURNING id`,
+        [raceBorrower, `YSCAP-RACE-${st}`])).rows[0].id;
+      const raceOrder = (await appDb.query(
+        `INSERT INTO class_orders (application_id,class_order_id,api_version,status)
+         VALUES ($1,$2,'v1','completed') RETURNING *`, [raceApp, `CLASS-RACE-${st}`])).rows[0];
+      for (const name of ['report.xml', 'report.pdf']) {
+        await appDb.query(`INSERT INTO class_attachments (class_order_row,application_id,name) VALUES ($1,$2,$3)`, [raceOrder.id, raceApp, name]);
+      }
+
+      // A barrier so BOTH passes get past their "unfetched" SELECT before either files —
+      // which is what makes the read-then-write race real (and what makes this test FAIL
+      // without the lock). Each pass parks at its first fetch until the other pass also
+      // reaches its first fetch, or a short timeout (the timeout only ever fires WITH the
+      // lock, where the second pass is blocked at pg_advisory_lock and never fetches).
+      const barrier = (() => {
+        let count = 0, release;
+        const all = new Promise((r) => { release = r; });
+        return () => { if (++count >= 2) release(); return Promise.race([all, new Promise((r) => setTimeout(r, 400))]); };
+      })();
+      const racing = () => {
+        const base = fakeTransport('raw'); let arrived = false;
+        const inner = base.attachmentBytes;
+        base.attachmentBytes = async (cid, attId) => { if (!arrived) { arrived = true; await barrier(); } return inner(cid, attId); };
+        return base;
+      };
+      const impR = fakeImporter();
+      const [r1, r2] = await Promise.all([
+        doc.ingestForOrder(appDb, raceOrder, { transport: racing(), storage: fakeStorage(), importAppraisal: impR.fn }),
+        doc.ingestForOrder(appDb, raceOrder, { transport: racing(), storage: fakeStorage(), importAppraisal: impR.fn }),
+      ]);
+      const filedTotal = (r1.filed || 0) + (r2.filed || 0);
+      const docCount = (await appDb.query(`SELECT count(*)::int n FROM documents WHERE application_id=$1`, [raceApp])).rows[0].n;
+      ok(docCount === 2, `concurrency: exactly two documents under a race (got ${docCount}) — the lock prevented duplicates`);
+      ok(filedTotal === 2, `concurrency: filed sums to 2 across both passes (got ${filedTotal})`);
+      ok(impR.calls.length === 1, `concurrency: importer called once, not twice (got ${impR.calls.length})`);
+    } catch (e) {
+      fail++; console.error('  FAIL (concurrency threw):', e && e.message || e);
+    } finally {
+      // documents.application_id is not ON DELETE CASCADE — remove them first, then the
+      // app (which cascades class_orders → class_attachments), then the borrower.
+      if (raceApp) {
+        await appDb.query(`DELETE FROM documents WHERE application_id=$1`, [raceApp]).catch(() => {});
+        await appDb.query(`DELETE FROM applications WHERE id=$1`, [raceApp]).catch(() => {});
+      }
+      if (raceBorrower) await appDb.query(`DELETE FROM borrowers WHERE id=$1`, [raceBorrower]).catch(() => {});
+    }
   } catch (e) {
     try { await c.query('ROLLBACK'); } catch (_) { /* ignore */ }
     fail++; console.error('  FAIL (threw):', e && e.stack || e);

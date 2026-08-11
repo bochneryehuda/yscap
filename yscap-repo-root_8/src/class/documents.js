@@ -165,8 +165,37 @@ async function resolveAttachmentBytes(raw, { getUrl } = {}) {
 // ---------------------------------------------------------------------------
 // Fetch + file one order's announced documents. Returns { ok, filed, imported }.
 // deps lets a test inject the transport / storage / importer; production uses the real ones.
+//
+// A per-order ADVISORY LOCK serializes the pass so two concurrent runs — the webhook
+// receiver's drain and the poller sweep, or two scaled-out instances — can't both
+// select the same un-fetched attachment and file it twice (the read-then-write class
+// db/401 fixed for evaluateApplication; same shape here). A caller that passed its OWN
+// transaction client already owns isolation (a test, or an in-tx caller) and runs inner
+// directly; the pool path takes the lock on a dedicated connection. FAIL-OPEN: a lock we
+// cannot take still runs — a missed lock costs at most one duplicate staff-only / pending
+// document a human rejects (and the re-import self-heals), while refusing to run would
+// silently drop the appraisal.
 // ---------------------------------------------------------------------------
 async function ingestForOrder(dbc, order, deps = {}) {
+  const onPool = !dbc || dbc === db;
+  if (!onPool) return ingestForOrderLocked(dbc, order, deps);
+  const lockKey = `class-doc-ingest:${order && order.id}`;
+  let lockConn = null;
+  try {
+    try {
+      lockConn = await db.getClient();
+      await lockConn.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [lockKey]);
+    } catch (_) { lockConn = null; }   // fail open
+    return await ingestForOrderLocked(db, order, deps);
+  } finally {
+    if (lockConn) {
+      try { await lockConn.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockKey]); } catch (_) { /* ignore */ }
+      try { lockConn.release(); } catch (_) { /* ignore */ }
+    }
+  }
+}
+
+async function ingestForOrderLocked(dbc, order, deps = {}) {
   const q = dbc || db;
   const transport = deps.transport || client;
   const store = deps.storage || storage;
