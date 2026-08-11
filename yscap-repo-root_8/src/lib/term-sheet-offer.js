@@ -590,11 +590,14 @@ async function registerFromOffer(appId, offer) {
   // the note buyer's own rules) attach through the engine, exactly as on every other
   // register path. Best-effort.
   try { await require('./conditions/engine').evaluateApplication(appId); } catch (_) { /* advisory */ }
-  // Populate the assets/liquidity condition from the freshly-computed quote NOW —
-  // the same call the staff register route makes — so the file shows the correct
-  // required liquidity (and, for a manual product, the stated reserve months)
-  // immediately rather than only after the next boot backfill. A fresh file has no
-  // signed-off condition to reopen. Best-effort.
+  // Populate the assets/liquidity condition from the freshly-computed quote — the
+  // same call the staff register route makes — so it carries the correct required
+  // liquidity (and, for a manual product, the stated reserve months). An offer file
+  // is created at status `file_intake` with no checklist yet, so this is usually a
+  // no-op at accept time (the item does not exist) and the condition populates from
+  // the STORED quote once the file's checklist is generated (leaving intake / a
+  // resync / the boot backfill) — the reserve dollar is baked into that stored quote
+  // regardless. Harmless and best-effort; a fresh file has no sign-off to reopen.
   try { await require('./liquidity').syncLiquidityCondition(appId, quote, db, isManual ? { program, assetMonths: offerAssetMonths } : {}); } catch (_) { /* advisory */ }
 
   return { registered: true, program, status: quote.status, isManual, needsApproval };
