@@ -92,6 +92,22 @@ ok(r.ok && r.encStatus === 'na', 'un-linked Encompass is N/A, not blocking');
 r = closing.decideReconcile({ ours: '2026-07-10', clickup: '2026-07-10', encompass: '2026-07-09', encLinked: true });
 ok(!r.ok && r.encStatus === 'mismatch', 'Encompass disagreement blocks');
 
+// ── the Encompass funded-date read (owner-reported 2026-08-11) ──────────────────
+// The tenant records the funded date in the CX.FUNDEDDATE custom field, NOT standard
+// field 1401 (which it leaves empty), so the reconciliation panel showed the
+// Encompass leg blank even after the closer filled it in. It is read from
+// CX.FUNDEDDATE, and the fieldReader's MM/DD/YYYY display format is normalized to ISO.
+eq(closing.readEncompassFundedDate({ encompass_extra: { customFields: [{ fieldName: 'CX.FUNDEDDATE', value: '07/27/2026' }] } }), '2026-07-27',
+  'reads CX.FUNDEDDATE and normalizes the fieldReader MM/DD/YYYY format to ISO');
+eq(closing.readEncompassFundedDate({ encompass_extra: { _fieldValues: { 'CX.FUNDEDDATE': '2026-07-27' } } }), '2026-07-27',
+  'reads CX.FUNDEDDATE from the authoritative by-number read');
+// Fallback: a loan carrying the STANDARD funded date (field 1401) still reads.
+eq(closing.readEncompassFundedDate({ encompass_extra: { customFields: [], closingDocument: { fundingDate: '2026-07-10' } } }), '2026-07-10',
+  'falls back to standard field 1401 (closingDocument.fundingDate)');
+// No funded date anywhere / not linked → null, never a guess.
+eq(closing.readEncompassFundedDate({ encompass_extra: { customFields: [] } }), null, 'no funded date on the loan → null');
+eq(closing.readEncompassFundedDate({ encompass_extra: null }), null, 'not linked to Encompass → null');
+
 // ── warehouses ──────────────────────────────────────────────────────────────
 for (const w of ['Stride Bank', 'Bank of the Sierra', 'Banc of California', 'Northpointe', 'Fidelis', 'CorrFirst', 'Table Funding'])
   ok(closing.WAREHOUSES.includes(w), `warehouse present: ${w}`);

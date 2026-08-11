@@ -13918,6 +13918,29 @@ router.get('/applications/:id/closing', async (req, res) => {
   } catch (e) { console.warn('[closing] workspace error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
+// Refresh the funded-date reconciliation from Encompass (owner-reported 2026-08-11:
+// "if you just filled it in, it should pull to see if it was filled"). The closing
+// reconciliation reads the Encompass funded date out of the STORED snapshot
+// (applications.encompass_extra), so a date the closer just entered in Encompass is
+// invisible until the snapshot is re-pulled. This does exactly one thing: a
+// READ-ONLY Encompass pull (the reader never writes to Encompass and never throws —
+// a failure is stamped + returned) and reports the outcome; the panel reloads the
+// workspace itself afterward, which recomputes the reconciliation off the fresh
+// snapshot. File-scoped by the /applications/:id middleware; open to anyone on the
+// file (it is a read).
+router.post('/applications/:id/closing/reconcile-refresh', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const pull = await require('../encompass/reader').pullLoanForApplication(appId)
+      .catch((e) => ({ ok: false, reason: (e && e.message) ? e.message.slice(0, 200) : 'pull failed' }));
+    await audit(req, 'closing_reconcile_refresh', 'application', appId, { pulled: !!(pull && pull.ok), reason: (pull && pull.reason) || null });
+    // The panel reloads the workspace itself after this returns, so only the pull
+    // outcome is needed here (a friendly reason on failure so the closer knows why
+    // nothing moved — no loan number, no Encompass match, Encompass unreachable…).
+    res.json({ pulled: !!(pull && pull.ok), reason: (pull && pull.reason) || null });
+  } catch (e) { console.warn('[closing] reconcile refresh:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
 // Ensure the singleton closing row exists (so a PATCH before submit still works).
 async function ensureClosingRow(client, appId, actorId) {
   await client.query(

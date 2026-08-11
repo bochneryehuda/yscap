@@ -1052,6 +1052,9 @@ export const api = {
   advanceClosing:    (appId, stage) => req('POST', `/api/staff/applications/${appId}/closing-workflow`, { stage }),
   // The closing workspace (the closer's desk).
   closingWorkspace:  (appId) => req('GET', `/api/staff/applications/${appId}/closing`),
+  // Read-only Encompass re-pull, then hand back the fresh workspace — so a funded
+  // date the closer just entered in Encompass shows up on the reconciliation.
+  closingReconcileRefresh: (appId) => req('POST', `/api/staff/applications/${appId}/closing/reconcile-refresh`),
   closingUpdate:     (appId, b) => req('PATCH', `/api/staff/applications/${appId}/closing`, b),
   closingAddNote:    (appId, body) => req('POST', `/api/staff/applications/${appId}/closing/notes`, { body }),
   closingCashToClose:(appId, actualCashToClose, docId) => req('POST', `/api/staff/applications/${appId}/closing/cash-to-close`, { actualCashToClose, docId }),

@@ -75,8 +75,21 @@ const ok = (c, n) => { assert.ok(c, n); console.log(`  ok  ${n}`); passed++; };
     ok(conds.includes('closing_hud_final') && conds.includes('closing_pkg_signed') && conds.includes('closing_tracking_label'), 'the 3 closing conditions are present');
 
     // Encompass funded date reads from encompass_extra via the read-only field map.
+    // The FALLBACK path (standard field 1401 = closingDocument.fundingDate) still works.
     const encRow = (await client.query(`SELECT encompass_extra FROM applications WHERE id=$1`, [appId])).rows[0];
-    ok(closing.readEncompassFundedDate(encRow) === '2026-07-10', 'Encompass funded date reads field 1401 (closingDocument.fundingDate)');
+    ok(closing.readEncompassFundedDate(encRow) === '2026-07-10', 'Encompass funded date falls back to std 1401 (closingDocument.fundingDate)');
+
+    // THE PRIMARY read: the tenant's CX.FUNDEDDATE custom field, in the fieldReader's
+    // MM/DD/YYYY display format — normalized to ISO (owner-reported 2026-08-11).
+    await client.query(
+      `UPDATE applications SET encompass_extra=$2::jsonb WHERE id=$1`,
+      [appId, JSON.stringify({ customFields: [{ fieldName: 'CX.FUNDEDDATE', value: '07/10/2026' }] })]);
+    const encRow2 = (await client.query(`SELECT encompass_extra FROM applications WHERE id=$1`, [appId])).rows[0];
+    ok(closing.readEncompassFundedDate(encRow2) === '2026-07-10', 'Encompass funded date reads CX.FUNDEDDATE (MM/DD/YYYY → ISO)');
+    // Restore the standard-field snapshot for the reconciliation checks below.
+    await client.query(
+      `UPDATE applications SET encompass_extra=$2::jsonb WHERE id=$1`,
+      [appId, JSON.stringify({ customFields: [], closingDocument: { fundingDate: '2026-07-10' } })]);
 
     // Reconciliation: all three match → ok.
     let rec = await closing.reconcileClosingDates(appId, client);
