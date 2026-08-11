@@ -173,8 +173,16 @@ async function post(baseUrl, message, opts = {}) {
   throw lastErr || new Error(`AMC ${label || 'POST'} failed after ${MAX_TRIES} attempts`);
 }
 
-// A READ (lookup / order-lookup / status / documents) — hits the order endpoint,
-// never gated by the write gate.
+// A catalog / reference LOOKUP (GetLoanType, GetJobType, Get_JobTypes_By_LoanType,
+// GetPropertyType, GetFee, GetAMCPreference, GetUsers, GetLoanOfficer, …). Per the vendor
+// iPackage's own Postman collection these are NOT order operations: every catalog lookup is
+// served at the SAME "/direct/" endpoint as DoLogin (loginUrl) — NOT the "/order/" endpoint.
+// Posting a catalog action to "/order/" makes the gateway answer a raw HTTP 500 (an unhandled
+// action) rather than a CDG NACK. Master-gated read only, never the write gate.
+function lookup(message, opts = {}) { return post(AMC().loginUrl, message, { ...opts, write: false }); }
+// An ORDER-SPECIFIC read (GetAppraisalStatus / GetAppraisalDetail / GetComments / GetRevisions /
+// RetriveAppraisalDocuments) — these carry a ServiceProviderOrderNumber + ?orderId= and DO live
+// at the "/order/" endpoint. Never gated by the write gate. (Catalog lookups use lookup(), above.)
 function read(message, opts = {}) { return post(AMC().orderUrl, message, { ...opts, write: false }); }
 // A WRITE (create / addform / comment / revision / upload) — gated by AMC_OUTBOUND_ENABLED.
 function write(message, opts = {}) { return post(AMC().orderUrl, message, { ...opts, write: true }); }
@@ -228,7 +236,7 @@ function cdgMaskSafe(message) {
 }
 
 module.exports = {
-  configured, read, write, login,
+  configured, lookup, read, write, login,
   getAccessToken, invalidateToken,
   postDocuments, getDocument,
 };
