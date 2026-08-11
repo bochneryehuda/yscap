@@ -171,21 +171,44 @@ async function cardStatus(db, appId) {
 // ---------------------------------------------------------------------------
 // Form-selection rules (admin-editable amc_form_map rows).
 // ---------------------------------------------------------------------------
+const FORM_RULE_COLS =
+  `id, program, property_category, loan_purpose, loan_type, property_key, product_code,
+   product_name, subproduct_codes, amc_identifier, priority, active`;
+
 async function formRules(db) {
   // Read the columns chooseForm actually matches on. loan_type / property_key /
   // product_name were added by db/481 but never selected here, so every rule's
   // loan_type/property_key came back undefined (a wildcard) and every deal collapsed
-  // to the lowest-id rule (always "Form 56634"), with no name to show. Also scope to
-  // the tenant environment — the seeded ids are environment-specific, so a UAT service
-  // must never auto-pick a PRODUCTION form id.
+  // to the lowest-id rule (always "Form 56634"), with no name to show.
+  //
+  // Scope to the tenant environment — the seeded ids are environment-specific, so a
+  // UAT service should prefer its OWN rules and never pick a PRODUCTION id when a UAT
+  // rule exists. BUT the only seed we can ship is the production tenant's (a UAT
+  // tenant's ids can't be reached from here), so a service pointed anywhere the current
+  // environment has no rules would otherwise return nothing and auto-pick nothing —
+  // exactly the "always Form 56634" complaint in reverse (now: no default at all).
+  // So: use this environment's rules when it HAS any (the design intent, and the case
+  // the moment UAT ids get seeded); else fall back to whatever active rules DO exist so
+  // the deal still gets a sensible default. Staff can change the form on the preview,
+  // and an id that is wrong for the tenant surfaces as a VISIBLE send error (#1128) —
+  // never a silent bad order.
   const env = (cfg.amc && cfg.amc.environment) || 'production';
-  const r = await db.query(
-    `SELECT id, program, property_category, loan_purpose, loan_type, property_key, product_code,
-            product_name, subproduct_codes, amc_identifier, priority, active
-       FROM amc_form_map
+  const forEnv = await db.query(
+    `SELECT ${FORM_RULE_COLS} FROM amc_form_map
       WHERE active = true AND (environment = $1 OR environment IS NULL)
       ORDER BY priority ASC, id ASC`, [env]);
-  return r.rows;
+  if (forEnv.rows.length) return forEnv.rows;
+
+  const anyEnv = await db.query(
+    `SELECT ${FORM_RULE_COLS} FROM amc_form_map
+      WHERE active = true
+      ORDER BY priority ASC, id ASC`);
+  if (anyEnv.rows.length) {
+    console.warn(`[amc] no form-map rules for environment='${env}'; falling back to ` +
+      `${anyEnv.rows.length} rule(s) from another environment so a form still auto-picks — ` +
+      `set AMC_ENVIRONMENT correctly or seed '${env}' rules to silence this`);
+  }
+  return anyEnv.rows;
 }
 
 // The full list of forms staff can pick from, as [{id, name}]. Robust to the cache

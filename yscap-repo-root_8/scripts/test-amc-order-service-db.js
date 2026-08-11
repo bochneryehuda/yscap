@@ -141,6 +141,16 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     ok(rctx.property.salesContractAmount == null, 'refinance carries no sales-contract amount');
     ok(rctx.loanPurpose === 'Refi Cash-Out', 'refinance loan purpose carried through');
 
+    // ---- environment fallback (the shipped seed is production-only; a service whose
+    //      environment has no rules must still auto-pick, not come back empty) ----
+    // Remove every rule tagged for THIS ('uat') environment. The remaining rows are the
+    // db/481 production seed + the production 'PROD-ONLY' decoy — a different environment
+    // than the service is pointed at. formRules must fall back to them rather than starve.
+    await c.query(`DELETE FROM amc_form_map WHERE environment = 'uat'`);
+    const fellBack = await orderService.formRules(c);
+    ok(fellBack.length > 0, 'formRules falls back to another environment when this one has no rules (never starved)');
+    ok(fellBack.some((r) => r.product_code === 'PROD-ONLY'), 'the fallback reaches the production rules so a default still auto-picks');
+
     await c.query('ROLLBACK');
   } catch (e) {
     try { await c.query('ROLLBACK'); } catch (_) { /* ignore */ }
