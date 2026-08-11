@@ -87,6 +87,16 @@ function get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? o
   ok(cdg.refValue(req.message.serviceProviderSystem.referenceIdentifiers, 'ServiceProviderOrderNumber') === 'SP345', 'addform parent order number');
 })();
 
+// ---- CreateAppraisal OMITS sourceInformation when no source-client id is configured ----
+// The vendor confirmed this tenant has none; the order must be valid without it, so the
+// builder must not emit an empty/undefined sourceClientIdentifier.
+(() => {
+  const req = cdg.buildCreateAppraisal(
+    { productCode: '76', loan: { loanNumber: '1' }, borrowers: [], property: {} },
+    { apiKey: 'K', subdomain: 's', lenderIdentifier: 'GG1' });   // no sourceClientId
+  ok(req.message.clientSystem.sourceInformation === undefined, 'create omits sourceInformation when the source-client id is unset');
+})();
+
 // ---- parseAck against the createappraisal response sample ----
 (() => {
   const ack = cdg.parseAck({ message: {

@@ -184,28 +184,33 @@ is off; writes need the separate outbound gate; dry-run builds+logs and sends no
 Render service environment (or a local `.env`, which is gitignored). This section names
 variables only.
 
-### Received (owner, 2026-08-06) — UAT
+### Received (owner, 2026-08-06; login pair + subdomain 2026-08-11) — UAT
 
 | Variable | What arrived | Status |
 |---|---|---|
 | `AMC_CLIENT_ID` | UAT OAuth client id | received |
 | `AMC_CLIENT_SECRET` | UAT OAuth client secret | received |
 | `AMC_LENDER_IDENTIFIER` | the vendor's **"GGID"** (`GG…`) — same field, paste verbatim | received |
+| `AMC_LOGIN_ACCOUNT` | the AppraisalScope **user** orders are placed as | received — DoLogin authenticates |
+| `AMC_LOGIN_PASSWORD` | that user's password | received — DoLogin authenticates |
+| `AMC_SUBDOMAIN` | our AppraisalScope tenant, e.g. `integrations.uat` | received — DoLogin authenticates |
 
-### Still required before anything can authenticate
+Both stages of auth now succeed: OAuth GetToken issues a Bearer token, and DoLogin
+returns an AppraisalScope `api_key`. **The remaining go-live blocker is vendor-side**,
+not a credential — the read-only catalog lookups (`GetLoanType` / `GetJobType`) return
+HTTP 500 at the order/lookup endpoint; Cotality must confirm/fix that endpoint (and
+that this account is entitled to it). See section 7's preflight for the live check.
 
-| Variable | What to ask the vendor for | Blocks |
+### Optional / not issued for this tenant
+
+| Variable | What it is | Blocks |
 |---|---|---|
-| `AMC_LOGIN_ACCOUNT` | the AppraisalScope **user** orders are placed as | DoLogin → everything |
-| `AMC_LOGIN_PASSWORD` | that user's password | DoLogin → everything |
-| `AMC_SUBDOMAIN` | our AppraisalScope tenant, e.g. `integrations.uat` | DoLogin → everything |
-| `AMC_SOURCE_CLIENT_ID` | our client/user id inside AppraisalScope | placing an order |
+| `AMC_SOURCE_CLIENT_ID` | *optional* — a client/user id inside AppraisalScope; the vendor (Tony Pham, 2026-08-11) confirmed this tenant has none, and the order builder omits `sourceInformation` when it is unset | — |
 
 The OAuth pair and the login pair are **two different credentials for two different
 systems** — the first authenticates *the software* to CoreLogic's gateway, the second
-authenticates *a person* to the AppraisalScope tenant behind it. Having one is not
-having the other, which is why `AMC_LOGIN_ACCOUNT` is still outstanding even though
-the OAuth keys have arrived.
+authenticates *a person* to the AppraisalScope tenant behind it. Both have now arrived
+and both authenticate.
 
 `AMC_FALLBACK_APIKEY` is the escape hatch: if the vendor hands over a ready-made UAT
 `api_key` instead of a login, set that and DoLogin is skipped entirely.
@@ -242,10 +247,12 @@ cannot be finalized until a lookup call actually returns this tenant's form cata
 
 ## 8. Owner decisions (2026-08-05)
 
-- **Credentials:** *(updated 2026-08-06)* the UAT OAuth pair and the GGID have arrived;
-  the AppraisalScope login (`AMC_LOGIN_ACCOUNT`/`PASSWORD`), the `AMC_SUBDOMAIN` and
-  `AMC_SOURCE_CLIENT_ID` are still outstanding. Full status and the check command are in
-  section 7.
+- **Credentials:** *(updated 2026-08-11)* the UAT OAuth pair, the GGID, the AppraisalScope
+  login (`AMC_LOGIN_ACCOUNT`/`PASSWORD`) and `AMC_SUBDOMAIN` have arrived and
+  authenticate. `AMC_SOURCE_CLIENT_ID` is **optional and not issued for this tenant** —
+  the vendor (Tony Pham, 2026-08-11) confirmed there is no such credential; DoLogin and
+  every read work without it and the order builder omits it, so PILOT no longer treats it
+  as required. Full status and the check command are in section 7.
 - **Payment stays MANUAL**, but the appraisal-fee card must be **linked** to the
   existing payment-card condition (`application_payment_cards` / the `appraisal_card`
   condition, `src/lib/appraisal-card.js`): entering the card **at the order fills the

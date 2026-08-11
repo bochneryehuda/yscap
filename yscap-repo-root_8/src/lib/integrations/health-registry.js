@@ -612,12 +612,14 @@ const INTEGRATIONS = [
     env: [{ name: 'AMC_CLIENT_ID', required: true }, { name: 'AMC_CLIENT_SECRET', required: true },
       { name: 'AMC_LOGIN_ACCOUNT', required: true }, { name: 'AMC_LOGIN_PASSWORD', required: true },
       { name: 'AMC_SUBDOMAIN', required: true }, { name: 'AMC_LENDER_IDENTIFIER', required: true },
-      { name: 'AMC_SOURCE_CLIENT_ID', required: true }],
+      // OPTIONAL — the vendor confirmed there is no source-client id for this tenant; DoLogin
+      // and every read work without it, and the order builder omits it when unset.
+      { name: 'AMC_SOURCE_CLIENT_ID', required: false }],
     switches: [{ name: 'AMC_ENABLED', label: 'Reading + polling' }, { name: 'AMC_OUTBOUND_ENABLED', label: 'Ordering + writing' }],
     liveProbe: true,
     async probe() {
       const c = require('../../amc/client').configured();
-      if (!c.hasOauth && !c.hasLogin) return { configured: false, live: null, detail: 'Not connected — the appraisal-ordering connector is built and off by default. Add the Cotality / AppraisalScope credentials (AMC_CLIENT_ID/SECRET, AMC_LOGIN_ACCOUNT/PASSWORD, AMC_SUBDOMAIN, AMC_LENDER_IDENTIFIER, AMC_SOURCE_CLIENT_ID) in Render, then press “Test now” to check them. Ordering screens are added by later build phases.' };
+      if (!c.hasOauth && !c.hasLogin) return { configured: false, live: null, detail: 'Not connected — the appraisal-ordering connector is built and off by default. Add the Cotality / AppraisalScope credentials (AMC_CLIENT_ID/SECRET, AMC_LOGIN_ACCOUNT/PASSWORD, AMC_SUBDOMAIN, AMC_LENDER_IDENTIFIER) in Render, then press “Test now” to check them. Ordering screens are added by later build phases.' };
       if (!c.ready) return { configured: false, live: null, detail: 'Partly connected — some credentials are still missing (the red chips below name them). “Test now” checks the sign-in key that is already set.' };
       if (!c.enabled) return { configured: true, enabled: false, live: null, detail: 'Credentials are set, but the master switch (AMC_ENABLED) is off, so nothing talks to the AMC yet. “Test now” still checks the sign-in key without turning anything on.' };
       return { configured: true, enabled: true, live: null, detail: 'Credentials set and enabled — press “Test now” to run the full read-only credential check (nothing is ordered). Live ordering is delivered by later build phases; use TEST MODE (AMC_DRYRUN) to verify the request before going live.' };
