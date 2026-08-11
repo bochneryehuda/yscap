@@ -313,9 +313,11 @@ const todayDay = () => new Date().toISOString().slice(0, 10);
 // entity paths, and the custom/standard funding fields. CX.FUNDEDDATE is the
 // tenant's OWN funded-date custom field (the same one the closing reconciliation
 // reads — see encompass-field-map's funded_date entry); it lives in customFields[]
-// so customFieldMap surfaces it, unlike the standard ids 1401/1997/1999, whose
-// values come through the JSON paths above. A SCHEDULED/estimated date in the
-// future is not a closing — hence the day test.
+// so customFieldMap surfaces it, unlike the standard funding ids 1997/1999, whose
+// values come through the JSON paths above. FIELD 1401 IS NOT HERE ON PURPOSE — it
+// is Encompass "Loan Program" (returns the program name, not a date; owner-reported
+// 2026-08-11), so it must never be read as a funding signal. A SCHEDULED/estimated
+// date in the future is not a closing — hence the day test.
 const FUNDED_DATE_PATHS = [
   'closingDocument.fundingDate', 'closingDocument.disbursementDate',
   'fundingDate', 'fundedDate', 'closedDate', 'disbursementDate',
@@ -323,7 +325,7 @@ const FUNDED_DATE_PATHS = [
   'funding.fundsSentDate', 'funding.fundsReleasedDate', 'funding.disbursementDate',
   'currentLoanStatus.fundsSentDate', 'currentLoanStatus.fundsReleasedDate',
 ];
-const FUNDED_FIELD_IDS = ['CX.FUNDEDDATE', '1401', '1997', '1999'];
+const FUNDED_FIELD_IDS = ['CX.FUNDEDDATE', '1997', '1999'];
 function fundedDay(raw, cf, today) {
   const now = today || todayDay();
   const cands = FUNDED_DATE_PATHS.map((p) => pathOf(raw, p))
