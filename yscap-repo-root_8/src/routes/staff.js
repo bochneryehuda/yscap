@@ -11475,6 +11475,11 @@ router.post('/track-record-candidates/:id/decide', async (req, res) => {
          import screen lets a human enter; importNew bounds it and refuses an
          unstorable number rather than escaping as a 500. */
       rehab: b.rehab,
+      /* #22 — the reviewer's per-field conflict picks when JOINING to a line we
+         already have — { field: 'theirs' }. matchExisting only ever acts on
+         'theirs' for a real conflict (both sides present and different), never
+         on the address, so a stray key is harmless. */
+      resolutions: (b.resolutions && typeof b.resolutions === 'object') ? b.resolutions : null,
     });
     await audit(req, 'track_record_candidate_decided', 'borrower', own.rows[0].borrower_id,
       { candidateId: req.params.id, action: b.action, trackRecordId: out.trackRecordId || null });

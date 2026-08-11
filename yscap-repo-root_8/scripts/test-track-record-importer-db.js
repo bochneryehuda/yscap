@@ -651,6 +651,119 @@ const found = (name) => {
     ok(bline && bline.rehab_amount == null, '…and a blank rehab leaves the column NULL — never a fabricated 0');
   }
 
+  console.log('\n13. #22 — a per-field conflict is RESOLVABLE ("use the records"); the address never is; a verified line reopens');
+  {
+    /* When our line AND the records both hold a value that DISAGREES, the default
+       keeps ours (the fill only ever touches a blank). #22 lets the reviewer pick
+       "use the records" per conflicting field when JOINING to a line we already
+       have. The address is the match key and is never a choice — a different place
+       is two different properties. A material overwrite reopens a verified line
+       through the same would_reopen confirm a fill does. */
+    const KEY = require('../src/lib/track-record-key').trackRecordKey;
+    const mkLine = async (addr, verified) => {
+      const trId = (await db.query(
+        `INSERT INTO track_records (borrower_id, property_address, address_key, deal_type, purchase_price, entered_by_kind)
+         VALUES ($1,$2::jsonb,$3,'flip',399000,'borrower') RETURNING id`,
+        [borrowerId, JSON.stringify(addr), KEY(addr)])).rows[0].id;
+      if (verified) await db.query(
+        `UPDATE track_records SET is_verified=true, verification_status='verified', verified_by=$2 WHERE id=$1`,
+        [trId, staff.id]);
+      return trId;
+    };
+    const stageMatched = async (cand, trId, dk) => {
+      const s = await IMP._internals.stageOne(db, {
+        borrowerId, searchId: null,
+        candidate: { dedupe_key: dk, raw: {}, ...cand },
+        basisCtx: { branch: 'person', personalName: 'Imp Tester' },
+      });
+      await db.query(`UPDATE track_record_candidates SET match_track_record_id=$2, match_confidence='exact' WHERE id=$1`,
+        [s.id, trId]);
+      return s.id;
+    };
+
+    // ── A) a conflict resolved to "the records" OVERWRITES that one field
+    {
+      const addr = { line1: '20 Resolve Way', city: 'Lakewood', state: 'NJ', zip: '08701' };
+      const trId = await mkLine(addr, false);
+      const cId = await stageMatched({ property_address: addr, purchase_price: 300000, sale_price: 450000,
+        purchase_date: '2024-03-01', sale_date: '2024-12-01' }, trId, 'res_A');
+
+      const cmp = await (await call(`/api/staff/track-record-candidates/${cId}/compare`)).json();
+      const priceRow = cmp.rows.find((x) => x.field === 'purchase_price');
+      ok(priceRow.conflict === true && priceRow.resolvable === true,
+        'a figure BOTH sides hold, differing, is a conflict the reviewer CAN resolve');
+      const addrRow = cmp.rows.find((x) => x.field === 'property_address');
+      ok(addrRow.resolvable === false,
+        'the address is NEVER resolvable — a different place is two different properties, not a field');
+
+      const r = await call(`/api/staff/track-record-candidates/${cId}/decide`, {
+        method: 'POST', body: JSON.stringify({ action: 'match_existing', resolutions: { purchase_price: 'theirs' } }) });
+      ok(r.status === 200, 'the match applies with "use the records" picked');
+      const out = await r.json();
+      ok(out.overwritten.includes('purchase_price'), '…and REPORTS the one field it overwrote');
+      ok(out.filled.includes('sale_price'), '…while a blank on our side still fills from the records');
+      const t = (await db.query(`SELECT purchase_price, sale_price FROM track_records WHERE id=$1`, [trId])).rows[0];
+      ok(Number(t.purchase_price) === 300000, 'THE RECORDS WON the one field the reviewer picked');
+      ok(Number(t.sale_price) === 450000, '…and the blank was filled too');
+    }
+
+    // ── B) with nothing picked, the default is unchanged — the line keeps ours
+    {
+      const addr = { line1: '22 Keep Way', city: 'Lakewood', state: 'NJ', zip: '08701' };
+      const trId = await mkLine(addr, false);
+      const cId = await stageMatched({ property_address: addr, purchase_price: 300000,
+        purchase_date: '2024-04-01' }, trId, 'res_B');
+      const r = await call(`/api/staff/track-record-candidates/${cId}/decide`, {
+        method: 'POST', body: JSON.stringify({ action: 'match_existing' }) });
+      ok(r.status === 200, 'a match with no picks applies');
+      const out = await r.json();
+      ok((out.overwritten || []).length === 0, '…and overwrites NOTHING');
+      ok(Number((await db.query(`SELECT purchase_price FROM track_records WHERE id=$1`, [trId])).rows[0].purchase_price) === 399000,
+        'the typed figure survives — a conflict left alone keeps ours');
+    }
+
+    // ── C) the address is STRUCTURALLY never overwritten, even if asked
+    {
+      const ourAddr = { line1: '24 Ours Way', city: 'Lakewood', state: 'NJ', zip: '08701' };
+      const trId = await mkLine(ourAddr, false);
+      const cId = await stageMatched({ property_address: { line1: '999 Theirs Blvd', city: 'Trenton', state: 'NJ', zip: '08608' },
+        purchase_price: 399000 }, trId, 'res_C');
+      const r = await call(`/api/staff/track-record-candidates/${cId}/decide`, {
+        method: 'POST', body: JSON.stringify({ action: 'match_existing', resolutions: { property_address: 'theirs' } }) });
+      ok(r.status === 200, 'the match applies');
+      const out = await r.json();
+      ok(!(out.overwritten || []).includes('property_address'), 'the address is NOT in the overwrite report');
+      const t = (await db.query(`SELECT property_address FROM track_records WHERE id=$1`, [trId])).rows[0];
+      ok(/24 Ours Way/.test(JSON.stringify(t.property_address)),
+        'and the line KEEPS its address — the match key is never overwritten');
+    }
+
+    // ── D) a MATERIAL overwrite on a VERIFIED line reopens — refused once, then confirmed
+    {
+      const addr = { line1: '26 Verified Way', city: 'Lakewood', state: 'NJ', zip: '08701' };
+      const trId = await mkLine(addr, true);
+      const cId = await stageMatched({ property_address: addr, purchase_price: 300000 }, trId, 'res_D');
+      const first = await call(`/api/staff/track-record-candidates/${cId}/decide`, {
+        method: 'POST', body: JSON.stringify({ action: 'match_existing', resolutions: { purchase_price: 'theirs' } }) });
+      ok(first.status === 409, `overwriting a figure on a verified line is refused the first time (${first.status})`);
+      const fb = await first.json();
+      ok(fb.code === 'would_reopen_verification' && (fb.fields || []).includes('purchase_price'),
+        '…in the reopen words, naming the field');
+      const still = (await db.query(`SELECT is_verified, purchase_price FROM track_records WHERE id=$1`, [trId])).rows[0];
+      ok(still.is_verified === true && Number(still.purchase_price) === 399000,
+        '…and NOTHING was written — still verified, still ours');
+      const again = await call(`/api/staff/track-record-candidates/${cId}/decide`, {
+        method: 'POST', body: JSON.stringify({ action: 'match_existing', resolutions: { purchase_price: 'theirs' }, confirmReopen: true }) });
+      ok(again.status === 200, 'asked a second time, explicitly, it goes through');
+      const out = await again.json();
+      ok(out.reopened === true && out.overwritten.includes('purchase_price'),
+        '…the records win the field AND the reopen is reported');
+      const done = (await db.query(`SELECT is_verified, purchase_price FROM track_records WHERE id=$1`, [trId])).rows[0];
+      ok(done.is_verified === false && Number(done.purchase_price) === 300000,
+        'db/485 un-verified it and the overwrite landed');
+    }
+  }
+
   await db.query('DELETE FROM track_record_candidates WHERE borrower_id=$1', [borrowerId]).catch(() => {});
   await db.query('DELETE FROM track_record_searches WHERE borrower_id=$1', [borrowerId]).catch(() => {});
   await db.query('DELETE FROM track_records WHERE borrower_id=$1', [borrowerId]).catch(() => {});

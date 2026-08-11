@@ -970,7 +970,7 @@ async function decideCandidate(candidateId, opts, client) {
   }
 }
 
-async function decideLocked(db, candidateId, { action, staffId, note, reasonCode, snoozeDays, dealType, confirmReopen, exit, rehab }) {
+async function decideLocked(db, candidateId, { action, staffId, note, reasonCode, snoozeDays, dealType, confirmReopen, exit, rehab, resolutions }) {
   const c = (await db.query(
     `SELECT * FROM track_record_candidates WHERE id=$1 FOR UPDATE`, [candidateId])).rows[0];
   if (!c) { const e = new Error('not found'); e.status = 404; throw e; }
@@ -1004,7 +1004,7 @@ async function decideLocked(db, candidateId, { action, staffId, note, reasonCode
     return { ok: true, action, status: 'snoozed', days };
   }
 
-  if (action === 'match_existing') return matchExisting(db, c, { staffId, note, confirmReopen });
+  if (action === 'match_existing') return matchExisting(db, c, { staffId, note, confirmReopen, resolutions });
   return importNew(db, c, { staffId, note, dealType, exit, rehab });
 }
 
@@ -1219,7 +1219,7 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
  * disagreement stays a disagreement a person can see rather than being quietly
  * resolved in the vendor's favour.
  */
-async function matchExisting(db, c, { staffId, note, confirmReopen }) {
+async function matchExisting(db, c, { staffId, note, confirmReopen, resolutions }) {
   if (!c.match_track_record_id) {
     const e = new Error('There is no line on the track record to match this to.'); e.status = 400; throw e;
   }
@@ -1239,20 +1239,43 @@ async function matchExisting(db, c, { staffId, note, confirmReopen }) {
     if (oursBlank && theirs != null && theirs !== '') fills[f] = theirs;
   }
 
-  const materialFills = Object.keys(fills).filter((f) => MATERIAL.includes(f));
+  /* #22 — PER-FIELD CONFLICT RESOLUTION. When our line and the records BOTH hold
+     a value and they disagree, the default is to keep ours (the fill loop above
+     only ever touches a blank). The reviewer may instead pick "use theirs" on
+     the compare screen, per field — `resolutions` is { field: 'theirs' }. An
+     overwrite is a deliberate replacement, so it is a direct SET (not the
+     blank-only COALESCE a fill uses). The ADDRESS is the MATCH KEY and is never
+     overwritten here: a genuinely different place means "two different
+     properties", which is a track-record finding, not a field to resolve. */
+  const overwrites = {};
+  const res = (resolutions && typeof resolutions === 'object') ? resolutions : {};
+  for (const f of FILLABLE) {
+    if (f === 'property_address') continue;
+    if (res[f] !== 'theirs') continue;
+    const ours = t[f];
+    const theirs = f === 'llc_id' ? c.proposed_llc_id : c[f];
+    if (theirs == null || theirs === '') continue;        // nothing to take
+    if (ours == null || ours === '') continue;            // a blank is a fill, handled above
+    if (String(ours) === String(theirs)) continue;        // not actually a change
+    overwrites[f] = theirs;
+  }
+
+  const changed = { ...fills, ...overwrites };
+  const materialChanged = Object.keys(changed).filter((f) => MATERIAL.includes(f));
   /* A VERIFIED LINE LOSES ITS VERIFICATION when a material column moves —
      db/485, correctly, since the verification was made without that figure. But
      nobody presses "match" expecting to undo a verification, so this is refused
-     until it is asked for a second time, in those words. The guard is never
-     weakened; the surprise is. */
-  if (t.is_verified === true && materialFills.length && !confirmReopen) {
+     until it is asked for a second time, in those words (a filled blank OR a
+     reviewer-chosen overwrite both count). The guard is never weakened; the
+     surprise is. */
+  if (t.is_verified === true && materialChanged.length && !confirmReopen) {
     const e = new Error(
-      `This project is already verified, and filling in ${materialFills.length === 1 ? 'that figure' : 'those figures'} `
-      + `(${materialFills.join(', ')}) will reopen it for review. Confirm if that is what you want.`);
-    e.status = 409; e.code = 'would_reopen_verification'; e.fields = materialFills; throw e;
+      `This project is already verified, and changing ${materialChanged.length === 1 ? 'that figure' : 'those figures'} `
+      + `(${materialChanged.join(', ')}) will reopen it for review. Confirm if that is what you want.`);
+    e.status = 409; e.code = 'would_reopen_verification'; e.fields = materialChanged; throw e;
   }
 
-  if (Object.keys(fills).length) {
+  if (Object.keys(changed).length) {
     const sets = []; const vals = [c.match_track_record_id]; let i = 1;
     for (const [f, v] of Object.entries(fills)) {
       i += 1;
@@ -1260,6 +1283,12 @@ async function matchExisting(db, c, { staffId, note, confirmReopen }) {
       // so a value typed between the read and the write is never clobbered.
       if (f === 'property_address') { sets.push(`property_address = CASE WHEN property_address IS NULL THEN $${i}::jsonb ELSE property_address END`); vals.push(JSON.stringify(ADDR.parseToAddressObject(v))); }
       else { sets.push(`${f} = COALESCE(${f}, $${i})`); vals.push(v); }
+    }
+    // A reviewer-chosen overwrite is a DIRECT set (the fill loop's COALESCE would
+    // refuse it, since ours is not blank). property_address is never in here.
+    for (const [f, v] of Object.entries(overwrites)) {
+      i += 1;
+      sets.push(`${f} = $${i}`); vals.push(v);
     }
     sets.push('updated_at = now()');
     await db.query(`UPDATE track_records SET ${sets.join(', ')} WHERE id=$1`, vals);
@@ -1279,6 +1308,7 @@ async function matchExisting(db, c, { staffId, note, confirmReopen }) {
     ok: true, action: 'match_existing', status: 'merged',
     trackRecordId: c.match_track_record_id,
     filled: Object.keys(fills),
+    overwritten: Object.keys(overwrites),
     reopened: t.is_verified === true && after.is_verified !== true,
   };
 }
@@ -1316,17 +1346,25 @@ async function compareCandidate(candidateId, client) {
     const samePlace = f === 'property_address' && !!ours && !!theirs
       && (() => { try { return require('../address').sameAddress(t[f], c[f]); } catch (_) { return false; } })();
     const conflict = !!ours && !!theirs && ours !== theirs && !samePlace;
+    /* #22 — a CONFLICT the reviewer may resolve per field ("keep ours" / "use
+       theirs"). The ADDRESS is the match key and is never resolvable: two
+       different places is "two different properties", a finding, not a field. */
+    const resolvable = conflict && f !== 'property_address';
     return {
       field: f,
       ours, theirs,
       oursEmpty: !ours, theirsEmpty: !theirs,
       conflict,
+      resolvable,
       /* THE POLICY, stated per row rather than left to the reader: the public
-         record fills a blank; anything a human typed wins. */
+         record fills a blank; a disagreement keeps ours unless the reviewer
+         picks the records; the address is never overwritten. */
       willFill: !ours && !!theirs,
       material: MATERIAL.includes(f),
       note: conflict
-        ? 'Both hold a value and they disagree — the line keeps yours. Change it by hand if the records are right.'
+        ? (resolvable
+          ? 'Both hold a value and they disagree — the line keeps yours unless you choose the records.'
+          : 'A different place — that is two different properties, not a figure to change here.')
         : (samePlace && ours !== theirs
           ? 'The same place, spelled two ways — not a disagreement. The line keeps its spelling.'
           : (!ours && theirs ? 'Blank here, so this fills in.' : (ours && !theirs ? 'The records hold nothing — yours is kept.' : (ours && theirs ? 'They agree.' : 'Neither holds anything.')))),
