@@ -61,6 +61,16 @@ const nackBody = { message: { digitalGatewaySystem: { statusResponses: [
   ok(/not a rejection/i.test(r.text), 'a network failure is explicitly framed as NOT a rejection of the order');
 }
 
+// A deliberate switch (outbound off) is NOT framed as a connection problem.
+{
+  const e = Object.assign(new Error('AMC_OUTBOUND_DISABLED: refusing CreateAppraisal — writes are gated off'), { code: 'AMC_OUTBOUND_DISABLED' });
+  const r = svc.describeSendFailure(e);
+  ok(r.detail.kind === 'gated', 'outbound-off classified as gated');
+  ok(/turned off/i.test(r.text), 'outbound-off reads as turned off');
+  ok(!/connection problem/i.test(r.text), 'outbound-off is NOT called a connection problem');
+  ok(r.detail.httpStatus === null && r.detail.gateway === null, 'gated detail carries no status/body');
+}
+
 // A timeout/abort reads as a timeout.
 {
   const e = Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });

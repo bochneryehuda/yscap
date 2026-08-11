@@ -273,6 +273,17 @@ function readGatewayBody(body) {
 }
 
 function describeSendFailure(e) {
+  // A deliberate switch (outbound off / master off) is NOT a connection problem —
+  // say so plainly rather than sending someone to chase a firewall ghost.
+  const code = e && e.code;
+  if (code === 'AMC_OUTBOUND_DISABLED') {
+    const text = 'Sending orders to the appraisal gateway is turned off (the outbound switch is off), so the order was not sent.';
+    return { text, detail: { kind: 'gated', httpStatus: null, code, message: String((e && e.message) || e), gateway: null, cause: null } };
+  }
+  if (code === 'AMC_DISABLED') {
+    const text = 'The appraisal integration is turned off, so the order was not sent.';
+    return { text, detail: { kind: 'gated', httpStatus: null, code, message: String((e && e.message) || e), gateway: null, cause: null } };
+  }
   const status = Number.isInteger(e && e.status) ? e.status : null;
   const gatewayMsg = readGatewayBody(e && e.body);
   const timedOut = e && (e.name === 'AbortError' || /aborted|timeout/i.test(String(e.message || '')));
@@ -358,8 +369,9 @@ async function createOrder(db, appId, opts = {}) {
     // Capture the gateway's REAL reason (status + body), not just e.message, so a
     // live failure is diagnosable from the file and the logs.
     const failure = describeSendFailure(e);
-    // A transport 401 means the cached Bearer went stale between DoLogin and the
-    // order — drop it so the next attempt re-authenticates cleanly.
+    // A transport 401 on the order endpoint — drop the cached DoLogin session so the
+    // next attempt re-authenticates cleanly (the OAuth Bearer is already refreshed
+    // once inside the transport before this surfaces).
     if (e && e.status === 401) session.invalidate();
     await db.query(`UPDATE amc_orders SET status = 'error', last_error = $2, last_status_response = $3, updated_at = now() WHERE id = $1`,
       [order.id, failure.text.slice(0, 2000), JSON.stringify(failure.detail)]);
