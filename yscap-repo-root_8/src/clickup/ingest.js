@@ -816,6 +816,37 @@ function firstUserIdFromField(task, fieldId) {
 const _addrOf = (v) => (v && (v.formatted_address || v.oneLine)) || null;
 
 /**
+ * INBOUND subject-address decision — pure, so the guard has ONE definition the
+ * test can pin (owner-directed 2026-08-02 "the USPS verification bounces back" +
+ * 2026-08-11 "understand that it's the same address"). Given our stored subject
+ * address text, the inbound ClickUp value, and whether the file's subject is a
+ * USPS-imported address, decide what the inbound pull does to property_address:
+ *   'no_house'      — inbound lost the house number (street-only machine garbage)
+ *                     → keep ours; the caller re-pushes + audits.
+ *   'same_address'  — the same place, ZIP-authoritative (address.sameAddress)
+ *                     → keep ours, silent.
+ *   'same_property' — a USPS file whose ClickUp value is the Google echo of the
+ *                     SAME building with a same-city ZIP difference that
+ *                     sameAddress misses but sameProperty (city-authoritative)
+ *                     recognizes → keep ours (USPS survives), silent.
+ *   'overwrite'     — a genuinely different place → let the COALESCE write it (a
+ *                     real ClickUp property edit flows in; on a USPS file the
+ *                     db/379+415 trigger then re-verifies the NEW property).
+ * The USPS branch is checked LAST, so the ZIP-authoritative sameAddress always
+ * decides a same-ZIP/different-city-LABEL echo first — sameProperty only ever
+ * ADDS the same-city ZIP-diff case on top. Pure; never throws.
+ */
+function inboundAddressDecision({ oursText, theirsText, uspsImported }) {
+  const ADDR = require('../lib/address');
+  const ourHouse = oursText ? ADDR.houseNumberOf(ADDR.parseAddress(oursText).line1) : '';
+  const theirHouse = theirsText ? ADDR.houseNumberOf(ADDR.parseAddress(theirsText).line1) : '';
+  if (ourHouse && !theirHouse) return 'no_house';
+  if (oursText && theirsText && ADDR.sameAddress(oursText, theirsText)) return 'same_address';
+  if (uspsImported && oursText && theirsText && ADDR.sameProperty(oursText, theirsText)) return 'same_property';
+  return 'overwrite';
+}
+
+/**
  * Find which EXISTING portal app a task belongs to, without creating one:
  *   1) Portal File ID stamp (authoritative — written by our own push).
  *   2) Within the resolved borrower's unlinked RTL apps, an app-level match on
@@ -1901,16 +1932,30 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   // ClickUp to hold our spelling is neither possible nor necessary. `sameAddress` is
   // conservative — anything it cannot read on both sides answers false — so a real
   // edit in ClickUp still flows in untouched.
+  //
+  // USPS FILES GO ONE STEP FURTHER (owner-directed 2026-08-11: "when we import USPS
+  // ... just update them with the Google address ... The USPS-verified address
+  // should always survive ... understand that it's the same address"). Once a file's
+  // subject property is a USPS-verified, human-adopted address, the OUTBOUND push now
+  // deliberately sends ClickUp the GOOGLE spelling of that address (so its
+  // Google-backed location picker can match it — orchestrator.withCoords with
+  // preferProvider). Google and USPS routinely give the SAME building a different ZIP
+  // within one city, which `sameAddress` (ZIP-authoritative) reads as different — so
+  // that outbound preference, on its own, would re-arm the very bounce-back it is
+  // meant to end. The inbound half closes the loop with `address.sameProperty`
+  // (city-authoritative: tolerates a same-city ZIP difference, still blocks a
+  // different-city jump), applied ONLY on a USPS-imported file (`usps_imported_at`)
+  // and ONLY after `sameAddress` has already said no. The two changes ship together
+  // and are meaningless apart.
   if (targetId && cols.property_address) {
     try {
-      const ADDR = require('../lib/address');
       const cur = (await db.query(
-        `SELECT property_address FROM applications WHERE id=$1`, [targetId])).rows[0];
+        `SELECT property_address, usps_imported_at FROM applications WHERE id=$1`, [targetId])).rows[0];
       const oursText = _addrOf(cur && cur.property_address);
       const theirsText = _addrOf(a.property_address);
-      const ourHouse = oursText ? ADDR.houseNumberOf(ADDR.parseAddress(oursText).line1) : '';
-      const theirHouse = theirsText ? ADDR.houseNumberOf(ADDR.parseAddress(theirsText).line1) : '';
-      if (ourHouse && !theirHouse) {
+      const decision = inboundAddressDecision({
+        oursText, theirsText, uspsImported: !!(cur && cur.usps_imported_at) });
+      if (decision === 'no_house') {
         cols.property_address = null;   // COALESCE keeps the real address
         try { await require('./enqueue').enqueueClickupPush(targetId, ['property_address']); } catch (_) {}
         try {
@@ -1919,12 +1964,24 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
              VALUES ('system', NULL, 'clickup_pull_address_no_house_number', 'application', $1, $2)`,
             [targetId, JSON.stringify({ taskId: task && task.id, kept: oursText, refused: theirsText })]);
         } catch (_) {}
-      } else if (oursText && theirsText && ADDR.sameAddress(oursText, theirsText)) {
-        // Silent on purpose: this is the ORDINARY state of every synced file (two
-        // systems spelling one address their own way), so auditing it would write a
-        // row per file per reconcile pass and drown the real guards above.
-        cols.property_address = null;   // COALESCE keeps our (USPS-standardized) spelling
+      } else if (decision === 'same_address' || decision === 'same_property') {
+        // Both drop the write so COALESCE keeps our spelling, both silent on purpose:
+        // this is the ORDINARY state of every synced file (two systems spelling one
+        // address their own way), so auditing it would write a row per file per
+        // reconcile pass and drown the real guards. 'same_property' is the USPS-file
+        // extension — the Google echo of the same building with a same-city ZIP diff
+        // that sameAddress misses — so the USPS verification stamp survives the
+        // round-trip (usps_imported_at, which title/insurance/closing prep gate on).
+        cols.property_address = null;
       }
+      // decision === 'overwrite' — a genuinely different place: COALESCE writes it,
+      // and a real ClickUp property edit flows in untouched. On a USPS file the
+      // db/379+db/415 trigger then wipes the stamp and reopens the verification to
+      // re-verify the NEW property — the deliberate safe default (db/415:
+      // "over-matching would leave a USPS stamp standing on a different property").
+      // The outbound never PUSHES a non-sameProperty form (it keeps our USPS text
+      // when Google drifts across a city line), so this is only ever a genuine human
+      // re-type in ClickUp.
     } catch (_) { /* best-effort — a guard failure must never break the inbound pull */ }
   }
 
@@ -2297,4 +2354,5 @@ module.exports = {
   ingestTask, resolveBorrower, upsertLlc, upsertTrackRecord, linkOrCreateApplication,
   applyChecklistStatuses, identityFrom, RTL_PROGRAMS, decideInboundProcessor,
   descopeFlipped, dropUnstorableCols, dropAssignmentMoneyWithoutCheckbox,
+  inboundAddressDecision,
 };

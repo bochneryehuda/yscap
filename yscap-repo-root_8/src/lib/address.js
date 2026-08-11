@@ -799,6 +799,48 @@ function sameAddress(a, b) {
   } catch (_) { return false; }
 }
 
+/**
+ * Are these two addresses the SAME PHYSICAL PROPERTY, tolerating a USPS-vs-Google
+ * ZIP difference? Identical to sameAddress EXCEPT the locality authority is the
+ * CITY, not the ZIP: within one city a differing ZIP is a USPS/Google database
+ * quirk for the same building, not a different property. A ZIP difference ACROSS
+ * DIFFERENT cities is NOT tolerated — that is the Piscataway/Plainfield trap (one
+ * street number, two cities, two ZIPs, two different buildings ~130m apart).
+ *
+ * Used ONLY where USPS and Google spellings of ONE verified address must be
+ * recognized as the same place: the ClickUp OUTBOUND Google-form preference and
+ * the INBOUND USPS-survival guard (owner-directed 2026-08-11 — "they should
+ * understand that it's the same address"). Everything else stays on the stricter,
+ * ZIP-authoritative sameAddress.
+ *
+ * NOT a standalone superset of sameAddress — swapping the locality authority
+ * from ZIP to city means a same-ZIP/different-city-LABEL pair ("…, Brooklyn, NY
+ * 11219" vs "…, New York, NY 11219") is sameAddress=true but sameProperty=false.
+ * Both call sites use it ONLY in UNION with the stricter check — sameAddress is
+ * evaluated FIRST in the inbound guard, and geocodeRewriteIsSafe OR'd ahead of it
+ * in the outbound one — so the COMBINED decision is always a superset of
+ * sameAddress and only ever tolerates MORE (a same-city ZIP), never less. Do not
+ * use it alone in place of sameAddress. Conservative + pure; never throws.
+ */
+function sameProperty(a, b) {
+  try {
+    const x = parseAddressParts(a), y = parseAddressParts(b);
+    if (!x.house || !y.house || !x.street || !y.street) return false;
+    if (!houseMatches(x.house, y.house)) return false;
+    const streetOk = x.street === y.street
+      || (!!x.streetBase && x.streetBase === y.streetBase && (x.street === x.streetBase || y.street === y.streetBase));
+    if (!streetOk) return false;
+    if (x.state && y.state && x.state !== y.state) return false;
+    // CITY is the authority here: same city + differing ZIP = the same building.
+    // With no city to compare on a side, fall back to ZIP strictness so this is
+    // never LOOSER than sameAddress on the locality axis.
+    if (x.city && y.city) { if (x.city !== y.city) return false; }
+    else if (x.zip && y.zip && x.zip !== y.zip) return false;
+    if (x.unit && y.unit && x.unit !== y.unit) return false;
+    return true;
+  } catch (_) { return false; }
+}
+
 /** Stable key for grouping/deduping addresses: house|street|zip. Unit- and
  *  city-free by design (see sameAddress). '' when unreadable. */
 function addressCompareKey(v) {
@@ -811,7 +853,7 @@ function addressCompareKey(v) {
 
 module.exports = {
   parseAddress, parseToAddressObject, normalizeAddress, splitUnit, stateAbbr, stateCompareKey,
-  parseAddressParts, sameAddress, addressCompareKey, addressTextOf,
+  parseAddressParts, sameAddress, sameProperty, addressCompareKey, addressTextOf,
   abbreviateStreet, normalizeCityName, preferBorough, osmComponentsToAddress,
   canonicalOneLine, withoutUnit, withUnit, looksLikeProviderLongForm, parseProviderLongForm,
   compactFormattedAddress, canonicalizeAddressValue,

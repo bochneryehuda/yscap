@@ -54,7 +54,7 @@ async function firstListId(folderId) {
  * Best-effort throughout: an unresolvable address returns unchanged (the field
  * is then skipped, exactly as before — never a bad or location-clearing write).
  */
-async function withCoords(addr) {
+async function withCoords(addr, opts) {
   if (!addr || (addr.lat != null && addr.lng != null)) return addr;
   const g = geocoder();
   const line = addr.oneLine || addr.formatted_address
@@ -85,7 +85,20 @@ async function withCoords(addr) {
       // was undone by the next push. `geocodeRewriteIsSafe` refuses a dropped house
       // number, a changed ZIP, or a dropped directional; the provider is still free
       // to abbreviate the street, fix the city, or fill a ZIP we never had.
-      const base = (theirs && ADDR.geocodeRewriteIsSafe(ours || line, theirs)) ? theirs : (ours || line);
+      // On a USPS-VERIFIED subject property, PREFER Google's spelling for the value
+      // we send ClickUp — ClickUp's location field is Google-backed, so the USPS
+      // mailing text often can't be matched there and comes back mismatched
+      // (owner-directed 2026-08-11: "when we import USPS ... just update them with
+      // the Google address"). `geocodeRewriteIsSafe` already accepts a same-property
+      // restyle (same house/ZIP/directional); `sameProperty` additionally accepts a
+      // USPS-vs-Google ZIP difference WITHIN the same city — never across cities, so
+      // the Piscataway/Plainfield different-building trap stays blocked. Our STORED
+      // property_address (the USPS form) is untouched; this only picks the outbound
+      // ClickUp text (and its Google place_id/coords below).
+      const preferProvider = !!(opts && opts.preferProvider);
+      const provSafe = theirs && (ADDR.geocodeRewriteIsSafe(ours || line, theirs)
+        || (preferProvider && ADDR.sameProperty(ours || line, theirs)));
+      const base = provSafe ? theirs : (ours || line);
       // Keep the apartment on the value we store/show: the geocoder resolved the
       // BUILDING (the unit was stripped so it would place on the map — see
       // address-canon.geocode), but the mailing address still names the unit.
@@ -149,6 +162,19 @@ async function resolveClickupUserId({ storedId, staffId, email }) {
   return cu;
 }
 
+// Is this file's SUBJECT property a USPS-verified, human-adopted address? The gate
+// is the SAME human-adoption test usps-verify.preferredFinancingAddress uses — a
+// 'verified'/'corrected' verdict AND a human import (usps_imported_at) — minus that
+// function's hasOfficialAddress term, which it needs only because it RETURNS the
+// usps_address object; this is a boolean gate and withCoords independently requires
+// sameProperty before it ever adopts Google's form, so a wrong building can't be
+// picked even if the stamp were somehow partial. Subject address ONLY — USPS
+// verifies the subject property, never the borrower home.
+function uspsVerifiedSubject(row) {
+  const m = row && row.usps_match;
+  return (m === 'verified' || m === 'corrected') && !!(row && row.usps_imported_at);
+}
+
 /** Load everything the mapper needs to build a task from an application. */
 async function loadPushContext(appId) {
   const r = await db.query(
@@ -185,7 +211,7 @@ async function loadPushContext(appId) {
       original_purchase_price: row.original_purchase_price, acquisition_date: row.acquisition_date,
       ys_loan_number: row.ys_loan_number, expected_closing: row.expected_closing, submitted_at: row.submitted_at,
       internal_status: row.internal_status || null,
-      property_address: await withCoords(row.property_address),
+      property_address: await withCoords(row.property_address, { preferProvider: uspsVerifiedSubject(row) }),
     },
     borrower: {
       first_name: row.first_name, last_name: row.last_name,
