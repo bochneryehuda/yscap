@@ -45,19 +45,37 @@ async function loadContext(db, appId) {
   const r = await db.query(
     `SELECT a.id, a.ys_loan_number, a.loan_type, a.property_address, a.property_type,
             a.occupancy, a.purchase_price, a.loan_amount, a.est_closing_date,
-            a.borrower_id, a.co_borrower_id, a.loan_officer_id,
+            a.borrower_id, a.co_borrower_id, a.loan_officer_id, a.processor_id,
             b.first_name AS b_first, b.last_name AS b_last, b.full_name AS b_full,
             b.email AS b_email, b.cell_phone AS b_cell,
             cb.first_name AS c_first, cb.last_name AS c_last, cb.full_name AS c_full,
             cb.email AS c_email, cb.cell_phone AS c_cell,
-            lo.full_name AS lo_name, lo.email AS lo_email, lo.phone AS lo_phone
+            lo.full_name AS lo_name, lo.email AS lo_email, lo.phone AS lo_phone,
+            pr.email AS pr_email
        FROM applications a
        JOIN borrowers b ON b.id = a.borrower_id
        LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
-       LEFT JOIN staff_users lo ON lo.id = a.loan_officer_id
+       LEFT JOIN staff_users lo ON lo.id = a.loan_officer_id AND lo.is_active = true
+       LEFT JOIN staff_users pr ON pr.id = a.processor_id AND pr.is_active = true
       WHERE a.id = $1 AND a.deleted_at IS NULL`, [appId]);
   const a = r.rows[0];
   if (!a) return null;
+
+  // Everyone Class should email as the appraisal moves: the loan officer, the
+  // processor, and the borrower(s). Each becomes a `BorrowerInfo` entry on the
+  // order's notificationList (see order-build), so Class copies all of them when the
+  // report comes back — the SAME set NAN carries as products[].notifications. A
+  // deactivated LO/processor drops out (their is_active LEFT JOIN yields NULL), and
+  // a malformed or duplicate address is dropped rather than sent.
+  const notifyEmails = [];
+  const addEmail = (e) => {
+    const v = String(e == null ? '' : e).trim().toLowerCase();
+    if (v && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v) && !notifyEmails.includes(v)) notifyEmails.push(v);
+  };
+  addEmail(a.lo_email);
+  addEmail(a.pr_email);
+  addEmail(a.b_email);
+  addEmail(a.c_email);
 
   const pa = addrParts(a.property_address);
   return {
@@ -88,9 +106,13 @@ async function loadContext(db, appId) {
           lastName: (a.lo_name || '').split(' ').slice(1).join(' ') || null,
           email: a.lo_email, workPhone: a.lo_phone }
       : null,
-    propertyContact: null,                       // filled from file contacts once wired
+    // Class's PropertyAccess contact is who lets the appraiser IN. The file models no
+    // distinct access party, and a stale purchase-side realtor would be worse than
+    // nothing on a refinance — so this stays null and order-build records that the
+    // appraiser reaches the borrower to arrange entry, exactly NAN's parties.bestContact.
+    propertyContact: null,
     lender: { clientName: 'YS Capital Group' },
-    notifyEmails: [],
+    notifyEmails,
   };
 }
 
@@ -196,6 +218,10 @@ async function buildPreview(db, appId, opts = {}) {
     body: built.body,
     fields: fieldRows(built),
     contacts: built.body.contacts || [],
+    // Who Class will email as the appraisal moves (LO + processor + borrowers). The
+    // notificationList is an array, so fieldRows() skips it — surface it here so the
+    // screen shows every recipient before the order goes out (the desk's standing rule).
+    notifyEmails: ctx.notifyEmails,
     missing: built.missing,
     assumptions: built.assumptions,
     overridden: built.overridden,
