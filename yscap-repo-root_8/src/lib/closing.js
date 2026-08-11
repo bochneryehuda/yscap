@@ -247,9 +247,13 @@ async function runCashToCloseCheck(appId, actualCashToClose, client) {
 }
 
 // ---------------------------------------------------------------------------
-// Encompass funded date (READ-ONLY) — field 1401, pulled from the scrubbed loan in
+// Encompass funded date (READ-ONLY) — the tenant's CX.FUNDEDDATE custom field
+// (standard field 1401 as a fallback), pulled from the scrubbed loan in
 // applications.encompass_extra via the read-only field map. Returns null when the
-// file isn't linked / the field is empty (never guesses).
+// file isn't linked / the field is empty (never guesses). The value arrives in the
+// tenant's display format (MM/DD/YYYY) OR ISO depending on the read path, so it is
+// normalized with the field map's normDate — the plain ISO-only dayStr would drop
+// an MM/DD/YYYY funded date, which is exactly why the Encompass leg read blank.
 // ---------------------------------------------------------------------------
 function readEncompassFundedDate(app) {
   try {
@@ -257,7 +261,7 @@ function readEncompassFundedDate(app) {
     const extra = app && app.encompass_extra;
     if (!extra) return null;
     const fields = map.extractFields(extra) || {};
-    return fields.funded_date ? dayStr(fields.funded_date) : null;
+    return fields.funded_date ? map.normDate(fields.funded_date) : null;
   } catch (_) { return null; }
 }
 
