@@ -62,8 +62,8 @@ const CREDENTIALS = [
 
 const ENDPOINTS = [
   { env: 'AMC_OAUTH_URL', cfgKey: 'oauthUrl', what: 'OAuth GetToken' },
-  { env: 'AMC_LOGIN_URL', cfgKey: 'loginUrl', what: 'DoLogin' },
-  { env: 'AMC_ORDER_URL', cfgKey: 'orderUrl', what: 'lookups / create / status' },
+  { env: 'AMC_LOGIN_URL', cfgKey: 'loginUrl', what: 'DoLogin + catalog lookups (the "/direct/" endpoint)' },
+  { env: 'AMC_ORDER_URL', cfgKey: 'orderUrl', what: 'CreateAppraisal + order-specific reads/writes (the "/order/" endpoint)' },
   { env: 'AMC_POSTDOCUMENTS_URL', cfgKey: 'postDocumentsUrl', what: 'document upload' },
 ];
 
