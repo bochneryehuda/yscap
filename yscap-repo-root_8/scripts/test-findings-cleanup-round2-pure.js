@@ -22,17 +22,17 @@ let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', m); } };
 const codes = (l) => (l || []).map((f) => f.code);
 
-// ───────────────────────── item 2 — Blue Lake wants TWO months ─────────────────────────
-// "Blue Lake needs 2 months of bank statements, not 1. The rule text says 1."
+// ─────────────────── item 2 — TWO months on EVERY file (owner-directed 2026-08-11) ───────────────────
+// SUPERSEDES the per-program/note-buyer table: every program requires exactly two months.
 ok(bankStatementMonths('standard', null, 'Blue Lake') === 2,
-  `a Standard file sold to Blue Lake asks for 2 months (got ${bankStatementMonths('standard', null, 'Blue Lake')})`);
+  `a Standard file asks for 2 months (got ${bankStatementMonths('standard', null, 'Blue Lake')})`);
 ok(bankStatementMonths('standard', null, 'bluelake') === 2, 'however the note buyer is spelled');
 ok(bankStatementMonths('standard', null, 'BLUE LAKE') === 2, 'and whatever the casing');
-ok(bankStatementMonths('standard', null, null) === 1, 'a Standard file with no note buyer is unchanged at 1 month');
-ok(bankStatementMonths('standard', null, 'CorrFirst') === 1, 'and another note buyer does not raise it');
-ok(bankStatementMonths('gold', null, 'Blue Lake') === 2, 'Gold already asked for 2 — no double-counting');
-ok(bankStatementMonths('manual', 3, 'Blue Lake') === 3,
-  'a manual product stating 3 months keeps 3 — a note buyer can raise the count, never lower it');
+ok(bankStatementMonths('standard', null, null) === 2, 'a Standard file with no note buyer is 2 too');
+ok(bankStatementMonths('standard', null, 'CorrFirst') === 2, 'and every other note buyer is 2 as well');
+ok(bankStatementMonths('gold', null, 'Blue Lake') === 2, 'Gold is 2 — no double-counting');
+ok(bankStatementMonths('manual', 3, 'Blue Lake') === 2,
+  'a manual product stating 3 is capped at 2 — nothing can ask for three');
 // Borrower-facing: the note buyer's NAME must never appear (frozen rule).
 const blLine = bankStatementLine('standard', null, 'Blue Lake');
 ok(/2 months/.test(blLine), `the borrower is asked for 2 months (got "${blLine}")`);

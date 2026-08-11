@@ -67,10 +67,11 @@ assert((reg.BY_KEY.note_buyer.options || []).some((o) => o.v === 'bluelake') && 
 assert(!!reg.BY_KEY.note_buyer_is_fidelis && reg.BY_KEY.note_buyer_is_fidelis.type === 'boolean',
   'note_buyer_is_fidelis is a boolean rule field (kept for rule authors; the flood rule no longer uses it)');
 
-assert(liq.bankStatementMonths('manual', 4) === 4, 'manual liquidity months honor the entered value');
-assert(liq.bankStatementMonths('manual') === 2, 'manual liquidity months fall back to 2');
-assert(liq.bankStatementMonths('gold') === 2 && liq.bankStatementMonths('standard') === 1, 'gold=2 / standard=1 unchanged');
-assert(/2 months of liquidity/.test(liq.bankStatementLine('manual', 2)) && !/gold|standard/i.test(liq.bankStatementLine('manual', 2)), 'manual liquidity line names months, not a program name');
+// TWO MONTHS ON EVERY FILE (owner-directed 2026-08-11) — nothing can ask for more.
+assert(liq.bankStatementMonths('manual', 4) === 2, 'manual is capped at 2, whatever was entered');
+assert(liq.bankStatementMonths('manual') === 2, 'manual default 2');
+assert(liq.bankStatementMonths('gold') === 2 && liq.bankStatementMonths('standard') === 2, 'gold=2 / standard=2 (uniform two months)');
+assert(/requires two months/.test(liq.bankStatementLine('manual', 2)) && !/gold|standard/i.test(liq.bankStatementLine('manual', 2)), 'manual line states two months, not a program name');
 
 if (!process.env.DATABASE_URL) {
   console.log('SKIP db-backed manual-program tests (no DATABASE_URL)');

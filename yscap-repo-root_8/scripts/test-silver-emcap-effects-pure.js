@@ -23,40 +23,39 @@ let passed = 0;
 const ok = (cond, msg) => { assert.ok(cond, msg); passed++; };
 const eq = (a, b, msg) => { assert.strictEqual(a, b, `${msg} (got ${JSON.stringify(a)}, want ${JSON.stringify(b)})`); passed++; };
 
-// ── 1. program month counts ─────────────────────────────────────────────────
-eq(bankStatementMonths('silver'), 2, 'Silver program requires 2 months');
+// ── 1. TWO MONTHS ON EVERY FILE (owner-directed 2026-08-11) ─────────────────
+eq(bankStatementMonths('silver'), 2, 'Silver requires 2 months');
 eq(bankStatementMonths('Silver Program'), 2, 'silver matched by wording, not exact key');
-eq(bankStatementMonths('gold'), 2, 'Gold still 2 months (unchanged)');
-eq(bankStatementMonths('standard'), 1, 'Standard still 1 month (unchanged)');
-eq(bankStatementMonths('manual', 3), 3, 'Manual still uses the stated months (unchanged)');
-eq(bankStatementMonths('manual', null), 2, 'Manual default still 2 (unchanged)');
-eq(bankStatementMonths(null), 1, 'no program → baseline 1 (unchanged)');
+eq(bankStatementMonths('gold'), 2, 'Gold requires 2 months');
+eq(bankStatementMonths('standard'), 2, 'Standard now requires 2 months too (uniform)');
+eq(bankStatementMonths('manual', 3), 2, 'manual is capped at 2 — nothing can ask for three');
+eq(bankStatementMonths('manual', null), 2, 'manual default 2');
+eq(bankStatementMonths(null), 2, 'no program → 2 (uniform)');
 
-// ── 2. note-buyer raises, every EMCAP spelling ──────────────────────────────
-eq(bankStatementMonths('standard', null, 'EMCAP'), 2, 'EMCAP raises a Standard file to 2');
-eq(bankStatementMonths('standard', null, 'EMCAP Financial'), 2, 'the real label "EMCAP Financial" raises to 2');
-eq(bankStatementMonths('standard', null, 'emcap  financial'), 2, 'casing/spacing tolerant');
-eq(bankStatementMonths('standard', null, 'Blue Lake'), 2, 'Blue Lake still raises to 2 (unchanged)');
-eq(bankStatementMonths('standard', null, 'Fidelis'), 1, 'Fidelis never raises (unchanged)');
-eq(bankStatementMonths('silver', null, 'EMCAP Financial'), 2, 'Silver + EMCAP = 2 (program and buyer agree)');
-// A lender literally named "constructor" must not poison the lookup (prototype trap).
-eq(bankStatementMonths('standard', null, 'constructor'), 1, 'prototype-named lender is harmless');
+// ── 2. neither the note buyer nor the manual months can change the count ─────
+eq(bankStatementMonths('standard', null, 'EMCAP'), 2, 'EMCAP → still 2');
+eq(bankStatementMonths('standard', null, 'EMCAP Financial'), 2, 'the real label "EMCAP Financial" → 2');
+eq(bankStatementMonths('standard', null, 'Blue Lake'), 2, 'Blue Lake → 2');
+eq(bankStatementMonths('standard', null, 'Fidelis'), 2, 'Fidelis → 2 (Standard is now 2 on its own)');
+eq(bankStatementMonths('silver', null, 'EMCAP Financial'), 2, 'Silver + EMCAP = 2');
+eq(bankStatementMonths('manual', 12, 'Blue Lake'), 2, 'a manual 12 with a note buyer is still 2');
+eq(bankStatementMonths('standard', null, 'constructor'), 2, 'a prototype-named lender is harmless');
 
-// ── 3. borrower-facing wording ──────────────────────────────────────────────
+// ── 3. borrower-facing wording — two months + the printout allowance ────────
 ok(/Silver Program requires two months/.test(bankStatementLine('silver')),
   'Silver line names the Silver Program and two months');
 ok(/Gold Standard Program requires two months/.test(bankStatementLine('gold')),
-  'Gold line unchanged');
-ok(/Standard Program requires one month/.test(bankStatementLine('standard')),
-  'Standard line unchanged');
-// Silver + EMCAP: the program itself requires 2, so the line stays PROGRAM-named
-// (the buyer-raised generic wording is only for a buyer raising ABOVE the program).
-ok(/Silver Program requires two months/.test(bankStatementLine('silver', null, 'EMCAP Financial')),
-  'Silver + EMCAP keeps the program-named wording');
-// Standard + EMCAP: the buyer raised it — generic wording, never the buyer name.
-const raised = bankStatementLine('standard', null, 'EMCAP Financial');
-ok(/2 months/.test(raised) && /this loan requires/.test(raised), 'buyer-raised wording states the count');
-ok(!/emcap/i.test(raised), 'buyer-raised wording NEVER names the note buyer');
+  'Gold line names the Gold Standard Program and two months');
+ok(/Standard Program requires two months/.test(bankStatementLine('standard')),
+  'Standard line now names two months (was one)');
+ok(/transaction printout showing the deposit/.test(bankStatementLine('gold')),
+  'every ask carries the printout allowance');
+// A note buyer never changes the program-named wording (nothing raises the count).
+ok(/Gold Standard Program requires two months/.test(bankStatementLine('gold', null, 'Blue Lake')),
+  'Gold + Blue Lake keeps the program-named wording');
+const withBuyer = bankStatementLine('standard', null, 'EMCAP Financial');
+ok(/two months/.test(withBuyer), 'states two months');
+ok(!/emcap/i.test(withBuyer), 'wording NEVER names the note buyer');
 
 // ── 4. the shared prefix helper ─────────────────────────────────────────────
 ok(registry.isEmcapNoteBuyer('EMCAP'), 'isEmcapNoteBuyer: EMCAP');

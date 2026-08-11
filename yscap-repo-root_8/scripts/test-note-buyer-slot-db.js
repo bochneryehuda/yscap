@@ -138,15 +138,17 @@ const liveCodes = async (appId) => (await db.query(
     assert(!!req('sow_contingency') && req('sow_contingency').fromNoteBuyer === true,
       'Blue Lake carries the 5% Scope-of-Work contingency, attributed to the NOTE BUYER');
     assert(/5%/.test(req('sow_contingency').text), 'the contingency line states the 5%');
-    assert(!!req('bank_statements') && /2 months/.test(req('bank_statements').text) && req('bank_statements').fromNoteBuyer === true,
-      'Blue Lake raises bank statements to 2 months, attributed to the note buyer');
+    // Every program now requires two months (owner-directed 2026-08-11), so the note buyer no
+    // longer RAISES the count — it is the program's requirement, attributed to the program.
+    assert(!!req('bank_statements') && /2 months/.test(req('bank_statements').text) && req('bank_statements').fromNoteBuyer === false,
+      'bank statements are 2 months, set by the program (not raised by the note buyer)');
     assert(!!req('data_tape') && /Blue Lake/i.test(req('data_tape').text), 'Blue Lake names its data tape');
 
     const fid = slot.effects[Object.keys(slot.effects).find((k) => k.startsWith('fidelis'))];
     assert(fid && !(fid.requirements || []).some((r) => r.key === 'sow_contingency'),
       'Fidelis does NOT carry the 5% contingency');
-    assert(fid && /1 month/.test(((fid.requirements || []).find((r) => r.key === 'bank_statements') || {}).text || ''),
-      'Fidelis leaves bank statements at the program count (1 month)');
+    assert(fid && /2 months/.test(((fid.requirements || []).find((r) => r.key === 'bank_statements') || {}).text || ''),
+      'Fidelis also shows the program count of 2 months (every program is 2)');
 
     // A GOLD-registered file requires the 5% for the PROGRAM's sake — the line must
     // say so rather than let a note-buyer switch read as removing the requirement.

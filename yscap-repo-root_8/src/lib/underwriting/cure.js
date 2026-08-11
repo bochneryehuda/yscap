@@ -447,15 +447,13 @@ async function loadCureContext(appId, client) {
   const program = row.registered_program || row.app_program || null;
   // Lazy-require liquidity here (NOT at module top): liquidity.js eagerly
   // requires the db layer, and cure.js must stay load-pure so the pure cure
-  // test runs with no DB. bankStatementMonths is the canonical Gold=2/Standard=1
-  // helper — never a second copy of that number (CLAUDE.md).
+  // test runs with no DB. bankStatementMonths is the canonical two-months helper
+  // (every program requires two months, owner-directed 2026-08-11) — never a
+  // second copy of that number (CLAUDE.md).
   const { bankStatementMonths } = require('../liquidity');
-  // The note buyer must go in too (audit 2026-07-26). `syncLiquidityCondition` records the note
-  // buyer's higher count on the condition, but this is what the cure engine COMPARES the uploaded
-  // statements against — and a Blue Lake file whose condition says 2 months was clearing on one
-  // statement because the expectation here was still the program's 1. That is a FALSE CLEAR: the
-  // clearance preview reported it satisfied and the weak-proof sign-off warning, which exists to
-  // catch exactly this, stayed silent. `a.lender` is the note buyer (field-registry.normNoteBuyer).
+  // Passed the program + note buyer so this stays the SAME call the assets condition is worded
+  // from — if the count ever varies again, the cure engine and the condition move together and can
+  // never disagree about how many months the uploaded statements must cover. Today both are two.
   const requiredMonths = program ? bankStatementMonths(program, null, row.lender) : null;
   const borrowerName = require('../person-name').displayName(row).trim() || null;
   const entityName = row.llc_name || null;

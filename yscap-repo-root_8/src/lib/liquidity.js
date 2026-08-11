@@ -22,83 +22,47 @@ const money = (n) => (n == null || isNaN(Number(n))) ? '—' : '$' + Math.round(
 // (owner-directed 2026-07-16); the stored breakdown already keeps cents.
 const money2 = (n) => (n == null || isNaN(Number(n))) ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-// How many months of bank statements the file requires, driven by the REGISTERED
-// program (owner-directed 2026-07-12). Before a product is registered the file
-// carries a generic "assets & bank statements" ask (no month count); once
-// registered, the Gold Standard Program requires TWO months, the Silver Program
-// requires TWO months (owner-directed 2026-07-29: "They require two months bank
-// statement not only one month… same as blue lake"), and the Standard Program
-// requires ONE. The MANUAL Program has no fixed table — the registrant states the
-// months at registration (owner-directed 2026-07-20), passed in as `assetMonths`.
-// Borrower-facing — never names a capital partner.
-// The NOTE BUYER can require more months than the program does (owner-directed 2026-07-26: "Blue
-// Lake needs 2 months of bank statements, not 1 — the rule text says 1"). Keyed with the SAME shared
-// normalizer the conditions engine and the guideline desk use, so one spelling of a note buyer is
-// never treated as two. Whichever is stricter wins — a note buyer's requirement can raise the count,
-// never lower it below what the program already asks for.
-// Object.create(null), not {}: a lender literally recorded as "constructor" would otherwise look up
-// Object.prototype.constructor and make the month count NaN. Cheap to prevent, ugly to debug.
-// The Silver program's note buyer requires 2 months too (owner-directed 2026-07-29); its ClickUp/
-// Sitewire label is "EMCAP Financial", which normalizes to 'emcapfinancial' — the prefix helper
-// below (same shape as isFidelisNoteBuyer, db/337) folds every spelling onto the 'emcap' entry.
-const NOTE_BUYER_MONTHS = Object.assign(Object.create(null), { bluelake: 2, emcap: 2 });
-function noteBuyerMonths(noteBuyer) {
-  if (!noteBuyer) return 0;
-  let key = '';
-  try {
-    const reg = require('./conditions/field-registry');
-    key = reg.normNoteBuyer(noteBuyer) || '';
-    if (!(key in NOTE_BUYER_MONTHS) && typeof reg.isEmcapNoteBuyer === 'function' && reg.isEmcapNoteBuyer(noteBuyer)) key = 'emcap';
-  } catch (_) { key = ''; }
-  const m = NOTE_BUYER_MONTHS[key];
-  return typeof m === 'number' && Number.isFinite(m) ? m : 0;
-}
-// The PROGRAM's own month count (before any note-buyer raise): Gold 2, Silver 2,
-// Standard 1, Manual = the registrant's stated months (default 2).
-function programMonths(program, assetMonths) {
-  if (/manual/i.test(String(program || ''))) {
-    const m = Math.round(Number(assetMonths));
-    return Number.isFinite(m) && m > 0 ? m : 2;   // fall back to the manual default
-  }
-  return /gold|silver/i.test(String(program || '')) ? 2 : 1;
-}
+// TWO MONTHS OF BANK STATEMENTS ON EVERY FILE (owner-directed 2026-08-11 — SUPERSEDES the old
+// per-program / note-buyer / manual-stated table). Every program requires exactly two months of
+// bank statements: the program, the manual "months of liquidity" input and the note buyer no
+// longer change the count. `bankStatementMonths` always returns 2. Borrower-facing — never names a
+// capital partner. The (program, assetMonths, noteBuyer) signature is kept so every caller is
+// unchanged; the last two arguments are now ignored (nothing can raise or lower the count).
 function bankStatementMonths(program, assetMonths, noteBuyer) {
-  return Math.max(programMonths(program, assetMonths), noteBuyerMonths(noteBuyer));
+  return 2;
 }
+// A printout showing the deposit may be provided IN ADDITION to the two statements when the funds
+// are not yet reflected in the most recent statement's ending balance (owner-directed 2026-08-11).
+// Borrower-facing; appended to every bank-statement ask and to the generic pre-registration hint.
+const PRINTOUT_ALLOWANCE =
+  'If the funds are not yet reflected in the ending balance of the most recent statement, you may ' +
+  'also provide a recent transaction printout showing the deposit in addition to the two statements.';
 // THE TWO-MONTH REQUIREMENT IS LOUD, NEVER A SMALL ASIDE (owner-directed 2026-07-30:
 // "it should stay in very bulk on the condition, highlighted, quoted, that this
 // program requires two months of bank statements according to the registration").
-// Whenever the registration requires 2+ months (the Gold or Silver program, a note
-// buyer that raises a Standard file, or a manual registration stating 2+), the
-// condition LEADS with an unmissable quoted banner on its own line. The '⚠️' prefix
-// on the first line is the marker the portal UIs key on to render it as a
-// highlighted callout; plain-text surfaces still read it loud (caps + quote).
-// Borrower-facing: never a note-buyer name.
-function loudMonthsBanner(m) {
-  const words = m === 2 ? 'TWO (2) MONTHS' : `${m} MONTHS`;
-  const plain = m === 2 ? 'two months' : `${m} months`;
-  return `⚠️ ${words} OF BANK STATEMENTS REQUIRED — "This program requires ${plain} of bank statements according to the registration."\n`;
+// The condition LEADS with an unmissable quoted banner on its own line. The '⚠️' prefix on the
+// first line + the trailing '\n' is the marker the portal UIs (LoudHint.jsx) key on to render a
+// highlighted callout; plain-text surfaces (V1, emails, ClickUp) still read it loud. Every file now
+// requires two months, so every registered file's assets condition carries it.
+function loudMonthsBanner() {
+  return '⚠️ TWO (2) MONTHS OF BANK STATEMENTS REQUIRED — "This program requires two months of bank statements according to the registration."\n';
 }
+// Borrower-facing: NEVER names a note buyer (frozen rule). Program-named where we have a program,
+// generic otherwise; every branch states two months and carries the printout allowance. Silver and
+// Gold are tested BEFORE "standard" so the label "Gold Standard Program" can never fall through to
+// the Standard branch.
 function bankStatementLine(program, assetMonths, noteBuyer) {
-  const m = bankStatementMonths(program, assetMonths, noteBuyer);
-  const loud = m >= 2 ? loudMonthsBanner(m) : '';
-  // Borrower-facing: NEVER names the note buyer (frozen rule). When the note buyer is what RAISES
-  // the count above the program's own requirement, the line just states the count — the reason is
-  // internal. A count the program itself requires keeps the program-named wording below.
-  if (noteBuyerMonths(noteBuyer) >= m && m > programMonths(program, assetMonths)) {
-    return `${loud}Provide ${m} month${m === 1 ? '' : 's'} of recent bank statements — this loan requires ${m} month${m === 1 ? '' : 's'} of liquidity.`;
-  }
-  if (/manual/i.test(String(program || ''))) {
-    return `${loud}Provide ${m} month${m === 1 ? '' : 's'} of recent bank statements — this loan's program requires ${m} month${m === 1 ? '' : 's'} of liquidity.`;
-  }
-  return m === 2
-    ? (/silver/i.test(String(program || ''))
-      ? `${loud}Provide 2 months of recent bank statements — the Silver Program requires two months.`
-      : `${loud}Provide 2 months of recent bank statements — the Gold Standard Program requires two months.`)
-    : 'Provide 1 month of a recent bank statement — the Standard Program requires one month.';
+  const loud = loudMonthsBanner();
+  const p = String(program || '');
+  let ask;
+  if (/silver/i.test(p)) ask = 'Provide 2 months of recent bank statements — the Silver Program requires two months.';
+  else if (/gold/i.test(p)) ask = 'Provide 2 months of recent bank statements — the Gold Standard Program requires two months.';
+  else if (/standard/i.test(p)) ask = 'Provide 2 months of recent bank statements — the Standard Program requires two months.';
+  else ask = 'Provide 2 months of recent bank statements — this loan requires two months.';
+  return `${loud}${ask} ${PRINTOUT_ALLOWANCE}`;
 }
 const GENERIC_BANK_STMT_HINT =
-  'Provide recent bank statements showing your liquid assets. The exact number of months required is set once your product is registered in Products & Pricing.';
+  'Provide 2 months of recent bank statements showing your liquid assets. ' + PRINTOUT_ALLOWANCE;
 
 // The program registered on a file right now ('gold' | 'standard' | null).
 async function currentProgram(appId, client = db) {
