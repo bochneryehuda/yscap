@@ -54,7 +54,7 @@ function normalizeClickupLocation(v) {
   return (out.oneLine || out.line1 || out.formatted_address) ? out : undefined;
 }
 
-const ACTUAL_CLOSING = '0846edc7-8619-4ee6-827e-a673570d3057'; // date, pull-only
+const ACTUAL_CLOSING = '0846edc7-8619-4ee6-827e-a673570d3057'; // date, two-way (see FIELD_MAP)
 
 // Single field descriptor used by BOTH directions.
 // t: portal table (b=borrower, a=application, l=llc)

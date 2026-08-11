@@ -116,8 +116,9 @@ garbage year can never reach ClickUp again even if a client bypasses the UI.
   profile edits push only to files already linked, never materializing a task).
 - Staff: the file's DOB row is now **inline-editable** (was fill-once-only), with
   the same strict validation, and syncs to ClickUp on save.
-- Staff closing-date saves push `expected_closing` immediately
-  (`actual_closing` stays pull-only — ClickUp owns it).
+- Staff closing-date saves push BOTH `expected_closing` and `actual_closing`
+  immediately (owner-directed 2026-08-11: the actual closing date is now two-way,
+  synced with our actual closing date).
 
 ## Owner's ClickUp activity-history audit (2026-07-15) — and what it corrected
 
