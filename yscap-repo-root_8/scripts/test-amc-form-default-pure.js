@@ -22,8 +22,14 @@ const eq = (a, b, m) => ok(a === b, `${m} (got ${JSON.stringify(a)}, want ${JSON
 const strat = (program, loanPurpose, rehabType) => ob.dealStrategyKey({ program, loanPurpose, rehabType });
 
 eq(strat('Fix & Flip', 'Purchase'), 'fix_and_flip', 'Fix & Flip → fix_and_flip');
+// THE CANONICAL production program value is "Fix & Flip w/ Construction" (the ClickUp-
+// synced enum; plain "Fix & Flip" was a drift bug). It contains "construction" — this is
+// the case the post-merge audit caught: keying ground-up on /construction/ misclassified
+// it as ground_up (unseeded) → no form default, i.e. the live bug WAS NOT fixed.
+eq(strat('Fix & Flip w/ Construction', 'Purchase'), 'fix_and_flip', 'CANONICAL fix&flip "Fix & Flip w/ Construction" → fix_and_flip (NOT ground_up)');
 eq(strat('Bridge / Stabilized', 'Purchase'), 'bridge', 'Bridge / Stabilized → bridge');
 eq(strat('Ground-up Construction', 'Purchase'), 'ground_up', 'Ground-up → ground_up');
+eq(strat('Ground-Up Construction', 'Purchase'), 'ground_up', 'canonical "Ground-Up Construction" still → ground_up (contains "ground")');
 eq(strat('Fix & Hold (BRRRR)', 'Purchase'), 'fix_and_flip', 'BRRRR (a renovation) → fix_and_flip');
 eq(strat('', 'DSCR Rental'), 'dscr', 'DSCR/rental keyword in loan_type → dscr');
 eq(strat('', 'Purchase', 'heavy'), 'fix_and_flip', 'a rehab tier alone → fix_and_flip');
@@ -57,6 +63,7 @@ const formFor = (program, loanPurpose, propertyType, rehabType) => {
 };
 
 eq(formFor('Fix & Flip', 'Purchase', 'SFR'), '56634', 'fix&flip SFR → 56634 (the owner\'s default)');
+eq(formFor('Fix & Flip w/ Construction', 'Purchase', 'SFR'), '56634', 'CANONICAL fix&flip program auto-picks 56634 (the live-bug regression — must NOT be blank)');
 eq(formFor('Fix & Flip', 'Purchase', 'Condominium'), '56651', 'fix&flip condo → 56651');
 eq(formFor('Fix & Flip', 'Purchase', '2-4 Family'), '56650', 'fix&flip 2-4 → 56650');
 eq(formFor('Bridge / Stabilized', 'Purchase', 'Single Family Residence'), '55975', 'bridge SFR → 55975');
