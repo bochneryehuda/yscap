@@ -13,3 +13,11 @@ ALTER TABLE sync_review_queue ADD COLUMN IF NOT EXISTS portal_actor_id uuid REFE
 CREATE INDEX IF NOT EXISTS idx_sync_review_actor
   ON sync_review_queue(portal_actor_id)
   WHERE portal_actor_id IS NOT NULL AND status = 'open';
+
+-- Supports the queue-aware inbound bounce-back guard (inbound-portal-edit-guard.js), which
+-- asks on EVERY inbound pull whether a file has an UNDELIVERED outbound ClickUp push. Without
+-- an index on entity_id that lookup would scan sync_queue (mostly 'done' rows) on every pull.
+-- Partial so it stays tiny: only the small set of not-yet-delivered ClickUp push jobs.
+CREATE INDEX IF NOT EXISTS idx_sync_queue_pending_push
+  ON sync_queue (entity_id)
+  WHERE target = 'clickup' AND direction = 'push' AND status IN ('queued', 'processing', 'dead');
