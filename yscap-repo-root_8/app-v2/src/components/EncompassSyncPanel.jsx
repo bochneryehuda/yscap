@@ -290,7 +290,20 @@ export default function EncompassSyncPanel({ appId }) {
 
   const refresh = useCallback(async () => {
     setBusy('refresh'); setErr(''); setFlash('');
-    try { setData(await api.encompassRefresh(appId)); setFlash('Refreshed from Encompass.'); }
+    try {
+      const d = await api.encompassRefresh(appId);
+      setData(d);
+      // The refresh does a LIVE read from Encompass. If that read didn't land, the
+      // comparison below is still the LAST successful read — never say "Refreshed"
+      // over a stale copy (owner-reported 2026-08-11: "it says refreshed but the
+      // date stays 9 days ago and it still doesn't match"). Say plainly that the
+      // read didn't go through and give Encompass's own reason.
+      if (d && d.pull && d.pull.ok === false) {
+        setErr(`Couldn’t read this loan from Encompass just now${d.pull.reason ? ` — ${d.pull.reason}` : ''}. The comparison below is still the last successful read${d.pulledAt ? ` (${fmtAgo(d.pulledAt)})` : ''} — your latest Encompass changes are not in yet.`);
+      } else {
+        setFlash('Refreshed from Encompass — read just now.');
+      }
+    }
     catch (e) { setErr(e.message || 'Refresh failed.'); }
     finally { setBusy(''); }
   }, [appId]);
@@ -377,6 +390,15 @@ export default function EncompassSyncPanel({ appId }) {
             {hasLoan ? <>read from Encompass {fmtAgo(data.pulledAt)}</> : 'no Encompass loan pulled yet'}
             {data && data.priced === false ? ' · file not yet priced (some fields will show no data)' : ''}
           </div>
+          {/* The last read from Encompass failed — say so plainly (encompass_last_error
+              is cleared on every successful read, so a non-null value means the MOST
+              RECENT read didn't land). Otherwise the panel silently compares against a
+              stale copy and reads as "nothing matches" (owner-reported 2026-08-11). */}
+          {data && data.lastError && (
+            <div style={{ fontSize: 12, color: V.crit, fontWeight: 600, marginTop: 3 }}>
+              ⚠ The last read from Encompass didn’t go through — {data.lastError}. The comparison below shows the last values we successfully read; press “Refresh from Encompass” to try again.
+            </div>
+          )}
         </div>
         {hasLoan && (
           <button onClick={refresh} disabled={!!busy}
