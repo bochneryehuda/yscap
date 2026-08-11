@@ -127,20 +127,43 @@ function computeRollup({ links = [], draws = [], requests = [], findingLines = [
   }
 
   // ---- fold in the draw requests ----
+  // The INSPECTOR-approved amount for a request line, in the approval ladder's own order of
+  // authority (approval.inspectorApproved): the live request mirror when it carries the inspector's
+  // number, else the delivered-findings snapshot. A NULL is "the inspector has not answered this
+  // line yet" — DISTINCT from an inspector-approved $0 — so a not-yet-inspected line falls back to
+  // the borrower's request while a line the inspector trimmed to $0 does not. Without the findings
+  // fallback the per-line committed/available figures counted the REQUESTED amount for the whole
+  // stretch after the inspector answered but before the request mirror caught up: a $25,100 budget
+  // with a $7,700-inspector-approved / $8,250-requested draw read "drawn $8,250 / available $16,850"
+  // while the report headline (drawMoney, findings-aware) correctly said $7,700 (owner-reported
+  // 2026-08-10, 109 Chapel St draw #1). Never anticipate the higher requested amount once the
+  // inspector has answered — the whole amount was not approved.
+  const findingApprovedByReq = new Map();
+  for (const fl of (Array.isArray(findingLines) ? findingLines : [])) {
+    if (fl && fl.sitewire_request_id != null && fl.approved_cents != null) {
+      findingApprovedByReq.set(N(fl.sitewire_request_id), N(fl.approved_cents));
+    }
+  }
+  const inspectorApprovedFor = (r) => {
+    if (r && r.approved_cents != null) return N(r.approved_cents);              // the request mirror has it
+    const k = r ? N(r.sitewire_request_id) : null;                             // else the delivered findings
+    return (k != null && findingApprovedByReq.has(k)) ? findingApprovedByReq.get(k) : null; // null = not answered
+  };
   const unknown = [];
   for (const r of requests) {
     const l = byJid.get(N(r.sitewire_job_item_id));
     if (!l) { if (r.sitewire_job_item_id != null) unknown.push(N(r.sitewire_job_item_id)); continue; }
     if (l.is_media_item || String(l.sow_line_key).indexOf('__media__') === 0) continue;
     const line = ensureLine(l);
-    const appr = N(r.approved_cents);
+    const inspVal = inspectorApprovedFor(r);   // inspector-approved cents for this line, or null if not answered
+    const appr = N(inspVal);
     const req = N(r.requested_cents);
     const approvedDraw = drawApproved.get(N(r.sitewire_draw_id)) === true;
-    // The exposure THIS request row puts on the line while the draw is still open. The
-    // inspector's figure governs once they have answered; before that the borrower's request is
-    // the only statement of what this draw will take, and treating it as $0 is what made a live
-    // draw invisible in every budget figure we show.
-    const exposure = appr > 0 ? appr : req;
+    // The exposure THIS request row puts on the line while the draw is still open. Once the inspector
+    // has answered (inspVal is a real number, even a trimmed $0) THEIR figure governs; until then the
+    // borrower's request is the only statement of what this draw will take, and treating it as $0
+    // would make a live draw invisible in every budget figure we show.
+    const exposure = inspVal != null ? appr : req;
     if (approvedDraw) line.drawn += appr;
     else { line.approved_pending += appr; line.requested_open += req; line.pending_exposure += exposure; }
     if (l.unit_index != null) {
@@ -418,9 +441,11 @@ async function projectFromFileBudget(db, appId, rollup) {
       if (d.is_released || d.is_final_approved) {
         drawn += N(d.final_approved_cents) > 0 ? N(d.final_approved_cents) : N(d.approved_cents);
       } else {
-        // Same rule as the per-line exposure: the inspector's figure once they have answered,
-        // the borrower's request until then.
-        exposure += N(d.approved_cents) > 0 ? N(d.approved_cents) : N(d.requested_cents);
+        // Same rule as the per-line exposure: the inspector's figure once they have answered (even a
+        // trimmed-to-$0 line), the borrower's request until then — never the higher requested amount
+        // after the inspector has answered. `has_inspector_amounts` is drawMoney's own findings-aware
+        // "did the inspector put a number on this draw", so this path and the per-line path agree.
+        exposure += d.has_inspector_amounts ? N(d.approved_cents) : N(d.requested_cents);
       }
     }
     const committed = drawn + exposure;

@@ -218,15 +218,42 @@ const ROLLUP = rollupMod.computeRollup({
   const roof = declined.lines.find((l) => l.sow_line_key === 'cat:roof');
   eq('D12 declining the draw returns the money to available', roof.available, 2500000);
   eq('D13 …and the line is back to 0% used', roof.pct_committed, 0);
-  // Amended DOWN to $10,000: only the new ask is committed, the rest is free again.
+  // Amended DOWN to $10,000: only the new ask is committed, the rest is free again. The inspector
+  // has not re-inspected the amended line, so `approved_cents` is NULL (the production semantic for
+  // "not answered" — the reconcile binds null, never 0; approval.inspectorApproved treats 0 as an
+  // answered-$0). With no inspector figure the exposure falls back to the lowered request.
   const amended = rollupMod.computeRollup({
     links: LINKS, draws: [DRAW], findingLines: [],
-    requests: REQUESTS.map((r, i) => ({ ...r, approved_cents: 0, requested_cents: i === 0 ? 1000000 : 0 })),
+    requests: REQUESTS.map((r, i) => ({ ...r, approved_cents: null, requested_cents: i === 0 ? 1000000 : 0 })),
     nameByKey: { 'cat:roof': 'Roof' },
   });
   const roofA = amended.lines.find((l) => l.sow_line_key === 'cat:roof');
   eq('D12b amending the draw down commits only the new amount', roofA.committed, 1000000);
   eq('D12c …and frees the difference', roofA.available, 1500000);
+}
+{
+  /* THE INSPECTOR FIGURE COMES OFF THE DELIVERED FINDINGS WHEN THE REQUEST MIRROR HAS NOT CAUGHT UP
+     (owner-reported 2026-08-10, 109 Chapel St draw #1). Budget $25,100; the borrower requested
+     $8,250 and the inspector approved $7,700 — but the inspector's number is in the delivered
+     findings, not yet in the request mirror (approved_cents NULL). committed/available must read the
+     $7,700 the report headline reads, NOT the $8,250 requested — the whole amount was not approved. */
+  const B = 2510000, REQ = 825000, INSP = 770000;
+  const LINKS2 = [{ sow_line_key: 'cat:roof', sitewire_job_item_id: 900, name: 'Roof', budgeted_cents: B, state: 'active' }];
+  const DRAW2 = { sitewire_draw_id: 9001, number: 1, status: 'pending_capital_partner', total_requested_cents: REQ, total_approved_cents: 0 };
+  const REQ2 = [{ sitewire_draw_id: 9001, sitewire_job_item_id: 900, sitewire_request_id: 7001, requested_cents: REQ, approved_cents: null }];
+  const FL2 = [{ sitewire_draw_id: 9001, sitewire_request_id: 7001, sow_line_key: 'cat:roof', requested_cents: REQ, approved_cents: INSP }];
+  const roll = rollupMod.computeRollup({ links: LINKS2, draws: [DRAW2], requests: REQ2, findingLines: FL2, nameByKey: { 'cat:roof': 'Roof' } });
+  const line = roll.lines.find((l) => l.sow_line_key === 'cat:roof');
+  eq('D14 committed reads the inspector-approved $7,700, not the requested $8,250', line.committed, INSP);
+  eq('D14b available = budget − inspector-approved', line.available, B - INSP);
+  eq('D14c project committed too', roll.project.committed, INSP);
+  eq('D14d project available too', roll.project.available, B - INSP);
+  eq('D14e pct is measured against the approved amount', roll.project.pct_committed, Math.round((INSP / B) * 1000) / 10);
+  // And a not-yet-inspected line (no request-mirror figure, no finding line) still falls back to the
+  // request, so a live pre-inspection draw is never invisible.
+  const REQ3 = [{ sitewire_draw_id: 9001, sitewire_job_item_id: 900, sitewire_request_id: 7002, requested_cents: REQ, approved_cents: null }];
+  const roll2 = rollupMod.computeRollup({ links: LINKS2, draws: [DRAW2], requests: REQ3, findingLines: [], nameByKey: { 'cat:roof': 'Roof' } });
+  eq('D14f a not-yet-inspected line still commits the request', roll2.lines.find((l) => l.sow_line_key === 'cat:roof').committed, REQ);
 }
 {
   // a RELEASED draw is drawn, not merely committed
