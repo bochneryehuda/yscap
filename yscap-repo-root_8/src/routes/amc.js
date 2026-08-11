@@ -25,6 +25,7 @@ const { can, assigneeExistsSql } = require('../lib/permissions');
 const client = require('../amc/client');
 const orderService = require('../amc/order-service');
 const comments = require('../amc/comments');
+const cancel = require('../amc/cancel');
 const revisions = require('../amc/revisions');
 const rov = require('../amc/rov');
 const amcDocuments = require('../amc/documents');
@@ -125,6 +126,19 @@ async function orderScoped(req, res) {
   if (!(await canSeeFile(req, order.application_id))) { res.status(403).json({ error: 'forbidden' }); return null; }
   return order;
 }
+
+// Ask the AMC to cancel a placed order (the NAN mirror of the Class cancel). A reason
+// is required; the feature is off until the AMC is switched on (the gated transport
+// enforces it) and only asks — the order moves to 'cancelled' when the vendor confirms.
+router.post('/orders/:orderId/cancel', async (req, res) => {
+  const order = await orderScoped(req, res);
+  if (!order) return;
+  const reason = (req.body && req.body.reason) || '';
+  if (!String(reason).trim()) return res.status(400).json({ error: 'reason_required', message: 'Add a short reason for the cancellation.' });
+  const out = await cancel.requestCancel(db, order, { reason, staffId: req.actor && req.actor.id });
+  if (!out.ok) return res.status(400).json(out);
+  res.json(out);
+});
 
 // The message thread on an order (both directions), plus the unread count.
 router.get('/orders/:orderId/comments', async (req, res) => {

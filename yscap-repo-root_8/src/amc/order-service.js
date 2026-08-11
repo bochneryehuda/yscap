@@ -147,7 +147,11 @@ async function loadContext(db, appId) {
       salesContractAmount: isPurchase && a.purchase_price != null ? Number(a.purchase_price) : null,
     },
     borrowers,
-    parties: { bestContact: 'Borrower' },
+    // Leave bestContact UNSET here: buildOrderSpec defaults it to 'Borrower' (so the sent
+    // order is unchanged), and leaving it off the context lets orderAssumptions surface it
+    // as an auto-filled default the desk should eyeball — pre-filling it here would hide
+    // that auto-fill from the "What PILOT filled in for you" list on every real preview.
+    parties: {},
     // The appraisal-fee card, so the order desk shows whether payment is on file and
     // the same card fills the appraisal_card condition (bidirectional — owner-directed).
     card: await cardStatus(db, appId),
@@ -275,6 +279,9 @@ async function buildPreview(db, appId, opts = {}) {
     chosenFormName: formNameFor(forms, spec.productCode, chosen),   // the full name to SHOW
     spec,
     missing,
+    // What PILOT auto-filled (a default or a rule/mapping) that staff should eyeball
+    // before the order goes out — the NAN mirror of the Class desk's assumptions.
+    assumptions: orderBuild.orderAssumptions(ctx, chosen, opts.overrides || {}, spec),
     canPlace: missing.length === 0,
     forms,            // the form catalog [{id,name}], for the staff override dropdown
     notifyEmails: ctx.notifyEmails,   // who NAN will email order updates to

@@ -30,7 +30,9 @@ const session = require('./session');
 const storage = require('../lib/storage');
 
 // The order states that are still live at the AMC (mirror the partial index in db/480).
-const OPEN_STATUSES = ['ordered', 'in_process', 'assigned', 'inspected', 'in_review', 'product_available', 'on_hold'];
+// 'cancel_requested' stays open so the poll keeps checking for the vendor's Cancellation
+// (1051) confirmation, which flips it to 'cancelled'.
+const OPEN_STATUSES = ['ordered', 'in_process', 'assigned', 'inspected', 'in_review', 'product_available', 'on_hold', 'cancel_requested'];
 const POLL_BATCH = Math.max(1, parseInt(process.env.AMC_POLL_BATCH || '25', 10) || 25);
 
 // ---------------------------------------------------------------------------

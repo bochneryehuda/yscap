@@ -230,7 +230,54 @@ function missingRequired(spec) {
   return missing;
 }
 
+// ---------------------------------------------------------------------------
+// The auto-filled ASSUMPTIONS on a built spec — the values PILOT chose because the
+// file didn't state one (a default) or picked from a rule/mapping, each with a plain
+// reason, so the desk can SHOW what it filled in before the order goes out. PURE: it
+// READS the built spec + the inputs and classifies them; it never re-derives a default,
+// so what the assumptions list says can never disagree with what buildOrderSpec sends.
+// A value a staffer overrode (in opts) or that came verbatim from the file is NOT an
+// assumption and is left off the list.
+// ---------------------------------------------------------------------------
+function orderAssumptions(ctx, form, opts = {}, spec = null) {
+  const s = spec || buildOrderSpec(ctx, form, opts);
+  const loan = s.loan || {};
+  const property = s.property || {};
+  const parties = s.parties || {};
+  const out = [];
+  const add = (field, label, value, why, source) => {
+    if (value == null || value === '') return;
+    out.push({ field, label, value: String(value), why, source });
+  };
+
+  // The appraisal form, auto-picked from the form rules (only when staff didn't pick one).
+  // chooseForm returns the human name as `productName`; accept `name` too for a caller
+  // that hands one in. Fall back to the id only when neither is known.
+  if (opts.productCode == null && form && form.productCode != null) {
+    add('productCode', 'Appraisal form', form.productName || form.name || ('Form #' + form.productCode),
+      'Picked automatically from the form rules for this deal — you can change it above.', 'rule');
+  }
+  // Mortgage type: RTL loans are business-purpose and the file rarely states one, so it
+  // is DEFAULTED. The vendor requires it, so it is worth a second look before ordering.
+  if (opts.mortgageType == null && (ctx.mortgageType == null || ctx.mortgageType === '')) {
+    add('mortgageType', 'Mortgage type', loan.mortgageType,
+      'Filled in with a default — the file doesn’t state one. Check it before ordering.', 'default');
+  }
+  // Best person to contact: defaulted to the borrower when the file doesn't name one.
+  const partiesBest = ctx.parties && ctx.parties.bestContact;
+  if (opts.bestContact == null && (partiesBest == null || partiesBest === '')) {
+    add('bestContact', 'Best person to contact', parties.bestContact,
+      'Defaulted to the borrower — change it if the appraiser should reach someone else.', 'default');
+  }
+  // Property type (the vendor's title category), mapped from the file's property type.
+  if (opts.titleCategory == null && property.titleCategory) {
+    add('titleCategory', 'Property type', property.titleCategory,
+      'Worked out from the property type on the file.', 'derived');
+  }
+  return out;
+}
+
 module.exports = {
-  buildOrderSpec, dealShapeFor, dealStrategyKey, missingRequired,
+  buildOrderSpec, orderAssumptions, dealShapeFor, dealStrategyKey, missingRequired,
   titleCategoryFor, occupancyFor, loanPurposeFor,
 };
