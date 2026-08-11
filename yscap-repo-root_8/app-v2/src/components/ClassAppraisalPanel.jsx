@@ -621,16 +621,24 @@ function VersionRow({ preview, chosen, onPick }) {
 function ProductRow({ preview, chosen, enabled, open, onOpen, onPick }) {
   const row = (preview.fields || []).find((f) => f.path === 'productId');
   const value = row ? row.value : null;
+  // The product PILOT auto-picked from the admin rules (null until class_form_map is
+  // seeded). Show its NAME when it is the value on the order, mirroring the AMC panel.
+  const auto = preview.chosenProduct || null;
+  const autoName = auto && String(auto.productId) === String(value) && auto.productName ? auto.productName : null;
   return (
     <div style={{ border: `1px solid ${value ? LINE : BAD}`, borderRadius: 10, padding: 12, marginTop: 12, background: '#fff' }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 200 }}>
           <div style={{ fontSize: 11, color: MUTED, textTransform: 'uppercase', letterSpacing: '.03em' }}>Which report to order</div>
           <div style={{ color: value ? INK : BAD, fontWeight: 600 }}>
-            {value ? `Class product #${value}` : 'Not chosen yet'}
+            {value ? (autoName ? `${autoName} (#${value})` : `Class product #${value}`) : 'Not chosen yet'}
           </div>
           <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>
-            {chosen ? 'You picked this one.' : 'Class hasn’t given us a standard report to default to, so this is picked by hand for now.'}
+            {chosen
+              ? 'You picked this one.'
+              : auto
+                ? 'PILOT picked this one for you from the deal — you can change it from their list.'
+                : 'Class hasn’t given us a standard report to default to, so this is picked by hand for now.'}
           </div>
         </div>
         <button type="button" className="btn soft" onClick={onOpen} disabled={!enabled}

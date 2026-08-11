@@ -23,6 +23,13 @@
 
 const orderBuild = require('./order-build');
 const client = require('./client');
+const cfg = require('../config');
+const formSelect = require('./form-select');
+// The RTL strategy token (fix_and_flip / bridge / dscr / ground_up) is derived by the
+// SAME mapper the AMC desk uses, so a class_form_map rule keyed on a strategy means
+// exactly what the equivalent amc_form_map rule means. Both desks are RTL and this is a
+// pure helper — reused rather than re-implemented so the two form maps can never drift.
+const { dealStrategyKey } = require('../amc/order-build');
 
 function addrParts(v) {
   const a = (v && typeof v === 'object') ? v : {};
@@ -45,6 +52,7 @@ async function loadContext(db, appId) {
   const r = await db.query(
     `SELECT a.id, a.ys_loan_number, a.loan_type, a.property_address, a.property_type,
             a.occupancy, a.purchase_price, a.loan_amount, a.est_closing_date,
+            a.program, a.rehab_type,
             a.borrower_id, a.co_borrower_id, a.loan_officer_id, a.processor_id,
             b.first_name AS b_first, b.last_name AS b_last, b.full_name AS b_full,
             b.email AS b_email, b.cell_phone AS b_cell,
@@ -81,6 +89,10 @@ async function loadContext(db, appId) {
   return {
     appId: a.id,
     referenceNumber: a.ys_loan_number || null,
+    // The RTL deal signals the product auto-pick keys on (see dealShapeFor). The rehab
+    // tier and the program together derive the strategy; carried but never sent to Class.
+    program: a.program || null,
+    rehabType: a.rehab_type || null,
     property: {
       ...pa,
       // The canonical key, not the raw stored label — "Condominium" and "Condo"
@@ -204,9 +216,70 @@ function fieldRows(built) {
   return rows;
 }
 
+// ---------------------------------------------------------------------------
+// Product (form) auto-pick — the Class mirror of the AMC form-selection rules.
+// Reads the admin-editable class_form_map, matches a rule to the deal, and returns the
+// chosen Class productId. INERT until class_form_map is seeded (db/535 ships it EMPTY):
+// with no rows chooseProduct returns null and staff pick from Class's live catalog —
+// exactly today's behaviour. When the owner names the Class product ids and a later
+// migration seeds the rows, the auto-pick lights up with no code change here.
+// ---------------------------------------------------------------------------
+const PRODUCT_RULE_COLS =
+  `id, program, property_category, loan_purpose, loan_type, property_key,
+   product_id, product_name, priority, active`;
+
+async function loadProductRules(db) {
+  // Scope to the tenant environment — the seeded ids are environment-specific, so a
+  // service pointed at UAT must prefer its OWN rules and never pick a production id when
+  // a UAT rule exists. But when THIS environment has no rules, fall back to whatever
+  // active rules DO exist so a deal still gets a sensible default — the same shape the
+  // AMC formRules resolver uses. (An id that is wrong for the tenant surfaces as a
+  // VISIBLE send error, never a silent bad order.)
+  const env = (cfg.class && cfg.class.environment) || 'production';
+  const forEnv = await db.query(
+    `SELECT ${PRODUCT_RULE_COLS} FROM class_form_map
+      WHERE active = true AND (environment = $1 OR environment IS NULL)
+      ORDER BY priority ASC, id ASC`, [env]);
+  if (forEnv.rows.length) return forEnv.rows;
+  const anyEnv = await db.query(
+    `SELECT ${PRODUCT_RULE_COLS} FROM class_form_map
+      WHERE active = true
+      ORDER BY priority ASC, id ASC`);
+  return anyEnv.rows;
+}
+
+// The deal shape the product rules match on — program + property category/key + loan
+// purpose + the RTL STRATEGY. `loan_purpose` is the Purchase/Refinance stored on the file;
+// `loan_type` is the strategy (fix_and_flip/bridge/dscr/ground_up) DERIVED the same way the
+// AMC desk derives it, so a rule keyed on a strategy means the same thing on both desks.
+function dealShapeFor(ctx) {
+  const c = ctx || {};
+  const strategy = dealStrategyKey({
+    program: c.program,
+    rehabType: c.rehabType,
+    loanPurpose: c.loan && c.loan.loanType,
+    loanType: c.loan && c.loan.loanType,
+  });
+  return {
+    program: c.program || null,
+    propertyCategory: c.property && c.property.categoryLabel,   // the RAW label
+    loanPurpose: c.loan && c.loan.loanType,                     // Purchase / Refinance
+    loanType: strategy,                                          // the RTL strategy token
+    propertyKey: c.property && c.property.category,             // the canonical key (sfr / condo / …)
+  };
+}
+
 async function buildPreview(db, appId, opts = {}) {
   const ctx = await loadContext(db, appId);
   if (!ctx) return null;
+  // Auto-pick the Class product from the admin rules. A staff override (opts.overrides
+  // .productId) still WINS inside buildOrder, which reads ctx.productId as the DERIVED
+  // value — so we set it here and let the override take precedence, exactly the way the
+  // form default does. `chosen` is null until class_form_map is seeded, so with no rules
+  // productId stays unset and the order desk asks a human to pick, unchanged.
+  const productRules = await loadProductRules(db);
+  const chosen = formSelect.chooseProduct(dealShapeFor(ctx), productRules);
+  if (chosen && ctx.productId == null) ctx.productId = chosen.productId;
   // The version comes from the system default unless this order chose one. The
   // BUILDER resolves it (an override wins), and the answer it reports is what the
   // screen shows and what the send posts to — never re-derived here, or the screen
@@ -222,6 +295,9 @@ async function buildPreview(db, appId, opts = {}) {
     // notificationList is an array, so fieldRows() skips it — surface it here so the
     // screen shows every recipient before the order goes out (the desk's standing rule).
     notifyEmails: ctx.notifyEmails,
+    // The product PILOT auto-picked from class_form_map (null until the map is seeded).
+    // Staff can still change it on the screen; the override wins in buildOrder.
+    chosenProduct: chosen,
     missing: built.missing,
     assumptions: built.assumptions,
     overridden: built.overridden,
@@ -240,4 +316,7 @@ async function buildPreview(db, appId, opts = {}) {
   };
 }
 
-module.exports = { loadContext, buildPreview, fieldRows, _internals: { LABELS, addrParts } };
+module.exports = {
+  loadContext, buildPreview, fieldRows, loadProductRules, dealShapeFor,
+  _internals: { LABELS, addrParts },
+};
