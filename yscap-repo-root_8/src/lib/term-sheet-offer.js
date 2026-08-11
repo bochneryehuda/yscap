@@ -531,6 +531,19 @@ async function registerFromOffer(appId, offer) {
      leverage override that lands "ineligible" against the Standard caps must be
      sized and registered as MANUAL with its escalation, never bounced. */
   if (isManual) inputs.forcePrice = true;
+  /* MANUAL: the stated "months of liquidity" are the RESERVE months the borrower
+     must SHOW (owner-directed 2026-08-11) and they drive the required-liquidity
+     dollar (pricing.js normalize). The register route collects them from the
+     Products & Pricing panel, but the STUDIO that built this offer has no such
+     prompt — so the offer flow uses the COMPANY DEFAULT (the same value the panel
+     pre-fills), fed into the quote AND persisted so the stored quote's liquidity
+     requirement matches the register route's, not the Standard 2/4-by-loan-size
+     rule. A future per-file months on the offer would slot in here. */
+  let offerAssetMonths = null;
+  if (isManual) {
+    try { offerAssetMonths = (await manualProgram.loadSettings()).assetMonths; } catch (_) { offerAssetMonths = null; }
+    if (offerAssetMonths != null) inputs.assetMonths = offerAssetMonths;
+  }
 
   const vestRefusal = require('./vesting-program-rule').registrationRefusal(app, program);
   if (vestRefusal) return { registered: false, reason: 'vesting_refused' };
@@ -562,6 +575,7 @@ async function registerFromOffer(appId, offer) {
       // what the file's history should show — the borrower did not price this.
       registeredByStaffId: offer.officer_id || null,
       isManual,
+      assetMonths: offerAssetMonths,
       termOptions: (offer.term_options && typeof offer.term_options === 'object') ? offer.term_options : null,
       needsApproval,
       overrideChanges,
@@ -576,6 +590,12 @@ async function registerFromOffer(appId, offer) {
   // the note buyer's own rules) attach through the engine, exactly as on every other
   // register path. Best-effort.
   try { await require('./conditions/engine').evaluateApplication(appId); } catch (_) { /* advisory */ }
+  // Populate the assets/liquidity condition from the freshly-computed quote NOW —
+  // the same call the staff register route makes — so the file shows the correct
+  // required liquidity (and, for a manual product, the stated reserve months)
+  // immediately rather than only after the next boot backfill. A fresh file has no
+  // signed-off condition to reopen. Best-effort.
+  try { await require('./liquidity').syncLiquidityCondition(appId, quote, db, isManual ? { program, assetMonths: offerAssetMonths } : {}); } catch (_) { /* advisory */ }
 
   return { registered: true, program, status: quote.status, isManual, needsApproval };
 }
