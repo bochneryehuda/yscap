@@ -509,5 +509,47 @@ console.log('\n15. Ownership is proved by the county current-owner record and by
     'the acquisition deed still decides when one is present — the new sources are a fallback, not a replacement');
 }
 
+// ═══════════════════ 16. A same-day / at-purchase mortgage is not a refinance exit
+console.log('\n16. Purchase financing is not a refinance — the real later refinance is what proves the exit');
+{
+  const ent = 'Bishop Street Holdings LLC';
+  const mort = (date, extra) => ({ addresses: [ONE_LINE], grantees: [ent], date, documentId: `M-${date}`, termMonths: 360, ...extra });
+
+  // A permanent mortgage recorded AT the purchase (a same-day "refinance" claim)
+  const atPurchase = byPillar(C.computeChecks(
+    { deal_type: 'hold', purchase_date: '2024-02-01', refi_date: '2024-02-05', property_address: ADDR, entity_name: ent },
+    { searched: true, deeds: [], satisfactions: [], mortgages: [mort('2024-02-05', { isRefinance: false, loanPurpose: 'Purchase' })] },
+    CTX, TODAY)).exit;
+  ok(atPurchase.auto_verdict !== 'proved',
+    'a permanent mortgage recorded at the purchase is purchase financing, not a refinance exit — a same-day refinance is not an exit');
+
+  // Two mortgages at purchase (a first and a second) PLUS a genuine later refinance
+  const laterRefi = byPillar(C.computeChecks(
+    { deal_type: 'hold', purchase_date: '2024-02-01', refi_date: '2025-06-01', property_address: ADDR, entity_name: ent },
+    { searched: true, deeds: [], satisfactions: [], mortgages: [
+      mort('2024-02-03', { documentId: 'PM1' }),                       // first, at purchase
+      mort('2024-02-03', { documentId: 'PM2' }),                       // second, at purchase
+      mort('2025-06-04', { documentId: 'RF1', isRefinance: true }),    // the real refinance, 16 months later
+    ] }, CTX, TODAY)).exit;
+  ok(laterRefi.auto_verdict === 'proved' && laterRefi.auto_evidence.recordingDate === '2025-06-04',
+    'with two mortgages at purchase AND a real later refinance, the LATER refinance is what proves the exit — not the 2nd-at-purchase');
+  ok(laterRefi.auto_evidence.excludedPurchaseFinancing === true,
+    '…and the evidence records that the at-purchase financing was seen and correctly set aside');
+
+  // No purchase date to place the mortgage, and the record does not call it a refinance
+  const noDateNoSignal = byPillar(C.computeChecks(
+    { deal_type: 'hold', refi_date: '2025-06-01', property_address: ADDR, entity_name: ent },
+    { searched: true, deeds: [], mortgages: [mort('2025-06-04')] }, CTX, TODAY)).exit;
+  ok(noDateNoSignal.auto_verdict !== 'proved',
+    'with no purchase date to place it and no "refinance" flag on the record, a mortgage is not assumed to be a refinance exit');
+
+  // …but an explicit refinance flag proves it even without a purchase date to place it
+  const noDateWithSignal = byPillar(C.computeChecks(
+    { deal_type: 'hold', refi_date: '2025-06-01', property_address: ADDR, entity_name: ent },
+    { searched: true, deeds: [], mortgages: [mort('2025-06-04', { isRefinance: true })] }, CTX, TODAY)).exit;
+  ok(noDateWithSignal.auto_verdict === 'proved',
+    '…while a record that calls itself a refinance still proves the exit with no purchase date to place it');
+}
+
 console.log(fail ? `\n${fail} FAILURE(S)` : '\nOK  the pure engine: never fabricates, both comparers must agree, and "we did not look" is not an all-clear');
 process.exit(fail ? 1 : 0);
