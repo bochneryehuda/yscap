@@ -198,19 +198,29 @@ const REGISTRY = Object.freeze([
   pull({ key: 'origination_pct', encompassFieldId: '388', loanPath: ['originationFeePercent', 'closingCost.originationFeePercentage'], type: 'percent', category: 'cost', compare: 'percent', our: 'quote:origination % (e.g. 1.25)', note: 'Origination fee % — field 388. Read authoritatively BY FIELD NUMBER (fieldReader → 1.000 = 1%), the same scale as our origPct*100. The GFE loanOriginationPercentage path is deliberately NOT a fallback — it is a different fee (points/adjusted origination) and reads 2 where field 388 is 1' }),
   pull({ key: 'term_months', encompassFieldId: '4', loanPath: 'loanAmortizationTermMonths', type: 'int', category: 'loan', compare: 'int', our: 'column:term (text → int)', note: 'Term in months' }),
   pull({ key: 'maturity_date', encompassFieldId: '78', loanPath: 'maturityDate', type: 'date', category: 'loan', compare: 'date', our: 'column:maturity_date', note: 'Maturity date — read from full loan (maturityDate), not pipeline' }),
-  // Funded date — the closing-workflow 3-system reconciliation reads this (field
-  // 1401 Funded Date; docs/ENCOMPASS-DATA-MAPPING.md §3G). REFERENCE only for the
-  // per-file term-sheet comparison: it is DISPLAYED (Encompass's funded date) but
-  // NEVER gates term-sheet issuance. It must not, because a funded date only
-  // exists AFTER the loan funds — long after the term sheet is issued — so under
-  // the owner-directed match-all gate (2026-07-26: advisory + "no data" both hold
-  // the term sheet) a naturally-empty funded_date would wrongly block every
-  // pre-funding file. extractFields still returns the value (compare type does not
-  // affect extraction), so closing.js `readEncompassFundedDate` + the closing
-  // reconciliation gate (#773) keep working unchanged. loanPath is
-  // closingDocument.fundingDate — verify the tenant populates it on a live funded
-  // loan before the closing gate treats a present value as authoritative.
-  pull({ key: 'funded_date', encompassFieldId: '1401', loanPath: 'closingDocument.fundingDate', type: 'date', category: 'loan', compare: 'reference', gate: GATE.REFERENCE, our: 'column:funded_date', note: 'Funded date — read-only reference; shown for info, never gates the term sheet (empty until funding); the closing reconciliation gate reads the value separately' }),
+  // Funded date — the closing-workflow 3-system reconciliation reads this
+  // (docs/ENCOMPASS-DATA-MAPPING.md §3G). REFERENCE only for the per-file
+  // term-sheet comparison: it is DISPLAYED (Encompass's funded date) but NEVER
+  // gates term-sheet issuance. It must not, because a funded date only exists
+  // AFTER the loan funds — long after the term sheet is issued — so under the
+  // owner-directed match-all gate (2026-07-26: advisory + "no data" both hold the
+  // term sheet) a naturally-empty funded_date would wrongly block every pre-funding
+  // file. extractFields still returns the value (compare type does not affect
+  // extraction), so closing.js `readEncompassFundedDate` + the closing
+  // reconciliation gate read it.
+  //
+  // THE FIELD IS THE CUSTOM FIELD CX.FUNDEDDATE, NOT the standard field 1401
+  // (owner-reported 2026-08-11: "the funded date was filled in Encompass … the
+  // field that we should be using is cx.fundeddate"). This tenant records the
+  // funded date in CX.FUNDEDDATE (live custom-field catalog: "Funded Date") and
+  // leaves standard field 1401 empty, so the reconciliation panel showed Encompass
+  // blank even after the closer filled it in. CX.FUNDEDDATE is the primary read
+  // (BY NUMBER via the fieldReader, and passed through customFields[]); the standard
+  // field 1401 stays as a FALLBACK through its loanPath closingDocument.fundingDate,
+  // so a loan that carries the standard funded date is still read. Dates arrive from
+  // the fieldReader in the tenant display format (MM/DD/YYYY) — readEncompassFundedDate
+  // normalizes with normDate, which handles both that and ISO.
+  pull({ key: 'funded_date', encompassFieldId: 'CX.FUNDEDDATE', loanPath: 'closingDocument.fundingDate', type: 'date', category: 'loan', compare: 'reference', gate: GATE.REFERENCE, our: 'column:funded_date', note: 'Funded date — CX.FUNDEDDATE (the tenant\'s field; standard field 1401 / closingDocument.fundingDate is the fallback loanPath). Read-only reference; shown for info, never gates the term sheet (empty until funding); the closing reconciliation gate reads the value separately' }),
   // THE PURCHASE ADVICE (PA) DATE — the SOLD signal (owner-directed 2026-08-09: "I'm going to
   // give you the exact field ID that you should use from Encompass, which is the PA date, and
   // that's going to tell you if it was sold or not. If a file doesn't have a PA date yet, it
@@ -892,5 +902,10 @@ module.exports = {
   fieldReaderToMap,
   mapValue,
   compareField,
+  // The Encompass date normalizer — tolerant of the fieldReader's MM/DD/YYYY
+  // display format AND ISO. closing.readEncompassFundedDate uses it so a funded
+  // date read out of Encompass reduces to a 'YYYY-MM-DD' the reconciliation gate
+  // can compare (the plain closing.dayStr is ISO-only and would drop MM/DD/YYYY).
+  normDate,
   _internals: { coerce, readField, getPath, num, normText, normName, normDate, normEntityName, normPartnerName, stripCorpForm, fieldReaderToMap, KNOWN_FIELD_IDS, MONEY_TOL, WHOLE_DOLLAR_TOL, PERCENT_TOL },
 };
