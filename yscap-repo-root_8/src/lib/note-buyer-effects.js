@@ -242,7 +242,14 @@ async function noteBuyerSlot(appId, client = db, opts = {}) {
     app = (await client.query(`SELECT lender FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0] || null;
   } catch (_) { app = null; }
   if (!app) return out;
-  out.current = { label: app.lender || null, key: registry.normNoteBuyer(app.lender) || null };
+  // `key` is the CANONICAL buyer key (not the exact normNoteBuyer), so it matches the
+  // canonical `value` on the options + the `effects` map keys below. Otherwise a file
+  // whose stored lender is a long label ("EMCAP Financial" → 'emcapfinancial', "Blue
+  // Lake Capital" → 'bluelakecapital') — which db/535 and the register auto-link now
+  // make the norm — would have a current.key that matches NO effects entry, and the
+  // card's "what this note buyer requires" panel + the (current) marker would vanish.
+  // `label` stays the RAW stored name (what the file actually holds).
+  out.current = { label: app.lender || null, key: (registry.canonicalNoteBuyer(app.lender) || {}).key || null };
 
   try { out.options = await require('./note-buyers').listNoteBuyers(); } catch (_) { out.options = []; }
   // The file's own note buyer is always offerable, even if ClickUp has never heard of
