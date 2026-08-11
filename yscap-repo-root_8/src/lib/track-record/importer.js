@@ -970,7 +970,7 @@ async function decideCandidate(candidateId, opts, client) {
   }
 }
 
-async function decideLocked(db, candidateId, { action, staffId, note, reasonCode, snoozeDays, dealType, confirmReopen, exit }) {
+async function decideLocked(db, candidateId, { action, staffId, note, reasonCode, snoozeDays, dealType, confirmReopen, exit, rehab }) {
   const c = (await db.query(
     `SELECT * FROM track_record_candidates WHERE id=$1 FOR UPDATE`, [candidateId])).rows[0];
   if (!c) { const e = new Error('not found'); e.status = 404; throw e; }
@@ -1005,7 +1005,7 @@ async function decideLocked(db, candidateId, { action, staffId, note, reasonCode
   }
 
   if (action === 'match_existing') return matchExisting(db, c, { staffId, note, confirmReopen });
-  return importNew(db, c, { staffId, note, dealType, exit });
+  return importNew(db, c, { staffId, note, dealType, exit, rehab });
 }
 
 /* THE UNDECIDED STATES. A settle may only ever move a candidate OUT of one of
@@ -1049,7 +1049,7 @@ async function settle(db, id, status, staffId, note) {
    own answer would make the audit trail say something untrue and would hide
    the line from the queue built to surface self-reported ones. It defaults to
    'staff' so every existing caller is unchanged. */
-async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staff', borrowerActor = null, exit = null }) {
+async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staff', borrowerActor = null, exit = null, rehab = null }) {
   /* A DEAL TYPE IS REQUIRED TO IMPORT, because a line without one counts toward
      NOTHING and is filed under holds — see `dealTypeFromRecords`. The explicit
      answer wins; the candidate's own value is next; the records' reading is the
@@ -1122,6 +1122,21 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
     }
   }
 
+  /* #23 — THE REHAB BUDGET, TYPED ON THE IMPORT SCREEN (owner-directed). The
+     public records (deeds, mortgages) never carry a rehab figure, so it can only
+     come from the reviewer — it is the one deal figure the import screen must let
+     a human enter. Optional: a blank / zero / negative reads as "not given" and
+     leaves the column NULL. A figure too big for the money column is refused at
+     the door (there is a human at this screen), never escaped as a 500 —
+     mirroring the exit figures above. */
+  let rehabAmount = null;
+  const rehabN = num(rehab);
+  if (rehabN > 0) {
+    const problem = NB.tableColumnProblem('track_records', 'rehab_amount', rehabN);
+    if (problem) { const e = new Error(problem); e.status = 400; e.code = 'rehab_amount_too_big'; throw e; }
+    rehabAmount = rehabN;
+  }
+
   let llcId = c.proposed_llc_id || null;
   let entityCreated = false;
   if (!llcId && str(c.entity_name)) {
@@ -1135,8 +1150,8 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
        (borrower_id, llc_id, property_address, address_key, deal_type,
         purchase_price, purchase_date, sale_price, sale_date, entity_name,
         rent_amount, rent_date, refi_amount, refi_date,
-        origin, entered_by_kind, entered_at, notes, seller_name)
-     VALUES ($1,$2::uuid,$3::jsonb,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'public_records',$16,now(),$15,$17)
+        origin, entered_by_kind, entered_at, notes, seller_name, rehab_amount)
+     VALUES ($1,$2::uuid,$3::jsonb,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'public_records',$16,now(),$15,$17,$18)
      RETURNING id, is_verified, verification_status`,
     /* THE CANONICAL OBJECT SHAPE, never a bare string. `candidate.property_address`
        arrives as the one-line STRING elementix shapes.js flattens the deed's
@@ -1161,7 +1176,8 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
       enteredByKind,
       // The counterparty the deed named (audit M3) — what the related-party
       // control reads. Null when the records named nobody but the borrower.
-      (c.raw && str(c.raw.counterparty)) || null]);
+      (c.raw && str(c.raw.counterparty)) || null,
+      rehabAmount]);
 
   const row = ins.rows[0];
   /* EXACTLY ONE DECIDER (db/504's `trc_one_decider_check`): a staffer or a
