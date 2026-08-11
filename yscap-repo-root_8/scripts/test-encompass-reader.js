@@ -16,6 +16,9 @@
  *   5. pullLoanForApplication with no ys_loan_number stamps encompass_last_error.
  *   6. pullLoanForApplication with a pipeline-search miss stamps encompass_last_error.
  *   7. _scrubForStorage removes SSN from borrower + coBorrower on every application.
+ *  15. STALE-GUID SELF-HEAL — a cached GUID whose getLoan 404s/410s is cleared and
+ *      re-searched ONCE so the pull self-heals; a transient error (401/5xx/timeout)
+ *      never clears the GUID; _isLoanNotFound classifies only 404/410 as "gone".
  */
 
 const assert = require('assert');
@@ -430,7 +433,67 @@ async function main() {
     assert.ok(!s.includes('444-55-8028') && !s.includes('444558028'), 'raw co-borrower SSN never stored (any format)');
   }
 
-  console.log('OK — Encompass reader unit tests pass (includes super-dump + bulk-pull + client-contract check + identity-by-number + SSN scrub).');
+  // (15) STALE-GUID SELF-HEAL (owner-reported 2026-08: a file "read from Encompass 9d ago"
+  // that keeps failing to refresh even after pressing Refresh). A cached GUID can go DEAD —
+  // a loan deleted / merged / renumbered in Encompass — and getLoan then 404s on every pull,
+  // so the timestamp freezes and the file never matches, forever, with no way out. On a
+  // DEFINITIVE not-found (404/410) with a CACHED guid, clear the bad link and re-search by
+  // loan number ONCE so the very next pull self-heals. A TRANSIENT error (401/403/5xx/timeout)
+  // must NEVER clear the guid (that would throw away a good link on every Encompass hiccup).
+
+  // (15a) The classifier: only HTTP 404/410 count as "the loan is gone".
+  assert.strictEqual(reader._isLoanNotFound(new Error('Encompass 404: Not Found')), true, '404 is not-found');
+  assert.strictEqual(reader._isLoanNotFound(new Error('Encompass 410: Gone')), true, '410 is not-found');
+  assert.strictEqual(reader._isLoanNotFound(new Error('Encompass 401: Unauthorized')), false, '401 is transient');
+  assert.strictEqual(reader._isLoanNotFound(new Error('Encompass 403: Forbidden')), false, '403 is transient');
+  assert.strictEqual(reader._isLoanNotFound(new Error('Encompass 400: Bad Request')), false, '400 is not not-found');
+  assert.strictEqual(reader._isLoanNotFound(new Error('Encompass 500: Server Error')), false, '500 is transient');
+  assert.strictEqual(reader._isLoanNotFound(new Error('network timeout')), false, 'a timeout is transient');
+  assert.strictEqual(reader._isLoanNotFound(null), false, 'null is not not-found');
+  assert.strictEqual(reader._isLoanNotFound({}), false, 'an object with no message is not not-found');
+
+  // (15b) A cached GUID whose getLoan 404s: clear it, re-search once, and the pull SUCCEEDS.
+  mockDb._appRows = [{ id: 'app-stale', ys_loan_number: 'YS-HEAL', encompass_loan_guid: 'guid-dead' }];
+  let healFinds = 0;
+  mockClient.findLoanByLoanNumber = async () => { healFinds++; return [{ loanId: 'guid-fresh', fields: { 'Loan.Guid': 'guid-fresh', 'Loan.LoanNumber': 'YS-HEAL' } }]; };
+  mockClient.getLoan = async (guid) => {
+    if (guid === 'guid-dead') throw new Error('Encompass 404: {"summary":"Loan not found"}');
+    return { guid, loanNumber: 'YS-HEAL', applications: [{ borrower: { firstName: 'Heal', lastName: 'Ed' } }] };
+  };
+  mockClient.readFields = async () => ({ '364': 'YS-HEAL' });
+  queries.length = 0;
+  const rHeal = await reader.pullLoanForApplication('app-stale');
+  assert.strictEqual(rHeal.ok, true, 'a stale GUID self-heals: the pull succeeds after re-search');
+  assert.strictEqual(rHeal.guid, 'guid-fresh', 'the fresh GUID is used');
+  assert.strictEqual(healFinds, 1, 're-searched exactly once');
+  assert.ok(queries.some((q) => /SET encompass_loan_guid=NULL/.test(q.sql)), 'the dead GUID is cleared');
+  assert.ok(queries.some((q) => /UPDATE applications SET encompass_loan_guid=\$1/.test(q.sql) && q.params[0] === 'guid-fresh'), 'the fresh GUID is adopted');
+  assert.ok(queries.some((q) => /encompass_extra=\$1::jsonb/.test(q.sql)), 'the healed loan is stored (pulledAt advances)');
+
+  // (15c) A cached GUID whose getLoan hits a TRANSIENT error (401): fail, but NEVER clear or re-search.
+  mockDb._appRows = [{ id: 'app-transient', ys_loan_number: 'YS-TX', encompass_loan_guid: 'guid-live' }];
+  let txFinds = 0;
+  mockClient.findLoanByLoanNumber = async () => { txFinds++; return []; };
+  mockClient.getLoan = async () => { throw new Error('Encompass 401: token expired'); };
+  queries.length = 0;
+  const rTx = await reader.pullLoanForApplication('app-transient');
+  assert.strictEqual(rTx.ok, false, 'a transient getLoan error fails without self-heal');
+  assert.ok(/getLoan: Encompass 401/.test(rTx.reason), 'the transient error is surfaced (no re-search)');
+  assert.strictEqual(txFinds, 0, 'a transient error NEVER re-searches');
+  assert.ok(!queries.some((q) => /SET encompass_loan_guid=NULL/.test(q.sql)), 'a transient error NEVER clears the cached GUID');
+
+  // (15d) A cached GUID that 410s AND re-search finds nothing: still clear the dead link
+  // (so a later pull can try again once the loan reappears), and explain both halves.
+  mockDb._appRows = [{ id: 'app-gone', ys_loan_number: 'YS-GONE', encompass_loan_guid: 'guid-dead-2' }];
+  mockClient.findLoanByLoanNumber = async () => [];
+  mockClient.getLoan = async () => { throw new Error('Encompass 410: Gone'); };
+  queries.length = 0;
+  const rGone = await reader.pullLoanForApplication('app-gone');
+  assert.strictEqual(rGone.ok, false, 'a stale GUID whose re-search finds nothing → fails');
+  assert.ok(queries.some((q) => /SET encompass_loan_guid=NULL/.test(q.sql)), 'the dead GUID is still cleared so a later pull can retry');
+  assert.ok(/out of date/.test(rGone.reason) && /no Encompass loan/.test(rGone.reason), 'the reason explains the stale link and the empty re-search');
+
+  console.log('OK — Encompass reader unit tests pass (includes super-dump + bulk-pull + client-contract check + identity-by-number + SSN scrub + stale-GUID self-heal).');
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

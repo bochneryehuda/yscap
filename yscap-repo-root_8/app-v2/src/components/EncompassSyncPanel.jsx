@@ -393,8 +393,13 @@ export default function EncompassSyncPanel({ appId }) {
           {/* The last read from Encompass failed — say so plainly (encompass_last_error
               is cleared on every successful read, so a non-null value means the MOST
               RECENT read didn't land). Otherwise the panel silently compares against a
-              stale copy and reads as "nothing matches" (owner-reported 2026-08-11). */}
-          {data && data.lastError && (
+              stale copy and reads as "nothing matches" (owner-reported 2026-08-11).
+              Gated on hasLoan: this banner points at "the comparison below" and the
+              "Refresh from Encompass" button, both of which only render once a loan is
+              linked. In the NO-loan state the same error is shown by the "Last attempt:"
+              line beside the loan-number box, so showing it here too would duplicate it
+              and name a button that isn't on screen. */}
+          {hasLoan && data.lastError && (
             <div style={{ fontSize: 12, color: V.crit, fontWeight: 600, marginTop: 3 }}>
               ⚠ The last read from Encompass didn’t go through — {data.lastError}. The comparison below shows the last values we successfully read; press “Refresh from Encompass” to try again.
             </div>
