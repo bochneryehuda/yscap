@@ -227,6 +227,17 @@ console.log('\n6. The exit — a sale, a real refinance, and the two things that
   ok(C.PERM_TERM_MIN_MONTHS === S.PERM_TERM_MIN_MONTHS,
     'the permanent-term floor is the SAME number the scoring ladder uses — one rule read from two sides');
 
+  /* THE ROOT-FIX, PROVEN ON THE REAL FIELD. shapes.mortgage() puts the borrower
+     names in `grantees` (from borrowerNames||borrower), NEVER `borrowers` — so
+     findRefinance, reading `m.borrowers`, was silently dark on every production
+     mortgage. This fixture carries ONLY `grantees`, the shape live data has. */
+  const refiRealField = byPillar(C.computeChecks(hold, {
+    searched: true, deeds: [], satisfactions: [],
+    mortgages: [{ addresses: [ONE_LINE], grantees: ['Bishop Street Holdings LLC'], date: '2025-04-04', documentId: 'M1', termMonths: 360 }],
+  }, CTX, TODAY)).exit;
+  ok(refiRealField.auto_verdict === 'proved',
+    'a permanent-term refinance named on the REAL `grantees` field is a proved exit — findRefinance read the never-emitted `borrowers` and was dark on this before');
+
   const leased = byPillar(C.computeChecks(
     { deal_type: 'hold', purchase_date: '2024-02-01', rent_date: '2025-04-01', property_address: ADDR },
     { searched: true, deeds: [], mortgages: [] }, CTX, TODAY)).exit;
@@ -415,6 +426,87 @@ console.log('\n14. The pattern that only shows across the whole track record');
   for (const bad of [null, 'x', 7]) {
     ok(CP.assessCounterparty(bad, bad).verdict === 'unknown', `assessCounterparty(${JSON.stringify(bad)}) answers unknown rather than throwing`);
   }
+}
+
+// ═══════════════════ 15. OWNERSHIP — the current owner and the refinance prove it too
+console.log('\n15. Ownership is proved by the county current-owner record and by a refinance — not only the acquisition deed');
+{
+  const co = (holder, key) => ({
+    addresses: [ONE_LINE], grantees: key === 'entity' ? [holder] : [], people: key === 'person' ? [holder] : [],
+    date: '2024-02-08', isCurrent: true, deedId: 'CO-1',
+  });
+  const noDeeds = { searched: true, deeds: [], mortgages: [], satisfactions: [] };
+
+  // (1) the current-owner record
+  const coPerson = byPillar(C.computeChecks(LINE,
+    { ...noDeeds, currentOwner: co('Yehuda Bochner', 'person') }, { ...CTX, controlVerdict: null }, TODAY)).ownership;
+  ok(coPerson.auto_verdict === 'proved',
+    'the borrower named on the county current-owner record proves ownership, with no acquisition deed and no control check');
+
+  const coEntityNoCtl = byPillar(C.computeChecks(LINE,
+    { ...noDeeds, currentOwner: co('Bishop Street Holdings LLC', 'entity') }, { ...CTX, controlVerdict: null }, TODAY)).ownership;
+  ok(coEntityNoCtl.auto_verdict === 'no_data' && coEntityNoCtl.auto_evidence.needsControlCheck === true,
+    '…but when the current owner is our ENTITY and nobody confirmed control, it is no_data needing the control check — never a fabricated proof');
+
+  const coEntityOk = byPillar(C.computeChecks(LINE,
+    { ...noDeeds, currentOwner: co('Bishop Street Holdings LLC', 'entity') }, CTX, TODAY)).ownership;
+  ok(coEntityOk.auto_verdict === 'proved' && String(coEntityOk.auto_evidence.satisfiedByLlcId) === String(CTX.llcId),
+    '…and once control is confirmed it is proved, carrying which entity satisfied it');
+
+  // (2) the refinance — ANY term (this is the ownership question, not the exit question)
+  const refiEntity = byPillar(C.computeChecks(LINE, {
+    searched: true, deeds: [], currentOwner: null,
+    mortgages: [{ addresses: [ONE_LINE], grantees: ['Bishop Street Holdings LLC'], date: '2025-01-10', documentId: 'RM-1', isRefinance: true, termMonths: 24 }],
+  }, CTX, TODAY)).ownership;
+  ok(refiEntity.auto_verdict === 'proved',
+    'a refinance in the entity name (real `grantees` field), confirmed control, proves ownership — even a short term, because you cannot refinance what you do not own');
+
+  const refiPerson = byPillar(C.computeChecks(LINE, {
+    searched: true, deeds: [], currentOwner: null,
+    mortgages: [{ addresses: [ONE_LINE], grantees: ['Yehuda Bochner'], date: '2025-01-10', documentId: 'RM-2', loanPurpose: 'Refinance', termMonths: 360 }],
+  }, { ...CTX, controlVerdict: null }, TODAY)).ownership;
+  ok(refiPerson.auto_verdict === 'proved',
+    'a refinance in the borrower\'s own name, detected via loanPurpose, proves ownership with no control check');
+
+  // NEVER FABRICATE — the new sources naming somebody else, with deeds naming others, is still contradicted
+  const stillContradicted = byPillar(C.computeChecks(LINE, {
+    searched: true,
+    deeds: [{ addresses: [ONE_LINE], grantors: ['A'], grantees: ['Completely Different Co LLC'], date: '2024-02-08', documentId: 'X' }],
+    currentOwner: co('Completely Different Co LLC', 'entity'),
+    mortgages: [{ addresses: [ONE_LINE], grantees: ['Completely Different Co LLC'], date: '2025-01-10', documentId: 'RM-X', isRefinance: true, termMonths: 360 }],
+  }, CTX, TODAY)).ownership;
+  ok(stillContradicted.auto_verdict === 'contradicted',
+    'a current owner AND a refinance both naming somebody else, with deeds naming others, is still contradicted — the new sources never invent ownership');
+
+  // A current-owner record for a DIFFERENT property is ignored
+  const wrongAddr = byPillar(C.computeChecks(LINE, {
+    ...noDeeds,
+    currentOwner: { addresses: ['999 Nowhere Rd, Trenton, NJ 08608'], grantees: ['Bishop Street Holdings LLC'], people: [], date: '2024-02-08', isCurrent: true, deedId: 'CO-Z' },
+  }, CTX, TODAY)).ownership;
+  ok(wrongAddr.auto_verdict !== 'proved',
+    'a current-owner record for a DIFFERENT property is ignored — it never proves this line');
+
+  // THE SCORE FOLLOWS THE PILLAR. Without wiring the new evidence into `checkB`,
+  // the ladder's A3 identity gate would DISCARD a currentOwner/refi-proved deal as
+  // "not the grantee on any deed" — the pillar would say proved while the score
+  // threw it away. A3 firing can only lift it to needs_review, never to auto_proved.
+  const holdRefi = { deal_type: 'hold', purchase_date: '2024-02-01', refi_date: '2025-04-01', property_address: ADDR, entity_name: 'Bishop Street Holdings LLC' };
+  const provenByRefi = C.computeChecks(holdRefi, {
+    searched: true, deeds: [], satisfactions: [], currentOwner: null,
+    mortgages: [{ addresses: [ONE_LINE], grantees: ['Bishop Street Holdings LLC'], date: '2025-04-04', documentId: 'M9', isRefinance: true, termMonths: 360 }],
+  }, CTX, TODAY);
+  const scoredRefi = S.scoreDeal(C.signalsFor(provenByRefi, {}, CTX), { today: TODAY });
+  ok(scoredRefi.discarded === false,
+    'the SCORE follows the pillar — a refinance-proved deal passes the ladder\'s A3 gate and is scored, not discarded as "never the grantee on a deed"');
+  ok(scoredRefi.band !== 'auto_proved',
+    '…but A3 alone never auto-proves it — the exit-corroboration and personal-identity gates still have to pass on their own');
+
+  // The acquisition deed still wins when present (the new branches run AFTER it)
+  const withAcq = byPillar(C.computeChecks(LINE, {
+    ...RECS, deeds: [RECS.deeds[0]], currentOwner: co('Bishop Street Holdings LLC', 'entity'),
+  }, CTX, TODAY)).ownership;
+  ok(withAcq.auto_verdict === 'proved' && withAcq.auto_evidence.checkB && withAcq.auto_evidence.checkB.recordingDate === '2024-02-08',
+    'the acquisition deed still decides when one is present — the new sources are a fallback, not a replacement');
 }
 
 console.log(fail ? `\n${fail} FAILURE(S)` : '\nOK  the pure engine: never fabricates, both comparers must agree, and "we did not look" is not an all-clear');

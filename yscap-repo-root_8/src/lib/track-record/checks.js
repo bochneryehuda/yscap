@@ -171,6 +171,13 @@ function anyOurs(names, ctx) {
 
 const asArray = (v) => (Array.isArray(v) ? v.filter((x) => x != null) : (v == null ? [] : [v]));
 
+/** Borrower/grantee names on a mortgage. `shapes.js` emits the borrower names as
+ *  `grantees` (from `borrowerNames || borrower`); a legacy or hand-built row may
+ *  instead carry `borrowers`. Accept BOTH — reading only `borrowers` was
+ *  `undefined` on every production mortgage, which is why `findRefinance` was
+ *  silently `no_data` on real files (the exit-pillar refinance never fired). */
+const mortgageHolders = (m) => [...asArray(m && m.grantees), ...asArray(m && m.borrowers)];
+
 /** The grade a recorded instrument earns, lifted one rung when we read the
  *  signers and the borrower's own signature is on it. */
 function gradeOf(rec, signedByBorrower) {
@@ -333,6 +340,86 @@ function recencyPillar(line, recs, ctx, today) {
 
 /* ── PILLAR 2 — OWNERSHIP (Check B, plus the Check A carry) ──────────────── */
 
+/**
+ * Decide the pillar from a holder we matched on a NON-DEED source (the county's
+ * current-owner record, or a refinance mortgage). The verdict logic is exactly
+ * the acquisition-deed branch's — a deed in the borrower's OWN name proves it; an
+ * ENTITY holder is Check-B-proved but needs Check A (confirmed → proved, rejected
+ * → contradicted, never-asked → no_data). Kept in one place so the three sources
+ * can never disagree about what an entity match means. `w` supplies the per-source
+ * wording; `source`/`confidence` are the source's own grade inputs.
+ */
+function ownershipFromHolder(base, who, rec, ctx, source, confidence, w) {
+  const signed = signedByBorrower(rec, ctx);
+  // A mortgage carries `documentId`; an ownership row carries `deedId`.
+  const docId = rec.documentId || rec.deedId || null;
+  const grade = gradeOf({ ...rec, documentId: docId }, signed);
+
+  /* The SAME evidence shape the acquisition-deed branch records. Two reasons it
+     must match: `signalsFor` reads `checkB.granteeIsMatchedEntity` to satisfy the
+     scoring ladder's A3 identity gate (a HARD discard gate — without it a deal
+     proved only by the current-owner record or a refinance would be thrown away
+     as "not the grantee on any deed", so the pillar and the score would disagree),
+     and `checkB.borrowerSignedInstrument` feeds the personal-identity gate. A3
+     firing can only move such a deal from `discarded` to `needs_review`; it can
+     never reach `auto_proved` without the exit/personal-identity gates passing on
+     their own. `granteeIsMatchedEntity` reads "the party we matched is named as
+     holder on this recorded instrument" — true for a person or an entity, exactly
+     as the acquisition-deed branch sets it. */
+  const checkB = {
+    grantee: who.matched,
+    granteeIsMatchedEntity: true,
+    recordingDate: ymd(rec.date),
+    documentId: docId,
+    heldAs: who.as,
+    borrowerSignedInstrument: signed,
+  };
+
+  // The borrower's OWN name — no entity between the person and the property.
+  if (who.as === 'person') {
+    return {
+      ...base,
+      auto_source: source,
+      auto_verdict: VERDICT.PROVED,
+      auto_confidence: confidence,
+      auto_grade: grade,
+      auto_evidence: { why: w.person, matched: who.matched, checkB },
+    };
+  }
+
+  // An ENTITY holder. Check A decides whether it carries to this borrower. (The
+  // 'rejected' branch mirrors the acq-deed branch and is currently unreachable —
+  // see that branch's note; kept for a future explicit Check-A rejection.)
+  if (ctx.controlVerdict === 'rejected') {
+    return {
+      ...base,
+      auto_source: 'entity',
+      auto_verdict: VERDICT.CONTRADICTED,
+      auto_confidence: 'certain',
+      auto_grade: grade,
+      auto_evidence: { why: w.entityRejected, matched: who.matched, checkB, controlVerdict: 'rejected' },
+    };
+  }
+  if (ctx.controlVerdict === 'confirmed') {
+    return {
+      ...base,
+      auto_source: source,
+      auto_verdict: VERDICT.PROVED,
+      auto_confidence: confidence,
+      auto_grade: grade,
+      auto_evidence: { why: w.entityConfirmed, matched: who.matched, checkB, controlVerdict: 'confirmed', satisfiedByLlcId: ctx.llcId },
+    };
+  }
+  return {
+    ...base,
+    auto_source: source,
+    auto_verdict: VERDICT.NO_DATA,
+    auto_confidence: null,
+    auto_grade: grade,
+    auto_evidence: { why: w.entityNoData, matched: who.matched, checkB, needsControlCheck: true },
+  };
+}
+
 function ownershipPillar(line, recs, ctx, today) {
   const base = { pillar: 'ownership' };
   const deeds = forProperty(recs.deeds, line.property_address);
@@ -427,6 +514,46 @@ function ownershipPillar(line, recs, ctx, today) {
         needsControlCheck: true,
       },
     };
+  }
+
+  // NO ACQUISITION DEED NAMES US — but ownership can still be PROVED two other
+  // ways, each stronger than an old deed naming somebody else (a current-owner or
+  // refinance in our name means we owned it), so both run before the CONTRADICTED
+  // branch and after the acquisition deed (neither is stronger than the deed).
+
+  // (1) THE COUNTY'S CURRENT-OWNER RECORD names our side. `get_address_ownership`
+  //     with no end date is the party holding the property today; if that is the
+  //     borrower (or a confirmed entity of theirs), they own it.
+  if (recs.currentOwner
+      && addressesOfRecord(recs.currentOwner).some((a) => samePlace(a, line.property_address))) {
+    const who = anyOurs([...(recs.currentOwner.grantees || []), ...(recs.currentOwner.people || [])], ctx);
+    if (who.hit) {
+      return ownershipFromHolder(base, who, recs.currentOwner, ctx, 'elementix', 'certain', {
+        person: `The county's current-owner record for this property names the borrower as the holder.`,
+        entityNoData: `"${who.matched}" is the current owner of record for this property, so the company holds it. Nobody has confirmed yet that this borrower controls that company.`,
+        entityConfirmed: `"${who.matched}" is the current owner of record for this property, and this borrower's control of that company has been confirmed.`,
+        entityRejected: `"${who.matched}" is the current owner of record, but this borrower's control of that company was reviewed and rejected — so this property does not carry to them.`,
+      });
+    }
+  }
+
+  // (2) A REFINANCE in our name. You cannot refinance a property you do not own,
+  //     so a refinance mortgage naming the borrower (or a confirmed entity) proves
+  //     ownership — ANY term (this is the ownership question, not the exit
+  //     question, so the exit pillar's permanent-term test does not apply here).
+  const refiMort = forProperty(recs.mortgages, line.property_address)
+    .filter((m) => m.isExtension !== true
+      && (m.isRefinance === true || /refi/i.test(String(m.loanPurpose || '')))
+      && anyOurs(mortgageHolders(m), ctx).hit)
+    .sort((a, b) => (ymd(b.date) || '').localeCompare(ymd(a.date) || ''))[0];
+  if (refiMort) {
+    const who = anyOurs(mortgageHolders(refiMort), ctx);
+    return ownershipFromHolder(base, who, refiMort, ctx, 'elementix', 'certain', {
+      person: `A refinance recorded on ${ymd(refiMort.date)} names the borrower on this property — you cannot refinance a property you do not own.`,
+      entityNoData: `A refinance recorded on ${ymd(refiMort.date)} names "${who.matched}" as the borrower on this property, so the company held it. Nobody has confirmed yet that this borrower controls that company.`,
+      entityConfirmed: `A refinance recorded on ${ymd(refiMort.date)} names "${who.matched}" as the borrower, and this borrower's control of that company has been confirmed.`,
+      entityRejected: `A refinance recorded on ${ymd(refiMort.date)} names "${who.matched}", but this borrower's control of that company was reviewed and rejected.`,
+    });
   }
 
   // No deed names us. Does one affirmatively name somebody else?
@@ -675,7 +802,7 @@ function findRefinance(line, recs, ctx) {
   let best = null;
   for (const m of mortgages) {
     if (m.isExtension === true) continue;
-    if (!anyOurs(m.borrowers, ctx).hit) continue;
+    if (!anyOurs(mortgageHolders(m), ctx).hit) continue;
     const term = Number(m.termMonths);
     if (!Number.isFinite(term) || term < PERM_TERM_MIN_MONTHS) continue;
     if (claimed) {
