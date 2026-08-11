@@ -108,7 +108,7 @@ function compact(obj) {
 // A structural leverage/ARV override (LTV/LTC/ARV) makes the registration a
 // MANUAL PRODUCT (server: manual-program.js). Markup/points/fees/rate alone do
 // not. Mirrors the server's STRUCTURAL_OVERRIDE_KEYS so the studio can prompt for
-// the required liquidity months before it registers.
+// the required reserve months before it registers.
 const MANUAL_STRUCTURAL_KEYS = ['ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct'];
 export function overridesAreManual(ov) {
   if (!ov) return false;
@@ -564,7 +564,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const [msg, setMsg] = useState('');
   /* A file created from a term sheet REGISTERS ITSELF on the way in
      (owner-directed 2026-08-06). When that register was refused — a manual basis
-     needs its liquidity months, a value disagrees with the application, an
+     needs its reserve months, a value disagrees with the application, an
      exception is required — the file still exists, unregistered, exactly as it
      would have before. The reason is handed over in sessionStorage and surfaced
      HERE, on the one screen where it can be acted on, rather than being
@@ -578,9 +578,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       setErr(`This file was created from a term sheet, but the product could not be registered automatically: ${n} Review the scenario below and register it here.`);
     } catch (_) { /* best-effort */ }
   }, []);
-  // Manual Program: months of liquidity the registrant must state before a
-  // manual product (LTV/LTC/ARV override) can register. Prefilled from the current
-  // manual registration or the admin default; required only when the scenario is
+  // Manual Program: how many months of RESERVES the borrower must show (in the
+  // ending balance of the most recent statement) before a manual product
+  // (LTV/LTC/ARV override) can register. Prefilled from the current manual
+  // registration or the admin default (3); required only when the scenario is
   // actually manual.
   const [assetMonths, setAssetMonths] = useState('');
   const [exceptionInfo, setExceptionInfo] = useState(null);   // server exception_required payload (MANUAL scenario)
@@ -697,8 +698,8 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     loadPricing().then((d) => {
       if (!alive) return;
       setData(d);
-      // Prefill the liquidity-months field: the current manual registration's
-      // value, else the pending escalation's, else the company default.
+      // Prefill the reserve-months field: the current manual registration's
+      // value, else the pending escalation's, else the company default (3).
       const pre = (d && d.current && d.current.asset_months)
         || (d && d.manualEscalation && d.manualEscalation.asset_months)
         || (d && d.manualDefaults && d.manualDefaults.assetMonths);
@@ -1113,14 +1114,14 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // changes made in admin mode STAY in the registration and the exports.
       const overrides = overridesFromSnapshot(s, adminActive ? 'staff' : mode);
       // Manual product (LTV/LTC/ARV override): the registrant MUST state how many
-      // months of liquidity this file requires before it can register — it then
+      // months of RESERVES this file requires before it can register — it then
       // goes to the super-admin escalation box. Block here with a clear ask rather
       // than let the server 422 opaquely.
       const manual = overridesAreManual(overrides);
       const months = Number(assetMonths);
       if (manual && !(Number.isFinite(months) && months >= 1 && months <= 24)) {
         // The finally block clears busy + releases the submit gate on return.
-        setErr('This is a manual product — you changed the LTV, LTC or ARV. Enter how many months of assets/liquidity this file must show (1–24) below, then register. It will go to an admin for approval.');
+        setErr('This is a manual product — you changed the LTV, LTC or ARV. Enter how many months of reserves this file must show (default 3, 1–24) below, then register. It will go to an admin for approval.');
         return;
       }
       // econVersion: the file-basis fingerprint this studio session prefilled
@@ -1194,7 +1195,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         setErr(e.data.error || 'This file changed since the studio was opened — reopen the studio to pick up the latest values, then register again.');
       } else if (e.status === 422 && e.data && e.data.code === 'manual_asset_months_required') {
         if (e.data.suggestedAssetMonths != null && !assetMonths) setAssetMonths(String(e.data.suggestedAssetMonths));
-        setErr(e.data.error || 'This is a manual product — enter how many months of assets/liquidity this file must show, then register.');
+        setErr(e.data.error || 'This is a manual product — enter how many months of reserves this file must show, then register.');
       } else if (e.status === 422 && e.data && e.data.code === 'file_mismatch') {
         // The studio's scenario disagrees with the application record (property
         // type / units / loan type / deal type / state). The registration was
@@ -1352,7 +1353,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
 
   // (manualLive — whether the live scenario is a manual product — is computed
   // above blockReason; every staff role can enter those knobs and must state
-  // the liquidity months before it can register.)
+  // the reserve months before it can register.)
   // Is the LIVE scenario carrying an admin-zone knob that is OFF the company
   // default (and therefore needs an admin's approval)? Compared against the real
   // company defaults the server sends on the pricing load — the SAME numbers the
@@ -1472,9 +1473,9 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
           {escCountered
             ? 'An admin proposed different terms they would accept. Review the terms below and accept them to re-register at the countered numbers, or open the studio and adjust the scenario for a fresh exception.'
             : escPending
-              ? `Registered but NOT confirmed — waiting for an admin to approve it in the Escalations box${esc.asset_months ? ` (${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of liquidity required)` : ''}. The borrower isn’t sent terms until it’s approved.`
+              ? `Registered but NOT confirmed — waiting for an admin to approve it in the Escalations box${esc.asset_months ? ` (${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of reserves required)` : ''}. The borrower isn’t sent terms until it’s approved.`
               : esc.status === 'approved'
-                ? `Approved${esc.asset_months ? ` · ${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of liquidity required` : ''}.`
+                ? `Approved${esc.asset_months ? ` · ${esc.asset_months} month${esc.asset_months === 1 ? '' : 's'} of reserves required` : ''}.`
                 : `Declined${esc.decision_note ? ` — ${esc.decision_note}` : ''}. Adjust the scenario and re-register, or re-submit the exception.`}
           {/* Exactly WHAT was moved off the company defaults (db/343), so the
               file itself always shows what is being approved. */}
@@ -1509,18 +1510,20 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
           )}
         </div>
       )}
-      {/* Manual product — the registrant must state months of liquidity before
-          registering. Every staff role can reach the LTV/LTC/ARV knobs now
+      {/* Manual product — the registrant states how many months of RESERVES the
+          borrower must show (owner-directed 2026-08-11: it is reserve months, not a
+          bank-statement count). Every staff role can reach the LTV/LTC/ARV knobs
           (owner-directed 2026-07-27); the approval is what governs. */}
       {manualLive && (
         <div className="notice" style={{ marginTop: 10 }}>
           <strong>Manual product (custom LTV / LTC / ARV).</strong> This registers as a Manual Program and goes to an
-          admin for approval. Enter how many months of assets/liquidity this file must show:
+          admin for approval. How many months of reserves must this file show in the ending balance of the most recent
+          statement? Defaults to 3; this box overrides it.
           <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 8 }}>
             <input type="number" min="1" max="24" step="1" value={assetMonths}
               onChange={(e) => setAssetMonths(e.target.value)} style={{ width: 90 }}
-              aria-label="Months of assets/liquidity required" placeholder="months" />
-            <span className="muted small">months of liquidity (required, 1–24)</span>
+              aria-label="Months of reserves required" placeholder="months" />
+            <span className="muted small">months of reserves (default 3, 1–24)</span>
           </div>
         </div>
       )}
@@ -1728,18 +1731,25 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
                       admin for approval before the borrower gets terms. Leave them alone and the deal registers as usual.
                     </>
                   )}
-                </div>
-              )}
-              {manualLive && (
-                <div className="notice" style={{ margin: '10px 0' }}>
-                  <strong>Manual product (custom LTV / LTC / ARV).</strong> This registers as a Manual Program and needs
-                  an admin’s approval. Enter how many months of assets/liquidity this file must show before registering:
-                  <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 8 }}>
-                    <input type="number" min="1" max="24" step="1" value={assetMonths}
-                      onChange={(e) => setAssetMonths(e.target.value)} style={{ width: 90 }}
-                      aria-label="Months of assets/liquidity required" placeholder="months" />
-                    <span className="muted small">months of liquidity (required, 1–24)</span>
-                  </div>
+                  {/* The Manual Program's months-of-RESERVES input lives HERE, inside
+                      the same approval box as the manual program — one section, not a
+                      separate box (owner-directed 2026-08-11). It is how many months of
+                      reserves the borrower must show in the ending balance of the most
+                      recent statement; defaults to 3 and this box overrides it. */}
+                  {manualLive && (
+                    <div style={{ marginTop: 10 }}>
+                      <div className="small">
+                        <strong>Manual program — months of reserves.</strong> How many months of reserves must this file
+                        show in the ending balance of the most recent statement? Defaults to 3; this box overrides it.
+                      </div>
+                      <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 8 }}>
+                        <input type="number" min="1" max="24" step="1" value={assetMonths}
+                          onChange={(e) => setAssetMonths(e.target.value)} style={{ width: 90 }}
+                          aria-label="Months of reserves required" placeholder="months" />
+                        <span className="muted small">months of reserves (default 3, 1–24)</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
               {(submitExceptionMode || exceptionInfo) && (
