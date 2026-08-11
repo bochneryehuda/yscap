@@ -65,7 +65,7 @@
  */
 
 const { fieldSame } = require('./inbound-economics-freeze');
-const { normNoteBuyer } = require('./conditions/field-registry');
+const { sameNoteBuyer } = require('./conditions/field-registry');
 const { normalizeLoanNumber } = require('./fields');
 
 // EVERY bidirectional (`dir:'both'`) APPLICATION field in the ClickUp field map is
@@ -115,7 +115,8 @@ const PENDING_EXCLUDE = new Set(['status', 'internal_status']);
 // as a change (which would raise a spurious conflict). A null on either side is "same" —
 // a null incoming value keeps ours via COALESCE, and a blank file value being FILLED by
 // ClickUp is not a bounce-back. Dates compare by CALENDAR DAY; the note buyer by its
-// canonical key ("Blue Lake Capital" ≡ "blue lake capital"); the YS loan number by its
+// canonical buyer identity ("EMCAP" ≡ "EMCAP Financial", "Blue Lake" ≡ "Blue Lake
+// Capital" — the same buyer under any spelling); the YS loan number by its
 // stored normalized form (case/format-insensitive). Everything else uses the
 // economics-freeze comparator unchanged (numeric-aware; term / property-type equality),
 // so every field that was already protected behaves byte-for-byte as before.
@@ -125,8 +126,11 @@ function sameField(field, a, b) {
     return String(a).slice(0, 10) === String(b).slice(0, 10);
   }
   if (field === 'lender') {
-    if (a == null || b == null) return true;
-    return normNoteBuyer(a) === normNoteBuyer(b);
+    // CANONICAL identity, not the exact normalizer: "EMCAP" and "EMCAP Financial"
+    // are the SAME buyer, so a file holding one while ClickUp holds the other is
+    // NOT a change — reading it as one caused an endless keep+re-push churn (the
+    // two never converge because a re-push of the same buyer is a no-op).
+    return sameNoteBuyer(a, b);
   }
   if (field === 'ys_loan_number') {
     if (a == null || b == null) return true;

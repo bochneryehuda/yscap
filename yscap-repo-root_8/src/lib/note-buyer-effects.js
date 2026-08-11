@@ -134,7 +134,12 @@ async function registeredProgram(appId, client = db) {
  * buyer name here is fine — this whole surface is staff-only).
  */
 function requirementsFor(label, { program, assetMonths }) {
-  const key = registry.normNoteBuyer(label) || '';
+  // The CANONICAL key, so a buyer's long production label ("Blue Lake Capital",
+  // "EMCAP Financial") resolves to the same key as its short form — otherwise
+  // `key === 'bluelake'` and `tapesForBuyer(key)` would silently miss the very
+  // labels the picker now offers. Identical to the old `normNoteBuyer(label)||''`
+  // for an unknown/blank buyer.
+  const key = (registry.canonicalNoteBuyer(label) || {}).key || '';
   const out = [];
   const prog = String((program || '')).trim();
 
@@ -245,9 +250,12 @@ async function noteBuyerSlot(appId, client = db, opts = {}) {
   // ClickUp dropdown), so a typed name gets a real preview instead of a shrug.
   const extra = [out.current.label, opts.candidate].filter((x) => x && String(x).trim());
   for (const label of extra) {
-    const key = registry.normNoteBuyer(label);
-    if (!key || out.options.some((o) => o.value === key)) continue;
-    out.options.push({ value: key, label: String(label).trim() });
+    // Canonical identity, so the file's own "EMCAP" (short) collapses onto the
+    // list's canonical "EMCAP Financial" option instead of re-appearing as a
+    // second row — the exact duplicate the owner asked to merge.
+    const canon = registry.canonicalNoteBuyer(label);
+    if (!canon || out.options.some((o) => o.value === canon.key)) continue;
+    out.options.push({ value: canon.key, label: canon.label });
   }
   out.options.sort((a, b) => String(a.label).localeCompare(String(b.label)));
 
