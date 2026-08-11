@@ -33,7 +33,7 @@ const { scrubText } = require('../lib/borrower-safe');
 const APPROVAL = require('./approval');   // PURE — the one definition of the approval ladder + the netting wording
 // DB / storage / rollup are required lazily inside the DB-side functions only, so the PURE builder path
 // (and its unit test) never touches the database or trips the "DATABASE_URL not set" boot log.
-const lazy = { get db() { return require('../db'); }, get storage() { return require('../lib/storage'); }, get rollup() { return require('./rollup'); }, get media() { return require('./media-archive'); } };
+const lazy = { get db() { return require('../db'); }, get storage() { return require('../lib/storage'); }, get rollup() { return require('./rollup'); }, get media() { return require('./media-archive'); }, get reconcile() { return require('./reconcile'); }, get switches() { return require('../lib/integrations/switches'); } };
 const { stripLocationExif } = require('../lib/image-exif');
 
 // ---- jsPDF lazy loader (own cache; deliberately NOT sharing esign's, so a report can render even if the
@@ -965,6 +965,43 @@ async function autoDeliverArtifacts(appId, sitewireDrawId) {
   return out;
 }
 
+/* PULL THE FRESHEST STATE FROM SITEWIRE FOR ONE DRAW and refresh everything we
+   derive from it, in order (owner-directed 2026-08-11 — "after a draw dispute is
+   accepted we update Sitewire with the new figures and Sitewire generates a new
+   report; that report is never pulled back into our system"):
+     (1) reconcileOne re-reads the property → updates the draw's figures AND its
+         pdf_src (Sitewire regenerates its report after any figure change);
+     (2) archiveDrawMedia pulls that now-fresh Sitewire PDF + photos into our
+         durable store (content-hash dedup → a genuinely NEW report becomes a new
+         draw_media row; an unchanged one is a no-op);
+     (3) rebuild OUR branded staff + borrower reports — the version hash includes
+         the approved figures, so a changed draw mints a FRESH report and
+         SUPERSEDES the old (SharePoint shelves the old copy to Old Versions, and
+         Deliver-to-Investor / gatherAttachments then send only the newest).
+   This is the missing Sitewire → PILOT direction (the PILOT → Sitewire push already
+   happens on the dispute decision). Gated on SITEWIRE_ENABLED; every step is
+   best-effort so a refresh hiccup can never block a dispute decision or an investor
+   delivery. Returns { reconciled, archived, reports }. */
+async function refreshDrawFromSitewire(appId, sitewireDrawId) {
+  const out = { reconciled: false, archived: 0, reports: [] };
+  if (!lazy.switches.on('SITEWIRE_ENABLED')) return out;
+  try {
+    const r = await lazy.reconcile.reconcileOne(appId);
+    out.reconciled = !(r && (r.skipped || r.error));
+  } catch (e) { console.warn(`[sitewire] refresh reconcile failed (draw=${sitewireDrawId}): ${e && e.message}`); }
+  try {
+    const r = await lazy.media.archiveDrawMedia(appId, sitewireDrawId);
+    out.archived = (r && r.archived) || 0;
+  } catch (e) { console.warn(`[sitewire] refresh archive failed (draw=${sitewireDrawId}): ${e && e.message}`); }
+  for (const mode of ['staff', 'borrower']) {
+    try {
+      const r = await buildOrGetReportDoc(appId, { sitewireDrawId, scope: 'draw', mode });
+      if (r && r.doc) out.reports.push(mode);
+    } catch (e) { console.warn(`[sitewire] refresh report failed (draw=${sitewireDrawId}, ${mode}): ${e && e.message}`); }
+  }
+  return out;
+}
+
 /** The deterministic, version-hashed filename for a report. */
 function reportFilename({ scope, mode, drawNumber, version, loanNo }) {
   const label = scope === 'project' ? 'project' : ('draw-' + (drawNumber != null ? drawNumber : 'x'));
@@ -975,6 +1012,6 @@ function reportFilename({ scope, mode, drawNumber, version, loanNo }) {
 
 module.exports = {
   buildDrawReport, loadReportMeta, attachPhotoBytes, storeDrawReport, reportVersion, reportFilename,
-  buildOrGetReportDoc, autoDeliverArtifacts,
+  buildOrGetReportDoc, autoDeliverArtifacts, refreshDrawFromSitewire,
   imageFormat, getJsPDF, MAX_PHOTOS_TOTAL, MAX_PHOTOS_PER_LINE, EMBED_BYTE_BUDGET,
 };
