@@ -131,8 +131,11 @@ async function pushOutboxOnce() {
     // two systems reconcile the moment the push finally goes through. (The old rule
     // dead-lettered outage-class at 40 attempts ≈ 7 hours — a longer outage silently lost
     // the edit, with no dead-job requeue path. That ceiling is removed.) A task deleted
-    // upstream resolves on its own — the orphan reconcile archives its file, and a push to
-    // an archived file completes as a skip, so this never spins on a genuinely gone task.
+    // upstream is bounded and surfaced: the orphan reconcile files a review card immediately,
+    // and where it can ARCHIVE the file (a live sibling exists) the next push completes as a
+    // skip; where it cannot (no sibling → the file goes to manual_review with its task id
+    // intact) the pre-read keeps failing, so this retries at 1 call / 10 min until a human
+    // works that card — never a data loss, never a busy spin, just not auto-resolved.
     // Only a PERMANENT error (a value ClickUp rejects, e.g. HTTP 400) dead-letters, after
     // 8 attempts, to a visible manual-review row — retrying a value ClickUp refuses is
     // pointless, so that one needs a human.
@@ -1612,18 +1615,18 @@ function start() {
       console.log(on
         ? '[clickup-sync] outbound writes ENABLED — enqueue-on-write ONLY (no auto-sweep)'
         : '[clickup-sync] outbound writes DISABLED (CLICKUP_OUTBOUND_ENABLED!=1) — inbound/reconcile only');
+      // On every OFF/unknown → ON transition (the first ON tick after boot AND a runtime
+      // flip on the API-Health page), re-drive the dead-lettered push backlog so "rerun the
+      // stuck items when ClickUp is back up" (owner-directed 2026-08-11) also happens when a
+      // human turns writing back on WITHOUT a restart — parity with the per-tick philosophy
+      // (audit note). Bounded + rate-limited; one-shot per transition.
+      if (on) redriveDeadPushesOnce().catch((e) => console.error('[clickup-sync] dead-push re-drive', e && e.message));
       outboundAnnounced = on;
     }
     if (!on) return;
     await tick(pushOutboxOnce, 'push');
   };
   setInterval(outboundTick, 3000);
-
-  // Re-drive the EXISTING dead-lettered outbound-push backlog on boot (owner-directed
-  // 2026-08-11: "rerun the stuck items when ClickUp is back up"). Self-gated on the
-  // outbound switch; bounded; paced by the shared rate limiter. See redriveDeadPushesOnce.
-  setTimeout(() => { redriveDeadPushesOnce().catch((e) => console.error('[clickup-sync] dead-push re-drive', e && e.message)); },
-    cfg.clickupRunBackfill ? 150000 : 20000);
 
   // ADDRESS BACKFILL (owner-reported 2026-07-28, card FILLE-1990). Enqueue-on-write
   // means a field re-pushes when a HUMAN edits it — and nobody edits an address that is
