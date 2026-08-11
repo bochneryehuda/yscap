@@ -493,6 +493,31 @@ async function main() {
   assert.ok(queries.some((q) => /SET encompass_loan_guid=NULL/.test(q.sql)), 'the dead GUID is still cleared so a later pull can retry');
   assert.ok(/out of date/.test(rGone.reason) && /no Encompass loan/.test(rGone.reason), 'the reason explains the stale link and the empty re-search');
 
+  // (15e) A guid we JUST searched for this call is NOT stale — a 404 on a
+  // freshly-searched guid must NOT trigger the self-heal (no clear, no double-search),
+  // because hadCachedGuid is false. It surfaces the plain getLoan error instead.
+  mockDb._appRows = [{ id: 'app-fresh404', ys_loan_number: 'YS-FRESH', encompass_loan_guid: null }];
+  let freshFinds = 0;
+  mockClient.findLoanByLoanNumber = async () => { freshFinds++; return [{ loanId: 'guid-just-found', fields: { 'Loan.Guid': 'guid-just-found', 'Loan.LoanNumber': 'YS-FRESH' } }]; };
+  mockClient.getLoan = async () => { throw new Error('Encompass 404: Not Found'); };
+  queries.length = 0;
+  const rFresh = await reader.pullLoanForApplication('app-fresh404');
+  assert.strictEqual(rFresh.ok, false, 'a 404 on a just-searched guid fails without self-heal');
+  assert.ok(/getLoan: Encompass 404/.test(rFresh.reason), 'the plain getLoan error is surfaced (no self-heal wording)');
+  assert.strictEqual(freshFinds, 1, 'searched exactly once — no double-search on a fresh guid');
+  assert.ok(!queries.some((q) => /SET encompass_loan_guid=NULL/.test(q.sql)), 'a fresh-guid 404 NEVER clears the guid');
+
+  // (15f) Double-404: a stale guid 404s, the re-search finds a guid, but the RETRY
+  // getLoan ALSO 404s → the catch(e2) path stamps the "re-read after fixing" error.
+  mockDb._appRows = [{ id: 'app-dbl', ys_loan_number: 'YS-DBL', encompass_loan_guid: 'guid-dead-3' }];
+  mockClient.findLoanByLoanNumber = async () => [{ loanId: 'guid-also-dead', fields: { 'Loan.Guid': 'guid-also-dead', 'Loan.LoanNumber': 'YS-DBL' } }];
+  mockClient.getLoan = async () => { throw new Error('Encompass 404: Not Found'); };
+  queries.length = 0;
+  const rDbl = await reader.pullLoanForApplication('app-dbl');
+  assert.strictEqual(rDbl.ok, false, 'a double-404 (re-searched guid also gone) fails');
+  assert.ok(/re-read after fixing the out-of-date Encompass link/.test(rDbl.reason), 'the retry-failure error is stamped');
+  assert.ok(queries.some((q) => /SET encompass_loan_guid=NULL/.test(q.sql)), 'the original dead guid was still cleared');
+
   console.log('OK — Encompass reader unit tests pass (includes super-dump + bulk-pull + client-contract check + identity-by-number + SSN scrub + stale-GUID self-heal).');
 }
 
