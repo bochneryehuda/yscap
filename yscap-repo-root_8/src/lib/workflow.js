@@ -563,6 +563,63 @@ async function overdueByRecipient(client = db) {
   return r.rows;
 }
 
+/**
+ * THE OVERDUE FILES THEMSELVES, for one person — so the nudge can NAME them.
+ *
+ * Owner-directed 2026-08-07, on the "7 files in your Workflow are overdue" email: *"emails like
+ * this should have a list of the files and the status of each and every file and whose loan
+ * officer in every single file, nicely designed."* A count with a link is not a notification, it
+ * is a chore: the reader has to go and re-derive what the email already knew.
+ *
+ * Ordered by how far past target each hand-off is (worst first), which is the only order that
+ * makes the top of the list the thing to do next. Carries the hand-off KIND so the digest can
+ * group a draw coordinator's queue separately from a closer's — the owner's *"nicely design every
+ * workflow separately"*.
+ */
+/* IS SOMEBODY ACTUALLY WAITING ON MONEY RIGHT NOW? — the `has_open_draw` column below.
+   Owner-directed 2026-08-07: *"the draw coordinator workflows should only be stuff that they need
+   to do now. It means stuff that has open draws."* A `draw_setup` hand-off lands the moment a file
+   funds and then sits there for months until the borrower first asks for money — so an overdue
+   draw queue is mostly files with nothing to do on them, and the two that DO need doing today are
+   buried underneath.
+
+   The three signals are deliberately narrow: each one means the COORDINATOR's own hands are
+   needed. A finding sitting at 'delivered' is waiting on the BORROWER to accept it, not on the
+   desk, so it is not counted. Computed on every row (three cheap correlated EXISTS over at most
+   `limit` rows) but only MEANT for the draw hand-offs — every other kind is actionable from the
+   moment it is routed, and `email/workflow-queues` only reads it for that family. */
+async function overdueItemsFor(staffId, limit = 25, client = db) {
+  const r = await client.query(
+    `SELECT w.id, w.submission_type, w.status AS item_status, w.due_at, w.created_at,
+            a.id AS application_id, a.ys_loan_number, a.property_address, a.status AS file_status,
+            lo.full_name AS lo_name,
+            EXTRACT(EPOCH FROM (now() - w.due_at)) / 3600.0 AS hours_over,
+            -- see the note above this function
+            (EXISTS (SELECT 1 FROM portal_draw_requests pdr
+                      WHERE pdr.application_id = a.id
+                        AND pdr.status IN ('submitted','entered','approved'))
+             OR EXISTS (SELECT 1 FROM trinity_inspection_orders tio
+                         WHERE tio.application_id = a.id
+                           AND tio.status IN ('requested','ordered','report_received'))
+             OR EXISTS (SELECT 1 FROM draw_findings df
+                         WHERE df.application_id = a.id
+                           AND (df.status = 'disputed'
+                                OR (df.status = 'accepted'
+                                    AND NOT EXISTS (SELECT 1 FROM draw_disbursements dd
+                                                     WHERE dd.sitewire_draw_id = df.sitewire_draw_id
+                                                       AND dd.funded_status = 'released'))))
+            ) AS has_open_draw
+       FROM workflow_items w
+       JOIN applications a ON a.id = w.application_id AND a.deleted_at IS NULL
+       LEFT JOIN staff_users lo ON lo.id = a.loan_officer_id AND lo.is_active = true
+      WHERE w.to_staff_id = $1
+        AND w.status IN ('open','in_progress')
+        AND w.due_at IS NOT NULL AND now() >= w.due_at
+      ORDER BY w.due_at ASC
+      LIMIT $2`, [staffId, limit]);
+  return r.rows;
+}
+
 // Nav badge + KPI tiles: how many live items are routed to me, by state + type.
 async function queueCounts(staffId, client = db) {
   const r = await client.query(
@@ -681,6 +738,6 @@ module.exports = {
   TYPES, TYPE_KEYS, typeConfig, OUTCOME_LABELS, SLA_HOURS, slaHoursFor,
   candidatesForRole, allActiveStaff,
   conditionsClearedPct, fileLiveItems, fileTimeline,
-  submitItem, pickItem, returnItem, lockClosingItems, resolveClosingItem, reopenClosingItem, maybeFinishClosing, closingIsFinished, listQueue, listByRole, WORKFLOW_ROLES, queueCounts, overdueByRecipient,
+  submitItem, pickItem, returnItem, lockClosingItems, resolveClosingItem, reopenClosingItem, maybeFinishClosing, closingIsFinished, listQueue, listByRole, WORKFLOW_ROLES, queueCounts, overdueByRecipient, overdueItemsFor,
   CLOSING_STAGES, getClosing, openClosing, advanceClosing,
 };

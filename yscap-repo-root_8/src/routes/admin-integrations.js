@@ -16,6 +16,7 @@ const router = require('../lib/safe-router')();
 const db = require('../db');
 const { requireAuth, requirePermission } = require('../auth');
 const health = require('../lib/integrations/health-registry');
+const monitor = require('../lib/integrations/monitor');
 const switches = require('../lib/integrations/switches');
 const flags = require('../lib/flags');
 
@@ -37,13 +38,53 @@ const fail = (res, code, e, msg) => {
   return res.status(code).json({ error: msg });
 };
 
+/**
+ * THE DOWN-ALERT MONITOR'S OWN MEMORY, on the page that reports health.
+ *
+ * `integration_health_state` (db/214) already records HOW LONG each service has been
+ * unreachable and when the monitor last swept — the two facts a person actually needs
+ * when something is red ("since when?" and "is anything watching this between visits?")
+ * — and until now they lived only in that table and in an email. A probe on page load
+ * can only ever say "not reachable right now"; the elapsed time is what separates a
+ * blip from an outage nobody has noticed for three days.
+ *
+ * A stored `down_since` is attached only through `monitor.downSinceFor`, which drops a
+ * stale row from before a recovery — the monitor sweeps on a timer and may not have run
+ * since a service came back, and "down for 3 days" beside a green light is worse than
+ * saying nothing.
+ *
+ * Best-effort in every direction: a missing table or a failed read leaves the page exactly
+ * as it was before this existed.
+ */
+async function monitorBlock(integrations) {
+  // `switch` is the full effective() shape, so the page drives the alerts through the SAME
+  // toggle/reset endpoints and the same audit row as every per-integration switch — the
+  // monitor is simply the one switch that belongs to no single card (integration: null).
+  const out = { ...monitor.describe(), lastSweepAt: null, switch: switches.effective(monitor.SWITCH_KEY) };
+  try {
+    const rows = (await db.query('SELECT key, down_since, updated_at FROM integration_health_state')).rows;
+    const byKey = new Map(rows.map((r) => [r.key, r]));
+    for (const i of integrations) i.downSince = monitor.downSinceFor(i.state, byKey.get(i.key));
+    for (const r of rows) if (r.updated_at && (!out.lastSweepAt || r.updated_at > out.lastSweepAt)) out.lastSweepAt = r.updated_at;
+  } catch (_) { /* the page renders fine without it */ }
+  return out;
+}
+
 // Every integration's live status. Each probe is independently time-boxed + non-throwing, so this
 // never hangs and a single down service can't fail the whole page.
 router.get('/health', async (req, res) => {
   try {
     await flags.refresh(); // so the on/off switches show their live override state, not a stale cache
     const integrations = await health.probeAll();
-    res.json({ checkedAt: new Date().toISOString(), integrations });
+    /* THE OUTBOUND RATE BUDGETS (lib/api-rate-limit.js, db/482). `waits` is the number
+       worth watching: a climbing count means real traffic wants more than the cap allows,
+       which is the signal to raise a limit BEFORE a provider phones the way ClickUp did
+       (owner-directed 2026-08-07). Best-effort — an empty list never fails the page. */
+    const rateLimits = await require('../lib/api-rate-limit').status();
+    // Stamps `downSince` onto each integration and reports whether anything is watching
+    // between visits. Never throws — see monitorBlock.
+    const monitorState = await monitorBlock(integrations);
+    res.json({ checkedAt: new Date().toISOString(), integrations, rateLimits, monitor: monitorState });
   } catch (e) { return fail(res, 500, e, 'could not read integration health'); }
 });
 

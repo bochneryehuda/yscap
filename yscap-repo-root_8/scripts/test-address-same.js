@@ -45,6 +45,18 @@ const SAME_PAIRS = [
   ['21 Homestead Lane Unit 2, Monsey, NY 10952', '21 Homestead Ln #2, Monsey, NY 10952, USA'],
   ['4611 12th Avenue Apt 3L 3L, Brooklyn, NY 11219', '4611 12th Ave, Brooklyn, NY 11219, USA'],
   ['1563 61th St. 4, Brooklyn, NY 11219', '1563 61st St, Brooklyn, NY 11219, USA'],
+  /* A NUMBERED STREET SPELLED AS A WORD (owner-directed 2026-08-09: "the street
+     can be spelled a few different ways"). Found by probing the matcher against
+     the owner's own list rather than by a report: a county clerk writes SECOND
+     STREET, the records vendor returns 2ND ST, and the borrower types 2nd St.
+     Before this they were three different streets — and in the public-records
+     importer a false MISMATCH does not merely fail to match, it stages a
+     DUPLICATE candidate for a property already on the record. Brooklyn and
+     Lakewood are full of numbered streets, so this is routine, not exotic. */
+  ['1727 S 2nd St, Piscataway, NJ 08854', '1727 South Second Street, Piscataway, New Jersey 08854-1234'],
+  ['30 15th Ave, Brooklyn, NY 11219', '30 Fifteenth Avenue, Brooklyn, NY 11219'],
+  ['8 Twenty First St, Brooklyn, NY 11215', '8 21st St, Brooklyn, NY 11215'],
+  ['8 Twenty-First St, Brooklyn, NY 11215', '8 21 St, Brooklyn, NY 11215'],
   ['4 Basswood dr., Lakewood, NJ 08701', '4 Basswood Dr l, Lakewood, NJ 08701, USA'],
   ['446 Marcy Ave 3A, Brooklyn, NY 11206', '446 Marcy Ave APT 3A, Brooklyn, NY 11206, USA'],
   ['53 Lenox Dr, Lakewood, Lakewood, NJ 08701', '53 Lenox Dr, Lakewood, NJ 08701, USA'],
@@ -110,6 +122,16 @@ const NEVER_SAME = [
   ['12 Oak St, Monsey, NY 10952', '', 'one side blank'],
   ['', '', 'both blank'],
   ['Monsey, NY 10952', 'Monsey, NY 10952', 'no house number on either side — unreadable, never "same"'],
+  /* The other half of the spelled-out-ordinal rule. Widening a matcher is only
+     safe if it is proven not to widen too far, and the dangerous shapes are a
+     word that merely STARTS like a number word and a street NAMED after a
+     number rather than numbered. Over-matching here is worse than the miss it
+     fixes: it would merge two genuinely different properties onto one line. */
+  ['12 Second St, Lakewood, NJ 08701', '12 Third St, Lakewood, NJ 08701', 'Second is not Third'],
+  ['12 Secondary Rd, Lakewood, NJ 08701', '12 2 Rd, Lakewood, NJ 08701', '"Secondary" merely starts like "Second"'],
+  ['12 Twenty Oaks Ln, Lakewood, NJ 08701', '12 20 Oaks Ln, Lakewood, NJ 08701', 'Twenty Oaks is a name, not a number'],
+  ['12 Fortieth Manor, Lakewood, NJ 08701', '12 41 Manor, Lakewood, NJ 08701', 'Fortieth is 40, never 41'],
+  ['12 Twenty-Second St, Brooklyn, NY 11215', '12 21st St, Brooklyn, NY 11215', '22nd is not 21st'],
 ];
 for (const [a, b, why] of NEVER_SAME) ok(!ADDR.sameAddress(a, b), `never collapsed (${why}): "${a}" vs "${b}"`);
 
@@ -160,10 +182,18 @@ ok(eqLocDiff === false, 'a genuinely different address is still a write');
       const b = (await db.query(
         `INSERT INTO borrowers(first_name,last_name,email) VALUES('Addr','Same',$1) RETURNING id`,
         ['addrsame' + Math.random() + '@e.com'])).rows[0].id;
+      // THE FIXTURE IS BACKDATED PAST EVERY REAL ROW ON PURPOSE.
+      // `closeEquivalentAddressReviewsOnce` is a GLOBAL sweep over the whole
+      // queue — `ORDER BY created_at LIMIT 500` — so on a re-used database a few
+      // hundred older open address reviews sit in front of a fixture dated now()
+      // and it is never looked at: the assertions below then fail with nothing
+      // wrong with the closer. Dating these first makes the pass reach them
+      // whatever the backlog is.
       const mkRow = async (enc, pilot, tag) => (await db.query(
         `INSERT INTO sync_review_queue
-           (borrower_id, task_id, direction, field_key, current_value, proposed_value, reason, clickup_value, portal_value, source)
-         VALUES ($1,$2,'inbound','current_address',$3,$4,'encompass_address_differs: test',$4,$3,'encompass') RETURNING id`,
+           (borrower_id, task_id, direction, field_key, current_value, proposed_value, reason, clickup_value, portal_value, source, created_at)
+         VALUES ($1,$2,'inbound','current_address',$3,$4,'encompass_address_differs: test',$4,$3,'encompass',
+                 now() - interval '9000 days') RETURNING id`,
         [b, 'encompass:test-' + tag + '-' + Math.random(), pilot, enc])).rows[0].id;
 
       const equivalent = await mkRow('5701 15 Ave 4D, Brooklyn, NY 11219', '5701 15th Ave Apt 4d, Brooklyn, NY 11219, USA', 'same');
@@ -175,8 +205,13 @@ ok(eqLocDiff === false, 'a genuinely different address is still a write');
       ok(await st(equivalent) === 'resolved', 'the same-address row is closed');
       ok(await st(real) === 'open', 'the genuinely different row STAYS OPEN for a human');
 
-      const again = await closer.closeEquivalentAddressReviewsOnce({ limit: 500 });
-      ok(!again.closed, 'a second pass closes nothing (idempotent)');
+      // IDEMPOTENT is asserted on OUR rows, not on the global counter — a second
+      // pass legitimately reaches other borrowers' rows the first pass's 500-row
+      // cap left behind, and counting those would fail a pass that did exactly
+      // the right thing.
+      await closer.closeEquivalentAddressReviewsOnce({ limit: 500 });
+      ok(await st(equivalent) === 'resolved' && await st(real) === 'open',
+        'a second pass changes nothing (idempotent)');
 
       await db.query(`DELETE FROM sync_review_queue WHERE borrower_id=$1`, [b]);
       await db.query(`DELETE FROM borrowers WHERE id=$1`, [b]);

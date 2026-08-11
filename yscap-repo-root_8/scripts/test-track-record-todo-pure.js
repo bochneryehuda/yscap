@@ -78,6 +78,18 @@ console.log('\nB. the exit is the frozen rule — and it is terminal');
     'exactly one exit verdict is ever reported');
   ok(codes({ is_verified: true, doc_count: 1, docs_accepted: 1, exit_expired: true }).join() === 'exit_expired',
     'a VERIFIED line whose exit aged out still says so — "verified but counts toward nothing" is the confusion this prevents');
+
+  // #40 (owner-directed 2026-08-10): a recorded review OUTCOME is a DECISION,
+  // so the line no longer nags "verify me".
+  ok(codes({ is_verified: false, verification_status: 'rejected', doc_count: 0, docs_waiting: 1 }).length === 0,
+    'a REJECTED line is settled — no outstanding work at all, not even a waiting document');
+  ok(codes({ is_verified: false, verification_status: 'not_verified', doc_count: 0 }).join() === '',
+    'a "not verified" outcome never nags "no documents"/"ready to verify" — the reviewer decided');
+  ok(codes({ is_verified: false, verification_status: 'unable_mismatch', doc_count: 1, docs_accepted: 1 }).join() === '',
+    'an "unable to verify" outcome is not "ready to verify"');
+  ok(codes({ is_verified: false, verification_status: 'unable_docs', doc_count: 2, docs_waiting: 1, open_request_count: 1 })
+    .sort().join() === ['documents_waiting', 'open_request'].sort().join(),
+    'but a decided line still surfaces a REAL open item (a waiting document, an open request)');
 }
 
 console.log('\nC. it is a work list, so it says WHO owes the work');
@@ -172,9 +184,12 @@ console.log('\nG. it is INSIDE the file, AFTER the track record');
 
 {
   const panel = screen.slice(screen.indexOf('function StaffTrackRecordPanel'));
-  const frameAt = panel.indexOf('<StaticToolFrame');
+  // "The track record itself" is the LEDGER since phase C (and the embedded
+  // iframe is retired since phase E) — the subject of this pin is unchanged:
+  // you read the record, THEN you read what is left on it.
+  const recordAt = panel.indexOf('<RecordLedger');
   const todoAt = panel.indexOf('<TrackRecordTodo');
-  ok(frameAt > 0 && todoAt > frameAt,
+  ok(recordAt > 0 && todoAt > recordAt,
     'the list renders AFTER the track record itself — the owner\'s "after the track record"');
   ok(/staffTrackRecordTodo/.test(apiJs) && /staffTrackRecordTodo/.test(screen),
     'it reads the server\'s answer');

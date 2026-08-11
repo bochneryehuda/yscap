@@ -79,7 +79,7 @@ function call(server, method, path, token, body) {
 (async () => {
   await ensureSchema();
   const sfx = `${process.pid}-${Math.floor(Math.random() * 1e6)}`;
-  let borrowerId, server;
+  let borrowerId, server, adminId;
   const mkApp = async (lender, status = 'processing') => (await db.query(
     `INSERT INTO applications (borrower_id, status, loan_type, lender) VALUES ($1,$2,'Fix & Flip',$3) RETURNING id`,
     [borrowerId, status, lender])).rows[0].id;
@@ -119,7 +119,18 @@ function call(server, method, path, token, body) {
     // (2) The db/374 back-date. Seed the pre-reversal states by hand, re-run the
     //     migrations (a boot), and prove the final state converges.
     const bdOpt = await mkApp('Fidelis Investors LLC');           // downgraded-optional with the db/335 note
-    const bdOptItem = await attachFlood(bdOpt, { is_required: false, notes: `processor note to keep\n\n${OPT_NOTE}` });
+    /* THE HUMAN NOTE MUST BE UNIQUE PER RUN, or this test eventually fails on its own
+       fixture. db/476 clears a non-'[auto]' note that sits VERBATIM on the same template
+       across >= 3 files spanning >= 2 borrowers — its leak signature. This suite creates
+       one borrower per run and (before the cleanup below) left its file behind, so from
+       the third run on a long-lived database three borrowers carried a character-for-
+       character identical "processor note to keep": db/476 correctly read that as a leak,
+       cleared it, and the "the human note survives" assertion failed. CI never saw it —
+       it runs on a fresh database every time. The suffix makes the note un-groupable, so
+       the assertion holds however many times this has ever run, INCLUDING against rows
+       older builds already left in a developer's database. */
+    const humanNote = `processor note to keep (${sfx})`;
+    const bdOptItem = await attachFlood(bdOpt, { is_required: false, notes: `${humanNote}\n\n${OPT_NOTE}` });
     const bdReq = await mkApp('Fidelis Investors LLC');           // flood-forced with the db/335 §4 note
     const bdReqItem = await attachFlood(bdReq, { is_required: true, notes: REQ_NOTE });
     const bdGone = await mkApp('Fidelis Investors LLC');          // cert deleted entirely (db/335 §2 shape)
@@ -134,7 +145,7 @@ function call(server, method, path, token, body) {
     ok(it && it.is_required === true, 'back-date: a downgraded-optional cert is REQUIRED again');
     ok(!/(Optional on this file|does not require a flood certificate)/.test(it.notes || ''),
       'back-date: the "optional" marker note is stripped');
-    ok(/processor note to keep/.test(it.notes || ''), 'back-date: the human note survives');
+    ok((it.notes || '').includes(humanNote), 'back-date: the human note survives');
     it = await floodItem(bdReq);
     ok(it && it.is_required === true && !/even though this capital partner does not ask/.test(it.notes || ''),
       'back-date: the flood-zone-forced marker is stripped too (it would now mislead)');
@@ -147,7 +158,7 @@ function call(server, method, path, token, body) {
 
     // (3) The LIVE gate: the Fidelis bypass is GONE — an empty flood cert refuses to
     //     sign off on every file; the super-admin override (with a reason) still works.
-    const adminId = (await db.query(
+    adminId = (await db.query(
       `INSERT INTO staff_users (email, full_name, role, is_active, mfa_enabled, password_hash, token_version)
        VALUES ($1,'Flood Admin','super_admin',true,false,'x',0) RETURNING id`,
       [`ef-admin-${sfx}@test.local`])).rows[0].id;
@@ -181,6 +192,15 @@ function call(server, method, path, token, body) {
     process.exitCode = 1;
   } finally {
     try { if (server) server.close(); } catch (_) { }
+    /* CLEAN THE FIXTURE UP. It never did, so every run left its files (and their flood
+       conditions) in a shared warehouse — which is what let the note above accumulate
+       past db/476's threshold, and what makes every other suite's questions about
+       `checklist_items` a little less answerable. Applications and their checklist rows
+       go with the borrower; the staff user is its own row. Best-effort: a cleanup
+       failure must never turn a passing suite red. */
+    try { if (borrowerId) await db.query(`DELETE FROM applications WHERE borrower_id=$1`, [borrowerId]); } catch (_) { }
+    try { if (borrowerId) await db.query(`DELETE FROM borrowers WHERE id=$1`, [borrowerId]); } catch (_) { }
+    try { if (adminId) await db.query(`DELETE FROM staff_users WHERE id=$1`, [adminId]); } catch (_) { }
     try { await db.pool.end(); } catch (_) { }
   }
 })();

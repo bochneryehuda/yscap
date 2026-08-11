@@ -53,6 +53,10 @@ app.use('/api/esign/webhook', require('./routes/esign-webhook'));
 // TrustPoint webhook — its OWN small JSON parser + rate limit (never the global 32MB
 // parser: unauthenticated callers must not force huge parses), token-authenticated.
 app.use('/api/trustpoint/webhook', require('./routes/trustpoint-webhook'));
+// Class Valuation callbacks — the appraisal vendor PUSHES order events to us. Same
+// discipline as the three above: its own small JSON parser + rate limit, mounted
+// before the global one, HTTP Basic (their contract) and failing closed.
+app.use('/api/class/callbacks', require('./routes/class-webhook'));
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 /* THE NUL BYTE IS REMOVED ONCE, AT THE DOOR (third audit, 2026-08-02).
@@ -382,9 +386,32 @@ app.use('/api/apply', require('./routes/apply'));
 // after signing; resolves the real destination from our DB and 302s into the
 // portal. The Connect webhook (/api/esign/webhook) is mounted above, pre-JSON.
 app.use('/api/esign', require('./routes/esign-public'));
+// The Elementix approval's RETURN leg. PUBLIC on purpose and mounted HERE rather
+// than inside the admin staff wall below: Elementix completes the approval by
+// redirecting the person's BROWSER back to us, and a top-level navigation from
+// another origin cannot carry the portal's token (it lives in localStorage and
+// rides on fetch calls). Behind the wall this route could never run — the owner
+// signed in at Elementix and got "unauthenticated" back (2026-08-09). Its
+// credential is the single-use, 15-minute, 192-bit `state` plus the PKCE verifier
+// that never leaves our database, so holding the returned code is not enough to
+// plant an authorization. The rate limit exists only so this door cannot be used
+// to hammer the vendor's token endpoint. It must stay AHEAD of the gated
+// `/api/admin/elementix` and `/api/admin` mounts; the path itself is fixed — it is
+// the redirect_uri already registered with Elementix and stored on pending rows.
+app.use('/api/admin/elementix/callback',
+  rateLimit({ bucket: 'elementix-callback', windowMs: 60000, max: 30 }),
+  require('./routes/admin-elementix-callback'));
 // Public token-authenticated draw-findings accept (the one-click "Accept" link we email the
 // borrower — the reply_token is the capability; no login needed to release their own money).
 app.use('/api/public/draw-findings', rateLimit({ bucket: 'draw-public', windowMs: 60000, max: 60 }), require('./routes/draw-findings-public'));
+// An emailed term sheet's own two doors (owner-directed 2026-08-07). Mounted OUTSIDE
+// /api/borrower because the read is public — the borrower clicking the officer's link
+// has no account yet, which is the whole point — and the token is the authorization.
+// Rate-limited like every other public token door: the token is 24 random bytes, so
+// guessing is hopeless, but a probe should still not be free.
+app.use('/api/term-sheet-offers',
+  rateLimit({ bucket: 'term-sheet-offer', windowMs: 60000, max: 60 }),
+  require('./routes/term-sheet-offers'));
 // Start / leave / audit a borrower view. Mounted outside /api/staff because the
 // leave + status calls are made while holding a BORROWER-kind token.
 app.use('/api/borrower-view', require('./routes/borrower-view'));
@@ -409,6 +436,14 @@ app.use('/api/trustpoint', require('./routes/trustpoint'));
 // Appraisal desk: import the appraisal XML, reconcile it against the file, and resolve
 // PILOT findings. The router applies requireAuth + requireStaff + per-file scoping itself.
 app.use('/api/appraisal', require('./routes/appraisal'));
+// AMC appraisal-ordering desk (AppraisalScope / CoreLogic Digital Gateway): the new
+// "Order an appraisal" section beside the Title / Insurance / Attorney orders. Same
+// auth wall + per-file scoping as the draw desk. Inert until the AMC switches are on
+// (src/amc/**, db/480); RTL only.
+app.use('/api/amc', require('./routes/amc'));
+// The SECOND appraisal vendor, mounted alongside — never inside — the AMC desk.
+// Each answers only for itself; nothing here picks between them.
+app.use('/api/class', require('./routes/class'));
 // The research desk: the cross-file property / comparable / appraiser database built
 // out of every appraisal XML we have ever imported (db/415), its search engine, and
 // the build-your-own valuation grid (db/410). Staff-wide by design — it holds
@@ -448,6 +483,15 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   // API Health — the status of every external API / integration (config presence + live reach).
   // The router applies its own requireAuth + platform_setup guards.
   app.use('/api/admin/integrations', requireAuth, requireStaff, require('./routes/admin-integrations'));
+  // Elementix (recorded deeds / mortgages over MCP) — the one-time OAuth approval,
+  // the read-only capability probe, and the connection status. READ-ONLY vendor:
+  // there is no write path to Elementix anywhere in this codebase.
+  // NOTE: the Elementix approval's RETURN leg (`/api/admin/elementix/callback`)
+  // is mounted PUBLICLY, further up with the other public routes, and is
+  // deliberately NOT part of this staff wall — Elementix brings the person back
+  // by redirecting their browser, which carries no portal token. See the comment
+  // at that mount; everything else about the connection stays gated here.
+  app.use('/api/admin/elementix', requireAuth, requireStaff, require('./routes/admin-elementix'));
   // Encompass READ-ONLY admin routes (owner-directed 2026-07-22): the cached
   // tenant field catalog + per-file cached raw loan JSON + refresh triggers.
   // The router applies its own requireAuth + platform_setup guards, and every
@@ -739,6 +783,15 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillAppraisalPhotoKindsOnce()
           .then((r) => r && r.refreshed && console.log('[boot] appraisal photo re-classify:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] appraisal photo re-classify failed:', e.message));
+        // Previous-files fix (owner-directed 2026-08-09): appraisal photos used to be a
+        // never-mirror kind, so every set already in PILOT was settled OUT of the mirror
+        // queue and would never reach SharePoint on its own. Copy the CURRENT sets into
+        // their new "Appraisal photos" folder; a superseded set is retired, not copied.
+        // Mirrors first and stamps after, so a failure never re-arms the row as pending
+        // and the backlog SLO can never fire because of this pass. Bounded, self-draining.
+        require('./lib/sharepoint-backup').backfillAppraisalPhotoMirrorOnce()
+          .then((r) => r && r.mirrored && console.log('[boot] appraisal photo mirror backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] appraisal photo mirror backfill failed:', e.message));
         // Previous-files fix: appraisals imported before the As-Is/ARV comp-grid split have every
         // comp stored as 'unknown', so the report shows one mixed grid instead of two. Re-run the
         // extractor on each pre-split appraisal's stored XML and write back the per-comp grid.
@@ -771,6 +824,22 @@ if (require.main === module) {
         require('./lib/appraisal/desk').backfillNoteBuyerFindingsOnce()
           .then((r) => r && r.synced && console.log('[boot] note-buyer appraisal checks backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] note-buyer appraisal checks backfill failed:', e.message));
+        // PREVIOUS FILES for the draw-wire name check (owner-reported 2026-08-10, 69 Bassett):
+        // `name_kind` is stored at capture, so the db/478 known-entity rule fix never reached
+        // already-captured wires — a wire to the borrower's own entity kept its fatal "new
+        // entity" verdict forever. Re-classify the stored new-entity rows against the LIVE rule
+        // (and give a still-new entity its profile slot). Bounded, silent, idempotent.
+        require('./lib/esign/draw-wire').backfillWireReclassifyOnce()
+          .then((r) => r && (r.fixed || r.linked) && console.log('[boot] draw-wire reclassify backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] draw-wire reclassify backfill failed:', e.message));
+        // PREVIOUS FILES for iPhone photos (owner-reported 2026-08-10: the draw inspection
+        // photos are HEIC, "we need to add our site to be able to read this format"). New
+        // archives convert at the door; this ONE forward-only sweep converts what is already
+        // in the draw-media archive so the galleries, accept page and branded reports can
+        // finally show them. Cursor-driven, bounded per boot, self-terminating.
+        require('./sitewire/media-archive').backfillHeicMediaOnce(Number(process.env.DRAW_MEDIA_HEIC_BOOT || 40))
+          .then((r) => r && r.converted && console.log('[boot] draw-media HEIC backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] draw-media HEIC backfill failed:', e.message));
         // PREVIOUS FILES for the email-signature filter (owner-reported 2026-08-03:
         // the tiny pictures out of a title / insurance agent's signature "still
         // coming in as documents … we still need to manually reject it on every
@@ -909,6 +978,19 @@ if (require.main === module) {
         require('./lib/address-heal').healProviderLongAddressesOnce()
           .then((r) => r && r.fixed && console.log('[boot] address format repair:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] address format repair failed:', e.message));
+        // Previous-files fix: a public-records track-record import stored its address
+        // as a bare one-line STRING (elementix shapes.js flattens the deed's
+        // addresses[{addressFull}]), so the line showed "(no address)" — every reader
+        // expects the canonical { line1, city, state, zip, oneLine } object. The
+        // importer is fixed at the source; this reshapes the rows it already wrote. It
+        // runs concurrently with the heals around it (all fire-and-forget) — order does
+        // not matter, because a bare string and its reshaped object key IDENTICALLY, so
+        // the dedupe heal reads the same key either way. db/516 makes the reshape
+        // non-material to the verify guard, so a verified line stays verified. Bounded,
+        // resumable, idempotent; never blocks boot.
+        require('./lib/track-record-address-shape').healTrackRecordAddressShapeOnce()
+          .then((r) => r && r.fixed && console.log('[boot] track-record address shape repair:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] track-record address shape repair failed:', e.message));
         // Previous-files fix (owner-reported 2026-08-02: "one track record has twice
         // the same address"). Four writers each invented their own dedupe key, so the
         // same property arriving from two sources became two lines. The CAUSE is fixed
@@ -962,6 +1044,19 @@ if (require.main === module) {
         require('./lib/appraisal/property-category-heal').healAppraisalPropertyCategoriesOnce()
           .then((r) => r && r.looked && console.log('[boot] appraisal property category repair:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] appraisal property category repair failed:', e.message));
+        /* THE ENTITY-DOCUMENT SLOTS SAY WHAT EACH ENTITY IS ACTUALLY ASKED FOR
+           (owner-directed 2026-08-09): a corporation for its bylaws and stock
+           certificate, an LLC for its operating agreement. This runs on every
+           boot ON PURPOSE — db/033 copies the shared template's wording back
+           down onto every one of these items each time it runs, which is right
+           for an LLC and wrong for every other type. Migrations are never
+           edited, and a SQL twin of the wording table would drift from the
+           JavaScript, so the repair calls the same one definition every other
+           caller does. Scoped to non-LLC entities (an LLC's correct wording IS
+           the template's), so it is a no-op for the whole back book. */
+        require('./lib/entity-slot-heal').healEntitySlotWordingOnce()
+          .then((r) => r && r.updated && console.log('[boot] entity slot wording:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] entity slot wording failed:', e.message));
         require('./lib/underwriting/investor-guidelines/seed').seedNoteBuyerConditions()
           .then((r) => r && r.ok && console.log('[boot] note-buyer conditions seed:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] note-buyer conditions seed failed:', e.message));
@@ -981,6 +1076,15 @@ if (require.main === module) {
         require('./lib/underwriting/ai-finding-notify').retireStaleFatalNotificationsOnce()
           .then((r) => r && (r.retiredStale || r.retiredSettled) && console.log('[boot] stale AI-fatal notifications retired:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] stale AI-fatal notification retire failed:', e.message));
+        // Previous AND future draws (owner-directed 2026-08-06): the draw-packet Excel
+        // is now filed as a document so it mirrors into the per-draw SharePoint folder
+        // ("Draws/Draw N") alongside the inspection reports. This files a packet for any
+        // draw that doesn't already carry a current one, so previous draws get theirs on
+        // the next boot. Bounded, best-effort, self-draining; never blocks boot.
+        // Off-switch: DRAW_PACKET_BACKFILL_DISABLED=1.
+        require('./sitewire/draw-packet').backfillDrawPacketsOnce()
+          .then((r) => r && r.filed && console.log('[boot] draw-packet documents filed:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] draw-packet backfill failed:', e.message));
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }
@@ -1026,6 +1130,11 @@ if (require.main === module) {
     // + the API key; read-only toward TrustPoint (webhook registration is the one
     // journaled write, and it only happens from the admin route).
     try { require('./trustpoint/poller').start(); } catch (e) { console.warn('trustpoint poller not started:', e.message); }
+    // Class Valuation callback-inbox drain. The receiver drains on delivery, so this
+    // is only the BACKSTOP: a delivery whose processing failed would otherwise wait
+    // for the next unrelated callback to sweep it up, and on a quiet file there may
+    // not be one. Self-gated by CLASS_ENABLED, bounded, and it never throws.
+    try { require('./class/poller').start(); } catch (e) { console.warn('class poller not started:', e.message); }
     // Encompass READ-ONLY pull worker (owner-directed 2026-07-22). Self-gates on
     // ENCOMPASS_ENABLED=1 + ENCOMPASS_* env creds. Never writes to Encompass
     // (structurally impossible via src/lib/integrations/encompass.js); writes ONLY
@@ -1035,6 +1144,12 @@ if (require.main === module) {
     // only). Runs independently of ENCOMPASS_ENABLED; self-gates on the
     // ENCOMPASS_FLOOD_ENABLED switch, so an idle tick is a cheap no-op.
     try { require('./sync/encompass-sync').startFloodPoller(); } catch (e) { console.warn('encompass flood poller not started:', e.message); }
+    // AMC appraisal-order poll worker (AppraisalScope / CoreLogic Digital Gateway is a
+    // PULL API — CDG never pushes, so status + finished documents are polled). Self-gates
+    // on AMC_ENABLED per tick, so an idle tick is a cheap no-op and flipping the switch on
+    // starts polling with no redeploy. On product-available it files the report back into
+    // the Document Center and runs the appraisal import automatically.
+    try { require('./amc/sync').start(); } catch (e) { console.warn('amc sync not started:', e.message); }
     // Scheduled notification digests (owner-directed 2026-07-20): weekly borrower
     // "what's still needed", daily per-officer pipeline snapshot, stale-file
     // alerts, and the Monday admin summary. Each self-gates via audit_log so it

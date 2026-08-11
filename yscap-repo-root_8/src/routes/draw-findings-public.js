@@ -27,6 +27,7 @@ const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
 const notify = require('../lib/notify');
+const drawLabel = require('../lib/draw-label');   // "Draw 2" — the ONE way a draw is named in a subject
 const borrowerSafe = require('../lib/borrower-safe');
 const storage = require('../lib/storage');
 const drawReport = require('../sitewire/draw-report');
@@ -127,7 +128,19 @@ router.get('/:token/media/:mediaId', tokenThrottleReadMedia, async (req, res) =>
   if (!m || !m.storage_ref) return res.status(404).end();
   let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
   if (!buf || !buf.length) return res.status(404).end();
-  setMediaHeaders(res, m.content_type);   // safe-type allowlist + sandbox CSP
+  // THE BYTES DECIDE THE TYPE, never the CDN's archived header (owner-reported 2026-08-10:
+  // every photo tile rendered as a broken image). media-archive stores the content type the
+  // Sitewire CDN happened to send — often `application/octet-stream` or nothing — and under
+  // setMediaHeaders' nosniff a non-image type makes the browser REFUSE to render perfectly
+  // good JPEG bytes in an <img>. Sniffing the magic bytes is the same "vendor header is not
+  // evidence" rule draw-report.js already applies to these very rows for the PDF embeds.
+  const SNIFF_MIME = { jpg: 'image/jpeg', png: 'image/png', gif: 'image/gif', heic: 'image/heic', tiff: 'image/tiff', pdf: 'application/pdf' };
+  let ctype = m.content_type;
+  try {
+    const kind = require('../lib/upload-bytes').sniffKind(buf);
+    if (kind && SNIFF_MIME[kind]) ctype = SNIFF_MIME[kind];
+  } catch (_) { /* fall back to the stored type */ }
+  setMediaHeaders(res, ctype);   // safe-type allowlist + sandbox CSP
   return res.end(buf);
 });
 
@@ -166,7 +179,8 @@ router.post('/:token/accept', tokenThrottleMutation, async (req, res) => {
     `UPDATE draw_findings SET status='accepted', accepted_at=now(), accepted_via='email', wire_due_at=now() + ($2 || ' hours')::interval, updated_at=now()
       WHERE id=$1 AND status='delivered' RETURNING wire_due_at`, [f.id, String(hours)])).rows[0];
   if (!upd) return res.status(409).json({ error: 'already handled' });
-  await notify.notifyAppStaff(f.application_id, { type: 'draw_accepted', title: 'Borrower accepted a draw (email)', badge: { text: 'Accepted', tone: 'positive' },
+  await notify.notifyAppStaff(f.application_id, { type: 'draw_accepted', title: 'Borrower accepted a draw (email)',
+    drawTag: await drawLabel.drawTagForRef(db, f.application_id, { sitewireDrawId: f.sitewire_draw_id }), badge: { text: 'Accepted', tone: 'positive' },
     body: `The borrower accepted the inspection results from the email — the release is due by ${new Date(upd.wire_due_at).toLocaleString('en-US')}.`, applicationId: f.application_id, link: `/internal/app/${f.application_id}` }).catch(() => {});
   res.json({ ok: true, wire_due_at: upd.wire_due_at });
 });
@@ -204,7 +218,8 @@ router.post('/:token/dispute', tokenThrottleMutation, async (req, res) => {
     await db.query(`UPDATE draw_finding_lines SET dispute_status='open', dispute_desired_cents=$2, dispute_note=$3, updated_at=now() WHERE id=$1`, [u.line_id, u.desired, u.note]);
   }
   const count = updates.length;
-  await notify.notifyAppStaff(f.application_id, { type: 'draw_disputed', title: 'Borrower disputed a draw (email)', badge: { text: 'Disputed', tone: 'action' },
+  await notify.notifyAppStaff(f.application_id, { type: 'draw_disputed', title: 'Borrower disputed a draw (email)',
+    drawTag: await drawLabel.drawTagForRef(db, f.application_id, { sitewireDrawId: f.sitewire_draw_id }), badge: { text: 'Disputed', tone: 'action' },
     body: `The borrower pushed back on ${count} item(s) on their draw results from the email. A draw coordinator needs to review — the borrower can add photo evidence from their portal.`, applicationId: f.application_id, link: `/internal/app/${f.application_id}` }).catch(() => {});
   res.json({ ok: true, disputed_lines: count });
 });

@@ -326,6 +326,11 @@
     }
     // optional voluntary de-leverage (slider): tighten LTC only
     if (input.targetLTC && input.targetLTC > 0 && caps.maxLTC) caps.maxLTC = Math.min(caps.maxLTC, input.targetLTC);
+    /* A typed loan amount — a voluntary ceiling on the tier's own dollar wall, so it
+       can only ever REDUCE. Identical in kind and effect to the line above; see the
+       full note in standard-program.js (whose sizeLoan this engine reuses). Inert
+       when unset; raising a loan still requires the admin basis below. */
+    if (input.targetLoan && input.targetLoan > 0) caps.maxLoan = Math.min(caps.maxLoan, input.targetLoan);
     // ---- admin manual override: set the qualifying basis directly (only when > 0; default untouched) ----
     if (input.ovrAcqLTV > 0) caps.maxAcqLTV = input.ovrAcqLTV;
     if (input.ovrARLTV > 0) caps.maxARLTV = input.ovrARLTV;

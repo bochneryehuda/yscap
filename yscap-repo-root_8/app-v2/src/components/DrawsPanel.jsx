@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { api } from '../lib/api.js';
+import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
+import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import EmailCenter from './EmailCenter.jsx';
 import FileSections, { Section } from './FileSections.jsx';
@@ -235,15 +236,21 @@ export default function DrawsPanel({ appId }) {
                     Whole-project report
                   </button>
                   <button className="btn btn-sm ghost" title="The same whole-project report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower."
-                    onClick={() => { if (!window.confirm('Share the borrower-safe whole-project report with the borrower? They’ll be able to see it in their portal.')) return; const w = window.open('', '_blank'); act('projreportb', async () => { await api.sitewireProjectReport(appId, 'borrower', w); return { msg: 'Shared the borrower-safe whole-project report with the borrower.' }; }); }}>
+                    onClick={async () => { if (!(await askConfirm('Share the borrower-safe whole-project report with the borrower? They’ll be able to see it in their portal.'))) return; const w = window.open('', '_blank'); act('projreportb', async () => { await api.sitewireProjectReport(appId, 'borrower', w); return { msg: 'Shared the borrower-safe whole-project report with the borrower.' }; }); }}>
                     Borrower copy
                   </button>
                 </div>
               ) : null}>
+              {/* WHO RELEASES THE MONEY — the answer, where it came from, whether the loan is sold
+                  yet, and the question to ask when those two disagree. Above the draws because it
+                  governs every one of them. */}
+              <ReleasePartyCard appId={appId} release={data.release} reload={load} />
               {draws.length === 0 && <div className="muted">No draws yet on this file.</div>}
               {draws.map((d) => (
                 <DrawCard key={d.sitewire_draw_id} appId={appId} draw={d} requests={reqsByDraw[d.sitewire_draw_id] || []}
-                  finding={findingByDraw[d.sitewire_draw_id]} busy={busy} act={act} reload={load} writesOff={writesOff} readsOff={readsOff} quickStatuses={quickStatuses} />
+                  finding={findingByDraw[d.sitewire_draw_id]} busy={busy} act={act} reload={load} writesOff={writesOff} readsOff={readsOff} quickStatuses={quickStatuses}
+                  delivery={(data.investor_deliveries || []).find((x) => String(x.sitewire_draw_id) === String(d.sitewire_draw_id)) || null}
+                  answers={data.investor_answers || []} />
               ))}
             </Section>
 
@@ -275,6 +282,11 @@ export default function DrawsPanel({ appId }) {
               <SitewireDocuments appId={appId} readsOff={readsOff} />
             </Section>
 
+            {/* SETTINGS — every knob that governs this file's draws, and WHICH LEVEL decided each. */}
+            <Section id="dsec-settings" title="Draw settings on this file" defaultOpen={false}>
+              <FileDrawSettings appId={appId} />
+            </Section>
+
             {/* MANAGE — reallocations, project status + controls. */}
             <Section id="dsec-changes" title="Scope-of-Work change requests" defaultOpen={false}>
               <ChangeRequests appId={appId} items={change_requests} busy={busy} act={act} />
@@ -304,7 +316,7 @@ export default function DrawsPanel({ appId }) {
 // for a new entity lives in the operating-agreement block right below the card.
 const WIRE_KIND = {
   borrower_personal: { label: 'Borrower’s account', tone: 'on' },
-  subject_llc: { label: 'Subject LLC account', tone: 'on' },
+  subject_llc: { label: 'Subject entity account', tone: 'on' },
   // A known entity of the borrower (on their profile / library) — not the file's linked
   // subject LLC, but not an unknown third party either, so no operating agreement is needed.
   known_entity: { label: 'Borrower’s entity', tone: 'on' },
@@ -502,7 +514,7 @@ function LifecycleControl({ appId, link, writesOff, onChanged }) {
   const state = (link && link.lifecycle_state) || 'active';
   const at = link && link.lifecycle_at;
   async function set(next, confirmText) {
-    if (!window.confirm(confirmText)) return;
+    if (!(await askConfirm(confirmText))) return;
     setBusy(next); setMsg('');
     try {
       const r = await api.post(`/api/sitewire/files/${appId}/lifecycle`, { state: next });
@@ -589,7 +601,7 @@ function SitewirePropertyControls({ appId, onChanged }) {
     } catch (e) { setMsg(e?.data?.error || e.message || 'That didn’t work.'); }
     finally { setBusy(''); }
   }
-  const confirmApply = (question, changes, key, done) => { if (!window.confirm(question)) return; apply(changes, key, done); };
+  const confirmApply = async (question, changes, key, done) => { if (!(await askConfirm(question))) return; apply(changes, key, done); };
 
   if (loading) return <div className="dd-card" style={{ marginTop: 12 }}>Loading Sitewire settings…</div>;
   if (!d) return null;
@@ -737,7 +749,7 @@ function ResetDrawControl({ appId, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   async function reset() {
-    if (!window.confirm('Reset this file’s draw setup and start over?\n\nThis deactivates the property in Sitewire (Sitewire has no delete — the old copy stays in their list, just inactive) and unlinks it here, clearing the mirrored draws, findings and photos so you can push a fresh copy. Your money ledger — releases, retainage and waivers — is kept.')) return;
+    if (!(await askConfirm('Reset this file’s draw setup and start over?\n\nThis deactivates the property in Sitewire (Sitewire has no delete — the old copy stays in their list, just inactive) and unlinks it here, clearing the mirrored draws, findings and photos so you can push a fresh copy. Your money ledger — releases, retainage and waivers — is kept.'))) return;
     setBusy(true); setMsg('');
     try {
       const r = await api.post(`/api/sitewire/files/${appId}/reset-draw`, {});
@@ -1057,7 +1069,7 @@ function PortalDrawsCard({ appId }) {
               )}
               {['submitted', 'entered', 'approved'].includes(pr.status) && (
                 <button className="btn btn-sm ghost" disabled={busy}
-                  onClick={() => { const reason = window.prompt('Cancel this draw request? Add a short reason (the borrower sees it if they submitted it):'); if (reason !== null) act(() => api.post(`/api/sitewire/files/${appId}/portal-draws/${pr.id}/cancel`, { reason })); }}>Cancel request</button>
+                  onClick={async () => { const reason = await askPrompt('Cancel this draw request? Add a short reason (the borrower sees it if they submitted it):'); if (reason !== null) act(() => api.post(`/api/sitewire/files/${appId}/portal-draws/${pr.id}/cancel`, { reason })); }}>Cancel request</button>
               )}
             </div>
             {apprFor === pr.id && (
@@ -1897,7 +1909,7 @@ function DrawTimeline({ timeline }) {
   );
 }
 
-function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff, readsOff, quickStatuses }) {
+function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff, readsOff, quickStatuses, delivery, answers }) {
   const offTip = writesOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
   const readTip = readsOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
   const isOpen = draw.status !== 'approved';
@@ -2024,12 +2036,12 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
         {DRAW_ACTIONS(isOpen).map((a) => (
           <button key={a.key} className={'btn btn-sm ' + (a.key === 'approve' ? 'primary' : 'ghost')}
             title={offTip || a.hint} disabled={writesOff || busy === a.key + draw.sitewire_draw_id}
-            onClick={() => {
+            onClick={async () => {
               let note = null;
               if (a.needsNote) {
-                note = window.prompt(a.prompt, '');
+                note = await askPrompt(a.prompt, { defaultValue: '' });
                 if (note == null) return;                       // cancelled
-                if (String(note).trim().length < 8) { window.alert('Please write at least a few words explaining why — this goes on the file\u2019s audit trail.'); return; }
+                if (String(note).trim().length < 8) { showMessage('Please write at least a few words explaining why — this goes on the file\u2019s audit trail.'); return; }
               }
               act(a.key + draw.sitewire_draw_id, async () => {
                 await api.post(`/api/sitewire/draws/${draw.sitewire_draw_id}/${a.key}`, note ? { note: String(note).trim() } : {});
@@ -2039,8 +2051,46 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
             {a.label}
           </button>
         ))}
+        {/* SOMEBODY READ THE INSPECTION. Records the read and drives the readiness checklist —
+            DELIBERATELY NOT A GATE: Deliver still works whether or not this was pressed, because
+            turning it into a refusal would be a new hold on live files nobody asked for. It only
+            appears once findings exist, since there is nothing to read before that. */}
+        {finding && !finding.reviewed_at && (
+          <button className="btn btn-sm soft" title="Record that you read the inspector's report. It never blocks Deliver — it is what the checklist reads."
+            disabled={busy === 'review' + draw.sitewire_draw_id}
+            onClick={async () => {
+              const note = await askPrompt('Anything worth recording about this inspection? (optional)',
+                { title: 'Mark the inspection reviewed', confirmLabel: 'Mark reviewed', multiline: true });
+              if (note === null) return;   // they backed out — a blank answer is still a real "reviewed, no note"
+              act('review' + draw.sitewire_draw_id, async () => {
+                await api.post(`/api/sitewire/files/${appId}/findings/${finding.id}/review`, note ? { note } : {});
+                reload();
+                return { msg: 'Recorded that you reviewed this inspection.' };
+              });
+            }}>
+            Mark reviewed
+          </button>
+        )}
+        {finding && finding.reviewed_at && (
+          <span className="pill sw-approved" title={finding.review_note || 'Somebody read the inspector’s report before it went out.'}>
+            Reviewed {fmtDay(finding.reviewed_at)}
+          </span>
+        )}
         <button className="btn btn-sm ghost" title={readTip} disabled={readsOff || busy === 'deliver' + draw.sitewire_draw_id}
-          onClick={() => act('deliver' + draw.sitewire_draw_id, async () => { const r = await api.post(`/api/sitewire/files/${appId}/findings/${draw.sitewire_draw_id}/deliver`, {}); const ready = Array.isArray(r.reports_ready) && r.reports_ready.length; return { msg: `Findings delivered to the borrower (${r.lines} items).${ready ? ' Photos archived + PILOT reports ready.' : (r.reports_pending ? ' Archiving photos + preparing reports…' : '')}` }; })}>
+          onClick={() => act('deliver' + draw.sitewire_draw_id, async () => {
+            const r = await api.post(`/api/sitewire/files/${appId}/findings/${draw.sitewire_draw_id}/deliver`, {});
+            const ready = Array.isArray(r.reports_ready) && r.reports_ready.length;
+            // The whole point of this button is the BORROWER receiving the results — if their
+            // email did not go out, say so loudly instead of reporting a clean delivery
+            // (owner-reported 2026-08-10: the borrower was never looped in and nothing said so).
+            if (r.borrower_emailed === false) {
+              const why = r.borrower_email_reason === 'no_borrower_email'
+                ? 'no email address on their profile, draw emails turned off in their settings, or the file is parked — fix that and re-send'
+                : 'their copy was blocked or could not be sent — reach them another way';
+              return { msg: `⚠️ Findings recorded (${r.lines} items), but the borrower did NOT receive the email: ${why}.` };
+            }
+            return { msg: `Findings delivered to the borrower (${r.lines} items).${ready ? ' Photos archived + PILOT reports ready.' : (r.reports_pending ? ' Archiving photos + preparing reports…' : '')}` };
+          })}>
           {finding ? 'Re-send findings' : 'Deliver findings to borrower'}
         </button>
 
@@ -2055,14 +2105,21 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
           <button className="btn btn-sm soft" title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and the inspection photos." disabled={busy === 'rep' + draw.sitewire_draw_id}
             onClick={() => { const w = window.open('', '_blank'); act('rep' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'staff', w); return { msg: 'Opened the PILOT report in a new tab.' }; }); }}>Our report</button>
           <button className="btn btn-sm soft" title="The same report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower." disabled={busy === 'repb' + draw.sitewire_draw_id}
-            onClick={() => { if (!window.confirm('Share the borrower-safe report for this draw with the borrower? They’ll be able to see it in their portal, including the draw processing fee deducted from their release.')) return; const w = window.open('', '_blank'); act('repb' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'borrower', w); return { msg: 'Shared the borrower-safe report with the borrower (opened in a new tab).' }; }); }}>Borrower copy</button>
+            onClick={async () => { if (!(await askConfirm('Share the borrower-safe report for this draw with the borrower? They’ll be able to see it in their portal, including the draw processing fee deducted from their release.'))) return; const w = window.open('', '_blank'); act('repb' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'borrower', w); return { msg: 'Shared the borrower-safe report with the borrower (opened in a new tab).' }; }); }}>Borrower copy</button>
           {draw.pdf_src && <a className="btn btn-sm soft" href={draw.pdf_src} target="_blank" rel="noreferrer">Inspector PDF</a>}
         </span>
       </div>
 
+      {/* WHAT'S LEFT ON THIS DRAW — every step, who we are waiting on, and the one action that
+          clears it. The blockers used to appear only as a refusal after pressing Deliver. */}
+      <DrawChecklist checklist={draw.checklist} statusWords={draw.status_words} dates={draw.dates} daysInStage={draw.days_in_stage} />
       {showPhotos && <InspectionGallery appId={appId} draw={draw} finding={finding} readsOff={readsOff} />}
+      {/* Invoices, receipts and extra photos — the proof behind an override. Always available, not
+          only at the moment of an override, because they turn up whenever they turn up. */}
+      <DrawAttachments appId={appId} drawId={draw.sitewire_draw_id} />
       {finding && <FindingStatus appId={appId} finding={finding} reload={reload} />}
       {finding && <InvestorDeliveryCard appId={appId} drawId={draw.sitewire_draw_id} reload={reload} />}
+      {finding && <InvestorAnswer appId={appId} drawId={draw.sitewire_draw_id} delivery={delivery} answers={answers} reload={reload} />}
     </div>
   );
 }
@@ -2097,13 +2154,13 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
     const manual = p.funding_mode === 'manual';
     let ok;
     if (manual) {
-      ok = window.confirm(`Record that this draw was delivered to ${p.note_buyer} outside PILOT?\n\nPILOT sends no email — this only records the delivery so the reminders stop.`);
+      ok = await askConfirm(`Record that this draw was delivered to ${p.note_buyer} outside PILOT?\n\nPILOT sends no email — this only records the delivery so the reminders stop.`);
     } else {
       const who = p.to.join(', ');
       const modeLine = p.funding_mode === 'reimbursement'
         ? `They will be asked to REIMBURSE us ${usd2(p.money.investor_total_cents)}.`
         : `They will be asked to release ${usd2(p.money.to_borrower_cents)} to the borrower and ${usd2(p.money.to_us_cents)} to us.`;
-      ok = window.confirm(`Deliver this draw to ${p.note_buyer}?\n\nTo: ${who}\n\n${modeLine}\n\nThe draw coordinator, the loan officer and draws@yscapgroup.com are copied. The borrower is never included.`);
+      ok = await askConfirm(`Deliver this draw to ${p.note_buyer}?\n\nTo: ${who}\n\n${modeLine}\n\nThe draw coordinator, the loan officer and draws@yscapgroup.com are copied. The borrower is never included.`);
     }
     if (!ok) return;
     setBusy(true); setErr(''); setMsg('');
@@ -2225,6 +2282,18 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
             </ul>
           )}
 
+          {/* HAS THIS LOAN BEEN SOLD? A CHECK, NOT A STOP — the Deliver button stays enabled
+              (owner-directed 2026-08-09: "default should be like it was sold already, but it
+              should give you a warning that it doesn't have a PA date if you're sure you want to
+              do investor delivery"). Gold, not red: red is for the blockers above, which do refuse.
+              A table-funded loan produces no warning at all — it was sold at the closing table. */}
+          {p.sold_warning && (
+            <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 8, background: 'var(--gold-soft,#F7F1E4)', border: '1px solid var(--gold,#AE8746)' }}>
+              <div style={{ fontWeight: 700, color: '#141B22' }}>{p.sold_warning.title}</div>
+              <div className="small" style={{ marginTop: 4, color: '#3A4550' }}>{p.sold_warning.body}</div>
+            </div>
+          )}
+
           <div className="row" style={{ gap: 10, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-sm primary" disabled={busy || !p.can_send} onClick={send}
               title={p.can_send ? (p.funding_mode === 'manual' ? 'Record this draw as delivered manually' : `Deliver this draw to ${p.note_buyer}`) : 'Clear the items above first'}>
@@ -2241,6 +2310,442 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
           {err ? <div className="act-card-sub" style={{ color: 'var(--danger,#B4453C)' }}>{err}</div> : null}
         </>
       )}
+    </div>
+  );
+}
+
+/* ── WHO RELEASES THE MONEY, and has this loan been sold yet ─────────────────────────────────
+   (owner-directed 2026-08-09.) The answer, WHICH level gave it — this project / this capital
+   provider / the company default — and the question that has to be asked when the money is set to
+   come from an investor who does not own the loan yet. It never changes anything by itself. */
+/* WHERE DID THIS COME FROM? — every knob that governs this file's draws, its answer, and WHICH OF
+   THE THREE LEVELS decided it (owner-directed 2026-08-09: the settings were spread across a global
+   table, a per-capital-provider table and three per-file routes, and nothing anywhere said which one
+   won — so a coordinator looking at a $250 fee had to guess).
+
+   READ-ONLY on purpose. The knobs are SET where they belong — the company defaults and the
+   per-capital-provider rules on the Draw Rules screen, the per-project ones on their own cards
+   (who releases the money, lien waivers, the fee on the Start-draw screen). A second place to write
+   them would be a second thing that can disagree; this is the one place that ANSWERS. */
+function FileDrawSettings({ appId }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    let live = true;
+    api.get(`/api/sitewire/files/${appId}/draw-settings`)
+      .then((r) => { if (live) setData(r); })
+      .catch((e) => { if (live) setErr(e?.data?.error || 'Could not read the settings for this file.'); });
+    return () => { live = false; };
+  }, [appId]);
+
+  if (err) return <div className="muted">{err}</div>;
+  if (!data) return <div className="muted">Loading…</div>;
+
+  const rows = Array.isArray(data.settings) ? data.settings : [];
+  // A knob nobody has set anywhere reads as the built-in default, which is a real answer and is
+  // shown — "nothing is set" is exactly what somebody chasing a surprising fee needs to see.
+  const show = (s) => {
+    if (s.value === null || s.value === undefined || s.value === '') return '—';
+    if (s.type === 'money_cents') return usd(s.value);
+    if (s.type === 'pct') return `${s.value}%`;
+    if (s.type === 'days') return `${s.value} day${Number(s.value) === 1 ? '' : 's'}`;
+    if (s.type === 'hours') return `${s.value} hour${Number(s.value) === 1 ? '' : 's'}`;
+    if (s.type === 'bool') return s.value ? 'Yes' : 'No';
+    return String(s.value);
+  };
+
+  return (
+    <div>
+      <div className="act-card-sub" style={{ marginBottom: 10, color: '#4B585C' }}>
+        Every setting that governs this file's draws, and where each answer came from. Company
+        defaults and capital-provider rules are set on the Draw Rules screen; the per-project ones
+        are set on their own cards above.
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table className="dd-table" style={{ minWidth: 640 }}>
+          <thead><tr><th>Setting</th><th>In force</th><th>Decided by</th><th>Company</th><th>Capital provider</th><th>This project</th></tr></thead>
+          <tbody>
+            {rows.map((s) => (
+              <tr key={s.key}>
+                <td>
+                  <div style={{ fontWeight: 500, color: '#141B22' }}>
+                    {s.label}
+                    {/* An advisory knob WARNS and never refuses — saying so here stops somebody
+                        reading a warning they can override as a rule that blocked them. */}
+                    {s.advisory ? <span className="pill sw-draft" style={{ marginLeft: 6, fontSize: 11 }}>advisory</span> : null}
+                  </div>
+                  {s.help ? <div className="small" style={{ color: '#4B585C' }}>{s.help}</div> : null}
+                </td>
+                <td style={{ fontWeight: 600, color: '#141B22', whiteSpace: 'nowrap' }}>{show(s)}</td>
+                <td style={{ color: s.level === 'none' ? '#4B585C' : '#141B22', whiteSpace: 'nowrap' }}>{s.levelLabel}</td>
+                {['company', 'capital_provider', 'project'].map((lv) => (
+                  <td key={lv} style={{ whiteSpace: 'nowrap', fontWeight: s.level === lv ? 700 : 400, color: s.level === lv ? '#141B22' : '#4B585C' }}>
+                    {/* A level that CANNOT hold this knob says so, rather than showing a blank that
+                        reads as "nobody set it here yet". */}
+                    {s.settable && s.settable[lv] === false
+                      ? <span className="small" style={{ color: '#8A99A8' }}>n/a</span>
+                      : show({ ...s, value: s.levels ? s.levels[lv] : null })}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ReleasePartyCard({ appId, release, reload }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  if (!release) return null;
+
+  async function setProjectMode(mode) {
+    setBusy(true); setErr('');
+    try { await api.post(`/api/sitewire/files/${appId}/release-party`, { mode }); reload(); }
+    catch (e) { setErr(e?.data?.error || 'Could not save that choice.'); }
+    finally { setBusy(false); }
+  }
+
+  const w = release.warning;
+  return (
+    <div className="act-card is-open" id="release-party">
+      <div className="act-card-head">
+        <div style={{ minWidth: 220, flex: 1 }}>
+          <div className="act-card-title">Who releases the money</div>
+          <div className="act-card-sub">
+            <b style={{ color: '#141B22' }}>{release.modeLabel}</b>
+            {' · '}<span style={{ color: '#4B585C' }}>from {release.levelLabel}</span>
+          </div>
+        </div>
+        {/* TWO ways a loan is sold, and the label says WHICH — a table-funded loan was sold at the
+            closing table and is never getting a purchase advice date, so "no PA date" on one of
+            those is completely normal and must not read as a problem (owner-directed 2026-08-09). */}
+        <span className={`chip ${release.sold === 'sold' ? 'good' : ''}`}
+          title={release.soldVia === 'table_funding'
+            ? 'Funded on the Table Funding warehouse line — sold at the closing table, so no purchase advice date is expected'
+            : 'Read from the purchase advice date in Encompass'}>
+          {release.soldLabel}
+        </span>
+      </div>
+
+      <div className="act-card-sub" style={{ marginTop: 8, color: '#4B585C' }}>{release.modeHelp}</div>
+
+      {/* THE QUESTION — never a refusal. The coordinator can carry on, or take the one-click switch. */}
+      {w && (
+        <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 8, background: 'var(--gold-soft,#F7F1E4)', border: '1px solid var(--gold,#AE8746)' }}>
+          <div style={{ fontWeight: 700, color: '#141B22' }}>{w.title}</div>
+          <div className="small" style={{ marginTop: 4, color: '#3A4550' }}>{w.body}</div>
+          <button className="btn btn-sm ghost" style={{ marginTop: 8 }} disabled={busy}
+            onClick={() => setProjectMode(w.suggestMode)}>{w.suggestLabel}</button>
+        </div>
+      )}
+
+      <div style={{ marginTop: 12 }}>
+        <div className="act-label" style={{ display: 'block', marginBottom: 5 }}>For every draw on this project</div>
+        <div className="seg" role="group" aria-label="Who releases the money on this project">
+          <button type="button" className={release.levels.project === 'investor_direct' ? 'on' : ''} disabled={busy}
+            onClick={() => setProjectMode('investor_direct')}>The investor releases</button>
+          <button type="button" className={release.levels.project === 'reimbursement' ? 'on' : ''} disabled={busy}
+            onClick={() => setProjectMode('reimbursement')}>We release</button>
+          <button type="button" className={release.levels.project === 'manual' ? 'on' : ''} disabled={busy}
+            onClick={() => setProjectMode('manual')}>Handled outside PILOT</button>
+        </div>
+        <div className="act-card-sub" style={{ marginTop: 6 }}>
+          {release.levels.project
+            ? <>Set on this project.{' '}
+              <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13 }} disabled={busy}
+                onClick={() => setProjectMode('')}>Go back to the {release.levels.capital_provider ? 'capital provider’s' : 'company'} setting</button></>
+            : `Not set here — this project follows ${release.levelLabel}. A single draw can still be set differently.`}
+        </div>
+      </div>
+      {err ? <div className="act-card-sub" style={{ color: 'var(--danger,#B4453C)' }}>{err}</div> : null}
+    </div>
+  );
+}
+
+/* ── WHAT'S LEFT ON THIS DRAW ─────────────────────────────────────────────────────────────────
+   The same facts the refusals are built from, stated forward. A description, never a gate. */
+function DrawChecklist({ checklist, statusWords, dates, daysInStage }) {
+  const [open, setOpen] = useState(false);
+  if (!checklist || !checklist.steps || !checklist.steps.length) return null;
+  const dot = (state) => (state === 'done' ? '#2F7F53' : state === 'unknown' ? '#8A99A8' : '#AE8746');
+  const shown = open ? checklist.steps : checklist.steps.filter((s) => s.state !== 'done');
+  const dateRow = (label, d) => {
+    if (!d || !d.date) return null;
+    return (
+      <span key={label} style={{ marginRight: 14, color: d.late ? '#B4453C' : '#4B585C' }}>
+        {label} <b style={{ color: d.late ? '#B4453C' : '#141B22' }}>{d.date}</b>{d.actual ? '' : d.late ? ' (late)' : ' (expected)'}
+      </span>
+    );
+  };
+  return (
+    <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 8, background: 'var(--surface-soft,#FBF9F4)', border: '1px solid var(--hairline,#E4E0D6)' }}>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ fontWeight: 700, color: '#141B22' }}>
+          What’s left on this draw
+          <span style={{ fontWeight: 500, color: '#4B585C' }}> · {checklist.done} of {checklist.total} done</span>
+          {daysInStage != null && <span style={{ fontWeight: 500, color: '#4B585C' }}> · {daysInStage} day{daysInStage === 1 ? '' : 's'} at this step</span>}
+        </div>
+        <button className="btn btn-sm soft" onClick={() => setOpen(!open)}>{open ? 'Hide what’s done' : 'Show everything'}</button>
+      </div>
+
+      {statusWords && !statusWords.known && (
+        <div className="small" style={{ marginTop: 6, color: '#B4453C' }}>
+          {statusWords.label}. {statusWords.note}
+        </div>
+      )}
+
+      {dates && (
+        <div className="small" style={{ marginTop: 6 }}>
+          {dateRow('Inspection', dates.inspection)}
+          {dateRow('Decision', dates.decision)}
+          {dateRow('Release', dates.release)}
+        </div>
+      )}
+
+      <ul style={{ listStyle: 'none', padding: 0, margin: '8px 0 0' }}>
+        {shown.map((s) => (
+          <li key={s.key} className="small" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', padding: '3px 0', color: '#3A4550' }}>
+            <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 8, background: dot(s.state), marginTop: 6, flex: '0 0 auto' }} />
+            <span>
+              <b style={{ color: '#141B22' }}>{s.label}</b>
+              {s.state !== 'done' && s.who ? <span style={{ color: '#4B585C' }}> — waiting on {s.who}</span> : null}
+              {s.detail ? <span style={{ display: 'block', color: '#4B585C' }}>{s.detail}</span> : null}
+              {s.state !== 'done' && s.action ? <span style={{ display: 'block', color: '#4B585C' }}>→ {s.action}</span> : null}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {!open && !shown.length && <div className="small" style={{ marginTop: 6, color: '#2F7F53' }}>Everything on this draw is done.</div>}
+    </div>
+  );
+}
+
+/* Read a chosen file into the upload contract every door in this app takes. Base64 only — never a
+   data: URL, whose prefix silently shifts the decode and garbles every byte of the stored file. */
+function readAsUpload(f) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onerror = () => rej(new Error('could not read that file'));
+    r.onload = () => res({ filename: f.name, contentType: f.type || 'application/octet-stream', dataBase64: String(r.result || '').split(',')[1] || '' });
+    r.readAsDataURL(f);
+  });
+}
+
+/* ── SUPPORTING DOCUMENTS ON A DRAW ───────────────────────────────────────────────────────────
+   Invoices, receipts and extra photos — the proof behind an override, and whatever else belongs
+   on the draw. They travel to the investor with everything else. */
+function DrawAttachments({ appId, drawId }) {
+  const [d, setD] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+  const [cat, setCat] = useState('invoice');
+  const [preview, setPreview] = useState(null);
+  const load = useCallback(() => {
+    api.get(`/api/sitewire/files/${appId}/draws/${drawId}/attachments`).then(setD).catch(() => setD(null));
+  }, [appId, drawId]);
+  useEffect(() => { load(); }, [load]);
+
+  async function onPick(e) {
+    const files = [...(e.target.files || [])];
+    e.target.value = '';
+    if (!files.length) return;
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      // The one upload contract this app uses everywhere: {filename, contentType, dataBase64}.
+      const payload = [];
+      for (const f of files) payload.push({ ...(await readAsUpload(f)), category: cat });
+      const r = await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/attachments`, { files: payload });
+      const skipped = (r.skipped || []);
+      setMsg(`${r.added.length} file${r.added.length === 1 ? '' : 's'} attached.${skipped.length ? ` ${skipped.length} could not be: ${skipped.map((s) => `${s.what} — ${s.reason}`).join('; ')}` : ''}`);
+      setD(r.attachments ? { ...(d || {}), attachments: r.attachments } : d);
+      load();
+    } catch (ex) { setErr(ex?.data?.error || 'Could not attach that file.'); }
+    finally { setBusy(false); }
+  }
+
+  async function remove(att) {
+    if (!(await askConfirm(`Take “${att.filename}” off this draw?\n\nThe document stays on the loan file — it just stops travelling to the investor with this draw.`))) return;
+    setBusy(true); setErr('');
+    try { await api.del(`/api/sitewire/files/${appId}/draws/${drawId}/attachments/${att.id}`); load(); }
+    catch (ex) { setErr(ex?.data?.error || 'Could not remove it.'); }
+    finally { setBusy(false); }
+  }
+
+  // Review a pending document right on the draw card — a pulled Sitewire document (and a
+  // borrower upload) only travels to the investor once somebody accepts it.
+  async function review(att, action) {
+    let reason;
+    if (action === 'reject') {
+      // window.prompt contract: a string (possibly '') = proceed, null = they backed out.
+      reason = await askPrompt(`Reject “${att.filename}”?\n\nIt stays on the file but will NOT travel to the investor. Why is it being rejected? (optional)`, { title: 'Reject this document', confirmLabel: 'Reject' });
+      if (reason === null) return;
+    }
+    setBusy(true); setErr('');
+    try { await api.sitewireReviewDrawAttachment(appId, drawId, att.id, action, reason || undefined); load(); }
+    catch (ex) { setErr(ex?.data?.error || 'Could not record that.'); }
+    finally { setBusy(false); }
+  }
+
+  const rows = (d && d.attachments) || [];
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div className="act-label" style={{ display: 'block', marginBottom: 5 }}>Supporting documents</div>
+      <div className="act-card-sub" style={{ marginTop: 0 }}>
+        Invoices, receipts and extra photos for this draw — they go to the investor with the reports.
+        Documents the borrower emails to Sitewire are pulled in here automatically; accept them so they travel.
+      </div>
+      {rows.length > 0 && (
+        <ul style={{ listStyle: 'none', padding: 0, margin: '8px 0 0' }}>
+          {rows.map((a) => (
+            <li key={a.id} className="small" style={{ display: 'flex', gap: 8, alignItems: 'baseline', padding: '3px 0', color: '#3A4550', flexWrap: 'wrap' }}>
+              <b style={{ color: '#141B22' }}>{(d.categories || []).find((c) => c.value === a.category)?.label || 'Document'}</b>
+              <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13, flex: 1, minWidth: 120, textAlign: 'left', overflowWrap: 'anywhere' }}
+                title="Preview it here" onClick={() => setPreview(preview && preview.id === a.id ? null : a)}>{a.filename}</button>
+              {a.source === 'sitewire_property_doc' && <span className="chip" title={a.note || ''}>from Sitewire</span>}
+              {a.review_status === 'rejected'
+                ? <span className="chip" style={{ color: '#B4453C' }}>rejected</span>
+                : a.review_status !== 'accepted' && <span className="chip">awaiting review</span>}
+              {a.review_status !== 'accepted' && (
+                <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13, color: '#2F7F53' }} disabled={busy}
+                  onClick={() => review(a, 'accept')}>Accept</button>
+              )}
+              {a.review_status === 'pending' && (
+                <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13, color: '#B4453C' }} disabled={busy}
+                  onClick={() => review(a, 'reject')}>Reject</button>
+              )}
+              <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13 }}
+                onClick={() => api.sitewireOpenDrawAttachment(appId, drawId, a.id, window.open('', '_blank'))}>Open</button>
+              <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13, color: '#B4453C' }} disabled={busy}
+                onClick={() => remove(a)}>Remove</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {preview && <AttachmentPreview key={preview.id} appId={appId} drawId={drawId} att={preview} onClose={() => setPreview(null)} />}
+      <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <select className="input" style={{ maxWidth: 190 }} value={cat} onChange={(e) => setCat(e.target.value)} aria-label="What kind of document">
+          {((d && d.categories) || [{ value: 'invoice', label: 'Invoice' }]).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+        </select>
+        <label className="btn btn-sm soft" style={{ cursor: busy ? 'default' : 'pointer' }}>
+          {busy ? 'Attaching…' : 'Add a document'}
+          <input type="file" multiple disabled={busy} onChange={onPick} style={{ display: 'none' }} />
+        </label>
+      </div>
+      {msg ? <div className="act-card-sub" style={{ color: 'var(--primary,#2F7F86)' }}>{msg}</div> : null}
+      {err ? <div className="act-card-sub" style={{ color: 'var(--danger,#B4453C)' }}>{err}</div> : null}
+    </div>
+  );
+}
+
+/* Inline preview of one supporting document — an image or a PDF renders right here on the draw
+   card (owner-directed 2026-08-10: "I want to be able to preview it regularly", not a forced
+   download). The bytes come through the authed download helper (an <img>/<iframe> src cannot
+   carry the Bearer token) and are shown from a local object URL, revoked on close. A type the
+   browser cannot render degrades to a plain download row — never a broken frame. */
+function AttachmentPreview({ appId, drawId, att, onClose }) {
+  const [url, setUrl] = useState(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let alive = true; let objUrl = null;
+    api.authedBlob(`/api/sitewire/files/${appId}/draws/${drawId}/attachments/${att.id}/file`)
+      .then((blob) => { if (!alive) return; objUrl = URL.createObjectURL(blob); setUrl(objUrl); })
+      .catch(() => { if (alive) setFailed(true); });
+    return () => { alive = false; if (objUrl) URL.revokeObjectURL(objUrl); };
+  }, [appId, drawId, att.id]);
+
+  const ct = String(att.content_type || '');
+  const isImg = /^image\/(png|jpe?g|gif|webp|bmp)/i.test(ct);
+  const isPdf = /^application\/pdf/i.test(ct);
+  const kb = att.size_bytes ? `${Math.max(1, Math.round(att.size_bytes / 1024)).toLocaleString('en-US')} KB` : '';
+  return (
+    <div style={{ marginTop: 8, border: '1px solid var(--line,#E4DFD3)', borderRadius: 10, padding: 10, background: '#fff' }}>
+      <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        <b className="small" style={{ color: '#141B22', flex: 1, minWidth: 140, overflowWrap: 'anywhere' }}>{att.filename}</b>
+        <span className="small" style={{ color: '#4B585C' }}>{kb}</span>
+        <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13 }}
+          onClick={async () => { try { const b = await api.authedBlob(`/api/sitewire/files/${appId}/draws/${drawId}/attachments/${att.id}/file`); saveBlob(b, att.filename); } catch { /* the row's Open still works */ } }}>Download</button>
+        <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13 }} onClick={onClose}>Close</button>
+      </div>
+      {(att.note || att.supports) && (
+        <div className="small" style={{ color: '#4B585C', marginTop: 4 }}>
+          {att.supports ? <span>Backs up: {att.supports}. </span> : null}{att.note || ''}
+        </div>
+      )}
+      <div style={{ marginTop: 8 }}>
+        {failed ? <div className="small" style={{ color: '#B4453C' }}>The file could not be loaded — try Open or Download.</div>
+          : !url ? <div className="small" style={{ color: '#4B585C' }}>Loading preview…</div>
+          : isImg ? <img src={url} alt={att.filename} style={{ maxWidth: '100%', maxHeight: 420, borderRadius: 8, display: 'block' }} />
+          : isPdf ? <iframe title={att.filename} src={url} style={{ width: '100%', height: 460, border: '1px solid var(--line,#E4DFD3)', borderRadius: 8, background: '#fff' }} />
+          : <div className="small" style={{ color: '#4B585C' }}>This file type has no in-page preview — use Open or Download.</div>}
+      </div>
+    </div>
+  );
+}
+
+/* ── WHAT THE INVESTOR SAID BACK ──────────────────────────────────────────────────────────────
+   "With the investor" used to be a dead end that only a reminder ever escaped. */
+function InvestorAnswer({ appId, drawId, delivery, answers, reload }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [answer, setAnswer] = useState('');
+  const [note, setNote] = useState('');
+  const [funding, setFunding] = useState('');
+  if (!delivery || !delivery.sent_at) return null;
+
+  async function save() {
+    setBusy(true); setErr('');
+    try {
+      await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/investor-answer`, {
+        answer, note: note || undefined, expected_funding_date: funding || undefined,
+      });
+      setAnswer(''); setNote(''); setFunding(''); reload();
+    } catch (e) { setErr(e?.data?.error || 'Could not record that.'); }
+    finally { setBusy(false); }
+  }
+
+  if (delivery.answer) {
+    const label = (answers || []).find((a) => a.answer === delivery.answer);
+    return (
+      <div className="act-card-sub" style={{ marginTop: 12 }}>
+        <b style={{ color: '#141B22' }}>The investor said</b> {label ? label.label : delivery.answer}
+        {delivery.answered_at ? ` on ${new Date(delivery.answered_at).toLocaleDateString('en-US')}` : ''}
+        {delivery.expected_funding_date ? ` · funding ${delivery.expected_funding_date}` : ''}
+        {delivery.answer_note ? <span style={{ display: 'block' }}>“{delivery.answer_note}”</span> : null}
+        {label ? <span style={{ display: 'block', color: '#4B585C' }}>{label.next}</span> : null}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div className="act-label" style={{ display: 'block', marginBottom: 5 }}>What did the investor say?</div>
+      <div className="act-card-sub" style={{ marginTop: 0, marginBottom: 6 }}>
+        Sent {new Date(delivery.sent_at).toLocaleDateString('en-US')}
+        {delivery.days_waiting != null ? ` — ${delivery.days_waiting} day${delivery.days_waiting === 1 ? '' : 's'} ago` : ''}. Record their answer so nobody has to go and ask.
+      </div>
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <select className="input" style={{ maxWidth: 230 }} value={answer} onChange={(e) => setAnswer(e.target.value)} aria-label="What the investor said">
+          <option value="">Pick one…</option>
+          {(answers || []).map((a) => <option key={a.answer} value={a.answer}>{a.label}</option>)}
+        </select>
+        {answer === 'approved' && (
+          <input className="input" style={{ maxWidth: 180 }} type="date" value={funding}
+            onChange={(e) => setFunding(e.target.value)} aria-label="When they say the money moves" />
+        )}
+        <button className="btn btn-sm primary" disabled={busy || !answer} onClick={save}>{busy ? 'Saving…' : 'Record it'}</button>
+      </div>
+      {(answer === 'questioned' || answer === 'declined') && (
+        <textarea value={note} onChange={(e) => setNote(e.target.value)} disabled={busy} rows={2} maxLength={2000}
+          placeholder={answer === 'questioned' ? 'What did they ask for?' : 'Why did they decline?'}
+          aria-label="What the investor said, in their words"
+          style={{ width: '100%', boxSizing: 'border-box', marginTop: 8, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--hairline,#E4E0D6)', fontSize: 14, color: '#141B22' }} />
+      )}
+      {err ? <div className="act-card-sub" style={{ color: 'var(--danger,#B4453C)' }}>{err}</div> : null}
     </div>
   );
 }
@@ -2276,9 +2781,9 @@ function FindingStatus({ appId, finding, reload }) {
   const [recording, setRecording] = useState(false);
   const [recErr, setRecErr] = useState('');
   async function recordAgreement() {
-    const note = window.prompt('How did the borrower approve this draw?\n\nFor example: "approved by phone with Yehuda 8/3" or "emailed approval, forwarded to the file". This goes on the file’s audit trail.', '');
+    const note = await askPrompt('How did the borrower approve this draw?\n\nFor example: "approved by phone with Yehuda 8/3" or "emailed approval, forwarded to the file". This goes on the file’s audit trail.', { defaultValue: '' });
     if (note == null) return;
-    if (String(note).trim().length < 8) { window.alert('Please write a few words about how the approval arrived — it goes on the file’s audit trail.'); return; }
+    if (String(note).trim().length < 8) { showMessage('Please write a few words about how the approval arrived — it goes on the file’s audit trail.'); return; }
     setRecording(true); setRecErr('');
     try {
       await api.post(`/api/sitewire/files/${appId}/findings/${finding.id}/mark-accepted`, { note: String(note).trim() });
@@ -2409,15 +2914,20 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
         // Only show approved/not-approved once the DRAW is actually approved (decided). Before that every
         // line is under review — an undecided line must NOT read as a red "Not approved" rejection.
         const decided = draw.status === 'approved';
-        const notAppr = l.not_approved_cents != null ? l.not_approved_cents : Math.max(0, (l.requested_cents || 0) - (l.approved_cents || 0));
+        // TRI-STATE (db/518): a NULL approved amount means the inspector never answered this
+        // line — never render it as "Approved $0.00" or a red full-amount "Not approved".
+        const answered = l.approved_cents != null;
+        const notAppr = !answered ? 0 : (l.not_approved_cents != null ? l.not_approved_cents : Math.max(0, (l.requested_cents || 0) - (l.approved_cents || 0)));
         return (
           <div key={l.id || l.request_id || i} style={{ borderTop: '1px dashed var(--line,#e6e0d4)', paddingTop: 8, marginTop: 8 }}>
             <div className="row between" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
               <div className="small"><b>{l.name || `Line ${l.job_item_id || l.sitewire_job_item_id || ''}`}</b></div>
               <div className="small muted" style={{ fontVariantNumeric: 'tabular-nums' }}>
                 Requested {usd2(l.requested_cents)}{decided
-                  ? <> · Approved {usd2(l.approved_cents)}{notAppr > 0 ? <span style={{ color: 'var(--bad,#b04a3f)' }}> · Not approved {usd2(notAppr)}</span> : null}</>
-                  : <> · {l.approved_cents ? `Approved ${usd2(l.approved_cents)}` : 'Awaiting your decision'}</>}
+                  ? (answered
+                    ? <> · Approved {usd2(l.approved_cents)}{notAppr > 0 ? <span style={{ color: 'var(--bad,#b04a3f)' }}> · Not approved {usd2(notAppr)}</span> : null}</>
+                    : <> · not reviewed by the inspector</>)
+                  : <> · {answered ? `Approved ${usd2(l.approved_cents)}` : 'Awaiting your decision'}</>}
               </div>
             </div>
             {l.inspector_comments && <div className="small" style={{ marginTop: 3, fontStyle: 'italic' }}>Inspector: “{l.inspector_comments}”</div>}

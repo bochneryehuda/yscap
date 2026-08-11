@@ -1,0 +1,353 @@
+'use strict';
+/**
+ * READING THE PUBLIC RECORDS — the guards, offline.
+ *
+ * §1 IS THE OWNER'S OWN CONSTRAINT AND IT IS THE REASON THIS FILE EXISTS:
+ *   "you should never skip trace contacts, which means you should never display
+ *    contact phone numbers because you never retrieve contact phone numbers that
+ *    were not yet skip traced. If it's already skip traced, then you can look at
+ *    it if you want to, but if you didn't, I don't want to do this to cost me
+ *    money because I have only 1,000 per month."
+ *
+ * Three independent things have to hold, and each is asserted separately,
+ * because relying on any ONE of them is how a credit gets spent by accident:
+ * the paid tool is not reachable from the research module at all; a contact is
+ * read only after the vendor says the person is ALREADY unlocked; and the
+ * client refuses a paid call that cannot say who asked, about whom, and why.
+ */
+
+let fail = 0;
+const ok = (c, m) => { if (c) console.log(`  ok  ${m}`); else { fail++; console.error(`  FAIL ${m}`); } };
+
+const path = require('path');
+const fs = require('fs');
+
+/* Stub the network BEFORE the module under test loads, so nothing here can
+   reach a real endpoint even if a switch were on. */
+const clientPath = require.resolve('../src/elementix/client.js');
+const calls = [];
+let reply = () => ({ ok: true, data: {} });
+require.cache[clientPath] = {
+  id: clientPath, filename: clientPath, loaded: true, exports: {
+    callTool: async (name, args, opts) => { calls.push({ name, args, opts }); return reply(name, args); },
+    listTools: async () => ({ ok: true, tools: [] }),
+    PAID_TOOLS: new Set(['submit_contact_enrichment']),
+  },
+};
+
+const L = require('../src/lib/elementix/lookups');
+const NO_DB = { db: { query: async () => ({ rows: [] }) } };   // the ledger, stubbed
+const reset = () => { calls.length = 0; reply = () => ({ ok: true, data: {} }); };
+
+(async () => {
+
+// ═══════ 1. THE OWNER'S CONSTRAINT — three separate guards
+console.log('\n1. A skip trace can never happen by accident');
+{
+  const src = fs.readFileSync(path.join(__dirname, '../src/lib/elementix/lookups.js'), 'utf8');
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  ok(!L.TOOLS.has('submit_contact_enrichment'),
+    'the paid enrichment tool is NOT in the closed set this module may call');
+  ok(L.FORBIDDEN.includes('submit_contact_enrichment'), '…it is named as forbidden');
+  /* Comments stripped first — the module's header QUOTES the owner and names the
+     tool, so a naive grep matches the explanation. Same trap this rebuild has
+     now hit four times. */
+  const mentions = (code.match(/submit_contact_enrichment/g) || []).length;
+  ok(mentions === 1, `…and the only place the name appears in the CODE is that refusal list (${mentions})`);
+  ok(!/allowPaid|paidActor/.test(code),
+    'nothing here can even ASK to spend money — there is no argument for it');
+
+  reset();
+  const r = await (L.call('submit_contact_enrichment', {}, NO_DB));
+  ok(r.reason === 'paid_tool_refused', 'and calling it by name is refused before any network call');
+  ok(calls.length === 0, '…with nothing sent');
+
+  reset();
+  /* PARENTHESES MATTER: `await (p).reason` reads `.reason` off the PROMISE and
+     then awaits undefined, so the assertion silently compares undefined. Bind
+     the awaited value first. */
+  const heavy = await L.call('list_people', {}, NO_DB);
+  ok(heavy.reason === 'unknown_tool',
+    'list_people is refused too — 145,873 characters for 5 rows, and no argument makes it affordable');
+  ok(calls.length === 0, '…also without sending anything');
+}
+
+// ═══════ 2. A phone number is shown only when it was ALREADY paid for
+console.log('\n2. A contact is read only when the person is already unlocked');
+{
+  const PERSON = '11111111-2222-3333-4444-555555555555';
+
+  reset();
+  reply = (name) => (name === 'get_contact_status' ? { ok: true, data: { unlocked: false } } : { ok: true, data: { phone: '555-0100' } });
+  const locked = await (L.contactFor(PERSON, NO_DB));
+  ok(locked.ok === true && locked.unlocked === false && locked.contact === null,
+    'a person who has NOT been skip traced returns no contact at all');
+  ok(calls.length === 1 && calls[0].name === 'get_contact_status',
+    '…and get_contact_info was NEVER called — the status is asked FIRST, in code');
+  ok(/never spends one on its own/.test(locked.why),
+    '…with a plain sentence saying why, not an error somebody would try to fix');
+
+  reset();
+  reply = (name) => (name === 'get_contact_status' ? { ok: true, data: { unlocked: true } } : { ok: true, data: { phone: '555-0100' } });
+  const unlocked = await (L.contactFor(PERSON, NO_DB));
+  ok(unlocked.unlocked === true && unlocked.contact && unlocked.contact.phone === '555-0100',
+    'a person ALREADY skip traced returns what we already paid for — the owner\'s "you can look at it if you want to"');
+
+  /* FAILS CLOSED. Every shape it cannot read confidently is "not unlocked",
+     which costs a phone number nobody sees and never costs a credit. */
+  for (const shape of [null, undefined, {}, { status: 'locked' }, { status: 'pending' }, 'nonsense', 42, { unlocked: 'yes' }]) {
+    if (L.isUnlocked(shape)) { fail++; console.error(`  FAIL isUnlocked(${JSON.stringify(shape)}) read as unlocked`); }
+  }
+  ok(true, 'and every unreadable status reads as NOT unlocked — the cheap direction');
+  ok(L.isUnlocked({ status: 'unlocked' }) && L.isUnlocked([{ enriched: true }]) && L.isUnlocked({ data: { unlocked: true } }),
+    'while the real shapes are recognised');
+
+  reset();
+  const bad = await (L.contactFor('not-a-uuid', NO_DB));
+  ok(bad.ok === false && bad.reason === 'bad_args' && calls.length === 0,
+    'a junk person id is refused before anything is sent');
+}
+
+// ═══════ 3. The two vendor shapes that are easy to get wrong
+console.log('\n3. entity vs company, and a money string that is not a number');
+{
+  reset();
+  await (L.searchEntity('MW Trading LLC', 'nj', NO_DB));
+  ok(calls[0].name === 'match_entity', 'with a state, the deterministic one-or-nothing matcher runs');
+  /* `entityFilter` BELONGS TO `search`, NOT TO `match_entity`. The old assertion
+     pinned a parameter the tool does not have — a guess about the vendor,
+     written down as a requirement, and then guarded by a test, which is how a
+     wrong belief survives review. Confirmed against the live schema. The
+     entity-vs-company distinction is real and still matters on `search`; here
+     the tool only ever matches entities. */
+  ok(calls[0].args.entityFilter === undefined,
+    'match_entity is NOT sent entityFilter — that parameter belongs to `search`, and this tool only matches entities');
+  ok(calls[0].args.state === 'NJ', '…and the state is upper-cased for the filter');
+
+  /* NO USABLE STATE → THE VENDOR'S OWN NO-STATE ROUTE, never a call it would
+     refuse. match_entity REQUIRES the state — the owner's real search sent
+     five no-state matches and got five raw "-32602 … [state] … received
+     undefined" refusals on the screen, each one still spending a slot of the
+     shared allowance. A full state NAME is still never guessed into a code;
+     it now means "no state", and `search` answers. The reply here is the LIVE
+     capture (fixtures rule): the same LLC name really is one entity in NJ and
+     another in CA, with a near name riding along. */
+  const FIXTURES = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures/elementix-shapes.json'), 'utf8'));
+  reset();
+  reply = (name) => (name === 'search' ? { ok: true, data: FIXTURES.search_entity } : { ok: true, data: {} });
+  const noSt = await L.searchEntity('MW Trading LLC', 'New Jersey', NO_DB);
+  ok(calls.length === 1 && calls[0].name === 'search'
+      && calls[0].args.entityFilter === 'entity' && calls[0].args.state === undefined,
+    'no usable state → `search` with entityFilter:entity — match_entity is never sent a request the vendor refuses');
+  ok(noSt.ok === true && noSt.ambiguous === true && (noSt.data || []).length === 2,
+    'the LIVE two-state capture: the same name in NJ and CA is TWO records — one-or-nothing refuses to pick');
+  ok((noSt.statesFound || []).join(',') === 'NJ,CA',
+    '…and the states are NAMED, so the screen can ask the person to pick one instead of only saying "ambiguous"');
+  ok(!(noSt.data || []).some((r) => /GROUP/.test(r.name || '')),
+    '…and "MW TRADING GROUP LLC" from the same live response is dropped — a near name is a different company');
+
+  /* The entity name discipline: suffix/punctuation-blind, ORDER-PRESERVING —
+     a company is not a person, and "Trading MW" is a different name. */
+  const NI = L._internals;
+  ok(NI.sameEntityName('MW Trading, L.L.C.', 'MW TRADING LLC'), 'suffix + punctuation variants match');
+  ok(NI.sameEntityName('MW Trading', 'MW TRADING LLC'), 'a missing suffix still matches');
+  ok(!NI.sameEntityName('Trading MW LLC', 'MW TRADING LLC'), 'word ORDER is preserved — reversed words are a different company');
+  ok(!NI.sameEntityName('MW Trading Group LLC', 'MW Trading LLC'), 'an extra word is a different company');
+  ok(!NI.sameEntityName('', 'MW TRADING LLC'), 'an empty name never matches anything');
+  ok(NI.sameEntityName('LLC', 'LLC'),
+    'a name that IS a bare suffix is not stripped to nothing — the last word survives');
+  ok(NI.sameEntityName('S & G Holdings LLC', 'S AND G HOLDINGS LLC'),
+    '"&" reads as AND — the same words, two spellings');
+  ok(!NI.sameEntityName('MW Trading Inc', 'MW Trading LLC'),
+    'two names BOTH stating a corporate form, and different kinds of company, never match — a stranger\'s corporation must not stage as the borrower\'s LLC');
+  ok(NI.sameEntityName('MW Trading', 'MW Trading Inc'),
+    'while a name stating NO form still matches either — the vendor\'s own with-or-without behavior');
+  ok(NI.sameEntityName('MW Trading Co', 'MW Trading LLC'),
+    'and Co/Company/Ltd are form-neutral — they decide nothing');
+
+  /* A REFUSAL THAT NEVER REACHED THE WIRE COSTS NOTHING (audit 2026-08-09).
+     The preflight makes a malformed request free; the research counter must
+     not book it as a spent lookup. A 2-character entity name with no state is
+     refused at the `search` 3-character floor before anything is sent. */
+  reset();
+  const freeRefusal = await L.researchProperty({ entityName: 'ab', ...NO_DB });
+  ok(calls.length === 0 && freeRefusal.calls === 0,
+    'a contract-refused step books ZERO api calls — nothing was sent, nothing is counted');
+  ok((freeRefusal.errors || []).some((e) => e.reason === 'bad_args'),
+    '…while the refusal itself is still recorded as the reason');
+
+  ok(L.money('$1,240,000') === 1240000, 'currentExposure parses out of a display string');
+  ok(L.money('1.2M') === 1200000 && L.money('750k') === 750000, '…including the short forms');
+  ok(L.money('—') === null && L.money('') === null && L.money(undefined) === null,
+    'and an unreadable one is NULL, never NaN — NaN > threshold is false, so a NaN makes an exposed borrower read as unexposed');
+  ok(L.money(0) === 0, 'a real zero survives');
+}
+
+// ═══════ 4. A common name cannot identify a person
+console.log('\n4. The common-name gate is read at the source');
+{
+  ok(L.NAME_COMMONNESS_REFUSE_AT === 85, 'the gate is the same number the scoring ladder refuses at');
+  const S = require('../src/lib/track-record/scoring');
+  ok(L.NAME_COMMONNESS_REFUSE_AT === S.COMMON_NAME_REFUSE_AT,
+    '…literally the same, asserted, so the lookup and the ladder can never drift');
+  ok(L.nameTooCommon({ nameCommonnessScore: 92 }) === true, 'a very common name is flagged');
+  ok(L.nameTooCommon({ nameCommonnessScore: 10 }) === false, 'an unusual one is not');
+  ok(L.nameTooCommon({}) === false && L.nameCommonness({}) === null,
+    'and an ABSENT score is not a flag — absent is never a negative finding');
+}
+
+// ═══════ 5. Ids are checked before anything is sent
+console.log('\n5. Every id is validated before a call goes out');
+{
+  const UUID = '11111111-2222-3333-4444-555555555555';
+  for (const [fn, label] of [[L.entityDeeds, 'entityDeeds'], [L.entityMortgages, 'entityMortgages'],
+    [L.entityPeople, 'entityPeople'], [L.addressTransactions, 'addressTransactions'], [L.document, 'document']]) {
+    reset();
+    const r = await (fn('12345', NO_DB));
+    if (r.ok !== false || calls.length !== 0) { fail++; console.error(`  FAIL ${label} sent a call for a junk id`); }
+  }
+  ok(true, 'a junk id is refused with nothing sent, on every wrapper');
+
+  /* THE VENDOR TAKES {type, id} — both required, and the parameter is `id`,
+     never `documentId`. The old shape here matched neither rule, so this
+     wrapper could never have completed a call; the type comes free on every
+     transaction row. */
+  reset();
+  const noType = await (L.document(UUID, NO_DB));
+  ok(noType.ok === false && noType.reason === 'bad_args' && calls.length === 0,
+    'a document fetch WITHOUT its type is refused before the wire — the vendor requires the type with the id');
+
+  reset();
+  await (L.document(UUID, { ...NO_DB, type: 'deed' }));
+  ok(calls[0].args.type === 'deed' && calls[0].args.id === UUID && calls[0].args.documentId === undefined,
+    'a document request is {type, id} — never the old {documentId} the vendor refused whole');
+  ok(calls[0].args.include === 'signers',
+    'a document is fetched with include:signers — a tenth the size, and the signers are what the identity gate reads');
+
+  /* COVERAGE: state is an ARRAY and there is NO county parameter — the county
+     is picked out of the state's rows HERE. */
+  reset();
+  reply = () => ({ ok: true, data: { data: [
+    { countyName: 'Ocean County', state: 'NJ', entityCombinedCoveragePct: 82 },
+    { countyName: 'Bergen County', state: 'NJ', entityCombinedCoveragePct: 91 },
+  ] } });
+  const cov = await (L.coverage({ state: 'NJ', county: 'Ocean' }, NO_DB));
+  ok(calls[0].args.state && Array.isArray(calls[0].args.state) && calls[0].args.state[0] === 'NJ'
+      && calls[0].args.county === undefined,
+    'coverage sends state as the ARRAY the vendor takes, and never a county parameter it does not have');
+  ok(cov.ok === true && cov.data.length === 1 && cov.data[0].countyName === 'Ocean County',
+    '…and the county question is answered client-side from the state\'s rows');
+  reset();
+  const covNoSt = await (L.coverage({ county: 'Ocean' }, NO_DB));
+  ok(covNoSt.ok === false && covNoSt.reason === 'bad_args' && calls.length === 0,
+    'a county with no state is refused plainly — there is no request that could answer it');
+
+  reset();
+  await (L.entityDeeds(UUID, { ...NO_DB, countOnly: true }));
+  ok(calls[0].args.scope === 'count', 'and a result can be SIZED before it is paged');
+}
+
+// ═══════ 6. The whole sequence, and what it does when it cannot read
+console.log('\n6. The entity-first sequence degrades instead of lying');
+{
+  reset();
+  reply = () => ({ ok: false, reason: 'disabled', detail: 'switched off' });
+  const off = await (L.researchProperty({ entityName: 'MW Trading LLC', state: 'NJ', address: '1 A St, Lakewood, NJ 08701', ...NO_DB }));
+  ok(off.searched === false, 'with the service off, NOTHING is reported as searched');
+  ok(off.errors.length > 0, '…and what could not be reached is named');
+  ok(off.deeds.length === 0 && off.currentOwner === null, '…and no evidence is invented');
+
+  reset();
+  let step = 0;
+  reply = (name) => {
+    step += 1;
+    if (name === 'match_entity') return { ok: true, data: { results: [{ id: '11111111-2222-3333-4444-555555555555', name: 'MW TRADING LLC' }] } };
+    if (name === 'get_entity_deeds') return { ok: true, data: { results: [{ address: '1 A St, Lakewood, NJ 08701', grantees: ['MW TRADING LLC'] }] } };
+    return { ok: true, data: { results: [] } };
+  };
+  const found = await (L.researchProperty({ entityName: 'MW Trading LLC', state: 'NJ', address: '1 A St, Lakewood, NJ 08701', ...NO_DB }));
+  ok(found.searched === true && found.deeds.length === 1, 'a real answer comes back shaped for the checks engine');
+  ok(!calls.some((c) => c.name === 'match_address'),
+    '…and the address round trip is SKIPPED when the entity route already found the property — that is the saving');
+  ok(step > 0, 'and it made calls to get there');
+
+  reset();
+  reply = (name) => (name === 'match_entity'
+    ? { ok: true, data: { results: [{ id: 'a', name: 'MW TRADING LLC' }, { id: 'b', name: 'MW TRADING LLC' }] } }
+    : { ok: true, data: { results: [] } });
+  const amb = await (L.researchProperty({ entityName: 'MW Trading LLC', state: 'NJ', ...NO_DB }));
+  ok(amb.ambiguousEntity === true && amb.entity === null,
+    'TWO equally good companies is a human question — neither is picked, which is how somebody else\'s deeds stay off this record');
+
+// ═══════ DRY-RUN IS A REFUSAL, NEVER AN EMPTY COUNTY (owner-reported 2026-08-09)
+console.log('\n5. A dry run never reads as "the county has nothing"');
+  reset();
+  reply = () => ({ ok: true, dryRun: true, data: null });
+  const dr = await L.researchProperty({ entityName: 'MW Trading LLC', state: 'NJ', ...NO_DB });
+  ok(dr.searched === false, 'a dry run never counts as having searched');
+  ok((dr.errors || []).some((e) => e.reason === 'dry_run'),
+    'the dry run is RECORDED as the reason — with the switch on, the screen said "the county does not publish online" about a search that never left the building');
+  ok((dr.errors || []).every((e) => /dry-run/i.test(e.detail || '')),
+    '…and the message tells the person which switch to flip');
+
+// ═══════ THE PERSON ROUTE — exact name or nothing
+console.log('\n6. A person is matched by their EXACT name, never a near one');
+  reset();
+  reply = (name) => {
+    if (name === 'match_person') return { ok: true, data: { status: 'none', match: null } };
+    if (name === 'search') return { ok: true, data: { results: [
+      { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'FRANKY PEREIRA', entityType: 'person' },
+    ] } };
+    return { ok: true, data: { data: [] } };
+  };
+  const near = await L.researchPerson({ personName: 'Frank Pereira', state: 'NJ', ...NO_DB });
+  ok(near.person === null && near.searched === false,
+    'FRANKY is not FRANK — a near-name is refused, verified against the live vendor returning exactly this shape');
+  ok(calls.some((c) => c.name === 'match_person' && c.args.state === 'NJ'),
+    'with a state, the exact matcher is tried first — persons are keyed (name, state)');
+
+  /* WITHOUT a state, match_person is never sent: the vendor requires the
+     state and refuses the call whole (-32602), and the refusal used to be
+     swallowed silently here — one spent lookup per person search that could
+     never succeed. */
+  reset();
+  reply = (name) => (name === 'search' ? { ok: true, data: { results: [] } } : { ok: true, data: {} });
+  await L.researchPerson({ personName: 'Patrick Kamara', ...NO_DB });
+  ok(!calls.some((c) => c.name === 'match_person'),
+    'with NO state, match_person is never sent — a call the vendor must refuse is not worth a slot of the allowance');
+  ok(calls.some((c) => c.name === 'search' && c.args.entityFilter === 'person' && c.args.state === undefined),
+    '…the fuzzy person route answers instead, with no state filter');
+
+  reset();
+  reply = (name) => {
+    if (name === 'match_person') return { ok: true, data: { status: 'none', match: null } };
+    if (name === 'search') return { ok: true, data: { results: [
+      { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'KAMARA PATRICK', entityType: 'person' },
+    ] } };
+    if (name === 'get_person_deeds') return { ok: true, data: { data: [
+      { id: 'd1', recordingDate: '2025-01-10', totalConsideration: 300000, isGrantee: true,
+        grantees: ['PATRICK KAMARA'], grantors: ['A SELLER'],
+        addresses: [{ id: 'x', addressFull: '1 PERSONAL WAY, LAKEWOOD, NJ 08701' }] },
+    ], nextPage: 2 } };
+    if (name === 'get_person_mortgages') return { ok: true, data: { data: [
+      { id: 'm1', recordingDate: '2025-06-02', mortgageAmount: '210000.00', isRefinance: true,
+        borrowerNames: ['PATRICK KAMARA'],
+        propertyAddresses: [{ id: 'x', addressFull: '1 PERSONAL WAY, LAKEWOOD, NJ 08701' }] },
+    ] } };
+    return { ok: true, data: { data: [] } };
+  };
+  const person = await L.researchPerson({ personName: 'Patrick Kamara', state: 'NJ', ...NO_DB });
+  ok(!!person.person, 'the county\'s reversed spelling ("KAMARA PATRICK") still matches — word-for-word, order-blind');
+  ok(person.deeds.length === 1 && person.deeds[0].date === '2025-01-10',
+    'their personal-name deed comes back normalised');
+  ok(person.mortgages.length === 1 && person.mortgages[0].isRefinance === true
+      && person.mortgages[0].addresses[0] === '1 PERSONAL WAY, LAKEWOOD, NJ 08701',
+    'a person-route mortgage reads its propertyAddresses spelling — the live person tools\' field name');
+  ok(person.truncated.some((t) => t.list === 'deeds'),
+    'a vendor "nextPage" is REPORTED — a short answer must never pass as a complete one');
+}
+
+  console.log(fail ? `\n${fail} FAILURE(S)` : '\nOK  no skip trace is reachable, a phone number is shown only when already paid for, and nothing is guessed');
+  process.exit(fail ? 1 : 0);
+})().catch((e) => { console.error('ERROR', e); process.exit(1); });

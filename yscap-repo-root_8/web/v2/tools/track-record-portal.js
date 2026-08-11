@@ -25,8 +25,25 @@
 
   window.TR_PORTAL = true;
 
-  var STATUS_LABEL = { pending: "Pending review", docs: "Documentation required", verified: "Verified", limited: "Limited verification" };
-  var STATUS_COLOR = { pending: "#8a949c", docs: "#c9a24b", verified: "#4caf7d", limited: "#7fa9b0" };
+  // Per-line verification statuses (owner-directed 2026-08-10, #40; db/518). ONLY
+  // 'verified' (Fully verified) counts toward experience. 'docs'/'limited' are
+  // legacy values the back book may still carry (labelled, not offered in the
+  // picker). The two "unable to verify" reasons are the owner's own wording.
+  var STATUS_LABEL = {
+    pending: "Pending review", verified: "Fully verified",
+    not_verified: "Not verified",
+    unable_docs: "Unable to verify — waiting on documents",
+    unable_mismatch: "Unable to verify — records don't match",
+    rejected: "Rejected",
+    docs: "Documentation required", limited: "Public records only"
+  };
+  var STATUS_COLOR = {
+    pending: "#8a949c", verified: "#4caf7d",
+    not_verified: "#b08968", unable_docs: "#c9a24b", unable_mismatch: "#c98a4b",
+    rejected: "#c96a6a", docs: "#c9a24b", limited: "#7fa9b0"
+  };
+  // The review OUTCOMES the staff picker offers (not the legacy docs/limited).
+  var STATUS_OPTIONS = ["pending", "verified", "not_verified", "unable_docs", "unable_mismatch", "rejected"];
 
   function listUrl() { return staffMode ? "/api/staff/borrowers/" + staffBorrowerId + "/track-records" : "/api/borrower/track-records"; }
   function createUrl() { return listUrl(); }
@@ -103,12 +120,34 @@
   function dstr(v) { return v ? String(v).slice(0, 10) : ""; }
   function nstr(v) { return v == null || v === "" ? "" : String(Math.round(Number(v))); }
   function propFromRow(r) {
-    var a = r.property_address || {};
+    /* A row stored before the shape fix (or by any writer that still hands us a
+       bare one-line string) has no .street/.line1/.city, which rendered
+       "(no address)". Coerce a string to { oneLine } so it lands in the address
+       box; the server-side heal converts the stored rows to the full object. */
+    var a = r.property_address;
+    if (typeof a === "string") a = { oneLine: a };
+    a = a || {};
     var dt = String(r.deal_type || "").toLowerCase();
     var kind = (dt.indexOf("hold") >= 0 || dt.indexOf("rental") >= 0) ? "hold" : "flip";
-    if (dt.indexOf("ground") >= 0) kind = (r.sale_price || r.sale_date) ? "flip" : "hold";
+    if (dt.indexOf("ground") >= 0 || dt.indexOf("construction") >= 0) kind = "ground";
     return {
-      id: r.id, kind: kind,
+      /* GROUND-UP IS NOW A FIRST-CLASS KIND. `kind` is the tool's view of a row,
+         and the data has three real types (flip / hold / ground-up). A flip
+         shows a sale, a hold shows a lease/refi, and a ground-up can carry ANY
+         of the three exits — so `payloadFromProp` sends every exit field for a
+         ground kind and never blanks one.
+
+         `_kind0` records the kind the row LOADED as, so a save can tell a
+         DELIBERATE switch (the user pressed "Switch to …" — a real "this was
+         actually a rental / a ground-up" correction, where clearing the other
+         side is right) from a row that merely loaded and was saved unchanged.
+         Before ground was first-class, propFromRow collapsed every ground-up
+         into flip-or-hold, and saving one silently wiped the exit it didn't show
+         (a ground-up rented in 2022 and sold in 2026 loaded as 'flip' and lost
+         its 2022 rent_date on save) — that whole class is gone now that a
+         ground-up loads as 'ground'. `src/lib/experience.js` names that exact
+         drift as the reason its SQL is a COALESCE and not a CASE. */
+      id: r.id, kind: kind, _kind0: kind,
       address: a.street || a.line1 || a.oneLine || "", city: a.city || "", state: a.state || "", zip: a.zip || "",
       entity: r.entity_name || "", ownedPersonally: !!r.owned_personally, propType: r.property_type || "", seller: "",
       purchasePrice: nstr(r.purchase_price), purchaseDate: dstr(r.purchase_date), rehab: nstr(r.rehab_amount),
@@ -126,14 +165,45 @@
       street: p.address || "", city: p.city || "", state: p.state || "", zip: p.zip || "",
       oneLine: [p.address, [p.city, p.state].filter(Boolean).join(", "), p.zip].filter(function (x) { return x && String(x).trim(); }).join(", "),
     };
-    var dealType = p.kind === "hold" ? "fix-and-hold" : "flip";
-    if (p._dealType && /ground/i.test(p._dealType)) dealType = p._dealType;   // keep ground-up labelling
+    /* THE USER SWITCHED THE TOGGLE, or this tool merely displayed the row.
+       Everything below turns on that one question — see `_kind0` in propFromRow. */
+    var switched = !p.id || (p._kind0 && p.kind !== p._kind0);
+
+    /* NEVER RE-LABEL A DEAL THIS TOOL ONLY DISPLAYED. The old test was
+       `/ground/i`, which preserved 'ground-up' and 'ground up construction' and
+       silently rewrote 'new construction' to 'flip' — because `kind` is a
+       two-state and 'new construction' matches neither 'hold' nor 'ground'.
+       `experience.bucketOf` counts it as GROUND (it reads '%ground%' OR
+       '%construction%'), so the tool moved a deal out of the ground bucket the
+       server had put it in, inflated the flip count, and — on a built-and-rented
+       ground-up — set the exit to a NULL sale_date, which counts toward nothing.
+
+       Keeping the row's OWN label whenever the toggle did not move fixes that
+       spelling and every other one, including spellings nobody here thought of.
+       A label is only rewritten when the user actually says the deal was
+       something else. */
+    var dealType = p.kind === "ground" ? "ground-up" : (p.kind === "hold" ? "fix-and-hold" : "flip");
+    if (p._dealType && !switched) dealType = p._dealType;
+
+    /* A FIELD THE CURRENT VIEW DOES NOT SHOW KEEPS WHAT THE ROW HELD. Sending ''
+       for it is a DELETE of a value the user was never shown and never changed.
+       On a deliberate switch the other side is cleared as before — that is the
+       "I mislabelled this" cleanup, and it is the only case where a blank is
+       something a person actually asked for. */
+    var keep = function (mine, stored) { return switched ? "" : (mine || stored || ""); };
+    // A GROUND-UP CAN FINISH ANY WAY (sale, lease, refinance) — send ALL its exit
+    // fields directly, never through `keep`, so none is ever blanked. A flip owns
+    // only its sale, a hold only its lease/refi; the other side is kept-or-cleared.
+    var g = p.kind === "ground";
     var out = {
       dealType: dealType, propertyAddress: addr,
       purchasePrice: p.purchasePrice || "", purchaseDate: p.purchaseDate || "", rehabAmount: p.rehab || "",
-      salePrice: p.kind === "flip" ? (p.salePrice || "") : "", saleDate: p.kind === "flip" ? (p.saleDate || "") : "",
-      rentAmount: p.kind === "hold" ? (p.rent || "") : "", rentDate: p.kind === "hold" ? (p.rentDate || "") : "",
-      refiAmount: p.kind === "hold" ? (p.refiAmount || "") : "", refiDate: p.kind === "hold" ? (p.refiDate || "") : "",
+      salePrice: (p.kind === "flip" || g) ? (p.salePrice || "") : keep("", p.salePrice),
+      saleDate: (p.kind === "flip" || g) ? (p.saleDate || "") : keep("", p.saleDate),
+      rentAmount: (p.kind === "hold" || g) ? (p.rent || "") : keep("", p.rent),
+      rentDate: (p.kind === "hold" || g) ? (p.rentDate || "") : keep("", p.rentDate),
+      refiAmount: (p.kind === "hold" || g) ? (p.refiAmount || "") : keep("", p.refiAmount),
+      refiDate: (p.kind === "hold" || g) ? (p.refiDate || "") : keep("", p.refiDate),
       currentValue: p.currentValue || "", notes: p.notes || "",
       propertyType: p.propType || "", entityName: p.ownedPersonally ? "" : (p.entity || ""),
       ownedPersonally: !!p.ownedPersonally,
@@ -364,7 +434,10 @@
     var when = new Date().toLocaleString("en-US");
     function exitCell(p) {
       if (p.kind === "flip") return "Sold " + fmtMoney(p.salePrice) + (p.saleDate ? " · " + escH(p.saleDate) : "");
+      // hold OR ground-up: show whichever exit(s) it carries (a ground-up can be
+      // sold, rented, refinanced — or any combination).
       var bits = [];
+      if (p.salePrice || p.saleDate) bits.push("Sold " + fmtMoney(p.salePrice) + (p.saleDate ? " · " + escH(p.saleDate) : ""));
       if (p.rent) bits.push("Rents " + fmtMoney(p.rent) + "/mo" + (p.rentDate ? " since " + escH(p.rentDate) : ""));
       if (p.refiAmount) bits.push("Refi " + fmtMoney(p.refiAmount) + (p.refiDate ? " · " + escH(p.refiDate) : ""));
       return bits.join("<br>") || "—";
@@ -450,6 +523,42 @@
     }).catch(function () { snapReady = true; scheduleSnapshot(); });
   }
 
+  /* ---- REJECTED lines are hidden by default, with a toggle to show them
+     (owner-directed 2026-08-10, #40: "hide it from the list and make an option
+     to sort and see also the rejected ones"). Nothing is deleted — a rejected
+     card is display:none until the toggle is on. The tool re-renders #tr-app on
+     every pass, so the toggle bar is re-injected idempotently each ONRENDER. --- */
+  var showRejected = false;
+  function applyRejected() {
+    var rejected = 0;
+    document.querySelectorAll(".tr-card[data-card]").forEach(function (card) {
+      var p = propsById[card.getAttribute("data-card")];
+      if (p && p.status === "rejected") {
+        rejected++;
+        card.style.display = showRejected ? "" : "none";
+      }
+    });
+    var root = document.getElementById("tr-app") || document.body;
+    var bar = document.getElementById("tr-rejected-toggle");
+    if (rejected > 0) {
+      if (!bar) {
+        bar = document.createElement("div");
+        bar.id = "tr-rejected-toggle";
+        bar.style.cssText = "margin:6px 0 2px;font-size:.78rem";
+        root.insertBefore(bar, root.firstChild);
+      }
+      bar.textContent = "";
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = (showRejected ? "▾ Hide" : "▸ Show") + " rejected (" + rejected + ")";
+      btn.style.cssText = "background:transparent;border:1px solid #8a949c;border-radius:6px;color:inherit;padding:.2rem .6rem;cursor:pointer";
+      btn.onclick = function () { showRejected = !showRejected; applyRejected(); };
+      bar.appendChild(btn);
+    } else if (bar && bar.parentNode) {
+      bar.parentNode.removeChild(bar);
+    }
+  }
+
   /* ---- per-card UI: verification badge, docs, staff status control ---- */
   window.TR_PORTAL_ONRENDER = function () {
     if (!loaded) return;
@@ -490,16 +599,22 @@
         sel.className = "tr-portal-verify";
         sel.title = "Verification status";
         sel.style.cssText = "font-size:.72rem;background:transparent;border:1px solid #4e777f;border-radius:6px;color:inherit;padding:.15rem .2rem";
-        ["pending", "docs", "verified", "limited"].forEach(function (s) {
+        var cur = p.status || "pending";
+        var opts = STATUS_OPTIONS.slice();
+        // A legacy row (docs/limited) keeps its current value visible + selected.
+        if (opts.indexOf(cur) < 0) opts.unshift(cur);
+        opts.forEach(function (s) {
           var o = document.createElement("option");
-          o.value = s; o.textContent = STATUS_LABEL[s];
-          if ((p.status || "pending") === s) o.selected = true;
+          o.value = s; o.textContent = STATUS_LABEL[s] || s;
+          if (cur === s) o.selected = true;
           sel.appendChild(o);
         });
         sel.onchange = function () {
           var prev = p.status || "pending";
-          var wasVerified = prev === "verified" || prev === "limited";
-          var nowCounts = sel.value === "verified" || sel.value === "limited";
+          // Whether the row CURRENTLY counts is is_verified — the real gate.
+          var wasVerified = !!p._verified;
+          // ONLY "Fully verified" counts now (owner-directed 2026-08-10, #40).
+          var nowCounts = sel.value === "verified";
           var body = { status: sel.value };
           // Revoking a verified project reopens the borrower's experience and
           // notifies them — so it requires a reason (mirrors the LLC revoke).
@@ -516,6 +631,7 @@
         actions.appendChild(sel);
       }
     });
+    applyRejected();
   };
 
   /* ---- inline documents strip per track-record entry ----

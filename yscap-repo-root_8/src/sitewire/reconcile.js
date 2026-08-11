@@ -18,6 +18,7 @@ const risk = require('./risk');
 const M = require('./mapper');
 const routing = require('./routing');
 const tpIntake = require('./trustpoint-intake');
+const drawLabel = require('../lib/draw-label');   // "Draw 2" — the ONE way a draw is named in a subject
 const EV = require('./inspection-evidence');
 const { inboundDrawCopy } = require('./draw-inbound-copy');
 
@@ -266,6 +267,7 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
       const b = await drawBlocks();
       await notify.notifyAppStaffThread(appId, {
         type: 'draw_inbound', title: 'A new draw request came in',
+        drawTag: drawLabel.drawLabel(draw.number),
         badge: copy.actionNeeded ? { text: 'Action needed', tone: 'action' } : { text: 'New draw', tone: 'gold' },
         body: `A new draw request (Draw #${draw.number == null ? '—' : draw.number}) came in for ${addrText} through Sitewire. ${copy.methodLabel} — ${copy.actionLabel}. ${copy.nextStep}`,
         ...moneyOpts(b),
@@ -297,7 +299,7 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
       if (r) {
         const b = await drawBlocks();
         await notify.notifyAppStaffThread(appId, {
-          type: 'draw_inbound', title: r.title, badge: { text: 'Sitewire update', tone: r.tone },
+          type: 'draw_inbound', title: r.title, drawTag: drawLabel.drawLabel(draw.number), badge: { text: 'Sitewire update', tone: r.tone },
           body: r.body, ...moneyOpts(b),
           applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
       }
@@ -317,7 +319,7 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
       if (r) {
         const b = await drawBlocks();
         await notify.notifyAppStaffThread(appId, {
-          type: 'draw_inbound', title: r.title, badge: { text: 'Sitewire update', tone: r.tone },
+          type: 'draw_inbound', title: r.title, drawTag: drawLabel.drawLabel(draw.number), badge: { text: 'Sitewire update', tone: r.tone },
           body: r.body, ...moneyOpts(b),
           applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
       }
@@ -334,6 +336,31 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
     try { released = (await db.query(
       `SELECT approved_cents FROM draw_disbursements WHERE application_id=$1 AND sitewire_draw_id=$2 AND kind='draw' AND funded_status='released' ORDER BY created_at LIMIT 1`, [appId, drawId])).rows[0] || null; } catch (_) {}
     await recordInboundChange(appId, drawId, 'draw', drawId, released ? 'release_drift' : 'total_approved_cents', String(prev.total_approved_cents || 0), String(newAppr), !!released);
+    // THE AMOUNT DOCTRINE'S LAST GAP (owner-directed 2026-08-10: one amount travels the draw and
+    // keeps updating, and every message must reflect the CURRENT one). If the findings were
+    // already DELIVERED to the borrower and the inspector's number then moves in Sitewire, the
+    // borrower is sitting on a results email quoting a stale figure. PILOT never re-emails the
+    // borrower on its own (re-delivering is the coordinator's judgement — the findings snapshot
+    // itself must be re-pulled first) — it tells the coordinator to re-deliver. Fires once per
+    // change by construction: the mirror upsert above already stored the new amount, so the next
+    // poll sees no difference. Only an UNDECIDED delivery ('delivered') is stale-able — an
+    // accepted/disputed finding is being worked at the number the borrower actually saw.
+    if (!released) {
+      try {
+        const delivered = (await db.query(
+          `SELECT id FROM draw_findings WHERE application_id=$1 AND sitewire_draw_id=$2 AND status='delivered' LIMIT 1`,
+          [appId, drawId])).rows[0];
+        if (delivered) {
+          const usd0 = (c) => require('./transforms').usdExact(c);
+          await notify.notifyAppStaff(appId, {
+            type: 'draw_inbound',
+            title: 'The inspector\'s numbers changed after the findings went out',
+            body: `Draw #${draw.number == null ? '—' : draw.number} on ${addrText}: the approved amount in Sitewire moved from ${usd0(prev.total_approved_cents || 0)} to ${usd0(newAppr)} AFTER the findings were delivered to the borrower — the results they are looking at quote the old number. Open the draw and deliver the findings again so everybody sees the current amount.`,
+            applicationId: appId, link: `/internal/app/${appId}/draws`, inAppOnly: false,
+          }).catch(() => {});
+        }
+      } catch (_) { /* best-effort — the audit row above already recorded the change */ }
+    }
     if (released) {
       const usd0 = (c) => require('./transforms').usdExact(c);   // cent-exact: these messages report exact-cents comparisons
       try {
@@ -667,6 +694,12 @@ async function reconcileOne(appId) {
   // for the escalate path — pushDocuments itself uses escalate:false to avoid recursing into its
   // own retry.
   try { await require('./doc-push').verifyPushedDocsOnce(appId, link.sitewire_property_id, null, { escalate: true }); } catch (_) {}
+  // Pull borrower-emailed proof off the property's Documents tab onto the matching PILOT draw
+  // (owner-directed 2026-08-10 — "CCF_000016.pdf, From inbound email" never reached the draw or
+  // the investor). Runs on the property payload this reconcile already fetched — no extra
+  // Sitewire call — AFTER the draws loop so the mirror rows the draw match needs exist.
+  // Best-effort: never fails the reconcile.
+  try { await require('./property-doc-ingest').ingestForProperty(appId, prop); } catch (_) {}
   return { draws: n };
 }
 
@@ -816,12 +849,20 @@ async function fetchDrawFindings(sitewireDrawId) {
       src: (i.media && i.media.src) || null, thumbnail: (i.media && i.media.thumbnail) || null,
       type: (i.media && i.media.media_type) || null, lat: i.latitude, lng: i.longitude, captured_at: i.captured_at, note: i.note,
     })).filter((m) => m.src);
-    const req = r.requested_cents || 0; const appr = r.approved_cents == null ? 0 : r.approved_cents;
-    treq += req; tappr += appr;
+    // TRI-STATE (owner doctrine 2026-08-10, db/518): a NULL approved amount is "the inspector has
+    // not answered this line", never a confident $0 — the coercion here was the root that made the
+    // accept page print "Approved $0" on unreviewed work. Totals still sum the answered lines only.
+    // The per-request detail (getRequest) is the fallback for the amount exactly as it already is
+    // for the name/comments — Sitewire's draw payload has omitted per-request fields before
+    // (inspections, job_item.name), and an omission must never read as "unanswered".
+    const req = r.requested_cents || 0;
+    const rawAppr = r.approved_cents != null ? r.approved_cents : (detail.approved_cents != null ? detail.approved_cents : null);
+    const appr = rawAppr == null ? null : rawAppr;
+    treq += req; tappr += appr || 0;
     lines.push({
       request_id: r.id, job_item_id: (r.job_item && r.job_item.id) || (detail.job_item && detail.job_item.id) || null,
       name: (r.job_item && r.job_item.name) || (detail.job_item && detail.job_item.name) || null,
-      requested_cents: req, approved_cents: appr, not_approved_cents: Math.max(0, req - appr),
+      requested_cents: req, approved_cents: appr, not_approved_cents: appr == null ? null : Math.max(0, req - appr),
       inspector_comments: detail.inspector_comments || r.inspector_comments || null,
       lender_comments: detail.lender_comments || r.lender_comments || null,
       photo_count: media.filter((m) => m.type === 'image').length, video_count: media.filter((m) => m.type === 'video').length,
@@ -912,10 +953,18 @@ async function persistDrawFindings(appId, sitewireDrawId, deliveredTo = null) {
     const cur = existing.get(key);
     // approved_cents is the NEGOTIATED figure once a dispute has been decided (dispute_status !== 'open').
     // Preserve the coordinator-decided amount so a fresh Sitewire read doesn't overwrite it; when the
-    // dispute is still 'open' or absent, the Sitewire amount wins (source of truth).
+    // dispute is still 'open' or absent, the Sitewire amount wins (source of truth). A NULL from
+    // Sitewire is STORED as NULL (db/518): the inspector has not answered this line, and writing 0
+    // would tell the borrower it was denied.
     const disputeDecided = cur && cur.dispute_status && cur.dispute_status !== 'open';
-    const approvedCents = disputeDecided ? Number(cur.approved_cents || 0) : (ln.approved_cents || 0);
-    const notApprovedCents = Math.max(0, (ln.requested_cents || 0) - approvedCents);
+    // The preserve arm keeps a NULL as NULL too (pre-merge audit, db/518): a decided dispute can
+    // legitimately leave approved_cents unanswered (a rejected dispute on an unreviewed line, an
+    // approve whose Sitewire push failed), and collapsing it to 0 here would stamp a permanent
+    // denied-$0 the go-forward migration can never undo.
+    const approvedCents = disputeDecided
+      ? (cur.approved_cents == null ? null : Number(cur.approved_cents))
+      : (ln.approved_cents == null ? null : ln.approved_cents);
+    const notApprovedCents = approvedCents == null ? null : Math.max(0, (ln.requested_cents || 0) - approvedCents);
     if (cur) {
       await db.query(
         `UPDATE draw_finding_lines
@@ -965,4 +1014,4 @@ async function persistDrawFindings(appId, sitewireDrawId, deliveredTo = null) {
     preserved_dispute_status: !promotable };
 }
 
-module.exports = { syncCapitalPartners, syncStaffUsers, reconcileOne, reconcileAll, fetchDrawFindings, deriveTimes, assessAndStoreRisk, persistDrawFindings, settingsMap, verifyBudgetDrift, _reactFor: reactFor };
+module.exports = { syncCapitalPartners, syncStaffUsers, reconcileOne, reconcileAll, fetchDrawFindings, deriveTimes, assessAndStoreRisk, persistDrawFindings, settingsMap, verifyBudgetDrift, _reactFor: reactFor, _reactToInboundDraw: reactToInboundDraw };

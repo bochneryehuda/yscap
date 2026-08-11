@@ -25,6 +25,11 @@ const loGate = require('./lo-notification-gate');
 // above. See src/lib/lo-self-gate.js + db/368_lo_self_notification_prefs.sql.
 const loSelfGate = require('./lo-self-gate');
 const notifCatalog = require('./notification-catalog');
+// One event, one copy (owner-directed 2026-08-09): a notification fired BECAUSE
+// an inbound email arrived carries `opts.alreadyEmailed` — who that email
+// already reached — and any recipient on it keeps the in-app row but is never
+// sent a duplicate email. See src/lib/looped-in.js for the rule.
+const loopedIn = require('./looped-in');
 
 /**
  * What `notifyStaff` returns when the message was HELD rather than delivered or
@@ -78,6 +83,7 @@ const KICKER_OF = {
   draw_setup: 'Construction draws are open',
   draw_accepted: 'Construction draw', draw_disputed: 'Construction draw', draw_dispute_resolved: 'Draw inspection',
   draw_message: 'Message from your loan team', draw_started: 'Construction draw', draw_inbound: 'Construction draw',
+  draw_docs_pulled: 'Construction draw',
   trustpoint_import: 'Construction draw',
   sow_reallocation: 'Budget change', sow_change_request: 'Budget change',
   change_request: 'Change request', assignment: 'File assignment',
@@ -86,6 +92,9 @@ const KICKER_OF = {
   sharepoint_backlog_slo: 'Document sync', inbound_reply: 'File reply',
   officer_assigned: 'Your loan officer', all_caught_up: 'You’re all set',
   milestone: 'Milestone', digest: 'Your loan file',
+  // The purchase advice that never arrived (owner-directed 2026-08-09). STAFF-ONLY — it goes to
+  // the file's closer and the super admins, never a borrower.
+  purchase_advice_missing: 'Purchase advice',
   // The Workflow (owner-directed 2026-07-21): a file was submitted to your
   // personal work queue, or a file you submitted was finished + sent back.
   workflow_submitted: 'Workflow', workflow_returned: 'Workflow', workflow_ready: 'Workflow',
@@ -125,7 +134,24 @@ async function enrichFileOpts(opts, audience) {
   const out = { ...opts, _enriched: true };
   if (out.subjectTag == null) out.subjectTag = (audience === 'borrower' ? (ctx.borrowerSubjectTag || ctx.subjectTag) : ctx.subjectTag) || null;
   if (!Array.isArray(out.meta) || !out.meta.length) {
-    out.meta = audience === 'borrower' ? ctx.borrowerMeta : ctx.meta;
+    // A DRAW email that carries its own FACTS box does not get the generic identity block
+    // stapled on beside it (owner-reported 2026-08-10, the "A draw was inspected" email:
+    // purchase price / ARV / loan amount are "the wrong facts" — the exact ruling the
+    // 2026-08-03 redesign already made for the borrower draw emails, which pass their own
+    // meta). The subject tag still carries the file identity; the facts box carries the draw.
+    const drawWithFacts = out.facts && categoryOf(out.type) === 'draws';
+    if (!drawWithFacts) out.meta = audience === 'borrower' ? ctx.borrowerMeta : ctx.meta;
+  }
+  // ONE EMAIL'S OWN EXTRA FACTS — appended here rather than threaded through `fileContext` so it
+  // works on BOTH paths, including the fan-out helpers that pre-fetch `_fileCtx` once and would
+  // otherwise skip a per-call argument entirely.
+  //
+  // STAFF ONLY, and that restriction is the point: this exists because the Workflow hand-off needs
+  // to name the file's NOTE BUYER, which may never reach a borrower surface. Honouring it on a
+  // borrower email would hand every future caller a way through that rule by accident, so a
+  // borrower's meta is left exactly as `borrowerMeta` built it.
+  if (audience !== 'borrower' && Array.isArray(opts.extraMeta) && opts.extraMeta.length) {
+    out.meta = [...(out.meta || []), ...opts.extraMeta.filter(Boolean)];
   }
   // Borrower emails always carry the premium loan-officer contact CARD (from the
   // file's assigned officer) so the borrower sees a real person + how to reach
@@ -145,11 +171,24 @@ function buildEmail(opts, audience) {
     title:     opts.title,
     // The file tag rides in the SUBJECT only (the in-body H1 stays clean).
     subjectTag: opts.subjectTag || '',
+    // WHICH DRAW ("Draw 2"), at the FRONT of the subject (owner-directed
+    // 2026-08-09). Passed straight through from the call site — the ONE place a
+    // draw email has to remember is `drawTag`, and every draw email present and
+    // future gets the same treatment because every one of them renders here.
+    // Built by src/lib/draw-label.js, which answers null rather than guess.
+    drawTag:   opts.drawTag || '',
     // A small category eyebrow above the headline for scannability.
     kicker:    opts.kicker || KICKER_OF[opts.type] || '',
-    preheader: opts.body || opts.title,
+    preheader: opts.emailBody || opts.body || opts.title,
     greeting:  opts.greeting || (audience === 'borrower' ? 'Hello,' : ''),
-    intro:     opts.body || '',
+    // `body` is ONE field doing two jobs: it is the in-app notification row's text AND the
+    // email's opening paragraph. Usually that is right. It stops being right when the email
+    // grows a money band and a facts table (owner-directed 2026-08-07), because the one-line
+    // summary that serves the in-app row perfectly — "Gold Standard Program · $523,125 @ 10.00%
+    // · cash to close $78,411 · liquidity $109,799" — is then a worse restatement of the block
+    // directly beneath it. `emailBody` lets a caller say the two things separately; every caller
+    // that does not set it is byte-identical to before.
+    intro:     opts.emailBody || opts.body || '',
     lines:     opts.lines || [],
     meta:      opts.meta || [],
     // Every notification email is genuinely repliable (owner-directed
@@ -180,6 +219,14 @@ function buildEmail(opts, audience) {
     // for draws). Absent on every other email, which renders exactly as before.
     figures:   opts.figures || null,
     facts:     opts.facts || null,
+    // The change ledger (what moved off the standard, from → to) and a list table (the files /
+    // items an email is about). Owner-directed 2026-08-07 — an approval email must SHOW what is
+    // being asked for, and a "7 files are overdue" digest must name the seven. Absent on every
+    // other email, which renders exactly as before.
+    changes:   opts.changes || null,
+    table:     opts.table || null,
+    // …and the plural, for an email that carries more than one queue (see template.js `tables`).
+    tables:    opts.tables || null,
     steps:     opts.steps || null,
     progress:  opts.progress || null,
     callout:   opts.callout || null,
@@ -187,6 +234,10 @@ function buildEmail(opts, audience) {
     // Titled how-to blocks (owner-directed 2026-07-21) — clean, professional
     // instruction sections (e.g. "How to request a draw", "What happens next").
     sections:  opts.sections || null,
+    // The earlier conversation, quoted in the shape mail clients collapse behind
+    // their three-dots control (lib/email/quote.js). Used by the inbound forwards so
+    // a reply notification leads with the reply and not with a copy of the thread.
+    quoted:    opts.quoted || null,
     audience,
   });
 }
@@ -388,7 +439,7 @@ async function _mark(id, status) {
 // These types are ONLY ever suppressed for STAFF — the borrower-facing versions
 // (condition_added / doc_requested / doc_rejected) go through notifyBorrower,
 // which has its own BORROWER_MAJOR_EMAIL policy and is untouched by this set.
-const STAFF_INAPP_TYPES = new Set(['tool_submitted', 'doc_uploaded', 'condition_added']);
+const STAFF_INAPP_TYPES = new Set(['tool_submitted', 'doc_uploaded', 'condition_added', 'draw_docs_pulled']);
 
 // Escape hatch (used by the Notification Center's Send-now action) — bypasses
 // the LO gate for this single call so a hand-reviewed draft actually goes out.
@@ -498,6 +549,21 @@ async function notifyStaff(staffId, opts) {
   if (inAppOnly) emailOn = false;
   // Self gate: 'inapp' forces in-app-only for the LO's own inbox.
   if (selfChannel === 'inapp') emailOn = false;
+  // ALREADY IN THEIR OWN INBOX (owner-directed 2026-08-09): when this
+  // notification is ABOUT an inbound email, `opts.alreadyEmailed` names who that
+  // email already reached — and a recipient who was on it (To, Cc, or the
+  // sender) gets NO second email from us, because their inbox holds the message
+  // itself. The in-app row below still writes, so the portal record stays
+  // complete. Resolved HERE, before the batch-defer branch, so a suppressed
+  // email can neither send live nor park in a batch digest — a digest repeating
+  // a message they already read is the same bombardment arriving later.
+  let emailAddrs = null;
+  if (emailOn) {
+    emailAddrs = opts.emailTo ? [].concat(opts.emailTo) : await _staffEmail(staffId);
+    const kept = loopedIn.withoutAlreadyEmailed(emailAddrs, opts.alreadyEmailed);
+    if (emailAddrs.length && !kept.length) emailOn = false;
+    emailAddrs = kept;
+  }
   // enrichFileOpts already ran at the top of notifyStaff (so the LO gate + the
   // self gate see the same fully-composed payload the send path uses). It sets
   // _enriched=true so a second call would be a no-op, but we don't run it —
@@ -531,7 +597,9 @@ async function notifyStaff(staffId, opts) {
     } catch (_) { /* fall through to live send */ }
     if (queued) return id;
   }
-  const to = emailOn ? (opts.emailTo ? [].concat(opts.emailTo) : await _staffEmail(staffId)) : [];
+  // The address list was already resolved (and the already-on-the-email people
+  // removed) above, before the defer branch — never re-fetch it here.
+  const to = emailOn ? (emailAddrs || []) : [];
   _track(_emailRow(id, to, opts, 'staff')).catch(() => {});   // fire-and-forget (marks 'skipped' when `to` is empty); never let a stray rejection crash the process
   return id;
 }
@@ -551,6 +619,7 @@ const CATEGORY_OF = {
   // Sitewire draw-management events (findings delivery, accept/dispute, SOW reallocations)
   draw_findings: 'draws', draw_accepted: 'draws', draw_disputed: 'draws', draw_dispute_resolved: 'draws',
   draw_message: 'draws', draw_started: 'draws', draw_inbound: 'draws',
+  draw_docs_pulled: 'draws',
   // Action-needed (a submitted draw must be hand-entered into TrustPoint) — deliberately
   // NOT in STAFF_INAPP_TYPES, so it emails the coordinator.
   trustpoint_import: 'draws',
@@ -558,6 +627,10 @@ const CATEGORY_OF = {
   // New borrower touchpoints (owner-directed 2026-07-20)
   officer_assigned: 'status_updates', all_caught_up: 'status_updates',
   milestone: 'status_updates', digest: 'reminders',
+  // A CHASE, so 'reminders'. Deliberately NOT 'draws': that category is what makes notify Cc the
+  // whole draw loop-in (coordinator + desk + officer) onto an email, and this one is about the
+  // SALE of the loan, which is the closer's and the super admins' business, not the draw desk's.
+  purchase_advice_missing: 'reminders',
   // The Workflow (owner-directed 2026-07-21) — staff hand-off events. Action-
   // bearing, so NOT added to STAFF_INAPP_TYPES: they email the recipient/submitter.
   workflow_submitted: 'status_updates', workflow_returned: 'status_updates', workflow_ready: 'status_updates',
@@ -571,7 +644,10 @@ const CATEGORY_OF = {
   // The closing chain — documents arrived on it. Passed inAppOnly:true by its one
   // caller (closing-inbox), because the chain email ITSELF already forwards to every
   // assignee: emailing again about the same message would be double-notifying.
-  closing_docs_in: 'documents',
+  // 'closing' (not 'documents') since the role-scoping rule (owner-directed 2026-08-10):
+  // it is the category a CLOSER's file visibility is keyed on. Staff-side only — the
+  // borrower prefs screen reads NOTIFY_CATEGORIES, which deliberately does not list it.
+  closing_docs_in: 'closing',
   // Finding escalation (owner-directed 2026-07-21) — action-bearing staff events, so
   // NOT added to STAFF_INAPP_TYPES: the reviewer/escalator is emailed (unless muted).
   finding_escalation: 'conditions', finding_escalation_decided: 'conditions',
@@ -613,6 +689,53 @@ const CATEGORY_OF = {
 const ALWAYS_IN_APP = new Set(['doc_rejected', 'condition_added', 'security', 'account', 'llc_unverified', 'track_record_unverified']);
 const NOTIFY_CATEGORIES = ['messages', 'status_updates', 'documents', 'conditions', 'pricing', 'reminders', 'draws', 'other'];
 const categoryOf = (type) => CATEGORY_OF[type] || 'other';
+
+/**
+ * ROLE-SCOPED FILE NOTIFICATIONS (owner-directed 2026-08-10: "the closer, the draw
+ * coordinator … are getting notifications not related to their part … The draw coordinator
+ * is related to the draws. The closer is related to closing. Only the loan officers on top
+ * of the entire file should receive all the notifications.")
+ *
+ * THE CLASS THIS CLOSES: db/392 widened `application_assignees.role` to admit 'closer' and
+ * 'draw_coordinator' (every file submitted to closing carries its closer as a permanent
+ * assignee via the pointer-sync trigger), while the whole-file fan-outs (`notifyAppStaff`,
+ * `notifyAppStaffThread`) select assignees WITH NO ROLE FILTER — so a closer received every
+ * countered exception, product registration and draw event on the file, forever.
+ *
+ * The unit of "their part" is the ASSIGNEE role on the file (never the staffer's global
+ * role — an admin helping as an officer keeps full visibility), and the unit of "kind of
+ * notification" is `categoryOf(type)` — the SAME key the draw loop-in is keyed on, so the
+ * two rules can never disagree about what "a draw email" is. Enforced ONLY at the two
+ * whole-team fan-out chokepoints below; every direct notifyStaff(<person>) call, the
+ * notifyAdmins fan-out, the borrower-email draw loop-in Cc (owner-directed 2026-07-28) and
+ * the DocuSign wire viewers are deliberately untouched.
+ *
+ * FAIL OPEN by construction: a FORCED type (security/account/esign) reaches everyone; an
+ * assignee role with no entry here keeps whole-file visibility (a role added next year must
+ * never silently go dark) — the role-scope test pins that every ASSIGNEE_ROLES value has an
+ * explicit entry, so the decision is forced at build time, not at 2am.
+ */
+const STAFF_ROLE_CATEGORIES = {
+  loan_officer: '*',        // "on top of the entire file" — sees everything
+  processor: '*',           // the original whole-file team (db/103) — sees everything
+  closer: ['closing'],
+  draw_coordinator: ['draws'],
+};
+function roleSeesCategory(role, category) {
+  const allowed = STAFF_ROLE_CATEGORIES[String(role || '')];
+  if (allowed === undefined) return true;   // unknown/legacy role → whole-file (fail open)
+  if (allowed === '*') return true;
+  return Array.isArray(allowed) && allowed.includes(category);
+}
+/** Does an assignee holding `roles` on the file see this notification at all? */
+function staffRolesSee(roles, opts) {
+  try {
+    const catalog = require('./notification-catalog');
+    if (catalog.isForced(catalog.keyForType(opts.type, opts), opts.type)) return true;
+  } catch (_) { return true; }   // an unreadable catalog must never silence anybody
+  const cat = categoryOf(opts.type);
+  return (Array.isArray(roles) ? roles : []).some((r) => roleSeesCategory(r, cat));
+}
 // Whether a category sends email BY DEFAULT (i.e. at least one of its event types
 // is a "major" email moment). The preferences screen uses this so a borrower with
 // no saved preference sees the category's REAL starting state — showing "email on"
@@ -895,7 +1018,12 @@ async function notifyBorrower(borrowerId, opts) {
      VALUES ('borrower',$1,$2,$3,$4,$5,$6) RETURNING id`,
     [borrowerId, opts.type, sopts.title, sopts.body || null, opts.applicationId || null, opts.link || null]);
   const id = rows[0].id;
-  const to = pref.email ? (opts.emailTo ? [].concat(opts.emailTo) : await _borrowerEmail(borrowerId)) : [];
+  // ALREADY IN THEIR OWN INBOX — same rule as notifyStaff (owner-directed
+  // 2026-08-09): a borrower who was on the very email this notification is
+  // about keeps the in-app row and is never emailed a duplicate of it.
+  const to = loopedIn.withoutAlreadyEmailed(
+    pref.email ? (opts.emailTo ? [].concat(opts.emailTo) : await _borrowerEmail(borrowerId)) : [],
+    opts.alreadyEmailed);
   _track(_emailRow(id, to, sopts, 'borrower')).catch(() => {});   // fire-and-forget; swallow any stray rejection so it can't crash the process
   return id;
 }
@@ -937,7 +1065,7 @@ async function notifyAppBorrowers(appId, opts) {
     who caused the event (staff-triggered sites). Per-staffer notifications_enabled
     is honored inside notifyStaff, so it isn't re-implemented here. */
 async function notifyAppStaff(appId, opts = {}) {
-  const { rows } = await db.query(
+  const { rows: allRows } = await db.query(
     // ACTIVE ONLY. A fired employee stays an application_assignee until somebody
     // reassigns the file (this module's own notes say so), so without this the
     // team fan-out could consist entirely of people who cannot sign in — and any
@@ -947,10 +1075,20 @@ async function notifyAppStaff(appId, opts = {}) {
     // would email them every internal file event (note-buyer names, internal
     // contacts). A broker's visibility comes through the /api/tpo surface, never
     // the internal notification stream (TPO PORTAL invariant, CLAUDE.md).
-    `SELECT DISTINCT aa.staff_id
+    // Roles aggregated per person: one staffer can hold several roles on a file,
+    // and seeing the notification through ANY of them is enough.
+    `SELECT aa.staff_id, array_agg(DISTINCT aa.role) AS roles
        FROM application_assignees aa
        JOIN staff_users su ON su.id = aa.staff_id AND su.is_active = true AND su.is_external = false
-      WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND aa.staff_id IS NOT NULL`, [appId]);
+      WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND aa.staff_id IS NOT NULL
+      GROUP BY aa.staff_id`, [appId]);
+  // ROLE SCOPE (owner-directed 2026-08-10): a part-of-the-file assignee (closer, draw
+  // coordinator) receives only their part's categories — see STAFF_ROLE_CATEGORIES. This
+  // narrows `.length`'s meaning from "everyone on the file" to "everyone on the file this
+  // event CONCERNS" — the right reading for every caller that asks "did this reach anybody
+  // responsible?" (an esign event on a file whose only assignees are part-roles now
+  // escalates to admins, which is what 'nobody responsible heard it' should do).
+  const rows = allRows.filter((r) => staffRolesSee(r.roles, opts));
   const except = opts.exceptStaffId ? String(opts.exceptStaffId) : null;
   // `exceptStaffIds` is the PLURAL form, for a caller fanning out over several
   // audiences in turn (the order-overdue ladder tells the assignee, then the team,
@@ -1081,12 +1219,21 @@ async function notifyAppThread(appId, opts = {}) {
   // is checked directly first. Fails toward SENDING: an unreadable file emails the team.
   let mailable = true;
   try {
+    // A borrower who MUTED this category's email is not mailable either (audit 2026-08-10):
+    // `notifyBorrower` still writes their in-app row and returns its id, so counting rows alone
+    // read a muted borrower as "emailed" — the team's copy was suppressed and the event went out
+    // to nobody, with the caller told it was delivered. The pref join mirrors notifyBorrower's own
+    // rule: an explicit pref wins, else the type's major-email default.
+    const emailDefault = (typeof opts.major === 'boolean') ? opts.major : BORROWER_MAJOR_EMAIL.has(opts.type);
     const r = await db.query(
       `SELECT count(*)::int AS n
          FROM applications a
          JOIN borrowers b ON b.id IN (a.borrower_id, a.co_borrower_id)
+         LEFT JOIN notification_prefs np ON np.borrower_id = b.id AND np.category = $3
         WHERE a.id=$1 AND COALESCE(b.email,'') <> ''
-          AND (a.status <> 'on_hold' OR $2::bool)`, [appId, !!opts.evenIfOnHold]);
+          AND (a.status <> 'on_hold' OR $2::bool)
+          AND COALESCE(np.email, $4::bool)`,
+      [appId, !!opts.evenIfOnHold, categoryOf(opts.type), emailDefault]);
     mailable = (r.rows[0] && r.rows[0].n > 0);
   } catch (_) { mailable = true; }
 
@@ -1101,13 +1248,34 @@ async function notifyAppThread(appId, opts = {}) {
   // with a different reader: the desk's feed reading "YOUR construction draw has been released" is
   // written in the borrower's voice about the desk's own file. So a caller may pass `staffTitle` /
   // `staffBody` for the rows the team sees. Absent, the shared wording is used unchanged.
-  const staff = await notifyAppStaff(appId, {
-    ...shared,
-    ...(opts.staffTitle ? { title: opts.staffTitle } : {}),
-    ...(opts.staffBody ? { body: opts.staffBody } : {}),
-    inAppOnly: emailed,
-  });
-  return { borrowers: rows, staff, emailedTogether: emailed };
+  const staffOpts = { ...shared, inAppOnly: emailed };
+  if (opts.staffTitle) staffOpts.title = opts.staffTitle;
+  if (opts.staffBody) staffOpts.body = opts.staffBody;
+  // A BORROWER-ACTION LINK NEVER RIDES TO STAFF (owner-reported 2026-08-10, the Malky Katz
+  // delivery). The findings email's CTA is the borrower's NO-LOGIN accept/dispute magic link
+  // (`/draw-accept/<reply_token>`) — the borrower's own legal capability. The staff fan-out used
+  // to carry the shared opts verbatim, so every staff in-app row linked to it, and on the
+  // no-mailable-borrower FALLBACK the whole borrower-voiced email (magic link included) was
+  // EMAILED to the file's assignees — a staffer could accept findings AS the borrower (the same
+  // rule audit L1 already enforces on the API: "never hand the borrower's reply_token to a staff
+  // client"). A caller with a borrower-action CTA passes `staffLink` (+ optional `staffCtaLabel`);
+  // with one present the borrower CTAs are replaced wholesale on the staff copy.
+  if (opts.staffLink) {
+    staffOpts.link = opts.staffLink;
+    staffOpts.ctaLabel = opts.staffCtaLabel || 'Open the file';
+    delete staffOpts.cta2Label; delete staffOpts.cta2Link;
+  }
+  // THE FALLBACK IS NEVER SILENT ABOUT WHY IT FIRED. When the team's copy goes out with email
+  // enabled it is because the BORROWER'S copy did not — and a staff email that reads exactly like
+  // the borrower's ("please confirm the amount") hides the one fact the team must act on: the
+  // borrower has NOT seen this. Say so on the team's copy, with the reason class.
+  if (!emailed) {
+    staffOpts.note = mailable
+      ? 'Heads up: the borrower’s copy of this email was NOT sent — it was held or muted (a pending review, or their settings). The borrower has not seen this; reach them another way.'
+      : 'Heads up: the borrower could NOT be emailed — no email address on file, these emails turned off in their settings, or the file is parked. The borrower has not seen this; reach them another way.';
+  }
+  const staff = await notifyAppStaff(appId, staffOpts);
+  return { borrowers: rows, staff, emailedTogether: emailed, borrowerMailable: mailable };
 }
 
 /**
@@ -1150,17 +1318,28 @@ async function notifyAppStaffThread(appId, opts = {}) {
   try {
     const assignees = (await db.query(
       // ACTIVE assignees only, with a real address — the same roster notifyAppStaff fans out to.
-      `SELECT DISTINCT su.email
+      // Roles ride along for the role-scope filter (owner-directed 2026-08-10): a closer's
+      // address must not be a visible To recipient on every internal draw thread.
+      `SELECT su.email, array_agg(DISTINCT aa.role) AS roles
          FROM application_assignees aa
          JOIN staff_users su ON su.id = aa.staff_id AND su.is_active = true
         WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND aa.staff_id IS NOT NULL
-          AND COALESCE(su.email,'') <> ''`, [appId])).rows.map((r) => r.email);
+          AND COALESCE(su.email,'') <> ''
+        GROUP BY su.email`, [appId])).rows
+      .filter((r) => staffRolesSee(r.roles, opts))
+      .map((r) => r.email);
     let loopIn = [];
     if (categoryOf(opts.type) === 'draws') {
       // The coordinator + officer + draws@ desk, exactly as the borrower draw emails loop them in.
       try { loopIn = await require('./draw-recipients').drawLoopInBcc(appId); } catch (_) { /* best-effort */ }
     }
     recipients = _staffThreadRecipients({ assignees, loopIn, explicit: Array.isArray(opts.to) ? opts.to : [] });
+    // Anybody already on the inbound email this event is about holds the
+    // message itself — drop them from the one shared email. Their in-app row
+    // still writes below, and if EVERYONE was on it the fallback fan-out runs
+    // with email enabled but notifyStaff re-applies the same rule per person,
+    // so nobody is double-mailed and nobody not-on-the-email goes dark.
+    recipients = loopedIn.withoutAlreadyEmailed(recipients, opts.alreadyEmailed);
   } catch (e) {
     console.error('[notify] app-staff-thread recipients', appId, (e && e.message) || e);
   }
@@ -1190,17 +1369,38 @@ async function notifyAppStaffThread(appId, opts = {}) {
   return { emailed, recipients: recipients.length, staff };
 }
 
-/** Notify every active admin (used when an application has no loan officer). */
+/**
+ * Notify every active admin (used when an application has no loan officer).
+ *
+ * TWO OPTIONAL NARROWINGS, both additive and both OFF unless a caller asks
+ * (every existing call site is byte-identical without them):
+ *
+ *   opts.emailRoles       — ['super_admin'] etc. An admin OUTSIDE the list keeps
+ *                           the in-app row and loses only the EMAIL. It can only
+ *                           ever narrow: an explicit opts.inAppOnly still wins,
+ *                           and an unrecognized/empty list is ignored entirely
+ *                           (fail toward the status quo, never toward silence).
+ *   opts.skipSharedInbox  — do not copy the NOTIFY_ADMINS shared-inbox list.
+ *
+ * The pair exists for the API-Health down-alerts (owner-directed 2026-08-09:
+ * "no loan officers should receive it"). NOTIFY_ADMINS is a hand-maintained
+ * list of ADDRESSES with no role attached — the one recipient list here that
+ * could contain a loan officer — so an alert type that must never reach one
+ * skips it and emails only the roles it names. The in-app rows are unaffected:
+ * every admin still SEES the alert in PILOT, they just aren't mailed it.
+ */
 async function notifyAdmins(opts) {
   // Enrich once with the file's identity so BOTH the per-admin emails and the
   // shared-inbox copy carry the file tag + detail block (no-op without appId).
   opts = await enrichFileOpts(opts, 'staff');
   const { rows } = await db.query(
-    `SELECT id, email FROM staff_users WHERE role IN ('admin','super_admin') AND is_active = true`);
+    `SELECT id, email, role FROM staff_users WHERE role IN ('admin','super_admin') AND is_active = true`);
   // Same plural exclusion as notifyAppStaff — an admin who is ALSO on the file, or
   // who IS the order's assignee, was getting two identical emails and two in-app
   // rows from a single escalation, every two days, for as long as it stayed late.
   const exceptMany = new Set((Array.isArray(opts.exceptStaffIds) ? opts.exceptStaffIds : []).map(String));
+  const emailRoles = (Array.isArray(opts.emailRoles) && opts.emailRoles.length)
+    ? new Set(opts.emailRoles.map((r) => String(r))) : null;
   const ids = [];
   for (const a of rows) {
     if (exceptMany.has(String(a.id))) continue;
@@ -1208,17 +1408,27 @@ async function notifyAdmins(opts) {
     // administrator must not stop the escalation reaching the others. The
     // administrators are the LAST rung of every ladder in this system — losing
     // the rest of them to one bad row is losing the escalation entirely.
-    try { ids.push(await notifyStaff(a.id, { ...opts, emailTo: a.email })); }
+    const per = { ...opts, emailTo: a.email };
+    delete per.emailRoles; delete per.skipSharedInbox; // routing directives, not per-staff opts
+    // Only ever SET inAppOnly — never clear it — so the STAFF_INAPP_TYPES default
+    // inside notifyStaff keeps working for callers that pass neither option.
+    if (emailRoles && !emailRoles.has(String(a.role))) per.inAppOnly = true;
+    try { ids.push(await notifyStaff(a.id, per)); }
     catch (e) { console.error('[notify] admin fan-out', a.id, (e && e.message) || e); }
   }
   // also copy the configured NOTIFY_ADMINS inbox list, if any (branded).
   // An explicitly in-app-only fan-out (e.g. an unrouted marketing lead whose
   // email went to the sales desk) must not email this list either — the whole
   // point of inAppOnly is "rows yes, emails no" (audit 2026-07-24).
-  if (cfg.notifyAdmins.length && opts.inAppOnly !== true) {
-    const msg = buildEmail(opts, 'staff');
-    _track(email.sendMail({ to: cfg.notifyAdmins, subject: msg.subject, text: msg.text, html: msg.html,
-      replyTo: opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null }).catch(() => {}));
+  if (cfg.notifyAdmins.length && opts.inAppOnly !== true && opts.skipSharedInbox !== true) {
+    // The shared-inbox list honors the already-on-the-email rule too — a
+    // monitored inbox that was Cc'd on the reply itself needs no second copy.
+    const adminTo = loopedIn.withoutAlreadyEmailed(cfg.notifyAdmins, opts.alreadyEmailed);
+    if (adminTo.length) {
+      const msg = buildEmail(opts, 'staff');
+      _track(email.sendMail({ to: adminTo, subject: msg.subject, text: msg.text, html: msg.html,
+        replyTo: opts.replyTo || fileReplyTo(opts.applicationId) || cfg.replyToDefault || null }).catch(() => {}));
+    }
   }
   return ids;
 }
@@ -1238,12 +1448,15 @@ async function fileContext(appId, extraMeta = []) {
     const r = await db.query(
       `SELECT a.ys_loan_number, a.property_address, a.program, a.loan_type, a.status,
               a.purchase_price, a.arv, a.rehab_budget, a.loan_amount,
+              a.lender,
               b.first_name, b.last_name, b.email, b.cell_phone,
               lo.full_name AS lo_name, lo.title AS lo_title, lo.email AS lo_email,
-              lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls
+              lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls,
+              pr.full_name AS proc_name, pr.email AS proc_email
          FROM applications a
          JOIN borrowers b ON b.id=a.borrower_id
          LEFT JOIN staff_users lo ON lo.id=a.loan_officer_id AND lo.is_active=true
+         LEFT JOIN staff_users pr ON pr.id=a.processor_id AND pr.is_active=true
         WHERE a.id=$1`, [appId]);
     const a = r.rows[0];
     if (!a) return null;
@@ -1271,6 +1484,22 @@ async function fileContext(appId, extraMeta = []) {
       a.arv != null ? { label: 'ARV', value: money(a.arv) } : null,
       a.rehab_budget != null ? { label: 'Rehab budget', value: money(a.rehab_budget) } : null,
       a.loan_amount != null ? { label: 'Loan amount', value: money(a.loan_amount) } : null,
+      // WHO IS ON THIS FILE — owner-directed 2026-08-07, on the Workflow hand-off email: *"it
+      // should say in the email who the loan officer on the file is and who the note buyer on the
+      // file is."* A processor picking up a hand-off had no way to tell either from the email, and
+      // both are already on the row this query reads. STAFF meta only — `borrowerMeta` is built
+      // separately below and never receives these.
+      //
+      // THE NOTE BUYER IS DELIBERATELY *NOT* HERE, and that is the whole lesson of this block: this
+      // is the SHARED identity block, so anything added rides EVERY staff email on a file — and
+      // several staff surfaces withhold the capital-partner name ON PURPOSE. The investor draw
+      // reminders speak of "the investor" precisely so the desk can forward one without leaking who
+      // funds the loan (`test-draw-coordinator-reminders-db.js` pins it, and it caught exactly this
+      // when the row was added here). The owner asked for the note buyer on ONE email, so it is
+      // attached to THAT email's own `extraMeta` in `workflow.notifyHandoff` — never to the block
+      // every surface inherits. Put a note-buyer name on a specific email; never on this list.
+      a.lo_name ? { label: 'Loan officer', value: [a.lo_name, a.lo_email].filter(Boolean).join(' · ') } : null,
+      a.proc_name ? { label: 'Processor', value: [a.proc_name, a.proc_email].filter(Boolean).join(' · ') } : null,
       ...extraMeta,
     ].filter(Boolean);
     // Borrower-safe identity block: a clean "which file" summary (no internal
@@ -1317,4 +1546,4 @@ async function fileContext(appId, extraMeta = []) {
   } catch (_) { return null; }
 }
 
-module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAppThread, notifyAppStaffThread, _staffThreadRecipients, deliveredCount, notifyAdmins, buildEmail, fileContext, injectOpenPixel, NOTIFY_CATEGORIES, ALWAYS_IN_APP, categoryEmailsByDefault, drainEmails };
+module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAppThread, notifyAppStaffThread, _staffThreadRecipients, deliveredCount, notifyAdmins, buildEmail, fileContext, injectOpenPixel, NOTIFY_CATEGORIES, ALWAYS_IN_APP, categoryEmailsByDefault, drainEmails, STAFF_ROLE_CATEGORIES, roleSeesCategory, staffRolesSee };

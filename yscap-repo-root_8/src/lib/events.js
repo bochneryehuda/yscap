@@ -197,6 +197,12 @@ function disconnectUser(kind, id) {
  */
 async function publishTrackRecordUpdate(borrowerId, actor = null) {
   if (!borrowerId) return;
+  // Phase E (owner-directed 2026-08-09): the chokepoint that live-refreshes
+  // every open screen ALSO keeps the borrower's downloadable SAVED COPY fresh
+  // — one hook covers every write path the SSE refresh covers, so a staff
+  // edit that never opens the tool can no longer leave the copy stale.
+  // Debounced + fire-and-forget inside the module; may never block a publish.
+  try { require('./track-record/html-copy').queueSavedCopyRefresh(borrowerId); } catch (_) { /* best-effort */ }
   const data = { borrowerId: String(borrowerId) };
   const skip = actor && actor.kind && actor.id ? keyOf(actor.kind, actor.id) : null;
   const emit = (kind, id) => { if (id && keyOf(kind, id) !== skip) publishToUser(kind, id, 'track_record:updated', data); };

@@ -360,8 +360,20 @@ async function siteIntake(p, opts = {}) {
           await require('../lib/vesting').setVestingLlcByName(appId, entityName, {
             source: 'intake',
             // Only used when the entity is genuinely NEW — a name the borrower
-            // already has keeps its own details (never overwritten by a re-type).
-            fields: { ein: (p.eEin || p.entityEin || null), formationState: (p.eState || p.entityState || null) },
+            // already has keeps its own details (never overwritten by a re-type),
+            // except for the TYPE, which records onto an entity nobody has
+            // confirmed or verified (llc.confirmEntityType owns that rule).
+            fields: {
+              ein: (p.eEin || p.entityEin || null),
+              formationState: (p.eState || p.entityState || null),
+              // The marketing form has ASKED for this since it shipped and never
+              // sent it (owner-directed 2026-08-09) — the same collected-then-
+              // discarded class as the refinance fields.
+              entityType: (p.eType || p.entityType || null),
+              // Which KIND of partnership or trust — it decides what we may ask
+              // this entity for and what the loan documents call it.
+              entitySubtype: (p.eSubtype || p.entitySubtype || null),
+            },
           });
         }
       } catch (vestErr) { console.error('[intake] vesting wiring failed:', db.describeError(vestErr)); }
@@ -407,7 +419,26 @@ async function siteIntake(p, opts = {}) {
       }
     } catch (followUpErr) { console.error('[intake] post-commit follow-up failed:', db.describeError(followUpErr)); }
   }
+  /* REGISTER THE PRODUCT THEY BUILT THE TERM SHEET ON (owner-directed
+     2026-08-06: "it should feed automatically into the products and pricing that
+     he'd chosen" — and, asked directly about this door having nobody signed in
+     behind it, "register it automatically too").
+
+     AFTER the commit, deliberately: the application and its borrower are already
+     safe, so nothing about a registration can cost the lead. The module refuses
+     everything but the plain case — the three self-registerable programs, an
+     ELIGIBLE quote, the same vesting and as-is refusals the interactive doors
+     apply — and never throws. Officer routing is untouched: a branded ?lo= link
+     still lands on that officer, and an unbranded one still lands in the
+     unassigned box for a human to assign. */
+  let registered = null;
+  try {
+    const r = await require('../lib/intake-auto-register')
+      .autoRegisterFromIntake(appId, p.pricingProgram, db);
+    registered = r && r.registered ? r.program : null;
+  } catch (_) { registered = null; }
   return { borrowerId, applicationId: appId, assigned: !!officerId, officerId,
+           registeredProgram: registered,
            dup: !!dupOfBorrowerId, borrowerExisted, hasAuth, followUp };
 }
 

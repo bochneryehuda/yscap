@@ -223,6 +223,92 @@ const INTEGRATIONS = [
     },
   },
   {
+    key: 'doclab', name: 'DocLab (Private Lender Law) — loan documents', group: 'workflow',
+    purpose: 'Drafts the closing loan documents — note, mortgage or deed of trust, guaranty, loan agreement. The API form of the closing-prep package PILOT already emails to the same law firm. RTL only: no DSCR products and no prepayment penalties.',
+    direction: 'Two-way (we submit a loan request, they return the drafted documents)',
+    auth: 'Client id + secret issued by Private Lender Law (a one-hour access token)',
+    env: [
+      { name: 'DOCLAB_BASE_URL', required: true },
+      { name: 'DOCLAB_CLIENT_ID', required: true },
+      { name: 'DOCLAB_CLIENT_SECRET', required: true },
+      { name: 'DOCLAB_ENVIRONMENT', required: false },
+      { name: 'DOCLAB_TEMPLATE_LENDER_NAME', required: false },
+      { name: 'DOCLAB_LENDER_NAME', required: false },
+    ],
+    switches: [
+      { name: 'DOCLAB_ENABLED', label: 'Reading' },
+      { name: 'DOCLAB_DRYRUN', label: 'Test mode' },
+      { name: 'DOCLAB_OUTBOUND_ENABLED', label: 'Sending' },
+    ],
+    // DELIBERATELY NOT a live probe. Reaching DocLab means minting a fresh access
+    // token against a law firm's API on every page load, which is a login attempt,
+    // not a health check — and their token is valid for an hour, so hammering it
+    // teaches us nothing the stored configuration does not already say. "Can we
+    // actually reach it?" is answered on demand by the preflight.
+    liveProbe: false,
+    async probe() {
+      const c = require('../../doclab/client');
+      if (!c.configured()) {
+        return { configured: false, live: null,
+          detail: 'Private Lender Law has not issued us a client id and secret yet, so nothing is connected.' };
+      }
+      const on = c.masterOn();
+      const send = c.outboundOn();
+      const dry = c.dryrunOn();
+      const unconfirmed = c.endpointStatus().filter((e) => !e.confirmed && !e.overridden).length;
+      const env = (require('../../config').doclab || {}).environment || 'unknown';
+      const bits = [];
+      bits.push(on ? `Connected to the ${env} environment.` : 'Switched off.');
+      if (on) bits.push(dry ? 'Test mode is on, so nothing is actually sent.'
+        : (send ? 'Loan document requests can be sent.' : 'Sending is switched off — reading only.'));
+      // The one fact worth surfacing without a network call: several endpoint paths
+      // came through PLL's documentation as images rather than text, so they are the
+      // documented shape with an inferred path. Saying so here is what stops a 404
+      // from being read as a credential problem.
+      if (unconfirmed) bits.push(`${unconfirmed} endpoint ${unconfirmed === 1 ? 'address is' : 'addresses are'} still unconfirmed with Private Lender Law.`);
+      return { configured: true, enabled: on, live: null, detail: bits.join(' ') };
+    },
+  },
+  {
+    key: 'elementix', name: 'Elementix (recorded deeds / mortgages)', group: 'data',
+    purpose: 'Looks up recorded deeds and mortgages to research a property, an owner, or a borrower’s claimed track record. Read-only — PILOT never writes anything to Elementix.',
+    direction: 'One-way (read)', auth: 'Sign-in approved once in a browser (no key to buy)',
+    // No required key: the endpoint is signed in to on the seat the owner already
+    // pays for, so a missing CLIENT_ID is normal and must not read as misconfigured.
+    env: [{ name: 'ELEMENTIX_URL', required: false }, { name: 'ELEMENTIX_CLIENT_ID', required: false },
+      { name: 'ELEMENTIX_TOKEN_KEY', required: false }],
+    switches: [{ name: 'ELEMENTIX_ENABLED', label: 'Lookups' }, { name: 'ELEMENTIX_DRYRUN', label: 'Dry run' }],
+    // DELIBERATELY NOT a live probe. Every reach counts against a ceiling of
+    // 1,000 requests/hour that is shared by the WHOLE organization, so probing on
+    // each page load would spend the team's allowance to tell us what the stored
+    // authorization already says. "Can we actually reach it?" is answered on
+    // demand by GET /api/admin/elementix/discover instead.
+    liveProbe: false,
+    async probe() {
+      const oauth = require('../../elementix/oauth');
+      let s;
+      try { s = await oauth.status(); }
+      catch (e) { return { configured: true, live: null, detail: `Could not read the stored connection: ${e && e.message}` }; }
+      if (!s.configured) return { configured: false, live: null, detail: s.detail || 'The Elementix address is not set.' };
+      const on = require('./switches').on('ELEMENTIX_ENABLED');
+      if (!s.connected) {
+        return { configured: true, enabled: on, live: null,
+          detail: 'Not connected yet — somebody has to approve PILOT once in a browser (Connect on this page).' };
+      }
+      // Whether it RENEWS ITSELF is the fact that decides if this keeps working
+      // unattended, so it is the thing worth saying out loud on the status line.
+      const renew = s.selfRenewing
+        ? 'and renews itself, so nobody has to approve again'
+        : 'but did NOT get a renewal token, so somebody will have to approve again when it expires';
+      if (!on) {
+        return { configured: true, enabled: false, live: null,
+          detail: `Connected (${s.scopedTo}-wide) ${renew}. Lookups are switched off, so nothing is being read yet.` };
+      }
+      return { configured: true, enabled: true, live: null,
+        detail: `Connected (${s.scopedTo}-wide) ${renew}.${s.lastError ? ` Last problem: ${s.lastError}` : ''}` };
+    },
+  },
+  {
     key: 'clickup', name: 'ClickUp (pipeline / CRM)', group: 'workflow',
     purpose: 'Keeps loan-file data (status, borrower details, dates) in sync with the team’s ClickUp pipeline.',
     direction: 'Two-way', auth: 'API token',
@@ -519,6 +605,114 @@ const INTEGRATIONS = [
       catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching Encompass.' : (e.message || 'Not reachable.') }; }
     },
   },
+  {
+    key: 'amc', name: 'AppraisalScope / Cotality (appraisal ordering)', group: 'framework',
+    purpose: 'Order appraisals directly from the AMC, track the order, message the AMC back and forth, request revisions / ROV reconsiderations, and pull the finished report back into the file. Runs on Cotality\'s Digital Gateway (Cotality is CoreLogic\'s new name). The connector foundation is built; later build phases add the ordering screens.',
+    direction: 'Two-way (planned)', auth: 'OAuth2 (Cotality Digital Gateway) + AppraisalScope login',
+    env: [{ name: 'AMC_CLIENT_ID', required: true }, { name: 'AMC_CLIENT_SECRET', required: true },
+      { name: 'AMC_LOGIN_ACCOUNT', required: true }, { name: 'AMC_LOGIN_PASSWORD', required: true },
+      { name: 'AMC_SUBDOMAIN', required: true }, { name: 'AMC_LENDER_IDENTIFIER', required: true },
+      { name: 'AMC_SOURCE_CLIENT_ID', required: true }],
+    switches: [{ name: 'AMC_ENABLED', label: 'Reading + polling' }, { name: 'AMC_OUTBOUND_ENABLED', label: 'Ordering + writing' }],
+    liveProbe: true,
+    async probe() {
+      const c = require('../../amc/client').configured();
+      if (!c.hasOauth && !c.hasLogin) return { configured: false, live: null, detail: 'Not connected — the appraisal-ordering connector is built and off by default. Add the Cotality / AppraisalScope credentials (AMC_CLIENT_ID/SECRET, AMC_LOGIN_ACCOUNT/PASSWORD, AMC_SUBDOMAIN, AMC_LENDER_IDENTIFIER, AMC_SOURCE_CLIENT_ID) in Render, then press “Test now” to check them. Ordering screens are added by later build phases.' };
+      if (!c.ready) return { configured: false, live: null, detail: 'Partly connected — some credentials are still missing (the red chips below name them). “Test now” checks the sign-in key that is already set.' };
+      if (!c.enabled) return { configured: true, enabled: false, live: null, detail: 'Credentials are set, but the master switch (AMC_ENABLED) is off, so nothing talks to the AMC yet. “Test now” still checks the sign-in key without turning anything on.' };
+      return { configured: true, enabled: true, live: null, detail: 'Credentials set and enabled — press “Test now” to run the full read-only credential check (nothing is ordered). Live ordering is delivered by later build phases; use TEST MODE (AMC_DRYRUN) to verify the request before going live.' };
+    },
+    /* "Test now" = the REAL credential check, run where the credentials actually live
+       (the deployed service's Render env) — the same read-only preflight as
+       `npm run amc:preflight`, so the owner never needs a shell to answer "do the new
+       credentials work?". Never on page load (probeAll stays cheap via probe()).
+
+       The master-switch discipline holds: while AMC_ENABLED is off, ONLY the OAuth
+       sign-in key is checked (a token call to the gateway — it can neither read nor
+       write anything at the AMC tenant); DoLogin + the read-only lookup run only once
+       the switch is on. Both caches are invalidated first so every press is a fresh
+       check, never yesterday's cached token. Places no order, uploads nothing. */
+    async test() {
+      const client = require('../../amc/client');
+      const session = require('../../amc/session');
+      const preflight = require('../../amc/preflight');
+      const amc = cfg.amc || {};
+      let host = ''; try { host = new URL(amc.oauthUrl).host; } catch { host = String(amc.oauthUrl || '(unset)'); }
+      const c = client.configured();
+      if (!amc.clientId || !amc.clientSecret) {
+        return { configured: !!(c.hasOauth || c.hasLogin), live: null,
+          detail: 'The sign-in key is not set — add AMC_CLIENT_ID + AMC_CLIENT_SECRET (the client id + secret from Cotality) in the hosting settings (Render env), then press “Test now” again. Credentials are never pasted into PILOT itself.' };
+      }
+      client.invalidateToken();
+      try { session.invalidate(); } catch (_) { /* token-only checks don't need the session */ }
+      if (!require('./switches').on('AMC_ENABLED')) {
+        try {
+          await timebox(client.getAccessToken(), 15000);
+          return { configured: true, enabled: false, live: true,
+            detail: `The credentials WORK — ${host} accepted the client id + secret and issued a sign-in token. To also test the AppraisalScope login, turn on “Reading + polling” below and press “Test now” again.` };
+        } catch (e) {
+          const why = e && e.message === 'timed out'
+            ? { detail: `Timed out reaching ${host}.`, fix: 'Try again; if it keeps timing out it is a network problem, not the credentials.' }
+            : preflight.classify('token', e);
+          return { configured: true, enabled: false, live: false,
+            detail: `The sign-in key was NOT accepted at ${host} — ${why.detail}${why.fix ? ` ${why.fix}` : ''}` };
+        }
+      }
+      // Master switch ON → the full read-only preflight: token → DoLogin → one lookup.
+      try {
+        const result = await timebox(preflight.run(), 30000);
+        if (result.ok) {
+          return { configured: true, enabled: true, live: true,
+            detail: `Everything works — ${host} issued a sign-in token, the AppraisalScope login was accepted, and the tenant answered a read-only test lookup. Nothing was ordered.` };
+        }
+        const labels = { token: 'The sign-in key (AMC_CLIENT_ID / AMC_CLIENT_SECRET)', login: 'The AppraisalScope login (AMC_LOGIN_ACCOUNT / AMC_LOGIN_PASSWORD / AMC_SUBDOMAIN)', lookup: 'The read-only test lookup' };
+        const first = result.steps.find((s) => !s.ok) || {};
+        return { configured: true, enabled: true, live: false,
+          detail: `${labels[first.step] || 'A step'} failed — ${first.detail || first.cause || 'no recognizable cause'}${first.fix ? ` ${first.fix}` : ''}` };
+      } catch (e) {
+        return { configured: true, enabled: true, live: false,
+          detail: e && e.message === 'timed out' ? 'The check timed out — try again in a minute.' : `The check failed to run: ${(e && e.message) || e}` };
+      }
+    },
+  },
+  {
+    key: 'class', name: 'Class Valuation (appraisal ordering)', group: 'framework',
+    purpose: 'The SECOND appraisal vendor, alongside AppraisalScope / NAN. Order an appraisal with every field filled in and shown first, then track it and pull the finished report back onto the file. BOTH of their form versions are built — UAD 2.6 (the normal one today) and UAD 3.6, ready for the industry shift — and staff can send a single file on the newer one to try it before anything is switched over. It needs the four Class credentials; the callback receiver comes with a later build phase. Nothing decides between the two vendors — that stays a deliberate choice.',
+    direction: 'Two-way (planned) — we place orders, they push status back by webhook',
+    auth: 'OAuth2 password grant (client id + secret + username + password)',
+    // All four are [Required] by their password grant — there is no partial mode, and
+    // a portal login on its own is not enough (V1 guide p.9).
+    env: [{ name: 'CLASS_CLIENT_ID', required: true }, { name: 'CLASS_CLIENT_SECRET', required: true },
+      { name: 'CLASS_USERNAME', required: true }, { name: 'CLASS_PASSWORD', required: true },
+      { name: 'CLASS_ENVIRONMENT', required: false }, { name: 'CLASS_API_VERSION', required: false },
+      { name: 'CLASS_ORG_ID', required: false },
+      { name: 'CLASS_LENDER_ORG_ID', required: false },
+      // The PUSH half: the address Class calls, and the username/password THEY use
+      // when calling us. Optional for ordering, required before any status, document
+      // or inspection news can reach the file on its own.
+      { name: 'CLASS_CALLBACK_URL', required: false },
+      { name: 'CLASS_CALLBACK_USER', required: false },
+      { name: 'CLASS_CALLBACK_PASSWORD', required: false }],
+    switches: [{ name: 'CLASS_ENABLED', label: 'Reading + polling' }, { name: 'CLASS_OUTBOUND_ENABLED', label: 'Ordering + writing' }],
+    liveProbe: false,
+    async probe() {
+      const c = require('../../class/client').configured();
+      if (!c.ready) {
+        const missing = [!c.hasClient ? 'the client id + secret' : null, !c.hasUser ? 'the username + password' : null].filter(Boolean).join(' and ');
+        return { configured: false, live: null, detail: `Not connected — the Class Valuation connector is built and off by default. Class still needs to supply ${missing || 'the four credentials'} (CLASS_CLIENT_ID / CLASS_CLIENT_SECRET / CLASS_USERNAME / CLASS_PASSWORD). All four are required by their sign-in; a portal login on its own is not enough.` };
+      }
+      if (!c.enabled) return { configured: true, enabled: false, live: null, detail: 'Credentials are set, but the master switch (CLASS_ENABLED) is off, so nothing talks to Class Valuation yet.' };
+      const env = `Pointed at their ${c.environment.toUpperCase()} environment, ordering on the UAD ${c.uad} form by default.`;
+      const hosts = c.hostsConfirmed ? '' : ' Their sign-in address for this environment has not been confirmed by Class yet — check it before ordering for real.';
+      // The push half is what makes an order tell us it progressed. Called out
+      // separately because ordering works fine without it — and then goes quiet,
+      // which is the confusing failure this line exists to pre-empt.
+      const push = c.callbackReady
+        ? ' Their status updates can reach us.'
+        : ' NOTE: the callback address and login are not set, so orders will go out but nothing will come back on its own.';
+      return { configured: true, enabled: true, live: null, detail: `Credentials set and enabled. ${env} Ordering is ${c.outbound ? 'ON' : 'still off'}; use TEST MODE (CLASS_DRYRUN) to check the request before going live.${push}${hosts}` };
+    },
+  },
 ];
 
 // Turn a probe result + descriptor into the resolved shape the page renders. `state` is the single
@@ -546,7 +740,14 @@ async function resolveOne(entry, opts) {
   // it has one (a real connection reach); otherwise, and on every page load, run
   // the cheap probe() so probeAll never hammers external services.
   const useTest = opts && opts.live && typeof entry.test === 'function';
-  try { r = useTest ? await entry.test() : await entry.probe(); }
+  /* Run inside the health-probe context so PILOT's OWN rate limiter never holds this call.
+     Six vendor clients pace themselves through `acquire()`, which waits up to a minute when
+     a bucket is empty — and every probe here is wrapped in an 8-second deadline. That
+     mismatch is what reported healthy services as "not reachable" a few times a day
+     (owner-reported 2026-08-09). A probe measures the FAR END; it must never measure our
+     own queue. See api-rate-limit.runAsHealthProbe. */
+  const rate = require('../api-rate-limit');
+  try { r = await rate.runAsHealthProbe(() => (useTest ? entry.test() : entry.probe())); }
   catch (e) { r = { configured: false, live: false, detail: e && e.message ? e.message : 'probe failed' }; }
   r = r || {};
   // The RUNTIME on/off switches for this integration (from src/lib/integrations/switches.js) — each
@@ -582,9 +783,44 @@ async function resolveOne(entry, opts) {
   };
 }
 
-// Run every probe in parallel (each already time-boxed + non-throwing) and return the resolved list.
+/* How many probes may be in flight at once.
+   NOT `Promise.all` over all 28. Every probe is a real outbound call — several are full
+   OAuth token exchanges — and firing the lot simultaneously on a single shared-CPU instance
+   made them compete for TLS handshakes, sockets and rate-limit tokens under their own
+   8-second deadline. The slowest of the herd then timed out and reported a healthy vendor
+   as down. Six at a time keeps a full sweep well inside a page load while removing the
+   self-inflicted contention. */
+const PROBE_CONCURRENCY = Math.max(1, parseInt(process.env.HEALTH_PROBE_CONCURRENCY || '6', 10) || 6);
+
+/**
+ * Run `fn` over `items` with at most `limit` in flight, returning the results IN INPUT
+ * ORDER. A fixed pool of workers pulling from a shared cursor — so a slow probe holds one
+ * slot rather than the whole batch, and the sweep finishes in the time of the slowest
+ * BATCH rather than the slowest single call.
+ *
+ * Exported through `_internals` so the pooling itself is unit-testable: `probeAll` calls
+ * the real registry (28 outbound requests), which no test can run.
+ */
+async function mapWithConcurrency(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;                       // claim an index before any await — one owner each
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  const workers = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: workers }, worker));
+  return out;
+}
+
+// Run every probe (each already time-boxed + non-throwing) and return the resolved list IN
+// REGISTRY ORDER — the page groups on `group`, but a stable order keeps a diff of two
+// health payloads readable.
 async function probeAll() {
-  return Promise.all(INTEGRATIONS.map((e) => resolveOne(e)));
+  return mapWithConcurrency(INTEGRATIONS, PROBE_CONCURRENCY, (e) => resolveOne(e));
 }
 // Run a single integration by key (the "Test now" button). Returns null for an unknown key.
 async function probeOne(key) {
@@ -593,4 +829,7 @@ async function probeOne(key) {
   return resolveOne(entry, { live: true });
 }
 
-module.exports = { INTEGRATIONS, probeAll, probeOne, _internals: { computeState, envSet, envPresence } };
+module.exports = {
+  INTEGRATIONS, probeAll, probeOne,
+  _internals: { computeState, envSet, envPresence, mapWithConcurrency, PROBE_CONCURRENCY },
+};

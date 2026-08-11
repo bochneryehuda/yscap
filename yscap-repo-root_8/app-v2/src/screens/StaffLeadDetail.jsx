@@ -215,6 +215,8 @@ export default function StaffLeadDetail() {
               </div>
             </div>
           </div>
+
+          <SubmittedDeal lead={lead} />
         </div>
 
         {/* ---- Center: activity timeline ---- */}
@@ -258,6 +260,101 @@ export default function StaffLeadDetail() {
           onConverted={(appId) => { setConvertOpen(false); nav(`/internal/app/${appId}`); }} onErr={setErr} />
       )}
     </>
+  );
+}
+
+/* WHAT THEY ACTUALLY TYPED — the tool submission behind this lead.
+ *
+ * Owner-reported 2026-08-07: somebody generated a term sheet from an officer's own
+ * link "with the name of the LLC and everything" but left no email or phone, and the
+ * officer could not see any of it. A row WAS created (a contact-less term-sheet
+ * generation has been allowed since 2026-07-24) — but every screen read the CRM
+ * columns, which nothing filled from a tool, so the LLC, the property and the figures
+ * sat in the `payload` jsonb that nothing rendered. From the officer's side that is
+ * indistinguishable from "no lead was created".
+ *
+ * The server now promotes the deal facts onto the row itself (lib/lead-deal-facts.js);
+ * this panel shows them plus the FULL form the visitor filled in, which is what makes
+ * the owner's ask possible: "loan officers can do his research to try to figure out
+ * who that person is and try to call him."
+ *
+ * Renders NOTHING when there is nothing to show, so a hand-typed lead is unchanged.
+ * Text colours are explicit darks — `var(--ink*)` is a LIGHT token in this palette.
+ */
+function SubmittedDeal({ lead }) {
+  const p = (lead && lead.payload && typeof lead.payload === 'object') ? lead.payload : {};
+  const rows = [];
+  const add = (label, value) => { if (value != null && String(value).trim() !== '') rows.push([label, String(value)]); };
+  add('Entity', lead.company);
+  add('Property', (lead.property_address && (lead.property_address.oneLine || addrLine(lead.property_address))) || null);
+  add('Property type', lead.property_type);
+  add('Program', lead.program);
+  add('Loan amount', lead.loan_amount != null ? money(lead.loan_amount) : null);
+  /* The tool's own display rows (the exact term-sheet terms — rate, term, ARV,
+     eligibility). Already PII-scrubbed server-side before storage. */
+  const metaRows = Array.isArray(p.metaRows) ? p.metaRows.filter((r) => r && r.label && r.value != null && String(r.value).trim() !== '') : [];
+  /* The whole entered form, last and collapsed: it is long, and it is for the officer
+     who wants to dig rather than the one scanning the lead. */
+  const state = (p.state && typeof p.state === 'object' && !Array.isArray(p.state)) ? p.state : null;
+  const stateRows = state
+    ? Object.entries(state)
+        .filter(([, v]) => v != null && v !== '' && typeof v !== 'object')
+        .slice(0, 120)
+    : [];
+  if (!rows.length && !metaRows.length && !stateRows.length) return null;
+  return (
+    <div className="panel">
+      <div className="panel-h"><h3>What they entered</h3></div>
+      <div className="panel-b">
+        {!lead.email && !lead.phone && (
+          <p className="small" style={{ margin: '0 0 10px', color: '#8A6D3B' }}>
+            No email or phone was left — everything below is what they typed, so you can work out who this is.
+          </p>
+        )}
+        {rows.length > 0 && (
+          <table className="small" style={{ width: '100%', borderCollapse: 'collapse', color: '#141B22' }}>
+            <tbody>
+              {rows.map(([k, v]) => (
+                <tr key={k}>
+                  <td style={{ padding: '3px 8px 3px 0', color: '#4B585C', whiteSpace: 'nowrap', verticalAlign: 'top' }}>{k}</td>
+                  <td style={{ padding: '3px 0', fontWeight: 600 }}>{v}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {metaRows.length > 0 && (
+          <details style={{ marginTop: rows.length ? 10 : 0 }}>
+            <summary className="small" style={{ cursor: 'pointer', color: '#256168' }}>The terms they generated ({metaRows.length})</summary>
+            <table className="small" style={{ width: '100%', borderCollapse: 'collapse', marginTop: 6, color: '#141B22' }}>
+              <tbody>
+                {metaRows.map((r, i) => (
+                  <tr key={i}>
+                    <td style={{ padding: '3px 8px 3px 0', color: '#4B585C', whiteSpace: 'nowrap', verticalAlign: 'top' }}>{r.label}</td>
+                    <td style={{ padding: '3px 0' }}>{String(r.value)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        )}
+        {stateRows.length > 0 && (
+          <details style={{ marginTop: 10 }}>
+            <summary className="small" style={{ cursor: 'pointer', color: '#256168' }}>Everything on the form ({stateRows.length})</summary>
+            <table className="small" style={{ width: '100%', borderCollapse: 'collapse', marginTop: 6, color: '#141B22' }}>
+              <tbody>
+                {stateRows.map(([k, v]) => (
+                  <tr key={k}>
+                    <td style={{ padding: '3px 8px 3px 0', color: '#4B585C', whiteSpace: 'nowrap', verticalAlign: 'top' }}>{k}</td>
+                    <td style={{ padding: '3px 0', overflowWrap: 'anywhere' }}>{String(v)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        )}
+      </div>
+    </div>
   );
 }
 

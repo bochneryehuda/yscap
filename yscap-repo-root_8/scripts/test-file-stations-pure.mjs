@@ -34,16 +34,16 @@ const ALL_SECTIONS = [
   'sec-overview', 'sec-application', 'sec-payoff', 'sec-pricing', 'sec-exceptions',
   'sec-conditions', 'sec-underwriting', 'sec-appraisal', 'sec-track',
   'sec-documents', 'sec-esign',
-  'sec-order-title', 'sec-order-insurance', 'sec-order-closing',
+  'sec-order-title', 'sec-order-insurance', 'sec-order-appraisal', 'sec-order-closing',
   'sec-closing', 'sec-tapes',
   'sec-draws', 'sec-messages',
 ];
-ok(ALL_SECTIONS.length === 18, 'the inventory names 18 sections');
+ok(ALL_SECTIONS.length === 19, 'the inventory names 19 sections');
 const flat = STATIONS.flatMap((s) => s.sections);
 ok(flat.length === new Set(flat).size, 'no section is claimed by two rooms');
 for (const sec of ALL_SECTIONS) ok(!!STATION_OF[sec], `${sec} has a room`);
 ok(flat.length === ALL_SECTIONS.length && ALL_SECTIONS.every((s) => flat.includes(s)),
-  'the rooms cover exactly the 18 sections — nothing homeless, nothing invented');
+  'the rooms cover exactly the 19 sections — nothing homeless, nothing invented');
 ok(!flat.includes('sec-encompass'),
   'no room CLAIMS sec-encompass — a retired address is not a section');
 /* EIGHT rooms now. The original promise was seven; the owner then asked for
@@ -57,8 +57,8 @@ ok(STATIONS.length === 8, 'eight rooms — the original seven plus the owner-req
    "Orders" — the owner's report. Three sections is what lights it up, so the
    COUNT is the load-bearing part of this assertion, not just the names. */
 ok(STATIONS.some((s) => s.id === 'st-orders'
-   && s.sections.join() === 'sec-order-title,sec-order-insurance,sec-order-closing'),
-  'Orders holds its three order sections, in work order');
+   && s.sections.join() === 'sec-order-title,sec-order-insurance,sec-order-appraisal,sec-order-closing'),
+  'Orders holds its four order sections, in work order (appraisal beside title/insurance/attorney)');
 ok(STATIONS.find((s) => s.id === 'st-orders').sections.length > 1,
   'Orders has more than one section — which is what makes the rail show them');
 ok(STATIONS.find((s) => s.id === 'st-signing').sections.join() === 'sec-esign,sec-closing',
@@ -257,11 +257,29 @@ for (const [sec, only, title] of [
     `${sec} renders the ${only} order and only that one`);
   ok(new RegExp(`\\{ id: '${sec}',`).test(staff), `${sec} is in the SECTIONS array the rail reads`);
 }
+/* The appraisal order section is a vendor DESK, not an OrdersPanel-backed email
+   order — so it renders the vendor panels rather than an `only=` OrdersPanel. It
+   sits in the Orders room beside the other three.
+
+   TWO vendors live in this one section (AppraisalScope / NAN and Class Valuation)
+   and NEITHER is the default — the owner has not picked one. Both are asserted, so
+   a vendor cannot quietly disappear from the screen: an ordering desk that is not
+   rendered is indistinguishable from one that is switched off. */
+ok(/id="sec-order-appraisal"[^>]*title="Appraisal"/.test(staff), 'sec-order-appraisal is rendered, titled "Appraisal"');
+ok(/id="sec-order-appraisal"[\s\S]{0,1600}?<AmcAppraisalPanel/.test(staff), 'sec-order-appraisal renders the AppraisalScope / NAN desk');
+ok(/id="sec-order-appraisal"[\s\S]{0,1600}?<ClassAppraisalPanel/.test(staff), 'sec-order-appraisal renders the Class Valuation desk too');
+/* Each desk has to say whose it is on its face. Ordering from the wrong company is
+   not a mistake a person can spot afterwards. */
+for (const vendor of ['AppraisalScope / NAN', 'Class Valuation']) {
+  ok(new RegExp(`<VendorHeading>${vendor.replace(/[/]/g, '[/]')}</VendorHeading>`).test(staff),
+    `the ${vendor} desk is labelled with its vendor's name`);
+}
+ok(/\{ id: 'sec-order-appraisal',/.test(staff), 'sec-order-appraisal is in the SECTIONS array the rail reads');
 /* The three open by DEFAULT. Landing in the Orders room and finding three
    collapsed headers is the "go into orders and then see the 3 options" the split
    exists to end, so a defaultOpen={false} here would undo the whole change. */
-ok(!/id="sec-order-(title|insurance|closing)"[^>]*defaultOpen=\{false\}/.test(staff),
-  'the order sections open by default — the room shows the work, not three lids');
+ok(!/id="sec-order-(title|insurance|appraisal|closing)"[^>]*defaultOpen=\{false\}/.test(staff),
+  'the order sections open by default — the room shows the work, not the lids');
 /* A DERIVED open-state prop is what slammed the Title section shut on its own
    "sent to <vendor>" confirmation the instant the order was placed. Comments are
    stripped first — the fix's own comment quotes the offending line, and a check

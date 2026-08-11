@@ -154,8 +154,27 @@ eq(ADDR.withUnit(ADDR.withoutUnit('100 Main St Unit 4D, Lakewood, NJ 08701'), 'U
           zip: '08701', formatted_address: LONG_NJ, oneLine: LONG_NJ, lat: 40.09, lng: -74.21,
         })])).rows[0].id;
 
-      const r1 = await heal.healProviderLongAddressesOnce({ limit: 500 });
-      ok(r1.fixed >= 2, 'the repair pass rewrote the seeded rows (' + JSON.stringify(r1.byColumn) + ')');
+      /* DRAIN, DON'T TAKE ONE CAPPED PASS. `healProviderLongAddressesOnce` is a
+         GLOBAL sweep with a per-column row LIMIT and NO ORDER BY, so on a
+         re-used database the seeded rows are simply not in the batch it happens
+         to read and the assertions below fail with nothing wrong with the
+         repair. It is self-draining (a repaired row stops matching), so we loop
+         until a pass rewrites nothing. Bounded: the SQL prefilter is
+         deliberately loose, so a clean address that merely CONTAINS the word
+         "County" (100 County Line Rd, Lakewood) matches forever and is
+         rewritten never — "no progress" is DONE here, not stuck. */
+      const r1 = { fixed: 0, byColumn: {} };
+      let passes = 0, stuck = false;
+      for (let i = 0; i < 60; i++) {
+        const p = await heal.healProviderLongAddressesOnce({ limit: 500 });
+        passes++;
+        r1.fixed += p.fixed;
+        for (const k of Object.keys(p.byColumn)) r1.byColumn[k] = (r1.byColumn[k] || 0) + p.byColumn[k];
+        if (!p.fixed) break;
+        if (i === 59) stuck = true;
+      }
+      ok(r1.fixed >= 2 && !stuck,
+        'the repair pass rewrote the seeded rows (' + JSON.stringify(r1.byColumn) + ', ' + passes + ' pass(es))');
 
       const app = (await db.query(`SELECT property_address AS x FROM applications WHERE id=$1`, [a])).rows[0].x;
       eq(app.formatted_address, '103 Newport Ave, Lakewood, NJ 08701', 'the file address is the mailing one-line');

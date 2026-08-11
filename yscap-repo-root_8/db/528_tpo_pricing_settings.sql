@@ -1,4 +1,4 @@
--- 491_tpo_pricing_settings.sql — the TPO (broker/wholesale) PRICING LAYER
+-- 528_tpo_pricing_settings.sql — the TPO (broker/wholesale) PRICING LAYER
 -- (owner-directed 2026-08-06). A NEW layer ON TOP of the frozen pricing engines:
 -- separate markup + origination controls for the TPO channel, optional per-firm
 -- overrides, and a firm-set broker origination fee. It changes NO retail number

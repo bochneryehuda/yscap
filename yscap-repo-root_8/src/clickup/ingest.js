@@ -643,7 +643,7 @@ async function upsertLlc(borrowerId, llcName, ein, taskId) {
 const { trackRecordKey, matchTrackRecord } = require('../lib/track-record-key');
 
 /** Auto track-record line from a closed file, with deal-type inference. */
-async function upsertTrackRecord(borrowerId, read, taskId) {
+async function upsertTrackRecord(borrowerId, read, taskId, llcId) {
   const a = read.app || {};
   const key = trackRecordKey(a.property_address);
   if (!key) return null;
@@ -671,22 +671,105 @@ async function upsertTrackRecord(borrowerId, read, taskId) {
   if (isRefi && hit) { dealType = 'fix-and-hold'; inferred = true; }
 
   if (exists.rows[0]) {
-    // Also (re)fill the property address — early track records were written with
-    // the raw ClickUp location shape (or none), so a re-run repopulates them with
-    // the normalized address. COALESCE keeps an existing value if this read lacks one.
-    await db.query(`UPDATE track_records SET deal_type=$2, inferred=$3,
-                      property_address=COALESCE($4, property_address), updated_at=now() WHERE id=$1`,
-      [exists.rows[0].id, dealType, inferred, a.property_address ? JSON.stringify(a.property_address) : null]).catch(() => {});
+    /* A RE-INGEST NEVER OVERWRITES A HUMAN, AND NEVER RE-SPELLS AN ADDRESS.
+       Both columns are MATERIAL to db/485's verify guard, so writing either one
+       unconditionally knocked the line back to pending — on every webhook, forever.
+
+       deal_type: only while the row is still `inferred`, i.e. a machine wrote it
+       and nobody has corrected it. The inference here reads `program` alone and
+       yields 'fix-and-hold' for everything except one exact label, so a staffer's
+       correction to 'flip' was being reverted AND the verification dropped, every
+       time ClickUp touched that card.
+
+       property_address: WRITTEN ONLY WHEN IT IS A DIFFERENT PLACE.
+
+       The first cut of this fix made the address strictly FILL-ONLY, justified by
+       "`hit` came from matchTrackRecord, which already confirmed sameAddress".
+       THAT WAS ONLY TRUE OF ONE OF THE TWO ARMS. `hit` is
+       `byTask.rows[0] || matchTrackRecord(...)` — the byTask arm matches on
+       `source_task_id` and says NOTHING about the address. So a genuine
+       correction typed into the ClickUp card ("we had the wrong house") was
+       silently dropped and the line stayed pinned to the wrong property forever,
+       which is worse than the churn it was meant to stop. Caught by the pre-merge
+       audit, which drove the real function and watched the correction vanish.
+
+       Fill-only also lost the OTHER thing the old unconditional write did: it
+       repaired track records still holding the raw ClickUp location shape
+       (`{formatted_address, lat, lng}` and no `line1`). address-heal does NOT
+       cover those — `canonicalizeAddressValue` returns null for that shape — and
+       such a row renders a BLANK Property cell in the investor TPR package,
+       because `addrText` finds neither `oneLine` nor `line1`.
+
+       So the test is SEMANTIC, not positional: ask whether the incoming address
+       is the same place we already hold, using the same `pilot_address_same_place`
+       db/493's verify guard uses, so the two can never disagree about what a
+       re-spelling is.
+         · same place        -> write nothing. No churn, no un-verify. (D2)
+         · a different place -> write it. A real correction lands, and it
+                                correctly un-verifies: the line now claims a
+                                different property, which IS a restatement.
+         · unreadable either side -> `same_place` fails closed to false, so the
+                                incoming value is written. That is deliberate:
+                                the raw-shape rows above are exactly the
+                                unreadable ones, and repairing a blank Property
+                                cell is worth one re-verification. */
+    await db.query(`UPDATE track_records
+                       SET deal_type = CASE WHEN inferred THEN $2 ELSE deal_type END,
+                           inferred  = CASE WHEN inferred THEN $3 ELSE inferred END,
+                           property_address = CASE
+                             WHEN $4::jsonb IS NULL THEN property_address
+                             WHEN COALESCE(pilot_address_same_place(property_address, $4::jsonb), false)
+                               THEN property_address
+                             ELSE $4::jsonb END,
+                           /* THE KEY MOVES WITH THE ADDRESS, on exactly the same
+                              condition. This branch has never re-keyed, so a row
+                              whose address was corrected kept a key describing the
+                              OLD property -- and that key is what every duplicate
+                              match, the heal pass and the findings desk read, so
+                              the line would go on colliding with the wrong house.
+                              address_key is deliberately NOT material to db/485's
+                              verify guard (re-keying is a repair), so this cannot
+                              un-verify anything on its own. NOTE: no backticks in
+                              here -- this is inside a JS template literal, and one
+                              would end the string mid-query. */
+                           address_key = CASE
+                             WHEN $4::jsonb IS NULL THEN address_key
+                             WHEN COALESCE(pilot_address_same_place(property_address, $4::jsonb), false)
+                               THEN address_key
+                             ELSE $5 END,
+                           /* llc_id: FILL-ONLY, and only while the line is still
+                              unverified. llc_id is MATERIAL to the verify guard, so
+                              filling it on a VERIFIED row would un-verify it on every
+                              webhook — the D2 defect all over again. Connecting a name
+                              to the entity it already meant is a repair, and repairing
+                              the VERIFIED back book is the bounded, guard-suspended
+                              backfill's job, not a webhook's. A human's entity choice is
+                              never overwritten either way. */
+                           llc_id = CASE
+                             WHEN llc_id IS NULL AND NOT is_verified THEN $6::uuid
+                             ELSE llc_id END,
+                           updated_at = now()
+                     WHERE id=$1`,
+      [exists.rows[0].id, dealType, inferred,
+       a.property_address ? JSON.stringify(a.property_address) : null, key, llcId || null]).catch(() => {});
     return exists.rows[0].id;
   }
   try {
     const r = await db.query(
+      // entered_by_kind/at stamped here, not left to db/458's next-boot backfill.
+      /* llc_id ($11): THE ENTITY THAT HELD THE PROPERTY. `upsertLlc` resolves it
+         one line above the call site and it was simply never passed in, so every
+         ClickUp-created track record carried NO entity — which is what stops one
+         verified company from carrying ownership to the other properties it held
+         (owner-directed 2026-08-09). A new row lands unverified, so setting it
+         here is free. */
       `INSERT INTO track_records (borrower_id, property_address, deal_type, purchase_price, purchase_date, sale_date,
-                                 is_verified, origin, source_task_id, inferred, address_key, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,false,'clickup_backfill',$7,$8,$9,$10) RETURNING id`,
+                                 is_verified, origin, source_task_id, inferred, address_key, notes,
+                                 entered_by_kind, entered_at, llc_id)
+       VALUES ($1,$2,$3,$4,$5,$6,false,'clickup_backfill',$7,$8,$9,$10,'clickup',now(),$11) RETURNING id`,
       [borrowerId, a.property_address ? JSON.stringify(a.property_address) : null, dealType,
        a.purchase_price || null, saneDay(a.acquisition_date), saneDay(a.actual_closing),
-       taskId, inferred, key, 'Auto-derived from ClickUp; unverified']);
+       taskId, inferred, key, 'Auto-derived from ClickUp; unverified', llcId || null]);
     return r.rows[0].id;
   } catch (e) {
     // Concurrency race on uq_track_records_source_task (db/082): a parallel ingest
@@ -1176,7 +1259,9 @@ async function ingestTask(task, options = {}, opts = {}) {
   // borrowerId may be null (no-identity guard): no LLC / track-record rows
   // can hang off a person who does not exist yet.
   const llcId = borrowerId ? await upsertLlc(borrowerId, read.llc.llc_name, read.llc.ein, task.id) : null;
-  if (borrowerId && CLOSED_STATUSES(read.internalStatus)) { try { await upsertTrackRecord(borrowerId, read, task.id); } catch (_) {} }
+  // llcId is resolved ONE LINE ABOVE and used to be dropped here, so every
+  // ClickUp-created track record carried no entity at all. See upsertTrackRecord.
+  if (borrowerId && CLOSED_STATUSES(read.internalStatus)) { try { await upsertTrackRecord(borrowerId, read, task.id, llcId); } catch (_) {} }
 
   // Loan officer comes from the PIPELINE folder (or the Loan Officer Email field);
   // processor from the Processor Email field. Both resolve to a staff_users id.
@@ -1495,6 +1580,28 @@ function dropUnstorableCols(cols, taskId) {
   return require('../lib/number-bounds').dropUnstorable('applications', cols, (dropped) => {
     console.warn(`[clickup] inbound ${dropped.join(', ')} did not fit the column on task ${taskId} — keeping the portal value`);
   });
+}
+
+/* AN ASSIGNMENT'S MONEY TRAVELS WITH ITS CHECKBOX (the same group rule as
+   fields.assignmentFields / #96: an assignment is one concept, never loose
+   numbers). The card's two currency fields — "Contract assignment/flip fee" and
+   the underlying purchase price — can never be CLEARED by our push: the no-wipe
+   guard skips empty values by design. So when a team removes an assignment in
+   PILOT (the details door NULLs both columns and pushes the checkbox off), the
+   card keeps the old dollar figures forever — and this pull was writing them
+   straight back over the file's deliberate NULL on every sync, invisibly (the
+   inbound change audit skips null→value fills). Owner-reported 2026-08-10,
+   YSCAP258134769: the fee was removed three times and came back within minutes
+   each time. The rule: a card whose assignment CHECKBOX is not ticked cannot
+   assert assignment money. Decline to import — cols[k]=null makes the COALESCE
+   keep the file's own value; nothing is ever cleared by this. A card whose
+   checkbox IS ticked imports both figures exactly as before. Pure, exported for
+   the unit test. */
+function dropAssignmentMoneyWithoutCheckbox(cols) {
+  if (!cols || cols.is_assignment === true) return cols;
+  if ('assignment_fee' in cols) cols.assignment_fee = null;
+  if ('underlying_contract_price' in cols) cols.underlying_contract_price = null;
+  return cols;
 }
 
 async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) {
@@ -1956,6 +2063,11 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     } catch (_) { /* best-effort — a lookup failure just leaves the pull as it was */ }
   }
 
+  // A card whose assignment checkbox is off cannot assert assignment money —
+  // see dropAssignmentMoneyWithoutCheckbox for the whole story (the stuck-fee
+  // resurrection loop, owner-reported 2026-08-10).
+  dropAssignmentMoneyWithoutCheckbox(cols);
+
   const vals = Object.values(cols);
   const set = Object.keys(cols).map((k, i) => `${k}=COALESCE($${i + 2}, ${k})`).join(', ');
   // Set when THIS pull moves the expected closing date, so the closing chain can be
@@ -2184,5 +2296,5 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
 module.exports = {
   ingestTask, resolveBorrower, upsertLlc, upsertTrackRecord, linkOrCreateApplication,
   applyChecklistStatuses, identityFrom, RTL_PROGRAMS, decideInboundProcessor,
-  descopeFlipped, dropUnstorableCols,
+  descopeFlipped, dropUnstorableCols, dropAssignmentMoneyWithoutCheckbox,
 };

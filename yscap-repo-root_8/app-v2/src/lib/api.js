@@ -309,10 +309,23 @@ export const api = {
   forgotPassword:     (email, scope) => req('POST', '/auth/borrower/forgot', scope ? { email, scope } : { email }),
   resetPassword:      (token, password) => req('POST', '/auth/borrower/reset', { token, password }),
   acceptInvite:       (b) => req('POST', '/auth/accept', b),                   // {token,password,fullName?}
-  // Borrower HELPER (assistant) login — a standing second login a borrower
-  // authorized (can do everything but see personal info / sign). Its own creds.
+  /* An officer's emailed term sheet (owner-directed 2026-08-07). The READ is public —
+     the borrower has no account yet when they click the link, and the token is the
+     authorization — so it must not be filed under the borrower routes. `start` needs
+     the session /auth/accept just handed out. */
+  termSheetOffer:     (token) => req('GET', `/api/term-sheet-offers/${encodeURIComponent(token)}`),
+  startFromTermSheetOffer: (token, initial) =>
+    req('POST', `/api/term-sheet-offers/${encodeURIComponent(token)}/start`, { initial }),
+  // Staff side: send a term sheet built in the Investor Suite to a borrower.
+  sendTermSheetOffer: (b) => req('POST', '/api/staff/term-sheet-offers', b),
+  termSheetOffersSent: () => req('GET', '/api/staff/term-sheet-offers'),
+  // Borrower HELPER (assistant) — a standing second login a borrower authorized
+  // (can do everything but see personal info / sign). Its own credentials, but
+  // NOT its own sign-in screen: a helper signs in through `login` above, on the
+  // one client login page, and the server hands back a helper session
+  // (owner-directed 2026-08-09). `assistantAccept` is the one-time
+  // set-your-password step from the invite email.
   assistantAccept:    (token, password) => req('POST', '/auth/assistant/accept', { token, password }),
-  assistantLogin:     (email, password) => req('POST', '/auth/assistant/login', { email, password }),
   assistantLogout:    () => req('POST', '/auth/assistant/logout'),
   // Borrower self-service: manage the helpers on my own account.
   assistantsList:     () => req('GET', '/api/borrower/assistants'),
@@ -391,6 +404,11 @@ export const api = {
   addTrackRecord:  (b) => req('POST', '/api/borrower/track-records', b),
   deleteTrackRecord: (id) => req('DELETE', `/api/borrower/track-records/${id}`),
   trackRecordSnapshot: () => req('GET', '/api/borrower/track-record/snapshot'),
+  // Properties our team found in the public records, for the borrower to confirm
+  // (blueprint §9.4). A "yes" is a CLAIM — it lands pending and staff verify it.
+  trackRecordCandidates: () => req('GET', '/api/borrower/track-record-candidates'),
+  answerTrackRecordCandidate: (id, b) => req('POST', `/api/borrower/track-record-candidates/${id}/answer`, b),
+  undoTrackRecordCandidate: (id) => req('POST', `/api/borrower/track-record-candidates/${id}/undo`),
 
   // reusable partners (co-borrowers)
   partners:     () => req('GET', '/api/borrower/partners'),
@@ -565,6 +583,53 @@ export const api = {
   // Change WHICH email the Sitewire borrower invite goes to (borrower / GC / partner). Replaces the
   // pending invite (Sitewire keeps one email per property) + stores it so the push/resend honor it.
   setDrawInviteEmail: (appId, email) => req('POST', `/api/sitewire/files/${appId}/invite-email`, { email }),
+
+  // ---- AMC appraisal ordering (AppraisalScope / CoreLogic Digital Gateway) ----
+  amcConfig:        () => req('GET', '/api/amc/config'),
+  amcPreview:       (appId) => req('GET', `/api/amc/files/${appId}/preview`),
+  amcOrders:        (appId) => req('GET', `/api/amc/files/${appId}/orders`),
+  amcPlaceOrder:    (appId, body) => req('POST', `/api/amc/files/${appId}/order`, body),
+  amcSaveCard:      (appId, body) => req('POST', `/api/amc/files/${appId}/card`, body),
+  amcOrder:         (orderId) => req('GET', `/api/amc/orders/${orderId}`),
+  amcComments:      (orderId) => req('GET', `/api/amc/orders/${orderId}/comments`),
+  amcPostComment:   (orderId, body) => req('POST', `/api/amc/orders/${orderId}/comments`, { body }),
+  amcReadComment:   (orderId, commentId) => req('POST', `/api/amc/orders/${orderId}/comments/${commentId}/read`),
+  amcRevisions:     (orderId) => req('GET', `/api/amc/orders/${orderId}/revisions`),
+  amcPostRevision:  (orderId, b) => req('POST', `/api/amc/orders/${orderId}/revisions`, b),
+  amcRovComps:      (appId) => req('GET', `/api/amc/files/${appId}/rov-comps`),
+  amcRovCompSearch: (appId, query) => {
+    const qs = new URLSearchParams(Object.entries(query || {}).filter(([, v]) => v != null && v !== '')).toString();
+    return req('GET', `/api/amc/files/${appId}/rov-comp-search${qs ? '?' + qs : ''}`);
+  },
+  amcPostRov:       (orderId, b) => req('POST', `/api/amc/orders/${orderId}/rov`, b),
+  amcDocuments:     (appId, orderId) => req('GET', `/api/amc/files/${appId}/documents${orderId ? '?orderId=' + orderId : ''}`),
+  amcUploadDocs:    (orderId, documentIds) => req('POST', `/api/amc/orders/${orderId}/documents`, { documentIds }),
+
+  // ---- Class Valuation appraisal ordering (the SECOND vendor) ----
+  // Deliberately its own set of calls, never shared with the AMC ones: the owner has
+  // not picked a default vendor, so nothing here may quietly become "the" appraisal
+  // desk. `classPreview` takes the staff overrides so the screen re-previews as they
+  // type — the server is the one that decides what a change does.
+  classConfig:   () => req('GET', '/api/class/config'),
+  classPreview:  (appId, overrides) => {
+    const qs = new URLSearchParams(Object.entries(overrides || {}).filter(([, v]) => v != null && v !== '')).toString();
+    return req('GET', `/api/class/files/${appId}/preview${qs ? '?' + qs : ''}`);
+  },
+  classProducts: (query) => {
+    const qs = new URLSearchParams(Object.entries(query || {}).filter(([, v]) => v != null && v !== '')).toString();
+    return req('GET', `/api/class/products${qs ? '?' + qs : ''}`);
+  },
+  classPlaceOrder: (appId, body) => req('POST', `/api/class/files/${appId}/order`, body),
+  // After the order: the orders on a file, the conversation with Class, and the
+  // three things a desk asks for once a report is back.
+  classOrders:      (appId) => req('GET', `/api/class/files/${appId}/orders`),
+  classThread:      (appId, o) => req('GET', `/api/class/files/${appId}/orders/${o}/thread`),
+  classThreadSync:  (appId, o) => req('POST', `/api/class/files/${appId}/orders/${o}/thread/sync`),
+  classNote:        (appId, o, content) => req('POST', `/api/class/files/${appId}/orders/${o}/notes`, { content }),
+  classMarkRead:    (appId, o) => req('POST', `/api/class/files/${appId}/orders/${o}/read`),
+  classRevision:    (appId, o, body) => req('POST', `/api/class/files/${appId}/orders/${o}/revision`, body),
+  classCancelOrder: (appId, o, body) => req('POST', `/api/class/files/${appId}/orders/${o}/cancel`, body),
+  classReasons:     (kind) => req('GET', `/api/class/revision-reasons?kind=${encodeURIComponent(kind || 'revision')}`),
   staffBorrowerResetPassword: (id) => req('POST', `/api/staff/borrowers/${id}/reset-password`),
   staffBorrowerSetPassword: (id, password) => req('POST', `/api/staff/borrowers/${id}/set-password`, { password }),
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),
@@ -598,11 +663,47 @@ export const api = {
   staffTrackRecordTodo: (appId, borrowerId) =>
     req('GET', `/api/staff/applications/${appId}/track-record-todo${borrowerId ? `?borrower=${borrowerId}` : ''}`),
   staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),
+  /* The profile lens of the Track Record Center: per-line to-do codes + the
+     borrower's verified in-window counts — the person, no file. */
+  staffBorrowerTrackRecordTodo: (id) => req('GET', `/api/staff/borrowers/${id}/track-record-todo`),
+  /* The search sheet's budget meter — calls this hour / paid credits this
+     month, read-only (the refusing caps live server-side). */
+  staffElementixUsage: () => req('GET', '/api/staff/elementix/usage'),
   staffTrackRecordSnapshot:  (id) => req('GET', `/api/staff/borrowers/${id}/track-record/snapshot`),
   staffBorrowerLlcs: (id) => req('GET', `/api/staff/borrowers/${id}/llcs`),
+  // Super-admin: preview + remove an entity added to a profile by mistake.
+  staffEntityRemovalPreview: (borrowerId, llcId) => req('GET', `/api/staff/borrowers/${borrowerId}/llcs/${llcId}/removal-preview`),
+  staffRemoveEntity: (borrowerId, llcId, reason) => req('POST', `/api/staff/borrowers/${borrowerId}/llcs/${llcId}/remove`, { reason }),
   // Deals a BORROWER typed that nobody has reviewed yet — the track-record
   // review queue (db/458). Scoped server-side to the borrowers this staffer sees.
   staffTrackRecordReviews: () => req('GET', '/api/staff/track-record-reviews'),
+  /* THE WORKSPACE (phase 5). Every next step, refusal and readiness sentence in
+     these payloads is computed by src/lib/track-record/pillar-actions.js — the
+     screen renders them verbatim and never re-decides one. */
+  staffTrackRecordWorkspace: (q = {}) =>
+    req('GET', `/api/staff/track-record-workspace?filter=${encodeURIComponent(q.filter || 'open')}`),
+  staffTrackRecordLine: (id) => req('GET', `/api/staff/track-records/${id}/workspace`),
+  staffDecidePillar: (pillarId, body) => req('POST', `/api/staff/track-record-pillars/${pillarId}/decide`, body),
+  staffBulkConfirmPillars: (id, body) => req('POST', `/api/staff/track-records/${id}/pillars/bulk-confirm`, body || {}),
+  /* THE IMPORTER (phases 7 + 9). Four routes that have existed since phase 7
+     with no client and no screen. Searching SPENDS the office's shared hourly
+     allowance, so it is only ever a deliberate click — never a page load. */
+  staffTrackRecordSearch: (borrowerId, body) =>
+    req('POST', `/api/staff/borrowers/${borrowerId}/track-record-search`, body || {}),
+  staffTrackRecordCandidates: (borrowerId) =>
+    req('GET', `/api/staff/borrowers/${borrowerId}/track-record-candidates`),
+  staffCompareCandidate: (id) => req('GET', `/api/staff/track-record-candidates/${id}/compare`),
+  /* WHO IS ON IT — advisory. Starting a review run says "I am on these" so two
+     reviewers do not read the same deeds; it never gates a decision. */
+  staffClaimCandidates: (borrowerId, body) =>
+    req('POST', `/api/staff/borrowers/${borrowerId}/track-record-candidates/claim`, body || {}),
+  staffDecideCandidate: (id, body) => req('POST', `/api/staff/track-record-candidates/${id}/decide`, body),
+  staffTrackRecordDocTypes: () => req('GET', '/api/staff/track-record-doc-types'),
+  staffRequestTrackRecordDocTyped: (id, body) => req('POST', `/api/staff/track-records/${id}/request-doc`, body),
+  staffTrackRecordRequestPreview: (id, body) => req('POST', `/api/staff/track-records/${id}/request-doc/preview`, body),
+  staffAddTrackRecordNote: (body) => req('POST', '/api/staff/track-record-notes', body),
+  staffTrackRecordNotes: (kind, id) =>
+    req('GET', `/api/staff/track-record-notes?subjectKind=${encodeURIComponent(kind)}&subjectId=${encodeURIComponent(id)}`),
   staffTrackRecordReviewsCount: () => req('GET', '/api/staff/track-record-reviews/count'),
   // In-file verify set: the file's vesting entity + this borrower's track-record
   // entities only (not the borrower's whole LLC library). Returns { vestingLlcId, llcs:[{...,vesting}] }.
@@ -619,6 +720,22 @@ export const api = {
   staffUploadLlcDoc: (llcId, b) => coalesceUpload('llcDoc:' + llcId, b, () => req('POST', `/api/staff/llcs/${llcId}/documents`, normalizeUpload(b))),
   staffVerifyLlc:    (id, b) => req('POST', `/api/staff/llcs/${id}/verify`, b || {}),
   staffVerifyTrackRecord:    (id, body) => req('POST', `/api/staff/track-records/${id}/verify`, body),
+  /* Edit a line's own fields (address/entity/prices/dates/deal type) — the PUT
+     door writes ONLY the columns the body sent (trackRecordSentOnly guard), so
+     a partial edit never nulls what it did not touch, and never stamps a
+     verification (db/485 stays the one judge). Inline editing on the Track
+     Record Center (2026-08-09) instead of opening the embedded tool. */
+  staffUpdateTrackRecord:    (id, body) => req('PUT', `/api/staff/track-records/${id}`, body || {}),
+  /* Delete a whole track-record line (a duplicate, or a deal that isn't theirs).
+     The server re-checks access and recomputes the borrower's tier. Deleting a
+     line cascade-removes any documents on it, so the caller warns twice (#32). */
+  staffDeleteTrackRecord:    (id) => req('DELETE', `/api/staff/track-records/${id}`),
+  /* CHECK THE RECORDS — the per-line public-records research (verify-run.js).
+     This is the button the owner expected "Verify" to be (2026-08-09): it reads
+     the county's own records for THIS property and fills the three pillars; it
+     never marks the line verified — a person still does that, and the final
+     verify stays gated on a completed in-window exit. */
+  staffResearchTrackRecord:  (id, force) => req('POST', `/api/staff/track-records/${id}/research`, force ? { force: true } : {}),
   // Raise an issue/request against a track-record line item or a vesting LLC — it
   // becomes a named internal+external condition on the file (applicationId).
   staffRaiseTrackRecordIssue: (id, applicationId, reason, postCondition) => req('POST', `/api/staff/track-records/${id}/raise-issue`, { applicationId, reason, postCondition: !!postCondition }),
@@ -677,7 +794,9 @@ export const api = {
   staffClosingPrep:         (appId) => req('GET', `/api/staff/applications/${appId}/closing-prep`),
   staffPlaceClosingPrep:    (appId, body) => req('POST', `/api/staff/applications/${appId}/closing-prep/place`, body || {}),
   staffClosingPrepFollowup: (appId, body) => req('POST', `/api/staff/applications/${appId}/closing-prep/followup`, body || {}),
-  staffCancelClosingPrep:   (appId, reopen) => req('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, reopen ? { reopen: true } : {}),
+  // `reason` rides only on a CANCEL — it goes into the email outside counsel receives. A reopen
+  // emails nobody, so it carries none.
+  staffCancelClosingPrep:   (appId, reopen, reason) => req('POST', `/api/staff/applications/${appId}/closing-prep/cancel`, reopen ? { reopen: true } : (reason ? { reason } : {})),
   staffSetLoanNumber: (appId, loanNumber) => req('POST', `/api/staff/applications/${appId}/loan-number`, { loanNumber }),
   staffPostClosing: (appId) => req('GET', `/api/staff/applications/${appId}/post-closing`),
   staffSeedPostClosing: (appId) => req('POST', `/api/staff/applications/${appId}/post-closing/seed`),
@@ -695,6 +814,16 @@ export const api = {
   sitewireOpenDisputeMedia: async (lineId, idx, win) => { const { blob, filename } = await download(`/api/sitewire/findings/lines/${lineId}/dispute-media/${idx}`); openBlob(blob, filename, win); },
   // Sitewire draw desk: authenticated per-draw packet (schedule of values + findings + waivers).
   sitewireExportPacket: async (appId, drawId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/draws/${drawId}/packet`); saveBlob(blob, filename); },
+  // A supporting document filed on a draw. Streamed through the authed download helper for the same
+  // reason every other draw artifact is: an <img>/<a> cannot carry the Bearer token.
+  sitewireOpenDrawAttachment: async (appId, drawId, attId, win) => {
+    try { const { blob, filename } = await download(`/api/sitewire/files/${appId}/draws/${drawId}/attachments/${attId}/file`); openBlob(blob, filename, win); }
+    catch (e) { try { if (win) win.close(); } catch (_) {} throw e; }
+  },
+  // Accept / reject a supporting document right on the draw card — only an accepted document
+  // travels with the investor delivery.
+  sitewireReviewDrawAttachment: (appId, drawId, attId, action, reason) =>
+    req('POST', `/api/sitewire/files/${appId}/draws/${drawId}/attachments/${attId}/review`, reason ? { action, reason } : { action }),
   // PILOT-branded inspection report (phase 2b) — opens the PDF in a tab (`win` is opened synchronously in the
   // click handler so the popup blocker doesn't eat it; closed here on error). mode 'staff' (full) | 'borrower'
   // (borrower-safe: no partner name / fee / net / GPS). Per-draw and whole-project variants.
@@ -1014,6 +1143,15 @@ export const api = {
   sharepointReconciliation: () => req('GET', '/api/admin/sharepoint/reconciliation'),
   sharepointRunSweep:  () => req('POST', '/api/admin/sharepoint/mirror', {}),
   sharepointRetryStuck: () => req('POST', '/api/admin/sharepoint/retry-exhausted', {}),
+  // Elementix (recorded deeds / mortgages). The connection is approved ONCE in a
+  // browser and then renews itself. `elementixConnect` returns the sign-in URL as
+  // JSON rather than a redirect ON PURPOSE — a 302 inside fetch() is followed
+  // invisibly, and this hand-off has to happen in the address bar so the person
+  // actually sees Elementix's own sign-in page.
+  elementixStatus:     () => req('GET', '/api/admin/elementix/status'),
+  elementixDiscover:   () => req('GET', '/api/admin/elementix/discover'),
+  elementixConnect:    () => req('GET', '/api/admin/elementix/connect'),
+  elementixDisconnect: () => req('POST', '/api/admin/elementix/disconnect', {}),
   integrationSwitches: () => req('GET', '/api/admin/integrations/switches'),
   integrationToggleSwitch: (key, enabled, confirm) => req('POST', `/api/admin/integrations/switches/${encodeURIComponent(key)}`, { enabled, confirm }),
   integrationResetSwitch:  (key) => req('POST', `/api/admin/integrations/switches/${encodeURIComponent(key)}/reset`),

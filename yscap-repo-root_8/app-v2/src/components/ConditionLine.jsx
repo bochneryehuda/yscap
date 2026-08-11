@@ -75,6 +75,45 @@ export default function ConditionLine({
   );
 }
 
+/* THE ONE CONTROL THAT CLOSES AN OPEN CONDITION.
+ *
+ * Owner-reported 2026-08-07: "The Collapse button sometimes appears at the top,
+ * sometimes at the bottom, and in some cases is not displayed at all."
+ *
+ * ROOT CAUSE, and it is the whole class rather than three placement mistakes:
+ * ENTERING the collapsed state has always had one definition — `ConditionLine`
+ * above, whose chevron is the same on every row — while LEAVING it was hand-rolled
+ * separately by each of the three renderers that can open a condition, each picking
+ * its own mount point and its own visibility rule:
+ *   • an INTERNAL condition (StaffApplication `Item`) put it at the BOTTOM, inside
+ *     the action bar, and rendered it ONLY when the viewer's own role-action was
+ *     already done — so a live internal condition could be opened and never closed.
+ *     That is the "not displayed at all" case, and it is also why the two the owner
+ *     screenshotted disagreed: the signed-off USPS row qualified, so it showed the
+ *     button — at the bottom.
+ *   • an EXTERNAL condition put it inline in the label line (top).
+ *   • the LLC/vesting condition put it top-right behind a spacer (top).
+ *
+ * So this component is the counterpart of the compact line, deliberately in the
+ * same file: one wording, one look, one place, and NEVER conditional. A row that
+ * can open must always be closable — an expanded condition can run several screens
+ * tall (the entity panel, the Scope of Work), so hunting for the control at the
+ * bottom was the worst of the three answers even when it was there.
+ *
+ * PLACEMENT is owned by the CSS (`.cnd-collapse` pins itself right with
+ * margin-left:auto), not by the caller — a caller that has to align it is a caller
+ * that can align it differently. Drop it as the last child of the open row's header
+ * and it lands in the same spot every time.
+ */
+export function ConditionCollapse({ onToggle, title = 'Close this condition' }) {
+  return (
+    <button type="button" className="cnd-collapse" onClick={onToggle} title={title}>
+      <span className="cnd-chev open" aria-hidden="true">▶</span>
+      <span>Collapse</span>
+    </button>
+  );
+}
+
 /* THE NOTE-BUYER MARK — "this one is here because of THIS capital partner."
  *
  * Owner-directed 2026-08-02: "it should have a mark that this condition is for

@@ -54,6 +54,58 @@ const SWITCHES = [
   // Dangerous: this one WRITES a loan value. Off = PILOT still reads the As-Is off the appraisal and
   // still shows it on the "Confirm the As-Is value" condition; it just never changes the file itself.
   { key: 'APPRAISAL_ASIS_AUTO_ENABLED', integration: 'azure_docint', label: 'Lower the As-Is value automatically when the appraisal reads lower than the purchase price', dangerous: true, envDefault: () => cfg.appraisalAsIsAutoEnabled },
+  // AMC appraisal ordering (AppraisalScope / CoreLogic Digital Gateway). Master turns
+  // on the lookups cache + the status/comment poll worker (reads); OUTBOUND actually
+  // places orders, messages the AMC, requests revisions and uploads documents.
+  { key: 'AMC_ENABLED', integration: 'amc', label: 'Order appraisals from the AMC (reading + polling)', dangerous: false, resume: true, envDefault: () => !!(cfg.amc && cfg.amc.enabled) },
+  // Test mode: build + log the exact request, send nothing. Dry-run wins over the
+  // write gate (checked first), so it is always safe to leave on while verifying.
+  { key: 'AMC_DRYRUN', integration: 'amc', label: 'AMC orders — TEST MODE (build the request but don’t send it)', dangerous: false, envDefault: () => !!(cfg.amc && cfg.amc.dryrun) },
+  { key: 'AMC_OUTBOUND_ENABLED', integration: 'amc', label: 'Place appraisal orders / message the AMC / upload documents (write)', dangerous: true, envDefault: () => !!(cfg.amc && cfg.amc.outboundEnabled) },
+
+  // Class Valuation — the SECOND appraisal vendor. Its own switches on purpose:
+  // the two vendors are turned on and off independently, and one being live must
+  // never imply anything about the other. Same three-stage shape as the AMC.
+  // No `resume` flag: both consumers (the poller and the client) read the switch at
+  // CALL time, so turning it back on takes effect immediately. Claiming otherwise
+  // would tell an admin a redeploy is needed when it is not.
+  { key: 'CLASS_ENABLED', integration: 'class', label: 'Order appraisals from Class Valuation (reading)', dangerous: false, envDefault: () => !!(cfg.class && cfg.class.enabled) },
+  { key: 'CLASS_DRYRUN', integration: 'class', label: 'Class Valuation orders — TEST MODE (build the request but don’t send it)', dangerous: false, envDefault: () => !!(cfg.class && cfg.class.dryrun) },
+  { key: 'CLASS_OUTBOUND_ENABLED', integration: 'class', label: 'Place appraisal orders with Class Valuation (write)', dangerous: true, envDefault: () => !!(cfg.class && cfg.class.outboundEnabled) },
+
+  // Elementix (recorded deeds / mortgages). Reading only — there is no write path to
+  // Elementix at all, so neither switch is dangerous. NOT a switch: the paid contact
+  // enrichment, which is a per-person human click and can never be turned on globally.
+  { key: 'ELEMENTIX_ENABLED', integration: 'elementix', label: 'Elementix public-records lookups (reading)', dangerous: false, envDefault: () => cfg.elementix.enabled },
+  { key: 'ELEMENTIX_DRYRUN', integration: 'elementix', label: 'Elementix dry-run (log the intended lookup, send nothing)', dangerous: false, envDefault: () => cfg.elementix.dryrun },
+
+  // DocLab (Private Lender Law) — loan-document drafting. Same three-stage shape as
+  // the AMC and Class: master turns on reading (the token, the template catalogue, a
+  // state's prepayment options, a request's status); OUTBOUND actually puts a loan
+  // request in front of the law firm. TEST MODE is checked FIRST, so leaving it on is
+  // always safe while somebody is verifying a payload.
+  // No `resume` flag: every consumer reads the switch at CALL time, so turning one
+  // back on takes effect immediately with no redeploy.
+  { key: 'DOCLAB_ENABLED', integration: 'doclab', label: 'DocLab loan documents (reading)', dangerous: false, envDefault: () => !!(cfg.doclab && cfg.doclab.enabled) },
+  { key: 'DOCLAB_DRYRUN', integration: 'doclab', label: 'DocLab — TEST MODE (build the request but don’t send it)', dangerous: false, envDefault: () => !!(cfg.doclab && cfg.doclab.dryrun) },
+  { key: 'DOCLAB_OUTBOUND_ENABLED', integration: 'doclab', label: 'Send loan document requests to DocLab (write)', dangerous: true, envDefault: () => !!(cfg.doclab && cfg.doclab.outboundEnabled) },
+
+  /* THE DOWN-ALERT MONITOR — the only PLATFORM-level switch here, and the only one with
+     `integration: null`. It belongs to no single card because it watches all of them, so
+     the health registry's `s.integration === entry.key` filter never attaches it to one
+     and the API Health page renders it in its own banner instead. `list()` still carries
+     it, so the existing toggle/reset endpoints, the audit row and the override row all
+     work unchanged.
+
+     ON BY DEFAULT (owner-directed 2026-08-09, "turn on the down alerts"). It was opt-in
+     so we would not call every outside service on a timer unless the owner wanted the
+     alerts — the owner now does. `INTEGRATIONS_MONITOR_ENABLED=0` in the hosting settings
+     still turns it off, and so does this switch, with no redeploy.
+
+     `resume: false` is the truth here and not a copy-paste: monitor.start() arms its timer
+     unconditionally and every tick re-reads this switch, so turning it back on resumes by
+     itself. Claiming otherwise would tell an admin to redeploy when they need not. */
+  { key: 'INTEGRATIONS_MONITOR_ENABLED', integration: null, label: 'Automatic down-alerts (check every service on a timer and email the admins when one stops)', dangerous: false, resume: false, envDefault: () => process.env.INTEGRATIONS_MONITOR_ENABLED !== '0' },
 ];
 const BY_KEY = Object.create(null);
 for (const s of SWITCHES) BY_KEY[s.key] = s;

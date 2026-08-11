@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth.jsx';
+import { askPrompt } from '../lib/dialog.js';
 
 /**
  * Encompass sync — the live, full data-comparison screen (READ-ONLY sync).
@@ -20,7 +21,7 @@ const LABELS = {
   ys_loan_number: 'Loan number', property_type: 'Property type', units: '# of units',
   deal_type: 'Deal / project type', exit_plan: 'Exit plan', loan_to_be_vested: 'Vesting (entity / individual)',
   vesting_title_role: 'Vesting title role (Officer / Individual · field 4008)',
-  vesting_llc: 'Subject LLC / vesting', capital_provider: 'Note buyer / capital provider',
+  vesting_llc: 'Vesting entity', capital_provider: 'Note buyer / capital provider',
   // Borrower + co-borrower identity + subject address
   id_borrower_name: 'Borrower name', id_dob: 'Date of birth', id_email: 'Email',
   id_phone: 'Phone', id_property_address: 'Property address',
@@ -37,7 +38,15 @@ const LABELS = {
   max_ltc: 'Max LTC %', note_rate: 'Interest rate %', origination_pct: 'Origination fee %', term_months: 'Term (months)',
   maturity_date: 'Maturity date', total_experience_deals: 'Experience (deals)', rehab_type: 'Rehab type',
   accrual_type: 'Accrual type', ref_cash_to_close: 'Est. cash to close', ref_down_payment: 'Down payment',
-  ref_table_funder: 'Table funder', ref_cross_collateralized: 'Cross-collateralized', ref_multi_property: 'Multi-property',
+  ref_cross_collateralized: 'Cross-collateralized', ref_multi_property: 'Multi-property',
+  // CX.TABLEFUNDER (owner-directed 2026-08-09) — THREE keys, because the field itself and the two
+  // questions asked about it are different things. `funding_channel` is the raw value, shown for
+  // context and never checked (its tenant spellings are unverified, so comparing it could block a
+  // term sheet over a word nobody enumerated). The two `_rule` / `_agreement` rows are the real
+  // questions, and each fires only on a value PILOT can positively read.
+  funding_channel: 'How the loan funded (Encompass)',
+  funding_channel_rule: 'Funding channel allowed for this note buyer',
+  funding_channel_agreement: 'How the loan funded — closing desk vs Encompass',
 };
 const CATEGORY_LABEL = {
   program: 'Program & identity', identity: 'Borrower & property', loan: 'Loan & terms', interest: 'Loan & terms',
@@ -114,7 +123,7 @@ function statusOf(f) {
 
 function Pill({ s }) {
   return (
-    <span style={{ fontSize: 10.5, fontWeight: 800, color: s.fg, background: s.bg, border: `1px solid ${s.fg}55`, borderRadius: 999, padding: '2px 9px', whiteSpace: 'nowrap' }}>
+    <span style={{ fontSize: 11, fontWeight: 800, color: s.fg, background: s.bg, border: `1px solid ${s.fg}55`, borderRadius: 999, padding: '2px 9px', whiteSpace: 'nowrap' }}>
       {s.text}
     </span>
   );
@@ -124,7 +133,7 @@ function Pill({ s }) {
 function Legend() {
   const item = (fg, bg, title, desc) => (
     <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, marginBottom: 3 }}>
-      <span style={{ flex: '0 0 auto', fontSize: 10, fontWeight: 800, color: fg, background: bg, border: `1px solid ${fg}55`, borderRadius: 999, padding: '1px 8px', whiteSpace: 'nowrap' }}>{title}</span>
+      <span style={{ flex: '0 0 auto', fontSize: 11, fontWeight: 800, color: fg, background: bg, border: `1px solid ${fg}55`, borderRadius: 999, padding: '1px 8px', whiteSpace: 'nowrap' }}>{title}</span>
       <span style={{ color: V.muted, fontSize: 11.5 }}>{desc}</span>
     </div>
   );
@@ -164,7 +173,7 @@ function RawTroubleshoot({ appId }) {
     catch (e) { setErr(e && e.message ? e.message : 'Could not load the raw data.'); }
     finally { setBusy(false); }
   }, [appId]);
-  const th = { textAlign: 'left', padding: '5px 8px', color: V.muted, fontWeight: 800, fontSize: 10.5, borderBottom: `1px solid ${V.line}`, whiteSpace: 'nowrap' };
+  const th = { textAlign: 'left', padding: '5px 8px', color: V.muted, fontWeight: 800, fontSize: 11, borderBottom: `1px solid ${V.line}`, whiteSpace: 'nowrap' };
   const td = { padding: '5px 8px', color: V.ink, fontSize: 11.5, borderBottom: `1px solid ${V.line}`, verticalAlign: 'top' };
   return (
     <div style={{ marginTop: 14, border: `1px solid ${V.line}`, borderRadius: 8, background: V.paper }}>
@@ -295,7 +304,7 @@ export default function EncompassSyncPanel({ appId }) {
 
   // Any assigned staffer escalates a not-matching / "no data" field to a super admin.
   const requestException = useCallback(async (fieldKey) => {
-    const reason = window.prompt('Why should this field be excepted? A short note for the super admin.');
+    const reason = await askPrompt('Why should this field be excepted? A short note for the super admin.');
     if (reason == null) return;                          // cancelled
     if (!reason.trim()) { setErr('Add a short reason to request an exception.'); return; }
     setBusy(fieldKey); setErr(''); setFlash('');
@@ -308,7 +317,7 @@ export default function EncompassSyncPanel({ appId }) {
   const decideException = useCallback(async (fieldKey, decision) => {
     let reason = '';
     if (decision === 'grant') {
-      const r = window.prompt('Reason for granting this exception (recorded on the file):');
+      const r = await askPrompt('Reason for granting this exception (recorded on the file):');
       if (r == null) return;
       if (!r.trim()) { setErr('Add a short reason to grant an exception.'); return; }
       reason = r.trim();
@@ -491,7 +500,7 @@ function Row({ f, busy, onReplace, withActions, isSuper = false, onRequestExcept
                   <button onClick={() => onDecide(f.key, 'deny')} disabled={!!busy} style={outBtn(V.crit)}>Deny</button>
                 </span>
               ) : (
-                <span style={{ color: V.amber, fontSize: 10.5, fontWeight: 700 }}>Awaiting super admin</span>
+                <span style={{ color: V.amber, fontSize: 11, fontWeight: 700 }}>Awaiting super admin</span>
               )
             )}
             {/* A granted exception: only a super admin can remove it. */}
@@ -536,7 +545,7 @@ function ComparisonTable({ fields, busy, onReplace, withActions, isSuper = false
           {order.map((g) => (
             <React.Fragment key={g}>
               {withActions && (
-                <tr><td colSpan={cols} style={{ padding: '8px 10px 3px', fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: V.muted, background: V.paper }}>{g}</td></tr>
+                <tr><td colSpan={cols} style={{ padding: '8px 10px 3px', fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: V.muted, background: V.paper }}>{g}</td></tr>
               )}
               {byGroup[g].map((f) => <Row key={f.key} f={f} busy={busy} onReplace={onReplace} withActions={withActions} isSuper={isSuper} onRequestException={onRequestException} onDecide={onDecide} />)}
             </React.Fragment>

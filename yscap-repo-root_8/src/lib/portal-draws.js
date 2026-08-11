@@ -19,7 +19,12 @@
 const db = require('../db');
 const workflow = require('./workflow');
 const notify = require('./notify');
+const drawLabel = require('./draw-label');   // "Draw 2" — the ONE way a draw is named in a subject
 const routing = require('../sitewire/routing');
+// The ONE draw-email composer (CLAUDE.md draw rule 15). A portal request has no Sitewire draw to
+// read yet, so its own row is the money source — converted through the same `drawMoney` as every
+// other draw, never re-added up here.
+const { drawEmailBlocks } = require('../sitewire/draw-email-blocks');
 
 const usd = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const err = (status, message) => { const e = new Error(message); e.status = status; return e; };
@@ -178,6 +183,7 @@ async function createRequest(appId, entries, opts = {}) {
       + (isTp ? 'Enter it in TrustPoint as a REGULAR workflow draw — the line-by-line amounts are in your Workflow item.'
               : 'Order the physical inspection from Trinity, then record the findings when the report comes back.'),
     badge: { text: isTp ? 'Enter in TrustPoint' : 'Order inspection', tone: 'gold' },
+    drawTag: await drawLabel.drawTagForRef(db, appId, { portalRequestId: row.id }),
     applicationId: appId, link: '/internal/workflow', ctaLabel: 'Open my Workflow',
   };
   try {
@@ -189,17 +195,28 @@ async function createRequest(appId, entries, opts = {}) {
     const { fileReplyTo } = require('./file-address');
     await mail.deliver(
       mail.trustpointImport({
-        drawNumber: `P${row.id}`, propertyLabel: addr.addr || null, loanNumber: addr.ys_loan_number || null,
+        drawNumber: `P${row.id}`, drawTag: await drawLabel.drawTagForRef(db, appId, { portalRequestId: row.id }),
+        propertyLabel: addr.addr || null, loanNumber: addr.ys_loan_number || null,
         lines: picked.map((l) => ({ name: l.name, requested_cents: l.requested_cents })), totalCents: total,
       }),
       ['draws@yscapgroup.com'], { replyTo: fileReplyTo(appId), applicationId: appId, type: 'trustpoint_import', audience: 'staff' });
   } catch (_) {}
-  // Borrower confirmation (their own submission — a receipt, not marketing).
+  // Borrower confirmation (their own submission — a receipt, not marketing). The amount is the
+  // HEADLINE, not a clause in a sentence (draw rule 15), and the facts box carries the project's
+  // own budget picture rather than the file's identity block. The team is NOT notified again here:
+  // the coordinator task above is their copy, and it is a different message (an action, not a
+  // receipt) — so this is deliberately a borrower announcement, whose loop-in Cc is applied for
+  // every 'draws' notification at the notify chokepoint.
   if (opts.source === 'borrower') {
+    const blocks = await drawEmailBlocks(db, appId, { portalRequest: row, borrower: true });
     await notify.notifyAppBorrowers(appId, {
       type: 'draw', title: 'Your draw request was received',
-      body: `We received your draw request for ${usd(total)} on ${addr.addr || 'your property'}. The inspection and review are next — we'll keep you posted at every step.`,
-      applicationId: appId, link: `/app/${appId}`,
+      drawTag: await drawLabel.drawTagForRef(db, appId, { portalRequestId: row.id }),
+      badge: { text: 'Received', tone: 'gold' },
+      figures: (blocks && blocks.figures) || null,
+      facts: (blocks && blocks.facts) || null,
+      body: `We have your draw request on ${addr.addr || 'your property'}${blocks && blocks.figures ? '' : ` for ${usd(total)}`}. An inspection is next — we'll email you the moment the inspector has been through it, and you'll get to review the amount before anything is released.`,
+      applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws',
     }).catch(() => {});
   }
   return row;
@@ -418,10 +435,18 @@ async function cancelRequest(appId, portalRequestId, { staffId = null, reason = 
     `UPDATE trustpoint_draws SET portal_draw_request_id=NULL, updated_at=now()
       WHERE application_id=$1 AND portal_draw_request_id=$2 AND writeback_at IS NULL`, [appId, pr.id]).catch(() => {});
   if (pr.source === 'borrower') {
+    // NO figure band here, deliberately. A cancellation is not a money event — nothing was
+    // approved and nothing moved — so a 40px headline would give the amount a weight it does not
+    // have. What the borrower actually wants to know is that their budget is untouched, which is
+    // exactly what the facts box says.
+    const blocks = await drawEmailBlocks(db, appId, { borrower: true });
     await notify.notifyAppBorrowers(appId, {
       type: 'draw', title: 'Your draw request was cancelled',
-      body: `Your draw request for ${usd(pr.total_requested_cents)} was cancelled by your loan team${reason ? `: ${String(reason).slice(0, 200)}` : ''}. You can submit a new request whenever you're ready — or reply to this email with any questions.`,
-      applicationId: appId, link: `/app/${appId}`,
+      drawTag: await drawLabel.drawTagForRef(db, appId, { portalRequestId: pr.id }),
+      badge: { text: 'Cancelled', tone: 'neutral' },
+      facts: (blocks && blocks.facts) || null,
+      body: `Your draw request for ${usd(pr.total_requested_cents)} was cancelled by your loan team${reason ? `: ${String(reason).slice(0, 200)}` : ''}. Nothing was released and none of your construction budget was used — you can submit a new request whenever you're ready, or reply to this email with any questions.`,
+      applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws',
     }).catch(() => {});
   }
   return row;
@@ -495,10 +520,18 @@ async function approveTrinityRequest(appId, portalRequestId, entries, { staffId 
   await db.query(
     `UPDATE workflow_items SET status='returned', outcome_label='Reviewed', returned_at=now(), updated_at=now()
       WHERE application_id=$1 AND submission_type='trinity_inspection_order' AND status IN ('open','in_progress')`, [appId]).catch(() => {});
+  // The inspector's decision, ranked (draw rule 15): the APPROVED amount leads, the request and
+  // the held-back difference sit under it. `row` carries the per-line decision this call just
+  // wrote, so the figures are the same numbers the desk and the packet read.
+  const blocks = await drawEmailBlocks(db, appId, { portalRequest: row, borrower: true });
   await notify.notifyAppBorrowers(appId, {
-    type: 'draw', title: 'Your draw was reviewed',
-    body: `Good news — your draw request was reviewed and ${usd(total)} was approved. The release is being processed; we'll confirm when the funds are on the way.`,
-    applicationId: appId, link: `/app/${appId}`,
+    type: 'draw', title: 'Your inspection is complete — here is what was approved',
+    drawTag: await drawLabel.drawTagForRef(db, appId, { portalRequestId: pr.id }),
+    badge: { text: 'Inspector approved', tone: 'positive' },
+    figures: (blocks && blocks.figures) || null,
+    facts: (blocks && blocks.facts) || null,
+    body: `Your draw was inspected and reviewed${blocks && blocks.figures ? '' : ` — ${usd(total)} was approved`}. Anything not approved this time stays on your budget and can be drawn again once that work is done. The release is being processed; we'll confirm the moment the funds are on the way.`,
+    applicationId: appId, link: `/app/${appId}`, ctaLabel: 'View your draws',
   }).catch(() => {});
   return { request: row, closeout: await historicalCloseOut(appId, pr.id) };
 }

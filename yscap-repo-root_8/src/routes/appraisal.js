@@ -144,6 +144,124 @@ async function appraisalComparison(appId) {
 
 // Upload cap: aligned to the per-file limit the JSON body-parser actually allows,
 // so the decode cap can never exceed what express.json() accepts (no dead ceiling).
+/**
+ * THE BORROWER-SAFE HEADLINE OF AN APPRAISAL, as email blocks.
+ *
+ * Owner-directed 2026-08-07 — the "your appraisal has been received" milestone should carry what
+ * the report actually says about the property, not just the news that it exists.
+ *
+ * WHAT MAY BE IN HERE, and why the boundary is where it is: every value below is a statement the
+ * report makes ABOUT THE BORROWER'S OWN PROPERTY, and the borrower can already read all of it in
+ * their portal's property report (`GET /api/borrower/applications/:id/appraisal` returns the whole
+ * `appraisals` row minus a defined staff-only set). Nothing from the UNDERWRITING read is here —
+ * no finding, no comparable, no collateral score, no ARV-defensibility signal, no note-buyer
+ * check — and no `lender_name` / `amc_name` / appraiser contact, which that route drops outright
+ * because a capital-partner name may never reach a borrower.
+ *
+ * Every row is omitted when its value is unknown: a report that states no after-repair value has
+ * no ARV, and printing a dash there would teach the reader our numbers are unreliable.
+ *
+ * Returns `{figures, facts, sections}` or null — never throws, because a milestone email must not
+ * fail for want of its decoration.
+ */
+async function borrowerAppraisalBlocks(appId) {
+  try {
+    const a = (await db.query(
+      `SELECT effective_date, condition_of_appraisal,
+              appraised_value, as_is_value, as_is_confidence, arv_value, arv_confidence,
+              property_type, units, year_built, gla, beds, baths_full, baths_half, lot_area,
+              condition_uad, quality_uad, subject_city, subject_state
+         FROM appraisals
+        WHERE application_id = $1 AND superseded = false
+        ORDER BY imported_at DESC LIMIT 1`, [appId])).rows[0];
+    if (!a) return null;
+    // The property TYPE is the category (single family / 2-4 / condo), never the Detached /
+    // Attached attachment style — same correction the staff tab and the borrower route apply.
+    require('../lib/appraisal/property-category').applyPropertyType(a);
+
+    const money = (v) => (v == null || !Number.isFinite(Number(v))
+      ? null : '$' + Math.round(Number(v)).toLocaleString('en-US'));
+    // A value the parser marked `needs_verify` is a READING somebody still has to confirm. It is
+    // not a fact yet, so it is not put in front of the borrower as one — the report is in the
+    // portal either way. Only a DEFINITE value is quoted (the same discipline the import applies
+    // before it will write a value onto the loan file at all).
+    const definite = (v, conf) => (conf === 'definite' ? money(v) : null);
+
+    const arv = definite(a.arv_value, a.arv_confidence);
+    const asIs = definite(a.as_is_value, a.as_is_confidence);
+    // `appraised_value` is the report's single headline figure. On a subject-to report that IS the
+    // after-repair value, so quoting it as a SECOND number alongside the ARV would show the same
+    // money twice under two names; it is only used when there is no ARV to lead with.
+    const appraised = money(a.appraised_value);
+
+    // WHICH number leads. On a renovation deal the after-repair value is the one the borrower is
+    // waiting on; on a straight purchase it is the as-is. Never a $0 or an unknown headline.
+    let figures = null;
+    if (arv) {
+      figures = {
+        primary: { label: 'After-repair value (ARV)', value: arv, sub: 'as stated on your appraisal', tone: 'teal' },
+        secondary: [asIs ? { label: 'As-is value today', value: asIs } : null].filter(Boolean),
+      };
+    } else if (asIs || appraised) {
+      figures = {
+        primary: { label: 'Appraised value', value: asIs || appraised, sub: 'as stated on your appraisal', tone: 'teal' },
+        secondary: [],
+      };
+    }
+
+    const rows = [];
+    const add = (label, value) => { if (value != null && value !== '') rows.push({ label, value }); };
+    const day = (d) => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(d || ''));
+      return m ? new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : null;
+    };
+    add('Effective date of the appraisal', day(a.effective_date));
+    add('Property type', a.property_type);
+    add('Units', a.units != null && Number(a.units) > 0 ? String(a.units) : null);
+    add('Year built', a.year_built);
+    add('Living area', a.gla != null && Number(a.gla) > 0 ? `${Math.round(Number(a.gla)).toLocaleString('en-US')} sq ft` : null);
+    const baths = (Number(a.baths_full) || 0) + (Number(a.baths_half) || 0) * 0.5;
+    add('Bedrooms / bathrooms', (Number(a.beds) > 0 || baths > 0)
+      ? `${Number(a.beds) > 0 ? a.beds : '—'} bed · ${baths > 0 ? baths : '—'} bath` : null);
+    add('Lot size', a.lot_area);
+
+    // The UAD condition/quality grades are the appraiser's own published rating of the property,
+    // printed on the report the borrower can open. They are stated in WORDS rather than as the
+    // raw "C4" / "Q3" codes, which mean nothing outside the trade — and NOTE the scale runs
+    // BACKWARDS (C1/Q1 is the best), so a reader shown the bare code guesses wrong.
+    const CONDITION = {
+      C1: 'New / no deferred maintenance', C2: 'Well maintained, little to no wear',
+      C3: 'Well maintained, limited deferred maintenance', C4: 'Adequate — some deferred maintenance',
+      C5: 'Obvious deferred maintenance', C6: 'Substantial repairs needed',
+    };
+    const QUALITY = {
+      Q1: 'Highest quality construction', Q2: 'High quality construction',
+      Q3: 'Above-average quality construction', Q4: 'Average quality construction',
+      Q5: 'Economy quality construction', Q6: 'Basic quality construction',
+    };
+    add('Condition as inspected', CONDITION[String(a.condition_uad || '').toUpperCase()] || null);
+    add('Construction quality', QUALITY[String(a.quality_uad || '').toUpperCase()] || null);
+
+    // What the appraisal was written SUBJECT TO — the single most consequential thing on a
+    // construction file, and stated in plain words rather than the MISMO enum.
+    const BASIS = {
+      AsIs: 'Valued as the property stands today.',
+      SubjectToRepairs: 'Valued subject to the repairs in your scope of work being completed.',
+      SubjectToCompletion: 'Valued subject to the construction being completed.',
+      SubjectToInspection: 'Valued subject to a further inspection.',
+    };
+    const basis = BASIS[String(a.condition_of_appraisal || '')] || null;
+
+    const sections = basis ? [{ title: 'What this value is based on', body: basis }] : null;
+
+    return {
+      figures,
+      facts: rows.length ? { title: 'What the report says about your property', rows } : null,
+      sections,
+    };
+  } catch (_) { return null; }
+}
+
 const MAX_UPLOAD_BYTES = Math.max(1, cfg.maxUploadMb) * 1024 * 1024;
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
@@ -352,22 +470,38 @@ router.post('/:appId/import', async (req, res, next) => {
       { appraisalId: out.appraisalId, findings: out.summary, warnings: (out.warnings || []).map((w) => w.code) });
 
     // Milestone → borrower (owner-directed 2026-07-20): the appraisal report has
-    // arrived. Borrower-safe — it says the appraisal was RECEIVED and is under
-    // review; it NEVER exposes the appraised value, condition, or any finding.
-    // Gated to once per file per ~day so a re-import doesn't re-notify.
+    // arrived. Gated to once per file per ~day so a re-import doesn't re-notify.
+    //
+    // WHAT IT SAYS WIDENED 2026-08-07 (owner-directed: *"an email like this should have more
+    // information. It should have the ARV value as well. Do research from the Appraisal Findings
+    // XML screen for what other information we can put here … Some blocks and some sections from
+    // the Appraisal Findings XML screen should be in an email like this to the borrower."*). The
+    // old copy said only that a report had arrived — and the borrower can already open the report
+    // itself in their portal, so withholding its headline numbers from the email that announces it
+    // was never protecting anything; it just made them click.
+    //
+    // THE LINE THAT STILL HOLDS, and it is a different line: everything here is a FACT THE REPORT
+    // STATES about the borrower's own property. Nothing from the underwriting read crosses over —
+    // no finding, no comparable, no ARV-defensibility signal, no note-buyer check, no appraiser
+    // contact detail, and never a capital-partner / AMC / lender name. That is the same boundary
+    // `GET /api/borrower/applications/:id/appraisal` already draws (SCRUTINY_CODES, the
+    // note_buyer source filter, and the dropped lender/amc columns) — read that route before
+    // adding a field here, and add nothing it would strip.
     try {
       if (app.borrower_id) {
         // Atomically CLAIM the ~day slot (stamp-first) so a double/re-import in the
         // same instant can't send the milestone twice.
         const claimId = await require('../lib/throttle-claim').claimOncePerPeriod({ action: 'appraisal_received_emailed', entityId: app.id, interval: '20 hours' });
         if (claimId) {
+          const blocks = await borrowerAppraisalBlocks(app.id);
           await require('../lib/notify').notifyAppBorrowers(app.id, {
             type: 'milestone',
             title: 'Your property appraisal has been received',
             badge: { text: 'Milestone', tone: 'teal' },
             body: 'Good news — the appraisal report for your property has come in and is now with your loan team for review.',
             lines: ['There\'s nothing you need to do right now. If anything from the appraisal needs your attention, we\'ll reach out.'],
-            applicationId: app.id, link: `/app/${app.id}`, ctaLabel: 'View your file' });
+            ...(blocks || {}),
+            applicationId: app.id, link: `/app/${app.id}`, ctaLabel: 'View your full property report' });
         }
       }
     } catch (_) { /* milestone email is best-effort */ }

@@ -251,10 +251,10 @@ function png() {
     const accDis = await call(server, 'POST', `/api/tpo/applications/${appDisabled}/findings/${fidD}/accept`, tokA, {});
     ok(accDis.status === 200, `the broker CAN accept on a portal-DISABLED TPO file (the borrower has no portal) — got ${accDis.status}`);
 
-    // ── db/487 REPLAY idempotency ──
+    // ── db/524 REPLAY idempotency ──
     // Every migration re-runs on every boot, and by now a 'tpo' accepted + disputed row exists.
-    // db/487 widens the accepted_via/disputed_via CHECKs UNDER db/454's / db/193's OWN names, so when
-    // those earlier files replay (BEFORE db/487 in numeric order) their `IF NOT EXISTS(<own name>)`
+    // db/524 widens the accepted_via/disputed_via CHECKs UNDER db/454's / db/193's OWN names, so when
+    // those earlier files replay (BEFORE db/524 in numeric order) their `IF NOT EXISTS(<own name>)`
     // guards find the WIDE constraint and skip — never re-adding the narrow list, which would fail
     // against the 'tpo' row. An early draft used new constraint names and DID fail here.
     const fs = require('fs'); const pathm = require('path');

@@ -165,6 +165,61 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ok('C1 with no borrower to address, the team is emailed directly rather than nobody', outbox.length >= 1);
   ok('C2 and the coordinator is on it', outbox.some((m) => [].concat(m.to || []).map(String).some((e) => e.toLowerCase() === coordEmail)));
 
+  // ---- C3+ THE FALLBACK NEVER LEAKS THE BORROWER'S MAGIC LINK, AND NEVER LIES (owner-reported
+  // 2026-08-10, the Malky Katz delivery: the borrower-voiced findings email — carrying the
+  // borrower's no-login /draw-accept/<reply_token> capability — was emailed to a staff assignee,
+  // and nothing anywhere said the borrower had NOT received it).
+  outbox.length = 0;
+  const MAGIC = 'SECRETTOKEN' + rnd;
+  const thread = await notify.notifyAppThread(app2, {
+    type: 'draw_findings', title: 'Your inspection is complete — please confirm the amount',
+    body: 'confirm to release your draw', applicationId: app2,
+    link: `/draw-accept/${MAGIC}`, ctaLabel: 'Review & confirm',
+    cta2Label: 'Push back on a line', cta2Link: `/draw-accept/${MAGIC}?tab=dispute`,
+    staffTitle: 'Inspection results sent to the borrower — awaiting their confirmation',
+    staffBody: 'the results went to the borrower to accept or dispute',
+    staffLink: `/internal/app/${app2}`, staffCtaLabel: 'Open the file',
+  });
+  await sleep(900);
+  ok('C3 the fallback still emails the team (an event never goes dark)', outbox.length >= 1);
+  ok('C4 but NO email carries the borrower\'s magic accept link',
+    outbox.every((m) => !String(m.html || '').includes(MAGIC) && !String(m.text || '').includes(MAGIC)));
+  ok('C5 the fallback email is STAFF-voiced, not "please confirm the amount"',
+    outbox.every((m) => !/please confirm the amount/i.test(String(m.subject || ''))));
+  ok('C6 and it SAYS the borrower has not seen this',
+    outbox.some((m) => /borrower could NOT be emailed|has not seen this/i.test(String(m.html || '') + String(m.text || ''))));
+  const staffLinkRow = (await db.query(
+    `SELECT link FROM notifications
+      WHERE application_id=$1 AND recipient_kind='staff' AND type='draw_findings'
+      ORDER BY created_at DESC LIMIT 1`, [app2])).rows[0];
+  eq('C7 the staff in-app row links to the FILE, never the magic link', staffLinkRow && staffLinkRow.link, `/internal/app/${app2}`);
+  ok('C8 the thread reports the borrower was NOT reached (so the route can warn the coordinator)',
+    !!thread && thread.emailedTogether === false && thread.borrowerMailable === false);
+
+  // ---- C9+ A borrower who MUTED draw emails is NOT "emailed" (audit 2026-08-10): notifyBorrower
+  // still writes their in-app row, so counting rows alone reported a muted borrower as reached —
+  // the team's copy was suppressed AND the caller was told it was delivered.
+  const bor3Email = `muted${rnd}@example.com`;
+  const bor3 = (await db.query(
+    `INSERT INTO borrowers(first_name,last_name,email) VALUES('Muted','Borrower',$1) RETURNING id`, [bor3Email])).rows[0].id;
+  const app3 = (await db.query(
+    `INSERT INTO applications(borrower_id,status,ys_loan_number,property_address) VALUES($1,'funded',$2,'{"oneLine":"1 Muted Way"}') RETURNING id`,
+    [bor3, 'MB' + rnd.slice(0, 6)])).rows[0].id;
+  await db.query(`INSERT INTO application_assignees(application_id,staff_id,role) VALUES($1,$2,'processor') ON CONFLICT DO NOTHING`, [app3, coord]);
+  await db.query(`INSERT INTO notification_prefs(borrower_id,category,in_app,email) VALUES($1,'draws',true,false)
+                  ON CONFLICT (borrower_id,category) DO UPDATE SET email=false`, [bor3]);
+  outbox.length = 0;
+  const mutedThread = await notify.notifyAppThread(app3, {
+    type: 'draw_findings', title: 'Your inspection is complete — please confirm the amount',
+    body: 'x', applicationId: app3, staffTitle: 'Results ready', staffLink: `/internal/app/${app3}`,
+  });
+  await sleep(900);
+  ok('C9 a muted-email borrower reads as NOT mailable', !!mutedThread && mutedThread.borrowerMailable === false && mutedThread.emailedTogether === false);
+  ok('C10 so the team is emailed the fallback instead of the event going to nobody',
+    outbox.length >= 1 && outbox.every((m) => ![].concat(m.to || []).map((x) => String(x).toLowerCase()).includes(bor3Email)));
+  ok('C11 and their in-app row still exists (their choice was email-only)',
+    (await db.query(`SELECT 1 FROM notifications WHERE application_id=$1 AND recipient_kind='borrower' AND type='draw_findings'`, [app3])).rows.length >= 1);
+
   // ================================================ D. a NON-draw email is untouched
   outbox.length = 0;
   // `doc_rejected` is a borrower ACTION item, so it genuinely emails (unlike status_change, which
@@ -176,18 +231,61 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   ok('D2 and carries NO visible Cc — this change is scoped to the draw process',
     !nonDraw || ![].concat(nonDraw.cc || []).length);
 
+  // ================================================ E. the rest of the draw emails
+  // Every remaining draw notification was converted to the same composer. These two prove the
+  // parts a pure test cannot reach: the real COLUMNS behind each money source, both read inside
+  // the same swallowing catch as everything else in `drawEmailBlocks`.
+  {
+    // A PORTAL request (§5B) — no Sitewire draw exists yet, so its own row is the money source.
+    const pr = (await db.query(
+      `INSERT INTO portal_draw_requests (application_id, source, platform, lines, total_requested_cents)
+       VALUES ($1,'borrower','trinity',$2::jsonb,5000000) RETURNING *`,
+      [app, JSON.stringify([{ sitewire_job_item_id: JI, name: 'Roof', requested_cents: 5000000 }])])).rows[0];
+    const pb = await drawEmailBlocks(db, app, { portalRequest: pr, borrower: true });
+    ok('E1 a portal draw request builds its own money block', !!(pb && pb.figures));
+    eq('E2 leading with the REQUESTED amount, since nothing is inspected yet',
+      pb.figures.primary.value, '$50,000');
+    ok('E3 and it still carries the project budget facts', pb.facts && pb.facts.rows.some((r) => r.label === 'Rehab budget'));
+
+    // The coordinator records the decision — the shape approveTrinityRequest writes.
+    const decided = (await db.query(
+      `UPDATE portal_draw_requests SET status='approved', approved_cents=3345000, lines=$2::jsonb
+        WHERE id=$1 RETURNING *`,
+      [pr.id, JSON.stringify([{ sitewire_job_item_id: JI, name: 'Roof', requested_cents: 5000000, approved_cents: 3345000 }])])).rows[0];
+    const db2 = await drawEmailBlocks(db, app, { portalRequest: decided, borrower: true });
+    eq('E4 once reviewed, the APPROVED amount is the headline', db2.figures.primary.value, '$33,450');
+    ok('E5 and no wire amount is promised — this path has no resolved draw fee',
+      !/wired to you|no draw fee/i.test(String(db2.figures.primary.sub || '')));
+    await db.query(`DELETE FROM portal_draw_requests WHERE id=$1`, [pr.id]);
+  }
+  {
+    // A RECORDED RELEASE — the release email's figures come from the ledger, via the rollup.
+    await db.query(
+      `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents, retainage_held_cents, net_release_cents, release_date, funded_status, kind)
+       VALUES ($1,$2,3345000,29900,0,3315100,CURRENT_DATE,'released','draw')`, [app, DRAW]);
+    const rb = await drawEmailBlocks(db, app, { sitewireDrawId: DRAW, borrower: true });
+    ok('E6 a released draw leads with the RELEASE, read from the ledger',
+      rb.figures && /Released/.test(rb.figures.primary.label) && rb.figures.primary.value === '$33,151');
+    ok('E7 the release DATE was read (proves the disbursement date query runs)',
+      rb.facts.rows.some((r) => r.label === 'Funds released on'));
+    ok('E8 and the draw fee that was netted out is stated',
+      rb.facts.rows.some((r) => /Draw processing fee/.test(r.label) && r.value === '$299'));
+    await db.query(`DELETE FROM draw_disbursements WHERE application_id=$1`, [app]);
+  }
+
   mailer.sendMail = realSend;
 
   // ================================================ cleanup
-  await db.query(`DELETE FROM notifications WHERE application_id = ANY($1)`, [[app, app2]]);
-  await db.query(`DELETE FROM application_assignees WHERE application_id = ANY($1)`, [[app, app2]]);
+  await db.query(`DELETE FROM notifications WHERE application_id = ANY($1)`, [[app, app2, app3]]);
+  await db.query(`DELETE FROM application_assignees WHERE application_id = ANY($1)`, [[app, app2, app3]]);
+  await db.query(`DELETE FROM notification_prefs WHERE borrower_id=$1`, [bor3]);
   await db.query(`DELETE FROM draw_findings WHERE application_id=$1`, [app]);
   await db.query(`DELETE FROM sitewire_draw_requests WHERE sitewire_draw_id=$1`, [DRAW]);
   await db.query(`DELETE FROM sitewire_job_item_links WHERE application_id=$1`, [app]);
   await db.query(`DELETE FROM sitewire_draws WHERE application_id=$1`, [app]);
   await db.query(`DELETE FROM sitewire_property_links WHERE application_id=$1`, [app]);
-  await db.query(`DELETE FROM applications WHERE id = ANY($1)`, [[app, app2]]);
-  await db.query(`DELETE FROM borrowers WHERE id = ANY($1)`, [[bor, bor2]]);
+  await db.query(`DELETE FROM applications WHERE id = ANY($1)`, [[app, app2, app3]]);
+  await db.query(`DELETE FROM borrowers WHERE id = ANY($1)`, [[bor, bor2, bor3]]);
   await db.query(`DELETE FROM staff_users WHERE id = ANY($1)`, [[coord, lo]]);
 
   console.log(`test-draw-email-db: ${pass} passed, ${fail} failed`);

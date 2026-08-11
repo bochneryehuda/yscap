@@ -87,6 +87,9 @@ const TODO_ORDER = [
 function int(v) { const n = parseInt(v, 10); return Number.isFinite(n) && n > 0 ? n : 0; }
 
 function addressOf(pa) {
+  // A row stored as a bare one-line string (public-records import before the
+  // shape fix) still reads correctly rather than as "A past project".
+  if (typeof pa === 'string') return pa.trim() || 'A past project';
   if (!pa || typeof pa !== 'object') return 'A past project';
   return pa.oneLine
     || [pa.line1 || pa.street || pa.address, pa.city, pa.state].filter(Boolean).join(', ')
@@ -104,7 +107,18 @@ function addressOf(pa) {
  */
 function lineTodo(row) {
   const r = row || {};
+  const status = String(r.verification_status || '');
+  // A REJECTED line is settled — the team decided it is not the borrower's, a
+  // duplicate, or wrong — so it carries NO outstanding work (owner-directed
+  // 2026-08-10, #40). It never nags anyone.
+  if (status === 'rejected') return [];
   const verified = r.is_verified === true;
+  // A recorded non-counting review outcome — "not verified" or one of the two
+  // "unable to verify" reasons — is a DECISION: the reviewer has looked, so the
+  // line never generates a "verify me" nag (matches the "waiting for review"
+  // banner, which counts only genuinely-pending lines). Real outstanding items
+  // (a document waiting to be reviewed, an open request) still surface below.
+  const reviewDecided = status === 'not_verified' || status === 'unable_docs' || status === 'unable_mismatch';
   const codes = [];
 
   // Only ONE exit verdict can be true, and each is terminal for verification —
@@ -114,7 +128,7 @@ function lineTodo(row) {
   if (int(r.docs_waiting) > 0) codes.push('documents_waiting');
   if (int(r.open_request_count) > 0) codes.push('open_request');
 
-  if (!verified) {
+  if (!verified && !reviewDecided) {
     if (exitProblem) codes.push(exitProblem);
     if (int(r.docs_rejected) > 0) codes.push('document_rejected');
     else if (int(r.doc_count) === 0 && !exitProblem) codes.push('no_documents');
@@ -124,7 +138,7 @@ function lineTodo(row) {
     if (!exitProblem && int(r.docs_accepted) > 0 && int(r.docs_waiting) === 0 && int(r.docs_rejected) === 0) {
       codes.push('ready_to_verify');
     }
-  } else if (exitProblem === 'exit_expired') {
+  } else if (verified && exitProblem === 'exit_expired') {
     // A verified line whose exit has aged out still shows as verified but counts
     // toward nothing — the exact "verified but counts toward nothing" confusion
     // the verify gate exists to prevent, so say it plainly.
@@ -195,6 +209,55 @@ const LINE_SQL = (exitSql) => `
  * co-borrower file — the section has a person switcher, and a to-do list for
  * somebody who is not on screen is noise. Omit it for the file's whole set.
  */
+/* One row shape for every consumer — the app-scoped to-do and the borrower-
+   scoped profile lens read the SAME mapping, so a line can never carry one
+   code on the loan file and another on the profile. */
+function mapLines(rows) {
+  return rows.map((r) => {
+    const requests = Array.isArray(r.open_requests) ? r.open_requests : [];
+    const todo = lineTodo({ ...r, open_request_count: requests.length });
+    return {
+      id: r.id,
+      borrowerId: r.borrower_id,
+      address: addressOf(r.property_address),
+      dealType: r.deal_type || '',
+      exitDate: r.exit_date ? String(r.exit_date).slice(0, 10) : null,
+      isVerified: r.is_verified === true,
+      status: r.verification_status || 'pending',
+      selfReported: r.entered_by_kind === 'borrower',
+      docCount: int(r.doc_count),
+      docsWaiting: int(r.docs_waiting),
+      openRequests: requests,
+      todo,
+    };
+  }).filter((l) => l.todo.length);
+}
+
+/**
+ * THE PROFILE LENS (mega-workspace phase D): the borrower CRM profile mounts
+ * the same Track Record Center the loan file has, minus everything that only
+ * exists on a file — no claim, no registration, no findings gate. What it DOES
+ * carry: the per-line to-do codes (the ledger's REO reasons + chips) and the
+ * borrower's own VERIFIED in-window counts (the tier ladder), both from the
+ * same definitions the loan file reads. Best-effort shape mirrors
+ * trackRecordTodo's: an unreadable database answers `unreadable`, never throws.
+ */
+async function borrowerTrackRecordView(borrowerId, { client = null } = {}) {
+  const EXP = require('./experience');
+  if (!client) client = require('../db');
+  const empty = { lines: [], verified: null, unreadable: false };
+  if (!borrowerId) return empty;
+  let rows = [];
+  try {
+    rows = (await client.query(LINE_SQL(EXP.EXIT_DATE_SQL), [[borrowerId]])).rows;
+  } catch (_) { return { ...empty, unreadable: true }; }
+  let verified = null;
+  try {
+    verified = await EXP.countBorrowersExperience([borrowerId], client, { verifiedOnly: true });
+  } catch (_) { verified = null; }
+  return { lines: mapLines(rows), verified, unreadable: false };
+}
+
 async function trackRecordTodo(appId, { borrowerId = null, client = null } = {}) {
   const EXP = require('./experience');
   if (!client) client = require('../db');
@@ -224,24 +287,7 @@ async function trackRecordTodo(appId, { borrowerId = null, client = null } = {})
     rows = (await client.query(LINE_SQL(EXP.EXIT_DATE_SQL), [ids])).rows;
   } catch (_) { return { ...empty, unreadable: true }; }
 
-  const lines = rows.map((r) => {
-    const requests = Array.isArray(r.open_requests) ? r.open_requests : [];
-    const todo = lineTodo({ ...r, open_request_count: requests.length });
-    return {
-      id: r.id,
-      borrowerId: r.borrower_id,
-      address: addressOf(r.property_address),
-      dealType: r.deal_type || '',
-      exitDate: r.exit_date ? String(r.exit_date).slice(0, 10) : null,
-      isVerified: r.is_verified === true,
-      status: r.verification_status || 'pending',
-      selfReported: r.entered_by_kind === 'borrower',
-      docCount: int(r.doc_count),
-      docsWaiting: int(r.docs_waiting),
-      openRequests: requests,
-      todo,
-    };
-  }).filter((l) => l.todo.length);
+  const lines = mapLines(rows);
 
   // The two other things the gate refuses on, read from the modules that own
   // them — never re-stated here.
@@ -251,8 +297,14 @@ async function trackRecordTodo(appId, { borrowerId = null, client = null } = {})
   let experience = null;
   try {
     const claimed = EXP.requestedFromApp(app);
-    if (EXP.hasRequirement(claimed)) {
-      const need = await EXP.registeredExperienceNeed(appId, client, claimed);
+    // THE REGISTRATION IS ASKED FIRST — the same 2026-08-09 ordering the
+    // sign-off gate got: a claim somebody lowered to zero UNDER a live
+    // registration still owes the registered need, and gating this block on
+    // the claim alone made the to-do say "no experience required" on the
+    // exact file the gate refuses. registeredExperienceNeed falls back to
+    // the claim when nothing is registered, so one call answers both shapes.
+    const need = await EXP.registeredExperienceNeed(appId, client, claimed);
+    if (EXP.hasRequirement(claimed) || EXP.hasRequirement(need)) {
       const verified = await EXP.countBorrowersExperience(EXP.fileBorrowerIds(app), client, { verifiedOnly: true });
       const reg = (await client.query(
         `SELECT 1 FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId])).rows[0];
@@ -264,13 +316,19 @@ async function trackRecordTodo(appId, { borrowerId = null, client = null } = {})
   } catch (_) { experience = null; }
 
   const summary = summarize(lines);
+  // `registered` is INFORMATIONAL, never blocking: since 2026-08-06 the gate
+  // signs off a fully-verified claim with no registration (Products & Pricing's
+  // own condition is what demands one), so `ok` turns on the SHORTFALL alone —
+  // the old `!registered` term made the to-do read "not done" on files the
+  // gate would clear.
   const ok = !summary.items && !findings.length
-    && !(experience && (!experience.registered || experience.shortfall.length));
+    && !(experience && experience.shortfall.length);
   return { ok, summary, lines, findings, experience, unreadable: false };
 }
 
 module.exports = {
   trackRecordTodo,
+  borrowerTrackRecordView,
   lineTodo,
   summarize,
   shortfallOf,

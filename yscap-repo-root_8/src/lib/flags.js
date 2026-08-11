@@ -12,7 +12,14 @@
  * The contract everywhere is `flags.enabled('ENV_NAME', <current env/cfg default>)` — the caller
  * passes the env default so this module never has to know each switch's default.
  */
-const db = require('../db');
+/**
+ * The database is required LAZILY. `enabled()` / `hasOverride()` / `overridesObject()` are pure
+ * synchronous reads off the in-memory cache and need no database at all — only refresh/setFlag/
+ * clearFlag do. Requiring pg at module load meant every switch-gated module dragged the database
+ * in with it, so a pure test of a gated rule could not load. `require` is cached, so this costs
+ * nothing after the first call.
+ */
+function db() { return require('../db'); }
 
 const REFRESH_MS = Math.max(5, parseInt(process.env.FLAGS_REFRESH_SEC || '20', 10) || 20) * 1000;
 
@@ -32,7 +39,7 @@ function overridesObject() { const o = {}; for (const [k, v] of overrides) o[k] 
 /** Reload all overrides from the DB into the cache. Best-effort — never throws. */
 async function refresh() {
   try {
-    const { rows } = await db.query('SELECT key, enabled FROM integration_flags');
+    const { rows } = await db().query('SELECT key, enabled FROM integration_flags');
     const next = new Map();
     for (const r of rows) next.set(r.key, r.enabled === true);
     overrides = next;
@@ -46,7 +53,7 @@ async function refresh() {
 /** Set (or change) an override, update the cache immediately, and audit. Returns the new value. */
 async function setFlag(key, on, staffId, note) {
   const val = !!on;
-  await db.query(
+  await db().query(
     `INSERT INTO integration_flags (key, enabled, updated_by, updated_at, note)
           VALUES ($1, $2, $3, now(), $4)
      ON CONFLICT (key) DO UPDATE SET enabled = $2, updated_by = $3, updated_at = now(), note = $4`,
@@ -56,7 +63,7 @@ async function setFlag(key, on, staffId, note) {
 }
 /** Remove an override so the switch reverts to its env default. */
 async function clearFlag(key) {
-  await db.query('DELETE FROM integration_flags WHERE key = $1', [key]);
+  await db().query('DELETE FROM integration_flags WHERE key = $1', [key]);
   overrides.delete(key);
 }
 
@@ -68,4 +75,15 @@ function start() {
   setInterval(() => { refresh().catch(() => {}); }, REFRESH_MS).unref();
 }
 
-module.exports = { enabled, hasOverride, overridesObject, refresh, setFlag, clearFlag, start };
+/* CACHE-ONLY hooks for tests. `setFlag`/`clearFlag` are the real doors and both write to the
+   database; a PURE test of a switch-gated rule needs to move the in-memory cache and nothing
+   else. Named `_internals` like every other test seam here, and deliberately not part of the
+   public surface — production code must go through setFlag/clearFlag so the override is
+   persisted and audited. */
+function setOverrideForTest(key, on) { overrides.set(key, !!on); }
+function clearOverrideForTest(key) { overrides.delete(key); }
+
+module.exports = {
+  enabled, hasOverride, overridesObject, refresh, setFlag, clearFlag, start,
+  _internals: { setOverrideForTest, clearOverrideForTest },
+};

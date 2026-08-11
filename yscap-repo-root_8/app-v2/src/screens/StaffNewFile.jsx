@@ -10,6 +10,7 @@ import { unitsMode, unitsForType } from '../lib/enums.js';
 import { fullNameOf } from '../lib/personName.js';
 import { sizesOnAsIsValue, seasoningText } from '../lib/dealBasis.js';
 import InviteApplicant from '../components/InviteApplicant.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /* Staff-side file origination. An admin, loan officer, or operations user opens
    a mortgage file from their end — the borrower does NOT need to be signed up.
@@ -75,7 +76,7 @@ function readStaffPrefill() {
 }
 function prefillToForm(p) {
   const f = {}, addr = {};
-  if (!p) return { f, addr };
+  if (!p) return { f, addr, register: null };
   const str = (x) => (x === '' || x == null) ? '' : String(x);
   const setIf = (o, k, val) => { const s = str(val); if (s !== '') o[k] = s; };
   setIf(f, 'firstName', p.firstName); setIf(f, 'lastName', p.lastName);
@@ -86,8 +87,22 @@ function prefillToForm(p) {
   setIf(f, 'requestedExpFlips', p.requestedExpFlips); setIf(f, 'requestedExpHolds', p.requestedExpHolds);
   setIf(f, 'requestedExpGround', p.requestedExpGround); setIf(f, 'entityName', p.entityName);
   if (p.isAssignment) { f.isAssignment = true; setIf(f, 'underlyingContractPrice', p.underlyingContractPrice); }
+  // THE PAYOFF TRAVELS WITH THE REFINANCE ON THE STAFF HAND-OFF TOO (owner-directed
+  // 2026-08-02). scenarioToDraft carries payoff*/loan# on a refinance and the borrower
+  // Apply path keeps them, but this staff Investor-Suite → New-file prefill silently
+  // dropped all three — so an officer who priced a refi in the studio, watched the
+  // payoff drive the cash-to-borrower figure, then pressed "Create loan file", had to
+  // retype it (and a retype is where the file quietly stops agreeing with the term
+  // sheet). The New-file form has these exact fields (refinance-only), so carry them.
+  setIf(f, 'payoffAmount', p.payoffAmount); setIf(f, 'payoffLender', p.payoffLender);
+  setIf(f, 'payoffLoanNumber', p.payoffLoanNumber);
   if (p.propertyAddress) { setIf(addr, 'street', p.propertyAddress.street); setIf(addr, 'state', p.propertyAddress.state); }
-  return { f, addr };
+  /* The pricing ELECTION the Investor Suite read off the live term sheet — the
+     program, the manual basis, the markup/origination changes, the fee overrides
+     and the out-of-pocket. It is NOT form state (none of it is typed on this
+     screen); it rides straight to the register call once the file exists, so the
+     file is born as the sheet the officer just built (owner-directed 2026-08-06). */
+  return { f, addr, register: (p && p.__register) || null };
 }
 
 /* Optional co-borrower at file creation (#98). Internal-only borrower-name
@@ -304,10 +319,13 @@ export default function StaffNewFile() {
   const _d = (_urlBorrowerId && _rawDraft && (_rawDraft.borrowerId || '') !== _urlBorrowerId) ? null : _rawDraft;
   if (_d !== _rawDraft) { try { localStorage.removeItem(DRAFT_KEY); } catch (_) { /* ignore */ } }
   const _pf = prefillToForm(readStaffPrefill());   // term-sheet → new-file prefill (consumed once)
+  // Survives every re-render between opening the form and submitting it; never
+  // state, because it changes nothing on screen.
+  const registerRef = useRef(_pf.register);
   const _fromTermSheet = Object.keys(_pf.f).length > 0 || Object.keys(_pf.addr).length > 0;
   const [f, setF] = useState({
     firstName: '', lastName: '', email: '', phone: '',
-    program: '', loanType: '', propertyType: '', units: '', entityName: '', llcId: '', vesting: 'entity',
+    program: '', loanType: '', propertyType: '', units: '', entityName: '', llcId: '', entityType: '', entitySubtype: '', vesting: 'entity',
     purchasePrice: '', asIsValue: '', arv: '', rehabBudget: '', rehabType: '', sqftPre: '', sqftPost: '',
     isAssignment: false, underlyingContractPrice: '',
     // Refinance-only. The loan is sized on the as-is value above; these carry the
@@ -469,6 +487,11 @@ export default function StaffNewFile() {
         // creates on the borrower after the file is made.
         llcId: f.llcId || undefined,
         entityName: (!f.llcId && f.entityName.trim()) ? f.entityName.trim() : undefined,
+        // WHICH KIND OF ENTITY (owner-directed 2026-08-09). Only ever used when
+        // the entity is genuinely new — a name the borrower already has keeps
+        // the type it was set up with.
+        entityType: (!f.llcId && f.entityName.trim() && f.entityType) ? f.entityType : undefined,
+        entitySubtype: (!f.llcId && f.entityName.trim() && f.entitySubtype) ? f.entitySubtype : undefined,
         // The server reads this through fields.vestsIndividually, which lets a
         // picked entity win — so the two can never contradict each other.
         vesting: f.vesting || 'entity',
@@ -525,12 +548,60 @@ export default function StaffNewFile() {
         // (owner-directed 2026-07-26). Confirming keeps the two people as
         // SEPARATE profiles that happen to share an address; nothing is merged.
         if (e1.data && e1.data.sharedEmail && e1.data.sharedEmail.canShare
-            && window.confirm(`${e1.message}\n\nAre these two different people who share one email address?`)) {
+            && await askConfirm(`${e1.message}\n\nAre these two different people who share one email address?`)) {
           r = await api.staffCreateFile({ ...body, allowSharedEmail: true });
         } else throw e1;
       }
       if (r && r.coBorrowerWarning) console.warn('[new-file] co-borrower:', r.coBorrowerWarning);
       try { localStorage.removeItem(DRAFT_KEY); } catch (_) {}   // draft consumed — file created
+      /* BORN REGISTERED (owner-directed 2026-08-06: "starting an application …
+         should be like the registration button, because it's coming from the
+         Term Sheet Generator"). The Investor Suite handed over the pricing
+         ELECTION it read from the live term sheet — program, manual basis,
+         markup/origination changes, fee overrides, out-of-pocket — so the file
+         registers here through the SAME endpoint a human presses Register on.
+         Nothing is recomputed locally: the frozen engine sizes the loan on the
+         file from these inputs, which is why the loan amount is not carried.
+
+         NEVER BLOCKS THE FILE. It is created either way — a refusal (an
+         exception is needed, a value disagrees with the application) leaves
+         exactly today's outcome, an unregistered file, and says so with the one
+         place to go. Swallowing the reason would be worse than not trying. */
+      const reg = registerRef.current;
+      let regNote = '';
+      if (reg && reg.program) {
+        const doRegister = (months) => api.staffRegisterProduct(
+          r.applicationId, reg.program, reg.overrides || {},
+          undefined,                          // no econVersion — the file was just born
+          months, false, reg.termOptions || undefined);
+        try {
+          await doRegister(undefined);
+        } catch (e3) {
+          /* A MANUAL PRODUCT STILL TRAVELS, AND WAITS FOR ITS EXCEPTION
+             (owner-directed 2026-08-06: "make sure that the manual program still
+             needs to go through the exception — the exception still needs to be
+             approved, but it should still travel along and wait for the exception
+             as it goes"). A manual basis registers only with a liquidity-month
+             count, which this screen does not collect; refusing there would DROP
+             the manual scenario the officer built, which is the one thing that
+             must not happen. So we retry once with the count the SERVER itself
+             suggests — the company default, exactly what the studio prefills that
+             field with, so nothing is invented here. The registration then opens
+             the super-admin escalation as it always does and the terms are held
+             until it is approved; an admin can counter the months there. */
+          const suggested = e3 && e3.data && e3.data.suggestedAssetMonths;
+          if (e3 && e3.data && e3.data.code === 'manual_asset_months_required' && Number(suggested) >= 1) {
+            try { await doRegister(Number(suggested)); } catch (e4) {
+              regNote = e4 && e4.message ? e4.message : 'the product could not be registered automatically';
+            }
+          } else {
+            regNote = e3 && e3.message ? e3.message : 'the product could not be registered automatically';
+          }
+        }
+      }
+      if (regNote) {
+        try { sessionStorage.setItem('ys-newfile-register-note', regNote); } catch (_) { /* best-effort */ }
+      }
       nav(`/internal/app/${r.applicationId}`);
     } catch (e2) {
       setErr(e2.message || 'Could not create the file.');
@@ -703,7 +774,7 @@ export default function StaffNewFile() {
                   <input type="radio" name="vestingChoice" value={o.v}
                     checked={(f.vesting || 'entity') === o.v}
                     onChange={() => setF(s2 => (o.v === 'individual'
-                      ? { ...s2, vesting: 'individual', entityName: '', llcId: '' }
+                      ? { ...s2, vesting: 'individual', entityName: '', llcId: '', entityType: '', entitySubtype: '' }
                       : { ...s2, vesting: 'entity' }))} />
                   <span>{o.t}</span>
                 </label>
@@ -715,13 +786,13 @@ export default function StaffNewFile() {
             </p>
           </div>
           {(f.vesting || 'entity') === 'entity' ? (
-          <div className="field"><label>Vesting entity / LLC (if any)</label>
-            <LlcPicker value={f.entityName} staff borrowerId={borrowerId}
-              placeholder={borrowerId ? 'Which LLC is this property purchased under?' : 'Type the LLC name (created once the borrower is saved)'}
-              onPick={({ id, name }) => setF(s => ({ ...s, entityName: name, llcId: id || '' }))} />
+          <div className="field"><label>Vesting entity name</label>
+            <LlcPicker value={f.entityName} staff borrowerId={borrowerId} entityType={f.entityType} entitySubtype={f.entitySubtype}
+              placeholder={borrowerId ? 'Which entity is this property purchased under?' : 'Type the entity name (created once the borrower is saved)'}
+              onPick={({ id, name, entityType, entitySubtype }) => setF(s => ({ ...s, entityName: name, llcId: id || '', entityType: entityType || s.entityType, entitySubtype: entitySubtype || '' }))} />
             <p className="muted small" style={{ marginTop: 4 }}>
-              {borrowerId ? 'Pick one of this borrower’s LLCs or create a new one — we’ll ask for its EIN letter, formation docs, and operating agreement.'
-                : 'If the property vests in an LLC, type its name — it’s created on the borrower once the file is saved.'}
+              {borrowerId ? 'Pick one of this borrower’s entities or create a new one — we’ll ask for its formation documents, EIN letter and governing document.'
+                : 'If the property vests in an entity, type its name — it’s created on the borrower once the file is saved.'}
             </p></div>
           ) : null}
           </div>

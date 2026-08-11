@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import { fileToBase64 } from '../lib/files.js';
 import DocPreview from './DocPreview.jsx';
+import { askConfirm, askPrompt } from '../lib/dialog.js';
 
 /**
  * Credit report (Xactus import) — the internal "Credit report" condition
@@ -764,6 +765,13 @@ function CreditHero({ report }) {
 // The entire report, laid out with the whole screen (owner-directed 2026-07-23):
 // opens on import and from the condition's "Open full report" button, closeable.
 function CreditReportOverlay({ report, history, justImported, onClose, onDownload }) {
+  // "Open PDF" DOWNLOADED the file (owner-reported 2026-08-06 about the manual
+  // upload: "you only have a button open that does not preview the document — it
+  // downloads it. It should be a regular preview button"). The manual-upload panel
+  // was fixed first; this is the SAME class on the imported-report overlay, so it
+  // reads the report inline through the same DocPreview and keeps Download as its
+  // own explicit action. Local state — the overlay owns its own preview.
+  const [previewDoc, setPreviewDoc] = useState(null);
   // Scroll-locked + position-preserving + Escape-to-close (see useScrollLock).
   useScrollLock(onClose);
 
@@ -780,7 +788,8 @@ function CreditReportOverlay({ report, history, justImported, onClose, onDownloa
             </p>
           </div>
           <div className="crx-overlay-tools">
-            {report.pdfDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.pdfDocumentId, 'credit-report.pdf')}>📄 Open PDF</button>}
+            {report.pdfDocumentId && <button className="crx-btn ghost sm" onClick={() => setPreviewDoc({ id: report.pdfDocumentId, filename: 'credit-report.pdf', content_type: 'application/pdf' })}>Preview</button>}
+            {report.pdfDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.pdfDocumentId, 'credit-report.pdf')}>Download PDF</button>}
             {report.xmlDocumentId && <button className="crx-btn ghost sm" onClick={() => onDownload(report.xmlDocumentId, 'credit-report.xml')}>Download data (XML)</button>}
             <button className="crx-x" onClick={onClose} aria-label="Close">✕</button>
           </div>
@@ -802,6 +811,15 @@ function CreditReportOverlay({ report, history, justImported, onClose, onDownloa
           )}
         </div>
       </div>
+      {previewDoc && (
+        <DocPreview
+          title="Credit report"
+          filename={previewDoc.filename}
+          contentType={previewDoc.content_type}
+          load={() => api.staffDownloadDoc(previewDoc.id)}
+          onDownload={() => onDownload(previewDoc.id, previewDoc.filename)}
+          onClose={() => setPreviewDoc(null)} />
+      )}
     </div>
   );
 }
@@ -876,7 +894,7 @@ function ExternalCreditPanel({ appId, itemId, scopeKind, onChanged, onDownload, 
     setErr('');
     let why = '';
     if (action === 'reject') {
-      why = window.prompt('Why is this credit report being rejected? The reason is recorded on the file.') || '';
+      why = await askPrompt('Why is this credit report being rejected? The reason is recorded on the file.') || '';
       if (!why.trim()) return;
     }
     setBusy(true);
@@ -892,7 +910,7 @@ function ExternalCreditPanel({ appId, itemId, scopeKind, onChanged, onDownload, 
   // (bytes + row) and keeps it out of SharePoint, exactly like the file screen's
   // own delete. Distinct from Reject, which keeps a rejected copy on the file.
   async function del(doc) {
-    if (!window.confirm(`Permanently delete "${doc.filename || 'this credit report'}"?\n\nThis removes it for good and it will NOT be synced to SharePoint. Use this only for a document uploaded by mistake.`)) return;
+    if (!(await askConfirm(`Permanently delete "${doc.filename || 'this credit report'}"?\n\nThis removes it for good and it will NOT be synced to SharePoint. Use this only for a document uploaded by mistake.`))) return;
     setErr(''); setBusy(true);
     try {
       await api.staffDeleteDoc(doc.id);
@@ -921,7 +939,7 @@ function ExternalCreditPanel({ appId, itemId, scopeKind, onChanged, onDownload, 
   }
 
   async function withdraw() {
-    if (!window.confirm('Withdraw the exception request? The credit condition goes back to needing an imported report.')) return;
+    if (!(await askConfirm('Withdraw the exception request? The credit condition goes back to needing an imported report.'))) return;
     setErr(''); setBusy(true);
     try {
       await api.creditWaiverRemove(appId, { itemId: targetItemId, scope: scopeKind === 'co' ? 'co' : 'primary' });

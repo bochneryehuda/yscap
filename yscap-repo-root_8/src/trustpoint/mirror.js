@@ -15,6 +15,7 @@
 const db = require('../db');
 const client = require('./client');
 const notify = require('../lib/notify');
+const drawLabel = require('../lib/draw-label');   // "Draw 2" — the ONE way a draw is named in a subject
 
 const usd = (c) => c == null ? '—' : '$' + Math.floor(Number(c) / 100).toLocaleString('en-US');
 // money-leg amounts keep their cents (a mirrored wire is exact, never floored)
@@ -22,10 +23,11 @@ const usd2 = (c) => c == null ? '—' : '$' + (Number(c) / 100).toLocaleString('
 const { drawEmailBlocks } = require('../sitewire/draw-email-blocks');
 
 // " #2" for the borrower's SUBJECT LINE (owner-directed 2026-07-27: "in the subject line write
-// draw 1 draw 2, how many draw it is"). The email subject is built as `title · <file tag>`, so
-// the draw number belongs in the title. Blank when the administrator gave the draw no number —
-// never a guessed "#1".
-const drawNo = (row) => (row && row.number != null ? ` #${row.number}` : '');
+// draw 1 draw 2, how many draw it is"). SUPERSEDED 2026-08-09: the number no longer sits inside
+// the title — it LEADS the subject as `drawTag` ("Draw 2 · Your construction draw has been
+// released"), built by lib/draw-label so every draw email in the system names a draw the same way.
+// The old helper is gone rather than left unused; `drawLabel.drawLabel(row.number)` keeps the same
+// never-guess contract (null when the administrator gave the draw no number).
 
 async function audit(appId, tpDrawId, entity, entityId, field, oldV, newV, reacted) {
   try {
@@ -461,7 +463,8 @@ async function mirrorDisbursement(appId, row, { baseline = false, addr = 'the pr
         figures = { ...figures, primary: { label: 'Released to you', value: usd2(shown), sub: 'typically arrives in 1–2 business days' } };
       }
       await notify.notifyAppThread(appId, {
-        type: 'draw', title: `Your construction draw${drawNo(row)} has been released`,
+        type: 'draw', title: 'Your construction draw has been released',
+        drawTag: drawLabel.drawLabel(row.number),
         hero: figures ? null : { label: 'Released to you', value: usd2(shown), sub: 'typically arrives in 1–2 business days', tone: 'positive' },
         figures: figures || null,
         facts: (blocks && blocks.facts) || null,
@@ -520,6 +523,10 @@ async function verifyPartnerFee(appId, row) {
     const total = fees.reduce((s, c) => s + c, 0);
     await notify.notifyAppStaffThread(appId, {
       type: 'draw_inbound', title: 'Draw fee doesn’t match the agreed amount',
+      // The draw leads the SUBJECT rather than sitting inside the sentence; a draw the
+      // administrator never numbered carries no tag at all rather than a guessed one, so
+      // the body keeps saying which draw it is either way.
+      drawTag: drawLabel.drawLabel(row.number),
       body: `Draw #${row.number == null ? '—' : row.number} carries fee lines totaling ${usd2(total)}, but the agreed per-draw fee for this program is ${usd2(expected)}. The borrower's net wire depends on this — please double-check the fee with the draw administrator.`,
       badge: { text: 'Fee check', tone: 'action' }, applicationId: appId, link: `/internal/app/${appId}/draws`,
     }).catch(() => {});
@@ -602,6 +609,7 @@ async function reactDraw(appId, row, prev, { baseline = false, addrText = null }
     const copy = (blocks && blocks.copy) || { title: 'Your draw is approved — funds are on the way', badge: 'Approved', tone: 'positive' };
     await notify.notifyAppThread(appId, {
       type: 'draw', title: copy.title,
+      drawTag: drawLabel.drawLabel(row.number),
       badge: { text: copy.badge, tone: copy.tone },
       body: `Your draw for ${addr} has been approved. Here is exactly what was approved and what reaches you.`,
       figures: (blocks && blocks.figures) || null,
@@ -643,7 +651,8 @@ async function reactReturned(appId, row, addrText) {
   // keeps its own staff-voiced line. `link` is omitted so each audience gets its default (borrower →
   // /app, staff → /internal).
   await notify.notifyAppThread(appId, {
-    type: 'draw', title: `Your draw${drawNo(row)} needs attention`,
+    type: 'draw', title: 'Your draw needs attention',
+    drawTag: drawLabel.drawLabel(row.number),
     body: `Your draw request for ${addr} needs a little more before it can be approved. Your loan team will reach out with exactly what's needed.`,
     staffTitle: 'Draw returned on TrustPoint',
     staffBody: `Draw #${nLabel} for ${addr} was returned in TrustPoint's review — something needs attention before it can be approved.`,

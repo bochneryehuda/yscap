@@ -10,6 +10,9 @@ import { moneyNum } from '../lib/money.js';
    identical document can be attached to the loan file. Every guideline,
    limitation, note and number the borrower sees is the static tool's own. */
 
+// WHO IS DRIVING THIS TOOL — one definition, shared with the Investor Suite.
+import { stampToolOfficer } from '../lib/toolOfficer.js';
+
 const STUDIO_URL = '/tools/term-sheet.html';
 
 // Marketing chrome that has no place inside the portal. Everything else —
@@ -203,8 +206,17 @@ export function buildStudioState(x) {
 
 /* Everything the studio currently shows, read straight out of the static
    page: the raw inputs (by element id), the chosen program, and the exact
-   calc objects the static tool renders + exports from. */
-function readSnapshot(win) {
+   calc objects the static tool renders + exports from.
+
+   EXPORTED (owner-directed 2026-08-06) so the Investor Suite's "Create loan
+   file →" can read its own term-sheet iframe with the SAME function this
+   component uses. That hand-off has to carry the elected program and the admin
+   pricing knobs onto the new file, and the alternatives were both worse: the
+   plain `YS.collectState()` drops every `data-noshare` admin field (the markup)
+   AND has no idea which program card is active, and re-deriving any of it in
+   the Suite would be a second reading of the studio that could disagree with
+   this one. One reader, one answer. */
+export function readSnapshot(win) {
   const doc = win.document;
   const val = (id) => { const e = doc.getElementById(id); return e ? String(e.value).trim() : ''; };
   // #143 — the dollar inputs DISPLAY comma-grouped ("400,000"); every money field
@@ -249,6 +261,9 @@ function readSnapshot(win) {
       // Out-of-pocket rehab exception (owner-authorized 2026-07-31): the dollar box + the
       // "raise the initial to its max" toggle in the admin zone.
       tsOopRehab: moneyVal('tsOopRehab'), tsOopRehabMax: chk('tsOopRehabMax'),
+      // A typed loan amount (owner-directed 2026-08-06) — the admin zone's exact-amount box.
+      tsTargetLoan: moneyVal('tsTargetLoan'),
+      tsLadderPick: val('tsLadderPick'),
       // admin pricing knobs (staff mode) — same names the staff pricing API takes
       tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'), tsYspSilver: val('tsYspSilver'),
       // Manual GOLD top-tier markup (item 15) — the studio's "manual section for the top tier".
@@ -318,6 +333,19 @@ export function adminStateFromEngineInputs(inp) {
   put('tsMLtv', inp.ovrAcqLTVPct); put('tsMArv', inp.ovrARLTVPct);
   put('tsMLtc', inp.ovrLTCPct); put('tsMRate', inp.ovrRatePct); put('tsMIr', inp.ovrIrMonths);
   put('tsOopRehab', inp.oopRehab);   // out-of-pocket rehab exception (owner-authorized 2026-07-31)
+  // The typed loan amount, so reopening a file restores it. `put` keeps a 0 (it only
+  // skips null/''), and a 0 here means "no amount" — restoring it would paint a zero
+  // into a money box. Belt-and-suspenders with pricing.js no longer storing one.
+  if (Number(inp.targetLoan) > 0) put('tsTargetLoan', inp.targetLoan);
+  /* THE LADDER RUNG THE FILE WAS REGISTERED AT. It lives only in the studio's own
+     module scope, which resets on every iframe load — so without this a reopened file
+     showed the slider at MAXIMUM and the mandatory post-appraisal re-register
+     (esign/gate.js requires one before a term sheet may issue) registered that
+     maximum: a signed $1,794,000 at 8.500% came back as $2,070,000 at 9.125%.
+     The value-side rung is named so the studio applies it on the RIGHT axis — two
+     rungs can share an LTC, so a bare number could pick the wrong one. */
+  if (Number(inp.targetARLTV) > 0) put('tsLadderPick', 'arv:' + Number(inp.targetARLTV));
+  else if (Number(inp.targetLTC) > 0) put('tsLadderPick', 'ltc:' + Number(inp.targetLTC));
   // Re-arm the manual-scenario toggle whenever ANY manual override value was
   // registered — not only when inp.manualPricing is set. Otherwise reopening a
   // manually-priced file restores the rate VALUE into the (hidden) field but leaves
@@ -370,6 +398,9 @@ export function selectionFromSnapshot(snap) {
     arvLtvPct: d.arvPct != null ? d.arvPct * 100 : null,
     binding: d.binding || '',
     targetLTC: (d.inp && d.inp.targetLTC) || null,
+    // Silver's ladder steps on the VALUE side too, so the snapshot has to carry
+    // whichever lever the chosen rung used — see overridesFromSnapshot.
+    targetARLTV: (d.inp && d.inp.targetARLTV) || null,
   };
 }
 
@@ -380,6 +411,32 @@ export function blobToBase64(blob) {
     r.onerror = reject;
     r.readAsDataURL(blob);
   });
+}
+
+/* CAPTURE THE EXACT PDF THE STATIC TOOL WOULD DOWNLOAD, for any window hosting it.
+   `doc.save()` is swapped for an `output('blob')` capture for the duration of the one
+   export call and then restored in a `finally`, so a throw mid-export can never leave
+   the tool unable to download normally. Returns `{blob, filename}` or null — null on
+   every "not ready" path (no frame, no TS API, the PDF engine would not load), so a
+   caller can say "give it a moment" instead of shipping an empty attachment.
+
+   ONE DEFINITION, used by the studio component's `capturePdf()` ref method AND by the
+   Investor Suite, which hosts the same tool through a bare StaticToolFrame. */
+export async function capturePdfFromWindow(win) {
+  if (!win || !win.TS) return null;
+  if (!(win.jspdf && win.jspdf.jsPDF)) {
+    try { await loadPdfEngine(win.document); } catch (_) { return null; }
+  }
+  if (!(win.jspdf && win.jspdf.jsPDF)) return null;
+  const API = win.jspdf.jsPDF.API;
+  const orig = API.save;
+  let captured = null;
+  API.save = function saveCapture(name) {
+    try { captured = { blob: this.output('blob'), filename: String(name || 'YS_Term_Sheet.pdf') }; } catch (_) { /* fall through */ }
+    return this;
+  };
+  try { await win.TS.exportPdf(null); } finally { API.save = orig; }
+  return captured;
 }
 
 function loadPdfEngine(doc) {
@@ -515,25 +572,11 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
       try { win.TS.setPricingDefaults(d); return true; } catch (_) { return false; }
     },
     /* Build the exact PDF the static tool downloads, but capture the bytes
-       instead: doc.save() is swapped for an output('blob') capture for the
-       duration of the one export call, then restored. */
-    async capturePdf() {
-      const win = winRef.current;
-      if (!win || !win.TS) return null;
-      if (!(win.jspdf && win.jspdf.jsPDF)) {
-        try { await loadPdfEngine(win.document); } catch (_) { return null; }
-      }
-      if (!(win.jspdf && win.jspdf.jsPDF)) return null;
-      const API = win.jspdf.jsPDF.API;
-      const orig = API.save;
-      let captured = null;
-      API.save = function saveCapture(name) {
-        try { captured = { blob: this.output('blob'), filename: String(name || 'YS_Term_Sheet.pdf') }; } catch (_) { /* fall through */ }
-        return this;
-      };
-      try { await win.TS.exportPdf(null); } finally { API.save = orig; }
-      return captured;
-    },
+       instead. The mechanics live in the exported `capturePdfFromWindow` so the
+       Investor Suite — which hosts the same tool through a bare StaticToolFrame
+       rather than this component — captures the sheet the SAME way, rather than
+       growing a second copy of a save()-swapping trick. */
+    async capturePdf() { return capturePdfFromWindow(winRef.current); },
   }), []);
 
   // Keep the tool's hold reason live: a resolved finding lifts the hold on the
@@ -657,6 +700,17 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
             });
           }
         } catch (_) { /* cosmetic — falls back to no LO block */ }
+        /* NO ASSIGNED OFFICER IS NOT "NOBODY" — it is the person at the keyboard
+           (owner-directed 2026-08-07: "if somebody is doing something from his login,
+           it should always stay with his information, his name"). On a file WITH an
+           assigned officer that officer wins and nothing changes: the term sheet is
+           the file's, not the operator's. On an UNASSIGNED file the tool was
+           completely anonymous, so anything it posted lost its owner to the lead
+           round-robin exactly as the Investor Suite did. The stamp also declares the
+           staff-portal origin unconditionally, which is what keeps the rotation out
+           of the way even when the identity cannot be resolved (lib/toolOfficer.js).
+           Fire-and-forget: it must never delay or block the studio. */
+        stampToolOfficer(win, { keepExisting: !!(officer && officer.name) });
         // Term-sheet hold (owner-directed 2026-07-31): open fatal appraisal
         // findings hold generation — the tool's Download-PDF button refuses
         // with this reason (termsheet.js reads window.TS_ISSUE_HOLD). The

@@ -364,6 +364,30 @@
         totalLoan = acquisition + rehabLoan + financedIR;
         fullPmt = totalLoan * (rate / 12);
         rehabOverCap = true;
+        /* RE-FIT THE RESERVE TO THE SMALLER PAYMENT (owner-directed 2026-08-07).
+           The reserve was sized above against `capDesired(val, pmt)` = the term cap
+           times the payment BEFORE this guard cut the loan. The cut lowers the
+           payment and never re-ran that fit, so the financed reserve could exceed
+           its own documented ceiling — measured $76,713 (18.67 months) on an
+           18-month Gold ground-up whose 75%-of-term cap is $55,455, and LARGER in
+           dollars on the smaller loan. The borrower financed, and paid origination
+           and interest on, money that can never accrue as interest within the term,
+           and the note buyer's workbook cap was exceeded.
+           Only reachable inside this guard (a rehab-over-cap deal), only when a term
+           cap exists, and it can only ever REDUCE — each pass lowers the reserve,
+           which lowers the basis, the loan and the payment, so it converges downward
+           and is bounded. Every documented month cap is honoured because `capMo` IS
+           that cap (full term on Standard, the frozen 75%-of-term on Gold ground-up,
+           zero on Gold reno / bridge, where no reserve exists to re-fit). */
+        if (capMo > 0) {
+          for (var gFit = 0; gFit < 40 && financedIR > capMo * fullPmt + 0.005; gFit++) {
+            financedIR = capMo * fullPmt;
+            ltcBasisG = costBasis0 + (reserveInCost ? financedIR : 0);
+            rehabLoan = Math.max(0, m * ltcBasisG - acquisition - financedIR);
+            totalLoan = acquisition + rehabLoan + financedIR;
+            fullPmt = totalLoan * (rate / 12);
+          }
+        }
       }
     }
 
@@ -553,6 +577,16 @@
     // optional leverage choice: borrower may take LESS than the program max LTC for better pricing
     if (input.targetLTC && input.targetLTC > 0) maxLTC = Math.min(maxLTC, input.targetLTC);
     var capsEff = { maxLoan: c.maxLoan, minFico: c.minFico, maxAcqLTV: c.maxAcqLTV, maxARLTV: c.maxARLTV, maxLTC: maxLTC };
+    /* A TYPED LOAN AMOUNT IS A VOLUNTARY CEILING, NOT A NEW WAY TO SIZE A LOAN
+       (owner-directed 2026-08-06). It is a MIN against the tier's own dollar wall, so
+       it can only ever REDUCE — an amount ABOVE what the caps allow is unreachable
+       here BY DESIGN, and the only way up is the admin basis below (ovrAcqLTV /
+       ovrARLTV / ovrLTC), which already routes to approval. Because sizeLoan finances
+       the rehab first and gives the remainder to the initial advance, and the loan
+       grows monotonically to the nearest wall, capping the wall lands the structure on
+       the typed amount with the owner's own split intact — no sizing math changes.
+       Inert when unset. */
+    if (input.targetLoan && input.targetLoan > 0) capsEff.maxLoan = Math.min(capsEff.maxLoan, input.targetLoan);
     // ---- admin manual override: set the qualifying basis directly (only when > 0; default untouched) ----
     if (input.ovrAcqLTV > 0) capsEff.maxAcqLTV = input.ovrAcqLTV;
     if (input.ovrARLTV > 0) capsEff.maxARLTV = input.ovrARLTV;

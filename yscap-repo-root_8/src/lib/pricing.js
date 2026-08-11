@@ -218,6 +218,22 @@ function buildInputs(app, experience, overrides) {
     heavyRehab: /heavy|gut|ground/i.test(clean(app.rehab_type)),
     sqftAddition: /square|sf|addition|ground/i.test(clean(app.rehab_type)) || num(app.sqft_post) > num(app.sqft_pre),
     targetLTC: 0,
+    // The Silver (EMCAP) ladder can step down the VALUE side as well as the cost
+    // side, because EMCAP prices on the ARV band and the LTC band alike. A rung the
+    // borrower picked has to arrive here or the file would register the deal's
+    // MAXIMUM loan while the signed sheet shows the smaller, better-priced one.
+    // Zero = no lever, exactly like targetLTC.
+    targetARLTV: 0,
+    /* A typed loan amount (owner-directed 2026-08-06) — a voluntary CEILING on the
+       tier's own dollar wall, on every program. It can only reduce; raising a loan
+       still requires the approval-gated manual basis.
+       DELIBERATELY ABSENT FROM THE BASE rather than present-as-zero, which is the
+       `oopRehab` treatment and not the `targetLTC` one. A base `targetLoan: 0` is
+       stored into product_registrations.inputs on EVERY registration, and the studio
+       restores that key into a MONEY box — so every re-opened file showed "Loan
+       amount ($): 0" instead of its "maximum" placeholder. Pricing-inert either way
+       (the engine tests `> 0`), but a zero sitting in a money field on a term-sheet
+       screen is the kind of thing somebody eventually believes. */
     // Sticky per-file markup (#101): once a file is registered with a per-file
     // markup override it is persisted on the application (db/109) and re-applied to
     // EVERY subsequent quote — staff live, borrower live, AND borrower register — so
@@ -246,7 +262,15 @@ function buildInputs(app, experience, overrides) {
 
   // Staff overrides win. Only copy known keys; coerce numeric fields.
   const NUMK = ['units', 'purchasePrice', 'sellerPrice', 'asIsValue', 'arv', 'rehabBudget',
-    'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC',
+    'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC', 'targetARLTV', 'targetLoan',
+    // THE PAYOFF THE STUDIO WAS PRICED ON (owner-directed 2026-08-07). A refinance
+    // pays the existing loan out of the INITIAL ADVANCE — the borrower brings the
+    // shortfall, or keeps what is left over. It is a live, editable field in the
+    // studio's DEAL section (not the admin zone), so an officer typing a fresh
+    // payoff letter figure quoted one cash-to-close while the register used only
+    // the file's stale column: a measured $208,410 swing that INVERTED who pays
+    // whom. Whitelisted so the studio and the file price the same deal.
+    'payoff',
     'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
     'markupStdPct', 'markupGoldPct', 'markupSilverPct',
     // Per-file GOLD TOP-TIER markup (owner item 15 — the studio's "manual section
@@ -404,6 +428,123 @@ function markupTiersFor(program, input, cd) {
 function setEngineMarkupTiers(program, tiers) {
   const engine = program === 'gold' ? GSP : (program === 'silver' ? SVP : YSP);
   if (engine && typeof engine.setMarkupTiers === 'function') engine.setMarkupTiers(tiers);
+}
+function engineFor(program) { return program === 'gold' ? GSP : (program === 'silver' ? SVP : YSP); }
+
+/* ── THE RATE BUILD-UP: buy rate → our markup → the borrower's note rate ────────
+   Owner-directed 2026-08-07, on the registered-product page: "when I have added
+   the buy rate, the markup, and the final rate…" — the page showed only the note
+   rate, so nobody reading a registered file could see what it is MADE of.
+
+   THE FROZEN ENGINES DELIBERATELY DO NOT HAND OVER THE BUY RATE. All three say
+   so in their own words — standard-program.js: "returns BORROWER NOTE RATE ONLY
+   (buy rate + markup). The buy rate is computed internally and never returned/
+   exposed." So it is MEASURED here rather than recomputed: every engine's rate is
+   `clamp(buy) + markup(tier)`, so the SAME evaluate run with the markup forced to
+   zero yields the buy rate directly, and the difference IS the markup. That uses
+   only the two sanctioned hooks (`setMarkup`/`setMarkupTiers`) and duplicates NO
+   frozen logic — which matters more than it looks: the markup rule differs per
+   engine (Gold exempts Tier 1, Silver hard-caps at MARKUP_MAX, the company map
+   overlays per tier), so any hand-written copy of it here would drift the first
+   time one of those rules moved, and would print a wrong buy rate with total
+   confidence. Gold exports no rate function at all, so measuring is also the only
+   uniform way to reach it without editing a frozen file.
+
+   THE ONE HAZARD, AND WHY THE GUARD IS A RE-DERIVATION AND NOT A SIMILARITY TEST.
+   On a deal with a FINANCED interest reserve the note rate feeds back into sizing
+   (a lower rate buys a smaller reserve → a smaller loan → a lower LTC → possibly a
+   lower leverage band → a DIFFERENT buy rate), so the zero-markup run does not
+   always price the same deal, and subtracting it would report a buy rate off by a
+   whole band. Comparing the two runs' sizing is NOT the right test in either
+   direction: too strict (a reserve that moved by $1,000 cannot change any rate, yet
+   an LTC-target deal was rejected outright in testing) and not obviously sufficient
+   (only each engine's own grid knows which figures its buy rate reads, and copying
+   that knowledge here is the drift we are avoiding). So the measurement PROVES
+   ITSELF: force the markup to the measured value and re-price. If the engine then
+   reproduces the real note rate to the cent AND re-sizes the deal identically, then
+   that markup IS the one it applied and the zero-markup run IS the buy rate — no
+   assumption about which inputs the grid reads. Anything else reports
+   `exact:false` and the caller shows the note rate alone. Omit-don't-guess: a buy
+   rate that is usually right is worse than none.
+
+   STAFF-ONLY BY CONSTRUCTION: this lives inside `adminPricing`, the block every
+   borrower-facing path already strips (routes/borrower.js stripQuoteInternal /
+   stripInternalAppFields, lib/tpr-export.js). Putting it anywhere else on the
+   quote would mean a fourth scrub site to remember, and one day forget. */
+const RATE_EPSILON = 1e-9;
+function ratePct(fraction) { return Math.round(num(fraction) * 100 * 1000) / 1000; }
+
+/* The engine's whole sized structure, for "did re-pricing at the measured markup
+   land on the same deal?". The engines name these keys differently (rehabLoan vs
+   rehabHoldback, reserve vs financedReserve) — listing both spellings is
+   deliberate: an absent key reads '' on BOTH sides, so it never weakens the test. */
+function sizingFingerprint(ev) {
+  const s = (ev && ev.sizing) || null;
+  if (!s) return null;
+  return [ev.tier, ev.kind, s.totalLoan, s.initialAdvance, s.rehabLoan, s.rehabHoldback,
+    s.reserve, s.financedReserve, s.ltcPct, s.acqLtvPct, s.arvPct, s.binding]
+    .map((x) => (x == null ? '' : String(x))).join('|');
+}
+
+/* Price this deal with the markup forced to `fraction` on EVERY tier — the map
+   wins over the per-program value in all three engines, so this is the one way to
+   pin the markup whatever tier the deal lands in. Never throws. */
+function probeAtMarkup(program, input, fraction) {
+  try {
+    setEngineMarkup(program, fraction);
+    setEngineMarkupTiers(program, { 1: fraction, 2: fraction, 3: fraction });
+    return engineFor(program).evaluate(input);
+  } catch (_) { return null; }
+}
+
+/* @param m/tiers the markup state `quoteProgram` set — RESTORED here, because its
+   own finally only resets what it set, so a probe value left behind would silently
+   re-price every later quote in this process at the wrong markup. */
+function measureRateBuildUp(program, input, ev, m, tiers) {
+  const finalRate = ev && ev.noteRate != null ? num(ev.noteRate) : 0;
+  if (!(finalRate > 0)) return null;                 // nothing priced — no build-up to show
+  const out = { finalRatePct: ratePct(finalRate), buyRatePct: null, markupPct: null, exact: false, why: null };
+  // An admin-forced note rate IS the rate: every engine short-circuits
+  // `rateOvr || noteRate(...)`, so no markup was ever added and there is no
+  // build-up — saying so is the honest answer, not measuring a meaningless zero.
+  if (hasInput(input, 'ovrRate') && num(input.ovrRate) > 0) { out.why = 'rate_overridden'; return out; }
+  const engine = engineFor(program);
+  if (!engine || typeof engine.evaluate !== 'function' || typeof engine.setMarkupTiers !== 'function') {
+    out.why = 'unavailable'; return out;
+  }
+  try {
+    const zero = probeAtMarkup(program, input, 0);
+    const buy = zero && zero.noteRate != null ? num(zero.noteRate) : 0;
+    if (!(buy > 0)) { out.why = 'unreadable'; return out; }
+    const markup = finalRate - buy;
+    // A negative markup is arithmetically impossible (every engine adds it AFTER
+    // the buy-rate clamp), so seeing one means something we do not understand.
+    if (!(markup >= 0)) { out.why = 'unreadable'; return out; }
+    // THE PROOF: re-price with that markup pinned. Reproducing the real note rate
+    // AND the real structure is what establishes that this is the markup the engine
+    // applied and `buy` is the rate underneath it.
+    const back = probeAtMarkup(program, input, markup);
+    const fp = sizingFingerprint(ev);
+    if (!back || back.noteRate == null || Math.abs(num(back.noteRate) - finalRate) > RATE_EPSILON
+        || !fp || fp !== sizingFingerprint(back)) {
+      out.why = 'not_reproducible'; return out;
+    }
+    out.buyRatePct = ratePct(buy);
+    out.markupPct = ratePct(markup);
+    out.exact = true;
+    return out;
+  } finally {
+    setEngineMarkup(program, m == null ? null : m);
+    setEngineMarkupTiers(program, tiers || null);
+  }
+}
+
+/* Never breaks a quote: a build-up that cannot be measured is simply absent. */
+function attachRateBuildUp(quote, program, input, ev, m, tiers) {
+  if (!quote || !quote.adminPricing) return quote;
+  try { quote.adminPricing.rateBuildUp = measureRateBuildUp(program, input, ev, m, tiers); }
+  catch (_) { quote.adminPricing.rateBuildUp = null; }
+  return quote;
 }
 
 /* ---- normalize an engine result into one UI-agnostic quote shape ---- */
@@ -756,7 +897,7 @@ function quoteProgram(program, input, opts) {
           ladder = { maxLtc: pl.maxLtc, binding: pl.binding, rows: pl.rows };
         }
       } catch (_) { /* ladder is best-effort */ }
-      return normalize('silver', input, ev, ladder, opts);
+      return attachRateBuildUp(normalize('silver', input, ev, ladder, opts), 'silver', input, ev, m, tiers);
     } finally {
       if (m != null) setEngineMarkup(program, null);
       if (tiers) setEngineMarkupTiers(program, null);
@@ -766,7 +907,7 @@ function quoteProgram(program, input, opts) {
     try {
       const ev = GSP.evaluate(input);
       if (input.forcePrice && ev.status === 'INELIGIBLE') { ev.status = 'MANUAL'; ev.exitShortfall = 0; }
-      return normalize('gold', input, ev, null, opts);
+      return attachRateBuildUp(normalize('gold', input, ev, null, opts), 'gold', input, ev, m, tiers);
     } finally {
       if (m != null) setEngineMarkup(program, null);
       if (tiers) setEngineMarkupTiers(program, null);
@@ -784,7 +925,10 @@ function quoteProgram(program, input, opts) {
     } catch (_) { /* ladder is best-effort */ }
     // Tag with the real program ('standard' or 'manual') — a manual product
     // prices on this Standard engine but is labeled/recorded as Manual.
-    return normalize(program === 'manual' ? 'manual' : 'standard', input, ev, ladder, opts);
+    // The build-up passes the ORIGINAL program so it probes the same engine that
+    // just priced this deal (a manual product prices on Standard's).
+    return attachRateBuildUp(normalize(program === 'manual' ? 'manual' : 'standard', input, ev, ladder, opts),
+      program, input, ev, m, tiers);
   } finally {
     if (m != null) setEngineMarkup(program, null);
     if (tiers) setEngineMarkupTiers(program, null);
@@ -851,4 +995,8 @@ module.exports = {
   enginesReady, loadErr: () => loadErr,
   buildInputs, quoteProgram, quoteAll, parseTermMonths, PROGRAM_LABEL,
   econVersionFor,
+  // Exposed for the rate build-up test only — the guards (omit-don't-guess when
+  // the probe re-sized the deal, restore the caller's markup state) are the whole
+  // point, so they are asserted directly rather than inferred from a quote.
+  _internals: { measureRateBuildUp, sizingFingerprint, ratePct },
 };

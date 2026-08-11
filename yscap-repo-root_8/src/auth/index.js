@@ -605,6 +605,76 @@ async function tryStaffCredentials(email, password) {
     return { mfaRequired: true, challenge: C.signJwt({ sub: row.id, kind: 'staff', role: row.role, mfa: true }, 300), kind: 'staff' };
   return { token: staffToken(row.id, row.role, row.token_version), kind: 'staff' };
 }
+
+/* A borrower's HELPER (assistant) is the THIRD credential store — its own row in
+   `borrower_assistants`, never `borrower_auth` (src/lib/borrower-assistant.js).
+   It used to have its OWN sign-in page at /assistant/login, reached by its own
+   link in the client login's footer — exactly the kind of separate door this
+   cross-surface routing exists to delete. A helper is a CLIENT, so they sign in
+   on the client login page like everybody else and the SERVER works out which
+   credential they typed (owner-directed 2026-08-09: "they should just sign in
+   from the same screen that the borrowers are signing in ... their credentials
+   should know that they're only a helper and give them the correct helper
+   credentials"). Nothing on that screen mentions helpers at all — there is a
+   client login and a staff login, and that is the whole of it.
+
+   This is the ONE definition of "are these helper credentials" — the legacy
+   POST /auth/assistant/login delegates to it too, so the two doors can never
+   drift in lockout counting, timing, or what a helper token carries.
+
+   Returns {token,kind,assistant} on success, {locked:true} while the helper's
+   own lockout is running, else null. */
+async function tryAssistantCredentials(email, password) {
+  const em = String(email || '').trim().toLowerCase();
+  const r = await db.query(
+    `SELECT id, borrower_id, password_hash, token_version, failed_attempts, locked_until
+       FROM borrower_assistants
+      WHERE lower(email)=$1 AND disabled_at IS NULL LIMIT 1`, [em]);
+  const row = r.rows[0];
+  // Compensating hash (see tryStaffCredentials) — uniform timing whether or not
+  // a helper login exists for this email, so the fallback can't be used to
+  // enumerate who has been invited to help on somebody's loan.
+  if (!row || !row.password_hash) { await C.hashPassword(String(password || '')).catch(() => {}); return null; }
+  if (row.locked_until && new Date(row.locked_until) > new Date()) return { locked: true };
+  if (!(await C.verifyPassword(password, row.password_hash))) {
+    // A wrong password here counts against THIS account's lockout exactly as the
+    // direct endpoint would — otherwise the cross-surface fallback is an
+    // unthrottled brute-force channel (the same audit finding as tryStaffCredentials).
+    const fa = (row.failed_attempts || 0) + 1;
+    await db.query(`UPDATE borrower_assistants SET failed_attempts=$2, locked_until=$3 WHERE id=$1`,
+      [row.id, fa, fa >= MAX_FAILED ? new Date(Date.now() + 15 * 60000) : null]).catch(() => {});
+    return null;
+  }
+  await db.query(`UPDATE borrower_assistants SET failed_attempts=0, locked_until=NULL, last_login_at=now() WHERE id=$1`, [row.id]).catch(() => {});
+  // A REAL borrower token carrying the assistant envelope — so every borrower
+  // screen and endpoint works unchanged while the PII strip and the sign block
+  // ride along (authenticate() re-validates the helper row on every request).
+  // The BORROWER's own token_version is deliberately not read: a helper is an
+  // INDEPENDENT credential and the borrower may have no portal login at all.
+  // `kind:'borrower'` is what the SPA routes on, and the helper-ness lives
+  // INSIDE the token — so the login screen needs no new branch to handle this.
+  return {
+    kind: 'borrower',
+    assistant: true,
+    token: borrowerAssistant.mintToken({
+      borrowerId: row.borrower_id, borrowerTv: 0,
+      assistantId: row.id, assistantTv: row.token_version || 0 }),
+  };
+}
+
+/* The client login's fallback: these details didn't open a borrower account, so
+   try the OTHER stores a person on this page can legitimately hold — staff
+   first (their console is their primary identity), then a borrower's helper.
+   Answers the response and returns true when one of them authenticated. */
+async function answerCrossSurfaceLogin(res, email, password) {
+  const staff = await tryStaffCredentials(email, password);
+  if (staff) { res.json(staff); return true; }
+  const helper = await tryAssistantCredentials(email, password);
+  if (helper && helper.token) { res.json(helper); return true; }
+  if (helper && helper.locked) { res.status(423).json({ error: 'account locked — try later' }); return true; }
+  return false;
+}
+
 async function tryBorrowerCredentials(email, password) {
   const r = await db.query(
     `SELECT b.id, a.password_hash, a.mfa_enabled, a.token_version, a.failed_attempts, a.locked_until, a.email_verified
@@ -641,20 +711,26 @@ router.post('/borrower/login', async (req, res, next) => {
     const row = r.rows[0];
     // No borrower account (or wrong borrower password): before failing, see if
     // these are actually STAFF credentials — a staffer on the "Client Login"
-    // page signs into their staff console instead of looping on resets.
+    // page signs into their staff console instead of looping on resets — or a
+    // borrower's HELPER, who signs in on this same page and gets a helper
+    // session (owner-directed 2026-08-09; see tryAssistantCredentials).
     if (!row) {
-      const cross = await tryStaffCredentials(email, password);
-      if (cross) return res.json(cross);
+      if (await answerCrossSurfaceLogin(res, email, password)) return;
       // Run a real password hash even when the account doesn't exist, so the
-      // response time doesn't reveal whether the email is registered (enumeration).
+      // response time doesn't reveal whether the email is registered
+      // (enumeration). It is NOT redundant with the compensating hashes inside
+      // the two cross-surface tries: it is what keeps this path's hash count
+      // EQUAL to the "borrower exists, wrong password" path below, which spends
+      // one on its own verify. Drop it and the two become tellable apart.
       await C.hashPassword(String(password || '')).catch(() => {});
       return res.status(401).json({ error: 'invalid credentials' });
     }
     if (row.locked_until && new Date(row.locked_until) > new Date())
       return res.status(423).json({ error: 'account locked — try later' });
     if (!(await C.verifyPassword(password, row.password_hash))) {
-      const cross = await tryStaffCredentials(email, password);
-      if (cross) return res.json(cross);   // dual-identity: the staff password works — don't punish the borrower row
+      // Dual identity: the staff (or helper) password works — sign them into the
+      // account they actually have, and don't punish the borrower row for it.
+      if (await answerCrossSurfaceLogin(res, email, password)) return;
       const fa = row.failed_attempts + 1;
       await db.query(`UPDATE borrower_auth SET failed_attempts=$2, locked_until=$3 WHERE borrower_id=$1`,
         [row.id, fa, fa >= MAX_FAILED ? new Date(Date.now() + 15 * 60000) : null]);
@@ -1321,29 +1397,20 @@ router.post('/assistant/accept', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/* LEGACY door. A helper now signs in on the CLIENT login page like everybody
+   else — POST /auth/borrower/login recognizes helper credentials through the
+   very same `tryAssistantCredentials` (owner-directed 2026-08-09), and the SPA
+   no longer calls this. It is kept, delegating to that ONE definition, so an
+   old bookmark, a saved password-manager entry or an in-flight integration
+   still works and behaves IDENTICALLY to the client login — a second copy of
+   the credential check here is how the two doors would drift. */
 router.post('/assistant/login', async (req, res, next) => {
-  const email = String((req.body && req.body.email) || '').trim().toLowerCase();
-  const password = (req.body && req.body.password) || '';
   try {
-    const r = await db.query(
-      `SELECT id, borrower_id, password_hash, token_version, failed_attempts, locked_until
-         FROM borrower_assistants
-        WHERE lower(email)=$1 AND disabled_at IS NULL LIMIT 1`, [email]);
-    const row = r.rows[0];
-    // Compensating hash (uniform timing) whether or not the account exists / has a
-    // password yet — an enumeration guard, same as the borrower/staff logins.
-    if (!row || !row.password_hash) { await C.hashPassword(String(password)).catch(() => {}); return res.status(401).json({ error: 'invalid credentials' }); }
-    if (row.locked_until && new Date(row.locked_until) > new Date()) return res.status(423).json({ error: 'account locked — try later' });
-    if (!(await C.verifyPassword(password, row.password_hash))) {
-      const fa = (row.failed_attempts || 0) + 1;
-      await db.query(`UPDATE borrower_assistants SET failed_attempts=$2, locked_until=$3 WHERE id=$1`,
-        [row.id, fa, fa >= MAX_FAILED ? new Date(Date.now() + 15 * 60000) : null]).catch(() => {});
-      return res.status(401).json({ error: 'invalid credentials' });
-    }
-    await db.query(`UPDATE borrower_assistants SET failed_attempts=0, locked_until=NULL, last_login_at=now() WHERE id=$1`, [row.id]).catch(() => {});
-    res.json({ kind: 'borrower', assistant: true,
-      token: borrowerAssistant.mintToken({ borrowerId: row.borrower_id, borrowerTv: 0,
-        assistantId: row.id, assistantTv: row.token_version || 0 }) });
+    const out = await tryAssistantCredentials(
+      (req.body && req.body.email) || '', (req.body && req.body.password) || '');
+    if (out && out.token) return res.json(out);
+    if (out && out.locked) return res.status(423).json({ error: 'account locked — try later' });
+    res.status(401).json({ error: 'invalid credentials' });
   } catch (e) { next(e); }
 });
 

@@ -7,7 +7,7 @@
  *        attached; the non-owner-occupied affidavit becomes its own rule-driven
  *        condition rather than a hidden prerequisite of the act.
  *   #26  GOLD REFUSES a registration on individual vesting, with the message
- *        that you must switch to an LLC — authorized by the owner in their own
+ *        that you must switch to an entity — authorized by the owner in their own
  *        words.
  *
  * THE PROPERTY THIS FILE EXISTS TO GUARD: the Gold refusal must live OUTSIDE the
@@ -50,9 +50,12 @@ for (const g of ['gold', 'Gold', 'GOLD', 'Gold Standard', 'gold_standard']) {
   ok(!!V.registrationRefusal(individual, g), `Gold spelled "${g}" refuses individual vesting`);
 }
 ok(/switch/i.test(V.registrationRefusal(individual, 'gold') || ''),
-  'the refusal tells them to switch to an LLC — the owner\'s own instruction');
-ok(/LLC name/i.test(V.registrationRefusal(individual, 'gold') || ''),
-  '…and to enter the LLC name');
+  'the refusal tells them to switch to an entity — the owner\'s own instruction');
+// The wording says ENTITY, not LLC (owner-directed 2026-08-09): the file may
+// vest in a corporation, a partnership or a trust, and naming only one of them
+// tells a corporation to do something that does not apply to it.
+ok(/entity name/i.test(V.registrationRefusal(individual, 'gold') || ''),
+  '…and to enter the entity name');
 ok(/does not allow/i.test(V.registrationRefusal(individual, 'gold') || ''),
   '…and says why, in the owner\'s words');
 

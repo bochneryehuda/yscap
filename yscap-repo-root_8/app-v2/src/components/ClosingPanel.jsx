@@ -36,7 +36,7 @@ const STAGE_LABEL = {
 };
 const QUICKLINK_LABEL = {
   term_sheet: 'Term sheet', insurance: 'Insurance', contract: 'Purchase contract',
-  assignment: 'Assignment of contract', llc: 'LLC documents', bank_statement: 'Bank statements',
+  assignment: 'Assignment of contract', llc: 'Entity documents', bank_statement: 'Bank statements',
   // The readable credit report (both borrowers'); the machine-readable XML data
   // file is deliberately excluded server-side — see closing.isCreditReportDoc.
   credit_report: 'Credit report', title: 'Title',
@@ -471,6 +471,23 @@ function FundingSection({ appId, cw, ws, isCloser, busy, run }) {
               <option value="">— select a warehouse —</option>
               {(ws.warehouses || []).map((w) => <option key={w} value={w}>{w}</option>)}
             </select>
+            {/* THE USUAL ANSWER FOR THIS NOTE BUYER, offered — never applied (owner-directed
+                2026-08-09: Fidelis deals are usually table funded, "but there are a few Fidelis
+                deals that are not"). The server only sends this while the warehouse is still
+                unset, so it disappears the moment the closer picks anything, including this. */}
+            {isCloser && ws.warehouseSuggestion ? (
+              <div className="small" style={{ marginTop: 6, color: '#4B585C' }}>
+                {ws.warehouseSuggestion.why}{' '}
+                <button type="button" className="btn soft small" style={{ marginTop: 4 }} disabled={!!busy}
+                  onClick={() => {
+                    const w = ws.warehouseSuggestion.warehouse;
+                    setWh(w);
+                    run('wh', () => api.closingUpdate(appId, { warehouse: w }), 'Warehouse saved.');
+                  }}>
+                  Use “{ws.warehouseSuggestion.warehouse}”
+                </button>
+              </div>
+            ) : null}
           </label>
           <label className="field" style={{ margin: 0 }}>
             <span className="small muted">Funded date (our system)</span>

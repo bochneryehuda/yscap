@@ -252,25 +252,42 @@ function coBorrowerInvite({ firstName, primaryName, acceptUrl, hasAccount, offic
 /** Invitation to the borrower on a staff-originated loan file: their loan team
  *  has already opened the file — set up portal access (or sign in) to follow it,
  *  upload documents, and message the team. */
-function borrowerInvite({ firstName, propertyLabel, loanNumber, inviter, acceptUrl, hasAccount, officer } = {}) {
+/**
+ * `noFile` — the invitation is a plain portal invite with NO loan file behind it
+ * (owner-directed 2026-08-07: a borrower we already hold a profile for, because they
+ * did a DSCR deal, invited so they can START an RTL loan themselves). The wording has
+ * to change with it: "has opened a loan file for you" is a promise about a file that
+ * does not exist, and it would land the borrower in a portal looking for it. Instead
+ * it says plainly that they can start an application. Absent → byte-identical to the
+ * invitation that has always gone out with a file.
+ */
+function borrowerInvite({ firstName, propertyLabel, loanNumber, inviter, acceptUrl, hasAccount, officer, noFile } = {}) {
   const meta = [];
-  if (propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
-  if (loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
+  if (!noFile && propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
+  if (!noFile && loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
   officerMeta(meta, officer);   // #150 — the inviting officer's contact block
+  const who = inviter ? inviter + ' at YS Capital Group' : 'Your loan team at YS Capital Group';
   return render({
     audience: 'borrower',
-    title: 'Your loan file is ready in the portal',
-    subjectTag: fileTag(loanNumber, propertyLabel),
+    title: noFile ? 'You’re invited to the YS Capital borrower portal' : 'Your loan file is ready in the portal',
+    subjectTag: noFile ? '' : fileTag(loanNumber, propertyLabel),
     badge: { text: 'Portal invite', tone: 'teal' },
     replyable: true,
-    preheader: 'Set up secure access to follow your loan with YS Capital Group.',
+    preheader: noFile
+      ? 'Set up secure access and start a loan application with YS Capital Group.'
+      : 'Set up secure access to follow your loan with YS Capital Group.',
     greeting: greet(firstName),
-    intro: (inviter ? inviter + ' at YS Capital Group' : 'Your loan team at YS Capital Group')
-      + ' has opened a loan file for you and invited you to the secure borrower portal.',
+    intro: noFile
+      ? `${who} has invited you to the secure borrower portal, where you can start a loan application whenever you are ready.`
+      : `${who} has opened a loan file for you and invited you to the secure borrower portal.`,
     lines: [
-      hasAccount
-        ? 'Your existing portal account already has access to this file — sign in to review it, upload your documents, and message your loan team.'
-        : 'Set up your access below to review the file, upload your documents, track every milestone through closing, and message your loan team directly. This invitation expires in 14 days.',
+      noFile
+        ? (hasAccount
+          ? 'Sign in below to start a new loan application, upload your documents, and message your loan team.'
+          : 'Set up your access below, then start a loan application whenever you are ready — the portal walks you through it, keeps your documents in one place, and lets you message your loan team directly. This invitation expires in 14 days.')
+        : (hasAccount
+          ? 'Your existing portal account already has access to this file — sign in to review it, upload your documents, and message your loan team.'
+          : 'Set up your access below to review the file, upload your documents, track every milestone through closing, and message your loan team directly. This invitation expires in 14 days.'),
     ],
     meta,
     cta: acceptUrl ? { label: hasAccount ? 'Sign in to the portal' : 'Set up your access', url: acceptUrl } : null,
@@ -352,7 +369,7 @@ function staffInvite({ fullName, role, acceptUrl, inviter, days = 7 } = {}) {
 }
 
 /** Invitation to the TPO (external brokerage) portal — a broker or one of their
- *  processors sets up their account to start submitting loans (db/485). */
+ *  processors sets up their account to start submitting loans (db/522). */
 function tpoInvite({ fullName, firmName, role, acceptUrl, days = 7 } = {}) {
   const roleLabel = ({ tpo_officer: 'Loan Officer', tpo_processor: 'Processor' })[role] || 'team member';
   const meta = [{ label: 'Role', value: roleLabel }];
@@ -450,27 +467,47 @@ function drawRequest({ borrowerName, propertyLabel, loanNumber } = {}) {
 // phase 1, 2026-07-24). STAFF-ONLY — TrustPoint/note-buyer names never reach a borrower
 // surface; this goes to the draws desk + coordinator only. Carries the copy-ready
 // per-line table so the manual TrustPoint entry takes minutes.
-function trustpointImport({ drawNumber, propertyLabel, loanNumber, lines = [], totalCents = 0 } = {}) {
+function trustpointImport({ drawNumber, drawTag = null, propertyLabel, loanNumber, lines = [], totalCents = 0 } = {}) {
   const usd = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const meta = [];
   if (propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
   if (loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
   meta.push({ label: 'Draw', value: `#${drawNumber == null ? '—' : drawNumber}` });
-  meta.push({ label: 'Total requested', value: usd(totalCents) });
-  for (const l of lines.slice(0, 40)) meta.push({ label: l.name, value: usd(l.requested_cents) });
-  if (lines.length > 40) meta.push({ label: 'More lines', value: `+${lines.length - 40} more — see the file's draw desk` });
+  // The owner's draw-email rule applies to the emails going to OUR TEAM too, not only the
+  // borrower's (owner-directed 2026-08-03: "the emails that are going out to our team and the
+  // emails everywhere"). The total was a meta row indistinguishable from the forty line items
+  // stacked under it; it is now the headline, and the lines are a real TABLE — which is what the
+  // coordinator is copying from, so it is worth reading as one.
+  const CAP = 40;
+  const shown = lines.slice(0, CAP);
   return render({
     audience: 'staff',
-    title: `Draw #${drawNumber == null ? '—' : drawNumber} needs to be entered into TrustPoint`,
+    // The draw LEADS the subject ("Draw 2 · A draw needs to be entered…") — owner-directed
+    // 2026-08-09, so a coordinator with three of these open can tell them apart in the inbox.
+    // The caller resolves the tag through lib/draw-label (which answers null rather than guess);
+    // with no tag the number stays in the title, which is what this email always said.
+    title: drawTag ? 'A draw needs to be entered into TrustPoint'
+      : `Draw #${drawNumber == null ? '—' : drawNumber} needs to be entered into TrustPoint`,
+    drawTag: drawTag || '',
     subjectTag: fileTag(loanNumber, propertyLabel),
     badge: { text: 'Enter in TrustPoint', tone: 'gold' },
     replyable: true,
     preheader: 'A submitted draw on a TrustPoint-administered file needs manual entry.',
     intro: 'A draw was just submitted on this file. Its draws are administered on TrustPoint, so it needs to be entered there by hand — the line-by-line amounts are below, ready to copy over.',
+    figures: { primary: { label: 'Total requested', value: usd(totalCents) }, secondary: [] },
     lines: [
       'Enter it in TrustPoint as a REGULAR workflow draw — never TrustPoint’s “imported draw” option (imported draws send no updates back, which would blind the follow-up tracking).',
       'Once it’s entered, mark the Workflow item done (“Entered in TrustPoint”).',
     ],
+    table: shown.length ? {
+      title: 'Line by line',
+      head: ['Line item', 'Requested'],
+      align: ['left', 'right'],
+      rows: shown.map((l) => [String(l.name || 'Line item'), usd(l.requested_cents)]),
+      // NO SILENT CAPS: a coordinator copying 40 of 52 lines into TrustPoint and being told
+      // nothing is exactly how a draw gets entered short.
+      note: lines.length > CAP ? `+${lines.length - CAP} more line item(s) — open the file's draw desk for the full list.` : null,
+    } : null,
     meta,
     note: 'Reply to this email to reach the draws desk and the loan team together.',
   });

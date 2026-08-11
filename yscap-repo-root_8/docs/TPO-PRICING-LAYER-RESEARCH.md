@@ -63,7 +63,7 @@ to the layer above. So "default all the same" = leave the TPO fields NULL; "cut 
 set only `tpo_pricing_settings.orig_gold_pct`. The broker fee is the last layer and only ever adds to
 **origination / closing costs**, never the rate.
 
-### Storage (db/491)
+### Storage (db/528)
 
 - **`tpo_pricing_settings`** — the TPO-channel admin defaults. A one-row singleton (`id=1`), all pct columns
   **NULLABLE** (NULL = same as retail): `markup_{std,gold,silver}_pct`, `orig_{std,gold,silver}_pct`,
@@ -74,7 +74,7 @@ set only `tpo_pricing_settings.orig_gold_pct`. The broker fee is the last layer 
   **`broker_orig_pct` column is the only thing the firm-admin broker route writes** (piece 3), scoped to
   their own firm, never the rate.
 
-Both mirror the established TPO single-row + audit pattern (`tpo_firm_credit_credentials`, db/490), not the
+Both mirror the established TPO single-row + audit pattern (`tpo_firm_credit_credentials`, db/527), not the
 append-only company history — changes are audited to `audit_log`.
 
 ### Resolver — `src/lib/tpo-pricing.js` (new, non-frozen)
@@ -120,7 +120,7 @@ battery (retail byte-identical) and re-frozen in `CLAUDE.md`.
 
 ## Build order (each through the two-audit gate)
 
-1. **Foundation** — db/491 + `tpo-pricing.js` resolver + `pricing.js` threading + tests (this pass).
+1. **Foundation** — db/528 + `tpo-pricing.js` resolver + `pricing.js` threading + tests (this pass).
 2. **Piece 1** — TPO section in `admin-pricing.js` + `StaffCompanyPricing.jsx`.
 3. **Piece 2** — per-firm overrides in `admin-tpo.js` + `StaffTpoFirms.jsx`.
 4. **Piece 3** — broker self-service `broker_orig_pct` route in `tpo.js` + broker UI + the term-sheet display

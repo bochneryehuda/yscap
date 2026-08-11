@@ -48,8 +48,15 @@ async function normalizeDisputeMedia(items) {
     if (!buf || !buf.length) continue;
     // Derive the type from the BYTES, not the client. Anything that isn't a real photo (svg / html /
     // pdf / unknown) is rejected here so a malicious "image" can never be stored or served inline.
-    const ct = sniffImageMime(buf);
+    let ct = sniffImageMime(buf);
     if (!ct) continue;
+    // An iPhone photo (HEIC) is converted to JPEG at the door (owner-directed 2026-08-10) so the
+    // staff reviewing the dispute can actually SEE the evidence. A failed conversion keeps the
+    // original — the evidence is never dropped to gain a preview.
+    if (ct === 'image/heic') {
+      const c = await require('../lib/heic').maybeConvert(buf);
+      if (c.converted) { buf = c.buf; ct = 'image/jpeg'; }
+    }
     try { buf = stripLocationExif(buf, ct) || buf; } catch (_) { /* keep original on any failure */ }
     let saved;
     try { saved = await storage.save(buf, { filename: m.filename || 'evidence' }); } catch (_) { continue; }

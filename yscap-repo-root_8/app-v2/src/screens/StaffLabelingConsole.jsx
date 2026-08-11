@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
+import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
@@ -54,7 +55,7 @@ export default function StaffLabelingConsole() {
   const handleUpload = async (e) => {
     e.preventDefault();
     const f = fileRef.current && fileRef.current.files && fileRef.current.files[0];
-    if (!f) { alert('Pick a file first.'); return; }
+    if (!f) { showMessage('Pick a file first.'); return; }
     setBusy(true);
     try {
       const dataUrl = await new Promise((res, rej) => {
@@ -69,31 +70,30 @@ export default function StaffLabelingConsole() {
       fileRef.current.value = '';
       setAddForm({ ...addForm, pages: '' });
       await load();
-    } catch (e) { alert('Upload failed: ' + (e && e.message || 'error')); }
+    } catch (e) { showMessage('Upload failed: ' + (e && e.message || 'error')); }
     finally { setBusy(false); }
   };
 
   const remove = async (id) => {
-    if (!window.confirm('Remove this example from training? (The uploaded file stays in Azure.)')) return;
+    if (!(await askConfirm('Remove this example from training? (The uploaded file stays in Azure.)'))) return;
     setBusy(true);
     try { await api.labelingDeleteExample(id); await load(); }
-    catch (e) { alert('Could not remove: ' + (e && e.message || 'error')); }
+    catch (e) { showMessage('Could not remove: ' + (e && e.message || 'error')); }
     finally { setBusy(false); }
   };
 
   const kickTraining = async (targetProject, docType) => {
-    const modelId = window.prompt(
+    const modelId = await askPrompt(
       targetProject === 'classifier'
         ? 'Azure Custom Classification project id (e.g. pilot-doc-splitter):'
-        : `Azure Custom Neural project id for ${docType} (e.g. pilot-${docType.replace(/_/g, '-')}):`,
-      targetProject === 'classifier' ? 'pilot-doc-splitter' : `pilot-${(docType || '').replace(/_/g, '-')}`);
+        : `Azure Custom Neural project id for ${docType} (e.g. pilot-${docType.replace(/_/g, '-')}):`, { defaultValue: targetProject === 'classifier' ? 'pilot-doc-splitter' : `pilot-${(docType || '').replace(/_/g, '-')}` });
     if (!modelId || !modelId.trim()) return;
     setBusy(true);
     try {
       const r = await api.labelingRequestTraining({ targetProject, docType: targetProject === 'extractor' ? docType : null, modelId: modelId.trim() });
-      if (r && r.note) alert(r.note);
+      if (r && r.note) showMessage(r.note);
       await load();
-    } catch (e) { alert('Training request failed: ' + (e && e.message || 'error')); }
+    } catch (e) { showMessage('Training request failed: ' + (e && e.message || 'error')); }
     finally { setBusy(false); }
   };
 

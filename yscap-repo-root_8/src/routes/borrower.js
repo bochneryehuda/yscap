@@ -29,6 +29,7 @@ const numberBounds = require('../lib/number-bounds');     // ONE definition of e
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const pricing = require('../lib/pricing');
+const stickyOverrides = require('../lib/pricing-sticky');
 const manualProgram = require('../lib/manual-program');
 const termOpts = require('../lib/term-options');
 const workflowAuto = require('../lib/workflow-automation');
@@ -767,8 +768,12 @@ router.post('/applications/:id/request-draw', async (req, res) => {
 // definition now, shared with every other door that takes a typed entity name
 // (src/lib/vesting.js): it reuses a name the borrower already has, recovers from
 // the unique-index race, and builds a brand-new entity's document slots.
-async function resolveEntityByName(borrowerId, name) {
-  const out = await require('../lib/vesting').resolveEntityByName(borrowerId, name);
+// `fields` carries what the door was told about the entity — today the ENTITY
+// TYPE (LLC / Corporation / Partnership / Trust, owner-directed 2026-08-09). It
+// is only ever used for an entity that is genuinely NEW; a name the borrower
+// already has keeps its own details (see vesting.resolveEntityByName).
+async function resolveEntityByName(borrowerId, name, fields = {}) {
+  const out = await require('../lib/vesting').resolveEntityByName(borrowerId, name, fields);
   return out ? out.id : null;
 }
 
@@ -780,7 +785,7 @@ router.post('/applications', async (req, res) => {
   const numProblem = require('../lib/fields').applicationNumberProblem(b);
   if (numProblem) return res.status(400).json({ error: numProblem });
   if (b.llcId) { const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]); if (!o.rows[0]) b.llcId = null; }
-  if (!b.llcId && b.entityName) { try { b.llcId = await resolveEntityByName(me(req), b.entityName); } catch (_) { /* best-effort */ } }
+  if (!b.llcId && b.entityName) { try { b.llcId = await resolveEntityByName(me(req), b.entityName, { entityType: b.entityType }); } catch (_) { /* best-effort */ } }
   // Assignment invariant (mirrors the staff create, #96): the ticked flag is the
   // truth; underlying/fee are hard-nulled off an assignment, and the stored
   // purchase price is the underlying + the (derived) fee so leverage/pricing
@@ -819,6 +824,9 @@ router.post('/applications', async (req, res) => {
 router.get('/applications/:id', async (req, res) => {
   const r = await db.query(
     `SELECT a.*, l.llc_name, l.is_verified AS llc_verified, l.formation_state AS llc_formation_state,
+            -- What kind of company the file vests in, so the borrower's own screen
+            -- asks for the right governing document by name (owner-directed 2026-08-09).
+            l.entity_type, l.entity_type_confirmed, l.entity_subtype,
             cb.first_name AS co_borrower_first_name, cb.last_name AS co_borrower_last_name,
             pr.program AS registered_program, pr.product_label AS registered_product_label,
             pr.status AS registered_product_status, pr.note_rate AS registered_note_rate,
@@ -1017,7 +1025,11 @@ router.get('/applications/:id/pricing', async (req, res) => {
     const current = history.find((x) => x.is_current) || null;
     let quote = null;
     // The live what-if quote embeds adminPricing too — strip it before it leaves.
-    if (pricing.enginesReady()) { try { quote = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp)); quote.experience = f.exp; } catch (_) {} }
+    // The panel's live quote is what the borrower READS, so it is priced with the
+    // file's own carried values too — otherwise the screen advertises a loan that
+    // registering cannot produce (owner-directed 2026-08-07).
+    const effPanel = await stickyOverrides.effectiveOverrides(f.app.id, {}, db);
+    if (pricing.enginesReady()) { try { quote = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, effPanel)); quote.experience = f.exp; } catch (_) {} }
     // If the borrower's registration is a manual-review exception waiting on a
     // super-admin, surface that state so the studio shows "registered but NOT
     // confirmed — waiting for approval" on reload (not just the transient submit
@@ -1048,7 +1060,10 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     const f = await loadFileForPricing(req.params.id, me(req));
     if (!f) return res.status(404).json({ error: 'not found' });
     const overrides = borrowerPricingOverrides((req.body && req.body.overrides) || {});
-    const out = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, overrides));
+    // The SAME effective overrides the register will use — a what-if that ignores
+    // what the file carries would quote a loan the register cannot produce.
+    const effQ = await stickyOverrides.effectiveOverrides(f.app.id, overrides, db);
+    const out = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, effQ));
     res.json({ ...out, experience: f.exp });
   } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
@@ -1094,7 +1109,23 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // economics here — see src/lib/pricing-overrides.js). The what-if /quote path
     // may keep them; the registered basis uses the file's experience of record.
     delete overrides.expFlips; delete overrides.expHolds; delete overrides.expGround;
-    const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    /* A STAFF-SET LOAN AMOUNT IS STICKY ACROSS A BORROWER RE-REGISTER (owner-directed
+       2026-08-06 typed loan amount). `targetLoan` lives in the studio's ADMIN zone,
+       which is removed from the DOM for a borrower — so their studio cannot show it,
+       cannot restore it, and their allowlist rightly refuses to accept one from the
+       client. The consequence, without this, is a silent way to UNDO an officer's
+       ceiling: staff register a file at a typed $500,000, the borrower opens their
+       own Products & Pricing, sees the deal at its maximum, presses Register, and the
+       file re-registers at the full amount — a bigger loan at a worse rate, with no
+       approval, no escalation and no record that a ceiling was ever removed.
+       So it is carried forward from the file's own last registration, exactly as the
+       per-file markup is (pricing.js) and for exactly the same stated reason: a
+       borrower can never reprice away the basis the file was structured at. STAFF
+       still change it freely — they can see the box, and their own door never runs
+       this. Best-effort: an unreadable prior registration must never block a
+       borrower's register, and it can only ever make the loan SMALLER. */
+    const effReg = await stickyOverrides.effectiveOverrides(f.app.id, overrides, db);
+    const inputs = pricing.buildInputs(f.app, f.exp, effReg);
     /* A refinance is sized on the as-is value, so with none on file there is no
        denominator and nothing to register (owner-directed 2026-08-02). Same
        refusal as the staff door — the studio blocks it client-side, this stops a
@@ -1249,7 +1280,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       const typed = String((b2.overrides && b2.overrides.entityName) || b2.entityName || '').trim();
       const cur = (await db.query(`SELECT llc_id, borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {};
       if (typed && !cur.llc_id && cur.borrower_id) {
-        const vestLlcId = await resolveEntityByName(cur.borrower_id, typed);
+        const vestLlcId = await resolveEntityByName(cur.borrower_id, typed, { entityType: b2.entityType });
         if (vestLlcId) await require('../lib/vesting').setVestingLlc(appId, vestLlcId, { source: 'borrower', actor: null });
       }
     } catch (e) { console.error('[borrower-register] vesting from studio failed:', db.describeError(e)); }
@@ -1903,7 +1934,15 @@ router.post('/llcs', async (req, res) => {
   const { id: llcId, existed } = await llcLib.findOrCreateLlc(me(req), {
     llcName: b.llcName, ein: ein.ein, formationState: b.formationState,
     formationDate: b.formationDate, ownershipPct: b.ownershipPct,
+    entityType: b.entityType,   // LLC / Corporation / Partnership / Trust (owner-directed 2026-08-09)
+    // …and, for a partnership or a trust, WHICH kind — it decides what we may ask
+    // them for (a revocable trust has no EIN; a general partnership no state filing).
+    entitySubtype: b.entitySubtype,
   });
+  /* A type stated on a name the borrower ALREADY has still records — but only
+     while nobody has confirmed one and the entity is not verified. The rules and
+     all three guards live in llc.confirmEntityType. */
+  if (existed) { try { await llcLib.confirmEntityType(llcId, b.entityType, { entitySubtype: b.entitySubtype }); } catch (_) { /* best-effort */ } }
   // Only a brand-new entity gets members + its document checklist; an existing
   // one keeps its own (never clobbered by a re-create).
   if (!existed) {
@@ -1931,6 +1970,31 @@ router.patch('/llcs/:id', async (req, res) => {
   }
   const sets = [], vals = []; let i = 1;
   const map = { llcName: 'llc_name', ein: 'ein', formationState: 'formation_state', formationDate: 'formation_date', ownershipPct: 'ownership_pct' };
+  /* WHAT KIND OF COMPANY THIS IS (owner-directed 2026-08-09). Written through the
+     ONE rule in llc.js rather than the column map above, because recording a type
+     is three columns plus a re-label of the entity's document slots — a
+     corporation is asked for bylaws and a stock certificate, not an operating
+     agreement. A value we cannot read is REFUSED here rather than silently
+     ignored: the borrower picked something, so answering 200 while storing
+     nothing is the repo's "returned 200 but didn't save" class. */
+  if (b.entityType !== undefined && String(b.entityType || '').trim()) {
+    const ET = require('../lib/entity-type');
+    if (!ET.isRecognized(b.entityType)) {
+      return res.status(400).json({ error: `Pick one of: ${ET.TYPES.map((t) => t.label).join(', ')}.` });
+    }
+    /* The sub-kind is normalized AGAINST the type being saved, so switching a
+       trust to an LLC cannot leave "revocable" behind on a type that has no
+       sub-kind — and an explicit blank CLEARS it, because "I picked the wrong
+       one" has to be undoable. */
+    const sub = ET.normalizeSubtype(ET.normalizeKey(b.entityType), b.entitySubtype) || null;
+    await db.query(
+      `UPDATE llcs SET entity_type=$2, entity_type_confirmed=true, entity_type_set_at=now(),
+                       entity_subtype=$4, updated_at=now()
+        WHERE id=$1 AND borrower_id=$3 AND is_verified=false`,
+      [req.params.id, ET.normalizeKey(b.entityType), me(req), sub]);
+    try { await llcLib.applyEntitySlotWording(req.params.id); } catch (_) { /* wording is cosmetic */ }
+    if (Object.keys(map).every((k) => b[k] === undefined)) return res.json({ ok: true });
+  }
   // WO-6 (F-M11): a mid-typed formation date ('0026-07-15') must not persist as
   // year 26 — normalize it (2-digit year → 2026, garbage → null) like every
   // other typed date field, so the year-0026 class can't corrupt LLC ages.
@@ -2677,6 +2741,41 @@ router.upsertPartner = upsertPartner;
 // ---------------- TRACK RECORDS (general per-borrower section) ----------------
 // A borrower's track record is one general dataset — never tied to a single
 // file. Loan-file experience conditions link here automatically.
+/* ── CONFIRMING PROPERTIES FOUND IN THE PUBLIC RECORDS (blueprint §9.4) ─────
+   Staff searched and staged; the borrower says which are theirs. A "yes" is a
+   CLAIM — it writes a line at `pending`, which counts toward nothing until our
+   team verifies it — and it is strictly less risky than the line they can
+   already type by hand below. Nothing on these three routes makes a vendor
+   call: a borrower may never spend the office's lookup allowance. */
+router.get('/track-record-candidates', async (req, res) => {
+  try {
+    res.json(await require('../lib/track-record/borrower-confirm').loadForBorrower(me(req)));
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.post('/track-record-candidates/:id/answer', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const out = await require('../lib/track-record/borrower-confirm').answerCandidate(req.params.id, {
+      borrowerId: me(req), answer: b.answer, dealType: b.dealType, note: b.note,
+    });
+    await audit(req, 'borrower_answered_track_record_candidate', 'borrower', me(req),
+      { candidateId: req.params.id, answer: b.answer, trackRecordId: out.trackRecordId || null });
+    try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+    require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.post('/track-record-candidates/:id/undo', async (req, res) => {
+  try {
+    const out = await require('../lib/track-record/borrower-confirm').undoAnswer(req.params.id, { borrowerId: me(req) });
+    await audit(req, 'borrower_undid_track_record_candidate', 'borrower', me(req),
+      { candidateId: req.params.id, lineRemoved: out.lineRemoved === true, lineKept: out.lineKept === true });
+    try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+    require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+
 router.get('/track-records', async (req, res) => {
   // Explicit borrower-safe allowlist — NEVER `t.*`. The row carries internal-only
   // columns the borrower must not see: `lo_notes` (candid staff notes on the deal,
@@ -2690,7 +2789,8 @@ router.get('/track-records', async (req, res) => {
             t.rent_amount, t.rent_date, t.refi_amount, t.refi_date, t.current_value, t.notes,
             t.is_verified, t.docs_status, t.owned_personally, t.created_at, t.updated_at,
             COALESCE(t.entity_name, l.llc_name) AS entity_name,
-            (SELECT count(*)::int FROM documents d WHERE d.track_record_id=t.id) AS doc_count,
+            (SELECT count(*)::int FROM documents d
+              WHERE d.track_record_id=t.id AND d.visibility='borrower' AND d.is_current) AS doc_count,
             (SELECT COALESCE(json_agg(json_build_object(
                     'id', d.id, 'filename', d.filename, 'review_status', d.review_status,
                     'created_at', d.created_at) ORDER BY d.created_at), '[]'::json)
@@ -2731,9 +2831,21 @@ router.get('/track-records', async (req, res) => {
 // recent exit, in track-record.js qualifies()) — an incomplete row saves fine, it
 // just doesn't count yet. `trackRecordErrors` keeps its name (imported elsewhere)
 // but is now the minimal save gate.
-function trackRecordErrors(b) {
-  const addressText = b.propertyAddress && (b.propertyAddress.oneLine || b.propertyAddress.street || b.propertyAddress.line1);
-  if (!addressText) return 'property address is required';
+// The one reading of "does this body carry a real property address" — shared by
+// the save gate below and the sent-only guard, so the two can never disagree
+// about what counts as a blank address.
+function trackRecordAddressText(b) {
+  const a = b && b.propertyAddress;
+  return !!(a && (a.oneLine || a.street || a.line1));
+}
+function trackRecordErrors(b, opts) {
+  // The address is the line's IDENTITY, so it is required to CREATE a line. On an
+  // EDIT a blank/absent address means "keep the previous address" (owner-directed
+  // #29: "leave the address blank to keep the previous address") — the line
+  // already has one and `trackRecordSentOnly` preserves it — so an edit is never
+  // blocked for want of an address it is not changing.
+  if (opts && opts.isEdit) return null;
+  if (!trackRecordAddressText(b)) return 'property address is required';
   return null;
 }
 // What this entry still needs to be COMPLETE (count toward experience). Returned
@@ -2798,6 +2910,62 @@ function trackRecordCols(b) {
   };
 }
 
+/* AN EDIT ONLY TOUCHES WHAT THE REQUEST ACTUALLY SAID (2026-08-09 audit).
+   `trackRecordCols` builds the FULL column shape — right for the create doors,
+   a loaded gun on the two PUT doors: a partial body nulled every absent figure
+   (sale price, the dates, the entity name), silently reset an absent dealType
+   to 'flip', and — on the staff door — every one of those "changes" is
+   material to db/485, so the line was un-verified over columns the caller
+   never mentioned. Both tools send full rows, which is why it stayed quiet;
+   the doors must not depend on that. Shared by BOTH put doors so they cannot
+   drift. */
+const TRK_COL_SENT_KEY = {
+  property_address: 'propertyAddress', deal_type: 'dealType',
+  purchase_price: 'purchasePrice', sale_price: 'salePrice', rehab_amount: 'rehabAmount',
+  purchase_date: 'purchaseDate', sale_date: 'saleDate',
+  rent_amount: 'rentAmount', rent_date: 'rentDate',
+  refi_amount: 'refiAmount', refi_date: 'refiDate',
+  current_value: 'currentValue', notes: 'notes', property_type: 'propertyType',
+  entity_name: 'entityName', owned_personally: 'ownedPersonally',
+};
+const TRK_MATERIAL_COLS = [
+  // db/485's own material list — the columns whose CHANGE resets a review.
+  'property_address', 'llc_id', 'owned_personally', 'entity_name', 'deal_type',
+  'property_type', 'purchase_price', 'sale_price', 'rehab_amount', 'rent_amount',
+  'refi_amount', 'current_value', 'purchase_date', 'sale_date', 'rent_date', 'refi_date',
+];
+function trackRecordSentOnly(cols, b) {
+  const out = { ...cols };
+  for (const [col, key] of Object.entries(TRK_COL_SENT_KEY)) {
+    // "Owned personally" CLEARS the entity by design even when entityName was
+    // not restated — the flag is the statement about the entity.
+    if (b[key] === undefined && !(col === 'entity_name' && b.ownedPersonally)) delete out[col];
+  }
+  /* THE ADDRESS IS THE LINE'S IDENTITY AND AN EDIT CAN NEVER CLEAR IT (#29,
+     owner-directed). A blank OR absent address on a PUT means "keep the previous
+     address", so drop the column AND its dedupe key unless the request carried a
+     REAL address to change it to — otherwise an edit that leaves the address
+     blank to keep it would overwrite the stored address (and its key) with a
+     blank. A genuine address change (real text) still rewrites both. */
+  if (!trackRecordAddressText(b)) { delete out.property_address; delete out.address_key; }
+  /* THE REVIEW RESET BELONGS TO db/485, NOT TO THIS ROUTE. The entered stamp
+     (`trackRecordEnteredCols`) force-writes is_verified=false + 'pending' —
+     right on the CREATE doors (entering a line is pending review, and their
+     ON CONFLICT retry can land on a verified row), and WRONG restated on an
+     EDIT: a notes-only save, or a full-row autosave echo carrying the exact
+     same figures, destroyed a reviewer's verification over nothing (2026-08-09
+     audit — the trigger's own tail says "no material column moved … left
+     completely alone", and this route was overruling it). The trigger fires on
+     every REAL material change from every writer, so dropping the two flags
+     here removes only the false resets. The who-typed-this stamp itself rides
+     only when the edit actually spoke about the deal's substance — a note is
+     not "whoever last put these figures on the line". */
+  delete out.is_verified;
+  delete out.verification_status;
+  if (!TRK_MATERIAL_COLS.some((c) => c in out)) { delete out.entered_by_kind; delete out.entered_at; }
+  return out;
+}
+
 /* WHO TYPED THIS, AND SO WHERE IT STANDS (owner-directed 2026-08-03: "anyone
    that enters the track record first should be pending review till they review
    it and they provide documentation, then it should go for verified").
@@ -2824,10 +2992,28 @@ function trackRecordCols(b) {
    `verification_status = 'pending'` next to `is_verified = true`, which every
    count reads as verified and every screen reads as pending. Staff stamp who and
    when; a new staff-entered line is pending by the column default anyway. */
+/**
+ * The "somebody entered this" stamp every track-record create carries.
+ *
+ * `verification_status` IS SET FOR EVERY KIND (2026-08-07). It used to read
+ * `if (kind === 'borrower')`, so the STAFF door got no status at all — while the comment
+ * at that call site stated it "lands pending review exactly as the borrower's does".
+ * A helper that takes the actor as an argument and then behaves differently per actor is
+ * not a shared rule; it is two rules sharing a function, and this is exactly the gap the
+ * owner reported ("staff are entering track records, since it's coming up as verified").
+ *
+ * `is_verified` is stated explicitly for the same reason: relying on the column default
+ * is right on a plain INSERT and WRONG on the create doors' `ON CONFLICT … DO UPDATE`
+ * branch, where a retried save lands on an existing — possibly already verified — row.
+ * db/485's trigger is the belt behind all of it, for every writer including the imports.
+ */
 function trackRecordEnteredCols(kind) {
-  const cols = { entered_by_kind: kind, entered_at: new Date().toISOString() };
-  if (kind === 'borrower') cols.verification_status = 'pending';
-  return cols;
+  return {
+    entered_by_kind: kind,
+    entered_at: new Date().toISOString(),
+    verification_status: 'pending',
+    is_verified: false,
+  };
 }
 router.post('/track-records', async (req, res) => {
   const b = req.body || {};
@@ -2848,8 +3034,25 @@ router.post('/track-records', async (req, res) => {
   // PUT guard) — the conflict then no-ops and we re-select its id. Rows without
   // a clientRowId keep plain-insert behavior (the partial index ignores NULLs).
   const clientRowId = b.clientRowId ? String(b.clientRowId).slice(0, 80) : null;
+  /* A TYPED ENTITY NAME BECOMES A REAL ENTITY (owner-directed 2026-08-09: "any
+     LLC that he enters should be a real LLC on his profile"). Before this the
+     name was stored as free text and nothing else happened — no document slots,
+     no members, no verification, and no way for one verified company to carry
+     ownership to the other properties it held.
+
+     Only when the borrower did NOT pick an existing entity from the list
+     (`b.llcId`), and never for a personally-owned line. `promoteEntityName` never
+     throws, refuses junk, and writes nothing when the name could mean two of
+     their companies — so this can neither lose the deal being saved nor attach
+     it to the wrong company. */
+  let promotedLlcId = null;
+  if (!b.llcId && !b.ownedPersonally && b.entityName) {
+    const p = await require('../lib/track-record-entity')
+      .promoteEntityName(me(req), b.entityName, { firstSeenOn: 'track_record' });
+    promotedLlcId = p.llcId;
+  }
   const allNames = ['borrower_id', 'llc_id', 'client_row_id', ...names];
-  const allVals = [me(req), b.llcId || null, clientRowId, ...vals];
+  const allVals = [me(req), b.llcId || promotedLlcId || null, clientRowId, ...vals];
   const ph = allVals.map((_, i) => '$' + (i + 1)).join(',');
   const updateSet = ['llc_id=EXCLUDED.llc_id', ...names.map(n => `${n}=EXCLUDED.${n}`), 'updated_at=now()'].join(', ');
   const r = await db.query(
@@ -2865,6 +3068,10 @@ router.post('/track-records', async (req, res) => {
     trId = ex.rows[0] && ex.rows[0].id;
   }
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+  // AUDITED, like the staff door (staff_add_track_record). Without this the only
+  // trace of a borrower-created line was an SSE event and entered_by_kind — so
+  // "who put this deal on the record, and when" had no durable answer.
+  await audit(req, 'add_track_record', 'track_record', trId, { address: b.propertyAddress || null, dealType: b.dealType || null });
   // Live cross-user refresh (#112): staff viewing this borrower's record reload.
   require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
   res.status(201).json({ ok: true, trackRecordId: trId, missing: trackRecordMissing(b) });
@@ -2880,16 +3087,31 @@ router.put('/track-records/:id', async (req, res) => {
     const l = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]);
     if (!l.rows[0]) return res.status(404).json({ error: 'llc not found' });
   }
-  const bad = trackRecordErrors(b);
+  const bad = trackRecordErrors(b, { isEdit: true });
   if (bad) return res.status(400).json({ error: bad });
-  const cols = { ...trackRecordCols(b), ...trackRecordEnteredCols('borrower') };
-  const names = Object.keys(cols);
-  const vals = Object.values(cols);
+  const cols = trackRecordSentOnly({ ...trackRecordCols(b), ...trackRecordEnteredCols('borrower') }, b);
+  /* Build the SET clause incrementally so it stays valid however few columns the
+     edit touched. Now that a blank-address edit keeps the stored address (#29),
+     `cols` can be empty — an entity-only edit, or a blank-address save that
+     changed nothing else — and the old positional `$off` scheme would emit a
+     stray comma (`SET , updated_at=now()`). llc_id only moves when the request
+     SPOKE about it — a body that simply omits the field must not clear it. */
+  const params = [req.params.id, me(req)];
+  const setParts = [];
+  if (b.llcId !== undefined || b.ownedPersonally) {
+    params.push(b.ownedPersonally ? null : (b.llcId || null));
+    setParts.push(`llc_id=$${params.length}`);
+  }
+  for (const [name, val] of Object.entries(cols)) {
+    params.push(val);
+    setParts.push(`${name}=$${params.length}`);
+  }
+  setParts.push('updated_at=now()');
   await db.query(
-    `UPDATE track_records SET llc_id=$3, ${names.map((n, i) => `${n}=$${i + 4}`).join(', ')}, updated_at=now()
-      WHERE id=$1 AND borrower_id=$2`,
-    [req.params.id, me(req), b.llcId || null, ...vals]);
+    `UPDATE track_records SET ${setParts.join(', ')} WHERE id=$1 AND borrower_id=$2`,
+    params);
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+  await audit(req, 'edit_track_record', 'track_record', req.params.id, { address: b.propertyAddress || null, dealType: b.dealType || null });
   require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
   res.json({ ok: true, missing: trackRecordMissing(b) });
 });
@@ -2901,6 +3123,7 @@ router.delete('/track-records/:id', async (req, res) => {
     [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found or already verified' });
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+  await audit(req, 'delete_track_record', 'track_record', req.params.id);
   require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
   res.json({ ok: true });
 });
@@ -3885,7 +4108,7 @@ router.post('/drafts/:id/submit', async (req, res) => {
   // Only accept an LLC the borrower actually owns.
   if (b.llcId) { const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]); if (!o.rows[0]) b.llcId = null; }
   // A typed-but-never-picked entity name still links a real profile LLC.
-  if (!b.llcId && b.entityName) { try { b.llcId = await resolveEntityByName(me(req), b.entityName); } catch (_) { /* best-effort */ } }
+  if (!b.llcId && b.entityName) { try { b.llcId = await resolveEntityByName(me(req), b.entityName, { entityType: b.entityType }); } catch (_) { /* best-effort */ } }
 
   // resolve officer -> null means Lead Capture
   let officerId = null, officerRow = null;
@@ -4156,6 +4379,13 @@ async function generateLlcChecklist(llcId, client = db) {
     if (dup.rows[0]) continue;
     await insertFromTemplate(tpl, { llc_id: llcId }, client);
   }
+  /* NAME THE SLOTS FOR WHAT THIS ENTITY ACTUALLY IS (owner-directed 2026-08-09).
+     The slots were just copied from ONE template, so they all say "operating
+     agreement" — which is a document a corporation does not have. This rewrites
+     them to the entity's own type, and because SharePoint names its folders from
+     the item's label and the TPR export categorises from it, both follow with no
+     second map. Never throws; an LLC is unchanged by it. */
+  try { await require('../lib/llc').applyEntitySlotWording(llcId, client); } catch (_) { /* wording is cosmetic next to the slots existing */ }
 }
 
 // One-shot backfill: apply the RTL condition set + internal checklist to every
@@ -4379,6 +4609,7 @@ module.exports.trackRecordErrors = trackRecordErrors;
 module.exports.trackRecordCols = trackRecordCols;
 module.exports.trackRecordMissing = trackRecordMissing;
 module.exports.trackRecordEnteredCols = trackRecordEnteredCols;
+module.exports.trackRecordSentOnly = trackRecordSentOnly;
 // Exposed so a test can RUN this door's text helper rather than regex the source
 // for its name — a source regex passes even when the helper has stopped
 // delegating, which is exactly how two defects in this series stayed hidden.

@@ -517,6 +517,36 @@ module.exports = {
   // must present it (Authorization: Bearer <token> or X-Api-Key). Render env ONLY.
   trustpointWebhookToken: process.env.TRUSTPOINT_WEBHOOK_TOKEN || null,
 
+  // ---- Elementix (recorded deeds / mortgages, reached over MCP). READ-ONLY. ----
+  // No API key is bought: the endpoint uses the standard MCP OAuth flow, so PILOT
+  // signs in on the seat the owner already pays for, approved once in a browser.
+  // Auth lives in src/elementix/oauth.js; the guarded client is src/elementix/client.js.
+  // Capability map + the county-by-county coverage caveats: docs/ELEMENTIX-RESEARCH.md.
+  elementix: {
+    url:          (process.env.ELEMENTIX_URL || 'https://app.elementix.com/api/mcp').replace(/\/+$/, ''),
+    enabled:      process.env.ELEMENTIX_ENABLED === '1',   // master switch (default off)
+    dryrun:       process.env.ELEMENTIX_DRYRUN === '1',    // log the intended call, send nothing
+    // Only needed if Elementix declines self-registration and hands us a client id
+    // instead. Render env ONLY, never committed.
+    clientId:     process.env.ELEMENTIX_CLIENT_ID || null,
+    clientSecret: process.env.ELEMENTIX_CLIENT_SECRET || null,
+    // Escape hatch for when the endpoint publishes no discoverable metadata.
+    authServer:   process.env.ELEMENTIX_AUTH_SERVER || null,
+    // At-rest key for the stored tokens; falls back to the SSN key. Changing it
+    // does not lose anything dangerous — somebody re-approves once.
+    tokenKey:     process.env.ELEMENTIX_TOKEN_KEY || null,
+    // THE OWNER'S MONEY CAP: "I have only 1,000 per month." This is the number
+    // of CREDIT-SPENDING contact look-ups allowed in a calendar month, counted
+    // in the database (db/503) so it survives a deploy and spans every instance.
+    // PILOT never spends one on its own — see src/lib/elementix/lookups.js.
+    paidPerMonth: Math.max(0, Number(process.env.ELEMENTIX_PAID_PER_MONTH || 1000)),
+    // Self-cap well under the platform ceiling of 1,000 requests/hour, which is
+    // shared by the WHOLE organization across every connected client — every
+    // officer's session and every background job draw from the same bucket.
+    maxPerHour:   parseInt(process.env.ELEMENTIX_MAX_PER_HOUR || '400', 10),
+    maxPerSec:    parseInt(process.env.ELEMENTIX_MAX_PER_SEC || '3', 10),
+  },
+
   sitewireDocsEnabled:  process.env.SITEWIRE_DOCS_ENABLED === '1',   // master switch for the doc-push workaround (default off)
   sitewireWebBaseUrl:   (process.env.SITEWIRE_WEB_BASE_URL || process.env.SITEWIRE_BASE_URL || 'https://app.sitewire.co').replace(/\/+$/, ''),
   // Preferred (durable): PILOT logs itself in and refreshes its own session — a lender_owner web login.
@@ -980,4 +1010,193 @@ module.exports = {
       jobLeaseSeconds:   Math.max(30, parseInt(process.env.UW_JOB_LEASE_SECONDS || '300', 10) || 300),
     };
   })(),
+
+  // --- AMC appraisal ordering (AppraisalScope / CoreLogic Digital Gateway) ---
+  // The outbound appraisal-ordering integration: place the order directly with the
+  // AMC, track its lifecycle, message the AMC back and forth, request revisions /
+  // ROV reconsiderations, push + pull documents, and pull the finished report back
+  // into the file. It talks to CoreLogic's Digital Gateway (CDG), a synchronous
+  // "pull" gateway in front of AppraisalScope — WE always initiate, and it never
+  // pushes to us, so status / comments / revisions / documents are all polled.
+  //
+  // Modeled on the Sitewire draw integration. Staged rollout, ALL default OFF:
+  //   AMC_ENABLED          master switch — the lookups cache + the poll worker (reads)
+  //   AMC_OUTBOUND_ENABLED separate gate — actually place / message / upload (WRITES)
+  //   AMC_DRYRUN           build + log the exact request body, send nothing
+  // Credentials come from Render env ONLY (never source, never chat). CoreLogic/the
+  // vendor provide: the OAuth client id/secret (GetToken), the DoLogin account
+  // id/password, the ServiceProviderSubDomain, the DigitalGatewayLenderIdentifier
+  // (a CoreLogic reporting id), and the sourceClientIdentifier. Nothing talks to the
+  // AMC until AMC_ENABLED=1 and these are set.
+  amc: {
+    enabled:        process.env.AMC_ENABLED === '1',            // master (default OFF)
+    outboundEnabled: process.env.AMC_OUTBOUND_ENABLED === '1',  // write gate (default OFF)
+    dryrun:         process.env.AMC_DRYRUN === '1',             // build + log, send nothing
+
+    // ---- endpoints (UAT vs PROD). The vendor assigns these; overridable so an env
+    // flip needs no redeploy. Defaults are the documented UAT hosts. ----
+    // OAuth2 token endpoint (client_credentials grant). Cotality is CoreLogic's new
+    // name — the vendor (Tony Pham, 2026-08-10) directed the token call at the
+    // cotality.com host. The old corelogic.com host still answers identically, so a
+    // stale AMC_OAUTH_URL override keeps working, but this default follows the vendor.
+    oauthUrl:  (process.env.AMC_OAUTH_URL
+                 || 'https://api-uat.cotality.com/order-gateway-oauth2/token?grant_type=client_credentials')
+                 .trim(),
+    // DoLogin endpoint (returns the AppraisalScope api_key).
+    loginUrl:  (process.env.AMC_LOGIN_URL
+                 || 'https://uat1.globalgateway.corelogic.com/direct/appraisal_service/request/appraisalscope/client')
+                 .trim().replace(/\/+$/, ''),
+    // Order + lookup endpoint (the ?orderId= is appended for order-specific updates).
+    orderUrl:  (process.env.AMC_ORDER_URL
+                 || 'https://uat1.globalgateway.corelogic.com/order/appraisal_service/request/appraisalscope/client')
+                 .trim().replace(/\/+$/, ''),
+    // Document multipart-upload endpoint (returns a getdocument retrieval URL).
+    postDocumentsUrl: (process.env.AMC_POSTDOCUMENTS_URL
+                 || 'https://uat1.globalgateway.corelogic.com/postdocuments')
+                 .trim().replace(/\/+$/, ''),
+
+    // ---- credentials (Render env ONLY) ----
+    clientId:      process.env.AMC_CLIENT_ID || null,          // OAuth GetToken client id
+    clientSecret:  process.env.AMC_CLIENT_SECRET || null,      // OAuth GetToken client secret
+    loginAccount:  process.env.AMC_LOGIN_ACCOUNT || null,      // DoLogin loginAccountIdentifier
+    loginPassword: process.env.AMC_LOGIN_PASSWORD || null,     // DoLogin loginAccountPassword
+
+    // ---- required message identifiers (provided by CoreLogic / the vendor) ----
+    subdomain:       process.env.AMC_SUBDOMAIN || null,        // ServiceProviderSubDomain (e.g. integrations.uat)
+    lenderIdentifier: process.env.AMC_LENDER_IDENTIFIER || null, // DigitalGatewayLenderIdentifier (CoreLogic reporting id)
+    sourceClientId:  process.env.AMC_SOURCE_CLIENT_ID || null, // clientSystem.sourceInformation.sourceClientIdentifier
+
+    // Lower-env fallback API key when OAuth creds have not been issued yet (UAT only,
+    // never available in production). Sent as an `apikey` HTTP header. Optional.
+    fallbackApiKey:  process.env.AMC_FALLBACK_APIKEY || null,
+
+    pollSec:   Math.max(60, parseInt(process.env.AMC_POLL_SEC || '600', 10) || 600),  // status/comment poll cadence
+    lookupRefreshHours: Math.max(1, parseInt(process.env.AMC_LOOKUP_REFRESH_HOURS || '24', 10) || 24),
+  },
+
+  // ---------------------------------------------------------------------------
+  // Class Valuation — the SECOND appraisal vendor (owner-directed 2026-08-07).
+  //
+  // It is NOT a variant of the AMC/CoreLogic integration and must not be folded
+  // into it. Three differences decide the whole shape:
+  //   • AUTH is ONE call, not two. OAuth2 PASSWORD grant — client id + secret +
+  //     username + password, all four issued by Class (their guide, p.9, marks
+  //     every one [Required] and "supplied by Class Valuation"). There is no
+  //     second login and no per-message api key.
+  //   • It is REST, not one action-typed endpoint. POST /orders, GET /orders/{id},
+  //     GET /orders/{id}/attachments — each its own path.
+  //   • It PUSHES. Class calls a webhook of ours on every change; CoreLogic is
+  //     poll-only. So there is no poll cadence here — there is a callback URL and
+  //     the Basic-auth credentials WE issue to them.
+  //
+  // Switches mirror the AMC ones exactly, and for the same reason:
+  //   CLASS_ENABLED          master — token + reads (products, orders, attachments)
+  //   CLASS_OUTBOUND_ENABLED separate gate — actually PLACE an order / write
+  //   CLASS_DRYRUN           build + log the exact body, send nothing
+  //
+  // Credentials come from Render env ONLY (never source, never chat). Nothing
+  // reaches Class until CLASS_ENABLED=1 and the four values are set.
+  //
+  // WE ARE ON THE **V1** ORDERS API — the guide YS Capital was given ("Class Orders
+  // API Guide", rev 0.17, 08-03-2026). Its order hosts are
+  // `api{,.uat,.test}.classvaluation.com` (p.3, with a verbatim call at p.13), which
+  // is ALSO what their onboarding email gave — the two agree, so the order hosts are
+  // confirmed. A separate V2 document uses `orders-external.*` and different field
+  // spellings; do not mix them. Both guides only ever show the TEST identity host, so
+  // the UAT/production identity hosts are still INFERRED — confirm before switching
+  // on. Everything stays overridable by env.
+  class: {
+    enabled:         process.env.CLASS_ENABLED === '1',           // master (default OFF)
+    outboundEnabled: process.env.CLASS_OUTBOUND_ENABLED === '1',  // write gate (default OFF)
+    dryrun:          process.env.CLASS_DRYRUN === '1',            // build + log, send nothing
+
+    // ---- credentials (Render env ONLY) — all four required by the password grant ----
+    clientId:     process.env.CLASS_CLIENT_ID || null,
+    clientSecret: process.env.CLASS_CLIENT_SECRET || null,
+    username:     process.env.CLASS_USERNAME || null,   // the API user, NOT necessarily the portal login
+    password:     process.env.CLASS_PASSWORD || null,
+
+    // ---- which UAD version we order on (owner-directed 2026-08-07) ----
+    // 'v1' = UAD 2.6 (POST /orders) — the DEFAULT, and what the industry is on today.
+    // 'v2' = UAD 3.6 (POST /v2/orders) — built and ready for the shift.
+    // Both live on the SAME hosts and the SAME credentials; only the path and the
+    // body shape differ. Staff can also pick the version for ONE order on the screen,
+    // so 3.6 can be tried on a single file before this default is moved.
+    apiVersion: (process.env.CLASS_API_VERSION || 'v1').trim().toLowerCase(),
+
+    // ---- hosts (all overridable; see the note above) ----
+    // environment: 'uat' (default) | 'test' | 'production'
+    environment: (process.env.CLASS_ENVIRONMENT || 'uat').trim().toLowerCase(),
+    tokenUrl:  (process.env.CLASS_TOKEN_URL || '').trim().replace(/\/+$/, '') || null,
+    ordersUrl: (process.env.CLASS_ORDERS_URL || '').trim().replace(/\/+$/, '') || null,
+
+    // ---- the org scoping Class puts in the POST /orders query string ----
+    orgId:       process.env.CLASS_ORG_ID || null,
+    lenderOrgId: process.env.CLASS_LENDER_ORG_ID || null,
+
+    // ---- the callback (webhook) half: credentials WE issue to Class ----
+    // Class POSTs to us with HTTP Basic auth using exactly these. Registered via
+    // POST /callbacks; the URL defaults to APP_URL + the mounted route.
+    callbackUrl:      (process.env.CLASS_CALLBACK_URL || '').trim() || null,
+    callbackUser:     process.env.CLASS_CALLBACK_USER || null,
+    callbackPassword: process.env.CLASS_CALLBACK_PASSWORD || null,
+    // Their registration also allows an ApiToken mode (a token in a header we name)
+    // instead of Basic. We register Basic; these exist so the mode can be switched at
+    // Class's end without a deploy. Unset = that mode is simply off.
+    callbackToken:       process.env.CLASS_CALLBACK_TOKEN || null,
+    callbackTokenHeader: (process.env.CLASS_CALLBACK_TOKEN_HEADER || 'x-api-key').trim(),
+
+    timeoutMs: Math.max(1000, parseInt(process.env.CLASS_TIMEOUT_MS || '60000', 10) || 60000),
+  },
+
+  // ---- DocLab (Private Lender Law) — loan-document drafting. RTL ONLY. ----
+  // The API form of the closing-prep step lib/closing-prep.js already emails to
+  // TeamAG@privatelenderlaw.com. Research + the field map: docs/doclab/.
+  //
+  // THE SANDBOX AND PRODUCTION SHARE A BASE URL (their API Setup page) — the
+  // CREDENTIAL is the only thing that decides which one you reach. So `environment`
+  // is a label WE set and stamp on every stored request; it is never inferred from
+  // the URL, because the URL cannot tell you.
+  doclab: {
+    enabled:         process.env.DOCLAB_ENABLED === '1',           // master (default OFF)
+    outboundEnabled: process.env.DOCLAB_OUTBOUND_ENABLED === '1',  // write gate (default OFF)
+    dryrun:          process.env.DOCLAB_DRYRUN === '1',            // build + log, send nothing
+
+    baseUrl:      (process.env.DOCLAB_BASE_URL || '').trim().replace(/\/+$/, '') || null,
+    // Render env ONLY, never committed. PLL issues these per environment.
+    clientId:     process.env.DOCLAB_CLIENT_ID || null,
+    clientSecret: process.env.DOCLAB_CLIENT_SECRET || null,
+    scope:        process.env.DOCLAB_SCOPE || null,
+    // 'sandbox' | 'production' — a label, recorded on every request. Defaults to
+    // sandbox so an unlabelled deployment can never claim its documents were real.
+    environment:  (process.env.DOCLAB_ENVIRONMENT || 'sandbox').trim().toLowerCase(),
+    timeoutMs:    Math.max(1000, parseInt(process.env.DOCLAB_TIMEOUT_MS || '45000', 10) || 45000),
+
+    // The SignalR hub for real-time status pushes. Long-polling GET /request/{id}
+    // is the documented fallback and is what the poller will use first.
+    notificationHubUrl: (process.env.DOCLAB_NOTIFICATION_HUB_URL || 'https://api.privatelenderlaw.ai/notificationHub').trim(),
+
+    // ---- the two "lender" names, which are NOT the same thing ----
+    // The name our TEMPLATES are filed under at PLL — a routing key, not a party.
+    templateLenderName: (process.env.DOCLAB_TEMPLATE_LENDER_NAME || '').trim() || null,
+    // The entity that MAKES the loan and is named on the note and the mortgage.
+    // NEVER applications.lender — that is the note buyer and must not reach a
+    // borrower-facing document. See src/doclab/field-map.js.
+    lenderName:      (process.env.DOCLAB_LENDER_NAME || '').trim() || null,
+    lenderAddress:   (process.env.DOCLAB_LENDER_ADDRESS || '').trim() || null,
+    lenderCity:      (process.env.DOCLAB_LENDER_CITY || '').trim() || null,
+    lenderState:     (process.env.DOCLAB_LENDER_STATE || '').trim() || null,
+    lenderTownAndState: (process.env.DOCLAB_LENDER_TOWN_AND_STATE || '').trim() || null,
+    lenderOrgType:   (process.env.DOCLAB_LENDER_ORG_TYPE || '').trim() || null,
+    servicerName:    (process.env.DOCLAB_SERVICER_NAME || '').trim() || null,
+    servicerAddress: (process.env.DOCLAB_SERVICER_ADDRESS || '').trim() || null,
+    // Which state's law governs. A legal choice, so it is configured, never
+    // inferred from the property.
+    governingLaw:    (process.env.DOCLAB_GOVERNING_LAW || '').trim() || null,
+
+    // Skip the separate approve / generate-PDF calls. Both default OFF so the first
+    // live packages get a human beat before documents are drafted.
+    autoApprove:    process.env.DOCLAB_AUTO_APPROVE === '1',
+    autoApprovePdf: process.env.DOCLAB_AUTO_APPROVE_PDF === '1',
+  },
 };

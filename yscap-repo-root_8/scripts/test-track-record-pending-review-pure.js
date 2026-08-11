@@ -59,14 +59,20 @@ ok(/function trackRecordEnteredCols\(kind\)/.test(borrower),
 {
   const helper = borrower.slice(borrower.indexOf('function trackRecordEnteredCols'), borrower.indexOf('function trackRecordEnteredCols') + 400);
   ok(/entered_by_kind: kind/.test(helper) && /entered_at:/.test(helper), 'it stamps who and when');
-  ok(/if \(kind === 'borrower'\) cols\.verification_status = 'pending'/.test(helper),
-    'a BORROWER write resets the line to pending review');
-  /* THE STAFF DOOR DELIBERATELY DOES NOT RESET. A staffer may correct a VERIFIED
-     line's figures; writing 'pending' over that leaves the row claiming both at
-     once — verification_status 'pending' next to is_verified true — which every
-     count reads as verified and every screen reads as pending. */
-  ok(!/verification_status: 'pending'/.test(helper.replace(/if \(kind === 'borrower'\)[^\n]*\n/, '')),
-    "…and only the borrower's, so a staff correction can't leave a row claiming pending AND verified");
+  /* EVERY WRITE RESETS THE LINE, WHOEVER TYPED IT (owner-directed 2026-08-07: "There
+     should not even be a single thing where somebody entered their track record that
+     should come up as verified… no matter how you enter it").
+     This used to read `if (kind === 'borrower')`, and the reason recorded here was a
+     REAL one worth keeping: writing 'pending' while leaving `is_verified` true leaves
+     the row claiming BOTH at once — pending on every screen, verified in every count.
+     The answer is not to skip the reset for staff; it is to write BOTH halves, which is
+     what the helper now does, so the contradiction it warned about is impossible. */
+  ok(!/kind === 'borrower'/.test(helper),
+    'no per-actor branch — a helper that takes the actor and behaves differently is two rules, not one');
+  ok(/verification_status: 'pending'/.test(helper),
+    'EVERY write — borrower or staff — resets the line to pending review');
+  ok(/is_verified: false/.test(helper),
+    "…and clears is_verified in the same breath, so a row can never claim pending AND verified");
 }
 {
   // Both borrower doors (create + edit) and the staff door must go through it —
@@ -147,20 +153,38 @@ console.log('\nD. the processing queue — what is waiting on us');
 
 console.log('\nD2. the queue has a SCREEN, in the hub for things waiting on a decision');
 
+/* THE SCREEN CHANGED, THE REQUIREMENTS DID NOT. `StaffTrackRecordReviews` was
+   replaced on 2026-08-09 by `StaffTrackRecordWorkspace` — the owner's "two
+   stacked track records, combine into ONE". Every assertion below is the SAME
+   property re-pointed at the screen that now carries it; none is relaxed. If a
+   future screen replaces this one, do the same rather than deleting a line. */
 {
-  const screen = read('app-v2', 'src', 'screens', 'StaffTrackRecordReviews.jsx');
+  const screen = read('app-v2', 'src', 'screens', 'StaffTrackRecordWorkspace.jsx');
+  /* THE PER-LINE WORK MOVED INTO A SHARED COMPONENT (owner-directed 2026-08-09,
+     "one screen, everything"): the workspace renders <LineDetail>, the SAME
+     component the inline Track Record Center renders, so the full screen and the
+     default screen can never drift. The verdict + request-doc capabilities are
+     therefore asserted on the component that now carries them, and the workspace
+     is proven to MOUNT it — the property is intact, only its home moved. This is
+     the "re-point, do not relax" rule the D2 header states, applied to a
+     component extraction instead of a screen swap. */
+  const detail = read('app-v2', 'src', 'components', 'track-record', 'LineDetail.jsx');
   const hub = read('app-v2', 'src', 'screens', 'StaffApprovals.jsx');
   const layout = read('app-v2', 'src', 'components', 'StaffLayout.jsx');
-  ok(/staffTrackRecordReviews\(\)/.test(screen), 'the screen reads the queue');
-  ok(/staffVerifyTrackRecord\(/.test(screen), '…and sets a verdict through the ONE audited verify route');
-  ok(/staffRequestTrackRecordDoc\(/.test(screen), '…and can ask for the documentation that is missing');
+  ok(/staffTrackRecordWorkspace\(/.test(screen), 'the screen reads the queue');
+  ok(/<LineDetail\b/.test(screen),
+    '…and renders the shared per-line detail, so the full screen and the inline center can never drift');
+  ok(/staffVerifyTrackRecord\(/.test(detail), '…and sets a verdict through the ONE audited verify route');
+  ok(/staffRequestTrackRecordDoc/.test(detail), '…and can ask for the documentation that is missing');
   // The refusals here are real underwriting rules (no exit, a stale exit, not a
   // processor) and each names the way forward — summarising them loses that.
-  ok(/e && e\.message/.test(screen), '…and shows the server\'s own refusal wording, never a summary');
-  ok(/mayVerify/.test(screen) && /sign_off_conditions/.test(screen),
-    'verifying is offered only to a processor — the same rule the route enforces');
-  ok(/StaffTrackRecordReviews/.test(hub) && /'track-record'/.test(hub),
+  ok(/e && e\.message/.test(detail), '…and shows the server\'s own refusal wording, never a summary');
+  ok(/maySignOff/.test(detail) && /sign_off_conditions/.test(screen),
+    'verifying is offered only to somebody with sign-off — the same rule the route enforces');
+  ok(/StaffTrackRecordWorkspace/.test(hub) && /'track-record'/.test(hub),
     'it is a TAB of the Approvals hub, not another top-level nav link');
+  ok(!/StaffTrackRecordReviews/.test(hub),
+    '…and the screen it replaced is not mounted alongside it — two of them is the complaint this rebuild started from');
   ok(/staffTrackRecordReviewsCount/.test(hub) && /staffTrackRecordReviewsCount/.test(layout),
     'both the tab badge and the one Approvals nav badge count it');
   ok(/\+ trReviewCount/.test(layout), '…so the nav badge total includes what is waiting here');

@@ -83,10 +83,30 @@ eq(g.error.requiredProgram, 'standard', 'program_mismatch names the required pro
 ok(buyerRule.exportGate(loan('Fidelis'), fidelisTape, { isAdmin: false, registeredProgram: 'standard' }).ok, 'standard + Fidelis → Fidelis tape OK');
 ok(buyerRule.exportGate(loan('Blue Lake'), bluelakeTape, { isAdmin: false, registeredProgram: 'gold' }).ok, 'gold + Blue Lake → Blue Lake tape OK');
 ok(buyerRule.exportGate(loan('blue lake'), bluelakeTape, { isAdmin: false, registeredProgram: 'gold' }).ok, 'normNoteBuyer tolerant of casing/spacing (blue lake → bluelake)');
-// normNoteBuyer strips spacing but does NOT suffix-fuzzy-match (deliberate — a
-// FATAL over-match would be worse); a longer label like "BlueLake Capital" does
-// NOT resolve to the bluelake key, so it can't export the Blue Lake tape.
-ok(!buyerRule.exportGate(loan('BlueLake Capital'), bluelakeTape, { isAdmin: false, registeredProgram: 'gold' }).ok, 'a suffixed label does NOT fuzzy-match the provider');
+
+// The buyers' REAL note-buyer labels (applications.lender / the ClickUp dropdown) are
+// longer than the bare key — the owner's own "Fidelis Investors LLC" and the routine
+// "Blue Lake Capital" — and normNoteBuyer is EXACT, so they never resolve to the bare
+// key. Each is ENUMERATED as a tape alias (fidelis.js / bluelake.js buyerAliases),
+// exactly like EMCAP's real "EMCAP Financial" label below — a CLOSED list, never a
+// prefix/fuzzy match. Without these a correctly-labeled file could neither export its
+// tape (non-admin) nor persist its New-Construction answers (owner-reported: the
+// ground-up questionnaire re-asked on every export). The real label exports; a
+// NON-enumerated sibling still can't, which proves the matcher stays a closed list.
+ok(buyerRule.exportGate(loan('Fidelis Investors LLC'), fidelisTape, { isAdmin: false, registeredProgram: 'standard' }).ok,
+  '"Fidelis Investors LLC" (the owner\'s real label) exports the Fidelis tape on a standard registration');
+ok(buyerRule.exportGate(loan('Fidelis Investments LLC'), fidelisTape, { isAdmin: false, registeredProgram: 'standard' }).ok,
+  '"Fidelis Investments LLC" (the Sitewire spelling) also exports the Fidelis tape');
+ok(!buyerRule.exportGate(loan('Fidelis Partners'), fidelisTape, { isAdmin: false, registeredProgram: 'standard' }).ok,
+  'a NON-enumerated Fidelis-prefixed label does NOT fuzzy-match the tape (closed list)');
+ok(!buyerRule.exportGate(loan('Fidelity National'), fidelisTape, { isAdmin: false, registeredProgram: 'standard' }).ok,
+  '"Fidelity National" (the title insurer) never matches the Fidelis tape');
+ok(buyerRule.exportGate(loan('Blue Lake Capital'), bluelakeTape, { isAdmin: false, registeredProgram: 'gold' }).ok,
+  '"Blue Lake Capital" (the real label) exports the Blue Lake tape on a gold registration');
+ok(buyerRule.exportGate(loan('blue lake capital llc'), bluelakeTape, { isAdmin: false, registeredProgram: 'gold' }).ok,
+  'the Blue Lake alias is casing/spacing tolerant via normNoteBuyer');
+ok(!buyerRule.exportGate(loan('Blue Lake Partners'), bluelakeTape, { isAdmin: false, registeredProgram: 'gold' }).ok,
+  'a NON-enumerated Blue-Lake-prefixed label does NOT fuzzy-match the tape (closed list)');
 
 // EMCAP↔Silver is LIVE: a non-admin exports the EMCAP tape exactly when the loan
 // is an EMCAP loan registered on the Silver program — any other program mismatches.

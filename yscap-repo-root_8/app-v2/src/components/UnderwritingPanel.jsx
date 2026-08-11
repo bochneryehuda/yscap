@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import DocCompare from './DocCompare.jsx';
@@ -23,7 +24,7 @@ const DOC_LABEL = {
   government_id: 'Government ID', purchase_contract: 'Purchase contract', title: 'Title report',
   bank_statement: 'Bank statement', appraisal: 'Appraisal', operating_agreement: 'Operating agreement',
   assignment: 'Assignment of contract', ein_letter: 'EIN letter', good_standing: 'Good standing',
-  llc_formation: 'LLC formation', insurance: 'Insurance', flood: 'Flood cert',
+  llc_formation: 'Entity formation', insurance: 'Insurance', flood: 'Flood cert',
   settlement: 'Settlement statement', credit_report: 'Credit report', background_report: 'Background / OFAC',
   contract_amendment: 'Contract amendment', scope_of_work: 'Scope of work', payoff_statement: 'Payoff statement',
   voided_check: 'Voided check', plans_permits: 'Plans & permits', signed_term_sheet: 'Signed term sheet',
@@ -98,7 +99,7 @@ function SuggestionActions({ appId, suggestionId, status, important, templateCod
   const run = async (fn, label) => {
     setBusy(true);
     try { await fn(); onChange && onChange(); }
-    catch (e) { alert(`Could not ${label}: ${(e && e.message) || 'error'}`); }
+    catch (e) { showMessage(`Could not ${label}: ${(e && e.message) || 'error'}`); }
     finally { setBusy(false); }
   };
   const decide = (action, extra) => run(() => api.aiSuggestionsDecide(appId, suggestionId, { action, ...(extra || {}) }), action.replace(/_/g, ' '));
@@ -116,7 +117,7 @@ function SuggestionActions({ appId, suggestionId, status, important, templateCod
         {templateCode && (
           <button disabled={busy} style={btn(true)}
             title={`Create the "${templateCode}" condition on this file`}
-            onClick={() => { if (window.confirm(`Create the "${templateCode}" condition on this file?`)) decide('convert_to_condition', { templateCode }); }}>
+            onClick={async () => { if (await askConfirm(`Create the "${templateCode}" condition on this file?`)) decide('convert_to_condition', { templateCode }); }}>
             Post the condition
           </button>
         )}
@@ -171,13 +172,13 @@ function EntityAdoptButton({ appId, entityName, findingId, onChange }) {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(null);
   const run = async () => {
-    if (!window.confirm(`Add "${entityName}" to the borrower's profile as one of their entities?\n\nAny operating agreement, articles of organization or EIN letter for it already on this file is copied onto the new entity, and the entity-documents condition is posted for whatever is still missing.`)) return;
+    if (!(await askConfirm(`Add "${entityName}" to the borrower's profile as one of their entities?\n\nAny operating agreement, articles of organization or EIN letter for it already on this file is copied onto the new entity, and the entity-documents condition is posted for whatever is still missing.`))) return;
     setBusy(true);
     try {
       const r = await api.adoptEntityToProfile(appId, entityName, findingId);
       setDone(r);
       onChange && onChange();
-    } catch (e) { alert(`Could not add the entity: ${(e && e.message) || 'error'}`); }
+    } catch (e) { showMessage(`Could not add the entity: ${(e && e.message) || 'error'}`); }
     finally { setBusy(false); }
   };
   if (done) {
@@ -265,21 +266,21 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
       setSimRows(rows);
       const p = {}; for (const s of rows) p[s.id] = true;
       setSimPicked(p);
-    } catch (e) { alert('Could not load similar findings: ' + (e && e.message || 'error')); setSimOpen(false); }
+    } catch (e) { showMessage('Could not load similar findings: ' + (e && e.message || 'error')); setSimOpen(false); }
     finally { setSimBusy(false); }
   };
   const runBulk = async () => {
     const ids = Object.keys(simPicked).filter(id => simPicked[id]);
-    if (!ids.length) { alert('No findings selected.'); return; }
-    if (simAction === 'dismiss' && !simNote.trim()) { alert('Please add a dismissal reason.'); return; }
-    if (!window.confirm(`${simAction} ${ids.length} finding${ids.length === 1 ? '' : 's'} across other files?`)) return;
+    if (!ids.length) { showMessage('No findings selected.'); return; }
+    if (simAction === 'dismiss' && !simNote.trim()) { showMessage('Please add a dismissal reason.'); return; }
+    if (!(await askConfirm(`${simAction} ${ids.length} finding${ids.length === 1 ? '' : 's'} across other files?`))) return;
     setSimBusy(true);
     try {
       const r = await api.bulkResolveFindings(appId, ids, simAction, simNote);
-      alert(`Bulk ${simAction} complete: ${r.resolved || 0} of ${r.allowed || 0} resolved${r.blocked ? ` (${r.blocked} blocked)` : ''}.`);
+      showMessage(`Bulk ${simAction} complete: ${r.resolved || 0} of ${r.allowed || 0} resolved${r.blocked ? ` (${r.blocked} blocked)` : ''}.`);
       setSimOpen(false); setSimRows(null); setSimNote('');
       onChange && onChange();
-    } catch (e) { alert(`Could not bulk ${simAction}: ` + (e && e.message || 'error')); }
+    } catch (e) { showMessage(`Could not bulk ${simAction}: ` + (e && e.message || 'error')); }
     finally { setSimBusy(false); }
   };
   const runCommittee = async () => {
@@ -289,7 +290,7 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
       const r = await api.runCommitteeReview(appId, f.id, false);
       setCommitteeOpinion(r.opinion || null);
       onChange && onChange();
-    } catch (e) { alert(e.message || 'The panel could not be reached'); }
+    } catch (e) { showMessage(e.message || 'The panel could not be reached'); }
     finally { setCommitteeBusy(false); }
   };
   const s = SEV[f.severity] || SEV.info;
@@ -314,16 +315,16 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
   const submit = async (action, extra = {}) => {
     setBusy(true);
     try { await api.underwritingResolveFinding(appId, f.id, { action, ...extra }); onChange && onChange(); }
-    catch (e) { alert(e.message || 'Could not resolve the finding'); }
+    catch (e) { showMessage(e.message || 'Could not resolve the finding'); }
     finally { setBusy(false); }
   };
-  const click = (a) => {
+  const click = async (a) => {
     // "Fix the file" (needs a value): pre-fill with what the DOCUMENT says (the
     // suggested correction) so the underwriter just confirms; for price / as-is /
     // ARV / rehab budget the server writes it straight onto the loan file.
     if (a.needs === 'value') { setPending(a); setText(docVal != null ? String(docVal) : ''); return; }
     if (a.needs === 'note') { setPending(a); setText(''); return; }
-    if (a.key === 'decline' && !window.confirm('Decline this file on this finding?')) return;
+    if (a.key === 'decline' && !(await askConfirm('Decline this file on this finding?'))) return;
     submit(a.key);
   };
   const confirmPending = () => {
@@ -346,7 +347,7 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
       });
       setEscOpen(false); setEscNote('');
       onChange && onChange();
-    } catch (e) { alert(e.message || 'Could not escalate the finding'); }
+    } catch (e) { showMessage(e.message || 'Could not escalate the finding'); }
     finally { setBusy(false); }
   };
 
@@ -365,7 +366,7 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
       const w = window.open(url, '_blank');
       if (!w) { const a = document.createElement('a'); a.href = url; a.download = filename || 'document'; document.body.appendChild(a); a.click(); a.remove(); }
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    } catch (err) { alert(err.message || 'Could not open the source document'); }
+    } catch (err) { showMessage(err.message || 'Could not open the source document'); }
   };
   return (
     <div ref={cardRef} style={{
@@ -380,7 +381,7 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
         {/* AI TRIAGE priority chip (owner-directed 2026-07-27) — the AI's "look here first" ranking.
             Display-only; the finding's real severity badge (above) is unchanged. Dark text. */}
         {f.aiTriage && (
-          <span title={f.aiTriage.why || ''} style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em',
+          <span title={f.aiTriage.why || ''} style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em',
             padding: '3px 8px', borderRadius: 6,
             color: f.aiTriage.bucket === 'noise' ? '#4B585C' : '#256168',
             background: f.aiTriage.bucket === 'noise' ? '#EFEFEA' : '#E4F0F0',
@@ -468,7 +469,7 @@ function Finding({ appId, f, onChange, resolvable, canAct = false, canWaive = tr
       {f.aiReview && (
         <div style={{ marginTop: 2, marginBottom: resolvable ? 10 : 0, padding: '8px 10px', borderRadius: 8,
           background: '#F1F6F6', border: '1px solid #CBE0E0' }}>
-          <div style={{ fontSize: 10.5, fontWeight: 700, color: '#256168', marginBottom: 3, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#256168', marginBottom: 3, textTransform: 'uppercase', letterSpacing: 0.3 }}>
             {f.aiReview.verdict === 'confirmed' ? 'AI checked this — confirmed a real concern'
               : f.aiReview.verdict === 'uncertain' ? 'AI checked this — could not fully confirm'
               : 'AI checked this'}
@@ -690,7 +691,7 @@ function ExtractionCard({ e }) {
           {keys.length === 0 && <span style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>No fields were read.</span>}
           {keys.map((k) => (
             <div key={k} style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{k.replace(/([A-Z])/g, ' $1').replace(/_/g, ' ').trim()}</div>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{k.replace(/([A-Z])/g, ' $1').replace(/_/g, ' ').trim()}</div>
               <div style={{ fontSize: 13, overflowWrap: 'anywhere' }}>{typeof fields[k] === 'object' ? JSON.stringify(fields[k]) : String(fields[k])}</div>
             </div>
           ))}
@@ -735,7 +736,7 @@ function TieOutMatrix({ tieout }) {
   const catMismatch = {};
   for (const r of shown) if (r.status === 'mismatch') catMismatch[r.category] = (catMismatch[r.category] || 0) + 1;
   const visible = onlyIssues ? shown.filter((r) => r.status === 'mismatch') : shown;
-  const th = { padding: '7px 10px', fontSize: 10.5, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', textAlign: 'left', whiteSpace: 'nowrap', borderBottom: '1px solid var(--line,#E7E1D3)' };
+  const th = { padding: '7px 10px', fontSize: 11, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', textAlign: 'left', whiteSpace: 'nowrap', borderBottom: '1px solid var(--line,#E7E1D3)' };
   const cellStyle = (s) => ({ padding: '7px 10px', fontSize: 12.5, borderBottom: '1px solid var(--line-soft,#EFEADD)', background: (CELL[s] || CELL.noref).bg, color: (CELL[s] || CELL.noref).fg, verticalAlign: 'top' });
   let lastCat = null;
   return (
@@ -778,7 +779,7 @@ function TieOutMatrix({ tieout }) {
               return (
                 <React.Fragment key={row.key}>
                   {catHeader && (
-                    <tr><td colSpan={columns.length + 1} style={{ padding: '8px 10px 3px', fontSize: 10, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>
+                    <tr><td colSpan={columns.length + 1} style={{ padding: '8px 10px 3px', fontSize: 11, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>
                       {catHeader}
                       {catBad > 0 && <span style={{ marginLeft: 8, color: 'var(--crit,#B4483C)', fontWeight: 800 }}>● {catBad} {catBad === 1 ? 'mismatch' : 'mismatches'}</span>}
                     </td></tr>
@@ -799,7 +800,7 @@ function TieOutMatrix({ tieout }) {
                             ? <span>{cfg.mark && <b style={{ marginRight: 4 }}>{cfg.mark}</b>}{cell.value}</span>
                             : <span style={{ color: cfg.fg }}>{cfg.mark || ''}</span>}
                           {roleLabel && cell.value != null
-                            ? <div style={{ fontSize: 10, color: '#4B585C', marginTop: 1 }}>{roleLabel}</div>
+                            ? <div style={{ fontSize: 11, color: '#4B585C', marginTop: 1 }}>{roleLabel}</div>
                             : null}
                         </td>
                       );
@@ -836,7 +837,7 @@ function ConditionCoverage({ coverage }) {
           return (
             <div key={c.code} style={{ border: '1px solid var(--line,#E7E1D3)', borderLeft: `4px solid ${r.fg}`, borderRadius: 10, background: 'var(--card,#fff)', padding: '9px 12px' }}>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, overflowWrap: 'anywhere' }}>{c.label}</div>
-              <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: r.fg, background: r.bg, padding: '2px 7px', borderRadius: 6 }}>{r.label}</span>
+              <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: r.fg, background: r.bg, padding: '2px 7px', borderRadius: 6 }}>{r.label}</span>
             </div>
           );
         })}
@@ -925,7 +926,7 @@ function DocReviewGuide({ appId, docType, label, onClose }) {
       )}
       {!state.loading && state.items.map((it, i) => (
         <div key={i} style={{ marginBottom: 8 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 700 }}>{it.condition}{it.noteBuyerSpecific ? <span style={{ fontSize: 10.5, color: 'var(--gold,#AE8746)', fontWeight: 800 }}> · this buyer</span> : null}</div>
+          <div style={{ fontSize: 12.5, fontWeight: 700 }}>{it.condition}{it.noteBuyerSpecific ? <span style={{ fontSize: 11, color: 'var(--gold,#AE8746)', fontWeight: 800 }}> · this buyer</span> : null}</div>
           {it.required_evidence && <div style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)', marginTop: 1 }}>{it.required_evidence}</div>}
           {Array.isArray(it.checks) && it.checks.length > 0 && (
             <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
@@ -975,17 +976,17 @@ function Completeness({ completeness, documentsOnFile = [], appId = null }) {
             <div key={s.docType} style={{ border: '1px solid var(--line,#E7E1D3)', borderLeft: `4px solid ${st.fg}`, borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px' }}>
               <div style={{ fontSize: 13, fontWeight: 600, overflowWrap: 'anywhere' }}>{s.label}</div>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
-                <span style={{ fontSize: 10.5, color: 'var(--muted,#4B585C)' }}>{OWNER_LABEL[s.owner] || s.owner} · {s.gating}</span>
+                <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
+                <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>{OWNER_LABEL[s.owner] || s.owner} · {s.gating}</span>
               </div>
               {appId && (
                 <button onClick={() => setOpenGuideType((t) => t === s.docType ? null : s.docType)}
-                  style={{ background: 'none', border: 'none', color: 'var(--teal-deep,#256168)', cursor: 'pointer', fontSize: 10.5, padding: '3px 0 0', textDecoration: 'underline' }}>
+                  style={{ background: 'none', border: 'none', color: 'var(--teal-deep,#256168)', cursor: 'pointer', fontSize: 11, padding: '3px 0 0', textDecoration: 'underline' }}>
                   {openGuideType === s.docType ? 'Hide what to check' : 'What to look for'}
                 </button>
               )}
               {(filesByType[s.docType] || []).length > 0 && s.status !== 'missing' && (
-                <div style={{ fontSize: 10.5, color: 'var(--muted,#4B585C)', marginTop: 4, overflowWrap: 'anywhere' }} title={filesByType[s.docType].join(', ')}>
+                <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 4, overflowWrap: 'anywhere' }} title={filesByType[s.docType].join(', ')}>
                   📎 {filesByType[s.docType][0]}{filesByType[s.docType].length > 1 ? ` +${filesByType[s.docType].length - 1}` : ''}
                 </div>
               )}
@@ -997,9 +998,9 @@ function Completeness({ completeness, documentsOnFile = [], appId = null }) {
                   : '';
                 const scorePct = d.authenticityScore != null ? Math.round(d.authenticityScore * 100) : null;
                 return (
-                  <div key={d.documentId} style={{ fontSize: 10.5, marginTop: 4 }}
+                  <div key={d.documentId} style={{ fontSize: 11, marginTop: 4 }}
                     title={firedSignals ? `Signals: ${firedSignals}${scorePct != null ? ` · score ${scorePct}/100` : ''}` : (scorePct != null ? `Authenticity score ${scorePct}/100` : '')}>
-                    <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: style.color, background: style.bg, padding: '2px 6px', borderRadius: 6 }}>
+                    <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: style.color, background: style.bg, padding: '2px 6px', borderRadius: 6 }}>
                       ⚠ {style.label}
                     </span>
                   </div>
@@ -1031,11 +1032,11 @@ function Metrics({ metrics }) {
       </div>
       <div style={{ overflowX: 'auto', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 420, fontSize: 12.5 }}>
-          <thead><tr>{['Metric', 'Value', 'Cap', 'Cap amount', ''].map((h, i) => <th key={i} style={{ padding: '7px 10px', textAlign: i > 0 && i < 4 ? 'right' : 'left', fontSize: 10.5, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', borderBottom: '1px solid var(--line,#E7E1D3)' }}>{h}</th>)}</tr></thead>
+          <thead><tr>{['Metric', 'Value', 'Cap', 'Cap amount', ''].map((h, i) => <th key={i} style={{ padding: '7px 10px', textAlign: i > 0 && i < 4 ? 'right' : 'left', fontSize: 11, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', borderBottom: '1px solid var(--line,#E7E1D3)' }}>{h}</th>)}</tr></thead>
           <tbody>
             {metrics.rows.map((r) => (
               <tr key={r.key} style={{ background: r.pass ? 'transparent' : 'var(--crit-bg,#F6E7E4)' }}>
-                <td style={{ padding: '7px 10px', fontWeight: 600 }}>{r.label}{metrics.binding === r.key && <span style={{ fontSize: 10, color: 'var(--gold,#AE8746)', marginLeft: 6 }}>binds</span>}</td>
+                <td style={{ padding: '7px 10px', fontWeight: 600 }}>{r.label}{metrics.binding === r.key && <span style={{ fontSize: 11, color: 'var(--gold,#AE8746)', marginLeft: 6 }}>binds</span>}</td>
                 <td style={{ padding: '7px 10px', textAlign: 'right', color: r.pass ? 'var(--ivory,#141B22)' : 'var(--crit,#B4483C)', fontWeight: r.pass ? 400 : 700 }}>{pctOf(r.value)}</td>
                 <td style={{ padding: '7px 10px', textAlign: 'right', color: 'var(--muted,#4B585C)' }}>{pctOf(r.cap)}</td>
                 <td style={{ padding: '7px 10px', textAlign: 'right' }}>{money(r.capAmount)}</td>
@@ -1072,7 +1073,7 @@ function StalenessBoard({ staleness }) {
             <div key={i} style={{ border: '1px solid var(--line,#E7E1D3)', borderLeft: `4px solid ${f.fg}`, borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px' }}>
               <div style={{ fontSize: 13, fontWeight: 600 }}>{d.label}</div>
               <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 2 }}>as of {d.asOf}{d.refreshBy && d.kind === 'freshness' ? ` · good until ${d.refreshBy}` : ''}</div>
-              <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: f.fg, marginTop: 4, display: 'inline-block' }}>{f.label}</span>
+              <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: f.fg, marginTop: 4, display: 'inline-block' }}>{f.label}</span>
             </div>
           );
         })}
@@ -1143,9 +1144,9 @@ function SellerChain({ sellerChain }) {
             <div key={n.role} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               {i > 0 ? <span title={edge.status} style={{ color: g.fg, fontWeight: 800, fontSize: 17, minWidth: 18, textAlign: 'center' }}>{g.arrow}</span> : null}
               <div style={{ border: '1px solid var(--line,#E4DECF)', borderRadius: 8, padding: '7px 10px', minWidth: 118, background: n.present ? 'var(--card,#fff)' : 'transparent', opacity: n.present ? 1 : 0.5 }}>
-                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{n.role}</div>
+                <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{n.role}</div>
                 <div style={{ fontSize: 13, fontWeight: 700 }}>{n.name || '—'}</div>
-                {n.source ? <div style={{ fontSize: 10.5, color: 'var(--muted,#4B585C)' }}>{n.source}</div> : null}
+                {n.source ? <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>{n.source}</div> : null}
               </div>
             </div>
           );
@@ -1186,9 +1187,9 @@ function ChainOfTitle({ chainOfTitle }) {
             <div key={`${n.role}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               {i > 0 && g ? <span title={g.title} style={{ color: g.fg, fontWeight: 800, fontSize: 17, minWidth: 18, textAlign: 'center' }}>{g.arrow}</span> : null}
               <div style={{ border: '1px solid var(--line,#E4DECF)', borderRadius: 8, padding: '7px 10px', minWidth: 118, background: 'var(--card,#fff)' }}>
-                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{n.role}</div>
+                <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{n.role}</div>
                 <div style={{ fontSize: 13, fontWeight: 700 }}>{n.name || '—'}</div>
-                {n.source ? <div style={{ fontSize: 10.5, color: 'var(--muted,#4B585C)' }}>{n.source}</div> : null}
+                {n.source ? <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>{n.source}</div> : null}
               </div>
             </div>
           );
@@ -1245,16 +1246,16 @@ function AssignmentChain({ assignmentChain }) {
               {n.leg ? (
                 <div style={{ minWidth: 108, textAlign: 'center', padding: '0 4px' }}>
                   <div style={{ fontSize: 17, fontWeight: 800, color: mark(n.leg.agrees).fg, lineHeight: 1 }}>⇒</div>
-                  <div style={{ fontSize: 10, color: '#4B585C' }}>{n.leg.label}</div>
+                  <div style={{ fontSize: 11, color: '#4B585C' }}>{n.leg.label}</div>
                   <div style={{ fontSize: 11.5, fontWeight: 700, color: mark(n.leg.agrees).fg }}>
                     {n.leg.amountLabel} {money(n.leg.amount)}
                   </div>
                 </div>
               ) : null}
               <div style={{ border: '1px solid var(--line,#E4DECF)', borderRadius: 8, padding: '7px 10px', minWidth: 130, background: 'var(--card,#fff)', opacity: (n.who || []).length ? 1 : 0.55 }}>
-                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: '#4B585C' }}>{n.role}</div>
+                <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: '#4B585C' }}>{n.role}</div>
                 <div style={{ fontSize: 13, fontWeight: 700, color: '#141B22' }}>{names(n.who)}</div>
-                <div style={{ fontSize: 10.5, color: '#4B585C' }}>{n.src}</div>
+                <div style={{ fontSize: 11, color: '#4B585C' }}>{n.src}</div>
               </div>
             </div>
           ))}
@@ -1308,16 +1309,16 @@ function BankLiquidity({ bankLiquidity }) {
       <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Bank liquidity — do the accounts cover the cash needed?</h4>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
         <div style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px', minWidth: 150 }}>
-          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>Liquid assets on file</div>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>Liquid assets on file</div>
           <div style={{ fontSize: 16, fontWeight: 700 }}>{money(total)}</div>
         </div>
         <div style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px', minWidth: 150 }}>
-          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>Required liquidity</div>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>Required liquidity</div>
           <div style={{ fontSize: 16, fontWeight: 700 }}>{req != null ? money(req) : <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--muted,#4B585C)' }}>set once a product is registered</span>}</div>
         </div>
         {covered != null && (
           <div style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px', minWidth: 150 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{covered ? 'Covered' : 'Short by'}</div>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{covered ? 'Covered' : 'Short by'}</div>
             <div style={{ fontSize: 16, fontWeight: 700, color: covered ? 'var(--good,#3F7A5B)' : 'var(--bad,#B4453B)' }}>{covered ? '✓' : money(bankLiquidity.shortfall)}</div>
           </div>
         )}
@@ -1387,7 +1388,7 @@ function Experience({ experience, appId, onChange, readOnly }) {
   const blocking = findings.some((f) => f.severity === 'fatal');
 
   async function grantException() {
-    const note = window.prompt('Reason for the experience exception (recorded on the file):');
+    const note = await askPrompt('Reason for the experience exception (recorded on the file):');
     if (!note || !note.trim()) return;
     setBusy(true); setErr('');
     try { await api.underwritingExperienceException(appId, { grant: true, note }); await onChange(); }
@@ -1456,9 +1457,9 @@ function Amendments({ amendments }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 8 }}>
         {rows.map((r, i) => (
           <div key={i} style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px' }}>
-            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{r[0]}</div>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{r[0]}</div>
             <div style={{ fontSize: 14, fontWeight: 600 }}>{String(r[1])}</div>
-            {r[2] && <div style={{ fontSize: 10.5, color: r[2].source === 'amendment' ? 'var(--gold,#AE8746)' : 'var(--muted,#4B585C)' }}>{r[2].source === 'amendment' ? `by amendment${r[2].date ? ` ${r[2].date}` : ''}` : 'base contract'}</div>}
+            {r[2] && <div style={{ fontSize: 11, color: r[2].source === 'amendment' ? 'var(--gold,#AE8746)' : 'var(--muted,#4B585C)' }}>{r[2].source === 'amendment' ? `by amendment${r[2].date ? ` ${r[2].date}` : ''}` : 'base contract'}</div>}
           </div>
         ))}
       </div>
@@ -1521,7 +1522,7 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
   const confirmFact = async (factKey) => {
     const inp = confirmInputs[factKey] || {};
     const value = (inp.value || '').trim();
-    if (!value) { alert('Enter the value you want to lock in.'); return; }
+    if (!value) { showMessage('Enter the value you want to lock in.'); return; }
     setConfirmBusy(factKey);
     try {
       await api.confirmFact(appId, factKey, value, inp.reason || '');
@@ -1529,7 +1530,7 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
       const d = await api.factHistory(appId, factKey);
       setFactHistory((h) => ({ ...h, [factKey]: { loading: false, ...d } }));
       setConfirmInputs((i) => ({ ...i, [factKey]: { value: '', reason: '' } }));
-    } catch (e) { alert(e.message || 'Could not confirm the value.'); }
+    } catch (e) { showMessage(e.message || 'Could not confirm the value.'); }
     finally { setConfirmBusy(null); }
   };
   const twinCount = (twinFacts || []).length;
@@ -1564,7 +1565,7 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
   return (
     <div style={{ marginBottom: 22, border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, background: 'var(--card,#fff)', overflow: 'hidden' }}>
       <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line,#E7E1D3)', background: 'rgba(174,135,70,0.05)' }}>
-        <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: '#AE8746', marginBottom: 2 }}>Sovereign evidence</div>
+        <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: '#AE8746', marginBottom: 2 }}>Sovereign evidence</div>
         <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>
           Canonical facts and per-condition cure proofs — the underlying evidence layer PILOT computes on.
         </div>
@@ -1600,7 +1601,7 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
                         </td>
                         <td style={{ padding: '5px 6px', overflowWrap: 'anywhere' }}>{stringifyValue(f.value_json && (f.value_json.value != null ? f.value_json.value : f.value_json))}</td>
                         <td style={{ padding: '5px 6px' }}>
-                          <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
+                          <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
                         </td>
                       </tr>
                       {isOpen && (
@@ -1702,7 +1703,7 @@ function SovereignCockpit({ twinFacts, cureProofs, appId, canIssueCerts, canConf
                 return (
                   <div key={p.id} style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 8, padding: 10, marginBottom: 8 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-                      <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: rs.fg, background: rs.bg, padding: '2px 7px', borderRadius: 6 }}>{rs.label}</span>
+                      <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: rs.fg, background: rs.bg, padding: '2px 7px', borderRadius: 6 }}>{rs.label}</span>
                       {p.recommended_action && (
                         <span style={{ fontSize: 11.5, color: 'var(--muted,#4B585C)' }}>· recommended: {String(p.recommended_action).replace(/_/g, ' ')}</span>
                       )}
@@ -1800,7 +1801,7 @@ function GuidelineFitPanel({ appId }) {
   const verdictChip = (v, excepted) => {
     const s = VERDICT[v] || VERDICT.noted;
     return (
-      <span style={{ fontSize: 10.5, fontWeight: 800, color: s.fg, background: s.bg, border: `1px solid ${s.fg}44`, borderRadius: 999, padding: '2px 9px', whiteSpace: 'nowrap' }}>
+      <span style={{ fontSize: 11, fontWeight: 800, color: s.fg, background: s.bg, border: `1px solid ${s.fg}44`, borderRadius: 999, padding: '2px 9px', whiteSpace: 'nowrap' }}>
         {excepted && v === 'violated' ? 'Exception applies' : s.label}
       </span>
     );
@@ -1874,7 +1875,7 @@ function GuidelineFitPanel({ appId }) {
                     return (
                       <div key={i} style={{ padding: '7px 0', borderTop: i === 0 ? 'none' : '1px solid var(--line,#E7E1D3)' }}>
                         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                          <span style={{ fontSize: 10.5, fontWeight: 800, color: fg, minWidth: 34 }}>{fits ? 'FITS' : 'FAILS'}</span>
+                          <span style={{ fontSize: 11, fontWeight: 800, color: fg, minWidth: 34 }}>{fits ? 'FITS' : 'FAILS'}</span>
                           <span style={{ fontSize: 13, fontWeight: 700 }}>{r.investor}</span>
                         </div>
                         {blockers.length > 0 && (
@@ -2155,7 +2156,7 @@ function WholeLoanRunPanel({ appId }) {
                   <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted,#4B585C)', marginBottom: 6 }}>What to work next</div>
                   {c.nextActions.actions.slice(0, 8).map((a, i) => (
                     <div key={i} style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '5px 0', borderTop: i === 0 ? 'none' : '1px solid var(--line,#E7E1D3)' }}>
-                      <span style={{ fontSize: 10.5, fontWeight: 800, minWidth: 62, color: a.blocking ? 'var(--crit,#B4483C)' : (a.overdue ? 'var(--amber,#B7791F)' : 'var(--muted,#4B585C)') }}>
+                      <span style={{ fontSize: 11, fontWeight: 800, minWidth: 62, color: a.blocking ? 'var(--crit,#B4483C)' : (a.overdue ? 'var(--amber,#B7791F)' : 'var(--muted,#4B585C)') }}>
                         {a.blocking ? 'BLOCKING' : (a.overdue ? 'OVERDUE' : (a.kind === 'condition' ? 'CONDITION' : 'REVIEW'))}
                       </span>
                       <span style={{ fontSize: 13, fontWeight: 600 }}>{a.title}</span>
@@ -2243,15 +2244,15 @@ function SovereignAVMSection({ appId, canRefresh }) {
             <>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 12 }}>
                 <div style={{ padding: '8px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8 }}>
-                  <div style={{ fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)' }}>Appraisal ARV</div>
+                  <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)' }}>Appraisal ARV</div>
                   <div style={{ fontSize: 15, fontWeight: 600 }}>{appraisal ? dollars(appraisal.value) : '—'}</div>
                 </div>
                 <div style={{ padding: '8px 10px', border: '1px solid var(--line,#E7E1D3)', borderRadius: 8 }}>
-                  <div style={{ fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)' }}>AVM median ({consensus ? consensus.count : 0})</div>
+                  <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)' }}>AVM median ({consensus ? consensus.count : 0})</div>
                   <div style={{ fontSize: 15, fontWeight: 600 }}>{consensus ? dollars(consensus.median) : '—'}</div>
                 </div>
                 <div style={{ padding: '8px 10px', border: `1px solid ${comparison && comparison.disagrees ? 'var(--crit,#B4483C)' : 'var(--line,#E7E1D3)'}`, borderRadius: 8 }}>
-                  <div style={{ fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)' }}>Delta vs appraisal</div>
+                  <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted,#4B585C)' }}>Delta vs appraisal</div>
                   <div style={{ fontSize: 15, fontWeight: 600, color: comparison && comparison.disagrees ? 'var(--crit,#B4483C)' : 'var(--ivory,#141B22)' }}>
                     {comparison && comparison.diff != null ? (comparison.diff >= 0 ? '+' : '') + dollars(comparison.diff) : '—'}
                     {comparison && comparison.diffPct != null && <span className="muted" style={{ fontSize: 12 }}> · {(comparison.diff >= 0 ? '+' : '')}{pct(comparison.diffPct)}</span>}
@@ -2380,7 +2381,7 @@ function SovereignCertificatesSection({ appId, canIssue }) {
                     </td>
                     <td style={{ padding: '5px 6px' }}>
                       {cur ? (
-                        <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
+                        <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
                       ) : <span style={{ color: 'var(--muted,#4B585C)' }}>not stamped yet</span>}
                     </td>
                     <td style={{ padding: '5px 6px', color: cur && cur.integrity && cur.integrity.ok === false ? 'var(--crit,#B4483C)' : 'var(--good,#3F7A5B)' }}>
@@ -2460,7 +2461,7 @@ function SovereignStructuringSection({ appId }) {
                     <tr key={alt.key} style={{ borderTop: '1px solid var(--line,#E7E1D3)' }}>
                       <td style={{ padding: '5px 6px' }}>{alt.label}</td>
                       <td style={{ padding: '5px 6px' }}>
-                        <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
+                        <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', color: st.fg, background: st.bg, padding: '2px 7px', borderRadius: 6 }}>{st.label}</span>
                       </td>
                       <td style={{ padding: '5px 6px' }}>{dollars(alt.quote && alt.quote.totalLoan)}</td>
                       <td style={{ padding: '5px 6px' }}>{rate(alt.quote && alt.quote.noteRate)}</td>
@@ -2521,7 +2522,7 @@ function SovereignAiRiskSection({ appId }) {
         </div>
         <div style={{ textAlign: 'right', flexShrink: 0 }}>
           <div style={{ fontSize: 26, fontWeight: 800, color: tint, lineHeight: 1 }}>{data.score}</div>
-          <div style={{ fontSize: 10, color: tint, textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 700 }}>{data.bucket}</div>
+          <div style={{ fontSize: 11, color: tint, textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 700 }}>{data.bucket}</div>
         </div>
       </div>
     </div>
@@ -2670,7 +2671,7 @@ function SovereignKnowledgeGraphSection({ appId }) {
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--amber,#B7791F)', marginBottom: 4 }}>Shared signals</div>
               {shared.map((s, i) => (
                 <div key={i} style={{ fontSize: 12, padding: '2px 0', color: 'var(--amber,#B7791F)' }}>
-                  {s.signal}: {s.files_on_llc} files on this LLC
+                  {s.signal}: {s.files_on_llc} files on this entity
                 </div>
               ))}
             </div>
@@ -2692,30 +2693,30 @@ function SovereignAskAdminSection({ appId }) {
   const [xdBusy, setXdBusy] = useState(false);
   const [xdRes, setXdRes] = useState(null);
   const ask = async () => {
-    const q = window.prompt('What do you want the super-admin to decide about this file?');
+    const q = await askPrompt('What do you want the super-admin to decide about this file?');
     if (!q || !q.trim()) return;
     setBusy(true); setSent(false);
     try {
       await api.askAdminAboutFile(appId, q.trim());
       setSent(true);
-      alert('Sent to the super-admin. Their answer will show on this file (AI Findings panel) and in /internal/ai-inbox.');
-    } catch (e) { alert(`Could not send: ${(e && e.message) || 'error'}`); }
+      showMessage('Sent to the super-admin. Their answer will show on this file (AI Findings panel) and in /internal/ai-inbox.');
+    } catch (e) { showMessage(`Could not send: ${(e && e.message) || 'error'}`); }
     finally { setBusy(false); }
   };
   const runXd = async () => {
-    if (!window.confirm('Run the deep AI cross-document consistency check on this file? This costs a small amount per run (~$0.05–$0.20).')) return;
+    if (!(await askConfirm('Run the deep AI cross-document consistency check on this file? This costs a small amount per run (~$0.05–$0.20).'))) return;
     setXdBusy(true); setXdRes(null);
     try {
       const r = await api.aiCrossDocCheck(appId);
       setXdRes(r);
       if (r && r.findings && r.findings.length) {
-        alert(`Cross-doc AI check posted ${r.findings.length} finding${r.findings.length === 1 ? '' : 's'} to the AI Findings panel below.`);
+        showMessage(`Cross-doc AI check posted ${r.findings.length} finding${r.findings.length === 1 ? '' : 's'} to the AI Findings panel below.`);
       } else if (r && r.ok) {
-        alert('Cross-doc AI check found no contradictions across the file.');
+        showMessage('Cross-doc AI check found no contradictions across the file.');
       } else {
-        alert(`Cross-doc AI check could not run: ${(r && r.reason) || 'unknown'}`);
+        showMessage(`Cross-doc AI check could not run: ${(r && r.reason) || 'unknown'}`);
       }
-    } catch (e) { alert(`Cross-doc AI check failed: ${(e && e.message) || 'error'}`); }
+    } catch (e) { showMessage(`Cross-doc AI check failed: ${(e && e.message) || 'error'}`); }
     finally { setXdBusy(false); }
   };
   return (
@@ -2895,8 +2896,8 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true, show
                     const r = await api.aiRerunChecks(appId);
                     const total = Object.values(r.ran || {}).reduce((a, b) => a + (Number(b) || 0), 0);
                     load();
-                    alert(total ? `Re-ran AI checks. ${total} new finding${total === 1 ? '' : 's'} posted.` : 'Re-ran AI checks. Nothing new to flag.');
-                  } catch (e) { alert(`Failed: ${(e && e.message) || 'error'}`); }
+                    showMessage(total ? `Re-ran AI checks. ${total} new finding${total === 1 ? '' : 's'} posted.` : 'Re-ran AI checks. Nothing new to flag.');
+                  } catch (e) { showMessage(`Failed: ${(e && e.message) || 'error'}`); }
                 }}>▶ Re-run checks</button>
             )}
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--muted,#4B585C)' }}>
@@ -2914,13 +2915,13 @@ function AISuggestionsSection({ appId, readOnly = false, canResolve = true, show
               <button className="btn ghost" style={{ padding: '3px 9px', fontSize: 11, color: 'var(--crit,#B4483C)', borderColor: 'var(--crit,#B4483C)' }}
                 onClick={async () => {
                   const n = (rows || []).filter(r => r.status !== 'dismissed').length;
-                  const reason = window.prompt(`Dismiss all ${n} open AI suggestion${n === 1 ? '' : 's'} on this file? Type a reason (e.g. "test file", "team already reviewed").`, '');
+                  const reason = await askPrompt(`Dismiss all ${n} open AI suggestion${n === 1 ? '' : 's'} on this file? Type a reason (e.g. "test file", "team already reviewed").`, { defaultValue: '' });
                   if (reason == null) return;
                   try {
                     const r = await api.aiDismissAllOnFile(appId, reason || 'Bulk-dismissed from file view');
                     load();
-                    alert(`Dismissed ${r.dismissed} suggestion${r.dismissed === 1 ? '' : 's'}.`);
-                  } catch (e) { alert(`Failed: ${(e && e.message) || 'error'}`); }
+                    showMessage(`Dismissed ${r.dismissed} suggestion${r.dismissed === 1 ? '' : 's'}.`);
+                  } catch (e) { showMessage(`Failed: ${(e && e.message) || 'error'}`); }
                 }}>Dismiss all</button>
             )}
             {/* R3.37 — filter chips */}
@@ -3000,7 +3001,7 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
       await api.aiSuggestionsDecide(appId, suggestion.id, { action, ...extra });
       if (onChanged) await onChanged();
     } catch (e) {
-      alert(`Could not ${action.replace(/_/g, ' ')}: ${(e && e.message) || 'error'}`);
+      showMessage(`Could not ${action.replace(/_/g, ' ')}: ${(e && e.message) || 'error'}`);
     } finally { setBusy(false); }
   }, [appId, suggestion.id, disabled, onChanged]);
 
@@ -3011,12 +3012,12 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
       await api.aiSuggestionAddNote(appId, suggestion.id, noteText);
       setNoteText(''); setNoteOpen(false);
       if (onChanged) await onChanged();
-    } catch (e) { alert(`Could not add note: ${(e && e.message) || 'error'}`); }
+    } catch (e) { showMessage(`Could not add note: ${(e && e.message) || 'error'}`); }
     finally { setBusy(false); }
   };
 
   const askAdmin = async () => {
-    const q = window.prompt('What should the super-admin decide?', suggestion.title);
+    const q = await askPrompt('What should the super-admin decide?', { defaultValue: suggestion.title });
     if (!q || !q.trim()) return;
     setBusy(true);
     try {
@@ -3025,7 +3026,7 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
       await api.aiSuggestionAddNote(appId, suggestion.id, `[asked super-admin] ${q}`);
       await api.aiSuggestionsDecide(appId, suggestion.id, { action: 'ask_admin', reason: q });
       if (onChanged) await onChanged();
-    } catch (e) { alert(`Could not ask super-admin: ${(e && e.message) || 'error'}`); }
+    } catch (e) { showMessage(`Could not ask super-admin: ${(e && e.message) || 'error'}`); }
     finally { setBusy(false); }
   };
 
@@ -3033,15 +3034,15 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
     const pa = suggestion.proposed_action || {};
     const tplCode = (pa.fields && pa.fields.opensCondition) || pa.templateCode || null;
     if (!tplCode) {
-      alert('This suggestion does not name a condition template — decide it another way or ask the super-admin.');
+      showMessage('This suggestion does not name a condition template — decide it another way or ask the super-admin.');
       return;
     }
-    if (!window.confirm(`Create the "${tplCode}" condition on this file from this AI suggestion?`)) return;
+    if (!(await askConfirm(`Create the "${tplCode}" condition on this file from this AI suggestion?`))) return;
     await doAction('convert_to_condition', { templateCode: tplCode });
   };
 
   const convertToTask = async () => {
-    const taskId = window.prompt('ClickUp task URL or id to link this suggestion to:');
+    const taskId = await askPrompt('ClickUp task URL or id to link this suggestion to:');
     if (!taskId || !taskId.trim()) return;
     await doAction('convert_to_task', { taskId: taskId.trim() });
   };
@@ -3049,8 +3050,8 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
   return (
     <div style={{ border: `1px solid ${tint.fg}33`, borderLeft: `4px solid ${tint.fg}`, borderRadius: 10, padding: '10px 12px', marginBottom: 10, background: isClosed ? 'var(--paper,#F6F3EC)' : 'var(--card,#fff)', opacity: isClosed ? 0.75 : 1 }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
-        <span style={{ background: tint.bg, color: tint.fg, fontSize: 10, fontWeight: 800, padding: '2px 7px', borderRadius: 6, textTransform: 'uppercase', letterSpacing: '.05em' }}>{sourceLabel}</span>
-        {suggestion.severity && <span style={{ ...(SEV[suggestion.severity] || {}), fontSize: 10, fontWeight: 800, padding: '2px 7px', borderRadius: 6, background: SEV[suggestion.severity] && SEV[suggestion.severity].bg, color: SEV[suggestion.severity] && SEV[suggestion.severity].fg }}>{SEV[suggestion.severity] ? SEV[suggestion.severity].label : suggestion.severity}</span>}
+        <span style={{ background: tint.bg, color: tint.fg, fontSize: 11, fontWeight: 800, padding: '2px 7px', borderRadius: 6, textTransform: 'uppercase', letterSpacing: '.05em' }}>{sourceLabel}</span>
+        {suggestion.severity && <span style={{ ...(SEV[suggestion.severity] || {}), fontSize: 11, fontWeight: 800, padding: '2px 7px', borderRadius: 6, background: SEV[suggestion.severity] && SEV[suggestion.severity].bg, color: SEV[suggestion.severity] && SEV[suggestion.severity].fg }}>{SEV[suggestion.severity] ? SEV[suggestion.severity].label : suggestion.severity}</span>}
         {suggestion.important && <span style={{ color: 'var(--amber,#B7791F)' }} title="Marked important">★</span>}
         {typeof suggestion.confidence === 'number' && <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)' }}>{Math.round(suggestion.confidence * 100)}% confident</span>}
         <span style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginLeft: 'auto' }}>{new Date(suggestion.created_at).toLocaleString()}</span>
@@ -3102,12 +3103,12 @@ function AISuggestionCard({ appId, suggestion, onChanged, disabled }) {
             <button className="btn ghost" style={{ fontSize: 11, color: 'var(--crit,#B4483C)', borderColor: 'var(--crit,#B4483C)' }}
               onClick={async () => {
                 const code = suggestion.evidence.code;
-                const reason = window.prompt(`Silence '${code}' portfolio-wide? Every future finding with this code will be dropped before it reaches any file. Type a reason (audited).`, '');
+                const reason = await askPrompt(`Silence '${code}' portfolio-wide? Every future finding with this code will be dropped before it reaches any file. Type a reason (audited).`, { defaultValue: '' });
                 if (reason == null || !reason.trim()) return;
                 try {
                   await api.aiSilencedCodesAdd(code, reason.trim());
-                  alert(`Silenced '${code}'. Manage the mute list at /internal/ai-silenced-codes.`);
-                } catch (e) { alert(`Failed: ${(e && e.message) || 'error'}`); }
+                  showMessage(`Silenced '${code}'. Manage the mute list at /internal/ai-silenced-codes.`);
+                } catch (e) { showMessage(`Failed: ${(e && e.message) || 'error'}`); }
               }}>🔇 Silence code</button>
           )}
         </div>
@@ -3438,10 +3439,10 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
             </div>
             <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
               <button className="btn ghost" style={{ fontSize: 11 }} onClick={async () => {
-                const hours = parseInt(window.prompt('Snooze the fraud banner for how many hours? (1–168)', '24') || '', 10);
+                const hours = parseInt(await askPrompt('Snooze the fraud banner for how many hours? (1–168)', { defaultValue: '24' }) || '', 10);
                 if (!(hours >= 1 && hours <= 168)) return;
                 try { await api.fraudBannerSnooze(appId, hours); load(); }
-                catch (e) { alert(`Snooze failed: ${(e && e.message) || 'error'}`); }
+                catch (e) { showMessage(`Snooze failed: ${(e && e.message) || 'error'}`); }
               }}>Snooze banner</button>
               {/* This used to scroll to the FIRST <h4> on the whole page, which is
                   above the reader — so a button labelled "open the findings panel"
@@ -3506,7 +3507,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
         }[verdict.status] || { fg: 'var(--muted,#4B585C)', bg: 'var(--paper,#F6F3EC)' };
         return (
           <div style={{ border: `1px solid ${V.fg}33`, borderLeft: `5px solid ${V.fg}`, background: V.bg, borderRadius: 12, padding: '12px 16px', marginBottom: 18 }}>
-            <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: V.fg, marginBottom: 3 }}>PILOT verdict</div>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: V.fg, marginBottom: 3 }}>PILOT verdict</div>
             <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ivory,#141B22)' }}>{verdict.headline}</div>
           </div>
         );

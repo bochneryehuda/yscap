@@ -8,6 +8,7 @@ import { fmtDay } from '../lib/dates.js';
 // Why an order's clock is stopped, worded in ONE place and shared with the file's
 // own order card — the decision itself is the server's (order-sla.orderState).
 import { dormantMarker } from '../lib/orderDormant.js';
+import { askConfirm } from '../lib/dialog.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ORDERS QUEUE — every title, insurance & attorney closing-prep order across the
@@ -64,7 +65,7 @@ function OrderCell({ o, appId, kind, onChased, fileStatus }) {
   const tone = o.overdue ? { color: '#B3261E', borderColor: '#B3261E' }
     : o.status === 'completed' ? { color: 'var(--ok)', borderColor: 'var(--ok)' }
     : (o.status === 'documents_in' || o.status === 'ordered') ? { color: 'var(--teal,#2F7F86)', borderColor: 'var(--teal,#2F7F86)' }
-    : { color: 'var(--gold)', borderColor: 'var(--gold)' };
+    : { color: 'var(--gold-ink)', borderColor: 'var(--gold)' };
 
   /* ONE-CLICK CHASE. The whole reason somebody opens this queue is to do something
      about a late order, and the only thing they could do before was open the file
@@ -92,7 +93,7 @@ function OrderCell({ o, appId, kind, onChased, fileStatus }) {
       const who = to.length
         ? `This follow-up goes to:\n\n${to.join('\n')}\n\nSend it?`
         : 'Send the follow-up on this order?\n\n(The recipient list could not be loaded — open the file to see it.)';
-      if (!window.confirm(who)) { setBusy(false); return; }
+      if (!(await askConfirm(who))) { setBusy(false); return; }
       const r = await api.staffOrderFollowup(appId, kind, {});
       setMsg(r.unconfirmed ? 'Sent — but unconfirmed, check the thread' : 'Chased');
       onChased && onChased();
@@ -115,7 +116,7 @@ function OrderCell({ o, appId, kind, onChased, fileStatus }) {
           owing us something — that is how a queue teaches people to ignore it. */}
       {o.pendingOn === 'us' && <span className="small" style={{ color: '#8A5A00', fontWeight: 600 }}>waiting on us</span>}
       <span className="muted small">{o.assignedName ? `${o.assignedName} has it` : 'nobody assigned'}</span>
-      {o.unassignedDocs > 0 && <span className="pill" style={{ color: 'var(--gold)', borderColor: 'var(--gold)' }}>{o.unassignedDocs} to assign</span>}
+      {o.unassignedDocs > 0 && <span className="pill" style={{ color: 'var(--gold-ink)', borderColor: 'var(--gold)' }}>{o.unassignedDocs} to assign</span>}
       {o.unassignedDocs === 0 && o.returnedDocs > 0 && <span className="muted small">{o.returnedDocs} doc{o.returnedDocs === 1 ? '' : 's'} back</span>}
       {o.notes && <span className="small" style={{ color: '#4B585C', fontStyle: 'italic' }}>“{String(o.notes).slice(0, 80)}”</span>}
       {/* A HELD FILE IS SHOWN BUT NOT CHASED. The desk lists it so its returned
@@ -199,7 +200,7 @@ export default function StaffOrders() {
         <h1 style={{ margin: 0 }}>Orders</h1>
         <div className="spacer" />
         {lateCount > 0 && <span className="pill" style={{ color: '#B3261E', borderColor: '#B3261E' }}>{lateCount} file{lateCount === 1 ? '' : 's'} late</span>}
-        {toAssign > 0 && <span className="pill" style={{ color: 'var(--gold)', borderColor: 'var(--gold)', marginLeft: 8 }}>{toAssign} document{toAssign === 1 ? '' : 's'} to classify</span>}
+        {toAssign > 0 && <span className="pill" style={{ color: 'var(--gold-ink)', borderColor: 'var(--gold)', marginLeft: 8 }}>{toAssign} document{toAssign === 1 ? '' : 's'} to classify</span>}
       </div>
       <p className="muted small" style={{ marginTop: 0 }}>
         Every title, insurance and attorney closing-prep order across your files, the latest first.

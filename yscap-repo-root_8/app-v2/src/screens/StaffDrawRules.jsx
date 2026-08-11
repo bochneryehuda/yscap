@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { InfoTip } from '../components/FileSections.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /* Inspection & fee rules (admin/setup). Per capital partner (with an optional program
    override) decide virtual vs. on-site inspection, whether a Sitewire inspector and/or
@@ -66,6 +67,7 @@ const HELP = {
   inspector: 'Whether a Sitewire inspector must sign off each draw before it can be approved.',
   cp_approval: 'Whether approved draws route to the capital partner for their own sign-off before release.',
   realloc: 'Whether the borrower may move money between Scope-of-Work lines (a reallocation request).',
+  release_party: 'Who actually wires the borrower on this partner’s files. “The investor releases” means they pay the borrower directly and send us our draw fee; “we release” means we wire the borrower and the investor pays us back the whole approved amount. Leave it on the company default unless this partner works differently.',
   retainage: 'Money you hold back from each approved draw and release at the very end, so the last piece isn\'t paid until the work is fully finished. Example: set to 10% — a $10,000 approved draw pays the borrower $9,000 now and keeps $1,000 until the project is done and signed off. Leave it at 0 for no hold-back (most files).',
   lien: 'Blocks a draw from being released until every required lien waiver is received or waived. Off unless this project uses lien waivers.',
   advanced: 'These aren\'t part of the standard draw workflow, so they stay hidden on the draw desk. Turn them on here — globally, or for one specific project — and they\'ll appear on that file\'s desk.',
@@ -80,7 +82,7 @@ export default function StaffDrawRules() {
   const [err, setErr] = useState('');
   const [draft, setDraft] = useState(blankDraft());
 
-  function blankDraft() { return { partner_label: '', program: '', draw_platform: 'sitewire', inspection_method: 'mobile', allow_virtual: true, allow_physical: true, require_sitewire_inspector: true, require_capital_partner_approval: false, allow_reallocation: false, fee_cents_virtual: '299', fee_cents_physical: '499' }; }
+  function blankDraft() { return { partner_label: '', program: '', draw_platform: 'sitewire', inspection_method: 'mobile', allow_virtual: true, allow_physical: true, require_sitewire_inspector: true, require_capital_partner_approval: false, allow_reallocation: false, fee_cents_virtual: '299', fee_cents_physical: '499', investor_funding_mode: '' }; }
 
   const [settings, setSettings] = useState({});
   const [status, setStatus] = useState(null);
@@ -116,12 +118,16 @@ export default function StaffDrawRules() {
         // a BLANK virtual fee means "use the default" — send nothing so the backend's $299 fallback fires
         // (a typed 0 is still sent and honored as a free inspection). Physical is nullable = inherit.
         fee_cents_virtual: String(draft.fee_cents_virtual).trim() === '' ? undefined : toCents(draft.fee_cents_virtual), fee_cents_physical: draft.fee_cents_physical === '' ? null : toCents(draft.fee_cents_physical),
+        // MUST be sent on every save: the rules route writes this column from EXCLUDED (like every
+        // other field here), so a save that omitted it would silently clear who releases this
+        // partner's draws — and blank is a real answer meaning "use the company default".
+        investor_funding_mode: draft.investor_funding_mode || null,
       });
       setMsg('Rule saved.'); setDraft(blankDraft()); load();
     } catch (e) { setErr(e?.data?.error || e.message || 'Could not save.'); }
   }
   function edit(r) {
-    setDraft({ partner_label: r.partner_label || r.capital_partner_name || '', program: r.program || '', draw_platform: r.draw_platform || (r.handled_externally ? 'external' : 'sitewire'), inspection_method: r.inspection_method, allow_virtual: r.allow_virtual !== false, allow_physical: r.allow_physical !== false, require_sitewire_inspector: r.require_sitewire_inspector, require_capital_partner_approval: r.require_capital_partner_approval, allow_reallocation: r.allow_reallocation, fee_cents_virtual: dollars(r.fee_cents_virtual), fee_cents_physical: r.fee_cents_physical == null ? '' : dollars(r.fee_cents_physical) });
+    setDraft({ partner_label: r.partner_label || r.capital_partner_name || '', program: r.program || '', draw_platform: r.draw_platform || (r.handled_externally ? 'external' : 'sitewire'), inspection_method: r.inspection_method, allow_virtual: r.allow_virtual !== false, allow_physical: r.allow_physical !== false, require_sitewire_inspector: r.require_sitewire_inspector, require_capital_partner_approval: r.require_capital_partner_approval, allow_reallocation: r.allow_reallocation, fee_cents_virtual: dollars(r.fee_cents_virtual), fee_cents_physical: r.fee_cents_physical == null ? '' : dollars(r.fee_cents_physical), investor_funding_mode: r.investor_funding_mode || '' });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -205,6 +211,22 @@ export default function StaffDrawRules() {
             <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.require_sitewire_inspector} disabled={draft.draw_platform === 'external'} onChange={(e) => setDraft({ ...draft, require_sitewire_inspector: e.target.checked })} /> Require Sitewire inspector<InfoTip tip={HELP.inspector} /></label>
             <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.require_capital_partner_approval} disabled={draft.draw_platform === 'external'} onChange={(e) => setDraft({ ...draft, require_capital_partner_approval: e.target.checked })} /> Require capital-partner approval<InfoTip tip={HELP.cp_approval} /></label>
             <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_reallocation} disabled={draft.draw_platform === 'external'} onChange={(e) => setDraft({ ...draft, allow_reallocation: e.target.checked })} /> Allow reallocations<InfoTip tip={HELP.realloc} /></label>
+            {/* WHO RELEASES THE MONEY, for every file with this capital provider (owner-directed
+                2026-08-09). Blank is a real answer: it hands the decision to the company default.
+                A project — and a single draw — can still override it. */}
+            <label className="small" style={{ gridColumn: '1 / -1' }}>
+              Who releases the money<InfoTip tip={HELP.release_party} />
+              <select className="input" style={{ marginTop: 6 }} value={draft.investor_funding_mode}
+                onChange={(e) => setDraft({ ...draft, investor_funding_mode: e.target.value })}>
+                <option value="">Use the company default</option>
+                <option value="investor_direct">The investor releases straight to the borrower</option>
+                <option value="reimbursement">We release, and the investor reimburses us</option>
+                <option value="manual">Handled outside PILOT</option>
+              </select>
+              <div className="muted" style={{ marginTop: 4 }}>
+                This project, and any single draw, can still be set differently — the most specific answer wins.
+              </div>
+            </label>
           </div>
           <div className="row" style={{ gap: 8, marginTop: 14 }}>
             <button className="btn btn-sm primary" onClick={save}>Save rule</button>
@@ -278,7 +300,7 @@ function InvestorContacts() {
     finally { setBusy(false); }
   }
   async function remove(id, email) {
-    if (!window.confirm(`Stop sending draw deliveries to ${email}?`)) return;
+    if (!(await askConfirm(`Stop sending draw deliveries to ${email}?`))) return;
     setBusy(true); setErr(''); setNote('');
     try { await api.del(`/api/sitewire/investor-contacts/${id}`); setNote('Contact removed.'); load(); }
     catch (e) { setErr(e?.data?.error || 'Could not remove that contact.'); }

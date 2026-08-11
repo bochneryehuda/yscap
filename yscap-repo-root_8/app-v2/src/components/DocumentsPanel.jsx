@@ -28,7 +28,7 @@ const STATUS_PILL = {
   accepted: { label: 'accepted', style: { borderColor: 'var(--ok)', color: 'var(--ok)' } },
   rejected: { label: 'rejected', style: { borderColor: 'var(--danger)', color: 'var(--danger)' } },
   superseded: { label: 'replaced', style: { opacity: .6 } },
-  pending: { label: 'awaiting review', style: { borderColor: 'var(--gold)', color: 'var(--gold)' } },
+  pending: { label: 'awaiting review', style: { borderColor: 'var(--gold)', color: 'var(--gold-ink)' } },
 };
 
 /* The backup state, in one word. `sharepoint_mirror_status` is the explicit

@@ -299,7 +299,17 @@ async function openForFile(appId, q = db) {
           AND (f.application_id IS NULL OR f.application_id = $2)
         ORDER BY f.created_at`, [ids, appId]);
     return r.rows.map((x) => ({ ...x, actions: actionsFor(x.code) }));
-  } catch (_) { return []; }
+  } catch (e) {
+    /* THROW — do not answer []. An empty list is a STATEMENT ("this track
+       record is clean"), and a read error is not evidence of that. Swallowing
+       here made a database blip indistinguishable from a clean record on the
+       screen AND in the gate at once (audit 2026-08-09 #7). The two consumers
+       want different failure postures, so each owns its own: the ROUTE lets
+       this surface as a 500 and the screen says "could not load" instead of
+       "nothing to review"; `experienceBlockReason` below catches it itself and
+       stays fail-open, exactly as its header documents. */
+    throw e;
+  }
 }
 
 /**
@@ -310,8 +320,15 @@ async function openForFile(appId, q = db) {
  * must not make a condition permanently unsignable.
  */
 async function experienceBlockReason(appId, q = db) {
-  let open;
-  try { open = await openForFile(appId, q); } catch (_) { return null; }
+  let all;
+  try { all = await openForFile(appId, q); } catch (_) { return null; }
+  /* ONLY A 'warning' HOLDS THE CONDITION. `openForFile` returns every open row
+     because the screen must SHOW them all, but an 'info' finding is advisory —
+     a public-records index disagreeing with the borrower is something a reviewer
+     should see, not something that stops a closing. Without this filter the first
+     advisory code added would silently become a gate, and an outside data vendor
+     would be able to hold up a loan. */
+  const open = all.filter((f) => f && f.severity !== 'info');
   if (!open.length) return null;
   const what = open.length === 1 ? 'one thing' : `${open.length} things`;
   const first = open[0] && open[0].title ? ` (${open[0].title.toLowerCase()})` : '';
@@ -330,6 +347,22 @@ async function resolveFinding({ findingId, action, note, actorId, appId }) {
   if (!actorId) throw err(400, 'a track-record decision must record who made it');
   const f = (await db.query(`SELECT * FROM track_record_findings WHERE id=$1`, [findingId])).rows[0];
   if (!f) throw err(404, 'that finding is gone');
+  // IDOR GUARD. The finding is loaded by id alone, but the caller only proved it
+  // may work THIS file (appId — the route runs behind the /applications/:id scope
+  // middleware). A finding is on this file only if it belongs to one of the file's
+  // borrowers AND is either scoped to this file or borrower-wide — the EXACT set
+  // openForFile SHOWS, so a reviewer can only settle what the file's screen lists.
+  // Without it, a staffer on file A could pass a findingId from a borrower they
+  // cannot see and merge away / remove that borrower's track-record lines. Placed
+  // before the 'already settled' check so a cross-file finding never leaks its
+  // state. (A direct internal call with no appId is a trusted context; the one
+  // route caller always passes it.)
+  if (appId) {
+    const fileBorrowerIds = (await borrowerIdsForFile(appId)).map(String);
+    const onThisFile = fileBorrowerIds.includes(String(f.borrower_id))
+      && (f.application_id == null || String(f.application_id) === String(appId));
+    if (!onThisFile) throw err(403, 'that finding is not on this file');
+  }
   if (f.status !== 'open') throw err(409, 'somebody already settled that finding');
   if (!isActionAllowed(f.code, action)) throw err(400, `“${action}” is not one of the options for this finding`);
 

@@ -80,8 +80,8 @@ const PACING_MS = 300;             // between uploads — keeps Graph bursts pol
 // isRegenKind() below and NEVER_MIRROR_SQL, so a doc_kind-NULL doc is correctly
 // non-regen (FALSE) and the guard becomes `NOT(FALSE AND …)=TRUE` → selected +
 // mirrored within seconds. Every consumer derives from this ONE constant.
-const REGEN_KIND_SQL = `(COALESCE(d.doc_kind,'') = 'track_record_html' OR COALESCE(d.doc_kind,'') = 'tpr_export' OR COALESCE(d.doc_kind,'') = 'draw_inspection_report' OR COALESCE(d.doc_kind,'') LIKE '%\\_export')`;
-function isRegenKind(k) { return k === 'track_record_html' || k === 'tpr_export' || k === 'draw_inspection_report' || /_export$/.test(String(k || '')); }
+const REGEN_KIND_SQL = `(COALESCE(d.doc_kind,'') = 'track_record_html' OR COALESCE(d.doc_kind,'') = 'tpr_export' OR COALESCE(d.doc_kind,'') = 'draw_inspection_report' OR COALESCE(d.doc_kind,'') = 'draw_packet' OR COALESCE(d.doc_kind,'') LIKE '%\\_export')`;
+function isRegenKind(k) { return k === 'track_record_html' || k === 'tpr_export' || k === 'draw_inspection_report' || k === 'draw_packet' || /_export$/.test(String(k || '')); }
 // ONE definition of "deliberately NEVER mirrored to SharePoint" (owner-directed).
 // The drain-exclusion SQL, the settle pass, AND the upload chokepoint ALL derive
 // from this single map so they can never diverge. ROOT of the appraisal_photo
@@ -93,12 +93,16 @@ function isRegenKind(k) { return k === 'track_record_html' || k === 'tpr_export'
 //   • heter_iska_signed — owner policy: kept in-system + on DocuSign ONLY (never
 //     leaks; companion to the TPR export denylist + rtl_cond_iska.tpr_exclude).
 //     (DOCUSIGN-DOCUMENT-BUILD-SPEC Addendum A.3/A.9.)
-//   • appraisal_photo — derived thumbnails auto-extracted from the appraisal PDF
-//     (which IS mirrored); up to ~24 per file, so mirroring them floods the team
-//     site for no gain.
+//
+// appraisal_photo WAS on this list and is NOT any more (owner-directed
+// 2026-08-09). Shown the full list of what the mirror skips and asked which to
+// change, the owner picked the photos — "in their own subfolder". They were
+// excluded because ~24 images per file would flood the category folder sitting
+// next to the actual loan documents; a dedicated `Appraisal photos` folder
+// (categoryPathFor) answers that objection without costing the pictures, which
+// are the one skipped kind a person actually wants to open in the team site.
 const NEVER_MIRROR_REASON = {
   heter_iska_signed: 'never mirrored (owner policy: the Heter Iska is kept in-system + on DocuSign only)',
-  appraisal_photo: 'not mirrored — a thumbnail auto-extracted from the appraisal (the appraisal PDF itself IS mirrored)',
 };
 const DEFAULT_NEVER_MIRROR_REASON = 'not mirrored (owner policy: this document kind is kept in-system only)';
 const NEVER_MIRROR_KINDS = new Set(Object.keys(NEVER_MIRROR_REASON));
@@ -117,6 +121,66 @@ const NEVER_MIRROR_REASON_CASE = `CASE d.doc_kind ${Object.entries(NEVER_MIRROR_
 const NEVER_MIRROR_SQL = `(COALESCE(d.doc_kind,'') NOT IN (${[...NEVER_MIRROR_KINDS].map(_sqlLit).join(',')})
   AND NOT (d.lead_id IS NOT NULL AND d.application_id IS NULL AND d.borrower_id IS NULL
            AND d.checklist_item_id IS NULL AND d.llc_id IS NULL AND d.track_record_id IS NULL))`;
+
+// ------------------------------------------- why a document is NOT in SharePoint
+// Owner-reported 2026-08-09: the scoreboard read "2,655 total / 1,755 in
+// SharePoint" with one grey line of small print naming TWO example reasons for a
+// gap of 900 — a third of the library. The mirror was whole (nothing waiting,
+// nothing stuck, and 1,755 + 900 = 2,655 exactly), but the screen gave no way to
+// SEE that, so a correct number read as 900 missing documents.
+//
+// These constants are the reasons this file writes, and SKIP_BUCKETS groups them
+// for the scoreboard — ONE table, so the writer and the grouper can never drift
+// and a new reason gets its own line for free. Anything a bucket does not
+// recognise lands in `other`, which the screen SHOWS rather than folding into a
+// friendly label — an unexplained skip has to be visible, not rounded off.
+const SKIP_SUPERSEDED_PREFIX = 'superseded before mirror — ';
+const SKIP_REASON_SUPERSEDED   = `${SKIP_SUPERSEDED_PREFIX}a newer copy of this autosaved snapshot mirrors instead`;
+const SKIP_REASON_SUPERSEDED_HEAL = `${SKIP_SUPERSEDED_PREFIX}a newer copy of this snapshot mirrors instead (stuck-heal)`;
+const SKIP_REASON_LEAD = 'not mirrored — a lead/CRM attachment, not a pipeline document';
+const SKIP_DUPLICATE_PREFIX = 'duplicate bytes — identical to already-mirrored document ';
+const duplicateBytesReason = (id) => `${SKIP_DUPLICATE_PREFIX}${id}`;
+// Written by lib/esign/webhook.js (an app-less DocuSign self-test document has no
+// loan file to file under), and by refileRow below when a human has moved our own
+// mirrored copy. The human-moved one is matched so it can never be counted as
+// "not mirrored" — that document IS in SharePoint, just not where we filed it.
+const SKIP_ESIGN_SELFTEST_PREFIX = 'e-sign self-test —';
+const SKIP_HUMAN_PLACED_PREFIX = 'left where a human put it';
+// Appraisal photos were a never-mirror KIND until 2026-08-09. Two reasons must
+// stay recognised so the scoreboard never drops a row into `other`: the LEGACY
+// stamp still on every photo mirrored-nothing before that change (kept verbatim
+// — it is written on rows already in the database and re-typing it here is the
+// only way to keep grouping them), and the reason the back-fill leaves on a
+// SUPERSEDED set, which is deliberately never copied: those are the pictures
+// from an appraisal a later import replaced, so copying them would put two
+// contradictory photo sets of one property in the team site.
+const LEGACY_SKIP_APPRAISAL_PHOTO = 'not mirrored — a thumbnail auto-extracted from the appraisal (the appraisal PDF itself IS mirrored)';
+const SKIP_REASON_PHOTO_SUPERSEDED = 'an older photo set — a newer appraisal import replaced it, and that newer set is in SharePoint';
+// LIKE-safe prefix match (the prefixes carry no wildcards today; escaped anyway
+// so adding one later can never silently widen a bucket).
+const _sqlPrefix = (col, p) => `${col} LIKE ${_sqlLit(`${String(p).replace(/([%_\\])/g, '\\$1')}%`)}`;
+const SKIP_BUCKETS = [
+  { key: 'heter_iska', match: `d.sharepoint_skipped_reason = ${_sqlLit(NEVER_MIRROR_REASON.heter_iska_signed)}`,
+    label: 'Heter Iska — kept in PILOT and DocuSign only, by your instruction' },
+  { key: 'appraisal_photos', match: `d.sharepoint_skipped_reason IN (${_sqlLit(LEGACY_SKIP_APPRAISAL_PHOTO)}, ${_sqlLit(SKIP_REASON_PHOTO_SUPERSEDED)})`,
+    label: 'Appraisal photos from an older, replaced appraisal — the current set IS in SharePoint' },
+  { key: 'in_system_only', match: `d.sharepoint_skipped_reason = ${_sqlLit(DEFAULT_NEVER_MIRROR_REASON)}`,
+    label: 'Other kinds kept inside PILOT only' },
+  { key: 'superseded', match: _sqlPrefix('d.sharepoint_skipped_reason', SKIP_SUPERSEDED_PREFIX),
+    label: 'Older auto-saves of a tool that was edited again — the newest copy IS in SharePoint' },
+  { key: 'duplicate', match: _sqlPrefix('d.sharepoint_skipped_reason', SKIP_DUPLICATE_PREFIX),
+    label: 'Exact duplicates — the identical file is already in SharePoint' },
+  { key: 'lead', match: `d.sharepoint_skipped_reason = ${_sqlLit(SKIP_REASON_LEAD)}`,
+    label: 'Lead / CRM attachments — not a loan-file document' },
+  { key: 'esign_selftest', match: _sqlPrefix('d.sharepoint_skipped_reason', SKIP_ESIGN_SELFTEST_PREFIX),
+    label: 'DocuSign test documents — no loan file to file them under' },
+];
+// A document the shelf sweep left alone because a person moved or renamed our
+// copy carries BOTH a mirror ref and a skip reason, so it must never be counted
+// in the "not mirrored" pile — it IS in SharePoint. Every count below is
+// therefore scoped to `sharepoint_backup_ref IS NULL`.
+const SKIP_NOT_MIRRORED_SQL = `(d.sharepoint_skipped_reason IS NOT NULL AND d.sharepoint_backup_ref IS NULL)`;
+const SKIP_OTHER_SQL = `(${SKIP_NOT_MIRRORED_SQL} AND NOT (${SKIP_BUCKETS.map((b) => b.match).join(' OR ')}))`;
 function snapshotSettleSec() {
   const v = parseInt(process.env.SHAREPOINT_SNAPSHOT_SETTLE_SEC || '600', 10);
   return Number.isFinite(v) && v >= 10 ? v : 600;
@@ -357,15 +421,67 @@ function isClosingDoc(row) {
 // condition-attached or loose — files under the SAME clean category folder the
 // TPR export uses, so the "Synced by Pilot" tree reads like the TPR package
 // instead of one folder per long condition label (owner-directed 2026-07-30).
+// Draw documents file into a PER-DRAW folder tree (owner-directed 2026-08-06):
+// each draw gets its own "Draw N" folder holding the packet Excel + a subfolder
+// per report SOURCE (Our report / TrustPoint / Inspector / Sitewire), instead of
+// one flat "Draw Reports" bin. `documents` has no draw column, so the draw number
+// and the source are read from the system-generated FILENAME; an unrecognized
+// draw doc falls to a safe "Draws/Unfiled draw/Reports" bucket — never lost.
+function drawInfoFromName(name) {
+  const s = String(name || '');
+  let m;
+  if ((m = /^pilot-draw-(\d+)-packet-/i.exec(s)))                    return { num: +m[1], packet: true };
+  if ((m = /^pilot-draw-(\d+)-report-(?:staff|borrower)-/i.exec(s))) return { num: +m[1], sub: 'Our report' };
+  if (/^pilot-project-report-/i.test(s))                             return { project: true, sub: 'Our report' };
+  if ((m = /^trustpoint-draw-(\d+)-inspection-result/i.exec(s)))     return { num: +m[1], sub: 'Inspector' };
+  // TrustPoint's OWN report PDF (trustpoint/mirror.js) is named by TrustPoint's
+  // draw id, not the draw NUMBER, so it can't file per-draw from the filename —
+  // group it under one clear TrustPoint folder (honest, and out of "Unfiled").
+  // Checked before the generic trustpoint-draw-<n> case (which needs a digit).
+  if (/^trustpoint-draw-report-/i.test(s))                           return { flat: 'TrustPoint reports' };
+  if ((m = /^trustpoint-draw-(\d+)-/i.exec(s)))                      return { num: +m[1], sub: 'TrustPoint' };
+  if ((m = /^sitewire-draw-(\d+)-/i.exec(s)))                        return { num: +m[1], sub: 'Sitewire' };
+  // The PILOT-branded TrustPoint ("trinary") report (trustpoint/report.js) is
+  // `draw-<N>-<tag>-report-<mode>-<ver>.pdf` — it carries the draw number, so it
+  // files per-draw alongside the inspector's own TrustPoint documents.
+  if ((m = /^draw-(\d+)-[a-z0-9]+-report-/i.exec(s)))                return { num: +m[1], sub: 'TrustPoint' };
+  return { sub: 'Reports' };
+}
+// The per-draw folder PATH for a draw document (the packet Excel, or any report).
+// All segments are literal folder names (no address/slug), so the path is short
+// and stable, and the existing multi-segment resolver creates each level.
+function drawFolderPathFor(row) {
+  const info = drawInfoFromName(row.filename);
+  if (info.flat) return ['Draws', info.flat];   // a draw report with no draw number in its filename
+  const drawSeg = info.project ? 'All draws (project)'
+    : (info.num != null ? `Draw ${info.num}` : 'Unfiled draw');
+  const path = ['Draws', drawSeg];
+  if (info.packet) return path;                 // the Excel packet sits at the Draw N root — the anchor
+  path.push(info.sub || 'Reports');
+  return path;
+}
+
 function categoryPathFor(row) {
   if (row.llc_resolved_id) return [row.llc_name || 'LLC', llcSubfolder(row)];
   if (row.doc_kind === 'photo_id') return ['Photo ID'];               // always profile-level
   if (row.doc_kind === 'term_sheet') return ['Term Sheet', 'Unsigned'];
   if (row.doc_kind === 'term_sheet_signed') return ['Term Sheet', 'Signed'];
   if (row.doc_kind === 'tpr_export') return ['TPR Exports'];
-  // Draw Management phase 2b — the PILOT-branded inspection reports get their own category so their
-  // frequent version-hashed supersedes never shuffle other (uncategorized) file documents.
-  if (row.doc_kind === 'draw_inspection_report') return ['Draw Reports'];
+  // The appraisal's own pictures, in their own folder (owner-directed 2026-08-09).
+  // The PARENT is derived, never spelled, so the photos always sit BESIDE the
+  // appraisal report rather than in a folder that could drift away from it if the
+  // category is ever renamed. Note this also hands the photos their own version
+  // stream for free: `categoryFor` is the JOINED path and `stateKeyFor` slugs it,
+  // so a re-import superseding 24 photos can never bump the appraisal REPORT's
+  // Version-N counter — they are two folders, so they must be two streams.
+  if (row.doc_kind === 'appraisal_photo') return [tprCategoryOf(row), 'Appraisal photos'];
+  // Draw Management — per-draw folders (owner-directed 2026-08-06): each draw's
+  // documents (our PILOT reports, TrustPoint/trinary reports, the inspector's own
+  // report, the Sitewire virtual-inspection PDF) file under Draws/Draw N/<source>,
+  // and the draw-packet Excel sits at the Draw N root — instead of one flat
+  // "Draw Reports" bin. The frequent version-hashed supersedes still land in their
+  // own per-draw/per-source folder (their own version stream — see stateKeyFor).
+  if (row.doc_kind === 'draw_inspection_report' || row.doc_kind === 'draw_packet') return drawFolderPathFor(row);
   // Everything that arrives on the closing email chain — its own folder, so the
   // team's drive mirrors the same separation the file makes: the running closing
   // correspondence is NOT the final executed closing package.
@@ -452,7 +568,11 @@ const ENRICH_SELECT = `
            l.id                                                                AS llc_resolved_id,
            l.llc_name,
            COALESCE(tr.property_address->>'oneLine',
-                    tr.property_address->>'street', tr.property_address->>'line1') AS tr_address,
+                    tr.property_address->>'street', tr.property_address->>'line1',
+                    -- A legacy bare one-line string (public-records import before the shape
+                    -- heal) names the REO folder by the address, not "Project <id>".
+                    CASE WHEN jsonb_typeof(tr.property_address) = 'string'
+                         THEN tr.property_address #>> '{}' END) AS tr_address,
            a.ys_loan_number,
            COALESCE(a.property_address->>'oneLine',
                     NULLIF(TRIM(CONCAT_WS(', ',
@@ -592,7 +712,7 @@ async function settleSupersededSnapshots() {
   const r = await db.query(
     `UPDATE documents d SET
         sharepoint_backed_up_at = now(),
-        sharepoint_skipped_reason = 'superseded before mirror — a newer copy of this autosaved snapshot mirrors instead',
+        sharepoint_skipped_reason = ${_sqlLit(SKIP_REASON_SUPERSEDED)},
         sharepoint_backup_error = NULL
       WHERE d.sharepoint_backed_up_at IS NULL
         AND COALESCE(d.is_current, true) = false
@@ -638,7 +758,7 @@ async function settleNeverMirror() {
   const lead = await db.query(
     `UPDATE documents d SET
         sharepoint_backed_up_at = now(),
-        sharepoint_skipped_reason = 'not mirrored — a lead/CRM attachment, not a pipeline document',
+        sharepoint_skipped_reason = ${_sqlLit(SKIP_REASON_LEAD)},
         sharepoint_backup_error = NULL
       WHERE d.sharepoint_backed_up_at IS NULL
         AND d.storage_ref IS NOT NULL
@@ -647,6 +767,94 @@ async function settleNeverMirror() {
       RETURNING d.id`);
   if (lead.rowCount) console.log(`[sp-sync] settled ${lead.rowCount} lead/CRM attachment(s) (not pipeline docs)`);
   return (r.rowCount || 0) + (lead.rowCount || 0);
+}
+
+/**
+ * PREVIOUS AND FUTURE — copy the appraisal photos already on file.
+ *
+ * Owner-directed 2026-08-09. Removing `appraisal_photo` from the never-mirror
+ * set only reaches appraisals imported from now on: every photo already in
+ * PILOT was SETTLED (backed_up_at stamped + a skip reason) precisely so it would
+ * leave the pending population, and a settled row is invisible to the drain
+ * forever. Without this pass the owner's whole back catalogue of property
+ * pictures would never appear, which is the standing "previous AND future" rule.
+ *
+ * IT MIRRORS FIRST AND STAMPS AFTER, and that ordering is the whole design.
+ * The obvious implementation — clear the settle stamps and let the normal drain
+ * pick the rows up — sets `sharepoint_backed_up_at = NULL` on documents created
+ * WEEKS ago, and the backlog SLO measures `min(created_at)` across exactly that
+ * population. So the first boot after this change would report an oldest-pending
+ * age of weeks, breach the SLO, flip the mirror unhealthy and email every admin
+ * — an alarm caused entirely by a deliberate policy change, which is how people
+ * learn to ignore alarms. Calling `mirrorRow` directly on a still-settled row
+ * uploads it and lets `uploadAndRecord` overwrite the stamps on SUCCESS, so a
+ * failure leaves the row exactly as it was: still settled, still invisible to
+ * the SLO, retried on the next boot. The pending/stuck/oldest-pending numbers
+ * never move because of this pass.
+ *
+ * ONLY THE CURRENT SET IS COPIED. A re-imported appraisal retires its
+ * predecessor's photos (`is_current = false`), and copying those too would put
+ * two contradictory photo sets of one property in the team site — so a
+ * superseded set is re-stamped with a reason that says so and stays out.
+ * Nothing is deleted either way; the bytes stay in PILOT.
+ *
+ * Bounded per boot and self-draining (a success clears the skip reason, so the
+ * row leaves the candidate set). Never throws. Off with
+ * SHAREPOINT_PHOTO_BACKFILL_DISABLED=1; batch via SHAREPOINT_PHOTO_BACKFILL_FILES.
+ */
+async function backfillAppraisalPhotoMirrorOnce() {
+  const out = { scanned: 0, mirrored: 0, superseded: 0, failed: 0, skipped: null };
+  if (process.env.SHAREPOINT_PHOTO_BACKFILL_DISABLED === '1') return { ...out, skipped: 'disabled' };
+  if (!enabled()) return { ...out, skipped: 'sync disabled' };
+  const limit = Math.max(1, parseInt(process.env.SHAREPOINT_PHOTO_BACKFILL_FILES || '120', 10) || 120);
+  try {
+    // Retire the superseded sets first — one cheap statement, no uploads, and it
+    // shrinks the candidate set the paid loop below has to walk.
+    const sup = await withTimeout(db.query(
+      `UPDATE documents SET sharepoint_skipped_reason = $1
+        WHERE doc_kind = 'appraisal_photo'
+          AND COALESCE(is_current, true) = false
+          AND sharepoint_backup_ref IS NULL
+          AND sharepoint_skipped_reason IS DISTINCT FROM $1`, [SKIP_REASON_PHOTO_SUPERSEDED]),
+      DB_OP_TIMEOUT_MS, 'photo-backfill supersede stamp timed out');
+    out.superseded = sup.rowCount || 0;
+
+    const { rows } = await withTimeout(db.query(
+      `SELECT id FROM documents
+        WHERE doc_kind = 'appraisal_photo'
+          AND COALESCE(is_current, true) = true
+          AND sharepoint_backup_ref IS NULL          -- not already in SharePoint
+          AND sharepoint_skipped_reason IS NOT NULL  -- settled by the old policy
+          AND storage_ref IS NOT NULL
+        ORDER BY created_at ASC
+        LIMIT $1`, [limit]), DB_OP_TIMEOUT_MS, 'photo-backfill selection timed out');
+    out.scanned = rows.length;
+
+    for (const { id } of rows) {
+      let row;
+      try { row = await enrichedRowById(id); } catch (_) { row = null; }
+      if (!row) { out.failed++; continue; }
+      try {
+        await withTimeout(mirrorRow(row), FORCE_ATTEMPT_TIMEOUT_MS, 'photo mirror timed out');
+        out.mirrored++;
+      } catch (e) {
+        // Deliberately NOT recordFailure: that path is for rows in the live
+        // queue and would re-arm this document as pending, which is the exact
+        // SLO false alarm this pass exists to avoid. The row keeps its settle
+        // stamps and is simply retried on the next boot.
+        out.failed++;
+        console.warn(`[sp-photos] doc ${id}: ${e.message}`);
+      }
+      await sleep(PACING_MS);      // the same polite gap every other upload loop uses
+    }
+  } catch (e) {
+    console.warn('[sp-photos] backfill error:', e.message);
+    return { ...out, skipped: 'error' };
+  }
+  if (out.mirrored || out.superseded || out.failed) {
+    console.log(`[sp-photos] appraisal-photo backfill: ${out.mirrored} copied, ${out.superseded} older set(s) retired, ${out.failed} to retry`);
+  }
+  return out;
 }
 
 // ------------------------------------------------------------------ versioning
@@ -1007,7 +1215,7 @@ async function mirrorRowInner(row, scopeKey) {
           sharepoint_backup_error = NULL
         WHERE id = $1`,
       [row.id, contentSha, dup.sharepoint_web_url || null,
-       `duplicate bytes — identical to already-mirrored document ${dup.id}`]);
+       duplicateBytesReason(dup.id)]);
     try {
       await require('./sync-review').closeStaleReviews({
         taskId: `spdoc:${row.id}`, fieldKey: 'sharepoint_doc',
@@ -1666,7 +1874,7 @@ async function refileRow(row) {
               sharepoint_skipped_reason=$3
         WHERE id=$1`,
       [row.id, shelf.key,
-       `left where a human put it — not re-filed to "${shelf.folder || 'the category folder'}" (${String(e.message).slice(0, 120)})`]);
+       `${SKIP_HUMAN_PLACED_PREFIX} — not re-filed to "${shelf.folder || 'the category folder'}" (${String(e.message).slice(0, 120)})`]);
     return 'skipped:human';
   }
 }
@@ -2122,6 +2330,22 @@ async function reconciliation() {
         count(*) FILTER (WHERE storage_ref IS NOT NULL)::int                                            AS total_docs,
         count(*) FILTER (WHERE sharepoint_backup_ref IS NOT NULL)::int                                  AS mirrored,
         count(*) FILTER (WHERE sharepoint_skipped_reason IS NOT NULL)::int                              AS skipped,
+        -- The "not mirrored on purpose" pile, and WHY — so the gap between
+        -- "total" and "in SharePoint" reads as an answer instead of a mystery.
+        -- Scoped to backup_ref IS NULL: a copy a human moved carries a skip
+        -- reason too, and that document IS in SharePoint (owner-reported
+        -- 2026-08-09). Same single scan — these are FILTERs, not a second query.
+        count(*) FILTER (WHERE ${SKIP_NOT_MIRRORED_SQL})::int                                            AS skipped_not_mirrored,
+        ${SKIP_BUCKETS.map((b) => `count(*) FILTER (WHERE ${SKIP_NOT_MIRRORED_SQL} AND ${b.match})::int AS skip_${b.key}`).join(',\n        ')},
+        count(*) FILTER (WHERE ${SKIP_OTHER_SQL})::int                                                   AS skip_other,
+        -- Belt to that suspender: a document with bytes that is in NONE of the
+        -- four buckets (mirrored / skipped / waiting / stuck). Normally 0; a
+        -- never-mirror kind sits here for the seconds between upload and the
+        -- settle pass. Surfaced so the scoreboard can never show a silent gap.
+        count(*) FILTER (WHERE storage_ref IS NOT NULL
+                          AND sharepoint_backup_ref IS NULL
+                          AND sharepoint_skipped_reason IS NULL
+                          AND NOT (sharepoint_backed_up_at IS NULL AND ${NEVER_MIRROR_SQL}))::int        AS unaccounted,
         count(*) FILTER (WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
                           AND ${NEVER_MIRROR_SQL})::int                                                  AS pending,
         count(*) FILTER (WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
@@ -2146,6 +2370,18 @@ async function reconciliation() {
       FROM documents d`,
     [MAX_ATTEMPTS]);
   const r = rows[0];
+  // The "not mirrored on purpose" pile, itemised in plain language. Only
+  // non-empty lines, biggest first — and `other` is ALWAYS shown when non-zero,
+  // deliberately unlabelled, because a skip nothing recognises is exactly the
+  // thing a person needs to see rather than have summarised at them.
+  const skippedBreakdown = SKIP_BUCKETS
+    .map((b) => ({ key: b.key, label: b.label, count: Number(r[`skip_${b.key}`] || 0) }))
+    .filter((b) => b.count > 0)
+    .sort((a, b) => b.count - a.count);
+  if (Number(r.skip_other || 0) > 0) {
+    skippedBreakdown.push({ key: 'other', count: Number(r.skip_other),
+      label: 'Not recognised — worth a look (open the document mirror report)' });
+  }
   const oldestHrs = r.oldest_pending_secs != null ? Math.round(r.oldest_pending_secs / 360) / 10 : null;
   const thresholdHrs = Number(process.env.SHAREPOINT_BACKLOG_SLO_HOURS || 6);
   const backlogBreached = oldestHrs != null && oldestHrs > thresholdHrs;
@@ -2199,6 +2435,7 @@ async function reconciliation() {
     + (r.item_missing || 0) + (r.local_missing || 0);
   return {
     ...r,
+    skipped_breakdown: skippedBreakdown,
     oldest_pending_hours: oldestHrs,
     needs_attention: needsAttention,
     slo: { thresholdHours: thresholdHrs, oldestPendingHours: oldestHrs, breached: backlogBreached, exhausted: r.exhausted },
@@ -2351,7 +2588,7 @@ async function escalateStuckDocs() {
       // Self-heal: settle the superseded snapshot exactly like the settle pass.
       await db.query(
         `UPDATE documents SET sharepoint_backed_up_at = now(),
-            sharepoint_skipped_reason = 'superseded before mirror — a newer copy of this snapshot mirrors instead (stuck-heal)',
+            sharepoint_skipped_reason = ${_sqlLit(SKIP_REASON_SUPERSEDED_HEAL)},
             sharepoint_backup_error = NULL
           WHERE id = $1 AND sharepoint_backed_up_at IS NULL`, [d.id]);
       settled++;
@@ -2634,6 +2871,8 @@ module.exports = {
   // shelf re-filing (owner-directed 2026-08-03) — exported for the admin
   // trigger and the DB test; see lib/sharepoint-shelf.js for the rule.
   refileOnce, refileRow, refileBatch,
+  // Appraisal-photo mirroring back-fill (owner-directed 2026-08-09).
+  backfillAppraisalPhotoMirrorOnce,
   reconciliation, checkBacklogSlo, stuckDocuments, escalateStuckDocs,
   classifyMirrorError, forceAttemptDoc,
   neverAttemptedStrays, pendingBatch, explainExclusion, enrichedRowById,
@@ -2652,4 +2891,26 @@ module.exports = {
   // Exported for the recategorize repair (scripts/sharepoint-recategorize-existing.js)
   // + the pure category test (scripts/test-sharepoint-category.js).
   categoryPathFor, scopeKeyFor, stateKeyFor,
+  // The scoreboard's own predicates + the exact reason strings the writers use.
+  // Exported so scripts/test-sharepoint-scoreboard-db.js asserts against the SAME
+  // SQL the report runs — a test that re-typed these would prove nothing about
+  // the real query, and the drift it would hide is the whole bug class here.
+  _scoreboardSql: {
+    notMirrored: SKIP_NOT_MIRRORED_SQL,
+    other: SKIP_OTHER_SQL,
+    neverMirror: NEVER_MIRROR_SQL,
+    buckets: SKIP_BUCKETS,
+    reasons: {
+      heterIska: NEVER_MIRROR_REASON.heter_iska_signed,
+      appraisalPhotoLegacy: LEGACY_SKIP_APPRAISAL_PHOTO,
+      appraisalPhotoSuperseded: SKIP_REASON_PHOTO_SUPERSEDED,
+      defaultNeverMirror: DEFAULT_NEVER_MIRROR_REASON,
+      superseded: SKIP_REASON_SUPERSEDED,
+      supersededHeal: SKIP_REASON_SUPERSEDED_HEAL,
+      duplicate: duplicateBytesReason,
+      lead: SKIP_REASON_LEAD,
+      esignSelfTest: 'e-sign self-test — no loan file to mirror under',   // lib/esign/webhook.js
+      humanPlaced: SKIP_HUMAN_PLACED_PREFIX,
+    },
+  },
 };

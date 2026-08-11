@@ -1,0 +1,82 @@
+jsonKey,Description,Version,12 Month DOT,12 Month DTSD,12 Month MTG,12 Month with Holdback DOT,12 Month with Holdback DTSD,12 Month with Holdback MTG,DSCR - DOT,DSCR - DTSD,DSCR - MTG,NY Building Loan - MTG,Commercial DOT,Commercial DTSD,Commercial MTG,Commercial with holdback DOT,Commercial with holdback DTSD,Commercial with holdback MTG,DSCR - Portfolio Rental DOT,DSCR - Portfolio Rental DTSD,DSCR - Portfolio Rental MTG,CEMA - DSCR,CEMA Acquisition Building Loan,DSCR - Portfolio Rental - MERS -DOT,DSCR - Portfolio Rental - MERS -DTSD,DSCR - Portfolio Rental - MERS -MTG,DSCR - Single Family Rental - MERS-DOT,DSCR - Single Family Rental - MERS-DSTD,DSCR - Single Family Rental - MERS-MTG,DSCR - 30 Year Single Family Rental - MERS- DOT,DSCR - 30 Year Single Family Rental - MERS-DTSD,DSCR - 30 Year Single Family Rental - MERS-MTG
+acknowledgement_corporate_status,"Enter ""Bylaws and Board of Directors"" or ""Operating Agreement and Members"" depending upon Borrowing Entity being a Corporation or a LLC.",3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+amount_at_closing,"The net amount of funds available to Borrower after all fees and costs are netted, includiding the Construction Holdback (if any)",3.1.0,—,✓,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—
+block_number,Used to legally identify the property’s location within a survey system.,3.1.1,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—
+borrower_address,Complete mailing address of the borrower.,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+borrower_contribution,"The amount of money the borrower is required to contribute toward the project, property purchase, or transaction from their own funds.",3.1.1,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—
+borrower_name,The name of the borrowing entity,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+borrower_state,The state which the borrowing entity was formed in,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+bylaws_operating_agreement,"Specify if the borrower uses an operating agreement (for LLC), bylaws (for corporation), trust agreement (for Trust), partnership agreement (for partnership), etc",3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,—,—,—,—,—,✓,✓,✓,✓,✓,✓,—,✓,—,✓,✓,✓,—,✓
+collateral_property_address,The full street address of the subject property,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+collateral_property_county,The street address of the collateral property being secured,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,—,—,—,—,—,—,—,—,—,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+collateral_property_state,The state in which the subject property is located,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+construction_holdback,"Total amount to be withheld from the loan amount to be advanced at a later date pursuant to a draw request, after a portion of construction is completed",3.1.0,—,—,—,✓,✓,✓,—,—,—,✓,✓,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—
+date_of_closing,The intended date for the parties to sign and fund the loan transaction,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+district_number,Used to legally identify the property’s location within a survey system.,3.1.1,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—
+draw_fee_amount,The fee associated with lender's expense to review a draw request form and issue an advance to borrower,3.1.1,—,—,—,✓,✓,✓,—,—,—,✓,—,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—
+exit_fee_percentage,Percentage of the applicable exit fee,3.1.1,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—
+first_day_of_month_plus_1_year,The payment date plus One Year.,3.1.0,✓,✓,✓,✓,✓,✓,—,—,—,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,—,—,—,—,—,—,—,—
+first_payment_date,The date in which the first payment under the loan comes due and payable,3.1.0,—,—,—,—,—,—,✓,✓,✓,—,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+governing_law,The law governing the terms of the contract of the loan (can be the same or different than the state of the subject property,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+governing_law_all_caps,The state whose law will govern the terms of the contract (can be the same or different than the state of the subject property),3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+guarantor_address,Address of the personal guarantor of the loan,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+guarantor_name,Name of the personal guarantor of the loan,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+guarantor_or_collectively_the_guarantor,"If there is one guarantor, enter ""guarantor"". If there are multiple guarantors, enter ""collectively, the guarantor""",3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,—,✓,—,—,—,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+individual_jointly_and_severally,"If there is one guarantor, enter ""indvidually"". If there are multiple guarantors, enter ""jointly and severally""",3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,—,✓,—,—,—,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+initial_advance,The total loan amount less the construction holdback amount,3.1.0,—,—,—,✓,✓,✓,—,—,—,✓,—,—,✓,✓,—,✓,✓,✓,✓,✓,✓,—,✓,✓,✓,—,—,✓,✓,—
+initial_advance_upon_closing,The total loan amount less the construction holdback amount,3.1.0,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,✓,✓,✓,—,—,—,—,—,—,—,—,—,—
+interest_rate,The interest rate of the loan,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+last_day_of_the_month,"Last day of the month of closing, used to identify the last date that per diem interest shall accrue",3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+last_day_to_draw,The last day the borrower has to make a request for an advance of the construction holdback. The most common last day to draw is two months before the maturity date to ensure the project can be completed with time to sell/refinance and repay the lender,3.1.0,—,—,—,✓,✓,✓,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—
+lender_address,The address of the lender making the loan,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+lender_name,The name of the lender making the loan,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+lender_name_all_caps,"Lender's name on the loan, in all capital letters for recording purposes",3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+lender_state,The state of the lender's address,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+lender_town_and_state,State and town of the Lender's address,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,—,—,—,—,—,—,—,—,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+lender_type_of_organization,"The type of organizination of the entity the lender us using to make the loan (e.g. limited liability company, corporation, trust, etc)",3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+loan_amount,Amount of the loan being made,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+loan_id,Lender's unique loan id for the subject loan,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+loan_to_value_percent,"The maximum loan to value ratio permitted under the terms of the loan. If the property value falls and the LTV percentage increases, the borrower must pay down the loan to this percentage to avoid default. Also known as a mark to market provision.",3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,—,—,—,—,—,—,—,—,—,,,—,—,—,—,—,—,—,—,—
+lot_number,Number of the personal inputVari of the loan,3.1.1,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—
+maturity_date,The date on which the loan matures and comes due and payable,3.1.0,—,✓,—,—,✓,—,✓,✓,✓,✓,✓,✓,—,✓,✓,✓,✓,✓,✓,✓,✓,—,✓,—,✓,✓,✓,✓,✓,—
+maturity_date_of_loan,The date on which the loan matures and comes due and payable,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+membership_interest_percentage,The total membership interest that this particular pledgor holds in the borrowing entity,3.1.2,✓,✓,✓,✓,✓,✓,✓,✓,—,—,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,—,—,—,—,—,—,—,—,—,—
+month_of_closing,The month in which closing is occurring,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+monthly_payment,The amount of the monthly mortgage payment,3.1.0,—,—,—,—,—,—,✓,✓,✓,—,—,—,—,—,—,—,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+monthly_payment_date_begin,The date that the first monthly payment comes due and payable,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+pledgor,"The party pledging its interest in the borrowing entity, should be one for each member of the borrowing entity to ensure complete pledge of membership interests",3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+pledgor_or_collectively_the_pledgor,"If there is only one pledgor, enter ""Pledgor"". If there are multiple pledgors, enter ""collectively, the Pledgor""",3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,—,—,—,—,—,—,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+property_town,The town of the collateral property being secured,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+purchase_refinance,Specify whether the transaction is a purchase or a refinance,3.1.1,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—
+purpose_of_loan,Specify whether the purpose of the loan is purchase or refinance the property,3.1.0,✓,✓,✓,✓,✓,✓,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—
+section_number,Number of the personal inputVari of the loan,3.1.1,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—
+settlement_agent_name,Name of the settlement agent handling the closing of the loan,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+settlement_agent_name_and_address,Name and address of the settlement agent handling the closing of the loan,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+signatory_name,Name of the person signing on behalf of the borrowing entity,3.1,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+signatory_title,"Title of the signatory of the borrowing entity duly authorized to bind the company and chosen by Lender to execute the loan documents (e.g. Member, Managing Member, President, Secretary, etc)",3.1,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+state_abbrev,"Abbreviation for the state department of environmental protection (e.g. CADEP, NYDEP, TXDEP)",3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,✓,—,—,—,—,—,✓,✓,✓,✓,—,✓,✓,✓,✓,✓,✓,✓,✓,✓
+title_agent,Name of the title agency insuring the transaction,3.1.1,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—,✓,✓,—,—,—,—,—,—,—,—,—
+title_agent_name,Name of the title agency insuring the transaction,3.1.1,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—,✓,✓,—,—,—,—,—,—,—,—,—
+title_agent_name_and_address,Name and address of the title agency insuring the transaction,3.1.1,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,—,—,—,✓,✓,—,—,—,—,—,—,—,—,—
+trustee,"Trustee of the Deed of Trust (most often the title company at closing, but some will need you to identify your own. PLL can help with this as needed)",3.1.0,✓,—,—,✓,—,—,✓,—,—,—,—,—,—,✓,—,—,✓,✓,✓,—,—,✓,—,—,—,✓,—,—,—,✓
+type_of_organization,"Type of company for the borrowing entity (e.g. limited liability company, corporation, etc)",3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+underwriter,The name of the title underwriter issuing the loan policy,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+year_for_notary_block,"Year of the closing, for the notary block",3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+prepayment_penalty,The type of prepayment penalty being charged on the transaction,3.1.0,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+feeName (Dynamic_Fee),Name of the dynamicFee of the loan,3.1.1,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+feeAmount (Dynamic_Fee),Amount of the dynamicFee of the loan,3.1.1,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓
+number_of_shares,quantity of ownership shares held in a corporation or entity associated with the loan transaction.,3.1.2,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,—,—,—,—,—,—,—,—,—,—
+certificate_number,ID associated with a certificate tied to the loan or collateral,3.1.2,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,—,—,—,—,—,—,—,—,—,—
+pledgor_address,Address of the individual/entity pledging collateral.,3.1.2,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,✓,—,—,—,—,—,—,—,—,—,—,—
+gap_loan_amount,The amount of funds in the loan amount which exceed the assigned loan in a CEMA. This figure represents the portion of the loan which the borrower will owe Mortgage Recording Tax on in New York,3.1.4,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,✓,✓,—,—,—,—,—,—,—,—,—
+servicer_name,The address of the entity responsible for the administration of the loan,3.1.2,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,✓,✓,✓,✓,✓,✓,—,—,—,✓,✓
+servicer_address,The address of the entity responsible for the administration of the loan,3.1.2,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,✓,✓,✓,✓,✓,✓,—,—,—,✓,✓
+late_charge_percentage,,3.1.3,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,✓,—,✓,—,—,—
+grace_period_days,,3.1.3,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,✓,✓,—,—,—
+mers_number,,3.1.3,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,✓,✓,✓,✓,✓,✓,✓,✓,✓
+monthly_escrow_payments,,3.1.3,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,✓,✓,✓,—,—,—,✓,✓,✓
+monthly_payment_with_escrows,,3.1.3,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,✓,✓,✓,—,—,—,✓,✓,✓
+property_street_address,,3.1.3,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,✓,✓,✓,✓,—,✓,✓,✓,—
+collateral_property_name,,3.1.3,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,✓,—,—,—,—,—,—,✓,—
+late_charge_percentage,,3.1.3,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,✓,—,✓,—,—,—
+state,,3.1.3,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,—,✓,—,—,✓

@@ -71,7 +71,7 @@ export default function GuarantyWaiverCard({ appId }) {
             <div style={{ padding: 10, background: 'rgba(174,135,70,0.08)', border: '1px solid #AE8746', borderRadius: 8 }}>
               <div className="muted small" style={{ marginBottom: 6 }}>
                 Ask a super-admin to waive {coName}’s personal guarantee (rare). They stay a member/owner of the
-                LLC but won’t be a personal guarantor. This goes to the Exceptions box for approval — the term
+                entity but won’t be a personal guarantor. This goes to the Exceptions box for approval — the term
                 sheet updates only if it’s approved.
               </div>
               <label className="muted small">Reason</label>

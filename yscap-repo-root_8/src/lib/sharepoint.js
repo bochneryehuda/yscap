@@ -129,6 +129,12 @@ async function fetchTokenNow() {
  * exactly; exponential backoff (with jitter) otherwise; one token refresh on 401.
  */
 async function graph(path, { method = 'GET', headers = {}, body, raw = false, timeout = 60000 } = {}) {
+  // SHARED-ACROSS-PROCESSES pacing (lib/api-rate-limit.js, db/482). The owner asked for
+  // real limits on every outbound API after ClickUp phoned about ours, and this client had
+  // NO pacing at all — its bursts (a whole closing package at once) went out as fast as the
+  // loop would allow. The cap is a ceiling well under the provider's, not a brake; it never
+  // throws, and if the database is unreachable it degrades to a per-process bucket.
+  await require('./api-rate-limit').acquire('graph');
   const url = path.startsWith('http') ? path : GRAPH + path;
   let refreshed = false;
   for (let attempt = 1; ; attempt++) {

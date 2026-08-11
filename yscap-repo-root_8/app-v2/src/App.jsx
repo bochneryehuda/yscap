@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './lib/auth.jsx';
 import { engineReport } from './lib/engines.js';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 import RouteChrome from './components/RouteChrome.jsx';
+import AppDialogHost from './components/AppDialog.jsx';
 import Layout from './components/Layout.jsx';
 import StaffLayout from './components/StaffLayout.jsx';
 import Login from './screens/Login.jsx';
@@ -12,10 +13,10 @@ import Forgot from './screens/Forgot.jsx';
 import Reset from './screens/Reset.jsx';
 import Accept from './screens/Accept.jsx';
 import AssistantAccept from './screens/AssistantAccept.jsx';
-import AssistantLogin from './screens/AssistantLogin.jsx';
 import Helpers from './screens/Helpers.jsx';
 import GuestChat from './screens/GuestChat.jsx';
 import DrawAccept from './screens/DrawAccept.jsx';
+import AcceptTerms from './screens/AcceptTerms.jsx';
 import EsignDone from './screens/EsignDone.jsx';
 import Dashboard from './screens/Dashboard.jsx';
 import Tasks from './screens/Tasks.jsx';
@@ -28,6 +29,7 @@ import PricingStudio from './screens/PricingStudio.jsx';
 import NotificationSettings from './screens/NotificationSettings.jsx';
 import StaffLogin from './screens/StaffLogin.jsx';
 import StaffQueue from './screens/StaffQueue.jsx';
+import StaffTrackRecordWorkspace from './screens/StaffTrackRecordWorkspace.jsx';
 import StaffNewFile from './screens/StaffNewFile.jsx';
 import StaffTasks from './screens/StaffTasks.jsx';
 import StaffWorkflow from './screens/StaffWorkflow.jsx';
@@ -162,6 +164,13 @@ export default function App() {
     <AuthProvider>
       <HashRouter>
         <RouteChrome />
+        {/* PILOT's own message box. Mounted ONCE, here, for two reasons: it
+            covers every screen including the public ones (login, e-sign, guest
+            chat), and it sits OUTSIDE the ErrorBoundary so a screen that
+            crashes cannot take the dialog down with it. Without a mounted host
+            lib/dialog falls back to the browser's native box, so a message is
+            never swallowed — see the note in that file. */}
+        <AppDialogHost />
         <ErrorBoundary>
         <Routes>
           {/* public */}
@@ -171,10 +180,18 @@ export default function App() {
           <Route path="/reset" element={<Reset />} />
           <Route path="/accept" element={<Accept />} />
           <Route path="/assistant/accept" element={<AssistantAccept />} />
-          <Route path="/assistant/login" element={<AssistantLogin />} />
+          {/* A borrower's helper signs in on the ONE client login screen — the
+              server recognizes their credentials there (owner-directed
+              2026-08-09). The separate helper sign-in screen is gone; this
+              redirect keeps an old bookmark or a saved link working. */}
+          <Route path="/assistant/login" element={<Navigate to="/login" replace />} />
           {/* #75 — magic-link guest chat for external email participants (no login). */}
           <Route path="/guest/:key" element={<GuestChat />} />
           <Route path="/draw-accept/:token" element={<DrawAccept />} />
+          {/* An officer's emailed term sheet: see the terms, create a password,
+              answer two questions, and land in a file already carrying them
+              (owner-directed 2026-08-07). PUBLIC — nobody has an account yet. */}
+          <Route path="/accept-terms/:token" element={<AcceptTerms />} />
           {/* Where a borrower lands after signing from PILOT's branded e-sign email —
               exchanges the one-time login code so they return INSIDE their file logged in. */}
           <Route path="/esign/done" element={<EsignDone />} />
@@ -222,6 +239,10 @@ export default function App() {
               (owner-directed 2026-07-31). Embeds the escalation/exception/finding/
               sync-review/my-request screens unchanged. */}
           <Route path="/internal/approvals" element={<StaffPrivate><StaffApprovals /></StaffPrivate>} />
+          {/* The track-record workspace as its OWN full-screen route (mega-workspace
+              phase F) — the same component the Approvals tab embeds, with room to
+              work. ?borrower=<id> narrows it to one person (profile links here). */}
+          <Route path="/internal/track-record" element={<StaffPrivate><StaffTrackRecordWorkspace /></StaffPrivate>} />
           <Route path="/internal/settings" element={<StaffPrivate><StaffSettings /></StaffPrivate>} />
           {/* Old scattered approval routes now redirect into the hub, keeping their
               query string so deep links (?app=<id>) still land on the right card. */}

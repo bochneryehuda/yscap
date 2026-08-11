@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import TapeQuestionsModal from '../components/TapeQuestionsModal.jsx';
 import { useAuth } from '../lib/auth.jsx';
+import { askPrompt } from '../lib/dialog.js';
 
 /* Data Tapes — the provider-centric export hub. Pick a capital provider, see
    every loan currently assigned to it (the tape can only carry loans set to that
@@ -64,7 +65,7 @@ export default function StaffTapes() {
       const q = await api.staffTapeQuestions(loanId, active);
       const questions = (q && q.questions) || [];
       const seasoned = q && q.seasoned && q.seasoned.isSeasoned ? q.seasoned : null;
-      if (questions.length || seasoned) { setPending({ loanId, tapeName, questions, seasoned }); setBusyRow(null); return; }
+      if (questions.length || seasoned) { setPending({ loanId, tapeName, questions, seasoned, supplementalMissing: (q && q.supplementalMissing) || 0 }); setBusyRow(null); return; }
       await exportRow(loanId, tapeName, undefined);
     } catch (e) { setErr((e.data && e.data.message) || e.message || 'Export failed'); setBusyRow(null); }
   }
@@ -81,13 +82,13 @@ export default function StaffTapes() {
       // NOBODY may self-override. A super admin can allow it inline with a reason;
       // everyone else asks a super admin for an exception (recorded per file).
       if (d.code === 'encompass_override_reason_required' && d.canOverride) {
-        const reason = window.prompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAs a super admin you can allow it — type a short reason (this is logged):`, '');
+        const reason = await askPrompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAs a super admin you can allow it — type a short reason (this is logged):`, { defaultValue: '' });
         if (reason && reason.trim()) { setBusyRow(null); await exportRow(loanId, tapeName, { ...(answers || {}), encompassOverrideReason: reason.trim() }); return; }
         setBusyRow(null); return;
       }
       if (d.code === 'encompass_exception_required' || d.code === 'encompass_unreconciled') {
         if (d.canRequestException) {
-          const note = window.prompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAsk a super admin to allow it — say why the tape needs to go out now:`, '');
+          const note = await askPrompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAsk a super admin to allow it — say why the tape needs to go out now:`, { defaultValue: '' });
           if (note && note.trim()) {
             try { await api.requestTapeException(loanId, { reasonNote: note.trim() }); setMsg('Sent a request to a super admin. They can allow the tape from the Exceptions box.'); }
             catch (e2) { setErr((e2.data && e2.data.error) || e2.message || 'Could not send the request.'); }
@@ -115,7 +116,7 @@ export default function StaffTapes() {
       // logged reason; everyone else sees which loans still need reconciling or a
       // super-admin exception (requested per file from the loan file).
       if (d.code === 'encompass_override_reason_required' && d.canOverride) {
-        const reason = window.prompt(`${d.message || 'Some selected loans don’t fully match Encompass yet.'}\n\nAs a super admin you can allow them — type a short reason (this is logged):`, '');
+        const reason = await askPrompt(`${d.message || 'Some selected loans don’t fully match Encompass yet.'}\n\nAs a super admin you can allow them — type a short reason (this is logged):`, { defaultValue: '' });
         if (reason && reason.trim()) { setBusyBulk(false); await exportBulk(reason.trim()); return; }
         setBusyBulk(false); return;
       }
@@ -237,7 +238,11 @@ export default function StaffTapes() {
       {pending && (
         <TapeQuestionsModal
           title={pending.questions.length ? `${activeTape ? activeTape.name : ''} tape — a few details` : `${activeTape ? activeTape.name : ''} tape — confirm current numbers`}
-          subtitle={pending.questions.length ? "This is a ground-up loan. Fill these in and they'll be saved on the file, so we won't ask again." : undefined}
+          subtitle={pending.questions.length
+            ? (pending.supplementalMissing > 0
+                ? "This is a ground-up loan. Fill in these details — they're saved on the file and pre-filled here every time you export."
+                : "These details are saved on the file and pre-filled here. Review or change anything, then export.")
+            : undefined}
           questions={pending.questions}
           seasoned={pending.seasoned}
           busy={busyRow === pending.loanId}

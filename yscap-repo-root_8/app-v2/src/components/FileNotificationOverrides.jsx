@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { askConfirm } from '../lib/dialog.js';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    PER-FILE NOTIFICATION OVERRIDES
@@ -49,7 +50,7 @@ export default function FileNotificationOverrides({ applicationId, isMyFile }) {
         // Clear all overrides — full defaults. Ask once before dropping any
         // per-key overrides the LO built up; the wildcard-only case is silent.
         const perKeyCount = (overrides || []).filter((o) => o.notif_key !== '*').length;
-        if (perKeyCount > 0 && !window.confirm(`Clear ${perKeyCount} per-notification override${perKeyCount > 1 ? 's' : ''} on this file? It will use your Notification Center defaults from now on.`)) {
+        if (perKeyCount > 0 && !(await askConfirm(`Clear ${perKeyCount} per-notification override${perKeyCount > 1 ? 's' : ''} on this file? It will use your Notification Center defaults from now on.`))) {
           setBusy(false);
           return;
         }
@@ -133,7 +134,7 @@ export default function FileNotificationOverrides({ applicationId, isMyFile }) {
                       <tr key={o.notif_key} style={{ borderBottom: '1px solid var(--line)' }}>
                         <td style={{ padding: 6 }}>{entry ? entry.label : o.notif_key}</td>
                         <td style={{ padding: 6, textAlign: 'right' }}>
-                          <span className="ec-pill ec-pill-muted" style={{ fontSize: 10, marginRight: 6 }}>
+                          <span className="ec-pill ec-pill-muted" style={{ fontSize: 11, marginRight: 6 }}>
                             {!o.enabled ? 'Off' : o.mode === 'manual' ? 'Manual' : 'Automatic'}
                           </span>
                           <button className="btn ghost small" onClick={() => clearPerKey(o.notif_key)}>Clear</button>

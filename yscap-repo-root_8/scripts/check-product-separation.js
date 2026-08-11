@@ -11,7 +11,7 @@
  *     built before 2026-08-02. The main product.
  *   • LT  — Long-Term Loans. Brand new, starts at zero, side build, not live.
  *     Back end lives ONLY in src/longterm/**; front end ONLY in
- *     app-v2/src/longterm/** (and app/src/longterm/** for the frozen V1);
+ *     app-v2/src/longterm/**; HTTP ONLY under /api/lt/*;
  *     tables ONLY lt_*; migrations db/NNN_lt_*.sql; tests scripts/test-lt-*.js.
  *
  * The owner's rule: nothing crosses between them without explicit WRITTEN
@@ -29,7 +29,8 @@
  *      migration redefining an RTL function
  *   7. LT code reaching an RTL table by raw SQL (the crossing that needs no import),
  *      RTL code reaching an lt_* table the same way, and RTL back-end code calling /api/lt
- *   8. an LT migration that creates a table not named lt_*
+ *   8. an LT migration that creates a table not named lt_*, or that touches ONLY
+ *      RTL tables (the opposite of 5 — a both-sides rule cannot catch it)
  *   9. the rule documents, or this gate's own wiring, going missing
  *
  * Everything is checked from the filesystem — no database, no network, no deps.
@@ -40,6 +41,8 @@
  *   • a plainly-named new column added to an RTL table for Long-Term's benefit, a new
  *     ClickUp/Encompass mapping, or a new checklist template
  *   • anything under web/ (built bundles plus a handful of frozen static tools)
+ *   • SQL inside scripts/test-lt-*.js — a Long-Term test may name ANY table, in
+ *     either product, because it exists to exercise them
  * Those rest on the person doing the work and on the PR checklist.
  *
  * DO NOT weaken, baseline, or "temporarily" disable this gate. If it blocks you the
@@ -293,6 +296,14 @@ function checkImports(allow, files) {
 // 7. The crossing that needs no import: raw SQL, and RTL back-end code calling /api/lt.
 // ---------------------------------------------------------------------------
 // Things that legitimately follow FROM/JOIN/INTO/UPDATE and are not tables.
+// Words that follow FROM/INTO/UPDATE in ordinary English but can never be a table
+// here. Without this, a plain label in a Long-Term screen ("Select a program from
+// the dropdown") trips the raw-SQL rule — the same failure mode that used to block
+// Long-Term's own tests.
+const ENGLISH_NOT_A_TABLE = new Set(['the', 'a', 'an', 'this', 'that', 'these', 'those', 'it', 'them',
+  'one', 'all', 'any', 'each', 'my', 'your', 'our', 'their', 'us', 'me', 'you', 'here', 'there',
+  'master', 'now', 'then', 'both', 'either', 'every']);
+
 const SQL_NON_TABLE = new Set(['lateral', 'only', 'select', 'unnest', 'values', 'dual', 'generate_series',
   'jsonb_array_elements', 'jsonb_array_elements_text', 'jsonb_each', 'jsonb_each_text', 'jsonb_to_recordset',
   'json_array_elements', 'json_each', 'regexp_split_to_table', 'string_to_table', 'each', 'rows', 'set']);
@@ -312,6 +323,7 @@ function tablesNamedIn(sqlText) {
   const keep = (name, at, whole) => {
     const lower = name.toLowerCase();
     if (SQL_NON_TABLE.has(lower) || ctes.has(lower)) return false;
+    if (ENGLISH_NOT_A_TABLE.has(lower)) return false;   // a label, not a query
     if (sqlText[at + whole.length] === '(') return false;              // a function call, not a table
     return true;
   };
@@ -319,13 +331,13 @@ function tablesNamedIn(sqlText) {
   // Writes first, remembering where they matched so the FROM inside "DELETE FROM"
   // is never counted a second time as a read.
   const writeSpans = [];
-  for (const re of [/\bINSERT\s+INTO\s+("?[A-Za-z_][\w.]*"?)/gi,
+  for (const re of [/\bINSERT\s+INTO\s+("?[\w."]+"?)/gi,
     // `UPDATE t SET`, `UPDATE ONLY t SET`, `UPDATE t AS x SET`, `UPDATE t x SET` — an
     // alias is the cheapest way to hide the one write the owner refused.
-    /\bUPDATE\s+(?:ONLY\s+)?("?[A-Za-z_][\w.]*"?)(?:\s+(?:AS\s+)?[A-Za-z_]\w*)?\s+SET\b/gi,
-    /\bDELETE\s+FROM\s+("?[A-Za-z_][\w.]*"?)/gi,
-    /\bTRUNCATE\s+(?:TABLE\s+)?(?:ONLY\s+)?("?[A-Za-z_][\w.]*"?)/gi,
-    /\bMERGE\s+INTO\s+("?[A-Za-z_][\w.]*"?)/gi]) {
+    /\bUPDATE\s+(?:ONLY\s+)?("?[\w."]+"?)(?:\s+(?:AS\s+)?[A-Za-z_]\w*)?\s+SET\b/gi,
+    /\bDELETE\s+FROM\s+(?:ONLY\s+)?("?[\w."]+"?)/gi,
+    /\bTRUNCATE\s+(?:TABLE\s+)?(?:ONLY\s+)?("?[\w."]+"?)/gi,
+    /\bMERGE\s+INTO\s+("?[\w."]+"?)/gi]) {
     let m;
     while ((m = re.exec(sqlText))) {
       writeSpans.push([m.index, m.index + m[0].length]);
@@ -334,7 +346,23 @@ function tablesNamedIn(sqlText) {
     }
   }
 
-  const READ = /\b(?:FROM|JOIN)\s+("?[A-Za-z_][\w.]*"?)/gi;
+  // `TRUNCATE a, b;` — the continuation is walked only from the TRUNCATE itself.
+  const TRUNC = /\bTRUNCATE\s+(?:TABLE\s+)?(?:ONLY\s+)?("?[\w."]+"?)/gi;
+  let t;
+  while ((t = TRUNC.exec(sqlText))) {
+    let at = t.index + t[0].length;
+    const MORE_T = /^\s*,\s*(?:ONLY\s+)?("?[\w."]+"?)/i;
+    for (;;) {
+      const more = sqlText.slice(at).match(MORE_T);
+      if (!more) break;
+      const nm = cleanIdent(more[1]);
+      writeSpans.push([at, at + more[0].length]);
+      if (keep(nm, at + more[0].length - more[1].length, more[1])) out.push({ name: nm, mode: 'write' });
+      at += more[0].length;
+    }
+  }
+
+  const READ = /\b(?:FROM|JOIN)\s+(?:ONLY\s+)?("?[\w."]+"?)/gi;
   let m;
   while ((m = READ.exec(sqlText))) {
     if (writeSpans.some(([s, e]) => m.index >= s && m.index < e)) continue;
@@ -344,7 +372,7 @@ function tablesNamedIn(sqlText) {
     // from a real FROM clause, so a SELECT list or an INSERT column list
     // (`INSERT INTO t (borrower_id, staff_id)`) is never mistaken for tables.
     let at = m.index + m[0].length;
-    const MORE = /^(?:\s+(?:AS\s+)?[A-Za-z_]\w*)?\s*,\s*("?[A-Za-z_][\w.]*"?)/i;
+    const MORE = /^(?:\s+(?:AS\s+)?[A-Za-z_]\w*)?\s*,\s*("?[\w."]+"?)/i;
     for (;;) {
       const tail = sqlText.slice(at);
       const more = tail.match(MORE);
@@ -361,8 +389,8 @@ function looksLikeSql(text) {
   if (/\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|WITH)\b/i.test(text) && /\b(FROM|INTO|SET|JOIN)\b/i.test(text)) return true;
   // TRUNCATE / MERGE carry no FROM or SET, so they need their own shape — tight
   // enough that ordinary prose ("truncate the string") is not read as SQL.
-  if (/\bTRUNCATE\s+(?:TABLE\s+)?(?:ONLY\s+)?[A-Za-z_][\w.]*\s*(?:;|$|CASCADE|RESTART)/i.test(text)) return true;
-  if (/\bMERGE\s+INTO\s+[A-Za-z_][\w.]*\s+USING\b/i.test(text)) return true;
+  if (/\bTRUNCATE\s+(?:TABLE\s+)?(?:ONLY\s+)?"?[\w."]+"?(?:\s*,\s*(?:ONLY\s+)?"?[\w."]+"?)*\s*(?:;|$|CASCADE|RESTART|RESTRICT)/i.test(text)) return true;
+  if (/\bMERGE\s+INTO\s+"?[\w."]+"?[\s\S]{0,80}?\bUSING\b[\s\S]{0,160}?\bON\b/i.test(text)) return true;
   return false;
 }
 
@@ -437,7 +465,7 @@ function checkSql(allow) {
   for (const name of files) {
     const where = 'db/' + name;
     const sql = stripSqlComments(fs.readFileSync(path.join(DB_DIR, name), 'utf8'));
-    const declaredLtMigration = /^\d+_lt_/.test(name);   // db/NNN_lt_*.sql — anchored, so db/430_default_lt_value.sql is NOT one
+    const declaredLtMigration = /^\d+_lt_/i.test(name);   // db/NNN_lt_*.sql — anchored, so db/430_default_lt_value.sql is NOT one
 
     const ltTouched = new Set();
     const rtlTouched = new Set();
@@ -507,7 +535,7 @@ function checkSql(allow) {
     const TOUCH = [
       /\bINSERT\s+INTO\s+("?[\w."]+"?)/gi,
       /\bUPDATE\s+("?[\w."]+"?)\s+SET\b/gi,
-      /\bDELETE\s+FROM\s+("?[\w."]+"?)/gi,
+      /\bDELETE\s+FROM\s+(?:ONLY\s+)?("?[\w."]+"?)/gi,
       /\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?("?[\w."]+"?)/gi,
       /\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?[\w"]+\s+ON\s+("?[\w."]+"?)/gi,
       /\bDROP\s+TRIGGER\s+(?:IF\s+EXISTS\s+)?[\w"]+\s+ON\s+("?[\w."]+"?)/gi,

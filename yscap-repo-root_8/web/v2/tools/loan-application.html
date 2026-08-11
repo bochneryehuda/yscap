@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-<script src="../theme.js?v=n7"></script>
+<script src="../theme.js?v=tsprog1"></script>
 <script>
 (function () {
   try {
@@ -11,7 +11,7 @@
   } catch (e) {}
 })();
 </script>
-<script src="../brand.js?v=n4"></script>
+<script src="../brand.js?v=tsprog1"></script>
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>YS Capital — Loan Application | Fix &amp; Flip · Bridge · Rental</title>
@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com/">
 <link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin="">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../suite.css?v=pilot4">
+<link rel="stylesheet" href="../suite.css?v=aa1">
 <style>
 /* =====================================================================
    LOAN APPLICATION — editorial reskin to the approved blueprint.
@@ -268,10 +268,10 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
 .la-scope .result-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--la-line-soft);border:1px solid var(--la-line-soft);border-radius:var(--la-r);overflow:hidden;}
 .la-scope .result{background:var(--la-panel);padding:15px 18px;transition:background .2s var(--la-ease);}
 .la-scope .result:hover{background:var(--la-card);}
-.la-scope .r-label{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--la-ink-soft);font-weight:700;}
+.la-scope .r-label{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--la-ink-soft);font-weight:700;}
 .la-scope .r-value{font-family:var(--la-serif);font-size:20px;font-weight:500;letter-spacing:-.01em;margin-top:6px;color:var(--la-ink);}
 .la-scope .r-value.tealed{color:var(--la-gold);}
-.la-scope .r-hint{font-size:10.5px;color:var(--la-ink-mut);margin-top:5px;line-height:1.4;}
+.la-scope .r-hint{font-size:11px;color:var(--la-ink-mut);margin-top:5px;line-height:1.4;}
 
 /* loan-amount logic explainer */
 .la-scope .loan-logic{margin:0;padding:.95rem 1.15rem;border:1px solid var(--la-line);border-left:3px solid var(--la-teal);border-radius:11px;background:var(--la-card);}
@@ -303,7 +303,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
 .la-scope .la-admin-head{font-family:var(--la-serif);font-size:1rem;font-weight:600;color:var(--la-ink);display:flex;align-items:center;gap:.5rem;}
 .la-scope .la-admin-badge{font-family:var(--la-sans);font-size:.6rem;letter-spacing:.1em;text-transform:uppercase;background:var(--la-teal);color:#fff;padding:.16rem .4rem;border-radius:5px;}
 .la-scope .la-admin-sub{font-size:.8rem;color:var(--la-ink-soft);margin:.5rem 0 .2rem;line-height:1.45;}
-.la-scope .la-admin-group{font-family:var(--la-sans);font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--la-teal-deep);margin:.95rem 0 .5rem;}
+.la-scope .la-admin-group{font-family:var(--la-sans);font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--la-teal-deep);margin:.95rem 0 .5rem;}
 .la-scope .la-admin-grid2{display:grid;grid-template-columns:1fr 1fr;gap:.55rem .6rem;}
 .la-scope .la-admin-grid2 .field label{font-size:.72rem;color:var(--la-ink-soft);margin-bottom:.28rem;}
 .la-scope .la-admin-lockbtn{margin-top:1rem;width:100%;background:none;color:var(--la-ink-soft);border:1px solid var(--la-line);border-radius:9px;padding:.55rem .9rem;font-family:var(--la-sans);font-size:.82rem;font-weight:600;cursor:pointer;}
@@ -736,15 +736,16 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
 
             <div class="panel">
                 <h2><span class="panel-num">2</span> Vesting &amp; ownership</h2>
-                <p class="panel-note">Most investors take title to the property in an entity (an LLC). Tell us how you'll hold this one.</p>
+                <p class="panel-note">Most investors take title to the property in an entity. Tell us how you'll hold this one.</p>
                 <label class="toggle-card switch" for="vestEntity" style="cursor:pointer">
-                    <span class="tc-text"><b>Taking title in an entity (LLC / Corp)</b>Leave off to borrow as an individual.</span>
+                    <span class="tc-text"><b>Taking title in an entity</b>An LLC, corporation, partnership or trust. Leave off to borrow as an individual.</span>
                     <span style="display:inline-flex;align-items:center"><input type="checkbox" id="vestEntity"><span class="track"></span></span>
                 </label>
                 <div class="field-rows cond hidden" data-cond="vestEntity" style="margin-top:1rem">
                     <div class="field-rows two-col" style="margin:0">
-                        <div class="field"><label for="eName">Entity name</label><div class="input"><input id="eName" type="text" placeholder="e.g. 123 Main Holdings LLC"></div></div>
-                        <div class="field"><label for="eType">Entity type</label><div class="input"><select id="eType"><option value="">Select…</option><option>LLC</option><option>Corporation (Inc / S-Corp)</option><option>Limited Partnership</option><option>Other</option></select></div></div>
+                        <div class="field"><label for="eName">Vesting entity name</label><div class="input"><input id="eName" type="text" placeholder="e.g. 123 Main Holdings LLC"></div></div>
+                        <div class="field"><label for="eType">Entity type <span class="req">*</span></label><div class="input"><select id="eType"><option value="">Select…</option><option value="llc">LLC</option><option value="corporation">Corporation (Inc / S-Corp)</option><option value="partnership">Partnership (LP / LLP / general)</option><option value="trust">Trust</option></select></div><span class="field-err">Select the entity type.</span><div class="hint" id="eTypeHint">A corporation uploads its bylaws and stock certificate where an LLC uploads its operating agreement — so we ask up front.</div></div>
+                        <div class="field hidden" id="eSubtypeField"><label for="eSubtype">What kind?</label><div class="input"><select id="eSubtype"><option value="">Select…</option></select></div><div class="hint">A revocable trust has no EIN of its own and a general partnership is not filed with any state — this tells us what we can and cannot ask you for.</div></div>
                     </div>
                     <div class="field-rows two-col" style="margin:0">
                         <div class="field"><label for="eState">State of formation</label><div class="input"><input id="eState" type="text" placeholder="e.g. NY"></div></div>
@@ -752,7 +753,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
                     </div>
                 </div>
                 <div class="cond hidden" data-cond="ownership" style="margin-top:1.1rem">
-                    <div class="subhead">LLC ownership split <em style="text-transform:none;letter-spacing:0;color:var(--muted-2)">— must total 100%; enter one for two borrowers and we'll balance the other</em></div>
+                    <div class="subhead">Entity ownership split <em style="text-transform:none;letter-spacing:0;color:var(--muted-2)">— must total 100%; enter one for two borrowers and we'll balance the other</em></div>
                     <div class="own-row" data-own="1"><span class="own-name" data-ownname="1">Primary borrower</span><div class="input"><input id="b1Own" type="number" inputmode="decimal" min="0" max="100" placeholder="0"><span class="adorn">%</span></div></div>
                     <div class="own-row" data-own="2"><span class="own-name" data-ownname="2">Borrower 2</span><div class="input"><input id="b2Own" type="number" inputmode="decimal" min="0" max="100" placeholder="0"><span class="adorn">%</span></div></div>
                     <div class="own-row" data-own="3"><span class="own-name" data-ownname="3">Borrower 3</span><div class="input"><input id="b3Own" type="number" inputmode="decimal" min="0" max="100" placeholder="0"><span class="adorn">%</span></div></div>
@@ -812,6 +813,20 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
                         <div class="field-rows two-col" style="margin:0">
                             <div class="field"><label for="payoff">Current loan payoff</label><div class="input"><span class="adorn">$</span><input id="payoff" type="number" inputmode="decimal" placeholder="0"></div></div>
                             <div class="field"><label for="origPrice2">Original purchase price</label><div class="input"><span class="adorn">$</span><input id="origPrice2" type="number" inputmode="decimal" placeholder="0"></div></div>
+                        </div>
+                        <!-- WHO is being paid off, and WHICH loan (owner-directed: the payoff
+                             is part of the structure — say who holds it and its loan number, so the
+                             closing attorney knows where to send the payoff request). Collected here
+                             exactly as the borrower portal and staff new-file form do, so a refinance
+                             started from ANY side carries the same payoff details. -->
+                        <div class="field-rows two-col" style="margin:0">
+                            <!-- The product elected on the Term Sheet Generator, carried by its "Start application →"
+                                 hand-off (owner-directed 2026-08-06) so the new file can register the pricing the
+                                 applicant was actually shown. Hidden and never typed: it is restored by
+                                 YS.applyState from the #d= fragment, exactly like the payoff carriers. -->
+                            <input id="tsProgram" type="hidden" value="">
+                            <div class="field"><label for="payoffLender">Lender being paid off</label><div class="input"><input id="payoffLender" type="text" placeholder="who holds the current loan"></div></div>
+                            <div class="field"><label for="payoffLoanNo">Their loan number</label><div class="input"><input id="payoffLoanNo" type="text" placeholder="the payoff lender's loan #"></div></div>
                         </div>
                         <div class="field" style="max-width:260px"><label for="acqDate">Date acquired</label><div class="input"><input id="acqDate" type="date"></div></div>
                     </div>
@@ -1049,11 +1064,11 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
 </footer>
 
 </div>
-<script src="../suite.js?v=admin8"></script>
-<script src="rb-logo.js?v=admin8"></script>
-<script src="standard-program.js?v=asgseller18-asgelig"></script>
-<script src="title-cost.js?v=admin8"></script>
-<script src="address-autocomplete.js?v=usps1"></script>
+<script src="../suite.js?v=tsprog1"></script>
+<script src="rb-logo.js?v=tsprog1"></script>
+<script src="standard-program.js?v=tsprog1"></script>
+<script src="title-cost.js?v=tsprog1"></script>
+<script src="address-autocomplete.js?v=tsprog1"></script>
 <script>
 /* =====================================================================
    YS LOAN APPLICATION — wizard logic (v2)
@@ -1104,6 +1119,20 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
   var $$ = function (s, c) { return Array.prototype.slice.call((c || document).querySelectorAll(s)); };
   var el  = function (id) { return document.getElementById(id); };
   var val = function (id) { var e = el(id); return e ? String(e.value).trim() : ""; };
+  /* The WORDS a dropdown shows, not the key it sends. The review summary,
+     the PDF and the confirmation email are read by a person, so a select
+     whose value is a stored key ("corporation") must print its label
+     ("Corporation (Inc / S-Corp)"). Falls back to the raw value for a
+     plain text box, so it is safe to use anywhere val() is. */
+  var label = function (id) {
+    var e = el(id);
+    if (!e) return "";
+    if (e.tagName === "SELECT" && e.selectedIndex >= 0) {
+      var o = e.options[e.selectedIndex];
+      return o && o.value ? String(o.text).trim() : "";
+    }
+    return String(e.value).trim();
+  };
   var num = function (id) { return YS.num(id); };
   function digits(s) { return (s || "").replace(/\D/g, ""); }
   // Phone / ZIP boxes accept digits only, pretty-printed as the user types —
@@ -1455,7 +1484,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
       tool: "term_sheet_exception",
       name: bName(1) || null, email: vEmail || null, phone: vPhone || null,
-      officerCode: officerCode, subject: sum.subject, message: sum.body,
+      officerCode: officerCode, fromStaffPortal: (window.YS_FROM_STAFF_PORTAL === true ? true : undefined), subject: sum.subject, message: sum.body,
       formToken: FORM_TOKEN.t || undefined,
       payload: { kind: "loan_application_manual_review", state: YS.collectState() }
     }) })
@@ -1755,6 +1784,13 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     2: function () {
       var bad = [], n = bCount();
       // vesting/ownership now lives in step 2
+      /* WHICH KIND OF ENTITY IS A REQUIRED ANSWER (owner-directed 2026-08-09) —
+         it decides which governing document we ask for, so leaving it blank
+         means asking a corporation for an operating agreement it does not have.
+         Only asked when they are actually vesting in an entity. */
+      if (el("vestEntity").checked) {
+        var etOk = val("eType") !== ""; setErr("eType", !etOk); if (!etOk) bad.push("eType");
+      } else setErr("eType", false);
       if (el("vestEntity").checked && n > 1) {
         var tot = 0; for (var j = 1; j <= n; j++) tot += num("b" + j + "Own");
         if (Math.abs(tot - 100) > 0.5) { bad.push("ownership"); updateOwnTotal(); }
@@ -1810,8 +1846,8 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     S.push({ title: "Loan officer", step: 1, items: [
       ["Loan officer", off ? (off.name + (off.title ? " — " + off.title : "")) : "No preference — routed to loan desk"]
     ]});
-    var v = [["Vesting", el("vestEntity").checked ? "Entity (LLC / Corp)" : "Individual"]];
-    if (el("vestEntity").checked) { v.push(["Entity name", val("eName")]); v.push(["Entity type", val("eType")]); v.push(["State of formation", val("eState")]); v.push(["EIN", val("eEin")]); }
+    var v = [["Vesting", el("vestEntity").checked ? (label("eType") || "Entity") : "Individual"]];
+    if (el("vestEntity").checked) { v.push(["Vesting entity name", val("eName")]); v.push(["Entity type", label("eType")]); if (val("eSubtype")) v.push(["Kind", label("eSubtype")]); v.push(["State of formation", val("eState")]); v.push(["EIN", val("eEin")]); }
     S.push({ title: "Vesting", step: 1, items: v });
     for (var i = 1; i <= n; i++) {
       var p = "b" + i, items = [
@@ -1832,7 +1868,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     ]});
     var a = [];
     if (!isRefi()) { a.push(["Purchase price", money("price")]); if (el("isAssign").checked) { a.push(["Assignment / wholesale", "Yes"]); a.push(["Seller's contract price", money("origPrice")]); a.push(["Assignment fee", money("assignFee")]); } }
-    else { a.push(["Current loan payoff", money("payoff")]); a.push(["Original purchase price", money("origPrice2")]); a.push(["Date acquired", val("acqDate")]); }
+    else { a.push(["Current loan payoff", money("payoff")]); a.push(["Lender being paid off", val("payoffLender")]); a.push(["Their loan number", val("payoffLoanNo")]); a.push(["Original purchase price", money("origPrice2")]); a.push(["Date acquired", val("acqDate")]); }
     a.push(["As-is value", money("asIs")]); a.push(["ARV", money("arv")]);
     S.push({ title: "Acquisition & valuation", step: 2, items: a });
     S.push({ title: "Rehab, timeline & experience", step: 2, items: [
@@ -2102,6 +2138,20 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
          seasoning basis. Refinance-only: on a purchase there is nothing to pay
          off and no prior acquisition. */
       payoffAmount: isRefi() ? val("payoff") : null,
+      /* WHO is being paid off and WHICH loan — the other two thirds of the payoff
+         the borrower portal and staff new-file form both send. The intake handler
+         already stores payoff_lender / payoff_loan_number (refi-gated); the public
+         form simply never collected them, so a refinance started from the marketing
+         site lost them while the other two entry points kept them (owner-directed:
+         "no matter from which side"). Refinance-only, like the amount above. */
+      /* The product elected on the Term Sheet Generator (owner-directed
+         2026-08-06: "it should feed automatically into the products and pricing
+         that he'd chosen"). Only ever one of the three self-registerable
+         programs — the generator never carries MANUAL, which is an approval-
+         bearing admin product and must not register itself off a public form. */
+      pricingProgram: val("tsProgram") || null,
+      payoffLender: isRefi() ? (val("payoffLender") || null) : null,
+      payoffLoanNumber: isRefi() ? (val("payoffLoanNo") || null) : null,
       originalPurchasePrice: isRefi() ? val("origPrice2") : null,
       acquisitionDate: isRefi() ? val("acqDate") : null,
       isAssignment: assign,
@@ -2113,11 +2163,46 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
       requestedIrAmount: el("finReserve").checked ? val("resAmount") : null,
       expFlips: val("expFlips"), expHolds: val("expBrrrr"), expGround: val("expGround"),
       eName: el("vestEntity").checked ? val("eName") : null,
+      /* WHAT KIND OF ENTITY (owner-directed 2026-08-09). This box has existed
+         since the form shipped and even prints on the review summary, but the
+         answer was never SENT — so every entity arrived assumed to be an LLC and
+         a corporation was asked for an operating agreement it does not have. */
+      eType: el("vestEntity").checked ? val("eType") : null,
+      /* Only a partnership and a trust have a kind, and it is what stops us
+         asking a revocable trust for an EIN it does not have. */
+      eSubtype: el("vestEntity").checked ? val("eSubtype") : null,
       eState: el("vestEntity").checked ? val("eState") : null,
       eEin: el("vestEntity").checked ? val("eEin") : null,
       payload: YS.collectState()
     };
   }
+  /* WHICH KIND OF PARTNERSHIP OR TRUST — only those two have one, so the box
+     appears only when it has something to ask. It is not required: a borrower
+     who does not know can leave it, and the loan team settles it before closing.
+     Kept in step with src/lib/entity-type.js SUBTYPES. */
+  var ENTITY_SUBTYPES = {
+    partnership: [["general", "General partnership"], ["limited", "Limited partnership (LP)"], ["llp", "Limited liability partnership (LLP)"]],
+    trust: [["revocable", "Revocable (living) trust"], ["irrevocable", "Irrevocable trust"]]
+  };
+  function syncEntitySubtype() {
+    var wrap = el("eSubtypeField"), sel = el("eSubtype");
+    if (!wrap || !sel) return;
+    var opts = ENTITY_SUBTYPES[val("eType")] || [];
+    if (!opts.length) { wrap.classList.add("hidden"); sel.value = ""; sel.innerHTML = '<option value="">Select\u2026</option>'; return; }
+    var keep = sel.value;
+    sel.innerHTML = '<option value="">Select\u2026</option>';
+    for (var i = 0; i < opts.length; i++) {
+      var o = document.createElement("option");
+      o.value = opts[i][0]; o.textContent = opts[i][1];
+      sel.appendChild(o);
+    }
+    // A kind only survives a type change if the new type still offers it.
+    sel.value = opts.some(function (x) { return x[0] === keep; }) ? keep : "";
+    wrap.classList.remove("hidden");
+  }
+  if (el("eType")) el("eType").addEventListener("change", syncEntitySubtype);
+  syncEntitySubtype();
+
   function doSubmit() {
     if (!el("consent").checked) {
       el("consentErr").style.display = "block";
@@ -2160,7 +2245,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
       : ((new URLSearchParams(location.search).get("lo")) || "");
     return fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
       tool: "loan_application", name: bName(1), email: val("b1Email"), phone: val("b1Phone"),
-      officerCode: officerCode, subject: subject, message: buildSummary(), payload: YS.collectState()
+      officerCode: officerCode, fromStaffPortal: (window.YS_FROM_STAFF_PORTAL === true ? true : undefined), subject: subject, message: buildSummary(), payload: YS.collectState()
     }) })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
       .then(function () { finish(off, null); })
@@ -2341,6 +2426,6 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
 })();
 
 </script>
-<script src="../float-actions.js?v=admin10-applyfix"></script>
+<script src="../float-actions.js?v=tsprog1"></script>
 </body>
 </html>

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
@@ -8,7 +9,12 @@ import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { passwordProblem } from '../lib/password.js';
 import { BorrowerProfileForm, BorrowerSsnRow, NameSplitPrompt, PortalAccessRow } from '../components/BorrowerProfilePanel.jsx';
 import { fullNameOf } from '../lib/personName.js';
+import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 import { BorrowerContacts } from '../components/FileContacts.jsx';
+import ExperienceHeader from '../components/track-record/ExperienceHeader.jsx';
+import RecordLedger from '../components/track-record/RecordLedger.jsx';
+import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
+import { useAuth } from '../lib/auth.jsx';
 
 // Borrower CRM hub — the single place staff see everything about a person:
 // personal info + editable CRM fields, their loan files ("mortgages with us"),
@@ -73,7 +79,7 @@ export default function StaffBorrowerDetail() {
       {tab === 'Overview' && <Overview b={b} onChanged={load} />}
       {tab === 'Files' && <Files id={id} />}
       {tab === 'Entities' && <Entities id={id} />}
-      {tab === 'Track record' && <TrackRecord id={id} />}
+      {tab === 'Track record' && <TrackRecord id={id} onOpenEntities={() => setTab('Entities')} />}
       {tab === 'Credit' && <Credit id={id} />}
       {tab === 'Conditions' && <Conditions id={id} />}
       {tab === 'Tasks' && <Tasks id={id} />}
@@ -99,20 +105,20 @@ function Header({ b, name, onChanged }) {
     setBusy(kind); setErr('');
     try {
       if (kind === 'invite') {
-        try {
-          await api.staffBorrowerInvite(b.id); flash(`PILOT invite sent to ${b.email}.`); onChanged();
-        } catch (e) {
-          // A borrower with NO active file has nothing to be invited TO — so START a
-          // new application for them and invite them to fill it in (owner-directed
-          // 2026-08-04, #23). Passing borrowerId links the new file to THIS exact
-          // profile, so their records (entities, track record, SSN) carry over, and
-          // it reuses the same tested invite-only path as "Invite for a new application".
-          if (e.data && e.data.code === 'no_active_file') {
-            await api.staffCreateFile({ inviteOnly: true, borrowerId: b.id,
-              borrower: { email: b.email, firstName: b.first_name, lastName: b.last_name } });
-            flash(`Started a new application for ${b.email} and sent them an invite.`); onChanged();
-          } else throw e;
-        }
+        /* NO PER-SCREEN FALLBACK ANY MORE (2026-08-07). This handler used to catch the
+           server's "this borrower has no active file" refusal and manufacture an
+           invite-only application so there was something to invite them TO. Two wrongs
+           that: it lived in ONE of the four screens that call this endpoint, so the
+           borrowers list and the shared BorrowerProfilePanel still dead-ended (the
+           owner's report); and it minted a loan number, a checklist and a ClickUp task
+           for a deal nobody has, purely to satisfy a check that should not have
+           existed. The server now sends a plain portal invitation when there is no
+           file, and the borrower starts their own application from the portal. */
+        const r = await api.staffBorrowerInvite(b.id);
+        flash(r && r.noFile
+          ? `PILOT invite sent to ${b.email} — they can start an application from the portal.`
+          : `PILOT invite sent to ${b.email}.`);
+        onChanged();
       }
       else if (kind === 'reset') { await api.staffBorrowerResetPassword(b.id); flash(`Reset link emailed to ${b.email}.`); }
       else if (kind === 'ssn') { const r = await api.staffBorrowerSsn(b.id); setSsn(r.ssn); }
@@ -277,7 +283,7 @@ function ContactBook({ b, onChanged }) {
     catch (e) {
       setErr(e.message || 'Could not make that the primary');
       if (e.data && e.data.sharedEmail && e.data.sharedEmail.canShare
-          && window.confirm(`${e.message}\n\nKeep both people on this email address?`)) {
+          && await askConfirm(`${e.message}\n\nKeep both people on this email address?`)) {
         return promote(c, true);
       }
     } finally { setBusy(''); }
@@ -422,6 +428,61 @@ function Files({ id }) {
 /* ---------------- entities ---------------- */
 function Entities({ id }) {
   const [rows, err, reload] = useLoad(() => api.staffBorrowerLlcs(id), [id]);
+  const { actor } = useAuth();
+  const isSuper = ((actor && actor.role) || '') === 'super_admin';
+  const [busy, setBusy] = useState('');
+  /* Take an entity off this profile — for one added by mistake (owner-directed
+     2026-08-10). WHO may do it is tiered by the server: an entity used on a CLOSED
+     loan or a track record is super-admin-only; a pure orphan or an in-progress-only
+     entity is open to any staffer here. We ask the server what would happen FIRST,
+     then show TWO warnings (the consequences, then a typed reason). All the safety +
+     the snapshot live server-side in src/lib/entity-remove.js. */
+  async function removeEntity(l) {
+    let preview;
+    try { preview = await api.staffEntityRemovalPreview(id, l.id); }
+    catch (e) { showMessage((e && e.message) || 'Could not check that entity.'); return; }
+
+    // Tier: an entity committed to a closed loan or a track record needs a super-admin.
+    if (preview.requiredLevel === 'super_admin' && !isSuper) {
+      await showMessage(
+        `"${l.llc_name}" is used on a closed loan or a track record, so only a super-admin can remove it. Ask a super-admin if it really needs to come off this profile.`,
+        { title: 'Super-admin only' });
+      return;
+    }
+
+    // WARNING 1 — the consequences, in plain language.
+    const lines = [];
+    if (preview.action === 'transferred') {
+      const to = (preview.transferTo && preview.transferTo.name) || 'the other owner';
+      lines.push(`"${l.llc_name}" is also on another borrower's profile, so it will be MOVED to ${to}. It leaves THIS profile but is not deleted.`);
+    } else {
+      lines.push(`"${l.llc_name}" will be permanently removed from this profile.`);
+    }
+    for (const w of (preview.warnings || [])) lines.push('• ' + w.message);
+    lines.push('');
+    lines.push('Do you want to continue?');
+    if (!(await askConfirm(lines.join('\n'), { title: 'Remove entity', confirmLabel: 'Continue', cancelLabel: 'Keep it' }))) return;
+
+    // WARNING 2 — a typed reason is the final confirmation (recorded).
+    const reason = await askPrompt(
+      'This cannot be easily undone. Type a short reason to confirm — it is recorded.',
+      { title: 'Confirm removal', confirmLabel: 'Remove', cancelLabel: 'Back' });
+    if (reason == null) return;                       // cancelled
+    if (!reason.trim()) { showMessage('A reason is required to remove an entity.'); return; }
+
+    setBusy(l.id);
+    try {
+      const out = await api.staffRemoveEntity(id, l.id, reason.trim());
+      const reopened = (out.reopenedAppIds || []).length;
+      let msg = out.action === 'transferred'
+        ? `"${out.entityName}" was moved to the other owner's profile.`
+        : `"${out.entityName}" was removed from this profile.`;
+      if (reopened) msg += ` ${reopened} active file${reopened === 1 ? '' : 's'} now need${reopened === 1 ? 's a' : ' a'} new entity before ${reopened === 1 ? 'it' : 'they'} can clear to close.`;
+      showMessage(msg, { title: 'Done' });
+      reload();
+    } catch (e) { showMessage((e && e.message) || 'Could not remove the entity.'); }
+    finally { setBusy(''); }
+  }
   if (err) return <div className="notice err">{err}</div>;
   if (!rows) return <Empty t="Loading…" />;
   if (!rows.length) return <div className="panel"><Empty t="No entities on this borrower." /></div>;
@@ -433,6 +494,12 @@ function Entities({ id }) {
             <h3 style={{ margin: 0 }}>{l.llc_name}
               {l.is_verified ? <span className="pill ok" style={{ marginLeft: 8 }}>Verified ✓</span> : <span className="pill" style={{ marginLeft: 8 }}>Unverified</span>}
             </h3>
+            <div className="spacer" />
+            <button className="btn ghost small" disabled={busy === l.id}
+              title="Take this entity off the profile — for one added by mistake."
+              onClick={() => removeEntity(l)}>
+              {busy === l.id ? 'Removing…' : 'Remove entity'}
+            </button>
           </div>
           <LlcManager llcId={l.id} onChanged={reload} compactHeader staff />
         </div>
@@ -442,49 +509,95 @@ function Entities({ id }) {
 }
 
 /* ---------------- track record ---------------- */
-function TrackRecord({ id }) {
+/* One readable name per loan file — the address when we have one, else the
+   loan number, never twenty anonymous "a loan file" links in a row. */
+function fileLabel(a) {
+  const one = a.property_address && a.property_address.oneLine;
+  if (one) return one;
+  const built = addr(a.property_address);
+  if (built && built !== '—') return built;
+  return a.ys_loan_number || 'a loan file';
+}
+
+function TrackRecord({ id, onOpenEntities }) {
   const [rows, err, reload] = useLoad(() => api.staffBorrowerTrackRecords(id), [id]);
-  const [busy, setBusy] = useState('');
-  async function verify(t) {
-    setBusy(t.id);
-    try { await api.staffVerifyTrackRecord(t.id, { status: 'verified' }); reload(); } catch (e) { alert(e.message || 'Could not verify'); }
-    finally { setBusy(''); }
-  }
-  async function revoke(t) {
-    const reason = window.prompt('Revoke this project’s verification. The borrower is notified with this reason:');
-    if (reason == null) return;                       // cancelled
-    if (!reason.trim()) { alert('A reason is required to revoke verification.'); return; }
-    setBusy(t.id);
-    try { await api.staffVerifyTrackRecord(t.id, { status: 'pending', reason: reason.trim() }); reload(); }
-    catch (e) { alert(e.message || 'Could not revoke verification'); }
-    finally { setBusy(''); }
-  }
+  /* THE SHARED TRACK RECORD CENTER, BORROWER LENS (mega-workspace phase D,
+     owner-directed 2026-08-09 "continue with phases D E and F"): the profile
+     renders the SAME ledger + header the loan file renders — one arrangement
+     of the person's record, wherever it is read. The per-line verbs (check
+     the records / verify / revoke / documents / edit) live natively in the
+     shared <LineDetail>, so the profile passes no line actions — only the
+     entity cross-link (there is no file here to mint a condition on). */
+  const [view, setView] = useState(null);       // { lines, verified } — the lens payload
+  const [viewKey, setViewKey] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    api.staffBorrowerTrackRecordTodo(id)
+      .then((d) => { if (alive) setView(d && typeof d === 'object' ? d : null); })
+      .catch(() => { if (alive) setView(null); });
+    return () => { alive = false; };
+  }, [id, viewKey]);
+  const reloadAll = () => { reload(); setViewKey((k) => k + 1); };
+  const todoByLine = useMemo(() => {
+    const m = {};
+    for (const l of ((view && view.lines) || [])) m[String(l.id)] = l.todo || [];
+    return m;
+  }, [view]);
+  // Cross-link: which loan files read this record (the experience condition on
+  // each of the borrower's files reads this same set of lines).
+  const [files] = useLoad(() => api.staffBorrowerApplications(id), [id]);
+  const liveFiles = (files || []).filter((a) => !/declined|withdrawn|cancel/i.test(String(a.status || '')));
+
+  // The shared ledger gates its own doc-review verbs on the viewer's role
+  // (accept needs a completer, delete needs the delete permission) — passed
+  // straight through as maySignOff / canDelete / role below.
+  const { actor } = useAuth();
+  const role = (actor && actor.role) || '';
+
   if (err) return <div className="notice err">{err}</div>;
   if (!rows) return <Empty t="Loading…" />;
-  if (!rows.length) return <div className="panel"><Empty t="No track-record entries." /></div>;
   return (
-    <div className="panel" style={{ padding: 0, overflowX: 'auto' }}>
-      <table className="tbl" style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead><tr style={{ textAlign: 'left' }}>
-          {['Property', 'Type', 'Entity', 'Purchase', 'Sale/Value', 'Verified', ''].map(h => <th key={h} style={{ padding: '10px 12px' }}>{h}</th>)}
-        </tr></thead>
-        <tbody>
-          {rows.map(t => (
-            <tr key={t.id} style={{ borderTop: '1px solid var(--line, rgba(127,169,176,.2))' }}>
-              <td style={{ padding: '10px 12px' }}>{(t.property_address && t.property_address.oneLine) || addr(t.property_address)}</td>
-              <td style={{ padding: '10px 12px' }} className="small">{(t.deal_type || '').replace(/_/g, ' ') || '—'}</td>
-              <td style={{ padding: '10px 12px' }} className="small">{t.owned_personally ? 'Personal name' : (t.entity_name || '—')}</td>
-              <td style={{ padding: '10px 12px' }}>{money(t.purchase_price)}</td>
-              <td style={{ padding: '10px 12px' }}>{money(t.sale_price || t.current_value)}</td>
-              <td style={{ padding: '10px 12px' }}>{t.is_verified ? <span className="pill ok">✓</span> : <span className="pill">no</span>}</td>
-              <td style={{ padding: '10px 12px' }}>{t.is_verified
-                ? <button className="btn ghost small" disabled={busy === t.id} onClick={() => revoke(t)} title="Revoke this project’s verification (borrower is notified)">Revoke</button>
-                : <button className="btn ghost small" disabled={busy === t.id} onClick={() => verify(t)}>Verify</button>}</td>
-            </tr>
+    <>
+    {/* THE WORKBENCH RENDERS EVEN WITH AN EMPTY RECORD — that is precisely the
+        case where searching the public records is most useful. */}
+    <StaffPropertyWorkbench borrowerId={id} />
+    <div style={{ marginTop: 14 }}>
+      <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
+        <h3 style={{ margin: 0 }}>Track record</h3>
+        <div className="spacer" />
+        <Link className="btn primary small" to={`/internal/track-record?borrower=${id}`}
+          title="This borrower's projects in the full-screen track-record workspace — every check, the documents, and the actions.">
+          Open the workspace
+        </Link>
+      </div>
+      {liveFiles.length > 0 && (
+        /* Named links, CAPPED — a borrower with twenty files must not open the
+           tab onto a paragraph of links; the Files tab is the full list. */
+        <div className="small" style={{ color: '#4B585C', margin: '2px 0 8px' }}>
+          This record feeds the experience condition on{' '}
+          {liveFiles.slice(0, 4).map((a, i) => (
+            <React.Fragment key={a.id}>
+              {i > 0 && ' · '}
+              <Link to={`/internal/app/${a.id}`}>{fileLabel(a)}</Link>
+            </React.Fragment>
           ))}
-        </tbody>
-      </table>
+          {liveFiles.length > 4 && <> and {liveFiles.length - 4} more (see the Files tab)</>}.
+        </div>
+      )}
+      <ExperienceHeader lens="borrower" experience={view ? { verified: view.verified } : null} findingsOpen={0} />
+      {rows.length === 0
+        ? <div className="panel"><Empty t="No track-record entries." /></div>
+        : (
+          /* Every line opens in place into the shared <LineDetail>, which
+             carries Check-the-records / Verify / Revoke / documents / edit
+             natively — so the profile passes no lineActions, only the entity
+             cross-link. */
+          <RecordLedger lens="borrower" lines={rows} todoByLine={todoByLine}
+            maySignOff={canComplete(role)} canDelete={canDeleteDoc(role)} role={role} onChanged={reloadAll}
+            onOpenEntity={onOpenEntities ? () => onOpenEntities() : null} />
+        )}
     </div>
+    </>
   );
 }
 
@@ -790,7 +903,7 @@ function Tasks({ id }) {
     finally { setBusy(false); gate.leave(); }
   }
   async function complete(r) {
-    try { await api.staffUpdateReminder(r.application_id, r.id, { status: 'done' }); reload(); } catch (e) { alert(e.message || 'Failed'); }
+    try { await api.staffUpdateReminder(r.application_id, r.id, { status: 'done' }); reload(); } catch (e) { showMessage(e.message || 'Failed'); }
   }
   if (err) return <div className="notice err">{err}</div>;
   if (!rows) return <Empty t="Loading…" />;
@@ -840,7 +953,7 @@ function Documents({ id }) {
   async function dl(d) {
     setBusy(d.id);
     try { const { blob, filename } = await api.staffDownloadDoc(d.id); saveBlob(blob, filename || d.filename); }
-    catch (e) { alert(e.message || 'Download failed'); }
+    catch (e) { showMessage(e.message || 'Download failed'); }
     finally { setBusy(''); }
   }
   if (err) return <div className="notice err">{err}</div>;
@@ -899,12 +1012,12 @@ function Notes({ id }) {
     if (!body.trim()) return;
     if (!gate.enter()) return;             // a note add is already in flight
     setBusy(true);
-    try { await api.staffAddBorrowerNote(id, body.trim()); setBody(''); reload(); } catch (e) { alert(e.message || 'Could not add note'); }
+    try { await api.staffAddBorrowerNote(id, body.trim()); setBody(''); reload(); } catch (e) { showMessage(e.message || 'Could not add note'); }
     finally { setBusy(false); gate.leave(); }
   }
   async function del(n) {
-    if (!window.confirm('Delete this note?')) return;
-    try { await api.staffDeleteBorrowerNote(id, n.id); reload(); } catch (e) { alert(e.message || 'Could not delete'); }
+    if (!(await askConfirm('Delete this note?'))) return;
+    try { await api.staffDeleteBorrowerNote(id, n.id); reload(); } catch (e) { showMessage(e.message || 'Could not delete'); }
   }
   return (
     <div className="panel">

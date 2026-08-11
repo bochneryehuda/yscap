@@ -27,8 +27,29 @@ function token() {
 // removed, that must be a conscious human action outside this sync — never an
 // automatic consequence of a portal change.
 const TASK_PATH_RE = /(^|\/)task\/[^/?]+/; // any endpoint addressing a specific task
+
+// THE ONE SANCTIONED FIELD-VALUE CLEAR (owner-directed 2026-08-10, in the
+// owner's own words: "when we are deleting the assignment fee from the file,
+// the assignment fee should also be deleted from the ClickUp file"). Removing
+// an assignment in PILOT nulls the two money columns and un-ticks the card's
+// checkbox — but the push skips empty values by design, so the card kept the
+// old dollar figures forever and the inbound pull kept restoring them (the
+// stuck-fee loop, YSCAP258134769). ClickUp's remove-custom-field-value
+// endpoint is `DELETE /task/{id}/field/{fieldId}`, which the task-deletion
+// guard below would otherwise refuse. The carve-out is EXACTLY these two
+// enumerated currency fields on exactly that path shape — never a task, never
+// a list membership, never any other field. Do NOT widen this list without
+// the owner saying so in their own words; the general no-clearing rule
+// (guardNoFieldClearing) is untouched and still refuses every empty setField.
+const ASSIGNMENT_CLEAR_FIELD_IDS = Object.freeze([
+  '273c41d1-10ee-4b02-aa74-7007f8023574', // currency 'Contract assignment/flip fee' (F.EXTRA.contractAssignFee)
+  'de81ad3e-572e-4e83-b9d9-c284400c9df1', // currency 'Contract assignment underlying purchase price' (F.EXTRA.contractAssignUnderlying)
+]);
+const ASSIGNMENT_CLEAR_PATH_RE = new RegExp(`^/task/[^/?]+/field/(?:${ASSIGNMENT_CLEAR_FIELD_IDS.join('|')})$`);
+
 function guardNoTaskDeletion(method, path) {
   if (String(method).toUpperCase() !== 'DELETE') return;
+  if (ASSIGNMENT_CLEAR_PATH_RE.test(String(path))) return; // the one sanctioned field clear — see above
   if (TASK_PATH_RE.test(String(path))) {
     const e = new Error(
       `BLOCKED: ClickUp task deletion is permanently disabled (DELETE ${path}). ` +
@@ -112,7 +133,9 @@ function guardTaskUpdatePayload(payload) {
 // owns the long game. Errors are tagged e.retryable / e.status / e.retryAfter so
 // pushOutboxOnce can retry transient failures PATIENTLY instead of dead-lettering
 // a good edit during a brief outage.
-const RPM = Math.max(1, parseInt(process.env.CLICKUP_MAX_RPM || '70', 10) || 70);        // pace under ClickUp's 100/min
+// The per-minute rate now lives in lib/api-rate-limit.js, which reads the SAME
+// CLICKUP_MAX_RPM env (default 90, still under ClickUp's 100). A second copy here would
+// be a number that silently disagrees with the one actually enforced.
 const MAX_TRIES = Math.max(1, parseInt(process.env.CLICKUP_MAX_TRIES || '3', 10) || 3);  // short in-call budget
 const TIMEOUT_MS = Math.max(1000, parseInt(process.env.CLICKUP_TIMEOUT_MS || '20000', 10) || 20000);
 const BASE_BACKOFF_MS = 500;
@@ -162,21 +185,23 @@ function httpError(method, path, status, retryAfterSec) {
   return err;
 }
 
-// Per-process token bucket. Refills continuously at RPM/minute. Per-process (like
-// the volume breaker) — multiple instances each get their own budget; a shared
-// DB-backed limiter is a later refinement. Still turns "fire as fast as we can"
-// into "never exceed ~RPM/min", which is the whole point.
-let _tokens = RPM;
-let _lastRefill = Date.now();
-async function takeToken() {
-  for (;;) {
-    const now = Date.now();
-    _tokens = Math.min(RPM, _tokens + ((now - _lastRefill) / 60000) * RPM);
-    _lastRefill = now;
-    if (_tokens >= 1) { _tokens -= 1; return; }
-    await sleep(Math.ceil((1 - _tokens) * (60000 / RPM)));
-  }
-}
+// THE BUDGET IS SHARED ACROSS EVERY PROCESS (owner-directed 2026-08-07: "we cannot ask
+// them for more than 100 requests per minute… never allow more than 100 requests within
+// a minute").
+//
+// This used to be a MODULE-LEVEL bucket, and the comment here named its own hole:
+// "Per-process — multiple instances each get their own budget; a shared DB-backed limiter
+// is a later refinement." render.yaml runs TWO processes against the SAME ClickUp token —
+// the web service (which also runs the sync when RUN_SYNC is on) and the pipeline worker
+// — so each paced itself to 70/min in ignorance of the other and the token could
+// legitimately see 140 in a minute. That is the call ClickUp made. No per-process number
+// could have fixed it; the budget had to move somewhere every process can see, which is
+// the database (lib/api-rate-limit.js, db/482).
+//
+// The per-process bucket is still applied inside `acquire` as layer 2, so if the database
+// is unreachable we degrade to exactly the old behaviour rather than stopping the sync.
+const apiRateLimit = require('../lib/api-rate-limit');
+async function takeToken() { await apiRateLimit.acquire('clickup'); }
 
 async function fetchWithTimeout(url, opts, ms) {
   const ac = new AbortController();
@@ -197,7 +222,7 @@ async function call(path, { method = 'GET', body, idempotent } = {}) {
   const idem = idempotent != null ? !!idempotent : method !== 'POST';
   let lastErr;
   for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
-    await takeToken(); // pre-throttle: never exceed ~RPM/min, so we rarely get 429'd
+    await takeToken(); // pre-throttle (shared across processes) so we rarely get 429'd
     let res;
     try {
       res = await fetchWithTimeout(`${BASE}${path}`, {
@@ -252,6 +277,22 @@ const setField = (taskId, fieldId, value) => {
   // Value-idempotent: writing the same value twice is a no-op, so this POST is
   // safe to re-send on a transient failure (unlike createTask/addComment — N-1).
   return call(`/task/${taskId}/field/${fieldId}`, { method: 'POST', body: { value }, idempotent: true });
+};
+
+// Remove the VALUE of one of the two assignment money fields — the ONE
+// owner-sanctioned clear (see ASSIGNMENT_CLEAR_FIELD_IDS above for the whole
+// story). Refuses any other field id BEFORE the wire; the caller (the
+// orchestrator's assignmentClearPlan step) additionally requires a scoped
+// human-edit push, a null portal value, is_assignment=false, and a before-image
+// proving the card holds something. Idempotent (a repeat delete of an empty
+// field is a no-op at ClickUp).
+const clearAssignmentMoneyField = (taskId, fieldId) => {
+  if (!ASSIGNMENT_CLEAR_FIELD_IDS.includes(fieldId)) {
+    const e = new Error(`BLOCKED: field ${fieldId} is not one of the two assignment money fields — the sync clears nothing else, ever.`);
+    e.code = 'CLICKUP_CLEAR_FORBIDDEN';
+    throw e;
+  }
+  return call(`/task/${taskId}/field/${fieldId}`, { method: 'DELETE' });
 };
 
 // Workspaces (teams) the token can see, each with its `members[].user` (id +
@@ -328,7 +369,7 @@ function verifyWebhookSignature(rawBody, signature, secret) {
 }
 
 module.exports = {
-  call, createTask, updateTask, setField, getFolderLists, addComment, getTeams,
+  call, createTask, updateTask, setField, clearAssignmentMoneyField, ASSIGNMENT_CLEAR_FIELD_IDS, getFolderLists, addComment, getTeams,
   getTask, getListFields, getFilteredTeamTasks,
   addTaskToList, removeTaskFromList,
   createWebhook, listWebhooks, updateWebhook, deleteWebhook, verifyWebhookSignature,

@@ -9,7 +9,12 @@ import { PASSWORD_HINT, passwordProblem } from '../lib/password.js';
 // A deep link that hit the login guard stashes its target in `location.state.from`.
 // Return there after sign-in (so an email link lands ON its page) — but never to
 // another auth screen, and only same-app relative paths.
-const AUTH_ROUTES = /^\/(login|internal\/login|forgot|internal\/forgot|verify|reset|accept)\b/;
+/* Never bounce somebody back to an AUTH screen after they have just signed in.
+   `(?![\w-])` rather than `\b`: a word boundary matches at a HYPHEN, so `\baccept\b`
+   also swallowed `/accept-terms/<token>` — the emailed term-sheet page, which is a real
+   destination that merely starts with the same word. An existing borrower signing in
+   from it was silently dropped on the dashboard with their terms link gone. */
+const AUTH_ROUTES = /^\/(login|internal\/login|forgot|internal\/forgot|verify|reset|accept)(?![\w-])/;
 export function returnDest(loc, fallback) {
   const from = loc && loc.state && typeof loc.state.from === 'string' ? loc.state.from : '';
   return (from && from.startsWith('/') && !from.startsWith('//') && !AUTH_ROUTES.test(from)) ? from : fallback;
@@ -152,11 +157,16 @@ export default function Login() {
             : <button className="btn link" onClick={() => { setErr(''); setMode('login'); }}>← Back to sign in</button>}
         </div>
 
+        {/* There is a CLIENT sign-in and a STAFF sign-in, and that is all this
+            screen says (owner-directed 2026-08-09). A borrower's helper is a
+            client: they sign in here with their own email and password, and
+            /auth/borrower/login works out that the credentials are a helper's
+            and hands back a helper session. The screen never needs to mention
+            that helpers exist, and the separate "Helper sign in" link + the
+            separate screen behind it were the whole complaint. */}
         {mode === 'login' && (
           <div className="auth-foot">
             <button className="btn link small muted" onClick={() => nav('/verify')}>Verify email</button>
-            <span className="auth-foot-sep" aria-hidden="true">·</span>
-            <button className="btn link small muted" onClick={() => nav('/assistant/login')}>Helper sign in</button>
             <span className="auth-foot-sep" aria-hidden="true">·</span>
             <button className="btn link small muted" onClick={() => nav('/internal/login')}>Staff sign in</button>
           </div>

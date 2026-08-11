@@ -257,7 +257,7 @@ module.exports = {
   // fuzzy match: the export gate is the direction where an over-match ships a data tape
   // for the wrong buyer (the same reason normNoteBuyer itself stays exact). A new real
   // spelling is added HERE, in the owner's words — never by loosening the matcher.
-  buyerAliases: ['emcapfinancial'],
+  buyerAliases: ['emcapfinancial', 'emcapfinancialllc'],
   name: 'EMCAP',
   fullName: 'EMCAP',
   description: 'EMCAP Format Submission Tape — the loan filled into EMCAP’s own one-sheet workbook.',

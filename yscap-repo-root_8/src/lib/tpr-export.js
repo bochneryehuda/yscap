@@ -96,6 +96,7 @@ const C = {
   SOW: 'Scope of Work',
   TERMSHEET: 'Term Sheet',
   TITLE: 'TITLE',
+  DRAWS: 'Draws',
   OTHER: 'Other Documents',
 };
 
@@ -185,6 +186,12 @@ function categoryFor(d) {
   if (kind.indexOf('appraisal_') === 0) return C.APPRAISAL;   // appraisal_pdf/xml/photo
   if (kind === 'title_order_return') return C.TITLE;
   if (kind === 'insurance_order_return') return C.INSURANCE;
+  // Construction-draw artifacts get their OWN folder in the SharePoint mirror (which shares this
+  // categorizer) instead of landing in "Other Documents" among the loan's origination paperwork —
+  // a draw's invoices, receipts and reports are a different chapter of the file's life. They are
+  // DELIBERATELY NOT in the investor TPR package: TPR_DOC_SELECT excludes draw_inspection_report /
+  // draw_packet by doc_kind, and draw_support joins them there, so this only ever decides a folder.
+  if (kind === 'draw_support' || kind === 'draw_inspection_report' || kind === 'draw_packet') return C.DRAWS;
 
   // 2) Entity (vesting LLC + layered owning LLCs) — any doc carrying an llc_id.
   if (d.llc_id) return C.LLC;
@@ -252,14 +259,15 @@ const dateStr = (v) => {
 const DEAL_LABEL = { flip: 'Fix & Flip', 'fix-and-hold': 'Fix & Hold', 'fix_and_hold': 'Fix & Hold', ground_up: 'Ground-Up', 'ground-up': 'Ground-Up', rental: 'Rental', bridge: 'Bridge' };
 const dealLabel = (t) => DEAL_LABEL[t] || (t ? String(t).replace(/_/g, ' ') : '—');
 
-// The frozen 3-year exit window (mirrors track-record.js qualifies()): a
-// completed exit dated within the last 36 months counts toward experience.
+/* The frozen 3-year exit window — ONE definition, in src/lib/experience.js,
+   the module the sign-off gate and every experience count already read.
+   This used to be a private fourth re-derivation (`sale_date || refi_date ||
+   rent_date`, no deal_type branch, a 30.44-day month), so the investor package's
+   "Recent (3yr)" column could disagree with the counts the file was underwritten
+   on. Do not re-implement it here again. */
+const { exitDateOf, exitCounts } = require('./experience');
 function exitInfo(r) {
-  const exit = r.sale_date || r.refi_date || r.rent_date || null;
-  if (!exit) return { exit: null, counts: false };
-  const d = new Date(exit); if (isNaN(d)) return { exit, counts: false };
-  const monthsAgo = (Date.now() - d.getTime()) / (1000 * 60 * 60 * 24 * 30.44);
-  return { exit, counts: monthsAgo >= 0 && monthsAgo <= 36 };
+  return { exit: exitDateOf(r), counts: exitCounts(r) };
 }
 
 // ---------------------------------------------------------------- XLSX writer
@@ -375,7 +383,7 @@ const TPR_DOC_SELECT_FOR = (reviewTest) => `
      -- printouts, the PILOT-branded draw inspection reports) are not source
      -- documents — and re-packing a regenerable export inside the next one must
      -- never happen. Keep this list in step with sharepoint-backup.isRegenKind.
-     AND COALESCE(d.doc_kind,'') NOT IN ('track_record_html','tpr_export','draw_inspection_report')
+     AND COALESCE(d.doc_kind,'') NOT IN ('track_record_html','tpr_export','draw_inspection_report','draw_packet','draw_support')
      AND COALESCE(d.doc_kind,'') NOT LIKE '%\\_export'
      -- Closing-chain CORRESPONDENCE (whatever the attorney's chain mailed us) is a
      -- running record, not a source document, and much of it is drafts and internal
@@ -560,11 +568,16 @@ async function buildTprExport(appId) {
   // The borrower's (and co-borrower's) operational track record.
   const borrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
   const records = (await db.query(
+    // A REJECTED line (the team decided it is not the borrower's, a duplicate, or
+    // wrong) is not part of their track record and never ships to the investor
+    // (owner-directed 2026-08-10, #40; db/519). Every other status still ships,
+    // each with its own review-status stamp.
     `SELECT id, borrower_id, property_address, deal_type, purchase_price, sale_price, rehab_amount,
             purchase_date, sale_date, rent_amount, rent_date, refi_amount, refi_date, current_value,
             is_verified, verified_at, verification_status, entered_by_kind, notes
        FROM track_records
       WHERE borrower_id = ANY($1::uuid[])
+        AND COALESCE(verification_status, '') <> 'rejected'
       ORDER BY COALESCE(sale_date, refi_date, rent_date, purchase_date) DESC NULLS LAST, created_at DESC`,
     [borrowerIds])).rows;
 

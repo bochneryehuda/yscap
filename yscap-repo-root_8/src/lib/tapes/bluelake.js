@@ -235,6 +235,13 @@ function bulkFilename() { return `BlueLake-BidTape-Bulk-${new Date().toISOString
 module.exports = {
   key: 'bluelake',
   buyerKey: 'bluelake',
+  // The buyer's REAL note-buyer label is routinely "Blue Lake Capital"
+  // (→ 'bluelakecapital'), which the bare 'bluelake' key never matches under the
+  // EXACT normNoteBuyer. Enumerated here (a CLOSED list, never a prefix/fuzzy match —
+  // the export direction is where an over-match ships a tape to the wrong buyer) so a
+  // real Blue Lake file can export its tape. SAME shape/reason as emcap.js and
+  // fidelis.js. Every spelling is unambiguously Blue Lake.
+  buyerAliases: ['bluelakecapital', 'bluelakecapitalllc'],
   name: 'Blue Lake',
   fullName: 'Blue Lake Capital',
   description: 'Blue Lake Capital RTL Bid Tape — the loan filled into Blue Lake’s own workbook (per-row ratios auto-recalculate).',

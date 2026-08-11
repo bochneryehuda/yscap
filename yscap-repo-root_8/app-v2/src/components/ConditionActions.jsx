@@ -3,6 +3,7 @@ import { nextStep, docNextStep, canComplete, canDeleteDoc } from '../lib/conditi
 import { canOverride, askOverride } from '../lib/condition-override.js';
 import { CONDITION_STATUSES, conditionStatusLabel } from '../lib/conditions-vocab.js';
 import { fmtDateTime } from '../lib/dates.js';
+import { askPrompt } from '../lib/dialog.js';
 
 /* THE AUDIT TRAIL on a condition — who cleared it, and exactly when (owner-directed
  * 2026-08-05: "right on the bottom of the Signed Off button you should see a
@@ -108,8 +109,8 @@ export default function ConditionActions({
   const btn = size === 'small' ? ' small' : '';
   const sendBack = canSendBack === undefined ? it.audience !== 'staff' : canSendBack;
 
-  const pushBack = () => {
-    const reason = window.prompt(signed || it.status === 'satisfied'
+  const pushBack = async () => {
+    const reason = await askPrompt(signed || it.status === 'satisfied'
       ? 'Reopen and send this back to the borrower — what needs to change? (they will see this)'
       : 'Send this back to the borrower — what needs to change? (they will see this)');
     if (reason == null || !reason.trim()) return;
@@ -206,7 +207,7 @@ export default function ConditionActions({
                 <div className="cond-more-sep" />
                 <button className="btn ghost small" style={{ color: '#8A6D3B' }}
                   title="Super admin: clear this condition WITHOUT a document / without meeting its requirement. Your reason is saved on the file."
-                  onClick={() => { const x = askOverride(it.label); if (x) onPatch(it.id, { signedOff: true, ...x }); }}>
+                  onClick={async () => { const x = await askOverride(it.label); if (x) onPatch(it.id, { signedOff: true, ...x }); }}>
                   Override — clear without meeting it
                 </button>
               </>

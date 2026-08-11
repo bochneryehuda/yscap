@@ -143,13 +143,24 @@ async function tapeQuestions(appId, tapeKey, db) {
   if (!tape) throw new TapeNotFoundError(tapeKey);
   const loan = await assembleTapeLoan(appId, db);
   if (!loan.found) throw new LoanNotFoundError(appId);
-  const missing = tape.missingSupplemental ? tape.missingSupplemental(loan) : [];
+  // Return EVERY applicable supplemental field (not just the unanswered ones), each
+  // PRE-FILLED with what's already saved on the file. These answers are file data now
+  // (applications.tape_supplemental) — owner-directed: "it should still populate the
+  // questions, but the answers should already be pre-filled. You can still change that.
+  // That should be the spot where you're changing this detail to export a new tape."
+  // So a re-export shows the questionnaire ready to confirm/adjust, never a blank re-ask.
+  const applicable = tape.supplementalFieldsFor ? tape.supplementalFieldsFor(loan)
+    : (tape.missingSupplemental ? tape.missingSupplemental(loan) : []);
+  const stored = loan.supplemental || {};
   attachSeasoning(loan);
   return {
     newConstruction: tape.isNewConstruction ? !!tape.isNewConstruction(loan) : false,
-    questions: missing.map((f) => ({
+    // How many applicable fields are still unanswered, so the UI can tell a first-time
+    // fill (all blank) from a pre-filled review (some/all already saved).
+    supplementalMissing: applicable.filter((f) => stored[f.key] == null || stored[f.key] === '').length,
+    questions: applicable.map((f) => ({
       key: f.key, label: f.label, type: f.type, options: f.options || null,
-      current: (loan.supplemental && loan.supplemental[f.key] != null) ? loan.supplemental[f.key] : '',
+      current: (stored[f.key] != null) ? stored[f.key] : '',
     })),
     // For a SEASONED loan (already funded, being sold later) the export asks a
     // human to confirm the current balance, next due date and interest reserve

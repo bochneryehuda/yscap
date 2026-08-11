@@ -21,7 +21,9 @@
  */
 const db = require('../db');
 const notify = require('./notify');
+const drawLabel = require('./draw-label');   // "Draw 2" / "Draws 2, 3" — the ONE way a draw is named in a subject
 const workflow = require('./workflow');
+const workflowQueues = require('./email/workflow-queues');
 const loanExceptions = require('./loan-exceptions');
 const { outstandingItems } = require('./reminders');
 const { claimOncePerPeriod } = require('./throttle-claim');
@@ -75,6 +77,21 @@ const DIGEST_ACTION = Object.freeze({
   // Per-FILE stamp for the direct-source sweep (the sweep's other stamp,
   // `direct_source_sweep_daily`, is global and only prevents overlapping runs).
   DIRECT_SOURCE_FILE: 'direct_source_file_verified',
+  // The gaps in the draw workflow that had NO reminder at all (owner-directed 2026-08-09).
+  // Every one covers a stretch where a draw could sit silently: between ordering an inspection and
+  // the report arriving, between the report arriving and somebody reading it, between reading it
+  // and the borrower being told, after a final approval on a file WE release, an investor fee we
+  // are owed, and retainage that is releasable at the end of the job.
+  DRAW_INSPECTION_LATE: 'draw_inspection_late',
+  DRAW_FINDINGS_UNREVIEWED: 'draw_findings_unreviewed',
+  DRAW_APPROVED_UNRECORDED: 'draw_approved_unrecorded',
+  INVESTOR_FEE_OWED: 'investor_fee_owed_chase',
+  RETAINAGE_RELEASABLE: 'retainage_releasable',
+  // A funded loan that was NOT sold at the closing table and still has no purchase advice a month
+  // later (owner-directed 2026-08-09: "if it doesn't get a purchase date till 30 days after a
+  // funding date, then we should get notified — super admin should get notified, and the closer
+  // should get notified").
+  PURCHASE_ADVICE_MISSING: 'purchase_advice_missing',
 });
 
 /**
@@ -340,6 +357,133 @@ async function dailyPipelineDigestOnce() {
       await _stamp('pipeline_digest_daily', st.id, { files: files.rows.length });
       sent++;
     } catch (e) { console.error('[digest] pipeline', st.id, e && e.message); }
+  }
+  return sent;
+}
+
+/* 2b) WEEKLY LOAN-OFFICER PIPELINE SNAPSHOT (owner-directed 2026-08-07: *"we also need to set up
+   a nice email every week to only the loan officers with a snapshot of their pipeline, active
+   files, funded files, totals, and details."*).
+
+   Deliberately NOT a second copy of the daily digest above. The daily one is a to-do list —
+   oldest-at-stage first, so the top row is the thing to chase today. This one is a WEEK's read:
+   the totals first (what is in flight, what closed), then the file-by-file detail.
+
+   ONLY LOAN OFFICERS, by the owner's word. `role='loan_officer'` is the test, so a processor or
+   a closer who happens to be assigned to files does not receive it — they have their own Workflow
+   nudge, and an officer's book is a sales read, not a task list.
+
+   Every figure is a plain count/sum over the officer's own assigned, non-deleted files. Nothing
+   here is a pricing number — `loan_amount` is the registered amount already stored on the row. */
+async function weeklyOfficerPipelineOnce() {
+  let sent = 0;
+  let officers = [];
+  try {
+    officers = (await db.query(
+      `SELECT id, email, full_name FROM staff_users
+        WHERE is_active = true AND role = 'loan_officer'
+          AND COALESCE(notifications_enabled, true) = true
+          AND email IS NOT NULL AND btrim(email) <> ''
+        ORDER BY full_name`)).rows;
+  } catch (_) { return 0; }
+
+  const money0 = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
+
+  for (const st of officers) {
+    try {
+      /* ONE query for the officer's whole book — active AND funded — so the totals and the detail
+         table can never be computed off two different snapshots taken a moment apart. Funded is
+         windowed to the last 90 days: "funded files" on a weekly snapshot means recent closings,
+         and an all-time total would grow forever and stop being news. */
+      const r = await db.query(
+        `SELECT a.id, a.ys_loan_number, a.property_address, a.status, a.status_changed_at,
+                a.loan_amount, a.expected_closing, a.funded_date,
+                (SELECT count(*)::int FROM checklist_items ci
+                  WHERE ci.application_id = a.id AND ci.audience IN ('borrower','both')
+                    AND ci.status IN ('outstanding','requested','issue')) AS open_borrower
+           FROM applications a
+           JOIN application_assignees aa ON aa.application_id = a.id
+                AND aa.staff_id = $1 AND aa.removed_at IS NULL AND aa.role = 'loan_officer'
+          WHERE a.deleted_at IS NULL
+            AND (a.status <> ALL($2)
+                 OR (a.status = 'funded' AND a.funded_date IS NOT NULL
+                     AND a.funded_date >= (now() - interval '90 days')::date))
+          ORDER BY a.status_changed_at ASC NULLS FIRST, a.id
+          LIMIT 200`, [st.id, TERMINAL]);
+
+      const all = r.rows;
+      const active = all.filter((f) => f.status !== 'funded');
+      const funded = all.filter((f) => f.status === 'funded');
+      // Nothing in flight AND nothing closed recently → there is no snapshot to send. A weekly
+      // email that says "you have no files" every week is the noise this is meant to avoid.
+      if (!active.length && !funded.length) continue;
+      if (!(await _gateRecipient('officer_pipeline_weekly', st.id, '6 days'))) continue;
+
+      const sum = (rows) => rows.reduce((t, f) => t + (Number(f.loan_amount) || 0), 0);
+      const activeVol = sum(active);
+      const fundedVol = sum(funded);
+      const openItems = active.reduce((t, f) => t + (Number(f.open_borrower) || 0), 0);
+
+      const table = active.length ? {
+        title: 'Your active files — longest at their current stage first',
+        head: ['Property / file', 'Stage', 'Days', 'Loan amount', 'Borrower items'],
+        align: ['left', 'left', 'right', 'right', 'right'],
+        rows: active.slice(0, 25).map((f) => {
+          const d = daysAt(f.status_changed_at);
+          return [
+            `${addrOf(f.property_address)}${f.ys_loan_number ? ` · ${String(f.ys_loan_number).toUpperCase()}` : ''}`,
+            STATUS_LABEL[f.status] || f.status,
+            d != null ? String(d) : '—',
+            f.loan_amount != null ? money0(f.loan_amount) : '—',
+            f.open_borrower ? String(f.open_borrower) : '—',
+          ];
+        }),
+        note: active.length > 25 ? `…and ${active.length - 25} more active files in your pipeline.` : null,
+      } : null;
+
+      const fundedTable = funded.length ? {
+        title: 'Funded in the last 90 days',
+        head: ['Property / file', 'Funded', 'Loan amount'],
+        align: ['left', 'left', 'right'],
+        rows: funded.slice(0, 15).map((f) => [
+          `${addrOf(f.property_address)}${f.ys_loan_number ? ` · ${String(f.ys_loan_number).toUpperCase()}` : ''}`,
+          f.funded_date ? String(f.funded_date).slice(0, 10) : '—',
+          f.loan_amount != null ? money0(f.loan_amount) : '—',
+        ]),
+        note: funded.length > 15 ? `…and ${funded.length - 15} more funded in the window.` : null,
+      } : null;
+
+      const first = (st.full_name || '').trim().split(/\s+/)[0];
+      await notify.notifyStaff(st.id, {
+        type: 'digest',
+        title: `Your week: ${active.length} active file${active.length === 1 ? '' : 's'}`,
+        badge: { text: 'Weekly snapshot', tone: 'teal' },
+        body: `${active.length} active (${money0(activeVol)}) · ${funded.length} funded in 90 days (${money0(fundedVol)})`,
+        emailBody: `Here is your book as it stands${first ? `, ${first}` : ''} — what is in flight, what has closed, and where each file is sitting.`,
+        figures: {
+          primary: { label: 'Active pipeline', value: money0(activeVol), sub: `across ${active.length} file${active.length === 1 ? '' : 's'}`, tone: 'teal' },
+          secondary: [
+            { label: 'Funded (90 days)', value: money0(fundedVol), tone: 'positive' },
+            { label: 'Files funded', value: String(funded.length), tone: 'positive' },
+            { label: 'Borrower items open', value: String(openItems) },
+          ],
+        },
+        // Two tables cannot both ride the single `table` slot, so the funded list goes in as a
+        // second block through `sections` — a titled block whose body is one line per file. The
+        // active list is the one that gets the real table, because it is the one people scan.
+        table,
+        sections: fundedTable ? [{
+          title: fundedTable.title,
+          body: [
+            ...fundedTable.rows.map((row) => `${row[0]} — funded ${row[1]} · ${row[2]}`),
+            ...(fundedTable.note ? [fundedTable.note] : []),
+          ],
+        }] : null,
+        link: '/internal/pipeline', ctaLabel: 'Open your pipeline', emailTo: st.email,
+      });
+      await _stamp('officer_pipeline_weekly', st.id, { active: active.length, funded: funded.length });
+      sent++;
+    } catch (e) { console.error('[digest] officer-pipeline-weekly', st.id, e && e.message); }
   }
   return sent;
 }
@@ -790,7 +934,12 @@ async function drawFindingsAwaitingBorrowerOnce() {
     // LIMIT slot — delivered_at never advances, so without it the most-stuck files starve the queue
     // (the exact defect the ORDER BY + notThrottled were added to prevent).
     `WITH due AS (
-       SELECT f.application_id, count(*)::int AS n, min(f.delivered_at) AS oldest
+       -- one_draw is the draw to decorate the nudge with, and it is meaningful ONLY when this
+       -- file has exactly one result waiting: with two, a single draw's figures would headline
+       -- one of them and quietly misrepresent the other.
+       SELECT f.application_id, count(*)::int AS n, min(f.delivered_at) AS oldest,
+              array_agg(f.sitewire_draw_id) AS draw_ids,
+              CASE WHEN count(*) = 1 THEN min(f.sitewire_draw_id) END AS one_draw
          FROM draw_findings f
          JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
         WHERE f.status='delivered' AND f.delivered_at IS NOT NULL
@@ -804,7 +953,7 @@ async function drawFindingsAwaitingBorrowerOnce() {
      -- nudges = how many borrower reminders were already sent THIS delivered episode (since the
      -- oldest currently-delivered finding). Stamps from a prior, already-accepted draw are before
      -- that oldest delivery, so a new delivery always starts the borrower over with a fresh CAP.
-     SELECT d.application_id, d.n, d.oldest,
+     SELECT d.application_id, d.n, d.oldest, d.one_draw, d.draw_ids,
             (SELECT count(*) FROM audit_log l
                WHERE l.entity_type='application' AND l.action='${DIGEST_ACTION.DRAW_FINDINGS_REMINDER}'
                  AND l.entity_id=d.application_id AND l.created_at >= d.oldest)::int AS nudges
@@ -818,10 +967,21 @@ async function drawFindingsAwaitingBorrowerOnce() {
       if (r.nudges < CAP) {
         // Still under the cap: nudge the BORROWER, at most once per `waitHours` (the atomic gate).
         if (!(await _gate(DIGEST_ACTION.DRAW_FINDINGS_REMINDER, r.application_id, `${waitHours} hours`))) continue;
+        // The nudge carries the money it is nudging about (draw rule 15) — the amount waiting on
+        // their confirmation is the whole reason to open it. Only when ONE result is waiting; with
+        // several there is no single headline figure, so the reminder stays a plain reminder.
+        let blocks = null;
+        if (r.n === 1 && r.one_draw != null) {
+          blocks = await require('../sitewire/draw-email-blocks')
+            .drawEmailBlocks(db, r.application_id, { sitewireDrawId: Number(r.one_draw), borrower: true });
+        }
         await notify.notifyAppBorrowers(r.application_id, {
           type: 'draw_findings',
           title: r.n === 1 ? 'Your draw inspection result is waiting for you' : `${r.n} draw inspection results are waiting for you`,
+          drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids),
           badge: { text: 'Action needed', tone: 'action' },
+          figures: (blocks && blocks.figures) || null,
+          facts: (blocks && blocks.facts) || null,
           body: `Your inspection result${r.n === 1 ? ' is' : 's are'} ready and waiting for you. Your draw is released once you review and accept ${r.n === 1 ? 'it' : 'them'} — please take a moment to review ${r.n === 1 ? 'it' : 'them'} (or dispute a line) in your portal.`,
           callout: { title: 'Why this matters', body: 'The release clock for your draw only starts once you accept — reviewing promptly gets your money to you sooner.', tone: 'action' },
           applicationId: r.application_id, link: `/app/${r.application_id}`, ctaLabel: 'Review your draw' });
@@ -836,7 +996,8 @@ async function drawFindingsAwaitingBorrowerOnce() {
         const coords = await drawRecipients.coordinatorsOrDesk(r.application_id);
         const stuckTitle = r.n === 1 ? 'A borrower hasn’t accepted their draw — please follow up' : `A borrower hasn’t accepted ${r.n} draws — please follow up`;
         const stuckBody = `We reminded the borrower ${CAP} times and their draw inspection result${r.n === 1 ? ' is' : 's are'} still waiting to be accepted — so we’ve stopped emailing them. Please reach out to the borrower, or mark the draw approved on their behalf if they’ve already agreed.`;
-        const stuckOpts = { type: 'draw', badge: { text: 'Follow up', tone: 'action' }, title: stuckTitle, body: stuckBody, applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' };
+        const stuckOpts = { type: 'draw', badge: { text: 'Follow up', tone: 'action' }, title: stuckTitle,
+          drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids), body: stuckBody, applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' };
         if (coords.length) {
           for (const c of coords) {
             try { await notify.notifyStaff(c.id, { ...stuckOpts, emailTo: c.email }); }
@@ -877,7 +1038,8 @@ async function trustpointUnreleasedOnce() {
   let rows = [];
   try {
     rows = (await db.query(
-      `SELECT t.application_id, count(*)::int AS n, min(COALESCE(t.approved_at, t.first_seen_at)) AS oldest
+      `SELECT t.application_id, count(*)::int AS n, min(COALESCE(t.approved_at, t.first_seen_at)) AS oldest,
+              array_agg(t.number) AS draw_numbers
          FROM trustpoint_draws t
          JOIN applications a ON a.id=t.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
         WHERE t.status='APPROVED' AND t.disbursed_at IS NULL
@@ -904,6 +1066,7 @@ async function trustpointUnreleasedOnce() {
       await notify.notifyAppStaff(r.application_id, {
         type: 'draw',
         title: r.n === 1 ? 'Approved draw not released yet' : `${r.n} approved draws not released yet`,
+        drawTag: drawLabel.drawTagFor(r.draw_numbers),
         badge: { text: 'Chase release', tone: 'action' },
         body: `${r.n === 1 ? 'A draw' : `${r.n} draws`} on this file ${r.n === 1 ? 'was' : 'were'} approved by the draw administrator ${d != null && d > 0 ? `${d} day${d === 1 ? '' : 's'} ago ` : ''}but no funds release has been observed yet. The wire comes from the note buyer's side — please follow up with them so the borrower isn't left waiting.`,
         applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' });
@@ -917,7 +1080,8 @@ async function trustpointUnreleasedOnce() {
 async function drawReleaseOverdueOnce() {
   let sent = 0;
   const rows = (await db.query(
-    `SELECT f.application_id, count(*)::int AS n, min(f.wire_due_at) AS due
+    `SELECT f.application_id, count(*)::int AS n, min(f.wire_due_at) AS due,
+            array_agg(f.sitewire_draw_id) AS draw_ids
        FROM draw_findings f
        JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
       WHERE f.status='accepted' AND f.wire_due_at IS NOT NULL AND f.wire_due_at < now()
@@ -940,6 +1104,7 @@ async function drawReleaseOverdueOnce() {
       await notify.notifyAppStaff(r.application_id, {
         type: 'draw',
         title: r.n === 1 ? 'Draw release overdue' : `${r.n} draw releases overdue`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids),
         badge: { text: 'Overdue', tone: 'action' },
         body: `The borrower accepted ${r.n === 1 ? 'a draw' : `${r.n} draws`} and the release ${d != null && d > 0 ? `is ${d} day${d === 1 ? '' : 's'} past the target` : 'is now due'}, but no release has been recorded in PILOT yet. Please confirm the wire and record the release.`,
         applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' });
@@ -991,6 +1156,345 @@ function activeManagedLink(appIdExpr) {
                      AND pl.matched_by = 'created' AND COALESCE(pl.lifecycle_state,'active') = 'active')`;
 }
 
+/* ══ The stretches of the draw workflow that had NO reminder at all (owner-directed 2026-08-09) ══
+ *
+ * Each is the same shape as the Increment C sweeps above — scope to an ACTIVE PILOT-managed link,
+ * put the throttle in the WHERE as well as the gate (a per-file digest whose sort key does not
+ * advance starves its tail otherwise), deterministic oldest-first ORDER, and the atomic _gate claim.
+ * Every one is self-gating, so it can never bombard, and every one names the ONE action that clears
+ * it. They all read their "how long is too long" from the draw settings, so an admin changes the
+ * cadence on the settings screen rather than in code.
+ */
+
+/** One company-level day count from the draw settings, with the catalog's own fallback. Never throws. */
+async function settingDays(key) {
+  // Delegates to the ONE reader in draw-settings, so a sweep and the screen that describes it can
+  // never disagree about the threshold. Same fail-to-0 contract as before: an unreadable setting
+  // sends nothing rather than nagging on a guessed number.
+  try { return await require('../sitewire/draw-settings').daysSettingFor(key); } catch (_) { return 0; }
+}
+
+/* A) INSPECTION ORDERED, NO REPORT. A draw sitting in an inspecting state past the inspection SLA
+   with no findings row — nobody was chasing the inspector, because nothing anywhere knew it was
+   late. Clears itself the moment the findings land. */
+async function drawInspectionLateOnce() {
+  let sent = 0;
+  const days = await settingDays('inspection_sla_days');
+  if (!(days > 0)) return 0;                       // 0 turns the reminder off entirely
+  const rows = (await db.query(
+    `SELECT d.application_id, count(*)::int AS n, min(d.submitted_at) AS oldest,
+            array_agg(d.sitewire_draw_id) AS draw_ids
+       FROM sitewire_draws d
+       JOIN applications a ON a.id=d.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+      WHERE d.status IN ('inspecting','pending','pending_capital_partner')
+        AND d.submitted_at IS NOT NULL
+        AND d.submitted_at < now() - (($1)::text || ' days')::interval
+        AND NOT EXISTS (SELECT 1 FROM draw_findings f WHERE f.sitewire_draw_id = d.sitewire_draw_id)
+        AND ${activeManagedLink('d.application_id')}
+        AND ${notThrottled('d.application_id', DIGEST_ACTION.DRAW_INSPECTION_LATE, "interval '2 days'")}
+      GROUP BY d.application_id
+      ORDER BY oldest ASC, d.application_id
+      LIMIT 300`, [String(days)])).rows;
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.DRAW_INSPECTION_LATE, r.application_id, '2 days'))) continue;
+      const age = daysAt(r.oldest);
+      sent += await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'Inspection report is late' : `${r.n} inspection reports are late`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids),
+        badge: { text: 'Chase the inspector', tone: 'action' },
+        body: `${r.n === 1 ? 'A draw has been' : `${r.n} draws have been`} waiting on the inspection for ${age != null ? `${age} day${age === 1 ? '' : 's'}` : 'longer than expected'} — the report was expected within ${days} day${days === 1 ? '' : 's'}. Chase the inspector, or record the report if it has already arrived.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk',
+      }, 'draw-inspection-late');
+      await _stamp(DIGEST_ACTION.DRAW_INSPECTION_LATE, r.application_id, { draws: r.n, days: age });
+    } catch (e) { console.error('[digest] draw-inspection-late', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* B) THE REPORT IS IN AND NOBODY HERE HAS CONFIRMED THEY READ IT.
+   This is the gap the review stamp was built for. Note WHAT the state actually is, because it is
+   not what it first looks like: a `draw_findings` row is created BY the delivery (reconcile.js
+   inserts it with status='delivered' and delivered_at=now()), so "findings exist but have not gone
+   to the borrower" is structurally impossible and a sweep looking for it could never fire. The
+   real, common state is the opposite and worse — the results have ALREADY reached the borrower and
+   nobody at the company ever confirmed they read the inspector's report. So this chases the review
+   itself, and its wording says so. */
+async function drawFindingsUnreviewedOnce() {
+  let sent = 0;
+  const days = await settingDays('decision_sla_days');
+  if (!(days > 0)) return 0;
+  const rows = (await db.query(
+    `SELECT f.application_id, count(*)::int AS n, min(f.created_at) AS oldest,
+            array_agg(f.sitewire_draw_id) AS draw_ids
+       FROM draw_findings f
+       JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+      WHERE f.reviewed_at IS NULL
+        AND f.created_at < now() - (($1)::text || ' days')::interval
+        -- A draw the borrower has already settled needs no retrospective review chase; the money
+        -- question has moved on and a nudge there is noise.
+        AND f.status = 'delivered'
+        AND ${activeManagedLink('f.application_id')}
+        AND ${notThrottled('f.application_id', DIGEST_ACTION.DRAW_FINDINGS_UNREVIEWED, "interval '2 days'")}
+      GROUP BY f.application_id
+      ORDER BY oldest ASC, f.application_id
+      LIMIT 300`, [String(days)])).rows;
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.DRAW_FINDINGS_UNREVIEWED, r.application_id, '2 days'))) continue;
+      const age = daysAt(r.oldest);
+      sent += await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'Nobody has reviewed this inspection' : `${r.n} inspections have not been reviewed`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids),
+        badge: { text: 'Read it', tone: 'action' },
+        body: `The inspector's results went to the borrower ${age != null ? `${age} day${age === 1 ? '' : 's'} ago` : 'a while ago'} and nobody here has confirmed they read them. Open the draw, check the amounts and the photos against the report, and mark it reviewed — if something is wrong, it is far cheaper to catch now than after the money moves.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk',
+      }, 'draw-findings-unreviewed');
+      await _stamp(DIGEST_ACTION.DRAW_FINDINGS_UNREVIEWED, r.application_id, { draws: r.n, days: age });
+    } catch (e) { console.error('[digest] draw-findings-unreviewed', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* C) DELIBERATELY ABSENT — "reviewed but not yet delivered to the borrower" CANNOT HAPPEN.
+   The plan for this batch listed it, and reading the schema disproved it: `draw_findings` rows are
+   created BY the delivery (reconcile.js inserts status='delivered', delivered_at=now()), so a
+   review stamp can only ever be written on an already-delivered row. A sweep for that state would
+   have executed cleanly, matched nothing forever, and looked like a working reminder. Recorded here
+   rather than silently dropped, so nobody re-adds it. If findings ever start being persisted BEFORE
+   delivery, this is the reminder to write. */
+
+/* D) FINALLY APPROVED, MONEY NEVER RECORDED — on a file WE release.
+   On an investor-released file PILOT writes the ledger itself at final approve, so a missing row
+   there means the automatic write did not run and the same nudge is the right answer. The one case
+   this must NOT nag about is a MANUAL delivery, where the money genuinely moved outside PILOT.
+   `wire_due_at` already drives the separate overdue alert, so this is scoped to draws that have NO
+   findings row to carry one (a draw approved without the borrower-accept path). */
+async function drawApprovedUnrecordedOnce() {
+  let sent = 0;
+  const rows = (await db.query(
+    `SELECT d.application_id, count(*)::int AS n, min(d.approved_at) AS oldest,
+            array_agg(d.sitewire_draw_id) AS draw_ids
+       FROM sitewire_draws d
+       JOIN applications a ON a.id=d.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
+      WHERE d.status = 'approved' AND d.approved_at IS NOT NULL
+        AND d.approved_at < now() - interval '2 days'
+        AND NOT EXISTS (SELECT 1 FROM draw_disbursements dd WHERE dd.kind='draw' AND dd.sitewire_draw_id = d.sitewire_draw_id)
+        -- the accepted-findings path has its own overdue alert keyed on wire_due_at; do not double up
+        AND NOT EXISTS (SELECT 1 FROM draw_findings f WHERE f.sitewire_draw_id = d.sitewire_draw_id AND f.wire_due_at IS NOT NULL)
+        -- a MANUAL delivery moved the money outside PILOT on purpose
+        AND COALESCE((SELECT pl.investor_funding_mode FROM sitewire_property_links pl
+                       WHERE pl.application_id = d.application_id AND pl.matched_by='created'), '') <> 'manual'
+        AND ${activeManagedLink('d.application_id')}
+        AND ${notThrottled('d.application_id', DIGEST_ACTION.DRAW_APPROVED_UNRECORDED, "interval '3 days'")}
+      GROUP BY d.application_id
+      ORDER BY oldest ASC, d.application_id
+      LIMIT 300`)).rows;
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.DRAW_APPROVED_UNRECORDED, r.application_id, '3 days'))) continue;
+      const age = daysAt(r.oldest);
+      sent += await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: r.n === 1 ? 'An approved draw has no money recorded' : `${r.n} approved draws have no money recorded`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids),
+        badge: { text: 'Record it', tone: 'action' },
+        body: `${r.n === 1 ? 'A draw was' : `${r.n} draws were`} finally approved ${age != null ? `${age} day${age === 1 ? '' : 's'} ago` : 'a while ago'} but nothing has been recorded in the money ledger. Record the release on the draw desk — until it is there, the loan's data tape understates what has been drawn.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk',
+      }, 'draw-approved-unrecorded');
+      await _stamp(DIGEST_ACTION.DRAW_APPROVED_UNRECORDED, r.application_id, { draws: r.n, days: age });
+    } catch (e) { console.error('[digest] draw-approved-unrecorded', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* E) AN INVESTOR STILL OWES US OUR DRAW FEE. Only ever a report and a nudge — nothing anywhere waits
+   on it. Scoped per FILE so the reminder lands with the people who know that deal. */
+async function investorFeeOwedOnce() {
+  let sent = 0;
+  const days = await settingDays('fee_owed_chase_days');
+  if (!(days > 0)) return 0;
+  const rows = (await db.query(
+    `SELECT dd.application_id, count(*)::int AS n, sum(dd.fee_receivable_cents)::bigint AS owed,
+            min(COALESCE(dd.release_date, dd.created_at::date)) AS oldest,
+            max(dd.note_buyer_label) AS buyer,
+            array_agg(dd.sitewire_draw_id) AS draw_ids
+       FROM draw_disbursements dd
+       JOIN applications a ON a.id=dd.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined')
+      WHERE dd.fee_status = 'owed'
+        AND COALESCE(dd.release_date, dd.created_at::date) <= CURRENT_DATE - (($1)::text || ' days')::interval
+        AND ${notThrottled('dd.application_id', DIGEST_ACTION.INVESTOR_FEE_OWED, "interval '7 days'")}
+      GROUP BY dd.application_id
+      ORDER BY oldest ASC, dd.application_id
+      LIMIT 300`, [String(days)])).rows;
+  for (const r of rows) {
+    try {
+      if (!(await _gate(DIGEST_ACTION.INVESTOR_FEE_OWED, r.application_id, '7 days'))) continue;
+      const age = daysAt(r.oldest);
+      const amt = '$' + (Number(r.owed || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      sent += await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: `${r.buyer || 'The investor'} still owes us ${amt}`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids),
+        badge: { text: 'Chase the fee', tone: 'action' },
+        body: `${r.buyer || 'The investor'} released ${r.n === 1 ? 'a draw' : `${r.n} draws`} on this property directly to the borrower and still owes us ${amt} in draw fees${age != null ? `, the oldest from ${age} day${age === 1 ? '' : 's'} ago` : ''}. Chase it, then mark it received on the fees-owed list.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk',
+      }, 'investor-fee-owed');
+      await _stamp(DIGEST_ACTION.INVESTOR_FEE_OWED, r.application_id, { draws: r.n, owed_cents: Number(r.owed || 0), days: age });
+    } catch (e) { console.error('[digest] investor-fee-owed', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* F) RETAINAGE IS RELEASABLE. A project marked finished or paid off that is still holding retainage
+   — the borrower's own money, sitting with us because nobody pressed the button. Deliberately keyed
+   on the LIFECYCLE state rather than a guess about completion: a human said the job is done. */
+async function retainageReleasableOnce() {
+  let sent = 0;
+  const rows = (await db.query(
+    `SELECT pl.application_id, pl.lifecycle_at,
+            (COALESCE((SELECT sum(dd.retainage_held_cents) FROM draw_disbursements dd
+                        WHERE dd.application_id=pl.application_id AND dd.kind='draw'), 0)
+             - COALESCE((SELECT sum(dd2.net_release_cents) FROM draw_disbursements dd2
+                        WHERE dd2.application_id=pl.application_id AND dd2.kind='retainage_release'), 0))::bigint AS holding
+       FROM sitewire_property_links pl
+       JOIN applications a ON a.id=pl.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined')
+      WHERE pl.matched_by='created' AND COALESCE(pl.lifecycle_state,'active') IN ('finished','paid_off')
+        AND ${notThrottled('pl.application_id', DIGEST_ACTION.RETAINAGE_RELEASABLE, "interval '7 days'")}
+      ORDER BY pl.lifecycle_at ASC NULLS LAST, pl.application_id
+      LIMIT 300`)).rows;
+  for (const r of rows) {
+    const holding = Number(r.holding || 0);
+    if (holding <= 0) continue;                    // nothing held — never a reminder about $0
+    try {
+      if (!(await _gate(DIGEST_ACTION.RETAINAGE_RELEASABLE, r.application_id, '7 days'))) continue;
+      const amt = '$' + (holding / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      sent += await notifyCoordinators(r.application_id, {
+        type: 'draw',
+        title: `${amt} of retainage is ready to release`,
+        badge: { text: 'Release it', tone: 'action' },
+        body: `This project is marked complete and we are still holding ${amt} of the borrower's retainage. Release it on the draw desk.`,
+        applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk',
+      }, 'retainage-releasable');
+      await _stamp(DIGEST_ACTION.RETAINAGE_RELEASABLE, r.application_id, { holding_cents: holding });
+    } catch (e) { console.error('[digest] retainage-releasable', r.application_id, e && e.message); }
+  }
+  return sent;
+}
+
+/* G) THE PURCHASE ADVICE NEVER ARRIVED (owner-directed 2026-08-09: "there should be a workflow for
+   this stuff that doesn't have a purchase date — if it doesn't get a purchase date till 30 days
+   after a funding date, then we should get notified; super admin should get notified, and the
+   closer should get notified").
+
+   THE WHOLE SWEEP IS BUILT AROUND NOT FIRING ON A TABLE-FUNDED LOAN. A loan sold at the closing
+   table is never going to receive a purchase advice — that is what table funding MEANS — so
+   chasing one would put a monthly email on every Fidelis deal we ever close, forever, which is the
+   fastest way to teach a team to ignore this alert. Three independent things have to say the loan
+   is still to be sold before anyone is told:
+     · the closer's own warehouse pick is not the Table Funding line (closing_workflow.table_funded,
+       the reliable local signal — a human on our own desk chose it);
+     · Encompass's funding channel does not say table funding either (belt and braces, for a file
+       where the two disagree — the disagreement itself is surfaced on the Encompass panel);
+     · neither place we record a purchase advice has one — the Encompass-read date on the file AND
+       the closer's own hand-entered `purchasing_advice` row. Missing the second would chase files
+       where a human had already recorded the advice by hand, which is precisely the desk this is
+       meant to help.
+
+   RTL only, structurally: `applications` IS the RTL product's table — the long-term side has its
+   own `lt_*` tables and does not appear here at all.
+
+   Self-gating (≤ once per file per week) and business-hours like every other sweep. The threshold
+   is the owner's 30 days, with an env override for a deployment that wants to be told sooner. */
+const PURCHASE_ADVICE_CHASE_DAYS = () => Math.max(1, Number(process.env.PURCHASE_ADVICE_CHASE_DAYS || 30));
+
+async function purchaseAdviceMissingOnce() {
+  let sent = 0;
+  const days = PURCHASE_ADVICE_CHASE_DAYS();
+  let rows = [];
+  try {
+    rows = (await db.query(
+      `SELECT a.id, a.ys_loan_number, a.funded_date, a.lender, a.closer_id,
+              (CURRENT_DATE - a.funded_date)::int AS age,
+              -- The Encompass funding channel, read from the flat by-number map the reader writes
+              -- on every pull, falling back to the customFields[] array a pull made before that
+              -- wiring would have stored. Text only — the JS side normalizes it through the ONE
+              -- shared value map, so this never has to know the tenant's exact wording.
+              -- jsonb_typeof guard: jsonb_array_elements RAISES on anything that is not an array,
+              -- and one stored copy whose customFields came back as an object would throw the whole
+              -- query — which this function's catch would swallow into a permanent, confident
+              -- "nothing to chase". A shape we did not expect must cost us that one file's
+              -- fallback, never the sweep.
+              COALESCE(
+                a.encompass_extra->'_fieldValues'->>'CX.TABLEFUNDER',
+                (SELECT cf->>'value'
+                   FROM jsonb_array_elements(
+                          CASE WHEN jsonb_typeof(a.encompass_extra->'customFields') = 'array'
+                               THEN a.encompass_extra->'customFields' ELSE '[]'::jsonb END) cf
+                  WHERE cf->>'fieldName' = 'CX.TABLEFUNDER' LIMIT 1)
+              ) AS channel_raw
+         FROM applications a
+         LEFT JOIN closing_workflow cw ON cw.application_id = a.id
+         LEFT JOIN purchasing_advice pa ON pa.application_id = a.id
+        WHERE a.deleted_at IS NULL
+          AND a.status = 'funded'
+          AND a.funded_date IS NOT NULL
+          AND a.funded_date <= CURRENT_DATE - (($1)::text || ' days')::interval
+          AND COALESCE(cw.table_funded, false) = false
+          AND a.purchase_advice_date IS NULL
+          AND pa.advice_date IS NULL
+          AND ${notThrottled('a.id', DIGEST_ACTION.PURCHASE_ADVICE_MISSING, "interval '7 days'")}
+        ORDER BY a.funded_date ASC, a.id
+        LIMIT 200`, [String(days)])).rows;
+  } catch (e) { console.error('[digest] purchase-advice-missing query', e && e.message); return 0; }
+
+  for (const r of rows) {
+    try {
+      const FC = require('./funding-channel');
+      // Encompass's own answer, through the shared normalizer. Belt and braces on top of the
+      // warehouse check already applied in SQL.
+      if (FC.soldAtTable({ channel: FC.channelKey(r.channel_raw) })) continue;
+      // …and the question about the BUYER rather than the file (owner-directed 2026-08-09): RCN,
+      // Roc Capital and Temple View are table funded as a matter of course, so a missing purchase
+      // advice on one of their files is a data-entry gap, not a loan waiting to be sold. Fidelis is
+      // NOT excluded — that is the owner's "case-by-case", and its table-funded files are already
+      // skipped by the check above, which is a fact about the file rather than about the buyer.
+      if (!FC.chaseMissingPurchaseAdvice(r.lender)) continue;
+      if (!(await _gate(DIGEST_ACTION.PURCHASE_ADVICE_MISSING, r.id, '7 days'))) continue;
+      const age = Number(r.age || 0);
+      const who = r.lender ? String(r.lender) : 'the investor';
+      const payload = {
+        type: 'purchase_advice_missing',
+        title: `No purchase advice ${age} days after funding`,
+        badge: { text: 'Chase the sale', tone: 'action' },
+        body: `This loan funded ${age} days ago and was not table funded, so it still has to be sold to ${who} — and no purchase advice date has come back. Chase it, or record the advice on the file if it has already arrived.`,
+        applicationId: r.id,
+        link: `/internal/app/${r.id}`,
+        ctaLabel: 'Open the loan file',
+      };
+      // THE CLOSER FIRST, then the super admins — and the closer is EXCLUDED from the admin
+      // fan-out when they are one, so a closer who is also a super admin gets one email, not two
+      // (the same plural exclusion notifyAdmins already applies for the file team).
+      const told = [];
+      if (r.closer_id) {
+        try { await notify.notifyStaff(r.closer_id, payload); told.push(String(r.closer_id)); sent += 1; }
+        catch (e) { console.error('[digest] purchase-advice-missing closer', r.id, e && e.message); }
+      }
+      // SUPER ADMINS ONLY, and never the shared NOTIFY_ADMINS inbox — that list is hand-typed
+      // ADDRESSES with no role attached, so it is the one list that could carry somebody the owner
+      // did not name here. Every admin still SEES it in PILOT; only super admins are emailed.
+      const admins = await notify.notifyAdmins({
+        ...payload, exceptStaffIds: told, emailRoles: ['super_admin'], skipSharedInbox: true,
+      });
+      sent += Array.isArray(admins) ? admins.length : (admins ? 1 : 0);
+      await _stamp(DIGEST_ACTION.PURCHASE_ADVICE_MISSING, r.id, { days: age, buyer: r.lender || null });
+    } catch (e) { console.error('[digest] purchase-advice-missing', r.id, e && e.message); }
+  }
+  return sent;
+}
+
 /* 7) order_trustpoint (blueprint 2b) — a draw submitted through the portal composer on a TrustPoint
    (Blue Lake physical) file that the coordinator has NOT yet hand-entered into TrustPoint. The
    portal_draw_requests row IS the state: platform 'trustpoint' + status 'submitted' + no tp_draw_id
@@ -1001,7 +1505,8 @@ async function orderTrustpointOnce() {
   let rows = [];
   try {
     rows = (await db.query(
-      `SELECT p.application_id, count(*)::int AS n, min(p.created_at) AS oldest
+      `SELECT p.application_id, count(*)::int AS n, min(p.created_at) AS oldest,
+              array_agg(p.id) AS portal_ids
          FROM portal_draw_requests p
          JOIN applications a ON a.id=p.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
         WHERE p.platform='trustpoint' AND p.status='submitted' AND p.tp_draw_id IS NULL
@@ -1017,6 +1522,7 @@ async function orderTrustpointOnce() {
       await notifyCoordinators(r.application_id, {
         type: 'draw',
         title: r.n === 1 ? 'A draw is waiting to be entered into TrustPoint' : `${r.n} draws are waiting to be entered into TrustPoint`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.portal_ids, 'portal'),
         badge: { text: 'Enter in TrustPoint', tone: 'action' },
         body: `The borrower submitted ${r.n === 1 ? 'a draw' : `${r.n} draws`} on this file and ${r.n === 1 ? 'it has' : 'they have'} not been entered into TrustPoint yet. Please enter ${r.n === 1 ? 'it' : 'them'} so the inspection can be ordered and the borrower's draw can move forward.`,
         applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' }, 'order-trustpoint');
@@ -1036,7 +1542,8 @@ async function orderTrinityOnce() {
   let rows = [];
   try {
     rows = (await db.query(
-      `SELECT t.application_id, count(*)::int AS n, min(t.created_at) AS oldest
+      `SELECT t.application_id, count(*)::int AS n, min(t.created_at) AS oldest,
+              array_agg(t.portal_draw_request_id) AS portal_ids
          FROM trinity_inspection_orders t
          JOIN applications a ON a.id=t.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
         WHERE t.status='requested'
@@ -1052,6 +1559,7 @@ async function orderTrinityOnce() {
       await notifyCoordinators(r.application_id, {
         type: 'draw',
         title: r.n === 1 ? 'A physical inspection is waiting to be ordered on Trinity' : `${r.n} physical inspections are waiting to be ordered on Trinity`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.portal_ids, 'portal'),
         badge: { text: 'Order on Trinity', tone: 'action' },
         body: `${r.n === 1 ? 'A physical inspection has' : `${r.n} physical inspections have`} been requested on this file but not yet ordered from Trinity. Please place the order so the borrower's draw can move forward.`,
         applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' }, 'order-trinity');
@@ -1074,7 +1582,8 @@ async function investorPendingDeliveryOnce() {
   let rows = [];
   try {
     rows = (await db.query(
-      `SELECT f.application_id, count(*)::int AS n, min(COALESCE(f.accepted_at, f.delivered_at)) AS oldest
+      `SELECT f.application_id, count(*)::int AS n, min(COALESCE(f.accepted_at, f.delivered_at)) AS oldest,
+              array_agg(f.sitewire_draw_id) AS draw_ids
          FROM draw_findings f
          JOIN applications a ON a.id=f.application_id AND a.deleted_at IS NULL AND a.status NOT IN ('withdrawn','declined','on_hold')
         WHERE f.status IN ('accepted','resolved')
@@ -1095,6 +1604,7 @@ async function investorPendingDeliveryOnce() {
       await notifyCoordinators(r.application_id, {
         type: 'draw',
         title: r.n === 1 ? 'A draw is approved and ready to send to the investor' : `${r.n} draws are approved and ready to send to the investor`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids),
         badge: { text: 'Deliver to investor', tone: 'action' },
         body: `The borrower has agreed to ${r.n === 1 ? 'a draw' : `${r.n} draws`} on this file and ${r.n === 1 ? 'it is' : 'they are'} waiting to be delivered to the investor. Please send the delivery so the borrower's funds are not held up.`,
         applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' }, 'investor-pending');
@@ -1161,7 +1671,8 @@ async function withInvestorOnce() {
             AND ${activeManagedLink('dl.application_id')}
             AND ${notThrottled('dl.application_id', DIGEST_ACTION.WITH_INVESTOR, "interval '2 days'")}
        )
-       SELECT application_id, count(*)::int AS n, min(last_send) AS delivered
+       SELECT application_id, count(*)::int AS n, min(last_send) AS delivered,
+              array_agg(sitewire_draw_id) AS draw_ids
          FROM with_inv
         WHERE last_send < now() - interval '48 hours'
         GROUP BY application_id
@@ -1175,6 +1686,7 @@ async function withInvestorOnce() {
       await notifyCoordinators(r.application_id, {
         type: 'draw',
         title: r.n === 1 ? 'A draw is with the investor awaiting funding' : `${r.n} draws are with the investor awaiting funding`,
+        drawTag: await drawLabel.drawTagForDraws(db, r.application_id, r.draw_ids),
         badge: { text: 'Awaiting investor', tone: 'action' },
         body: `${r.n === 1 ? 'A draw was' : `${r.n} draws were`} delivered to the investor ${d != null && d > 0 ? `${d} day${d === 1 ? '' : 's'} ago ` : ''}and no funding has come back yet. Please follow up with the investor so the borrower is not left waiting.`,
         applicationId: r.application_id, link: `/internal/app/${r.application_id}/draws`, ctaLabel: 'Open the draw desk' }, 'with-investor');
@@ -1430,11 +1942,35 @@ async function workflowAgingOnce() {
   for (const r of rows) {
     try {
       if (!r.to_staff_id || !(await _gateRecipient('workflow_overdue', r.to_staff_id, '20 hours'))) continue;
+      /* NAME THE FILES, ONE CARD PER WORKFLOW (owner-directed 2026-08-07: *"emails like this
+         should have a list of the files and the status of each and every file and whose loan
+         officer in every single file … nicely design every workflow separately"*). The old body
+         was a count and a link — everything it knew, it made the reader go and look up again; the
+         first pass at the fix was one merged list, which reads as ONE job arbitrarily split.
+         `workflowQueues.buildQueueTables` (pure) splits the rows by workflow family so a
+         processor's queue, a closer's queue and a draw coordinator's queue arrive as three
+         separate cards, each saying what that queue is for, and — for draws only — carrying only
+         the files where somebody is actually waiting on money.
+
+         Best-effort: if the detail query fails the nudge still goes with its count, because a
+         person with overdue work being told nothing is the worse outcome. */
+      let items = [];
+      try { items = await workflow.overdueItemsFor(r.to_staff_id); } catch (_) { items = []; }
+      let queues = { tables: [], shown: 0, parked: 0 };
+      try {
+        queues = workflowQueues.buildQueueTables(items, workflow.typeConfig, { perTable: 8 });
+      } catch (e) { console.error('[digest] workflow-queues', e && e.message); }
+      /* The count in the headline is the recipient's REAL overdue total. The cards can hold fewer
+         (the per-card cap, and the parked draw files) — so when they do, say so rather than let the
+         two numbers silently disagree. */
+      const unlisted = Math.max(0, (Number(r.overdue) || 0) - queues.shown - queues.parked);
       await notify.notifyStaff(r.to_staff_id, {
         type: 'workflow_ready',
         title: r.overdue === 1 ? 'A file in your Workflow is overdue' : `${r.overdue} files in your Workflow are overdue`,
         badge: { text: 'Overdue', tone: 'action' },
-        body: `You have ${r.overdue} file${r.overdue === 1 ? '' : 's'} in your Workflow past ${r.overdue === 1 ? 'its' : 'their'} target time. Open your Workflow to pick ${r.overdue === 1 ? 'it' : 'them'} up or send ${r.overdue === 1 ? 'it' : 'them'} back.`,
+        body: `You have ${r.overdue} file${r.overdue === 1 ? '' : 's'} in your Workflow past ${r.overdue === 1 ? 'its' : 'their'} target time.`,
+        emailBody: `These hand-offs are past the target time they were meant to be picked up or sent back in. They are grouped below by the queue they belong to — pick one up, or send it back to whoever submitted it.${unlisted ? ` ${unlisted} more ${unlisted === 1 ? 'is' : 'are'} waiting in your Workflow.` : ''}`,
+        tables: queues.tables.length ? queues.tables : null,
         link: '/internal/workflow', ctaLabel: 'Open my Workflow' });
       await _stamp('workflow_overdue', r.to_staff_id, { overdue: r.overdue });
       sent++;
@@ -1931,14 +2467,32 @@ async function exceptionAgingOnce() {
   if (!rows.length) return 0;
   if (!(await _gate('exception_aging_digest', null, '20 hours'))) return 0;
   const labels = Object.fromEntries(Object.entries(loanExceptions.EXCEPTION_TYPES).map(([k, v]) => [k, v.label]));
-  const lines = rows.slice(0, 10).map((r) => {
+  /* THE LIST IS A TABLE, NOT A PARAGRAPH OF BULLETS (owner-directed 2026-08-07: *"e-mails like
+     this should be much nicer designed"*). The old body packed every waiting exception into one
+     newline-joined run of "• Send before clear-to-close — 276 Blake St, New Haven · waiting 10d"
+     inside a single paragraph — which mail clients reflow, so on a phone the bullets wrapped into
+     each other and the ages ran together. Each row now has its own line and its own age column,
+     and the OLDEST is first: the whole point of a review-target digest is that the top row is the
+     one hurting most. The plain-text body keeps a readable list for any client that strips HTML. */
+  const shown = rows.slice(0, 12);
+  const ageOf = (r) => {
     const days = Math.floor(Number(r.open_hours || 0) / 24);
-    const age = days >= 1 ? `${days}d` : `${Math.round(Number(r.open_hours || 0))}h`;
+    return days >= 1 ? `${days}d` : `${Math.round(Number(r.open_hours || 0))}h`;
+  };
+  const addrOf = (r) => {
     const a = r.property_address;
     const addr1 = !a ? '' : (typeof a === 'string' ? a : [a.line1 || a.address, a.city].filter(Boolean).join(', '));
-    return `• ${labels[r.exception_type] || r.exception_type} — ${addr1 || r.ys_loan_number || 'a file'} · waiting ${age}`;
-  });
-  if (rows.length > 10) lines.push(`…and ${rows.length - 10} more.`);
+    return addr1 || r.ys_loan_number || 'a file';
+  };
+  const table = {
+    title: 'Waiting on a decision — oldest first',
+    head: ['Property / file', 'Exception', 'Waiting'],
+    align: ['left', 'left', 'right'],
+    rows: shown.map((r) => [addrOf(r), labels[r.exception_type] || r.exception_type, ageOf(r)]),
+    note: rows.length > shown.length
+      ? `…and ${rows.length - shown.length} more in the Exceptions box.`
+      : null,
+  };
   const supers = await db.query(`SELECT id FROM staff_users WHERE role='super_admin' AND is_active=true`);
   let sent = 0;
   for (const su of supers.rows) {
@@ -1948,7 +2502,10 @@ async function exceptionAgingOnce() {
         title: rows.length === 1 ? 'An exception request is waiting past its review target'
           : `${rows.length} exception requests are waiting past their review target`,
         badge: { text: 'Review due', tone: 'action' },
-        body: `These policy-exception requests have been open longer than the review target. The requester can’t move them — only a super-admin can approve or deny:\n\n${lines.join('\n')}`,
+        // The in-app row keeps a short summary; the email gets the sentence + the table.
+        body: `${rows.length} policy-exception request${rows.length === 1 ? ' has' : 's have'} been open longer than the review target.`,
+        emailBody: 'These policy-exception requests have been open longer than the review target. The person who raised them cannot move them — only an approver can decide.',
+        table,
         link: '/internal/exceptions', ctaLabel: 'Open the Exceptions box',
       });
       sent++;
@@ -2123,6 +2680,14 @@ async function runDue() {
     await orderTrinityOnce().catch((e) => console.error('[digests] order-trinity', e && e.message));
     await investorPendingDeliveryOnce().catch((e) => console.error('[digests] investor-pending', e && e.message));
     await withInvestorOnce().catch((e) => console.error('[digests] with-investor', e && e.message));
+    // The six stretches that had no reminder at all (owner-directed 2026-08-09). Each self-gates on
+    // its own period, so a steady morning tick gives the intended cadence.
+    await drawInspectionLateOnce().catch((e) => console.error('[digests] draw-inspection-late', e && e.message));
+    await drawFindingsUnreviewedOnce().catch((e) => console.error('[digests] draw-findings-unreviewed', e && e.message));
+    await drawApprovedUnrecordedOnce().catch((e) => console.error('[digests] draw-approved-unrecorded', e && e.message));
+    await investorFeeOwedOnce().catch((e) => console.error('[digests] investor-fee-owed', e && e.message));
+    await retainageReleasableOnce().catch((e) => console.error('[digests] retainage-releasable', e && e.message));
+    await purchaseAdviceMissingOnce().catch((e) => console.error('[digests] purchase-advice-missing', e && e.message));
     await trainingRunOnce().catch((e) => console.error('[digests] training-run', e && e.message));
     await certificateSurveyOnce().catch((e) => console.error('[digests] cert-survey', e && e.message));
     await directSourceSweepOnce().catch((e) => console.error('[digests] direct-source-sweep', e && e.message));
@@ -2136,6 +2701,10 @@ async function runDue() {
     if (weekday === 'Mon') await weeklyAdminAiQuestionsOnce().catch((e) => console.error('[digests] admin-ai-questions', e && e.message));
     if (weekday === 'Mon') await weeklyTopRiskyFilesOnce().catch((e) => console.error('[digests] admin-top-risky', e && e.message));
     if (weekday === 'Mon') await weeklyLoAiDigestOnce().catch((e) => console.error('[digests] lo-weekly-ai', e && e.message));
+    // The loan officers' own weekly book snapshot (owner-directed 2026-08-07). Monday morning,
+    // alongside the other weeklies; it self-gates on a 6-day window so a Monday that misses the
+    // window (a deploy, an outage) still catches up on the Tuesday rather than skipping a week.
+    if (weekday === 'Mon') await weeklyOfficerPipelineOnce().catch((e) => console.error('[digests] officer-pipeline-weekly', e && e.message));
   }
   if (hour >= 8 && hour < 18) {
     await weeklyBorrowerOutstandingOnce().catch((e) => console.error('[digests] borrower', e && e.message));
@@ -2159,6 +2728,11 @@ async function runDue() {
     // 'completed' for those two, so every deal we have ever closed sat on the desk
     // looking like outstanding work — which is how a queue stops being read.
     await require('./order-tracking').retireSatisfiedOrdersOnce().catch((e) => console.error('[digests] order-retire', e && e.message));
+    /* Abandoned Elementix approvals. `sweepPending()` had ZERO callers, so a
+       half-finished browser approval sat in the table forever — harmless until
+       somebody debugging a connection reads a stale pending row as the current
+       attempt. It is its own no-op when Elementix was never configured. */
+    await require('../elementix/oauth').sweepPending().catch((e) => console.error('[digests] elementix-pending', e && e.message));
     // …and THEN chase what is genuinely still out. Ordered after the retires on
     // purpose: nudging somebody about an order the same tick is about to retire is
     // the noise this desk exists to remove.
@@ -2328,9 +2902,15 @@ module.exports = {
   weeklyBorrowerOutstandingOnce, dailyPipelineDigestOnce, staleFileAlertsOnce, weeklyAdminSummaryOnce,
   drawFindingsAwaitingBorrowerOnce, drawReleaseOverdueOnce, trustpointUnreleasedOnce, workflowAgingOnce, conditionFreshnessReopenOnce,
   orderTrustpointOnce, orderTrinityOnce, investorPendingDeliveryOnce, withInvestorOnce,
+  drawInspectionLateOnce, drawFindingsUnreviewedOnce,
+  drawApprovedUnrecordedOnce, investorFeeOwedOnce, retainageReleasableOnce, purchaseAdviceMissingOnce,
   orderOverdueOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, unfundedRereadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
   qaDeskAuditOnce, exceptionAgingOnce, exceptionExpirySweepOnce, closingChainCatchupOnce,
+  weeklyOfficerPipelineOnce,
   backupFreshnessWatchOnce,
+  // Exposed so a test can prove the sweeps and the screens that describe them read the SAME
+  // threshold — the whole point of routing both through draw-settings.daysSettingFor.
+  _internals: { settingDays },
 };

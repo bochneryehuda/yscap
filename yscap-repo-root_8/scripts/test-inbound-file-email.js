@@ -359,6 +359,69 @@ async function main() {
     r = await fileInbox.processReceivedEvent(evt('test-display-1', [`"YS File" <file+${A1}@${DOMAIN}>`]));
     ok(r.status === 'forwarded', 'display-name recipient form → forwarded');
 
+    // ---------- one event, one copy (owner-directed 2026-08-09) ----------
+    // A staffer who was on the inbound email THEMSELVES (the sender hit
+    // reply-all) must not ALSO receive our forward — their inbox already holds
+    // the message. They keep an in-app row saying so; whoever the email did NOT
+    // reach is forwarded exactly as before.
+    console.log('\n# already-on-the-email suppression (one event, one copy)');
+    sent = [];
+    r = await fileInbox.processReceivedEvent({ type: 'email.received', data: {
+      email_id: 'test-onchain-partial-1',
+      to: [`file+${A1}@${DOMAIN}`],
+      // Display-name form on purpose — normalization must still match S2.
+      cc: [`"Processor Two" <${S2email}>`],
+    } });
+    ok(r.status === 'forwarded' && r.count === 1, 'reply-all with one assignee on Cc → forwarded to the OTHER assignee only');
+    ok(sent.length === 1 && [].concat(sent[0].to).join(',') === S1email,
+      'the Cc\'d assignee is NOT re-emailed (their inbox already has the reply)');
+    {
+      // No earlier case produces the on-the-email wording, so existence is exact.
+      const s2row = await db.query(
+        `SELECT 1 FROM notifications
+          WHERE staff_id=$1 AND application_id=$2 AND type='inbound_reply'
+            AND body ILIKE '%you were on that email%'`, [S2, A1]);
+      ok(s2row.rows.length === 1, 'the Cc\'d assignee still gets the in-app row, worded "you were on that email"');
+      const s1row = await db.query(
+        `SELECT 1 FROM notifications
+          WHERE staff_id=$1 AND application_id=$2 AND type='inbound_reply'
+            AND body ILIKE '%you were on that email%'`, [S1, A1]);
+      ok(s1row.rows.length === 0, 'the forwarded assignee\'s in-app row keeps the ordinary wording');
+    }
+
+    // EVERY remaining assignee on the email → nothing to send. Terminal
+    // 'on_chain' (the success case: the reply reached the team on its own
+    // chain), in-app rows for everyone, and a redelivery stays quiet.
+    sent = [];
+    r = await fileInbox.processReceivedEvent({ type: 'email.received', data: {
+      email_id: 'test-onchain-all-1',
+      to: [`file+${A1}@${DOMAIN}`, S1email],
+      cc: [S2email],
+    } });
+    ok(r.status === 'on_chain' && sent.length === 0, 'every assignee on the email → on_chain, NO forward sent');
+    {
+      const row = await db.query(`SELECT status FROM inbound_file_emails WHERE resend_email_id='test-onchain-all-1'`);
+      ok(row.rows[0] && row.rows[0].status === 'on_chain', 'on_chain recorded on the inbound row');
+      const rows = await db.query(
+        `SELECT staff_id FROM notifications
+          WHERE application_id=$1 AND type='inbound_reply' AND body ILIKE '%you were on that email%'
+            AND staff_id = ANY($2::uuid[])`, [A1, [S1, S2]]);
+      ok(new Set(rows.rows.map((x) => String(x.staff_id))).size === 2,
+        'both assignees got the portal record of the reply');
+    }
+    r = await fileInbox.processReceivedEvent({ type: 'email.received', data: {
+      email_id: 'test-onchain-all-1', to: [`file+${A1}@${DOMAIN}`, S1email], cc: [S2email],
+    } });
+    ok(r.status === 'duplicate' && sent.length === 0, 'on_chain is terminal — a redelivery is a plain duplicate');
+
+    // Plain Reply (nobody looped in) keeps today's behavior byte-identical —
+    // the owner's flip side: "if people are not looped in, then our system
+    // should send out notifications of the replies."
+    sent = [];
+    r = await fileInbox.processReceivedEvent(evt('test-onchain-none-1', [`file+${A1}@${DOMAIN}`]));
+    ok(r.status === 'forwarded' && sent.length === 1 && [].concat(sent[0].to).length === 2,
+      'plain Reply (no one looped in) → both assignees forwarded exactly as before');
+
     // ---------- round-2 audit regressions: filters ----------
     console.log('\n# archived files, self-echo, inactive staff, auto-replies');
     sent = [];

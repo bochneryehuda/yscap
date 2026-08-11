@@ -91,7 +91,7 @@ function Bars({ series, format, onPick }) {
               cursor: onPick ? 'pointer' : 'default', display: 'flex', flexDirection: 'column',
               justifyContent: 'flex-end', height: '100%' }}>
             <span style={{ display: 'block', height: h, background: last ? GOLD : TEAL_SOFT, borderRadius: '2px 2px 0 0' }} />
-            {n <= 14 && <span style={{ fontSize: 9, color: MUTED, marginTop: 4, whiteSpace: 'nowrap' }}>{String(s.key).slice(-5)}</span>}
+            {n <= 14 && <span style={{ fontSize: 11, color: MUTED, marginTop: 4, whiteSpace: 'nowrap' }}>{String(s.key).slice(-5)}</span>}
           </button>
         );
       })}
@@ -259,7 +259,7 @@ export default function DashboardCard({ answer, onDrill, onEdit, editable }) {
           {answer.explain.sql && (
             <details style={{ marginTop: 6 }}>
               <summary className="small" style={{ cursor: 'pointer', color: MUTED }}>Show the exact query</summary>
-              <pre style={{ fontSize: 10.5, overflowX: 'auto', background: '#F4F1EA', padding: 8, borderRadius: 3, marginTop: 6 }}>{answer.explain.sql}</pre>
+              <pre style={{ fontSize: 11, overflowX: 'auto', background: '#F4F1EA', padding: 8, borderRadius: 3, marginTop: 6 }}>{answer.explain.sql}</pre>
             </details>
           )}
         </div>

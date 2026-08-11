@@ -204,15 +204,29 @@ const ROLLUP = rollupMod.computeRollup({
   eq('D11 per-unit cells commit too', roof.units.map((u) => u.available), [0, 0, 0, 0]);
 }
 {
-  // AMEND / DECLINE puts it all back: drop the approvals and the money is available again.
+  /* AMEND / DECLINE puts it all back.
+     UPDATED 2026-08-07: this used to model a decline as "zero the APPROVED amounts and leave the
+     request standing", which worked only while `committed` counted approvals alone. Under the
+     owner's widened rule a draw is committed from the moment it is REQUESTED, so that fixture now
+     describes a draw that is still open and still asking for the full $25,000 — and it is right
+     that the money stays committed. A real decline removes the draw; a real amendment lowers what
+     it asks for. Both are checked, which is what the assertion always meant. */
   const declined = rollupMod.computeRollup({
-    links: LINKS, draws: [DRAW], findingLines: [],
-    requests: REQUESTS.map((r) => ({ ...r, approved_cents: 0 })),
+    links: LINKS, draws: [], findingLines: [], requests: [],
     nameByKey: { 'cat:roof': 'Roof' },
   });
   const roof = declined.lines.find((l) => l.sow_line_key === 'cat:roof');
-  eq('D12 amending/declining the draw returns the money to available', roof.available, 2500000);
+  eq('D12 declining the draw returns the money to available', roof.available, 2500000);
   eq('D13 …and the line is back to 0% used', roof.pct_committed, 0);
+  // Amended DOWN to $10,000: only the new ask is committed, the rest is free again.
+  const amended = rollupMod.computeRollup({
+    links: LINKS, draws: [DRAW], findingLines: [],
+    requests: REQUESTS.map((r, i) => ({ ...r, approved_cents: 0, requested_cents: i === 0 ? 1000000 : 0 })),
+    nameByKey: { 'cat:roof': 'Roof' },
+  });
+  const roofA = amended.lines.find((l) => l.sow_line_key === 'cat:roof');
+  eq('D12b amending the draw down commits only the new amount', roofA.committed, 1000000);
+  eq('D12c …and frees the difference', roofA.available, 1500000);
 }
 {
   // a RELEASED draw is drawn, not merely committed

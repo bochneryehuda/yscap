@@ -307,7 +307,10 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
     const tiles = [
       ['Budget', usd(p.budget)],
       ['Released', usd(p.drawn)],
-      ['Approved, not yet released', usd(Math.max(0, committed - p.drawn))],
+      // Owner-directed 2026-08-07: a draw counts against the budget from the moment it is
+      // REQUESTED, not from the moment the inspector answers — so this tile can no longer be
+      // called "approved". It is everything in flight.
+      ['Committed on draws in flight', usd(Math.max(0, committed - p.drawn))],
       ['Still available', usd(available)],
     ];
     const tw = (W - 2 * M - 3 * 8) / 4;
@@ -513,10 +516,15 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
       // line title + economics
       doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor.apply(doc, DARK);
       doc.text(pdfSafe(fit(clean(l.name) || 'Line item', 58)), M + 3, y + 9);
-      const notAppr = l.not_approved_cents != null ? Number(l.not_approved_cents) : Math.max(0, Number(l.requested_cents || 0) - Number(l.approved_cents || 0));
+      // TRI-STATE (db/518): a NULL approved amount means the inspector has not answered this
+      // line — say so, never "Approved $0", which reads as denied. An unanswered line also has
+      // no not-approved figure (requested minus an unknown answer is unknown).
+      const answered = l.approved_cents != null;
+      const notAppr = !answered ? 0
+        : (l.not_approved_cents != null ? Number(l.not_approved_cents) : Math.max(0, Number(l.requested_cents || 0) - Number(l.approved_cents || 0)));
       const econ = borrower
-        ? 'Requested ' + usd(l.requested_cents) + ' · Approved ' + usd(l.approved_cents)
-        : 'Req ' + usd(l.requested_cents) + ' · Appr ' + usd(l.approved_cents);
+        ? 'Requested ' + usd(l.requested_cents) + ' · ' + (answered ? 'Approved ' + usd(l.approved_cents) : 'not yet reviewed')
+        : 'Req ' + usd(l.requested_cents) + ' · ' + (answered ? 'Appr ' + usd(l.approved_cents) : 'not reviewed');
       doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor.apply(doc, GRAY);
       doc.text(pdfSafe(econ), W - M - 3, y + 9, { align: 'right' });
       y += 14;
@@ -563,6 +571,41 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
         }
       } else if (photos.length) {
         para('Photos for this line are saved in PILOT but could not be embedded here.', 7.6, GRAY);
+      }
+      y += 4;
+    }
+
+    // ---- SUPPORTING DOCUMENTS ON THIS DRAW ----------------------------------------------
+    // Invoices, receipts and extra photos a human filed on the draw — typically the proof behind
+    // an override (owner-directed 2026-08-09). They are LISTED by name so the reader knows what
+    // exists even when the bytes are a PDF that cannot be drawn into a page, and any that IS an
+    // image is embedded exactly like an inspector photo. The `supports` sentence is printed with
+    // it, so the report explains itself: "approved $2,400 over requested on the roof line".
+    const atts = Array.isArray(s.attachments) ? s.attachments : [];
+    if (atts.length) {
+      brk(40);
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor.apply(doc, INK);
+      doc.text(pdfSafe('Supporting documents'), M + 3, y + 8); y += 16;
+      for (const a of atts) {
+        brk(26);
+        const head = [a.category_label || 'Supporting document', clean(a.filename || '')].filter(Boolean).join(' — ');
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor.apply(doc, INK);
+        doc.text(pdfSafe(fit(head, 92)), M + 6, y + 6); y += 12;
+        if (a.supports) para('Supports: ' + clean(a.supports), 7.6, [70, 78, 82]);
+        if (a.note) para(clean(a.note), 7.6, GRAY);
+        const buf = a && a.buf;
+        const fmt = buf && (a.format || imageFormat(buf));
+        if (buf && fmt && embeddedCount < MAX_PHOTOS_TOTAL && embeddedBytes < EMBED_BYTE_BUDGET) {
+          const cellW = 160, cellH = 120;
+          brk(cellH + 12);
+          try {
+            doc.addImage(buf, fmt, M + 6, y, cellW, cellH);
+            doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.5); doc.rect(M + 6, y, cellW, cellH);
+            embeddedBytes += buf.length; embeddedCount++;
+            y += cellH + 10;
+          } catch (_) { /* an image that will not decode is simply listed, never a thrown report */ }
+        }
+        y += 4;
       }
       y += 4;
     }
@@ -699,6 +742,13 @@ async function loadReportMeta(appId, { sitewireDrawId = null, mode = 'staff' } =
       released: !!d.released,
       release_date: d.release_date || null,
       lines,
+      // Supporting documents filed on THIS draw — invoices, receipts, extra photos (the proof
+      // behind an override). Metadata only here; the bytes are read in attachPhotoBytes, exactly
+      // like the inspector's photos, so this stays a pure DB read.
+      // BORROWER COPY: a document the borrower themselves attached is theirs to see, and a staff
+      // one is proof about their own draw — but only an ACCEPTED document appears, because an
+      // upload nobody has reviewed is not something we present as part of the record (db/424).
+      attachments: await loadDrawAttachments(appId, did, mode),
     });
   }
   // The version also folds in the FILE HEADER fields (address/borrower/program/loan) so a correction to
@@ -708,6 +758,32 @@ async function loadReportMeta(appId, { sitewireDrawId = null, mode = 'staff' } =
     .update(baseVersion + '|' + [app.address, app.csz, app.borrowerName, app.program, app.loanNo].join('|'))
     .digest('hex').slice(0, 12);
   return { app, rollup, sections, version, hasScope: drawIds.length > 0 };
+}
+
+/**
+ * The supporting documents on one draw, as report metadata. Never throws — a report missing its
+ * attachment list is a smaller problem than a report that will not build.
+ */
+async function loadDrawAttachments(appId, drawId, mode) {
+  try {
+    if (drawId == null) return [];
+    const CAT = require('./draw-attachments').CATEGORY_LABEL;
+    const rows = (await lazy.db.query(
+      `SELECT da.category, da.note, da.supports, da.uploaded_by_kind,
+              d.filename, d.content_type, d.storage_ref, d.review_status
+         FROM draw_attachments da JOIN documents d ON d.id = da.document_id
+        WHERE da.application_id=$1 AND da.sitewire_draw_id=$2 AND d.is_current
+          AND d.review_status = 'accepted'
+        ORDER BY da.created_at ASC, da.id ASC`, [appId, drawId])).rows;
+    return rows.map((r) => ({
+      category: r.category, category_label: CAT[r.category] || 'Supporting document',
+      filename: r.filename, content_type: r.content_type, storage_ref: r.storage_ref,
+      note: r.note || null,
+      // The staff copy explains WHAT the document backs up; the borrower's does not, because that
+      // sentence describes an internal override decision in our own words.
+      supports: mode === 'borrower' ? null : (r.supports || null),
+    }));
+  } catch (_) { return []; }
 }
 
 function isoDay(v) { return v ? String(new Date(v).toISOString()).slice(0, 10) : ''; }
@@ -739,6 +815,28 @@ async function attachPhotoBytes(sections) {
       }
       l.photos = out;
     }
+    // The SUPPORTING DOCUMENTS on the draw. Only an image can be drawn into a page, so a PDF or a
+    // spreadsheet keeps its metadata (and is still LISTED by name) with no `buf` — the builder
+    // renders the entry either way, so a document can never vanish from the report just because
+    // its bytes are not a picture. GPS is stripped on the embed path as a backstop, the same as
+    // for an inspector photo.
+    const out2 = [];
+    for (const a of (s.attachments || [])) {
+      let entry = a;
+      try {
+        if (a.storage_ref && /^image\//.test(String(a.content_type || ''))
+            && count < MAX_PHOTOS_TOTAL && bytes < EMBED_BYTE_BUDGET) {
+          const raw = await lazy.storage.read(a.storage_ref);
+          if (raw && raw.length && raw.length <= EMBED_BYTE_BUDGET) {
+            const buf = stripLocationExif(raw);
+            const fmt = imageFormat(buf);
+            if (fmt) { bytes += buf.length; count++; entry = { ...a, buf, format: fmt }; }
+          }
+        }
+      } catch (_) { /* unreadable bytes — the document is still listed by name */ }
+      out2.push(entry);
+    }
+    s.attachments = out2;
   }
   return { photoCount: count, photoBytes: bytes };
 }
@@ -762,7 +860,16 @@ async function reportVersion(appId, drawId) {
   // tables above. Hash the two rollup-source tables (app-wide) so such a change refreshes the cached report.
   const jq = await lazy.db.query(`SELECT COALESCE(max(updated_at)::text,'') m, count(*) c, COALESCE(sum(budgeted_cents),0) b, COALESCE(sum(CASE WHEN state='deleted' THEN 1 ELSE 0 END),0) del FROM sitewire_job_item_links WHERE application_id=$1`, [appId]);
   const rq = await lazy.db.query(`SELECT COALESCE(max(r.updated_at)::text,'') m, count(*) c, COALESCE(sum(r.requested_cents),0) rq, COALESCE(sum(r.approved_cents),0) ap FROM sitewire_draw_requests r JOIN sitewire_draws d ON d.sitewire_draw_id=r.sitewire_draw_id WHERE d.application_id=$1`, [appId]);
-  const sig = JSON.stringify({ d: dq.rows, f: fq.rows, m: mq.rows, l: lq.rows, j: jq.rows, r: rq.rows });
+  // Supporting documents attached to the draw are IN the report, so adding, removing or accepting
+  // one must mint a fresh report rather than serve the cached copy that predates it. Guarded so an
+  // older database without the table simply contributes nothing to the hash.
+  let aq = { rows: [] };
+  try {
+    aq = drawId != null
+      ? await lazy.db.query(`SELECT count(*) c, COALESCE(max(da.created_at)::text,'') m, COALESCE(sum(CASE WHEN d.review_status='accepted' THEN 1 ELSE 0 END),0) acc FROM draw_attachments da JOIN documents d ON d.id=da.document_id WHERE da.application_id=$1 AND da.sitewire_draw_id=$2 AND d.is_current`, [appId, drawId])
+      : await lazy.db.query(`SELECT count(*) c, COALESCE(max(da.created_at)::text,'') m, COALESCE(sum(CASE WHEN d.review_status='accepted' THEN 1 ELSE 0 END),0) acc FROM draw_attachments da JOIN documents d ON d.id=da.document_id WHERE da.application_id=$1 AND d.is_current`, [appId]);
+  } catch (_) { aq = { rows: [] }; }
+  const sig = JSON.stringify({ d: dq.rows, f: fq.rows, m: mq.rows, l: lq.rows, j: jq.rows, r: rq.rows, a: aq.rows });
   return crypto.createHash('sha256').update(sig).digest('hex').slice(0, 12);
 }
 

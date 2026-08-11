@@ -348,8 +348,13 @@ const { buildDrawRequest } = require('./draw-request-pdf');
 // borrower(s) e-sign (no notary), built from the file (noo-affidavit-pdf.js). Same
 // generate() contract.
 const { buildNooAffidavit } = require('./noo-affidavit-pdf');
+// The FINAL term sheet — BUILT on our server from the last registration at send
+// time (term-sheet-pdf.js), so pressing Send always produces the final version
+// (owner-directed 2026-08-02/06). Products & Pricing keeps making the stored
+// INITIAL for preview; the FINAL is only ever generated here.
+const { buildTermSheet } = require('./term-sheet-pdf');
 
-const BUILDERS = { bp_disclosure: buildDisclosurePdf, heter_iska: buildIskaPdf, application_export: buildApplication, draw_request: buildDrawRequest, noo_affidavit: buildNooAffidavit };
+const BUILDERS = { bp_disclosure: buildDisclosurePdf, heter_iska: buildIskaPdf, application_export: buildApplication, draw_request: buildDrawRequest, noo_affidavit: buildNooAffidavit, term_sheet: buildTermSheet };
 
 /** Build a generated document by doc_kind. Returns a PDF Buffer for every live
  *  doc_kind (bp_disclosure, heter_iska, application_export — all PDFs our server
