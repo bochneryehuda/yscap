@@ -107,6 +107,30 @@ const num = (v) => (v == null ? null : Number(v));
     // the broker quote never leaks internal margin
     ok(!/adminPricing|markupPct|"markup/.test(JSON.stringify(q1.body)), 'the broker quote leaks no internal markup/margin');
 
+    // ── 2b) pricingDefaults (the studio seed) is SCRUBBED like every sibling ────
+    // (adversarial-security audit 2026-08-06): extraFees[].name is admin-authored
+    // free text, so a fee named with a note-buyer would otherwise print a capital-
+    // partner name on a broker's term sheet. GET /pricing scrubs pricingDefaults on
+    // the way out; numbers pass through untouched.
+    {
+      const pricingSettings = require(R + '/src/lib/pricing-settings');
+      const feeBefore = (await db.query(`SELECT extra_fees FROM company_pricing_settings WHERE is_current`)).rows[0];
+      if (feeBefore) {
+        await db.query(`UPDATE company_pricing_settings SET extra_fees=$1 WHERE is_current`,
+          [JSON.stringify([{ name: 'BlueLake settlement fee', amount: 1500, state: '' }])]);
+        pricingSettings.bust();
+        const gp = await call(server, 'GET', `/api/tpo/applications/${appA}/pricing`, tokA);
+        const pd = gp.body && gp.body.pricingDefaults;
+        const feeNames = (pd && Array.isArray(pd.extraFees)) ? pd.extraFees.map((f) => f && f.name).join('|') : '';
+        ok(gp.status === 200 && pd, 'GET /pricing returns pricingDefaults for the studio to seed');
+        ok(feeNames && !/blue\s*lake/i.test(feeNames), `a note-buyer name in an extra fee is SCRUBBED from pricingDefaults ("${feeNames}")`);
+        ok(pd && pd.extraFees[0] && Number(pd.extraFees[0].amount) === 1500 && Number(pd.origStdPct) > 0,
+          'the numeric fee + pcts pass through the scrub untouched');
+        await db.query(`UPDATE company_pricing_settings SET extra_fees=$1 WHERE is_current`, [JSON.stringify(feeBefore.extra_fees)]);
+        pricingSettings.bust();
+      }
+    }
+
     // ── 3) Per-firm override wins, and does not clobber the broker fee ─────────
     const fp0 = await call(server, 'GET', `/api/admin/tpo/firms/${firmA}/pricing`, adminT);
     ok(fp0.status === 200 && num(fp0.body.fallback.origStdPct) === 0.5, 'firm pricing GET shows the channel fallback (0.5%)');

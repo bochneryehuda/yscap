@@ -607,8 +607,13 @@ router.get('/applications/:id/pricing', async (req, res, next) => {
     // stored inputs, stripped by stripInputsInternal). The channel markup it names
     // is already implicit in the note rate the broker is shown (quote.noteRate), so
     // it discloses nothing a broker with the client engine could not already derive.
+    // SCRUBBED like every sibling in this response (redactRow / borrowerSafeQuoteBundle):
+    // extraFees[].name is admin-authored free text, so a fee named "BlueLake settlement"
+    // would otherwise print a capital-partner name on a broker's term sheet. scrubDeepStrings
+    // deep-COPIES (never mutates the 60s cache) and only touches strings, so the pcts/fees
+    // pass through untouched (adversarial-security audit 2026-08-06).
     let pricingDefaults = null;
-    try { pricingDefaults = tpoPricing.effectiveSettingsFor(f.app); } catch (_) { pricingDefaults = null; }
+    try { pricingDefaults = scrubDeepStrings(tpoPricing.effectiveSettingsFor(f.app)); } catch (_) { pricingDefaults = null; }
     res.json({ current, history, quote, enginesReady: pricing.enginesReady(),
       econVersion: pricing.econVersionFor(f.app), manualEscalation, termSheetHold, termSheetFinal, pricingDefaults });
   } catch (e) { console.error('[tpo pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
