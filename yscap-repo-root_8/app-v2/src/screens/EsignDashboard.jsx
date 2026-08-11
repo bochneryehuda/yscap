@@ -68,6 +68,8 @@ function Recipient({ r }) {
 function EnvelopeCard({ e, onReload, isAdmin }) {
   const [busy, setBusy] = useState(false);
   const [actErr, setActErr] = useState('');
+  const [emailEdit, setEmailEdit] = useState(null);   // inline "change a signer's email" editor: { rid, email, name }
+  const [emailWarn, setEmailWarn] = useState(null);    // after a change: { newEmail, fileEmail, borrowerId, name } — "also update the file" reminder
   // A test envelope's resend/void is admin-only server-side (403 otherwise) — don't
   // show the buttons to a see-all non-admin, or a click just errors. Real envelopes
   // stay open to all staff.
@@ -91,6 +93,35 @@ function EnvelopeCard({ e, onReload, isAdmin }) {
     setActErr('');
     try { const { blob, filename } = await api.staffDownloadDoc(documentId); saveBlob(blob, filename || fallbackName); }
     catch (err) { setActErr(err.message || 'Could not download the document.'); }
+  }
+  // A pending BORROWER / CO-BORROWER on an in-flight envelope can be re-addressed —
+  // change their email and re-send the invitation, for any package (owner-directed).
+  // The counter-signer + loan-officer emails are system-sourced and never re-addressed
+  // here (the server enforces this too).
+  const canEditEmail = (r) => !!e.envelopeId && !TERMINAL.includes(e.phase)
+    && ['borrower', 'co_borrower'].includes(r.role)
+    && !(r.signedAt || r.status === 'completed' || r.status === 'signed') && !(r.declinedAt || r.status === 'declined');
+  async function changeEmail(r) {
+    const email = String((emailEdit && emailEdit.email) || '').trim();
+    const name = String((emailEdit && emailEdit.name) || '').trim();
+    if (!email) { setActErr('Enter the new email address.'); return; }
+    setBusy(true); setActErr('');
+    try {
+      const res = await api.post(`/api/staff/esign/${e.id}/recipient-email`, { recipientRowId: r.id, email, ...(name ? { name } : {}) });
+      setEmailEdit(null);
+      if (res && res.differsFromFile && res.borrowerId) setEmailWarn({ newEmail: res.email, fileEmail: res.fileEmail, borrowerId: res.borrowerId, name: res.name });
+      if (onReload) onReload();
+    } catch (err) { setActErr(err.message || 'Could not change the email.'); }
+    finally { setBusy(false); }
+  }
+  // Optional convenience: also set the file's borrower email through the ONE shared
+  // borrower writer (PATCH /borrowers/:id) — never a new write path.
+  async function updateFileEmail() {
+    if (!emailWarn) return;
+    setBusy(true); setActErr('');
+    try { await api.staffUpdateBorrower(emailWarn.borrowerId, { email: emailWarn.newEmail }); setEmailWarn(null); if (onReload) onReload(); }
+    catch (err) { setActErr(err.message || 'Could not update the file email automatically — update it in the borrower section.'); }
+    finally { setBusy(false); }
   }
   const docLabel = (kind) => String(kind || 'signed document').replace(/_signed$/, '').replace(/_/g, ' ');
   const ph = PHASE[e.phase] || { label: e.phase, cls: 'muted', dot: '#4B585C' };
@@ -140,8 +171,48 @@ function EnvelopeCard({ e, onReload, isAdmin }) {
       <div className="esign-recips">
         {recips.length === 0
           ? <p className="muted small" style={{ margin: '10px 0 0' }}>No recipients recorded yet.</p>
-          : recips.map((r) => <Recipient key={r.id || `${r.role}-${r.routingOrder}`} r={r} />)}
+          : recips.map((r) => {
+            const editing = emailEdit && emailEdit.rid === r.id;
+            return (
+              <div key={r.id || `${r.role}-${r.routingOrder}`}>
+                <Recipient r={r} />
+                {canEditEmail(r) && !editing ? (
+                  <div style={{ margin: '-2px 0 10px', paddingLeft: 4 }}>
+                    <button className="btn ghost btn-sm" onClick={() => { setEmailWarn(null); setActErr(''); setEmailEdit({ rid: r.id, email: r.email || '', name: r.name || '' }); }}
+                      title="Wrong email? Change it and re-send the invitation to the new address — no need to void and re-issue.">✎ Change email &amp; re-send</button>
+                  </div>
+                ) : null}
+                {editing ? (
+                  <div className="notice info" style={{ margin: '2px 0 10px' }}>
+                    <div className="muted small" style={{ marginBottom: 6 }}>Re-address this invitation. DocuSign re-sends it to the new email right away; the old link stops working.</div>
+                    <input className="input" type="email" style={{ width: '100%', maxWidth: 340 }} placeholder="name@example.com"
+                      value={emailEdit.email} onChange={(ev) => setEmailEdit((s) => ({ ...s, email: ev.target.value }))}
+                      onKeyDown={(ev) => { if (ev.key === 'Enter' && !busy) changeEmail(r); }} />
+                    <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                      <button className="btn primary btn-sm" disabled={busy || !String(emailEdit.email || '').trim()} onClick={() => changeEmail(r)}>{busy ? 'Updating…' : 'Change email & re-send'}</button>
+                      <button className="btn ghost btn-sm" onClick={() => setEmailEdit(null)}>Cancel</button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
       </div>
+      {emailWarn ? (
+        <div className="notice warn" style={{ margin: '10px 0 0' }}>
+          <div>
+            <strong>This changed the email for this signing package only.</strong>{' '}
+            If <strong>{emailWarn.newEmail}</strong> is {emailWarn.name || 'the borrower'}’s correct email, also update it
+            on the file so future packages and emails go there
+            {emailWarn.fileEmail ? <> — the file still shows <strong>{emailWarn.fileEmail}</strong></> : null}.
+            {' '}If it was a one-off fix, leave the file as it is.
+          </div>
+          <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            <button className="btn primary btn-sm" disabled={busy} onClick={updateFileEmail}>Update it on the file too</button>
+            <button className="btn ghost btn-sm" onClick={() => setEmailWarn(null)}>Keep the file as it is</button>
+          </div>
+        </div>
+      ) : null}
 
       {(e.documents && e.documents.length) || e.certificate ? (
         <div className="row" style={{ gap: 6, margin: '10px 0 0', flexWrap: 'wrap', alignItems: 'baseline' }}>

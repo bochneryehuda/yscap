@@ -17924,9 +17924,10 @@ router.post('/esign/:rowId/resend', async (req, res) => {
     if (!require('../lib/integrations/switches').on('DOCUSIGN_SEND_ENABLED')) return res.status(409).json({ error: 'Sending is paused right now. Turn sending back on before resending.' });
     // A resend can only re-notify the address DocuSign baked into the envelope at
     // send time — it cannot re-address. If the file's borrower email changed since,
-    // a resend would nudge the STALE address. Refuse and steer staff to void +
-    // re-issue so the new address is used. (Test envelopes are app-less — no file
-    // borrower to compare against, so they skip this check.)
+    // a resend would nudge the STALE address. Refuse and steer staff to "Change
+    // email & re-send" (which re-addresses the envelope), or void + re-issue.
+    // (Test envelopes are app-less — no file borrower to compare against, so they
+    // skip this check.)
     if (row.application_id) {
       const cur = (await db.query(
         `SELECT b.email AS file_email, r.email AS env_email
@@ -17938,13 +17939,43 @@ router.post('/esign/:rowId/resend', async (req, res) => {
       const fileEmail = cur && cur.file_email && String(cur.file_email).trim().toLowerCase();
       const envEmail = cur && cur.env_email && String(cur.env_email).trim().toLowerCase();
       if (fileEmail && envEmail && fileEmail !== envEmail) {
-        return res.status(409).json({ error: 'The borrower’s email on file changed since this package was sent. A resend can’t update the address — void this package and re-issue it so the new email is used.' });
+        return res.status(409).json({ error: 'The borrower’s email on file changed since this package was sent. A resend can’t update the address — use “Change email & re-send” on the signer to re-address it (or void and re-issue).' });
       }
     }
     await docusignLib.resendEnvelope(row.envelope_id);
     await audit(req, 'esign_resend', 'application', row.application_id, { purpose: row.purpose });
     res.json({ ok: true });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Change a signer's email on an ALREADY-SENT package and re-send the invitation to
+// the new address (owner-directed) — the alternative to void + re-issue when an email
+// was simply wrong. Works on any package (term sheet / Heter Iska / draw wire form /
+// NOO) because they're all esign envelopes. The response reports whether the corrected
+// address differs from the borrower's email ON FILE so the UI can warn "also update it
+// on the file"; we never write the borrower record here (that's the one shared writer).
+router.post('/esign/:rowId/recipient-email', async (req, res) => {
+  try {
+    const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
+    if (!row) return res.status(status).json({ error });
+    const recipientRowId = String((req.body && req.body.recipientRowId) || '').trim();
+    if (!recipientRowId) return res.status(400).json({ error: 'which signer? (recipientRowId is required)' });
+    const out = await require('../lib/esign/recipient-email').changeRecipientEmail({
+      envelopeRowId: row.id, recipientRowId,
+      email: (req.body && req.body.email) || '', name: (req.body && req.body.name) || '',
+      actorId: req.actor.id, db, docusign: docusignLib,
+    });
+    await audit(req, 'esign_recipient_email_changed', 'application', row.application_id, {
+      purpose: row.purpose, role: out.role, from: out.prevEmail, to: out.email, differsFromFile: out.differsFromFile,
+    });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    if (e && e.status && e.expose) return res.status(e.status).json({ error: e.message });
+    // A DocuSign refusal (recipient already signed on their side, envelope not
+    // correctable) comes back non-retryable → a clean 400 with its message.
+    if (e && e.retryable === false && e.message) return res.status(400).json({ error: e.message });
+    console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
 });
 
 // Void a still-open envelope (reason required by DocuSign).

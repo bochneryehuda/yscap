@@ -72,6 +72,8 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
   const [encOvrNote, setEncOvrNote] = useState('');     // the admin's recorded reason
   const [tsOvrOpen, setTsOvrOpen] = useState(false);    // term-sheet-not-final override form open (super-admin)
   const [tsOvrNote, setTsOvrNote] = useState('');       // the super-admin's recorded reason
+  const [emailEdit, setEmailEdit] = useState(null);     // inline "change a signer's email" editor: { rid, envId, email, name }
+  const [emailWarn, setEmailWarn] = useState(null);     // after a change: { newEmail, fileEmail, borrowerId, name } — "also update the file" reminder
   const seq = useRef(0);
 
   const load = useCallback(async (quiet) => {
@@ -172,6 +174,27 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
     setLnInput('');
   }, 'Loan number saved.');
   const resend = (rowId) => act(`resend:${rowId}`, () => api.post(`/api/staff/esign/${rowId}/resend`), 'Reminder resent.');
+  // Change a signer's email on an ALREADY-SENT package and re-send the invitation to
+  // the new address (owner-directed) — the fix for a wrong email, without void + re-issue.
+  const openEmailEdit = (envId, r) => { setEmailWarn(null); setErr(''); setEmailEdit({ rid: r.id, envId, email: r.email || '', name: r.name || '' }); };
+  const submitEmailChange = (envId, r) => act(`email:${r.id}`, async () => {
+    const email = String((emailEdit && emailEdit.email) || '').trim();
+    const name = String((emailEdit && emailEdit.name) || '').trim();
+    if (!email) throw new Error('Enter the new email address.');
+    const res = await api.post(`/api/staff/esign/${envId}/recipient-email`, { recipientRowId: r.id, email, ...(name ? { name } : {}) });
+    setEmailEdit(null);
+    // Only warn when the corrected address differs from the borrower's email ON FILE —
+    // that is the case where "also update the file" actually matters (future packages
+    // and emails go to the file's email, not this envelope's).
+    if (res && res.differsFromFile && res.borrowerId) setEmailWarn({ newEmail: res.email, fileEmail: res.fileEmail, borrowerId: res.borrowerId, name: res.name });
+  }, 'Email updated — a fresh invitation was re-sent to the new address.');
+  // Optional convenience: also set the file's borrower email through the ONE shared
+  // borrower writer (PATCH /borrowers/:id) — never a new write path.
+  const updateFileEmail = () => act('email:file', async () => {
+    if (!emailWarn) return;
+    await api.staffUpdateBorrower(emailWarn.borrowerId, { email: emailWarn.newEmail });
+    setEmailWarn(null);
+  }, 'The borrower’s email on the file was updated too — future emails will use it.');
   const voidEnv = async (rowId) => {
     const reason = await askPrompt('Void this envelope — reason (required):');
     if (!reason || !reason.trim()) return;
@@ -391,7 +414,48 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
         {e.phase === 'voided' && e.voidReason ? <div className="notice info" style={{ margin: '10px 0 0' }}>Voided: {e.voidReason}</div> : null}
 
         <div className="esign-recips">
-          {recips.map((r) => <Recipient key={r.id || `${r.role}-${r.routingOrder}`} r={r} />)}
+          {recips.map((r) => {
+            // A pending BORROWER / CO-BORROWER on an in-flight envelope can be
+            // re-addressed. The counter-signer + loan-officer emails are system-sourced
+            // (config / staff record) — never re-addressed here (the server enforces this too).
+            const canEditEmail = !terminal && !!e.envelopeId && recipientState(r) === 'pending'
+              && ['borrower', 'co_borrower'].includes(r.role);
+            const editing = emailEdit && emailEdit.rid === r.id;
+            return (
+              <div key={r.id || `${r.role}-${r.routingOrder}`}>
+                <Recipient r={r} />
+                {canEditEmail && !editing && (
+                  <div style={{ margin: '-2px 0 10px', paddingLeft: 4 }}>
+                    <button className="btn ghost btn-sm" onClick={() => openEmailEdit(e.id, r)}
+                      title="Wrong email? Change it and re-send the invitation to the new address — no need to void and re-issue.">
+                      ✎ Change email &amp; re-send
+                    </button>
+                  </div>
+                )}
+                {editing && (
+                  <div className="notice info" style={{ margin: '2px 0 10px' }}>
+                    <div className="muted small" style={{ marginBottom: 6 }}>
+                      Re-address this invitation. DocuSign re-sends it to the new email right away; the old link stops working.
+                    </div>
+                    <label className="muted small">New email</label>
+                    <input className="input" type="email" style={{ width: '100%', maxWidth: 360 }} placeholder="name@example.com"
+                      value={emailEdit.email} onChange={(ev) => setEmailEdit((s) => ({ ...s, email: ev.target.value }))}
+                      onKeyDown={(ev) => { if (ev.key === 'Enter' && busy !== `email:${r.id}`) submitEmailChange(e.id, r); }} />
+                    <label className="muted small" style={{ display: 'block', marginTop: 6 }}>Name (optional)</label>
+                    <input className="input" style={{ width: '100%', maxWidth: 360 }} placeholder={r.name || 'Signer name'}
+                      value={emailEdit.name} onChange={(ev) => setEmailEdit((s) => ({ ...s, name: ev.target.value }))} />
+                    <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                      <button className="btn primary btn-sm" disabled={busy === `email:${r.id}` || !String(emailEdit.email || '').trim()}
+                        onClick={() => submitEmailChange(e.id, r)}>
+                        {busy === `email:${r.id}` ? 'Updating…' : 'Change email & re-send'}
+                      </button>
+                      <button className="btn ghost btn-sm" onClick={() => setEmailEdit(null)}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
 
         {/* Legally-binding summary once the package is fully signed */}
@@ -451,6 +515,26 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
     <div className="esign-file">
       {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
       {msg && <div className="notice ok" style={{ marginBottom: 10 }}>{msg}</div>}
+      {/* After changing a signer's email: remind staff to ALSO update the file if this
+          is the real address (owner-directed). We changed the email only for THIS
+          package — the file's borrower email is what future packages/emails use. */}
+      {emailWarn && (
+        <div className="notice warn" style={{ marginBottom: 10 }}>
+          <div>
+            <strong>This changed the email for this signing package only.</strong>{' '}
+            If <strong>{emailWarn.newEmail}</strong> is {emailWarn.name || 'the borrower'}’s correct email, also update it
+            on the file so future packages and emails go there
+            {emailWarn.fileEmail ? <> — the file still shows <strong>{emailWarn.fileEmail}</strong></> : null}.
+            {' '}If it was a one-off fix, leave the file as it is.
+          </div>
+          <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            <button className="btn primary btn-sm" disabled={busy === 'email:file'} onClick={updateFileEmail}>
+              {busy === 'email:file' ? 'Updating…' : 'Update it on the file too'}
+            </button>
+            <button className="btn ghost btn-sm" onClick={() => setEmailWarn(null)}>Keep the file as it is</button>
+          </div>
+        </div>
+      )}
 
       {/* Readiness gate + Send buttons */}
       <div className="panel" style={{ marginBottom: 12 }}>
