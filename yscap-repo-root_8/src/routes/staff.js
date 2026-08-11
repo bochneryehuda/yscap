@@ -2825,7 +2825,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // MANUAL PRODUCT: a structural override of the deal leverage (acquisition LTV /
     // after-repair LTV / loan-to-cost) is NOT a Standard/Gold registration — it
     // becomes its own "Manual Program" (priced on the Standard/Fidelis engine),
-    // needs the registrant to state how many months of liquidity the file must
+    // needs the registrant to state how many months of RESERVES the borrower must
     // show, and goes to the escalation box. A markup/points/fee/rate override
     // alone is manual PRICING, not a manual product: it keeps the requested
     // program but still needs the same approval.
@@ -2838,7 +2838,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       assetMonths = Number.isFinite(raw) ? Math.round(raw) : NaN;
       if (!Number.isFinite(assetMonths) || assetMonths < 1 || assetMonths > 24) {
         return refuse(422, {
-          error: 'This is a manual product (you changed the LTV, LTC or ARV structure). Enter how many months of assets/liquidity this file must show before registering it.',
+          error: 'This is a manual product (you changed the LTV, LTC or ARV structure). Enter how many months of reserves this file must show before registering it (defaults to 3).',
           code: 'manual_asset_months_required',
           suggestedAssetMonths: settings.assetMonths,
         }, 'manual_asset_months_required', { program });
