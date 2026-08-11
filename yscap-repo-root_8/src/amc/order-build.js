@@ -78,7 +78,15 @@ function dealStrategyKey(ctx) {
   // "Purchase"/"Refinance" match none of the patterns below, so reading the purpose can
   // only ever HELP (catch a legacy "Ground up") — never false-classify a normal deal.
   const has = (re) => [c.program, c.rehabType, c.loanPurpose, c.loanType].some((v) => re.test(norm(v)));
-  if (has(/ground|construction/)) return 'ground_up';               // deliberately unseeded → asks a human
+  // GROUND-UP KEYS ON 'ground' ONLY, NEVER 'construction' — the canonical fix & flip
+  // program value is "Fix & Flip w/ Construction" (the ClickUp-synced enum; plain
+  // "Fix & Flip" was a drift bug that was fixed), and it contains the word "construction".
+  // Matching /construction/ here classified every fix & flip as ground_up (unseeded) →
+  // no form default, which is the exact live bug this fix exists to remove. Every REAL
+  // ground-up value carries "ground" (program "Ground-Up Construction", rehab_type
+  // "Ground-up", legacy "Ground up"), so /ground/ loses nothing. Same reasoning as
+  // pricing.js engineStrategy, which documents this trap.
+  if (has(/ground/)) return 'ground_up';                            // deliberately unseeded → asks a human
   if (has(/dscr|rental|30year|thirtyyear|longterm/)) return 'dscr';
   // A renovation of any depth (flip, BRRRR/hold, or a rehab tier) has a scope of work,
   // so it needs the "Completed Subject to (w/As Is Value)" form — the seed's fix_and_flip.

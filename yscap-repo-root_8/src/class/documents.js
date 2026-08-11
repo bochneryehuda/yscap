@@ -185,7 +185,11 @@ async function ingestForOrder(dbc, order, deps = {}) {
     try {
       lockConn = await db.getClient();
       await lockConn.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [lockKey]);
-    } catch (_) { lockConn = null; }   // fail open
+    } catch (_) {
+      // Fail open — but if getClient() succeeded and only the lock query threw, release
+      // the checked-out connection before dropping the reference, or it leaks from the pool.
+      if (lockConn) { try { lockConn.release(); } catch (_2) { /* ignore */ } lockConn = null; }
+    }
     return await ingestForOrderLocked(db, order, deps);
   } finally {
     if (lockConn) {
