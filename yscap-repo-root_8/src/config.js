@@ -1071,6 +1071,15 @@ module.exports = {
     lenderIdentifier: process.env.AMC_LENDER_IDENTIFIER || null, // DigitalGatewayLenderIdentifier (CoreLogic reporting id)
     sourceClientId:  process.env.AMC_SOURCE_CLIENT_ID || null, // clientSystem.sourceInformation.sourceClientIdentifier
 
+    // Which tenant environment the form defaults + note-buyer/processor party map are
+    // read from (amc_form_map.environment / amc_party_map.environment). Ids are
+    // environment-specific, so a UAT service must never pick a PRODUCTION form id.
+    // Explicit AMC_ENVIRONMENT wins; otherwise derived from the order URL (the default
+    // host is uat1.globalgateway…, so an unset env correctly reads as 'uat').
+    environment: (process.env.AMC_ENVIRONMENT
+                  || (/uat|test|sandbox/i.test(process.env.AMC_ORDER_URL || 'uat1.globalgateway') ? 'uat' : 'production'))
+                  .trim().toLowerCase(),
+
     // Lower-env fallback API key when OAuth creds have not been issued yet (UAT only,
     // never available in production). Sent as an `apikey` HTTP header. Optional.
     fallbackApiKey:  process.env.AMC_FALLBACK_APIKEY || null,

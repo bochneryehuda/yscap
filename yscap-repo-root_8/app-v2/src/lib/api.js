@@ -462,6 +462,10 @@ export const api = {
   // Phase 5a — order a credit pull (borrower-safe: readiness in, "pulled" out; no scores).
   tpoCreditStatus: (appId) => req('GET', `/api/tpo/applications/${appId}/credit`),
   tpoOrderCredit: (appId, body) => req('POST', `/api/tpo/applications/${appId}/credit/order`, body),   // { consent:true, borrowerIds? }
+  // Title & insurance ordering (broker; never flood, never RCN). Borrower-safe state.
+  tpoOrders:        (appId) => req('GET', `/api/tpo/applications/${appId}/orders`),
+  tpoSetOrderVendor:(appId, kind, b) => req('POST', `/api/tpo/applications/${appId}/orders/${kind}/vendor`, b),
+  tpoPlaceOrder:    (appId, kind, body) => req('POST', `/api/tpo/applications/${appId}/orders/${kind}/place`, body || {}),
   // Phase 6a — the read-only appraisal ("property profile report"); same borrower-safe scrub.
   tpoAppraisal: (appId) => req('GET', `/api/tpo/applications/${appId}/appraisal`),
   tpoAppraisalPhotoBlob: async (docId) => (await download(`/api/tpo/appraisal-photo/${docId}?inline=1`)).blob,
@@ -586,7 +590,7 @@ export const api = {
 
   // ---- AMC appraisal ordering (AppraisalScope / CoreLogic Digital Gateway) ----
   amcConfig:        () => req('GET', '/api/amc/config'),
-  amcPreview:       (appId) => req('GET', `/api/amc/files/${appId}/preview`),
+  amcPreview:       (appId, params) => req('GET', `/api/amc/files/${appId}/preview${params && Object.keys(params).length ? ('?' + new URLSearchParams(params).toString()) : ''}`),
   amcOrders:        (appId) => req('GET', `/api/amc/files/${appId}/orders`),
   amcPlaceOrder:    (appId, body) => req('POST', `/api/amc/files/${appId}/order`, body),
   amcSaveCard:      (appId, body) => req('POST', `/api/amc/files/${appId}/card`, body),
@@ -1048,6 +1052,9 @@ export const api = {
   advanceClosing:    (appId, stage) => req('POST', `/api/staff/applications/${appId}/closing-workflow`, { stage }),
   // The closing workspace (the closer's desk).
   closingWorkspace:  (appId) => req('GET', `/api/staff/applications/${appId}/closing`),
+  // Read-only Encompass re-pull, then hand back the fresh workspace — so a funded
+  // date the closer just entered in Encompass shows up on the reconciliation.
+  closingReconcileRefresh: (appId) => req('POST', `/api/staff/applications/${appId}/closing/reconcile-refresh`),
   closingUpdate:     (appId, b) => req('PATCH', `/api/staff/applications/${appId}/closing`, b),
   closingAddNote:    (appId, body) => req('POST', `/api/staff/applications/${appId}/closing/notes`, { body }),
   closingCashToClose:(appId, actualCashToClose, docId) => req('POST', `/api/staff/applications/${appId}/closing/cash-to-close`, { actualCashToClose, docId }),

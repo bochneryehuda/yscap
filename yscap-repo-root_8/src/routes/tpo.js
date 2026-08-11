@@ -43,6 +43,8 @@ const conditionEngine = require('../lib/conditions/engine');
 const changeRequests = require('../lib/change-requests');
 const { WRITE_TARGETS, BY_KEY } = require('../lib/conditions/field-registry');
 const tpoConditions = require('../lib/tpo-conditions');
+const orders = require('../lib/orders');
+const tpoOrders = require('../lib/tpo-orders');
 const { requireAuth, requireTpo } = require('../auth');
 const perms = require('../lib/permissions');
 const { serveDocument } = require('../lib/serve-document');
@@ -107,6 +109,49 @@ async function tpoAudit(req, action, entityType, entityId, detail) {
       [req.actor.id, action, entityType, entityId || null, req.ip, req.get('user-agent') || null, d,
        (req.impersonation && req.impersonation.staffId) || null]);
   } catch (e) { console.warn('[tpo-audit] failed', action, db.describeError ? db.describeError(e) : (e && e.message)); }
+}
+
+// Every label form our program→note-buyer derivation has EVER produced — the canonical
+// production spellings ("Fidelis Investors LLC" / "Blue Lake Capital" / "EMCAP Financial")
+// AND the legacy short labels ("Fidelis" / "Blue Lake" / "EMCAP") — normalized. The
+// stamp helper recognizes one of THESE as OUR OWN prior stamp (correctable when the
+// program changes); a value that is NOT one of them was set by a human (RCN, CorrFirst,
+// hand-typed) and is NEVER touched, so an RCN file's note buyer is safe.
+const TPO_LEGACY_SHORT_LABELS = ['Blue Lake', 'Fidelis', 'EMCAP'];
+const TPO_OWN_STAMP_KEYS = new Set();
+for (const p of ['gold', 'standard', 'silver']) {
+  const canon = require('../lib/note-buyer-for-program').noteBuyerForProgram(p);
+  if (canon) TPO_OWN_STAMP_KEYS.add(require('../lib/conditions/field-registry').normNoteBuyer(canon));
+}
+for (const s of TPO_LEGACY_SHORT_LABELS) TPO_OWN_STAMP_KEYS.add(require('../lib/conditions/field-registry').normNoteBuyer(s));
+
+// Derive the capital provider (note buyer) from a registered program and stamp it on a
+// broker file — at CREATION and at REGISTER (owner-directed: "a broker's brand-new file
+// should ... have the note buyer's stamp on it"). The note buyer follows the program
+// (Gold→Blue Lake, Standard→Fidelis, Silver→EMCAP); MANUAL has no fixed provider — left
+// for an admin. It writes the CANONICAL production spelling (the owner's "real production
+// spelling" rule), the SAME label persistProductRegistration uses, so a broker file
+// behaves identically to a retail one. FILL-ONLY / correct-our-own: it writes only when
+// `lender` is NULL or is one of OUR OWN derived stamps (any label form) that is not the
+// current program's — never a human value. STAFF-ONLY (the TPO scrubs strip the note
+// buyer). Runs BEFORE evaluateApplication so the note-buyer-driven rules reflect it;
+// idempotent (no write when already correct). NB register also needs this — a file
+// created under one program then registered under another on its FIRST register would
+// otherwise keep the stale creation stamp (persistProductRegistration's correct-our-own
+// branch can't fire with no prior registration).
+async function autoSetTpoNoteBuyer(appId, program, req) {
+  try {
+    const registry = require('../lib/conditions/field-registry');
+    const label = require('../lib/note-buyer-for-program').noteBuyerForProgram(program);
+    if (!label) return;                                   // manual / unknown — leave for an admin
+    const targetKey = registry.normNoteBuyer(label);
+    const cur = (await db.query(`SELECT lender FROM applications WHERE id=$1`, [appId])).rows[0];
+    const curKey = cur ? registry.normNoteBuyer(cur.lender) : null;
+    if (curKey === targetKey) return;                     // already correct → no write (idempotent)
+    if (curKey && !TPO_OWN_STAMP_KEYS.has(curKey)) return; // a human value (RCN, etc.) → never touch
+    await db.query(`UPDATE applications SET lender=$2, updated_at=now() WHERE id=$1`, [appId, label]);
+    if (req) await tpoAudit(req, 'tpo_note_buyer_auto_set', 'application', appId, { program, provider: label });
+  } catch (e) { console.warn('[tpo] note-buyer auto-set failed:', db.describeError(e)); }
 }
 
 // THE firm-scope guards — is this borrower / file inside the acting broker's
@@ -526,6 +571,14 @@ router.post('/applications', async (req, res, next) => {
        b.rehabType || null, isAssignment, underlying, assignFee, firmId, portalOn]);
     const appId = ins.rows[0].id;
 
+    // Stamp the note buyer from the program BEFORE conditions evaluate, so the file
+    // carries the capital-provider stamp right away and the note-buyer-driven rules
+    // reflect it (owner-directed: "have the note buyer's stamp on it").
+    await autoSetTpoNoteBuyer(appId, b.program || null, req);
+
+    // ensureFileConditions runs the conditions engine; a TPO intake file is now
+    // admitted by the engine (engineOpenStatus), so the broker's brand-new file gets
+    // its rule-driven conditions right away — not only after our team activates it.
     try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'tpo_create' }); }
     catch (e) { console.error('[tpo-origination] checklist failed:', db.describeError(e)); }
 
@@ -775,28 +828,11 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       }
     } catch (e) { console.error('[tpo-register] vesting from studio failed:', db.describeError(e)); }
     // AUTO-SET THE CAPITAL PROVIDER (note buyer) FROM THE REGISTERED PROGRAM
-    // (owner-directed 2026-08-06). On a broker file the capital provider follows the
-    // program (Gold→Blue Lake, Standard→Fidelis, Silver→EMCAP), so fill it in the
-    // BACKEND — title/insurance ordering and the note-buyer conditions need it. It is
-    // STAFF-ONLY: the TPO checklist/quote scrubs already strip the note buyer, so a
-    // broker never sees it. MANUAL has no fixed provider — leave it for an admin to
-    // set by hand. Written as the canonical label so it normalizes to the provider
-    // key every consumer expects (conditions engine, tape gate, Sitewire); the
-    // normNoteBuyer guard makes it idempotent (no churn / no re-fire when unchanged).
-    // Runs BEFORE evaluateApplication so the note-buyer-driven rules reflect it.
-    try {
-      const provKey = require('../lib/tapes/program-provider').providerForProgram(program);
-      const registry = require('../lib/conditions/field-registry');
-      const NOTE_BUYER_LABEL = { bluelake: 'Blue Lake', fidelis: 'Fidelis', emcap: 'EMCAP' };
-      const label = provKey ? NOTE_BUYER_LABEL[provKey] : null;
-      if (label) {
-        const cur = (await db.query(`SELECT lender FROM applications WHERE id=$1`, [appId])).rows[0];
-        if (!cur || registry.normNoteBuyer(cur.lender) !== provKey) {
-          await db.query(`UPDATE applications SET lender=$2, updated_at=now() WHERE id=$1`, [appId, label]);
-          await tpoAudit(req, 'tpo_note_buyer_auto_set', 'application', appId, { program, provider: label });
-        }
-      }
-    } catch (e) { console.warn('[tpo-register] note-buyer auto-set failed:', db.describeError(e)); }
+    // (owner-directed 2026-08-06). The note buyer follows the registered program; the
+    // shared helper stamps it fill-only (never over a human/RCN value) — the same call
+    // the file-create route makes, so a broker file is stamped at creation and kept in
+    // step on every re-register. Runs BEFORE evaluateApplication.
+    await autoSetTpoNoteBuyer(appId, program, req);
     // Registration rewrites loan amount / rate / program — re-run condition rules,
     // sync the liquidity requirement, enforce the Gold 5% SOW contingency, and
     // clear a signed Heter Iska if the loan amount moved. Same as the borrower door.
@@ -1257,6 +1293,120 @@ router.post('/applications/:id/credit/order', async (req, res) => {
     // BORROWER-SAFE result — never a score, report id, or fico.
     res.status(201).json({ ok: true, message: 'Credit was pulled — your loan team is reviewing it.' });
   } catch (e) { console.error('[tpo credit]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// ---------------- ORDERS (broker orders TITLE & INSURANCE, never flood, never RCN) ----------------
+// A TPO broker may order title & insurance for their firm's file (owner-directed 2026-08-11:
+// "They should allow ordering for everyone other than RCN"). Three hard rules, all enforced here:
+//   · FLOOD is NEVER a broker order — there is no flood order type at all, and flood certificate /
+//     flood insurance stay staff-only (tpoOrders.isTpoOrderKind admits ONLY title + insurance).
+//   · RCN is blocked for the broker and handled by our staff — the note buyer is NEVER revealed
+//     (only "your loan team handles this"); tpoOrders.brokerOrderingBlocked keys on isRcnNoteBuyer.
+//   · The order email shows OUR (YS Capital) mortgage clause — never the investor's — and signs as
+//     the file's loan officer, which on a TPO file is the broker ("for the TPO as the loan officer").
+//     All of that comes for free from reusing orders.getOrderData / buildOrderEmail / placeOrder —
+//     the SAME exactly-once path the staff Orders desk uses.
+// Firm-scoped via appInFirm. The read view is borrower-safe: it NEVER returns data.lender.
+
+// The whole orders section for the broker's file: title + insurance state, each borrower-safe.
+router.get('/applications/:id/orders', async (req, res, next) => {
+  try {
+    if (!(await appInFirm(req.actor.id, req.params.id))) return res.status(404).json({ error: 'file not found' });
+    const data = await orders.getOrderData(req.params.id);
+    if (!data) return res.status(404).json({ error: 'file not found' });
+    const rows = (await db.query(
+      `SELECT order_type, status FROM file_orders WHERE application_id=$1`, [req.params.id])).rows;
+    res.json({ orders: tpoOrders.TPO_ORDER_KINDS.map((k) => tpoOrders.tpoOrderState(data, rows, k)) });
+  } catch (e) { next(e); }
+});
+
+// Add the title company / insurance agent for this file so the broker can place the order.
+// Only title_company / insurance_agent (the order-relevant vendors) — never flood_insurance.
+router.post('/applications/:id/orders/:kind/vendor', async (req, res, next) => {
+  const appId = req.params.id, kind = req.params.kind;
+  try {
+    if (!tpoOrders.isTpoOrderKind(kind)) return res.status(400).json({ error: 'That order type is not available.' });
+    if (!(await appInFirm(req.actor.id, appId))) return res.status(404).json({ error: 'file not found' });
+    const b = req.body || {};
+    if (!b.companyName && !b.contactName && !b.email && !b.phone) {
+      return res.status(400).json({ error: 'Enter at least one contact detail (company, name, email or phone).' });
+    }
+    const app = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0];
+    if (!app) return res.status(404).json({ error: 'file not found' });
+    const contactType = orders.VENDOR_TYPE[kind]; // title_company / insurance_agent
+    const sc = await db.query(
+      `INSERT INTO service_contacts (borrower_id,contact_type,company_name,contact_name,email,phone,added_by_staff_id,last_used_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,now()) RETURNING id`,
+      [app.borrower_id, contactType, b.companyName || null, b.contactName || null,
+       b.email || null, b.phone || null, req.actor.id]);
+    await db.query(
+      `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type,added_by_kind,added_by_id)
+       VALUES ($1,$2,$3,'staff',$4)
+       ON CONFLICT (application_id,service_contact_id) DO UPDATE SET contact_type=EXCLUDED.contact_type`,
+      [appId, sc.rows[0].id, contactType, req.actor.id]);
+    await tpoAudit(req, 'tpo_order_vendor_set', 'application', appId, { kind, contactType });
+    res.status(201).json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// Place (or force-resend) a title/insurance order.
+router.post('/applications/:id/orders/:kind/place', async (req, res, next) => {
+  const appId = req.params.id, kind = req.params.kind;
+  try {
+    if (!tpoOrders.isTpoOrderKind(kind)) return res.status(400).json({ error: 'That order type is not available.' });
+    if (!(await appInFirm(req.actor.id, appId))) return res.status(404).json({ error: 'file not found' });
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'file not found' });
+    // RCN → staff-only. NEVER reveal WHY (the note buyer is never shown to a broker).
+    if (tpoOrders.brokerOrderingBlocked(data.lender)) {
+      return res.status(403).json({ error: 'Your loan team places this order for this file.', code: 'staff_handled' });
+    }
+    // Nothing goes out to an outside vendor about a deal that is over.
+    const st = (await db.query(`SELECT status FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+    if (st && ['declined', 'withdrawn', 'cancelled', 'funded'].includes(String(st.status || '').toLowerCase())) {
+      return res.status(422).json({ error: 'This file is closed — your loan team handles any further orders.', code: 'file_closed' });
+    }
+    const blk = orders.blockers(kind, data);
+    if (blk.includes('loan_number')) return res.status(400).json({ error: tpoOrders.brokerBlockerText('loan_number', kind), code: 'loan_number' });
+    if (blk.includes('contact')) return res.status(400).json({ error: tpoOrders.brokerBlockerText('contact', kind), code: 'contact' });
+    if (blk.includes('usps')) return res.status(422).json({ error: tpoOrders.brokerBlockerText('usps', kind), code: 'usps' });
+
+    const existing = (await db.query(
+      `SELECT status, send_count, meta, ordered_at, ordered_by FROM file_orders WHERE application_id=$1 AND order_type=$2`,
+      [appId, kind])).rows[0];
+    const force = req.body && (req.body.force === true || req.body.force === 'true');
+    if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
+      return res.status(409).json({ error: `This ${kind} order was already sent — your loan team can follow up or re-send.`, code: 'already_ordered' });
+    }
+    // A broker-placed order never CC's the borrower directly — on a wholesale deal the
+    // broker manages the borrower relationship. The broker is still CC'd (they are the
+    // file's loan officer), and vendor returns route back to us via the reply-to.
+    const ccBorrower = false;
+    const built = orders.buildOrderEmail(kind, data, {});
+    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower });
+    const me = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    const vendor = data.vendors[kind];
+    const r = await orders.placeOrder({
+      appId, kind, data, to, cc, replyTo, built, vendor,
+      actorId: req.actor.id, actorName: me.full_name || me.email,
+      ccBorrower, force, existing,
+    });
+    if (!r.ok) return res.status(r.httpStatus).json({ error: r.error, code: r.code });
+    await tpoAudit(req, 'tpo_order_placed', 'application', appId, { kind, unconfirmed: !!r.ambiguous });
+    // Tell OUR team a broker placed an order (in-app only; notifyAppStaff filters external
+    // users, so the broker is never a recipient).
+    try {
+      const ctx = await notify.fileContext(appId);
+      await notify.notifyAppStaff(appId, {
+        type: 'tool_submitted',
+        title: `A broker placed a ${kind} order`,
+        body: `${ctx ? ctx.label : 'A file'} — the ${kind} order was sent to the vendor.`,
+        meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+        link: `/internal/app/${appId}`, ctaLabel: 'Open the file' });
+    } catch (_) { /* best-effort */ }
+    if (r.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: r.warning });
+    res.json({ ok: true });
+  } catch (e) { next(e); }
 });
 
 // ---------------- APPRAISAL (broker READ-ONLY: the "property profile report") ----------------

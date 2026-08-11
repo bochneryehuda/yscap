@@ -1032,7 +1032,7 @@ async function notifyBorrower(borrowerId, opts) {
     Use for file-wide events (status change, closing date, conditions) so an
     invited co-borrower who can see the file also hears about it. */
 async function notifyAppBorrowers(appId, opts) {
-  const { rows } = await db.query(`SELECT borrower_id, co_borrower_id, status FROM applications WHERE id=$1`, [appId]);
+  const { rows } = await db.query(`SELECT borrower_id, co_borrower_id, status, is_tpo, borrower_portal_enabled FROM applications WHERE id=$1`, [appId]);
   const a = rows[0]; if (!a) return [];
   // ON HOLD = the file is PARKED (owner-directed 2026-07-26). A held file must
   // "stop sending out notification emails" — it is not being worked, so every
@@ -1043,6 +1043,16 @@ async function notifyAppBorrowers(appId, opts) {
   // when something happens on a parked file. `opts.evenIfOnHold` is the escape
   // hatch for the rare message that must go out anyway.
   if (a.status === 'on_hold' && !(opts && opts.evenIfOnHold)) return [];
+  // BORROWER LOGIN TURNED OFF on a TPO file (owner-directed 2026-08-11). When the
+  // broker turns off the borrower's portal login, the file "vanishes from the
+  // borrower's everything" — so a file-activity email, which links to a portal the
+  // borrower can no longer open, must not go out either. The broker manages the
+  // borrower on a wholesale deal. This is the single borrower fan-out chokepoint,
+  // so gating here silences every one of them at once (status moves, condition
+  // notices, document nudges). Only a TPO file with the toggle explicitly OFF is
+  // affected; retail files and portal-enabled TPO files are untouched. Staff
+  // notifications are NOT gated. `opts.evenIfPortalDisabled` is the escape hatch.
+  if (a.is_tpo && a.borrower_portal_enabled === false && !(opts && opts.evenIfPortalDisabled)) return [];
   const ids = [...new Set([a.borrower_id, a.co_borrower_id].filter(Boolean))];
   // Fetch the file's identity ONCE and hand it to each recipient's notify so we
   // don't re-query per borrower; also default applicationId so enrichment fires.

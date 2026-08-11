@@ -6263,141 +6263,23 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
     // connections at once — a handful of them starve a pool of ten, the capture
     // times out, and the order goes out but vanishes from the very screen the
     // "check before re-sending" advice points at.
-    let claimed = null;
-    let sendRes = null;
-    try {
-      const claim = await db.query(
-        `INSERT INTO file_orders (application_id, order_type, status, vendor_contact_id, vendor_email, vendor_name, subject, ordered_at, ordered_by, send_count, meta)
-         VALUES ($1,$2,'ordered',$3,$4,$5,$6,now(),$7,1, jsonb_build_object('ccBorrower', $8::boolean))
-         ON CONFLICT (application_id, order_type)
-         DO UPDATE SET status='ordered', vendor_contact_id=EXCLUDED.vendor_contact_id, vendor_email=EXCLUDED.vendor_email,
-                       vendor_name=EXCLUDED.vendor_name, subject=EXCLUDED.subject, ordered_at=now(),
-                       ordered_by=EXCLUDED.ordered_by, send_count=file_orders.send_count+1,
-                       meta=COALESCE(file_orders.meta,'{}'::jsonb) || jsonb_build_object('ccBorrower', $8::boolean), updated_at=now()
-           -- THE REAL GUARD, and it is atomic: a second concurrent click blocks on
-           -- this row, re-reads 'ordered' and matches nothing, so it answers 409
-           -- instead of sending the vendor a second copy.
-           --
-           -- A FORCED re-send is a deliberate act and is allowed past — but only
-           -- once every 10 seconds, so a double-click on "force a re-send" is one
-           -- order rather than two. A genuine re-send minutes later is unaffected.
-           WHERE file_orders.status IN ('not_ordered','cancelled')
-              OR ($9::boolean AND COALESCE(file_orders.ordered_at, 'epoch'::timestamptz) < now() - interval '10 seconds')
-         -- ::text, NOT the timestamp itself. Postgres now() is MICROSECOND
-         -- precision and a JS Date is only milliseconds, so a claim token
-         -- round-tripped through one comes back a fraction early and matches
-         -- nothing — the release below then silently did nothing, leaving an order
-         -- recorded as sent that never was.
-         RETURNING id, status, ordered_at::text AS claim_token`,
-        [appId, kind, vendor ? vendor.id : null, (vendor && vendor.email) || null,
-         (vendor && (vendor.company_name || vendor.contact_name)) || null, built.subject, req.actor.id, ccBorrower, !!force]);
-      if (!claim.rows[0]) {
-        // Telling somebody who just pressed "force a re-send" to force a re-send is
-        // the advice-to-do-the-thing-you-just-did trap. A refusal inside the
-        // 10-second window is a double-click, and says so.
-        return res.status(409).json(force
-          ? { error: `That ${kind} order has just gone out — give it a moment before sending it again.`, code: 'too_soon' }
-          : { error: `This ${kind} order was already sent. Use Follow-up, or force a re-send.`, code: 'already_ordered' });
-      }
-      claimed = claim.rows[0];
-      sendRes = await orders.sendOrderMail({
-        appId, kind, data, to, cc, replyTo, built,
-        fromName: meRow.full_name || meRow.email,
-        type: `${kind}_order`,
-      });
-      if (!sendRes.ok && !sendRes.ambiguous) {
-        // NOTHING REACHED THE VENDOR — put the row back EXACTLY as it was, so the
-        // order reads the truth and the next attempt can claim it.
-        //
-        // The PREVIOUS SNAPSHOT, not a rule. Setting `status='not_ordered'` and
-        // decrementing would be wrong on a re-send: the claim overwrote
-        // `ordered_at` with now(), so a failed re-send would leave the order
-        // looking freshly placed — the aging clock reset by a send that never
-        // happened, and the overdue nudge silenced for another three days.
-        //
-        // A COMPARE-AND-SWAP, not a blind revert: it only unwinds the row it can
-        // prove is still exactly the one just claimed (same id, same ordered_at,
-        // still 'ordered'). Anything else means something moved it in between, and
-        // stamping over that would erase real work.
-        await db.query(
-          `UPDATE file_orders
-              SET status = $3, ordered_at = $4, ordered_by = $5, send_count = $6, updated_at = now()
-            WHERE id = $1 AND status = 'ordered' AND ordered_at = $2::timestamptz`,
-          [claimed.id, claimed.claim_token,
-           (existing && existing.status) || 'not_ordered',
-           (existing && existing.ordered_at) || null,
-           (existing && existing.ordered_by) || null,
-           Number((existing && existing.send_count) || 0)])
-          .catch(() => { /* best-effort — the refusal is what matters */ });
-        return res.status(sendRes.reason === 'contact' ? 400 : 502).json({ error: sendRes.message, code: sendRes.reason });
-      }
-      // The order now has an owner and a history. AFTER the send, because a
-      // failure above releases the claim and these would describe an order that
-      // never went out. An AMBIGUOUS send keeps the claim on purpose: the provider
-      // may well have delivered it, and releasing would invite the re-send that
-      // double-orders.
-      await orderTracking.ensureAssignee(appId, kind);
-      // Anchor the vendor conversation on THIS order's Message-ID (the thread root)
-      // so a later follow-up / Email Center reply lands on the same chain in the
-      // vendor's inbox instead of a new one (owner-directed 2026-08-04). Only on a
-      // CONFIRMED send (an ambiguous send carries no id); best-effort — a missed
-      // stamp just means the follow-up threads by subject, not by header. A re-send
-      // re-anchors the thread, which is correct (the vendor sees a fresh order).
-      if (sendRes.messageId) {
-        await db.query(
-          `UPDATE file_orders
-              SET meta = COALESCE(meta,'{}'::jsonb) || jsonb_build_object('rootMessageId', $3::text, 'lastMessageId', $3::text)
-            WHERE application_id=$1 AND order_type=$2`,
-          [appId, kind, sendRes.messageId]).catch(() => {});
-      }
-      /* RE-SENDING A FINISHED ORDER IS A REOPEN, AND IT MUST BE RECORDED AS ONE.
-         The retire sweep leaves an order alone only while a 'reopened' event is
-         NEWER than the last 'completed' one — that is the whole mechanism by which
-         a human's decision survives it. This route recorded 'resent', so a
-         coordinator re-sending a completed title order (the Re-send button IS
-         offered there, because the vendor may still owe the final policy) sent the
-         email, brought the order back to life, and then watched the next digest
-         tick — within half an hour — put it straight back to 'completed'. It fell
-         off the desk, the nudge skipped it, and nobody ever chased that title
-         company again.
-         This is the same defect the closing-prep meta merge fixes for the attorney
-         order; it was live on the two commoner types from the same button. */
-      const wasFinished = !!(existing && existing.status === 'completed');
-      await orderTracking.recordEvent({
-        applicationId: appId, orderType: kind,
-        kind: wasFinished ? 'reopened' : (existing && existing.send_count ? 'resent' : 'placed'),
-        actorId: req.actor.id, orderId: claimed.id,
-        detail: {
-          vendor: (vendor && (vendor.company_name || vendor.contact_name)) || null,
-          to: to.length, cc: cc.length, force: !!force, unconfirmed: !!sendRes.ambiguous,
-          ...(wasFinished ? { reopenedBy: 'resend' } : {}),
-        },
-      });
-      // An order being chased must not also carry the date it was finished — the
-      // same reason `reopenOrder` clears it. The claim already set status='ordered'.
-      if (wasFinished) {
-        await db.query(
-          `UPDATE file_orders SET completed_at = NULL, updated_at = now()
-            WHERE id = $1 AND status <> 'completed'`, [claimed.id]).catch(() => {});
-      }
-    } catch (e) {
-      // `sendOrderMail` and `recordEvent` never throw, so reaching here after a
-      // successful send means the BOOKKEEPING failed — which must never be reported
-      // as "could not send", because that is exactly what makes somebody re-send an
-      // order the vendor already has.
-      if (sendRes && (sendRes.ok || sendRes.ambiguous)) {
-        return res.status(500).json({
-          error: 'The order was sent to the vendor, but part of recording it on the file failed. Do NOT re-send — check the Email Center, and tell an administrator.',
-          code: 'recorded_failed', sent_to: to, cc,
-        });
-      }
-      return res.status(500).json({ error: 'Could not send the order.' });
+    // The exactly-once claim → send → settle core lives in ONE place (orders.placeOrder),
+    // shared with the TPO broker order route so the two doors can never drift. This route
+    // owns auth, blockers, recipients, the audit row and the response shaping.
+    const r = await orders.placeOrder({
+      appId, kind, data, to, cc, replyTo, built, vendor,
+      actorId: req.actor.id, actorName: meRow.full_name || meRow.email,
+      ccBorrower, force, existing,
+    });
+    if (!r.ok) {
+      return res.status(r.httpStatus).json({ error: r.error, code: r.code,
+        ...(r.sent_to ? { sent_to: r.sent_to, cc: r.cc } : {}) });
     }
-    // Audit and the response are AFTER the commit and are best-effort — a failure
-    // here must never report a placed order as failed.
-    try { await audit(req, 'order_placed', 'application', appId, { kind, to: to.length, cc: cc.length, force: !!force, ccBorrower, unconfirmed: !!sendRes.ambiguous }); } catch (_) { /* recorded either way */ }
-    if (sendRes.ambiguous) {
-      return res.json({ ok: true, unconfirmed: true, warning: sendRes.message, sent_to: to, cc, ccBorrower });
+    // Audit and the response are best-effort — a failure here must never report a placed
+    // order as failed.
+    try { await audit(req, 'order_placed', 'application', appId, { kind, to: to.length, cc: cc.length, force: !!force, ccBorrower, unconfirmed: !!r.ambiguous }); } catch (_) { /* recorded either way */ }
+    if (r.ambiguous) {
+      return res.json({ ok: true, unconfirmed: true, warning: r.warning, sent_to: to, cc, ccBorrower });
     }
     res.json({ ok: true, sent_to: to, cc, ccBorrower });
   } catch (e) { res.status(500).json({ error: 'Could not send the order.' }); }
@@ -14045,6 +13927,29 @@ router.get('/applications/:id/closing', async (req, res) => {
     if (!data) return res.status(404).json({ error: 'not found' });
     res.json(data);
   } catch (e) { console.warn('[closing] workspace error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Refresh the funded-date reconciliation from Encompass (owner-reported 2026-08-11:
+// "if you just filled it in, it should pull to see if it was filled"). The closing
+// reconciliation reads the Encompass funded date out of the STORED snapshot
+// (applications.encompass_extra), so a date the closer just entered in Encompass is
+// invisible until the snapshot is re-pulled. This does exactly one thing: a
+// READ-ONLY Encompass pull (the reader never writes to Encompass and never throws —
+// a failure is stamped + returned) and reports the outcome; the panel reloads the
+// workspace itself afterward, which recomputes the reconciliation off the fresh
+// snapshot. File-scoped by the /applications/:id middleware; open to anyone on the
+// file (it is a read).
+router.post('/applications/:id/closing/reconcile-refresh', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const pull = await require('../encompass/reader').pullLoanForApplication(appId)
+      .catch((e) => ({ ok: false, reason: (e && e.message) ? e.message.slice(0, 200) : 'pull failed' }));
+    await audit(req, 'closing_reconcile_refresh', 'application', appId, { pulled: !!(pull && pull.ok), reason: (pull && pull.reason) || null });
+    // The panel reloads the workspace itself after this returns, so only the pull
+    // outcome is needed here (a friendly reason on failure so the closer knows why
+    // nothing moved — no loan number, no Encompass match, Encompass unreachable…).
+    res.json({ pulled: !!(pull && pull.ok), reason: (pull && pull.reason) || null });
+  } catch (e) { console.warn('[closing] reconcile refresh:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Ensure the singleton closing row exists (so a PATCH before submit still works).
