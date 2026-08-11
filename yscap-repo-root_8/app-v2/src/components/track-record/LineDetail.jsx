@@ -202,6 +202,27 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
     finally { setBusy(''); }
   }
 
+  // QUIET revoke (owner-directed 2026-08-11): the line was marked verified BY
+  // MISTAKE, so set it back to "Pending review" without telling the borrower —
+  // there is nothing for them to act on. No reason is required (they never see
+  // it); an optional internal note is captured for the audit trail. This is the
+  // deliberately-separate path so the LOUD revoke above stays unambiguous.
+  async function quietRevoke() {
+    const note = await askPrompt(
+      'Set this project back to “Pending review” WITHOUT notifying the borrower — use this when it was marked verified by mistake.\n\nOptional internal note (staff-only; the borrower never sees it). Leave blank and press OK to proceed.',
+      { multiline: true, confirmLabel: 'Set pending — don’t notify' });
+    if (note == null) return;   // Cancel
+    setBusy('verify');
+    try {
+      const body = { status: 'pending', silent: true };
+      if (note.trim()) body.reason = note.trim();
+      await api.staffVerifyTrackRecord(trackRecordId, body);
+      flash(true, 'Set to pending review — the borrower was not notified.');
+      changed();
+    } catch (e) { flash(false, (e && e.message) || 'could not update'); }
+    finally { setBusy(''); }
+  }
+
   async function bulkConfirm() {
     if (!detail || !detail.bulk || !detail.bulk.ok) { rowError('verify', detail && detail.bulk && detail.bulk.reason); return; }
     if (!(await askConfirm(`Confirm all three checks on ${detail.line.address}? The records already prove each one.`))) return;
@@ -473,6 +494,9 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
           )}
           {maySignOff && line.isVerified && (
             <button className="btn ghost small" disabled={busy === 'verify'} onClick={revoke} title="Revoke this project’s verification (the borrower is notified)">Revoke verification</button>
+          )}
+          {maySignOff && line.isVerified && (
+            <button className="btn ghost small" disabled={busy === 'verify'} onClick={quietRevoke} title="Set back to Pending review WITHOUT notifying the borrower — for a verification set by mistake">Set pending — don’t notify</button>
           )}
           <button className="btn soft small" disabled={busy === 'edit'} onClick={editing ? () => setEditing(null) : startEdit}
             title="Correct the deal’s own figures — editing a figure re-opens the review.">{editing ? 'Cancel edit' : 'Edit details'}</button>

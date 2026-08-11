@@ -4,6 +4,7 @@ import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import InviteApplicant from '../components/InviteApplicant.jsx';
 import { useFlash } from '../components/FlashToast.jsx';
+import { confirmRemoveFromWorkflow } from '../lib/workflowRemove.js';
 
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '—');
@@ -43,7 +44,7 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 const monthShort = (ym) => MONTHS[Number(ym.split('-')[1]) - 1] || ym;
 
 // The server-side filter params (everything except UI-only keys like `mine`/`tab`).
-const SERVER_KEYS = ['group', 'status', 'officerId', 'processorId', 'program', 'loanType', 'q', 'sort', 'minAmount', 'maxAmount', 'fundedFrom', 'fundedTo', 'createdFrom', 'createdTo', 'flag', 'limit', 'offset'];
+const SERVER_KEYS = ['group', 'status', 'officerId', 'processorId', 'program', 'loanType', 'q', 'sort', 'minAmount', 'maxAmount', 'fundedFrom', 'fundedTo', 'createdFrom', 'createdTo', 'flag', 'limit', 'offset', 'removed'];
 // The subset that counts as an "active filter" for Clear-filters / KPI-active UI.
 // `sort` is a view preference, not a filter, so it's intentionally excluded.
 const FILTER_KEYS = ['group', 'status', 'officerId', 'processorId', 'program', 'loanType', 'q', 'minAmount', 'maxAmount', 'fundedFrom', 'fundedTo', 'createdFrom', 'createdTo', 'flag'];
@@ -301,9 +302,10 @@ function RiskScoreChip({ score }) {
   );
 }
 
-function Row({ a }) {
+function Row({ a, removed, onRemove, onRestore }) {
   const pct = a.total_items > 0 ? Math.round((a.done_items / a.total_items) * 100) : 0;
   const off = a.loan_officer_name;
+  const act = (e, fn) => { e.preventDefault(); e.stopPropagation(); fn(a); };
   return (
     <Link to={`/internal/app/${a.id}`} className="q-row">
       <div className="cell-deal">
@@ -331,6 +333,9 @@ function Row({ a }) {
         {a.total_items > 0
           ? <><span className="pct">{pct}%</span><div className="prog-bar"><i style={{ width: pct + '%' }} /></div></>
           : <span className="mut">—</span>}
+        {removed
+          ? <button type="button" className="btn ghost small" style={{ marginTop: 6 }} onClick={(e) => act(e, onRestore)}>Restore</button>
+          : <button type="button" className="btn ghost small" style={{ marginTop: 6 }} title="Remove this file from the pipeline view (does not delete it)" onClick={(e) => act(e, onRemove)}>Remove</button>}
       </div>
     </Link>
   );
@@ -458,6 +463,20 @@ export default function StaffQueue() {
     setSearchParams(next, replace ? { replace: true } : undefined);
   };
   const clearFilters = () => setSearchParams({});
+
+  // Remove-from-this-view (owner-directed 2026-08-11): the row coordinator can
+  // take a file OFF the pipeline (e.g. it landed here by mistake) without deleting
+  // it — it stays on every other screen and can be restored from the "Removed"
+  // view. Double warning is handled by confirmRemoveFromWorkflow.
+  const showRemoved = searchParams.get('removed') === '1';
+  const removeApp = async (a) => {
+    const ok = await confirmRemoveFromWorkflow(a.id, 'pipeline', [a.first_name, a.last_name].filter(Boolean).join(' '));
+    if (ok) { flash('Removed from the pipeline'); fetchList(); }
+  };
+  const restoreApp = async (a) => {
+    try { await api.staffRestoreToWorkflow(a.id, 'pipeline'); flash('Restored to the pipeline'); fetchList(); }
+    catch (e) { flashErr((e && e.message) || 'Could not restore the file'); }
+  };
 
   // Current control values, read from the URL.
   const anyFilter = FILTER_KEYS.some(k => searchParams.get(k));
@@ -655,8 +674,14 @@ export default function StaffQueue() {
 
       <div className="panel">
         <div className="panel-h">
-          <h3>{tab === 'mine' ? 'Active files' : 'Lead capture'}</h3>
+          <h3>{tab === 'mine' ? (showRemoved ? 'Removed from the pipeline' : 'Active files') : 'Lead capture'}</h3>
           {displayList && <span className="pill mut">{displayList.length} file(s)</span>}
+          {tab === 'mine' && (
+            <button className="btn ghost small" style={{ marginLeft: 'auto' }}
+              onClick={() => setParam({ removed: showRemoved ? '' : '1' })}>
+              {showRemoved ? '← Back to pipeline' : 'Show removed'}
+            </button>
+          )}
         </div>
         {displayList == null
           ? <div className="panel-b"><p className="muted">Loading…</p></div>
@@ -672,7 +697,7 @@ export default function StaffQueue() {
                   <div>Status</div>
                   <div>Progress</div>
                 </div>
-                {displayList.map(a => <Row key={a.id} a={a} />)}
+                {displayList.map(a => <Row key={a.id} a={a} removed={showRemoved} onRemove={removeApp} onRestore={restoreApp} />)}
               </div>
             )}
       </div>

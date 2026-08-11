@@ -152,6 +152,15 @@ export default function Dashboard() {
   const isDead = (a) => ['declined', 'withdrawn', 'cancelled'].includes(a.status);
   const isMortgage = (a) => ['funded', 'closed'].includes(a.status);
   const inProgress = (apps || []).filter(a => !isDead(a) && !isMortgage(a));
+  // Incomplete borrower items across ALL live files — the SAME thing the per-file
+  // checklist cards show ("1/10 · 10%"). `outstanding` above deliberately excludes
+  // QUIET_STATUSES (a file_intake / on-hold file must not NAG the borrower to
+  // /tasks, #109/#151), but the card still shows its progress — so a file_intake
+  // file with 9 pending items showed "1/10" while the banner claimed "all caught
+  // up" (owner-reported 2026-08-11 bug). This drives a middle, non-nagging state
+  // so the banner never contradicts the visible cards.
+  const incompleteLive = (apps || []).filter(a => !isDead(a))
+    .reduce((s, a) => s + Math.max(0, (a.borrower_total || 0) - (a.borrower_done || 0)), 0);
   const mortgages = (apps || []).filter(isMortgage);
   const loanCard = (a) => (
     <Link to={`/app/${a.id}`} key={a.id} className="panel" style={{ textDecoration: 'none', color: 'inherit' }}>
@@ -241,6 +250,11 @@ export default function Dashboard() {
               <span className="ni-n">{outstanding}</span>
               <span className="ni-l">document{outstanding === 1 ? '' : 's'} & item{outstanding === 1 ? '' : 's'} to complete — open your tasks →</span>
             </div>
+          ) : incompleteLive > 0 ? (
+            // Items remain on a live file, but none is actionable RIGHT NOW (the
+            // file is at intake / on hold). Don't claim "all caught up" — that
+            // contradicts the checklist card — and don't nag them to /tasks either.
+            <div className="next-item ok"><span className="ni-l">✓ Nothing needs your attention right now — your loan team will reach out when they need anything from you.</span></div>
           ) : (
             <div className="next-item ok"><span className="ni-l">✓ You're all caught up — nothing outstanding right now.</span></div>
           )}
