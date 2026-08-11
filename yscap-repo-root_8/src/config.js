@@ -1040,11 +1040,15 @@ module.exports = {
     oauthUrl:  (process.env.AMC_OAUTH_URL
                  || 'https://api-uat.cotality.com/order-gateway-oauth2/token?grant_type=client_credentials')
                  .trim(),
-    // DoLogin endpoint (returns the AppraisalScope api_key).
+    // The "/direct/" endpoint — DoLogin AND every catalog/reference lookup (GetLoanType,
+    // GetJobType, GetPropertyType, GetFee, GetAMCPreference, GetUsers, …). Per the vendor
+    // iPackage, catalog lookups are served HERE, not at the "/order/" endpoint below.
     loginUrl:  (process.env.AMC_LOGIN_URL
                  || 'https://uat1.globalgateway.corelogic.com/direct/appraisal_service/request/appraisalscope/client')
                  .trim().replace(/\/+$/, ''),
-    // Order + lookup endpoint (the ?orderId= is appended for order-specific updates).
+    // The "/order/" endpoint — CreateAppraisal / AddForm + order-specific reads/writes
+    // (GetAppraisalStatus / GetAppraisalDetail / GetComments / GetRevisions / uploads), where
+    // the ?orderId= is appended. Catalog lookups do NOT belong here (they 500 if posted here).
     orderUrl:  (process.env.AMC_ORDER_URL
                  || 'https://uat1.globalgateway.corelogic.com/order/appraisal_service/request/appraisalscope/client')
                  .trim().replace(/\/+$/, ''),

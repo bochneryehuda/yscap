@@ -281,7 +281,9 @@ async function run(deps = {}) {
   } else {
     try {
       const ctx = await session.authContext();
-      const resp = await client.read(cdg.buildLookup({ actionType: lookupType, apiKey: ctx.apiKey, subdomain: ctx.subdomain }), { label: lookupType });
+      // Catalog lookups (GetLoanType / GetJobType) hit the "/direct/" endpoint, NOT "/order/"
+      // — client.lookup(), the same routing production uses; posting to "/order/" 500s.
+      const resp = await client.lookup(cdg.buildLookup({ actionType: lookupType, apiKey: ctx.apiKey, subdomain: ctx.subdomain }), { label: lookupType });
       const nack = cdg.parseError(resp);
       if (nack) {
         steps.push(stepResult('lookup', false, { ...classify('lookup', new Error(`${nack.code} ${nack.description || nack.name || ''}`)), raw: nack }));

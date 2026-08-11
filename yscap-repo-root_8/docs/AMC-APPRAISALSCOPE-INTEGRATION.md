@@ -38,10 +38,22 @@ inbound thing — status changes, AMC messages, revisions, completed documents �
    `message.clientSystem.referenceIdentifiers[type="ApiKey"]`.
 
 ### Endpoints (all POST)
-- **Lookups + Create** → `.../order/appraisal_service/request/appraisalscope/client`
-  (Create omits `?orderId=`).
-- **Update / order-lookup** → same base with `?orderId=<DigitalGatewayOrderNumber>`.
-- **DoLogin** → `.../direct/appraisal_service/request/appraisalscope/client`.
+
+**Two channels — get this right or the gateway answers a raw HTTP 500 (not a NACK).**
+The vendor iPackage's own Postman collection is the authority (Client iPackage → Postman →
+"Generic DG to Appraisal Scope UAT"): DoLogin **and every catalog/reference lookup** are on
+`/direct/`; only real order operations are on `/order/`.
+
+- **DoLogin + catalog lookups** → `.../direct/appraisal_service/request/appraisalscope/client`.
+  Catalog lookups = `GetLoanType`, `GetJobType`, `Get_JobTypes_By_LoanType`, `GetJobTypeAddOns`,
+  `GetPropertyType`, `GetPropertyViewType`, `GetAMCPreference`, `GetFee`, `GetUsers`,
+  `GetLoanOfficer`, `GetProcessor`, `CheckFHA`, `GetIntendedUse`, `GetInvestorList`, … — anything
+  NOT tied to a specific order. (`client.lookup()` / `client.login()`.)
+- **Create** → `.../order/appraisal_service/request/appraisalscope/client` (`CreateAppraisal` /
+  `AddForm`, no `?orderId=`).
+- **Order-specific reads/writes** → same `/order/` base with `?orderId=<DigitalGatewayOrderNumber>`
+  (`GetAppraisalStatus` / `GetAppraisalDetail` / `AddComment` / `GetComments` / `AddRevision` /
+  `GetRevisions` / uploads / `RetriveAppraisalDocuments`). (`client.read()` / `client.write()`.)
 - **Document bytes out** → `POST /postdocuments` (multipart) → returns a `retrievalUrl`
   (a `getdocument` URL) we then pass as `objectURL`.
 - **Document bytes in** → `GET` the `objectURL`/`getdocument/<id>` returned by
