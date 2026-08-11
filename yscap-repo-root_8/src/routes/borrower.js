@@ -624,10 +624,12 @@ router.get('/applications', async (req, res) => {
 // now, aggregated in TWO queries (NOT a checklist-call-per-file), so the home screen
 // shows it INSTANTLY on login without opening any file (owner-directed 2026-07-20:
 // "he needs to see outstanding stuff for him right away … a few documents … without
-// going into the file"). Quiet files (funded/closed/on-hold/terminal/intake) never
-// nag here — their items wait inside the file. Borrower-SAFE: only borrower_* wording,
-// scrubbed of any capital-partner name.
-const ACTION_QUIET_STATUSES = ['funded', 'closed', 'on_hold', 'declined', 'withdrawn', 'cancelled', 'file_intake'];
+// going into the file"). Quiet files (funded/closed/on-hold/terminal) never nag here —
+// their items wait inside the file. file_intake is deliberately NOT quiet (owner-directed
+// 2026-08-11): an intake file's pending items count as outstanding, so /tasks lists them
+// in step with the dashboard banner. Borrower-SAFE: only borrower_* wording, scrubbed of
+// any capital-partner name.
+const ACTION_QUIET_STATUSES = ['funded', 'closed', 'on_hold', 'declined', 'withdrawn', 'cancelled'];
 const ACTION_PKG_LABEL = { term_sheet_package: 'term sheet, application & disclosure', heter_iska: 'Heter Iska', noo_affidavit: 'non-owner-occupied certification' };
 function propLabelOf(j) {
   if (!j) return '';

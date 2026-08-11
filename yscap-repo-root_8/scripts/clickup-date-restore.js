@@ -60,8 +60,9 @@ const DATE_FIELDS = [
   { key: 'expected',   id: F.PIPELINE.expectedClosing, col: 'expected_closing', table: 'a', restorable: true },
   { key: 'submitted',  id: F.PIPELINE.dateSubmitted,   col: 'submitted_at',    table: 'a', restorable: true },
   { key: 'acquired',   id: F.EXTRA.acquisitionDate,    col: 'acquisition_date', table: 'a', restorable: true },
-  // actual closing is pull-only (ClickUp owns it) — report, never write
-  { key: 'actual',     id: ACTUAL_CLOSING,             col: 'actual_closing',  table: 'a', restorable: false },
+  // actual closing is now two-way (owner-directed 2026-08-11: synced with our actual
+  // closing date), so a corrupted value can be restored to ClickUp like the other dates.
+  { key: 'actual',     id: ACTUAL_CLOSING,             col: 'actual_closing',  table: 'a', restorable: true },
 ];
 
 const args = process.argv.slice(2);

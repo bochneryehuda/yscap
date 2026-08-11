@@ -1097,6 +1097,18 @@ if (require.main === module) {
     // modern `op='update'` ClickUp push jobs and mark them `done` WITHOUT pushing
     // — silently dropping outbound edits (and letting the next inbound pull revert
     // them). The ClickUp queue is now owned solely by `pushOutboxOnce`.
+    // Load the runtime feature-flag OVERRIDES before starting the sync/integration
+    // workers below. Each worker decides AT BOOT whether to schedule its poller/drain
+    // loop by reading switches.on(...), which falls back to the ENV DEFAULT until this
+    // override cache is populated. flags.start() used to run AFTER these workers, so a
+    // switch turned on only from the API-Health page (an admin override with no env var)
+    // was read as OFF at boot and its loop was never scheduled until a restart that
+    // happened to race the async flag load — the ClickUp OUTBOUND drain being the one
+    // that bit (owner-reported bounce-back: portal edits piled up in sync_queue unsent).
+    // Awaiting the first refresh here makes every worker's boot-time gate read the live
+    // override. Best-effort: on failure the workers fall back to env defaults, exactly
+    // as before, and flags.start() below still arms the periodic refresh.
+    try { await require('./lib/flags').refresh(); } catch (_) { /* fall back to env defaults */ }
     // ClickUp bidirectional sync worker (self-gated by CLICKUP_SYNC_ENABLED;
     // a no-op until the master switch is on, so it's safe to wire now).
     try { require('./sync/clickup-sync').start(); } catch (e) { console.warn('clickup sync not started:', e.message); }
