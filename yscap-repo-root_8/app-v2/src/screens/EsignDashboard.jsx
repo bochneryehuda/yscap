@@ -94,10 +94,12 @@ function EnvelopeCard({ e, onReload, isAdmin }) {
     try { const { blob, filename } = await api.staffDownloadDoc(documentId); saveBlob(blob, filename || fallbackName); }
     catch (err) { setActErr(err.message || 'Could not download the document.'); }
   }
-  // A pending signer on an in-flight envelope can be re-addressed — change their email
-  // and re-send the invitation, for any package (owner-directed). The admin
-  // counter-signer's email is a fixed system address, never offered here.
-  const canEditEmail = (r) => !!e.envelopeId && !TERMINAL.includes(e.phase) && r.role !== 'admin'
+  // A pending BORROWER / CO-BORROWER on an in-flight envelope can be re-addressed —
+  // change their email and re-send the invitation, for any package (owner-directed).
+  // The counter-signer + loan-officer emails are system-sourced and never re-addressed
+  // here (the server enforces this too).
+  const canEditEmail = (r) => !!e.envelopeId && !TERMINAL.includes(e.phase)
+    && ['borrower', 'co_borrower'].includes(r.role)
     && !(r.signedAt || r.status === 'completed' || r.status === 'signed') && !(r.declinedAt || r.status === 'declined');
   async function changeEmail(r) {
     const email = String((emailEdit && emailEdit.email) || '').trim();

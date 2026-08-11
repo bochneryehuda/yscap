@@ -91,11 +91,29 @@ ok(planRecipientEmailChange({ ...base, email: 'old@x.com', name: 'Corrected Name
   const p = planRecipientEmailChange({ ...base, recipient: { ...pendingBorrower, client_user_id: null } });
   ok(p.ok && !('clientUserId' in p.signerUpdate), 'non-embedded recipient carries no clientUserId');
 }
-// A loan-officer signer is correctable but is NOT a borrower recipient (no file warning).
+// AUTHORIZATION: only a borrower / co-borrower may be re-addressed. A loan-officer or
+// the lender's counter-signer is REJECTED on the server (403) — not merely hidden in the
+// UI (the UI is not the security boundary). This is the core control: the route is gated
+// only by file visibility, so without it a file-scoped staffer could redirect the binding
+// lender counter-signature.
 {
   const lo = { id: 'rec2', role: 'loan_officer', recipient_id_ds: '3', borrower_id: null, name: 'LO', email: 'lo@x.com', status: 'sent' };
-  const p = planRecipientEmailChange({ ...base, recipient: lo });
-  ok(p.ok && p.isBorrowerRecipient === false, 'loan-officer recipient is not a borrower recipient');
+  eq(planRecipientEmailChange({ ...base, recipient: lo }).status, 403, 'loan-officer recipient -> 403 (not re-addressable)');
+}
+{
+  const admin = { id: 'rec3', role: 'admin', is_countersigner: true, recipient_id_ds: '4', borrower_id: null, name: 'Lender', email: 'lender@x.com', status: 'sent' };
+  eq(planRecipientEmailChange({ ...base, recipient: admin }).status, 403, 'counter-signer (admin) recipient -> 403');
+}
+{
+  // A row flagged is_countersigner is rejected regardless of role spelling.
+  const cs = { id: 'rec5', role: 'borrower', is_countersigner: true, recipient_id_ds: '5', borrower_id: 'bor9', name: 'X', email: 'x@x.com', status: 'sent' };
+  eq(planRecipientEmailChange({ ...base, recipient: cs }).status, 403, 'is_countersigner recipient -> 403');
+}
+{
+  // A co-borrower IS re-addressable.
+  const cob = { id: 'rec4', role: 'co_borrower', recipient_id_ds: '2', borrower_id: 'bor2', name: 'Co', email: 'co@x.com', status: 'sent' };
+  const p = planRecipientEmailChange({ ...base, recipient: cob });
+  ok(p.ok && p.isBorrowerRecipient === true, 'co-borrower recipient is re-addressable + flagged for the file warning');
 }
 // A leading/trailing-space email is trimmed, not rejected.
 eq(planRecipientEmailChange({ ...base, email: '  new@x.com  ' }).newEmail, 'new@x.com', 'email is trimmed');
@@ -133,6 +151,10 @@ function fakeNotify() {
 }
 const onSwitch = { on: () => true };
 const offSwitch = { on: () => false };
+// Not gated by the test-mode allow-list — the correction path only enforces it while on
+// the demo host or in test mode. Passed to every IO call so the flow under test is the
+// go-live path (the test-mode gate has its own cases below).
+const noTestMode = { testMode: false, testEmailAllowlist: [] };
 
 // (1) Happy path: new address DIFFERS from the file email -> warning input true.
 {
@@ -141,7 +163,7 @@ const offSwitch = { on: () => false };
   const notify = fakeNotify();
   const out = await changeRecipientEmail({
     envelopeRowId: 'env1', recipientRowId: 'rec1', email: 'new@x.com',
-    db, docusign: ds, switches: onSwitch, notify,
+    db, docusign: ds, switches: onSwitch, notify, cfg: noTestMode,
   });
   eq(ds.calls.length, 1, 'DocuSign correction called once');
   eq(ds.calls[0].envelopeId, 'DS-1', 'correction targets the DocuSign envelope id');
@@ -165,7 +187,7 @@ const offSwitch = { on: () => false };
   const db = fakeDb({ env: liveEnv, recipient: pendingBorrower, borrowerEmail: 'new@x.com' });
   const out = await changeRecipientEmail({
     envelopeRowId: 'env1', recipientRowId: 'rec1', email: 'new@x.com',
-    db, docusign: fakeDocusign(), switches: onSwitch, notify: fakeNotify(),
+    db, docusign: fakeDocusign(), switches: onSwitch, notify: fakeNotify(), cfg: noTestMode,
   });
   eq(out.differsFromFile, false, 'no warning when the new address already matches the file');
 }
@@ -179,7 +201,7 @@ const offSwitch = { on: () => false };
   try {
     await changeRecipientEmail({
       envelopeRowId: 'env1', recipientRowId: 'rec1', email: 'new@x.com',
-      db, docusign: fakeDocusign(err), switches: onSwitch, notify: fakeNotify(),
+      db, docusign: fakeDocusign(err), switches: onSwitch, notify: fakeNotify(), cfg: noTestMode,
     });
   } catch (e) { threw = e; }
   ok(threw && threw.retryable === false, 'a DocuSign refusal propagates');
@@ -194,25 +216,61 @@ const offSwitch = { on: () => false };
   try {
     await changeRecipientEmail({
       envelopeRowId: 'env1', recipientRowId: 'rec1', email: 'new@x.com',
-      db, docusign: ds, switches: offSwitch, notify: fakeNotify(),
+      db, docusign: ds, switches: offSwitch, notify: fakeNotify(), cfg: noTestMode,
     });
   } catch (e) { threw = e; }
   eq(threw && threw.status, 409, 'paused sending -> 409');
   eq(ds.calls.length, 0, 'no DocuSign call when sending is paused');
 }
 
-// (5) A loan-officer recipient is corrected but NOT re-nudged with the borrower magic link.
+// (5) A loan-officer recipient is REJECTED (403) — never corrected — and DocuSign is
+// never called. Same for the admin counter-signer (the core authorization control).
+for (const bad of [
+  { id: 'rec2', role: 'loan_officer', recipient_id_ds: '3', borrower_id: null, name: 'LO', email: 'lo@x.com', status: 'sent' },
+  { id: 'rec3', role: 'admin', is_countersigner: true, recipient_id_ds: '4', borrower_id: null, name: 'Lender', email: 'lender@x.com', status: 'sent' },
+]) {
+  const db = fakeDb({ env: liveEnv, recipient: bad, borrowerEmail: null });
+  const ds = fakeDocusign();
+  let threw = null;
+  try {
+    await changeRecipientEmail({
+      envelopeRowId: 'env1', recipientRowId: bad.id, email: 'attacker@x.com',
+      db, docusign: ds, switches: onSwitch, notify: fakeNotify(), cfg: noTestMode,
+    });
+  } catch (e) { threw = e; }
+  eq(threw && threw.status, 403, `${bad.role}${bad.is_countersigner ? '/countersigner' : ''} correction -> 403`);
+  eq(ds.calls.length, 0, `no DocuSign call for a rejected ${bad.role} correction`);
+  eq(db.updates.length, 0, `no DB write for a rejected ${bad.role} correction`);
+}
+
+// (6) Test-mode allow-list gate: while in test mode, the new address must be on the
+// allow-list, or the correction is refused BEFORE any DocuSign call (mirrors send.js).
 {
-  const lo = { id: 'rec2', role: 'loan_officer', recipient_id_ds: '3', borrower_id: null, name: 'LO', email: 'lo@x.com', status: 'sent' };
-  const db = fakeDb({ env: liveEnv, recipient: lo, borrowerEmail: null });
-  const notify = fakeNotify();
+  const db = fakeDb({ env: liveEnv, recipient: pendingBorrower, borrowerEmail: 'old@x.com' });
+  const ds = fakeDocusign();
+  let threw = null;
+  try {
+    await changeRecipientEmail({
+      envelopeRowId: 'env1', recipientRowId: 'rec1', email: 'notallowed@x.com',
+      db, docusign: ds, switches: onSwitch, notify: fakeNotify(),
+      cfg: { testMode: true, testEmailAllowlist: ['allowed@x.com'] },
+    });
+  } catch (e) { threw = e; }
+  eq(threw && threw.status, 409, 'test mode + non-allow-listed address -> 409');
+  eq(ds.calls.length, 0, 'no DocuSign call for a test-mode-blocked address');
+  eq(db.updates.length, 0, 'no DB write for a test-mode-blocked address');
+}
+{
+  // An allow-listed address in test mode is accepted (case-insensitive).
+  const db = fakeDb({ env: liveEnv, recipient: pendingBorrower, borrowerEmail: 'old@x.com' });
+  const ds = fakeDocusign();
   const out = await changeRecipientEmail({
-    envelopeRowId: 'env1', recipientRowId: 'rec2', email: 'newlo@x.com',
-    db, docusign: fakeDocusign(), switches: onSwitch, notify,
+    envelopeRowId: 'env1', recipientRowId: 'rec1', email: 'Allowed@x.com',
+    db, docusign: ds, switches: onSwitch, notify: fakeNotify(),
+    cfg: { testMode: true, testEmailAllowlist: ['allowed@x.com'] },
   });
-  eq(notify.calls.length, 0, 'a loan-officer correction sends no borrower magic-link nudge');
-  eq(out.differsFromFile, false, 'no file-email warning for a non-borrower recipient');
-  eq(db.updates.length, 1, 'the loan-officer recipient email is still corrected');
+  eq(ds.calls.length, 1, 'an allow-listed test-mode address is corrected');
+  eq(out.email, 'Allowed@x.com', 'the corrected email is returned');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

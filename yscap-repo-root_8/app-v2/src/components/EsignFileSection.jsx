@@ -415,9 +415,11 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
 
         <div className="esign-recips">
           {recips.map((r) => {
-            // A pending signer on an in-flight envelope can be re-addressed. The admin
-            // counter-signer's email is a fixed system address — never offered here.
-            const canEditEmail = !terminal && !!e.envelopeId && recipientState(r) === 'pending' && r.role !== 'admin';
+            // A pending BORROWER / CO-BORROWER on an in-flight envelope can be
+            // re-addressed. The counter-signer + loan-officer emails are system-sourced
+            // (config / staff record) — never re-addressed here (the server enforces this too).
+            const canEditEmail = !terminal && !!e.envelopeId && recipientState(r) === 'pending'
+              && ['borrower', 'co_borrower'].includes(r.role);
             const editing = emailEdit && emailEdit.rid === r.id;
             return (
               <div key={r.id || `${r.role}-${r.routingOrder}`}>

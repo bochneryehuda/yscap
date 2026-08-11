@@ -23,6 +23,13 @@
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 // esign_envelopes.status values that are terminal — a package here can't be re-addressed.
 const TERMINAL_ENV = new Set(['completed', 'declined', 'voided']);
+// Only these recipient ROLES may be re-addressed. A borrower/co-borrower email is the
+// one that's typo'd; the lender's counter-signer (role 'admin' / is_countersigner) and
+// the loan-officer signer carry SYSTEM-sourced emails (config / the staff record), and
+// re-addressing the counter-signer would let a file-scoped staffer redirect the binding
+// lender signature to an address they control. The UI hides those; the SERVER enforces
+// it (the UI is never the security boundary).
+const READDRESSABLE_ROLES = new Set(['borrower', 'co_borrower']);
 
 const recipientSigned = (r) => !!(r && (r.signed_at || r.status === 'signed' || r.status === 'completed'));
 const recipientDeclined = (r) => !!(r && (r.declined_at || r.status === 'declined'));
@@ -51,6 +58,13 @@ function planRecipientEmailChange({ env, recipient, email, name, sendEnabled }) 
   }
   if (!sendEnabled) return { ok: false, status: 409, error: 'Sending is paused right now. Turn sending back on before re-sending the invitation.' };
   if (!recipient) return { ok: false, status: 404, error: 'That signer isn’t on this package — refresh and try again.' };
+  // AUTHORIZATION: only a borrower / co-borrower invitation may be re-addressed (see
+  // READDRESSABLE_ROLES). Rejecting the counter-signer here is the real control — the
+  // route is gated only by file visibility, so without this a file-scoped staffer could
+  // redirect the lender's binding counter-signature.
+  if (recipient.is_countersigner || !READDRESSABLE_ROLES.has(recipient.role)) {
+    return { ok: false, status: 403, error: 'Only a borrower or co-borrower’s email can be changed here. For a loan officer or the counter-signer, fix their email on their own record and re-issue the package.' };
+  }
   if (recipientSigned(recipient)) return { ok: false, status: 409, error: `${recipient.name || 'This signer'} has already signed — their email can’t be changed.` };
   if (recipientDeclined(recipient)) return { ok: false, status: 409, error: `${recipient.name || 'This signer'} declined — void and re-issue the package to send to a different address.` };
 
@@ -97,6 +111,19 @@ async function changeRecipientEmail(p) {
     sendEnabled: switches.on('DOCUSIGN_SEND_ENABLED'),
   });
   if (!plan.ok) throw fail(plan.status, plan.error);
+
+  // Pre-go-live safety: while on the DEMO host OR in test mode, a re-address must obey
+  // the SAME allow-list the send engine enforces (send.js guardTestEmails). Otherwise
+  // re-addressing would be a hole that mails a REAL recipient a binding envelope before
+  // go-live — the exact thing the allow-list exists to prevent.
+  const dcfg = p.cfg || require('../../config').docusign;
+  const onDemo = !!(docusign.isDemoHost && docusign.isDemoHost());
+  if (onDemo || (dcfg && dcfg.testMode)) {
+    const allow = ((dcfg && dcfg.testEmailAllowlist) || []).map((x) => String(x).toLowerCase());
+    if (!allow.includes(plan.newEmail.toLowerCase())) {
+      throw fail(409, `Sending is in test mode — “${plan.newEmail}” isn’t on the DocuSign test allow-list, so the invitation can’t be re-sent there until go-live.`);
+    }
+  }
 
   // Correct the recipient on the in-flight envelope and re-send to the new address.
   await docusign.updateRecipients(env.envelope_id, { signers: [plan.signerUpdate], resend: true });
