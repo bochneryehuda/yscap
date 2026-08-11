@@ -10,7 +10,7 @@ const notify = require('./notify');
 async function notifyMentions({ body, applicationId, senderId = null, senderName = 'Someone', link }) {
   const text = String(body || '');
   if (!text.includes('@')) return [];
-  const staff = await db.query(`SELECT id, full_name FROM staff_users WHERE is_active=true`);
+  const staff = await db.query(`SELECT id, full_name FROM staff_users WHERE is_active=true AND is_external=false`);
   const lower = text.toLowerCase();
   const hits = new Map();
   for (const s of staff.rows) {

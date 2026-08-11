@@ -215,9 +215,14 @@ console.log('\n5. It is INTERNAL by construction — inside the block every borr
   ok(!('rateBuildUp' in q), '…and NOT at the top level of the quote, where nothing would strip it');
   // The three existing scrubs all drop `adminPricing` wholesale, so the build-up is
   // covered without a fourth strip site to remember — assert they still do.
+  // stripQuoteInternal moved into the shared lib/borrower-safe.js (TPO Phase 4b —
+  // ONE definition, shared with routes/tpo.js so an external broker can never be
+  // handed a wider scrub than a borrower by drift). It still drops adminPricing
+  // wholesale; routes/borrower.js + routes/tpo.js both require it.
+  const bs = read('../src/lib/borrower-safe.js');
+  ok(/const \{ adminPricing, \.\.\.rest \} = q;/.test(bs),
+    'lib/borrower-safe.js stripQuoteInternal still drops adminPricing wholesale');
   const b = read('../src/routes/borrower.js');
-  ok(/const \{ adminPricing, \.\.\.rest \} = q;/.test(b),
-    'routes/borrower.js stripQuoteInternal still drops adminPricing wholesale');
   ok(/const \{ adminPricing, \.\.\.rest \} = row\.registered_quote;/.test(b),
     'routes/borrower.js stripInternalAppFields still drops it from the registered quote');
   ok(/const \{ adminPricing, \.\.\.rest \} = registration\.quote;/.test(read('../src/lib/tpr-export.js')),

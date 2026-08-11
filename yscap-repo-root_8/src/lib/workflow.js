@@ -116,13 +116,14 @@ const OUTCOME_LABELS = [
 async function candidatesForRole(role, client = db) {
   if (!role) return [];
   const r = await client.query(
-    `SELECT id, full_name, role FROM staff_users WHERE is_active = true AND role = $1 ORDER BY full_name`, [role]);
+    `SELECT id, full_name, role FROM staff_users WHERE is_active = true AND is_external = false AND role = $1 ORDER BY full_name`, [role]);
   return r.rows;
 }
-/** Every active staffer — the exception picker ("submit to whoever you want"). */
+/** Every active INTERNAL staffer — the exception picker ("submit to whoever you
+    want"). External TPO brokers (db/472) are never a hand-off target. */
 async function allActiveStaff(client = db) {
   const r = await client.query(
-    `SELECT id, full_name, role FROM staff_users WHERE is_active = true ORDER BY full_name`);
+    `SELECT id, full_name, role FROM staff_users WHERE is_active = true AND is_external = false ORDER BY full_name`);
   return r.rows;
 }
 

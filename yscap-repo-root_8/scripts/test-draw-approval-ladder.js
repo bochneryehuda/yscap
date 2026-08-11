@@ -306,7 +306,9 @@ const ROLLUP = rollupMod.computeRollup({
 // ===========================================================================
 {
   const fs = require('fs');
-  const src = fs.readFileSync(require('path').join(__dirname, '..', 'src', 'routes', 'borrower-draws.js'), 'utf8');
+  // The borrower-safe strip is the ONE shared definition (borrower + TPO surfaces both call it), so
+  // this guard reads that module — not the borrower ROUTE, which now just delegates to it.
+  const src = fs.readFileSync(require('path').join(__dirname, '..', 'src', 'sitewire', 'borrower-safe-draws.js'), 'utf8');
   const stripped = (k) => new RegExp('\\{[^}]*\\b' + k + '\\b[^}]*\\.\\.\\.safe', 's').test(src);
 
   // (a) still secret. `fee_kind` describes OUR fee schedule (which inspection tier priced the

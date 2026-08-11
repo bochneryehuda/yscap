@@ -164,10 +164,29 @@ function Attachment({ m, download }) {
 
 export default function ChatThread({ conversationId, surface, me, onChanged, onTaskCreated, onOpenApplication, height = '60vh' }) {
   const isStaff = surface === 'staff';
+  const isTpo = surface === 'tpo';   // Phase 6e — the broker↔team surface (firm-scoped, borrower-safe)
   const cid = conversationId;
 
-  // API dispatch for the two surfaces (same shapes on both).
-  const A = useMemo(() => isStaff ? {
+  // API dispatch for the surfaces (same shapes on all). The broker (tpo) surface is a lean mirror of
+  // the borrower one: no reactions / edit / delete / @mentions in v1 (those UI actions self-hide when
+  // the function is null), attachments served through the firm-scoped tpo route.
+  const A = useMemo(() => isTpo ? {
+    detail: () => api.tpoConversation(cid),
+    msgs: (before) => api.tpoConvMessages(cid, before),
+    send: (b) => api.tpoConvSend(cid, b),
+    read: (s) => api.tpoConvRead(cid, s),
+    markUnread: (s) => api.tpoConvMarkUnread(cid, s),
+    delivered: (s) => api.tpoConvDelivered(cid, s),
+    typing: () => api.tpoConvTyping(cid, getConnId()),
+    open: () => api.tpoConvOpen(cid, getConnId()),
+    draft: (b) => api.tpoConvDraft(cid, b),
+    react: null, pin: null, edit: null, del: null,
+    download: (d) => api.tpoDownloadChatAttachment(d),
+    mentionables: null,
+    rename: null, mute: null,
+    shared: () => api.tpoConvShared(cid),
+    addMember: null, removeMember: null, addExternal: null, removeExternal: null, search: null,
+  } : isStaff ? {
     detail: () => api.staffConversation(cid),
     msgs: (before) => api.staffConvMessages(cid, before),
     send: (b) => api.staffConvSend(cid, b),
@@ -210,7 +229,7 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
     rename: null, mute: null,
     shared: () => api.convShared(cid),
     addMember: null, removeMember: null, addExternal: null, removeExternal: null, search: null,
-  }, [cid, isStaff]);
+  }, [cid, isStaff, isTpo]);
 
   const [conv, setConv] = useState(null);
   const [msgs, setMsgs] = useState(null);
@@ -292,7 +311,7 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
   }, [cid]);
 
   useEffect(() => {
-    if (mentionables == null && conv) A.mentionables(conv.applicationId).then(setMentionables).catch(() => {});
+    if (A.mentionables && mentionables == null && conv) A.mentionables(conv.applicationId).then(setMentionables).catch(() => {});
     // eslint-disable-next-line
   }, [conv]);
 
@@ -581,6 +600,7 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
   /* ---------- message actions ---------- */
   async function doReact(mid, emoji) {
     setReactFor(null);
+    if (!A.react) return;   // surface without reactions (broker v1)
     try { await A.react(mid, emoji); } catch { /* non-fatal; SSE will correct */ }
   }
   async function doPin(m) {
@@ -961,10 +981,10 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
                         {/* One-tap quick reactions right on hover (owner-directed
                             2026-07-14): hover a message and thumbs-up it directly,
                             no extra click. 🙂 still opens the full picker. */}
-                        {QUICK_EMOJI.slice(0, 3).map(e => (
+                        {A.react && QUICK_EMOJI.slice(0, 3).map(e => (
                           <button key={e} className="msg-quickrx" title={`React ${e}`} aria-label={`React with ${e}`} onClick={() => doReact(m.id, e)}>{e}</button>
                         ))}
-                        <button title="More reactions" onClick={() => setReactFor(reactFor === m.id ? null : m.id)}><CI name="smile" /></button>
+                        {A.react && <button title="More reactions" onClick={() => setReactFor(reactFor === m.id ? null : m.id)}><CI name="smile" /></button>}
                         <button title="Reply" onClick={() => setReplyTo(m)}><CI name="reply" /></button>
                         {A.pin && <button title={m.pinned ? 'Unpin' : 'Pin'} onClick={() => doPin(m)}><CI name="pin" /></button>}
                         <button title="More" onClick={() => setMenuFor(menuFor === m.id ? null : m.id)}><CI name="more" /></button>
@@ -973,8 +993,8 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
                   </div>
                   {menuFor === m.id && (
                     <div className="cv-menu">
-                      {isMine && m.kind === 'text' && <button onClick={() => { setEditing({ id: m.id, text: m.body || '' }); setMenuFor(null); }}><CI name="pencil" /> Edit</button>}
-                      {isMine && <button onClick={() => doDelete(m)}><CI name="trash" /> Delete</button>}
+                      {A.edit && isMine && m.kind === 'text' && <button onClick={() => { setEditing({ id: m.id, text: m.body || '' }); setMenuFor(null); }}><CI name="pencil" /> Edit</button>}
+                      {A.del && isMine && <button onClick={() => doDelete(m)}><CI name="trash" /> Delete</button>}
                       <button onClick={() => { setInfoFor(infoFor === m.id ? null : m.id); setMenuFor(null); }}><CI name="info" /> Message info</button>
                       <button onClick={() => doMarkUnreadHere(m)}><CI name="unread" /> Mark unread from here</button>
                     </div>

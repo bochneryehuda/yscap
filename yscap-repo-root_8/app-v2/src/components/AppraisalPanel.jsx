@@ -97,9 +97,17 @@ function ValueStory({ a }) {
   );
 }
 
+// The panel serves three surfaces: staff (full), the borrower's read-only property report, and the
+// TPO broker's read-only property report. `source` selects the channel; when unset it falls back to
+// the historic readOnly (borrower) / staff split, so every existing caller is unchanged.
+function photoFetcherFor(source, readOnly) {
+  if (source === 'tpo') return api.tpoAppraisalPhotoBlob;
+  return readOnly ? api.appraisalPhotoBlobBorrower : api.appraisalPhotoBlob;
+}
+
 // Photo gallery — fetches each stored photo as an authorated blob, shows a grid + a full-screen
 // lightbox. Object URLs are revoked on unmount so nothing leaks.
-function PhotoGallery({ photos, readOnly }) {
+function PhotoGallery({ photos, readOnly, source }) {
   const [urls, setUrls] = useState({});   // documentId -> objectURL
   const [failed, setFailed] = useState({}); // documentId -> true (fetch failed)
   const [open, setOpen] = useState(-1);
@@ -110,7 +118,7 @@ function PhotoGallery({ photos, readOnly }) {
   const photoKey = photos.map((p) => p.document_id).join(',');
   useEffect(() => {
     let alive = true;
-    const fetcher = readOnly ? api.appraisalPhotoBlobBorrower : api.appraisalPhotoBlob;
+    const fetcher = photoFetcherFor(source, readOnly);
     (async () => {
       for (const p of photos) {
         if (!alive) break;
@@ -126,7 +134,7 @@ function PhotoGallery({ photos, readOnly }) {
     })();
     return () => { alive = false; madeRef.current.forEach((u) => { try { URL.revokeObjectURL(u); } catch (_) { /* noop */ } }); madeRef.current = []; };
     // deps: photoKey (the id set) not `photos` (new array each load) — avoids needless refetch.
-  }, [photoKey, readOnly]);
+  }, [photoKey, readOnly, source]);
 
   if (!photos || !photos.length) return null;
   const withUrl = photos.filter((p) => urls[p.document_id]);
@@ -1253,7 +1261,7 @@ function ScoreCard({ score }) {
   );
 }
 
-export default function AppraisalPanel({ appId, readOnly = false, onSummary, reloadSignal = 0 }) {
+export default function AppraisalPanel({ appId, readOnly = false, onSummary, reloadSignal = 0, source = null }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -1263,7 +1271,11 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
   const load = useCallback(async () => {
     setLoading(true); setErr('');
     try {
-      const d = readOnly ? await api.appraisalGetBorrower(appId) : await api.appraisalGet(appId);
+      // Channel: 'tpo' (broker, borrower-safe) / borrower read-only / staff full. The TPO + borrower
+      // payloads are the SAME borrower-safe shape (built by one shared server fn), so the panel
+      // renders either read-only view identically.
+      const d = source === 'tpo' ? await api.tpoAppraisal(appId)
+        : readOnly ? await api.appraisalGetBorrower(appId) : await api.appraisalGet(appId);
       setData(d);
       if (onSummary) onSummary(d && d.appraisal ? (d.summary || null) : null);
     } catch (e) { setErr(e.message || 'Could not load the appraisal'); }
@@ -1271,7 +1283,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
     // reloadSignal is bumped by the parent when an appraisal is imported elsewhere
     // (e.g. an XML dropped on the appraisal-documents condition), so the findings
     // appear here immediately without a separate re-import.
-  }, [appId, onSummary, readOnly, reloadSignal]);
+  }, [appId, onSummary, readOnly, reloadSignal, source]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1381,7 +1393,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
         <>
           {/* ===== HERO: subject photo + address + the value story ===== */}
           <div style={{ display: 'grid', gridTemplateColumns: hero ? 'minmax(0,1.15fr) minmax(0,1fr)' : '1fr', gap: 16, alignItems: 'stretch', marginBottom: 18 }}>
-            {hero && <HeroPhoto photo={hero} readOnly={readOnly} />}
+            {hero && <HeroPhoto photo={hero} readOnly={readOnly} source={source} />}
             <div style={{ background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 14, padding: 18, minWidth: 0 }}>
               <div style={{ fontSize: 22, fontWeight: 600, fontFamily: 'var(--serif,Georgia,serif)', lineHeight: 1.15 }}>{or(a.subject_address)}</div>
               <div style={{ color: 'var(--muted,#4B585C)', marginBottom: 14, fontSize: 13.5 }}>
@@ -1462,7 +1474,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
 
           {/* ===== PHOTO GALLERY ===== */}
           {photos.length > 0 ? (
-            <PhotoGallery photos={photos} readOnly={readOnly} />
+            <PhotoGallery photos={photos} readOnly={readOnly} source={source} />
           ) : (
             <div className="appr-avoid appr-noprint" style={{ background: 'var(--paper,#F6F3EC)', border: '1px dashed var(--line,#E7E1D3)', borderRadius: 14, padding: 18, marginTop: 6, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
               <div style={{ flex: 1, minWidth: 200 }}>
@@ -1784,19 +1796,19 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
 }
 
 // Hero photo tile — loads its own blob (independent of the gallery so the hero shows immediately).
-function HeroPhoto({ photo, readOnly }) {
+function HeroPhoto({ photo, readOnly, source }) {
   const [url, setUrl] = useState('');
   const docId = photo && photo.document_id;
   useEffect(() => {
     let alive = true, made = '';
-    const fetcher = readOnly ? api.appraisalPhotoBlobBorrower : api.appraisalPhotoBlob;
+    const fetcher = photoFetcherFor(source, readOnly);
     (async () => {
       if (!docId) return;
       try { const blob = await fetcher(docId); if (!alive) return; made = URL.createObjectURL(blob); setUrl(made); }
       catch (_) { /* no hero image */ }
     })();
     return () => { alive = false; if (made) { try { URL.revokeObjectURL(made); } catch (_) { /* noop */ } } };
-  }, [docId, readOnly]);
+  }, [docId, readOnly, source]);
   return (
     <div style={{ borderRadius: 14, overflow: 'hidden', border: '1px solid var(--line,#E7E1D3)', background: 'var(--line-soft,#EFEADD)', minHeight: 200, display: 'flex' }}>
       {url
