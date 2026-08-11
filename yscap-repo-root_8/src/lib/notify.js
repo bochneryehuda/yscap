@@ -1320,9 +1320,14 @@ async function notifyAppStaffThread(appId, opts = {}) {
       // ACTIVE assignees only, with a real address — the same roster notifyAppStaff fans out to.
       // Roles ride along for the role-scope filter (owner-directed 2026-08-10): a closer's
       // address must not be a visible To recipient on every internal draw thread.
+      // is_external=false: an EXTERNAL (TPO / broker) user IS the loan-officer assignee on their
+      // firm's files, and this path emails a DIRECT To list (not per-recipient notifyStaff, whose
+      // external early-return would otherwise catch it), so without this the broker would receive
+      // internal-format staff threads (note-buyer names, internal money). A broker's visibility is
+      // the /api/tpo surface only (TPO PORTAL invariant, CLAUDE.md) — same filter as notifyAppStaff.
       `SELECT su.email, array_agg(DISTINCT aa.role) AS roles
          FROM application_assignees aa
-         JOIN staff_users su ON su.id = aa.staff_id AND su.is_active = true
+         JOIN staff_users su ON su.id = aa.staff_id AND su.is_active = true AND su.is_external = false
         WHERE aa.application_id=$1 AND aa.removed_at IS NULL AND aa.staff_id IS NOT NULL
           AND COALESCE(su.email,'') <> ''
         GROUP BY su.email`, [appId])).rows

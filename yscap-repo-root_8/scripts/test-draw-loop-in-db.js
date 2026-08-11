@@ -81,7 +81,7 @@ async function fanOut(appId, opts) {
 }
 
 // ---- fixtures ---------------------------------------------------------------
-const ids = { staff: [], borrowers: [], apps: [] };
+const ids = { staff: [], borrowers: [], apps: [], firms: [] };
 async function seedStaff(role, name, { active = true } = {}) {
   const id = crypto.randomUUID();
   await db.query(`INSERT INTO staff_users (id, email, full_name, role, is_active) VALUES ($1,$2,$3,$4,$5)`,
@@ -355,6 +355,48 @@ async function main() {
       '…and no longer through the old notifyAppStaff(condition_added)');
   }
 
+  // -------------------------------------------------------------------------
+  console.log('\n8b. A TPO BROKER is never a recipient of an internal draw thread or draw loop-in');
+  // -------------------------------------------------------------------------
+  // On a TPO file the loan_officer IS the external broker (TPO identity model). The broker's
+  // visibility is the /api/tpo surface ONLY — they must never receive an internal-format staff
+  // draw thread (note-buyer names, internal money) nor be looped into a draw email. This pins the
+  // is_external=false filter on notifyAppStaffThread + the draw-recipient resolvers (firm-isolation
+  // is the #1 TPO risk, CLAUDE.md). notifyStaff's external early-return does NOT cover the thread
+  // path — it emails a direct To list — so the filter has to live on the query itself.
+  {
+    const firmId = (await db.query(`INSERT INTO tpo_firms (name) VALUES ($1) RETURNING id`, [`Firm ${TAG}`])).rows[0].id;
+    ids.firms.push(firmId);
+    const brokerId = crypto.randomUUID();
+    const brokerEmail = E('broker');
+    await db.query(
+      `INSERT INTO staff_users (id, email, full_name, role, is_active, is_external, tpo_firm_id)
+       VALUES ($1,$2,'Broker Bob','tpo_officer',true,true,$3)`, [brokerId, brokerEmail, firmId]);
+    ids.staff.push(brokerId);
+    // Our internal account-executive on the same file — this one MUST stay reachable on staff threads.
+    const ae = await seedStaff('loan_officer', 'aeInternal');
+    const tpoApp = await seedApp({ borrowerId: borrower.id, officerId: brokerId });
+    await db.query(`UPDATE applications SET is_tpo=true, tpo_firm_id=$2 WHERE id=$1`, [tpoApp, firmId]);
+    await db.query(
+      `INSERT INTO application_assignees (application_id, staff_id, role, is_primary) VALUES ($1,$2,'account_executive',false)
+       ON CONFLICT DO NOTHING`, [tpoApp, ae.id]);
+
+    const loEmails = await dr.fileLoanOfficerEmails(tpoApp);
+    ok(!loEmails.includes(brokerEmail), 'fileLoanOfficerEmails EXCLUDES the external broker (never looped into a draw email)');
+    const loopT = await dr.drawLoopInBcc(tpoApp);
+    ok(!loopT.includes(brokerEmail), 'drawLoopInBcc EXCLUDES the external broker');
+    ok(loopT.includes(dr.DRAW_DESK_INBOX), '…while the internal draws@ desk is still on it');
+
+    // The internal STAFF draw thread must reach our AE but NEVER the broker.
+    sends = [];
+    await notify.notifyAppStaffThread(tpoApp, { type: 'draw_inbound', title: 'A draw was inspected', body: 'internal', applicationId: tpoApp });
+    await notify.drainEmails();
+    const allTo = new Set();
+    for (const c of sends) for (const e of [].concat(c.to || [])) allTo.add(lower(e));
+    ok(!allTo.has(brokerEmail), 'notifyAppStaffThread never puts the external broker on the To of an internal draw thread');
+    ok(allTo.has(ae.email), '…while our internal account-executive on the file IS reached (the thread is not vacuously empty)');
+  }
+
   console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
 }
 
@@ -371,6 +413,8 @@ main()
     }
     await db.query(`DELETE FROM borrowers WHERE id = ANY($1)`, [ids.borrowers]).catch(() => {});
     await db.query(`DELETE FROM staff_users WHERE id = ANY($1)`, [ids.staff]).catch(() => {});
+    // Firms LAST — applications + staff_users carry a tpo_firm_id FK into tpo_firms.
+    await db.query(`DELETE FROM tpo_firms WHERE id = ANY($1)`, [ids.firms]).catch(() => {});
     await db.pool.end().catch(() => {});
     process.exit(fail === 0 ? 0 : 1);
   });
