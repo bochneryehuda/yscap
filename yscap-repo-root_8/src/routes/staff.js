@@ -11185,6 +11185,16 @@ router.post('/track-records/:id/verify', async (req, res) => {
   // condition, so — exactly like the LLC unverify (#125/#147) — it REQUIRES a
   // reason the borrower is shown and it notifies them.
   const isRevoke = wasVerified && !counts;
+  // QUIET REVOKE (owner-directed 2026-08-11): a line marked "verified" BY MISTAKE
+  // should be flippable back to pending review WITHOUT emailing the borrower —
+  // there is nothing for them to act on, so a "your verification was revoked"
+  // notice would only confuse them. `silent` is an EXPLICIT opt-in the caller
+  // must ASK for (never inferred from the role — mirrors the adminOverride
+  // pattern), and only ever applies on a revoke. The tier recompute + experience-
+  // condition reopen still run: a mistakenly-verified line genuinely should not
+  // count, so the file must reflect that; only the borrower NOTIFICATION is
+  // suppressed.
+  const silent = isRevoke && !!(req.body && req.body.silent === true);
   // Marking a line item verified/limited COUNTS toward the experience tier and
   // drives the experience condition to satisfied — a sign-off, so processor-only
   // (#126). A non-counting status (pending/docs) is a review action anyone may set.
@@ -11216,7 +11226,10 @@ router.post('/track-records/:id/verify', async (req, res) => {
     }
   }
   const reason = String((req.body && req.body.reason) || '').trim().slice(0, 500);
-  if (isRevoke && !reason) {
+  // A loud revoke needs a reason (the borrower is shown it). A QUIET revoke does
+  // not — the borrower never sees it — so the reason is optional there and, when
+  // given, becomes an internal note on the audit trail only.
+  if (isRevoke && !reason && !silent) {
     return res.status(400).json({ error: 'a reason is required to revoke verification — the borrower is told why' });
   }
   /* D16 — THE ORPHAN. Setting a line to "needs documents" used to write ONE
@@ -11255,14 +11268,18 @@ router.post('/track-records/:id/verify', async (req, res) => {
   // Tier / verified-experience counts are rule-engine fields.
   try { await conditionEngine.evaluateBorrowerApplications(tr.rows[0].borrower_id, { actor: req.actor, reason: isRevoke ? 'track_record_unverified' : 'track_record_verified' }); } catch (_) {}
   if (isRevoke) {
-    await audit(req, 'unverify_track_record', 'track_record', req.params.id, { status, reason });
-    const addr = (tr.rows[0].property_address && (tr.rows[0].property_address.oneLine || tr.rows[0].property_address.line1)) || 'a property';
-    try {
-      await notify.notifyBorrower(tr.rows[0].borrower_id, {
-        type: 'track_record_unverified', title: 'A track-record project needs attention', badge: { text: 'Action needed', tone: 'action' },
-        body: `Verification of your project at ${addr} was revoked: ${reason}. Please review it and its documents on your track record.`,
-        link: '/track-record', ctaLabel: 'Review your track record' });
-    } catch (_) { /* best-effort */ }
+    await audit(req, 'unverify_track_record', 'track_record', req.params.id, { status, reason, silent });
+    // A quiet revoke skips the borrower notification entirely (see `silent`
+    // above) — the audit row still records that the action happened, and why.
+    if (!silent) {
+      const addr = (tr.rows[0].property_address && (tr.rows[0].property_address.oneLine || tr.rows[0].property_address.line1)) || 'a property';
+      try {
+        await notify.notifyBorrower(tr.rows[0].borrower_id, {
+          type: 'track_record_unverified', title: 'A track-record project needs attention', badge: { text: 'Action needed', tone: 'action' },
+          body: `Verification of your project at ${addr} was revoked: ${reason}. Please review it and its documents on your track record.`,
+          link: '/track-record', ctaLabel: 'Review your track record' });
+      } catch (_) { /* best-effort */ }
+    }
   } else {
     await audit(req, 'verify_track_record', 'track_record', req.params.id, { status });
   }
@@ -11299,7 +11316,7 @@ router.post('/track-records/:id/verify', async (req, res) => {
   // Live cross-user refresh (#112): the borrower + other staff see the new
   // verification badge / revoke on the line item immediately.
   require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
-  res.json({ ok: true, status, revoked: isRevoke, request, requestError });
+  res.json({ ok: true, status, revoked: isRevoke, silent, request, requestError });
 });
 
 // ---------------- raise an issue against a track-record line item / an LLC ----------------
