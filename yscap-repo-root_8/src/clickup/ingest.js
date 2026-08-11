@@ -832,14 +832,21 @@ const _addrOf = (v) => (v && (v.formatted_address || v.oneLine)) || null;
  *   'overwrite'     — a genuinely different place → let the COALESCE write it (a
  *                     real ClickUp property edit flows in; on a USPS file the
  *                     db/379+415 trigger then re-verifies the NEW property).
- * The USPS branch is checked LAST, so the ZIP-authoritative sameAddress always
- * decides a same-ZIP/different-city-LABEL echo first — sameProperty only ever
- * ADDS the same-city ZIP-diff case on top. Pure; never throws.
+ * The USPS branch is checked after sameAddress, so the ZIP-authoritative sameAddress
+ * decides a same-ZIP/different-city-LABEL echo (Cedarhurst/Hempstead) — for which
+ * sameProperty would say "different" — while sameProperty only ever ADDS the
+ * same-city ZIP-diff case on top. All three "keep ours" branches drop the write, so
+ * their relative order changes only the returned label, never the outcome.
+ *
+ * The house-number gate uses `parseAddressParts` — the SAME parser as
+ * sameAddress/sameProperty — so a leading descriptive part ("Bedford Gardens, 74
+ * Ross St") still yields house "74" and can't be misread as street-only garbage.
+ * Pure; never throws.
  */
 function inboundAddressDecision({ oursText, theirsText, uspsImported }) {
   const ADDR = require('../lib/address');
-  const ourHouse = oursText ? ADDR.houseNumberOf(ADDR.parseAddress(oursText).line1) : '';
-  const theirHouse = theirsText ? ADDR.houseNumberOf(ADDR.parseAddress(theirsText).line1) : '';
+  const ourHouse = oursText ? (ADDR.parseAddressParts(oursText).house || '') : '';
+  const theirHouse = theirsText ? (ADDR.parseAddressParts(theirsText).house || '') : '';
   if (ourHouse && !theirHouse) return 'no_house';
   if (oursText && theirsText && ADDR.sameAddress(oursText, theirsText)) return 'same_address';
   if (uspsImported && oursText && theirsText && ADDR.sameProperty(oursText, theirsText)) return 'same_property';
@@ -1979,9 +1986,12 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
       // db/379+db/415 trigger then wipes the stamp and reopens the verification to
       // re-verify the NEW property — the deliberate safe default (db/415:
       // "over-matching would leave a USPS stamp standing on a different property").
-      // The outbound never PUSHES a non-sameProperty form (it keeps our USPS text
-      // when Google drifts across a city line), so this is only ever a genuine human
-      // re-type in ClickUp.
+      // The outbound only ever pushes the SAME building — a geocodeRewriteIsSafe
+      // restyle (same house/ZIP) or, on a USPS file, a sameProperty same-city form —
+      // never a different-CITY form (it keeps our USPS text when Google drifts across
+      // a city line), and a same-city ZIP relabel is caught here by sameAddress or
+      // sameProperty. So a value that reaches this branch is a genuinely different
+      // place — in practice a real human re-type in ClickUp.
     } catch (_) { /* best-effort — a guard failure must never break the inbound pull */ }
   }
 

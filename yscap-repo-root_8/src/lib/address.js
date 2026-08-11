@@ -807,6 +807,18 @@ function sameAddress(a, b) {
  * DIFFERENT cities is NOT tolerated — that is the Piscataway/Plainfield trap (one
  * street number, two cities, two ZIPs, two different buildings ~130m apart).
  *
+ * WHY a same-city ZIP difference is safe to fold together: a (house number, street,
+ * city) tuple names ONE physical building — US addressing assigns it a single
+ * canonical ZIP — so two records that agree on all three and disagree only on the
+ * ZIP are the same building wearing two postal labels (USPS's verified ZIP vs
+ * Google's), never two different buildings. A genuine move to a DIFFERENT building
+ * changes the house number, street, or city, all of which this still rejects. The
+ * one residual is a city that reuses a street name across two ZIP areas WITHOUT a
+ * directional ("100 Main St" in two neighborhoods) — vanishingly rare, indistinct
+ * from a USPS↔Google label difference, and on the only path that matters (a
+ * USPS-verified file) the USPS ZIP we keep is the human-verified one. This tolerance
+ * is exactly what the owner asked for ("understand that it's the same address").
+ *
  * Used ONLY where USPS and Google spellings of ONE verified address must be
  * recognized as the same place: the ClickUp OUTBOUND Google-form preference and
  * the INBOUND USPS-survival guard (owner-directed 2026-08-11 — "they should

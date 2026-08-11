@@ -74,6 +74,24 @@ const zipOf = (s) => (String(s || '').match(/\b(\d{5})\b/) || [])[1] || '';
   out = await orchestrator.withCoords(untouched, { preferProvider: true });
   ok(out === untouched, 'an unresolvable address is returned unchanged');
 
+  // ── A2. the row→preferProvider gate itself (uspsVerifiedSubject) ─────────────
+  // Pinned directly: mutating this function to `true`/`false` must FAIL a test, or a
+  // regression that turns the outbound Google-preference on for non-adopted files —
+  // or kills it entirely — would ship green.
+  const uvs = orchestrator.uspsVerifiedSubject;
+  ok(uvs({ usps_match: 'verified', usps_imported_at: '2026-08-11T00:00:00Z' }) === true,
+    'verified + imported → preferProvider ON');
+  ok(uvs({ usps_match: 'corrected', usps_imported_at: '2026-08-11T00:00:00Z' }) === true,
+    'corrected + imported → preferProvider ON');
+  ok(uvs({ usps_match: 'VERIFIED', usps_imported_at: '2026-08-11T00:00:00Z' }) === true,
+    'the verdict is compared case-insensitively (mirrors preferredFinancingAddress)');
+  ok(uvs({ usps_match: 'verified', usps_imported_at: null }) === false,
+    'verified but NOT human-imported → OFF (a staged proposal is not adoption)');
+  ok(uvs({ usps_match: 'unverified', usps_imported_at: '2026-08-11T00:00:00Z' }) === false,
+    'a non-verified verdict → OFF even with an import stamp');
+  ok(uvs({ usps_match: null, usps_imported_at: null }) === false && uvs({}) === false && uvs(null) === false,
+    'a blank/absent stamp → OFF (never throws)');
+
   // ── B. DECISION — the ONE inbound rule ──────────────────────────────────────
   const decide = (o, t, usps) => ingest.inboundAddressDecision({ oursText: o, theirsText: t, uspsImported: usps });
   ok(decide('1727 S 2nd St, Piscataway, NJ 08854', '1727 S 2nd St, Piscataway, NJ 07063', true) === 'same_property',
@@ -86,6 +104,8 @@ const zipOf = (s) => (String(s || '').match(/\b(\d{5})\b/) || [])[1] || '';
     'USPS file + different-city jump → overwrite (re-verify the new property)');
   ok(decide('312 Main St, Newark, NJ 07102', '', true) === 'no_house',
     'inbound with no house number → no_house (keep ours, re-push)');
+  ok(decide('Bedford Gardens, 74 Ross St, Brooklyn, NY 11205', 'Ross St, Brooklyn, NY 11205', true) === 'no_house',
+    'our address has a leading descriptive part but the house (74) is still read → no_house (one parser, not two)');
   ok(decide('755 Bedford Ave, Brooklyn, NY 11206', '702 Bedford Ave, Brooklyn, NY 11206', true) === 'overwrite',
     'a genuinely different house on a USPS file → overwrite');
   // never throws on hostile input
