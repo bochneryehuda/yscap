@@ -3,7 +3,7 @@
  * DB-gated test for the closing workspace — exercises the REAL queries against a
  * real schema (a pure/mock test can't catch a wrong-column bug). Covers:
  *   - ensureClosingConditions attaches the 3 closing document conditions (idempotent)
- *   - the Encompass funded-date read (field 1401 via closingDocument.fundingDate)
+ *   - the Encompass funded-date read (CX.FUNDEDDATE, loanPath closingDocument.fundingDate)
  *   - reconcileClosingDates across match / missing / mismatch / Encompass-N/A
  *   - getClosingWorkspace returns a coherent payload
  *   - the closer checklist create + read flow
@@ -28,7 +28,8 @@ const ok = (c, n) => { assert.ok(c, n); console.log(`  ok  ${n}`); passed++; };
     const b = (await client.query(
       `INSERT INTO borrowers (first_name,last_name,email,date_of_birth)
          VALUES ('Close','Test',$1,'1985-03-10') RETURNING id`, [email])).rows[0];
-    // encompass_extra carries the funded date at the standard 1401 loanPath. A real
+    // encompass_extra carries the funded date at the closingDocument.fundingDate
+    // loanPath (the JSON fallback; NOT field 1401, which is the loan program). A real
     // Encompass loan always has a customFields[] array (that's what triggers the
     // field-map's flattenLoan → standard loanPath resolution).
     const loan = { customFields: [], closingDocument: { fundingDate: '2026-07-10' } };
@@ -75,9 +76,10 @@ const ok = (c, n) => { assert.ok(c, n); console.log(`  ok  ${n}`); passed++; };
     ok(conds.includes('closing_hud_final') && conds.includes('closing_pkg_signed') && conds.includes('closing_tracking_label'), 'the 3 closing conditions are present');
 
     // Encompass funded date reads from encompass_extra via the read-only field map.
-    // The FALLBACK path (standard field 1401 = closingDocument.fundingDate) still works.
+    // The FALLBACK path (the JSON loanPath closingDocument.fundingDate) still works.
+    // NOTE: NOT field 1401 — that is the Encompass loan program, never a date.
     const encRow = (await client.query(`SELECT encompass_extra FROM applications WHERE id=$1`, [appId])).rows[0];
-    ok(closing.readEncompassFundedDate(encRow) === '2026-07-10', 'Encompass funded date falls back to std 1401 (closingDocument.fundingDate)');
+    ok(closing.readEncompassFundedDate(encRow) === '2026-07-10', 'Encompass funded date falls back to the loanPath closingDocument.fundingDate');
 
     // THE PRIMARY read: the tenant's CX.FUNDEDDATE custom field, in the fieldReader's
     // MM/DD/YYYY display format — normalized to ISO (owner-reported 2026-08-11).

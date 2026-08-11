@@ -248,7 +248,8 @@ async function runCashToCloseCheck(appId, actualCashToClose, client) {
 
 // ---------------------------------------------------------------------------
 // Encompass funded date (READ-ONLY) — the tenant's CX.FUNDEDDATE custom field
-// (standard field 1401 as a fallback), pulled from the scrubbed loan in
+// (closingDocument.fundingDate as a JSON fallback; NEVER field 1401, which is the
+// loan program, not a date), pulled from the scrubbed loan in
 // applications.encompass_extra via the read-only field map. Returns null when the
 // file isn't linked / the field is empty (never guesses). The value arrives in the
 // tenant's display format (MM/DD/YYYY) OR ISO depending on the read path, so it is
@@ -284,7 +285,7 @@ function decideReconcile({ ours, clickup, encompass, encLinked }) {
   if (enc == null) encStatus = encLinked ? 'missing' : 'na';
   else encStatus = sameDay(o, enc) ? 'match' : 'mismatch';
   // Encompass leg: a PRESENT-but-disagreeing funded date blocks (a real conflict);
-  // a linked-but-EMPTY date is ADVISORY only — Encompass field 1401 population is
+  // a linked-but-EMPTY date is ADVISORY only — CX.FUNDEDDATE population is
   // tenant-dependent, so its absence must never permanently stall reconciliation.
   if (encStatus === 'missing') advisories.push('Encompass has no funded date yet — confirm it there once it posts.');
   if (encStatus === 'mismatch' && o) reasons.push(`Funded dates disagree — PILOT ${o} vs Encompass ${enc}.`);
