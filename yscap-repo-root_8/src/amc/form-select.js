@@ -82,6 +82,7 @@ function chooseForm(deal, rules) {
   const win = candidates[0];
   return {
     productCode: String(win.product_code),
+    productName: win.product_name != null && String(win.product_name).trim() ? String(win.product_name).trim() : null,
     subproductCodes: Array.isArray(win.subproduct_codes) ? win.subproduct_codes.map(String) : [],
     amcIdentifier: win.amc_identifier != null ? String(win.amc_identifier) : null,
     ruleId: win.id != null ? win.id : null,

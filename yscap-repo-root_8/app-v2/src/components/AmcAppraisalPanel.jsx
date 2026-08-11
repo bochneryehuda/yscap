@@ -39,13 +39,15 @@ export default function AmcAppraisalPanel({ appId }) {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
+  // A staff-picked form (productCode) that overrides the auto-pick. '' = use the default.
+  const [formOverride, setFormOverride] = useState('');
 
   const load = useCallback(async () => {
     setErr(''); setLoading(true);
     try {
       const [cfg, pv, od] = await Promise.all([
         api.amcConfig().catch(() => null),
-        api.amcPreview(appId).catch(() => null),
+        api.amcPreview(appId, formOverride ? { productCode: formOverride } : undefined).catch(() => null),
         api.amcOrders(appId).catch(() => ({ orders: [] })),
       ]);
       setConfig(cfg && cfg.amc ? cfg.amc : null);
@@ -53,14 +55,14 @@ export default function AmcAppraisalPanel({ appId }) {
       setOrders((od && od.orders) || []);
     } catch (e) { setErr(e.message || 'Could not load appraisal ordering.'); }
     setLoading(false);
-  }, [appId]);
+  }, [appId, formOverride]);
 
   useEffect(() => { load(); }, [load]);
 
   const place = useCallback(async (doPlace) => {
     setBusy(true); setNotice(''); setErr('');
     try {
-      const out = await api.amcPlaceOrder(appId, { place: doPlace });
+      const out = await api.amcPlaceOrder(appId, { place: doPlace, ...(formOverride ? { productCode: formOverride } : {}) });
       if (!out.ok) {
         setErr(out.missing && out.missing.length ? ('Still needed: ' + out.missing.join(', ')) : (out.message || 'Could not place the order.'));
       } else {
@@ -70,7 +72,7 @@ export default function AmcAppraisalPanel({ appId }) {
       }
     } catch (e) { setErr(e.message || 'Could not place the order.'); }
     setBusy(false);
-  }, [appId, load]);
+  }, [appId, load, formOverride]);
 
   if (loading) return <div style={{ color: MUTED, padding: 12 }}>Loading appraisal ordering…</div>;
 
@@ -126,24 +128,47 @@ export default function AmcAppraisalPanel({ appId }) {
       {!notConfigured && preview ? (
         <div style={{ marginTop: 14 }}>
           <SectionTitle>Order an appraisal</SectionTitle>
-          <PreviewCard preview={preview} busy={busy} onDraft={() => place(false)} onPlace={() => place(true)} outbound={config.outbound} />
+          <PreviewCard preview={preview} busy={busy} onDraft={() => place(false)} onPlace={() => place(true)} outbound={config.outbound}
+            formValue={formOverride || (preview.spec && preview.spec.productCode) || ''} onPickForm={setFormOverride} />
         </div>
       ) : null}
     </div>
   );
 }
 
-function PreviewCard({ preview, busy, onDraft, onPlace, outbound }) {
+function PreviewCard({ preview, busy, onDraft, onPlace, outbound, formValue, onPickForm }) {
   const spec = preview.spec || {};
-  const form = preview.chosenForm || {};
   const missing = preview.missing || [];
   const card = preview.card || {};
   const prop = spec.property || {};
   const loan = spec.loan || {};
+  const forms = preview.forms || [];
+  const notifyEmails = preview.notifyEmails || [];
+  const code = String(formValue || spec.productCode || '');
+  const chosenName = preview.chosenFormName || (forms.find((f) => String(f.id) === code) || {}).name || null;
   return (
     <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 12 }}>
+      {/* Which appraisal form — shown by NAME, and changeable (default is auto-picked). */}
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 11, color: MUTED, textTransform: 'uppercase', letterSpacing: 0.3 }}>Form</div>
+        <div style={{ fontWeight: 600, color: INK, marginTop: 2 }}>
+          {chosenName || (code ? 'Form #' + code : 'No default for this deal — pick one below')}
+          {code ? <span style={{ color: MUTED, fontWeight: 400 }}> · #{code}</span> : null}
+        </div>
+        {forms.length ? (
+          <select value={code} onChange={(e) => onPickForm(e.target.value)}
+            style={{ marginTop: 6, maxWidth: '100%', border: `1px solid ${LINE}`, borderRadius: 8, padding: '7px 8px', color: INK, background: '#fff', fontSize: 14 }}>
+            {!code ? <option value="">Choose a form…</option> : null}
+            {forms.map((f) => (
+              <option key={f.id} value={String(f.id)}>{f.name ? (f.name + ' (#' + f.id + ')') : ('Form #' + f.id)}</option>
+            ))}
+          </select>
+        ) : (
+          <div style={{ fontSize: 12, color: MUTED, marginTop: 4 }}>The form list isn’t loaded yet — it fills in once the appraisal catalog syncs.</div>
+        )}
+      </div>
+
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
-        <Field label="Form">{form.productCode ? ('#' + form.productCode) : 'auto-select pending'}</Field>
         <Field label="Loan #">{spec.clientOrderNumber || '—'}</Field>
         <Field label="Property">{[prop.addressLine, prop.city, prop.state].filter(Boolean).join(', ') || '—'}</Field>
         <Field label="Type">{prop.titleCategory || '—'}</Field>
@@ -160,6 +185,12 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound }) {
       ) : (
         <div style={{ marginTop: 10, color: '#1E7B4F', fontSize: 13 }}>Ready to order.</div>
       )}
+
+      {notifyEmails.length ? (
+        <div style={{ marginTop: 10, fontSize: 12, color: MUTED }}>
+          Update emails from the appraiser will go to: <span style={{ color: INK }}>{notifyEmails.join(', ')}</span>
+        </div>
+      ) : null}
 
       <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
         <button className="btn soft" disabled={busy} onClick={onDraft}>Save draft</button>

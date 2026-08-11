@@ -20,6 +20,11 @@ if (!process.env.DATABASE_URL) {
   process.exit(0);
 }
 
+// Pin the tenant environment so the form-map rows this test inserts (tagged 'uat')
+// match what formRules filters on, deterministically — regardless of AMC_ORDER_URL.
+// Must be set BEFORE order-service (→ config) is required.
+process.env.AMC_ENVIRONMENT = 'uat';
+
 const { Pool } = require('pg');
 const orderService = require(path.join(ROOT, 'src/amc/order-service'));
 
@@ -42,23 +47,40 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     const borrowerId = bo.rows[0].id;
 
     const llc = await c.query(`INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,'PP Holdings LLC') RETURNING id`, [borrowerId]);
+
+    // A loan officer + processor on the file — their emails must ride the order's
+    // update-notification list (owner-directed contacts).
+    const stamp = Date.now();
+    const lo = await c.query(
+      `INSERT INTO staff_users (email, full_name, role, is_active) VALUES ($1,'Officer O','loan_officer',true) RETURNING id`,
+      [`amc-lo-${stamp}@example.com`]);
+    const pr = await c.query(
+      `INSERT INTO staff_users (email, full_name, role, is_active) VALUES ($1,'Proc P','processor',true) RETURNING id`,
+      [`amc-pr-${stamp}@example.com`]);
+
     const app = await c.query(
       `INSERT INTO applications
          (borrower_id, llc_id, ys_loan_number, program, loan_type, property_address,
-          property_type, occupancy, purchase_price, loan_amount, est_closing_date)
+          property_type, occupancy, purchase_price, loan_amount, est_closing_date,
+          loan_officer_id, processor_id)
        VALUES ($1,$2,'YSCAP-AMC-1','bridge','Purchase',
           '{"street":"12 Oak St","city":"Brooklyn","state":"NY","zip":"11249","county":"Kings"}',
-          'SFR','Investment',400000,300000,'2026-09-15')
-       RETURNING id`, [borrowerId, llc.rows[0].id]);
+          'SFR','Investment',400000,300000,'2026-09-15',$3,$4)
+       RETURNING id`, [borrowerId, llc.rows[0].id, lo.rows[0].id, pr.rows[0].id]);
     const appId = app.rows[0].id;
 
-    // A form-map rule so the preview auto-picks a form.
+    // A form-map rule so the preview auto-picks a form (tagged for THIS environment,
+    // carrying a human name).
     await c.query(
-      `INSERT INTO amc_form_map (program, property_category, loan_purpose, product_code, subproduct_codes, amc_identifier, priority, active)
-       VALUES ('bridge', NULL, NULL, '5', ARRAY['7'], '426', 10, true)`);
+      `INSERT INTO amc_form_map (program, property_category, loan_purpose, product_code, product_name, subproduct_codes, amc_identifier, priority, active, environment)
+       VALUES ('bridge', NULL, NULL, '5', 'Bridge SFR appraisal (test)', ARRAY['7'], '426', 10, true, 'uat')`);
     // A wildcard fallback that should LOSE to the specific bridge rule.
     await c.query(
-      `INSERT INTO amc_form_map (program, product_code, priority, active) VALUES (NULL, '1', 100, true)`);
+      `INSERT INTO amc_form_map (program, product_code, priority, active, environment) VALUES (NULL, '1', 100, true, 'uat')`);
+    // A DECOY from the OTHER environment: lowest priority, so if it were read it would
+    // win — proving the environment filter excludes it.
+    await c.query(
+      `INSERT INTO amc_form_map (program, product_code, priority, active, environment) VALUES ('bridge', 'PROD-ONLY', 1, true, 'production')`);
 
     // The appraisal_card condition, so cardStatus can read it.
     await c.query(
@@ -78,10 +100,24 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     ok(ctx.borrowers[0].residence && ctx.borrowers[0].residence.city === 'NYC', 'borrower residence parsed');
     ok(ctx.card && ctx.card.conditionStatus === 'outstanding' && ctx.card.onFile === false, 'card status: condition present, no card yet');
 
+    // ---- contacts: the LO + processor + borrower emails ride the update-notify list ----
+    ok(Array.isArray(ctx.notifyEmails), 'loadContext returns notifyEmails');
+    ok(ctx.notifyEmails.includes(`amc-lo-${stamp}@example.com`), 'loan officer email on the notify list');
+    ok(ctx.notifyEmails.includes(`amc-pr-${stamp}@example.com`), 'processor email on the notify list');
+    ok(ctx.notifyEmails.some((e) => e.startsWith('amc-test-')), 'borrower email on the notify list');
+
     // ---- buildPreview: auto-picks the specific form + fills the spec ----
     const preview = await orderService.buildPreview(c, appId);
-    ok(preview && preview.chosenForm && preview.chosenForm.productCode === '5', 'preview auto-picks the specific bridge form (not the wildcard)');
+    ok(preview && preview.chosenForm && preview.chosenForm.productCode === '5', 'preview auto-picks the specific bridge form (not the wildcard, and not the wrong-environment decoy)');
+    ok(preview.chosenForm.productName === 'Bridge SFR appraisal (test)', 'chosenForm carries the human name (product_name now selected)');
+    ok(preview.chosenFormName === 'Bridge SFR appraisal (test)', 'preview exposes chosenFormName for the UI');
     ok(preview.chosenForm.amcIdentifier === '426', 'preview carries the preferred AMC');
+    // The form dropdown catalog includes the mapped form (with its name), even without a live GetJobType cache.
+    ok(Array.isArray(preview.forms) && preview.forms.some((f) => String(f.id) === '5' && f.name === 'Bridge SFR appraisal (test)'), 'forms catalog includes the mapped form with its name');
+    ok(!preview.forms.some((f) => String(f.id) === 'PROD-ONLY'), 'the production-only decoy is not offered in a UAT service');
+    // The order-update recipients are surfaced on the preview.
+    ok(Array.isArray(preview.notifyEmails) && preview.notifyEmails.length >= 3, 'preview exposes the update-email recipients');
+    ok(preview.spec.notifyEmails && preview.spec.notifyEmails.length >= 3, 'the spec carries the notify emails → products[].notifications');
     ok(preview.spec.loan.loanNumber === 'YSCAP-AMC-1' && preview.spec.property.titleCategory === 'Single Family', 'spec filled from the file');
     ok(preview.canPlace === true && preview.missing.length === 0, 'preview is complete → placeable');
 
@@ -104,6 +140,16 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     const rctx = await orderService.loadContext(c, refi.rows[0].id);
     ok(rctx.property.salesContractAmount == null, 'refinance carries no sales-contract amount');
     ok(rctx.loanPurpose === 'Refi Cash-Out', 'refinance loan purpose carried through');
+
+    // ---- environment fallback (the shipped seed is production-only; a service whose
+    //      environment has no rules must still auto-pick, not come back empty) ----
+    // Remove every rule tagged for THIS ('uat') environment. The remaining rows are the
+    // db/481 production seed + the production 'PROD-ONLY' decoy — a different environment
+    // than the service is pointed at. formRules must fall back to them rather than starve.
+    await c.query(`DELETE FROM amc_form_map WHERE environment = 'uat'`);
+    const fellBack = await orderService.formRules(c);
+    ok(fellBack.length > 0, 'formRules falls back to another environment when this one has no rules (never starved)');
+    ok(fellBack.some((r) => r.product_code === 'PROD-ONLY'), 'the fallback reaches the production rules so a default still auto-picks');
 
     await c.query('ROLLBACK');
   } catch (e) {
