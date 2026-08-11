@@ -145,13 +145,14 @@ const exts = (arr) => arr.map(([doc_type, status = 'analyzed', confidence = 'ana
   assert.strictEqual(generic.stipulations.find((s) => s.docType === 'bank_statement').label,
     'Bank statements (proof of funds)', 'no program month count → generic label');
 
-  // Gold (2 months) / Standard (1 month) reflected in the label; gating/status unaffected.
+  // The registered month count relabels the bank-statement row (every program now requires two).
   const gold = assessCompleteness({ isEntity: false, program: 'gold', bankStmtMonths: 2 }, [], []);
   assert.strictEqual(gold.stipulations.find((s) => s.docType === 'bank_statement').label,
-    'Bank statements — 2 months (proof of funds)', 'Gold shows 2 months');
-  const standard = assessCompleteness({ isEntity: false, program: 'standard', bankStmtMonths: 1 }, [], []);
-  assert.strictEqual(standard.stipulations.find((s) => s.docType === 'bank_statement').label,
-    'Bank statements — 1 month (proof of funds)', 'Standard shows 1 month (singular)');
+    'Bank statements — 2 months (proof of funds)', 'a 2-month count shows "2 months"');
+  // A 1-month count still renders singular — rendering coverage for the pluralization branch.
+  const oneMonth = assessCompleteness({ isEntity: false, bankStmtMonths: 1 }, [], []);
+  assert.strictEqual(oneMonth.stipulations.find((s) => s.docType === 'bank_statement').label,
+    'Bank statements — 1 month (proof of funds)', 'a 1-month count renders singular');
   // The count only relabels the bank-statement row — every other stipulation keeps its label.
   assert.strictEqual(gold.stipulations.find((s) => s.docType === 'government_id').label, 'Government photo ID');
   // A non-positive / non-finite count is ignored (falls back to the generic label).

@@ -122,6 +122,7 @@ console.log('\n2. The borrower is shown their terms — and never our margin');
   }
   const db = require('../src/db');
   const pricing = require('../src/lib/pricing');
+  const manualProgram = require('../src/lib/manual-program');
   const C = require('../src/lib/crypto');
   const tag = crypto.randomBytes(4).toString('hex');
   const EMAIL = `tso.${tag}@example.com`;
@@ -207,6 +208,15 @@ console.log('\n2. The borrower is shown their terms — and never our margin');
     ok(appCount === 1, 'so the borrower has exactly one file');
 
     console.log('\n6. A MANUAL scenario registers AND carries its approval');
+    // Set the company default "months of liquidity" to a non-2/4 value so the
+    // reserve-months assertion below has TEETH — the offer flow has no per-file
+    // months prompt, so it must use THIS default for the manual reserve, not the
+    // Standard 2/4-by-loan-size rule (owner-directed 2026-08-11).
+    const priorManualSettings = await manualProgram.loadSettings();
+    await manualProgram.saveSettings({
+      maxAcqLtv: priorManualSettings.maxAcqLtv, maxArvLtv: priorManualSettings.maxArvLtv,
+      maxLtc: priorManualSettings.maxLtc, assetMonths: 6, isActive: priorManualSettings.isActive,
+    }, officerId);
     const m = await TSO.createOffer({
       officerId, borrowerEmail: `m.${tag}@example.com`, borrowerName: 'Manual Borrower',
       draft: DRAFT, program: 'standard',
@@ -221,11 +231,20 @@ console.log('\n2. The borrower is shown their terms — and never our margin');
     if (macc.applicationId) madeApps.push(macc.applicationId);
     ok(macc.ok && macc.registered === true, `a manual product still registers (${macc.reason || 'ok'})`);
     const mreg = (await db.query(
-      `SELECT is_manual, needs_approval, total_loan FROM product_registrations
+      `SELECT is_manual, needs_approval, total_loan, asset_months, quote FROM product_registrations
         WHERE application_id=$1 AND is_current`, [macc.applicationId])).rows[0];
     ok(mreg && mreg.is_manual === true, 'recorded as a manual product');
     ok(mreg && mreg.needs_approval === true,
       'AND flagged as needing approval — the owner’s "if it’s manual, it still needs the exception"');
+    // The offer-flow manual reserve = the company-default months of liquidity, NOT
+    // the Standard 2/4 rule (owner-directed 2026-08-11). asset_months is persisted
+    // (was a null-column gap the pre-merge audit caught) and the stored quote's
+    // reserve reflects it.
+    ok(mreg && Number(mreg.asset_months) === 6,
+      'the offer persists the company-default months of liquidity (6), not null');
+    const mq = mreg && mreg.quote ? (typeof mreg.quote === 'string' ? JSON.parse(mreg.quote) : mreg.quote) : null;
+    ok(mq && Number(mq.reserveMonths) === 6,
+      'and the stored quote’s reserve months = the stated 6, not the 2/4-by-loan-size rule');
     // The officer's manual BASIS actually moved the loan, which is the proof the
     // overrides travelled rather than being dropped on the floor.
     const mApp = (await db.query(`SELECT * FROM applications WHERE id=$1`, [macc.applicationId])).rows[0];
@@ -235,6 +254,12 @@ console.log('\n2. The borrower is shown their terms — and never our margin');
       'the fixture’s override genuinely changes the loan, so the next check has teeth');
     ok(Number(mreg.total_loan) === Number(withOvr.sizing.totalLoan),
       'and the registered loan is the OVERRIDDEN one — the officer’s manual basis travelled');
+    // Restore the company default so later sections see the original config.
+    await manualProgram.saveSettings({
+      maxAcqLtv: priorManualSettings.maxAcqLtv, maxArvLtv: priorManualSettings.maxArvLtv,
+      maxLtc: priorManualSettings.maxLtc, assetMonths: priorManualSettings.assetMonths,
+      isActive: priorManualSettings.isActive,
+    }, officerId);
 
     console.log('\n7. A dead link is a dead link');
     const x = await TSO.createOffer({ officerId, borrowerEmail: `x.${tag}@example.com`, draft: DRAFT, program: 'standard' });

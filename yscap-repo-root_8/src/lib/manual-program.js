@@ -249,7 +249,12 @@ async function latestApprovedGrant(appId, client = db) {
 // ---------------------------------------------------------------------------
 const SETTINGS_DEFAULTS = Object.freeze({
   maxAcqLtv: null, maxArvLtv: null, maxLtc: null,
-  assetMonths: 2, isActive: true,
+  // The Manual Program's default "months of liquidity" = months of RESERVES the
+  // borrower must show (owner-directed 2026-08-11: "on the manual program, the
+  // default should be three months' reserves, but that manual box should override").
+  // This pre-fills the register box + is the offer-flow fallback; the per-file box
+  // value overrides it. Kept in step with pricing.js MANUAL_RESERVE_DEFAULT_MONTHS.
+  assetMonths: 3, isActive: true,
 });
 
 function shapeSettings(row) {

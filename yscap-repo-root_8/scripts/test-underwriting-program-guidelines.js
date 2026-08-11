@@ -32,13 +32,13 @@ assert.strictEqual(canonProgram(''), null);
   assert.ok(g.notes.some((n) => /2 months of bank statements/.test(n)));
 }
 
-// ---- Standard: KYC 15%, 1 month, no contingency requirement (by default) ----
+// ---- Standard: KYC 15%, 2 months (uniform), no contingency requirement (by default) ----
 {
   const s = programGuidelineSnapshot('standard');
   assert.strictEqual(s.ownerThresholdPct, 15);
-  assert.strictEqual(s.bankStatementMonths, 1);
+  assert.strictEqual(s.bankStatementMonths, 2);
   assert.strictEqual(s.sowContingencyRequired, false);
-  assert.ok(s.notes.some((n) => /1 month of bank statements/.test(n)), 'singular month wording');
+  assert.ok(s.notes.some((n) => /2 months of bank statements/.test(n)), 'two-month wording');
   assert.ok(!s.notes.some((n) => /contingency/.test(n)), 'Standard (no override) has no SOW contingency note');
 }
 
@@ -72,17 +72,17 @@ assert.strictEqual(canonProgram(''), null);
     'the contingency note uses rehab-budget.SOW_CONTINGENCY_PCT (single source of truth)');
 }
 
-// ---- Manual: KYC 20%, month count = the registrant-stated asset_months (default 2) ----
+// ---- Manual: KYC 20%, two months (capped — a stated 3 can no longer ask for three) ----
 {
   const m = programGuidelineSnapshot('manual', { assetMonths: 3 });
   assert.strictEqual(m.ownerThresholdPct, 20);
-  assert.strictEqual(m.bankStatementMonths, 3, 'manual uses the stated asset_months');
+  assert.strictEqual(m.bankStatementMonths, 2, 'manual is capped at 2 — nothing asks for three');
   assert.strictEqual(m.sowContingencyRequired, false);
   const mDefault = programGuidelineSnapshot('manual');
-  assert.strictEqual(mDefault.bankStatementMonths, 2, 'manual with no stated months falls back to 2');
+  assert.strictEqual(mDefault.bankStatementMonths, 2, 'manual with no stated months is 2');
 }
 
-// ---- Unknown / unregistered: baseline KYC 25%, not registered, 1 month fallback, no assertions ----
+// ---- Unknown / unregistered: baseline KYC 25%, not registered, 2-month baseline ----
 {
   const u = programGuidelineSnapshot(null);
   assert.strictEqual(u.program, null);

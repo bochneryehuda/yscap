@@ -193,7 +193,14 @@ function dealFacts(deal = {}, { skip = null } = {}) {
   add('Initial / as-is LTV', pct(deal.acqLtvPct));
   add('ARV LTV', pct(deal.arvPct));
   add('Loan-to-cost', pct(deal.ltcPct));
-  add('Liquidity months required', deal.assetMonths != null ? `${deal.assetMonths} month${Number(deal.assetMonths) === 1 ? '' : 's'}` : null);
+  // A manual product's "months of liquidity" is how many months of RESERVES the
+  // borrower must SHOW in the ending balance of the most recent statement
+  // (owner-directed 2026-08-11) — NOT the bank-statement count (always two). It can
+  // legitimately exceed two, so this internal approval email shows the real value
+  // uncapped so the approver sees exactly how many months of reserves are required.
+  const reserveMonthsReq = deal.assetMonths != null && isFinite(Number(deal.assetMonths))
+    ? Math.round(Number(deal.assetMonths)) : null;
+  add('Reserve months to show', reserveMonthsReq != null && reserveMonthsReq > 0 ? `${reserveMonthsReq} month${reserveMonthsReq === 1 ? '' : 's'}` : null);
 
   return rows.length ? { title: 'The deal', rows } : null;
 }

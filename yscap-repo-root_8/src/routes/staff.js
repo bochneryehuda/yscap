@@ -2933,6 +2933,12 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // so a leverage override that lands "ineligible" against the Standard caps is
     // sized/registered as MANUAL (with the escalation), never bounced.
     if (isManual) inputs.forcePrice = true;
+    // MANUAL: the stated months of liquidity are the RESERVE months the borrower
+    // must SHOW (owner-directed 2026-08-11) — feed them into the quote so the
+    // registered liquidity requirement (pricing.js normalize) reflects them. Set
+    // server-side only, never a client override; normalize double-guards on
+    // program === 'manual', so Gold/Standard/Silver are byte-identical.
+    if (isManual) inputs.assetMonths = assetMonths;
     // Owner-directed 2026-07-27: EVERY staff role may re-price and re-register
     // with a higher ARV / as-is value on a priced file — the loan officer has the
     // same authority as an underwriter/admin over the deal inputs. (This was
@@ -3420,6 +3426,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
           liquidity: quote.liquidity ?? quote.liquidityRequired,
           downPayment: szn.downPayment,
           acqLtvPct: szn.acqLtvPct, arvPct: szn.arvPct, ltcPct: szn.ltcPct,
+          assetMonths: isManual ? assetMonths : null,
         },
       });
       await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants), minus the actor
@@ -3969,6 +3976,10 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     inputs.forcePrice = true;
     const requestedProgram = (esc.summary && esc.summary.program) === 'gold' ? 'gold' : (esc.summary && esc.summary.program) === 'silver' ? 'silver' : 'standard';
     const program = manualProgram.resolveProgram(requestedProgram, overrides);
+    // MANUAL: carry the escalation's stated months of liquidity into the quote so
+    // the accepted counter's liquidity requirement reflects the reserve months
+    // (owner-directed 2026-08-11) — same threading as the /register path above.
+    if (program === 'manual' && esc.asset_months != null) inputs.assetMonths = esc.asset_months;
     const quote = pricing.quoteProgram(program, inputs);
     // The sized loan lives on quote.SIZING.totalLoan — a quote has no top-level
     // `totalLoan` (audit 2026-07-30). Reading the missing key made `total` 0 on
