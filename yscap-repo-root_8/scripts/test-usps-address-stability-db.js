@@ -156,7 +156,14 @@ ok(!ADDR.sameAddress('1727 S 2nd St, Piscataway, NJ 08854', '1727 S 2nd St, Plai
     const ours = { line1: '21 Governor St', city: 'Providence', state: 'RI', zip: '02906-1234', oneLine: USPS_ONE };
     const theirs = mapper.normalizeClickupLocation({ formatted_address: GOOGLE_ONE, location: { lat: 41.8268, lng: -71.3948 } });
     const src = require('fs').readFileSync(R + '/src/clickup/ingest.js', 'utf8');
-    ok(/ADDR\.sameAddress\(oursText,\s*theirsText\)/.test(src) && /cols\.property_address = null;\s*\/\/ COALESCE keeps our/.test(src),
+    // The guard's decision is the pure, separately-tested inboundAddressDecision
+    // (test-usps-clickup-sync.js pins its truth table); it compares by MEANING via
+    // sameAddress, and the guard NULLs the write on a same-place decision so COALESCE
+    // keeps ours. Assert that structure rather than one exact source line.
+    ok(/ADDR\.sameAddress\(oursText,\s*theirsText\)/.test(src)
+       && /inboundAddressDecision\(\{/.test(src)
+       && /decision === 'same_address' \|\| decision === 'same_property'/.test(src)
+       && /cols\.property_address = null;/.test(src),
       'the inbound pull compares the subject address by MEANING and keeps ours when it is the same place');
     ok(ADDR.sameAddress(ADDR.addressTextOf(ours), ADDR.addressTextOf(theirs)),
       'and on this exact pair that guard fires, so the card’s spelling never reaches the file');

@@ -54,7 +54,7 @@ async function firstListId(folderId) {
  * Best-effort throughout: an unresolvable address returns unchanged (the field
  * is then skipped, exactly as before — never a bad or location-clearing write).
  */
-async function withCoords(addr) {
+async function withCoords(addr, opts) {
   if (!addr || (addr.lat != null && addr.lng != null)) return addr;
   const g = geocoder();
   const line = addr.oneLine || addr.formatted_address
@@ -85,7 +85,31 @@ async function withCoords(addr) {
       // was undone by the next push. `geocodeRewriteIsSafe` refuses a dropped house
       // number, a changed ZIP, or a dropped directional; the provider is still free
       // to abbreviate the street, fix the city, or fill a ZIP we never had.
-      const base = (theirs && ADDR.geocodeRewriteIsSafe(ours || line, theirs)) ? theirs : (ours || line);
+      // On a USPS-VERIFIED subject property, PREFER Google's spelling for the value
+      // we send ClickUp — ClickUp's location field is Google-backed, so the USPS
+      // mailing text often can't be matched there and comes back mismatched
+      // (owner-directed 2026-08-11: "when we import USPS ... just update them with
+      // the Google address"). `geocodeRewriteIsSafe` already accepts a same-property
+      // restyle (same house/ZIP/directional); `sameProperty` additionally accepts a
+      // USPS-vs-Google ZIP difference WITHIN the same city — never across cities, so
+      // the Piscataway/Plainfield different-building trap stays blocked.
+      //
+      // Only `formatted_address` (+ coords/place_id) becomes Google's here — the
+      // STRUCTURED fields and `oneLine` are spread through UNCHANGED (`...addr`), so
+      // they, the portal display (addrLine helpers read `oneLine` or the structured
+      // fields — both USPS here), and the authoritative `usps_address` stamp all stay
+      // USPS. That split is deliberate
+      // and load-bearing: the returned object is BOTH pushed to ClickUp AND cached
+      // back onto property_address (the coord write-back below), so a Google
+      // `formatted_address` is exactly what lets ClickUp keep holding the Google form
+      // on later pushes (withCoords early-returns on the cached coords) while the
+      // ZIP-strict db/415 stamp trigger — which reads the structured zip, still
+      // USPS — never fires. The USPS-verified address survives where it is
+      // authoritative; only the sync/compare form is Google's.
+      const preferProvider = !!(opts && opts.preferProvider);
+      const provSafe = theirs && (ADDR.geocodeRewriteIsSafe(ours || line, theirs)
+        || (preferProvider && ADDR.sameProperty(ours || line, theirs)));
+      const base = provSafe ? theirs : (ours || line);
       // Keep the apartment on the value we store/show: the geocoder resolved the
       // BUILDING (the unit was stripped so it would place on the map — see
       // address-canon.geocode), but the mailing address still names the unit.
@@ -147,6 +171,21 @@ async function resolveClickupUserId({ storedId, staffId, email }) {
   // by email again next time.
   if (staffId) db.query(`UPDATE staff_users SET clickup_user_id=$2 WHERE id=$1 AND clickup_user_id IS NULL`, [staffId, cu]).catch(() => {});
   return cu;
+}
+
+// Is this file's SUBJECT property a USPS-verified, human-adopted address? The gate
+// is the SAME human-adoption test usps-verify.preferredFinancingAddress uses — a
+// case-insensitive 'verified'/'corrected' verdict AND a human import
+// (usps_imported_at) — minus that function's hasOfficialAddress term, which it needs
+// only because it RETURNS the usps_address object; this is a boolean gate and
+// withCoords independently requires sameProperty before it ever adopts Google's form,
+// so a wrong building can't be picked even if the stamp were somehow partial. The
+// verdict is lowercased before compare (mirroring preferredFinancingAddress) so the
+// two USPS gates can never disagree on casing. Subject address ONLY — USPS verifies
+// the subject property, never the borrower home.
+function uspsVerifiedSubject(row) {
+  const m = String((row && row.usps_match) || '').toLowerCase();
+  return (m === 'verified' || m === 'corrected') && !!(row && row.usps_imported_at);
 }
 
 // The mapper context USED to be two hand-listed object literals (one per portal
@@ -223,7 +262,14 @@ async function loadPushContext(appId) {
   // current addresses (ClickUp's location field needs {lat,lng,formatted_address}),
   // the four name columns + generated full_name, marital status, and the SSN.
   const appCtx = appContextFromRow(row);
-  appCtx.property_address = await withCoords(row.property_address);
+  // USPS↔ClickUp sync: on a USPS-verified, human-adopted subject address, let the push
+  // adopt Google's formatted_address (the form ClickUp's Google-backed location picker
+  // produces) so the different-but-valid USPS mailing ZIP stops bouncing back inbound
+  // and wiping the verification stamp. withCoords only adopts when sameProperty holds
+  // (same house+street+city — tolerates the USPS↔Google ZIP diff, blocks a different
+  // building), and the structured USPS fields/oneLine stay untouched, so the db/415
+  // ZIP-strict trigger never fires. Borrower home is never a USPS subject → no gate.
+  appCtx.property_address = await withCoords(row.property_address, { preferProvider: uspsVerifiedSubject(row) });
   const borrowerCtx = borrowerContextFromRow(row);
   borrowerCtx.first_name = row.first_name;
   borrowerCtx.last_name = row.last_name;
@@ -798,6 +844,7 @@ module.exports = {
   pushApplication, createForNewFile, loadPushContext, resolveTargetList, firstListId, logSync,
   PII_OVERWRITE_SHIELD, PII_REVIEW_KEY, // exported for the write-safety tests
   withCoords, // exported for the address-downgrade regression test
+  uspsVerifiedSubject, // exported so the row→preferProvider gate is pinned by test
   appContextFromRow, borrowerContextFromRow, // exported for the ctx-drift regression test (lender/desired_rate/actual_closing omissions)
   circuitCheck, // the ONE shared volume breaker — every ClickUp write path counts into it (audit fix)
   seedBreakerFromDb, // WO-4b (F-M16): prime the breaker window from the journal on boot

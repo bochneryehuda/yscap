@@ -173,6 +173,59 @@ ok(eqLocDiff === false, 'a genuinely different address is still a write');
   ok(!/\[object Object\]/.test(text), 'a nested object in an address slot never renders as "[object Object]"');
 }
 
+// ── 6. sameProperty — the USPS↔Google same-building tolerance ──────────────
+// Used ONLY in the two USPS-gated paths (owner-directed 2026-08-11): the ClickUp
+// OUTBOUND Google-form preference + the INBOUND USPS-survival guard. Identical to
+// sameAddress EXCEPT the locality authority is the CITY, not the ZIP: within one
+// city a USPS-vs-Google ZIP difference is the same building; the SAME street
+// number across two cities is the Piscataway/Plainfield trap — two towns, two
+// ZIPs, two different buildings ~130m apart.
+const SAME_PROPERTY_TRUE = [
+  // same city, DIFFERENT ZIP — the exact case sameAddress (ZIP-authoritative) misses.
+  ['1727 S 2nd St, Piscataway, NJ 08854', '1727 S 2nd St, Piscataway, NJ 07063', 'same city, USPS vs Google ZIP'],
+  ['5701 15th Ave, Brooklyn, NY 11219', '5701 15th Ave, Brooklyn, NY 11220', 'same city, ZIP off by one'],
+  // and it still accepts everything sameAddress accepts when the CITY agrees:
+  ['312 Cedarhurst Ave, Cedarhurst, NY 11516', '312 Cedarhurst Ave, Cedarhurst, NY 11516', 'identical'],
+  ['199 Hewes St. 4, Brooklyn, NY 11211', '199 Hewes St, Brooklyn, NY 11211, USA', 'unit + ", USA", same city + ZIP'],
+  ['1727 S 2nd St, Piscataway, NJ 08854', '1727 South Second Street, Piscataway, New Jersey 08854', 'spelled-out street/state, same city'],
+];
+for (const [a, b, why] of SAME_PROPERTY_TRUE) {
+  ok(ADDR.sameProperty(a, b), `same property (${why}):\n     A: ${a}\n     B: ${b}`);
+  ok(ADDR.sameProperty(b, a), 'sameProperty is symmetric: ' + why);
+}
+
+const SAME_PROPERTY_FALSE = [
+  // THE TRAP: one street number, two towns, two ZIPs = two buildings. A ZIP
+  // difference is tolerated WITHIN a city, never ACROSS cities.
+  ['1727 S 2nd St, Piscataway, NJ 08854', '1727 S 2nd St, Plainfield, NJ 07063', 'Piscataway vs Plainfield — a different building'],
+  // everything sameAddress rejects, sameProperty rejects too:
+  ['12 Oak St, Monsey, NY 10952', '14 Oak St, Monsey, NY 10952', 'house number'],
+  ['12 Oak St, Monsey, NY 10952', '12 Elm St, Monsey, NY 10952', 'street name'],
+  ['100 Main St, Newark, NJ 07102', '100 Main St, Newark, DE 07102', 'state'],
+  ['12 Oak St Apt 3, Monsey, NY 10952', '12 Oak St Apt 5, Monsey, NY 10952', 'unit'],
+  ['12 Oak St, Monsey, NY 10952', '', 'one side blank'],
+  ['Monsey, NY 10952', 'Monsey, NY 10952', 'no house number either side — unreadable'],
+  // The ONE axis where sameProperty is STRICTER than sameAddress, and why it is
+  // still safe: a same-ZIP / different-CITY-LABEL pair (Cedarhurst is also mailed
+  // as Hempstead). The inbound guard runs sameAddress FIRST — which is
+  // ZIP-authoritative and keeps this pair — so sameProperty never has to; on its
+  // own (city-authoritative) it correctly reads two city names as two places.
+  ['312 Cedarhurst Ave, Cedarhurst, NY 11516', '312 Cedarhurst Ave, Hempstead, NY 11516', 'same ZIP, different city label — sameAddress handles this, not sameProperty'],
+];
+for (const [a, b, why] of SAME_PROPERTY_FALSE) {
+  ok(!ADDR.sameProperty(a, b), `not the same property (${why}):\n     A: ${a}\n     B: ${b}`);
+}
+// that Cedarhurst/Hempstead pair — sameAddress DOES keep it (ZIP-authoritative),
+// so the combined inbound guard (sameAddress OR sameProperty) never loses it.
+ok(ADDR.sameAddress('312 Cedarhurst Ave, Cedarhurst, NY 11516', '312 Cedarhurst Ave, Hempstead, NY 11516'),
+  'sameAddress keeps the same-ZIP/different-city-label pair the combined guard relies on');
+// hostile input never throws
+for (const v of [null, undefined, 0, {}, [], { line1: {} }, 'x', '...,,,']) {
+  let threw = false;
+  try { ADDR.sameProperty(v, '12 Oak St, Monsey, NY 10952'); } catch (_) { threw = true; }
+  ok(!threw, 'sameProperty hostile input never throws: ' + JSON.stringify(v));
+}
+
 (async () => {
   // ── 5. DB: the already-queued rows ──────────────────────────────────────
   if (process.env.DATABASE_URL) {
