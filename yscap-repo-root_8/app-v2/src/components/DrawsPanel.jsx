@@ -329,6 +329,8 @@ function DrawRequestCard({ appId }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [recipient, setRecipient] = useState('borrower'); // who signs the wire form: borrower | co_borrower
+  const [emailEdit, setEmailEdit] = useState(null);       // inline "change the wire form's email" editor: { rid, email }
+  const [emailWarn, setEmailWarn] = useState(null);       // after a change: { newEmail, fileEmail, borrowerId } — "also update the file" reminder
   const reload = useCallback(() => {
     api.get(`/api/sitewire/files/${appId}/draw-request`)
       .then((r) => setD(r)).catch(() => setD(null)).finally(() => setLoading(false));
@@ -359,6 +361,33 @@ function DrawRequestCard({ appId }) {
   async function openSigned(id) {
     try { const { blob } = await api.staffDownloadDoc(id); const url = URL.createObjectURL(blob); window.open(url, '_blank'); }
     catch (_) { setMsg('Could not open the signed form.'); }
+  }
+  // Change the wire form's email on the in-flight envelope and re-send to the new
+  // address (owner-directed) — the fix for a wrong email, without void + re-issue.
+  async function changeEmail(rid) {
+    const email = String((emailEdit && emailEdit.email) || '').trim();
+    if (!email) { setMsg('Enter the new email address.'); return; }
+    setBusy(true); setMsg('');
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/draw-request/recipient-email`, { ...(rid ? { recipientRowId: rid } : {}), email });
+      setEmailEdit(null);
+      setMsg('Email updated — a fresh invitation was re-sent to the new address.');
+      if (r && r.differsFromFile && r.borrowerId) setEmailWarn({ newEmail: r.email, fileEmail: r.fileEmail, borrowerId: r.borrowerId });
+      reload();
+    } catch (e) { setMsg((e && e.data && e.data.error) || e.message || 'Could not change the email.'); }
+    finally { setBusy(false); }
+  }
+  // Optional convenience: also set the file's borrower email through the ONE shared
+  // borrower writer (PATCH /borrowers/:id) — never a new write path.
+  async function updateFileEmail() {
+    if (!emailWarn) return;
+    setBusy(true); setMsg('');
+    try {
+      await api.staffUpdateBorrower(emailWarn.borrowerId, { email: emailWarn.newEmail });
+      setEmailWarn(null);
+      setMsg('The borrower’s email on the file was updated too — future emails will use it.');
+    } catch (e) { setMsg((e && e.data && e.data.error) || e.message || 'Could not update the file email automatically — update it in the borrower section.'); }
+    finally { setBusy(false); }
   }
 
   const envLabel = env ? ({
@@ -395,6 +424,46 @@ function DrawRequestCard({ appId }) {
           {d.recipients.map((r, i) => (
             <div key={i}>{r.name}: {r.signed_at ? `signed ${fmtDay(r.signed_at)}` : r.viewed_at ? 'opened, not yet signed' : 'sent, not yet opened'}</div>
           ))}
+        </div>
+      )}
+
+      {/* Change the wire form's email + re-send (owner-directed) — a wrong email is
+          fixed here without void + re-issue. Offered while the form is out for
+          signature and the signer hasn't signed/declined. */}
+      {env && !terminal && Array.isArray(d.recipients) && d.recipients.some((r) => r.can_change_email) && (() => {
+        const r = d.recipients.find((x) => x.can_change_email);
+        const editing = emailEdit && emailEdit.rid === r.id;
+        return (
+          <div style={{ marginTop: 8 }}>
+            {!editing ? (
+              <button className="btn btn-sm ghost" onClick={() => { setEmailWarn(null); setMsg(''); setEmailEdit({ rid: r.id, email: r.email || '' }); }}
+                title="Wrong email? Change it and re-send the invitation to the new address.">✎ Change email &amp; re-send</button>
+            ) : (
+              <div className="act-card" style={{ marginTop: 4 }}>
+                <div className="act-card-sub" style={{ marginBottom: 6 }}>Re-address this form. DocuSign re-sends it to the new email right away; the old link stops working.</div>
+                <input className="input" type="email" style={{ maxWidth: 320 }} placeholder="name@example.com"
+                  value={emailEdit.email} onChange={(e2) => setEmailEdit((s) => ({ ...s, email: e2.target.value }))}
+                  onKeyDown={(e2) => { if (e2.key === 'Enter' && !busy) changeEmail(r.id); }} />
+                <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                  <button className="btn btn-sm" disabled={busy || !String(emailEdit.email || '').trim()} onClick={() => changeEmail(r.id)}>{busy ? 'Updating…' : 'Change email & re-send'}</button>
+                  <button className="btn btn-sm ghost" onClick={() => setEmailEdit(null)}>Cancel</button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+      {emailWarn && (
+        <div className="notice warn" style={{ marginTop: 8 }}>
+          <div>
+            <strong>This changed the email for this form only.</strong>{' '}
+            If <strong>{emailWarn.newEmail}</strong> is the borrower’s correct email, also update it on the file so future
+            packages and emails go there{emailWarn.fileEmail ? <> — the file still shows <strong>{emailWarn.fileEmail}</strong></> : null}.
+          </div>
+          <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            <button className="btn btn-sm" disabled={busy} onClick={updateFileEmail}>Update it on the file too</button>
+            <button className="btn btn-sm ghost" onClick={() => setEmailWarn(null)}>Keep the file as it is</button>
+          </div>
         </div>
       )}
 
