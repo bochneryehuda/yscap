@@ -128,7 +128,10 @@ const completeCfg = { amc: { ...UAT, clientId: 'a', clientSecret: 'b', loginAcco
   // Happy path.
   const good = await preflight.run({
     cfg: completeCfg, cdg: fakeCdg,
-    client: { getAccessToken: async () => 'tok_abcdefghijkl', read: async () => ({ ok: true }) },
+    // The lookup step MUST hit the "/direct/" endpoint via client.lookup (not client.read /
+    // "/order/"): a plain read() here would silently pass while production 500s.
+    client: { getAccessToken: async () => 'tok_abcdefghijkl', lookup: async () => ({ ok: true }),
+      read: async () => { throw new Error('preflight must use client.lookup for catalog lookups, not client.read'); } },
     session: { apiKey: async () => 'key_abcdefghijkl', authContext: async () => ({ apiKey: 'key_abcdefghijkl', subdomain: 'integrations.uat' }) },
   });
   ok(good.ok === true, 'a fully working environment passes every step');
@@ -163,7 +166,7 @@ const completeCfg = { amc: { ...UAT, clientId: 'a', clientSecret: 'b', loginAcco
   const nacked = await preflight.run({
     cfg: completeCfg,
     cdg: { ...fakeCdg, parseError: () => ({ code: '-100', description: 'NOT_AUTHENTICATED' }) },
-    client: { getAccessToken: async () => 'tok_abcdefghijkl', read: async () => ({ __nack: true }) },
+    client: { getAccessToken: async () => 'tok_abcdefghijkl', lookup: async () => ({ __nack: true }) },
     session: { apiKey: async () => 'key_abcdefghijkl', authContext: async () => ({ apiKey: 'k', subdomain: 'wrong.tenant' }) },
   });
   ok(nacked.ok === false && nacked.steps[2].ok === false, 'a NACKed lookup fails the run');

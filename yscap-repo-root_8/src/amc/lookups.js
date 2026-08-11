@@ -53,7 +53,9 @@ async function setCached(db, lookupType, subdomain, rows) {
 // Fetch ONE lookup live and cache it. Throws on a NACK so the caller can report it.
 async function refreshOne(db, lookupType) {
   const ctx = await session.authContext();
-  const resp = await client.read(
+  // Catalog lookups are served at the "/direct/" endpoint (loginUrl), NOT "/order/" — see
+  // client.lookup(). Posting these to "/order/" is what returned HTTP 500 from the gateway.
+  const resp = await client.lookup(
     cdg.buildLookup({ actionType: lookupType, apiKey: ctx.apiKey, subdomain: ctx.subdomain }),
     { label: lookupType });
   const err = cdg.parseError(resp);
