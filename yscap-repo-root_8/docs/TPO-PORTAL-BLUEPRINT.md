@@ -201,9 +201,10 @@ internal workflow condition.
      immediately (vs. on our acceptance) is a product decision — not changed here
      (it touches the shared engine / all statuses). The reveal + info writer
      behave correctly either way.
-   - **STILL DEFERRED:** none of the condition surface remains — the remaining TPO
-     work is the ORDER-INITIATION side (a broker orders title / insurance / flood
-     / credit) and own-Xactus, which is Phase 5.
+   - **STILL DEFERRED:** none of the condition surface remains, and the ORDER-INITIATION
+     side (credit ✅, title/insurance ✅, flood = staff-only by owner direction) + own-Xactus ✅
+     are all built (Phase 5). A broker intake file also now gets its rule-driven conditions
+     right away (Phase 5d).
 5. **Orders + own-Xactus** — title / insurance / flood / credit on the TPO
    surface; then per-firm encrypted Xactus credentials for **credit**.
    - **Phase 5a — a broker orders CREDIT ✅ (BUILT).** `POST /api/tpo/
@@ -261,16 +262,32 @@ internal workflow condition.
        encrypted-at-rest, status no-leak, `provider.pull` firm-vs-ours endpoint via a
        stubbed fetch, importCredit threading, the admin routes + 403 gating + 400
        bad-URL + 404), both in `npm test`.
-   - **STILL DEFERRED in Phase 5 (need owner input):**
-     · **title / insurance ordering** — has a NOTE-BUYER LEAK tension: the order
-       email carries the note-buyer-derived mortgagee clause (RCN → the servicer's
-       address), and it is "signed by the loan officer" = the broker on a TPO file.
-       A broker-facing version must not show/CC the broker the clause, and should
-       sign as the AE. Needs owner input on whether a broker triggers a
-       YS-Capital-branded vendor email at all.
-     · **flood ordering** — conflicts with the flood-cert-staff-only HARD RULE
-       (the flood certificate is never broker-facing). A broker "ordering" flood
-       whose result they cannot see is contradictory; needs owner clarification.
+   - **Phase 5c — a broker orders TITLE & INSURANCE (except RCN) ✅ (BUILT, owner-directed 2026-08-11).**
+     New firm-scoped `/api/tpo` routes (`GET …/orders`, `POST …/orders/:kind/vendor`,
+     `POST …/orders/:kind/place`) reuse the SAME exactly-once path the staff Orders desk
+     uses — the claim → send → settle core was extracted into `orders.placeOrder(...)`,
+     one chokepoint shared by both doors. The NOTE-BUYER-LEAK tension resolved as follows,
+     per the owner's own answers: (1) the order email already showed OUR (YS Capital)
+     mortgage clause, never the investor's — so the broker/vendor "only see our mortgage
+     clause"; (2) it signs as the file's loan officer, which on a TPO file IS the broker
+     ("for the TPO as the loan officer"); (3) the RCN servicer clause never reaches a
+     broker because an RCN file is BLOCKED for the broker (staff-only) — `tpo-orders.js`
+     `brokerOrderingBlocked` keys on `isRcnNoteBuyer`, returns 403 `staff_handled`, and the
+     note buyer is NEVER revealed (only "your loan team handles this"). The borrower-safe
+     read (`GET …/orders`) never returns `applications.lender`. `src/lib/tpo-orders.js` is
+     the pure gate; `app-v2 TpoOrders.jsx` the panel. Tests `test-tpo-orders-pure.js` +
+     `test-tpo-orders-db.js`.
+     · **flood ordering — CONFIRMED staff-only, NOT built for TPO (owner-directed: "a
+       broker cannot order flood insurance").** There is no flood order type at all
+       (`file_orders` is title/insurance only), and `isTpoOrderKind` admits only
+       title/insurance, so a broker structurally cannot order flood; the flood
+       certificate + flood-insurance condition stay staff-only and are never revealed.
+   - **Phase 5d — a broker's brand-new file gets its conditions + note-buyer stamp RIGHT
+     AWAY ✅ (BUILT, owner-directed 2026-08-11).** The conditions engine now admits a TPO
+     intake file (`engineOpenStatus`), so the rule-driven conditions attach at creation
+     instead of waiting for our team to activate the file; the note buyer is stamped from
+     the program at creation (`autoSetTpoNoteBuyer`, canonical spelling, fill-only). A boot
+     backfill covers existing intake files. See CLAUDE.md TPO item 18.
 6. **Appraisal view, draws, messaging + AE/AM "view as TPO"** — the remaining
    borrower-style surfaces; the impersonation feature mirroring
    `src/lib/borrower-view.js` (a new `tpo-view` with its own `tpo_view_sessions`

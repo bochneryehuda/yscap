@@ -462,6 +462,10 @@ export const api = {
   // Phase 5a — order a credit pull (borrower-safe: readiness in, "pulled" out; no scores).
   tpoCreditStatus: (appId) => req('GET', `/api/tpo/applications/${appId}/credit`),
   tpoOrderCredit: (appId, body) => req('POST', `/api/tpo/applications/${appId}/credit/order`, body),   // { consent:true, borrowerIds? }
+  // Title & insurance ordering (broker; never flood, never RCN). Borrower-safe state.
+  tpoOrders:        (appId) => req('GET', `/api/tpo/applications/${appId}/orders`),
+  tpoSetOrderVendor:(appId, kind, b) => req('POST', `/api/tpo/applications/${appId}/orders/${kind}/vendor`, b),
+  tpoPlaceOrder:    (appId, kind, body) => req('POST', `/api/tpo/applications/${appId}/orders/${kind}/place`, body || {}),
   // Phase 6a — the read-only appraisal ("property profile report"); same borrower-safe scrub.
   tpoAppraisal: (appId) => req('GET', `/api/tpo/applications/${appId}/appraisal`),
   tpoAppraisalPhotoBlob: async (docId) => (await download(`/api/tpo/appraisal-photo/${docId}?inline=1`)).blob,
