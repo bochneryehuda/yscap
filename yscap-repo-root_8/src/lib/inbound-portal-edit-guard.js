@@ -61,9 +61,36 @@
 // strips the changed economics first, so this guard then sees them null and
 // skips them. `fieldSame` carries the term / property-type semantic equality.
 const { FROZEN_ECON_FIELDS, fieldSame } = require('./inbound-economics-freeze');
-const PROTECTED_FIELDS = FROZEN_ECON_FIELDS;                 // [ [col, label], … ]
+
+// Fields this guard protects that are NOT economics — so they get the same
+// "a portal edit is never silently reverted by a stale ClickUp pull" protection
+// without being dragged into the economics FREEZE (which would wrongly refuse a
+// closing-date change on a frozen file and treat the date as a priced input).
+// `expected_closing`: owner-reported 2026-08-11 — the estimated closing date was
+// changed to 08/13 in the portal and kept bouncing back to 07/29. It is mapped
+// `dir:'both'`, so ClickUp's stale value COALESCE-overwrote the edit whenever the
+// reconcile ran before the outbound push landed (or outbound was off) — the exact
+// class this guard exists for, but the closing date was simply never in the set.
+const EXTRA_PROTECTED_FIELDS = [
+  ['expected_closing', 'Expected closing date'],
+];
+const DATE_FIELDS = new Set(['expected_closing']);
+const PROTECTED_FIELDS = FROZEN_ECON_FIELDS.concat(EXTRA_PROTECTED_FIELDS); // [ [col, label], … ]
 const PROTECTED_KEYS = PROTECTED_FIELDS.map((f) => f[0]);
 const LABEL_OF = Object.fromEntries(PROTECTED_FIELDS);
+
+// A date column is compared by CALENDAR DAY (first 10 chars, YYYY-MM-DD) with the
+// same null handling as fieldSame (a null on either side is "same" — a null
+// incoming value keeps ours via COALESCE, never a change). Everything else uses
+// the economics-freeze semantic comparator unchanged, so the frozen fields behave
+// exactly as before.
+function sameField(field, a, b) {
+  if (DATE_FIELDS.has(field)) {
+    if (a == null || b == null) return true;
+    return String(a).slice(0, 10) === String(b).slice(0, 10);
+  }
+  return fieldSame(field, a, b);
+}
 
 /**
  * PURE — classify each protected field that ClickUp would change. No DB, so it
@@ -90,7 +117,7 @@ function classifyConflicts(cols, current, snapshotApp) {
     const incoming = cols[field];
     if (incoming == null) continue;                         // COALESCE keeps ours — never a change (also: an earlier guard already stripped it)
     const portal = current[field];
-    if (fieldSame(field, incoming, portal)) continue;       // ClickUp already matches the file — nothing to do
+    if (sameField(field, incoming, portal)) continue;       // ClickUp already matches the file — nothing to do
     const sv = snap[field];
     if (sv == null) continue;                               // ClickUp's last-seen value unknown → can't prove the file changed → normal pull
     if (!diff(field, portal, sv)) continue;                 // the file has NOT changed since the last sync → only ClickUp moved → ClickUp wins (normal pull)
@@ -104,7 +131,7 @@ function classifyConflicts(cols, current, snapshotApp) {
 // "these two values are genuinely different" — the negation of the semantic
 // equality, with the same null handling as fieldSame (a null on either side is
 // treated as "same" there, i.e. not a difference).
-function diff(field, a, b) { return !fieldSame(field, a, b); }
+function diff(field, a, b) { return !sameField(field, a, b); }
 
 // Compact "Label: <file value> (ClickUp says X)" summary for an audit note.
 function summarize(items) {

@@ -12865,6 +12865,19 @@ router.post('/applications/:id/closing-date', async (req, res) => {
         await db.query(
           `UPDATE applications SET est_closing_date=$2, first_payment_date=$3, maturity_date=$4, updated_at=now() WHERE id=$1`,
           [req.params.id, kd.estClosing, kd.firstPayment, kd.maturity]);
+        // Keep the CLOSING DESK's own copy in lock-step too (owner-reported
+        // 2026-08-11: "I changed the estimated closing to 08/13 and the Closing
+        // status panel still shows 07/29"). closing_workflow.est_closing_date is
+        // set once at the closing hand-off (workflow.openClosing, COALESCE-
+        // preserved) and was NEVER updated by this edit — yet the Closing status
+        // panel (ClosingPanel.jsx) and DocLab both PREFER it over
+        // applications.expected_closing, so a later edit here never showed. The
+        // file's expected closing is the one authoritative date, so it propagates
+        // to the desk copy. UPDATE-only: it never creates a closing_workflow row
+        // (a file not yet submitted to closing has none). Best-effort.
+        await db.query(
+          `UPDATE closing_workflow SET est_closing_date=$2, updated_at=now() WHERE application_id=$1`,
+          [req.params.id, normExpected]);
       } catch (e) { console.error('[set-closing] term-sheet date mirror failed:', db.describeError(e)); }
     }
     if (b.expectedClosing) {
