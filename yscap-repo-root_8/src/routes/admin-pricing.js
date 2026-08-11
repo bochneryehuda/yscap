@@ -10,6 +10,7 @@ const router = require('express').Router();
 const db = require('../db');
 const F = require('../lib/fields');           // jsonbText: NUL-safe jsonb binds
 const pricingSettings = require('../lib/pricing-settings');
+const tpoPricing = require('../lib/tpo-pricing');   // the wholesale/broker channel pricing layer (bust on save)
 
 const numOrNull = (v) => (v == null || v === '' || isNaN(Number(v)) ? null : Number(v));
 
@@ -111,6 +112,96 @@ router.put('/', async (req, res) => {
     await client.query('ROLLBACK').catch(() => {});
     res.status(500).json({ error: 'could not save pricing settings' });
   } finally { client.release(); }
+});
+
+// ── TPO (wholesale/broker) CHANNEL pricing (owner-directed 2026-08-06) ──────────
+// A separate markup + origination control set for the TPO channel, in the SAME
+// Pricing Center, behind the SAME manage_pricing gate (a kind='tpo' actor holds no
+// capability, so it can never reach this). Every value is OPTIONAL: NULL means
+// "same as the retail default above" — so with nothing set, a TPO file prices
+// exactly like retail. A TPO file resolves retail → these channel defaults → its
+// firm's overrides → the firm's broker fee (src/lib/tpo-pricing.js). This changes
+// NO retail number and NO frozen engine formula — it is a new layer on top.
+function shapeTpoChannel(row) {
+  row = row || {};
+  const n = (v) => (v == null || v === '' ? null : Number(v));
+  return {
+    markupStdPct: n(row.markup_std_pct), markupGoldPct: n(row.markup_gold_pct), markupSilverPct: n(row.markup_silver_pct),
+    origStdPct: n(row.orig_std_pct), origGoldPct: n(row.orig_gold_pct), origSilverPct: n(row.orig_silver_pct),
+    markupTiers: pricingSettings.cleanMarkupTiers(row.markup_tiers),
+  };
+}
+
+// The current TPO-channel settings + the retail defaults each field falls back to,
+// so the UI can show "TPO value, defaults to retail X".
+router.get('/tpo', async (req, res) => {
+  try {
+    const retail = await pricingSettings.load();
+    const row = (await db.query(
+      `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct, markup_tiers
+         FROM tpo_pricing_settings WHERE id = 1 LIMIT 1`)).rows[0];
+    res.json({ tpo: shapeTpoChannel(row), retail });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.put('/tpo', async (req, res) => {
+  const b = req.body || {};
+  // Every markup/orig value is optional — NULL (a blank field) means "same as
+  // retail". Same guardrails as the retail defaults: percents 0-100, Silver markup
+  // hard-capped at 1.00% (the engine clamps too; keep the stored default honest).
+  const cols = {
+    markup_std_pct: numOrNull(b.markupStdPct), markup_gold_pct: numOrNull(b.markupGoldPct), markup_silver_pct: numOrNull(b.markupSilverPct),
+    orig_std_pct: numOrNull(b.origStdPct), orig_gold_pct: numOrNull(b.origGoldPct), orig_silver_pct: numOrNull(b.origSilverPct),
+  };
+  for (const [k, v] of Object.entries(cols)) {
+    if (v == null) continue;
+    if (v < 0 || v > 100) return res.status(400).json({ error: `${k} must be between 0 and 100` });
+  }
+  if (cols.markup_silver_pct != null && cols.markup_silver_pct > 1) {
+    return res.status(400).json({ error: 'Silver program markup is capped at 1.00% — anything above 1 point is not earned on this program.' });
+  }
+  // markup_tiers: a caller that omits it PRESERVES the current map (mirrors the
+  // retail PUT); an explicit value replaces it. Read the current value from the DB,
+  // not the cache, so a concurrent save is never overwritten with stale tiers.
+  let markupTiers;
+  if (b.markupTiers !== undefined) {
+    markupTiers = pricingSettings.cleanMarkupTiers(b.markupTiers);
+    if (markupTiers) {
+      for (const prog of Object.keys(markupTiers)) {
+        for (const [t, v] of Object.entries(markupTiers[prog])) {
+          if (v < 0 || v > 100) return res.status(400).json({ error: `${prog} tier ${t} markup must be between 0 and 100` });
+          if (prog === 'silver' && v > 1) return res.status(400).json({ error: 'Silver program markup is capped at 1.00% — anything above 1 point is not earned on this program.' });
+        }
+      }
+    }
+  } else {
+    const cur = (await db.query(`SELECT markup_tiers FROM tpo_pricing_settings WHERE id = 1`)).rows[0];
+    markupTiers = pricingSettings.cleanMarkupTiers(cur && cur.markup_tiers);
+  }
+  const auditDetail = JSON.stringify({ ...cols, markup_tiers: markupTiers });
+  cols.markup_tiers = markupTiers ? F.jsonbText(markupTiers) : null;
+  try {
+    const names = Object.keys(cols);
+    const setClause = names.map((k, i) => `${k}=$${i + 1}`).join(', ');
+    await db.query(
+      `UPDATE tpo_pricing_settings SET ${setClause}, updated_by=$${names.length + 1} WHERE id = 1`,
+      [...Object.values(cols), req.actor.id]);
+    // AWAIT the reload (not just bust): the resolver cache serves synchronously, so
+    // a bare bust would leave the very next quote reading the stale value until the
+    // async reload lands. Warming it here makes the save reflect immediately.
+    await tpoPricing.loadChannel();
+    // Verify-after-write (the repo's #1 bug-class guard): re-read + return.
+    const saved = shapeTpoChannel((await db.query(
+      `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct, markup_tiers
+         FROM tpo_pricing_settings WHERE id = 1`)).rows[0]);
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+         VALUES ('staff',$1,'update_tpo_pricing','tpo_pricing_settings',NULL,$2::jsonb)`,
+        [req.actor.id, auditDetail]);
+    } catch (_) { /* audit best-effort */ }
+    res.json({ ok: true, tpo: saved });
+  } catch (e) { res.status(500).json({ error: 'could not save TPO pricing settings' }); }
 });
 
 module.exports = router;

@@ -316,6 +316,7 @@ export default function SyncReviews() {
   // from processors/LOs/underwriters (the server also enforces this).
   const isAdmin = role === 'admin' || role === 'super_admin';
   const [status, setStatus] = useState('open');
+  const [mine, setMine] = useState(false);   // "My changes" — reviews caused by MY PILOT edits (owner-directed 2026-08-11)
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
   const [busyId, setBusyId] = useState(null);
@@ -347,13 +348,13 @@ export default function SyncReviews() {
   // overwrite the current tab's rows (vanishing-search bug class, 2026-07-16).
   const loadSeq = useRef(0);
   const load = useCallback(async () => {
-    const mine = ++loadSeq.current;
+    const seq = ++loadSeq.current;
     setErr('');
     try {
-      const rows = (await api.get(`/api/staff/sync-reviews?status=${status}`)).reviews || [];
-      if (mine === loadSeq.current) setRows(rows);
-    } catch (e) { if (mine === loadSeq.current) { setErr(e.message || 'Could not load the review queue'); setRows([]); } }
-  }, [status]);
+      const rows = (await api.get(`/api/staff/sync-reviews?status=${status}${mine ? '&mine=1' : ''}`)).reviews || [];
+      if (seq === loadSeq.current) setRows(rows);
+    } catch (e) { if (seq === loadSeq.current) { setErr(e.message || 'Could not load the review queue'); setRows([]); } }
+  }, [status, mine]);
   useEffect(() => { load(); }, [load]);
 
   async function sitewireAct(id, action) {
@@ -463,6 +464,11 @@ export default function SyncReviews() {
           <option value="approved">Approved (legacy)</option>
           <option value="rejected">Dismissed</option>
         </select>
+        <label className="row small" style={{ gap: 6, alignItems: 'center', marginLeft: 10, cursor: 'pointer', whiteSpace: 'nowrap' }}
+          title="Show only the reviews caused by a change YOU made in PILOT">
+          <input type="checkbox" checked={mine} onChange={(e) => { setMine(e.target.checked); clearFlash(); }} />
+          My changes
+        </label>
       </div>
       <p className="muted small" style={{ marginBottom: 12 }}>
         PILOT and ClickUp disagreed and the system could not prove which side is right, so nothing was written anywhere.
@@ -540,6 +546,7 @@ export default function SyncReviews() {
               </p>
             )}
             <div className="metrow"><span className="k">Who</span><span className="v">{r.borrower_name || '—'}{r.property ? ` — ${r.property}` : ''}</span></div>
+            {r.changed_by && <div className="metrow"><span className="k">Changed by</span><span className="v">{r.changed_by}</span></div>}
             {isSitewire ? (
               (cu != null || p != null) && <div className="metrow"><span className="k">Details</span><span className="v">{p != null ? <>expected <strong>{showVal(p)}</strong></> : null}{p != null && cu != null ? ' · ' : ''}{cu != null ? <>found <strong>{showVal(cu)}</strong></> : null}</span></div>
             ) : isEconFrozen && econChanges.length ? (

@@ -192,9 +192,16 @@ async function isBorrowerLocked(appId, client = db) {
    delegates to it. */
 const OWN_FILE_SQL = (alias, p) => {
   const a = alias ? alias + '.' : '';
-  return `(${a}borrower_id=${p} OR ${a}co_borrower_id=${p}` +
+  // A TPO (broker) file whose broker has turned the borrower's login OFF is
+  // hidden from the borrower's own portal (owner-locked decision #1: the borrower
+  // keeps their login by default, the broker may disable it per file). This is a
+  // NO-OP for every retail file (is_tpo=false → the NOT clause is always true),
+  // so retail borrower access is byte-identical; both columns are NOT NULL, so no
+  // three-valued-logic surprise. Every borrower file gate routes through here.
+  return `((${a}borrower_id=${p} OR ${a}co_borrower_id=${p}` +
     ` OR ${a}borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p})` +
-    ` OR ${a}co_borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p}))`;
+    ` OR ${a}co_borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p}))` +
+    ` AND NOT (${a}is_tpo = true AND ${a}borrower_portal_enabled = false))`;
 };
 async function anchorForBorrower(borrowerId, client = db) {
   if (!borrowerId) return null;

@@ -2027,17 +2027,17 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     } catch (_) { /* best-effort — never breaks the inbound pull */ }
   }
 
-  // PORTAL-EDIT GUARD (owner-directed 2026-07-28: "anything you change that
-  // bounces back must tell you or go to manual review — never do it by itself").
-  // The everyday case the two guards above miss: an un-frozen file with a
-  // mappable value that a HUMAN just edited in the portal, which the COALESCE
-  // pull silently reverts if the reconcile runs before the outbound push lands.
-  // Using ClickUp's last-seen snapshot (still the PREVIOUS values here — the
-  // snapshot is rewritten after this returns), it keeps the file's value and
-  // either re-pushes it (the edit hadn't reached ClickUp yet — silent) or parks a
-  // review (both sides changed — a real conflict). Runs LAST so anything an
-  // earlier guard already stripped is skipped. No-op when ClickUp matches the
-  // file, or when there is no snapshot to prove a portal-side edit.
+  // PORTAL-EDIT GUARD (owner-directed 2026-07-28 + 2026-08-11 hard rule: "anything you
+  // change that bounces back must tell you or go to manual review — never do it by itself;
+  // even if it hasn't reached ClickUp, our value stays"). Two layers, for EVERY two-way
+  // application field (not the old hand-kept subset): (1) QUEUE-AWARE — a field with an
+  // UNDELIVERED outbound push (queued / in flight / dead-lettered) is kept no matter what,
+  // because the team changed it in PILOT and ClickUp hasn't accepted it yet; (2) SNAPSHOT
+  // heuristic — using ClickUp's last-seen snapshot (still the PREVIOUS values here — the
+  // snapshot is rewritten after this returns), it keeps the file's value and either
+  // re-pushes it (the edit hadn't reached ClickUp yet — silent) or parks a review (both
+  // sides changed — a real conflict). Runs LAST so anything an earlier guard already
+  // stripped is skipped. No-op when ClickUp matches the file.
   if (targetId && task) {
     try {
       await require('../lib/inbound-portal-edit-guard')

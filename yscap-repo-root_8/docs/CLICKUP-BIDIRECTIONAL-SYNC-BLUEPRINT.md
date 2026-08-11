@@ -305,7 +305,7 @@ Legend — **Dir:** `⇄` two-way · `←CU` ClickUp is source (pull-authoritati
 |---|---|---|---|---|---|
 | applications.submitted_at | Date File Submitted | `51ef2193-6f42-4b6a-ab8e-d4bc13f0bd0c` | date | →CU | portal |
 | applications.expected_closing | Expected Closing Date | `de57d9fb-4c9e-4881-b6bf-fcf6268e44a6` | date | ⇄ | two-way (owner) |
-| **applications.actual_closing** | **Actual Closing Date** | `0846edc7-8619-4ee6-827e-a673570d3057` | date | **←CU** | **ClickUp authoritative (per your instruction)** |
+| applications.actual_closing | Actual Closing Date | `0846edc7-8619-4ee6-827e-a673570d3057` | date | ⇄ | two-way (owner-directed 2026-08-11: synced with our actual closing date) |
 | (status change ts) | Status Milestone change timestamp | `f88cd36d-e57d-4f3e-b4ac-da02da23e8af` | date | ←CU | ClickUp internal |
 
 ### 6.9 CRM contact fields (the borrower's contact card, CRM & SALES space)

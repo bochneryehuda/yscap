@@ -138,5 +138,81 @@ r = G.classifyConflicts(
 assert(eq(keys(r.kept), []) && eq(keys(r.conflicts), []),
   'closing date: only ClickUp changed → ClickUp wins as before (the team moves it there too)');
 
+// ---- ANTI-RECURRENCE: protect the WHOLE two-way application set ------------
+// The recurring root cause was a hand-kept subset that every new dir:'both' field
+// slipped past (closing date, note buyer, rehab type, one after another). The
+// protected set must now equal EXACTLY the ClickUp field map's t:'a' dir:'both' cols,
+// so a field added to the map fails this test until it is protected here — forcing a
+// comparator decision at build time. This is the guarantee the class can't come back.
+const { FIELD_MAP } = require('../src/clickup/mapper');
+const twoWayAppCols = FIELD_MAP.filter((f) => f.t === 'a' && f.dir === 'both').map((f) => f.col).sort();
+assert(eq([...G.PROTECTED_KEYS].sort(), twoWayAppCols),
+  'the protected set is EXACTLY every two-way application field in the ClickUp map (no field can slip past)');
+// The four fields that USED to be gaps are now covered.
+assert(['lender', 'rehab_type', 'dscr_ratio', 'ys_loan_number'].every((k) => G.PROTECTED_KEYS.includes(k)),
+  'the previously-unprotected two-way fields (lender, rehab_type, dscr_ratio, ys_loan_number) are protected');
+
+// ---- new field comparators: a spelling/case difference is not a change -----
+// note buyer by canonical key.
+r = G.classifyConflicts(
+  { lender: 'blue lake capital' }, { lender: 'Blue Lake Capital' }, { lender: 'blue lake capital' });
+assert(eq(keys(r.kept), []) && eq(keys(r.conflicts), []),
+  'note buyer "blue lake capital" ≡ "Blue Lake Capital" — case is not a bounce-back');
+// a genuine note-buyer edit the file made, ClickUp stale → KEEP (no more bounce-back).
+r = G.classifyConflicts(
+  { lender: 'Fidelis' }, { lender: 'Blue Lake Capital' }, { lender: 'Fidelis' });
+assert(eq(keys(r.kept), ['lender']) && eq(keys(r.conflicts), []),
+  'note buyer: a file edit (ClickUp stale) is KEPT — the note buyer no longer bounces back');
+// YS loan number compared case-insensitively (stored all-caps).
+r = G.classifyConflicts(
+  { ys_loan_number: 'yscap258134769' }, { ys_loan_number: 'YSCAP258134769' }, { ys_loan_number: 'yscap258134769' });
+assert(eq(keys(r.kept), []) && eq(keys(r.conflicts), []),
+  'YS loan number "yscap…" ≡ "YSCAP…" — case is not a bounce-back');
+// acquisition_date is a date field → compared by calendar day.
+r = G.classifyConflicts(
+  { acquisition_date: '2025-06-15' }, { acquisition_date: '2025-06-15T00:00:00' }, { acquisition_date: '2025-06-15' });
+assert(eq(keys(r.kept), []) && eq(keys(r.conflicts), []),
+  'acquisition date: the same day in a different shape is never read as a change');
+// The ACTUAL closing date is two-way now (owner-directed 2026-08-11: "sync it with OUR actual
+// closing date, not the estimate") — protected like every other two-way field, date-compared.
+assert(G.PROTECTED_KEYS.includes('actual_closing'), 'the ACTUAL closing date is in the protected set');
+r = G.classifyConflicts(
+  { actual_closing: '2026-07-29' }, { actual_closing: '2026-08-13' }, { actual_closing: '2026-07-29' });
+assert(eq(keys(r.kept), ['actual_closing']) && eq(keys(r.conflicts), []),
+  'actual closing: a portal edit is KEPT, ClickUp\'s stale value never bounces back');
+r = G.classifyConflicts(
+  { actual_closing: '2026-08-13' }, { actual_closing: '2026-08-13T00:00:00' }, { actual_closing: '2026-08-13' });
+assert(eq(keys(r.kept), []) && eq(keys(r.conflicts), []),
+  'actual closing: the same day in a different shape is never read as a change');
+
+// ---- QUEUE-AWARE layer (the hard rule): an undelivered push keeps our value --
+// THIS is the field-agnostic fix. The snapshot heuristic alone does NOTHING when
+// ClickUp's last-seen value is unknown (no snapshot) — so a field a human edited on a
+// never-snapshotted file would bounce back. Baseline (no pending push):
+let base = G.classifyConflicts(
+  { purchase_price: 400000 }, { purchase_price: 450000 }, {} /* no snapshot */);
+assert(eq(keys(base.kept), []) && eq(keys(base.conflicts), []),
+  'baseline: with no snapshot and no pending push, the snapshot heuristic holds nothing');
+// With a PENDING/undelivered outbound push for the field, our value is KEPT regardless.
+let pend = G.classifyConflicts(
+  { purchase_price: 400000 }, { purchase_price: 450000 }, {}, new Set(['purchase_price']));
+assert(eq(keys(pend.kept), ['purchase_price']) && eq(keys(pend.conflicts), []),
+  'an undelivered push KEEPS our value even with NO snapshot — the hard rule, field-agnostic');
+// Pending push + ClickUp ALSO moved since we last saw it → genuine two-sided conflict.
+r = G.classifyConflicts(
+  { arv: 700000 }, { arv: 650000 }, { arv: 600000 }, new Set(['arv']));
+assert(eq(keys(r.conflicts), ['arv']) && eq(keys(r.kept), []),
+  'a pending push where ClickUp ALSO moved is a two-sided conflict (keep ours + review)');
+// Pending push + ClickUp only echoes the pre-edit value → keep ours SILENTLY.
+r = G.classifyConflicts(
+  { arv: 600000 }, { arv: 650000 }, { arv: 600000 }, new Set(['arv']));
+assert(eq(keys(r.kept), ['arv']) && eq(keys(r.conflicts), []),
+  'a pending push where ClickUp only echoes the pre-edit value → keep ours silently');
+// A pending key that ISN'T the field in play does not protect an unrelated field.
+r = G.classifyConflicts(
+  { loan_type: 'Fix & Hold' }, { loan_type: 'Fix & Flip' }, { loan_type: 'Fix & Flip' }, new Set(['program']));
+assert(eq(keys(r.kept), []) && eq(keys(r.conflicts), []),
+  'a pending push for a DIFFERENT field never protects an unrelated one (only ClickUp changed → wins)');
+
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL PASS');
 process.exit(failures ? 1 : 0);
