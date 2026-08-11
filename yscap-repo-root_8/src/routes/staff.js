@@ -12870,9 +12870,17 @@ router.post('/applications/:id/closing-date', async (req, res) => {
     await audit(req, 'set_closing_date', 'application', req.params.id, {
       expectedClosing: b.expectedClosing, actualClosing: b.actualClosing,
       before: { expectedClosing: beforeRow.expected_closing || null, actualClosing: beforeRow.actual_closing || null } });
-    // Propagate the new expected closing to ClickUp right away (scoped push —
-    // only this field). actual_closing is pull-only (ClickUp owns it).
-    if ('expectedClosing' in b) enqueueClickupPush(req.params.id, ['expected_closing']).catch(() => {});
+    // Propagate the new closing date(s) to ClickUp right away (scoped push — only the
+    // fields that changed). BOTH the expected AND the actual closing date are two-way now
+    // (owner-directed 2026-08-11: "the actual closing date should be synced with our
+    // actual closing date"), so a change here goes out and the inbound bounce-back guard
+    // keeps ClickUp's stale value from reverting it.
+    {
+      const closingPush = [];
+      if ('expectedClosing' in b) closingPush.push('expected_closing');
+      if ('actualClosing' in b) closingPush.push('actual_closing');
+      if (closingPush.length) enqueueClickupPush(req.params.id, closingPush).catch(() => {});
+    }
     // Keep the term-sheet closing date + its derived first-payment/maturity dates
     // in lock-step with the canonical closing date (owner-directed 2026-07-22): the
     // final term sheet's dates must stay correct when the closing date is edited

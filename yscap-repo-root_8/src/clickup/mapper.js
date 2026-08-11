@@ -142,7 +142,12 @@ const FIELD_MAP = [
   { cu: F.PIPELINE.investorLoanNo, t: 'a', col: 'investor_loan_number', type: 'text', dir: 'pull' },
   { cu: F.PIPELINE.expectedClosing, t: 'a', col: 'expected_closing', type: 'date', dir: 'both' },
   { cu: F.PIPELINE.dateSubmitted, t: 'a', col: 'submitted_at', type: 'date', dir: 'push' },
-  { cu: ACTUAL_CLOSING, t: 'a', col: 'actual_closing', type: 'date', dir: 'pull' },
+  // ACTUAL closing date — BIDIRECTIONAL (owner-directed 2026-08-11: "the actual closing
+  // date should be matched with OUR actual closing date … synced with our closing date").
+  // Maps to applications.actual_closing (the real funded/closed date), NOT expected_closing
+  // (the estimate, which is the separate row above). Was pull-only; the /closing-date door
+  // now enqueues it and the inbound bounce-back guard protects it like every other 'both' field.
+  { cu: ACTUAL_CLOSING, t: 'a', col: 'actual_closing', type: 'date', dir: 'both' },
   // --- llc ---
   { cu: F.PIPELINE.llcName, t: 'l', col: 'llc_name', type: 'text', dir: 'both' },
   { cu: F.PIPELINE.ein, t: 'l', col: 'ein', type: 'text', dir: 'both' },

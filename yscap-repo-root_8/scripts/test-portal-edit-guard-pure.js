@@ -173,6 +173,17 @@ r = G.classifyConflicts(
   { acquisition_date: '2025-06-15' }, { acquisition_date: '2025-06-15T00:00:00' }, { acquisition_date: '2025-06-15' });
 assert(eq(keys(r.kept), []) && eq(keys(r.conflicts), []),
   'acquisition date: the same day in a different shape is never read as a change');
+// The ACTUAL closing date is two-way now (owner-directed 2026-08-11: "sync it with OUR actual
+// closing date, not the estimate") — protected like every other two-way field, date-compared.
+assert(G.PROTECTED_KEYS.includes('actual_closing'), 'the ACTUAL closing date is in the protected set');
+r = G.classifyConflicts(
+  { actual_closing: '2026-07-29' }, { actual_closing: '2026-08-13' }, { actual_closing: '2026-07-29' });
+assert(eq(keys(r.kept), ['actual_closing']) && eq(keys(r.conflicts), []),
+  'actual closing: a portal edit is KEPT, ClickUp\'s stale value never bounces back');
+r = G.classifyConflicts(
+  { actual_closing: '2026-08-13' }, { actual_closing: '2026-08-13T00:00:00' }, { actual_closing: '2026-08-13' });
+assert(eq(keys(r.kept), []) && eq(keys(r.conflicts), []),
+  'actual closing: the same day in a different shape is never read as a change');
 
 // ---- QUEUE-AWARE layer (the hard rule): an undelivered push keeps our value --
 // THIS is the field-agnostic fix. The snapshot heuristic alone does NOTHING when

@@ -101,8 +101,9 @@ const PROTECTED_FIELDS = [
   ['acquisition_date', 'Acquisition date'],
   ['ys_loan_number', 'YS loan number'],
   ['expected_closing', 'Expected closing date'],
+  ['actual_closing', 'Actual closing date'],
 ];
-const DATE_FIELDS = new Set(['expected_closing', 'acquisition_date']);
+const DATE_FIELDS = new Set(['expected_closing', 'acquisition_date', 'actual_closing']);
 const PROTECTED_KEYS = PROTECTED_FIELDS.map((f) => f[0]);
 const LABEL_OF = Object.fromEntries(PROTECTED_FIELDS);
 // Columns the field-agnostic queue-aware layer must NOT generically protect, because they
