@@ -250,6 +250,56 @@ async function applyAck(db, orderId, ack, resp) {
   return r.rows[0];
 }
 
+// ---------------------------------------------------------------------------
+// Turn a thrown transport error into a legible, persistable failure. The
+// CDG/AppraisalScope gateway sends its real reason in the HTTP body, which
+// client.js attaches to err.body (a parsed object, {raw:text} for a non-JSON
+// intermediary reply, or a CDG NACK-shaped envelope). The catch used to keep
+// only e.message ("AMC CreateAppraisal -> 500"), so nobody could see WHY —
+// this makes the vendor's own words reach last_error / last_status_response /
+// the write journal and the route response, so a live "Test now" is diagnosable.
+// ---------------------------------------------------------------------------
+function readGatewayBody(body) {
+  if (body == null) return null;
+  if (typeof body === 'string') return body.slice(0, 400);
+  try {
+    // A NACK-shaped envelope returned with a non-2xx status: reuse the CDG parser.
+    const nack = cdg.parseError(body);
+    if (nack) return nack.description || (nack.code != null ? `status ${nack.code}` : null);
+  } catch (_) { /* not NACK-shaped — fall through */ }
+  const s = body.raw || body.message || body.error_description || body.error || body.title || body.detail;
+  if (typeof s === 'string' && s.trim()) return s.slice(0, 400);
+  try { return JSON.stringify(body).slice(0, 400); } catch (_) { return null; }
+}
+
+function describeSendFailure(e) {
+  const status = Number.isInteger(e && e.status) ? e.status : null;
+  const gatewayMsg = readGatewayBody(e && e.body);
+  const timedOut = e && (e.name === 'AbortError' || /aborted|timeout/i.test(String(e.message || '')));
+  const causeStr = e && e.cause ? (e.cause.code || e.cause.message || String(e.cause)) : null;
+  let text;
+  if (status) {
+    const hint = status === 403 ? ' — the account may not be entitled to place orders at this endpoint, or our address is not on the vendor’s allow-list'
+      : status === 404 ? ' — the order endpoint URL looks wrong'
+      : status === 401 ? ' — the login token was not accepted for placing an order'
+      : status >= 500 ? ' — the gateway hit a server error on the order' : '';
+    text = `The appraisal gateway rejected the order (HTTP ${status})${gatewayMsg ? ': ' + gatewayMsg : ''}${hint}.`;
+  } else if (timedOut) {
+    text = 'The order timed out reaching the appraisal gateway (no reply). This looks like a connection problem, not a rejection of the order.';
+  } else {
+    text = `Could not reach the appraisal gateway${causeStr ? ' (' + causeStr + ')' : (e && e.message ? ' (' + e.message + ')' : '')}. This looks like a connection problem, not a rejection of the order.`;
+  }
+  const detail = {
+    kind: status ? 'http_error' : (timedOut ? 'timeout' : 'network_error'),
+    httpStatus: status,
+    code: (e && e.code) || null,
+    message: String((e && e.message) || e),
+    gateway: (e && e.body != null) ? e.body : null,
+    cause: causeStr,
+  };
+  return { text, detail };
+}
+
 /**
  * Create — and optionally PLACE — an appraisal order for a file.
  *
@@ -305,10 +355,17 @@ async function createOrder(db, appId, opts = {}) {
   try {
     resp = await client.write(built, { orderId: orderIdParam || undefined, label: spec.requestAction });
   } catch (e) {
-    await db.query(`UPDATE amc_orders SET status = 'error', last_error = $2, updated_at = now() WHERE id = $1`,
-      [order.id, String(e.message || e)]);
-    await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, ok: false, error: String(e.message || e), staffId: opts.staffId });
-    return { ok: false, error: e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'send_failed', message: String(e.message || e) };
+    // Capture the gateway's REAL reason (status + body), not just e.message, so a
+    // live failure is diagnosable from the file and the logs.
+    const failure = describeSendFailure(e);
+    // A transport 401 means the cached Bearer went stale between DoLogin and the
+    // order — drop it so the next attempt re-authenticates cleanly.
+    if (e && e.status === 401) session.invalidate();
+    await db.query(`UPDATE amc_orders SET status = 'error', last_error = $2, last_status_response = $3, updated_at = now() WHERE id = $1`,
+      [order.id, failure.text.slice(0, 2000), JSON.stringify(failure.detail)]);
+    await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, response: failure.detail, ok: false, error: failure.text, staffId: opts.staffId });
+    console.error(`[amc] CreateAppraisal send failed for order ${order.id}: ${failure.text}`, failure.detail.gateway || '');
+    return { ok: false, error: e && e.code === 'AMC_OUTBOUND_DISABLED' ? 'outbound_disabled' : 'send_failed', message: failure.text, httpStatus: failure.detail.httpStatus, detail: failure.detail };
   }
 
   // Dry-run: the transport short-circuited without sending. Record the attempt.
@@ -342,7 +399,7 @@ async function listOrders(db, appId) {
     `SELECT id, request_action, parent_order_id, client_order_number, cdg_order_number,
             sp_order_number, appraisal_file_number, product_code, form_description,
             status, status_code, status_name, status_description, rush, need_by_date,
-            dryrun, last_error, created_at, ordered_at, completed_at, last_polled_at, updated_at
+            dryrun, last_error, last_status_response, created_at, ordered_at, completed_at, last_polled_at, updated_at
        FROM amc_orders WHERE application_id = $1 ORDER BY created_at DESC`, [appId]);
   return r.rows;
 }
@@ -356,5 +413,5 @@ module.exports = {
   loadContext, cardStatus, formRules, buildPreview,
   createOrder, listOrders, getOrder, journal,
   // exported for tests
-  addrParts, borrowerCtx,
+  addrParts, borrowerCtx, describeSendFailure, readGatewayBody,
 };
