@@ -97,7 +97,10 @@ async function loadDrawFindings(db, appId, { photoUrl } = {}) {
 async function loadDrawList(db, appId) {
   return (await db.query(
     `SELECT d.sitewire_draw_id, d.number, d.status, d.total_requested_cents, d.total_approved_cents,
+            -- SAME precedence as approval.inspectorApproved (mirror -> delivered findings -> total)
+            -- so a broker/borrower list never shows $0 while the mirror lags behind the findings.
             COALESCE((SELECT sum(r.approved_cents) FROM sitewire_draw_requests r WHERE r.sitewire_draw_id = d.sitewire_draw_id),
+                     (SELECT sum(fl.approved_cents) FROM draw_finding_lines fl JOIN draw_findings df ON df.id = fl.finding_id WHERE df.sitewire_draw_id = d.sitewire_draw_id AND fl.retired_at IS NULL),
                      d.total_approved_cents) AS inspector_approved_cents,
             d.submitted_at, d.approved_at,
             (SELECT status FROM draw_findings f WHERE f.sitewire_draw_id=d.sitewire_draw_id) AS findings_status
