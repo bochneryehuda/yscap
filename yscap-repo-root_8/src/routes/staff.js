@@ -17386,23 +17386,42 @@ router.get('/sync-reviews', async (req, res) => {
   try {
     const status = ['open', 'approved', 'rejected', 'resolved'].includes(String(req.query.status)) ? String(req.query.status) : 'open';
     const scoped = !seesAll(req);
+    // "My changes" (owner-directed 2026-08-11): every user's own view of the reviews
+    // caused by THEIR PILOT edits. A narrowing filter on portal_actor_id — it composes
+    // with the scope below (an admin sees every row but can still narrow to their own).
+    const mine = String(req.query.mine || '') === '1';
+    const params = [status];
+    let scopeClause = '';
+    if (scoped) {
+      params.push(req.actor.id);   // $2 for the file/borrower scope
+      scopeClause = `AND ((a.id IS NOT NULL AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')})
+                       ${REVIEW_BORROWER_SCOPE('$2')})`;
+    }
+    let mineClause = '';
+    if (mine) {
+      const p = scoped ? '$2' : `$${params.push(req.actor.id)}`;   // reuse the actor param when scoped
+      mineClause = `AND q.portal_actor_id = ${p}::uuid`;
+    }
     // Scoped access = the row's file is theirs, OR (for rows not tied to a
     // file yet — a non-materialized task, a borrower-level DOB) any of the
     // row's borrower's active files is theirs. Matches the notifyLoanOfficer
-    // fan-out, so the emailed LO always finds the row behind the deep link
-    // (pre-merge audit: the old scope hid application-less rows from LOs).
+    // fan-out, so the emailed LO always finds the row behind the deep link.
+    // `changed_by` = the staff member whose PILOT edit produced the disagreement (db/523),
+    // shown so the team can see WHOSE change it was; null for an unattributed row.
     const r = await db.query(
       `SELECT q.*, a.deleted_at,
               NULLIF(b.full_name,'') AS borrower_name,
+              COALESCE(NULLIF(sa.full_name,''), sa.email) AS changed_by,
               COALESCE(a.property_address->>'oneLine', a.property_address->>'line1') AS property
          FROM sync_review_queue q
          LEFT JOIN applications a ON a.id = q.application_id
          LEFT JOIN borrowers b ON b.id = COALESCE(q.borrower_id, a.borrower_id)
+         LEFT JOIN staff_users sa ON sa.id = q.portal_actor_id
         WHERE q.status = $1
-          ${scoped ? `AND ((a.id IS NOT NULL AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')})
-                       ${REVIEW_BORROWER_SCOPE('$2')})` : ''}
+          ${scopeClause}
+          ${mineClause}
         ORDER BY q.created_at DESC LIMIT 500`,
-      scoped ? [status, req.actor.id] : [status]);
+      params);
     res.json({ reviews: r.rows });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });

@@ -311,6 +311,13 @@ async function applyInboundPortalEditGuard({ appId, cols, taskId, borrowerId, cl
   // conflict the push is already enqueued and WILL carry ours to ClickUp ("our system is
   // the source of truth" — owner-directed); the review just tells the team both sides moved.
   if (conflicts.length) {
+    // Attribute the conflict to the staff member whose PILOT edit caused it (owner-directed
+    // 2026-08-11: "every user should have their own view of the stuff THEY changed that
+    // doesn't agree with ClickUp"). Recovered from the audit trail — best-effort, null when
+    // it can't be pinpointed. Fed to the review so the "My changes" view + the actor's own
+    // notification work.
+    let portalActorId = null;
+    try { portalActorId = await review.lastFieldEditor(appId, conflicts.map((c) => c.field), client); } catch (_) {}
     try {
       await review.queueReview({
         applicationId: appId, borrowerId: borrowerId || null, taskId, direction: 'inbound',
@@ -318,6 +325,7 @@ async function applyInboundPortalEditGuard({ appId, cols, taskId, borrowerId, cl
         clickupValue: conflicts.map((c) => `${c.label}: ${c.to}`).join('; '),
         portalValue: conflicts.map((c) => `${c.label}: ${c.from == null ? '—' : c.from}`).join('; '),
         rawValue: JSON.stringify({ changes: conflicts }),
+        portalActorId,
         suppressIfRejected: true,
       });
     } catch (_) { /* queueing is best-effort */ }

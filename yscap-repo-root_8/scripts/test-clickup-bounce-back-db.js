@@ -16,6 +16,7 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'testsecrettestsecrettestsecr
 
 const db = require('../src/db');
 const guard = require('../src/lib/inbound-portal-edit-guard');
+const review = require('../src/lib/sync-review');
 
 let failures = 0;
 const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failures++; };
@@ -39,11 +40,14 @@ async function enqueuePendingPush(appId, only, status = 'queued') {
 
 (async () => {
   const sfx = `${process.pid}-${Math.floor(Math.random() * 1e6)}`;
-  let borrowerId;
+  let borrowerId, staffId;
   try {
     borrowerId = (await db.query(
       `INSERT INTO borrowers (first_name,last_name,email) VALUES ('BB','Test',$1) RETURNING id`,
       [`bb-${sfx}@test.local`])).rows[0].id;
+    staffId = (await db.query(
+      `INSERT INTO staff_users (email, full_name, role) VALUES ($1,'BB Officer','loan_officer') RETURNING id`,
+      [`bbstaff-${sfx}@test.local`])).rows[0].id;
     const mkApp = async (task, extra = {}) => {
       const cols = Object.assign({ borrower_id: borrowerId, status: 'processing', clickup_pipeline_task_id: task }, extra);
       const keys = Object.keys(cols);
@@ -122,11 +126,47 @@ async function enqueuePendingPush(appId, only, status = 'queued') {
     const after5 = num((await db.query(`SELECT arv FROM applications WHERE id=$1`, [app5])).rows[0].arv);
     assert(after5 === 525000, 'case5: with no in-flight edit and no snapshot, a genuine ClickUp change still applies (bidirectional preserved)');
 
+    // ── CASE 6 — a two-sided conflict is ATTRIBUTED to the staffer who made the edit ──
+    // The audit trail records who changed the field; the guard recovers that person and
+    // stamps the review's portal_actor_id, so it lands in THEIR "my changes" view.
+    const task6 = `bbtask6-${sfx}`;
+    const app6 = await mkApp(task6, { arv: 720000 });
+    await db.query(
+      `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail, created_at)
+       VALUES ('staff', $1, 'edit_application', 'application', $2, $3, now())`,
+      [staffId, app6, JSON.stringify({ changes: { arv: { from: 600000, to: 720000 } } })]);
+    // lastFieldEditor recovers the editor by the conflicting column.
+    const editor = await review.lastFieldEditor(app6, ['arv'], db);
+    assert(editor === staffId, 'case6: lastFieldEditor recovers the staff member who edited the field from the audit trail');
+    await db.query(
+      `INSERT INTO clickup_task_index (task_id, application_id, snapshot, snapshot_at)
+       VALUES ($1,$2,$3,now()) ON CONFLICT (task_id) DO UPDATE SET snapshot=$3, snapshot_at=now()`,
+      [task6, app6, JSON.stringify({ app: { arv: 600000 } })]);
+    await enqueuePendingPush(app6, ['arv']);
+    const cols6 = { arv: 690000 };   // ClickUp moved it independently → two-sided conflict
+    await guard.applyInboundPortalEditGuard({ appId: app6, cols: cols6, taskId: task6, borrowerId });
+    const rev6 = (await db.query(
+      `SELECT portal_actor_id FROM sync_review_queue WHERE application_id=$1 AND field_key='portal_edit_conflict' AND status='open'`, [app6])).rows[0];
+    assert(rev6 && rev6.portal_actor_id === staffId, 'case6: the conflict review is attributed to the staffer whose edit caused it (the "my changes" view + their own notice)');
+
   } catch (e) {
     console.error('FAIL unexpected error', e);
     failures++;
   } finally {
-    try { if (borrowerId) await db.query(`DELETE FROM borrowers WHERE id=$1`, [borrowerId]); } catch (_) {}
+    try {
+      if (borrowerId) {
+        await db.query(`DELETE FROM sync_review_queue WHERE application_id IN (SELECT id FROM applications WHERE borrower_id=$1)`, [borrowerId]).catch(() => {});
+        await db.query(`DELETE FROM sync_queue WHERE entity_id IN (SELECT id FROM applications WHERE borrower_id=$1)`, [borrowerId]).catch(() => {});
+        await db.query(`DELETE FROM clickup_task_index WHERE application_id IN (SELECT id FROM applications WHERE borrower_id=$1)`, [borrowerId]).catch(() => {});
+        await db.query(`DELETE FROM audit_log WHERE entity_id IN (SELECT id FROM applications WHERE borrower_id=$1)`, [borrowerId]).catch(() => {});
+        await db.query(`DELETE FROM borrowers WHERE id=$1`, [borrowerId]).catch(() => {});
+      }
+      if (staffId) {
+        await db.query(`DELETE FROM sync_review_queue WHERE portal_actor_id=$1`, [staffId]).catch(() => {});
+        await db.query(`DELETE FROM audit_log WHERE actor_id=$1`, [staffId]).catch(() => {});
+        await db.query(`DELETE FROM staff_users WHERE id=$1`, [staffId]).catch(() => {});
+      }
+    } catch (_) {}
     await db.pool.end().catch(() => {});
   }
   console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL PASS');
