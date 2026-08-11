@@ -34,8 +34,12 @@ async function requestCancel(db, order, opts = {}) {
   const reason = String(opts.reason || '').trim();
   if (!reason) return { ok: false, error: 'reason_required', message: 'Add a short reason for the cancellation.' };
   if (!order || !order.id) return { ok: false, error: 'not_found' };
-  // Nothing to cancel at the vendor if the order never reached them.
-  if (!order.sp_order_number && !order.cdg_order_number) {
+  // A cancel needs the ServiceProviderOrderNumber: it identifies the order at the AMC in
+  // the CancelOrder envelope's serviceProviderSystem, AND it's what the poll worker uses
+  // to confirm the cancellation (GetAppraisalStatus filters on sp_order_number, so a
+  // sp-less order could never leave 'cancel_requested'). A placed order always carries it
+  // (the ACK sets sp + cdg together); a draft carries neither — nothing to cancel there.
+  if (!order.sp_order_number) {
     return { ok: false, error: 'not_placed', message: 'This order was never placed with the AMC, so there’s nothing to cancel there.' };
   }
   if (order.status === 'cancelled' || order.status === 'completed') {

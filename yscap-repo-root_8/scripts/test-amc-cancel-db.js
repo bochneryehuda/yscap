@@ -109,6 +109,12 @@ const nackResp = { message: { statusResponses: [
       `INSERT INTO amc_orders (application_id, client_order_number, status) VALUES ($1,'YSCAP-CANCEL-1','draft') RETURNING *`, [appId]);
     const notPlaced = await cancel.requestCancel(c, draftRow.rows[0], { reason: 'borrower withdrew', staffId });
     ok(!notPlaced.ok && notPlaced.error === 'not_placed', 'an order that never reached the AMC is not_placed');
+    // A cancel needs the ServiceProviderOrderNumber (the envelope + the poll both key on
+    // it), so a cdg-only order — which the poll could never advance — is also not_placed.
+    const cdgOnly = await c.query(
+      `INSERT INTO amc_orders (application_id, cdg_order_number, status) VALUES ($1,'CLG-NOSP','ordered') RETURNING *`, [appId]);
+    const noSp = await cancel.requestCancel(c, cdgOnly.rows[0], { reason: 'x', staffId });
+    ok(!noSp.ok && noSp.error === 'not_placed', 'an order with a cdg number but no sp order number is not_placed');
 
     // ---- guard: a terminal order is not cancellable -------------------------
     for (const term of ['cancelled', 'completed']) {

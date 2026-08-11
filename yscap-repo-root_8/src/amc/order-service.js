@@ -509,7 +509,8 @@ async function listOrders(db, appId) {
     `SELECT id, request_action, parent_order_id, client_order_number, cdg_order_number,
             sp_order_number, appraisal_file_number, product_code, form_description,
             status, status_code, status_name, status_description, rush, need_by_date,
-            dryrun, last_error, last_status_response, created_at, ordered_at, completed_at, last_polled_at, updated_at
+            dryrun, last_error, last_status_response, cancel_reason, cancel_requested_at,
+            cancel_requested_by, created_at, ordered_at, completed_at, last_polled_at, updated_at
        FROM amc_orders WHERE application_id = $1 ORDER BY created_at DESC`, [appId]);
   return r.rows;
 }

@@ -33,6 +33,10 @@ const storage = require('../lib/storage');
 // 'cancel_requested' stays open so the poll keeps checking for the vendor's Cancellation
 // (1051) confirmation, which flips it to 'cancelled'.
 const OPEN_STATUSES = ['ordered', 'in_process', 'assigned', 'inspected', 'in_review', 'product_available', 'on_hold', 'cancel_requested'];
+// The terminal lifecycles — an order that reaches one of these is done at the AMC. Used
+// to decide when a poll may move an order OUT of the 'cancel_requested' holding state
+// (only a vendor-confirmed cancel/completion/rejection releases it — see below).
+const TERMINAL_STATUSES = new Set(['cancelled', 'completed', 'rejected']);
 const POLL_BATCH = Math.max(1, parseInt(process.env.AMC_POLL_BATCH || '25', 10) || 25);
 
 // ---------------------------------------------------------------------------
@@ -78,7 +82,17 @@ async function applyStatusResponse(dbh, order, resp) {
   }
   await recordStatusEvent(dbh, order.id, st, resp);
   const lifecycle = cdg.mapStatusToLifecycle(st.statusCode, st.statusName);
-  const newStatus = lifecycle || order.status;
+  let newStatus = lifecycle || order.status;
+  // A cancel we've ASKED for stays 'cancel_requested' until the vendor CONFIRMS it
+  // (Cancellation / 1051 → 'cancelled') or the order otherwise reaches a terminal state.
+  // The order is still live at the AMC, so the next poll returns its current vendor
+  // status (assigned / in_process / …), which must NOT downgrade the marker — "asking is
+  // not agreeing". We still record the latest status_code/name/description below; only
+  // the lifecycle status is pinned. A terminal lifecycle (the 1051 confirmation, a
+  // completion, a rejection) is allowed through so the request can actually resolve.
+  if (order.status === 'cancel_requested' && !(lifecycle && TERMINAL_STATUSES.has(lifecycle))) {
+    newStatus = 'cancel_requested';
+  }
   await dbh.query(
     `UPDATE amc_orders SET
         status=$2, status_code=$3, status_name=$4, status_description=$5,

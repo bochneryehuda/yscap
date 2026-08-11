@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../lib/api';
 import { moneyNum } from '../lib/money';
-import { askConfirm, askPrompt } from '../lib/dialog';
+import { askConfirm, askPrompt } from '../lib/dialog.js';
 
 /**
  * AMC appraisal ordering (AppraisalScope / CoreLogic Digital Gateway) — the staff desk
