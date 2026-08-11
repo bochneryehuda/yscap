@@ -118,9 +118,10 @@ const nackResp = { message: { statusResponses: [
 
     // ---- guard: a terminal order is not cancellable -------------------------
     for (const term of ['cancelled', 'completed']) {
+      // Distinct sp_order_number per row — uq_amc_orders_sp_order is UNIQUE.
       const t = await c.query(
         `INSERT INTO amc_orders (application_id, cdg_order_number, sp_order_number, status)
-         VALUES ($1,'CLG-T','SP-T',$2) RETURNING *`, [appId, term]);
+         VALUES ($1,$2,$3,$4) RETURNING *`, [appId, 'CLG-T-' + term, 'SP-T-' + term, term]);
       const res = await cancel.requestCancel(c, t.rows[0], { reason: 'x', staffId });
       ok(!res.ok && res.error === 'not_cancellable', `a ${term} order is not_cancellable`);
     }
