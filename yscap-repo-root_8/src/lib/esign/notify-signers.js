@@ -28,10 +28,15 @@ const PACKAGE_LABEL = {
  * Email every borrower/co-borrower on an envelope who still needs to sign a PILOT
  * magic link. `envelopeRowId` is the esign_envelopes.id. Returns { sent, skipped }.
  * Never throws.
+ *
+ * `opts.onlyRecipientIdDs` (a DocuSign recipientId like "1") narrows the send to ONE
+ * recipient — used after a recipient-email CORRECTION so only the corrected signer is
+ * re-nudged with PILOT's own branded link, never their co-signer.
  */
 async function notifyReadyToSign(envelopeRowId, opts = {}) {
   const db = opts.db || dbDefault;
   const mail = opts.mail || mailDefault;   // injectable for tests
+  const onlyRid = opts.onlyRecipientIdDs != null ? String(opts.onlyRecipientIdDs) : null;
   const out = { sent: 0, skipped: 0, recipients: [] };
   let rows;
   try {
@@ -66,6 +71,8 @@ async function notifyReadyToSign(envelopeRowId, opts = {}) {
     return out;
   }
   for (const r of rows) {
+    // A correction re-nudges ONLY the recipient whose email we just changed.
+    if (onlyRid && String(r.recipient_id_ds) !== onlyRid) { out.skipped++; continue; }
     // Only email once the envelope is actually out for signing.
     if (!r.envelope_id || !['sent', 'delivered'].includes(r.status)) { out.skipped++; continue; }
     try {

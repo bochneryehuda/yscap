@@ -503,6 +503,82 @@ async function resendEnvelope(envelopeId) {
   }));
 }
 
+// ---- recipient CORRECTION (change email on an in-flight envelope) -----------
+// DocuSign's "Correct" flow: change a recipient's email/name on an envelope that is
+// still out for signature and (with resend_envelope) re-notify the NEW address. Used
+// so staff can fix a wrong email after a package went out WITHOUT voiding + re-issuing
+// (owner-directed). Only a recipient who has not yet signed/declined is correctable —
+// DocuSign returns the per-recipient outcome in `recipientUpdateResults`, so a 200 does
+// NOT mean success; buildRecipientUpdateBody + recipientUpdateFailure are the pure
+// helpers, unit-tested with no network.
+
+/** Build the PUT /recipients body. Each signer needs recipientId; email/name optional.
+ *  An embedded (clientUserId) recipient keeps its clientUserId + hybrid email flag so
+ *  the correction re-notifies the new address AND the in-portal magic link still works. */
+function buildRecipientUpdateBody({ signers = [], carbonCopies = [] } = {}) {
+  const body = {};
+  const sig = (Array.isArray(signers) ? signers : []).map((s) => ({
+    recipientId: String(s.recipientId),
+    ...(s.email != null ? { email: String(s.email) } : {}),
+    ...(s.name != null ? { name: String(s.name) } : {}),
+    ...(s.clientUserId ? { clientUserId: String(s.clientUserId) } : {}),
+    ...(s.embeddedRecipientStartURL ? { embeddedRecipientStartURL: String(s.embeddedRecipientStartURL) } : {}),
+  }));
+  const cc = (Array.isArray(carbonCopies) ? carbonCopies : []).map((c) => ({
+    recipientId: String(c.recipientId),
+    ...(c.email != null ? { email: String(c.email) } : {}),
+    ...(c.name != null ? { name: String(c.name) } : {}),
+  }));
+  if (sig.length) body.signers = sig;
+  if (cc.length) body.carbonCopies = cc;
+  return body;
+}
+
+/** Scan a recipientUpdateResults array for the first non-SUCCESS entry (DocuSign
+ *  answers 200 even when an individual recipient couldn't be corrected — e.g. they
+ *  already signed, or the envelope isn't correctable). Returns the failing entry or null. */
+function recipientUpdateFailure(results) {
+  const arr = Array.isArray(results) ? results : [];
+  for (const r of arr) {
+    const ed = r && r.errorDetails;
+    const code = ed && (ed.errorCode || ed.error);
+    if (code && String(code).toUpperCase() !== 'SUCCESS') return r;
+  }
+  return null;
+}
+
+/**
+ * Update one or more recipients on an in-flight envelope (change email/name), and
+ * re-notify them when `resend` (default true). Validates args, then inspects the
+ * per-recipient results so a "200 with a failed recipient" surfaces as a real error.
+ */
+async function updateRecipients(envelopeId, { signers = [], carbonCopies = [], resend = true } = {}) {
+  ensure();
+  const allSigners = Array.isArray(signers) ? signers : [];
+  if (!allSigners.length && !(Array.isArray(carbonCopies) && carbonCopies.length)) {
+    throw dsError('updateRecipients: at least one recipient required', { code: 'DOCUSIGN_ARG', retryable: false });
+  }
+  for (const s of allSigners) {
+    if (!s || !s.recipientId) throw dsError('updateRecipients: recipientId required', { code: 'DOCUSIGN_ARG', retryable: false });
+    if (s.email != null && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s.email)) throw dsError(`updateRecipients: invalid email "${s.email}"`, { code: 'DOCUSIGN_ARG', retryable: false });
+  }
+  const base = await apiBase();
+  const q = resend ? '?resend_envelope=true' : '';
+  const body = buildRecipientUpdateBody({ signers: allSigners, carbonCopies });
+  const j = await authedJson((token) => httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}/recipients${q}`), {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }));
+  const failed = recipientUpdateFailure(j && j.recipientUpdateResults);
+  if (failed) {
+    const ed = failed.errorDetails || {};
+    throw dsError(`DocuSign could not update the recipient: ${ed.message || ed.errorCode || 'unknown error'}`,
+      { code: 'DOCUSIGN_RECIPIENT_UPDATE', retryable: false, dsErrorCode: ed.errorCode || ed.error });
+  }
+  return j;
+}
+
 /**
  * Mint a short-lived embedded (in-portal) signing URL for one recipient.
  * The recipient MUST have been created with a clientUserId. returnUrl is where
@@ -668,6 +744,9 @@ module.exports = {
   listAuditEvents,
   voidEnvelope,
   resendEnvelope,
+  buildRecipientUpdateBody,
+  recipientUpdateFailure,
+  updateRecipients,
   createRecipientView,
   parseRecipients,
   derivePhase,
