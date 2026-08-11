@@ -164,6 +164,21 @@ function call(server, method, p, token, body) {
     ok(pr.status === 403 && pr.body.code === 'staff_handled', 'placing an RCN order is refused for the broker (403)');
     ok(!/rcn/i.test(JSON.stringify(pr.body)), 'the RCN refusal never names the note buyer');
 
+    // ── borrower-login toggle: a portal-disabled TPO file does NOT email the borrower ──
+    const notify = require(R + '/src/lib/notify');
+    const enabledOut = await notify.notifyAppBorrowers(appA, { type: 'condition_added', title: 'test', body: 'test' });
+    ok(Array.isArray(enabledOut) && enabledOut.filter(Boolean).length > 0, 'a portal-ENABLED TPO file still notifies the borrower');
+    await db.query(`UPDATE applications SET borrower_portal_enabled=false WHERE id=$1`, [appA]);
+    const disabledOut = await notify.notifyAppBorrowers(appA, { type: 'condition_added', title: 'test', body: 'test' });
+    ok(Array.isArray(disabledOut) && disabledOut.length === 0, 'a portal-DISABLED TPO file does NOT notify/email the borrower');
+    // a RETAIL file is never gated by the TPO toggle (is_tpo guard short-circuits)
+    const retail = (await db.query(
+      `INSERT INTO applications (borrower_id, property_address, program, loan_type, status, source, borrower_portal_enabled, is_tpo)
+       VALUES ((SELECT borrower_id FROM applications WHERE id=$1), $2, 'gold', 'Purchase', 'new', 'staff', false, false) RETURNING id`,
+      [appA, JSON.stringify(addrOf(9))])).rows[0].id;
+    const retailOut = await notify.notifyAppBorrowers(retail, { type: 'condition_added', title: 'test', body: 'test' });
+    ok(Array.isArray(retailOut) && retailOut.filter(Boolean).length > 0, 'a retail file with portal off is UNAFFECTED (the TPO toggle never gates it)');
+
     // ── firm isolation: broker B (another firm) cannot touch firm A's file ─────────
     ok((await call(server, 'GET', `/api/tpo/applications/${appA}/orders`, tokB)).status === 404, 'another firm cannot read the orders (404)');
     ok((await call(server, 'POST', `/api/tpo/applications/${appA}/orders/title/vendor`, tokB, { companyName: 'Z' })).status === 404, 'another firm cannot add a vendor (404)');
