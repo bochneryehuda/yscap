@@ -51,6 +51,7 @@ const LABEL_OF = {
   property_type: 'Property type',
   rehab_type: 'Rehab type',
   term: 'Loan term',
+  lender: 'Note buyer',
 };
 
 /**
@@ -68,6 +69,27 @@ function protectedColumns() {
     // `cu` is the ClickUp custom-field id — the key the live option map is keyed
     // by (mapper reads `options[f.cu]`), NOT the crosswalk enumKey.
     .map((f) => ({ col: f.col, enumKey: f.enumKey, cu: f.cu, label: LABEL_OF[f.col] || f.col }));
+}
+
+/**
+ * FREE (non-crosswalked) two-way dropdowns — today only the NOTE BUYER (`lender`).
+ * The owner (2026-08-11): "anything we change in our system that ClickUp didn't
+ * accept should stay, and open a manual review that ClickUp did not change it."
+ *
+ * A crosswalked enum carries its own mapping table, so `unmappableToClickUp` can
+ * judge mappability even with a cold option cache. A FREE dropdown has NO such
+ * table — the ONLY source of valid values is the LIVE ClickUp option list — so it
+ * can be judged unmappable ONLY when we actually hold that field's options
+ * (otherwise a cold cache would park a false review). Derived from FIELD_MAP
+ * (t:'a', type dropdown, dir:'both', NO enumKey) so a future free two-way dropdown
+ * is covered automatically.
+ */
+function protectedFreeColumns() {
+  let map = [];
+  try { map = require('../clickup/mapper').FIELD_MAP || []; } catch (_) { return []; }
+  return map
+    .filter((f) => f && f.t === 'a' && f.type === 'dropdown' && !f.enumKey && f.dir === 'both')
+    .map((f) => ({ col: f.col, cu: f.cu, label: LABEL_OF[f.col] || f.col }));
 }
 
 /**
@@ -95,6 +117,34 @@ function unmappableOverwrites(cols, current, options = {}) {
     if (!X.unmappableToClickUp(enumKey, kept, options && options[cu])) continue;  // ClickUp CAN hold ours — normal sync
     out.push({ field: col, label, kept: String(kept), incoming: String(incoming) });
   }
+
+  // FREE dropdowns (the NOTE BUYER). Mappability is decided ONLY by the LIVE ClickUp
+  // options via dropdownLabelToId — there is no crosswalk. Two things differ from the
+  // crosswalked loop above, both deliberate:
+  //   • "no change" is by CANONICAL buyer identity, so "EMCAP" ≡ "EMCAP Financial"
+  //     is never read as ClickUp trying to change the note buyer.
+  //   • with NO options for the field (a cold cache) we CANNOT prove unmappability,
+  //     so we skip — never a false review.
+  let T = null; let reg = null;
+  try { T = require('../clickup/transforms'); reg = require('./conditions/field-registry'); } catch (_) { T = null; }
+  if (T && reg) {
+    for (const { col, cu, label } of protectedFreeColumns()) {
+      if (!(col in cols)) continue;
+      const incoming = cols[col];
+      if (incoming == null || incoming === '') continue;    // COALESCE keeps ours anyway
+      const kept = current[col];
+      if (kept == null || kept === '') continue;            // filling a blank is never a revert
+      // Same buyer, spelled differently → not a change (no churn, no review).
+      const same = col === 'lender'
+        ? reg.sameNoteBuyer(kept, incoming)
+        : String(kept).trim().toLowerCase() === String(incoming).trim().toLowerCase();
+      if (same) continue;
+      const opts = options && options[cu];
+      if (!Array.isArray(opts) || opts.length === 0) continue;         // cold cache → cannot prove unmappable
+      if (T.dropdownLabelToId(opts, kept) != null) continue;          // ClickUp CAN hold ours — normal sync
+      out.push({ field: col, label, kept: String(kept), incoming: String(incoming) });
+    }
+  }
   return out;
 }
 
@@ -117,13 +167,15 @@ async function applyInboundEnumGuard({ appId, cols, taskId, borrowerId, options 
   const review = require('./sync-review');
   const closeStale = (note) => review.closeStaleReviews({ taskId, fieldKey: 'enum_unmappable', note }).catch(() => {});
 
-  const cs = protectedColumns();
-  if (!cs.length) return [];
+  // Union the crosswalked enums with the free two-way dropdowns (the note buyer) so
+  // `current` carries every column unmappableOverwrites needs to read.
+  const cols2 = [...new Set([...protectedColumns().map((c) => c.col), ...protectedFreeColumns().map((c) => c.col)])];
+  if (!cols2.length) return [];
 
   let current = null;
   try {
     current = (await client.query(
-      `SELECT ${cs.map((c) => c.col).join(', ')} FROM applications WHERE id=$1`, [appId])).rows[0] || null;
+      `SELECT ${cols2.join(', ')} FROM applications WHERE id=$1`, [appId])).rows[0] || null;
   } catch (_) { return []; }        // can't read the file → never block the pull
 
   const held = unmappableOverwrites(cols, current, options);
@@ -158,4 +210,4 @@ async function applyInboundEnumGuard({ appId, cols, taskId, borrowerId, options 
   return held.map((h) => h.field);
 }
 
-module.exports = { LABEL_OF, protectedColumns, unmappableOverwrites, summarize, applyInboundEnumGuard };
+module.exports = { LABEL_OF, protectedColumns, protectedFreeColumns, unmappableOverwrites, summarize, applyInboundEnumGuard };

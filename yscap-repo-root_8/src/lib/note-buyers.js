@@ -19,13 +19,16 @@
  *      ClickUp is unconfigured;
  *   3. the DISTINCT lender values already on files (anything a past pull stored).
  *
- * Deduped by the normalized key (normNoteBuyer) so "Blue Lake" / "blue lake"
- * collapse to one row; a human-friendly label is preserved for display.
- * Everything is best-effort — a ClickUp outage just yields the DB + registry set.
+ * Deduped by the CANONICAL note-buyer identity (canonicalNoteBuyer) so "Blue Lake" /
+ * "blue lake" AND "EMCAP" / "EMCAP Financial" collapse to ONE row per buyer, offered
+ * under its production ClickUp label (owner-directed 2026-08-11: "the two EMCAPs are
+ * the same note buyer — combine them; the one available in ClickUp is canonical").
+ * A note buyer the picker has never seen keeps its own spelling. Everything is
+ * best-effort — a ClickUp outage just yields the DB + registry set.
  */
 
 const db = require('../db');
-const { normNoteBuyer } = require('./conditions/field-registry');
+const { canonicalNoteBuyer } = require('./conditions/field-registry');
 
 // Pull the live ClickUp dropdown options for the note-buyer (lender) field.
 // Uses the already-warm option cache when present, else fetches from a
@@ -70,11 +73,14 @@ async function listNoteBuyers() {
     clickupNoteBuyerLabels(), Promise.resolve(registryNoteBuyerLabels()), dbNoteBuyerLabels(),
   ]);
   const byKey = new Map();
-  // ClickUp first (its label spelling wins), then registry, then DB stragglers.
+  // ClickUp first (its spelling wins the label for an UNKNOWN buyer), then registry,
+  // then DB stragglers. A KNOWN buyer (EMCAP / Fidelis / Blue Lake / RCN) always uses
+  // its canonical production label regardless of which spelling first appeared, so its
+  // short and long forms can never present as two separate options.
   for (const label of [...cu, ...reg, ...dbLabels]) {
-    const value = normNoteBuyer(label);
-    if (!value) continue;
-    if (!byKey.has(value)) byKey.set(value, { value, label: String(label).trim() });
+    const canon = canonicalNoteBuyer(label);
+    if (!canon) continue;
+    if (!byKey.has(canon.key)) byKey.set(canon.key, { value: canon.key, label: canon.label });
   }
   return [...byKey.values()].sort((a, b) => a.label.localeCompare(b.label));
 }

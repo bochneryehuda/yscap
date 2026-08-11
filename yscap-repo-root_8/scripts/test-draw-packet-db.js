@@ -218,6 +218,50 @@ const rowOf = (rows, label) => rows.find((r) => String(r[0] || '').toLowerCase()
     ok('5g a duplicate draw_packet (same application+filename) is refused by the unique index', dupBlocked);
   }
 
+  // ======================================================================
+  // 6. THE LIST COLUMN — inspector_approved_cents is findings-aware
+  //    The staff draws dashboard, the borrower list and the TPO list all read a
+  //    per-draw "Approved" column. It must equal the report/email headline
+  //    (approval.inspectorApproved): mirror -> delivered findings -> total.
+  //    Before the fix it summed the request mirror ONLY, so a fully-inspected
+  //    draw whose mirror had not caught up read $0 while the report read the
+  //    inspector's figure (owner-reported 2026-08-10, 109 Chapel St).
+  // ======================================================================
+  {
+    const bsd = require('../src/sitewire/borrower-safe-draws');
+    const D2 = BASE + 400, R2 = BASE + 401;   // mirror-lag: inspector answered in findings, mirror still NULL
+    const D3 = BASE + 500, R3 = BASE + 501;   // legacy findings-0: an answered $0 (matches the headline)
+    // D2 — the inspector approved $7,700 in the findings; the request mirror is still NULL
+    await db.query(`INSERT INTO sitewire_draws(application_id,sitewire_draw_id,number,status,total_requested_cents,total_approved_cents) VALUES($1,$2,2,'pending_capital_partner',825000,0)`, [app, D2]);
+    await db.query(`INSERT INTO sitewire_draw_requests(sitewire_draw_id,sitewire_request_id,sitewire_job_item_id,job_item_name,requested_cents,approved_cents) VALUES($1,$2,$3,'Roof',825000,NULL)`, [D2, R2, JI(1)]);
+    const f2 = (await db.query(`INSERT INTO draw_findings(application_id,sitewire_draw_id,status,total_requested_cents,total_approved_cents,delivered_at) VALUES($1,$2,'delivered',825000,770000,now()) RETURNING id`, [app, D2])).rows[0].id;
+    await db.query(`INSERT INTO draw_finding_lines(finding_id,sitewire_request_id,sitewire_job_item_id,sow_line_key,name,requested_cents,approved_cents,not_approved_cents,photo_count,video_count) VALUES($1,$2,$3,'cat:roof','Roof',825000,770000,55000,3,0)`, [f2, R2, JI(1)]);
+    // D3 — the inspector answered $0 (a legacy findings-0 sitting on a NULL mirror)
+    await db.query(`INSERT INTO sitewire_draws(application_id,sitewire_draw_id,number,status,total_requested_cents,total_approved_cents) VALUES($1,$2,3,'pending_capital_partner',300000,0)`, [app, D3]);
+    await db.query(`INSERT INTO sitewire_draw_requests(sitewire_draw_id,sitewire_request_id,sitewire_job_item_id,job_item_name,requested_cents,approved_cents) VALUES($1,$2,$3,'Paint',300000,NULL)`, [D3, R3, OTHER_JI]);
+    const f3 = (await db.query(`INSERT INTO draw_findings(application_id,sitewire_draw_id,status,total_requested_cents,total_approved_cents,delivered_at) VALUES($1,$2,'delivered',300000,0,now()) RETURNING id`, [app, D3])).rows[0].id;
+    await db.query(`INSERT INTO draw_finding_lines(finding_id,sitewire_request_id,sitewire_job_item_id,sow_line_key,name,requested_cents,approved_cents,not_approved_cents,photo_count,video_count) VALUES($1,$2,$3,'cat:rest','Paint',300000,0,0,1,0)`, [f3, R3, OTHER_JI]);
+
+    const list = await bsd.loadDrawList(db, app);
+    const byId = (id) => list.find((x) => Number(x.sitewire_draw_id) === id);
+    eq('6a a mirror-lag draw reads the inspector\'s findings figure, not $0', Number(byId(D2).inspector_approved_cents), 770000);
+    eq('6b a legacy findings-0 reads $0 (an answered denial, matching the headline)', Number(byId(D3).inspector_approved_cents), 0);
+    eq('6c a draw carrying a real request mirror still uses the mirror sum', Number(byId(DRAW).inspector_approved_cents), 2500000);
+    // and the list column agrees with the rollup / drawMoney per-draw approved figure
+    const roll2 = await rollupMod.loadRollup(db, app);
+    const rd2 = roll2.draws.find((x) => x.sitewire_draw_id === D2);
+    eq('6d the list column equals the rollup/drawMoney per-draw approved figure', Number(byId(D2).inspector_approved_cents), Number(rd2.approved_cents));
+    // 6e a RETIRED finding line is excluded from BOTH the list column and the rollup (same as
+    //    loadRollup's `retired_at IS NULL`), so the two never diverge on a soft-retired line.
+    await db.query(`UPDATE draw_finding_lines SET retired_at=now() WHERE finding_id=$1`, [f2]);
+    const listR = await bsd.loadDrawList(db, app);
+    const rollR = await rollupMod.loadRollup(db, app);
+    const rd2R = rollR.draws.find((x) => x.sitewire_draw_id === D2);
+    eq('6e a retired finding line drops out of the list column (mirror still NULL -> falls to total $0)',
+      Number(listR.find((x) => Number(x.sitewire_draw_id) === D2).inspector_approved_cents), 0);
+    eq('6e2 …and the list column still equals the rollup after retirement', Number(rd2R.approved_cents), 0);
+  }
+
   console.log(`\n${fail === 0 ? 'ALL' : fail + ' FAILED,'} ${pass} draw-packet / rollup / heal assertions ${fail === 0 ? 'passed' : ''}`);
   await db.query(`DELETE FROM applications WHERE id=$1`, [app]);
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [bor]);

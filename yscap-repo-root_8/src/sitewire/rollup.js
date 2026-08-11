@@ -127,20 +127,58 @@ function computeRollup({ links = [], draws = [], requests = [], findingLines = [
   }
 
   // ---- fold in the draw requests ----
+  // The INSPECTOR-approved amount for a request line, in the approval ladder's own order of
+  // authority (approval.inspectorApproved): the live request mirror when it carries the inspector's
+  // number, else the delivered-findings snapshot. A NULL is "the inspector has not answered this
+  // line yet" — DISTINCT from an inspector-approved $0 — so a not-yet-inspected line falls back to
+  // the borrower's request while a line the inspector trimmed to $0 does not. Without the findings
+  // fallback the per-line committed/available figures counted the REQUESTED amount for the whole
+  // stretch after the inspector answered but before the request mirror caught up: a $25,100 budget
+  // with a $7,700-inspector-approved / $8,250-requested draw read "drawn $8,250 / available $16,850"
+  // while the report headline (drawMoney, findings-aware) correctly said $7,700 (owner-reported
+  // 2026-08-10, 109 Chapel St draw #1). Never anticipate the higher requested amount once the
+  // inspector has answered — the whole amount was not approved.
+  // The request MIRROR is authoritative for both an approved amount AND a genuine denied $0 — the
+  // reconcile binds NULL only when Sitewire is silent and a real 0 when a denial is recorded — so a
+  // non-null mirror value (including 0) is used as-is. The delivered-findings snapshot is a fallback,
+  // and it is deliberately POSITIVE-ONLY: `draw_finding_lines.approved_cents` was `NOT NULL DEFAULT 0`
+  // before db/518 (which added the tristate and did NOT backfill), so a legacy 0 there is AMBIGUOUS
+  // between "inspector denied it" and "the line was never answered". Collapsing a still-in-flight line
+  // to $0 off an ambiguous historical 0 would OVER-state available — the exact bug class this fixes —
+  // so a 0/absent finding falls back to the request instead, and the mirror (honest about a denied 0)
+  // corrects a going-forward denial within one reconcile. NULL request/finding = "not answered yet".
+  // DELIBERATE divergence from the per-draw drawMoney "approved" DISPLAY figure: approval.inspectorApproved
+  // treats a findings-0 as an answered $0 (inclusive), because a column LABELLED "Approved" should show
+  // what the inspector answered. This EXPOSURE figure is a different question — how much of the budget is
+  // spoken for — so it is deliberately more conservative (positive-only), which never over-states
+  // available. On an ambiguous legacy findings-0 the two can differ (headline "$0 approved" vs this line
+  // reserving the request); both are lender-safe and both converge once the request mirror lands.
+  const findingApprovedByReq = new Map();
+  for (const fl of (Array.isArray(findingLines) ? findingLines : [])) {
+    if (fl && fl.sitewire_request_id != null && N(fl.approved_cents) > 0) {
+      findingApprovedByReq.set(N(fl.sitewire_request_id), N(fl.approved_cents));
+    }
+  }
+  const inspectorApprovedFor = (r) => {
+    if (r && r.approved_cents != null) return N(r.approved_cents);              // the request mirror has it (incl. a denied 0)
+    const k = r && r.sitewire_request_id != null ? N(r.sitewire_request_id) : null; // else a POSITIVE delivered-findings figure
+    return (k != null && findingApprovedByReq.has(k)) ? findingApprovedByReq.get(k) : null; // null = not answered → falls back to the request
+  };
   const unknown = [];
   for (const r of requests) {
     const l = byJid.get(N(r.sitewire_job_item_id));
     if (!l) { if (r.sitewire_job_item_id != null) unknown.push(N(r.sitewire_job_item_id)); continue; }
     if (l.is_media_item || String(l.sow_line_key).indexOf('__media__') === 0) continue;
     const line = ensureLine(l);
-    const appr = N(r.approved_cents);
+    const inspVal = inspectorApprovedFor(r);   // inspector-approved cents for this line, or null if not answered
+    const appr = N(inspVal);
     const req = N(r.requested_cents);
     const approvedDraw = drawApproved.get(N(r.sitewire_draw_id)) === true;
-    // The exposure THIS request row puts on the line while the draw is still open. The
-    // inspector's figure governs once they have answered; before that the borrower's request is
-    // the only statement of what this draw will take, and treating it as $0 is what made a live
-    // draw invisible in every budget figure we show.
-    const exposure = appr > 0 ? appr : req;
+    // The exposure THIS request row puts on the line while the draw is still open. Once the inspector
+    // has answered (inspVal is a real number, even a trimmed $0) THEIR figure governs; until then the
+    // borrower's request is the only statement of what this draw will take, and treating it as $0
+    // would make a live draw invisible in every budget figure we show.
+    const exposure = inspVal != null ? appr : req;
     if (approvedDraw) line.drawn += appr;
     else { line.approved_pending += appr; line.requested_open += req; line.pending_exposure += exposure; }
     if (l.unit_index != null) {
@@ -418,8 +456,19 @@ async function projectFromFileBudget(db, appId, rollup) {
       if (d.is_released || d.is_final_approved) {
         drawn += N(d.final_approved_cents) > 0 ? N(d.final_approved_cents) : N(d.approved_cents);
       } else {
-        // Same rule as the per-line exposure: the inspector's figure once they have answered,
-        // the borrower's request until then.
+        // POSITIVE-PREFERENCE, matching the `drawn` line above: the inspector's figure once it is
+        // POSITIVE, the borrower's request until then — never the higher requested amount once a real
+        // amount is approved. Why not drawMoney's `has_inspector_amounts` here: that flag is true for a
+        // pre-db/518 legacy findings-0 (approved_cents was NOT NULL DEFAULT 0, so an unanswered line
+        // reads as a confident $0), which would collapse a whole-draw-$0 in-flight draw to $0 exposure
+        // and over-state available. This is a FALLBACK path (only when the crosswalk budget is 0 — a
+        // TrustPoint/pre-crosswalk file): it has only drawMoney's PER-DRAW aggregate `approved_cents`,
+        // not per-line data, so it is strictly less precise than the per-line `computeRollup` path and
+        // does NOT match it in every case. It is lender-safe for the whole-draw-$0 case this fixes; on
+        // a MIXED legacy-findings-0 draw (one ambiguous 0 line + one positive line) the aggregate is
+        // already positive, so the 0 line's request is not re-added and available can be OVER-stated —
+        // an inherent limit of a crosswalk-less fallback on pre-db/518 data, matching drawMoney's own
+        // headline. The precise per-line path handles both the ambiguous 0 and a recorded denied-0.
         exposure += N(d.approved_cents) > 0 ? N(d.approved_cents) : N(d.requested_cents);
       }
     }
