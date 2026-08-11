@@ -214,6 +214,13 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
      here. Kept per candidate id (like every other draft above) so a figure typed
      for one property never rides onto another. Optional; the server bounds it. */
   const [rehabDraft, setRehabDraft] = useState({});
+  /* #22 — THE PER-FIELD CONFLICT PICKS when JOINING to a line we already have.
+     Shape { [candidateId]: { [field]: 'theirs' } }. By default a conflict keeps
+     ours (the fill only ever touches a blank); the reviewer may pick "use the
+     records" per conflicting field. The address is never a choice (a different
+     place is two different properties). Kept per candidate id like every other
+     draft so a pick for one property never rides onto another. */
+  const [resolutions, setResolutions] = useState({});
   /* THE GUIDED "not theirs" reason, per candidate (owner-directed 2026-08-10) —
      a picked reason CODE, never typed. Absent = use the system's suggestion,
      which the server derives from the #11 match basis. */
@@ -553,7 +560,24 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
                           <td style={{ padding: '6px 9px', color: MUTED }}>{r.field.replace(/_/g, ' ')}</td>
                           <td style={{ padding: '6px 9px', color: INK }}>{r.ours || <em style={{ color: MUTED }}>blank</em>}</td>
                           <td style={{ padding: '6px 9px', color: INK }}>{r.theirs || <em style={{ color: MUTED }}>blank</em>}</td>
-                          <td style={{ padding: '6px 9px', color: r.conflict ? AMBER : MUTED }}>{r.note}</td>
+                          <td style={{ padding: '6px 9px', color: r.conflict ? AMBER : MUTED }}>
+                            <div>{r.note}</div>
+                            {/* #22 — a CONFLICT the reviewer can resolve per field.
+                                Default keeps ours; picking "the records" overwrites
+                                just this field when we JOIN to the line. */}
+                            {r.resolvable ? (
+                              <select
+                                value={(resolutions[current.id] || {})[r.field] === 'theirs' ? 'theirs' : 'ours'}
+                                onChange={(e) => setResolutions((m) => ({
+                                  ...m, [current.id]: { ...(m[current.id] || {}), [r.field]: e.target.value },
+                                }))}
+                                style={{ marginTop: 6, fontSize: 13, padding: '4px 8px',
+                                  border: '1px solid #EAE4D7', borderRadius: 8, color: INK, background: '#fff', maxWidth: 220 }}>
+                                <option value="ours">Keep ours{r.ours ? ` (${r.ours})` : ''}</option>
+                                <option value="theirs">Use the records{r.theirs ? ` (${r.theirs})` : ''}</option>
+                              </select>
+                            ) : null}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -611,7 +635,12 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
               <div className="act-bar" style={{ display: 'flex', gap: 9, flexWrap: 'wrap', marginTop: 12 }}>
                 {current.matchTrackRecordId ? (
                   <button type="button" className="btn primary" disabled={busy}
-                    onClick={() => decide(current.id, 'match_existing')} style={{ minHeight: 44 }}>
+                    /* #22 — carry the reviewer's per-field conflict picks. A field
+                       left on "keep ours" is simply absent, so the default is
+                       unchanged; the server acts on 'theirs' only for a real
+                       conflict and never on the address. */
+                    onClick={() => decide(current.id, 'match_existing', { resolutions: resolutions[current.id] })}
+                    style={{ minHeight: 44 }}>
                     Join it to the line we have
                   </button>
                 ) : null}
