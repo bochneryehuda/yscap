@@ -89,11 +89,13 @@ const pricing = require('../src/lib/pricing');
   const borrowerRaw = { targetLoan: 9999999, targetLTC: 0.8 };
   const sanitized = {};
   {
-    // mirror the route: borrowerPricingOverrides is module-private, so assert the
-    // OUTCOME instead — a client-supplied targetLoan must not reach the engine.
-    const src = require('fs').readFileSync(path.join(__dirname, '..', 'src/routes/borrower.js'), 'utf8');
-    assert(!/out\.targetLoan\s*=/.test(src),
+    // borrowerPricingOverrides now lives in the shared lib/pricing-overrides.js (TPO
+    // Phase 4b — one definition shared with routes/tpo.js). EXERCISE it: a
+    // client-supplied targetLoan must never survive the allowlist to reach the engine.
+    Object.assign(sanitized, require(path.join(__dirname, '..', 'src/lib/pricing-overrides.js')).borrowerPricingOverrides(borrowerRaw));
+    assert(sanitized.targetLoan === undefined,
       'D1 the borrower allowlist never accepts a client-supplied loan amount');
+    const src = require('fs').readFileSync(path.join(__dirname, '..', 'src/routes/borrower.js'), 'utf8');
     assert(/stickyOverrides\.effectiveOverrides\(/.test(src),
       'D2 …and the route carries the file\'s OWN registered values forward, through the ONE chokepoint');
     const chokepoints = (src.match(/stickyOverrides\.effectiveOverrides\(/g) || []).length;

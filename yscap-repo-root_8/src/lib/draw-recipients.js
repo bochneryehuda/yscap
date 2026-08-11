@@ -78,9 +78,12 @@ async function drawCoordinatorsForFile(appId) {
                AND wi.to_staff_id IS NOT NULL AND wi.status IN ('open','in_progress')
           ),
           pick AS (
+            -- is_external=false: the draw coordinator is always internal (the sources above are
+            -- staff-only actions), but the filter keeps an external/broker user out of this staff
+            -- fan-out by construction (TPO PORTAL invariant, CLAUDE.md).
             SELECT DISTINCT ON (su.id) su.id, su.full_name, su.email, c.src, c.pref
               FROM cand c JOIN staff_users su ON su.id = c.staff_id
-             WHERE su.is_active = true AND NULLIF(btrim(su.email),'') IS NOT NULL
+             WHERE su.is_active = true AND su.is_external = false AND NULLIF(btrim(su.email),'') IS NOT NULL
              ORDER BY su.id, c.pref
           )
        SELECT id, full_name, email, src FROM pick ORDER BY pref, lower(email)`, [appId]);
@@ -93,7 +96,7 @@ async function drawDeskCoordinators() {
   try {
     const r = await db().query(
       `SELECT id, full_name, email FROM staff_users
-        WHERE is_active = true AND role = 'draw_coordinator' AND NULLIF(btrim(email),'') IS NOT NULL
+        WHERE is_active = true AND is_external = false AND role = 'draw_coordinator' AND NULLIF(btrim(email),'') IS NOT NULL
         ORDER BY lower(email)`);
     return r.rows.map((x) => ({ ...x, src: 'desk' }));
   } catch (_) { return []; }
@@ -128,15 +131,19 @@ async function drawTeamBcc(appId) {
 async function fileLoanOfficerEmails(appId) {
   if (!appId) return [];
   try {
+    // is_external=false on both branches: on a TPO file the loan_officer IS the external broker,
+    // and this feeds the draw email loop-in — a broker must never be a recipient of an internal
+    // draw email (TPO PORTAL firm-isolation invariant, CLAUDE.md). Retail is unaffected
+    // (is_external is NOT NULL DEFAULT false).
     const r = await db().query(
       `SELECT su.email
          FROM application_assignees aa JOIN staff_users su ON su.id = aa.staff_id
         WHERE aa.application_id = $1 AND aa.removed_at IS NULL AND aa.role = 'loan_officer'
-          AND su.is_active = true AND NULLIF(btrim(su.email),'') IS NOT NULL
+          AND su.is_active = true AND su.is_external = false AND NULLIF(btrim(su.email),'') IS NOT NULL
         UNION
        SELECT su.email
          FROM applications a JOIN staff_users su ON su.id = a.loan_officer_id
-        WHERE a.id = $1 AND su.is_active = true AND NULLIF(btrim(su.email),'') IS NOT NULL`, [appId]);
+        WHERE a.id = $1 AND su.is_active = true AND su.is_external = false AND NULLIF(btrim(su.email),'') IS NOT NULL`, [appId]);
     return uniqEmails(r.rows.map((x) => x.email));
   } catch (_) { return []; }
 }

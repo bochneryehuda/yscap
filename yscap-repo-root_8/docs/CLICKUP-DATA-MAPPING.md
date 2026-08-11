@@ -145,7 +145,7 @@ Borrower-facing set = existing 9 **+ `on_hold` + `file_intake`** (#151, owner-di
 | applications.investor_loan_number | investor Loan Number · `8ff507cc` | short_text | ⇄ | passthrough (CU-origin) |
 | applications.submitted_at | Date File Submitted · `51ef2193` | date | →CU | date↔ms |
 | applications.expected_closing | Expected Closing Date · `de57d9fb` | date | ⇄ | date↔ms |
-| **applications.actual_closing** | **Actual Closing Date · `0846edc7`** | date | **←CU** | date↔ms |
+| applications.actual_closing | Actual Closing Date · `0846edc7` | date | ⇄ | date↔ms (bidirectional — owner-directed 2026-08-11: sync the actual closing date with ours) |
 
 ### 3.7 Card data (single line → structured, per your instruction)
 | Portal | ClickUp (name · id) | Type | Dir | Transform |

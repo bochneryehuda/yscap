@@ -332,6 +332,10 @@ app.get('/api/health', async (req, res) => {
 // the first line unless the bearer token actually carries a borrower-view
 // envelope. See src/lib/borrower-view.js.
 app.use(require('./lib/borrower-view').guard);
+// Same shape for a TPO VIEW — an internal AE/AM/admin stepped into a broker's
+// login. Inert unless the bearer token carries a tpo-view envelope. See
+// src/lib/tpo-view.js.
+app.use(require('./lib/tpo-view').guard);
 // Same shape for a BORROWER ASSISTANT — a standing helper login the borrower
 // authorized. Mounted above /auth so it can refuse the borrower credential
 // routes (/auth/logout bumps the BORROWER's token_version; /auth/mfa changes the
@@ -411,9 +415,17 @@ app.use('/api/term-sheet-offers',
 // Start / leave / audit a borrower view. Mounted outside /api/staff because the
 // leave + status calls are made while holding a BORROWER-kind token.
 app.use('/api/borrower-view', require('./routes/borrower-view'));
+// Start / leave / audit a TPO (broker) view. Mounted outside /api/staff because
+// the leave + status calls are made while holding a TPO-kind token.
+app.use('/api/tpo-view', require('./routes/tpo-view'));
 app.use('/api/borrower', require('./routes/borrower'));
 app.use('/api/borrower', require('./routes/borrower-draws')); // borrower draw status + findings accept/dispute + change requests
 app.use('/api/staff', require('./routes/staff'));
+// TPO PORTAL — the external brokerage front door (db/472/468). The router
+// applies requireAuth + requireTpo + firm scoping itself; a tpo session is
+// structurally refused by /api/staff and /api/borrower (requireStaff /
+// requireBorrower), and an internal/borrower session is refused here.
+app.use('/api/tpo', require('./routes/tpo'));
 // Sitewire construction-draw desk + admin. The router applies requireAuth +
 // requireStaff + per-route capability gates (manage_draws / platform_setup) itself.
 app.use('/api/sitewire', require('./routes/sitewire'));
@@ -465,6 +477,9 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   // The router also applies its own requireAuth + platform_setup guards.
   app.use('/api/admin/clickup', requireAuth, requireStaff, require('./routes/admin-clickup'));
   app.use('/api/admin/sharepoint', requireAuth, requireStaff, require('./routes/admin-sharepoint'));
+  // TPO firm onboarding (db/472/469). The router self-gates requireAuth +
+  // requireStaff + manage_team; the mount adds the staff wall as defense-in-depth.
+  app.use('/api/admin/tpo', requireAuth, requireStaff, require('./routes/admin-tpo'));
   // API Health — the status of every external API / integration (config presence + live reach).
   // The router applies its own requireAuth + platform_setup guards.
   app.use('/api/admin/integrations', requireAuth, requireStaff, require('./routes/admin-integrations'));
@@ -1082,6 +1097,18 @@ if (require.main === module) {
     // modern `op='update'` ClickUp push jobs and mark them `done` WITHOUT pushing
     // — silently dropping outbound edits (and letting the next inbound pull revert
     // them). The ClickUp queue is now owned solely by `pushOutboxOnce`.
+    // Load the runtime feature-flag OVERRIDES before starting the sync/integration
+    // workers below. Each worker decides AT BOOT whether to schedule its poller/drain
+    // loop by reading switches.on(...), which falls back to the ENV DEFAULT until this
+    // override cache is populated. flags.start() used to run AFTER these workers, so a
+    // switch turned on only from the API-Health page (an admin override with no env var)
+    // was read as OFF at boot and its loop was never scheduled until a restart that
+    // happened to race the async flag load — the ClickUp OUTBOUND drain being the one
+    // that bit (owner-reported bounce-back: portal edits piled up in sync_queue unsent).
+    // Awaiting the first refresh here makes every worker's boot-time gate read the live
+    // override. Best-effort: on failure the workers fall back to env defaults, exactly
+    // as before, and flags.start() below still arms the periodic refresh.
+    try { await require('./lib/flags').refresh(); } catch (_) { /* fall back to env defaults */ }
     // ClickUp bidirectional sync worker (self-gated by CLICKUP_SYNC_ENABLED;
     // a no-op until the master switch is on, so it's safe to wire now).
     try { require('./sync/clickup-sync').start(); } catch (e) { console.warn('clickup sync not started:', e.message); }

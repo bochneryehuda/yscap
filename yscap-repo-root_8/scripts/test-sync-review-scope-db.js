@@ -176,6 +176,26 @@ const ok = (cond, what) => { if (cond) { pass++; console.log(`  ok  ${what}`); }
     ok(fr.status === 200, `the file officer resolves it (got ${fr.status})`);
   }
 
+  console.log('\n6. The "My changes" filter (?mine=1) narrows to the actor\'s OWN rows (owner-directed 2026-08-11)');
+  {
+    // A row attributed to `owner` via portal_actor_id (the staffer whose PILOT edit caused it).
+    const rid = (await db.query(
+      `INSERT INTO sync_review_queue (application_id, borrower_id, task_id, direction, field_key, reason, status, clickup_value, portal_value, portal_actor_id)
+       VALUES (NULL,$1,$2,'inbound','purchase_price','portal_edit_conflict','open','400000','450000',$3) RETURNING id`,
+      [borrower, `${tag}-mine`, owner.id])).rows[0].id;
+    const mineHas = async (tok, id) => {
+      const r = await (await call(tok, 'GET', '/sync-reviews?mine=1')).json();
+      return Array.isArray(r.reviews) && r.reviews.some((x) => String(x.id) === String(id));
+    };
+    ok(await mineHas(owner.tok, rid), 'the author sees their own row under ?mine=1 (scoped officer)');
+    ok(!(await mineHas(cobo.tok, rid)), 'a DIFFERENT in-scope officer does NOT see it under ?mine=1');
+    ok(!(await mineHas(admin.tok, rid)), 'an admin who did not author it does not see it under ?mine=1 (mine narrows even for see-all)');
+    // Without ?mine the see-all admin sees it, and every row carries a changed_by name.
+    const adminList = await (await call(admin.tok, 'GET', '/sync-reviews')).json();
+    const adminRow = adminList.reviews.find((x) => String(x.id) === String(rid));
+    ok(adminRow && adminRow.changed_by === 'Owner LO', 'the row carries the changed_by name for the team');
+  }
+
   server.close();
   console.log(`\n${fail ? 'FAILED' : 'OK'}  sync-review scope follows borrower visibility — ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

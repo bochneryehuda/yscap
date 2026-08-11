@@ -39,6 +39,7 @@
 const db = require('../../db');
 const C = require('../crypto');
 const provider = require('./provider');
+const firmCredentials = require('./firm-credentials');   // TPO own-Xactus: a broker firm's own credit login (Phase 5b)
 const { parseCreditXml, sliceForSegment } = require('./parse');
 const { matchSegments } = require('./match');
 const store = require('./store');
@@ -251,7 +252,7 @@ function sliceForTarget(parsed, target) {
 }
 
 // Pull/upload → parse → store for ONE borrower. Throws userError on a hard failure.
-async function importOne({ file, target, opts, pullType, requestType, version, isUpload, upload, targetCount, together }) {
+async function importOne({ file, target, opts, pullType, requestType, version, isUpload, upload, targetCount, together, credentials }) {
   const bureaus = provider.ALL_BUREAUS;                    // always tri-merge
   const up = upload || {};
   let xml = (up.xml !== undefined ? up.xml : opts.xml) || null;
@@ -274,7 +275,7 @@ async function importOne({ file, target, opts, pullType, requestType, version, i
     // own (see reissueRefFor), falling back to that borrower's last report on file.
     let reissueReportId = reissueRefFor(target, opts, targetCount);
     if (requestType === 'reissue' && !reissueReportId) reissueReportId = await priorReportId(file.id, target.borrowerId);
-    const res = await provider.pull({ borrower: b, pullType, requestType, bureaus, version, reissueReportId, loanNumber: file.ys_loan_number });
+    const res = await provider.pull({ borrower: b, pullType, requestType, bureaus, version, reissueReportId, loanNumber: file.ys_loan_number, credentials });
     xml = res.xml; pdfBase64 = res.pdfBase64; vendorReportId = res.vendorReportId;
     if (!xml && !pdfBase64) throw userError('Xactus returned nothing for this request.');
   }
@@ -453,7 +454,7 @@ async function importMerged({ file, parsed, borrowers, opts, pullType, requestTy
  * The alternative — a separate order per borrower, each with its OWN reference — is
  * the loop in importCredit. Which one runs is the caller's choice.
  */
-async function importJointLive({ file, targets, opts, pullType, requestType, version }) {
+async function importJointLive({ file, targets, opts, pullType, requestType, version, credentials }) {
   const bureaus = provider.ALL_BUREAUS;
   const packets = [];
   for (const t of targets) {
@@ -470,7 +471,7 @@ async function importJointLive({ file, targets, opts, pullType, requestType, ver
   if (requestType === 'reissue' && !reissueReportId) reissueReportId = await jointPriorReportId(file.id);
 
   const res = await provider.pull({
-    borrowers: packets, pullType, requestType, bureaus, version, reissueReportId, loanNumber: file.ys_loan_number,
+    borrowers: packets, pullType, requestType, bureaus, version, reissueReportId, loanNumber: file.ys_loan_number, credentials,
   });
   if (!res.xml && !res.pdfBase64) throw userError('Xactus returned nothing for this joint request.');
 
@@ -582,6 +583,12 @@ function normalizeFiles(list, borrowers) {
 
 async function importCredit(appId, opts = {}) {
   const { file, borrowers } = await fileBorrowers(appId);
+  // TPO own-Xactus (Phase 5b): if this file's firm has its OWN Xactus credit
+  // account configured, every LIVE pull below runs on it; otherwise this is null
+  // and the provider uses our shared company account exactly as before. Resolved
+  // ONCE here and threaded to the pull helpers explicitly — never attached to the
+  // widely-passed `file` object, so the decrypted password stays contained.
+  const creditCredentials = await firmCredentials.resolveForApplication(appId).catch(() => null);
   const pullType = PULL_TYPES.includes(opts.pullType) ? opts.pullType : 'soft';
   const requestType = REQUEST_TYPES.includes(opts.requestType) ? opts.requestType : 'reissue';
   // The interface version is FROZEN (owner-directed: "nobody can change that field").
@@ -643,7 +650,7 @@ async function importCredit(appId, opts = {}) {
     ? parseCreditXml(opts.xml) : null;
 
   if (wantJoint) {
-    const out = await importJointLive({ file, targets, opts, pullType, requestType, version });
+    const out = await importJointLive({ file, targets, opts, pullType, requestType, version, credentials: creditCredentials });
     results = out.results;
     jointInfo = out.joint;
   } else if (mergedParse && mergedParse.isMerged && borrowers.length > 1) {
@@ -690,7 +697,7 @@ async function importCredit(appId, opts = {}) {
       try {
         const r = await importOne({
           file, target, opts, pullType, requestType, version, isUpload,
-          upload, targetCount: targets.length, together,
+          upload, targetCount: targets.length, together, credentials: creditCredentials,
         });
         if (together && isUpload && !splitFiles.length && !sharedDocs && r.docs && (r.docs.xmlDocId || r.docs.pdfDocId)) {
           sharedDocs = r.docs;

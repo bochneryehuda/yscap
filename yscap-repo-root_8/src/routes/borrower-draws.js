@@ -21,7 +21,7 @@ const db = require('../db');
 const F = require('../lib/fields');           // jsonbText: NUL-safe jsonb binds
 const { requireAuth, requireBorrower } = require('../auth');
 const rollupMod = require('../sitewire/rollup');
-const APPROVAL = require('../sitewire/approval');   // the ONE wording for what is netted out
+const borrowerSafeDraws = require('../sitewire/borrower-safe-draws'); // ONE borrower-safe draw scrub (shared with the TPO surface)
 const { planReallocation } = require('../sitewire/reallocation');
 const M = require('../sitewire/mapper');
 const notify = require('../lib/notify');
@@ -29,71 +29,21 @@ const drawLabel = require('../lib/draw-label');   // "Draw 2" — the ONE way a 
 const borrowerSafe = require('../lib/borrower-safe');
 const drawReport = require('../sitewire/draw-report');
 const { serveDocument } = require('../lib/serve-document');
+// The dispute-evidence normalizer (sniff the real image type from the bytes, strip GPS, convert
+// iPhone HEIC to JPEG, cap size + count, store durable copies) is the ONE shared definition
+// (sitewire/dispute-media.js) — the borrower AND the TPO/broker surfaces store dispute evidence
+// identically and can never drift on this security-critical sniff/strip/cap layer.
+const { normalizeDisputeMedia } = require('../sitewire/dispute-media');
 const drawAttachments = require('../sitewire/draw-attachments');   // photos/invoices/receipts on a draw
 const drawChecklist = require('../sitewire/draw-checklist');       // expected dates + the booked visit
-const storage = require('../lib/storage');
-const { decodeUploadBase64, sniffKind } = require('../lib/upload-bytes');
-const { stripLocationExif } = require('../lib/image-exif');
-
-// Determine the REAL image type from the bytes' magic number — never trust the client's declared
-// content-type (audit H1: a borrower-supplied 'image/svg+xml'/'text/html' served inline is stored
-// XSS against the staff who open the evidence). Returns a safe image mime, or null to REJECT
-// (svg/html/pdf/zip/unknown all sniff to something we don't allow → dropped, never stored).
-function sniffImageMime(buf) {
-  const k = sniffKind(buf);
-  if (k === 'png') return 'image/png';
-  if (k === 'jpg') return 'image/jpeg';
-  if (k === 'gif') return 'image/gif';
-  if (buf && buf.length >= 12 && buf.subarray(0, 4).toString('latin1') === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP') return 'image/webp';
-  // HEIC: an ISO-BMFF `ftyp` box whose MAJOR BRAND is actually a HEIF still-image brand. sniffKind's
-  // plain `ftyp` match also catches MP4/MOV video, so verify the brand here rather than mislabel a
-  // video as a HEIC image (audit LOW). A video attached as photo evidence is simply not stored.
-  if (buf && buf.length >= 12 && buf.subarray(4, 8).toString('latin1') === 'ftyp'
-      && /^(heic|heix|heif|hevc|hevx|mif1|msf1)/.test(buf.subarray(8, 12).toString('latin1'))) return 'image/heic';
-  return null;
-}
-
-// Normalize borrower-uploaded dispute evidence into DURABLE stored copies. We only ever accept
-// freshly-uploaded bytes ({filename, dataBase64, contentType}) — never a client-supplied storage
-// ref (that would let a borrower point at someone else's file). Each image has its GPS stripped
-// (privacy) and is capped in size + count. Returns [{storage_ref, filename, content_type, kind}].
-const EVIDENCE_MAX_PER_LINE = 8;
-const EVIDENCE_MAX_BYTES = 12 * 1024 * 1024;
-async function normalizeDisputeMedia(items) {
-  if (!Array.isArray(items)) return [];
-  const out = [];
-  for (const m of items.slice(0, EVIDENCE_MAX_PER_LINE)) {
-    if (!m || typeof m !== 'object' || !m.dataBase64) continue;   // only accept real uploads
-    let buf;
-    try { buf = decodeUploadBase64(m.dataBase64, { maxBytes: EVIDENCE_MAX_BYTES }).buf; } catch (_) { continue; }  // {buf, sha256}; caps size (413)
-    if (!buf || !buf.length) continue;
-    // Derive the type from the BYTES, not the client. Anything that isn't a real photo (svg/html/pdf/
-    // unknown) is rejected here so a malicious "image" can never be stored or served inline (audit H1).
-    let ct = sniffImageMime(buf);
-    if (!ct) continue;
-    // An iPhone photo (HEIC) is converted to JPEG at the door (owner-directed 2026-08-10) so the
-    // staff reviewing the dispute can actually SEE the evidence. A failed conversion keeps the
-    // original — the evidence is never dropped to gain a preview.
-    if (ct === 'image/heic') {
-      const c = await require('../lib/heic').maybeConvert(buf);
-      if (c.converted) { buf = c.buf; ct = 'image/jpeg'; }
-    }
-    try { buf = stripLocationExif(buf, ct) || buf; } catch (_) { /* keep original on any failure */ }
-    let saved;
-    try { saved = await storage.save(buf, { filename: m.filename || 'evidence' }); } catch (_) { continue; }
-    out.push({ storage_ref: saved.ref, storage_provider: saved.provider, filename: String(m.filename || 'evidence').slice(0, 180), content_type: ct, kind: 'image', bytes: buf.length });
-  }
-  return out;
-}
 
 router.use(requireAuth, requireBorrower);
 const me = (req) => req.actor.id;
-const OWN_FILE_SQL = (alias, p) => {
-  const a = alias ? alias + '.' : '';
-  return `(${a}borrower_id=${p} OR ${a}co_borrower_id=${p}` +
-    ` OR ${a}borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p})` +
-    ` OR ${a}co_borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p}))`;
-};
+// ONE definition of "which files a borrower owns" — delegated to the shared
+// helper (mirrors routes/borrower.js) so the TPO borrower-login toggle (and any
+// future change) applies here too. A local copy silently diverged: a
+// portal-disabled TPO file would still expose its draws (audit follow-up).
+const OWN_FILE_SQL = require('../lib/change-requests').OWN_FILE_SQL;
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 async function ownsApp(req, appId) {
   if (!isUuid(appId)) return false; // malformed id → no ownership (avoid a 22P02 async-rejection hang, audit F1)
@@ -127,34 +77,15 @@ router.get('/draws/:appId/rollup', async (req, res) => {
   try {
     let sowState = null;
     try { const s = (await db.query(`SELECT tool_payload FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [req.params.appId])).rows[0]; sowState = s && s.tool_payload && s.tool_payload.state ? s.tool_payload.state : null; } catch (_) {}
-    const rollup = await rollupMod.loadRollup(db, req.params.appId, { sowState });
-    for (const l of rollup.lines) l.label = scrub(l.label);
-    // THE BORROWER SEES WHAT THEY WILL ACTUALLY BE PAID (owner-directed 2026-08-03: "yes add the
-    // released amount to the borrower screen too"). Their own PDF report has shown the draw fee and
-    // the net since the earlier fee ruling; the SCREEN still said only "the inspector approved
-    // $25,000" and never the $24,701 that lands in their account — so the two surfaces disagreed
-    // about the one number they care about most. The per-draw money now rides through.
-    //
-    // TWO THINGS ARE STILL STRIPPED, and they are a different kind of secret:
-    //   · `fee_kind`        — describes OUR fee schedule (which inspection tier priced this draw),
-    //                         not their money. Nothing on their screen needs it.
-    //   · `net_explanation` — the rollup builds the STAFF sentence ("… = $24,701 net release",
-    //                         plus a note about the fee becoming final when the release is
-    //                         recorded). It is replaced below with the BORROWER wording from the
-    //                         same one definition, so their screen and their PDF can never phrase
-    //                         the same deduction differently.
-    // `rollup.fees` — our fee income ACROSS the project — stays deleted below and always will be.
-    if (Array.isArray(rollup.draws)) {
-      rollup.draws = rollup.draws.map((d) => {
-        // `stage_times` carries the with_investor delivery time — the capital-partner step is never
-        // borrower-facing (frozen rule); the borrower sees their own finding-driven stepper instead.
-        const { fee_kind, net_explanation, stage_times, ...safe } = d;
-        safe.net_explanation = APPROVAL.netExplanation(d, { borrower: true });
-        return safe;
-      });
-    }
-    // Our fee income on this project is never borrower-facing.
-    delete rollup.fees;
+    // Borrower-safe strip (the ONE definition, shared with the TPO surface): scrub SOW-line labels,
+    // drop the per-draw `fee_kind` (our fee schedule) + the STAFF `net_explanation` — re-adding the
+    // BORROWER wording so the screen and the PDF phrase the deduction the same way — drop
+    // `stage_times` (the with_investor / capital-partner delivery time is never borrower/broker-facing
+    // — frozen rule; #1045 added it to the timeline) — and delete `rollup.fees` (our fee income across
+    // the project is never borrower/broker-facing). The per-draw money the borrower WILL be paid (net
+    // release / released) stays (owner-directed 2026-08-03: "add the released amount to the borrower
+    // screen too"). See src/sitewire/borrower-safe-draws.js for the single definition.
+    const rollup = borrowerSafeDraws.borrowerSafeRollup(await rollupMod.loadRollup(db, req.params.appId, { sowState }));
     // WHAT HAPPENS NEXT, AND WHEN (owner-directed 2026-08-09). The borrower could see the stage and
     // the money but never a DATE — and the booked inspection visit was mirrored, turned into "Visit
     // scheduled" by draw-status, and then simply never shown to the person waiting at the property.
@@ -317,38 +248,15 @@ router.post('/draws/:appId/attachments', async (req, res) => {
 router.get('/draws/:appId/findings', async (req, res) => {
   if (!(await ownsApp(req, req.params.appId))) return res.status(403).json({ error: 'forbidden' });
   try {
-  const findings = (await db.query(
-    `SELECT id, sitewire_draw_id, status, total_requested_cents, total_approved_cents, delivered_at, accepted_at, accepted_via, disputed_at, resolved_at, wire_due_at, reply_token,
-            EXISTS (SELECT 1 FROM draw_disbursements dd WHERE dd.sitewire_draw_id=draw_findings.sitewire_draw_id AND dd.kind='draw' AND dd.funded_status='released') AS released
-       FROM draw_findings WHERE application_id=$1 ORDER BY delivered_at DESC`, [req.params.appId])).rows;
-  const out = [];
-  for (const f of findings) {
-    // Durable inspector media (PILOT's own stored copies) grouped by the draw line — served via the
-    // borrower's OWN reply_token so an <img>/<video> tag works without an auth header, and the
-    // thumbnail never breaks when Sitewire's pre-signed link expires. GPS is already stripped at archive.
-    const durable = (await db.query(
-      `SELECT id, sitewire_request_id, kind FROM draw_media WHERE sitewire_draw_id=$1 AND kind IN ('image','video') ORDER BY id`, [f.sitewire_draw_id])).rows;
-    const durByReq = new Map();
-    for (const m of durable) { const k = String(m.sitewire_request_id); if (!durByReq.has(k)) durByReq.set(k, []); durByReq.get(k).push({ url: f.reply_token ? `/api/public/draw-findings/${f.reply_token}/media/${m.id}` : null, kind: m.kind }); }
-    const lines = (await db.query(
-      `SELECT id, sitewire_request_id, sow_line_key, unit_index, name, requested_cents, approved_cents, not_approved_cents, inspector_comments, photo_count, video_count, media, dispute_status, dispute_desired_cents, dispute_note
-         FROM draw_finding_lines WHERE finding_id=$1 AND retired_at IS NULL ORDER BY id`, [f.id])).rows
-      // scrub every free-text field a capital-partner name could hide in — including each inspection
-      // media NOTE (was leaking unscrubbed to the borrower). Keep the photo/video src (inspection
-      // evidence) but drop the media GPS lat/lng. lender_comments is a staff-leaning field the borrower
-      // never needs — not selected at all above. `photos` = durable copies (preferred by the UI).
-      .map((l) => ({
-        ...l,
-        name: scrub(l.name),
-        inspector_comments: scrub(l.inspector_comments),
-        photos: (durByReq.get(String(l.sitewire_request_id)) || []).filter((p) => p.url),
-        media: Array.isArray(l.media) ? l.media.map((m) => { if (!m || typeof m !== 'object') return m; const { lat, lng, ...mm } = m; return { ...mm, note: scrub(mm.note) }; }) : l.media,
-      }));
-    // don't leak the raw token as a top-level field; the per-line photo URLs already embed it.
-    const { reply_token, ...fSafe } = f;
-    out.push({ ...fSafe, lines });
-  }
-  res.json({ findings: out });
+    // The ONE borrower-safe findings load (shared with the TPO surface). Photos are served through
+    // the borrower's OWN per-finding reply_token so an <img>/<video> tag works without an auth header
+    // and never breaks when Sitewire's pre-signed link expires; the module never returns the token
+    // itself. (The TPO surface passes a firm-scoped media URL instead — the reply_token, which ALSO
+    // permits accept/dispute, must never reach a read-only broker.)
+    const out = await borrowerSafeDraws.loadDrawFindings(db, req.params.appId, {
+      photoUrl: (f, m) => (f.reply_token ? `/api/public/draw-findings/${f.reply_token}/media/${m.id}` : null),
+    });
+    res.json({ findings: out });
   } catch (e) { res.status(500).json({ error: 'Something went wrong — please try again.' }); }
 });
 
@@ -388,7 +296,7 @@ router.post('/findings/:findingId/dispute', async (req, res) => {
   // stored before a lost race are just unused blobs — harmless.)
   const updates = [];
   for (const ln of lines) {
-    if (!/^\d+$/.test(String(ln.line_id))) continue;
+    if (!/^\d{1,18}$/.test(String(ln.line_id))) continue;   // 1..18 digits stays in bigint range (a 19+-digit id would 22003 the lookup as a 500)
     const owned = (await db.query(`SELECT id, requested_cents FROM draw_finding_lines WHERE id=$1 AND finding_id=$2 AND retired_at IS NULL`, [ln.line_id, f.id])).rows[0];
     if (!owned) continue;
     let desired = ln.desired_cents == null ? null : Math.round(Number(ln.desired_cents));

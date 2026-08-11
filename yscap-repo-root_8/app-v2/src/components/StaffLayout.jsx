@@ -471,6 +471,7 @@ export default function StaffLayout({ children }) {
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>
         <NavLink className="sb-link" to="/internal/borrower-view" title="Borrower view — step into a borrower's portal and see PILOT exactly as they see it, so you can walk them through a screen live. One click brings you back."><NavIcon name="borrowerView" />Borrower view</NavLink>
+        <NavLink className="sb-link" to="/internal/tpo-view" title="Broker view — step into a TPO broker's login for a firm you handle and see PILOT exactly as they see it, so you can walk them through a screen live. One click brings you back."><NavIcon name="borrowerView" />Broker view</NavLink>
         <NavLink className="sb-link" to="/internal/emails" title="Email Center — every email & notification sent across your files, to exactly whom, with its full body, delivery status, and replies"><NavIcon name="emails" />Email Center</NavLink>
         <NavLink className="sb-link" to="/internal/notifications" title="Notification Center — the master control for every notification your borrowers receive: turn any single one off, keep it automatic, or park it as a draft to review before it goes out">
           <NavIcon name="emails" />Notifications
@@ -491,6 +492,7 @@ export default function StaffLayout({ children }) {
 
         {(canManageTeam || canManagePricing || canPlatformSetup || canViewAudit) && <div className="sb-sec">Admin</div>}
         {canManageTeam && <NavLink className="sb-link" to="/internal/team"><NavIcon name="team" />Team</NavLink>}
+        {canManageTeam && <NavLink className="sb-link" to="/internal/tpo-firms" title="Broker firms — onboard a brokerage firm, invite its lead broker, and set up a firm's own credit account"><NavIcon name="team" />Broker firms</NavLink>}
         {canManagePricing && <NavLink className="sb-link" to="/internal/pricing" title="Pricing Admin Center — company-wide markup, origination & fee defaults"><NavIcon name="pricing" />Pricing</NavLink>}
         {/* Manual / Escalations + Exceptions moved into the Approvals hub in the
             Main group (owner-directed 2026-07-31) — their counts still poll here

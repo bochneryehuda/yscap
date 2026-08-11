@@ -120,18 +120,27 @@ async function pushOutboxOnce() {
     }
   } catch (e) {
     const attempts = job.attempts + 1;
-    // OUTAGE-CLASS retries (post-merge audit finding #3): a circuit-breaker
-    // rejection or a fail-closed pre-write read means ClickUp (or our own
-    // volume cap) is temporarily unavailable — NOT that the job is bad. The
-    // default budget (dead at 8 attempts ≈ 4 minutes of backoff) is SHORTER
-    // than the breaker's own 10-minute window, so a legitimate user edit could
-    // dead-letter during a breaker opening or a brief API outage and be lost
-    // (there is no dead-job requeue path). These classes retry patiently:
-    // fixed 10-minute spacing, dead only after 40 attempts (~7 hours). A task
-    // deleted upstream resolves sooner anyway — the orphan reconcile archives
-    // its file, and a push to an archived file completes as a skip.
+    // OUTAGE-CLASS pushes NEVER dead-letter (owner-directed 2026-08-11: "when we
+    // change something in our system it should update ClickUp; if it can't, it should
+    // repush and repush and repush … even if it's not updating in ClickUp it should
+    // still stay updated in our system"). A circuit-breaker rejection, a fail-closed
+    // pre-write read, or a retryable HTTP error (429 / 5xx / network timeout) means
+    // ClickUp — or our own volume cap — is temporarily unavailable, NOT that the job is
+    // bad, so it keeps retrying at a gentle fixed 10-minute cadence FOREVER until it
+    // lands. The inbound bounce-back guard keeps the portal value the whole time, so the
+    // two systems reconcile the moment the push finally goes through. (The old rule
+    // dead-lettered outage-class at 40 attempts ≈ 7 hours — a longer outage silently lost
+    // the edit, with no dead-job requeue path. That ceiling is removed.) A task deleted
+    // upstream is bounded and surfaced: the orphan reconcile files a review card immediately,
+    // and where it can ARCHIVE the file (a live sibling exists) the next push completes as a
+    // skip; where it cannot (no sibling → the file goes to manual_review with its task id
+    // intact) the pre-read keeps failing, so this retries at 1 call / 10 min until a human
+    // works that card — never a data loss, never a busy spin, just not auto-resolved.
+    // Only a PERMANENT error (a value ClickUp rejects, e.g. HTTP 400) dead-letters, after
+    // 8 attempts, to a visible manual-review row — retrying a value ClickUp refuses is
+    // pointless, so that one needs a human.
     const outage = e && (e.code === 'CLICKUP_CIRCUIT_OPEN' || e.code === 'CLICKUP_PREREAD_FAILED' || e.retryable === true);
-    const dead = attempts >= (outage ? 40 : 8);
+    const dead = !outage && attempts >= 8;
     const backoff = outage ? 600 : Math.min(2 ** attempts, 3600);
     await db.query(
       `UPDATE sync_queue SET status=$1, attempts=$2, last_error=$3, run_after=now()+($4||' seconds')::interval, updated_at=now() WHERE id=$5`,
@@ -155,6 +164,31 @@ async function pushOutboxOnce() {
     }
   }
   return true;
+}
+
+// Re-drive the dead-lettered OUTBOUND push backlog (owner-directed 2026-08-11: "rerun the
+// stuck items when ClickUp is back up"). A dead-lettered push — under the OLD rule an outage
+// past ~7h, or a since-fixed permanent error — had no automatic requeue: only a manual
+// "Retry push" click or a fresh edit revived it, so an edit could sit unsent forever. This
+// moves dead push jobs back to 'queued' (attempts reset, due now) so the normal drain
+// re-attempts them: an outage-death lands once ClickUp is reachable, a still-permanent error
+// re-dies and re-raises its review. Going forward outage-class pushes never die (see
+// pushOutboxOnce), so this mainly heals the historical backlog + re-tests permanent errors
+// against the current code — the same self-heal philosophy as redriveInboxErrorsOnce for
+// inbound. Bounded per pass; every re-attempt is paced by the shared ClickUp rate limiter,
+// so reviving a large backlog can never storm ClickUp. Self-gated on the outbound switch.
+async function redriveDeadPushesOnce() {
+  if (!switches.on('CLICKUP_OUTBOUND_ENABLED')) return 0;
+  const max = Math.max(1, parseInt(process.env.CLICKUP_DEAD_REDRIVE_MAX || '2000', 10) || 2000);
+  const r = await db.query(
+    `UPDATE sync_queue SET status='queued', attempts=0, run_after=now(), updated_at=now()
+      WHERE id IN (SELECT id FROM sync_queue
+                    WHERE target='clickup' AND direction='push' AND op='update' AND status='dead'
+                    ORDER BY id LIMIT $1)
+      RETURNING id`, [max])
+    .catch((e) => { console.error('[clickup-sync] dead-push re-drive query', e && e.message); return { rows: [] }; });
+  if (r.rows.length) console.log(`[clickup-sync] re-drove ${r.rows.length} dead outbound push job(s) back to the queue`);
+  return r.rows.length;
 }
 
 // ---- unlinked-file recovery (post-merge audit finding #4) ------------------
@@ -1334,7 +1368,7 @@ async function backfillMemberLinksOnce() {
   } catch (e) { console.error('[clickup-sync] member-link backfill: member fetch failed', e.message); return 0; }
   if (!byEmail.size) return 0;
   const staff = await db.query(
-    `SELECT id, email FROM staff_users WHERE clickup_user_id IS NULL AND email IS NOT NULL AND is_active=true`);
+    `SELECT id, email FROM staff_users WHERE clickup_user_id IS NULL AND email IS NOT NULL AND is_active=true AND is_external=false`);
   let linked = 0;
   for (const s of staff.rows) {
     const cu = byEmail.get(String(s.email).toLowerCase());
@@ -1561,40 +1595,60 @@ function start() {
     setInterval(sweepTick, PROFILE_SWEEP_INTERVAL_SEC * 1000).unref();
   }
 
-  // Stage 2 — outbound loops (portal → ClickUp writes) are gated separately so
-  // inbound/backfill can run and be validated first, before the portal is
-  // allowed to write to production ClickUp.
-  if (switches.on('CLICKUP_OUTBOUND_ENABLED')) {
-    // SAFETY (post-incident): outbound pushes ONLY changes explicitly enqueued by a
-    // staff edit in the portal (enqueue-on-write). The old "dirty sweep" auto-pushed
-    // ANY file whose updated_at moved — including files just re-ingested FROM ClickUp
-    // (a round-trip), which overwrote ClickUp with the portal's mapped/synthetic
-    // values and looped. The sweep is intentionally NOT started; only the queue
-    // drain runs, so nothing reaches ClickUp unless a human changed it in the portal.
-    console.log('[clickup-sync] outbound writes ENABLED — enqueue-on-write ONLY (no auto-sweep)');
-    setInterval(() => tick(pushOutboxOnce, 'push'), 3000);
-    // ADDRESS BACKFILL (owner-reported 2026-07-28, card FILLE-1990). Enqueue-on-
-    // write means a field re-pushes when a HUMAN edits it — and nobody edits an
-    // address that is already right in PILOT. So every file pushed while the
-    // geocoder was broken (before 2026-07-26) keeps a blank "*Subject Property
-    // Address" / "*Borrower Address" on its card forever. This slow, resumable,
-    // FILL-ONLY sweep reads each linked card and pushes the two location fields
-    // only where the card has none — the "previous AND future" half of that fix.
-    // Off-switch: CLICKUP_ADDRESS_BACKFILL_DISABLED=1.
-    {
-      const addressBackfill = require('../clickup/address-backfill');
-      const addrTick = () => addressBackfill.sweepOnce()
+  // Stage 2 — outbound loops (portal → ClickUp writes). Each loop is scheduled
+  // UNCONDITIONALLY but re-reads the live CLICKUP_OUTBOUND_ENABLED switch on EVERY tick,
+  // so (a) turning the switch on from the API-Health page starts draining within one
+  // interval with NO restart, and (b) the boot-time flag-load race can never leave the
+  // drain unscheduled. The previous `if (switches.on(...))` wrapper decided ONCE at boot
+  // against the ENV DEFAULT (flags load asynchronously, after this runs), so a switch
+  // enabled only via an admin override was read as OFF and the drain never ran — portal
+  // edits then piled up in sync_queue unsent, which is the outbound half of the
+  // owner-reported bounce-back. This mirrors the per-tick gating the newer switches use
+  // (Class, DocLab, the down-alert monitor, the appraisal-XML catcher).
+  // SAFETY is unchanged: outbound pushes ONLY changes explicitly enqueued by a portal
+  // edit (enqueue-on-write); the old updated_at "dirty sweep" that round-tripped
+  // re-ingested values stays retired — only the queue drain runs.
+  let outboundAnnounced = null;
+  const outboundTick = async () => {
+    const on = switches.on('CLICKUP_OUTBOUND_ENABLED');
+    if (on !== outboundAnnounced) {   // log each real transition once, not every tick
+      console.log(on
+        ? '[clickup-sync] outbound writes ENABLED — enqueue-on-write ONLY (no auto-sweep)'
+        : '[clickup-sync] outbound writes DISABLED (CLICKUP_OUTBOUND_ENABLED!=1) — inbound/reconcile only');
+      // On every OFF/unknown → ON transition (the first ON tick after boot AND a runtime
+      // flip on the API-Health page), re-drive the dead-lettered push backlog so "rerun the
+      // stuck items when ClickUp is back up" (owner-directed 2026-08-11) also happens when a
+      // human turns writing back on WITHOUT a restart — parity with the per-tick philosophy
+      // (audit note). Bounded + rate-limited; one-shot per transition.
+      if (on) redriveDeadPushesOnce().catch((e) => console.error('[clickup-sync] dead-push re-drive', e && e.message));
+      outboundAnnounced = on;
+    }
+    if (!on) return;
+    await tick(pushOutboxOnce, 'push');
+  };
+  setInterval(outboundTick, 3000);
+
+  // ADDRESS BACKFILL (owner-reported 2026-07-28, card FILLE-1990). Enqueue-on-write
+  // means a field re-pushes when a HUMAN edits it — and nobody edits an address that is
+  // already right in PILOT. So every file pushed while the geocoder was broken (before
+  // 2026-07-26) keeps a blank "*Subject Property Address" / "*Borrower Address" on its
+  // card forever. This slow, resumable, FILL-ONLY sweep reads each linked card and pushes
+  // the two location fields only where the card has none — the "previous AND future" half
+  // of that fix. Gated per tick on the same live switch. Off: CLICKUP_ADDRESS_BACKFILL_DISABLED=1.
+  {
+    const addressBackfill = require('../clickup/address-backfill');
+    const addrTick = () => {
+      if (!switches.on('CLICKUP_OUTBOUND_ENABLED')) return Promise.resolve();
+      return addressBackfill.sweepOnce()
         .then((r) => { if (r && !r.idle && !r.skipped) console.log('[clickup-address-backfill]', JSON.stringify(r)); })
         .catch((e) => console.error('[clickup-sync] address-backfill', e && e.message));
-      setTimeout(addrTick, 120 * 1000).unref();          // let boot settle first
-      setInterval(addrTick, 60 * 1000).unref();
-    }
-  } else {
-    console.log('[clickup-sync] outbound writes DISABLED (CLICKUP_OUTBOUND_ENABLED!=1) — inbound/reconcile only');
+    };
+    setTimeout(addrTick, 120 * 1000).unref();          // let boot settle first
+    setInterval(addrTick, 60 * 1000).unref();
   }
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, redriveInboxErrorsOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, flagDeadUnlinkedFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS,
+module.exports = { start, pushOutboxOnce, redriveDeadPushesOnce, sweepDirtyOnce, processInboxOnce, redriveInboxErrorsOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, flagDeadUnlinkedFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS,
   optionMapForSweep: optionMap,   // the profile sweep reuses the warmed dropdown-option cache
   reconcileSince, nextWatermark, // WO-4: exported for the durable-watermark test
   isTaskDeletedError, // WO-6: exported for the token-rotation-safety test

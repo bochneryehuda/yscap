@@ -48,7 +48,7 @@ const FIELD_LABELS = {
 
 async function queueReview({ applicationId, borrowerId, taskId, direction, fieldKey,
   currentValue, proposedValue, rawValue, reason, clickupValue, portalValue, suppressIfRejected,
-  source, dbc }) {
+  source, portalActorId, dbc }) {
   // Callers that are already INSIDE a transaction (the Encompass enrichment pass
   // runs one) must queue on THEIR connection, or the insert cannot see the rows
   // that transaction created and fails its foreign key. Defaults to the pool.
@@ -91,15 +91,16 @@ async function queueReview({ applicationId, borrowerId, taskId, direction, field
       : (direction === 'inbound' ? currentValue : proposedValue);
     const ins = await q.query(
       `INSERT INTO sync_review_queue
-         (application_id, borrower_id, task_id, direction, field_key, current_value, proposed_value, raw_value, reason, clickup_value, portal_value, source)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         (application_id, borrower_id, task_id, direction, field_key, current_value, proposed_value, raw_value, reason, clickup_value, portal_value, source, portal_actor_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        ON CONFLICT ((coalesce(task_id,'')), field_key, direction, (coalesce(proposed_value,''))) WHERE status='open'
        DO NOTHING RETURNING id`,
       [applicationId || null, borrowerId || null, taskId || null, direction, fieldKey,
        currentValue == null ? null : String(currentValue),
        proposedValue == null ? null : String(proposedValue),
        rawValue == null ? null : String(rawValue), reason,
-       cuV == null ? null : String(cuV), pV == null ? null : String(pV), src]);
+       cuV == null ? null : String(cuV), pV == null ? null : String(pV), src,
+       portalActorId || null]);
     if (ins.rows[0]) notifyLoanOfficer(ins.rows[0].id).catch(() => {});
     // Reached the insert without throwing → a row IS in the queue (freshly
     // inserted, or an equal open row already there via ON CONFLICT). Callers that
@@ -155,8 +156,10 @@ function sharepointDocEmail({ borrowerName, portalValue } = {}) {
 
 async function notifyLoanOfficer(reviewId) {
   const r = await db.query(
-    `SELECT q.*, NULLIF(b.full_name,'') AS borrower_name
-       FROM sync_review_queue q LEFT JOIN borrowers b ON b.id = q.borrower_id
+    `SELECT q.*, NULLIF(b.full_name,'') AS borrower_name, sa.email AS actor_email
+       FROM sync_review_queue q
+       LEFT JOIN borrowers b ON b.id = q.borrower_id
+       LEFT JOIN staff_users sa ON sa.id = q.portal_actor_id AND sa.is_active
       WHERE q.id=$1 AND q.status='open' AND q.notified_at IS NULL`, [reviewId]);
   const row = r.rows[0];
   if (!row) return;
@@ -184,7 +187,13 @@ async function notifyLoanOfficer(reviewId) {
         WHERE a.borrower_id=$1 AND a.deleted_at IS NULL AND a.loan_officer_id IS NOT NULL`, [row.borrower_id])).rows;
     for (const a of apps) add(a.loan_officer_id, a.email, a.id);
   }
-  if (!officers.size) return;   // unassigned file — the admin queue view still shows it
+  // ALSO notify the person who MADE the change (owner-directed 2026-08-11): "every user
+  // should have their own view of the stuff THEY changed that doesn't agree with ClickUp."
+  // The actor caused this row, so they are by definition related to the file — this does
+  // not widen past the hard scope guard's intent, and it also gives an UNASSIGNED file a
+  // recipient (the editor) where before it emailed nobody. add() dedupes if they are the LO.
+  if (row.portal_actor_id && row.actor_email) add(row.portal_actor_id, row.actor_email, row.application_id);
+  if (!officers.size) return;   // unassigned file with no known editor — the admin queue view still shows it
   const notify = require('./notify');
   const label = FIELD_LABELS[row.field_key] || row.field_key;
   const who = row.borrower_name ? ` for ${row.borrower_name}` : '';
@@ -283,6 +292,55 @@ async function closeStaleReviews({ borrowerId, taskId, applicationId, fieldKey, 
        fieldKey, borrowerId || null, taskId || null, applicationId || null]);
     return r.rowCount || 0;
   } catch (e) { console.warn('[sync-review] stale-close skipped:', e.message); return 0; }
+}
+
+/**
+ * Recover the STAFF member whose PILOT edit produced a sync-review row, from the audit
+ * trail (owner-directed 2026-08-11: "every user should have their own view of the stuff
+ * THEY changed that doesn't agree with ClickUp"). We do NOT stamp a *_edited_by column on
+ * every write door — the audit log already records who changed what, keyed on the file.
+ *
+ * Precise pass: the most recent staff edit whose recorded diff names one of the conflicting
+ * columns (PATCH /details → detail.changes keyed by column; the completeness panels →
+ * detail.fields / detail.app arrays of column keys). Fallback: the most recent staff edit of
+ * the file in a short window — very likely the person who just made the change the pull tried
+ * to revert (e.g. the closing-date door, whose audit detail is camelCase, not column keys).
+ * Best-effort: returns null (unattributed) on any miss or error — the "My changes" view and
+ * the actor notification both tolerate null. Never throws.
+ *
+ * @param {string} appId
+ * @param {string[]} columns  the conflicting column names
+ * @returns {Promise<string|null>} a staff_users.id, or null
+ */
+const EDIT_ACTIONS = ['edit_application', 'set_closing_date', 'complete_fields', 'edit_field', 'condition_field'];
+async function lastFieldEditor(appId, columns, client) {
+  if (!appId) return null;
+  const q = client || db;
+  const cols = (Array.isArray(columns) ? columns : []).filter(Boolean).map(String);
+  try {
+    if (cols.length) {
+      const p = await q.query(
+        `SELECT actor_id FROM audit_log
+          WHERE actor_kind='staff' AND actor_id IS NOT NULL
+            AND entity_type='application' AND entity_id=$1
+            AND action = ANY($3::text[])
+            AND ( detail->'changes' ?| $2::text[]
+               OR detail->'fields'  ?| $2::text[]
+               OR detail->'app'     ?| $2::text[]
+               OR detail->'borrower' ?| $2::text[] )
+            AND created_at > now() - interval '60 days'
+          ORDER BY created_at DESC LIMIT 1`, [appId, cols, EDIT_ACTIONS]);
+      if (p.rows[0]) return p.rows[0].actor_id;
+    }
+    const f = await q.query(
+      `SELECT actor_id FROM audit_log
+        WHERE actor_kind='staff' AND actor_id IS NOT NULL
+          AND entity_type='application' AND entity_id=$1
+          AND action = ANY($2::text[])
+          AND created_at > now() - interval '7 days'
+        ORDER BY created_at DESC LIMIT 1`, [appId, EDIT_ACTIONS]);
+    return f.rows[0] ? f.rows[0].actor_id : null;
+  } catch (_) { return null; }   // best-effort; an unattributed row is fine
 }
 
 /**
@@ -469,4 +527,4 @@ async function sendReviewDigestOnce() {
   } catch (e) { console.warn('[sync-review] digest skipped:', e.message); return false; }
 }
 
-module.exports = { queueReview, notifyLoanOfficer, closeStaleReviews, remindStaleReviewsOnce, sendReviewDigestOnce, digestMessage, digestReasonLabel, FIELD_LABELS, sharepointDocEmail };
+module.exports = { queueReview, notifyLoanOfficer, closeStaleReviews, lastFieldEditor, remindStaleReviewsOnce, sendReviewDigestOnce, digestMessage, digestReasonLabel, FIELD_LABELS, sharepointDocEmail };

@@ -172,11 +172,16 @@ if (firstLoss) console.log('    first disagreement:', JSON.stringify(firstLoss))
 // can RAISE a cap; confusing the two would either route every ladder step to an
 // approval queue or, far worse, let a borrower-settable key raise a ceiling.
 {
-  const ovr = fs.readFileSync(path.join(__dirname, '..', 'src/lib/pricing-overrides.js'), 'utf8');
-  assert(!/\btargetARLTV\b/.test(ovr),
+  // borrowerPricingOverrides (the borrower/broker de-leverage allowlist) now lives
+  // in the shared lib/pricing-overrides.js (TPO Phase 4b — one definition shared
+  // with routes/tpo.js). targetARLTV appears there as a BORROWER lever, and must
+  // NOT be in the ADMIN override key lists (which route to an approval queue) —
+  // the separate `ovrARLTV` is the admin knob that can RAISE a cap.
+  const povr = require(path.join(__dirname, '..', 'src/lib/pricing-overrides.js'));
+  assert(!povr.APPROVAL_OVERRIDE_KEYS.includes('targetARLTV'),
     'C1 the value-side lever is not an admin-zone knob — it needs no exception approval, exactly like targetLTC');
-  const brw = fs.readFileSync(path.join(__dirname, '..', 'src/routes/borrower.js'), 'utf8');
-  assert(/targetARLTV > 0 && targetARLTV <= 1/.test(brw),
+  assert(povr.borrowerPricingOverrides({ targetARLTV: 5 }).targetARLTV === undefined
+      && povr.borrowerPricingOverrides({ targetARLTV: 0.7 }).targetARLTV === 0.7,
     'C2 the borrower door clamps it to a real ratio before it reaches the engine');
 
   // Proof rather than inspection: it can only ever REDUCE.

@@ -631,13 +631,6 @@ module.exports = {
     secret:   process.env.PLAID_SECRET,
     env:      (process.env.PLAID_ENV || 'sandbox').toLowerCase(),  // sandbox | development | production
   },
-  // Xactus (credit reports) — B2B credentials:
-  xactus: {
-    username: process.env.XACTUS_USERNAME,
-    password: process.env.XACTUS_PASSWORD,
-    clientId: process.env.XACTUS_CLIENT_ID,
-    endpoint: process.env.XACTUS_ENDPOINT,   // your assigned API base URL
-  },
   // USPS Addresses API v3 (OAuth2 client-credentials). Free with a USPS
   // developer account (developer.usps.com) — add the two keys to activate real
   // USPS address standardization + ZIP+4.
@@ -807,17 +800,27 @@ module.exports = {
     provider: (process.env.PROPERTY_DATA_PROVIDER || '').trim(),   // 'corelogic' | 'datatree' | 'attom'
     key:      process.env.PROPERTY_DATA_KEY || '',
   },
-  //   Xactus (formerly CreditPlus) — FICO + OFAC/background/fraud
+  //   Xactus (formerly CreditPlus) — the LEGACY per-user framework, consumed by the
+  //   OFAC/background/fraud integration (integrations/xactus.js) + the direct-source
+  //   connector. This is the ONE `xactus` block: a duplicate key here previously
+  //   shadowed an earlier block that read XACTUS_USERNAME/CLIENT_ID/ENDPOINT (the
+  //   second silently won), so both field sets are UNIONED here and no consumer
+  //   loses a value. The SHARED PRODUCTION credit login is the SEPARATE `xactusProd`
+  //   block below; a broker firm's OWN credit login is per-firm in the DB (TPO
+  //   own-Xactus), never here.
   xactus: {
     account:  process.env.XACTUS_ACCOUNT || '',
     user:     process.env.XACTUS_USER || '',
+    username: process.env.XACTUS_USERNAME || '',
     password: process.env.XACTUS_PASSWORD || '',
+    clientId: process.env.XACTUS_CLIENT_ID || '',
+    endpoint: process.env.XACTUS_ENDPOINT || '',
   },
   // Xactus — SHARED PRODUCTION credit login (owner-directed 2026-07-22). The
   // "Import credit" button (internal Credit report condition) pulls/reissues a
   // tri-merge report using ONE company login stored HERE (Render env) — NOT a
-  // per-user credential. This block is deliberately SEPARATE from the two legacy
-  // `xactus` blocks above (the per-user framework), which are left in place and
+  // per-user credential. This block is deliberately SEPARATE from the legacy
+  // `xactus` block above (the per-user framework), which is left in place and
   // dormant in case we return to that model. Consumed by src/lib/credit/provider.js.
   //   XACTUS_API_URL          the FULL Credit ReportX request URL Xactus gave you
   //                           to POST reports to (the exact endpoint, NOT a base

@@ -311,11 +311,15 @@ async function weeklyBorrowerOutstandingOnce() {
 async function dailyPipelineDigestOnce() {
   let sent = 0;
   const staff = await db.query(
+    // is_external=false: an external (TPO / broker) user is the loan-officer
+    // assignee on their firm's files, so without this they would receive the
+    // INTERNAL-format daily pipeline digest. Brokers get their own view through
+    // the /api/tpo surface (TPO PORTAL invariant, CLAUDE.md).
     `SELECT DISTINCT s.id, s.email, s.full_name
        FROM staff_users s
        JOIN application_assignees aa ON aa.staff_id=s.id AND aa.removed_at IS NULL
        JOIN applications a ON a.id=aa.application_id AND a.deleted_at IS NULL
-      WHERE s.is_active=true AND COALESCE(s.notifications_enabled,true)=true
+      WHERE s.is_active=true AND s.is_external=false AND COALESCE(s.notifications_enabled,true)=true
         AND a.status <> ALL($1)`, [TERMINAL]);
   for (const st of staff.rows) {
     try {
@@ -795,6 +799,7 @@ async function weeklyLoAiDigestOnce() {
          JOIN applications a ON a.loan_officer_id = u.id
          JOIN ai_suggestions s ON s.application_id = a.id
         WHERE u.is_active = true
+          AND u.is_external = false
           AND u.role IN ('loan_officer','processor','admin','super_admin')
           AND a.deleted_at IS NULL
           AND a.status NOT IN ('withdrawn','cancelled','declined','funded')

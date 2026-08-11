@@ -32,17 +32,20 @@ router.get('/', async (req, res) => {
         || (arow.token_version || 0) !== (asst.assistantTv || 0))
       return res.status(401).json({ error: 'helper access ended' });
   } else {
-    const tbl = claims.kind === 'staff' ? 'staff_users' : 'borrower_auth';
-    const idCol = claims.kind === 'staff' ? 'id' : 'borrower_id';
-    // Staff also gets an is_active check — a deactivated staffer must NOT keep the
-    // live stream (S1-01). borrower_auth has no is_active column, so only select it
-    // for staff.
-    const cols = claims.kind === 'staff' ? 'token_version, is_active' : 'token_version';
+    // A broker (kind='tpo', Phase 6e chat) IS a staff_users row (is_external=true), so it is
+    // validated like staff — same token_version + is_active gate (a deactivated broker, or a firm
+    // suspend which bumps the broker's token_version, drops the live stream).
+    const staffLike = claims.kind === 'staff' || claims.kind === 'tpo';
+    const tbl = staffLike ? 'staff_users' : 'borrower_auth';
+    const idCol = staffLike ? 'id' : 'borrower_id';
+    // Staff/tpo also gets an is_active check — a deactivated staffer/broker must NOT keep the live
+    // stream (S1-01). borrower_auth has no is_active column, so only select it for the staff-like kinds.
+    const cols = staffLike ? 'token_version, is_active' : 'token_version';
     const r = await db.query(`SELECT ${cols} FROM ${tbl} WHERE ${idCol}=$1`, [claims.sub]);
     const row = r.rows[0];
     const tv = row ? row.token_version : null;
     if (tv === null || tv !== (claims.tv || 0)) return res.status(401).json({ error: 'session expired' });
-    if (claims.kind === 'staff' && !row.is_active) return res.status(401).json({ error: 'account disabled' });
+    if (staffLike && !row.is_active) return res.status(401).json({ error: 'account disabled' });
   }
   // Per-device sign-out (db/321) must close the live stream too, or a "signed
   // out" tab keeps receiving chat/presence events. Fails OPEN — a stream is not
@@ -68,6 +71,21 @@ router.get('/', async (req, res) => {
     const su = s.rows[0];
     if (!su || su.is_active === false || (su.token_version || 0) !== (imp.staffTv || 0))
       return res.status(401).json({ error: 'borrower view ended' });
+  }
+
+  // TPO VIEW (src/lib/tpo-view.js): a "view as TPO" token authorizes TWO identities — the broker
+  // (validated by the staff-like token_version/is_active gate above) AND the internal staffer
+  // behind the view. Same re-validation as borrower-view so a revoked / deactivated staffer can't
+  // keep the broker's live stream open (this endpoint bypasses authenticate()).
+  const tpv = require('../lib/tpo-view');
+  const timp = tpv.readImpersonation(claims);
+  if (timp) {
+    if (tpv.sessionExpired(timp)) return res.status(401).json({ error: 'broker view ended' });
+    const ts = await db.query(
+      `SELECT token_version, is_active FROM staff_users WHERE id=$1`, [timp.staffId]);
+    const tsu = ts.rows[0];
+    if (!tsu || tsu.is_active === false || (tsu.token_version || 0) !== (timp.staffTv || 0))
+      return res.status(401).json({ error: 'broker view ended' });
   }
 
   // Borrowers only receive presence for the staff on their own files.
