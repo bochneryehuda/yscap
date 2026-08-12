@@ -1437,10 +1437,26 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     return miss;
   }
   var APP_STATE_NAMES = { FL: "Florida", CA: "California", NY: "New York" };
-  function appStateOverlayNote(st) {
-    st = (st || "").toUpperCase();
-    if (st === "FL" || st === "CA" || st === "NY") {
-      return "Per the " + APP_STATE_NAMES[st] + " program overlay, maximum leverage and loan limits are reduced and fix & flip / fix & hold refinances \u2014 both rate-and-term and cash-out \u2014 are not eligible. Your terms reflect the " + APP_STATE_NAMES[st] + " limits.";
+  // State-specific overlay note \u2014 shown ONLY when a real restriction applies to the
+  // deal (owner-reported 2026-08-12). The loan application prices on the STANDARD
+  // program only, whose matrix reduces leverage/loan limits in Florida on every
+  // deal but KEEPS the national purchase leverage in California / New York (loan
+  // limits are even higher there) \u2014 those states only block fix & flip / fix & hold
+  // refinances. The old note wrongly told a NY/CA PURCHASE its leverage was reduced
+  // and mentioned refinances that were irrelevant to a purchase.
+  function appStateOverlayNote(inp) {
+    inp = inp || {};
+    var st = (inp.state || "").toUpperCase();
+    var ffRefi = inp.loanType === "Refinance" && typeof YSP !== "undefined" && YSP.normStrategy && YSP.normStrategy(inp.strategy) === "FF";
+    if (st === "FL") {
+      return ffRefi
+        ? "Per the Florida program overlay, maximum leverage and loan limits are reduced and fix & flip / fix & hold refinances \u2014 both rate-and-term and cash-out \u2014 are not eligible. Your terms reflect the Florida limits."
+        : "Per the Florida program overlay, maximum leverage and loan limits are reduced. Your terms reflect the Florida limits.";
+    }
+    if (st === "CA" || st === "NY") {
+      return ffRefi
+        ? "Per the " + APP_STATE_NAMES[st] + " program overlay, fix & flip / fix & hold refinances \u2014 both rate-and-term and cash-out \u2014 are not eligible."
+        : "";
     }
     return "";
   }
@@ -1718,7 +1734,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
 
     // ----- state overlay note (only when a limiting state is chosen) -----
     var sStateN = el("snStateNote");
-    if (sStateN) { var snt = ready ? appStateOverlayNote(inp.state) : ""; if (snt) { sStateN.style.display = ""; sStateN.textContent = snt; } else { sStateN.style.display = "none"; sStateN.textContent = ""; } }
+    if (sStateN) { var snt = ready ? appStateOverlayNote(inp) : ""; if (snt) { sStateN.style.display = ""; sStateN.textContent = snt; } else { sStateN.style.display = "none"; sStateN.textContent = ""; } }
 
     // ----- manual review (ineligible or manual underwrite) \u2014 submits straight
     // to our team through the backend; never opens the visitor's mail client -----
