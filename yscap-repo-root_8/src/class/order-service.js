@@ -69,12 +69,13 @@ async function loadContext(db, appId) {
   const a = r.rows[0];
   if (!a) return null;
 
-  // Everyone Class should email as the appraisal moves: the loan officer, the
-  // processor, and the borrower(s). Each becomes a `BorrowerInfo` entry on the
-  // order's notificationList (see order-build), so Class copies all of them when the
-  // report comes back — the SAME set NAN carries as products[].notifications. A
-  // deactivated LO/processor drops out (their is_active LEFT JOIN yields NULL), and
-  // a malformed or duplicate address is dropped rather than sent.
+  // The fallback pool for Class's single notification recipient. Class's
+  // notificationList accepts EXACTLY ONE item, of type BorrowerInfo (see
+  // order-build) — the builder sends the borrower's own email, and only falls
+  // back to the first of THESE when the borrower has no email on file. The loan
+  // officer and processor follow the order in PILOT, not through Class. A
+  // deactivated LO/processor drops out (their is_active LEFT JOIN yields NULL),
+  // and a malformed or duplicate address is dropped rather than kept.
   const notifyEmails = [];
   const addEmail = (e) => {
     const v = String(e == null ? '' : e).trim().toLowerCase();
@@ -336,10 +337,13 @@ async function buildPreview(db, appId, opts = {}) {
     occupancyCandidates,
     occupancyKey: built.occupancyKey,
     contacts: built.body.contacts || [],
-    // Who Class will email as the appraisal moves (LO + processor + borrowers). The
-    // notificationList is an array, so fieldRows() skips it — surface it here so the
-    // screen shows every recipient before the order goes out (the desk's standing rule).
-    notifyEmails: ctx.notifyEmails,
+    // Who Class will email as the appraisal moves. Class's notification list carries
+    // exactly ONE item, of type BorrowerInfo — the borrower's own address (Class
+    // notifies the borrower; the LO/processor follow the order in PILOT). The
+    // notificationList is an array, so fieldRows() skips it — surface the actual
+    // recipient(s) that go out here, per the desk's "show what goes out" rule.
+    notifyEmails: (built.body.notificationList || [])
+      .map((n) => n.Email || n.email).filter(Boolean),
     // The product PILOT auto-picked from class_form_map (null until the map is seeded).
     // Staff can still change it on the screen; the override wins in buildOrder.
     chosenProduct: chosen,
