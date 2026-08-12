@@ -52,6 +52,15 @@ const CAPABILITIES = [
   { key: 'manage_conditions', label: 'Manage the Condition Center', hint: 'Author the global condition library and rule engine.' },
   { key: 'manage_pricing', label: 'Manage company pricing', hint: 'Set company-wide markup, origination and fee defaults for all not-yet-registered files.' },
   { key: 'manage_draws', label: 'Manage construction draws', hint: 'Review draw requests, set approved amounts, approve/amend/reopen draws, and record releases (the Sitewire draw desk).' },
+  // VIEW-ONLY draw access for loan officers (owner-directed 2026-08-12). A loan
+  // officer gets their own draw section + read-only access to the draw section on
+  // their files — draws, findings, inspection photos, the Sitewire/Trinity PDFs,
+  // notes — and may APPROVE or DISPUTE a finding on the borrower's behalf, but can
+  // run NONE of the draw desk (no start/approve/deliver/release/reallocate). It is
+  // a DISTINCT capability so it never grants the broader manage_draws power; the
+  // read routes accept `manage_draws OR view_draws`, so a coordinator/processor is
+  // unaffected. File scope is still enforced per-route (canSeeFile / fileScope).
+  { key: 'view_draws', label: 'View construction draws (read-only)', hint: 'See the draw section on your files — draws, findings, inspection photos and reports — and approve or dispute a finding on the borrower\'s behalf. Does NOT grant manage_draws (the draw desk). Loan officers hold it.' },
   { key: 'manage_closings', label: 'Manage closings', hint: 'Run the closing workspace: warehouse + collateral tracking, the actual cash-to-close check, HUD/ALTA, checklists, TPR / investor-delivery sign-off, and reconcile (the closer desk).' },
   // The Purchasing desk (owner-directed 2026-07-26): every file that moved to
   // purchasing after investor delivery (a table-funded loan is sold at closing and
@@ -109,7 +118,9 @@ const ROLE_DEFAULTS = {
   // re-pushing it, approving draws and recording releases require the manage_draws capability, which is held
   // by the Draw Coordinator / Processor / Admin / Super Admin — never a loan officer unless an admin
   // explicitly grants it per-person from the Team screen. (super_admin has every capability implicitly.)
-  loan_officer: ['review_conditions', 'pull_credit', 'waive_vesting_llc', 'send_term_sheet'],
+  // view_draws (owner-directed 2026-08-12): a read-only draw section + approve/dispute
+  // a finding on the borrower's behalf. Still NOT manage_draws (no draw desk).
+  loan_officer: ['review_conditions', 'pull_credit', 'waive_vesting_llc', 'send_term_sheet', 'view_draws'],
   // Closers see the whole pipeline (they need the closing queue across files) and
   // can review + sign off closing conditions on the files handed to them, plus run
   // the closing desk (manage_closings) and pull credit. An admin can widen/narrow

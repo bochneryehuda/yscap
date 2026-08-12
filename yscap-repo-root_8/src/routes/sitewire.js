@@ -66,7 +66,8 @@ const M = require('../sitewire/mapper');
 const T = require('../sitewire/transforms');
 const routing = require('../sitewire/routing');
 const rehab = require('../lib/rehab-budget');
-const { sanitizeDateOnly } = require('../lib/fields'); // strict YYYY-MM-DD validation for date inputs
+const { sanitizeDateOnly, jsonbText } = require('../lib/fields'); // strict YYYY-MM-DD validation for date inputs; jsonbText = NUL-safe jsonb text
+const { normalizeDisputeMedia } = require('../sitewire/dispute-media'); // sniff/strip/cap dispute evidence — shared with the borrower + TPO surfaces
 const notify = require('../lib/notify');
 const { drawSetupNotifyOpts } = require('../lib/email/draw-setup-email');
 const { enqueueSitewirePush } = require('../sitewire/enqueue');
@@ -98,6 +99,15 @@ const drawWire = require('../lib/esign/draw-wire');
 const { retainagePctFor, lienGateEnabled } = drawSettings;
 
 router.use(requireAuth, requireStaff);
+
+// VIEW-ONLY draw access (owner-directed 2026-08-12). A loan officer holds `view_draws`
+// (never `manage_draws`), so the READ routes and the two borrower-behalf actions
+// (approve / dispute a finding) accept EITHER capability; every draw-desk WRITE stays
+// on `requirePermission('manage_draws')` and refuses a loan officer with a 403. File
+// scope is still enforced per-route by canSeeFile / fileScope, so the LO only ever
+// sees their own files. Grep for `requireDrawView` to see exactly which routes a
+// loan officer can reach — a route on plain `manage_draws` is management-only.
+const requireDrawView = requirePermission(['manage_draws', 'view_draws']);
 
 // a funded file is past clear-to-close; a SOW change after CTC must net to zero
 const phaseFor = (status) => (String(status) === 'funded' ? 'after_ctc' : 'before_ctc');
@@ -145,7 +155,7 @@ async function canSeeFile(req, appId) {
 }
 
 // ---- GET /api/sitewire/draws — desk dashboard (mirrored draws, scoped) ----
-router.get('/draws', requirePermission('manage_draws'), async (req, res) => {
+router.get('/draws', requireDrawView, async (req, res) => {
   try {
     const sc = fileScope(req, 'a', 1);
     const rows = (await db.query(
@@ -173,7 +183,7 @@ router.get('/draws', requirePermission('manage_draws'), async (req, res) => {
 });
 
 // ---- GET /api/sitewire/files/:id — one file's Sitewire state (link, draws, requests, ledger) ----
-router.get('/files/:id', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -187,7 +197,7 @@ router.get('/files/:id', requirePermission('manage_draws'), async (req, res) => 
 });
 
 // ---- GET /api/sitewire/files/:id/findings/:drawId — pull full findings (photos + notes) ----
-router.get('/files/:id/findings/:drawId', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/findings/:drawId', requireDrawView, async (req, res) => {
   if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   if (!switches.on('SITEWIRE_ENABLED')) return res.status(503).json({ error: 'Sitewire is turned off' });
@@ -215,7 +225,7 @@ router.post('/files/:id/draws/:drawId/archive-media', requirePermission('manage_
 });
 
 // how many media are already archived for a draw (for the gallery's "✓ archived" indicator).
-router.get('/files/:id/draws/:drawId/archived-media', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/draws/:drawId/archived-media', requireDrawView, async (req, res) => {
   if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -227,7 +237,7 @@ router.get('/files/:id/draws/:drawId/archived-media', requirePermission('manage_
 // ---- GET /files/:id/draws/:drawId/media/:mediaId — stream a DURABLE inspection photo/video (staff) ----
 // PILOT's own stored copy, so the staff gallery never breaks when Sitewire's pre-signed link expires.
 // manage_draws + canSeeFile + the media must belong to this file's draw (IDOR).
-router.get('/files/:id/draws/:drawId/media/:mediaId', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/draws/:drawId/media/:mediaId', requireDrawView, async (req, res) => {
   if (!/^\d+$/.test(req.params.drawId) || !/^\d{1,18}$/.test(String(req.params.mediaId))) return res.status(404).end();
   if (!(await canSeeFile(req, req.params.id))) return res.status(404).end();
   const m = (await db.query(
@@ -262,7 +272,7 @@ async function generateAndServeReport(req, res, { sitewireDrawId, scope }) {
   } catch (e) { res.status(500).json({ error: 'Could not build the report — please try again.' }); }
 }
 // per-draw report
-router.get('/files/:id/draws/:drawId/report', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/draws/:drawId/report', requireDrawView, async (req, res) => {
   if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [req.params.drawId, req.params.id]);
@@ -270,7 +280,7 @@ router.get('/files/:id/draws/:drawId/report', requirePermission('manage_draws'),
   return generateAndServeReport(req, res, { sitewireDrawId: req.params.drawId, scope: 'draw' });
 });
 // whole-project report (cumulative across all draws)
-router.get('/files/:id/report', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/report', requireDrawView, async (req, res) => {
   return generateAndServeReport(req, res, { sitewireDrawId: null, scope: 'project' });
 });
 
@@ -330,7 +340,7 @@ router.post('/files/:id/reset-draw', requirePermission('manage_draws'), async (r
 // and offers the toggles. It also returns the raw property object — the honest way to reveal the exact field
 // names Sitewire uses for the two toggles we haven't confirmed yet (Block Draws / review type). manage_draws
 // + canSeeFile. Degrades gracefully: available:false when the file isn't PILOT-managed or the connection is off.
-router.get('/files/:id/sitewire-property', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/sitewire-property', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -438,7 +448,7 @@ const isSuperAdmin = (req) => !!(req.actor && req.actor.role === 'super_admin');
 
 // GET the SOW lines for the editor: each line's wording/description/amount + whether it's drawn-locked in
 // Sitewire, plus the unlock state + whether the viewer is a super-admin. manage_draws + canSeeFile.
-router.get('/files/:id/sow-lines', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/sow-lines', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -488,7 +498,7 @@ router.post('/files/:id/sow-line-edit', requirePermission('manage_draws'), async
 // Scoped to draw items ONLY (type draw%/sow_%) so it stays the coordinator's draw inbox, not the whole file's
 // notification history. Sitewire does not expose the emails IT sends, so this is PILOT's own trail.
 // manage_draws + canSeeFile.
-router.get('/files/:id/notifications', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/notifications', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -520,7 +530,7 @@ router.get('/files/:id/notifications', requirePermission('manage_draws'), async 
 // Opens a draw notification in full: the exact branded HTML we sent, every recipient, the reply-to, and the
 // attachment list. Go-forward: only messages sent after the capture shipped have a stored copy (has_full_email).
 // manage_draws + canSeeFile + the notification must belong to THIS file (IDOR).
-router.get('/files/:id/messages/:notificationId', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/messages/:notificationId', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   if (!/^[0-9a-f-]{36}$/i.test(String(req.params.notificationId))) return res.status(404).json({ error: 'not found' });
@@ -537,7 +547,7 @@ router.get('/files/:id/messages/:notificationId', requirePermission('manage_draw
 });
 
 // ---- GET /files/:id/messages/:notificationId/attachments/:idx — stream a captured attachment ----
-router.get('/files/:id/messages/:notificationId/attachments/:idx', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/messages/:notificationId/attachments/:idx', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   if (!/^[0-9a-f-]{36}$/i.test(String(req.params.notificationId)) || !/^\d{1,3}$/.test(String(req.params.idx))) return res.status(404).json({ error: 'not found' });
@@ -587,14 +597,14 @@ router.post('/files/:id/messages/reply', requirePermission('manage_draws'), draw
 });
 
 // ---- GET /files/:id/borrower-status — Sitewire's borrower-invite state (live read) ----
-router.get('/files/:id/borrower-status', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/borrower-status', requireDrawView, async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try { res.json(await orchestrator.getBorrowerInviteStatus(req.params.id)); }
   catch (e) { res.status(500).json({ error: 'Could not read the borrower status from Sitewire right now.' }); }
 });
 
 // ---- GET /files/:id/quick-notify-statuses — Sitewire's pipeline status labels ----
-router.get('/files/:id/quick-notify-statuses', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/quick-notify-statuses', requireDrawView, async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try { res.json({ statuses: await orchestrator.listQuickNotifyStatuses() }); }
   catch (e) { res.status(500).json({ error: 'Could not load the pipeline statuses.' }); }
@@ -618,7 +628,7 @@ router.post('/files/:id/draws/:drawId/quick-notify', requirePermission('manage_d
 });
 
 // ---- GET /files/:id/sitewire-documents — the Sitewire property's own documents (live read) ----
-router.get('/files/:id/sitewire-documents', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/sitewire-documents', requireDrawView, async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try { res.json(await orchestrator.getSitewireDocuments(req.params.id)); }
   catch (e) { res.status(500).json({ error: 'Could not load the Sitewire documents.' }); }
@@ -898,7 +908,7 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
 // history + Trinity orders; POST = create (staff may deliberately pass allow_over /
 // allow_parallel); then cancel / close-out retry / Trinity actions are the desk's levers.
 const intId = (v) => { const n = Number(v); return Number.isInteger(n) && n > 0 ? n : null; };
-router.get('/files/:id/portal-draws', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/portal-draws', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -996,7 +1006,7 @@ router.post('/files/:id/trinity-orders/:orderId/advance', requirePermission('man
 // whether it can be sent, the latest envelope's status, the borrower-typed wire details
 // (account number MASKED — only its last-4), the fatal operating-agreement condition when
 // the wire goes to a new entity, and the signed PDF link once it's filed back. Read-only.
-router.get('/files/:id/draw-request', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/draw-request', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -1604,7 +1614,7 @@ router.post('/files/:id/retainage-release', requirePermission('manage_draws'), a
 });
 
 // ---- lien waivers (per draw) ----
-router.get('/files/:id/waivers', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/waivers', requireDrawView, async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   const rows = (await db.query(`SELECT * FROM draw_lien_waivers WHERE application_id=$1 ORDER BY created_at DESC`, [req.params.id])).rows;
   res.json({ waivers: rows });
@@ -1722,7 +1732,7 @@ async function ownedDraw(req, appId, drawId) {
   return own.rowCount ? { sitewireDrawId: String(drawId) } : null;
 }
 
-router.get('/files/:id/draws/:drawId/attachments', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/draws/:drawId/attachments', requireDrawView, async (req, res) => {
   const ref = await ownedDraw(req, req.params.id, req.params.drawId);
   if (ref === 'forbidden') return res.status(403).json({ error: 'forbidden' });
   if (!ref) return res.status(404).json({ error: 'draw not found on this file' });
@@ -1809,7 +1819,7 @@ router.post('/files/:id/draws/:drawId/attachments/:attId/review', requirePermiss
 
 // Stream one attachment back. Scoped through the same draw ownership check, so an attachment id
 // from another file can never be fetched by guessing.
-router.get('/files/:id/draws/:drawId/attachments/:attId/file', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/draws/:drawId/attachments/:attId/file', requireDrawView, async (req, res) => {
   const ref = await ownedDraw(req, req.params.id, req.params.drawId);
   if (ref === 'forbidden') return res.status(403).json({ error: 'forbidden' });
   if (!ref) return res.status(404).json({ error: 'draw not found on this file' });
@@ -2089,7 +2099,7 @@ router.get('/settings', requirePermission(['manage_draws', 'platform_setup']), a
 // ---- GET /files/:id/draw-settings — every knob for ONE file, and WHICH LEVEL decided it ----
 // The owner's "where did this come from?": a coordinator looking at a $250 fee should never have
 // to guess whether it came from the project, the capital provider or the company default.
-router.get('/files/:id/draw-settings', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/draw-settings', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   const out = await drawSettings.resolvedFor(appId);
@@ -2253,7 +2263,7 @@ router.get('/status', requirePermission(['manage_draws', 'platform_setup']), asy
 // ===================================================================================
 
 // ---- GET /files/:id/rollup — the unified per-line/per-unit picture for a file ----
-router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/rollup', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -2572,7 +2582,7 @@ router.get('/files/:id/draws/:drawId/packet', requirePermission('manage_draws'),
 });
 
 // ---- GET /files/:id/activity — the draw audit trail (examiner-ready) ----
-router.get('/files/:id/activity', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/activity', requireDrawView, async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try { res.json({ activity: await buildDrawActivity(req.params.id) }); }
   catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
@@ -3046,7 +3056,7 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
 });
 
 // ---- GET /findings/:findingId — full finding detail (staff) ----
-router.get('/findings/:findingId', requirePermission('manage_draws'), async (req, res) => {
+router.get('/findings/:findingId', requireDrawView, async (req, res) => {
   if (!/^\d+$/.test(req.params.findingId)) return res.status(404).json({ error: 'not found' });
   const f = (await db.query(`SELECT * FROM draw_findings WHERE id=$1`, [req.params.findingId])).rows[0];
   if (!f || !(await canSeeFile(req, f.application_id))) return res.status(403).json({ error: 'forbidden' });
@@ -3076,7 +3086,7 @@ router.get('/findings/:findingId', requirePermission('manage_draws'), async (req
 // ---- GET /findings/lines/:lineId/dispute-media/:idx — serve one borrower dispute-evidence file (staff) ----
 // The borrower attached these when they pushed back on a line. Streamed from PILOT's durable storage
 // after the manage_draws + file-visibility + line-belongs-to-file checks. GPS was stripped on upload.
-router.get('/findings/lines/:lineId/dispute-media/:idx', requirePermission('manage_draws'), async (req, res) => {
+router.get('/findings/lines/:lineId/dispute-media/:idx', requireDrawView, async (req, res) => {
   if (!/^\d{1,18}$/.test(String(req.params.lineId)) || !/^\d{1,4}$/.test(String(req.params.idx))) return res.status(404).end();
   const row = (await db.query(
     `SELECT dfl.dispute_media, df.application_id
@@ -3250,7 +3260,7 @@ router.post('/files/:id/findings/:findingId/review', requirePermission('manage_d
 // goes through the SAME transition their own Accept button uses; only `accepted_via='staff'` and
 // the recorded note distinguish it. A note is REQUIRED: "who said the borrower agreed, and how?"
 // must be answerable from the file years later.
-router.post('/files/:id/findings/:findingId/mark-accepted', requirePermission('manage_draws'), async (req, res) => {
+router.post('/files/:id/findings/:findingId/mark-accepted', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!/^\d+$/.test(req.params.findingId)) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
@@ -3278,6 +3288,62 @@ router.post('/files/:id/findings/:findingId/mark-accepted', requirePermission('m
     body: `A coordinator recorded that the borrower approved this draw (${note.slice(0, 160)}). The release is due by ${new Date(upd.wire_due_at).toLocaleString('en-US')}.`,
     applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
   res.json({ ok: true, wire_due_at: upd.wire_due_at, accepted_via: 'staff' });
+});
+
+// ---- POST /files/:id/findings/:findingId/dispute — a loan officer files a DISPUTE
+// FOR THE BORROWER (owner-directed 2026-08-12): the view-only draw partner of the
+// accept-on-behalf above. It mirrors the borrower's own dispute (borrower-draws.js)
+// EXACTLY — same per-line IDOR (the line must belong to the finding), the same
+// [0, requested] clamp on the desired amount, the same shared normalizeDisputeMedia
+// (byte-sniffed, GPS-stripped, capped), the same guarded delivered→disputed flip —
+// so a borrower's and a loan officer's dispute are stored identically. It is stamped
+// disputed_via='staff' + disputed_by_staff_id (db/538 allows 'staff'), and a note
+// recording HOW the borrower asked to dispute is required, so "who filed this?" is
+// answerable. view_draws + canSeeFile: a loan officer only ever acts on their own
+// files, and this is the one WRITE (besides accept) they are allowed. ----
+router.post('/files/:id/findings/:findingId/dispute', requireDrawView, async (req, res) => {
+  const appId = req.params.id;
+  if (!/^\d+$/.test(req.params.findingId)) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const f = (await db.query(`SELECT * FROM draw_findings WHERE id=$1 AND application_id=$2`, [req.params.findingId, appId])).rows[0];
+  if (!f) return res.status(404).json({ error: 'those findings were not found on this file' });
+  const note = String((req.body && req.body.note) || '').trim();
+  if (note.length < 8) {
+    return res.status(400).json({ error: 'Record how the borrower asked to dispute this draw (at least 8 characters) — for example "borrower called 8/12, disputes the roof line".' });
+  }
+  if (f.status === 'accepted') return res.status(409).json({ error: 'This draw was already accepted — it can no longer be disputed.' });
+  if (f.status === 'resolved') return res.status(409).json({ error: 'These results have already been reviewed and resolved.' });
+  if (f.status !== 'delivered') return res.status(409).json({ error: 'These findings are not awaiting the borrower’s answer.' });
+  // Cap the fan-out exactly like the borrower route (a real draw never has ~200 lines).
+  const lines = (Array.isArray(req.body && req.body.lines) ? req.body.lines : []).slice(0, 200);
+  if (!lines.length) return res.status(400).json({ error: 'a dispute must name at least one line' });
+  const updates = [];
+  for (const ln of lines) {
+    if (!/^\d{1,18}$/.test(String(ln && ln.line_id))) continue;
+    const owned = (await db.query(`SELECT id, requested_cents FROM draw_finding_lines WHERE id=$1 AND finding_id=$2 AND retired_at IS NULL`, [ln.line_id, f.id])).rows[0];
+    if (!owned) continue;
+    let desired = ln.desired_cents == null ? null : Math.round(Number(ln.desired_cents));
+    if (desired != null && (!Number.isFinite(desired) || desired < 0 || desired > Number(owned.requested_cents))) desired = null;
+    const evidence = await normalizeDisputeMedia(ln.media);
+    updates.push({ line_id: ln.line_id, desired, note: ln.note ? String(ln.note).slice(0, 2000) : null, evidence });
+  }
+  if (!updates.length) return res.status(400).json({ error: 'no valid dispute lines' });
+  const flipped = (await db.query(
+    `UPDATE draw_findings SET status='disputed', disputed_at=now(), disputed_via='staff', disputed_by_staff_id=$2, updated_at=now()
+      WHERE id=$1 AND status='delivered' RETURNING id`, [f.id, req.actor.id])).rows[0];
+  if (!flipped) return res.status(409).json({ error: 'someone else just handled these findings' });
+  for (const u of updates) {
+    await db.query(
+      `UPDATE draw_finding_lines SET dispute_status='open', dispute_desired_cents=$2, dispute_note=$3, dispute_media=$4, updated_at=now() WHERE id=$1`,
+      [u.line_id, u.desired, u.note, u.evidence.length ? jsonbText(u.evidence) : null]);
+  }
+  const count = updates.length;
+  try { await orchestrator.journal({ appId, entity: 'draw', entityId: Number(f.sitewire_draw_id), field: 'borrower_disputed_offline', oldValue: { status: f.status }, newValue: { via: 'staff', lines: count, note: note.slice(0, 500), actor: req.actor.id }, source: 'money_override' }); } catch (_) {}
+  await notify.notifyAppStaff(appId, { type: 'draw_disputed', title: 'Dispute recorded for the borrower', badge: { text: 'Disputed', tone: 'action' },
+    drawTag: await drawLabel.drawTagForRef(db, appId, { sitewireDrawId: f.sitewire_draw_id }),
+    body: `A loan officer recorded that the borrower disputes ${count} item(s) on this draw (${note.slice(0, 160)}). A draw coordinator needs to review.`,
+    applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
+  res.json({ ok: true, disputed_lines: count, disputed_via: 'staff' });
 });
 
 // ---- POST /files/:id/draws/:drawId/funding-mode — how this draw is funded ----
