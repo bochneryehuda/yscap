@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../lib/api';
 import { moneyNum } from '../lib/money';
+import { askConfirm, askPrompt } from '../lib/dialog.js';
 
 /**
  * AMC appraisal ordering (AppraisalScope / CoreLogic Digital Gateway) — the staff desk
@@ -19,12 +20,12 @@ const STATUS_LABEL = {
   draft: 'Draft', placing: 'Placing…', ordered: 'Ordered', in_process: 'In process',
   assigned: 'Assigned to appraiser', inspected: 'Inspected', in_review: 'In review',
   product_available: 'Report ready', completed: 'Completed', on_hold: 'On hold',
-  cancelled: 'Cancelled', rejected: 'Rejected', error: 'Needs attention',
+  cancel_requested: 'Cancelling…', cancelled: 'Cancelled', rejected: 'Rejected', error: 'Needs attention',
 };
 function statusColor(s) {
   if (s === 'completed' || s === 'product_available') return '#1E7B4F';
   if (s === 'error' || s === 'rejected' || s === 'cancelled') return '#B4453B';
-  if (s === 'on_hold') return '#9A7A1E';
+  if (s === 'on_hold' || s === 'cancel_requested') return '#9A7A1E';
   return TEAL;
 }
 function money(n) { return n == null ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'); }
@@ -144,6 +145,7 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound, formValue, onP
   const loan = spec.loan || {};
   const forms = preview.forms || [];
   const notifyEmails = preview.notifyEmails || [];
+  const assumptions = preview.assumptions || [];
   const code = String(formValue || spec.productCode || '');
   const chosenName = preview.chosenFormName || (forms.find((f) => String(f.id) === code) || {}).name || null;
   return (
@@ -189,6 +191,20 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound, formValue, onP
       {notifyEmails.length ? (
         <div style={{ marginTop: 10, fontSize: 12, color: MUTED }}>
           Update emails from the appraiser will go to: <span style={{ color: INK }}>{notifyEmails.join(', ')}</span>
+        </div>
+      ) : null}
+
+      {/* What PILOT auto-filled that staff should eyeball before ordering (defaults /
+          rule-picked form / derived mappings) — the NAN mirror of the Class assumptions. */}
+      {assumptions.length ? (
+        <div style={{ marginTop: 10, border: `1px solid ${LINE}`, borderRadius: 8, padding: '8px 10px', background: '#FBF9F4' }}>
+          <div style={{ fontSize: 11, color: MUTED, textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 2 }}>What PILOT filled in for you</div>
+          {assumptions.map((a) => (
+            <div key={a.field} style={{ fontSize: 13, color: INK, marginTop: 4 }}>
+              <span style={{ fontWeight: 600 }}>{a.label}:</span> {a.value}
+              {a.why ? <span style={{ color: MUTED }}> — {a.why}</span> : null}
+            </div>
+          ))}
         </div>
       ) : null}
 
@@ -238,17 +254,57 @@ function OrderError({ order }) {
 
 function OrderDetail({ appId, orderId, order, onChange }) {
   const [tab, setTab] = useState('messages');
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const [cancelErr, setCancelErr] = useState('');
+  // Cancellable = it reached the AMC and isn't already done/cancelling. Key on the
+  // ServiceProviderOrderNumber ONLY, matching the backend's not_placed guard (a cancel
+  // needs the sp number for the envelope AND the poll confirmation) — so the button never
+  // shows on an order the backend would refuse with "never placed".
+  const canCancel = !!(order && order.sp_order_number
+    && order.status !== 'cancelled' && order.status !== 'completed' && order.status !== 'cancel_requested');
+
+  const doCancel = async () => {
+    setCancelErr('');
+    const reason = await askPrompt('Why are you cancelling this appraisal order? This reason is sent to the AMC.', {
+      title: 'Cancel appraisal order', confirmLabel: 'Continue', multiline: true,
+    });
+    if (reason == null) return;                                   // backed out
+    if (!String(reason).trim()) { setCancelErr('Add a short reason for the cancellation.'); return; }
+    const ok = await askConfirm(`Ask the AMC to cancel this order?\n\nReason: ${reason.trim()}`, {
+      title: 'Cancel appraisal order', confirmLabel: 'Cancel the order', cancelLabel: 'Keep it',
+    });
+    if (!ok) return;
+    setCancelBusy(true);
+    try {
+      const out = await api.amcCancelOrder(orderId, reason.trim());
+      if (!out || !out.ok) setCancelErr((out && out.message) || 'Could not cancel the order.');
+      else await onChange();
+    } catch (e) { setCancelErr((e && e.message) || 'Could not cancel the order.'); }
+    setCancelBusy(false);
+  };
+
   return (
     <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 12, marginBottom: 14, background: '#fff' }}>
       {order && order.status === 'error' ? <OrderError order={order} /> : null}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
+      {order && order.status === 'cancel_requested' ? (
+        <div style={{ border: '1px solid #E4D3A8', background: '#FBF6E9', borderRadius: 10, padding: 10, marginBottom: 12, color: '#7A5E17', fontSize: 13 }}>
+          <strong>Cancellation requested.</strong>{order.cancel_reason ? ` ${order.cancel_reason}` : ''} Waiting for the AMC to confirm.
+        </div>
+      ) : null}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         {[['messages', 'Messages'], ['revisions', 'Revisions & disputes'], ['documents', 'Documents']].map(([k, lbl]) => (
           <button key={k} onClick={() => setTab(k)}
             style={{ border: `1px solid ${tab === k ? TEAL : LINE}`, background: tab === k ? '#EAF3F3' : '#fff', color: INK, borderRadius: 8, padding: '5px 10px', fontWeight: 550, cursor: 'pointer' }}>
             {lbl}
           </button>
         ))}
+        {canCancel ? (
+          <button className="btn ghost" disabled={cancelBusy} onClick={doCancel} style={{ marginLeft: 'auto', color: '#B4453B' }}>
+            {cancelBusy ? 'Cancelling…' : 'Cancel order'}
+          </button>
+        ) : null}
       </div>
+      {cancelErr ? <div style={{ color: '#B4453B', fontSize: 13, marginBottom: 8 }}>{cancelErr}</div> : null}
       {tab === 'messages' ? <Messages orderId={orderId} /> : null}
       {tab === 'revisions' ? <Revisions appId={appId} orderId={orderId} /> : null}
       {tab === 'documents' ? <Documents appId={appId} orderId={orderId} onChange={onChange} /> : null}

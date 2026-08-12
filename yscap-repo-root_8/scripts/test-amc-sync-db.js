@@ -76,6 +76,24 @@ const nackResp = {
     out = await sync.applyStatusResponse(c, order, statusResp('1990', 'Vendor-ProductAvailable', 'ready'));
     ok(out.status === 'product_available', 'status flips to product_available on 1990');
 
+    // ---- a cancel we asked for HOLDS until the vendor confirms it (1051) ----
+    // Put the order into the 'cancel_requested' holding state (as requestCancel does).
+    await c.query(`UPDATE amc_orders SET status='cancel_requested' WHERE id=$1`, [order.id]);
+    order = (await c.query(`SELECT * FROM amc_orders WHERE id=$1`, [order.id])).rows[0];
+    // The order is still live at the AMC, so the next poll returns its CURRENT vendor
+    // status — that must NOT downgrade the marker ("asking is not agreeing").
+    out = await sync.applyStatusResponse(c, order, statusResp('1102', 'InProcess', 'still working'));
+    ok(out.status === 'cancel_requested' && out.changed === false, 'a live status does not clobber cancel_requested');
+    order = (await c.query(`SELECT * FROM amc_orders WHERE id=$1`, [order.id])).rows[0];
+    ok(order.status === 'cancel_requested', 'the order stays cancel_requested after a live-status poll');
+    ok(order.status_name === 'InProcess', 'the latest vendor status detail is still recorded while holding');
+    // The vendor CONFIRMS the cancellation (Cancellation / 1051) → it flips to cancelled.
+    out = await sync.applyStatusResponse(c, order, statusResp('1051', 'Cancellation', 'order cancelled'));
+    ok(out.status === 'cancelled', 'a 1051 Cancellation confirmation releases cancel_requested → cancelled');
+    // restore a live status for the document-ingest section below
+    await c.query(`UPDATE amc_orders SET status='product_available' WHERE id=$1`, [order.id]);
+    order = (await c.query(`SELECT * FROM amc_orders WHERE id=$1`, [order.id])).rows[0];
+
     // ---- ingestDocuments with an injected transport + importer ----
     const docsResp = { message: { deals: [{ embeddedFiles: [
       { documentId: 'D1', documentType: 'Appraisal Document', objectName: 'appraisal.xml', objectURL: 'https://amc/getdoc/D1', isAdditionalDocument: '0' },

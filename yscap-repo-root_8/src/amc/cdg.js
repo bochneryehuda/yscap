@@ -248,6 +248,24 @@ function buildAddComment({ apiKey, subdomain, spOrderNumber, clientOrderNumber, 
     },
   };
 }
+// ---- cancel an order -------------------------------------------------------
+// AppraisalScope initiates a cancellation with a requestActionType action carrying the
+// reason as a comment (the AddComment shape). The EXACT action name is NOT confirmed
+// from the repo/docs, so it is env-overridable (AMC_CANCEL_ACTION, default 'CancelOrder')
+// and MUST be verified against the live tenant before enabling outbound — the same
+// dry-run-first posture the flood-order contract carries. Asking is not agreeing: the
+// order only moves to 'cancelled' when the vendor's own status callback returns
+// Cancellation (1051), which mapStatusToLifecycle already handles.
+function buildCancelOrder({ apiKey, subdomain, spOrderNumber, clientOrderNumber, text, action }) {
+  return {
+    message: {
+      clientSystem: clientSystem({ apiKey, clientOrderNumber }),
+      products: { requestCommentText: text },
+      serviceProviderSystem: serviceProviderSystem({ subdomain, spOrderNumber }),
+      requestActionType: action || process.env.AMC_CANCEL_ACTION || 'CancelOrder',
+    },
+  };
+}
 function buildGetComments(ctx) { return orderLookup('GetComments', ctx); }
 function parseComments(resp) {
   const products = resp && resp.message && resp.message.products;
@@ -414,7 +432,7 @@ module.exports = {
   buildDoLogin, parseDoLogin,
   buildLookup, parseLookup,
   buildCreateAppraisal, parseAck,
-  buildAddComment, buildGetComments, parseComments,
+  buildAddComment, buildCancelOrder, buildGetComments, parseComments,
   buildAddRevision, parseRevisionAck, buildGetRevisions, parseRevisions,
   buildUploadDocuments, buildRetrieveDocuments, parseDocuments,
   buildGetStatus, buildGetDetail, parseStatus,

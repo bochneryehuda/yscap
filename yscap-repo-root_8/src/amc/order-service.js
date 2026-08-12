@@ -147,7 +147,11 @@ async function loadContext(db, appId) {
       salesContractAmount: isPurchase && a.purchase_price != null ? Number(a.purchase_price) : null,
     },
     borrowers,
-    parties: { bestContact: 'Borrower' },
+    // Leave bestContact UNSET here: buildOrderSpec defaults it to 'Borrower' (so the sent
+    // order is unchanged), and leaving it off the context lets orderAssumptions surface it
+    // as an auto-filled default the desk should eyeball — pre-filling it here would hide
+    // that auto-fill from the "What PILOT filled in for you" list on every real preview.
+    parties: {},
     // The appraisal-fee card, so the order desk shows whether payment is on file and
     // the same card fills the appraisal_card condition (bidirectional — owner-directed).
     card: await cardStatus(db, appId),
@@ -275,6 +279,9 @@ async function buildPreview(db, appId, opts = {}) {
     chosenFormName: formNameFor(forms, spec.productCode, chosen),   // the full name to SHOW
     spec,
     missing,
+    // What PILOT auto-filled (a default or a rule/mapping) that staff should eyeball
+    // before the order goes out — the NAN mirror of the Class desk's assumptions.
+    assumptions: orderBuild.orderAssumptions(ctx, chosen, opts.overrides || {}, spec),
     canPlace: missing.length === 0,
     forms,            // the form catalog [{id,name}], for the staff override dropdown
     notifyEmails: ctx.notifyEmails,   // who NAN will email order updates to
@@ -502,7 +509,8 @@ async function listOrders(db, appId) {
     `SELECT id, request_action, parent_order_id, client_order_number, cdg_order_number,
             sp_order_number, appraisal_file_number, product_code, form_description,
             status, status_code, status_name, status_description, rush, need_by_date,
-            dryrun, last_error, last_status_response, created_at, ordered_at, completed_at, last_polled_at, updated_at
+            dryrun, last_error, last_status_response, cancel_reason, cancel_requested_at,
+            cancel_requested_by, created_at, ordered_at, completed_at, last_polled_at, updated_at
        FROM amc_orders WHERE application_id = $1 ORDER BY created_at DESC`, [appId]);
   return r.rows;
 }

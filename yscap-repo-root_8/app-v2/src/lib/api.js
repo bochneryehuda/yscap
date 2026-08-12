@@ -595,6 +595,7 @@ export const api = {
   amcPlaceOrder:    (appId, body) => req('POST', `/api/amc/files/${appId}/order`, body),
   amcSaveCard:      (appId, body) => req('POST', `/api/amc/files/${appId}/card`, body),
   amcOrder:         (orderId) => req('GET', `/api/amc/orders/${orderId}`),
+  amcCancelOrder:   (orderId, reason) => req('POST', `/api/amc/orders/${orderId}/cancel`, { reason }),
   amcComments:      (orderId) => req('GET', `/api/amc/orders/${orderId}/comments`),
   amcPostComment:   (orderId, body) => req('POST', `/api/amc/orders/${orderId}/comments`, { body }),
   amcReadComment:   (orderId, commentId) => req('POST', `/api/amc/orders/${orderId}/comments/${commentId}/read`),

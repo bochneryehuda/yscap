@@ -84,6 +84,40 @@ async function main() {
   ok(pv.missing.some((m) => m.field === 'productId'), 'and the missing product is named');
   ok(byPath.productId.state === 'missing', 'the product row is flagged missing on the screen');
 
+  // --- product AUTO-PICK from class_form_map (the NAN parity gap) --------------
+  // Seed ONE rule that matches this fix&flip / SFR deal and the product is chosen for
+  // the desk automatically; a staff override still wins; removing the rule restores the
+  // ask-a-human default. The map ships EMPTY, so this proves the mechanism WITHOUT
+  // changing the inert base behaviour every other assertion in this file relies on.
+  // priority 20 keeps the row outside uq_class_form_map_default, and note=<tag> makes the
+  // seed uniquely this run's so a concurrent run can never delete it out from under us.
+  const clsEnv = require('../src/config').class.environment;
+  const seedTag = `t-${tag}`;
+  await db.query(
+    `INSERT INTO class_form_map (loan_type, property_key, product_id, product_name, priority, environment, note)
+     VALUES ('fix_and_flip','sfr','56634','1004 - SFR - Class', 20, $1, $2)`, [clsEnv, seedTag]);
+
+  const pvAuto = await orderService.buildPreview(db, appId);
+  ok(pvAuto.chosenProduct && pvAuto.chosenProduct.productId === '56634',
+     'a class_form_map rule auto-picks the product for the deal (fix&flip SFR -> 56634)');
+  ok(pvAuto.chosenProduct.productName === '1004 - SFR - Class', 'and carries the product name for the screen');
+  ok(String(pvAuto.body.productId) === '56634', 'the auto-picked product rides the order body');
+  ok(pvAuto.canPlace === true, 'so a fully-addressed file is now placeable with no human pick');
+  const pAuto = Object.fromEntries(pvAuto.fields.map((f) => [f.path, f]));
+  ok(pAuto.productId && pAuto.productId.state !== 'missing', 'and the product row is no longer flagged missing');
+
+  // A staff override still WINS over the auto-pick.
+  const pvAutoOv = await orderService.buildPreview(db, appId, { overrides: { productId: 999 } });
+  ok(String(pvAutoOv.body.productId) === '999', 'a staff-chosen product still overrides the auto-pick');
+  ok(pvAutoOv.overridden.includes('productId'), 'and the override is recorded as a human choice');
+
+  // Remove the rule — the mechanism is INERT again, exactly as it ships.
+  await db.query('DELETE FROM class_form_map WHERE note=$1', [seedTag]);
+  const pvNone = await orderService.buildPreview(db, appId);
+  ok(pvNone.chosenProduct === null, 'with the map empty again, nothing is auto-picked');
+  ok(pvNone.canPlace === false && pvNone.missing.some((m) => m.field === 'productId'),
+     'and the desk asks a human to pick, exactly as before the map was seeded');
+
   // --- an override rescues it and is recorded ----------------------------
   const pv2 = await orderService.buildPreview(db, appId, { overrides: { productId: 42 } });
   ok(pv2.canPlace === true, 'choosing a product makes it placeable');
@@ -256,6 +290,7 @@ async function main() {
 
   // --- cleanup ------------------------------------------------------------
   server.close();
+  await db.query('DELETE FROM class_form_map WHERE note=$1', [seedTag]);
   await db.query('DELETE FROM applications WHERE id=$1', [appId]);
   await db.query('DELETE FROM borrowers WHERE id = ANY($1::uuid[])', [[borrowerId, cob]]);
   await db.query('DELETE FROM staff_users WHERE id = ANY($1::uuid[])', [[officer, outsider, processor]]);
