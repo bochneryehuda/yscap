@@ -274,6 +274,29 @@ function dealShapeFor(ctx) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Learned v1 occupancy — the value Class actually accepted for a classification.
+//
+// v1 `occupancy` binds to an undocumented enum (see order-build), so the first order
+// of a classification cascades through the candidate list until Class takes one. That
+// winner is remembered HERE, in process, keyed by environment + version + classification,
+// so every later order of the same shape starts on the accepted value and cascades no
+// further. It is deliberately in-process only: a restart simply re-learns on the next
+// order (a few free model-binding 400s), so there is no table to migrate or go stale,
+// and nothing durable to be wrong.
+// ---------------------------------------------------------------------------
+const LEARNED_OCCUPANCY = new Map();
+const occKey = (apiVersion, oKey) =>
+  `${(cfg.class && cfg.class.environment) || 'production'}:${apiVersion}:${oKey}`;
+function rememberOccupancy(apiVersion, oKey, value) {
+  if (!apiVersion || !oKey || !value) return;
+  LEARNED_OCCUPANCY.set(occKey(apiVersion, oKey), String(value));
+}
+function learnedOccupancy(apiVersion, oKey) {
+  if (!apiVersion || !oKey) return null;
+  return LEARNED_OCCUPANCY.get(occKey(apiVersion, oKey)) || null;
+}
+
 async function buildPreview(db, appId, opts = {}) {
   const ctx = await loadContext(db, appId);
   if (!ctx) return null;
@@ -289,12 +312,29 @@ async function buildPreview(db, appId, opts = {}) {
   // BUILDER resolves it (an override wins), and the answer it reports is what the
   // screen shows and what the send posts to — never re-derived here, or the screen
   // could describe one version while the order goes out on the other.
-  const cfg = client.configured();
-  const built = orderBuild.buildOrder(ctx, opts.overrides || {}, { version: opts.version || cfg.apiVersion });
+  const cfgd = client.configured();
+  const built = orderBuild.buildOrder(ctx, opts.overrides || {}, { version: opts.version || cfgd.apiVersion });
+
+  // If this environment already learned which occupancy value Class accepts for this
+  // classification, start the order on it (and put it at the head of the cascade) so a
+  // proven file goes out clean on the first try. A learned value the builder did not
+  // already offer is added; the builder's order is otherwise preserved.
+  const learned = learnedOccupancy(built.apiVersion, built.occupancyKey);
+  let occupancyCandidates = Array.isArray(built.occupancyCandidates) ? built.occupancyCandidates.slice() : [];
+  if (learned) {
+    occupancyCandidates = [learned, ...occupancyCandidates.filter((v) => v !== learned)];
+    if (occupancyCandidates[0] != null) built.body.occupancy = occupancyCandidates[0];
+  }
+
   return {
     context: ctx,
     body: built.body,
     fields: fieldRows(built),
+    // The full occupancy cascade + the classification the accepted value is remembered
+    // under. The order route walks these on the specific occupancy binding error and,
+    // on success, remembers the winner via `rememberOccupancy`.
+    occupancyCandidates,
+    occupancyKey: built.occupancyKey,
     contacts: built.body.contacts || [],
     // Who Class will email as the appraisal moves (LO + processor + borrowers). The
     // notificationList is an array, so fieldRows() skips it — surface it here so the
@@ -315,13 +355,14 @@ async function buildPreview(db, appId, opts = {}) {
     path: built.path,
     options: orderBuild.screenOptions(built.apiVersion),
     versions: orderBuild.VERSIONS,
-    defaultVersion: cfg.apiVersion,
-    config: cfg,
+    defaultVersion: cfgd.apiVersion,
+    config: cfgd,
     hosts: client.hosts(),
   };
 }
 
 module.exports = {
   loadContext, buildPreview, fieldRows, loadProductRules, dealShapeFor,
-  _internals: { LABELS, addrParts },
+  rememberOccupancy, learnedOccupancy,
+  _internals: { LABELS, addrParts, LEARNED_OCCUPANCY, occKey },
 };
