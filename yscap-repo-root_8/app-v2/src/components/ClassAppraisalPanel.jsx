@@ -363,10 +363,12 @@ function OrderDetail({ appId, order, onChanged }) {
       // lost message — so the draft is cleared and the row shows why it did not go.
       setDraft('');
       setNotice(out && out.ok ? (out.dryrun ? 'Saved. Test mode, so nothing was sent.' : 'Sent to Class.') : '');
-      if (!(out && out.ok)) setErr((out && out.message) || 'We could not deliver that to Class. It is saved here and can be sent again.');
+      // A failed send is surfaced the SAME way a failed order is — the reason, the
+      // error code, and what Class actually reported — not a bare "request_failed".
+      if (!(out && out.ok)) setErr(parseOrderFailure(null, out));
       await load();
     } catch (e) {
-      setErr(e.message || 'We could not deliver that to Class. It is saved here.');
+      setErr(parseOrderFailure(e, null));
       await load();
     }
     setBusy(false);
@@ -389,7 +391,9 @@ function OrderDetail({ appId, order, onChanged }) {
 
   return (
     <div style={{ borderTop: `1px solid ${LINE}`, padding: 12, background: '#FBF9F4' }}>
-      {err ? <Banner tone="bad">{err}</Banner> : null}
+      {/* A send failure (an object from parseOrderFailure) renders the SAME rich box a
+          failed order does; a plain-string load/read error renders as a plain line. */}
+      <OrderFailure info={err} vendor="Class Valuation" action="send that message" />
       {notice ? <Banner tone="good">{notice}</Banner> : null}
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -504,11 +508,15 @@ function AskForm({ appId, order, kind, onDone }) {
       } else if (out && out.problems) {
         setProblems(out.problems);
       } else {
-        setErr((out && out.message) || 'We could not send that to Class. It is recorded here.');
+        setErr(parseOrderFailure(null, out));
       }
       if (onDone) await onDone();
     } catch (e) {
-      setErr(e.message || 'We could not send that to Class. It is recorded here.');
+      // A bad-reasons refusal (a 400) carries the specific problems to fix; anything
+      // else is a real send failure — shown the same rich way a failed order is, with
+      // Class's own reason, so the desk is never left with a bare "request_failed".
+      if (e && e.data && Array.isArray(e.data.problems)) setProblems(e.data.problems);
+      else setErr(parseOrderFailure(e, null));
       if (onDone) await onDone();
     }
     setBusy(false);
@@ -516,7 +524,7 @@ function AskForm({ appId, order, kind, onDone }) {
 
   return (
     <div>
-      {err ? <Banner tone="bad">{err}</Banner> : null}
+      <OrderFailure info={err} vendor="Class Valuation" action="send that request" />
       {done ? <Banner tone="good">{done}</Banner> : null}
       <div style={{ fontSize: 13, color: MUTED, marginBottom: 8 }}>
         {kind === 'rov'
