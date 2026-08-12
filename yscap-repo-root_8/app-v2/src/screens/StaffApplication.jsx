@@ -5729,7 +5729,7 @@ export default function StaffApplication() {
            openByDefault: the form IS this tab, so it renders expanded instead
            of hiding behind a second collapse. */
         <>
-          <EditFileDetails app={app} onSaved={load} openByDefault />
+          <EditFileDetails app={app} onSaved={load} openByDefault role={role} />
           {/* Read-only, under the editable deal fields: what the appraisal put on
               the file (db/403). Renders nothing until an appraisal is imported. */}
           <AppraisalFileFacts app={app} />

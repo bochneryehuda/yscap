@@ -229,6 +229,10 @@ function describe({ drawMode = null, fileMode = null, ruleMode = null, companyMo
     soldViaLabel: via ? SOLD_VIA_LABEL[via] : null,
     tableFunded: FC.soldAtTable({ tableFunded, channel }),
     paDate: paDateOf(paDate),
+    // Whether this deployment has the owner's Encompass PA-date field id configured — so a
+    // screen can offer a "re-pull the PA date" button only where a re-pull can actually read
+    // it. With no field id the read does nothing and the button would be a dead action.
+    paConfigured: !!fieldConfigured,
     warning: notSoldWarning({ mode: at.mode, sold }),
     // The levels are reported RAW (an unrecognised stored value reads as null, exactly as the
     // resolver treats it) so the settings screen can show what each level holds without having

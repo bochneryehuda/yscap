@@ -110,6 +110,11 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
   await mkContact('realtor', 'Best Realty', `${uniq}-realtor@best.test`);
   await mkContact('settlement_agent', 'Settle Co', `${uniq}-settle@settle.test`);
   await mkContact('attorney', 'Law LLP', `${uniq}-abe@law.test`);
+  // "any other contacts … should be added on the closing prep email" (owner-directed 2026-08-12):
+  // contractor + lender were SILENTLY DROPPED before (not in the shareable set) and must now reach
+  // the attorney, exactly like the realtor and settlement agent do.
+  await mkContact('contractor', 'BuildRight GC', `${uniq}-gc@build.test`);
+  await mkContact('lender', 'Prior Lender', `${uniq}-lender@prior.test`);
   await mkContact('insurance_agent', 'Shield Insurance', `${uniq}-ins@shield.test`);
   await mkContact('flood_insurance', 'Flood Co', `${uniq}-flood@flood.test`);
 
@@ -222,6 +227,9 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
     assert(s.html.includes(`${uniq}-title@acme.test`), 'the title company’s details ARE in the body');
     assert(s.html.includes(`${uniq}-settle@settle.test`), 'the settlement agent’s details are in the body');
     assert(s.html.includes(`${uniq}-realtor@best.test`), 'the realtor’s details are in the body');
+    assert(s.html.includes(`${uniq}-gc@build.test`),
+      'a CONTRACTOR contact reaches the closing attorney — every non-insurance contact does');
+    assert(s.html.includes(`${uniq}-lender@prior.test`), 'a LENDER contact reaches the closing attorney');
     assert(!s.html.includes(`${uniq}-ins@shield.test`) && !s.html.includes(`${uniq}-flood@flood.test`),
       'NEITHER insurance contact appears in the body');
     assert(s.html.includes('Seller counsel is on the contract.'), 'the sender’s note is in the email');

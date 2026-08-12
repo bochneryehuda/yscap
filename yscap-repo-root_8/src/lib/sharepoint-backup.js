@@ -106,6 +106,9 @@ function isRegenKind(k) { return k === 'track_record_html' || k === 'tpr_export'
 // sharepoint_backup_ref and stay in SharePoint until a human removes them there.
 const NEVER_MIRROR_REASON = {
   heter_iska_signed: 'never mirrored (owner policy: the Heter Iska is kept in-system + on DocuSign only)',
+  // A Heter Iska uploaded by hand onto the condition (not fed from DocuSign) — same
+  // owner policy as the executed copy: kept in-system + on DocuSign only, never mirrored.
+  heter_iska_manual: 'never mirrored (owner policy: the Heter Iska is kept in-system + on DocuSign only)',
   appraisal_photo: 'not mirrored — a thumbnail auto-extracted from the appraisal (the appraisal PDF itself IS mirrored)',
 };
 const DEFAULT_NEVER_MIRROR_REASON = 'not mirrored (owner policy: this document kind is kept in-system only)';

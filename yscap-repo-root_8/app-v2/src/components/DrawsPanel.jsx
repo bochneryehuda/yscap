@@ -2623,6 +2623,8 @@ function FileDrawSettings({ appId }) {
 function ReleasePartyCard({ appId, release, reload }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [paBusy, setPaBusy] = useState(false);
+  const [paMsg, setPaMsg] = useState('');
   if (!release) return null;
 
   async function setProjectMode(mode) {
@@ -2630,6 +2632,21 @@ function ReleasePartyCard({ appId, release, reload }) {
     try { await api.post(`/api/sitewire/files/${appId}/release-party`, { mode }); reload(); }
     catch (e) { setErr(e?.data?.error || 'Could not save that choice.'); }
     finally { setBusy(false); }
+  }
+
+  // Re-pull the owner's PA-date field from Encompass so PILOT recognizes a file that has since
+  // been sold (owner-directed 2026-08-12: "a refresh button over there to pull the PA date again
+  // to see if the file was sold … it should verify for itself that it was sold already"). This is
+  // a READ-ONLY Encompass pull — nothing is written to Encompass. On success the card reloads with
+  // the recomputed sold state.
+  async function refreshPaDate() {
+    setPaBusy(true); setPaMsg(''); setErr('');
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/refresh-pa-date`, {});
+      if (r && r.pulled) { setPaMsg('Re-read the purchase advice date from Encompass.'); reload(); }
+      else setErr(r && r.reason ? `Couldn’t read the PA date from Encompass: ${r.reason}` : 'Couldn’t reach Encompass to re-read the PA date — try again in a moment.');
+    } catch (e) { setErr(e?.data?.error || 'Could not refresh the PA date.'); }
+    finally { setPaBusy(false); }
   }
 
   const w = release.warning;
@@ -2646,13 +2663,27 @@ function ReleasePartyCard({ appId, release, reload }) {
         {/* TWO ways a loan is sold, and the label says WHICH — a table-funded loan was sold at the
             closing table and is never getting a purchase advice date, so "no PA date" on one of
             those is completely normal and must not read as a problem (owner-directed 2026-08-09). */}
-        <span className={`chip ${release.sold === 'sold' ? 'good' : ''}`}
-          title={release.soldVia === 'table_funding'
-            ? 'Funded on the Table Funding warehouse line — sold at the closing table, so no purchase advice date is expected'
-            : 'Read from the purchase advice date in Encompass'}>
-          {release.soldLabel}
-        </span>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+          <span className={`chip ${release.sold === 'sold' ? 'good' : ''}`}
+            title={release.soldVia === 'table_funding'
+              ? 'Funded on the Table Funding warehouse line — sold at the closing table, so no purchase advice date is expected'
+              : 'Read from the purchase advice date in Encompass'}>
+            {release.soldLabel}
+          </span>
+          {/* Re-read the PA date from Encompass to check whether the loan has since been sold.
+              Read-only; nothing is written to Encompass. Shown only where the PA-date field id is
+              configured — otherwise a re-pull can read nothing. */}
+          {release.paConfigured !== false && (
+            <button type="button" className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13 }}
+              disabled={paBusy}
+              title="Re-read the purchase advice date from Encompass to check whether this loan has been sold (read-only — nothing is written to Encompass)."
+              onClick={refreshPaDate}>
+              {paBusy ? 'Checking Encompass…' : '↻ Refresh PA date'}
+            </button>
+          )}
+        </div>
       </div>
+      {paMsg ? <div className="act-card-sub" style={{ color: 'var(--primary,#2F7F86)' }}>{paMsg}</div> : null}
 
       <div className="act-card-sub" style={{ marginTop: 8, color: '#4B585C' }}>{release.modeHelp}</div>
 

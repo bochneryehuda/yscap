@@ -55,6 +55,7 @@ const WIRED = [
   { match: /\/fees-owed\/\$\{[^}]+\}\/received/,            what: 'marking one of those fees received' },
   { match: /\/draw-settings`/,                              what: 'every knob on this file and which level decided it' },
   { match: /\/release-party`/,                              what: 'who releases the money on this project' },
+  { match: /\/refresh-pa-date`/,                             what: 're-reading the Encompass PA date to check if the file was sold' },
   { match: /\/investor-answer`/,                            what: "recording the investor's answer" },
   { match: /\/findings\/\$\{[^}]+\}\/review`/,              what: 'the inspection review stamp' },
   { match: /\/draws\/\$\{[^}]+\}\/attachments`/,            what: 'supporting documents on a draw (staff)' },

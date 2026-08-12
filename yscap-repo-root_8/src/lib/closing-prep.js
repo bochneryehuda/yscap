@@ -134,7 +134,7 @@ function applicableMissing(missing, data) {
 // was filed as an ENTITY DOCUMENT — attached to the email to the outside law firm,
 // and shipped in the investor TPR export. The mirrored SQL predicate in
 // `tpr-export.TPR_DOC_SELECT` reads the same three fields; keep the two in step.
-const FROZEN_KINDS = new Set(['heter_iska', 'heter_iska_signed', 'esign_certificate']);
+const FROZEN_KINDS = new Set(['heter_iska', 'heter_iska_signed', 'heter_iska_manual', 'esign_certificate']);
 const FROZEN_NAME_RE = /heter[\s_.\-]*iska|(?:^|[^a-z0-9])(?:iska|heter)(?:[^a-z0-9]|$)/i;
 function isFrozenOut(d) {
   if (FROZEN_KINDS.has(d.doc_kind)) return true;
@@ -479,8 +479,14 @@ async function buildAttachments(orderedDocs, { budget = null } = {}) {
 /* ──────────────────────────────── the file data ─────────────────────────────── */
 
 // Contact types whose details are SHARED with the attorney, in this order. Title is
-// first because it is the one the attorney needs to open their own chain.
-const SHARE_CONTACT_TYPES = ['title_company', 'settlement_agent', 'escrow', 'attorney', 'realtor'];
+// first because it is the one the attorney needs to open their own chain. This is
+// EVERY file contact type EXCEPT the two insurance ones (owner-directed 2026-08-12:
+// "any attorney, realtor, or any other contacts should be added on the closing prep
+// email so they can loop in the attorneys and the realtors" — insurance stays out).
+// Keep it in step with FILE_CONTACT_TYPES (routes/staff.js) minus the insurance pair;
+// a new contact type the borrower can record should reach the closing attorney too.
+const SHARE_CONTACT_TYPES = ['title_company', 'settlement_agent', 'escrow', 'attorney',
+  'realtor', 'contractor', 'appraiser', 'lender', 'other'];
 // NEVER shared, never a recipient — the attorney has no business with our insurance
 // contact. Both types, because every insurance gate in the app treats them as one.
 const NEVER_SHARE_CONTACT_TYPES = ['insurance_agent', 'flood_insurance'];
@@ -490,6 +496,10 @@ const CONTACT_LABEL = {
   escrow: 'Escrow',
   attorney: "Borrower's attorney",
   realtor: 'Realtor / agent',
+  contractor: 'Contractor',
+  appraiser: 'Appraiser',
+  lender: 'Lender',
+  // `other` falls back to the contact's own custom_type label (see getClosingPrepData).
 };
 
 function money(n) {

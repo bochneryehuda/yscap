@@ -290,6 +290,28 @@ function fakeStorage() {
     const certAfter = (await pool.query(`SELECT count(*)::int n FROM documents WHERE application_id=$1 AND doc_kind='esign_certificate'`, [app])).rows[0].n;
     eq(certAfter, 1, 'no duplicate certificate on re-drain');
 
+    // ---- the Heter Iska feeds its condition end to end (owner-reported 2026-08:
+    // a completed Iska "wasn't fed directly into the iska condition"). The send-time
+    // ensure (orchestrate.ensureIskaCondition) created rtl_cond_iska at send and bound
+    // the signed doc to it — before the fix nothing created the item and the binding
+    // was NULL, so handleCompletion skipped the feed. Complete the Iska envelope (sent
+    // above at a gate-passing moment) and assert the executed doc reaches the condition.
+    // (Placed after the term-sheet signed-doc counts so the 4th signed copy it adds
+    // never perturbs those.)
+    const iskaEnv = (await pool.query(
+      `SELECT id, envelope_id FROM esign_envelopes WHERE application_id=$1 AND purpose='heter_iska'`, [app])).rows[0];
+    const iskaBind = (await pool.query(
+      `SELECT checklist_item_id FROM esign_envelope_docs WHERE envelope_row_id=$1`, [iskaEnv.id])).rows[0];
+    ok(iskaBind && iskaBind.checklist_item_id, 'send-time ensure bound the Iska doc to a real rtl_cond_iska item (never a null binding)');
+    await pool.query(`INSERT INTO docusign_event_inbox (body_sha256,envelope_id,event_type) VALUES ('sha-iska',$1,'envelope-completed')`, [iskaEnv.envelope_id]);
+    await webhook.drainInbox({ db: pool, docusign, storage });
+    const iskaItem = (await pool.query(
+      `SELECT ci.status FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id WHERE ci.application_id=$1 AND t.code='rtl_cond_iska'`, [app])).rows[0];
+    eq(iskaItem.status, 'received', 'the completed Heter Iska FED rtl_cond_iska → received');
+    const iskaSignedDoc = (await pool.query(
+      `SELECT checklist_item_id FROM documents WHERE application_id=$1 AND doc_kind='heter_iska_signed' AND is_current LIMIT 1`, [app])).rows[0];
+    ok(iskaSignedDoc && iskaSignedDoc.checklist_item_id, 'the executed Heter Iska is attached to its condition');
+
     // ---- a PLAIN re-send after completion is a NO-OP (no duplicate envelope) --
     // Fixes the "click Send again and again → a pile of envelopes" bug: a plain send
     // never mints a duplicate for a terminal (completed/declined/voided/error) package;

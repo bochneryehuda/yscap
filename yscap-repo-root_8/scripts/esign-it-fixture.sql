@@ -95,12 +95,51 @@ CREATE TABLE product_registrations (
 
 CREATE TABLE checklist_templates (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  code text UNIQUE NOT NULL
+  code text UNIQUE NOT NULL,
+  -- Columns the Heter Iska ensure (orchestrate.ensureIskaCondition) copies from the
+  -- template onto a freshly-created rtl_cond_iska item. is_active defaults true so a
+  -- template seeded with only its code is ensurable (matches the real schema default).
+  label text,
+  borrower_label text,
+  audience text,
+  item_kind text,
+  role_scope text,
+  phase text,
+  hint text,
+  borrower_hint text,
+  is_gate boolean,
+  is_milestone boolean,
+  sort_order int,
+  tool_key text,
+  clickup_field_id text,
+  tpr_exclude boolean,
+  is_required boolean,
+  is_active boolean DEFAULT true
 );
 CREATE TABLE checklist_items (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   application_id uuid REFERENCES applications(id),
   template_id uuid REFERENCES checklist_templates(id),
+  -- Columns the Heter Iska ensure (orchestrate.ensureIskaCondition) writes when it
+  -- creates a fresh rtl_cond_iska item from its template.
+  scope text,
+  label text,
+  borrower_label text,
+  audience text,
+  item_kind text,
+  role_scope text,
+  phase text,
+  hint text,
+  borrower_hint text,
+  is_gate boolean,
+  is_milestone boolean,
+  sort_order int,
+  tool_key text,
+  clickup_field_id text,
+  tpr_exclude boolean,
+  created_by_kind text,
+  created_by_id uuid,
+  is_required boolean,
   status text NOT NULL DEFAULT 'open',
   signed_off_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),

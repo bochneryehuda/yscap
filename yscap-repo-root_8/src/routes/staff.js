@@ -350,9 +350,18 @@ router.get('/applications/export', async (req, res) => {
              reg.total_loan AS registered_loan, reg.status AS registration_status, reg.created_at AS registered_at,
              a.created_at, a.clickup_created_at, a.submitted_at, a.status_changed_at,
              a.expected_closing, a.actual_closing, a.updated_at,
-             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS total_items,
-             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
-                AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
+             -- Same exclusion as the on-screen pipeline % (below): the document-review gate
+             -- underwriting_review_cleared does not count, so the exported Checklist items /
+             -- Checklist done columns agree with the on-screen percentage.
+             (SELECT count(*)::int FROM checklist_items ci
+                LEFT JOIN checklist_templates t ON t.id = ci.template_id
+               WHERE ci.application_id=a.id
+                 AND COALESCE(t.code,'') <> 'underwriting_review_cleared') AS total_items,
+             (SELECT count(*)::int FROM checklist_items ci
+                LEFT JOIN checklist_templates t ON t.id = ci.template_id
+               WHERE ci.application_id=a.id
+                 AND COALESCE(t.code,'') <> 'underwriting_review_cleared'
+                 AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
              (SELECT count(*)::int FROM conditions c WHERE c.application_id=a.id AND c.status='open') AS open_conditions,
              a.clickup_pipeline_task_id, a.sync_state, a.clickup_last_synced_at
         FROM applications a
@@ -865,9 +874,21 @@ router.get('/applications', async (req, res) => {
                         a.clickup_pipeline_task_id,a.property_address,a.lender,
                         a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.processor_id,a.created_at,a.actual_closing,
                         b.first_name,b.last_name,b.email,
-                        (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS total_items,
-                        (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
-                           AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
+                        -- The pipeline % counts the file's checklist items, EXCLUDING the
+                        -- document-review gate underwriting_review_cleared (owner-directed
+                        -- 2026-08-12: the document finding section should not reduce the
+                        -- percentage of the file). Document findings feed that ONE condition,
+                        -- which sits open and dragged a CTC-ready file down to ~52%. Appraisal
+                        -- findings (appraisal_review_cleared) and every real condition still count.
+                        (SELECT count(*)::int FROM checklist_items ci
+                           LEFT JOIN checklist_templates t ON t.id = ci.template_id
+                          WHERE ci.application_id=a.id
+                            AND COALESCE(t.code,'') <> 'underwriting_review_cleared') AS total_items,
+                        (SELECT count(*)::int FROM checklist_items ci
+                           LEFT JOIN checklist_templates t ON t.id = ci.template_id
+                          WHERE ci.application_id=a.id
+                            AND COALESCE(t.code,'') <> 'underwriting_review_cleared'
+                            AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
                         (SELECT count(*)::int FROM ai_suggestions s
                            WHERE s.application_id=a.id AND s.severity='fatal'
                              AND s.status IN ('open','marked_important','escalated','asked_admin')
@@ -8002,6 +8023,7 @@ async function signOffGate(itemId, actor) {
   const isFraud = code === 'rtl_cond_fraud';
   const isAppraisalDocs = code === 'rtl_cond_appraisaldocs';   // two slots: XML + PDF
   const isCredit = code === 'rtl_cond_credit';                 // requires an IMPORTED credit report (not a bare PDF)
+  const isIska = code === 'rtl_cond_iska';                     // manual upload → super_admin only
   const isAppraisalReview = code === 'appraisal_review_cleared'; // CTC gate: no open fatal finding
   const isUnderwritingReview = code === 'underwriting_review_cleared'; // CTC gate: no open fatal document finding
   const isUspsAddress = code === 'usps_address_verification';
@@ -8130,8 +8152,35 @@ async function signOffGate(itemId, actor) {
     return null;
   }
 
+  // Heter Iska — fulfilled by an ACCEPTED document, but WHERE the document came from
+  // decides WHO may sign it off (owner-directed 2026-08):
+  //   • DocuSign-fed — the executed package the webhook auto-files (doc_kind
+  //     'heter_iska_signed' + source_type 'system') → any authorized signer.
+  //   • Manually uploaded — anything else attached to the condition by hand, which did
+  //     NOT come back through the DocuSign package → ONLY a super_admin may sign off.
+  // Fails SAFE: no accepted document → refuse; unknown/ambiguous provenance → treat as
+  // manual → require super_admin (never assume "DocuSign-fed"). A DocuSign-fed accepted
+  // copy present on the item lets any signer proceed even if a manual copy also sits there.
+  if (isIska) {
+    const docs = (await db.query(
+      `SELECT doc_kind, source_type FROM documents
+        WHERE checklist_item_id=$1 AND is_current AND ${docAccept.ACCEPTED_SQL('')}`, [itemId])).rows;
+    if (!docs.length) {
+      const any = await db.query(
+        `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current LIMIT 1`, [itemId]);
+      if (any.rows.length) return docAccept.ALL_REJECTED_MSG;
+      return 'Upload the executed Heter Iska (and accept it) before signing this off — a document-based condition cannot be completed with nothing uploaded.';
+    }
+    const docusignFed = docs.some((d) => d.doc_kind === 'heter_iska_signed' && d.source_type === 'system');
+    const isSuper = !!(actor && actor.kind === 'staff' && actor.role === 'super_admin');
+    if (!docusignFed && !isSuper) {
+      return 'This Heter Iska was uploaded manually — it did not come back from the signed DocuSign package. Only a super admin can sign off a manually-uploaded Heter Iska. Ask a super admin to sign it off, or send the Heter Iska through DocuSign so the executed copy feeds the condition automatically.';
+    }
+    return null;
+  }
+
   if (item.item_kind === 'document' && !item.tool_key && item.is_required !== false
-      && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud && !isAppraisalDocs && !isCredit) {
+      && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud && !isAppraisalDocs && !isCredit && !isIska) {
     // ACCEPTED, not merely "not rejected" (owner-directed 2026-08-03). The old
     // test was satisfied by a document nobody had ever opened, which is how a
     // condition got signed off on a previous policy's paperwork. The pending
@@ -12112,6 +12161,38 @@ router.get('/applications/:id/status-history', async (req, res) => {
 // file's Activity feed shows exactly what changed.
 router.patch('/applications/:id/details', async (req, res) => {
   const b = req.body || {};
+  // AS-IS / ARV super-admin OVERRIDE of the term-sheet-sent freeze (owner-directed
+  // 2026-08). When Save Changes is refused because the term sheet was already sent, the
+  // studio re-submits with {adminOverride:true, overrideReason} for an as-is/ARV-only
+  // edit. A super_admin may then update ONLY the as-is value + ARV when the change is
+  // terms-neutral (re-pricing keeps every borrower-visible figure identical, so the sent
+  // sheet still matches) — kept valid by re-asserting the pricing conditions the db/486
+  // trigger would reopen. Refused otherwise. See src/lib/asis-arv-override.js.
+  if (b.adminOverride === true) {
+    const asisArv = require('../lib/asis-arv-override');
+    const ov = await asisArv.evaluate({ appId: req.params.id, body: b, actor: req.actor });
+    if (ov.status === 'refused') return res.status(ov.code).json({ error: ov.message, locked: ov.code === 409 || undefined });
+    if (ov.status === 'apply') {
+      try {
+        const result = await asisArv.apply({ appId: req.params.id, changes: ov.changes });
+        await audit(req, 'asis_arv_override', 'application', req.params.id,
+          { changes: ov.changes, reason: ov.reason, changed: result.changed });
+        // Let the Condition Center re-check its RULE-driven conditions (it never touches
+        // the pricing / signed-term-sheet conditions the re-assert just preserved).
+        try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'asis_arv_override' }); }
+        catch (_) { /* best-effort */ }
+        return res.json({ ok: true, override: true, changed: result.changed });
+      } catch (e) {
+        if (e && e.notFound) return res.status(404).json({ error: 'application not found' });
+        console.warn('[asis-arv-override] apply failed:', db.describeError ? db.describeError(e) : e.message);
+        return res.status(500).json({ error: 'server error' });
+      }
+    }
+    // status === 'not_needed' — the file is not term-sheet-frozen, so the ordinary save
+    // works (and correctly reopens Products & Pricing). Drop the override control keys so
+    // the normal path below treats it as a plain as-is/ARV edit.
+    delete b.adminOverride; delete b.overrideReason;
+  }
   // #84 — a clear-to-close / funded file's loan structure is FROZEN for everyone,
   // super_admin included. This economics editor is one of the write paths that
   // used to skip the freeze (it could rewrite a funded loan's numbers). A
@@ -13992,6 +14073,44 @@ router.post('/applications/:id/closing/reconcile-refresh', async (req, res) => {
   } catch (e) { console.warn('[closing] reconcile refresh:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
+// Re-pull this file's ClickUp card so the funded-date reconciliation reads a fresh
+// ClickUp funded date (owner-directed 2026-08-12: "the same way we have a refresh in
+// Encompass button, we should also have a refresh from ClickUp button to refresh that
+// data from ClickUp"). The reconciliation's "ClickUp" column is `applications.actual_closing`,
+// synced inbound from ClickUp — so a value the team just set on the card is invisible here
+// until the card is re-ingested.
+//
+// NOTE this is NOT a read-only refresh (unlike the sibling Encompass reconcile-refresh, which
+// only re-pulls a read snapshot). `sync.ingestOne` runs the FULL inbound ingest — the SAME code
+// path a ClickUp webhook and every reconcile pass already run on this task — so it is
+// write-capable: it fills/updates the file's mapped columns (a non-null ClickUp value overwrites
+// through COALESCE; a null one keeps ours), heals borrower/entity fields, and can even fire an
+// inbound status-change notification. It grants NO new capability, though — every one of those
+// effects already fires automatically on each sync; this button only forces the timing. It stays
+// guarded exactly as the automatic sync is (COALESCE fill + the PII-overwrite shield → sync-review
+// queue for conflicts + the DOB gate + the outbound volume breaker), so nothing is silently
+// clobbered. The panel reloads the workspace afterward, which recomputes the reconciliation.
+// Friendly reason on failure (no linked card, ClickUp unreachable) so the closer knows why nothing
+// moved. File-scoped by the /applications/:id middleware; open to anyone on the file — the same
+// audience as the Encompass reconcile-refresh button it sits beside (deliberately, so the two
+// buttons behave alike), which is safe because the ingest can do nothing the automatic sync can't.
+router.post('/applications/:id/closing/reclickup-refresh', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const r = await db.query(`SELECT clickup_pipeline_task_id t FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId]);
+    const taskId = r.rows[0] && r.rows[0].t;
+    if (!taskId) {
+      await audit(req, 'closing_reclickup_refresh', 'application', appId, { pulled: false, reason: 'no linked ClickUp task' });
+      return res.json({ pulled: false, reason: 'This file is not linked to a ClickUp card.' });
+    }
+    let pulled = true, reason = null;
+    try { await require('../sync/clickup-sync').ingestOne(taskId); }
+    catch (e) { pulled = false; reason = (e && e.message) ? e.message.slice(0, 200) : 'ClickUp is temporarily unavailable'; }
+    await audit(req, 'closing_reclickup_refresh', 'application', appId, { pulled, reason });
+    res.json({ pulled, reason });
+  } catch (e) { console.warn('[closing] reclickup refresh:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
 // Ensure the singleton closing row exists (so a PATCH before submit still works).
 async function ensureClosingRow(client, appId, actorId) {
   await client.query(
@@ -15683,13 +15802,15 @@ router.post('/applications/:id/documents', async (req, res) => {
   let itemLabel = '';
   let itemAudience = null;
   let itemTrackRecordId = null;
+  let itemCode = null;
   if (b.checklistItemId) {
     // An LLC slot item has application_id NULL — look it up by llc_id instead.
     const it = llcId
-      ? await db.query(`SELECT id, COALESCE(borrower_label,label) AS label, audience, track_record_id FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, llcId])
-      : await db.query(`SELECT id, COALESCE(borrower_label,label) AS label, audience, track_record_id FROM checklist_items WHERE id=$1 AND application_id=$2`, [b.checklistItemId, req.params.id]);
+      ? await db.query(`SELECT id, COALESCE(borrower_label,label) AS label, audience, track_record_id, (SELECT code FROM checklist_templates ct WHERE ct.id=checklist_items.template_id) AS template_code FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, llcId])
+      : await db.query(`SELECT id, COALESCE(borrower_label,label) AS label, audience, track_record_id, (SELECT code FROM checklist_templates ct WHERE ct.id=checklist_items.template_id) AS template_code FROM checklist_items WHERE id=$1 AND application_id=$2`, [b.checklistItemId, req.params.id]);
     if (!it.rows[0]) return res.status(404).json({ error: 'checklist item not found on this file' });
     itemLabel = it.rows[0].label;
+    itemCode = it.rows[0].template_code || null;
     itemAudience = it.rows[0].audience;
     // A condition raised FOR one track-record line item: the upload belongs to
     // that line too (same contract as the borrower path).
@@ -15709,7 +15830,14 @@ router.post('/applications/:id/documents', async (req, res) => {
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
-  const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
+  // A manual upload onto the Heter Iska condition gets an explicit doc_kind so it is
+  // provenance-distinguishable from the DocuSign-fed executed copy (heter_iska_signed +
+  // source_type system) AND is kept in-system only — heter_iska_manual is on the
+  // SharePoint never-mirror list, the TPR-export denylist and closing-prep's FROZEN_KINDS,
+  // exactly like heter_iska_signed (owner policy: the Heter Iska never leaves the building).
+  // A client can never forge heter_iska_signed here (only term_sheet is client-settable).
+  const docKind = b.docKind === 'term_sheet' ? 'term_sheet'
+    : (itemCode === 'rtl_cond_iska' ? 'heter_iska_manual' : null);
   // WHICH STAMP these bytes print (owner-directed 2026-08-02, db/404). The
   // INITIAL/FINAL wording is drawn into the PDF at generation time, so the
   // generator is the only thing that knows — it reports what it printed and we

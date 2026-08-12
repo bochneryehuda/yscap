@@ -399,7 +399,7 @@ const TPR_DOC_SELECT_FOR = (reviewTest) => `
      --       the filename is denied — so a loosely-attached copy can't slip in.
      -- DocuSign completion certificates are excluded too: one belongs to the
      -- Iska envelope and would reveal it. See docs/DOCUSIGN…-SPEC Addendum A.9.
-     AND COALESCE(d.doc_kind,'') NOT IN ('heter_iska','heter_iska_signed','esign_certificate')
+     AND COALESCE(d.doc_kind,'') NOT IN ('heter_iska','heter_iska_signed','heter_iska_manual','esign_certificate')
      -- The name test is NOT a plain word-boundary match (audited leak, 2026-07-28):
      -- a word boundary needs a non-word character on BOTH sides, so a smashed
      -- filename -- HeterIska_Signed.pdf, HETERISKA.PDF -- matched nothing and a
