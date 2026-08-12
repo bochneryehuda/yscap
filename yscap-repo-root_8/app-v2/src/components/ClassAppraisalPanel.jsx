@@ -797,15 +797,30 @@ function Contacts({ contacts }) {
   );
 }
 
+// A loud, dark-on-light callout so a greyed button always explains itself in one place.
+function WhyBox({ title, children }) {
+  return (
+    <div style={{ marginTop: 10, border: `1px solid ${GOLD}`, background: '#FBF6EC', borderRadius: 8, padding: '9px 11px' }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: INK }}>{title}</div>
+      <div style={{ fontSize: 12.5, color: MUTED, marginTop: 3, lineHeight: 1.45 }}>{children}</div>
+    </div>
+  );
+}
+
 function PlaceOrder({ cfg, canPlace, busy, onPlace, uad, derivedCount }) {
   const on = !!(cfg && cfg.enabled);
   const outbound = !!(cfg && cfg.outbound);
   const dry = !!(cfg && cfg.dryrun);
-  // Why the button is unavailable, in the order a person would fix it.
-  const blocked = !canPlace ? 'Fill in what’s still needed above first.'
-    : !on ? 'The Class Valuation connection is switched off.'
-    : !outbound ? 'Sending orders to Class is switched off.'
-    : '';
+  // Why the button won't send — in the order a person would fix it. Each names the
+  // EXACT switch to flip, because the three Class switches (reading / test mode /
+  // write) are independent and the reading one is unfortunately labelled "Order…".
+  const block = !canPlace
+    ? { title: 'Fill in what’s still needed above first.', help: 'The list just above shows exactly what Class still needs before this can go out.' }
+    : !on
+    ? { title: 'Class ordering is switched off.', help: 'On the API Health page, turn ON both “Order appraisals from Class Valuation (reading)” and “Place appraisal orders with Class Valuation (write)”.' }
+    : !outbound
+    ? { title: 'This is ready — but sending to Class is still switched off.', help: 'To actually send it, turn ON “Place appraisal orders with Class Valuation (write)” on the API Health page. The reading switch on its own does NOT send orders.' }
+    : null;
   return (
     <div style={{ marginTop: 14, borderTop: `1px solid ${LINE}`, paddingTop: 12 }}>
       {derivedCount ? (
@@ -815,16 +830,21 @@ function PlaceOrder({ cfg, canPlace, busy, onPlace, uad, derivedCount }) {
           {derivedCount === 1 ? ' it' : ' them'} on the spot.
         </div>
       ) : null}
-      <button className="btn primary" disabled={busy || !!blocked} onClick={onPlace} title={blocked}>
+      <button className="btn primary" disabled={busy || !!block} onClick={onPlace} title={block ? block.title : ''}>
         {busy ? 'Working…' : dry ? 'Build the order (test mode — nothing is sent)' : 'Order this appraisal from Class'}
       </button>
       <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>Goes out on their {uad} form.</div>
-      {blocked ? <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>{blocked}</div> : null}
-      {!blocked && !dry ? (
+      {block ? (
+        <WhyBox title={block.title}>{block.help}</WhyBox>
+      ) : dry ? (
+        <WhyBox title="Test mode is on — this button will NOT send anything.">
+          To place the order for real, turn OFF “Class Valuation orders — TEST MODE” on the API Health page.
+        </WhyBox>
+      ) : (
         <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>
           This costs money and sends an appraiser to the property.
         </div>
-      ) : null}
+      )}
     </div>
   );
 }
