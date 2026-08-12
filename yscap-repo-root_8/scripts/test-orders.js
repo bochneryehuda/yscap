@@ -156,6 +156,17 @@ const titleFollow = orders.buildOrderEmail('title', { ...base, purchasePrice: 20
 assert.ok(!titleFollow.html.includes('$200,000'), 'a title follow-up is unaffected');
 ok('the insurance follow-up carries the same details; title is untouched');
 
+/* The follow-up now restates the FULL order (owner-directed 2026-08-12): the coverage ask and the
+   mortgagee clause ride along too, so the agent has everything to bind without the first email. */
+assert.ok(/Builders Risk/i.test(insFollow.html) && /Coverage required/i.test(insFollow.html),
+  'the insurance follow-up carries the coverage requirements');
+assert.ok(/Mortgagee Clause/i.test(insFollow.html) && insFollow.html.includes('5 New Montrose'),
+  'the insurance follow-up carries the mortgagee clause');
+assert.ok(/Mortgagee Clause/i.test(titleFollow.html) && titleFollow.html.includes('Loan Number'),
+  'the title follow-up carries the mortgagee clause too');
+assert.ok(!/Builders Risk/i.test(titleFollow.html), 'a title follow-up still has no coverage section');
+ok('the follow-up restates the coverage ask (insurance) and the mortgagee clause (both kinds)');
+
 /* ---- #18: RCN note buyer swaps the mortgagee clause (order email only) ---- */
 // No note buyer (or any non-RCN buyer) → the standard YS Capital clause.
 assert.deepStrictEqual(orders.mortgageeClauseFor(null), orders.MORTGAGEE_CLAUSE, 'no note buyer → standard clause');
