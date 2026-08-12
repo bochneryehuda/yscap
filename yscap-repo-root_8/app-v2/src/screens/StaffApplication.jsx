@@ -3459,6 +3459,12 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
       case 'review':    return it.status === 'received' && !it.signed_off_at;                              // uploaded/accepted, not signed off
       case 'attention': return it.status === 'issue';                                                       // needs a fix
       case 'signed':    return !!it.signed_off_at || it.status === 'satisfied';                             // done
+      // Everything the processor has NOT signed off yet (owner-directed 2026-08-12:
+      // a loan officer wants to see only what is still pending the processor's
+      // sign-off). The complement of "Signed off" — across every sub-status
+      // (outstanding, requested, received, issue) — excluding waived/satisfied,
+      // which are already cleared.
+      case 'unsigned':  return !(it.status === 'satisfied' || !!it.signed_off_at || !!it.waived_at);
       case 'all':       return true;
       case 'mine':
       default:          return !offMyPlate(it);                                                             // role default
@@ -3580,6 +3586,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
           <option value="awaiting">{conditionStatusLabel('outstanding')}</option>
           <option value="review">{conditionStatusLabel('received')}</option>
           <option value="attention">{conditionStatusLabel('issue')}</option>
+          <option value="unsigned">Not signed off yet</option>
           <option value="signed">Signed off</option>
           <option value="all">Everything</option>
         </select>
