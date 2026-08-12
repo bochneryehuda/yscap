@@ -1129,6 +1129,15 @@ router.post('/files/:id/wire-form/review', requirePermission('manage_draws'), as
     await db.query(
       `UPDATE documents SET review_status=$2, rejection_reason=$3, reviewed_by=$4, reviewed_at=now() WHERE id=$1`,
       [doc.id, status, action === 'reject' ? reason.slice(0, 1000) : null, req.actor.id]);
+    // Best-effort audit — accepting / rejecting the wire instructions gates the money, so record who
+    // did it and why; the logging write can never fail the action.
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+         VALUES ('staff',$1,$2,'application',$3,$4,$5,$6)`,
+        [req.actor && req.actor.id, `wire_form_${status}`, appId, req.ip, req.get('user-agent') || null,
+         { document_id: doc.id, reason: action === 'reject' ? reason.slice(0, 500) : null }]);
+    } catch (_) { /* logging is best-effort */ }
     res.json({ ok: true, status });
   } catch (e) { console.warn('[sitewire] wire-form review error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });

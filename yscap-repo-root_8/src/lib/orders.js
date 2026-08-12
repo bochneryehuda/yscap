@@ -279,7 +279,7 @@ function vendorGreetName(vendor) {
  * Build the branded order email (or its follow-up). Returns { subject, html,
  * text }. `subjectTag` (loan# · borrower · street) rides in the subject.
  */
-function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
+function buildOrderEmail(kind, data, { followup = false, note = '', fullOrder = false } = {}) {
   const label = ORDER_LABEL[kind];
   const vendor = data.vendors[kind];
   const subjectTag = [data.loanNumber || null, data.borrowerName, data.propertyLine.split(',')[0]].filter(Boolean).join(' · ');
@@ -343,14 +343,19 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
         ? String(note).trim()
         : `Following up to confirm when we can expect the ${kind === 'title' ? 'title search' : 'insurance quote'} to be completed. Please provide the following as soon as they become available:`,
       lines: wantLines.concat(['', signOff]),
-      // A follow-up carries every detail the ORIGINAL order carried (owner-directed
-      // 2026-08-12) — the full deal/borrower block, the coverage ask (insurance), and
-      // the mortgagee clause — so the vendor has everything to bind without hunting
-      // for the first email. Same hoisted values as the order, so the two can never
-      // state different facts.
-      meta: orderMeta,
-      sections: coverageSections,
-      callout: { title: 'Mortgagee Clause', body: clause },
+      // The "Follow up" button (fullOrder) carries every detail the ORIGINAL order carried
+      // (owner-directed 2026-08-12) — the full deal/borrower block, the coverage ask (insurance)
+      // and the mortgagee clause — so the vendor has everything to bind without hunting for the
+      // first email. Same hoisted values as the order, so the two can never state different facts.
+      // A plain Email Center REPLY (fullOrder falsey) keeps the lighter restatement it always had,
+      // so a one-line "closing is Tuesday" reply doesn't re-dump the whole order block.
+      meta: fullOrder ? orderMeta : [
+        { label: 'Property', value: data.propertyLine || '—' },
+        { label: 'Borrower', value: data.borrowerName },
+        data.loanNumber ? { label: 'Loan Number', value: data.loanNumber } : null,
+      ].filter(Boolean).concat(kind === 'insurance' ? insuranceDetailMeta(data) : []),
+      sections: fullOrder ? coverageSections : undefined,
+      callout: fullOrder ? { title: 'Mortgagee Clause', body: clause } : undefined,
       officer: officerCard,
       note: 'Reply to this email and it reaches the whole loan team.',
       replyable: true,

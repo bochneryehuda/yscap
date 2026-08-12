@@ -97,7 +97,9 @@ export default function DrawsPanel({ appId }) {
   // taking `data` as a dependency (which would re-create load and re-run every child's
   // effect). Reset when the file changes so a new file gets its first-load spinner.
   const dataRef = useRef(null);
-  useEffect(() => { dataRef.current = null; }, [appId]);
+  // On a file switch (if this panel is reused rather than remounted), drop the prior file's data so
+  // the new file shows the spinner instead of the previous file's draws (pre-merge audit B).
+  useEffect(() => { dataRef.current = null; setData(null); }, [appId]);
 
   const load = useCallback(() => {
     // ONLY the first load blanks the panel to a spinner. Every refresh AFTER an action
@@ -3227,17 +3229,24 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
   // figures must equal the draw's — "if it's changing any figures, it should not let you proceed
   // before it's matching to the actual draw."
   const selDraw = draws.find((d) => String(d.sitewire_draw_id) === String(f.sitewire_draw_id)) || null;
-  const expApprovedC = selDraw ? (Number(selDraw.approved_cents) || 0) : null;
+  // A release records the FINAL-approved amount — the figure the server validates the release against
+  // (sitewire_draws.total_approved_cents) and the amount that actually wires. drawMoney exposes it as
+  // final_approved_cents (0 until the draw is finally approved). Seeding/matching the INSPECTOR
+  // proposal instead could seed a number the server then rejects with a 422 when the lender cut the
+  // amount at final approval (pre-merge audit C-1); the final figure also gates recording on final
+  // approval, which IS the order of the workflow (the checklist puts "final approve" before "record").
+  const expApprovedC = selDraw ? (Number(selDraw.final_approved_cents) || 0) : null;
   const expFeeC = selDraw ? (Number(selDraw.fee_cents) || 0) : null;
-  const drawNotApproved = !!selDraw && expApprovedC <= 0;   // nothing approved on this draw yet
+  const drawNotApproved = !!selDraw && expApprovedC <= 0;   // not finally approved yet — nothing to release
   const figuresMatch = selDraw ? (approvedC === expApprovedC && feeC === expFeeC) : true;
-  // Seed the money boxes from a draw. Leaving release_date/funded_status alone — the date is the one
-  // thing a human still fills in.
+  // Seed the money boxes from a draw's FINAL-approved figures. A not-yet-final draw seeds a blank
+  // approved (the "not finally approved" note shows instead). release_date/funded_status are left
+  // alone — the date is the one thing a human still fills in.
   function seedFromDraw(d, extra = {}) {
     setF((s) => ({
       ...s,
       ...extra,
-      approved: d ? centsToInput(d.approved_cents) : '',
+      approved: d && Number(d.final_approved_cents) > 0 ? centsToInput(d.final_approved_cents) : '',
       fee: d ? centsToInput(d.fee_cents) : '',
       fee_kind: d && d.fee_kind ? d.fee_kind : s.fee_kind,
     }));
@@ -3357,7 +3366,7 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
         )}
         {drawNotApproved && (
           <div className="small" style={{ color: 'var(--warning)', marginTop: 8 }}>
-            Draw #{selDraw.number} has no approved amount yet — final-approve it first, then record the release here.
+            Draw #{selDraw.number} isn’t finally approved yet — final-approve it on the draw desk first, then record the release here.
           </div>
         )}
         {floorC > 0 && oopHeldC > 0 && (
