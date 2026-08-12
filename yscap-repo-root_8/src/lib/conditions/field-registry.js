@@ -190,10 +190,21 @@ function isEmcapNoteBuyer(raw) {
 // because Blue Lake does not buy a loan taken in a personal name at all.
 const BLUELAKE_KEY_PREFIX = 'bluelake';
 
-/** True when this note-buyer label (applications.lender) is Blue Lake, however it is spelled. */
+/** True when this note-buyer label (applications.lender) is Blue Lake, however it is spelled.
+ * Matches the normal spellings ("Blue Lake", "BlueLake", "Blue Lake Capital" → keys that
+ * START WITH 'bluelake') AND a TRUNCATED typo of the name (owner-reported 2026-08-12: a
+ * stray note buyer "Blue L" was showing as its own row and should combine into Blue Lake).
+ * A key that is ITSELF a prefix of 'bluelake' of length >= 5 — 'bluel', 'bluela', 'bluelak'
+ * — is an unambiguous truncation of Blue Lake: it can never grab a DIFFERENT "Blue *" buyer
+ * ("Blue Ledger" → 'blueledger' is neither a prefix of 'bluelake' nor starts with it), and the
+ * length>=5 floor keeps a bare "Blue" (which could begin any name) from being swept in. This
+ * does NOT loosen the EXACT `normNoteBuyer` (the tape-export gate keys on enumerated aliases,
+ * not this helper), so a truncated file still can't ship the wrong buyer's data tape. */
 function isBlueLakeNoteBuyer(raw) {
   const key = normNoteBuyer(raw);
-  return !!key && key.startsWith(BLUELAKE_KEY_PREFIX);
+  if (!key) return false;
+  return key.startsWith(BLUELAKE_KEY_PREFIX)
+    || (key.length >= 5 && BLUELAKE_KEY_PREFIX.startsWith(key));
 }
 
 // RCN — RCN Capital, whose notes are serviced by Elite Commercial Servicing. Same

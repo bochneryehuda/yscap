@@ -655,7 +655,16 @@
       origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: liquidity,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
-      ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
+      // ltvPct is the initial-advance (as-is) leverage shown next to the dollar
+      // initial advance. When an out-of-pocket rehab RAISES the initial advance, the
+      // dollar rises but the engine's own s.acqLtvPct still reflects the pre-OOP
+      // initial — so the shown "% initial" was stale (owner-reported 2026-08-12: "it
+      // stays 30%"). Recompute the DISPLAYED percent from the OOP-boosted initial over
+      // the engine's own acqDenom; DISPLAY-ONLY (no sizing/rate/cap change) and
+      // byte-identical when oopRehab is 0.
+      ltcPct: s.ltcPct || 0,
+      ltvPct: (_sl.oopRehab > 0 && s.acqDenom > 0) ? (initialAdvance / s.acqDenom) : (s.acqLtvPct || 0),
+      arvPct: s.arvPct || 0,
       binding: s.binding || "", caps: R.caps, status: R.status, reasons: R.reasons || [],
       exitShortfall: R.exitShortfall || 0, cityReview: R.cityReview || null,
       tierLabel: R.tierLabel, fico: inp.fico
@@ -721,7 +730,10 @@
       closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: goldReserve, reserveMo: 0,
       liquidity: cashToClose + goldReserve + _g.oopRehab + closingBuffer, liquidityPct: goldReservePct,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
-      ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
+      // ltvPct recomputed from the OOP-boosted initial advance — see calc(). Display-only.
+      ltcPct: s.ltcPct || 0,
+      ltvPct: (_g.oopRehab > 0 && s.acqDenom > 0) ? (initialAdvance / s.acqDenom) : (s.acqLtvPct || 0),
+      arvPct: s.arvPct || 0,
       binding: s.binding || "", caps: R.caps, status: R.status, reasons: R.reasons || [],
       exitShortfall: R.exitShortfall || 0, tierLabel: R.tierLabel, fico: inp.fico,
       productLabel: R.productLabel, irLocked: !!R.irLocked, irRequired: !!R.irRequired, drawFee: R.drawFee || 0
@@ -797,7 +809,10 @@
       origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: cashToClose + reserves + _sv.oopRehab + closingBuffer,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
-      ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
+      // ltvPct recomputed from the OOP-boosted initial advance — see calc(). Display-only.
+      ltcPct: s.ltcPct || 0,
+      ltvPct: (_sv.oopRehab > 0 && s.acqDenom > 0) ? (initialAdvance / s.acqDenom) : (s.acqLtvPct || 0),
+      arvPct: s.arvPct || 0,
       // `d.caps` keeps the meaning every reader in this file already assumes: the
       // EFFECTIVE ceiling this deal was sized and priced at. The Silver engine now
       // publishes that as `pricedCeiling` and publishes the PROGRAM MAXIMUM (already

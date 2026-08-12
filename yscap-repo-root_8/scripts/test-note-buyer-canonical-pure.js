@@ -48,6 +48,11 @@ const canonCases = [
   ['Blue Lake', 'bluelake', 'Blue Lake Capital'],
   ['BlueLake', 'bluelake', 'Blue Lake Capital'],
   ['Blue Lake Capital', 'bluelake', 'Blue Lake Capital'],
+  // A TRUNCATED typo of the name combines into Blue Lake (owner-reported 2026-08-12:
+  // a stray note buyer "Blue L" showed as its own row).
+  ['Blue L', 'bluelake', 'Blue Lake Capital'],
+  ['Blue La', 'bluelake', 'Blue Lake Capital'],
+  ['Blue Lak', 'bluelake', 'Blue Lake Capital'],
   ['RCN', 'rcn', 'RCN Capital'],
   ['RCN Capital', 'rcn', 'RCN Capital'],
 ];
@@ -64,6 +69,14 @@ for (const [raw, key, label] of canonCases) {
   const z = reg.canonicalNoteBuyer('  Zephyr Capital  ');
   assert(z && z.key === 'zephyrcapital' && z.label === 'Zephyr Capital',
     'A an unknown buyer is trimmed but not renamed');
+  // A DIFFERENT "Blue *" buyer must NOT be swept into Blue Lake — only a genuine
+  // truncation of "bluelake" collapses (owner-reported 2026-08-12).
+  const bl = reg.canonicalNoteBuyer('Blue Ledger Capital');
+  assert(bl && bl.key === 'blueledgercapital' && bl.label === 'Blue Ledger Capital',
+    'A "Blue Ledger Capital" is NOT collapsed into Blue Lake');
+  const bare = reg.canonicalNoteBuyer('Blue');
+  assert(bare && bare.key === 'blue' && bare.label === 'Blue',
+    'A a bare "Blue" is too short to be a Blue Lake truncation');
 }
 for (const blank of [null, undefined, '', '   ', '!!!']) {
   assert(reg.canonicalNoteBuyer(blank) === null, `A a blank/junk value (${JSON.stringify(blank)}) → null`);

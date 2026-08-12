@@ -383,7 +383,7 @@ const TPR_DOC_SELECT_FOR = (reviewTest) => `
      -- printouts, the PILOT-branded draw inspection reports) are not source
      -- documents — and re-packing a regenerable export inside the next one must
      -- never happen. Keep this list in step with sharepoint-backup.isRegenKind.
-     AND COALESCE(d.doc_kind,'') NOT IN ('track_record_html','tpr_export','draw_inspection_report','draw_packet','draw_support')
+     AND COALESCE(d.doc_kind,'') NOT IN ('track_record_html','tpr_export','draw_inspection_report','draw_packet','draw_support','appraisal_photo')
      AND COALESCE(d.doc_kind,'') NOT LIKE '%\\_export'
      -- Closing-chain CORRESPONDENCE (whatever the attorney's chain mailed us) is a
      -- running record, not a source document, and much of it is drafts and internal

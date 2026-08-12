@@ -47,13 +47,21 @@
 // singleton, src/lib/pricing-settings.js). Typing the default back is NOT an
 // override — only a value that DIFFERS from it is.
 // ---------------------------------------------------------------------------
+// `revenueUp: true` marks a FEE / MARKUP / RATE knob where charging ABOVE the
+// company default earns the company MORE. Owner-directed 2026-08-12: "anytime you
+// charge more than the default you don't need an exception; you only need one if
+// you charge LESS than the default." So a revenueUp knob set at-or-above its
+// default is NOT an override (no approval); BELOW its default (a discount) still
+// needs approval, exactly as before. Non-revenue knobs (title with no default; and
+// every leverage/basis knob in ENGAGED_OVERRIDE_KEYS) keep the old "any change
+// needs approval" behavior.
 const DEFAULTED_OVERRIDE_KEYS = Object.freeze({
-  markupStdPct:  { label: 'Rate markup / YSP — Standard',              unit: 'pct'   },
-  markupGoldPct: { label: 'Rate markup / YSP — Gold',                  unit: 'pct'   },
-  markupSilverPct: { label: 'Rate markup / YSP — Silver',              unit: 'pct'   },
-  origStdPct:    { label: 'Origination points — Standard',             unit: 'pct'   },
-  origGoldPct:   { label: 'Origination points — Gold',                 unit: 'pct'   },
-  origSilverPct: { label: 'Origination points — Silver',               unit: 'pct'   },
+  markupStdPct:  { label: 'Rate markup / YSP — Standard',              unit: 'pct',   revenueUp: true },
+  markupGoldPct: { label: 'Rate markup / YSP — Gold',                  unit: 'pct',   revenueUp: true },
+  markupSilverPct: { label: 'Rate markup / YSP — Silver',              unit: 'pct',   revenueUp: true },
+  origStdPct:    { label: 'Origination points — Standard',             unit: 'pct',   revenueUp: true },
+  origGoldPct:   { label: 'Origination points — Gold',                 unit: 'pct',   revenueUp: true },
+  origSilverPct: { label: 'Origination points — Silver',               unit: 'pct',   revenueUp: true },
   // The Manual product prices on the Standard engine and has NO company default of
   // its own — a blank manual field means "use Standard" (owner-directed 2026-07-30,
   // mirrored in pricing.js `origKey`). So it is compared against the STANDARD
@@ -61,12 +69,13 @@ const DEFAULTED_OVERRIDE_KEYS = Object.freeze({
   // not a change, exactly like its three siblings. Without `defaultKey` the lookup
   // would find no `cd.origManualPct`, read as "no default", and demand an approval
   // for a value that IS the default.
-  origManualPct: { label: 'Origination points — Manual', unit: 'pct', defaultKey: 'origStdPct' },
-  lenderFee:     { label: 'Underwriting / processing / legal fee',     unit: 'money' },
-  creditFee:     { label: 'Credit-report fee',                         unit: 'money' },
-  appraisalFee:  { label: 'Appraisal fee (paid outside closing)',      unit: 'money' },
+  origManualPct: { label: 'Origination points — Manual', unit: 'pct', defaultKey: 'origStdPct', revenueUp: true },
+  lenderFee:     { label: 'Underwriting / processing / legal fee',     unit: 'money', revenueUp: true },
+  creditFee:     { label: 'Credit-report fee',                         unit: 'money', revenueUp: true },
+  appraisalFee:  { label: 'Appraisal fee (paid outside closing)',      unit: 'money', revenueUp: true },
   // The company default for title is NULL = "auto-estimate per state", so any
-  // typed number is a deviation.
+  // typed number is a deviation. NOT revenueUp — with no numeric baseline there is
+  // no "above/below" to judge, so any typed title fee still needs approval.
   titleFee:      { label: 'Title / escrow fee',                        unit: 'money' },
 });
 
@@ -167,7 +176,14 @@ function pricingOverridesEngaged(raw, defaults) {
     // the Manual origination, which falls back to Standard). Absent on every other
     // key, so the lookup is unchanged for all of them.
     const defaultValue = cd ? numOrNull(cd[meta.defaultKey || key]) : null;
-    if (defaultValue != null && sameNumber(value, defaultValue)) continue;   // typed the default back
+    if (defaultValue != null) {
+      if (sameNumber(value, defaultValue)) continue;                 // typed the default back
+      // Owner-directed 2026-08-12: charging MORE than the default earns the company
+      // more, so a revenue knob at-or-above its default needs no approval — only a
+      // discount (BELOW default) does. A non-revenue knob (title) and any knob with
+      // no readable default fall through and are still flagged.
+      if (meta.revenueUp && value > defaultValue) continue;
+    }
     out.push({ key, label: meta.label, unit: meta.unit, value, defaultValue });
   }
   for (const key of Object.keys(ENGAGED_OVERRIDE_KEYS)) {

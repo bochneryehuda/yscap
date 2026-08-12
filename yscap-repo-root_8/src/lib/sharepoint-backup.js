@@ -94,15 +94,19 @@ function isRegenKind(k) { return k === 'track_record_html' || k === 'tpr_export'
 //     leaks; companion to the TPR export denylist + rtl_cond_iska.tpr_exclude).
 //     (DOCUSIGN-DOCUMENT-BUILD-SPEC Addendum A.3/A.9.)
 //
-// appraisal_photo WAS on this list and is NOT any more (owner-directed
-// 2026-08-09). Shown the full list of what the mirror skips and asked which to
-// change, the owner picked the photos — "in their own subfolder". They were
-// excluded because ~24 images per file would flood the category folder sitting
-// next to the actual loan documents; a dedicated `Appraisal photos` folder
-// (categoryPathFor) answers that objection without costing the pictures, which
-// are the one skipped kind a person actually wants to open in the team site.
+// appraisal_photo: NOT mirrored (owner-directed 2026-08-12 — REVERSES the
+// 2026-08-09 decision to mirror them). The owner now wants ONLY the appraisal PDF
+// and the appraisal XML in SharePoint (and in the TPR export); the individual
+// photos stay in PILOT + the regular Cloudflare/off-site backup and do not go to
+// the team site or investor delivery. So appraisal_photo is a never-mirror KIND
+// again. The reason string is the SAME literal the scoreboard's `appraisal_photos`
+// bucket already recognises (LEGACY_SKIP_APPRAISAL_PHOTO references this entry), so
+// a re-added photo groups on the scoreboard and never falls into `other`. NO-DELETE
+// still holds: photos ALREADY mirrored by the 2026-08-09 pass keep a
+// sharepoint_backup_ref and stay in SharePoint until a human removes them there.
 const NEVER_MIRROR_REASON = {
   heter_iska_signed: 'never mirrored (owner policy: the Heter Iska is kept in-system + on DocuSign only)',
+  appraisal_photo: 'not mirrored — a thumbnail auto-extracted from the appraisal (the appraisal PDF itself IS mirrored)',
 };
 const DEFAULT_NEVER_MIRROR_REASON = 'not mirrored (owner policy: this document kind is kept in-system only)';
 const NEVER_MIRROR_KINDS = new Set(Object.keys(NEVER_MIRROR_REASON));
@@ -154,7 +158,7 @@ const SKIP_HUMAN_PLACED_PREFIX = 'left where a human put it';
 // SUPERSEDED set, which is deliberately never copied: those are the pictures
 // from an appraisal a later import replaced, so copying them would put two
 // contradictory photo sets of one property in the team site.
-const LEGACY_SKIP_APPRAISAL_PHOTO = 'not mirrored — a thumbnail auto-extracted from the appraisal (the appraisal PDF itself IS mirrored)';
+const LEGACY_SKIP_APPRAISAL_PHOTO = NEVER_MIRROR_REASON.appraisal_photo;   // ONE definition — the never-mirror stamp (re-added 2026-08-12) IS the scoreboard-bucket string
 const SKIP_REASON_PHOTO_SUPERSEDED = 'an older photo set — a newer appraisal import replaced it, and that newer set is in SharePoint';
 // LIKE-safe prefix match (the prefixes carry no wildcards today; escaped anyway
 // so adding one later can never silently widen a bucket).
@@ -804,6 +808,11 @@ async function settleNeverMirror() {
  */
 async function backfillAppraisalPhotoMirrorOnce() {
   const out = { scanned: 0, mirrored: 0, superseded: 0, failed: 0, skipped: null };
+  // Owner-directed 2026-08-12: appraisal photos are a never-mirror KIND again, so
+  // there is nothing to back-fill. Short-circuit rather than churn re-pulls whose
+  // mirrorRow calls would only hit the never-mirror skip. If mirroring is ever
+  // re-enabled (appraisal_photo removed from NEVER_MIRROR_KINDS) this resumes.
+  if (NEVER_MIRROR_KINDS.has('appraisal_photo')) return { ...out, skipped: 'appraisal photos not mirrored' };
   if (process.env.SHAREPOINT_PHOTO_BACKFILL_DISABLED === '1') return { ...out, skipped: 'disabled' };
   if (!enabled()) return { ...out, skipped: 'sync disabled' };
   const limit = Math.max(1, parseInt(process.env.SHAREPOINT_PHOTO_BACKFILL_FILES || '120', 10) || 120);
