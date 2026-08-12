@@ -1144,6 +1144,20 @@ module.exports = {
     tokenUrl:  (process.env.CLASS_TOKEN_URL || '').trim().replace(/\/+$/, '') || null,
     ordersUrl: (process.env.CLASS_ORDERS_URL || '').trim().replace(/\/+$/, '') || null,
 
+    // ---- the prefix every DATA route hangs off on the LIVE service ----
+    // The vendor guide prints the bare paths (`/orders`, `/products`, `/callbacks`),
+    // but those 404 against the running API — the working routes all live under
+    // `/intg/` (`/intg/orders`, `/intg/products`, …). The token route is the ONE
+    // exception: it lives on the identity host at `/connect/token` and never carries
+    // this prefix. Overridable so a confirmed vendor change is a config edit, not a
+    // deploy; set CLASS_API_PREFIX to an empty string to turn the prefix off.
+    apiPrefix: (() => {
+      const raw = process.env.CLASS_API_PREFIX;
+      if (raw == null) return '/intg';                          // default: the live API's prefix
+      const t = raw.trim().replace(/\/+$/, '');                 // no trailing slash
+      return t === '' ? '' : (t.startsWith('/') ? t : '/' + t); // ONE leading slash; '' = disabled
+    })(),
+
     // ---- the org scoping Class puts in the POST /orders query string ----
     orgId:       process.env.CLASS_ORG_ID || null,
     lenderOrgId: process.env.CLASS_LENDER_ORG_ID || null,

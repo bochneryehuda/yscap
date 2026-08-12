@@ -73,6 +73,9 @@ export default function ClassAppraisalPanel({ appId }) {
   const [picking, setPicking] = useState(false);
   const [orders, setOrders] = useState(null);
   const [openOrder, setOpenOrder] = useState(null);
+  // Names of products chosen from their list, keyed by id — so the collapsed field
+  // shows the report's NAME after a hand-pick, not just its opaque id.
+  const [pickedNames, setPickedNames] = useState({});
 
   // The preview is re-fetched with the overrides, so what is on screen is always
   // what the SERVER would build — never a value this component patched locally.
@@ -180,10 +183,15 @@ export default function ClassAppraisalPanel({ appId }) {
           <ProductRow
             preview={preview}
             chosen={overrides.productId}
+            pickedNames={pickedNames}
             enabled={!!(cfg && cfg.enabled)}
             open={picking}
             onOpen={() => setPicking((v) => !v)}
-            onPick={(id) => { setPicking(false); setOverride('productId', String(id)); }}
+            onPick={(id, product) => {
+              setPicking(false);
+              setOverride('productId', String(id));
+              if (product && product.title) setPickedNames((m) => ({ ...m, [String(id)]: product.title }));
+            }}
           />
 
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
@@ -618,20 +626,22 @@ function VersionRow({ preview, chosen, onPick }) {
   );
 }
 
-function ProductRow({ preview, chosen, enabled, open, onOpen, onPick }) {
+function ProductRow({ preview, chosen, pickedNames, enabled, open, onOpen, onPick }) {
   const row = (preview.fields || []).find((f) => f.path === 'productId');
   const value = row ? row.value : null;
-  // The product PILOT auto-picked from the admin rules (null until class_form_map is
-  // seeded). Show its NAME when it is the value on the order, mirroring the AMC panel.
+  // The name to show for the report on the order: the product PILOT auto-picked from the
+  // admin rules (null until class_form_map is seeded), else the name of the one a human
+  // just picked from their list. Fall back to the id only when we have no name at all.
   const auto = preview.chosenProduct || null;
   const autoName = auto && String(auto.productId) === String(value) && auto.productName ? auto.productName : null;
+  const name = autoName || (value != null ? (pickedNames || {})[String(value)] : null) || null;
   return (
     <div style={{ border: `1px solid ${value ? LINE : BAD}`, borderRadius: 10, padding: 12, marginTop: 12, background: '#fff' }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 200 }}>
           <div style={{ fontSize: 11, color: MUTED, textTransform: 'uppercase', letterSpacing: '.03em' }}>Which report to order</div>
           <div style={{ color: value ? INK : BAD, fontWeight: 600 }}>
-            {value ? (autoName ? `${autoName} (#${value})` : `Class product #${value}`) : 'Not chosen yet'}
+            {value ? (name ? `${name} (#${value})` : `Class product #${value}`) : 'Not chosen yet'}
           </div>
           <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>
             {chosen
@@ -659,7 +669,8 @@ function ProductPicker({ onPick }) {
     let alive = true;
     (async () => {
       try {
-        const r = await api.classProducts({ limit: 200 });
+        // No page size — the server pages through the WHOLE catalogue for us.
+        const r = await api.classProducts();
         if (!alive) return;
         if (r && r.available) setRows(r.products || []);
         else { setRows([]); setErr('Their list of reports could not be read right now.'); }
@@ -670,7 +681,7 @@ function ProductPicker({ onPick }) {
     return () => { alive = false; };
   }, []);
   const filtered = (rows || []).filter((p) => {
-    const t = `${p.title || ''} ${p.id || ''}`.toLowerCase();
+    const t = `${p.title || ''} ${p.alternativeName || ''} ${p.id || ''}`.toLowerCase();
     return !q.trim() || t.includes(q.trim().toLowerCase());
   });
   return (
@@ -683,13 +694,15 @@ function ProductPicker({ onPick }) {
             style={{ ...inputStyle, width: '100%', marginBottom: 8 }} />
           <div style={{ maxHeight: 260, overflowY: 'auto', border: `1px solid ${LINE}`, borderRadius: 8 }}>
             {filtered.map((p) => (
-              <button type="button" key={p.id} onClick={() => onPick(p.id)}
+              <button type="button" key={p.id} onClick={() => onPick(p.id, p)}
                 style={{
                   display: 'block', width: '100%', textAlign: 'left', background: '#fff', color: INK,
                   border: 'none', borderTop: `1px solid ${LINE}`, padding: '8px 10px', cursor: 'pointer',
                 }}>
                 <span style={{ fontWeight: 550 }}>{p.title || `Product ${p.id}`}</span>
-                <span style={{ color: MUTED, fontSize: 12 }}> · #{p.id}</span>
+                {p.alternativeName && p.alternativeName !== p.title
+                  ? <span style={{ color: MUTED, fontSize: 12 }}> — {p.alternativeName}</span> : null}
+                <div style={{ color: MUTED, fontSize: 11 }}>#{p.id}</div>
               </button>
             ))}
             {!filtered.length ? <div style={{ padding: 10, color: MUTED, fontSize: 13 }}>Nothing matches that.</div> : null}
