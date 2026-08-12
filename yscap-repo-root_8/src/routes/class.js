@@ -168,33 +168,72 @@ router.post('/files/:id/order', async (req, res) => {
     if (!orderRowId) return;
     const cols = Object.keys(patch);
     if (!cols.length) return;
+    // `request_body` is jsonb; the value is a JSON string, so it is cast explicitly to
+    // match the insert (`$7::jsonb`) and be independent of parameter-type inference.
+    // Every other column takes its value straight.
+    const setSql = cols.map((c, i) => `${c} = $${i + 2}${c === 'request_body' ? '::jsonb' : ''}`).join(', ');
     await db.query(
-      `UPDATE class_orders SET ${cols.map((c, i) => `${c} = $${i + 2}`).join(', ')} WHERE id = $1`,
+      `UPDATE class_orders SET ${setSql} WHERE id = $1`,
       [orderRowId, ...cols.map((c) => patch[c])]).catch(() => {});
   };
+
+  const query = {
+    OrgId: (require('../config').class || {}).orgId || undefined,
+    LenderOrgId: (require('../config').class || {}).lenderOrgId || undefined,
+  };
+  // The occupancy cascade. v1 `occupancy` binds to a live enum whose members their
+  // guide never lists (see order-build), so the body starts on the most-likely value
+  // and we try the rest IN ORDER only on the specific occupancy binding error. A
+  // model-binding 400 creates nothing at Class, so a rejected candidate never places a
+  // real order — the FIRST value Class accepts is the one and only order, and it is
+  // remembered so this file's classification cascades at most once per process. Any
+  // OTHER failure (a different field, a business rejection, the write gate) stops the
+  // cascade at once and surfaces as itself.
+  const candidates = (Array.isArray(preview.occupancyCandidates) && preview.occupancyCandidates.length)
+    ? preview.occupancyCandidates
+    : [preview.body.occupancy];
 
   try {
     // THE PATH COMES FROM THE PREVIEW, not from the config: the preview is what
     // shaped this body, so posting it anywhere else would send a 2.6 body to the 3.6
     // endpoint or the reverse. Those two disagree about field names, so the failure
     // would be a rejected order at best and a silently dropped field at worst.
-    const out = await client.createOrder(preview.body, {
-      OrgId: (require('../config').class || {}).orgId || undefined,
-      LenderOrgId: (require('../config').class || {}).lenderOrgId || undefined,
-    }, { path: preview.path });
+    let out, sentBody, usedOccupancy, triedCount = 0;
+    for (let i = 0; i < candidates.length; i++) {
+      sentBody = { ...preview.body, occupancy: candidates[i] };
+      usedOccupancy = candidates[i];
+      triedCount = i + 1;
+      try {
+        out = await client.createOrder(sentBody, query, { path: preview.path });
+        break;   // accepted (or dry-run short-circuit) — stop here
+      } catch (e) {
+        const moreToTry = i < candidates.length - 1;
+        if (orderBuild.isOccupancyEnumError(e) && moreToTry) continue;   // occupancy still bad — next value
+        throw e;   // a real failure, or the candidates are exhausted
+      }
+    }
+
     if (out && out.__dryrun) {
       await finish({ status: 'dryrun' });
       return res.json({ ok: true, dryrun: true, apiVersion: preview.apiVersion, uad: preview.uad,
-        message: `TEST MODE — a UAD ${preview.uad} order was built and logged, nothing was sent.`, body: preview.body });
+        message: `TEST MODE — a UAD ${preview.uad} order was built and logged, nothing was sent.`, body: sentBody });
+    }
+    // Remember the value Class accepted so later orders of this shape go out clean, and
+    // record what actually went (the body the row stored at insert had the first-guess
+    // occupancy). Both are best-effort and never affect the response.
+    if (triedCount > 1) {
+      orderService.rememberOccupancy(preview.apiVersion, preview.occupancyKey, usedOccupancy);
+      console.warn(`[class] occupancy "${preview.occupancyKey}" accepted as "${usedOccupancy}" on ${preview.apiVersion} after ${triedCount} value(s)`);
     }
     await finish({
       status: 'ordered',
       class_order_id: out && out.orderId != null ? String(out.orderId) : null,
       transaction_id: out && out.transactionId != null ? String(out.transactionId) : null,
+      request_body: require('../lib/fields').jsonbText(sentBody),
     });
     res.json({
       ok: true, orderId: out && out.orderId, transactionId: out && out.transactionId,
-      apiVersion: preview.apiVersion, uad: preview.uad, body: preview.body,
+      apiVersion: preview.apiVersion, uad: preview.uad, body: sentBody,
       // AN UNRECORDED ORDER IS NOT A SUCCESS, even though the appraisal really was
       // ordered. With no row, nothing links their callbacks back to this file: the
       // order proceeds at Class and PILOT never hears about it again. Saying so is

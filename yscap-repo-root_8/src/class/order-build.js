@@ -116,15 +116,38 @@ const PURPOSE = {
 // consumer-mortgage value that would misdescribe a business-purpose loan.
 const LOAN_TYPE = { ground_up: 'NewConstruction' };
 
-// Occupancy. On 2.6 this is a FREE STRING ("Self-descriptive", p.30) — the only
-// value their own vocabulary confirms is `Investment`, which is what essentially
-// every RTL file resolves to, and the rest is our plain-English wording. On 3.6 it
-// is a CLOSED four-value enum, so the same file has to say the same thing in their
-// words — and two of our five have no exact 3.6 value, so they are declared.
-const OCCUPANCY_26 = {
-  investment: 'Investment', tenant: 'Tenant', vacant: 'Vacant',
-  primary: 'Owner', owner: 'Owner', second_home: 'Second Home',
+// Occupancy on UAD 2.6 (their v1). Their GUIDE documents this field as a FREE STRING
+// ("Self-descriptive", p.30) — but the LIVE v1 API refuses a free value: it binds
+// `occupancy` to a CLOSED .NET enum, `CV.OrdersExternal.Common.Orders.OccupancyTypeEnum`,
+// whose members the guide never lists. That is the SAME guide-vs-live divergence that
+// made every data route need the /intg prefix — the live API is authoritative, the
+// document is stale. Their v1 value for the investment case is NOT "Investment" (that
+// exact string is rejected), and their spec is not reachable from here.
+//
+// So we do not GUESS one value and hope. We carry an ORDERED list of the industry's
+// standard occupancy members, most-semantically-correct first, and let the live API
+// tell us which one it accepts: the sender tries them in order on the specific
+// occupancy binding error and stops at the first Class takes (see routes/class.js).
+// A model-binding 400 creates NOTHING at Class, so trying the next value can never
+// place a second real order, and the accepted value is remembered so a classification
+// cascades at most once per process. `Other` sits last as the near-certain fallback,
+// so an order still goes through even if their enum is spelled unlike anything here —
+// the appraiser determines the real occupancy on inspection regardless.
+const OCCUPANCY_CANDIDATES_26 = {
+  investment:  ['Investor', 'NonOwnerOccupied', 'InvestmentProperty', 'Investment', 'Vacant', 'Tenant', 'Rental', 'Other'],
+  tenant:      ['Tenant', 'TenantOccupied', 'NonOwnerOccupied', 'Investor', 'Rental', 'Other'],
+  vacant:      ['Vacant', 'Unoccupied', 'NonOwnerOccupied', 'Investor', 'Other'],
+  owner:       ['Owner', 'OwnerOccupied', 'PrimaryResidence', 'Primary', 'Other'],
+  primary:     ['PrimaryResidence', 'Primary', 'Owner', 'OwnerOccupied', 'PrimaryHome', 'Other'],
+  second_home: ['SecondHome', 'SecondaryResidence', 'Secondary', 'VacationHome', 'Owner', 'Other'],
 };
+// An occupancy word we do not recognise still lets the order through on the value
+// Class is likeliest to accept for "we could not classify it".
+const OCCUPANCY_FALLBACK_26 = ['Other'];
+// The single most-likely value per classification — what the order SCREEN offers as a
+// type-ahead suggestion, and the back-compat map the older callers read.
+const OCCUPANCY_26 = Object.fromEntries(
+  Object.entries(OCCUPANCY_CANDIDATES_26).map(([k, list]) => [k, list[0]]));
 const OCCUPANCY_36 = {
   investment: 'Investment',
   primary: 'PrimaryResidence',
@@ -184,8 +207,11 @@ const PROFILES = {
     notifyKeys: { type: 'Type', email: 'Email' },
     caseFileField: 'caseFileId', lpaField: 'lpaKey',
     propertyType: PROPERTY_TYPE_26, propertyTypeAssumed: PROPERTY_TYPE_ASSUMED_26,
-    occupancy: OCCUPANCY_26, occupancyAssumed: {},
-    occupancyIsEnum: false,
+    // v1 occupancy is a live enum whose members are undocumented — so it is a CANDIDATE
+    // LIST the sender cascades through, not a single value validated here.
+    occupancy: OCCUPANCY_CANDIDATES_26, occupancyAssumed: {},
+    occupancyFallback: OCCUPANCY_FALLBACK_26,
+    occupancyIsEnum: false, occupancyIsCandidates: true,
     enums: ENUMS_26,
   },
   v2: {
@@ -195,8 +221,10 @@ const PROFILES = {
     notifyKeys: { type: 'type', email: 'email' },
     caseFileField: 'duReferenceNumber', lpaField: 'lpaKeyReferenceIdentifier',
     propertyType: PROPERTY_TYPE_36, propertyTypeAssumed: PROPERTY_TYPE_ASSUMED_36,
+    // v2 occupancy is a CLOSED four-value enum their guide publishes in full, so it is
+    // validated here and needs no cascade — a single documented value.
     occupancy: OCCUPANCY_36, occupancyAssumed: OCCUPANCY_ASSUMED_36,
-    occupancyIsEnum: true,
+    occupancyIsEnum: true, occupancyIsCandidates: false,
     enums: ENUMS_36,
   },
 };
@@ -349,22 +377,40 @@ function buildOrder(ctx = {}, overrides = {}, opts = {}) {
   loanType = pickEnum('loanType', loanType, 'loanType', 'loanInfo.loanType');
 
   // ---- occupancy -----------------------------------------------------------
-  // Free text on 2.6, a closed enum on 3.6 — so on 3.6 a word with no exact value
-  // is DECLARED rather than sent, and a category we cannot place at all is reported
-  // instead of guessed.
+  // On 3.6 a closed enum, validated here (a word with no exact value is DECLARED, a
+  // category we cannot place at all is reported instead of guessed). On 2.6 a LIVE
+  // enum whose members are undocumented, so it resolves to an ORDERED candidate list
+  // the sender cascades through until Class accepts one — a human override is tried
+  // first, the auto candidates fall in behind it, and `occupancy` starts on the head
+  // of that list (see OCCUPANCY_CANDIDATES_26 and routes/class.js).
   const oKey = norm(p.occupancy);
-  let occupancy = profile.occupancy[oKey] || null;
-  if (!occupancy && profile.occupancyAssumed[oKey]) {
-    const [val, why] = profile.occupancyAssumed[oKey];
-    occupancy = val;
-    assumptions.push({ field: 'occupancy', value: val, why });
-  }
-  // 2.6 takes free text here, so only 3.6's closed list is validated.
-  occupancy = profile.occupancyIsEnum
-    ? pickEnum('occupancy', occupancy, 'occupancy', 'occupancy')
-    : pick('occupancy', occupancy);
-  if (!occupancy && profile.occupancyIsEnum && oKey && !rejected.has('occupancy')) {
-    missing.push({ field: 'occupancy', why: `UAD ${profile.uad} has no occupancy value matching "${p.occupancy}" — pick one on the order screen` });
+  let occupancy;
+  let occupancyCandidates;
+  if (profile.occupancyIsCandidates) {
+    const auto = profile.occupancy[oKey]
+      || (profile.occupancyAssumed[oKey] ? [profile.occupancyAssumed[oKey][0]] : null)
+      || profile.occupancyFallback || [];
+    const override = pick('occupancy', null);   // a value a staffer typed on the screen
+    const list = [];
+    if (override != null && override !== '') list.push(String(override));
+    for (const c of auto) list.push(c);
+    occupancyCandidates = list.filter((v, i) => v && list.indexOf(v) === i);
+    occupancy = occupancyCandidates[0] || null;
+    if (!occupancy && oKey && !rejected.has('occupancy')) {
+      missing.push({ field: 'occupancy', why: `no occupancy value could be derived for "${p.occupancy}"` });
+    }
+  } else {
+    occupancy = profile.occupancy[oKey] || null;
+    if (!occupancy && profile.occupancyAssumed[oKey]) {
+      const [val, why] = profile.occupancyAssumed[oKey];
+      occupancy = val;
+      assumptions.push({ field: 'occupancy', value: val, why });
+    }
+    occupancy = pickEnum('occupancy', occupancy, 'occupancy', 'occupancy');
+    if (!occupancy && oKey && !rejected.has('occupancy')) {
+      missing.push({ field: 'occupancy', why: `UAD ${profile.uad} has no occupancy value matching "${p.occupancy}" — pick one on the order screen` });
+    }
+    occupancyCandidates = occupancy ? [occupancy] : [];
   }
 
   // ---- required identity ---------------------------------------------------
@@ -454,7 +500,38 @@ function buildOrder(ctx = {}, overrides = {}, opts = {}) {
     uad: profile.uad,
     versionLabel: profile.label,
     path: profile.path,
+    // The occupancy the body starts on is `occupancyCandidates[0]`; the sender cascades
+    // through the rest ONLY on the specific occupancy binding error. `occupancyKey` is
+    // the classification the accepted value is remembered under.
+    occupancyCandidates,
+    occupancyKey: oKey || null,
   };
+}
+
+// True when a Class error is the v1 occupancy field failing to bind to their enum —
+// the ONE error the order sender may safely retry with the next candidate. It is
+// occupancy-SPECIFIC on purpose: once occupancy is accepted, a DIFFERENT field's
+// binding error (or any other failure) must stop the cascade and surface as itself.
+//
+// A .NET model-binding 400 can arrive two ways and the signal lives in a different
+// place in each: Class's own envelope `{success,code,error:"…OccupancyTypeEnum…
+// $.occupancy…"}` (the shape actually observed), OR ASP.NET Core's DEFAULT
+// ValidationProblemDetails `{title,status,errors:{"$.occupancy":["…"]}}`, where the
+// field is a KEY. So we search the WHOLE serialized body rather than a fixed set of
+// keys — and match only on the two stable identifiers for THIS error (the enum TYPE
+// name and the JSON PATH), so a different field's error can never match even when the
+// whole body is stringified. If occupancy is one of several bad fields, we retry it;
+// once occupancy binds, the path/type no longer appears and the cascade stops.
+function isOccupancyEnumError(err) {
+  if (!err || err.status !== 400) return false;
+  const parts = [];
+  if (err.body != null) {
+    try { parts.push(typeof err.body === 'string' ? err.body : JSON.stringify(err.body)); }
+    catch (_) { /* a body we cannot serialize simply contributes nothing */ }
+  }
+  if (typeof err.message === 'string') parts.push(err.message);
+  const text = parts.join(' ');
+  return /Occupancy\w*Enum/i.test(text) || /\$\.occupancy\b/i.test(text);
 }
 
 // What the SCREEN needs in order to offer exactly what this version accepts.
@@ -465,6 +542,11 @@ function buildOrder(ctx = {}, overrides = {}, opts = {}) {
 function screenOptions(version) {
   const profile = profileFor(version);
   const uniq = (a) => a.filter((v, i) => a.indexOf(v) === i);
+  // On the candidate version, `profile.occupancy` values are ARRAYS — the screen offers
+  // the head of each list as a type-ahead suggestion (the single most-likely value),
+  // not the whole cascade, so a staffer sees a clean list and the server still tries
+  // the rest behind the scenes.
+  const suggestFrom = (m) => uniq(Object.values(m).map((v) => (Array.isArray(v) ? v[0] : v)));
   return {
     version: profile.version,
     uad: profile.uad,
@@ -474,7 +556,7 @@ function screenOptions(version) {
     occupancyIsEnum: profile.occupancyIsEnum,
     occupancySuggestions: profile.occupancyIsEnum
       ? profile.enums.occupancy
-      : uniq(Object.values(profile.occupancy)),
+      : suggestFrom(profile.occupancy),
   };
 }
 
@@ -482,6 +564,7 @@ module.exports = {
   buildOrder,
   profileFor,
   screenOptions,
+  isOccupancyEnumError,
   DEFAULT_VERSION,
   VERSIONS: Object.values(PROFILES).map((p) => ({ version: p.version, uad: p.uad, label: p.label, path: p.path })),
   // Kept for the callers that predate two versions. These are the 2.6 lists.
@@ -491,6 +574,6 @@ module.exports = {
     PROFILES, PURPOSE, LOAN_TYPE, norm, contact, roleOf,
     // The 2.6 names, kept so the existing checks read the same as they always did.
     PROPERTY_TYPE: PROPERTY_TYPE_26, PROPERTY_TYPE_ASSUMED: PROPERTY_TYPE_ASSUMED_26,
-    OCCUPANCY: OCCUPANCY_26,
+    OCCUPANCY: OCCUPANCY_26, OCCUPANCY_CANDIDATES_26,
   },
 };
