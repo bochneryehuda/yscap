@@ -243,6 +243,18 @@ function profileFor(v) {
 const norm = (v) => String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
 const money = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : null; };
 const text = (v) => { const s = String(v == null ? '' : v).trim(); return s || null; };
+// Class validates phone numbers and rejects anything that is not a plain US
+// 10-digit number — their own examples are bare 10-digit strings (e.g.
+// 8888888888), and a stored "+1 (570) 555-1234" / "570-555-9999" comes back
+// "Please enter valid work phone number". Strip to digits, drop a leading US
+// country code, and only keep a clean 10-digit value; otherwise return null so
+// the caller omits the method (a contact phone is optional) rather than send
+// one Class will reject.
+const phone10 = (v) => {
+  const d = String(v == null ? '' : v).replace(/\D+/g, '');
+  const ten = d.length === 11 && d[0] === '1' ? d.slice(1) : d;
+  return ten.length === 10 ? ten : null;
+};
 
 // A contact Class will accept. Their contact-type list is closed and IDENTICAL on
 // both UAD versions; we only ever emit the four roles an appraisal genuinely needs.
@@ -254,8 +266,8 @@ function contact(profile, type, person, { primary = false } = {}) {
   const last = text(person.lastName);
   const methods = [];
   const email = text(person.email);
-  const mobile = text(person.mobile || person.cell);
-  const work = text(person.workPhone || person.phone);
+  const mobile = phone10(person.mobile || person.cell);
+  const work = phone10(person.workPhone || person.phone);
   if (email) methods.push({ value: email, type: 'Email', primaryContact: true });
   if (mobile) methods.push({ value: mobile, type: 'MobilePhone', primaryContact: !email });
   if (work) methods.push({ value: work, type: 'WorkPhone', primaryContact: false });
@@ -443,10 +455,19 @@ function buildOrder(ctx = {}, overrides = {}, opts = {}) {
       why: 'no property-access contact on the file — the appraiser will contact the borrower to arrange entry' });
   }
 
-  const notify = (Array.isArray(ctx.notifyEmails) ? ctx.notifyEmails : [])
-    .map(text).filter(Boolean)
-    .filter((e, i, a) => a.indexOf(e) === i)
-    .map((email) => ({ [profile.notifyKeys.type]: 'BorrowerInfo', [profile.notifyKeys.email]: email }));
+  // Class's notification list accepts EXACTLY ONE item, and its only type is
+  // BorrowerInfo (their enum carries no other value) — it is the borrower's own
+  // notification address, not a cc list. Emitting one item per notify-email is
+  // rejected ("The Notification list should have exactly one item of type
+  // BorrowerInfo"), so we send a single item: the borrower's email when we have
+  // one, else the first valid notify-email on file. The loan officer and
+  // processor follow the order in PILOT, not through Class's borrower channel.
+  const notifyEmail = text((ctx.borrower || {}).email)
+    || (Array.isArray(ctx.notifyEmails) ? ctx.notifyEmails : []).map(text).find(Boolean)
+    || null;
+  const notify = notifyEmail
+    ? [{ [profile.notifyKeys.type]: 'BorrowerInfo', [profile.notifyKeys.email]: notifyEmail }]
+    : [];
 
   const body = {
     productId,

@@ -336,10 +336,13 @@ async function buildPreview(db, appId, opts = {}) {
     occupancyCandidates,
     occupancyKey: built.occupancyKey,
     contacts: built.body.contacts || [],
-    // Who Class will email as the appraisal moves (LO + processor + borrowers). The
-    // notificationList is an array, so fieldRows() skips it — surface it here so the
-    // screen shows every recipient before the order goes out (the desk's standing rule).
-    notifyEmails: ctx.notifyEmails,
+    // Who Class will email as the appraisal moves. Class's notification list carries
+    // exactly ONE item, of type BorrowerInfo — the borrower's own address (Class
+    // notifies the borrower; the LO/processor follow the order in PILOT). The
+    // notificationList is an array, so fieldRows() skips it — surface the actual
+    // recipient(s) that go out here, per the desk's "show what goes out" rule.
+    notifyEmails: (built.body.notificationList || [])
+      .map((n) => n.Email || n.email).filter(Boolean),
     // The product PILOT auto-picked from class_form_map (null until the map is seeded).
     // Staff can still change it on the screen; the override wins in buildOrder.
     chosenProduct: chosen,
