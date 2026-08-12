@@ -8023,6 +8023,7 @@ async function signOffGate(itemId, actor) {
   const isFraud = code === 'rtl_cond_fraud';
   const isAppraisalDocs = code === 'rtl_cond_appraisaldocs';   // two slots: XML + PDF
   const isCredit = code === 'rtl_cond_credit';                 // requires an IMPORTED credit report (not a bare PDF)
+  const isIska = code === 'rtl_cond_iska';                     // manual upload → super_admin only
   const isAppraisalReview = code === 'appraisal_review_cleared'; // CTC gate: no open fatal finding
   const isUnderwritingReview = code === 'underwriting_review_cleared'; // CTC gate: no open fatal document finding
   const isUspsAddress = code === 'usps_address_verification';
@@ -8151,8 +8152,35 @@ async function signOffGate(itemId, actor) {
     return null;
   }
 
+  // Heter Iska — fulfilled by an ACCEPTED document, but WHERE the document came from
+  // decides WHO may sign it off (owner-directed 2026-08):
+  //   • DocuSign-fed — the executed package the webhook auto-files (doc_kind
+  //     'heter_iska_signed' + source_type 'system') → any authorized signer.
+  //   • Manually uploaded — anything else attached to the condition by hand, which did
+  //     NOT come back through the DocuSign package → ONLY a super_admin may sign off.
+  // Fails SAFE: no accepted document → refuse; unknown/ambiguous provenance → treat as
+  // manual → require super_admin (never assume "DocuSign-fed"). A DocuSign-fed accepted
+  // copy present on the item lets any signer proceed even if a manual copy also sits there.
+  if (isIska) {
+    const docs = (await db.query(
+      `SELECT doc_kind, source_type FROM documents
+        WHERE checklist_item_id=$1 AND is_current AND ${docAccept.ACCEPTED_SQL('')}`, [itemId])).rows;
+    if (!docs.length) {
+      const any = await db.query(
+        `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current LIMIT 1`, [itemId]);
+      if (any.rows.length) return docAccept.ALL_REJECTED_MSG;
+      return 'Upload the executed Heter Iska (and accept it) before signing this off — a document-based condition cannot be completed with nothing uploaded.';
+    }
+    const docusignFed = docs.some((d) => d.doc_kind === 'heter_iska_signed' && d.source_type === 'system');
+    const isSuper = !!(actor && actor.kind === 'staff' && actor.role === 'super_admin');
+    if (!docusignFed && !isSuper) {
+      return 'This Heter Iska was uploaded manually — it did not come back from the signed DocuSign package. Only a super admin can sign off a manually-uploaded Heter Iska. Ask a super admin to sign it off, or send the Heter Iska through DocuSign so the executed copy feeds the condition automatically.';
+    }
+    return null;
+  }
+
   if (item.item_kind === 'document' && !item.tool_key && item.is_required !== false
-      && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud && !isAppraisalDocs && !isCredit) {
+      && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud && !isAppraisalDocs && !isCredit && !isIska) {
     // ACCEPTED, not merely "not rejected" (owner-directed 2026-08-03). The old
     // test was satisfied by a document nobody had ever opened, which is how a
     // condition got signed off on a previous policy's paperwork. The pending

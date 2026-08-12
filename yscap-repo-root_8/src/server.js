@@ -840,6 +840,15 @@ if (require.main === module) {
         require('./lib/esign/draw-wire').backfillWireReclassifyOnce()
           .then((r) => r && (r.fixed || r.linked) && console.log('[boot] draw-wire reclassify backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] draw-wire reclassify backfill failed:', e.message));
+        // PREVIOUS FILES for the Heter Iska auto-feed fix (owner-reported 2026-08: a
+        // completed Heter Iska DocuSign package "wasn't fed directly into the iska
+        // condition"). The send-time ensure + webhook re-resolve heal in-flight
+        // completions; this ONE-SHOT pass reaches ALREADY-completed back-book envelopes
+        // whose executed doc was stored but never bound to rtl_cond_iska. Bounded,
+        // self-draining, idempotent. Off with ISKA_FEED_HEAL_DISABLED=1.
+        require('./lib/esign/iska-feed-heal').backfillIskaFeedOnce(Number(process.env.ISKA_FEED_HEAL_BOOT || 200))
+          .then((r) => r && r.fed && console.log('[boot] iska feed heal:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] iska feed heal failed:', e.message));
         // PREVIOUS FILES for iPhone photos (owner-reported 2026-08-10: the draw inspection
         // photos are HEIC, "we need to add our site to be able to read this format"). New
         // archives convert at the door; this ONE forward-only sweep converts what is already

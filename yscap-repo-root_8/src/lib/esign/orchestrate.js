@@ -303,6 +303,60 @@ async function resolveConditionItem(db, applicationId, code) {
   return r.rows.length ? r.rows[0].id : null;
 }
 
+// Reverse map: a completed signed doc_kind (esign_envelope_docs.doc_kind) -> the
+// condition TEMPLATE CODE that doc clears. Built ONCE from PACKAGES so it can never
+// drift from the send-time binding at createOrClaimEnvelope. Used by the webhook to
+// re-resolve a condition by code when the send-time binding captured NULL (the
+// condition was absent/stale when the envelope was sent).
+const CONDITION_CODE_BY_SIGNED_KIND = (() => {
+  const m = {};
+  for (const spec of Object.values(PACKAGES)) {
+    for (const d of (spec.docs || [])) {
+      if (d.signedKind && d.condition) m[d.signedKind] = d.condition;
+    }
+  }
+  return m;
+})();
+function conditionCodeForSignedKind(signedKind) {
+  return CONDITION_CODE_BY_SIGNED_KIND[signedKind] || null;
+}
+
+/**
+ * Ensure the Heter Iska condition (rtl_cond_iska) exists on this file, returning its
+ * checklist_item id. rtl_cond_iska is a STANDARD RTL condition instantiated on every
+ * RTL file at creation (generateChecklist), but a backfill gap (a file created before
+ * db/051 in a status outside its one-shot backfill list) or condition-dedup churn can
+ * leave it absent — which would bind the executed Iska -> NULL so the completed DocuSign
+ * package never feeds the condition (owner-reported 2026-08). Find the existing item;
+ * if genuinely absent, create it FAITHFULLY from the template (the same column set
+ * insertFromTemplate copies: label/hint/audience/item_kind/role_scope/phase/tpr_exclude/…),
+ * born 'outstanding'. Idempotent per file (a NOT EXISTS guard + a re-resolve fallback
+ * make a concurrent completion safe). Returns the item id, or null if the template is
+ * missing/inactive.
+ */
+async function ensureIskaCondition(db, applicationId, actorId) {
+  const existing = await resolveConditionItem(db, applicationId, 'rtl_cond_iska');
+  if (existing) return existing;
+  const ins = await db.query(
+    `INSERT INTO checklist_items
+       (template_id, scope, application_id, label, borrower_label, audience, item_kind,
+        role_scope, phase, hint, borrower_hint, is_gate, is_milestone, sort_order,
+        tool_key, clickup_field_id, tpr_exclude, created_by_kind, created_by_id, is_required, status)
+     SELECT t.id, 'application', $1, t.label, t.borrower_label, t.audience, t.item_kind,
+            COALESCE(t.role_scope,'any'), t.phase, t.hint, t.borrower_hint,
+            COALESCE(t.is_gate,false), COALESCE(t.is_milestone,false), COALESCE(t.sort_order,100),
+            t.tool_key, t.clickup_field_id, COALESCE(t.tpr_exclude,false), 'system', $2,
+            (t.is_required IS DISTINCT FROM false), 'outstanding'
+       FROM checklist_templates t
+      WHERE t.code='rtl_cond_iska' AND t.is_active=true
+        AND NOT EXISTS (SELECT 1 FROM checklist_items ci
+                         WHERE ci.application_id=$1 AND ci.template_id=t.id)
+     RETURNING id`, [applicationId, actorId || null]);
+  if (ins.rows[0]) return ins.rows[0].id;
+  // The NOT EXISTS suppressed the insert (a concurrent completion created it) — re-resolve.
+  return resolveConditionItem(db, applicationId, 'rtl_cond_iska');
+}
+
 // ---- application-document formatting helpers --------------------------------
 // The loan application prints EVERY field the borrower/staff entered. These turn
 // raw file values into the display strings the pure renderer (application-pdf.js)
@@ -1193,6 +1247,15 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
       e.code = 'NOO_NOT_APPLICABLE'; e.retryable = false; throw e;
     }
   }
+  // The Heter Iska condition (rtl_cond_iska) is a STANDARD RTL condition, but a backfill
+  // gap or condition-dedup churn can leave it absent/stale at send time — which would bind
+  // the signed Iska -> NULL so the executed doc never feeds the condition on completion
+  // (owner-reported 2026-08). Ensure it EXISTS before createOrClaimEnvelope binds the doc
+  // to it. Idempotent per file. (The webhook re-resolves by code as a completion-time
+  // belt-and-suspenders that also heals PAST envelopes; this is the going-forward belt.)
+  if (purpose === 'heter_iska') {
+    await ensureIskaCondition(db, applicationId, actor && actor.id);
+  }
   // Forward the draw-send recipient choice ('borrower'|'co_borrower') so the SOLO package (the wire form) is
   // SEEDED to the chosen signer — createOrClaimEnvelope reads opts.recipient to drive buildRoster.
   // A term-sheet-final override also mints a FRESH envelope (reissue) so it can be
@@ -1232,6 +1295,7 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
 
 module.exports = {
   PACKAGES, packageSpec, buildDefinition, sendPackage,
-  createOrClaimEnvelope, buildRoster, resolveRecipientIdentity, tabsFor, resolveConditionItem, latestDocument, loadApplication, loadCcViewers,
+  createOrClaimEnvelope, buildRoster, resolveRecipientIdentity, tabsFor, resolveConditionItem,
+  conditionCodeForSignedKind, ensureIskaCondition, latestDocument, loadApplication, loadCcViewers,
   loadDocGenData, validateGenerated, subjectAddress, subjectSuffix, composeSubject, fitAddress,
 };
