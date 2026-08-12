@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import EmailCenter from './EmailCenter.jsx';
-import FileSections, { Section } from './FileSections.jsx';
+import FileSections, { Section, goToSection } from './FileSections.jsx';
+import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 
 /* Per-file construction-draw desk (staff). One place tying draws ↔ Scope of Work ↔
    construction budget: the unified per-line/per-unit rollup, each draw's per-line
@@ -22,6 +23,10 @@ const centsOrNull = (v) => {
   const n = Math.round(Number(s.replace(/[^0-9.]/g, '')) * 100);
   return Number.isFinite(n) && n >= 0 ? n : null;
 };
+// cents → the dollars string an input box shows, so a value seeded from a draw round-trips
+// back through centsOrNull to the exact same cents (no float drift): 625000 → "6250.00" →
+// centsOrNull → 625000. Blank when the cents are missing.
+const centsToInput = (c) => { const n = Number(c); return Number.isFinite(n) ? (n / 100).toFixed(2) : ''; };
 const fmtDay = (v) => {   // MM/DD/YYYY (industry standard), shift-free for date-only values
   if (!v) return '—';
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v));
@@ -45,6 +50,18 @@ const STATUS = {
   pending: 'Awaiting your approval', pending_capital_partner: 'With capital partner', approved: 'Approved',
 };
 const RISK = { high: { label: 'High risk', cls: 'sw-pending' }, medium: { label: 'Review', cls: 'sw-insp' }, low: { label: 'Minor', cls: 'sw-draft' }, clear: { label: 'Clear', cls: 'sw-approved' } };
+// A "what's left" checklist step whose action lives in ANOTHER draw-desk section gets a Quick Link
+// straight there (owner-directed 2026-08-12: "every option you need to do should be a quick link …
+// Release Wire → the Money ledger, Approve Wire Instructions → the Wire Instructions page"). Steps
+// whose action is right here on the draw card carry no link — you're already looking at it. Keys
+// match src/sitewire/draw-checklist.js STEPS.
+const STEP_GOTO = {
+  wire_form_signed: 'dsec-request',       // send the DocuSign wire form
+  wire_form_accepted: 'dsec-request',     // accept the signed wire instructions
+  operating_agreement: 'dsec-request',    // collect the wire entity's operating agreement
+  lien_waivers: 'dsec-waivers',           // collect / waive outstanding lien waivers
+  money_recorded: 'dsec-ledger',          // record the release in the Money ledger
+};
 
 // Friendly one-liner for a birth-phase setup problem stored on the file (link.raw.setup_status). Shown
 // inline in this file's draw section — never as a global error row (go-forward only).
@@ -76,11 +93,29 @@ export default function DrawsPanel({ appId }) {
   const [busy, setBusy] = useState('');
   const [msg, setMsg] = useState('');
   const [quickStatuses, setQuickStatuses] = useState([]); // Sitewire pipeline status labels
+  // Mirrors `data` so load() can tell a first load from a background refresh without
+  // taking `data` as a dependency (which would re-create load and re-run every child's
+  // effect). Reset when the file changes so a new file gets its first-load spinner.
+  const dataRef = useRef(null);
+  // On a file switch (if this panel is reused rather than remounted), drop the prior file's data so
+  // the new file shows the spinner instead of the previous file's draws (pre-merge audit B).
+  useEffect(() => { dataRef.current = null; setData(null); }, [appId]);
 
   const load = useCallback(() => {
-    setLoading(true);
-    api.get(`/api/sitewire/files/${appId}/rollup`)
-      .then((d) => { setData(d); setErr(''); })
+    // ONLY the first load blanks the panel to a spinner. Every refresh AFTER an action
+    // (approve, record a release, change a setting) keeps the current desk on screen and
+    // holds the reader's place — so clicking anything no longer collapses the page to a
+    // "Loading draws…" div and bounces to the top (owner-reported: "any setting I click,
+    // I dive back up to the top of the page — we need to stay by Draw 1").
+    const first = dataRef.current == null;
+    if (first) setLoading(true);
+    return api.get(`/api/sitewire/files/${appId}/rollup`)
+      .then((d) => {
+        const snap = first ? null : captureScrollAnchor();   // measured just before the re-render
+        dataRef.current = d;
+        setData(d); setErr('');
+        restoreScrollAnchor(snap);                            // put the reader back after paint
+      })
       .catch((e) => setErr(e?.data?.error || e.message || 'Could not load draws'))
       .finally(() => setLoading(false));
   }, [appId]);
@@ -89,8 +124,11 @@ export default function DrawsPanel({ appId }) {
 
   const canManage = can('manage_draws');
   if (!canManage) return null;
-  if (loading) return <div className="panel" style={{ marginTop: 12 }}>Loading draws…</div>;
-  if (err) return <div className="panel" style={{ marginTop: 12, color: 'var(--bad,#b04a3f)' }}>{err}</div>;
+  // Blank to a spinner / error ONLY before the first successful load. Once we have data,
+  // a refresh keeps it on screen (a transient refresh error shows inline below, not a
+  // full-panel wipe) so the reader never gets thrown to the top.
+  if (loading && !data) return <div className="panel" style={{ marginTop: 12 }}>Loading draws…</div>;
+  if (err && !data) return <div className="panel" style={{ marginTop: 12, color: 'var(--bad,#b04a3f)' }}>{err}</div>;
   if (!data) return null;
 
   const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [], retainage = null, oop = null, waivers = [], lien_waivers_enabled = false,
@@ -139,6 +177,9 @@ export default function DrawsPanel({ appId }) {
 
   return (
     <div>
+      {/* A refresh that failed while the desk is already up — shown inline instead of
+          replacing the whole panel, so the reader stays where they are. */}
+      {err && <div className="dd-card" style={{ marginTop: 12, borderLeft: '3px solid var(--bad,#b04a3f)', color: 'var(--bad,#b04a3f)' }}>{err}</div>}
       {notLinked ? (
         <>
           {/* GO-FORWARD ONLY: a pre-existing Sitewire property (loan already there, not pushed by us) is
@@ -231,11 +272,11 @@ export default function DrawsPanel({ appId }) {
             <Section id="dsec-draws" title="Draws" defaultOpen badge={draws.length || null}
               action={draws.length > 0 ? (
                 <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                  <button className="btn btn-sm ghost" title="A PILOT-branded PDF of the whole construction project — schedule of values + every draw's inspection photos + notes."
+                  <button className="btn btn-sm soft" title="A PILOT-branded PDF of the whole construction project — schedule of values + every draw's inspection photos + notes."
                     onClick={() => { const w = window.open('', '_blank'); act('projreport', async () => { await api.sitewireProjectReport(appId, 'staff', w); return { msg: 'Opened the whole-project report in a new tab.' }; }); }}>
                     Whole-project report
                   </button>
-                  <button className="btn btn-sm ghost" title="The same whole-project report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower."
+                  <button className="btn btn-sm soft" title="The same whole-project report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower."
                     onClick={async () => { if (!(await askConfirm('Share the borrower-safe whole-project report with the borrower? They’ll be able to see it in their portal.'))) return; const w = window.open('', '_blank'); act('projreportb', async () => { await api.sitewireProjectReport(appId, 'borrower', w); return { msg: 'Shared the borrower-safe whole-project report with the borrower.' }; }); }}>
                     Borrower copy
                   </button>
@@ -374,6 +415,25 @@ function DrawRequestCard({ appId }) {
   async function openSigned(id) {
     try { const { blob } = await api.staffDownloadDoc(id); const url = URL.createObjectURL(blob); window.open(url, '_blank'); }
     catch (_) { setMsg('Could not open the signed form.'); }
+  }
+  // ACCEPT / REJECT the wire instructions right here (owner-directed 2026-08-12: "accept the wire
+  // instructions … I don't see any option"). Writes the shared 'accepted' definition, so the money
+  // gate clears the moment the coordinator accepts.
+  async function reviewWire(action) {
+    let reason = null;
+    if (action === 'reject') {
+      reason = await askPrompt('Why are you rejecting these wire instructions? The borrower will need to re-sign the form.',
+        { title: 'Reject wire instructions', confirmLabel: 'Reject', multiline: true });
+      if (reason == null) return;                                  // cancelled
+      if (!String(reason).trim()) { setMsg('A reason is required to reject.'); return; }
+    }
+    setBusy(true); setMsg('');
+    try {
+      await api.post(`/api/sitewire/files/${appId}/wire-form/review`, { action, ...(reason ? { reason: String(reason).trim() } : {}) });
+      setMsg(action === 'accept' ? 'Wire instructions accepted — this draw can now be delivered.' : 'Wire instructions rejected — ask the borrower to re-sign the form.');
+      reload();
+    } catch (e) { setMsg((e && e.data && e.data.error) || e.message || 'Could not update the wire instructions.'); }
+    finally { setBusy(false); }
   }
   // GENERAL RESEND (owner-directed 2026-08-12) — nudge the current signer with a fresh DocuSign
   // reminder to the SAME address, exactly like the term-sheet section's "Resend reminder". Distinct
@@ -570,12 +630,42 @@ function DrawRequestCard({ appId }) {
         </div>
       )}
 
-      {/* signed PDF */}
-      {d.signed_document && (
-        <div style={{ marginTop: 10 }}>
-          <button className="btn btn-sm ghost" onClick={() => openSigned(d.signed_document.id)}>View the signed form (PDF)</button>
-        </div>
-      )}
+      {/* ACCEPT THE WIRE INSTRUCTIONS — the signed form + the one action that clears the money gate.
+          Visible right here so it's not a hidden step (owner-directed 2026-08-12). */}
+      {d.signed_document && (() => {
+        const rev = d.signed_document.review_status || 'pending';
+        // "Accepted" reflects the actual money GATE (wire_form) — so a wire accepted through any
+        // copy reads as accepted and the buttons drop away — falling back to this document's own
+        // status when the gate summary is absent.
+        const accepted = rev === 'accepted' || !!(d.wire_form && d.wire_form.accepted);
+        const rejected = !accepted && rev === 'rejected';
+        return (
+          <div className="act-card" id="wire-form-review" data-keep-scroll="wire-form-review"
+            style={{ marginTop: 12, borderLeft: '3px solid ' + (accepted ? 'var(--success,#2E7A5E)' : rejected ? 'var(--danger,#A32A2A)' : 'var(--gold,#ae8746)') }}>
+            <div className="act-card-head">
+              <div style={{ minWidth: 200, flex: 1 }}>
+                <div className="act-card-title">{accepted ? 'Wire instructions accepted' : rejected ? 'Wire instructions rejected' : 'Accept the wire instructions'}</div>
+                <div className="act-card-sub">
+                  {accepted
+                    ? 'These wire instructions are approved — the draw can be delivered and the money can move.'
+                    : rejected
+                      ? 'These were rejected — the borrower needs to re-sign the form before any money can move.'
+                      : 'The borrower signed and their wire details are captured above. Review them and accept — the money can’t be released until you do.'}
+                </div>
+              </div>
+              <span className={'dd-chip ' + (accepted ? 'on' : rejected ? 'off' : 'warn')}><span className="dot" />{accepted ? 'Accepted' : rejected ? 'Rejected' : 'Needs review'}</span>
+            </div>
+            {rejected && d.signed_document.rejection_reason && (
+              <div className="act-card-sub" style={{ marginTop: 6, color: 'var(--danger,#A32A2A)' }}>Reason: {d.signed_document.rejection_reason}</div>
+            )}
+            <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+              {!accepted && <button className="btn btn-sm primary" disabled={busy} onClick={() => reviewWire('accept')}>Accept wire instructions</button>}
+              {!accepted && <button className="btn btn-sm ghost" disabled={busy} onClick={() => reviewWire('reject')}>Reject</button>}
+              <button className="btn btn-sm soft" onClick={() => openSigned(d.signed_document.id)}>View signed form (PDF)</button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* recipient chooser — only when there's a co-borrower to choose (owner-directed 2026-07-21) */}
       {coBorrower && (!env || terminal) && (
@@ -2072,7 +2162,7 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
         <div className="muted small">
           Requested {usd2(draw.requested_cents)} · {draw.final_approved_cents > 0 ? 'Final approved' : 'Inspector approved'} {usd2(draw.approved_cents)}
           {draw.fee_cents > 0 ? <> · Less fee {usd2(draw.fee_cents)}{draw.fee_projected ? '*' : ''}</> : null}
-          {' '}· Net {usd2(draw.net_release_cents)}
+          {' '}· Net <b style={{ color: 'var(--teal-br)' }}>{usd2(draw.net_release_cents)}</b>
         </div>
       </div>
 
@@ -2161,6 +2251,10 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
             route has always accepted them (client.DRAW_TRANSITIONS). Both also REQUIRE a note of at
             least 8 characters (audit B-10) which the old button never asked for, so every click
             answered 400 — the button was broken on open draws too. */}
+        {/* The DECISIONS on this draw, grouped + eyebrow-labelled the same way "Documents" is, so
+            the two clusters read as a pair and the primary "Final approve" anchors this one. */}
+        <span className="act-group">
+        <span className="act-label">Decisions</span>
         {DRAW_ACTIONS(isOpen).map((a) => (
           <button key={a.key} className={'btn btn-sm ' + (a.key === 'approve' ? 'primary' : 'ghost')}
             title={offTip || a.hint} disabled={writesOff || busy === a.key + draw.sitewire_draw_id}
@@ -2221,6 +2315,7 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
           })}>
           {finding ? 'Re-send findings' : 'Deliver findings to borrower'}
         </button>
+        </span>
 
         <span className="act-sep" aria-hidden="true" />
 
@@ -2642,7 +2737,11 @@ function DrawChecklist({ checklist, statusWords, dates, daysInStage }) {
               <b style={{ color: '#141B22' }}>{s.label}</b>
               {s.state !== 'done' && s.who ? <span style={{ color: '#4B585C' }}> — waiting on {s.who}</span> : null}
               {s.detail ? <span style={{ display: 'block', color: '#4B585C' }}>{s.detail}</span> : null}
-              {s.state !== 'done' && s.action ? <span style={{ display: 'block', color: '#4B585C' }}>→ {s.action}</span> : null}
+              {s.state !== 'done' && s.action ? (
+                STEP_GOTO[s.key]
+                  ? <button type="button" className="dd-quicklink" title="Go straight to where you do this" onClick={() => goToSection(STEP_GOTO[s.key])}>{s.action} →</button>
+                  : <span style={{ display: 'block', color: '#4B585C' }}>→ {s.action}</span>
+              ) : null}
             </span>
           </li>
         ))}
@@ -3122,11 +3221,46 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
   const oopHeldC = (approvedC || 0) - reimbursableC; // the part of this draw that stays out of pocket
   const retC = Math.round(reimbursableC * pct / 100);
   const net = reimbursableC - feeC - retC;
+
+  // AUTO-POPULATE + MATCH GUARD (owner-directed 2026-08-12). The approved amount and our fee are
+  // already known per draw (the system computed them — see rollup.draws), so selecting a draw fills
+  // them in and the coordinator only enters the release DATE. The boxes stay editable, but the
+  // release is BLOCKED until they line up with the draw again: this is the last step, so the recorded
+  // figures must equal the draw's — "if it's changing any figures, it should not let you proceed
+  // before it's matching to the actual draw."
+  const selDraw = draws.find((d) => String(d.sitewire_draw_id) === String(f.sitewire_draw_id)) || null;
+  // A release records the FINAL-approved amount — the figure the server validates the release against
+  // (sitewire_draws.total_approved_cents) and the amount that actually wires. drawMoney exposes it as
+  // final_approved_cents (0 until the draw is finally approved). Seeding/matching the INSPECTOR
+  // proposal instead could seed a number the server then rejects with a 422 when the lender cut the
+  // amount at final approval (pre-merge audit C-1); the final figure also gates recording on final
+  // approval, which IS the order of the workflow (the checklist puts "final approve" before "record").
+  const expApprovedC = selDraw ? (Number(selDraw.final_approved_cents) || 0) : null;
+  const expFeeC = selDraw ? (Number(selDraw.fee_cents) || 0) : null;
+  const drawNotApproved = !!selDraw && expApprovedC <= 0;   // not finally approved yet — nothing to release
+  const figuresMatch = selDraw ? (approvedC === expApprovedC && feeC === expFeeC) : true;
+  // Seed the money boxes from a draw's FINAL-approved figures. A not-yet-final draw seeds a blank
+  // approved (the "not finally approved" note shows instead). release_date/funded_status are left
+  // alone — the date is the one thing a human still fills in.
+  function seedFromDraw(d, extra = {}) {
+    setF((s) => ({
+      ...s,
+      ...extra,
+      approved: d && Number(d.final_approved_cents) > 0 ? centsToInput(d.final_approved_cents) : '',
+      fee: d ? centsToInput(d.fee_cents) : '',
+      fee_kind: d && d.fee_kind ? d.fee_kind : s.fee_kind,
+    }));
+    setErr('');
+  }
   async function save() {
     // A release must name its draw (audit F-2) — so the ledger, retainage pool and overdue monitor all bind
     // the release to exactly one draw. The server enforces this too; guarding here gives a clean message.
     if (!f.sitewire_draw_id) { setErr('Pick which draw this release is for.'); return; }
     if (approvedC == null || approvedC <= 0) { setErr('Enter the approved amount.'); return; }
+    if (!figuresMatch) {
+      setErr(`The approved amount and our fee must match Draw #${selDraw ? selDraw.number : ''} before you can record the release — approved ${usd2(expApprovedC)}, our fee ${usd2(expFeeC)}. Use the draw’s figures, or correct the numbers.`);
+      return;
+    }
     setBusy(true); setErr('');
     try {
       await api.post('/api/sitewire/disbursements', {
@@ -3143,6 +3277,8 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
   const totFee = sum('fee_cents');
   const totNet = sum('net_release_cents', 'released');
   const LEDGER_STATUS = { released: { label: 'Released', cls: 'sw-approved' }, held: { label: 'Held', cls: 'sw-pending' }, pending: { label: 'Pending', cls: 'sw-draft' } };
+  // Who actually wired the money, per the file's "Who releases the money" setting (release-party).
+  const RELEASED_BY = { us: 'Us', investor: 'Investor' };
   return (
     <div className="dd-card">
       <div className="dd-card-h" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
@@ -3153,7 +3289,7 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
             <div className="dd-sub" style={{ marginTop: 1 }}>Our fee comes off the approved amount{pct > 0 ? `, ${pct}% is held as retainage,` : ''} and the borrower nets the rest.</div>
           </div>
         </div>
-        <button className="btn btn-sm ghost" onClick={() => api.sitewireExportGl(appId).catch(() => {})}>GL export</button>
+        <button className="btn btn-sm soft" onClick={() => api.sitewireExportGl(appId).catch(() => {})}>GL export</button>
       </div>
 
       {/* summary tiles */}
@@ -3180,8 +3316,8 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
 
       {ledger.length > 0 && (
         <div className="dd-tablecard" style={{ overflowX: 'auto', marginTop: 12 }}>
-          <table className="dd-table" style={{ minWidth: 640 }}>
-            <thead><tr><th>Draw</th><th className="num">Approved</th><th className="num">Fee</th>{showRetainage && <th className="num">Retainage</th>}<th className="num">Net release</th><th>Date</th><th>Status</th></tr></thead>
+          <table className="dd-table" style={{ minWidth: 720 }}>
+            <thead><tr><th>Draw</th><th className="num">Approved</th><th className="num">Fee</th>{showRetainage && <th className="num">Retainage</th>}<th className="num">Net release</th><th>Date</th><th>Released by</th><th>Status</th></tr></thead>
             <tbody>
               {ledger.map((d) => {
                 const st = LEDGER_STATUS[d.funded_status] || { label: d.funded_status, cls: 'sw-draft' };
@@ -3193,6 +3329,7 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
                     {showRetainage && <td className="num" style={{ fontVariantNumeric: 'tabular-nums' }}>{usd2(d.retainage_held_cents)}</td>}
                     <td className="num" style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: 'var(--teal-br)' }}>{usd2(d.net_release_cents)}</td>
                     <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDay(d.release_date)}</td>
+                    <td className="muted">{d.kind === 'retainage_release' ? '—' : (RELEASED_BY[d.release_party] || '—')}</td>
                     <td><span className={'pill ' + st.cls}>{st.label}</span></td>
                   </tr>
                 );
@@ -3202,12 +3339,14 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
         </div>
       )}
 
-      {/* record a release — a clean inline form with a prominent net preview */}
+      {/* record a release — the draw's figures fill in on their own; the coordinator adds the date */}
       <div className="dd-card" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>
-        <div className="dd-field-l" style={{ fontWeight: 700, marginBottom: 8 }}>Record a release</div>
+        <div className="dd-field-l" style={{ fontWeight: 700, marginBottom: 2 }}>Record a release</div>
+        <div className="dd-sub" style={{ marginBottom: 8 }}>Pick a draw — its approved amount and our fee fill in automatically. You only need the release date. If you change a figure it must still match the draw before you can record the release.</div>
         <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <label className="small">Draw <span style={{ color: 'var(--bad,#b04a3f)' }}>*</span>
-            <select className="input" value={f.sitewire_draw_id} onChange={(e) => setF({ ...f, sitewire_draw_id: e.target.value })}>
+            <select className="input" value={f.sitewire_draw_id}
+              onChange={(e) => { const v = e.target.value; seedFromDraw(draws.find((x) => String(x.sitewire_draw_id) === String(v)) || null, { sitewire_draw_id: v }); }}>
               <option value="">Select a draw…</option>
               {draws.map((d) => <option key={d.sitewire_draw_id} value={d.sitewire_draw_id}>#{d.number}</option>)}
             </select>
@@ -3219,6 +3358,17 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
           </label>
           <label className="small">Release date<input type="date" className="input" value={f.release_date} onChange={(e) => setF({ ...f, release_date: e.target.value })} /></label>
         </div>
+        {selDraw && !figuresMatch && !drawNotApproved && (
+          <div className="small" style={{ color: 'var(--warning)', marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span>These don’t match Draw #{selDraw.number}: approved should be <b>{usd2(expApprovedC)}</b> and our fee <b>{usd2(expFeeC)}</b>. They must match the draw before you can record the release.</span>
+            <button type="button" className="btn btn-sm soft" onClick={() => seedFromDraw(selDraw)}>Use the draw’s figures</button>
+          </div>
+        )}
+        {drawNotApproved && (
+          <div className="small" style={{ color: 'var(--warning)', marginTop: 8 }}>
+            Draw #{selDraw.number} isn’t finally approved yet — final-approve it on the draw desk first, then record the release here.
+          </div>
+        )}
         {floorC > 0 && oopHeldC > 0 && (
           <div className="small" style={{ color: 'var(--warning)', marginTop: 8 }}>
             {usd2(oopHeldC)} of this draw is within the borrower’s out-of-pocket rehab ({usd2(floorC)}) and won’t be reimbursed — only {usd2(reimbursableC)} is reimbursable.
@@ -3226,7 +3376,8 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
         )}
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginTop: 12, flexWrap: 'wrap', gap: 10 }}>
           <div className="small">{floorC > 0 ? <>Reimbursable: <b>{usd2(reimbursableC)}</b> · </> : null}{pct > 0 ? <>Retainage held: <b>{usd2(retC)}</b> · </> : null}Borrower nets: <b style={{ fontSize: 16, color: 'var(--teal-br)' }}>{usd2(net)}</b></div>
-          <button className="btn btn-sm primary" disabled={busy || !f.sitewire_draw_id || approvedC == null || approvedC <= 0 || net < 0} onClick={save}>Record release</button>
+          <button className="btn btn-sm primary" disabled={busy || !f.sitewire_draw_id || approvedC == null || approvedC <= 0 || net < 0 || !figuresMatch}
+            title={!figuresMatch && f.sitewire_draw_id ? 'The approved amount and our fee must match the draw first' : undefined} onClick={save}>Record release</button>
         </div>
         {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}
       </div>

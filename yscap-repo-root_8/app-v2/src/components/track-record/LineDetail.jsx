@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api, saveBlob } from '../../lib/api.js';
 import { askConfirm, askPrompt } from '../../lib/dialog.js';
 import DocPreview from '../DocPreview.jsx';
+import { useMenuAutoClose, closeMenu } from '../ConditionActions.jsx';
 import { TR_STATUS_LABEL, TR_REVIEW_OUTCOMES, trStatusShort } from '../../lib/trackRecordStatus.js';
 
 /* ONE LINE'S WHOLE STORY, IN ONE COMPONENT (mega-workspace "one screen"
@@ -41,6 +42,25 @@ const dealLabel = (t) => {
   if (s.includes('hold') || s.includes('rental')) return 'Fix & Hold';
   return 'Fix & Flip';
 };
+// Normalize the stored deal type to the three edit-form keys.
+const normDeal = (t) => {
+  const s = String(t || '').toLowerCase();
+  if (s.includes('ground') || s.includes('construction')) return 'ground_up';
+  if (s.includes('hold') || s.includes('rental')) return 'hold';
+  return 'flip';
+};
+// Which exit the line already carries — so the edit form opens on the right set.
+const initialExitKind = (l) => {
+  if (l.rentAmount != null || l.rentDate) return 'rented';
+  if (l.refiAmount != null || l.refiDate) return 'refinanced';
+  return 'sold';
+};
+// The exit options a deal type offers (a flip is always a sale, so no picker).
+const EXIT_OPTS = {
+  flip: [{ k: 'sold', label: 'Sold' }],
+  hold: [{ k: 'rented', label: 'Rented' }, { k: 'refinanced', label: 'Refinanced' }],
+  ground_up: [{ k: 'sold', label: 'Sold' }, { k: 'rented', label: 'Rented' }, { k: 'refinanced', label: 'Refinanced' }],
+};
 
 /* The reviewer's at-a-glance state per pillar. `neutral` ("nothing found") is
    deliberately its own colour: painting it like `bad` would tell a reviewer we
@@ -54,6 +74,9 @@ const TONE_STYLE = {
   unknown: { mark: '?', color: '#4B585C', border: '#C9CFD3' },
 };
 const PILLAR_TITLE = { recency: 'Finished in the last 3 years', ownership: 'They owned it', exit: 'The exit really happened' };
+// Short labels for the compact three-across check strip (owner-directed
+// 2026-08-12: "the three … are too big … fit all three on one line").
+const PILLAR_SHORT = { recency: 'Date', ownership: 'Ownership', exit: 'Exit' };
 
 const holdText = (days) => {
   const n = readNum(days);
@@ -68,10 +91,10 @@ const holdText = (days) => {
 function Fig({ label, value, hint, strong }) {
   if (value == null) return null;
   return (
-    <div style={{ minWidth: 0 }}>
-      <div style={{ fontSize: 11, letterSpacing: '.05em', textTransform: 'uppercase', color: MUTED }}>{label}</div>
-      <div style={{ color: INK, fontWeight: strong ? 700 : 600, overflowWrap: 'anywhere' }}>{value}</div>
-      {hint ? <div className="small" style={{ color: MUTED }}>{hint}</div> : null}
+    <div className="tr-fig">
+      <span className="tr-eyebrow">{label}</span>
+      <span className={`tr-fig-v${strong ? ' strong' : ''}`}>{value}</span>
+      {hint ? <span className="tr-fig-h">{hint}</span> : null}
     </div>
   );
 }
@@ -92,6 +115,7 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
   const [editing, setEditing] = useState(null); // the inline edit draft, or null
   const [focusPillar, setFocusPillar] = useState(0);
   const [keysOpen, setKeysOpen] = useState(false);
+  useMenuAutoClose(); // shared closer for the "More ▾" menus (same as the conditions rows)
 
   /* An error goes in the banner AND on the row — in a long section the banner is
      off-screen by the time you have scrolled to the row you clicked, and a
@@ -291,8 +315,12 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
     if (!ask || !ask.docType) return;
     setBusy('ask');
     try {
+      // Opened generally from the main line item (no pillar) → derive the pillar
+      // from the chosen document type so the request still lands on the right check.
+      const chosen = docTypes.find((d) => d.slug === ask.docType);
+      const pillar = ask.pillar || (chosen && chosen.pillars && chosen.pillars[0]) || undefined;
       const out = await api.staffRequestTrackRecordDocTyped(ask.trackRecordId, {
-        docType: ask.docType, pillar: ask.pillar, llcId: ask.llcId || undefined,
+        docType: ask.docType, pillar, llcId: ask.llcId || undefined,
         customLabel: ask.customLabel || undefined, internalNote: ask.internalNote || undefined,
       });
       setAsk(null);
@@ -312,7 +340,8 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
   function startEdit() {
     const l = detail.line;
     setEditing({
-      dealType: l.dealType || 'flip',
+      dealType: normDeal(l.dealType),
+      exitKind: initialExitKind(l),
       ownedPersonally: !!l.ownedPersonally,
       entityName: l.entityName || '',
       purchasePrice: l.purchasePrice ?? '', purchaseDate: day(l.purchaseDate) || '',
@@ -321,6 +350,15 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
       rentAmount: l.rentAmount ?? '', rentDate: day(l.rentDate) || '',
       refiAmount: l.refiAmount ?? '', refiDate: day(l.refiDate) || '',
       addressText: '',   // blank = keep the stored address; typed = replace it
+    });
+  }
+  // Switching the deal type keeps the exit selection valid — a flip is always a
+  // sale; a hold that was on "sold" moves to "rented" (its first real option).
+  function setDealType(dt) {
+    setEditing((e) => {
+      const opts = EXIT_OPTS[dt] || EXIT_OPTS.flip;
+      const exitKind = opts.some((o) => o.k === e.exitKind) ? e.exitKind : opts[0].k;
+      return { ...e, dealType: dt, exitKind };
     });
   }
   async function saveEdit() {
@@ -333,10 +371,16 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
         entityName: e.ownedPersonally ? '' : e.entityName,
         purchasePrice: e.purchasePrice, purchaseDate: e.purchaseDate,
         rehabAmount: e.rehabAmount,
-        salePrice: e.salePrice, saleDate: e.saleDate,
-        rentAmount: e.rentAmount, rentDate: e.rentDate,
-        refiAmount: e.refiAmount, refiDate: e.refiDate,
       };
+      // DYNAMIC BY DEAL TYPE (owner-directed 2026-08-12): only the exit fields
+      // that apply to this deal type + exit are shown, and only those are SENT.
+      // The rest are omitted, so the PUT door PRESERVES them (trackRecordSentOnly
+      // writes only the keys the body carries) — switching a hold to a flip never
+      // silently wipes the rent it no longer shows.
+      const exit = e.dealType === 'flip' ? 'sold' : e.exitKind;
+      if (exit === 'sold') { body.salePrice = e.salePrice; body.saleDate = e.saleDate; }
+      else if (exit === 'rented') { body.rentAmount = e.rentAmount; body.rentDate = e.rentDate; }
+      else if (exit === 'refinanced') { body.refiAmount = e.refiAmount; body.refiDate = e.refiDate; }
       // THE ADDRESS IS OMITTED UNLESS THE USER TYPED A NEW ONE. A blank field
       // means "keep the stored address" (#29) — the PUT door preserves it, so we
       // never re-send (or have to reconstruct from the loaded line) an address the
@@ -433,21 +477,21 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
 
       {/* ── THE DEAL, WITH ALL THE DETAIL (owner: "all details available on the
           full screen should be here too") ─────────────────────────────────── */}
-      <div className="panel" style={{ marginBottom: 10 }}>
-        <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
-          <h3 style={{ margin: 0, color: INK, fontSize: 17 }}>{line.address}</h3>
+      <div className="tr-deal">
+        <div className="tr-deal-h">
+          <h3>{line.address}</h3>
           <span className="pill small">{dealLabel(line.dealType)}</span>
           {line.ownedPersonally
             ? <span className="pill small" title="Held under the borrower's personal name — no LLC">Personal name</span>
             : (line.entityName ? <span className="pill small" title={line.entityDocsVerified ? 'The company’s documents are complete' : 'The company’s documents are not complete yet'}>{line.entityName}{line.entityDocsVerified ? ' ✓' : ''}</span> : null)}
-          {/* Fully verified shows the green badge below; any other outcome shows
-              its friendly label (Pending / Not verified / Rejected / the two
-              "unable to verify" reasons) — never the raw stored value. */}
+          {/* Fully verified shows the green badge; any other outcome shows its
+              friendly label (Pending / Not verified / Rejected / the two "unable
+              to verify" reasons) — never the raw stored value. */}
           {line.verificationStatus && !line.isVerified && <span className="pill small">{trStatusShort(line.verificationStatus)}</span>}
           {line.isVerified && <span className="ts-badge ok">Fully verified</span>}
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: 10, margin: '10px 0 2px' }}>
+        <div className="tr-figs">
           <Fig label="Purchase" value={money(pp)} hint={day(line.purchaseDate)} />
           <Fig label="Rehab" value={money(rehab)} />
           {exitFig && <Fig label={exitFig.label} value={exitFig.value} hint={exitFig.hint} />}
@@ -457,194 +501,294 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
         </div>
 
         {detail.readiness && (
-          <div className="notice" style={{ marginTop: 8, background: 'rgba(47,127,134,.08)' }}>
-            <strong style={{ color: INK }}>{detail.readiness.answered} of {detail.readiness.of} checks answered.</strong>{' '}
-            <span style={{ color: MUTED }}>{detail.readiness.message}</span>
+          <div className="tr-readi">
+            <b>{detail.readiness.answered} of {detail.readiness.of} checks answered.</b>{' '}
+            <span>{detail.readiness.message}</span>
           </div>
         )}
 
-        <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-          <button className="btn ghost small" disabled={busy === 'research'} onClick={research}
-            title="Read the county’s public records (Elementix) for this property — fills the three checks below. It never marks the line verified by itself.">
-            {busy === 'research' ? 'Checking…' : 'Check the records (Elementix)'}
-          </button>
-          {maySignOff && !line.isVerified && (
-            <button className="btn primary small" disabled={busy === 'verify'} onClick={() => verify('verified')}
-              title="The final sign-off — this project counts toward experience. Needs a completed exit within 3 years.">Verify this project</button>
-          )}
-          {/* The review OUTCOME control (owner-directed 2026-08-10, #40): a
-              non-counting status — Pending / Not verified / Rejected / the two
-              "unable to verify" reasons. "Fully verified" is the primary button
-              above (it counts and carries the readiness warning); this never
-              counts. On a fully-verified line, picking one of these revokes the
-              verification (setReviewStatus prompts for the borrower's reason). */}
-          {maySignOff && (
-            <select className="input small" style={{ maxWidth: 240, height: 32 }} disabled={busy === 'verify'}
-              value={(!line.isVerified && TR_REVIEW_OUTCOMES.includes(line.verificationStatus)) ? line.verificationStatus : ''}
-              onChange={(e) => setReviewStatus(e.target.value)}
-              title="Record a review outcome — none of these count toward experience. On a verified line, this revokes verification.">
-              <option value="" disabled>Mark review outcome…</option>
-              {TR_REVIEW_OUTCOMES.map((s) => <option key={s} value={s}>{TR_STATUS_LABEL[s]}</option>)}
-            </select>
-          )}
-          {maySignOff && !line.isVerified && detail.bulk && (
-            <button className="btn small" disabled={busy === 'verify' || !detail.bulk.ok} title={detail.bulk.ok ? 'Confirm all three at once — only offered when the records already prove every one' : detail.bulk.reason} onClick={bulkConfirm}>
-              Confirm all three
-            </button>
-          )}
-          {maySignOff && line.isVerified && (
-            <button className="btn ghost small" disabled={busy === 'verify'} onClick={revoke} title="Revoke this project’s verification (the borrower is notified)">Revoke verification</button>
-          )}
-          {maySignOff && line.isVerified && (
-            <button className="btn ghost small" disabled={busy === 'verify'} onClick={quietRevoke} title="Set back to Pending review WITHOUT notifying the borrower — for a verification set by mistake">Set pending — don’t notify</button>
-          )}
-          <button className="btn soft small" disabled={busy === 'edit'} onClick={editing ? () => setEditing(null) : startEdit}
-            title="Correct the deal’s own figures — editing a figure re-opens the review.">{editing ? 'Cancel edit' : 'Edit details'}</button>
-          <button className="btn ghost small" onClick={addNote}>Add an internal note</button>
-          {/* Useful from a loan file or the full-screen workspace, but redundant
-              ON the borrower profile itself (it would link to the page you are
-              already on), so it is hidden there (#33). */}
-          {!onProfileScreen && <Link className="btn ghost small" to={`/internal/borrowers/${line.borrowerId}`}>Open their profile</Link>}
-          {canDelete && (
-            <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={busy === 'delete'}
-              title="Permanently delete this whole line from the track record — for a duplicate or a deal that isn’t theirs."
-              onClick={deleteLine}>{busy === 'delete' ? 'Deleting…' : 'Delete this line'}</button>
-          )}
-          {extraActions && extraActions(line)}
+        {/* ACTIONS — ONE primary, everything else behind "More", exactly the way a
+            condition row works (owner-directed 2026-08-12: "too many buttons … maybe
+            similar buttons should populate the same way we have on the Conditions").
+            Nothing is removed — every action is one click away, just not competing
+            with the one that matters. The document center + "Ask for a document"
+            live below on this same line item, never on the three checks. */}
+        <div className="cond-act" style={{ marginTop: 12 }}>
+          <div className="cond-act-row">
+            {maySignOff && !line.isVerified
+              ? <button className="btn primary small" disabled={busy === 'verify'} onClick={() => verify('verified')}
+                  title="The final sign-off — this project counts toward experience. Needs a completed exit within 3 years.">Verify this project</button>
+              : (maySignOff && line.isVerified
+                ? <span className="tr-chk-ok" style={{ alignSelf: 'center' }}>✓ Counts toward experience</span>
+                : null)}
+
+            <details className="cond-more">
+              <summary className="btn ghost small cond-more-btn" title="Every other action on this project">More ▾</summary>
+              <div className="cond-more-menu" onClick={closeMenu}>
+                <button className="btn ghost small" disabled={busy === 'research'} onClick={research}
+                  title="Read the county’s public records (Elementix) — fills the three checks. It never marks the line verified by itself.">
+                  {busy === 'research' ? 'Checking the records…' : 'Check the records'}
+                </button>
+                {maySignOff && !line.isVerified && detail.bulk && (
+                  <button className="btn ghost small" disabled={busy === 'verify' || !detail.bulk.ok}
+                    title={detail.bulk.ok ? 'Confirm all three checks at once — only when the records already prove every one' : detail.bulk.reason}
+                    onClick={bulkConfirm}>Confirm all three checks</button>
+                )}
+                <button className="btn ghost small" onClick={() => openAsk('')}
+                  title="Ask the borrower for a document on this project — it becomes a real request.">Ask for a document…</button>
+
+                {/* Non-counting review outcome (owner-directed 2026-08-10, #40). On a
+                    verified line, picking one revokes the verification (prompts for
+                    the borrower's reason). */}
+                {maySignOff && (
+                  <label className="cond-more-field">
+                    <span>Mark review outcome</span>
+                    <select className="input" disabled={busy === 'verify'}
+                      value={(!line.isVerified && TR_REVIEW_OUTCOMES.includes(line.verificationStatus)) ? line.verificationStatus : ''}
+                      onChange={(e) => setReviewStatus(e.target.value)}>
+                      <option value="">None — under review</option>
+                      {TR_REVIEW_OUTCOMES.map((s) => <option key={s} value={s}>{TR_STATUS_LABEL[s]}</option>)}
+                    </select>
+                  </label>
+                )}
+
+                <div className="cond-more-sep" />
+                <button className="btn ghost small" disabled={busy === 'edit'} onClick={editing ? () => setEditing(null) : startEdit}
+                  title="Correct the deal’s own figures — editing a figure re-opens the review.">{editing ? 'Cancel edit' : 'Edit details'}</button>
+                <button className="btn ghost small" onClick={addNote}>Add a note</button>
+                {/* Redundant ON the borrower profile itself (it would link to the page
+                    you are already on), so it is hidden there (#33). */}
+                {!onProfileScreen && <Link className="btn ghost small" to={`/internal/borrowers/${line.borrowerId}`}>Open borrower profile</Link>}
+
+                {extraActions && <><div className="cond-more-sep" />{extraActions(line)}</>}
+
+                {/* The two verified-state actions say IN WORDS whether the borrower
+                    is told, so the notify-vs-silent choice is unmistakable. */}
+                {maySignOff && line.isVerified && (
+                  <>
+                    <div className="cond-more-sep" />
+                    <button className="btn ghost small" disabled={busy === 'verify'} onClick={revoke}
+                      title="Revoke this project’s verification. The borrower is emailed.">Revoke — the borrower is emailed</button>
+                    <button className="btn ghost small" disabled={busy === 'verify'} onClick={quietRevoke}
+                      title="Set back to Pending review WITHOUT notifying the borrower — for a verification set by mistake.">Set to pending — the borrower is not told</button>
+                  </>
+                )}
+
+                {canDelete && (
+                  <>
+                    <div className="cond-more-sep" />
+                    <button className="btn ghost small" style={{ color: '#A32A2A' }} disabled={busy === 'delete'}
+                      title="Permanently delete this whole line from the track record — for a duplicate or a deal that isn’t theirs."
+                      onClick={deleteLine}>{busy === 'delete' ? 'Deleting…' : 'Delete this project'}</button>
+                  </>
+                )}
+              </div>
+            </details>
+          </div>
+          {maySignOff && !line.isVerified && detail.bulk && !detail.bulk.ok && <div className="cond-act-hint">{detail.bulk.reason}</div>}
+          {rowErr.verify && <div className="notice err small" style={{ marginTop: 6 }}>{rowErr.verify}</div>}
         </div>
-        {detail.bulk && !detail.bulk.ok && <p className="small" style={{ color: MUTED, margin: '6px 0 0' }}>{detail.bulk.reason}</p>}
-        {rowErr.verify && <div className="notice err small" style={{ marginTop: 6 }}>{rowErr.verify}</div>}
 
-        {/* INLINE EDIT — the deal's own figures. */}
-        {editing && (
-          <div className="panel" style={{ marginTop: 10, background: '#FBF9F4', border: '1px solid #EAE4D7' }}>
-            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-              <label className="small" style={{ color: MUTED, flex: '1 1 220px', minWidth: 180 }}>Address (leave blank to keep it)
-                <input className="input" placeholder={line.address} value={editing.addressText} onChange={(ev) => setEditing({ ...editing, addressText: ev.target.value })} />
-              </label>
-              <label className="small" style={{ color: MUTED, minWidth: 140 }}>Deal type
-                <select className="input" value={editing.dealType} onChange={(ev) => setEditing({ ...editing, dealType: ev.target.value })}>
-                  <option value="flip">Fix &amp; Flip</option>
-                  <option value="hold">Fix &amp; Hold / rental</option>
-                  <option value="ground_up">Ground-up</option>
-                </select>
-              </label>
+        {/* INLINE EDIT — one aligned column; the exit fields SWAP with the deal
+            type (a flip shows a sale, a hold shows rent/refi, ground-up picks the
+            exit) so a screen never shows a field the deal type can't have. */}
+        {editing && (() => {
+          const editExit = editing.dealType === 'flip' ? 'sold' : editing.exitKind;
+          return (
+            <div className="tr-edit">
+              <div className="tr-edit-sec">
+                <div className="tr-grid">
+                  <label className="tr-field" style={{ gridColumn: '1 / -1' }}><span>Address (leave blank to keep it)</span>
+                    <input className="input" placeholder={line.address} value={editing.addressText} onChange={(ev) => setEditing({ ...editing, addressText: ev.target.value })} /></label>
+                </div>
+              </div>
+
+              <div className="tr-edit-sec">
+                <span className="act-label" style={{ display: 'block', marginBottom: 8 }}>Deal type</span>
+                <div className="seg" role="group" aria-label="Deal type">
+                  <button type="button" className={editing.dealType === 'flip' ? 'on' : ''} onClick={() => setDealType('flip')}>Fix &amp; Flip</button>
+                  <button type="button" className={editing.dealType === 'hold' ? 'on' : ''} onClick={() => setDealType('hold')}>Fix &amp; Hold</button>
+                  <button type="button" className={editing.dealType === 'ground_up' ? 'on' : ''} onClick={() => setDealType('ground_up')}>Ground-up</button>
+                </div>
+                <div className="tr-grid" style={{ marginTop: 10 }}>
+                  <label className="tr-field"><span>Purchase $</span><input className="input" value={editing.purchasePrice} onChange={(ev) => setEditing({ ...editing, purchasePrice: ev.target.value })} /></label>
+                  <label className="tr-field"><span>Purchase date</span><input className="input" type="date" value={editing.purchaseDate} onChange={(ev) => setEditing({ ...editing, purchaseDate: ev.target.value })} /></label>
+                  <label className="tr-field"><span>{editing.dealType === 'ground_up' ? 'Construction $' : 'Rehab $'}</span><input className="input" value={editing.rehabAmount} onChange={(ev) => setEditing({ ...editing, rehabAmount: ev.target.value })} /></label>
+                </div>
+              </div>
+
+              <div className="tr-edit-sec">
+                <span className="act-label" style={{ display: 'block', marginBottom: 8 }}>Exit</span>
+                {editing.dealType !== 'flip' && (
+                  <div className="seg" role="group" aria-label="Exit">
+                    {(EXIT_OPTS[editing.dealType] || []).map((o) => (
+                      <button key={o.k} type="button" className={editing.exitKind === o.k ? 'on' : ''} onClick={() => setEditing({ ...editing, exitKind: o.k })}>{o.label}</button>
+                    ))}
+                  </div>
+                )}
+                <div className="tr-grid" style={{ marginTop: editing.dealType !== 'flip' ? 10 : 0 }}>
+                  {editExit === 'sold' && <>
+                    <label className="tr-field"><span>Sale $</span><input className="input" value={editing.salePrice} onChange={(ev) => setEditing({ ...editing, salePrice: ev.target.value })} /></label>
+                    <label className="tr-field"><span>Sale date</span><input className="input" type="date" value={editing.saleDate} onChange={(ev) => setEditing({ ...editing, saleDate: ev.target.value })} /></label>
+                  </>}
+                  {editExit === 'rented' && <>
+                    <label className="tr-field"><span>Rent $/mo</span><input className="input" value={editing.rentAmount} onChange={(ev) => setEditing({ ...editing, rentAmount: ev.target.value })} /></label>
+                    <label className="tr-field"><span>Rent since</span><input className="input" type="date" value={editing.rentDate} onChange={(ev) => setEditing({ ...editing, rentDate: ev.target.value })} /></label>
+                  </>}
+                  {editExit === 'refinanced' && <>
+                    <label className="tr-field"><span>Refinance $</span><input className="input" value={editing.refiAmount} onChange={(ev) => setEditing({ ...editing, refiAmount: ev.target.value })} /></label>
+                    <label className="tr-field"><span>Refinance date</span><input className="input" type="date" value={editing.refiDate} onChange={(ev) => setEditing({ ...editing, refiDate: ev.target.value })} /></label>
+                  </>}
+                </div>
+              </div>
+
+              <div className="tr-edit-sec">
+                <label className="tr-check-inline">
+                  <input type="checkbox" checked={editing.ownedPersonally} onChange={(ev) => setEditing({ ...editing, ownedPersonally: ev.target.checked })} /> Held in a personal name (no company)
+                </label>
+                {!editing.ownedPersonally && (
+                  <div className="tr-grid" style={{ marginTop: 10 }}>
+                    <label className="tr-field" style={{ gridColumn: '1 / -1' }}><span>Company / entity</span><input className="input" value={editing.entityName} onChange={(ev) => setEditing({ ...editing, entityName: ev.target.value })} /></label>
+                  </div>
+                )}
+              </div>
+
+              <div className="row" style={{ gap: 8, marginTop: 14, justifyContent: 'flex-end' }}>
+                <button className="btn ghost small" onClick={() => setEditing(null)}>Cancel</button>
+                <button className="btn primary small" disabled={busy === 'edit'} onClick={saveEdit}>{busy === 'edit' ? 'Saving…' : 'Save changes'}</button>
+              </div>
             </div>
-            <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
-              <label className="small" style={{ color: MUTED, minWidth: 100 }}>Purchase $<input className="input" value={editing.purchasePrice} onChange={(ev) => setEditing({ ...editing, purchasePrice: ev.target.value })} /></label>
-              <label className="small" style={{ color: MUTED, minWidth: 140 }}>Purchase date<input className="input" type="date" value={editing.purchaseDate} onChange={(ev) => setEditing({ ...editing, purchaseDate: ev.target.value })} /></label>
-              <label className="small" style={{ color: MUTED, minWidth: 100 }}>Rehab $<input className="input" value={editing.rehabAmount} onChange={(ev) => setEditing({ ...editing, rehabAmount: ev.target.value })} /></label>
-            </div>
-            <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
-              <label className="small" style={{ color: MUTED, minWidth: 100 }}>Sale $<input className="input" value={editing.salePrice} onChange={(ev) => setEditing({ ...editing, salePrice: ev.target.value })} /></label>
-              <label className="small" style={{ color: MUTED, minWidth: 140 }}>Sale date<input className="input" type="date" value={editing.saleDate} onChange={(ev) => setEditing({ ...editing, saleDate: ev.target.value })} /></label>
-              <label className="small" style={{ color: MUTED, minWidth: 100 }}>Rent $/mo<input className="input" value={editing.rentAmount} onChange={(ev) => setEditing({ ...editing, rentAmount: ev.target.value })} /></label>
-              <label className="small" style={{ color: MUTED, minWidth: 140 }}>Rent since<input className="input" type="date" value={editing.rentDate} onChange={(ev) => setEditing({ ...editing, rentDate: ev.target.value })} /></label>
-            </div>
-            <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 6, alignItems: 'center' }}>
-              <label className="small" style={{ color: MUTED, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <input type="checkbox" checked={editing.ownedPersonally} onChange={(ev) => setEditing({ ...editing, ownedPersonally: ev.target.checked })} /> Personal name (no company)
-              </label>
-              {!editing.ownedPersonally && (
-                <label className="small" style={{ color: MUTED, flex: '1 1 200px', minWidth: 160 }}>Company / entity<input className="input" value={editing.entityName} onChange={(ev) => setEditing({ ...editing, entityName: ev.target.value })} /></label>
-              )}
-              <div className="spacer" />
-              <button className="btn primary small" disabled={busy === 'edit'} onClick={saveEdit}>{busy === 'edit' ? 'Saving…' : 'Save changes'}</button>
-            </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
 
-      {/* ── THE ELEMENTIX FINDER: the three checks, each verified / definitely-
-          wrong / couldn't-verify, with the evidence and a manual override ───── */}
-      {detail.cards.map((c, i) => {
-        const tone = TONE_STYLE[c.tone] || TONE_STYLE.unknown;
-        const pillarId = c.pillarId;
-        return (
-          <div className="panel" key={c.pillar} data-ld-pillar={i}
-            style={{ marginBottom: 10, borderLeft: `3px solid ${tone.border}`, outline: keyboard && focusPillar === i ? '2px solid rgba(47,127,134,.55)' : 'none', outlineOffset: 2 }}>
-            <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
-              <span style={{ color: tone.color, fontWeight: 700, fontSize: 16 }}>{tone.mark}</span>
-              <strong style={{ color: INK }}>{i + 1} · {PILLAR_TITLE[c.pillar] || c.pillar}</strong>
-              {c.humanVerdict && <span className="pill small">{c.humanVerdict === 'confirmed' ? 'Confirmed by a person' : c.humanVerdict === 'rejected' ? 'Rejected' : 'Document asked for'}</span>}
-              {!c.humanVerdict && c.neutral && <span className="pill small">Nothing found — not a problem with the borrower</span>}
-            </div>
-            <p className="small" style={{ color: MUTED, margin: '6px 0 0' }}>{c.meaning}</p>
-            {c.snippet
-              ? <blockquote style={{ margin: '8px 0 0', padding: '8px 10px', borderLeft: '2px solid #C9CFD3', background: 'rgba(0,0,0,.03)', color: INK, fontSize: 13, overflowWrap: 'anywhere' }}>{c.snippet}</blockquote>
-              : <p className="small" style={{ color: '#8A6D3B', margin: '8px 0 0' }}>{c.snippetNote}</p>}
-            <div className="small" style={{ color: MUTED, marginTop: 6 }}>
-              {[c.source ? `Source: ${c.source}` : null, c.confidence ? `confidence ${c.confidence}` : null, c.grade ? `evidence ${c.grade}` : null, c.when || null, c.carriedFromEntity ? 'carried from the company' : null].filter(Boolean).join(' · ') || 'Not checked yet'}
-            </div>
-            <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-              {c.next.key === 'undo' || c.next.key === 'confirmed_locked'
-                ? <button className="btn ghost small" disabled={busy === pillarId || c.next.key === 'confirmed_locked'} title={c.next.title} onClick={() => undo(c)}>{c.next.label}</button>
-                : c.next.key === 'ask_doc'
-                  ? <button className="btn primary small" title={c.next.title} onClick={() => openAsk(c.pillar)}>{c.next.label}</button>
-                  : c.next.key === 'awaiting_doc'
-                    ? <button className="btn ghost small" disabled title={c.next.title}>{c.next.label}</button>
-                    : <button className={`btn ${c.next.tone === 'primary' ? 'primary' : 'ghost'} small`} disabled={busy === pillarId} title={c.next.title} onClick={() => (c.next.verdict ? decide(c, c.next.verdict) : openAsk(c.pillar))}>{c.next.label}</button>}
-              {c.other.map((o) => (
-                <button key={o.key} className="btn ghost small" disabled={busy === pillarId} title={o.title} onClick={() => (o.verdict ? decide(c, o.verdict) : openAsk(c.pillar))}>{o.label}</button>
-              ))}
-            </div>
-            <p className="small" style={{ color: MUTED, margin: '6px 0 0' }}>{c.next.hint}</p>
-            {rowErr[pillarId] && <div className="notice err small" style={{ marginTop: 6 }}>{rowErr[pillarId]}</div>}
-          </div>
-        );
-      })}
-
-      {/* ── DOCUMENTS (preview / download / accept / reject / delete — the same
-          set as conditions), REQUESTS, FINDINGS, NOTES ─────────────────────── */}
-      <div className="panel" style={{ marginBottom: 10 }}>
-        <strong style={{ color: INK }}>Documents</strong>
-        {detail.documents.length
-          ? detail.documents.map((d) => {
-            const rs = d.review_status || 'pending';
-            return (
-              <div className="row" key={d.id} style={{ gap: 6, alignItems: 'center', flexWrap: 'wrap', padding: '4px 0', borderTop: '1px solid rgba(127,169,176,.15)' }}>
-                <span className="small" style={{ flex: 1, minWidth: 140, color: INK, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
-                <span className="pill small" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
-                <button className="btn ghost small" onClick={() => setPreviewDoc(d)}>Preview</button>
-                <button className="btn ghost small" onClick={() => downloadDoc(d)}>Download</button>
-                {maySignOff && rs !== 'accepted' && <button className="btn primary small" disabled={busy === d.id} onClick={() => reviewDoc(d, 'accept')}>Accept</button>}
-                {rs !== 'rejected' && <button className="btn link small" disabled={busy === d.id} onClick={() => reviewDoc(d, 'reject')}>Reject</button>}
-                {canDelete && <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={busy === d.id} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => reviewDoc(d, 'delete')}>Delete</button>}
-                {rs === 'rejected' && d.rejection_reason && <span className="small" style={{ color: 'var(--danger)', width: '100%', paddingLeft: 8 }}>{d.rejection_reason}</span>}
+      {/* ── THE THREE CHECKS — compact, all three on one line, each just a Verify
+          (owner-directed 2026-08-12: "the three … are too big … you should just
+          need to click Verify, Verify, Verify … without the option to Ask for
+          Documents"). Asking for a document, and every other option, lives on the
+          main line item above. The evidence and the reject/undo are one click away
+          behind "Why?" so nothing is removed. */}
+      <div className="tr-check-strip">
+        {detail.cards.map((c, i) => {
+          const tone = TONE_STYLE[c.tone] || TONE_STYLE.unknown;
+          const pillarId = c.pillarId;
+          const confirmed = c.humanVerdict === 'confirmed';
+          const offered = (v) => (c.next && c.next.verdict === v) || (c.other || []).some((o) => o.verdict === v);
+          return (
+            <div className="tr-chk" key={c.pillar} data-ld-pillar={i}
+              style={{ borderLeftColor: tone.border, outline: keyboard && focusPillar === i ? '2px solid rgba(47,127,134,.55)' : 'none', outlineOffset: 2 }}>
+              <div className="tr-chk-top">
+                <span className="tr-chk-mark" style={{ background: tone.color }}>{tone.mark}</span>
+                <span className="tr-chk-t" title={PILLAR_TITLE[c.pillar] || c.pillar}>{PILLAR_SHORT[c.pillar] || PILLAR_TITLE[c.pillar] || c.pillar}</span>
+                {confirmed
+                  ? <span className="tr-chk-ok">✓ Verified</span>
+                  : (offered('confirmed')
+                    ? <button className="btn primary small" disabled={busy === pillarId} onClick={() => decide(c, 'confirmed')} title="Confirm this check">Verify</button>
+                    : <span className="tr-chk-wait">{c.humanVerdict === 'rejected' ? 'Marked wrong' : (c.neutral ? 'Nothing found' : 'Waiting')}</span>)}
               </div>
-            );
-          })
-          : <p className="small" style={{ color: '#8A6D3B', margin: '6px 0 0' }}>Nothing has been uploaded on this project.</p>}
+              <details className="tr-chk-why">
+                <summary>Why?</summary>
+                <p className="tr-check-mean" style={{ margin: '2px 0 0' }}>{c.meaning}</p>
+                {c.snippet
+                  ? <blockquote className="tr-quote">{c.snippet}</blockquote>
+                  : <p className="tr-quote note">{c.snippetNote}</p>}
+                <div className="tr-meta">
+                  {[c.source ? `Source: ${c.source}` : null, c.confidence ? `confidence ${c.confidence}` : null, c.grade ? `evidence ${c.grade}` : null, c.when || null, c.carriedFromEntity ? 'carried from the company' : null].filter(Boolean).join(' · ') || 'Not checked yet'}
+                </div>
+                {(c.next.key === 'undo' || c.next.key === 'confirmed_locked' || (!confirmed && offered('rejected'))) && (
+                  <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                    {(c.next.key === 'undo' || c.next.key === 'confirmed_locked') && (
+                      <button className="btn ghost small" disabled={busy === pillarId || c.next.key === 'confirmed_locked'} title={c.next.title} onClick={() => undo(c)}>{c.next.label}</button>
+                    )}
+                    {!confirmed && offered('rejected') && (
+                      <button className="btn ghost small" disabled={busy === pillarId} title="Mark this check as definitely wrong (asks for a reason)" onClick={() => decide(c, 'rejected')}>Mark wrong</button>
+                    )}
+                  </div>
+                )}
+                {rowErr[pillarId] && <div className="notice err small" style={{ marginTop: 6 }}>{rowErr[pillarId]}</div>}
+              </details>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ── THE DOCUMENT CENTER — on the main line item (owner-directed 2026-08-12:
+          "the whole document center … should be on the main line item"). Each
+          document keeps ONE clear action and tucks Preview / Download / Reject /
+          Delete into a popup, the same shape as a condition's document row. */}
+      <div className="tr-deal" style={{ marginBottom: 10 }}>
+        <div className="tr-deal-h" style={{ justifyContent: 'space-between' }}>
+          <h3 style={{ fontSize: 15 }}>Documents</h3>
+          <button className="btn soft small" onClick={() => openAsk('')}
+            title="Ask the borrower for a document on this project — it becomes a real request.">Ask for a document…</button>
+        </div>
+        {detail.documents.length
+          ? <div className="tr-docs">
+            {detail.documents.map((d) => {
+              const rs = d.review_status || 'pending';
+              const rejectIsPrimary = !maySignOff && rs === 'pending';
+              return (
+                <div className="tr-doc" key={d.id}>
+                  <div className="tr-doc-name">
+                    <b>{d.filename}</b>
+                    {d.doc_type ? <span>{d.doc_type}</span> : null}
+                    {rs === 'rejected' && d.rejection_reason ? <span style={{ color: 'var(--danger)' }}>{d.rejection_reason}</span> : null}
+                  </div>
+                  <span className="pill small" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
+                  <div className="tr-doc-acts">
+                    {maySignOff && rs !== 'accepted'
+                      ? <button className="btn primary small" disabled={busy === d.id} onClick={() => reviewDoc(d, 'accept')}
+                          title="Accept this document — the project stays under review until it is verified">Accept</button>
+                      : (rejectIsPrimary
+                        ? <button className="btn ghost small" disabled={busy === d.id} onClick={() => reviewDoc(d, 'reject')}
+                            title="Send this document back with a reason">Reject</button>
+                        : null)}
+                    <details className="cond-more">
+                      <summary className="btn ghost small cond-more-btn" title="Everything else for this document">More ▾</summary>
+                      <div className="cond-more-menu" onClick={closeMenu}>
+                        <button className="btn ghost small" onClick={() => setPreviewDoc(d)}>Preview</button>
+                        <button className="btn ghost small" disabled={busy === d.id} onClick={() => downloadDoc(d)}>Download</button>
+                        {rs !== 'rejected' && !rejectIsPrimary && <button className="btn ghost small" disabled={busy === d.id} onClick={() => reviewDoc(d, 'reject')}>Reject</button>}
+                        {canDelete && <button className="btn ghost small" style={{ color: '#A32A2A' }} disabled={busy === d.id}
+                          title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => reviewDoc(d, 'delete')}>Delete</button>}
+                      </div>
+                    </details>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          : <p className="tr-hint">Nothing has been uploaded on this project.</p>}
 
         {detail.requests.length > 0 && (
-          <>
-            <strong style={{ color: INK, display: 'block', marginTop: 10 }}>Asked for</strong>
+          <div className="tr-edit-sec">
+            <span className="act-label" style={{ display: 'block', marginBottom: 6 }}>Asked for</span>
             {detail.requests.map((r) => (
-              <div key={r.id} className="small" style={{ color: MUTED, marginTop: 4 }}>
+              <div key={r.id} className="tr-hint" style={{ marginTop: 4 }}>
                 <span className="pill small" style={{ marginRight: 6 }}>{r.status}</span>{r.label}
                 {r.scope === 'borrower_profile' && <span style={{ color: '#8A6D3B' }}> · on their profile until a file opens</span>}
               </div>
             ))}
-          </>
+          </div>
         )}
 
         {detail.findings.length > 0 && (
-          <>
-            <strong style={{ color: INK, display: 'block', marginTop: 10 }}>Problems found</strong>
+          <div className="tr-edit-sec">
+            <span className="act-label" style={{ display: 'block', marginBottom: 6 }}>Problems found</span>
             {detail.findings.map((f) => <div key={f.id} className="notice err small" style={{ marginTop: 4 }}>{f.title || f.code}</div>)}
-          </>
+          </div>
         )}
 
         {detail.notes.length > 0 && (
-          <>
-            <strong style={{ color: INK, display: 'block', marginTop: 10 }}>Internal notes</strong>
-            <p className="small" style={{ color: MUTED, margin: '2px 0 0' }}>Staff only — the borrower never sees these.</p>
+          <div className="tr-edit-sec">
+            <span className="act-label" style={{ display: 'block', marginBottom: 2 }}>Internal notes</span>
+            <p className="tr-hint" style={{ margin: '0 0 4px' }}>Staff only — the borrower never sees these.</p>
             {detail.notes.map((n) => (
               <div key={n.id} className="small" style={{ color: n.retracted_at ? MUTED : INK, marginTop: 4, textDecoration: n.retracted_at ? 'line-through' : 'none' }}>
                 {n.body}<span style={{ color: MUTED }}> — {n.author_name || 'staff'}, {day(n.created_at)}</span>
               </div>
             ))}
-          </>
+          </div>
         )}
       </div>
 
@@ -653,7 +797,7 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
           <div className="cv-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420 }}>
             <h3 style={{ marginTop: 0, color: INK }}>Keyboard shortcuts</h3>
             <table style={{ borderCollapse: 'collapse', width: '100%' }}><tbody>
-              {[['1 / 2 / 3', 'Focus a check, by the number on its card'], ['C', 'Confirm the focused check — only when the card offers it'], ['X', 'Reject the focused check (asks for the reason)'], ['D', 'Ask for a document on the focused check'], ['?', 'Show or hide this map']].map(([key, what]) => (
+              {[['1 / 2 / 3', 'Focus the first, second or third check'], ['C', 'Verify the focused check — only when it can be'], ['X', 'Mark the focused check wrong (asks for the reason)'], ['D', 'Ask for a document (on the focused check)'], ['?', 'Show or hide this map']].map(([key, what]) => (
                 <tr key={key}>
                   <td style={{ padding: '6px 10px 6px 0', whiteSpace: 'nowrap' }}><code style={{ background: 'rgba(0,0,0,.05)', borderRadius: 6, padding: '2px 8px', color: INK, fontWeight: 700 }}>{key}</code></td>
                   <td className="small" style={{ padding: '6px 0', color: MUTED }}>{what}</td>
@@ -670,7 +814,7 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
             <h3 style={{ marginTop: 0, color: INK }}>Ask for a document</h3>
             <label className="small" style={{ color: MUTED, display: 'block', marginTop: 8 }}>What do you need?</label>
             <select className="input" value={ask.docType} onChange={(e) => setAsk({ ...ask, docType: e.target.value })}>
-              {docTypes.filter((d) => d.pillars.includes(ask.pillar)).map((d) => <option key={d.slug} value={d.slug}>{d.label}</option>)}
+              {(ask.pillar ? docTypes.filter((d) => d.pillars.includes(ask.pillar)) : docTypes).map((d) => <option key={d.slug} value={d.slug}>{d.label}</option>)}
             </select>
             {ask.docType === 'other' && <input className="input" style={{ marginTop: 6 }} placeholder="Name the document" value={ask.customLabel} onChange={(e) => setAsk({ ...ask, customLabel: e.target.value })} />}
             <label className="small" style={{ color: MUTED, display: 'block', marginTop: 8 }}>Internal note (staff only — the borrower never sees this)</label>

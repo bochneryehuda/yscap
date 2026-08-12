@@ -6342,7 +6342,9 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     // after the order (which re-opens the USPS condition), block it until re-imported.
     if (data.uspsGate && !data.uspsImported) return res.status(422).json({ error: `The property address is no longer USPS-verified. Re-verify and import it in “USPS Address Verification” before following up on the ${kind} order, so the vendor never gets an unverified address.`, code: 'usps' });
     const note = String((req.body && req.body.message) || '').trim().slice(0, 4000);
-    const built = orders.buildOrderEmail(kind, data, { followup: true, note });
+    // The "Follow up" button restates the FULL order (all details + coverage + mortgagee clause);
+    // the Email Center vendor-reply (elsewhere) stays light so a one-line reply isn't a full re-dump.
+    const built = orders.buildOrderEmail(kind, data, { followup: true, fullOrder: true, note });
     // Follow-ups keep the borrower-CC footing the ORDER was placed with
     // (file_orders.meta.ccBorrower; owner-directed 2026-07-31 — title default
     // off). An order placed BEFORE this existed has no stored choice — fall to

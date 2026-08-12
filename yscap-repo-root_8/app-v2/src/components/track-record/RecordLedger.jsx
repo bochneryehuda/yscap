@@ -18,9 +18,6 @@ import { trStatusShort, trIsPendingReview } from '../../lib/trackRecordStatus.js
    LINE_TODO wording, the same rule the sign-off gate uses); with the todo
    unreadable it degrades to "verified = counting" and a generic reason. */
 
-const INK = '#141B22';
-const MUTED = '#4B585C';
-
 const money = (n) => (n == null || n === '' || !Number.isFinite(Number(n)) ? null : '$' + Math.round(Number(n)).toLocaleString('en-US'));
 const day = (d) => (d ? String(d).slice(0, 10) : null);
 /* A PARSER, not a formatter — answers `number | null` (money() below formats
@@ -115,34 +112,35 @@ export default function RecordLedger({
     const addr = pa.oneLine || [pa.line1 || pa.street || pa.address, pa.city, pa.state].filter(Boolean).join(', ') || 'Past project';
     const isOpen = open.has(t.id);
     const figs = figures(t);
+    const stripe = r.reo ? 'var(--gold)' : (t.is_verified ? '#2F7F86' : 'var(--border-strong)');
     return (
-      <div key={t.id} style={{ padding: '5px 0 5px 10px', borderTop: '1px solid rgba(127,169,176,.15)', borderLeft: `3px solid ${r.reo ? 'var(--gold)' : (t.is_verified ? 'var(--teal, #2F7F86)' : 'rgba(127,169,176,.4)')}` }}>
-        <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button type="button" className="btn link small" style={{ padding: 0, color: INK, fontWeight: 600, flex: 1, minWidth: 160, textAlign: 'left' }}
-            aria-expanded={isOpen} onClick={() => toggle(t.id)} title="Open this project — every detail, the Elementix check, the documents, and every action">
-            {isOpen ? '▾ ' : '▸ '}{addr}
+      <div key={t.id} className={`tr-led-row${isOpen ? ' is-open' : ''}`} style={{ borderLeftColor: stripe }}>
+        <div className="tr-led-head">
+          <button type="button" className="tr-led-toggle" aria-expanded={isOpen} onClick={() => toggle(t.id)}
+            title="Open this project — every detail, the Elementix check, the documents, and every action">
+            <span className="tr-led-caret">{isOpen ? '▾' : '▸'}</span>{addr}
           </button>
-          {t.owned_personally
-            ? <span className="pill small" title="Held under the borrower's personal name — no LLC">Personal name</span>
-            : (t.entity_name
-              ? (onOpenEntity
-                ? <button type="button" className="pill small" style={{ cursor: 'pointer' }} title="Entity on record — open the borrower's entities" onClick={() => onOpenEntity(t)}>{t.entity_name}</button>
-                : <span className="pill small" title="Entity on record">{t.entity_name}</span>)
-              : null)}
-          {t.is_verified
-            ? <span className="pill small" title="Fully verified — counts toward experience">Fully verified</span>
-            : (t.verification_status && <span className="pill small">{trStatusShort(t.verification_status)}</span>)}
-          {!isOpen && <button type="button" className="btn ghost small" onClick={() => toggle(t.id)}>Open</button>}
+          <div className="tr-led-tags">
+            {t.owned_personally
+              ? <span className="pill small" title="Held under the borrower's personal name — no LLC">Personal name</span>
+              : (t.entity_name
+                ? (onOpenEntity
+                  ? <button type="button" className="pill small" style={{ cursor: 'pointer' }} title="Entity on record — open the borrower's entities" onClick={() => onOpenEntity(t)}>{t.entity_name}</button>
+                  : <span className="pill small" title="Entity on record">{t.entity_name}</span>)
+                : null)}
+            {t.is_verified
+              ? <span className="ts-badge ok">Verified</span>
+              : (t.verification_status && <span className="pill small">{trStatusShort(t.verification_status)}</span>)}
+            <button type="button" className="btn ghost small" onClick={() => toggle(t.id)}>{isOpen ? 'Close' : 'Open'}</button>
+          </div>
         </div>
-        {figs && <div className="small" style={{ color: MUTED, padding: '2px 0 0 16px' }}>{figs}</div>}
-        {r.reo && (
-          <div className="small" style={{ color: '#8A6D3B', padding: '1px 0 0 16px' }}>Not counting: {r.reo}</div>
-        )}
+        {figs && !isOpen && <div className="tr-led-figs">{figs}</div>}
+        {r.reo && !isOpen && <div className="tr-led-reo">Not counting: {r.reo}</div>}
         {!isOpen && (r.todo || []).filter((x) => x.code !== 'open_request').slice(0, 2).map((x, i) => (
-          <div className="small" key={i} style={{ color: MUTED, padding: '1px 0 0 16px' }}>→ {x.title}</div>
+          <div className="tr-led-todo" key={i}>→ {x.title}</div>
         ))}
         {isOpen && (
-          <div style={{ padding: '8px 0 4px 0' }}>
+          <div className="tr-led-body">
             <LineDetail trackRecordId={t.id} maySignOff={maySignOff} canDelete={canDelete} role={role}
               onChanged={onChanged} onProfileScreen={lens === 'borrower'}
               extraActions={lineActions ? (ln) => lineActions(t, addr, ln) : null} />
@@ -152,58 +150,43 @@ export default function RecordLedger({
     );
   };
 
+  const group = (title, sub, rows) => (
+    <div className="tr-led-group">
+      <div className="tr-led-grouph">
+        <span className="tr-led-groupt">{title}</span>
+        <span className="tr-led-groups">{sub}</span>
+      </div>
+      {rows.map(line)}
+    </div>
+  );
+
   return (
-    <div className="panel" style={{ marginBottom: 12, padding: 10 }}>
+    <div className="tr-ledger">
       {waiting > 0 && (
-        <div className="small" style={{ marginBottom: 8, padding: '6px 10px', borderRadius: 8,
-          border: '1px solid var(--gold)', background: 'rgba(174,135,70,.08)', color: INK }}>
-          <strong>{waiting} {waiting === 1 ? 'deal is' : 'deals are'} waiting for review.</strong>{' '}
-          Nothing counts toward {lens === 'borrower' ? 'experience' : 'this file’s experience'} until
-          it is verified — open each one, check the records, then verify it.{' '}
+        <div className="tr-readi" style={{ background: 'rgba(174,135,70,.08)', borderColor: 'var(--gold)', marginBottom: 12 }}>
+          <b>{waiting} {waiting === 1 ? 'deal is' : 'deals are'} waiting for review.</b>{' '}
+          <span>Nothing counts toward {lens === 'borrower' ? 'experience' : 'this file’s experience'} until
+          it is verified — open each one, check the records, then verify it.</span>{' '}
           <a href="#/internal/approvals?tab=track-record">Every borrower&rsquo;s waiting deals →</a>
         </div>
       )}
-      <div className="muted small" style={{ marginBottom: 6 }}>
-        The record — open any project to see every detail, run the Elementix check, review its documents, and verify it.
-      </div>
+      <p className="tr-led-intro">The record — open any project to see every detail, run the Elementix check, review its documents, and verify it.</p>
       {GROUPS.map((g) => {
         const inGroup = counting.filter((r) => bucketOf(r.t.deal_type) === g.key);
         if (!inGroup.length) return null;
-        return (
-          <div key={g.key} style={{ marginBottom: 8 }}>
-            <div className="small" style={{ fontWeight: 650, color: INK, margin: '6px 0 2px' }}>
-              {g.title} <span style={{ color: MUTED, fontWeight: 400 }}>· {inGroup.length} counting · {g.sub}</span>
-            </div>
-            {inGroup.map(line)}
-          </div>
-        );
+        return <React.Fragment key={g.key}>{group(g.title, `${inGroup.length} counting · ${g.sub}`, inGroup)}</React.Fragment>;
       })}
-      {reo.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          <div className="small" style={{ fontWeight: 650, color: INK, margin: '6px 0 2px' }}>
-            REO / not currently counting <span style={{ color: MUTED, fontWeight: 400 }}>· {reo.length} — each says why; nothing entered is ever lost</span>
-          </div>
-          {reo.map(line)}
-        </div>
-      )}
+      {reo.length > 0 && group('REO / not currently counting', `${reo.length} — each says why; nothing entered is ever lost`, reo)}
       {/* REJECTED — hidden by default, revealed by a toggle (owner-directed
           2026-08-10, #40: "hide it from the list and make an option to sort and
           see also the rejected ones"). Nothing is deleted; it is out of the way. */}
       {rejected.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          <button type="button" className="btn link small" style={{ padding: 0, color: MUTED, fontWeight: 600 }}
-            aria-expanded={showRejected} onClick={() => setShowRejected((v) => !v)}
+        <div className="tr-led-group">
+          <button type="button" className="tr-led-reveal" aria-expanded={showRejected} onClick={() => setShowRejected((v) => !v)}
             title={showRejected ? 'Hide the rejected projects again' : 'Show the projects your team rejected'}>
-            {showRejected ? '▾ ' : '▸ '}{showRejected ? 'Hide' : 'Show'} rejected ({rejected.length})
+            <span className="tr-led-caret">{showRejected ? '▾' : '▸'}</span>{showRejected ? 'Hide' : 'Show'} rejected ({rejected.length})
           </button>
-          {showRejected && (
-            <div style={{ marginTop: 2 }}>
-              <div className="small" style={{ fontWeight: 650, color: INK, margin: '4px 0 2px' }}>
-                Rejected <span style={{ color: MUTED, fontWeight: 400 }}>· {rejected.length} — not counting; kept on the record</span>
-              </div>
-              {rejected.map(line)}
-            </div>
-          )}
+          {showRejected && group('Rejected', `${rejected.length} — not counting; kept on the record`, rejected)}
         </div>
       )}
     </div>

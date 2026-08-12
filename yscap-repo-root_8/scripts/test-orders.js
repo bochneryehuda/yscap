@@ -156,6 +156,23 @@ const titleFollow = orders.buildOrderEmail('title', { ...base, purchasePrice: 20
 assert.ok(!titleFollow.html.includes('$200,000'), 'a title follow-up is unaffected');
 ok('the insurance follow-up carries the same details; title is untouched');
 
+/* The "Follow up" BUTTON (fullOrder) restates the FULL order — the coverage ask and the mortgagee
+   clause ride along too, so the agent has everything to bind without the first email. A plain Email
+   Center reply (no fullOrder) stays LIGHT: it must not re-dump the whole order on a one-line reply. */
+const insFollowFull = orders.buildOrderEmail('insurance', insData, { followup: true, fullOrder: true });
+const titleFollowFull = orders.buildOrderEmail('title', base, { followup: true, fullOrder: true });
+assert.ok(/Builders Risk/i.test(insFollowFull.html) && /Coverage required/i.test(insFollowFull.html),
+  'the insurance follow-up button carries the coverage requirements');
+assert.ok(/Mortgagee Clause/i.test(insFollowFull.html) && insFollowFull.html.includes('5 New Montrose'),
+  'the insurance follow-up button carries the mortgagee clause');
+assert.ok(/Mortgagee Clause/i.test(titleFollowFull.html) && titleFollowFull.html.includes('Loan Number'),
+  'the title follow-up button carries the mortgagee clause too');
+assert.ok(!/Builders Risk/i.test(titleFollowFull.html), 'a title follow-up still has no coverage section');
+// A plain reply (followup, no fullOrder — the Email Center path) is NOT a full re-dump.
+assert.ok(!/Coverage required/i.test(insFollow.html) && !/Mortgagee Clause/i.test(insFollow.html),
+  'a plain insurance reply is light — no coverage spec, no mortgagee clause');
+ok('the Follow-up button restates the full order (coverage + clause); a plain reply stays light');
+
 /* ---- #18: RCN note buyer swaps the mortgagee clause (order email only) ---- */
 // No note buyer (or any non-RCN buyer) → the standard YS Capital clause.
 assert.deepStrictEqual(orders.mortgageeClauseFor(null), orders.MORTGAGEE_CLAUSE, 'no note buyer → standard clause');
