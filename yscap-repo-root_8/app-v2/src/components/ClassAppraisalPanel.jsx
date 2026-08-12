@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { api } from '../lib/api';
+import OrderFailure, { parseOrderFailure } from './OrderFailure.jsx';
 
 /**
  * Class Valuation appraisal ordering — the staff order desk. STAFF-ONLY.
@@ -125,14 +126,18 @@ export default function ClassAppraisalPanel({ appId }) {
       if (out && out.ok) {
         setNotice(out.dryrun
           ? 'Test mode — the order was built and written to the log. Nothing was sent to Class.'
-          : `Order placed with Class Valuation.${out.orderId ? ' Their order number is ' + out.orderId + '.' : ''}`);
+          : `Order placed with Class Valuation.${out.orderId ? ' Their order number is ' + out.orderId + '.' : ''}`
+            + (out.warning ? ' ' + out.warning : ''));
         await load(overrides);
         await loadOrders();
       } else {
-        setErr((out && out.message) || 'Could not place the order.');
+        // A 2xx that still says {ok:false} — surface the full reason, not the bare code.
+        setErr(parseOrderFailure(null, out));
       }
     } catch (e) {
-      setErr(e.message || 'Could not place the order.');
+      // The usual failure path: a non-2xx makes req() throw with the whole body on
+      // e.data. Show the owner the reason, the error code and what Class returned.
+      setErr(parseOrderFailure(e, null));
     }
     setBusy(false);
   }, [appId, overrides, load, loadOrders]);
@@ -161,7 +166,7 @@ export default function ClassAppraisalPanel({ appId }) {
 
   return (
     <div style={{ color: INK }}>
-      {err ? <Banner tone="bad">{err}</Banner> : null}
+      <OrderFailure info={err} vendor="Class Valuation" />
       {notice ? <Banner tone="good">{notice}</Banner> : null}
 
       <ConnectionLine cfg={cfg} hosts={config && config.hosts} notOn={notOn} />
@@ -309,6 +314,13 @@ function PlacedOrders({ appId, data, openOrder, onOpen, onChanged }) {
                     {o.due_date ? ` · due ${fmtDay(o.due_date)}` : ''}
                     {o.appointment_date ? ` · inspection ${fmtDay(o.appointment_date)}` : ''}
                   </div>
+                  {/* If this order errored, say WHY right here — the reason is stored on the
+                      row, so a person never has to go digging for why it didn't go through. */}
+                  {o.status === 'error' && o.last_error ? (
+                    <div style={{ fontSize: 12, color: BAD, marginTop: 3 }}>
+                      Why it didn’t go through: {o.last_error}
+                    </div>
+                  ) : null}
                 </div>
                 {unread ? <span style={{ background: TEAL, color: '#fff', borderRadius: 999, padding: '1px 8px',
                                           fontSize: 12, fontWeight: 700 }}>{unread} new</span> : null}

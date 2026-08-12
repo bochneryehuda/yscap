@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../lib/api';
 import { moneyNum } from '../lib/money';
 import { askConfirm, askPrompt } from '../lib/dialog.js';
+import OrderFailure, { parseOrderFailure } from './OrderFailure.jsx';
 
 /**
  * AMC appraisal ordering (AppraisalScope / CoreLogic Digital Gateway) — the staff desk
@@ -65,13 +66,18 @@ export default function AmcAppraisalPanel({ appId }) {
     try {
       const out = await api.amcPlaceOrder(appId, { place: doPlace, ...(formOverride ? { productCode: formOverride } : {}) });
       if (!out.ok) {
-        setErr(out.missing && out.missing.length ? ('Still needed: ' + out.missing.join(', ')) : (out.message || 'Could not place the order.'));
+        // A 2xx that still says {ok:false} — surface the full reason, not the bare code.
+        setErr(parseOrderFailure(null, out));
       } else {
-        setNotice(doPlace ? (out.dryrun ? 'Order built in test mode (nothing sent).' : 'Appraisal order placed.') : 'Draft saved.');
+        setNotice(doPlace ? (out.dryrun ? 'Order built in test mode (nothing sent).' : 'Order placed with AppraisalScope / NAN.') : 'Draft saved.');
         await load();
         if (out.order) setSelected(out.order.id);
       }
-    } catch (e) { setErr(e.message || 'Could not place the order.'); }
+    } catch (e) {
+      // The usual failure path: a non-2xx makes req() throw with the whole body on
+      // e.data. Show the owner the reason, the error code and what the AMC returned.
+      setErr(parseOrderFailure(e, null));
+    }
     setBusy(false);
   }, [appId, load, formOverride]);
 
@@ -81,7 +87,7 @@ export default function AmcAppraisalPanel({ appId }) {
 
   return (
     <div style={{ color: INK }}>
-      {err ? <Banner tone="bad">{err}</Banner> : null}
+      <OrderFailure info={err} vendor="AppraisalScope / NAN" />
       {notice ? <Banner tone="good">{notice}</Banner> : null}
 
       {notConfigured ? (

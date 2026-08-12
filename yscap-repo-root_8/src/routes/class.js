@@ -244,10 +244,16 @@ router.post('/files/:id/order', async (req, res) => {
         : 'The order WAS placed with Class, but PILOT could not record it — its updates will not reach this file. Tell an administrator, with the order number above.',
     });
   } catch (e) {
-    await finish({ status: 'error', last_error: String((e && e.message) || e).slice(0, 500) });
+    // Store the WHOLE reason (our message + the meaningful text out of the vendor's
+    // body), not just "HTTP 400" with the cause thrown away — so the errored order
+    // shows WHY on the file screen, and so a person watching the logs sees a clear
+    // [class] line instead of nothing (the reason used to live only in the DB row).
+    const reason = orderBuild.describeOrderError(e);
+    await finish({ status: 'error', last_error: reason });
     if (e.code === 'CLASS_OUTBOUND_DISABLED') {
       return res.status(409).json({ error: e.code, message: 'Placing orders with Class Valuation is switched off.' });
     }
+    console.warn(`[class] order failed for file ${appId}: ${reason}`);
     res.status(502).json({ error: e.code || 'order_failed', detail: e.message, vendor: e.body || null });
   }
 });

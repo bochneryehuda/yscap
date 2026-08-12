@@ -439,5 +439,42 @@ ok(ob.isOccupancyEnumError(null) === false && ob.isOccupancyEnumError(undefined)
 ok(ob.isOccupancyEnumError(Object.assign(new Error('gate off'), { code: 'CLASS_OUTBOUND_DISABLED' })) === false,
    'the write-gate refusal is not a 400 and never cascades');
 
+console.log('\n--- describeOrderError: the reason we STORE and LOG is never just "HTTP 400" ---');
+// The real occupancy failure (envelope shape A): our message + the vendor's own text,
+// so last_error carries the actual cause a person can read.
+const dA = ob.describeOrderError(enumErr);
+ok(/HTTP 400/.test(dA) && /OccupancyTypeEnum/.test(dA),
+   'the stored reason combines our message with the vendor body text (not just "HTTP 400")');
+// ASP.NET ValidationProblemDetails: the field is a KEY, and it is surfaced by name.
+const dB = ob.describeOrderError(problemDetails);
+ok(/\$\.occupancy/.test(dB) && /OccupancyTypeEnum/.test(dB),
+   'the ASP.NET errors{} shape is flattened into the reason, naming the field');
+// A raw (non-JSON) body kept verbatim by readBody under `raw`.
+const rawErr = Object.assign(new Error('Class createOrder failed: HTTP 502'), { status: 502, body: { raw: 'Bad Gateway (nginx)' } });
+ok(/HTTP 502/.test(ob.describeOrderError(rawErr)) && /Bad Gateway/.test(ob.describeOrderError(rawErr)),
+   'a raw non-JSON body is surfaced too');
+// A plain string body.
+ok(/upstream timeout/.test(ob.describeOrderError(Object.assign(new Error('x'), { body: 'upstream timeout' }))),
+   'a plain string vendor body is surfaced');
+// No body — just our message.
+ok(ob.describeOrderError(Object.assign(new Error('the connection dropped'), {})) === 'the connection dropped',
+   'with no vendor body the reason is simply our message');
+// The vendor text is not repeated when our message already carries it (the {success:false} path).
+const refused = Object.assign(new Error('Class createOrder refused: occupancy invalid'), { body: { success: false, message: 'occupancy invalid' } });
+ok(ob.describeOrderError(refused) === 'Class createOrder refused: occupancy invalid',
+   'the vendor text is not appended twice when our message already contains it');
+// Never blank, never throws on junk.
+ok(ob.describeOrderError(null) === 'unknown error', 'a missing error yields a readable fallback');
+ok(typeof ob.describeOrderError(Object.assign(new Error(''), { body: {} })) === 'string'
+   && ob.describeOrderError(Object.assign(new Error(''), { body: {} })).length > 0,
+   'an empty error still yields a non-empty reason');
+// Bounded so it can never overflow the last_error column.
+const huge = Object.assign(new Error('x'.repeat(400)), { body: { error: 'y'.repeat(400) } });
+ok(ob.describeOrderError(huge).length <= 500, 'the stored reason is capped at 500 characters');
+// vendorErrorText directly on the three shapes.
+ok(ob._internals.vendorErrorText({ error: 'boom' }) === 'boom', 'envelope error text');
+ok(ob._internals.vendorErrorText({ errors: { '$.x': ['a', 'b'] } }) === '$.x: a; b', 'errors{} flattened with the key');
+ok(ob._internals.vendorErrorText(null) === '' && ob._internals.vendorErrorText(undefined) === '', 'no body -> empty');
+
 console.log(`\ntest-class-order-build-pure: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

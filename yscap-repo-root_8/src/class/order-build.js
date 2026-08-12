@@ -534,6 +534,48 @@ function isOccupancyEnumError(err) {
   return /Occupancy\w*Enum/i.test(text) || /\$\.occupancy\b/i.test(text);
 }
 
+// A single self-contained sentence for WHY a Class call failed, combining our own
+// message with the meaningful text out of the vendor's body — so the reason we
+// STORE (class_orders.last_error) and LOG is never just "HTTP 400" with the actual
+// cause thrown away in the body. Class hands back three body shapes: their own
+// envelope `{success,code,error/message}`, ASP.NET's `{title,errors:{field:[…]}}`
+// (the field is a KEY), or a raw string kept under `raw`. The browser twin is
+// `vendorSummary()` in app-v2/src/components/OrderFailure.jsx — keep the two in step.
+function vendorErrorText(body) {
+  if (body == null) return '';
+  if (typeof body === 'string') return body.trim().slice(0, 300);
+  if (typeof body === 'object') {
+    if (typeof body.error === 'string' && body.error.trim()) return body.error.trim();
+    if (typeof body.message === 'string' && body.message.trim()) return body.message.trim();
+    // ASP.NET's `errors{}` carries the specifics; its `title` is generic boilerplate
+    // ("One or more validation errors occurred."), so the field messages win over it.
+    if (body.errors && typeof body.errors === 'object') {
+      const out = [];
+      for (const k of Object.keys(body.errors)) {
+        const m = body.errors[k];
+        out.push((k ? k + ': ' : '') + (Array.isArray(m) ? m.join('; ') : String(m)));
+      }
+      if (out.length) return out.join(' · ');
+    }
+    if (typeof body.detail === 'string' && body.detail.trim()) return body.detail.trim();
+    if (typeof body.title === 'string' && body.title.trim()) return body.title.trim();
+    if (typeof body.raw === 'string' && body.raw.trim()) return body.raw.trim().slice(0, 300);
+    try { return JSON.stringify(body).slice(0, 300); } catch (_) { /* unserializable */ }
+  }
+  return '';
+}
+
+function describeOrderError(err) {
+  if (!err) return 'unknown error';
+  const parts = [];
+  if (typeof err.message === 'string' && err.message) parts.push(err.message);
+  const vt = vendorErrorText(err.body);
+  // Don't repeat the vendor text when our own message already carries it.
+  if (vt && !parts.some((p) => p.includes(vt))) parts.push(vt);
+  const s = parts.join(' — ').trim();
+  return (s || 'the order was rejected with no detail').slice(0, 500);
+}
+
 // What the SCREEN needs in order to offer exactly what this version accepts.
 // `occupancy` comes back as a closed list on 3.6 and as SUGGESTIONS on 2.6 (where
 // the field is free text), and the screen renders a dropdown or a type-ahead
@@ -565,6 +607,7 @@ module.exports = {
   profileFor,
   screenOptions,
   isOccupancyEnumError,
+  describeOrderError,
   DEFAULT_VERSION,
   VERSIONS: Object.values(PROFILES).map((p) => ({ version: p.version, uad: p.uad, label: p.label, path: p.path })),
   // Kept for the callers that predate two versions. These are the 2.6 lists.
@@ -575,5 +618,6 @@ module.exports = {
     // The 2.6 names, kept so the existing checks read the same as they always did.
     PROPERTY_TYPE: PROPERTY_TYPE_26, PROPERTY_TYPE_ASSUMED: PROPERTY_TYPE_ASSUMED_26,
     OCCUPANCY: OCCUPANCY_26, OCCUPANCY_CANDIDATES_26,
+    vendorErrorText,
   },
 };
