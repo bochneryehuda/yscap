@@ -62,5 +62,23 @@ ok(ac.countyQueryFrom({ street: '10 Main St', city: 'Lakewood', state: 'NJ', zip
   'the alternate part names (street / zip) are accepted');
 ok(ac.countyQueryFrom({}) === '' && ac.countyQueryFrom(null) === '', 'nothing in -> empty, never throws');
 
+// --- the precision GATE resolveCounty applies before reading a county ---
+// resolveCounty reads a county ONLY from a match parseGeocodeResult / parseOsmResult
+// judge precise, so a road-level answer (the road the geocoder fell back to, which
+// can sit in a DIFFERENT county) never becomes the property's county. Pin that these
+// gate functions really do reject an imprecise match, so the county gate can't rot.
+console.log('\n--- the precision gate rejects a road-level match (wrong-county guard) ---');
+ok(ac.parseGeocodeResult({ status: 'OK', results: [{ place_id: 'p', types: ['route'],
+  formatted_address: '2nd St, Plainfield, NJ 07063', geometry: { location: { lat: 40.6, lng: -74.4 } } }] }) === null,
+  'a Google route-level match is refused by parseGeocodeResult (no county taken)');
+ok(ac.parseGeocodeResult({ status: 'OK', results: [{ place_id: 'p', types: ['street_address'],
+  formatted_address: '1727 S 2nd St, Piscataway, NJ 08854', geometry: { location: { lat: 40.5, lng: -74.4 } },
+  address_components: [{ long_name: '08854', types: ['postal_code'] }] }] }) !== null,
+  'a precise street_address match passes the gate (its county may be read)');
+ok(ac.parseOsmResult({ osm_id: 1, lat: '40.5', lon: '-74.4', address: { road: '2nd Street', county: 'Union County' } }).precision === 'road',
+  'an OSM match with no house_number is road-level — refused, so its county is not adopted');
+ok(ac.parseOsmResult({ osm_id: 2, lat: '40.5', lon: '-74.4', address: { house_number: '1727', road: 'South 2nd Street', county: 'Middlesex County' } }).precision === 'rooftop',
+  'an OSM match WITH a house_number is rooftop — its county may be read');
+
 console.log(`\ntest-address-county-pure: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

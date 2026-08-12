@@ -439,7 +439,14 @@ async function resolveCounty(input) {
       await require('./api-rate-limit').acquire('google_geocode');
       const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
       const j = r.ok ? await r.json() : null;
-      if (googleDefinitive(r.ok, j)) county = googleCounty(j);
+      // Only read the county off a PRECISE match. Google answers a house number it
+      // cannot place with the ROAD it sits on, and that road can lie in a DIFFERENT
+      // county (the geocodeRewriteIsSafe incident — "1727 S 2nd St, Piscataway"
+      // resolved across the Middlesex→Union county line). parseGeocodeResult returns
+      // null for a route / locality / ZIP-level match, so an imprecise answer yields
+      // no county and the order BLOCKS (the owner's stated preference) rather than
+      // adopting a neighbouring county nobody would notice on the preview.
+      if (googleDefinitive(r.ok, j) && parseGeocodeResult(j)) county = googleCounty(j);
     } catch (_) { /* fall through to the keyless provider */ }
   }
   if (!county) {
@@ -451,7 +458,13 @@ async function resolveCounty(input) {
         headers: { 'User-Agent': `YSCapitalPortal/1.0 (${cfg.osmContact || 'admin@yscapgroup.com'})`, accept: 'application/json' },
       }));
       const j = (r && r.ok) ? await r.json() : null;
-      if (osmDefinitive(r && r.ok, j) && Array.isArray(j) && j[0]) county = osmCounty(j[0]);
+      // Same precision rule as the Google branch: parseOsmResult reports 'rooftop'
+      // only when the match carries a house_number; a road-level match (no house
+      // number, the road's own data) is refused so a county is never taken from the
+      // wrong side of a boundary.
+      const m = (osmDefinitive(r && r.ok, j) && Array.isArray(j)) ? j[0] : null;
+      const parsed = m ? parseOsmResult(m) : null;
+      if (parsed && parsed.precision === 'rooftop') county = osmCounty(m);
     } catch (_) { /* best-effort */ }
   }
   if (county) {
