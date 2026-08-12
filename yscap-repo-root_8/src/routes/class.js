@@ -269,9 +269,16 @@ router.get('/files/:id/orders', async (req, res) => {
     `SELECT id, class_order_id, transaction_id, reference_number, api_version, uad, order_path,
             product_id, product_title, status, status_reason, invision_url, due_date,
             appointment_date, inspected_at, assigned_vendor, client_fee_cents, paid_at,
-            dryrun, last_event_at, last_error, placed_at, created_at
+            dryrun, last_event_at, last_error, request_body, placed_at, created_at
        FROM class_orders WHERE application_id = $1
       ORDER BY created_at DESC`, [appId]);
+  // Attach the plain "what was sent" summary and drop the raw body so the response stays
+  // lean — the screen shows the summary, never the vendor's internal order body.
+  const orders = r.rows.map((o) => {
+    const summary = orderBuild.orderSummary(o);
+    const { request_body, ...rest } = o;   // eslint-disable-line no-unused-vars
+    return { ...rest, summary };
+  });
   const ids = r.rows.map((o) => o.id);
   // Unread counts per order, so the file screen can badge a waiting reply without
   // fetching every thread.
@@ -291,7 +298,7 @@ router.get('/files/:id/orders', async (req, res) => {
     `SELECT id, class_order_row, name, content_type, document_id, announced_at, fetched_at
        FROM class_attachments WHERE class_order_row = ANY($1::bigint[])
       ORDER BY announced_at DESC`, [ids])).rows : [];
-  res.json({ orders: r.rows, events, attachments, unread, openAsks });
+  res.json({ orders, events, attachments, unread, openAsks });
 });
 
 // ---------------------------------------------------------------------------
@@ -385,7 +392,9 @@ router.post('/files/:id/orders/:orderRowId/revision', async (req, res) => {
     supporting: b.supporting,
     staffId: req.actor.id,
   });
-  res.status(out.ok ? 200 : (out.error === 'bad_reasons' ? 400 : 502)).json(out);
+  // not_ready = the report isn't in yet (a precondition, not a vendor failure) → 409, so
+  // the screen shows the plain "wait for the report" note, never the red gateway box.
+  res.status(out.ok ? 200 : (out.error === 'bad_reasons' ? 400 : out.error === 'not_ready' ? 409 : 502)).json(out);
 });
 
 router.post('/files/:id/orders/:orderRowId/cancel', async (req, res) => {

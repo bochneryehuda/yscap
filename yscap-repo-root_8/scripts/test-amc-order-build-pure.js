@@ -64,6 +64,26 @@ const ctx = {
   ok(ob.missingRequired(spec).length === 0, 'complete spec has nothing missing');
 }
 
+// ---- primary contact + purchase amount (AppraisalScope requireds) ----
+{
+  const spec = ob.buildOrderSpec(ctx, { productCode: '5' });
+  ok(spec.primaryContact && spec.primaryContact.fullName === 'Peter Parker', 'primary contact resolves to the borrower');
+  ok(spec.primaryContact.phone === '555-1' && spec.primaryContact.email === 'p@x.com', 'primary contact carries a phone + email');
+  ok(ob.missingRequired(spec).length === 0, 'complete spec (value + reachable contact) is not missing anything');
+
+  // Co-Borrower best-contact resolves to the secondary borrower.
+  const co = ob.buildOrderSpec(ctx, { productCode: '5' }, { bestContact: 'Co-Borrower' });
+  ok(co.primaryContact.fullName === 'Mary Jane', 'best-contact Co-Borrower resolves to the secondary borrower');
+
+  // No property value (a refinance with nothing on file, or a blank price) → flagged.
+  const noVal = ob.buildOrderSpec({ ...ctx, property: { ...ctx.property, salesContractAmount: null } }, { productCode: '5' });
+  ok(ob.missingRequired(noVal).includes('purchase price or property value'), 'a missing purchase/property value is flagged, not sent');
+
+  // A main contact with no phone AND no email → the vendor cannot build primary_contact.
+  const noReach = ob.buildOrderSpec({ ...ctx, borrowers: [{ firstName: 'A', lastName: 'B' }] }, { productCode: '5' });
+  ok(ob.missingRequired(noReach).includes('a phone or email for the main contact'), 'an unreachable main contact is flagged, not sent');
+}
+
 // ---- overrides ----
 {
   const spec = ob.buildOrderSpec(ctx, { productCode: '5' }, { productCode: '9', mortgageType: 'Other', bestContact: 'Owner', rush: true, needByDate: '2026-10-01', requestComment: 'please rush' });

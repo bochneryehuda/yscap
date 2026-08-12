@@ -102,31 +102,10 @@ export default function AmcAppraisalPanel({ appId }) {
         </div>
       )}
 
-      {/* Existing orders */}
+      {/* Existing orders — bucketed so the live ones lead and the failed / draft
+          orders are tucked into collapsible sections instead of one long messy list. */}
       {orders.length ? (
-        <div style={{ marginBottom: 14 }}>
-          <SectionTitle>Orders</SectionTitle>
-          <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden' }}>
-            {orders.map((o) => (
-              <div key={o.id} onClick={() => setSelected(selected === o.id ? null : o.id)}
-                style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '10px 12px', borderTop: `1px solid ${LINE}`, cursor: 'pointer', background: selected === o.id ? '#FBF9F4' : '#fff' }}>
-                <Pill color={statusColor(o.status)}>{STATUS_LABEL[o.status] || o.status}</Pill>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, color: INK }}>{o.form_description || ('Form ' + (o.product_code || '—'))} {o.request_action === 'AddForm' ? '(added form)' : ''}</div>
-                  <div style={{ fontSize: 12, color: MUTED }}>
-                    {o.cdg_order_number ? ('AMC #' + o.cdg_order_number + ' · ') : ''}Ordered {fmtDate(o.ordered_at || o.created_at)}{o.dryrun ? ' · test' : ''}
-                  </div>
-                  {o.status === 'error' && o.last_error ? (
-                    <div style={{ fontSize: 12, color: '#B4453B', marginTop: 4 }}>
-                      <strong>Why it didn’t go through:</strong> {o.last_error}
-                    </div>
-                  ) : null}
-                </div>
-                <span style={{ color: TEAL, fontSize: 13 }}>{selected === o.id ? 'Hide' : 'Open'}</span>
-              </div>
-            ))}
-          </div>
-        </div>
+        <OrdersList orders={orders} selected={selected} onOpen={(id) => setSelected(selected === id ? null : id)} />
       ) : null}
 
       {selected ? <OrderDetail appId={appId} orderId={selected} order={orders.find((o) => o.id === selected) || null} onChange={load} /> : null}
@@ -140,6 +119,73 @@ export default function AmcAppraisalPanel({ appId }) {
         </div>
       ) : null}
     </div>
+  );
+}
+
+// The orders on a file, grouped: the live ones lead; failed ("needs attention") and
+// draft orders collapse into their own sections so the list is never one long, messy
+// wall. You open a section to work the failed / draft orders inside it.
+function OrdersList({ orders, selected, onOpen }) {
+  const failed = orders.filter((o) => o.status === 'error');
+  const drafts = orders.filter((o) => o.status === 'draft');
+  const live = orders.filter((o) => o.status !== 'error' && o.status !== 'draft');
+  return (
+    <div style={{ marginBottom: 14 }}>
+      {live.length ? (
+        <>
+          <SectionTitle>Orders</SectionTitle>
+          <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden' }}>
+            {live.map((o) => <OrderRow key={o.id} o={o} open={selected === o.id} onOpen={onOpen} />)}
+          </div>
+        </>
+      ) : null}
+      {failed.length ? (
+        <CollapseSection tone="bad" defaultOpen={!live.length}
+          title={`⚠ Needs attention — ${failed.length} order${failed.length > 1 ? 's' : ''} didn’t go through`}>
+          {failed.map((o) => <OrderRow key={o.id} o={o} open={selected === o.id} onOpen={onOpen} />)}
+        </CollapseSection>
+      ) : null}
+      {drafts.length ? (
+        <CollapseSection title={`Drafts — ${drafts.length} not sent yet`}>
+          {drafts.map((o) => <OrderRow key={o.id} o={o} open={selected === o.id} onOpen={onOpen} />)}
+        </CollapseSection>
+      ) : null}
+    </div>
+  );
+}
+
+function OrderRow({ o, open, onOpen }) {
+  const prop = (o.summary || []).find((s) => s.label === 'Property');
+  return (
+    <div onClick={() => onOpen(o.id)}
+      style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '10px 12px', borderTop: `1px solid ${LINE}`, cursor: 'pointer', background: open ? '#FBF9F4' : '#fff' }}>
+      <Pill color={statusColor(o.status)}>{STATUS_LABEL[o.status] || o.status}</Pill>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 600, color: INK }}>{o.form_description || ('Form ' + (o.product_code || '—'))} {o.request_action === 'AddForm' ? '(added form)' : ''}</div>
+        <div style={{ fontSize: 12, color: MUTED }}>
+          {prop ? prop.value + ' · ' : ''}{o.cdg_order_number ? ('AMC #' + o.cdg_order_number + ' · ') : ''}Ordered {fmtDate(o.ordered_at || o.created_at)}{o.dryrun ? ' · test' : ''}
+        </div>
+        {o.status === 'error' && o.last_error ? (
+          <div style={{ fontSize: 12, color: '#B4453B', marginTop: 4 }}>
+            <strong>Why it didn’t go through:</strong> {o.last_error}
+          </div>
+        ) : null}
+      </div>
+      <span style={{ color: TEAL, fontSize: 13 }}>{open ? 'Hide' : 'Open'}</span>
+    </div>
+  );
+}
+
+// A collapsible section (native <details>) for the failed / draft buckets.
+function CollapseSection({ title, tone, defaultOpen, children }) {
+  const bad = tone === 'bad';
+  return (
+    <details open={!!defaultOpen} style={{ marginTop: 10, border: `1px solid ${bad ? '#E4B4AE' : LINE}`, borderRadius: 10, overflow: 'hidden', background: bad ? '#FDF6F5' : '#fff' }}>
+      <summary style={{ cursor: 'pointer', padding: '9px 12px', fontWeight: 600, color: bad ? '#8A2F27' : INK, fontSize: 13 }}>
+        {title}
+      </summary>
+      <div style={{ borderTop: `1px solid ${bad ? '#E4B4AE' : LINE}` }}>{children}</div>
+    </details>
   );
 }
 
@@ -297,6 +343,21 @@ function OrderDetail({ appId, orderId, order, onChange }) {
           <strong>Cancellation requested.</strong>{order.cancel_reason ? ` ${order.cancel_reason}` : ''} Waiting for the AMC to confirm.
         </div>
       ) : null}
+      {order && Array.isArray(order.summary) && order.summary.length ? (
+        <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 12, marginBottom: 12, background: '#FBF9F4' }}>
+          <div style={{ fontSize: 11, color: MUTED, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 8, fontWeight: 600 }}>
+            What was ordered · <span style={{ color: statusColor(order.status) }}>{STATUS_LABEL[order.status] || order.status}</span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '5px 14px' }}>
+            {order.summary.map((s, i) => (
+              <React.Fragment key={i}>
+                <div style={{ color: MUTED, fontSize: 12.5 }}>{s.label}</div>
+                <div style={{ color: INK, fontSize: 12.5, wordBreak: 'break-word' }}>{s.value}</div>
+              </React.Fragment>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         {[['messages', 'Messages'], ['revisions', 'Revisions & disputes'], ['documents', 'Documents']].map(([k, lbl]) => (
           <button key={k} onClick={() => setTab(k)}
@@ -312,7 +373,7 @@ function OrderDetail({ appId, orderId, order, onChange }) {
       </div>
       {cancelErr ? <div style={{ color: '#B4453B', fontSize: 13, marginBottom: 8 }}>{cancelErr}</div> : null}
       {tab === 'messages' ? <Messages orderId={orderId} /> : null}
-      {tab === 'revisions' ? <Revisions appId={appId} orderId={orderId} /> : null}
+      {tab === 'revisions' ? <Revisions appId={appId} orderId={orderId} order={order} /> : null}
       {tab === 'documents' ? <Documents appId={appId} orderId={orderId} onChange={onChange} /> : null}
     </div>
   );
@@ -355,12 +416,15 @@ function Messages({ orderId }) {
   );
 }
 
-function Revisions({ appId, orderId }) {
+function Revisions({ appId, orderId, order }) {
   const [rows, setRows] = useState([]);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [rovOpen, setRovOpen] = useState(false);
+  // A fix or a value dispute only makes sense once the report is IN (report ready or
+  // completed). A scope-of-work change is about the order in progress, so it stays open.
+  const reportIn = !!(order && (order.status === 'completed' || order.status === 'product_available'));
   const load = useCallback(async () => {
     try { const r = await api.amcRevisions(orderId); setRows((r && r.revisions) || []); } catch (_) { /* ignore */ }
   }, [orderId]);
@@ -394,10 +458,16 @@ function Revisions({ appId, orderId }) {
         <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>
           For a mistake the appraiser made, a correction, or a change to the scope of work. The appraiser fixes the report and sends it back — this does not change the value.
         </div>
+        {!reportIn ? (
+          <div style={{ border: `1px solid ${GOLD}`, background: '#FBF6EC', borderRadius: 8, padding: '8px 10px', fontSize: 12.5, color: MUTED, marginBottom: 8 }}>
+            The appraisal isn’t back yet, so a <strong>fix</strong> can’t be requested — there’s nothing to fix until the report is in. This opens up once the order shows <strong>Report ready</strong>. (A scope-of-work change can still be sent while the order is in progress.)
+          </div>
+        ) : null}
         <textarea value={text} onChange={(e) => setText(e.target.value)} rows={2} placeholder="Describe what needs to be fixed or changed…"
           style={{ width: '100%', border: `1px solid ${LINE}`, borderRadius: 8, padding: 8, color: INK, resize: 'vertical', boxSizing: 'border-box' }} />
         <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
-          <button className="btn soft" disabled={busy || !text.trim()} onClick={() => sendRevision('revision')}>Request a revision</button>
+          <button className="btn soft" disabled={busy || !text.trim() || !reportIn} onClick={() => sendRevision('revision')}
+            title={reportIn ? '' : 'Available once the report is in'}>Request a revision</button>
           <button className="btn soft" disabled={busy || !text.trim()} onClick={() => sendRevision('sow_change')}>Scope-of-work change</button>
         </div>
       </div>
@@ -408,7 +478,11 @@ function Revisions({ appId, orderId }) {
         <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>
           If you think the appraised value is too low, ask for a reconsideration of value. Search the Property Research Center for the comparable sales you want to use, add them, and PILOT fills in all their details automatically. You can also type in a property that isn’t in the research yet.
         </div>
-        {rovOpen ? (
+        {!reportIn ? (
+          <div style={{ border: `1px solid ${GOLD}`, background: '#FBF6EC', borderRadius: 8, padding: '8px 10px', fontSize: 12.5, color: MUTED }}>
+            You can dispute the value once the report is in. There’s no value to dispute until the appraiser sends the finished report back (<strong>Report ready</strong>).
+          </div>
+        ) : rovOpen ? (
           <RovBuilder appId={appId} orderId={orderId}
             onCancel={() => setRovOpen(false)}
             onSent={async () => { setRovOpen(false); await load(); }} />

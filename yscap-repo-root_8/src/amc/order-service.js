@@ -144,7 +144,16 @@ async function loadContext(db, appId) {
       postalCode: pa.postalCode,
       county: pa.county,
       occupancy: a.occupancy || null,
-      salesContractAmount: isPurchase && a.purchase_price != null ? Number(a.purchase_price) : null,
+      // AppraisalScope REQUIRES a property amount (its `purchase_amount`). On a PURCHASE
+      // it is the contract price; on a REFINANCE there is no purchase, so send the value
+      // the loan is sized on (as-is value → ARV → loan amount) so the appraiser still has
+      // a figure and the order is not rejected for a blank one. missingRequired refuses a
+      // blank on both, so a file with no value at all is caught on the preview, not by NAN.
+      salesContractAmount: isPurchase
+        ? (a.purchase_price != null ? Number(a.purchase_price) : null)
+        : (a.as_is_value != null ? Number(a.as_is_value)
+          : a.arv != null ? Number(a.arv)
+          : a.loan_amount != null ? Number(a.loan_amount) : null),
     },
     borrowers,
     // Leave bestContact UNSET here: buildOrderSpec defaults it to 'Borrower' (so the sent
@@ -504,15 +513,68 @@ async function createOrder(db, appId, opts = {}) {
 // ---------------------------------------------------------------------------
 // Reads.
 // ---------------------------------------------------------------------------
+// A plain, human summary of exactly what was sent to AppraisalScope for an order —
+// so the desk can see "what was in the order" (property, loan number, form, value,
+// borrower, contacts) after it is placed, not just the vendor's status. Built from the
+// STORED sent envelope (a snapshot), so it reflects the order as it went out even if the
+// file has changed since. Returns [{label, value}] rows, blanks omitted.
+function orderMoney(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? '$' + Math.round(n).toLocaleString('en-US') : String(v);
+}
+function orderSummary(order) {
+  const rows = [];
+  const add = (label, value) => { if (value != null && value !== '') rows.push({ label, value: String(value) }); };
+  add('Form ordered', order.form_description || (order.product_code ? 'Form ' + order.product_code : null));
+  const msg = order.request_payload && order.request_payload.message;
+  if (msg) {
+    const deal = (msg.deals && msg.deals[0]) || {};
+    const loan = (deal.loans && deal.loans[0]) || {};
+    const prop = (deal.properties && deal.properties[0]) || {};
+    const addr = prop.address || {};
+    add('Loan number', (loan.loanIdentifiers && loan.loanIdentifiers.lenderLoanIdentifier) || order.client_order_number);
+    add('Property', [addr.addressLine, addr.addressLine2, addr.cityName, addr.stateCode, addr.postalCode].filter(Boolean).join(', '));
+    add('County', addr.countyName);
+    add('Property type', prop.titleCategoryType);
+    add('Occupancy', prop.propertyCurrentOccupancyType);
+    add('Loan purpose', loan.loanPurposeType);
+    add('Purchase / property value', orderMoney(prop.salesContractAmount));
+    add('Loan amount', orderMoney(loan.baseLoanAmount));
+    const bs = (deal.borrowers || [])
+      .map((b) => b.legalEntityName || [b.firstName, b.middleName, b.lastName].filter(Boolean).join(' '))
+      .filter(Boolean);
+    if (bs.length) add(bs.length > 1 ? 'Borrowers' : 'Borrower', bs.join(', '));
+    const best = (deal.parties || []).find((p) => p.partyRoleType === 'BestContact');
+    if (best) {
+      const c = (best.contacts && best.contacts[0]) || {};
+      add('Main contact', [best.fullName, c.contactPhone, c.contactEmail].filter(Boolean).join(' · '));
+    }
+    const emails = (((msg.products && msg.products[0]) || {}).notifications || [])
+      .map((n) => n && n.contactEmail).filter(Boolean);
+    if (emails.length) add('Update emails to', emails.join(', '));
+  } else if (order.client_order_number) {
+    add('Loan number', order.client_order_number);
+  }
+  return rows;
+}
+
 async function listOrders(db, appId) {
   const r = await db.query(
     `SELECT id, request_action, parent_order_id, client_order_number, cdg_order_number,
             sp_order_number, appraisal_file_number, product_code, form_description,
             status, status_code, status_name, status_description, rush, need_by_date,
             dryrun, last_error, last_status_response, cancel_reason, cancel_requested_at,
-            cancel_requested_by, created_at, ordered_at, completed_at, last_polled_at, updated_at
+            cancel_requested_by, request_payload, created_at, ordered_at, completed_at,
+            last_polled_at, updated_at
        FROM amc_orders WHERE application_id = $1 ORDER BY created_at DESC`, [appId]);
-  return r.rows;
+  // Attach the plain "what was sent" summary; drop the raw envelope so the response
+  // stays lean and never carries the internals of the masked message to the screen.
+  return r.rows.map((o) => {
+    const summary = orderSummary(o);
+    const { request_payload, ...rest } = o;   // eslint-disable-line no-unused-vars
+    return { ...rest, summary };
+  });
 }
 
 async function getOrder(db, orderId) {
@@ -522,7 +584,7 @@ async function getOrder(db, orderId) {
 
 module.exports = {
   loadContext, cardStatus, formRules, buildPreview,
-  createOrder, listOrders, getOrder, journal,
+  createOrder, listOrders, getOrder, journal, orderSummary,
   // exported for tests
   addrParts, borrowerCtx, describeSendFailure, readGatewayBody, formsCatalog, formNameFor,
 };

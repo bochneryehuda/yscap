@@ -287,55 +287,90 @@ function PlacedOrders({ appId, data, openOrder, onOpen, onChanged }) {
   if (!rows.length) return null;
   const unreadFor = (id) => ((data.unread || []).find((u) => String(u.class_order_row) === String(id)) || {}).n || 0;
   const asksFor = (id) => (data.openAsks || []).filter((a) => String(a.class_order_row) === String(id));
+  // Bucket so the live orders lead; failed ("needs attention") and cancelled orders
+  // collapse into their own sections instead of one long, messy list.
+  const failed = rows.filter((o) => o.status === 'error');
+  const closed = rows.filter((o) => o.status === 'cancelled');
+  const live = rows.filter((o) => o.status !== 'error' && o.status !== 'cancelled');
+  const row = (o, first) => (
+    <ClassOrderRow key={o.id} o={o} first={first} open={String(openOrder) === String(o.id)}
+      unread={unreadFor(o.id)} asks={asksFor(o.id)} appId={appId} onOpen={onOpen} onChanged={onChanged} />
+  );
   return (
     <div style={{ marginBottom: 14 }}>
-      <SectionTitle>Orders placed with Class</SectionTitle>
-      <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden' }}>
-        {rows.map((o, i) => {
-          const [label, color] = ORDER_STATUS[o.status] || [o.status, MUTED];
-          const unread = unreadFor(o.id);
-          const asks = asksFor(o.id);
-          return (
-            <div key={o.id} style={{ borderTop: i ? `1px solid ${LINE}` : 'none' }}>
-              <div onClick={() => onOpen(o.id)}
-                style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '10px 12px', cursor: 'pointer',
-                         background: String(openOrder) === String(o.id) ? '#FBF9F4' : '#fff' }}>
-                <span style={{ border: `1px solid ${color}`, color, borderRadius: 999, padding: '2px 9px',
-                               fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>{label}</span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ color: INK, fontWeight: 600 }}>
-                    {o.class_order_id ? `Class order ${o.class_order_id}` : 'Not yet numbered by Class'}
-                    {o.dryrun ? <span style={{ color: MUTED, fontWeight: 400 }}> · test</span> : null}
-                  </div>
-                  <div style={{ fontSize: 12, color: MUTED }}>
-                    {/* Which form version this order is on. It is on the row rather than
-                        derived, because it is what every follow-up depends on. */}
-                    UAD {o.uad} · ordered {fmtDay(o.placed_at || o.created_at) || '—'}
-                    {o.due_date ? ` · due ${fmtDay(o.due_date)}` : ''}
-                    {o.appointment_date ? ` · inspection ${fmtDay(o.appointment_date)}` : ''}
-                  </div>
-                  {/* If this order errored, say WHY right here — the reason is stored on the
-                      row, so a person never has to go digging for why it didn't go through. */}
-                  {o.status === 'error' && o.last_error ? (
-                    <div style={{ fontSize: 12, color: BAD, marginTop: 3 }}>
-                      Why it didn’t go through: {o.last_error}
-                    </div>
-                  ) : null}
-                </div>
-                {unread ? <span style={{ background: TEAL, color: '#fff', borderRadius: 999, padding: '1px 8px',
-                                          fontSize: 12, fontWeight: 700 }}>{unread} new</span> : null}
-                {asks.length ? <span style={{ color: GOLD, fontSize: 12, fontWeight: 600 }}>
-                  {asks.some((a) => a.kind === 'rov') ? 'value disputed' : 'revision asked'}
-                </span> : null}
-                <span style={{ color: TEAL, fontSize: 13 }}>{String(openOrder) === String(o.id) ? 'Hide' : 'Open'}</span>
-              </div>
-              {String(openOrder) === String(o.id)
-                ? <OrderDetail appId={appId} order={o} onChanged={onChanged} /> : null}
-            </div>
-          );
-        })}
-      </div>
+      {live.length ? (
+        <>
+          <SectionTitle>Orders placed with Class</SectionTitle>
+          <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden' }}>
+            {live.map((o, i) => row(o, i === 0))}
+          </div>
+        </>
+      ) : null}
+      {failed.length ? (
+        <ClassCollapse tone="bad" defaultOpen={!live.length}
+          title={`⚠ Needs attention — ${failed.length} order${failed.length > 1 ? 's' : ''} didn’t go through`}>
+          {failed.map((o, i) => row(o, i === 0))}
+        </ClassCollapse>
+      ) : null}
+      {closed.length ? (
+        <ClassCollapse title={`Closed — ${closed.length} cancelled`}>
+          {closed.map((o, i) => row(o, i === 0))}
+        </ClassCollapse>
+      ) : null}
     </div>
+  );
+}
+
+function ClassOrderRow({ o, first, open, unread, asks, appId, onOpen, onChanged }) {
+  const [label, color] = ORDER_STATUS[o.status] || [o.status, MUTED];
+  const prop = (o.summary || []).find((s) => s.label === 'Property');
+  return (
+    <div style={{ borderTop: first ? 'none' : `1px solid ${LINE}` }}>
+      <div onClick={() => onOpen(o.id)}
+        style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '10px 12px', cursor: 'pointer',
+                 background: open ? '#FBF9F4' : '#fff' }}>
+        <span style={{ border: `1px solid ${color}`, color, borderRadius: 999, padding: '2px 9px',
+                       fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>{label}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ color: INK, fontWeight: 600 }}>
+            {o.class_order_id ? `Class order ${o.class_order_id}` : 'Not yet numbered by Class'}
+            {o.dryrun ? <span style={{ color: MUTED, fontWeight: 400 }}> · test</span> : null}
+          </div>
+          <div style={{ fontSize: 12, color: MUTED }}>
+            {prop ? prop.value + ' · ' : ''}UAD {o.uad} · ordered {fmtDay(o.placed_at || o.created_at) || '—'}
+            {o.due_date ? ` · due ${fmtDay(o.due_date)}` : ''}
+            {o.appointment_date ? ` · inspection ${fmtDay(o.appointment_date)}` : ''}
+          </div>
+          {/* If this order errored, say WHY right here — the reason is stored on the
+              row, so a person never has to go digging for why it didn't go through. */}
+          {o.status === 'error' && o.last_error ? (
+            <div style={{ fontSize: 12, color: BAD, marginTop: 3 }}>
+              Why it didn’t go through: {o.last_error}
+            </div>
+          ) : null}
+        </div>
+        {unread ? <span style={{ background: TEAL, color: '#fff', borderRadius: 999, padding: '1px 8px',
+                                  fontSize: 12, fontWeight: 700 }}>{unread} new</span> : null}
+        {asks.length ? <span style={{ color: GOLD, fontSize: 12, fontWeight: 600 }}>
+          {asks.some((a) => a.kind === 'rov') ? 'value disputed' : 'revision asked'}
+        </span> : null}
+        <span style={{ color: TEAL, fontSize: 13 }}>{open ? 'Hide' : 'Open'}</span>
+      </div>
+      {open ? <OrderDetail appId={appId} order={o} onChanged={onChanged} /> : null}
+    </div>
+  );
+}
+
+// A collapsible section (native <details>) for the failed / closed buckets.
+function ClassCollapse({ title, tone, defaultOpen, children }) {
+  const bad = tone === 'bad';
+  return (
+    <details open={!!defaultOpen} style={{ marginTop: 10, border: `1px solid ${bad ? '#E4B4AE' : LINE}`, borderRadius: 10, overflow: 'hidden', background: bad ? '#FDF6F5' : '#fff' }}>
+      <summary style={{ cursor: 'pointer', padding: '9px 12px', fontWeight: 600, color: bad ? '#8A2F27' : INK, fontSize: 13 }}>
+        {title}
+      </summary>
+      <div style={{ borderTop: `1px solid ${bad ? '#E4B4AE' : LINE}` }}>{children}</div>
+    </details>
   );
 }
 
@@ -388,6 +423,10 @@ function OrderDetail({ appId, order, onChanged }) {
 
   const notes = (thread && thread.notes) || [];
   const revisions = (thread && thread.revisions) || [];
+  // Class only takes a fix or a value dispute once the report is IN (its "Completed"
+  // status = "Report ready" here). Until then the two tabs are greyed and the form is
+  // locked — the appraisal isn't back, so there's nothing to fix yet.
+  const reportIn = order.status === 'completed';
 
   return (
     <div style={{ borderTop: `1px solid ${LINE}`, padding: 12, background: '#FBF9F4' }}>
@@ -396,17 +435,38 @@ function OrderDetail({ appId, order, onChanged }) {
       <OrderFailure info={err} vendor="Class Valuation" action="send that message" />
       {notice ? <Banner tone="good">{notice}</Banner> : null}
 
+      {order && Array.isArray(order.summary) && order.summary.length ? (
+        <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 12, marginBottom: 10, background: '#fff' }}>
+          <div style={{ fontSize: 11, color: MUTED, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 8, fontWeight: 600 }}>
+            What was ordered · <span style={{ color: (ORDER_STATUS[order.status] || [null, MUTED])[1] }}>{(ORDER_STATUS[order.status] || [order.status])[0]}</span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '5px 14px' }}>
+            {order.summary.map((s, i) => (
+              <React.Fragment key={i}>
+                <div style={{ color: MUTED, fontSize: 12.5 }}>{s.label}</div>
+                <div style={{ color: INK, fontSize: 12.5, wordBreak: 'break-word' }}>{s.value}</div>
+              </React.Fragment>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
         {[['messages', `Messages${thread && thread.unread ? ` (${thread.unread} new)` : ''}`],
           ['revision', 'Ask for a fix'],
           ['rov', 'Dispute the value'],
-          ['history', `What we've asked for${revisions.length ? ` (${revisions.length})` : ''}`]].map(([k, lbl]) => (
-          <button key={k} type="button" onClick={() => setTab(k)}
-            style={{ border: `1px solid ${tab === k ? TEAL : LINE}`, background: tab === k ? '#EAF3F3' : '#fff',
-                     color: INK, borderRadius: 8, padding: '5px 10px', fontWeight: 550, cursor: 'pointer' }}>
-            {lbl}
-          </button>
-        ))}
+          ['history', `What we've asked for${revisions.length ? ` (${revisions.length})` : ''}`]].map(([k, lbl]) => {
+          const locked = (k === 'revision' || k === 'rov') && !reportIn;
+          return (
+            <button key={k} type="button" onClick={() => setTab(k)}
+              title={locked ? 'Available once the report is in' : ''}
+              style={{ border: `1px solid ${tab === k ? TEAL : LINE}`, background: tab === k ? '#EAF3F3' : '#fff',
+                       color: INK, borderRadius: 8, padding: '5px 10px', fontWeight: 550, cursor: 'pointer',
+                       opacity: locked ? 0.55 : 1 }}>
+              {lbl}{locked ? ' · 🔒' : ''}
+            </button>
+          );
+        })}
       </div>
 
       {tab === 'messages' ? (
@@ -445,7 +505,8 @@ function OrderDetail({ appId, order, onChanged }) {
       ) : null}
 
       {tab === 'revision' || tab === 'rov' ? (
-        <AskForm appId={appId} order={order} kind={tab} onDone={async () => { await load(); if (onChanged) onChanged(); }} />
+        <AskForm appId={appId} order={order} kind={tab} reportIn={reportIn}
+          onDone={async () => { await load(); if (onChanged) onChanged(); }} />
       ) : null}
 
       {tab === 'history' ? (
@@ -473,7 +534,7 @@ function OrderDetail({ appId, order, onChanged }) {
 // Ask Class for a correction, or dispute the value. ONE form, because at Class it is
 // ONE call — a reconsideration of value is a revision filed with value reasons, and
 // the copy says so rather than implying a request type that does not exist.
-function AskForm({ appId, order, kind, onDone }) {
+function AskForm({ appId, order, kind, reportIn, onDone }) {
   const [reasons, setReasons] = useState(null);
   const [picked, setPicked] = useState([]);
   const [why, setWhy] = useState('');
@@ -485,12 +546,25 @@ function AskForm({ appId, order, kind, onDone }) {
 
   useEffect(() => {
     let alive = true;
+    if (reportIn === false) { setReasons({ common: [], all: [] }); return () => {}; }
     (async () => {
       try { const r = await api.classReasons(kind); if (alive) setReasons(r); }
       catch (_) { if (alive) setReasons({ common: [], all: [] }); }
     })();
     return () => { alive = false; };
-  }, [kind]);
+  }, [kind, reportIn]);
+
+  // The report isn't back yet — there is nothing to fix or dispute, and Class would
+  // reject the request. Show WHY plainly instead of a form that can't be sent.
+  if (reportIn === false) {
+    return (
+      <WhyBox title={kind === 'rov' ? 'You can dispute the value once the report is in.' : 'You can ask for a fix once the report is in.'}>
+        The appraiser hasn’t sent the finished report back yet, so there’s nothing to
+        {kind === 'rov' ? ' dispute' : ' fix'} — and Class won’t take the request until it’s done.
+        This opens up on its own the moment the order shows <strong>Report ready</strong>.
+      </WhyBox>
+    );
+  }
 
   const list = reasons ? (showAll ? reasons.all : reasons.common) : [];
   const toggle = (code) => setPicked((p) => (p.includes(code) ? p.filter((c) => c !== code) : p.concat(code)));
