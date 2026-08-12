@@ -112,6 +112,10 @@ async function main() {
     const dis = (await db.query(`SELECT status, disputed_via, disputed_by_staff_id FROM draw_findings WHERE id=$1`, [findingId])).rows[0];
     ok(dis.status === 'disputed' && dis.disputed_via === 'staff' && dis.disputed_by_staff_id === LO_ON,
       `the dispute is recorded as staff, attributed to the LO (via=${dis.disputed_via})`);
+    // an off-file LO cannot dispute either (canSeeFile is checked before any status logic)
+    r = await api(server, 'POST', `/api/sitewire/files/${APP}/findings/${findingId}/dispute`,
+      { note: 'off-file should be refused', lines: [{ line_id: Number(lineId), desired_cents: 40000, note: 'no' }] }, loOff);
+    ok(r.status === 403, `an off-file loan officer cannot dispute on this file (403) — got ${r.status}`);
   } catch (e) { fail++; console.log('  ✗ EXCEPTION', e && e.stack ? e.stack : e); }
   finally {
     await db.query(`DELETE FROM draw_finding_lines WHERE finding_id=$1`, [findingId]).catch(() => {});

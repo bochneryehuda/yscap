@@ -394,6 +394,10 @@ export default function StaffLayout({ children }) {
   const canManagePricing = can('manage_pricing');
   const canManageVendors = can('manage_vendors');
   const canManageDraws = can('manage_draws');
+  // A loan officer holds view_draws (not manage_draws): they get their OWN read-only draw section —
+  // every one of their active-draw properties, view-only, with accept/dispute on the borrower's
+  // behalf inside the file (owner-directed 2026-08-12). Coordinators see "Draw Management" instead.
+  const canViewDraws = !canManageDraws && can('view_draws');
   const canManageClosings = can('manage_closings');
   const canManagePurchasing = can('manage_purchasing');
   const canExportTapes = can('export_data_tapes');
@@ -486,6 +490,7 @@ export default function StaffLayout({ children }) {
         {canManagePurchasing && <NavLink className="sb-link" to="/internal/purchasing" title="Purchasing — every file that moved to purchasing after investor delivery: what's still missing, notes and tasks. A table-funded loan was sold at closing and never lands here."><NavIcon name="pipeline" />Purchasing
           {purchasingCount > 0 && <span className="sb-badge">{purchasingCount > 99 ? '99+' : purchasingCount}</span>}</NavLink>}
         {canManageDraws && <NavLink className="sb-link" to="/internal/draws" title="Draw Management — the post-funding phase: every draw, approvals, inspector photos, releases, and reports"><NavIcon name="pipeline" />Draw Management</NavLink>}
+        {canViewDraws && <NavLink className="sb-link" to="/internal/draws" title="My draws — your active-draw properties, view-only: every draw, the inspector's results, photos and reports"><NavIcon name="pipeline" />My draws</NavLink>}
         {canManageConditions && <NavLink className="sb-link" to="/internal/conditions" title="Condition Center — the global condition library & rules"><NavIcon name="conditions" />Conditions</NavLink>}
         {canManageVendors && <NavLink className="sb-link" to="/internal/vendors" title="Title & insurance vendor directory"><NavIcon name="vendors" />Vendors</NavLink>}
         {canDeleteFiles && <NavLink className="sb-link" to="/internal/archived" title="Archived files — restore or delete permanently"><NavIcon name="archived" />Archived</NavLink>}
