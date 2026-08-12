@@ -87,6 +87,16 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
       `INSERT INTO checklist_items (application_id, scope, tool_key, label, status, audience, item_kind)
        VALUES ($1,'application','appraisal_card','Appraisal payment card','outstanding','borrower','document')`, [appId]);
 
+    // The account's client-on-report profiles (AppraisalScope's required client_displayed_id).
+    // Exactly ONE profile cached → order-service auto-selects it (the common case), so the
+    // order is placeable without any config. Keyed under '' to match the test config's
+    // (unset) subdomain. ON CONFLICT so a real cached row doesn't collide inside the txn.
+    await c.query(
+      `INSERT INTO amc_lookup_cache (lookup_type, subdomain, payload, fetched_at)
+       VALUES ('GetClientDisplayOnReport', '', '[{"id":"297","name":"YS Capital Group"}]'::jsonb, now())
+       ON CONFLICT (lookup_type, subdomain)
+         DO UPDATE SET payload = EXCLUDED.payload, fetched_at = now()`);
+
     // ---- loadContext: exercises the real column names ----
     const ctx = await orderService.loadContext(c, appId);
     ok(ctx, 'loadContext returns a context');
@@ -99,6 +109,10 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     ok(ctx.borrowers.length === 1 && ctx.borrowers[0].firstName === 'Peter' && ctx.borrowers[0].middleName === 'Ben', 'borrower loaded incl. middle name');
     ok(ctx.borrowers[0].residence && ctx.borrowers[0].residence.city === 'NYC', 'borrower residence parsed');
     ok(ctx.card && ctx.card.conditionStatus === 'outstanding' && ctx.card.onFile === false, 'card status: condition present, no card yet');
+    // The client-on-report profile (client_displayed_id) auto-selected from the account's
+    // single cached profile.
+    ok(ctx.clientDisplayedId === '297' && ctx.clientDisplayedSource === 'catalog', 'client-displayed-on-report auto-selected from the single cached profile');
+    ok(ctx.clientDisplayedName === 'YS Capital Group', 'client-displayed-on-report name loaded');
 
     // ---- contacts: the LO + processor + borrower emails ride the update-notify list ----
     ok(Array.isArray(ctx.notifyEmails), 'loadContext returns notifyEmails');
@@ -119,6 +133,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     ok(Array.isArray(preview.notifyEmails) && preview.notifyEmails.length >= 3, 'preview exposes the update-email recipients');
     ok(preview.spec.notifyEmails && preview.spec.notifyEmails.length >= 3, 'the spec carries the notify emails → products[].notifications');
     ok(preview.spec.loan.loanNumber === 'YSCAP-AMC-1' && preview.spec.property.titleCategory === 'Single Family', 'spec filled from the file');
+    ok(preview.spec.clientDisplayedId === '297', 'spec carries the client-displayed-on-report id → the Lender party');
     ok(preview.canPlace === true && preview.missing.length === 0, 'preview is complete → placeable');
 
     // ---- createOrder (draft, no network) ----
@@ -127,10 +142,40 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     ok(draft.order && draft.order.status === 'draft' && draft.order.product_code === '5', 'draft persisted with the chosen form');
     ok(draft.order.request_payload && JSON.stringify(draft.order.request_payload).includes('YSCAP-AMC-1'), 'draft stores the (masked) request payload');
     ok(!JSON.stringify(draft.order.request_payload).includes('DoLogin'), 'draft payload carries no login credentials');
+    // The stored (masked) payload carries the Lender party (client_displayed_id) — proof the
+    // whole chain resolves the CDOR through to the wire message a draft records.
+    {
+      const lender = ((((draft.order.request_payload.message || {}).deals || [])[0] || {}).parties || [])
+        .find((p) => p.partyRoleType === 'Lender');
+      ok(lender && lender.partyRoleIdentifier === '297', 'draft payload carries the Lender party (client_displayed_id)');
+    }
 
     // ---- listOrders ----
     const list = await orderService.listOrders(c, appId);
     ok(list.length === 1 && list[0].id === draft.order.id, 'listOrders returns the draft');
+
+    // ---- resolveClientDisplayed: 1 profile → auto; several → don't guess; none → blocked.
+    //      Proves the order is blocked (not sent to fail at NAN) when the account has
+    //      several client-on-report profiles and none is pinned. ----
+    const setCdor = async (rows) => c.query(
+      `INSERT INTO amc_lookup_cache (lookup_type, subdomain, payload, fetched_at)
+       VALUES ('GetClientDisplayOnReport','',$1::jsonb, now())
+       ON CONFLICT (lookup_type, subdomain) DO UPDATE SET payload = EXCLUDED.payload, fetched_at = now()`,
+      [JSON.stringify(rows)]);
+
+    await setCdor([{ id: '297', name: 'YS Capital Group' }]);
+    const one = await orderService.resolveClientDisplayed(c, '');
+    ok(one.id === '297' && one.source === 'catalog', 'one cached profile → auto-selected');
+
+    await setCdor([{ id: '297', name: 'A' }, { id: '512', name: 'B' }]);
+    const many = await orderService.resolveClientDisplayed(c, '');
+    ok(many.id === null && many.source === 'multiple' && many.options.length === 2, 'several profiles → not guessed (order will be blocked until one is chosen)');
+
+    await setCdor([]);
+    const none = await orderService.resolveClientDisplayed(c, '');
+    ok(none.id === null && none.source === 'none', 'no cached profile → unresolved (order blocked with a plain reason)');
+    // Restore the single-profile cache for any later reads in this transaction.
+    await setCdor([{ id: '297', name: 'YS Capital Group' }]);
 
     // ---- a refinance file carries a PROPERTY VALUE (AppraisalScope requires an amount).
     //      There is no purchase, so it uses the AS-IS VALUE (deal-basis rule) — never the

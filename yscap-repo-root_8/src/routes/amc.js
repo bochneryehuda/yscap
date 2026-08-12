@@ -269,6 +269,9 @@ function readOverrides(src) {
   if (s.mortgageType) o.mortgageType = String(s.mortgageType);
   if (s.bestContact) o.bestContact = String(s.bestContact);
   if (s.titleCategory) o.titleCategory = String(s.titleCategory);
+  // The "Client Displayed on Report" (client_displayed_id) — auto-selected when the account
+  // has one profile; a staffer can pin a specific one when the account has several.
+  if (s.clientDisplayedId != null && s.clientDisplayedId !== '') o.clientDisplayedId = String(s.clientDisplayedId);
   if (s.requestComment) o.requestComment = String(s.requestComment);
   if (s.needByDate) o.needByDate = String(s.needByDate);
   if (s.rush != null) o.rush = s.rush === true || s.rush === 'true' || s.rush === '1';

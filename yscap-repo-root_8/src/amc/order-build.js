@@ -140,6 +140,14 @@ function buildOrderSpec(ctx, form, opts = {}) {
     clientOrderNumber: ctx.clientOrderNumber || ctx.loanNumber || null,
     clientReferenceNumber: ctx.clientReferenceNumber || null,
 
+    // The "Client Displayed on Report" id (AppraisalScope's REQUIRED client_displayed_id).
+    // Resolved in order-service (config override, else the account's single client-on-report
+    // profile) and attached to ctx; a staffer can pin a specific one via opts. cdg.js emits
+    // it as the deal's partyRoleType="Lender" party. Null when the account has several and
+    // none is chosen — missingRequired blocks the order rather than let NAN reject it.
+    clientDisplayedId: opts.clientDisplayedId != null ? String(opts.clientDisplayedId)
+      : (ctx.clientDisplayedId != null ? String(ctx.clientDisplayedId) : null),
+
     rush: opts.rush != null ? !!opts.rush : false,
     needByDate: opts.needByDate || null,
     jobFee: opts.jobFee != null ? opts.jobFee : null,
@@ -171,6 +179,10 @@ function buildOrderSpec(ctx, form, opts = {}) {
       county: pr.county || null,
       legalDescription: pr.legalDescription || null,
       occupancy: occupancyFor(pr.occupancy || ctx.occupancy),
+      // The vendor's REQUIRED `purchase_amount` maps from purchasePriceAmount — carry it
+      // (purchase deals only; loadContext leaves it null on a refinance). Kept distinct
+      // from salesContractAmount, which the vendor treats as a separate optional field.
+      purchasePriceAmount: pr.purchasePriceAmount != null ? pr.purchasePriceAmount : null,
       salesContractAmount: pr.salesContractAmount != null ? pr.salesContractAmount : null,
       salesConcessionAmount: pr.salesConcessionAmount != null ? pr.salesConcessionAmount : null,
       salesConcessionType: pr.salesConcessionType || null,
@@ -225,6 +237,12 @@ function resolvePrimaryContact(borrowers, bestContact) {
     || who.legalEntityName || null;
   return {
     role: bestContact || 'Borrower',
+    // The classification of the borrower this resolved TO — so cdg.js can name the
+    // BestContact party as 'Borrower' vs 'Co-Borrower' and the gateway reads the right
+    // borrower's contact. This matters when the reachable-fallback above switched `who`
+    // from the primary to a co-borrower: the vendor's primary_contact comes from whichever
+    // borrower the BestContact party points at, so it must point at the reachable one.
+    classification: who.classification || 'Primary',
     firstName: who.firstName || null,
     lastName: who.lastName || null,
     fullName: fullName || null,
@@ -259,6 +277,12 @@ function missingRequired(spec) {
   if (!primary || (!primary.firstName && !primary.legalEntityName)) missing.push('borrower first name');
   if (!primary || (!primary.lastName && !primary.legalEntityName)) missing.push('borrower last name');
   if (!spec.parties || !spec.parties.bestContact) missing.push('best person to contact');
+  // AppraisalScope REQUIRES a `client_displayed_id` — the client/lender profile shown on
+  // the report. It auto-selects when the account has one profile; when it can't be
+  // resolved (account has several and none picked, or the lookups aren't cached yet), block
+  // HERE with a plain reason instead of sending an order NAN rejects for a missing
+  // client_displayed_id. Resolving it = refresh the AMC lookups, or set AMC_CLIENT_DISPLAYED_ID.
+  if (!spec.clientDisplayedId) missing.push('the client shown on the appraisal report');
   // AppraisalScope REQUIRES a purchase/property amount and a real, reachable main
   // contact (its `purchase_amount` / `primary_contact`). Validate them HERE so a blank
   // shows on the preview as a plain "still needed" line and the submit refuses — never
@@ -312,6 +336,13 @@ function orderAssumptions(ctx, form, opts = {}, spec = null) {
   if (opts.titleCategory == null && property.titleCategory) {
     add('titleCategory', 'Property type', property.titleCategory,
       'Worked out from the property type on the file.', 'derived');
+  }
+  // The client shown on the appraisal report — auto-selected when the account has exactly
+  // one client-on-report profile, so the desk knows what will print on the report.
+  if (opts.clientDisplayedId == null && s.clientDisplayedId && ctx.clientDisplayedSource === 'catalog') {
+    add('clientDisplayedId', 'Client shown on the report',
+      ctx.clientDisplayedName ? `${ctx.clientDisplayedName} (#${s.clientDisplayedId})` : ('#' + s.clientDisplayedId),
+      'Auto-selected because your AppraisalScope account has one client-on-report profile.', 'catalog');
   }
   // Property value on a refinance: there is no purchase price, so the value the loan is
   // sized on was used. The appraisal gateway requires an amount, so this is worth a look.
