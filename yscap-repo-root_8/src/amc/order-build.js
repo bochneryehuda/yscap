@@ -211,7 +211,12 @@ function resolvePrimaryContact(borrowers, bestContact) {
   const list = Array.isArray(borrowers) ? borrowers : [];
   const primary = list.find((b) => (b.classification || 'Primary') === 'Primary') || list[0] || null;
   const secondary = list.find((b) => b.classification === 'Secondary') || null;
-  const who = bestContact === 'Co-Borrower' ? (secondary || primary) : primary;
+  const reachable = (b) => (Array.isArray(b && b.contacts) ? b.contacts : []).some((c) => c && (c.phone || c.email));
+  let who = bestContact === 'Co-Borrower' ? (secondary || primary) : primary;
+  // The vendor needs a REACHABLE primary_contact. If the default person has no phone or
+  // email on file but another borrower does, use that borrower — an order with one
+  // reachable person should not be blocked because the default contact has no reach.
+  if (who && !reachable(who)) who = list.find(reachable) || who;
   if (!who) return null;
   const contacts = Array.isArray(who.contacts) ? who.contacts : [];
   const firstWith = (k) => { for (const c of contacts) if (c && c[k]) return c[k]; return null; };

@@ -59,8 +59,8 @@ async function tick() {
   if (process.env.CLASS_POLL_DISABLED === '1') return;
   try {
     const out = await pollOpenOrdersOnce();
-    if (out && (out.replies || out.reports)) {
-      console.log(`[class] order poll: ${out.replies} new repl${out.replies === 1 ? 'y' : 'ies'}, ${out.reports} report(s) in, across ${out.polled} open order(s)`);
+    if (out && (out.replies || out.reports || out.statusChanges)) {
+      console.log(`[class] order poll: ${out.replies} new repl${out.replies === 1 ? 'y' : 'ies'}, ${out.reports} report(s) in, ${out.statusChanges || 0} status change(s), across ${out.polled} open order(s)`);
     }
   } catch (e) {
     console.warn('[class] order poll tick failed:', e && e.message);
@@ -78,6 +78,7 @@ async function pollOpenOrdersOnce() {
   if (client.configured && !client.configured().enabled) return { polled: 0, skipped: 'disabled' };
   const messages = require('./messages');
   const documents = require('./documents');
+  const callbacks = require('./callbacks');
   const batch = Math.max(1, Math.min(100, Number(process.env.CLASS_POLL_BATCH || 25)));
 
   let orders = [];
@@ -96,7 +97,7 @@ async function pollOpenOrdersOnce() {
     return { polled: 0 };
   }
 
-  let replies = 0, reports = 0;
+  let replies = 0, reports = 0, statusChanges = 0;
   for (const order of orders) {
     // 1. Their side of the thread — replies without waiting on a webhook. syncNotes
     //    dedupes on the Class note id, so a note we already have is left untouched.
@@ -106,21 +107,49 @@ async function pollOpenOrdersOnce() {
     } catch (e) { console.warn('[class] note poll failed for order', order.id, (e && e.message) || e); }
 
     // 2. The finished report — list + download + parse (idempotent under a per-order
-    //    lock). If it came in AND parsed, the order is DONE: mark it completed, exactly
-    //    as the webhook StatusChanged→completed path does. Completion is gated on the
-    //    report actually being ingested (the same rule the NAN sync uses), so the
-    //    "Ask for a fix" control only opens once the appraisal is genuinely in.
+    //    lock). If a NEW MISMO XML came in and parsed, mark the order completed and read
+    //    the appraisal onto the file.
+    let reportImported = false;
     try {
       const ing = await documents.ingestForOrder(db, order);
       if (ing && ing.imported) {
+        reportImported = true;
         reports += 1;
         await db.query(
           `UPDATE class_orders SET status = 'completed', last_event_at = now(), updated_at = now()
             WHERE id = $1 AND status <> 'completed'`, [order.id]).catch(() => {});
       }
     } catch (e) { console.warn('[class] report poll failed for order', order.id, (e && e.message) || e); }
+
+    // 3. Refresh the live STATUS from Class and apply the SAME map the webhook uses, so a
+    //    completion / hold / cancellation still reflects without a webhook — and so an
+    //    order Class marks completed but which has NO importable XML (a PDF-only report,
+    //    or an XML we could not parse) still transitions instead of being polled forever
+    //    with the fix/ROV controls stuck locked. The webhook's StatusChanged is NOT
+    //    import-gated, so neither is this. Best-effort: only a value that maps to one of
+    //    Class's known statuses is applied, and a completed/cancelled order is never
+    //    downgraded. Skipped when we already flipped it to completed above.
+    if (!reportImported) {
+      try {
+        const fresh = await callbacks.refreshOrder(order);
+        const body = fresh && fresh.ok ? fresh.order : null;
+        const raw = body && (body.status || body.orderStatus || body.OrderStatus
+          || body.StatusName || body.statusName
+          || (body.data && (body.data.status || body.data.StatusName)));
+        const mapped = raw ? callbacks.STATUS[String(raw).trim().toLowerCase()] : null;
+        if (mapped && mapped !== order.status) {
+          const upd = await db.query(
+            `UPDATE class_orders SET status = $2, last_event_at = now(), updated_at = now()
+              WHERE id = $1 AND status NOT IN ('completed', 'cancelled')`,
+            [order.id, mapped]);
+          if (upd.rowCount) statusChanges += 1;
+          // A completion pulls the report the same way the webhook completion does.
+          if (mapped === 'completed') { try { await documents.ingestForOrder(db, order); } catch (_) { /* best-effort */ } }
+        }
+      } catch (e) { /* best-effort — a status we cannot read is left as-is */ }
+    }
   }
-  return { polled: orders.length, replies, reports };
+  return { polled: orders.length, replies, reports, statusChanges };
 }
 
 function start() {

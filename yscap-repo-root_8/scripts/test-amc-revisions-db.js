@@ -53,6 +53,11 @@ const getDeps = { transport: { read: async () => ({ message: { products: [{ revi
     ok(!empty.ok && empty.error === 'empty', 'an empty revision is refused');
 
     // ---- an ROV with structured detail ----
+    // A value dispute (ROV) is only accepted once the report is IN — the SOW change above
+    // deliberately worked mid-review, but a value dispute needs the finished report, so
+    // advance the order to 'product_available' (Report ready) first.
+    await c.query(`UPDATE amc_orders SET status='product_available' WHERE id=$1`, [order.id]);
+    order.status = 'product_available';
     const detail = rov.buildRovDetail({ appraisedValue: 400000, opinionValue: 460000, comps: [
       { propertyId: 'p1', address: '10 Oak St', salePrice: 450000, saleDate: '2026-05-01', gla: 1800, beds: 3, bathsFull: 2 },
     ] });
