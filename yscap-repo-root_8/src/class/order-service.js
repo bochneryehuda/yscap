@@ -25,6 +25,11 @@ const orderBuild = require('./order-build');
 const client = require('./client');
 const cfg = require('../config');
 const formSelect = require('./form-select');
+// Class REQUIRES a county on every order, and a mailing address never carries one.
+// resolveCounty geocodes the property (cached) so PILOT fills it automatically — a
+// stated assumption, never a silent default — and the builder blocks cleanly if it
+// still could not be resolved.
+const addressCanon = require('../lib/address-canon');
 // The RTL strategy token (fix_and_flip / bridge / dscr / ground_up) is derived by the
 // SAME mapper the AMC desk uses, so a class_form_map rule keyed on a strategy means
 // exactly what the equivalent amc_form_map rule means. Both desks are RTL and this is a
@@ -301,6 +306,20 @@ function learnedOccupancy(apiVersion, oKey) {
 async function buildPreview(db, appId, opts = {}) {
   const ctx = await loadContext(db, appId);
   if (!ctx) return null;
+
+  // Class REQUIRES a county and the file's mailing address rarely carries one, so
+  // work it out from the property address (a geocode lookup, cached forever). It is
+  // recorded as a DERIVED assumption below so the reviewer sees it — never a silent
+  // default — and if it cannot be resolved the builder blocks the order with a plain
+  // reason (order-build) instead of letting Class 400. Best-effort: a staff override
+  // still wins in buildOrder, exactly like the product/version defaults.
+  let countyDerived = false;
+  if (ctx.property && !ctx.property.county) {
+    try {
+      const c = await addressCanon.resolveCounty(ctx.property);
+      if (c) { ctx.property.county = c; countyDerived = true; }
+    } catch (_) { /* the builder blocks cleanly if county stays blank */ }
+  }
   // Auto-pick the Class product from the admin rules. A staff override (opts.overrides
   // .productId) still WINS inside buildOrder, which reads ctx.productId as the DERIVED
   // value — so we set it here and let the override take precedence, exactly the way the
@@ -315,6 +334,17 @@ async function buildPreview(db, appId, opts = {}) {
   // could describe one version while the order goes out on the other.
   const cfgd = client.configured();
   const built = orderBuild.buildOrder(ctx, opts.overrides || {}, { version: opts.version || cfgd.apiVersion });
+
+  // Record the county we worked out as a stated assumption so the reviewer sees it
+  // on the preview (the desk's "show what was filled automatically" rule). Skip it
+  // when a staffer typed one — the builder already marks that row overridden.
+  if (countyDerived && ctx.property.county && !(built.overridden || []).includes('county')) {
+    built.assumptions.push({
+      field: 'property.county',
+      value: ctx.property.county,
+      why: 'read from the property address (Class requires a county and the file did not carry one) — confirm it is correct',
+    });
+  }
 
   // If this environment already learned which occupancy value Class accepts for this
   // classification, start the order on it (and put it at the head of the cascade) so a

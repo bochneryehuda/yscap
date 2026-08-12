@@ -128,6 +128,37 @@ async function main() {
   const byPath2 = Object.fromEntries(pv2.fields.map((f) => [f.path, f]));
   ok(byPath2.productId.state === 'overridden', 'the screen shows it as chosen by a person');
 
+  // --- county is DERIVED from the address when the file lacks one ---------
+  // Class REQUIRES a county ("The County field is required" — the owner's live
+  // 400), and a mailing address rarely carries one. buildPreview geocodes it
+  // (stubbed here so the test never touches the network) and records it as a
+  // STATED assumption; without a resolvable county the order is blocked with a
+  // plain reason rather than sending null for Class to reject.
+  {
+    const addressCanon = require('../src/lib/address-canon');
+    const origResolve = addressCanon.resolveCounty;
+    await db.query(`UPDATE applications SET property_address = property_address - 'county' WHERE id=$1`, [appId]);
+
+    addressCanon.resolveCounty = async () => null;               // the geocode cannot place it
+    const noC = await orderService.buildPreview(db, appId, { overrides: { productId: 42 } });
+    const byNoC = Object.fromEntries(noC.fields.map((f) => [f.path, f]));
+    ok(noC.canPlace === false && byNoC['property.county'] && byNoC['property.county'].state === 'missing',
+       'a county-less file with no geocode result blocks the order and flags county missing');
+
+    addressCanon.resolveCounty = async () => 'Kings County';     // the geocode resolves it
+    const gotC = await orderService.buildPreview(db, appId, { overrides: { productId: 42 } });
+    const byGotC = Object.fromEntries(gotC.fields.map((f) => [f.path, f]));
+    ok(gotC.body.property.county === 'Kings County' && gotC.canPlace === true,
+       'a derived county fills the field Class requires and unblocks the order');
+    ok(byGotC['property.county'].state === 'derived',
+       'and is shown DERIVED — a value the reviewer confirms, never a silent default');
+    ok(gotC.assumptions.some((a) => a.field === 'property.county' && /property address/i.test(a.why || '')),
+       'the assumption says it was read from the property address');
+
+    addressCanon.resolveCounty = origResolve;
+    await db.query(`UPDATE applications SET property_address = jsonb_set(property_address, '{county}', '"Luzerne"') WHERE id=$1`, [appId]);
+  }
+
   // --- a walked body cannot fall behind the builder ----------------------
   const bodyLeaves = [];
   (function walk(o, p) {
