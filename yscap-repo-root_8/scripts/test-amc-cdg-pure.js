@@ -78,6 +78,21 @@ function get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? o
   ok(deal.parties.find((x) => x.partyRoleType === 'LoanOfficer').partyRoleTypeIdentifier === '429', 'create loan officer');
 })();
 
+// ---- BestContact party carries a REAL contact person (AppraisalScope primary_contact) ----
+(() => {
+  const spec = {
+    productCode: '76', loan: { loanNumber: '1' }, property: { salesContractAmount: 200000 },
+    borrowers: [{ classification: 'Primary', firstName: 'Peter', lastName: 'Parker' }],
+    parties: { bestContact: 'Borrower' },
+    primaryContact: { role: 'Borrower', firstName: 'Peter', lastName: 'Parker', fullName: 'Peter Parker', phone: '555-1', email: 'p@x.com' },
+  };
+  const deal = cdg.buildCreateAppraisal(spec, { apiKey: 'K', subdomain: 's' }).message.deals[0];
+  const best = deal.parties.find((x) => x.partyRoleType === 'BestContact');
+  ok(best && best.fullName === 'Peter Parker', 'best contact carries the person name');
+  ok(best.contacts && best.contacts[0].contactPhone === '555-1' && best.contacts[0].contactEmail === 'p@x.com',
+    'best contact carries a phone + email for primary_contact');
+})();
+
 // ---- AddForm carries the parent SP order number ----
 (() => {
   const req = cdg.buildCreateAppraisal(

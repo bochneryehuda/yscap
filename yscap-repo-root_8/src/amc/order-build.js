@@ -198,7 +198,39 @@ function buildOrderSpec(ctx, form, opts = {}) {
 
     embeddedFiles: Array.isArray(opts.embeddedFiles) ? opts.embeddedFiles : [],
   };
+  // The MAIN CONTACT the appraiser reaches (AppraisalScope's REQUIRED `primary_contact`).
+  // The vendor needs a real person AND a way to reach them — the best-contact role token
+  // alone is not a contact — so resolve the choice to an actual borrower and carry their
+  // name + phone + email. cdg.js emits this on the BestContact party.
+  spec.primaryContact = resolvePrimaryContact(spec.borrowers, spec.parties.bestContact);
   return spec;
+}
+
+// Resolve the best-contact role to the actual person + a phone/email for them.
+function resolvePrimaryContact(borrowers, bestContact) {
+  const list = Array.isArray(borrowers) ? borrowers : [];
+  const primary = list.find((b) => (b.classification || 'Primary') === 'Primary') || list[0] || null;
+  const secondary = list.find((b) => b.classification === 'Secondary') || null;
+  const reachable = (b) => (Array.isArray(b && b.contacts) ? b.contacts : []).some((c) => c && (c.phone || c.email));
+  let who = bestContact === 'Co-Borrower' ? (secondary || primary) : primary;
+  // The vendor needs a REACHABLE primary_contact. If the default person has no phone or
+  // email on file but another borrower does, use that borrower — an order with one
+  // reachable person should not be blocked because the default contact has no reach.
+  if (who && !reachable(who)) who = list.find(reachable) || who;
+  if (!who) return null;
+  const contacts = Array.isArray(who.contacts) ? who.contacts : [];
+  const firstWith = (k) => { for (const c of contacts) if (c && c[k]) return c[k]; return null; };
+  const fullName = who.fullName
+    || [who.firstName, who.lastName].filter(Boolean).join(' ')
+    || who.legalEntityName || null;
+  return {
+    role: bestContact || 'Borrower',
+    firstName: who.firstName || null,
+    lastName: who.lastName || null,
+    fullName: fullName || null,
+    phone: firstWith('phone'),
+    email: firstWith('email'),
+  };
 }
 
 function buildContacts(b) {
@@ -227,6 +259,13 @@ function missingRequired(spec) {
   if (!primary || (!primary.firstName && !primary.legalEntityName)) missing.push('borrower first name');
   if (!primary || (!primary.lastName && !primary.legalEntityName)) missing.push('borrower last name');
   if (!spec.parties || !spec.parties.bestContact) missing.push('best person to contact');
+  // AppraisalScope REQUIRES a purchase/property amount and a real, reachable main
+  // contact (its `purchase_amount` / `primary_contact`). Validate them HERE so a blank
+  // shows on the preview as a plain "still needed" line and the submit refuses — never
+  // a silent bad order that only fails at the vendor with a cryptic 400.
+  if (!p || p.salesContractAmount == null) missing.push('purchase price or property value');
+  const pc = spec.primaryContact;
+  if (!pc || (!pc.phone && !pc.email)) missing.push('a phone or email for the main contact');
   return missing;
 }
 
@@ -274,10 +313,17 @@ function orderAssumptions(ctx, form, opts = {}, spec = null) {
     add('titleCategory', 'Property type', property.titleCategory,
       'Worked out from the property type on the file.', 'derived');
   }
+  // Property value on a refinance: there is no purchase price, so the value the loan is
+  // sized on was used. The appraisal gateway requires an amount, so this is worth a look.
+  const isRefi = /refi|refinance/.test(norm(ctx.loanPurpose));
+  if (isRefi && property.salesContractAmount != null) {
+    add('salesContractAmount', 'Property value', property.salesContractAmount,
+      'This is a refinance, so there’s no purchase price — the estimated value on file was used.', 'derived');
+  }
   return out;
 }
 
 module.exports = {
   buildOrderSpec, orderAssumptions, dealShapeFor, dealStrategyKey, missingRequired,
-  titleCategoryFor, occupancyFor, loanPurposeFor,
+  titleCategoryFor, occupancyFor, loanPurposeFor, resolvePrimaryContact,
 };

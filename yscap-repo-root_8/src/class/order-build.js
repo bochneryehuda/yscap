@@ -636,8 +636,43 @@ function screenOptions(version) {
   };
 }
 
+// A plain, human summary of what was sent to Class for an order — property, loan
+// number, report, value, occupancy, contacts — from the STORED sent body, so the desk
+// sees "what was in the order" after it is placed, not just the vendor's status. Mirrors
+// the NAN order summary. Returns [{label, value}] rows, blanks omitted.
+function summaryDollars(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? '$' + Math.round(n).toLocaleString('en-US') : String(v);
+}
+function orderSummary(order) {
+  const rows = [];
+  const add = (label, value) => { if (value != null && value !== '') rows.push({ label, value: String(value) }); };
+  add('Report ordered', order.product_title || (order.product_id ? 'Product #' + order.product_id : null));
+  const b = (order && order.request_body) || {};
+  const li = b.loanInfo || {};
+  const p = b.property || {};
+  add('Loan number', li.loanNumber || order.reference_number);
+  add('Property', [p.street, p.line2, p.city, p.state, p.zip].filter(Boolean).join(', '));
+  add('County', p.county);
+  add('Property type', b.propertyType || b.propertyTypeEnum);
+  add('Occupancy', b.occupancy);
+  add('Purpose', b.purpose);
+  add('Loan amount', summaryDollars(li.loanAmount));
+  add('Purchase / property value', summaryDollars(li.purchaseAmount != null ? li.purchaseAmount : b.contractPrice));
+  const names = (b.contacts || []).map((c) => [c.firstName, c.lastName].filter(Boolean).join(' ')).filter(Boolean);
+  if (names.length) add(names.length > 1 ? 'Contacts' : 'Contact', names.join(', '));
+  const notify = [];
+  for (const n of (b.notificationList || [])) {
+    for (const v of Object.values(n || {})) if (typeof v === 'string' && v.includes('@')) notify.push(v);
+  }
+  if (notify.length) add('Update emails to', notify.join(', '));
+  return rows;
+}
+
 module.exports = {
   buildOrder,
+  orderSummary,
   profileFor,
   screenOptions,
   isOccupancyEnumError,

@@ -28,6 +28,11 @@ const ok = (c, l) => { if (c) { pass++; console.log('PASS ' + l); } else { fail+
 // ---------------------------------------------------------------------------
 const captured = [];           // every reason we STORE on a row (send_error / last_error)
 const clientErr = { current: null };
+// The order loadOrder returns. A revision/ROV is now only accepted once the report is
+// IN, so the default here is a COMPLETED order — the state in which a fix is attempted
+// (the gate is proven separately below with a not-completed order).
+const orderRow = { current: { id: 10, application_id: 'app-1', class_order_id: 'CLS-1', status: 'completed' } };
+let revisionCalls = 0;         // how many times the vendor's requestRevision was reached
 
 const fakeDb = {
   query: async (sql, params) => {
@@ -36,7 +41,7 @@ const fakeDb = {
     if (/INSERT INTO class_revisions/i.test(s)) return { rows: [{ id: 201 }] };
     // loadOrder — a real, accepted order (class_order_id present), so we reach the send.
     if (/SELECT \* FROM class_orders/i.test(s)) {
-      return { rows: [{ id: 10, application_id: 'app-1', class_order_id: 'CLS-1' }] };
+      return { rows: [orderRow.current] };
     }
     if (/UPDATE class_notes SET send_error/i.test(s)) { captured.push({ table: 'note', val: params[1] }); return {}; }
     if (/UPDATE class_revisions SET/i.test(s) && /last_error/i.test(s)) { captured.push({ table: 'rev', val: params[1] }); return {}; }
@@ -46,7 +51,7 @@ const fakeDb = {
 const fakeClient = {
   configured: () => ({ enabled: true }),
   addNote: async () => { throw clientErr.current; },
-  requestRevision: async () => { throw clientErr.current; },
+  requestRevision: async () => { revisionCalls += 1; throw clientErr.current; },
   requestCancel: async () => { throw clientErr.current; },
 };
 
@@ -107,6 +112,24 @@ async function run() {
     const rec = captured.find((c) => c.table === 'rev');
     ok(rec && rec.val.includes(VENDOR_TEXT), 'and the stored last_error carries the vendor text');
   }
+
+  // ------------------------------------------------------------------
+  console.log('\n--- requestRevision(): refused before the report is in, without touching Class ---');
+  captured.length = 0;
+  revisionCalls = 0;
+  orderRow.current = { id: 10, application_id: 'app-1', class_order_id: 'CLS-1', status: 'in_process' };
+  clientErr.current = classError();
+  {
+    const out = await messages.requestRevision(10, {
+      kind: 'revision',
+      reasons: [{ reasonType: 'OrderDetailsPropertyAddress', reason: 'x' }],
+      staffId: 'u1',
+    });
+    ok(out.ok === false && out.error === 'not_ready', 'a not-completed order is refused with not_ready');
+    ok(out.notReady === true, 'and marked notReady so the route maps it to a plain 409, not a vendor failure');
+    ok(revisionCalls === 0, 'Class is never called — the fix request never left the building');
+  }
+  orderRow.current = { id: 10, application_id: 'app-1', class_order_id: 'CLS-1', status: 'completed' };   // restore
 
   // ------------------------------------------------------------------
   console.log('\n--- requestCancel(): a failed cancellation does the same ---');
