@@ -110,10 +110,69 @@ const fixed = ob.buildOrder({ ...BASE, property: { ...BASE.property, category: '
 ok(fixed.canPlace === true, 'an override rescues an otherwise unplaceable order');
 
 // ---------------------------------------------------------------------------
-console.log('\n--- notification emails are cleaned ---');
-const notif = ob.buildOrder({ ...BASE, notifyEmails: ['a@b.com', 'a@b.com', '', null, 'c@d.com'] });
-ok(notif.body.notificationList.length === 2, 'blanks dropped and duplicates collapsed');
+// Class's notification list accepts EXACTLY ONE item, of type BorrowerInfo —
+// their enum has no other type, and a list with more than one is rejected
+// ("The Notification list should have exactly one item of type BorrowerInfo").
+// One item per notify-email was the live rejection; the borrower's own email is
+// that single item.
+console.log('\n--- the notification list carries exactly ONE BorrowerInfo item (the borrower) ---');
+const notif = ob.buildOrder({ ...BASE, notifyEmails: ['a@b.com', 'c@d.com'] });
+ok(notif.body.notificationList.length === 1, 'exactly one notification item goes out, never one per recipient');
 ok(notif.body.notificationList[0].Type === 'BorrowerInfo', 'their only documented notification type is used');
+ok(notif.body.notificationList[0].Email === 'ada@example.com',
+   'and it is the borrower\'s own email, not the LO/processor cc list');
+// With no borrower email on file, the first valid notify-email fills the single
+// slot (blanks/dupes dropped), so a borrower who never gave an email still
+// leaves the list with exactly one valid recipient.
+const notifNoB = ob.buildOrder({
+  ...BASE, borrower: { firstName: 'Ada', lastName: 'Reyes' },
+  notifyEmails: ['a@b.com', 'a@b.com', '', null, 'c@d.com'],
+});
+ok(notifNoB.body.notificationList.length === 1 && notifNoB.body.notificationList[0].Email === 'a@b.com',
+   'no borrower email -> the first valid notify-email is the single BorrowerInfo item');
+// Nothing to notify -> an empty list, never a fabricated recipient.
+const notifNone = ob.buildOrder({ ...BASE, borrower: { firstName: 'Ada', lastName: 'Reyes' }, notifyEmails: [] });
+ok(Array.isArray(notifNone.body.notificationList) && notifNone.body.notificationList.length === 0,
+   'no email anywhere -> an empty notification list, never a made-up one');
+// A MALFORMED borrower email is never sent as the sole notification (Class
+// validates it) -> fall through to the first valid notify-email.
+const notifBadB = ob.buildOrder({
+  ...BASE, borrower: { firstName: 'Ada', lastName: 'Reyes', email: 'not-an-email' },
+  notifyEmails: ['also bad', 'lo@ys.com'],
+});
+ok(notifBadB.body.notificationList.length === 1 && notifBadB.body.notificationList[0].Email === 'lo@ys.com',
+   'a malformed borrower email falls through to the first VALID notify-email, never bouncing the order');
+// Only invalid candidates -> empty, never a malformed address on the wire.
+const notifAllBad = ob.buildOrder({ ...BASE, borrower: { firstName: 'Ada', lastName: 'Reyes', email: 'nope' }, notifyEmails: ['bad', ''] });
+ok(notifAllBad.body.notificationList.length === 0,
+   'no valid email anywhere -> empty list, never a malformed BorrowerInfo item');
+
+// ---------------------------------------------------------------------------
+// Class rejects a phone that is not a plain US 10-digit number ("Please enter
+// valid work phone number"). A stored "+1 (570) 555-1234" / "570-555-9999" must
+// go out as bare 10 digits, and an unparseable one is dropped, never sent.
+console.log('\n--- phones are normalised to the 10 bare digits Class accepts ---');
+const ph = ob.buildOrder({
+  ...BASE,
+  borrower: { firstName: 'Ada', lastName: 'Reyes', email: 'ada@example.com', mobile: '+1 (570) 555-1234' },
+  loanOfficer: { firstName: 'Lee', lastName: 'Ng', email: 'lee@ys.com', workPhone: '570-555-9999' },
+});
+const roleOf = (c) => (c && (c.Type != null ? c.Type : c.type)) || null;
+const bMethods = ph.body.contacts.find((c) => roleOf(c) === 'Borrower').contactMethods;
+ok(bMethods.some((m) => m.type === 'MobilePhone' && m.value === '5705551234'),
+   'a "+1 (570) 555-1234" mobile is sent as bare 10 digits — no +1 / parens / dashes');
+const loContact = ph.body.contacts.find((c) => roleOf(c) === 'LoanOfficer');
+ok(loContact && loContact.contactMethods.some((m) => m.type === 'WorkPhone' && m.value === '5705559999'),
+   'a "570-555-9999" work phone is sent as bare 10 digits (the live rejection)');
+const phBad = ob.buildOrder({
+  ...BASE,
+  borrower: { firstName: 'Ada', lastName: 'Reyes', email: 'ada@example.com', mobile: '555-12' },
+});
+const bMethods2 = phBad.body.contacts.find((c) => roleOf(c) === 'Borrower').contactMethods;
+ok(!bMethods2.some((m) => m.type === 'MobilePhone'),
+   'a too-short phone is dropped rather than sent for Class to reject');
+ok(bMethods2.some((m) => m.type === 'Email' && m.value === 'ada@example.com'),
+   'but the email method still rides');
 
 // ---------------------------------------------------------------------------
 // EVERY VALUE WE EMIT MUST BE ON THEIR LIST. This is the guard that makes the
@@ -233,9 +292,9 @@ ok(noBorrower36.missing.some((m) => m.field === 'contacts.Borrower'),
 console.log('\n--- the notification list re-cases BOTH of its keys ---');
 const n26 = ob.buildOrder({ ...BASE, notifyEmails: ['a@b.com'] });
 const n36 = ob.buildOrder({ ...BASE, notifyEmails: ['a@b.com'] }, {}, { version: 'v2' });
-ok(n26.body.notificationList[0].Type === 'BorrowerInfo' && n26.body.notificationList[0].Email === 'a@b.com',
-   '2.6 uses Type/Email');
-ok(n36.body.notificationList[0].type === 'BorrowerInfo' && n36.body.notificationList[0].email === 'a@b.com',
+ok(n26.body.notificationList[0].Type === 'BorrowerInfo' && n26.body.notificationList[0].Email === 'ada@example.com',
+   '2.6 uses Type/Email, carrying the borrower\'s own email');
+ok(n36.body.notificationList[0].type === 'BorrowerInfo' && n36.body.notificationList[0].email === 'ada@example.com',
    '3.6 uses type/email');
 ok(n36.body.notificationList[0].Type === undefined && n36.body.notificationList[0].Email === undefined,
    'and 3.6 carries neither of the 2.6 spellings');
