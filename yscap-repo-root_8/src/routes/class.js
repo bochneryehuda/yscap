@@ -20,6 +20,7 @@ const { requireAuth, requireStaff, requirePermission } = require('../auth');
 const { assigneeExistsSql } = require('../lib/permissions');
 const { can } = require('../lib/permissions');
 const client = require('../class/client');
+const classProducts = require('../class/products');
 const orderService = require('../class/order-service');
 const orderBuild = require('../class/order-build');
 const callbacks = require('../class/callbacks');
@@ -97,11 +98,14 @@ router.get('/files/:id/preview', async (req, res) => {
 });
 
 // Their product catalogue, for the form picker. A read — master switch only.
+// The endpoint is PAGINATED and each product's readable name is `title` (or
+// `alternativeName`), so we page through the WHOLE catalogue and normalize every row —
+// never one page, never a bare Mongo id. See src/class/products.js.
 router.get('/products', async (req, res) => {
   if (!client.configured().enabled) return res.json({ available: false, products: [] });
   try {
-    const r = await client.products({ limit: req.query.limit || 200 });
-    res.json({ available: true, products: (r && r.products) || [] });
+    const products = await classProducts.fetchAll(client, { title: req.query.title });
+    res.json({ available: true, products });
   } catch (e) {
     // Never relay the vendor's status — a 401 from Class would sign the STAFFER
     // out of PILOT (the repo's session chokepoint documents this class).
