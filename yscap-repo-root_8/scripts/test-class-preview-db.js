@@ -184,16 +184,20 @@ async function main() {
      'notifyEmails carries the loan officer, the processor AND both borrowers');
   ok(ctxN.notifyEmails.length === 4, 'and nobody appears twice');
 
-  // The preview surfaces the list, and the built body turns each into a BorrowerInfo
-  // notification — an array, which fieldRows() skips, so surfacing it is the ONLY
-  // way the screen sees who will be emailed before the order goes out.
+  // Class's notification list accepts EXACTLY ONE item, of type BorrowerInfo — its
+  // enum has no other type, and more than one is rejected ("should have exactly one
+  // item of type BorrowerInfo"). So the built body carries a SINGLE notification: the
+  // borrower's own email. The preview surfaces exactly what goes out (that one
+  // recipient), not the whole notify pool the loan officer / processor sit in.
   const pvN = await orderService.buildPreview(db, appId, { overrides: { productId: 42 } });
-  ok(Array.isArray(pvN.notifyEmails) && pvN.notifyEmails.length === 4,
-     'the preview surfaces the notify list so the screen shows who gets emailed');
-  ok((pvN.body.notificationList || []).length === 4 &&
+  ok(Array.isArray(pvN.notifyEmails) && pvN.notifyEmails.length === 1 &&
+     pvN.notifyEmails[0] === `ada.${tag}@example.com`,
+     'the preview surfaces the ONE recipient that actually goes out (the borrower)');
+  ok((pvN.body.notificationList || []).length === 1 &&
      // The key is `Type` on UAD 2.6 and `type` on 3.6 — read whichever this version emitted.
-     pvN.body.notificationList.every((n) => (n.Type != null ? n.Type : n.type) === 'BorrowerInfo'),
-     'and each recipient becomes a BorrowerInfo entry on the order body');
+     (pvN.body.notificationList[0].Type != null ? pvN.body.notificationList[0].Type : pvN.body.notificationList[0].type) === 'BorrowerInfo' &&
+     (pvN.body.notificationList[0].Email != null ? pvN.body.notificationList[0].Email : pvN.body.notificationList[0].email) === `ada.${tag}@example.com`,
+     'the order body carries exactly one BorrowerInfo entry — the borrower\'s email');
 
   // A DEACTIVATED processor drops out — an appraiser notice must never chase a
   // staffer who has left, exactly as the AMC desk does.
