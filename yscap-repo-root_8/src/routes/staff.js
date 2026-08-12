@@ -12161,6 +12161,38 @@ router.get('/applications/:id/status-history', async (req, res) => {
 // file's Activity feed shows exactly what changed.
 router.patch('/applications/:id/details', async (req, res) => {
   const b = req.body || {};
+  // AS-IS / ARV super-admin OVERRIDE of the term-sheet-sent freeze (owner-directed
+  // 2026-08). When Save Changes is refused because the term sheet was already sent, the
+  // studio re-submits with {adminOverride:true, overrideReason} for an as-is/ARV-only
+  // edit. A super_admin may then update ONLY the as-is value + ARV when the change is
+  // terms-neutral (re-pricing keeps every borrower-visible figure identical, so the sent
+  // sheet still matches) — kept valid by re-asserting the pricing conditions the db/486
+  // trigger would reopen. Refused otherwise. See src/lib/asis-arv-override.js.
+  if (b.adminOverride === true) {
+    const asisArv = require('../lib/asis-arv-override');
+    const ov = await asisArv.evaluate({ appId: req.params.id, body: b, actor: req.actor });
+    if (ov.status === 'refused') return res.status(ov.code).json({ error: ov.message, locked: ov.code === 409 || undefined });
+    if (ov.status === 'apply') {
+      try {
+        const result = await asisArv.apply({ appId: req.params.id, values: ov.values });
+        await audit(req, 'asis_arv_override', 'application', req.params.id,
+          { values: ov.values, reason: ov.reason, changed: result.changed });
+        // Let the Condition Center re-check its RULE-driven conditions (it never touches
+        // the pricing / signed-term-sheet conditions the re-assert just preserved).
+        try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'asis_arv_override' }); }
+        catch (_) { /* best-effort */ }
+        return res.json({ ok: true, override: true, changed: result.changed });
+      } catch (e) {
+        if (e && e.notFound) return res.status(404).json({ error: 'application not found' });
+        console.warn('[asis-arv-override] apply failed:', db.describeError ? db.describeError(e) : e.message);
+        return res.status(500).json({ error: 'server error' });
+      }
+    }
+    // status === 'not_needed' — the file is not term-sheet-frozen, so the ordinary save
+    // works (and correctly reopens Products & Pricing). Drop the override control keys so
+    // the normal path below treats it as a plain as-is/ARV edit.
+    delete b.adminOverride; delete b.overrideReason;
+  }
   // #84 — a clear-to-close / funded file's loan structure is FROZEN for everyone,
   // super_admin included. This economics editor is one of the write paths that
   // used to skip the freeze (it could rewrite a funded loan's numbers). A
@@ -15770,13 +15802,15 @@ router.post('/applications/:id/documents', async (req, res) => {
   let itemLabel = '';
   let itemAudience = null;
   let itemTrackRecordId = null;
+  let itemCode = null;
   if (b.checklistItemId) {
     // An LLC slot item has application_id NULL — look it up by llc_id instead.
     const it = llcId
-      ? await db.query(`SELECT id, COALESCE(borrower_label,label) AS label, audience, track_record_id FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, llcId])
-      : await db.query(`SELECT id, COALESCE(borrower_label,label) AS label, audience, track_record_id FROM checklist_items WHERE id=$1 AND application_id=$2`, [b.checklistItemId, req.params.id]);
+      ? await db.query(`SELECT id, COALESCE(borrower_label,label) AS label, audience, track_record_id, (SELECT code FROM checklist_templates ct WHERE ct.id=checklist_items.template_id) AS template_code FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, llcId])
+      : await db.query(`SELECT id, COALESCE(borrower_label,label) AS label, audience, track_record_id, (SELECT code FROM checklist_templates ct WHERE ct.id=checklist_items.template_id) AS template_code FROM checklist_items WHERE id=$1 AND application_id=$2`, [b.checklistItemId, req.params.id]);
     if (!it.rows[0]) return res.status(404).json({ error: 'checklist item not found on this file' });
     itemLabel = it.rows[0].label;
+    itemCode = it.rows[0].template_code || null;
     itemAudience = it.rows[0].audience;
     // A condition raised FOR one track-record line item: the upload belongs to
     // that line too (same contract as the borrower path).
@@ -15796,7 +15830,14 @@ router.post('/applications/:id/documents', async (req, res) => {
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
-  const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
+  // A manual upload onto the Heter Iska condition gets an explicit doc_kind so it is
+  // provenance-distinguishable from the DocuSign-fed executed copy (heter_iska_signed +
+  // source_type system) AND is kept in-system only — heter_iska_manual is on the
+  // SharePoint never-mirror list, the TPR-export denylist and closing-prep's FROZEN_KINDS,
+  // exactly like heter_iska_signed (owner policy: the Heter Iska never leaves the building).
+  // A client can never forge heter_iska_signed here (only term_sheet is client-settable).
+  const docKind = b.docKind === 'term_sheet' ? 'term_sheet'
+    : (itemCode === 'rtl_cond_iska' ? 'heter_iska_manual' : null);
   // WHICH STAMP these bytes print (owner-directed 2026-08-02, db/404). The
   // INITIAL/FINAL wording is drawn into the PDF at generation time, so the
   // generator is the only thing that knows — it reports what it printed and we
