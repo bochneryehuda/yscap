@@ -134,6 +134,18 @@ ok(notifNoB.body.notificationList.length === 1 && notifNoB.body.notificationList
 const notifNone = ob.buildOrder({ ...BASE, borrower: { firstName: 'Ada', lastName: 'Reyes' }, notifyEmails: [] });
 ok(Array.isArray(notifNone.body.notificationList) && notifNone.body.notificationList.length === 0,
    'no email anywhere -> an empty notification list, never a made-up one');
+// A MALFORMED borrower email is never sent as the sole notification (Class
+// validates it) -> fall through to the first valid notify-email.
+const notifBadB = ob.buildOrder({
+  ...BASE, borrower: { firstName: 'Ada', lastName: 'Reyes', email: 'not-an-email' },
+  notifyEmails: ['also bad', 'lo@ys.com'],
+});
+ok(notifBadB.body.notificationList.length === 1 && notifBadB.body.notificationList[0].Email === 'lo@ys.com',
+   'a malformed borrower email falls through to the first VALID notify-email, never bouncing the order');
+// Only invalid candidates -> empty, never a malformed address on the wire.
+const notifAllBad = ob.buildOrder({ ...BASE, borrower: { firstName: 'Ada', lastName: 'Reyes', email: 'nope' }, notifyEmails: ['bad', ''] });
+ok(notifAllBad.body.notificationList.length === 0,
+   'no valid email anywhere -> empty list, never a malformed BorrowerInfo item');
 
 // ---------------------------------------------------------------------------
 // Class rejects a phone that is not a plain US 10-digit number ("Please enter

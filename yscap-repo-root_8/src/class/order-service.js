@@ -69,12 +69,13 @@ async function loadContext(db, appId) {
   const a = r.rows[0];
   if (!a) return null;
 
-  // Everyone Class should email as the appraisal moves: the loan officer, the
-  // processor, and the borrower(s). Each becomes a `BorrowerInfo` entry on the
-  // order's notificationList (see order-build), so Class copies all of them when the
-  // report comes back — the SAME set NAN carries as products[].notifications. A
-  // deactivated LO/processor drops out (their is_active LEFT JOIN yields NULL), and
-  // a malformed or duplicate address is dropped rather than sent.
+  // The fallback pool for Class's single notification recipient. Class's
+  // notificationList accepts EXACTLY ONE item, of type BorrowerInfo (see
+  // order-build) — the builder sends the borrower's own email, and only falls
+  // back to the first of THESE when the borrower has no email on file. The loan
+  // officer and processor follow the order in PILOT, not through Class. A
+  // deactivated LO/processor drops out (their is_active LEFT JOIN yields NULL),
+  // and a malformed or duplicate address is dropped rather than kept.
   const notifyEmails = [];
   const addEmail = (e) => {
     const v = String(e == null ? '' : e).trim().toLowerCase();

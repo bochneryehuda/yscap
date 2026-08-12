@@ -255,6 +255,11 @@ const phone10 = (v) => {
   const ten = d.length === 11 && d[0] === '1' ? d.slice(1) : d;
   return ten.length === 10 ? ten : null;
 };
+// A well-formed email, else null — the SAME shape order-service applies to the
+// notify pool. The single notification recipient is validated here too so a
+// malformed borrower email is never sent as the sole BorrowerInfo item (Class
+// validates the notification address; an invalid one would bounce the order).
+const validEmail = (v) => { const s = text(v); return s && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s) ? s : null; };
 
 // A contact Class will accept. Their contact-type list is closed and IDENTICAL on
 // both UAD versions; we only ever emit the four roles an appraisal genuinely needs.
@@ -462,9 +467,10 @@ function buildOrder(ctx = {}, overrides = {}, opts = {}) {
   // BorrowerInfo"), so we send a single item: the borrower's email when we have
   // one, else the first valid notify-email on file. The loan officer and
   // processor follow the order in PILOT, not through Class's borrower channel.
-  const notifyEmail = text((ctx.borrower || {}).email)
-    || (Array.isArray(ctx.notifyEmails) ? ctx.notifyEmails : []).map(text).find(Boolean)
-    || null;
+  // Every candidate is format-checked, so a malformed borrower email falls
+  // through to the first valid notify-email rather than bouncing the order.
+  const notifyEmail = [(ctx.borrower || {}).email, ...(Array.isArray(ctx.notifyEmails) ? ctx.notifyEmails : [])]
+    .map(validEmail).find(Boolean) || null;
   const notify = notifyEmail
     ? [{ [profile.notifyKeys.type]: 'BorrowerInfo', [profile.notifyKeys.email]: notifyEmail }]
     : [];
