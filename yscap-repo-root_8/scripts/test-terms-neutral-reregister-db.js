@@ -20,7 +20,10 @@
  *
  * The rule matrix is covered by scripts/test-terms-neutral-reregister-pure.js.
  */
-process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres@127.0.0.1:5433/yscap_test';
+// Skip cleanly when there is no database (the no-DB `test` CI job) — the real
+// assertions run in the `test-db` job. NEVER hard-default DATABASE_URL to a local
+// URL: that turns "no DB" into an ECONNREFUSED crash instead of a skip.
+if (!process.env.DATABASE_URL) { console.log('SKIP test-terms-neutral-reregister-db (no DATABASE_URL)'); process.exit(0); }
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-terms-neutral';
 process.env.SSN_ENCRYPTION_KEY = process.env.SSN_ENCRYPTION_KEY || '0'.repeat(64);
 process.env.EMAIL_PROVIDER = 'none';
