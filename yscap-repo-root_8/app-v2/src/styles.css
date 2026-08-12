@@ -4176,6 +4176,126 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .inv-add .input{width:100% !important}
 }
 
+/* ============================================================================
+   TRACK RECORD workspace (staff) — one premium, aligned line-item.
+   Owner-directed 2026-08-12: "everything should line up … the CSS should be
+   stunning … buttons nice, not too many, in order." A tight set of building
+   blocks on the white-first tokens; text is explicit dark (#141B22 / #4B585C)
+   so it can never inherit a light --ink* token (the white-on-white trap).
+   ========================================================================= */
+
+.tr-eyebrow{font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+  color:#4B585C;font-weight:700;line-height:1.3}
+
+/* The experience stat row — evenly-sized boxes, aligned eyebrow + value */
+.tr-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:12px;margin:2px 0 14px}
+.tr-stat{border:1px solid var(--border);border-radius:12px;background:var(--surface);
+  padding:12px 14px;display:flex;flex-direction:column;gap:3px;min-width:0}
+.tr-stat.flag{border-color:var(--gold);box-shadow:inset 3px 0 0 var(--gold)}
+.tr-stat.met{border-color:var(--primary);box-shadow:inset 3px 0 0 var(--primary)}
+.tr-stat-v{font-size:15px;font-weight:650;color:#141B22;line-height:1.3;overflow-wrap:anywhere}
+.tr-stat-v.met{color:#1F6B3F}
+.tr-stat-sub{font-size:12.5px;color:#4B585C;line-height:1.45}
+
+/* The deal card header + aligned money grid */
+.tr-deal{border:1px solid var(--border);border-radius:14px;background:var(--surface);
+  padding:16px 18px;margin-bottom:12px;box-shadow:0 1px 2px rgba(20,27,34,.03)}
+.tr-deal-h{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.tr-deal-h h3{margin:0;color:#141B22;font-size:17px;font-weight:650;
+  font-family:var(--serif);overflow-wrap:anywhere;min-width:0}
+.tr-figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:12px 18px;margin:14px 0 2px}
+.tr-fig{min-width:0;display:flex;flex-direction:column;gap:2px}
+.tr-fig-v{color:#141B22;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;line-height:1.3}
+.tr-fig-v.strong{font-weight:700}
+.tr-fig-h{font-size:12px;color:#4B585C;line-height:1.3}
+
+/* A readiness banner that reads as information, not an error */
+.tr-readi{margin-top:12px;padding:10px 13px;border-radius:10px;
+  background:var(--primary-soft);border:1px solid var(--primary-border);font-size:13.5px;line-height:1.5}
+.tr-readi b{color:#141B22}
+.tr-readi span{color:#3A4550}
+
+/* Shared inside a check's "Why?" expander — the meaning line, the evidence
+   quote, and the source/confidence meta. */
+.tr-check-mean{font-size:13px;color:#4B585C;margin:7px 0 0;line-height:1.5}
+.tr-quote{margin:8px 0 0;padding:8px 12px;border-left:2px solid var(--border-strong);
+  background:var(--surface-soft);border-radius:0 8px 8px 0;color:#141B22;font-size:13px;
+  line-height:1.5;overflow-wrap:anywhere}
+.tr-quote.note{color:#8A6D3B;background:rgba(174,135,70,.07);border-left-color:var(--gold)}
+.tr-meta{font-size:12px;color:#4B585C;margin-top:7px}
+.tr-hint{font-size:12.5px;color:#4B585C;margin:7px 0 0;line-height:1.45}
+
+/* Compact verification checks (owner-directed 2026-08-12: "the three … are too
+   big … just click Verify, Verify, Verify … it should fit all three on one
+   line"). Each is a small card — mark + short title + one Verify control — with
+   the evidence and the reject/undo tucked behind a "Why?" expander. Asking for a
+   document lives on the main line item, never on a check. */
+.tr-check-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,208px),1fr));
+  gap:8px;margin:12px 0;align-items:start}
+.tr-chk{border:1px solid var(--border);border-left-width:3px;border-radius:10px;
+  background:var(--surface);padding:9px 11px;display:flex;flex-direction:column;gap:7px;min-width:0}
+.tr-chk-top{display:flex;align-items:center;gap:8px;min-width:0}
+.tr-chk-mark{width:18px;height:18px;border-radius:6px;display:grid;place-items:center;
+  font-size:11px;font-weight:800;color:#fff;flex:0 0 auto;line-height:1}
+.tr-chk-t{font-weight:650;color:#141B22;font-size:13px;flex:1;min-width:0;overflow-wrap:anywhere}
+.tr-chk-ok{font-size:12.5px;font-weight:700;color:#1F6B3F;white-space:nowrap;flex:0 0 auto}
+.tr-chk-wait{font-size:12px;color:#4B585C;white-space:nowrap;flex:0 0 auto}
+.tr-chk-why{font-size:12px;line-height:1.45}
+.tr-chk-why > summary{cursor:pointer;color:var(--primary);font-weight:600;font-size:12px;list-style:none}
+.tr-chk-why > summary::-webkit-details-marker{display:none}
+.tr-chk-why[open] > summary{margin-bottom:6px}
+.tr-chk-why .tr-quote{margin-top:6px}
+
+/* Documents — a scannable, aligned list (name+type left, status + actions right) */
+.tr-docs{margin-top:8px}
+.tr-doc{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:9px 0;border-top:1px solid var(--border)}
+.tr-doc:first-of-type{border-top:0}
+.tr-doc-name{flex:1;min-width:150px;display:flex;flex-direction:column;gap:1px;min-width:0}
+.tr-doc-name b{color:#141B22;font-weight:600;font-size:13.5px;overflow-wrap:anywhere}
+.tr-doc-name span{font-size:12px;color:#4B585C}
+.tr-doc-acts{display:inline-flex;gap:5px;flex-wrap:wrap;align-items:center}
+
+/* The inline edit form — one aligned label-over-field grid, grouped by section */
+.tr-edit{margin-top:14px;border:1px solid var(--border);border-radius:12px;
+  background:var(--surface-soft);padding:16px 18px}
+.tr-edit-sec + .tr-edit-sec{margin-top:14px;padding-top:14px;border-top:1px solid var(--border)}
+.tr-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:12px 16px;align-items:end}
+.tr-field{display:flex;flex-direction:column;gap:5px;min-width:0}
+.tr-field > span{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:#4B585C;font-weight:700}
+.tr-field .input{width:100%}
+.tr-check-inline{display:flex;align-items:center;gap:8px;font-size:13.5px;color:#141B22;font-weight:600}
+
+/* ---- The ledger (the outer list of deals) ---- */
+.tr-ledger{border:1px solid var(--border);border-radius:14px;background:var(--surface);
+  padding:14px 16px;margin-bottom:12px}
+.tr-led-intro{font-size:12.5px;color:#4B585C;margin:0 0 10px}
+.tr-led-group + .tr-led-group{margin-top:14px}
+.tr-led-grouph{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:0 0 6px;
+  padding-bottom:5px;border-bottom:1px solid var(--border)}
+.tr-led-groupt{font-weight:700;color:#141B22;font-size:13.5px}
+.tr-led-groups{font-size:12px;color:#4B585C}
+.tr-led-reveal{appearance:none;background:0;border:0;padding:0;cursor:pointer;
+  font:inherit;font-size:13px;font-weight:600;color:#4B585C;display:inline-flex;align-items:center;gap:6px}
+.tr-led-reveal:hover{color:#141B22}
+
+/* one deal row */
+.tr-led-row{border-left:3px solid var(--border-strong);border-radius:0 10px 10px 0;
+  padding:9px 10px 9px 12px;margin-top:6px;transition:background .14s ease}
+.tr-led-row:hover:not(.is-open){background:var(--surface-soft)}
+.tr-led-row.is-open{background:var(--surface-soft);padding-bottom:12px}
+.tr-led-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.tr-led-toggle{appearance:none;background:0;border:0;padding:0;cursor:pointer;text-align:left;
+  font:inherit;font-size:14px;font-weight:600;color:#141B22;flex:1;min-width:160px;
+  display:inline-flex;align-items:baseline;gap:8px;overflow-wrap:anywhere}
+.tr-led-toggle:hover{color:var(--primary-hover)}
+.tr-led-caret{color:var(--primary);font-size:11px;flex:0 0 auto}
+.tr-led-tags{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;flex:0 0 auto}
+.tr-led-figs{font-size:12.5px;color:#4B585C;padding-left:18px;margin-top:3px;font-variant-numeric:tabular-nums}
+.tr-led-reo{font-size:12.5px;color:#8A6D3B;padding-left:18px;margin-top:2px}
+.tr-led-todo{font-size:12.5px;color:#4B585C;padding-left:18px;margin-top:2px}
+.tr-led-body{margin-top:10px}
+@media(max-width:720px){ .tr-led-toggle{flex-basis:100%} }
+
 /* ---- Borrower draw notes (blocking reasons / next steps) ----
    Two blocks were hand-drawing the same bullet with inline styles; one class, two tones. */
 .dd-notes{margin-top:10px;display:flex;flex-direction:column;gap:6px}
