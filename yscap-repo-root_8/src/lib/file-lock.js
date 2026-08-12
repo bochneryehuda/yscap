@@ -324,10 +324,87 @@ async function payoffContactLockReason(appId, body, client = db, opts = {}) {
   return beyondClosingPrep ? reason : null;
 }
 
+/**
+ * THE TERMS-NEUTRAL RE-REGISTER CARVE-OUT (owner-directed 2026-08-12).
+ *
+ * WHY IT EXISTS. After a term sheet package is sent, re-registering a product is
+ * frozen ("clear the Term Sheet package first"). But a super_admin often needs to
+ * re-register with the borrower's terms UNCHANGED — switch the internal program
+ * (e.g. Standard → Silver, if Silver is cheaper for us but we keep the quoted
+ * rate) or adjust the internal markup / buy rate — where NOTHING the borrower's
+ * terms move. Forcing a clear there voids a signed term sheet and reopens
+ * conditions for no reason.
+ *
+ * THE RULE. This lifts ONLY the term-sheet-sent freeze, ONLY for a super_admin
+ * (owner-directed 2026-08-12: "only a super admin should be able to do it"), and
+ * ONLY when the borrower-visible terms are byte-identical to the current
+ * registration's — the owner's five FINAL numbers (final loan amount, construction
+ * (rehab) holdback, financed interest reserve, origination fee dollars, note rate)
+ * PLUS the loan TERM (also borrower-visible, and — because Gold prices a flat rate
+ * on a no-reserve deal — not always reflected in the five). PROGRAM, MARKUP and the
+ * internal BUY RATE are deliberately EXCLUDED; they may change freely so long as no
+ * borrower-visible number moves a nickel. Any move, or any non-super_admin, and the
+ * old rule stands (clear the package, re-register, send a new term sheet).
+ *
+ * WHY IT IS SAFE — the same test the SOW/payoff carve-outs are held to. The
+ * term-sheet freeze exists so a sent term sheet can never silently disagree with
+ * the file. When every borrower-visible number is identical, the sent term sheet's
+ * FIGURES still match the file exactly; the re-register supersedes the internal
+ * registration row WITHOUT voiding the envelope or reopening a condition, so the
+ * signed sheet stays intact and current — exactly the "silent re-register, no new
+ * term sheet" the owner asked for. (The sheet does print a "Program" row, so a
+ * cross-program switch leaves that ONE label historical — the owner directed this
+ * explicitly: "if only the program changes but the rate stays the same … all the
+ * details stay the same … we are good." The borrower's terms, which the freeze
+ * protects, do not move.)
+ *
+ * DELIBERATELY NARROW: the STATUS freeze (Clear-to-Close / funded / declined /
+ * withdrawn) still stands (a super_admin unlock remains the way through those),
+ * so this is a PRE-CTC carve-out only, mirroring sowLockReason.
+ *
+ * `finalNumbersKey(q, term)` is the neutrality PRIMITIVE — the borrower-visible
+ * figures, EXCLUDING program/markup. `term` is threaded in explicitly because it is
+ * not on the quote object. `termsNeutralReregister` is the pure FREEZE decision: it
+ * takes the file's already-read lock row (so it never re-reads — a second read that
+ * failed could lift a freeze the caller already established) plus the caller's
+ * neutrality verdict, and returns null (allow) or the freeze reason.
+ */
+function finalNumbersKey(q, term) {
+  const s = (q && q.sizing) || {};
+  const n = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
+  const rate = q && q.noteRate != null ? Number(q.noteRate) : null;
+  return JSON.stringify([
+    Math.round(n(s.totalLoan)),
+    Math.round(n(s.rehabHoldback)),
+    Math.round(n(s.financedReserve)),
+    Math.round(n(q && q.origination)),
+    rate == null || !Number.isFinite(rate) ? null : rate.toFixed(5),
+    // The loan TERM — borrower-visible, printed on the sheet, and NOT on the quote
+    // object, so it is passed in. A program/markup switch never moves it; a real
+    // term change (which on Gold's flat rate need not move any of the five) does,
+    // and must re-freeze the file.
+    term == null || term === '' ? null : String(term),
+  ]);
+}
+
+function termsNeutralReregister(row, isNeutral, opts = {}) {
+  if (!row) return null;                             // no row → caller decides (parity with structuralLockReason)
+  // The STATUS freeze always stands (a super_admin unlock is honored inside it).
+  const statusReason = statusFreezeReason(row, opts);
+  if (statusReason) return statusReason;
+  const tsReason = termSheetFreezeReason(row, opts);
+  if (!tsReason) return null;                        // nothing frozen — register away
+  // Term-sheet sent, pre-CTC: the carve-out is SUPER-ADMIN ONLY and terms must be
+  // unchanged. Anyone else — or any term change — stays frozen (clear the package).
+  const isSuper = !!(opts.actor && opts.actor.kind === 'staff' && opts.actor.role === 'super_admin');
+  return (isSuper && isNeutral) ? null : tsReason;
+}
+
 module.exports = {
   structuralLockReason, STRUCTURE_LOCKED, TS_SENT_STATUSES, termSheetSentLock,
   sowLockReason, sowBudgetNeutral, SOW_INVESTOR_STATUSES,
   payoffContactLockReason,
+  termsNeutralReregister, finalNumbersKey,
   // The two halves, exported so tests (and any future caller that needs one
   // freeze without the other) never have to re-implement them.
   _internals: { lockInputs, statusFreezeReason, termSheetFreezeReason, superUnlockActive },
