@@ -1066,11 +1066,16 @@ router.get('/files/:id/draw-request', requireDrawView, async (req, res) => {
         };
       }
     }
-    // The signed PDF, once filed back to the condition.
+    // The signed PDF, once filed back to the condition — with its review state so the desk can
+    // show + do the "accept the wire instructions" step right here (owner-directed 2026-08-12).
     const signed = (await db.query(
-      `SELECT id, filename, created_at FROM documents
+      `SELECT id, filename, created_at, COALESCE(review_status,'pending') AS review_status, rejection_reason FROM documents
         WHERE application_id=$1 AND doc_kind='draw_request_signed' AND is_current=true
         ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0] || null;
+    // The wire-form GATE, the SAME one the delivery step reads, so the card and the money gate can
+    // never disagree about whether the wire instructions are accepted.
+    const wireForm = await require('../sitewire/investor-delivery-send').wireFormStatus(appId)
+      .catch(() => ({ present: false, accepted: true, rejectedOnly: false }));
     res.json({
       docusign_enabled: switches.on('DOCUSIGN_SEND_ENABLED'),
       docusign_test_mode: !!cfg.docusign.testMode,
@@ -1094,9 +1099,47 @@ router.get('/files/:id/draw-request', requireDrawView, async (req, res) => {
       recipient_options: await require('../lib/draw-recipients').drawRecipients(appId).catch(() => ({ borrower: null, coBorrower: null })),
       wire,
       operating_agreement: oaCondition,
-      signed_document: signed ? { id: signed.id, filename: signed.filename, created_at: signed.created_at } : null,
+      signed_document: signed ? { id: signed.id, filename: signed.filename, created_at: signed.created_at, review_status: signed.review_status, rejection_reason: signed.rejection_reason || null } : null,
+      wire_form: wireForm,
     });
   } catch (e) { console.warn('[sitewire] draw-request status error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// ---- POST /files/:id/wire-form/review — accept / reject the signed wire instructions ----
+// The borrower's signed DocuSign wire form files onto the draw-request condition; the money can
+// only move once ONE correct version is ACCEPTED. This lets the DRAW COORDINATOR do that step
+// right on the draw desk (owner-directed 2026-08-12: "accept the wire instructions, part of the
+// process of approving a draw … I don't see any option"). It writes the ONE shared 'accepted'
+// definition (document-acceptance / review_status='accepted'), so this desk, the delivery gate
+// and the sign-off gate can never disagree about what "accepted" means.
+router.post('/files/:id/wire-form/review', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const action = String((req.body || {}).action || '');
+  if (!['accept', 'reject'].includes(action)) return res.status(400).json({ error: 'action must be accept or reject' });
+  const reason = String((req.body || {}).reason || '').trim();
+  if (action === 'reject' && !reason) return res.status(400).json({ error: 'a rejection reason is required' });
+  try {
+    const doc = (await db.query(
+      `SELECT id FROM documents
+        WHERE application_id=$1 AND is_current=true AND doc_kind='draw_request_signed'
+        ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0];
+    if (!doc) return res.status(404).json({ error: 'No signed wire form is on file to review.' });
+    const status = action === 'accept' ? 'accepted' : 'rejected';
+    await db.query(
+      `UPDATE documents SET review_status=$2, rejection_reason=$3, reviewed_by=$4, reviewed_at=now() WHERE id=$1`,
+      [doc.id, status, action === 'reject' ? reason.slice(0, 1000) : null, req.actor.id]);
+    // Best-effort audit — accepting / rejecting the wire instructions gates the money, so record who
+    // did it and why; the logging write can never fail the action.
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+         VALUES ('staff',$1,$2,'application',$3,$4,$5,$6)`,
+        [req.actor && req.actor.id, `wire_form_${status}`, appId, req.ip, req.get('user-agent') || null,
+         { document_id: doc.id, reason: action === 'reject' ? reason.slice(0, 500) : null }]);
+    } catch (_) { /* logging is best-effort */ }
+    res.json({ ok: true, status });
+  } catch (e) { console.warn('[sitewire] wire-form review error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- POST /files/:id/draw-request/send — send the Draw Request & Wire Instructions form via DocuSign ----
@@ -1512,10 +1555,16 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
       const gate = waiverGate(waivers, { enabled: true });
       if (!gate.ok) { await client.query('ROLLBACK'); return res.status(409).json({ error: `Lien waivers still outstanding: ${gate.missing.join('; ')}. Mark them received or waived before releasing.`, missing: gate.missing }); }
     }
+    // WHO released, per the file's "Who releases the money" setting (owner-directed 2026-08-12: the
+    // money ledger should record who released "according to the settings"). reimbursement → us,
+    // investor_direct → investor, manual/unset → us (the column's own default). Resolved under the
+    // txn's client; never fatal — a lookup miss keeps the safe default.
+    let releaseParty = 'us';
+    try { releaseParty = (await require('../sitewire/release-party').releaseStateFor(client, application_id, { sitewireDrawId: drawId })).party || 'us'; } catch (_) {}
     const row = (await client.query(
-      `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents, fee_kind, retainage_held_cents, net_release_cents, release_date, funded_status, kind, note, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draw',$10,$11) RETURNING *`,
-      [application_id, drawId, approved, fee, feeKind, split.retainage_held_cents, split.net_release_cents, releaseDate, fundedStatus, req.body.note ? String(req.body.note).slice(0, 2000) : null, req.actor.id])).rows[0];
+      `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents, fee_kind, retainage_held_cents, net_release_cents, release_date, funded_status, kind, note, created_by, release_party)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draw',$10,$11,$12) RETURNING *`,
+      [application_id, drawId, approved, fee, feeKind, split.retainage_held_cents, split.net_release_cents, releaseDate, fundedStatus, req.body.note ? String(req.body.note).slice(0, 2000) : null, req.actor.id, releaseParty])).rows[0];
     await client.query('COMMIT');
     // Milestone → borrower (owner-directed 2026-07-20): a construction draw was released. Tell them the NET
     // amount actually on its way (reimbursable − fee − retainage), only on an actual release. type 'draw'
