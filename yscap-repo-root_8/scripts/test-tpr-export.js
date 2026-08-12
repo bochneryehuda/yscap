@@ -83,9 +83,14 @@ async function main() {
       [APP, B, CB, LLC, JSON.stringify({ line1: '12 Test Ln', city: 'Testville', state: 'NJ', zip: '07000' })]);
     // A VERIFIED track-record line — only verified lines ship to delivery
     // (owner-directed 2026-08-12); TR2 below is a PENDING line that must NOT ship.
-    await db.query(`INSERT INTO track_records (id,borrower_id,property_address,deal_type,is_verified,verification_status) VALUES ($1,$2,$3,'flip',true,'verified')`,
+    // A line always LANDS pending (db/485 verify guard forces is_verified=false on
+    // insert); verifying is a separate UPDATE that touches ONLY the verification
+    // columns (no material column), which the guard leaves alone — mirroring the
+    // real Verify action. So a fixture cannot spoof a verified line at insert.
+    await db.query(`INSERT INTO track_records (id,borrower_id,property_address,deal_type) VALUES ($1,$2,$3,'flip')`,
       [TR, B, JSON.stringify({ line1: '9 Prior Rd', city: 'Testville', state: 'NJ' })]);
-    await db.query(`INSERT INTO track_records (id,borrower_id,property_address,deal_type,is_verified,verification_status) VALUES ($1,$2,$3,'flip',false,'pending')`,
+    await db.query(`UPDATE track_records SET is_verified=true, verification_status='verified', verified_at=now() WHERE id=$1`, [TR]);
+    await db.query(`INSERT INTO track_records (id,borrower_id,property_address,deal_type) VALUES ($1,$2,$3,'flip')`,
       [TR2, B, JSON.stringify({ line1: '77 Pending Way', city: 'Testville', state: 'NJ' })]);
 
     // A FRAUD internal condition item on the file (from the real template so db/120's flip applies).
