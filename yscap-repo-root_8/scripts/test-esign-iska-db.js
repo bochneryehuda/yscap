@@ -202,6 +202,37 @@ const mkEnvelopeDoc = async (appId, { checklistItemId = null, completedDocumentI
     assert((await signOffGate(item, proc)) === null, 'a genuine DocuSign-fed copy present → any signer may proceed even with a manual copy alongside');
   }
 
+  /* ───────── 6. heter_iska_manual — explicit manual provenance + never-leaves-the-building ─────────
+     A manual upload onto the Iska condition gets doc_kind='heter_iska_manual' (staff.js
+     upload door). It must (a) read as MANUAL in the sign-off gate → super_admin only, and
+     (b) be excluded from the SharePoint mirror, the TPR export and the closing-prep package
+     (owner policy: the Heter Iska never leaves the building), exactly like heter_iska_signed. */
+  {
+    const appId = await mkApp();
+    const item = await orchestrate.ensureIskaCondition(db, appId, null);
+    await db.query(
+      `INSERT INTO documents (application_id, checklist_item_id, filename, content_type, size_bytes, storage_provider,
+                              storage_ref, uploaded_by_kind, doc_kind, source_type, visibility, is_current, review_status)
+       VALUES ($1,$2,$3,'application/pdf',9,'local',$4,'staff','heter_iska_manual','staff_upload','borrower',true,'accepted')`,
+      [appId, item, `iska_manual_kind_${uniq}.pdf`, `${uniq}-mk`]);
+    const g = await signOffGate(item, proc);
+    assert(typeof g === 'string' && /super admin/i.test(g),
+      'a heter_iska_manual doc reads as MANUAL → a processor is refused (super_admin only)');
+    assert((await signOffGate(item, superA)) === null, 'a heter_iska_manual doc → a super_admin CAN sign off');
+  }
+  // heter_iska_manual is on all three "never leaves the building" denylists.
+  {
+    const read = (p) => require('fs').readFileSync(require('path').join(__dirname, p), 'utf8');
+    const sp = read('../src/lib/sharepoint-backup.js');
+    assert(/NEVER_MIRROR_REASON\s*=\s*\{[\s\S]*heter_iska_manual[\s\S]*?\}/.test(sp),
+      'heter_iska_manual is on the SharePoint never-mirror list');
+    const closing = require('../src/lib/closing-prep');
+    assert(closing.FROZEN_KINDS && closing.FROZEN_KINDS.has('heter_iska_manual'),
+      'heter_iska_manual is in closing-prep FROZEN_KINDS');
+    assert(/NOT IN \([^)]*'heter_iska_manual'[^)]*\)/.test(read('../src/lib/tpr-export.js')),
+      'heter_iska_manual is in the TPR-export doc_kind denylist');
+  }
+
   if (failures) { console.error(`\ntest-esign-iska-db: ${failures} FAILURE(S).`); process.exit(1); }
   console.log('\nAll Heter Iska feed + gate checks passed.');
   process.exit(0);

@@ -59,7 +59,7 @@ async function backfillIskaFeedOnce(limit = 200) {
         await db.query(
           `UPDATE checklist_items SET status = 'received', updated_at = now()
             WHERE id = $1 AND status NOT IN ('satisfied','waived')`, [itemId]);
-        enqueueChecklistStatusPush(itemId);
+        try { enqueueChecklistStatusPush(itemId); } catch (_) { /* best-effort push */ }
         fed++;
       }
     } catch (e) {

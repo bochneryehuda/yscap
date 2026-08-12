@@ -337,24 +337,52 @@ function conditionCodeForSignedKind(signedKind) {
 async function ensureIskaCondition(db, applicationId, actorId) {
   const existing = await resolveConditionItem(db, applicationId, 'rtl_cond_iska');
   if (existing) return existing;
-  const ins = await db.query(
-    `INSERT INTO checklist_items
-       (template_id, scope, application_id, label, borrower_label, audience, item_kind,
-        role_scope, phase, hint, borrower_hint, is_gate, is_milestone, sort_order,
-        tool_key, clickup_field_id, tpr_exclude, created_by_kind, created_by_id, is_required, status)
-     SELECT t.id, 'application', $1, t.label, t.borrower_label, t.audience, t.item_kind,
-            COALESCE(t.role_scope,'any'), t.phase, t.hint, t.borrower_hint,
-            COALESCE(t.is_gate,false), COALESCE(t.is_milestone,false), COALESCE(t.sort_order,100),
-            t.tool_key, t.clickup_field_id, COALESCE(t.tpr_exclude,false), 'system', $2,
-            (t.is_required IS DISTINCT FROM false), 'outstanding'
-       FROM checklist_templates t
-      WHERE t.code='rtl_cond_iska' AND t.is_active=true
-        AND NOT EXISTS (SELECT 1 FROM checklist_items ci
-                         WHERE ci.application_id=$1 AND ci.template_id=t.id)
-     RETURNING id`, [applicationId, actorId || null]);
-  if (ins.rows[0]) return ins.rows[0].id;
-  // The NOT EXISTS suppressed the insert (a concurrent completion created it) — re-resolve.
-  return resolveConditionItem(db, applicationId, 'rtl_cond_iska');
+  // Serialize the CREATE against a concurrent completion / boot heal / send on the SAME
+  // file. There is deliberately no unique index on checklist_items(application_id,
+  // template_id) (CLAUDE.md rule 4d), so under READ COMMITTED two callers that both see
+  // the condition absent could both insert. Take the SAME per-file advisory lock the
+  // conditions engine uses, on a dedicated connection. Fail OPEN — a missed lock costs at
+  // most one duplicate row (db/401 cleans an untouched duplicate up), and blocking a
+  // completion is worse. Works whether `db` is the app db wrapper (getClient), a raw pg
+  // Pool (connect), or a transaction client (neither → no lock, fail open).
+  const lockKey = `cond-eval:${applicationId}`;
+  let lockConn = null;
+  try {
+    lockConn = db.getClient ? await db.getClient() : (db.connect ? await db.connect() : null);
+    if (lockConn) await lockConn.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [lockKey]);
+    else lockConn = null;
+  } catch (_) {
+    if (lockConn) { try { lockConn.release(); } catch (_e) {} }
+    lockConn = null;
+  }
+  try {
+    // Re-check under the lock — another creator may have won the race.
+    const again = await resolveConditionItem(db, applicationId, 'rtl_cond_iska');
+    if (again) return again;
+    const ins = await db.query(
+      `INSERT INTO checklist_items
+         (template_id, scope, application_id, label, borrower_label, audience, item_kind,
+          role_scope, phase, hint, borrower_hint, is_gate, is_milestone, sort_order,
+          tool_key, clickup_field_id, tpr_exclude, created_by_kind, created_by_id, is_required, status)
+       SELECT t.id, 'application', $1, t.label, t.borrower_label, t.audience, t.item_kind,
+              COALESCE(t.role_scope,'any'), t.phase, t.hint, t.borrower_hint,
+              COALESCE(t.is_gate,false), COALESCE(t.is_milestone,false), COALESCE(t.sort_order,100),
+              t.tool_key, t.clickup_field_id, COALESCE(t.tpr_exclude,false), 'system', $2,
+              (t.is_required IS DISTINCT FROM false), 'outstanding'
+         FROM checklist_templates t
+        WHERE t.code='rtl_cond_iska' AND t.is_active=true
+          AND NOT EXISTS (SELECT 1 FROM checklist_items ci
+                           WHERE ci.application_id=$1 AND ci.template_id=t.id)
+       RETURNING id`, [applicationId, actorId || null]);
+    if (ins.rows[0]) return ins.rows[0].id;
+    // The NOT EXISTS suppressed the insert — re-resolve (a concurrent creator won).
+    return resolveConditionItem(db, applicationId, 'rtl_cond_iska');
+  } finally {
+    if (lockConn) {
+      try { await lockConn.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockKey]); } catch (_) {}
+      try { lockConn.release(); } catch (_) {}
+    }
+  }
 }
 
 // ---- application-document formatting helpers --------------------------------

@@ -134,7 +134,7 @@ function applicableMissing(missing, data) {
 // was filed as an ENTITY DOCUMENT — attached to the email to the outside law firm,
 // and shipped in the investor TPR export. The mirrored SQL predicate in
 // `tpr-export.TPR_DOC_SELECT` reads the same three fields; keep the two in step.
-const FROZEN_KINDS = new Set(['heter_iska', 'heter_iska_signed', 'esign_certificate']);
+const FROZEN_KINDS = new Set(['heter_iska', 'heter_iska_signed', 'heter_iska_manual', 'esign_certificate']);
 const FROZEN_NAME_RE = /heter[\s_.\-]*iska|(?:^|[^a-z0-9])(?:iska|heter)(?:[^a-z0-9]|$)/i;
 function isFrozenOut(d) {
   if (FROZEN_KINDS.has(d.doc_kind)) return true;
