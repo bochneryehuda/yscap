@@ -568,16 +568,21 @@ async function buildTprExport(appId) {
   // The borrower's (and co-borrower's) operational track record.
   const borrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
   const records = (await db.query(
-    // A REJECTED line (the team decided it is not the borrower's, a duplicate, or
-    // wrong) is not part of their track record and never ships to the investor
-    // (owner-directed 2026-08-10, #40; db/519). Every other status still ships,
-    // each with its own review-status stamp.
+    // DELIVERY IS VERIFIED-ONLY (owner-directed 2026-08-12, SUPERSEDES the
+    // 2026-08-10 #40/db/519 "ship every non-rejected line with a status stamp"
+    // rule for the investor export): only a CLEARLY VERIFIED line (is_verified =
+    // true, i.e. verification_status='verified' — the same definition the tier /
+    // experience math uses) goes to the TPR export and to SharePoint. A line still
+    // pending review, or not verified for any reason, stays in PILOT + the backup
+    // only and never appears on the delivered Excel or PDF. (is_verified = true
+    // already excludes rejected, so the old <> 'rejected' guard is subsumed.) The
+    // on-screen / internal track record still shows every line.
     `SELECT id, borrower_id, property_address, deal_type, purchase_price, sale_price, rehab_amount,
             purchase_date, sale_date, rent_amount, rent_date, refi_amount, refi_date, current_value,
             is_verified, verified_at, verification_status, entered_by_kind, notes
        FROM track_records
       WHERE borrower_id = ANY($1::uuid[])
-        AND COALESCE(verification_status, '') <> 'rejected'
+        AND is_verified = true
       ORDER BY COALESCE(sale_date, refi_date, rent_date, purchase_date) DESC NULLS LAST, created_at DESC`,
     [borrowerIds])).rows;
 
