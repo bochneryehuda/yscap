@@ -100,6 +100,26 @@ console.log('\n--- 2xx body that still says {ok:false} (defensive path) ---');
   ok(r.code === 'nope' && r.reason === 'soft failure' && r.missing[0] === 'a', 'reads straight off the out body');
 }
 
+console.log('\n--- Class 502: a MESSAGE / revision send failure (same shape as an order) ---');
+{
+  // src/class/messages.js sendFailure(): a failed note/revision/cancel is handed back
+  // as { ok:false, error, id, detail, vendor, message } and answered as a 502 — so the
+  // screen shows the reason + code + what Class reported EXACTLY like a failed order,
+  // never a bare "request_failed" (owner-directed: "not in the dark").
+  const e = thrown(502, {
+    ok: false, error: 'request_failed', id: 42,
+    detail: 'Class updateOrder failed: HTTP 400',
+    vendor: { errors: { '$.reasons': ['At least one valid reason is required.'] } },
+    message: 'Class updateOrder failed: HTTP 400',
+  });
+  const r = parseOrderFailure(e, null);
+  ok(r.code === 'request_failed', 'the message-failure code rides through, not a bare fallback');
+  ok(r.httpStatus === 502, 'the route status is shown');
+  ok(r.reason === 'Class updateOrder failed: HTTP 400', 'the plain reason reads off detail/message, never the code');
+  ok(r.vendor && r.vendor.errors, 'the vendor body rides through so the raw expander has it');
+  ok(/reason is required/i.test(vendorSummary(r.vendor)), "and Class's own words are recovered from it");
+}
+
 console.log('\n--- vendorSummary: every shape ---');
 ok(vendorSummary({ error: 'boom' }) === 'boom', 'envelope error');
 ok(vendorSummary({ message: 'nope' }) === 'nope', 'envelope message');

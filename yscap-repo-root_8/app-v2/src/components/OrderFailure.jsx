@@ -37,8 +37,13 @@ function Box({ children }) {
 
 // `info` is either a plain string (a load/other error) or the object from
 // parseOrderFailure(). `vendor` is the desk's own name, shown so a person always
-// knows which desk this failure is about.
-export default function OrderFailure({ info, vendor }) {
+// knows which desk this failure is about. `action` is the verb phrase in the
+// headline — it defaults to placing an order, and the same component is reused for a
+// failed message/revision/cancellation, which read "could not send that message"
+// etc. Everything BELOW the headline (code, status, what their system reported, the
+// full-technical-details expander) is identical, which is the whole point: a send
+// failure is shown the EXACT same way a placement failure is.
+export default function OrderFailure({ info, vendor, action = 'place this order' }) {
   const [showRaw, setShowRaw] = useState(false);
   if (!info) return null;
 
@@ -57,7 +62,7 @@ export default function OrderFailure({ info, vendor }) {
   return (
     <Box>
       <div style={{ fontWeight: 700, color: BAD_HEAD, marginBottom: reason || missing ? 4 : 0 }}>
-        {vendor ? `${vendor} could not place this order.` : 'Could not place this order.'}
+        {vendor ? `${vendor} could not ${action}.` : `Could not ${action}.`}
       </div>
 
       {reason ? <div style={{ color: INK, marginBottom: 4 }}>{reason}</div> : null}
