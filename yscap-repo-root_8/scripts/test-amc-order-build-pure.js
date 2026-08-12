@@ -64,6 +64,39 @@ const ctx = {
   ok(ob.missingRequired(spec).length === 0, 'complete spec has nothing missing');
 }
 
+// ---- primary contact + purchase amount (AppraisalScope requireds) ----
+{
+  const spec = ob.buildOrderSpec(ctx, { productCode: '5' });
+  ok(spec.primaryContact && spec.primaryContact.fullName === 'Peter Parker', 'primary contact resolves to the borrower');
+  ok(spec.primaryContact.phone === '555-1' && spec.primaryContact.email === 'p@x.com', 'primary contact carries a phone + email');
+  ok(ob.missingRequired(spec).length === 0, 'complete spec (value + reachable contact) is not missing anything');
+
+  // Co-Borrower best-contact resolves to the secondary borrower (who is reachable here,
+  // so the reachable-fallback below does not fire).
+  const co = ob.buildOrderSpec(
+    { ...ctx, borrowers: [ctx.borrowers[0], { ...ctx.borrowers[1], cellPhone: '555-5' }] },
+    { productCode: '5' }, { bestContact: 'Co-Borrower' });
+  ok(co.primaryContact.fullName === 'Mary Jane', 'best-contact Co-Borrower resolves to the secondary borrower');
+  ok(co.primaryContact.phone === '555-5', 'and carries the co-borrower’s own reach');
+
+  // No property value (a refinance with nothing on file, or a blank price) → flagged.
+  const noVal = ob.buildOrderSpec({ ...ctx, property: { ...ctx.property, salesContractAmount: null } }, { productCode: '5' });
+  ok(ob.missingRequired(noVal).includes('purchase price or property value'), 'a missing purchase/property value is flagged, not sent');
+
+  // A main contact with no phone AND no email → the vendor cannot build primary_contact.
+  const noReach = ob.buildOrderSpec({ ...ctx, borrowers: [{ firstName: 'A', lastName: 'B' }] }, { productCode: '5' });
+  ok(ob.missingRequired(noReach).includes('a phone or email for the main contact'), 'an unreachable main contact is flagged, not sent');
+
+  // If the DEFAULT contact has no reach but another borrower does, the reachable one is
+  // used — the order is not blocked when someone on the file can be reached.
+  const fallback = ob.buildOrderSpec({ ...ctx, borrowers: [
+    { classification: 'Primary', firstName: 'No', lastName: 'Reach' },
+    { classification: 'Secondary', firstName: 'Reach', lastName: 'Able', cellPhone: '555-9' },
+  ] }, { productCode: '5' });
+  ok(fallback.primaryContact.phone === '555-9', 'the reachable borrower is used when the default contact has no phone/email');
+  ok(!ob.missingRequired(fallback).includes('a phone or email for the main contact'), 'a reachable co-borrower keeps the order placeable');
+}
+
 // ---- overrides ----
 {
   const spec = ob.buildOrderSpec(ctx, { productCode: '5' }, { productCode: '9', mortgageType: 'Other', bestContact: 'Owner', rush: true, needByDate: '2026-10-01', requestComment: 'please rush' });

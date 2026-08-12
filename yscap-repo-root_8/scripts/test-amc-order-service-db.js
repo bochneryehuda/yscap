@@ -132,13 +132,16 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     const list = await orderService.listOrders(c, appId);
     ok(list.length === 1 && list[0].id === draft.order.id, 'listOrders returns the draft');
 
-    // ---- a refinance file must NOT carry a sales-contract amount ----
+    // ---- a refinance file carries a PROPERTY VALUE (AppraisalScope requires an amount).
+    //      There is no purchase, so it uses the AS-IS VALUE (deal-basis rule) — never the
+    //      purchase price. as_is_value (320k) differs from purchase_price (250k) so the
+    //      assertion proves the as-is value wins. ----
     const refi = await c.query(
-      `INSERT INTO applications (borrower_id, ys_loan_number, program, loan_type, property_address, property_type, purchase_price, loan_amount)
-       VALUES ($1,'YSCAP-AMC-2','bridge','Refi Cash-Out','{"street":"9 Elm St","city":"Queens","state":"NY","zip":"11375"}','SFR',250000,200000)
+      `INSERT INTO applications (borrower_id, ys_loan_number, program, loan_type, property_address, property_type, purchase_price, as_is_value, loan_amount)
+       VALUES ($1,'YSCAP-AMC-2','bridge','Refi Cash-Out','{"street":"9 Elm St","city":"Queens","state":"NY","zip":"11375"}','SFR',250000,320000,200000)
        RETURNING id`, [borrowerId]);
     const rctx = await orderService.loadContext(c, refi.rows[0].id);
-    ok(rctx.property.salesContractAmount == null, 'refinance carries no sales-contract amount');
+    ok(rctx.property.salesContractAmount === 320000, 'refinance carries the AS-IS value as the property amount (never the purchase price)');
     ok(rctx.loanPurpose === 'Refi Cash-Out', 'refinance loan purpose carried through');
 
     // ---- environment fallback (the shipped seed is production-only; a service whose

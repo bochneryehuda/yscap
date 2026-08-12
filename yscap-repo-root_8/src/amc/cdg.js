@@ -139,8 +139,23 @@ function buildCreateAppraisal(spec, ctx) {
   if (p.loanProcessorId != null) parties.push({ partyRoleType: 'LoanProcessor', partyRoleTypeIdentifier: String(p.loanProcessorId) });
   if (p.investorId != null) parties.push({ partyRoleType: 'Investor', partyRoleTypeIdentifier: String(p.investorId) });
   // Best-person-to-contact is REQUIRED (enum Borrower | Co-Borrower | Owner | Agent | …).
-  // The exact leaf is not pinned in the vendor mapping — verify against UAT.
-  if (p.bestContact) parties.push({ partyRoleType: 'BestContact', partyRoleTypeIdentifier: p.bestContact });
+  // AppraisalScope maps this to its required `primary_contact`, and a role TOKEN alone is
+  // not a contact — so carry the actual person's name + phone + email (resolved by
+  // order-build.resolvePrimaryContact). The exact leaf names verify against UAT.
+  if (p.bestContact) {
+    const party = { partyRoleType: 'BestContact', partyRoleTypeIdentifier: p.bestContact };
+    const pc = spec.primaryContact || {};
+    if (pc.fullName) party.fullName = pc.fullName;
+    if (pc.firstName) party.firstName = pc.firstName;
+    if (pc.lastName) party.lastName = pc.lastName;
+    if (pc.phone || pc.email) {
+      const c = { contactType: 'Primary' };
+      if (pc.email) c.contactEmail = pc.email;
+      if (pc.phone) c.contactPhone = pc.phone;
+      party.contacts = [c];
+    }
+    parties.push(party);
+  }
   if (parties.length) deal.parties = parties;
 
   const message = {

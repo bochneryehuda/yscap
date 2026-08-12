@@ -163,6 +163,16 @@ async function requestRevision(orderRowId, { kind = 'revision', reasons: raw, no
   const { order, error, message } = await loadOrder(null, orderRowId);
   if (error) return { ok: false, error, message };
 
+  // Class only accepts a fix or a value dispute once the report is IN. An order that is
+  // not Completed is rejected by them ("The order … must be in Completed status"), so
+  // refuse it HERE, plainly, before the vendor does — the screen greys the button and
+  // this is the server backstop. (A CANCEL is different: an unfinished order can be
+  // cancelled, so requestCancel deliberately does NOT gate on this.)
+  if (order.status !== 'completed') {
+    return { ok: false, error: 'not_ready', notReady: true,
+      message: 'The appraisal isn’t back yet, so Class can’t take a fix request. You can ask for a fix once the report is in.' };
+  }
+
   // Recorded as an ROV whenever the reasons say so, even if the screen called it an
   // ordinary revision — "did we dispute the value on this file?" must not depend on
   // which button somebody happened to press.
