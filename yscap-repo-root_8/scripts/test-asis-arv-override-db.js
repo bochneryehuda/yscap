@@ -115,6 +115,59 @@ const appAsIsArv = async (appId) => (await db.query(`SELECT as_is_value, arv FRO
     assert((await regStale(c.appId)).stale === true, 'control: the plain write marks the registration stale');
   }
 
+  /* ── TRIPWIRE: apply()'s capture set stays in lock-step with what the db/486 trigger
+     reopens on an as-is/ARV-only write. apply() hardcodes { product_pricing,
+     rtl_cond_signedts } as the rows to restore. If a future migration widens the trigger
+     to reopen ANOTHER condition on an as-is/arv change (e.g. drops the loan_amount gate on
+     the Heter Iska, or adds a new one), a neutral override would then SILENTLY leave that
+     condition reopened — the re-assert would not know to restore it. This asserts the two
+     never drift: the ONLY conditions the trigger reopens here are the ones apply() captures.
+     If it fires, extend apply()'s capture query in src/lib/asis-arv-override.js to match. ── */
+  {
+    const t = await mkRegisteredFrozen();
+    // Add two MORE cleared conditions the trigger must NOT reopen on an as-is/arv-only
+    // change: the Heter Iska (loan_amount-gated, db/280/486 line 247 — THE condition the
+    // audit flagged, since Theme B's Iska work sits next to this branch) and a generic
+    // unrelated condition (proves the trigger is selective). The Scope of Work is
+    // deliberately NOT added here — it is gated on a wholly separate `scope_changed`
+    // branch and the db/069 budget guard refuses a satisfied SOW without a real total.
+    const iskaTpl = (await db.query(`SELECT id FROM checklist_templates WHERE code='rtl_cond_iska'`)).rows[0];
+    await db.query(
+      `INSERT INTO checklist_items (application_id, template_id, scope, label, item_kind, status, signed_off_at, signed_off_by)
+       VALUES ($1,$2,'application','Heter Iska','document','satisfied',now(),$3)`,
+      [t.appId, iskaTpl ? iskaTpl.id : null, t.staffId]);
+    await db.query(
+      `INSERT INTO checklist_items (application_id, scope, label, tool_key, item_kind, status, signed_off_at, signed_off_by)
+       VALUES ($1,'application','Some other condition','info_field','condition','satisfied',now(),$2)`,
+      [t.appId, t.staffId]);
+
+    // Snapshot every cleared condition, do a PLAIN as-is/arv write (bypassing apply()'s
+    // re-assert), then read which of them the trigger reopened.
+    const before = (await db.query(
+      `SELECT id FROM checklist_items WHERE application_id=$1 AND status='satisfied' AND signed_off_at IS NOT NULL`,
+      [t.appId])).rows.map((r) => r.id);
+    await db.query(`UPDATE applications SET as_is_value=250000, arv=600000 WHERE id=$1`, [t.appId]);
+    const reopened = (await db.query(
+      `SELECT ci.tool_key, (SELECT code FROM checklist_templates ct WHERE ct.id=ci.template_id) AS code
+         FROM checklist_items ci
+        WHERE application_id=$1 AND id = ANY($2::uuid[])
+          AND NOT (status='satisfied' AND signed_off_at IS NOT NULL)`,
+      [t.appId, before])).rows;
+
+    // apply()'s capture predicate — the rows it restores after the write (kept in sync
+    // with the SELECT in src/lib/asis-arv-override.js apply()).
+    const captured = (r) => r.tool_key === 'product_pricing' || r.code === 'rtl_cond_signedts';
+    const stray = reopened.filter((r) => !captured(r)).map((r) => r.tool_key || r.code || '?');
+    assert(stray.length === 0,
+      `TRIPWIRE: on an as-is/arv-only write the db/486 trigger reopens ONLY apply()'s capture set — ` +
+      `a stray reopen means the trigger widened and apply() in asis-arv-override.js must capture+restore it too ` +
+      `(strays: ${stray.join(', ') || 'none'})`);
+    assert(reopened.some((r) => r.tool_key === 'product_pricing') && reopened.some((r) => r.code === 'rtl_cond_signedts'),
+      'TRIPWIRE: both captured conditions (product_pricing + signed-term-sheet) DID reopen — the trigger fired');
+    assert(reopened.length === 2,
+      `TRIPWIRE: exactly TWO conditions reopened — the Heter Iska and generic condition stayed signed off (got ${reopened.length})`);
+  }
+
   /* ── the OVERRIDE: super_admin + neutral → APPLIES and keeps the term sheet valid ── */
   {
     const t = await mkRegisteredFrozen();
@@ -122,7 +175,7 @@ const appAsIsArv = async (appId) => (await db.query(`SELECT as_is_value, arv FRO
     const decision = await asisArv.evaluate({ appId: t.appId, body, actor: superA });
     assert(decision.status === 'apply', `neutral super_admin override → evaluate says apply (got ${decision.status}: ${decision.message || ''})`);
     if (decision.status === 'apply') {
-      await asisArv.apply({ appId: t.appId, values: decision.values });
+      await asisArv.apply({ appId: t.appId, changes: decision.changes });
       const v = await appAsIsArv(t.appId);
       assert(Number(v.as_is_value) === 250000 && Number(v.arv) === 600000, 'the override wrote the new as-is + ARV');
       const pp = await ppState(t.appId);

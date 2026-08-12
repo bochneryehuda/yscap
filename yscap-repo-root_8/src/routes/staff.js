@@ -12174,9 +12174,9 @@ router.patch('/applications/:id/details', async (req, res) => {
     if (ov.status === 'refused') return res.status(ov.code).json({ error: ov.message, locked: ov.code === 409 || undefined });
     if (ov.status === 'apply') {
       try {
-        const result = await asisArv.apply({ appId: req.params.id, values: ov.values });
+        const result = await asisArv.apply({ appId: req.params.id, changes: ov.changes });
         await audit(req, 'asis_arv_override', 'application', req.params.id,
-          { values: ov.values, reason: ov.reason, changed: result.changed });
+          { changes: ov.changes, reason: ov.reason, changed: result.changed });
         // Let the Condition Center re-check its RULE-driven conditions (it never touches
         // the pricing / signed-term-sheet conditions the re-assert just preserved).
         try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'asis_arv_override' }); }

@@ -63,7 +63,7 @@ function numOrNull(v) {
  * unreadable registration/quote, a re-price that throws, or a re-price that does not
  * reproduce the stored quote (the sanity gate) → { neutral: false }.
  */
-async function computeNeutral(appId, proposed, client = db) {
+async function computeNeutral(appId, changes, client = db) {
   const reg = (await client.query(
     `SELECT program, quote, inputs FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`,
     [appId])).rows[0];
@@ -86,8 +86,12 @@ async function computeNeutral(appId, proposed, client = db) {
     // registration used TPO firm/channel settings, or a company default changed since,
     // this will NOT reproduce the stored quote and the sanity gate below refuses.
     oldQuote = pricing.quoteProgram(reg.program, storedInputs);
-    const patched = { ...storedInputs, asIsValue: proposed.asIsValue, arv: proposed.arv };
-    if (refi) patched.purchasePrice = proposed.asIsValue;
+    // Patch ONLY the fields the caller is actually changing — a field left untouched keeps
+    // the stored input verbatim, so an arv-only override never disturbs the as-is side (and
+    // never fabricates a value for a NULL as-is column).
+    const patched = { ...storedInputs };
+    if ('asIsValue' in changes) { patched.asIsValue = changes.asIsValue; if (refi) patched.purchasePrice = changes.asIsValue; }
+    if ('arv' in changes) patched.arv = changes.arv;
     newQuote = pricing.quoteProgram(reg.program, patched);
   } catch (_) {
     return { neutral: false, reason: 'reprice_failed' };
@@ -106,7 +110,10 @@ async function computeNeutral(appId, proposed, client = db) {
  * Returns one of:
  *   { status: 'refused', code, message }
  *   { status: 'not_needed' }                    // the file is not term-sheet-frozen → normal path
- *   { status: 'apply', values: {asIsValue, arv}, reason }
+ *   { status: 'apply', changes: {asIsValue?, arv?}, reason }
+ *
+ * `changes` carries ONLY the fields the request actually sent — an arv-only override never
+ * writes (nor fabricates) a value for the as-is column, and vice versa.
  */
 async function evaluate({ appId, body, actor }) {
   if (!(actor && actor.kind === 'staff' && actor.role === 'super_admin')) {
@@ -118,24 +125,32 @@ async function evaluate({ appId, body, actor }) {
   const reason = String(body.overrideReason || '').trim();
   if (!reason) return { status: 'refused', code: 400, message: 'Enter a short reason for the override before saving.' };
 
+  // Confirm the application exists (it is also the target of the write).
   const cur = (await db.query(`SELECT as_is_value, arv FROM applications WHERE id=$1`, [appId])).rows[0];
   if (!cur) return { status: 'refused', code: 404, message: 'application not found' };
 
-  // The FINAL as-is/ARV the file would carry: the new value where given, else current.
-  const asIs = ('asIsValue' in body) ? numOrNull(body.asIsValue) : Number(cur.as_is_value);
-  const arv = ('arv' in body) ? numOrNull(body.arv) : Number(cur.arv);
-  if (('asIsValue' in body) && Number.isNaN(asIs)) return { status: 'refused', code: 400, message: 'asIsValue must be a number' };
-  if (('arv' in body) && Number.isNaN(arv)) return { status: 'refused', code: 400, message: 'arv must be a number' };
-  // Bound each supplied value to its column (a fat-fingered paste is a 400, not a 500).
-  if (('asIsValue' in body) && asIs != null) {
-    const bad = numberBounds.applicationColumnProblem('as_is_value', asIs);
-    if (bad) return { status: 'refused', code: 400, message: bad };
+  // Build the change set from ONLY the fields the request sent. A field left out is never
+  // written — so an arv-only override leaves the as-is column exactly as it is (including a
+  // NULL as-is, which the old "read current, coalesce" shape would have written as 0).
+  const changes = {};
+  if ('asIsValue' in body) {
+    const n = numOrNull(body.asIsValue);
+    if (Number.isNaN(n)) return { status: 'refused', code: 400, message: 'asIsValue must be a number' };
+    if (n != null) {
+      const bad = numberBounds.applicationColumnProblem('as_is_value', n);
+      if (bad) return { status: 'refused', code: 400, message: bad };
+    }
+    changes.asIsValue = n;
   }
-  if (('arv' in body) && arv != null) {
-    const bad = numberBounds.applicationColumnProblem('arv', arv);
-    if (bad) return { status: 'refused', code: 400, message: bad };
+  if ('arv' in body) {
+    const n = numOrNull(body.arv);
+    if (Number.isNaN(n)) return { status: 'refused', code: 400, message: 'arv must be a number' };
+    if (n != null) {
+      const bad = numberBounds.applicationColumnProblem('arv', n);
+      if (bad) return { status: 'refused', code: 400, message: bad };
+    }
+    changes.arv = n;
   }
-  const values = { asIsValue: asIs != null && Number.isFinite(asIs) ? asIs : null, arv: arv != null && Number.isFinite(arv) ? arv : null };
 
   // Read the freeze once. A STATUS freeze (CTC/funded/…) is never lifted by this override
   // — the recorded way through those is a super-admin UNLOCK.
@@ -147,7 +162,7 @@ async function evaluate({ appId, body, actor }) {
   if (!tsReason) return { status: 'not_needed' };   // not term-sheet-frozen → ordinary save
 
   // Term-sheet-frozen: the override applies ONLY when the change is terms-neutral.
-  const neut = await computeNeutral(appId, values, db);
+  const neut = await computeNeutral(appId, changes, db);
   if (!neut.neutral) {
     return {
       status: 'refused', code: 409,
@@ -158,15 +173,33 @@ async function evaluate({ appId, body, actor }) {
   const block = fileLock.asIsArvTermSheetOverride(row, true, { actor, overrideRequested: true });
   if (block) return { status: 'refused', code: 409, message: block };
 
-  return { status: 'apply', values, reason };
+  return { status: 'apply', changes, reason };
 }
+
+// Map a `changes` key to its applications column. The ONLY writable targets — anything
+// else in `changes` is ignored (evaluate has already proved the request touched only these).
+const COLUMN_OF = { asIsValue: 'as_is_value', arv: 'arv' };
 
 /**
  * Apply a neutral as-is/ARV override in ONE transaction, keeping the sent term sheet valid:
- * capture the exact rows the db/486 trigger reopens, write as_is/arv, then RE-ASSERT those
- * rows to their captured before-state. Returns { before, changed }.
+ * capture the exact rows the db/486 trigger reopens, write ONLY the changed columns, then
+ * RE-ASSERT those rows to their captured before-state. `changes` carries only the fields the
+ * request sent (an arv-only override never touches as_is_value). Returns { before, changed }.
+ *
+ * NOTE: this trusts `evaluate` — it does NOT re-run the super-admin / neutrality / freeze
+ * gates. Never call apply() on a `changes` set that did not come from a `status:'apply'`
+ * evaluate() on the same request.
  */
-async function apply({ appId, values }) {
+async function apply({ appId, changes }) {
+  // Build the dynamic SET from the changed columns only. A field left out of `changes` is
+  // never written — the whole point of the changes-shape.
+  const sets = [];
+  const params = [];
+  for (const key of Object.keys(COLUMN_OF)) {
+    if (key in (changes || {})) { params.push(changes[key]); sets.push(`${COLUMN_OF[key]} = $${params.length}`); }
+  }
+  if (!sets.length) { const e = new Error('nothing to change'); e.notFound = true; throw e; }
+
   const client = await db.getClient();
   try {
     await client.query('BEGIN');
@@ -184,9 +217,10 @@ async function apply({ appId, values }) {
       [appId])).rows[0] || null;
     const beforeRow = (await client.query(`SELECT as_is_value, arv FROM applications WHERE id = $1`, [appId])).rows[0] || {};
 
+    params.push(appId);
     const upd = await client.query(
-      `UPDATE applications SET as_is_value = $1, arv = $2, updated_at = now() WHERE id = $3`,
-      [values.asIsValue, values.arv, appId]);
+      `UPDATE applications SET ${sets.join(', ')}, updated_at = now() WHERE id = $${params.length}`,
+      params);
     if (upd.rowCount === 0) { await client.query('ROLLBACK'); const e = new Error('application not found'); e.notFound = true; throw e; }
 
     // RE-ASSERT — restore the exact rows the trigger just reopened, so a neutral change
@@ -204,13 +238,12 @@ async function apply({ appId, values }) {
         [appId, reg.stale, reg.stale_reason]);
     }
     await client.query('COMMIT');
-    return {
-      before: { as_is_value: beforeRow.as_is_value, arv: beforeRow.arv },
-      changed: {
-        as_is_value: { from: beforeRow.as_is_value, to: values.asIsValue },
-        arv: { from: beforeRow.arv, to: values.arv },
-      },
-    };
+    // Report only the columns actually written (from → to), so the audit trail reflects the
+    // real change and never invents a from/to for a column the override left alone.
+    const changed = {};
+    if ('asIsValue' in changes) changed.as_is_value = { from: beforeRow.as_is_value, to: changes.asIsValue };
+    if ('arv' in changes) changed.arv = { from: beforeRow.arv, to: changes.arv };
+    return { before: { as_is_value: beforeRow.as_is_value, arv: beforeRow.arv }, changed };
   } catch (e) {
     try { await client.query('ROLLBACK'); } catch (_) { /* already rolled back */ }
     throw e;
