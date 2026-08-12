@@ -92,6 +92,7 @@ for (const [key, patch] of [
   ['property.city', { property: { ...BASE.property, city: '' } }],
   ['property.state', { property: { ...BASE.property, state: '' } }],
   ['property.zip', { property: { ...BASE.property, postalCode: '' } }],
+  ['property.county', { property: { ...BASE.property, county: '' } }],
   ['referenceNumber', { referenceNumber: '' }],
   ['productId', { productId: null }],
   ['contacts.Borrower', { borrower: null }],
@@ -108,6 +109,22 @@ ok(ovr.overridden.includes('propertyTypeEnum') && ovr.overridden.includes('purpo
    'and both are listed as overridden so the preview can show it');
 const fixed = ob.buildOrder({ ...BASE, property: { ...BASE.property, category: 'houseboat' } }, { propertyTypeEnum: 'Other' });
 ok(fixed.canPlace === true, 'an override rescues an otherwise unplaceable order');
+
+// ---------------------------------------------------------------------------
+// Class REQUIRES a county ("The County field is required" — the owner's live 400).
+// The county is not part of a mailing address, so the file often lacks one; the body
+// carries whatever is on the file, and a staffer can type/correct it on the screen.
+console.log('\n--- the county Class requires rides in the body, and is overridable ---');
+ok(r.body.property.county === 'Luzerne', 'the county on file rides in the body Class needs');
+const noCounty = ob.buildOrder({ ...BASE, property: { ...BASE.property, county: '' } });
+ok(noCounty.canPlace === false && noCounty.body.property.county === null,
+   'a blank county blocks the order rather than sending null for Class to 400');
+ok(noCounty.missing.some((m) => m.field === 'property.county' && /county/i.test(m.why)),
+   'and the refusal names the county so it is actionable on the screen');
+const cOvr = ob.buildOrder({ ...BASE, property: { ...BASE.property, county: '' } }, { county: 'Kings County' });
+ok(cOvr.body.property.county === 'Kings County' && cOvr.canPlace === true,
+   'a county typed on the screen fills the field and unblocks the order');
+ok(cOvr.overridden.includes('county'), 'and is recorded as overridden so the preview shows it');
 
 // ---------------------------------------------------------------------------
 // Class's notification list accepts EXACTLY ONE item, of type BorrowerInfo —

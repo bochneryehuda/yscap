@@ -444,6 +444,13 @@ function buildOrder(ctx = {}, overrides = {}, opts = {}) {
   for (const [k, v] of [['street', street], ['city', city], ['state', state], ['zip', zip]]) {
     if (!v) missing.push({ field: `property.${k}`, why: 'Class requires the full subject address' });
   }
+  // Class rejects an order with NO county ("The County field is required"), and the
+  // county is NOT part of a mailing one-line, so a file often does not carry one —
+  // order-service derives it from the address (a stated assumption). If it still
+  // could not be resolved, block here with the exact reason rather than let Class
+  // 400 the whole order. `pick` so a staffer can type it on the order screen.
+  const county = pick('county', text(p.county));
+  if (!county) missing.push({ field: 'property.county', why: 'Class requires the property county — add it on the order screen' });
 
   // ---- contacts ------------------------------------------------------------
   const contacts = [
@@ -482,7 +489,7 @@ function buildOrder(ctx = {}, overrides = {}, opts = {}) {
       street,
       line2: text(p.addressLine2),
       city, state, zip,
-      county: text(p.county),
+      county,
       taxId: text(p.taxId),
     },
     contacts,

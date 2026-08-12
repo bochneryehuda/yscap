@@ -46,7 +46,7 @@ async function canSeeFile(req, appId) {
 const OVERRIDE_KEYS = new Set([
   'apiVersion',
   'productId', 'propertyTypeEnum', 'purpose', 'loanType', 'occupancy',
-  'referenceNumber', 'street', 'city', 'state', 'zip', 'dueDate', 'instructions',
+  'referenceNumber', 'street', 'city', 'state', 'zip', 'county', 'dueDate', 'instructions',
 ]);
 // Their registration reply is documented as a list of event names, but the shape is
 // not guaranteed. Concatenating an OBJECT would append it as one element and write
