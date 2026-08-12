@@ -71,6 +71,42 @@ function borrowerCtx(row, i) {
   };
 }
 
+// The "Client Displayed on Report" (CDOR) — AppraisalScope's REQUIRED client_displayed_id.
+// It is the client/lender alias AppraisalScope prints ON the appraisal report, chosen from
+// the tenant's own GetClientDisplayOnReport list. The gateway derives its snake_case
+// client_displayed_id from a deal party partyRoleType="Lender" (the "Lender Alias (dba)"),
+// so cdg.js emits that party; here we resolve WHICH id to send:
+//   1. AMC_CLIENT_DISPLAYED_ID (config) — an explicit choice always wins.
+//   2. else the cached GetClientDisplayOnReport list: exactly ONE entry → auto-use it
+//      (the common case — most tenants have a single client-on-report profile).
+//   3. several entries and no config override → don't guess (the wrong alias would print
+//      the wrong company on the report). Leave it unresolved so missingRequired blocks the
+//      order with a plain reason instead of sending an order NAN rejects.
+// Best-effort + read-only: any cache miss / query error resolves to 'none' (blocked), never
+// throws, so building a draft/preview never fails on the CDOR lookup.
+async function resolveClientDisplayed(db, subdomain) {
+  const configured = (cfg.amc && cfg.amc.clientDisplayedId) || null;
+  if (configured) return { id: String(configured), name: null, source: 'config', options: [] };
+  let rows = [];
+  try { rows = await lookups.list(db, 'GetClientDisplayOnReport', subdomain || ''); } catch (_) { rows = []; }
+  if (!rows.length) {
+    // The seed/cache may live under a different subdomain than the live tenant — take the
+    // freshest cached list under ANY subdomain (mirrors formsCatalog's fallback).
+    try {
+      const r = await db.query(
+        `SELECT payload FROM amc_lookup_cache WHERE lookup_type = 'GetClientDisplayOnReport'
+          ORDER BY fetched_at DESC LIMIT 1`);
+      if (r.rows[0] && Array.isArray(r.rows[0].payload)) rows = r.rows[0].payload;
+    } catch (_) { /* none cached yet */ }
+  }
+  const opts = (Array.isArray(rows) ? rows : [])
+    .map((x) => ({ id: x && x.id != null ? String(x.id) : null, name: (x && x.name) || null }))
+    .filter((x) => x.id);
+  if (opts.length === 1) return { id: opts[0].id, name: opts[0].name, source: 'catalog', options: opts };
+  if (opts.length > 1) return { id: null, name: null, source: 'multiple', options: opts };
+  return { id: null, name: null, source: 'none', options: [] };
+}
+
 async function loadContext(db, appId) {
   const r = await db.query(
     `SELECT a.id, a.ys_loan_number, a.program, a.loan_type, a.property_address,
@@ -118,6 +154,9 @@ async function loadContext(db, appId) {
   addEmail(a.pr_email);
   for (const b of borrowers) addEmail(b.email);
 
+  // The client shown on the appraisal report (AppraisalScope's REQUIRED client_displayed_id).
+  const cdor = await resolveClientDisplayed(db, cfg.amc && cfg.amc.subdomain);
+
   return {
     appId: a.id,
     loanNumber: a.ys_loan_number || null,
@@ -135,6 +174,13 @@ async function loadContext(db, appId) {
     // The note buyer is STAFF-ONLY and never reaches the AMC message; carried only so
     // a form-selection rule could key on it in the future.
     noteBuyer: a.lender || null,
+    // AppraisalScope's REQUIRED client_displayed_id — the client-on-report profile. See
+    // resolveClientDisplayed: config override, else the account's single profile, else null
+    // (blocked). buildOrderSpec reads clientDisplayedId; orderAssumptions shows the name.
+    clientDisplayedId: cdor.id,
+    clientDisplayedName: cdor.name,
+    clientDisplayedSource: cdor.source,
+    clientDisplayedOptions: cdor.options,
     property: {
       category: a.property_type || null,
       addressLine: pa.addressLine,
@@ -154,6 +200,13 @@ async function loadContext(db, appId) {
         : (a.as_is_value != null ? Number(a.as_is_value)
           : a.arv != null ? Number(a.arv)
           : a.loan_amount != null ? Number(a.loan_amount) : null),
+      // AppraisalScope's REQUIRED `purchase_amount` maps SPECIFICALLY from the CDG
+      // `purchasePriceAmount` (mapping row 39: "Required when Intended Use is Purchase"),
+      // NOT from salesContractAmount — sending only salesContractAmount is exactly why
+      // the gateway kept rejecting the order for a missing purchase_amount. So carry the
+      // real purchase price here (purchase deals only; a refinance has no purchase, and
+      // Intended Use=Refinance makes purchase_amount not required).
+      purchasePriceAmount: isPurchase && a.purchase_price != null ? Number(a.purchase_price) : null,
     },
     borrowers,
     // Leave bestContact UNSET here: buildOrderSpec defaults it to 'Borrower' (so the sent
@@ -550,6 +603,8 @@ function orderSummary(order) {
       const c = (best.contacts && best.contacts[0]) || {};
       add('Main contact', [best.fullName, c.contactPhone, c.contactEmail].filter(Boolean).join(' · '));
     }
+    const lender = (deal.parties || []).find((p) => p.partyRoleType === 'Lender');
+    if (lender) add('Client shown on report', lender.partyRoleIdentifier);
     const emails = (((msg.products && msg.products[0]) || {}).notifications || [])
       .map((n) => n && n.contactEmail).filter(Boolean);
     if (emails.length) add('Update emails to', emails.join(', '));
@@ -587,4 +642,5 @@ module.exports = {
   createOrder, listOrders, getOrder, journal, orderSummary,
   // exported for tests
   addrParts, borrowerCtx, describeSendFailure, readGatewayBody, formsCatalog, formNameFor,
+  resolveClientDisplayed,
 };

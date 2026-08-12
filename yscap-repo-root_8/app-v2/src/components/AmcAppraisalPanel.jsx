@@ -43,13 +43,25 @@ export default function AmcAppraisalPanel({ appId }) {
   const [notice, setNotice] = useState('');
   // A staff-picked form (productCode) that overrides the auto-pick. '' = use the default.
   const [formOverride, setFormOverride] = useState('');
+  // A staff-pinned "client shown on the report" (client_displayed_id). '' = auto-select the
+  // account's single profile (the common case); only needed when the account has several.
+  const [cdorOverride, setCdorOverride] = useState('');
+
+  // The order overrides both the preview (GET) and the place (POST) send.
+  const overrideParams = useCallback(() => {
+    const o = {};
+    if (formOverride) o.productCode = formOverride;
+    if (cdorOverride) o.clientDisplayedId = cdorOverride;
+    return o;
+  }, [formOverride, cdorOverride]);
 
   const load = useCallback(async () => {
     setErr(''); setLoading(true);
     try {
+      const params = overrideParams();
       const [cfg, pv, od] = await Promise.all([
         api.amcConfig().catch(() => null),
-        api.amcPreview(appId, formOverride ? { productCode: formOverride } : undefined).catch(() => null),
+        api.amcPreview(appId, Object.keys(params).length ? params : undefined).catch(() => null),
         api.amcOrders(appId).catch(() => ({ orders: [] })),
       ]);
       setConfig(cfg && cfg.amc ? cfg.amc : null);
@@ -57,14 +69,14 @@ export default function AmcAppraisalPanel({ appId }) {
       setOrders((od && od.orders) || []);
     } catch (e) { setErr(e.message || 'Could not load appraisal ordering.'); }
     setLoading(false);
-  }, [appId, formOverride]);
+  }, [appId, overrideParams]);
 
   useEffect(() => { load(); }, [load]);
 
   const place = useCallback(async (doPlace) => {
     setBusy(true); setNotice(''); setErr('');
     try {
-      const out = await api.amcPlaceOrder(appId, { place: doPlace, ...(formOverride ? { productCode: formOverride } : {}) });
+      const out = await api.amcPlaceOrder(appId, { place: doPlace, ...overrideParams() });
       if (!out.ok) {
         // A 2xx that still says {ok:false} — surface the full reason, not the bare code.
         setErr(parseOrderFailure(null, out));
@@ -79,7 +91,7 @@ export default function AmcAppraisalPanel({ appId }) {
       setErr(parseOrderFailure(e, null));
     }
     setBusy(false);
-  }, [appId, load, formOverride]);
+  }, [appId, load, overrideParams]);
 
   if (loading) return <div style={{ color: MUTED, padding: 12 }}>Loading appraisal ordering…</div>;
 
@@ -115,7 +127,8 @@ export default function AmcAppraisalPanel({ appId }) {
         <div style={{ marginTop: 14 }}>
           <SectionTitle>Order an appraisal</SectionTitle>
           <PreviewCard preview={preview} busy={busy} onDraft={() => place(false)} onPlace={() => place(true)} outbound={config.outbound}
-            formValue={formOverride || (preview.spec && preview.spec.productCode) || ''} onPickForm={setFormOverride} />
+            formValue={formOverride || (preview.spec && preview.spec.productCode) || ''} onPickForm={setFormOverride}
+            cdorValue={cdorOverride || (preview.spec && preview.spec.clientDisplayedId) || ''} onPickCdor={setCdorOverride} />
         </div>
       ) : null}
     </div>
@@ -189,7 +202,7 @@ function CollapseSection({ title, tone, defaultOpen, children }) {
   );
 }
 
-function PreviewCard({ preview, busy, onDraft, onPlace, outbound, formValue, onPickForm }) {
+function PreviewCard({ preview, busy, onDraft, onPlace, outbound, formValue, onPickForm, cdorValue, onPickCdor }) {
   const spec = preview.spec || {};
   const missing = preview.missing || [];
   const card = preview.card || {};
@@ -200,6 +213,13 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound, formValue, onP
   const assumptions = preview.assumptions || [];
   const code = String(formValue || spec.productCode || '');
   const chosenName = preview.chosenFormName || (forms.find((f) => String(f.id) === code) || {}).name || null;
+  // The "client shown on the report" (client_displayed_id). Auto-selected when the account
+  // has one profile; a picker appears only when the account has several to choose from.
+  const ctx = preview.context || {};
+  const cdorOptions = ctx.clientDisplayedOptions || [];
+  const cdorCode = String(cdorValue || spec.clientDisplayedId || '');
+  const cdorName = (cdorOptions.find((o) => String(o.id) === cdorCode) || {}).name || ctx.clientDisplayedName || null;
+  const needsCdorPick = !cdorCode && cdorOptions.length > 1;
   return (
     <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 12 }}>
       {/* Which appraisal form — shown by NAME, and changeable (default is auto-picked). */}
@@ -221,6 +241,22 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound, formValue, onP
           <div style={{ fontSize: 12, color: MUTED, marginTop: 4 }}>The form list isn’t loaded yet — it fills in once the appraisal catalog syncs.</div>
         )}
       </div>
+
+      {/* Which client the report is issued under (client_displayed_id). A picker only when
+          the account has more than one profile; otherwise it's auto-selected silently. */}
+      {(cdorOptions.length > 1 || needsCdorPick) ? (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11, color: MUTED, textTransform: 'uppercase', letterSpacing: 0.3 }}>Client shown on the report</div>
+          {cdorName ? <div style={{ fontWeight: 600, color: INK, marginTop: 2 }}>{cdorName}{cdorCode ? <span style={{ color: MUTED, fontWeight: 400 }}> · #{cdorCode}</span> : null}</div> : null}
+          <select value={cdorCode} onChange={(e) => onPickCdor(e.target.value)}
+            style={{ marginTop: 6, maxWidth: '100%', border: `1px solid ${needsCdorPick ? '#E4B4AE' : LINE}`, borderRadius: 8, padding: '7px 8px', color: INK, background: '#fff', fontSize: 14 }}>
+            {!cdorCode ? <option value="">Choose the client shown on the report…</option> : null}
+            {cdorOptions.map((o) => (
+              <option key={o.id} value={String(o.id)}>{o.name ? (o.name + ' (#' + o.id + ')') : ('#' + o.id)}</option>
+            ))}
+          </select>
+        </div>
+      ) : null}
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
         <Field label="Loan #">{spec.clientOrderNumber || '—'}</Field>

@@ -1026,8 +1026,14 @@ module.exports = {
   // Credentials come from Render env ONLY (never source, never chat). CoreLogic/the
   // vendor provide: the OAuth client id/secret (GetToken), the DoLogin account
   // id/password, the ServiceProviderSubDomain and the DigitalGatewayLenderIdentifier
-  // (a CoreLogic reporting id / GGID). The sourceClientIdentifier is OPTIONAL — the
-  // vendor confirmed this tenant has none, and the order builder omits it when unset.
+  // (a CoreLogic reporting id / GGID). The sourceClientIdentifier (AMC_SOURCE_CLIENT_ID)
+  // is OPTIONAL — the vendor (Tony Pham, 2026-08-11) confirmed this tenant has none, and
+  // the order builder omits it when unset. It is NOT what the gateway means by
+  // `client_displayed_id`: that is the "Client Displayed on Report" (the client/lender
+  // alias printed ON the report), which comes from the tenant's own GetClientDisplayOnReport
+  // list and is emitted as a deal party partyRoleType="Lender" (see src/amc/cdg.js). The
+  // order builder auto-selects it when the account has exactly one such profile; set
+  // AMC_CLIENT_DISPLAYED_ID only to pin a specific one when the account has several.
   // Nothing talks to the AMC until AMC_ENABLED=1 and these are set.
   amc: {
     enabled:        process.env.AMC_ENABLED === '1',            // master (default OFF)
@@ -1069,7 +1075,11 @@ module.exports = {
     // ---- required message identifiers (provided by CoreLogic / the vendor) ----
     subdomain:       process.env.AMC_SUBDOMAIN || null,        // ServiceProviderSubDomain (e.g. integrations.uat)
     lenderIdentifier: process.env.AMC_LENDER_IDENTIFIER || null, // DigitalGatewayLenderIdentifier (CoreLogic reporting id)
-    sourceClientId:  process.env.AMC_SOURCE_CLIENT_ID || null, // clientSystem.sourceInformation.sourceClientIdentifier
+    sourceClientId:  process.env.AMC_SOURCE_CLIENT_ID || null, // clientSystem.sourceInformation.sourceClientIdentifier (OPTIONAL)
+    // The "Client Displayed on Report" id (AppraisalScope's REQUIRED client_displayed_id).
+    // Leave UNSET to auto-select when the account has exactly one client-on-report profile
+    // (the common case); set it to pin a specific id when the account has several.
+    clientDisplayedId: process.env.AMC_CLIENT_DISPLAYED_ID || null,
 
     // Which tenant environment the form defaults + note-buyer/processor party map are
     // read from (amc_form_map.environment / amc_party_map.environment). Ids are

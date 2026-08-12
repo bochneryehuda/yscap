@@ -43,8 +43,9 @@ function get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? o
     productCode: '76', subproductCodes: ['5', '6'], amcIdentifier: '426',
     clientOrderNumber: '1234AB', clientReferenceNumber: 'ABD-1', rush: true, needByDate: '2026-09-01',
     jobFee: 25, managementFee: 50, requestComment: 'hello', notifyEmails: ['a@b.com'],
+    clientDisplayedId: '297',
     loan: { loanNumber: '2020092901', mortgageType: 'Conventional', loanPurpose: 'Purchase', baseLoanAmount: 180000, estimatedClosingDate: '2026-09-15', lienPriority: '1st Lien Position' },
-    property: { titleCategory: 'Single Family', addressLine: '501 NE 122nd St', addressLine2: 'Suite D', city: 'Oklahoma City', state: 'OK', postalCode: '73114', county: 'Oklahoma', occupancy: 'Investment', salesContractAmount: 200000 },
+    property: { titleCategory: 'Single Family', addressLine: '501 NE 122nd St', addressLine2: 'Suite D', city: 'Oklahoma City', state: 'OK', postalCode: '73114', county: 'Oklahoma', occupancy: 'Investment', purchasePriceAmount: 150000, salesContractAmount: 200000 },
     borrowers: [{ classification: 'Primary', firstName: 'Peter', lastName: 'Parker', fullName: 'Peter Parker', contacts: [{ type: 'Home', email: 'p@x.com', phone: '123' }], residence: { addressLine: '1 A St', city: 'DC', state: 'DC', postalCode: '20013' } }],
     parties: { loanOfficerId: '429', loanProcessorId: '484', investorId: '447', bestContact: 'Borrower' },
     embeddedFiles: [{ objectURL: 'https://g/getdocument/1', objectName: 'c.pdf', documentType: 'Sales Contract', documentEffectiveDate: '2026-03-14' }],
@@ -70,27 +71,62 @@ function get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? o
   ok(deal.properties[0].titleCategoryType === 'Single Family', 'create property title category');
   ok(deal.properties[0].address.addressLine === '501 NE 122nd St' && deal.properties[0].address.stateCode === 'OK' && deal.properties[0].address.postalCode === '73114', 'create property address');
   ok(deal.properties[0].salesContractAmount === '200000.00', 'create sales contract amount');
+  // AppraisalScope's REQUIRED `purchase_amount` maps from purchasePriceAmount (distinct
+  // from salesContractAmount, exactly as the vendor's own createappraisal sample carries
+  // both). Emitting only salesContractAmount was why the order was rejected for a missing
+  // purchase_amount.
+  ok(deal.properties[0].purchasePriceAmount === '150000.00', 'create purchase price amount (purchase_amount)');
   ok(deal.borrowers[0].firstName === 'Peter' && deal.borrowers[0].lastName === 'Parker', 'create borrower name');
   ok(deal.borrowers[0].contacts[0].contactEmail === 'p@x.com', 'create borrower contact');
   ok(deal.borrowers[0].residences[0].address.cityName === 'DC', 'create borrower residence');
   const bestContact = deal.parties.find((x) => x.partyRoleType === 'BestContact');
-  ok(bestContact && bestContact.partyRoleTypeIdentifier === 'Borrower', 'create best contact (required)');
+  // The vendor's REQUIRED `primary_contact` is derived from the BestContact party's
+  // **partyRoleTypeOtherDescription** (an enum), NOT partyRoleTypeIdentifier — matching the
+  // vendor's own createappraisal sample. Emitting the wrong leaf left it empty, so the
+  // gateway couldn't tell WHO the best contact was and reported primary_contact missing.
+  ok(bestContact && bestContact.partyRoleTypeOtherDescription === 'Borrower', 'create best contact (primary_contact) via partyRoleTypeOtherDescription');
+  ok(bestContact && bestContact.partyRoleTypeIdentifier === undefined, 'best contact does not use the wrong leaf');
+  // AppraisalScope's REQUIRED `client_displayed_id` — the "Client Displayed on Report" —
+  // is emitted as a deal party partyRoleType="Lender" in partyRoleIdentifier (the vendor
+  // mapping's "Lender Alias (dba) Identifier"). With no Lender party the order was rejected
+  // for a missing client_displayed_id.
+  const lender = deal.parties.find((x) => x.partyRoleType === 'Lender');
+  ok(lender && lender.partyRoleIdentifier === '297', 'create client displayed on report (client_displayed_id) via Lender party');
   ok(deal.parties.find((x) => x.partyRoleType === 'LoanOfficer').partyRoleTypeIdentifier === '429', 'create loan officer');
 })();
 
-// ---- BestContact party carries a REAL contact person (AppraisalScope primary_contact) ----
+// ---- No Lender party when no client-displayed-on-report id is resolved ----
+// (so an unresolved CDOR doesn't emit an empty Lender party; the order is blocked earlier
+// by missingRequired instead — see the order-build test.)
+(() => {
+  const deal = cdg.buildCreateAppraisal(
+    { productCode: '76', loan: { loanNumber: '1' }, borrowers: [], property: {} },
+    { apiKey: 'K', subdomain: 's' }).message.deals[0];
+  ok(!(deal.parties || []).some((x) => x.partyRoleType === 'Lender'), 'omits the Lender party when no client-displayed id');
+})();
+
+// ---- BestContact names the borrower it resolves to; the reachable contact lives on the
+// referenced borrower (AppraisalScope's primary_contact), matching the vendor sample ----
 (() => {
   const spec = {
     productCode: '76', loan: { loanNumber: '1' }, property: { salesContractAmount: 200000 },
-    borrowers: [{ classification: 'Primary', firstName: 'Peter', lastName: 'Parker' }],
-    parties: { bestContact: 'Borrower' },
-    primaryContact: { role: 'Borrower', firstName: 'Peter', lastName: 'Parker', fullName: 'Peter Parker', phone: '555-1', email: 'p@x.com' },
+    // The BestContact is the Co-Borrower here, so it must name 'Co-Borrower' and the
+    // gateway reads THAT borrower's contacts for primary_contact.
+    borrowers: [
+      { classification: 'Primary', firstName: 'Peter', lastName: 'Parker' },
+      { classification: 'Secondary', firstName: 'Mary', lastName: 'Jane', contacts: [{ type: 'Home', phone: '555-1', email: 'm@x.com' }] },
+    ],
+    parties: { bestContact: 'Co-Borrower' },
+    primaryContact: { role: 'Co-Borrower', classification: 'Secondary', firstName: 'Mary', lastName: 'Jane', phone: '555-1', email: 'm@x.com' },
   };
   const deal = cdg.buildCreateAppraisal(spec, { apiKey: 'K', subdomain: 's' }).message.deals[0];
   const best = deal.parties.find((x) => x.partyRoleType === 'BestContact');
-  ok(best && best.fullName === 'Peter Parker', 'best contact carries the person name');
-  ok(best.contacts && best.contacts[0].contactPhone === '555-1' && best.contacts[0].contactEmail === 'p@x.com',
-    'best contact carries a phone + email for primary_contact');
+  ok(best && best.partyRoleTypeOtherDescription === 'Co-Borrower', 'best contact names the co-borrower it resolved to');
+  // The phone/email is carried on the referenced borrower's own contacts, not on the
+  // BestContact party — exactly the vendor's createappraisal shape.
+  const secondary = deal.borrowers.find((b) => b.borrowerClassificationType === 'Secondary');
+  ok(secondary && secondary.contacts[0].contactPhone === '555-1' && secondary.contacts[0].contactEmail === 'm@x.com',
+    'the referenced borrower carries the phone + email for primary_contact');
 })();
 
 // ---- AddForm carries the parent SP order number ----

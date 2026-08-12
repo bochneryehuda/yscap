@@ -138,23 +138,31 @@ function buildCreateAppraisal(spec, ctx) {
   if (p.loanOfficerId != null) parties.push({ partyRoleType: 'LoanOfficer', partyRoleTypeIdentifier: String(p.loanOfficerId) });
   if (p.loanProcessorId != null) parties.push({ partyRoleType: 'LoanProcessor', partyRoleTypeIdentifier: String(p.loanProcessorId) });
   if (p.investorId != null) parties.push({ partyRoleType: 'Investor', partyRoleTypeIdentifier: String(p.investorId) });
-  // Best-person-to-contact is REQUIRED (enum Borrower | Co-Borrower | Owner | Agent | …).
-  // AppraisalScope maps this to its required `primary_contact`, and a role TOKEN alone is
-  // not a contact — so carry the actual person's name + phone + email (resolved by
-  // order-build.resolvePrimaryContact). The exact leaf names verify against UAT.
+  // AppraisalScope's REQUIRED `client_displayed_id` is the "Client Displayed on Report"
+  // (the client/lender alias AppraisalScope prints ON the appraisal). The vendor mapping
+  // carries it as a deal party partyRoleType="Lender" — the "Lender Alias (dba) Identifier"
+  // in **partyRoleIdentifier** (NOT partyRoleTypeIdentifier, which the other parties use).
+  // The gateway derives its snake_case client_displayed_id from this party, so with no
+  // Lender party the order was rejected for a missing client_displayed_id. The id is the
+  // tenant's own GetClientDisplayOnReport id, resolved in order-service (config override or
+  // the account's single client-on-report profile).
+  if (spec.clientDisplayedId != null && spec.clientDisplayedId !== '') {
+    parties.push({ partyRoleType: 'Lender', partyRoleIdentifier: String(spec.clientDisplayedId) });
+  }
+  // Best-person-to-contact is REQUIRED, and AppraisalScope derives its own required
+  // `primary_contact` from it. The vendor's mapping is exact: the selection goes in
+  // parties[].partyRoleType="BestContact" → **partyRoleTypeOtherDescription** (an
+  // enumeration: Borrower | Co-Borrower | Owner | Other | Realtor | Assistant | …), NOT
+  // partyRoleTypeIdentifier. Emitting the wrong leaf left partyRoleTypeOtherDescription
+  // empty, so the gateway couldn't tell WHO the best contact was and reported
+  // primary_contact missing. The actual phone/email is NOT carried on this party — the
+  // gateway reads it from the referenced party (for a borrower, the borrowers[] contacts
+  // emitted above), exactly as the vendor's own CreateAppraisal sample does.
   if (p.bestContact) {
-    const party = { partyRoleType: 'BestContact', partyRoleTypeIdentifier: p.bestContact };
-    const pc = spec.primaryContact || {};
-    if (pc.fullName) party.fullName = pc.fullName;
-    if (pc.firstName) party.firstName = pc.firstName;
-    if (pc.lastName) party.lastName = pc.lastName;
-    if (pc.phone || pc.email) {
-      const c = { contactType: 'Primary' };
-      if (pc.email) c.contactEmail = pc.email;
-      if (pc.phone) c.contactPhone = pc.phone;
-      party.contacts = [c];
-    }
-    parties.push(party);
+    parties.push({
+      partyRoleType: 'BestContact',
+      partyRoleTypeOtherDescription: bestContactDescription(p.bestContact, spec.primaryContact),
+    });
   }
   if (parties.length) deal.parties = parties;
 
@@ -176,6 +184,26 @@ function buildCreateAppraisal(spec, ctx) {
     deals: [deal],
   };
   return { message };
+}
+
+// The BestContact selection → the vendor's enumeration for partyRoleTypeOtherDescription
+// (Borrower | Co-Borrower | Owner | Other | Realtor | Assistant | Listing Agent | Selling
+// Agent | See Additional Comments). The gateway reads primary_contact from whichever party
+// this names, so it must name the borrower we actually resolved a reachable contact for:
+// if order-build's reachable-fallback switched from the primary to the co-borrower, name
+// 'Co-Borrower' so the gateway reads THAT borrower's contact. We only ever carry the
+// borrowers' contacts, so a non-borrower selection still resolves to a borrower.
+const BEST_CONTACT_ENUM = {
+  borrower: 'Borrower', coborrower: 'Co-Borrower', owner: 'Owner', other: 'Other',
+  realtor: 'Realtor', assistant: 'Assistant',
+  listingagent: 'Listing Agent', sellingagent: 'Selling Agent', sellersagent: 'Selling Agent',
+};
+function bestContactDescription(bestContact, primaryContact) {
+  const pc = primaryContact || {};
+  if (pc.classification === 'Secondary') return 'Co-Borrower';
+  if (pc.classification === 'Primary') return 'Borrower';
+  const k = String(bestContact || '').toLowerCase().replace(/[^a-z]/g, '');
+  return BEST_CONTACT_ENUM[k] || 'Borrower';
 }
 
 function borrower(b) {
@@ -205,6 +233,11 @@ function property(pr) {
   out.address = address(pr);
   if (pr.legalDescription) out.address.propertyLocationDescription = pr.legalDescription;
   if (pr.occupancy) out.propertyCurrentOccupancyType = pr.occupancy;
+  // AppraisalScope's REQUIRED `purchase_amount` is derived from purchasePriceAmount (its
+  // own mapping: "Required when Intended Use is Purchase"), NOT from salesContractAmount —
+  // emitting only the latter is why the gateway rejected the order for a missing
+  // purchase_amount. Emit both (the vendor's own sample carries both).
+  if (pr.purchasePriceAmount != null) out.purchasePriceAmount = money(pr.purchasePriceAmount);
   if (pr.salesContractAmount != null) out.salesContractAmount = money(pr.salesContractAmount);
   if (pr.salesConcessionAmount != null) out.salesConcessionAmount = money(pr.salesConcessionAmount);
   if (pr.salesConcessionType) out.salesConcessionType = pr.salesConcessionType;

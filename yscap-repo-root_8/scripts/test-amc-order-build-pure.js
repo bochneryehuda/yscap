@@ -34,7 +34,9 @@ ok(ob.loanPurposeFor('Purchase') === 'Purchase', 'purpose purchase → Purchase'
 const ctx = {
   loanNumber: 'YSCAP-123', program: 'bridge', loanPurpose: 'Purchase',
   loanAmount: 300000, estimatedClosingDate: '2026-09-15',
-  property: { category: 'SFR', addressLine: '12 Oak St', city: 'Brooklyn', state: 'NY', postalCode: '11249', county: 'Kings', occupancy: 'Investment', salesContractAmount: 400000 },
+  // The account's single client-on-report profile, auto-resolved by order-service.
+  clientDisplayedId: '297', clientDisplayedName: 'YS Capital Group', clientDisplayedSource: 'catalog',
+  property: { category: 'SFR', addressLine: '12 Oak St', city: 'Brooklyn', state: 'NY', postalCode: '11249', county: 'Kings', occupancy: 'Investment', purchasePriceAmount: 400000, salesContractAmount: 400000 },
   borrowers: [
     { classification: 'Primary', firstName: 'Peter', lastName: 'Parker', fullName: 'Peter Parker', entityName: 'PP Holdings LLC', email: 'p@x.com', cellPhone: '555-1', workPhone: '555-2', residence: { addressLine: '1 A St', city: 'NYC', state: 'NY', postalCode: '10001' } },
     { firstName: 'Mary', lastName: 'Jane' },
@@ -61,6 +63,8 @@ const ctx = {
   ok(spec.borrowers[0].residence.city === 'NYC', 'borrower residence');
   ok(spec.parties.loanOfficerId === '429', 'loan officer amc id');
   ok(spec.parties.bestContact === 'Borrower', 'best contact defaults to Borrower');
+  ok(spec.clientDisplayedId === '297', 'client-displayed-on-report id flows from the context');
+  ok(spec.property.purchasePriceAmount === 400000, 'purchase price amount (purchase_amount) carried');
   ok(ob.missingRequired(spec).length === 0, 'complete spec has nothing missing');
 }
 
@@ -97,6 +101,29 @@ const ctx = {
   ok(!ob.missingRequired(fallback).includes('a phone or email for the main contact'), 'a reachable co-borrower keeps the order placeable');
 }
 
+// ---- client-displayed-on-report (AppraisalScope required client_displayed_id) ----
+{
+  // Auto-resolved (from ctx) → carried, and surfaced as an assumption so the desk sees it.
+  const spec = ob.buildOrderSpec(ctx, { productCode: '5' });
+  ok(spec.clientDisplayedId === '297', 'client-displayed id auto-selected from the account profile');
+  const assumptions = ob.orderAssumptions(ctx, { productCode: '5' }, {}, spec);
+  ok(assumptions.some((a) => a.field === 'clientDisplayedId' && /YS Capital Group/.test(a.value)),
+    'the client shown on the report is listed as an auto-filled assumption');
+
+  // A staffer can pin a specific one (opts wins over the auto-resolved account profile).
+  const pinned = ob.buildOrderSpec(ctx, { productCode: '5' }, { clientDisplayedId: '512' });
+  ok(pinned.clientDisplayedId === '512', 'an explicitly chosen client-displayed id wins');
+
+  // Unresolved (account has several profiles and none picked, or lookups not cached) →
+  // blocked with a plain reason instead of sending an order NAN rejects for a missing
+  // client_displayed_id. missingRequired must NOT include it once it is resolved.
+  const unresolved = ob.buildOrderSpec({ ...ctx, clientDisplayedId: null, clientDisplayedSource: 'multiple' }, { productCode: '5' });
+  ok(ob.missingRequired(unresolved).includes('the client shown on the appraisal report'),
+    'an unresolved client-displayed-on-report is flagged, not sent');
+  ok(!ob.missingRequired(spec).includes('the client shown on the appraisal report'),
+    'a resolved client-displayed-on-report is not flagged');
+}
+
 // ---- overrides ----
 {
   const spec = ob.buildOrderSpec(ctx, { productCode: '5' }, { productCode: '9', mortgageType: 'Other', bestContact: 'Owner', rush: true, needByDate: '2026-10-01', requestComment: 'please rush' });
@@ -128,7 +155,9 @@ const ctx = {
   ok(msg.deals[0].properties[0].address.stateCode === 'NY', 'e2e: property address on the wire');
   ok(msg.deals[0].borrowers[0].firstName === 'Peter', 'e2e: borrower on the wire');
   ok(msg.deals[0].appraisers[0].identifier === '426', 'e2e: preferred AMC on the wire');
-  ok(msg.deals[0].parties.some((p) => p.partyRoleType === 'BestContact' && p.partyRoleTypeIdentifier === 'Borrower'), 'e2e: best contact on the wire');
+  ok(msg.deals[0].parties.some((p) => p.partyRoleType === 'BestContact' && p.partyRoleTypeOtherDescription === 'Borrower'), 'e2e: best contact (primary_contact) on the wire');
+  ok(msg.deals[0].parties.some((p) => p.partyRoleType === 'Lender' && p.partyRoleIdentifier === '297'), 'e2e: client-displayed-on-report (client_displayed_id) on the wire');
+  ok(msg.deals[0].properties[0].purchasePriceAmount === '400000.00', 'e2e: purchase price amount (purchase_amount) on the wire');
 }
 
 console.log(`\n[test-amc-order-build-pure] ${pass} passed, ${fail} failed`);
