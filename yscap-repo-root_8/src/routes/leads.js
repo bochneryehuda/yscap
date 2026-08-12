@@ -546,12 +546,22 @@ router.post('/', async (req, res) => {
         // The body promises "just reply to this email" — when the lead routed to
         // an officer, replies go to that officer instead of the no-reply sender.
         // No application exists yet, so the file+ inbox doesn't apply here.
+        // ATTACH THE TERM SHEET to the visitor's confirmation (owner-directed 2026-08-12): a loan
+        // officer (or a prospect) who clicks "Email me this term sheet" on the generator asked to be
+        // sent the actual sheet — before this they got a plain "we received it" note and no PDF. The
+        // client already sends the generated PDF in `attachments`; forward the PDF one(s) to the
+        // visitor for the term-sheet tools only. It is the INITIAL term sheet.
+        const termSheetAtts = SALES_TOOLS.has(tool)
+          ? atts.filter((a) => /pdf/i.test(a.contentType || '') || /\.pdf$/i.test(a.filename || ''))
+          : [];
         const r = await mail.send('leadReceived', email, {
           firstName: name ? String(name).split(' ')[0] : '',
           toolLabel: label,
           officerName: officerRow ? officerRow.full_name : null,
+          hasTermSheet: termSheetAtts.length > 0,
           // #150: the confirmation arrives FROM the routed officer by name.
-        }, { replyTo: officerRow?.email || null, from: officerRow ? require('../lib/email').fromWithName(officerRow.full_name) : null });
+        }, { replyTo: officerRow?.email || null, from: officerRow ? require('../lib/email').fromWithName(officerRow.full_name) : null,
+             attachments: termSheetAtts.length ? termSheetAtts : undefined });
         if (r && r.ok) await db.query(`UPDATE leads SET emailed_submitter=true WHERE id=$1`, [leadId]);
       } catch (_) {}
     }

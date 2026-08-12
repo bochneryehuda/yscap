@@ -2770,8 +2770,22 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
   };
   try {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
-    const locked = await require('../lib/file-lock').structuralLockReason(appId, db, { actor: req.actor });   // #84
-    if (locked) return refuse(409, { error: locked }, 'structural_lock');
+    // #84 STRUCTURAL FREEZE, split into its two halves so a TERMS-NEUTRAL re-register
+    // (owner-directed 2026-08-12) can lift the term-sheet freeze WITHOUT lifting the
+    // status freeze. The STATUS freeze (Clear-to-Close / funded / declined /
+    // withdrawn — a super_admin unlock is already honored inside statusFreezeReason)
+    // refuses immediately, exactly as before. The TERM-SHEET-SENT freeze is DEFERRED:
+    // a SUPER-ADMIN re-register that keeps every borrower-visible number and moves
+    // only the INTERNAL program/markup/buy-rate leaves the sent term sheet's figures
+    // matching the file, so it needs no clearing of the package — but that can only
+    // be judged once the new quote and the prior registration's quote are in hand, so
+    // it is decided below (fileLock.termsNeutralReregister, at the prevQ load). The
+    // already-read lockRow is REUSED there — never re-read — so a transient read
+    // failure can never lift a freeze this early read positively established.
+    const fileLock = require('../lib/file-lock');
+    const lockRow = await fileLock._internals.lockInputs(appId, db).catch(() => null);
+    const statusFreeze = lockRow ? fileLock._internals.statusFreezeReason(lockRow, { actor: req.actor }) : null;
+    if (statusFreeze) return refuse(409, { error: statusFreeze }, 'structural_lock');
     const b = req.body || {};
     const requestedProgram = b.program === 'gold' ? 'gold' : b.program === 'silver' ? 'silver' : 'standard';
     const f = await loadFileForPricing(appId);
@@ -3029,9 +3043,28 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // The superseded terms, captured before the new row lands — the audit trail
     // (and Activity feed) shows exactly what a reprice changed.
     const prevQ = await db.query(
-      `SELECT program, total_loan, note_rate, product_label FROM product_registrations
+      `SELECT program, total_loan, note_rate, product_label, quote, inputs FROM product_registrations
         WHERE application_id=$1 AND is_current LIMIT 1`, [appId]);
     const prev = prevQ.rows[0] || null;
+
+    // TERMS-NEUTRAL RE-REGISTER (owner-directed 2026-08-12) — the deferred half of
+    // the term-sheet-sent freeze checked at the top of this handler. The sent term
+    // sheet prints only borrower-visible figures; when the five FINAL numbers (loan
+    // amount, construction holdback, financed reserve, origination dollars, note
+    // rate) AND the loan term are byte-identical to the current registration's, only
+    // the INTERNAL program/markup/buy-rate moved and the sent sheet's figures still
+    // match the file — so a SUPER-ADMIN may re-register without clearing the package.
+    // `finalNumbersKey` EXCLUDES program/markup; the loan term is threaded in
+    // explicitly (it is not on the quote). fileLock.termsNeutralReregister is the pure
+    // freeze decision — it takes the already-read lockRow (no re-read) plus this
+    // neutrality verdict, enforces the super_admin gate, and FAILS CLOSED with no
+    // prior quote to compare.
+    const prevInputs = prev && (typeof prev.inputs === 'string' ? (() => { try { return JSON.parse(prev.inputs); } catch (_) { return null; } })() : prev.inputs);
+    const termsNeutral = !!(prev && prev.quote
+      && fileLock.finalNumbersKey(quote, inputs && inputs.term)
+         === fileLock.finalNumbersKey(prev.quote, prevInputs && prevInputs.term));
+    const tsBlock = fileLock.termsNeutralReregister(lockRow, termsNeutral, { actor: req.actor });
+    if (tsBlock) return refuse(409, { error: tsBlock }, 'structural_lock');
 
     /* A quote whose numbers the file cannot RECORD is a bad request, not a 500
        — checked before the transaction opens, so a refusal leaves nothing
@@ -3456,7 +3489,12 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // 2026-07-31: appraisal fatals hold off generating term sheets — a
       // terms-are-ready email is a term sheet reaching the borrower).
       const apprHold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, appId);
-      if (economicsChanged && !needsEscalation && !apprHold) {
+      // (d) ALSO withheld on a TERMS-NEUTRAL re-register (owner-directed 2026-08-12):
+      // economicsChanged is driven by borrowerTermsKey, which includes the PROGRAM, so
+      // a program-only re-register (Standard → Silver, same five final numbers) reads
+      // as "changed" even though nothing the borrower sees moved. termsNeutral (the
+      // five numbers unchanged) suppresses that redundant nudge.
+      if (economicsChanged && !termsNeutral && !needsEscalation && !apprHold) {
         try { await require('../lib/terms-notify').sendBorrowerTerms(appId, { quote, total, termMonths: inputs && inputs.term, encompassOverride: encompassOverridden }); }
         catch (_) { /* borrower terms email is best-effort */ }
       }

@@ -140,10 +140,21 @@ assert(!engaged(false) && !engaged(null) && !engaged('') && !engaged(undefined) 
     'a money change reads as dollars');
 }
 
-// ---- RAISING a fee is still a change (the rule is "changing the defaults") ----
+// ---- RAISING a fee / markup / origination is NOT a change (owner-directed
+//      2026-08-12: charging MORE than the default earns the company more; only a
+//      DISCOUNT below the default needs an exception) ----
 {
-  assert(pricingOverridesEngaged({ origStdPct: 2 }, CD).length === 1,
-    'raising origination off the default also needs approval — the rule is any change, not only a discount');
+  assert(pricingOverridesEngaged({ origStdPct: 2 }, CD).length === 0,
+    'raising origination ABOVE the 1.25 default needs NO approval — charging more earns more');
+  assert(pricingOverridesEngaged({ markupStdPct: 1.0 }, CD).length === 0,
+    'raising the rate markup above the 0.5 default needs no approval');
+  assert(pricingOverridesEngaged({ lenderFee: 3000, creditFee: 250, appraisalFee: 1200 }, CD).length === 0,
+    'raising the underwriting / credit / appraisal fees above their defaults needs no approval');
+  // ...but DISCOUNTING below the default still needs approval.
+  assert(pricingOverridesEngaged({ origStdPct: 1.0 }, CD).length === 1,
+    'DISCOUNTING origination below the 1.25 default still needs approval');
+  assert(pricingOverridesEngaged({ lenderFee: 1000 }, CD)[0].key === 'lenderFee',
+    'a discounted underwriting fee still needs approval');
 }
 
 // ---- title fee: the default is "auto-estimate", so any typed number is a change ----

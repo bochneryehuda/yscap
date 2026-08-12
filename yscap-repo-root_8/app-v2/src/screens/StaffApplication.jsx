@@ -3459,6 +3459,12 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
       case 'review':    return it.status === 'received' && !it.signed_off_at;                              // uploaded/accepted, not signed off
       case 'attention': return it.status === 'issue';                                                       // needs a fix
       case 'signed':    return !!it.signed_off_at || it.status === 'satisfied';                             // done
+      // Everything the processor has NOT signed off yet (owner-directed 2026-08-12:
+      // a loan officer wants to see only what is still pending the processor's
+      // sign-off). The complement of "Signed off" — across every sub-status
+      // (outstanding, requested, received, issue) — excluding waived/satisfied,
+      // which are already cleared.
+      case 'unsigned':  return !(it.status === 'satisfied' || !!it.signed_off_at || !!it.waived_at);
       case 'all':       return true;
       case 'mine':
       default:          return !offMyPlate(it);                                                             // role default
@@ -3580,6 +3586,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
           <option value="awaiting">{conditionStatusLabel('outstanding')}</option>
           <option value="review">{conditionStatusLabel('received')}</option>
           <option value="attention">{conditionStatusLabel('issue')}</option>
+          <option value="unsigned">Not signed off yet</option>
           <option value="signed">Signed off</option>
           <option value="all">Everything</option>
         </select>
@@ -4973,7 +4980,7 @@ export default function StaffApplication() {
     // MISMO exports as well as the data tape, and only the TAPE needs the
     // export_data_tapes permission (gated inside the section, 2026-08-02).
     if (stId === 'st-delivery') return true;
-    if (stId === 'st-draws') return can('manage_draws');
+    if (stId === 'st-draws') return can('manage_draws') || can('view_draws');
     return STATIONS.some((s) => s.id === stId);
   }, [can]);
   // The ONE executor for a queued jump — runs after the target's room has
@@ -5352,7 +5359,7 @@ export default function StaffApplication() {
     // Construction draws is the LAST phase (post-funding), so it's the LAST section.
     // Shown for anyone who manages draws — funded or not — so the Draw Center is
     // always findable here (it just says "opens after funding" before funding).
-    ...(can('manage_draws') ? [{ id: 'sec-draws', label: 'Construction draws', group: 'Construction draws', badge: app.status === 'funded' ? '' : 'soon' }] : []),
+    ...((can('manage_draws') || can('view_draws')) ? [{ id: 'sec-draws', label: 'Construction draws', group: 'Construction draws', badge: app.status === 'funded' ? '' : 'soon' }] : []),
   ];
 
   // Seven Rooms render wiring. `show` decides whether a section renders (its
@@ -6125,7 +6132,7 @@ export default function StaffApplication() {
           window too (everything about the draw process lives there). */}
       {/* Construction draws is the post-funding PHASE — it lives in its own Draw Management workspace,
           not inside the file. The file just hands off to it. */}
-      {can('manage_draws') && (
+      {(can('manage_draws') || can('view_draws')) && (
         <Section hidden={!show('sec-draws')} id="sec-draws" title="Construction draws" collapsible={false}>
           {app.status === 'funded' ? (
             <div className="panel" style={{ background: 'var(--paper,#f6f3ec)' }}>

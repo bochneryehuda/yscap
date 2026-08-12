@@ -99,13 +99,17 @@ console.log('\n--- 3. the other three programs IGNORE the manual knob ---');
   }
 }
 
-console.log('\n--- 4. moving it off the default needs an admin approval ---');
+console.log('\n--- 4. DISCOUNTING it below the default needs an admin approval ---');
 {
   const defaults = { origStdPct: 1.25, origGoldPct: 1.25, origSilverPct: 1.25 };
   const named = (raw) => overrides.pricingOverridesEngaged(raw, defaults).map((c) => c.key);
 
-  ok(named({ origManualPct: 2.5 }).includes('origManualPct'),
-    'a changed manual origination is reported as needing approval');
+  // Owner-directed 2026-08-12: charging MORE than the default earns the company
+  // more and needs no exception; only a DISCOUNT below the default does.
+  ok(named({ origManualPct: 0.75 }).includes('origManualPct'),
+    'a DISCOUNTED manual origination (below the 1.25 default) needs approval');
+  ok(!named({ origManualPct: 2.5 }).includes('origManualPct'),
+    'RAISING the manual origination above the default needs NO approval');
   ok(!named({ origManualPct: 1.25 }).includes('origManualPct'),
     'typing the STANDARD company default back into the manual knob is NOT a change');
   ok(!named({ origManualPct: '' }).includes('origManualPct'),
@@ -113,10 +117,10 @@ console.log('\n--- 4. moving it off the default needs an admin approval ---');
   ok(!named({}).includes('origManualPct'),
     'an absent manual knob is NOT a change');
   // The borrowed default must not leak onto the siblings.
-  ok(named({ origSilverPct: 2.0 }).includes('origSilverPct'),
-    'the sibling knobs still compare against their OWN default');
-  const line = overrides.describeOverrides(overrides.pricingOverridesEngaged({ origManualPct: 2.5 }, defaults))[0];
-  ok(/Manual/.test(line) && /2\.5%/.test(line),
+  ok(named({ origSilverPct: 0.75 }).includes('origSilverPct'),
+    'the sibling knobs still compare against their OWN default (discount below 1.25)');
+  const line = overrides.describeOverrides(overrides.pricingOverridesEngaged({ origManualPct: 0.75 }, defaults))[0];
+  ok(/Manual/.test(line) && /0\.75%/.test(line),
     `the approval line names the Manual knob in plain language (got: ${line})`);
 }
 

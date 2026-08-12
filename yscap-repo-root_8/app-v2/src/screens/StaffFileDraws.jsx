@@ -3,11 +3,14 @@ import { useParams, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import DrawsPanel from '../components/DrawsPanel.jsx';
+import LoDrawView from '../components/LoDrawView.jsx';
 
 /* Full-window construction-draw desk for one file (owner-directed 2026-07-20). The same DrawsPanel that
    lives in the file's "Construction draws" section, opened in its own window so the whole draw process —
-   rollup, draws, money ledger, findings, reallocations — has room to live. Gated by manage_draws; only
-   funded files have a draw process. */
+   rollup, draws, money ledger, findings, reallocations — has room to live.
+   A draw COORDINATOR (manage_draws) gets the full desk; a LOAN OFFICER (view_draws only) gets the
+   read-only LoDrawView on their own file — see everything, run nothing, and accept/dispute an inspection
+   result on the borrower's behalf (owner-directed 2026-08-12). Only funded files have a draw process. */
 
 const addr = (a) => {
   const p = a && a.property_address;
@@ -28,7 +31,9 @@ export default function StaffFileDraws() {
     return () => { live = false; };
   }, [id]);
 
-  if (!can('manage_draws')) return <div className="panel" style={{ margin: 24 }}>You don’t have access to construction draws.</div>;
+  const manage = can('manage_draws');
+  const viewOnly = !manage && can('view_draws');
+  if (!manage && !viewOnly) return <div className="panel" style={{ margin: 24 }}>You don’t have access to construction draws.</div>;
 
   const title = app ? (addr(app) || app.ys_loan_number || 'Construction draws') : 'Construction draws';
   return (
@@ -51,7 +56,7 @@ export default function StaffFileDraws() {
       {err && <div className="panel" style={{ color: 'var(--bad,#b04a3f)' }}>{err}</div>}
       {app && app.status !== 'funded'
         ? <div className="panel" style={{ marginTop: 12 }}>This file isn’t funded yet — the draw process is the last phase and opens once the file is funded.</div>
-        : <DrawsPanel appId={id} />}
+        : (viewOnly ? <LoDrawView appId={id} /> : <DrawsPanel appId={id} />)}
     </div>
   );
 }

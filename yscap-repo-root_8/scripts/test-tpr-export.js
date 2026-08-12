@@ -61,7 +61,7 @@ async function main() {
   ok(tpr.isHtmlExport({ filename: 'SOW.pdf', content_type: 'application/pdf' }) === false, 'isHtmlExport: real PDF is not HTML');
   ok(tpr.isHtmlExport({ filename: 'SOW.xlsx', content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }) === false, 'isHtmlExport: Excel is not HTML');
 
-  const B = uuid(), CB = uuid(), APP = uuid(), LLC = uuid(), OWNER_LLC = uuid(), TR = uuid();
+  const B = uuid(), CB = uuid(), APP = uuid(), LLC = uuid(), OWNER_LLC = uuid(), TR = uuid(), TR2 = uuid();
   const ids = [];
   async function doc(name, fields) {
     const { ref, provider } = await storage.save(Buffer.from('doc:' + name), { filename: name });
@@ -81,8 +81,17 @@ async function main() {
     await db.query(`INSERT INTO llc_members (id,llc_id,full_name,ownership_pct,owner_llc_id) VALUES ($1,$2,'TPR Owner LLC',100,$3)`, [uuid(), LLC, OWNER_LLC]);
     await db.query(`INSERT INTO applications (id,borrower_id,co_borrower_id,llc_id,property_address) VALUES ($1,$2,$3,$4,$5)`,
       [APP, B, CB, LLC, JSON.stringify({ line1: '12 Test Ln', city: 'Testville', state: 'NJ', zip: '07000' })]);
+    // A VERIFIED track-record line — only verified lines ship to delivery
+    // (owner-directed 2026-08-12); TR2 below is a PENDING line that must NOT ship.
+    // A line always LANDS pending (db/485 verify guard forces is_verified=false on
+    // insert); verifying is a separate UPDATE that touches ONLY the verification
+    // columns (no material column), which the guard leaves alone — mirroring the
+    // real Verify action. So a fixture cannot spoof a verified line at insert.
     await db.query(`INSERT INTO track_records (id,borrower_id,property_address,deal_type) VALUES ($1,$2,$3,'flip')`,
       [TR, B, JSON.stringify({ line1: '9 Prior Rd', city: 'Testville', state: 'NJ' })]);
+    await db.query(`UPDATE track_records SET is_verified=true, verification_status='verified', verified_at=now() WHERE id=$1`, [TR]);
+    await db.query(`INSERT INTO track_records (id,borrower_id,property_address,deal_type) VALUES ($1,$2,$3,'flip')`,
+      [TR2, B, JSON.stringify({ line1: '77 Pending Way', city: 'Testville', state: 'NJ' })]);
 
     // A FRAUD internal condition item on the file (from the real template so db/120's flip applies).
     const ft = (await db.query(`SELECT id, tpr_exclude FROM checklist_templates WHERE code='rtl_cond_fraud' LIMIT 1`)).rows[0];
@@ -119,6 +128,9 @@ async function main() {
     const dSowHtml = await doc('62 Highland SOW.html', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'system', doc_kind: 'rehab_budget_export', content_type: 'text/html' });
     const dTrSnap = await doc('tr-snapshot.html', { borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'system', doc_kind: 'track_record_html' });
     const dTrDoc = await doc('hud-closing.pdf', { borrower_id: B, track_record_id: TR, review_status: 'accepted', is_current: true, source_type: 'staff_upload', visibility: 'internal' });
+    // A doc on the PENDING line — accepted at the DOCUMENT level, but its track-record
+    // line is not verified, so it must not ride into the delivered package.
+    const dTr2Doc = await doc('pending-hud.pdf', { borrower_id: B, track_record_id: TR2, review_status: 'accepted', is_current: true, source_type: 'staff_upload', visibility: 'internal' });
 
     // ISKA HARD FREEZE — three independent guards. None of these may ship.
     const dIskaSigned = await doc('signed-document.pdf', { application_id: APP, borrower_id: B, review_status: 'accepted', is_current: true, source_type: 'staff_upload', doc_kind: 'heter_iska_signed' });
@@ -206,6 +218,10 @@ async function main() {
     ok(roots.size === 1, `exactly ONE top folder in the ZIP (got: ${[...roots].join(' | ')})`);
     ok(names.some(n => /\/REO\/Track Record\.xlsx$/.test(n)), 'REO/Track Record.xlsx is present');
     ok(names.some(n => /\/REO\/Track Record\.pdf$/.test(n)), 'REO/Track Record.pdf is present');
+    // The PENDING track-record line is verified-only-excluded: its REO folder and
+    // its (document-accepted) line-item doc must NOT appear in the delivered zip.
+    ok(!names.some(n => /77 Pending Way/i.test(n) || /pending-hud\.pdf$/i.test(n)),
+      'a PENDING (unverified) track-record line does NOT ship to delivery (verified-only)');
     ok(names.some(n => /\/Scope of Work\/62 Highland SOW\.pdf$/.test(n)), 'SOW branded PDF filed under Scope of Work');
     ok(names.some(n => /\/Scope of Work\/62 Highland SOW\.xlsx$/.test(n)), 'SOW branded Excel filed under Scope of Work');
     ok(!names.some(n => /\/Scope of Work\/.*\.html?$/i.test(n)), 'SOW HTML snapshot is NOT in the export');
@@ -218,7 +234,7 @@ async function main() {
   finally {
     await db.query(`DELETE FROM documents WHERE id=ANY($1::uuid[])`, [ids]).catch(() => {});
     await db.query(`DELETE FROM checklist_items WHERE application_id=$1`, [APP]).catch(() => {});
-    await db.query(`DELETE FROM track_records WHERE id=$1`, [TR]).catch(() => {});
+    await db.query(`DELETE FROM track_records WHERE id=ANY($1::uuid[])`, [[TR, TR2]]).catch(() => {});
     await db.query(`DELETE FROM applications WHERE id=$1`, [APP]).catch(() => {});
     await db.query(`DELETE FROM llc_members WHERE llc_id=$1`, [LLC]).catch(() => {});
     await db.query(`DELETE FROM llcs WHERE id=ANY($1::uuid[])`, [[LLC, OWNER_LLC]]).catch(() => {});
