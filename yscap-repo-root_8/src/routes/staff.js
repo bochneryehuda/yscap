@@ -14018,12 +14018,22 @@ router.post('/applications/:id/closing/reconcile-refresh', async (req, res) => {
 // Encompass button, we should also have a refresh from ClickUp button to refresh that
 // data from ClickUp"). The reconciliation's "ClickUp" column is `applications.actual_closing`,
 // synced inbound from ClickUp — so a value the team just set on the card is invisible here
-// until the card is re-ingested. This runs the SAME guarded inbound ingest the ClickUp sync
-// uses (`ingestOne`), which refreshes actual_closing (and the card's other mapped fields)
-// through COALESCE + the PII overwrite shield + the sync-review queue — nothing is clobbered.
-// The panel reloads the workspace afterward, which recomputes the reconciliation. Friendly
-// reason on failure (no linked card, ClickUp unreachable) so the closer knows why nothing moved.
-// File-scoped by the /applications/:id middleware; open to anyone on the file (it is a read).
+// until the card is re-ingested.
+//
+// NOTE this is NOT a read-only refresh (unlike the sibling Encompass reconcile-refresh, which
+// only re-pulls a read snapshot). `sync.ingestOne` runs the FULL inbound ingest — the SAME code
+// path a ClickUp webhook and every reconcile pass already run on this task — so it is
+// write-capable: it fills/updates the file's mapped columns (a non-null ClickUp value overwrites
+// through COALESCE; a null one keeps ours), heals borrower/entity fields, and can even fire an
+// inbound status-change notification. It grants NO new capability, though — every one of those
+// effects already fires automatically on each sync; this button only forces the timing. It stays
+// guarded exactly as the automatic sync is (COALESCE fill + the PII-overwrite shield → sync-review
+// queue for conflicts + the DOB gate + the outbound volume breaker), so nothing is silently
+// clobbered. The panel reloads the workspace afterward, which recomputes the reconciliation.
+// Friendly reason on failure (no linked card, ClickUp unreachable) so the closer knows why nothing
+// moved. File-scoped by the /applications/:id middleware; open to anyone on the file — the same
+// audience as the Encompass reconcile-refresh button it sits beside (deliberately, so the two
+// buttons behave alike), which is safe because the ingest can do nothing the automatic sync can't.
 router.post('/applications/:id/closing/reclickup-refresh', async (req, res) => {
   const appId = req.params.id;
   try {
