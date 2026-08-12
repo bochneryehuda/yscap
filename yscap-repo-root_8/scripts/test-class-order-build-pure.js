@@ -303,9 +303,15 @@ ok(!/orders-external/.test(h.ordersUrl), 'and is NOT the V2 document\'s orders-e
 ok(client._internals.HOSTS.production.orders === 'https://api.classvaluation.com', 'production likewise');
 ok(client._internals.HOSTS.test.orders === 'https://api.test.classvaluation.com', 'test likewise');
 ok(h.environment === 'uat', 'UAT is the default environment, never production');
-ok(h.tokenConfirmed === false,
-   'the UAT identity host is reported UNCONFIRMED — their guide only ever prints the test one');
+ok(h.tokenConfirmed === true,
+   'the UAT identity host is now vendor-CONFIRMED (ids.uat.classvaluation.com)');
 ok(client._internals.HOSTS.test.tokenConfirmed === true, 'the test identity host IS confirmed by the guide');
+ok(client._internals.HOSTS.production.tokenConfirmed === false,
+   'production identity is STILL inferred — confirm it before switching production on');
+// The data prefix the live API hangs every route off — reported so a preflight can
+// print exactly where an order call goes (not just the host).
+ok(h.apiPrefix === '/intg' && h.apiBase === 'https://api.uat.classvaluation.com/intg',
+   'hosts() reports the /intg data prefix and the full data base');
 
 const masked = client._internals.maskSafe({ client_secret: 'abc', password: 'p', nested: { access_token: 't', keep: 'ok' } });
 ok(masked.client_secret === '***' && masked.password === '***' && masked.nested.access_token === '***',

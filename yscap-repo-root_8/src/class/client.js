@@ -39,12 +39,23 @@
  * secret is wrong" — and the expensive mistake is sending someone to re-issue a
  * perfectly good credential. Every response body is preserved, JSON or not.
  *
- * THE IDENTITY HOST IS STILL UNCONFIRMED. The V1 guide prints all three ORDER
- * hosts, but only ever shows the TEST identity host — the UAT and production ones
- * are inferred from its shape. Everything is derived from one table and overridable
- * by env; `hosts()` reports whether the values in use were confirmed or inferred,
- * so a preflight can say so out loud rather than failing with a DNS error nobody
- * can interpret.
+ * THE UAT IDENTITY HOST IS NOW CONFIRMED, PRODUCTION IS STILL INFERRED. The V1
+ * guide prints all three ORDER hosts but only ever shows the TEST identity host; the
+ * vendor has since confirmed the UAT identity host directly (`ids.uat.classvaluation
+ * .com/connect/token`), so that row is now confirmed too and only production's is
+ * inferred from its shape. Everything is derived from one table and overridable by
+ * env; `hosts()` reports whether the values in use were confirmed or inferred, so a
+ * preflight can say so out loud rather than failing with a DNS error nobody can
+ * interpret.
+ *
+ * EVERY DATA ROUTE LIVES UNDER `/intg/`. The guide prints the bare paths
+ * (`/orders`, `/products`, `/callbacks`), but those 404 against the running API —
+ * the working routes are `/intg/orders`, `/intg/products`, … So the ONE URL
+ * chokepoint (`request` → `apiBase`) inserts the prefix for every data call, and the
+ * raw document fetch (`attachmentBytes`) does the same. The token request is the
+ * lone exception: it posts to the IDENTITY host at `/connect/token` and never
+ * carries the prefix. The prefix is one overridable value (`CLASS_API_PREFIX`, empty
+ * to disable) so a confirmed vendor change is a config edit rather than a code one.
  */
 
 const cfg = require('../config');
@@ -82,13 +93,26 @@ const HOSTS = {
   // order paths hang off the ROOT of these hosts.
   production: { orders: 'https://api.classvaluation.com',      ordersConfirmed: true,
                 token:  'https://ids.classvaluation.com/connect/token',     tokenConfirmed: false },
+  // The vendor confirmed the UAT identity host directly, so its token URL is
+  // confirmed. Production's identity host is still INFERRED from the shape of the
+  // test/UAT ones — confirm it before switching production on.
   uat:        { orders: 'https://api.uat.classvaluation.com',  ordersConfirmed: true,
-                token:  'https://ids.uat.classvaluation.com/connect/token', tokenConfirmed: false },
-  // The ONLY identity host either guide ever shows is the test one — so this is the
-  // one row where the token URL is confirmed and the others are inferred from it.
+                token:  'https://ids.uat.classvaluation.com/connect/token', tokenConfirmed: true },
   test:       { orders: 'https://api.test.classvaluation.com', ordersConfirmed: true,
                 token:  'https://ids.test.classvaluation.com/connect/token', tokenConfirmed: true },
 };
+
+// The prefix every DATA route lives under on the live API (see the header). ONE
+// definition, overridable + disableable via config (`CLASS_API_PREFIX`); the `??`
+// fallback keeps a config that never set it (an older bundle, a test stubbing
+// `cfg.class` directly) on the live default rather than silently dropping the prefix.
+function apiPrefix() {
+  const c = CLASS();
+  return c.apiPrefix != null ? c.apiPrefix : '/intg';
+}
+// The base a data route hangs off: the orders host PLUS the `/intg` prefix. The
+// token route deliberately does NOT go through here — it uses `hosts().tokenUrl`.
+function apiBase() { return hosts().ordersUrl + apiPrefix(); }
 
 function hosts() {
   const c = CLASS();
@@ -100,6 +124,10 @@ function hosts() {
     environment: env,
     ordersUrl,
     tokenUrl,
+    // The prefix data routes hang off, and the full data base built from it — so a
+    // preflight can print exactly where an order call goes, not just the host.
+    apiPrefix: apiPrefix(),
+    apiBase: ordersUrl + apiPrefix(),
     // "Confirmed" means the vendor's own document prints this exact value for this
     // environment. An env override counts as confirmed by the operator.
     ordersConfirmed: !!c.ordersUrl || row.ordersConfirmed,
@@ -230,7 +258,9 @@ async function request(method, path, { body, query, write, label } = {}) {
     throw gateError('CLASS_OUTBOUND_DISABLED', `refusing ${label || method + ' ' + path} — writes are gated off`);
   }
 
-  const base = hosts().ordersUrl;
+  // Data routes hang off the orders host UNDER the `/intg` prefix (apiBase). The
+  // token request never reaches here — it posts to the identity host directly.
+  const base = apiBase();
   const qs = query && Object.keys(query).length
     ? '?' + new URLSearchParams(Object.entries(query).filter(([, v]) => v != null && v !== '')).toString()
     : '';
@@ -377,7 +407,7 @@ module.exports = {
   // returns the file directly or a JSON envelope pointing at it is resolved by the
   // caller (src/class/documents.js) — this only fetches, verbatim.
   attachmentBytes: (orderId, attachmentId) =>
-    rawFetch(`${hosts().ordersUrl}/orders/${encodeURIComponent(orderId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    rawFetch(`${apiBase()}/orders/${encodeURIComponent(orderId)}/attachments/${encodeURIComponent(attachmentId)}`,
       { label: 'attachmentBytes' }),
   // Follow a download URL an attachment response hands us. Our OWN Class host gets the
   // bearer; a presigned storage link (a different host) does not — see rawFetch.
@@ -411,5 +441,5 @@ module.exports = {
   registerCallback: (body) => post('/callbacks', body, { label: 'registerCallback' }),
   registerAllCallbacks: (body) => post('/callbacks/addAll', body, { label: 'registerAllCallbacks' }),
   deleteCallback: (id) => request('DELETE', '/callbacks', { query: { id }, write: true, label: 'deleteCallback' }),
-  _internals: { maskSafe, readBody, backoff, HOSTS },
+  _internals: { maskSafe, readBody, backoff, HOSTS, apiPrefix, apiBase },
 };
