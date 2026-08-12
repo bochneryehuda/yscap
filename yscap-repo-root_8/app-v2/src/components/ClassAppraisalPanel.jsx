@@ -47,7 +47,7 @@ const STATE = {
 const EDITABLE = new Set([
   'apiVersion',
   'productId', 'propertyTypeEnum', 'purpose', 'loanType', 'occupancy',
-  'referenceNumber', 'street', 'city', 'state', 'zip', 'dueDate', 'instructions',
+  'referenceNumber', 'street', 'city', 'state', 'zip', 'county', 'dueDate', 'instructions',
 ]);
 // The property type is the one field the two UAD versions RENAME (`propertyTypeEnum`
 // on 2.6, `propertyType` on 3.6). Its override key stays the 2.6 name on both, so a
