@@ -540,7 +540,7 @@ function isOccupancyEnumError(err) {
 // cause thrown away in the body. Class hands back three body shapes: their own
 // envelope `{success,code,error/message}`, ASP.NET's `{title,errors:{field:[…]}}`
 // (the field is a KEY), or a raw string kept under `raw`. The browser twin is
-// `vendorSummary()` in app-v2/src/components/OrderFailure.jsx — keep the two in step.
+// `vendorSummary()` in app-v2/src/lib/orderError.js — keep the two in step.
 function vendorErrorText(body) {
   if (body == null) return '';
   if (typeof body === 'string') return body.trim().slice(0, 300);
