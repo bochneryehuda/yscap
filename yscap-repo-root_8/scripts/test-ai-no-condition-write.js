@@ -61,6 +61,12 @@ const ALLOWLIST = new Set([
   // vendor answered it; no model chooses the template, the condition or the moment.
   'src/lib/order-inbox.js',
   'src/lib/esign/draw-wire.js',      // e-sign / draw-wire condition
+  // The Heter Iska condition ensure (ensureIskaCondition). rtl_cond_iska is a fixed,
+  // vetted template (db/051); this instantiates it when the DocuSign package is sent or
+  // completed so the executed Iska is never orphaned. Not an AI path — no model chooses
+  // the template, the condition or the moment; it fires only on a staff/borrower e-sign
+  // send and on the DocuSign completion webhook.
+  'src/lib/esign/orchestrate.js',
   'src/lib/raise-issue.js',          // staff "raise an issue" on an entity
   // A staffer picks a document type and a reason on a past project and presses
   // "Request a document"; this carries that click out. Not an AI path — there is
