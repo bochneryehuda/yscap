@@ -180,6 +180,14 @@ assert(!cp.SHARE_CONTACT_TYPES.includes('insurance_agent') && !cp.SHARE_CONTACT_
   'the insurance contact types are NOT in the shareable set');
 assert(cp.NEVER_SHARE_CONTACT_TYPES.includes('insurance_agent') && cp.NEVER_SHARE_CONTACT_TYPES.includes('flood_insurance'),
   'BOTH insurance contact types are explicitly never shared (every insurance gate treats them as one bucket)');
+// Every NON-INSURANCE contact type reaches the closing attorney (owner-directed 2026-08-12:
+// "any attorney, realtor, or any other contacts should be added on the closing prep email so
+// they can loop in the attorneys and the realtors" — insurance stays out).
+for (const t of ['title_company', 'settlement_agent', 'escrow', 'attorney', 'realtor', 'contractor', 'appraiser', 'lender', 'other']) {
+  assert(cp.SHARE_CONTACT_TYPES.includes(t), `${t} contacts are shared with the closing attorney`);
+}
+assert(cp.CONTACT_LABEL.contractor && cp.CONTACT_LABEL.appraiser && cp.CONTACT_LABEL.lender,
+  'contractor / appraiser / lender render with a friendly label in the email body');
 
 /* ──────────────────────────── 6. the email body ────────────────────────────── */
 const PKG_FULL = {

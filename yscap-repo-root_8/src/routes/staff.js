@@ -350,9 +350,18 @@ router.get('/applications/export', async (req, res) => {
              reg.total_loan AS registered_loan, reg.status AS registration_status, reg.created_at AS registered_at,
              a.created_at, a.clickup_created_at, a.submitted_at, a.status_changed_at,
              a.expected_closing, a.actual_closing, a.updated_at,
-             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS total_items,
-             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
-                AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
+             -- Same exclusion as the on-screen pipeline % (below): the document-review gate
+             -- underwriting_review_cleared does not count, so the exported Checklist items /
+             -- Checklist done columns agree with the on-screen percentage.
+             (SELECT count(*)::int FROM checklist_items ci
+                LEFT JOIN checklist_templates t ON t.id = ci.template_id
+               WHERE ci.application_id=a.id
+                 AND COALESCE(t.code,'') <> 'underwriting_review_cleared') AS total_items,
+             (SELECT count(*)::int FROM checklist_items ci
+                LEFT JOIN checklist_templates t ON t.id = ci.template_id
+               WHERE ci.application_id=a.id
+                 AND COALESCE(t.code,'') <> 'underwriting_review_cleared'
+                 AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
              (SELECT count(*)::int FROM conditions c WHERE c.application_id=a.id AND c.status='open') AS open_conditions,
              a.clickup_pipeline_task_id, a.sync_state, a.clickup_last_synced_at
         FROM applications a
@@ -865,9 +874,21 @@ router.get('/applications', async (req, res) => {
                         a.clickup_pipeline_task_id,a.property_address,a.lender,
                         a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.processor_id,a.created_at,a.actual_closing,
                         b.first_name,b.last_name,b.email,
-                        (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS total_items,
-                        (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
-                           AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
+                        -- The pipeline % counts the file's checklist items, EXCLUDING the
+                        -- document-review gate underwriting_review_cleared (owner-directed
+                        -- 2026-08-12: the document finding section should not reduce the
+                        -- percentage of the file). Document findings feed that ONE condition,
+                        -- which sits open and dragged a CTC-ready file down to ~52%. Appraisal
+                        -- findings (appraisal_review_cleared) and every real condition still count.
+                        (SELECT count(*)::int FROM checklist_items ci
+                           LEFT JOIN checklist_templates t ON t.id = ci.template_id
+                          WHERE ci.application_id=a.id
+                            AND COALESCE(t.code,'') <> 'underwriting_review_cleared') AS total_items,
+                        (SELECT count(*)::int FROM checklist_items ci
+                           LEFT JOIN checklist_templates t ON t.id = ci.template_id
+                          WHERE ci.application_id=a.id
+                            AND COALESCE(t.code,'') <> 'underwriting_review_cleared'
+                            AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
                         (SELECT count(*)::int FROM ai_suggestions s
                            WHERE s.application_id=a.id AND s.severity='fatal'
                              AND s.status IN ('open','marked_important','escalated','asked_admin')
@@ -13990,6 +14011,34 @@ router.post('/applications/:id/closing/reconcile-refresh', async (req, res) => {
     // nothing moved — no loan number, no Encompass match, Encompass unreachable…).
     res.json({ pulled: !!(pull && pull.ok), reason: (pull && pull.reason) || null });
   } catch (e) { console.warn('[closing] reconcile refresh:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// Re-pull this file's ClickUp card so the funded-date reconciliation reads a fresh
+// ClickUp funded date (owner-directed 2026-08-12: "the same way we have a refresh in
+// Encompass button, we should also have a refresh from ClickUp button to refresh that
+// data from ClickUp"). The reconciliation's "ClickUp" column is `applications.actual_closing`,
+// synced inbound from ClickUp — so a value the team just set on the card is invisible here
+// until the card is re-ingested. This runs the SAME guarded inbound ingest the ClickUp sync
+// uses (`ingestOne`), which refreshes actual_closing (and the card's other mapped fields)
+// through COALESCE + the PII overwrite shield + the sync-review queue — nothing is clobbered.
+// The panel reloads the workspace afterward, which recomputes the reconciliation. Friendly
+// reason on failure (no linked card, ClickUp unreachable) so the closer knows why nothing moved.
+// File-scoped by the /applications/:id middleware; open to anyone on the file (it is a read).
+router.post('/applications/:id/closing/reclickup-refresh', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const r = await db.query(`SELECT clickup_pipeline_task_id t FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId]);
+    const taskId = r.rows[0] && r.rows[0].t;
+    if (!taskId) {
+      await audit(req, 'closing_reclickup_refresh', 'application', appId, { pulled: false, reason: 'no linked ClickUp task' });
+      return res.json({ pulled: false, reason: 'This file is not linked to a ClickUp card.' });
+    }
+    let pulled = true, reason = null;
+    try { await require('../sync/clickup-sync').ingestOne(taskId); }
+    catch (e) { pulled = false; reason = (e && e.message) ? e.message.slice(0, 200) : 'ClickUp is temporarily unavailable'; }
+    await audit(req, 'closing_reclickup_refresh', 'application', appId, { pulled, reason });
+    res.json({ pulled, reason });
+  } catch (e) { console.warn('[closing] reclickup refresh:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Ensure the singleton closing row exists (so a PATCH before submit still works).

@@ -1056,6 +1056,9 @@ export const api = {
   // Read-only Encompass re-pull, then hand back the fresh workspace — so a funded
   // date the closer just entered in Encompass shows up on the reconciliation.
   closingReconcileRefresh: (appId) => req('POST', `/api/staff/applications/${appId}/closing/reconcile-refresh`),
+  // Read-only ClickUp re-pull (re-ingests the file's card), then hand back the fresh workspace — so
+  // a funded date the team just set in ClickUp shows up on the reconciliation.
+  closingReclickupRefresh: (appId) => req('POST', `/api/staff/applications/${appId}/closing/reclickup-refresh`),
   closingUpdate:     (appId, b) => req('PATCH', `/api/staff/applications/${appId}/closing`, b),
   closingAddNote:    (appId, body) => req('POST', `/api/staff/applications/${appId}/closing/notes`, { body }),
   closingCashToClose:(appId, actualCashToClose, docId) => req('POST', `/api/staff/applications/${appId}/closing/cash-to-close`, { actualCashToClose, docId }),

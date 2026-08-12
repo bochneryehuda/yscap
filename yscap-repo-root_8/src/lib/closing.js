@@ -463,7 +463,7 @@ async function getClosingWorkspace(appId, client) {
   const c = client || db;
   const app = (await c.query(
     `SELECT a.id, a.ys_loan_number, a.llc_id, a.status, a.funded_date, a.actual_closing,
-            a.expected_closing, a.closer_id, a.lender, s.full_name AS closer_name
+            a.expected_closing, a.closer_id, a.lender, a.clickup_pipeline_task_id, s.full_name AS closer_name
        FROM applications a LEFT JOIN staff_users s ON s.id = a.closer_id
       WHERE a.id=$1 AND a.deleted_at IS NULL`, [appId])).rows[0];
   if (!app) return null;
@@ -483,6 +483,9 @@ async function getClosingWorkspace(appId, client) {
     structure,
     application_id: appId,
     ys_loan_number: app.ys_loan_number,
+    // Whether this file is linked to a ClickUp card — so the reconciliation panel can offer a
+    // "Refresh from ClickUp" button only when there is a card to re-pull.
+    clickup_linked: !!app.clickup_pipeline_task_id,
     status: app.status,
     funded_date: dayStr(app.funded_date),
     actual_closing: dayStr(app.actual_closing),

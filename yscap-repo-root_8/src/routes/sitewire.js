@@ -3441,10 +3441,34 @@ router.post('/files/:id/release-party', requirePermission('manage_draws'), async
     [appId, clear ? null : mode]);
   if (!upd.rowCount) return res.status(409).json({ error: 'This file has no draw project yet — start the draw process first.' });
   try {
-    await orchestrator.journal({ appId, entity: 'file', entityId: appId, field: 'investor_funding_mode',
+    await orchestrator.journal({ appId, entity: 'file', entityId: null, field: 'investor_funding_mode',
       oldValue: null, newValue: { mode: clear ? null : mode, actor: req.actor.id }, source: 'money_override' });
   } catch (_) {}
   res.json({ ok: true, release: await releaseParty.releaseStateFor(db, appId).catch(() => null) });
+});
+
+// ---- POST /files/:id/refresh-pa-date — re-read the Encompass Purchase Advice date (READ-ONLY) ----
+// The owner's PA-date field (2370) rides the ordinary read-only Encompass pull: the reader reads it
+// by number and `release-party.syncPurchaseAdviceDate` lands it in our `purchase_advice_date` column,
+// from which "has this loan been sold?" is computed. So this simply pulls the loan again and hands
+// back the recomputed release state, so the "Who releases the money" card can recognize a file that
+// has now been sold. NOTHING is ever written to Encompass — Encompass is frozen/read-only; this is
+// the SAME read-only pull the closing "Refresh from Encompass" button uses.
+router.post('/files/:id/refresh-pa-date', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  // A friendly reason on failure so the coordinator knows why nothing moved (no loan number, no
+  // Encompass match, Encompass unreachable, PA field not configured on this deployment…).
+  const pull = await require('../encompass/reader').pullLoanForApplication(appId)
+    .catch((e) => ({ ok: false, reason: (e && e.message) ? e.message.slice(0, 200) : 'pull failed' }));
+  try {
+    // The file id rides `application_id`; entity_id is a bigint for numeric Sitewire ids, so a
+    // file-level entry leaves it null (else the audit row silently fails to write).
+    await orchestrator.journal({ appId, entity: 'file', entityId: null, field: 'pa_date_refresh',
+      oldValue: null, newValue: { pulled: !!(pull && pull.ok), reason: (pull && pull.reason) || null, actor: req.actor.id }, source: 'money_override' });
+  } catch (_) { /* best-effort audit */ }
+  const release = await releaseParty.releaseStateFor(db, appId).catch(() => null);
+  res.json({ ok: true, pulled: !!(pull && pull.ok), reason: (pull && pull.reason) || null, release });
 });
 
 // ---- GET /files/:id/draws/:drawId/investor-delivery — the preview behind the button ----
