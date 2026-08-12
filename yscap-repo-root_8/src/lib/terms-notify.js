@@ -87,12 +87,32 @@ async function sendBorrowerTerms(appId, { quote, total, termMonths, encompassOve
   let ctx = null;
   try { ctx = await notify.fileContext(appId); } catch (_) {}
 
+  // Attach the INITIAL term-sheet PDF to the borrower "terms are ready" email
+  // (owner-directed 2026-08-12: "the borrower is only receiving an email, not the
+  // actual term sheet — attach the initial term sheet as a PDF"). Built on the
+  // server from the just-registered quote (esign/term-sheet-pdf), stamped INITIAL
+  // (final:false) — only the DocuSign package sender may emit a FINAL sheet
+  // ("THE SENDER GENERATES THE FINAL"). Best-effort: a PDF hiccup never blocks the
+  // (already best-effort) email; `files` lists it in the body even if a provider
+  // drops the bytes. A term sheet is a few pages, well under the ~3 MB inline cap.
+  let attachments = null;
+  try {
+    const orch = require('./esign/orchestrate');
+    const { buildTermSheet } = require('./esign/term-sheet-pdf');
+    const data = await orch.loadDocGenData(db, appId);
+    const pdf = buildTermSheet({ ...data, termsheet: { ...data.termsheet, final: false } });
+    if (pdf && pdf.length > 0 && pdf.length <= 3 * 1024 * 1024) {
+      attachments = [{ filename: 'Term Sheet.pdf', contentType: 'application/pdf', content: pdf.toString('base64') }];
+    }
+  } catch (_) { /* the PDF attachment is best-effort — never break the email */ }
+
   await notify.notifyAppBorrowers(appId, {
     ...borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOptions, cashOut }),
     applicationId: appId,
     link: `/app/${appId}`,
     from: officer ? email.fromWithName(officer.name) : null,
     replyTo: officer ? officer.email : null,
+    ...(attachments ? { attachments, files: ['Term Sheet.pdf'] } : {}),
   });
 }
 
