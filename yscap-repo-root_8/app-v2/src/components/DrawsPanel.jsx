@@ -323,6 +323,19 @@ const WIRE_KIND = {
   new_entity: { label: 'New entity', tone: 'off' },
   unknown: { label: 'Not provided', tone: 'warn' },
 };
+/* The DocuSign signature status of ONE signer on the draw wire form — mirrors the term-sheet
+   section's per-recipient pill (Signed / Viewing / Sent / Declined). */
+function drawSignerStatus(r) {
+  const s = String(r.status || '').toLowerCase();
+  if (s === 'declined') return { label: 'Declined', tone: 'off' };
+  if (r.signed_at || s === 'signed' || s === 'completed') return { label: 'Signed', tone: 'on' };
+  if (r.viewed_at || s === 'delivered') return { label: 'Viewing', tone: 'warn' };
+  return { label: 'Sent — not opened', tone: 'warn' };
+}
+function DrawStepTime({ label, at }) {
+  return <span className="dd-sub">{label}: {at ? <b style={{ color: 'var(--text)' }}>{fmtDay(at)}</b> : '—'}</span>;
+}
+
 function DrawRequestCard({ appId }) {
   const [d, setD] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -361,6 +374,21 @@ function DrawRequestCard({ appId }) {
   async function openSigned(id) {
     try { const { blob } = await api.staffDownloadDoc(id); const url = URL.createObjectURL(blob); window.open(url, '_blank'); }
     catch (_) { setMsg('Could not open the signed form.'); }
+  }
+  // GENERAL RESEND (owner-directed 2026-08-12) — nudge the current signer with a fresh DocuSign
+  // reminder to the SAME address, exactly like the term-sheet section's "Resend reminder". Distinct
+  // from "Change email & re-send" (which re-addresses). Reuses the shared esign resend endpoint by
+  // the draw envelope's row id; the server refuses if the borrower's file email drifted (steer to
+  // change-email) or if sending is paused.
+  async function resendReminder() {
+    if (!env || !env.row_id) return;
+    setBusy(true); setMsg('');
+    try {
+      await api.post(`/api/staff/esign/${env.row_id}/resend`, {});
+      setMsg('Reminder resent to the current signer.');
+      reload();
+    } catch (e) { setMsg((e && e.data && e.data.error) || e.message || 'Could not resend the reminder.'); }
+    finally { setBusy(false); }
   }
   // Change the wire form's email on the in-flight envelope and re-send to the new
   // address (owner-directed) — the fix for a wrong email, without void + re-issue.
@@ -418,12 +446,33 @@ function DrawRequestCard({ appId }) {
 
       {msg && <div className="dd-sub" style={{ marginTop: 8 }}>{msg}</div>}
 
-      {/* recipient progress */}
-      {env && d.recipients && d.recipients.length > 0 && (
-        <div className="dd-sub" style={{ marginTop: 8 }}>
-          {d.recipients.map((r, i) => (
-            <div key={i}>{r.name}: {r.signed_at ? `signed ${fmtDay(r.signed_at)}` : r.viewed_at ? 'opened, not yet signed' : 'sent, not yet opened'}</div>
-          ))}
+      {/* SIGNATURE STATUS BLOCK (owner-directed 2026-08-12) — the same DocuSign slot the term-sheet
+          section has: sent / viewed / signed for each person who has to sign, so the coordinator can
+          follow and monitor the status right here. */}
+      {env && Array.isArray(d.recipients) && d.recipients.length > 0 && (
+        <div className="act-card" style={{ marginTop: 10 }}>
+          <div className="act-card-title">Signature status</div>
+          <div className="act-card-sub" style={{ marginBottom: 4 }}>Follow each signer through DocuSign — sent, viewed and signed.</div>
+          {d.recipients.map((r, i) => {
+            const st = drawSignerStatus(r);
+            return (
+              <div key={i} style={{ padding: '9px 0 4px', borderTop: i ? '1px solid var(--line)' : 'none' }}>
+                <div className="row" style={{ justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <span style={{ fontWeight: 700, color: 'var(--text)' }}>{r.name || '(no name)'}</span>
+                    {r.role === 'co_borrower' && <span className="dd-sub"> · co-borrower</span>}
+                    {r.email && <div className="dd-sub" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.email}</div>}
+                  </div>
+                  <span className={'dd-chip ' + st.tone}><span className="dot" />{st.label}</span>
+                </div>
+                <div className="row" style={{ gap: 16, marginTop: 6, flexWrap: 'wrap' }}>
+                  <DrawStepTime label="Sent" at={env.sent_at} />
+                  <DrawStepTime label="Viewed" at={r.viewed_at} />
+                  <DrawStepTime label="Signed" at={r.signed_at} />
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -551,7 +600,17 @@ function DrawRequestCard({ appId }) {
             {busy ? 'Sending…' : terminal ? 'Re-send draw request form' : 'Send draw request form (DocuSign)'}
           </button>
         )}
-        {env && !terminal && <span className="dd-sub">The form is out for signature. You can re-send once it’s completed, declined, or voided.</span>}
+        {/* GENERAL RESEND (owner-directed 2026-08-12) — the draw form previously had only "change
+            email & re-send"; this is the plain "remind the current signer" button the term-sheet
+            section has. It re-notifies the SAME address; the server refuses (with guidance) if the
+            file email drifted or sending is paused. */}
+        {env && !terminal && (
+          <button className="btn btn-sm" disabled={busy || !d.docusign_enabled} onClick={resendReminder}
+            title={!d.docusign_enabled ? 'DocuSign sending is turned off' : 'Send the current signer a fresh DocuSign reminder to the same address.'}>
+            {busy ? 'Sending…' : 'Resend reminder'}
+          </button>
+        )}
+        {env && !terminal && <span className="dd-sub" style={{ alignSelf: 'center' }}>The form is out for signature — send a reminder, change the email, or void &amp; re-issue.</span>}
       </div>
     </div>
   );
