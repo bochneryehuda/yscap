@@ -1069,7 +1069,7 @@ router.get('/files/:id/draw-request', requireDrawView, async (req, res) => {
     // The signed PDF, once filed back to the condition — with its review state so the desk can
     // show + do the "accept the wire instructions" step right here (owner-directed 2026-08-12).
     const signed = (await db.query(
-      `SELECT id, filename, created_at, COALESCE(review_status,'pending') AS review_status, rejection_reason FROM documents
+      `SELECT id, filename, created_at, COALESCE(review_status,'pending') AS review_status, rejection_reason, source_type FROM documents
         WHERE application_id=$1 AND doc_kind='draw_request_signed' AND is_current=true
         ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0] || null;
     // The wire-form GATE, the SAME one the delivery step reads, so the card and the money gate can
@@ -1086,6 +1086,9 @@ router.get('/files/:id/draw-request', requireDrawView, async (req, res) => {
         terminal: ['completed', 'declined', 'voided'].includes(String(env.status || '')),
         // Live = out for signature, so its recipient's email can still be corrected + re-sent.
         live: envLive,
+        // Clearable = a sent/delivered/completed package that can be voided/cleared PILOT-side so
+        // the wire form can be uploaded MANUALLY instead (owner-directed 2026-08).
+        clearable: ['sent', 'delivered', 'completed'].includes(String(env.status || '')),
       } : null,
       // `id` + `can_change_email` let the panel offer "change email & re-send" per signer
       // (a signed/declined signer can't be re-addressed). `has_file_email_mismatch` drives
@@ -1099,7 +1102,7 @@ router.get('/files/:id/draw-request', requireDrawView, async (req, res) => {
       recipient_options: await require('../lib/draw-recipients').drawRecipients(appId).catch(() => ({ borrower: null, coBorrower: null })),
       wire,
       operating_agreement: oaCondition,
-      signed_document: signed ? { id: signed.id, filename: signed.filename, created_at: signed.created_at, review_status: signed.review_status, rejection_reason: signed.rejection_reason || null } : null,
+      signed_document: signed ? { id: signed.id, filename: signed.filename, created_at: signed.created_at, review_status: signed.review_status, rejection_reason: signed.rejection_reason || null, manual: signed.source_type !== 'system' } : null,
       wire_form: wireForm,
     });
   } catch (e) { console.warn('[sitewire] draw-request status error:', e && e.message); res.status(500).json({ error: 'server error' }); }
@@ -1238,6 +1241,110 @@ router.post('/files/:id/draw-request/recipient-email', requirePermission('manage
     if (e && e.status && e.expose) return res.status(e.status).json({ error: e.message });
     if (e && e.retryable === false && e.message) return res.status(400).json({ error: e.message });
     console.warn('[sitewire] draw-request recipient-email error:', e && e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// ---- POST /files/:id/draw-request/clear — clear the sent/signed DocuSign wire form ----
+// Some files make MANUAL changes to the wire form (owner-directed 2026-08: "after sending
+// DocuSign, allow clearing it and uploading the form manually instead"). This voids the live
+// DocuSign draw-request package (or clears a completed one PILOT-side), supersedes its signed
+// document and REOPENS the draw condition — so a coordinator can then upload the wire form
+// manually. Reuses the shared clearPackage (void + supersede + reopen), scoped to the DRAW
+// permission so a Draw Coordinator who isn't a file assignee can still do it.
+router.post('/files/:id/draw-request/clear', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const { clearPackage, CLEARABLE_STATUSES } = require('../lib/esign/clear');
+    const env = (await db.query(
+      `SELECT id FROM esign_envelopes
+        WHERE application_id=$1 AND purpose='draw_request' AND status = ANY($2)
+        ORDER BY created_at DESC LIMIT 1`, [appId, CLEARABLE_STATUSES])).rows[0] || null;
+    if (!env) return res.status(409).json({ error: 'There is no sent draw request form to clear.' });
+    const reason = String((req.body && req.body.reason) || '').trim()
+      || 'Cleared to upload the wire form manually instead.';
+    // Void a still-out envelope at DocuSign so the old signing link stops working; a completed
+    // one is cleared PILOT-side only (clearPackage handles both).
+    const out = await clearPackage({ rowId: env.id, actorId: req.actor && req.actor.id, reason, db, docusign: require('../lib/integrations/docusign') });
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+         VALUES ('staff',$1,'draw_request_cleared','application',$2,$3,$4,$5)`,
+        [req.actor && req.actor.id, appId, req.ip, req.get('user-agent') || null,
+         { voided: out.voided, docsCleared: out.docsCleared, conditionsReopened: (out.conditionsReopened || []).length }]);
+    } catch (_) { /* logging is best-effort */ }
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    if (e && e.status && e.expose) return res.status(e.status).json({ error: e.message });
+    console.warn('[sitewire] draw-request clear error:', e && e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// ---- POST /files/:id/draw-request/upload-manual — file a wire form uploaded by hand ----
+// Some files make MANUAL changes to the wire form, so the coordinator uploads it here instead
+// of — or after clearing — the DocuSign flow (owner-directed 2026-08). The manual form files
+// onto the SAME draw condition and gets doc_kind='draw_request_signed' (told apart from a
+// DocuSign copy only by source_type='staff_upload'), so the money gate (wireFormStatus), the
+// accept/reject step and the INVESTOR-DELIVERY attachment all treat it identically — no query
+// anywhere had to change. It supersedes any current wire form so exactly one is live; the
+// coordinator still ACCEPTS it before the money can move.
+router.post('/files/:id/draw-request/upload-manual', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  if (!b.dataBase64) return res.status(400).json({ error: 'Attach the wire form file to upload.' });
+  try {
+    const a = (await db.query(
+      `SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+    if (!a) return res.status(404).json({ error: 'file not found' });
+    let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
+    try { ({ buf } = require('../lib/upload-bytes').decodeUploadBase64(b.dataBase64)); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+    const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+    if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+    // Ensure the draw condition exists so the manual form has somewhere to file back to.
+    const itemId = await drawWire.ensureDrawRequestCondition(db, appId, req.actor && req.actor.id);
+    const filename = String(b.filename || 'wire-instructions.pdf').slice(0, 200);
+    // Idempotency — a double-click files one copy, not two.
+    const dup = await require('../lib/doc-dedup').recentDuplicateDocId({
+      filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+      applicationId: appId, checklistItemId: itemId || null, docKind: 'draw_request_signed' });
+    if (dup) return res.status(201).json({ ok: true, documentId: dup, deduped: true });
+    const { ref, provider } = await storage.save(buf, { filename });
+    const ins = await db.query(
+      `INSERT INTO documents (application_id, checklist_item_id, borrower_id, filename, content_type, size_bytes,
+                              storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, source_type,
+                              slot_label, visibility, is_current, review_status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'draw_request_signed','staff_upload','Wire form (manual)','borrower',true,'pending')
+       RETURNING id`,
+      [appId, itemId || null, a.borrower_id, filename, b.contentType || 'application/pdf', buf.length, provider, ref, req.actor.id]);
+    const newId = ins.rows[0].id;
+    // Exactly one live wire form: supersede any OTHER current draw_request_signed (a completed
+    // DocuSign copy or a prior manual one). A superseded ACCEPTED copy simply drops off the gate
+    // (is_current=false), so the new manual form must be accepted before money can move.
+    await db.query(
+      `UPDATE documents SET is_current=false,
+          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+        WHERE application_id=$1 AND doc_kind='draw_request_signed' AND id<>$2 AND is_current=true`,
+      [appId, newId]);
+    // Mark the draw condition received (never downgrading a human's satisfied/waived).
+    if (itemId) {
+      await db.query(
+        `UPDATE checklist_items SET status='received', updated_at=now()
+          WHERE id=$1 AND status NOT IN ('satisfied','waived')`, [itemId]);
+      try { require('../clickup/enqueue').enqueueChecklistStatusPush(itemId).catch(() => {}); } catch (_) { /* best-effort */ }
+    }
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+         VALUES ('staff',$1,'draw_wire_manual_upload','application',$2,$3,$4,$5)`,
+        [req.actor && req.actor.id, appId, req.ip, req.get('user-agent') || null, { document_id: newId, filename }]);
+    } catch (_) { /* logging is best-effort */ }
+    res.status(201).json({ ok: true, documentId: newId });
+  } catch (e) {
+    console.warn('[sitewire] draw-request upload-manual error:', e && e.message);
     res.status(500).json({ error: 'server error' });
   }
 });

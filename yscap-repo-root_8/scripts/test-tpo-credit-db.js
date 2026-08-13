@@ -113,8 +113,11 @@ const PDF_B64 = Buffer.from('%PDF-1.4\n% tpo credit test\n').toString('base64');
     ok(row.name && row.hasSsn === true && row.canPull === true && row.hasReport === false, 'readiness: name + hasSsn + canPull, no report yet');
     ok(st.body.canOrder === true, 'canOrder true when configured + a borrower is ready');
     // NO score / report id / cross-file reference anywhere in the readiness.
+    // The fixture score numbers are matched only as whole JSON value tokens (NOT when they sit
+    // hex-letter-adjacent), so a random borrowerId UUID that happens to contain "705"/"712"/"698"
+    // can never false-fail this — while a genuine `:705,` / `:"705"` leak is still caught.
     const stStr = JSON.stringify(st.body);
-    ok(!/middleScore|reissueReportId|profileReport|fromLoanNumber|"score"|712|698|705/.test(stStr), 'readiness leaks NO score / report id / cross-file reference');
+    ok(!/middleScore|reissueReportId|profileReport|fromLoanNumber|"score"|(?<![0-9a-fA-F])(712|698|705)(?![0-9a-fA-F])/.test(stStr), 'readiness leaks NO score / report id / cross-file reference');
 
     // ---------------------------------------------------------------
     // 2) CONSENT GATE
@@ -129,8 +132,9 @@ const PDF_B64 = Buffer.from('%PDF-1.4\n% tpo credit test\n').toString('base64');
     ok(ord.status === 201 && ord.body.ok === true && !!ord.body.message, 'broker orders credit (201, borrower-safe message)');
     ok(pullCalls === 1, 'the credit pull actually ran (provider.pull called once)');
     ok(lastPullArgs && lastPullArgs.pullType === 'soft', 'a broker pull is FORCED to soft even when hard is requested (no FICO ding)');
-    // The result carries NO score / fico / report id.
-    ok(!/middleScore|"fico"|"score"|reportId|creditReportId|712|698|705/.test(JSON.stringify(ord.body)), 'the order result leaks NO score / fico / report id');
+    // The result carries NO score / fico / report id. (Score numbers bounded to whole JSON
+    // tokens — see the readiness note above — so a random id can't false-fail it.)
+    ok(!/middleScore|"fico"|"score"|reportId|creditReportId|(?<![0-9a-fA-F])(712|698|705)(?![0-9a-fA-F])/.test(JSON.stringify(ord.body)), 'the order result leaks NO score / fico / report id');
     // The staff-of-record artifacts DID land: credit_reports row + condition received + staff-only docs.
     ok((await db.query(`SELECT 1 FROM credit_reports WHERE application_id=$1`, [appA])).rows.length === 1, 'a credit_reports row was written (system of record)');
     ok((await db.query(`SELECT status FROM checklist_items WHERE id=$1`, [creditItem])).rows[0].status === 'received', 'the credit condition moved to received');

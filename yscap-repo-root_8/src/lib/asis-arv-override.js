@@ -3,33 +3,36 @@
  * AS-IS / ARV super-admin OVERRIDE of the term-sheet-sent freeze (owner-directed 2026-08).
  *
  * The owner's words: "update the as-is value and the ARV value in that application, but
- * leaving all the details of the term sheet the same … if any details from the loan are
- * changing, then the admin should not be able to overwrite if the loan amount or any fees
- * are changing … When clicking Save Changes, it should put in something which gives me the
- * option to override as admin."
+ * leaving all the details of the term sheet the same … When clicking Save Changes, it should
+ * put in something which gives me the option to override as admin." Then, choosing the scope
+ * for a change that WOULD re-price the loan (2026-08, "Save ARV, keep the loan"): RECORD the
+ * new as-is/ARV but keep the loan amount, the registration and the sent term sheet EXACTLY as
+ * they are — "you're just updating the recorded value. Nothing about the loan changes."
  *
  * So: on a file whose Term Sheet DocuSign package has been SENT (term-sheet-frozen), a
  * SUPER-ADMIN — behind a double warning + a typed reason — may update ONLY the as-is value
- * and the ARV, keeping the sent term sheet VALID, but ONLY when the change is terms-neutral.
- * If re-pricing at the new as-is/ARV would move the loan amount or ANY fee, the override is
- * REFUSED (clear the package and re-register).
+ * and the ARV, keeping the sent term sheet and everything it prices EXACTLY as they are —
+ * whether or not re-pricing at the new figures WOULD have moved the loan. The loan never
+ * moves: only the recorded as-is/ARV changes.
  *
- * TWO HARD PROBLEMS this module solves (see docs / CLAUDE.md file-lock notes):
- *   1. Neutrality is FORWARD-LOOKING. An as-is/ARV edit does not itself move the loan, but a
- *      later re-register would re-size — so "the loan amount or a fee is changing" means:
- *      would re-pricing the CURRENT registration at the new as-is/ARV keep the same
- *      borrower-visible figures? We RE-PRICE (fileLock.finalNumbersKey) and, as a SANITY
- *      GATE, first prove our re-price reproduces the STORED quote — failing CLOSED (refuse)
- *      if it does not (a changed company default, a TPO settings file, an engine change).
- *   2. The db/486 trigger reopens Products & Pricing + the signed-term-sheet condition + marks
- *      the registration stale on ANY as_is_value/arv write, at the DB layer, regardless of the
- *      route. A neutral override must NOT reopen them, so `apply` runs in ONE transaction:
- *      capture the exact rows the trigger will reopen, write as_is/arv, then RE-ASSERT those
- *      rows to their captured before-state — so the sent term sheet stays valid.
+ * TWO THINGS this module handles (see docs / CLAUDE.md file-lock notes):
+ *   1. KEEPING THE LOAN FROZEN is the whole point, and it is done by apply(), NOT by refusing
+ *      the save. The db/486 trigger reopens Products & Pricing + the signed-term-sheet
+ *      condition + marks the registration stale on ANY as_is_value/arv write, at the DB layer,
+ *      regardless of route. So `apply` runs in ONE transaction: capture the exact rows the
+ *      trigger will reopen, write as_is/arv, then RE-ASSERT those rows to their captured
+ *      before-state — so loan_amount, the registration, the sent term sheet and its conditions
+ *      stay untouched. This is what implements "keep the loan" for a change that would
+ *      otherwise re-size it.
+ *   2. NEUTRALITY IS NOW ADVISORY, NOT A GATE. We still RE-PRICE the current registration at
+ *      the new figures (fileLock.finalNumbersKey, with the stored-quote SANITY GATE) to record
+ *      whether the override kept the borrower-visible terms or deliberately moved past them —
+ *      but this is best-effort and never blocks the save. A super-admin who explicitly requests
+ *      the override saves regardless. The STATUS freeze (CTC/funded/…) still always stands.
  *
  * The freeze DECISION itself is the pure fileLock.asIsArvTermSheetOverride (a sibling of
- * termsNeutralReregister). This module orchestrates: validate the request, compute
- * neutrality (fail-closed), and apply with the re-assert.
+ * termsNeutralReregister). This module orchestrates: validate the request, compute the
+ * (advisory) neutrality verdict, and apply with the re-assert.
  */
 const db = require('../db');
 const fileLock = require('./file-lock');
@@ -161,19 +164,23 @@ async function evaluate({ appId, body, actor }) {
   const tsReason = fileLock._internals.termSheetFreezeReason(row, { actor });
   if (!tsReason) return { status: 'not_needed' };   // not term-sheet-frozen → ordinary save
 
-  // Term-sheet-frozen: the override applies ONLY when the change is terms-neutral.
-  const neut = await computeNeutral(appId, changes, db);
-  if (!neut.neutral) {
-    return {
-      status: 'refused', code: 409,
-      message: 'This change would move the loan amount or a fee, so the sent term sheet would no longer match. Clear the Term Sheet package first, then re-register.',
-    };
-  }
-  // Final freeze gate (pure) — belt-and-suspenders on the neutrality + super-admin + request.
-  const block = fileLock.asIsArvTermSheetOverride(row, true, { actor, overrideRequested: true });
+  // Term-sheet-frozen. Owner-directed 2026-08 ("Save ARV, keep the loan"): a super_admin
+  // may RECORD the new as-is/ARV whether or not re-pricing at them would move the loan. The
+  // loan itself never moves — apply() re-asserts Products & Pricing, the signed-term-sheet
+  // condition and the registration's stale flag, so loan_amount, the registration, the sent
+  // term sheet and its conditions stay EXACTLY as they are. So there is NO neutrality
+  // refusal any more. We still compute the neutrality verdict best-effort (never blocking)
+  // purely so the audit trail can record whether the override kept the terms or deliberately
+  // moved past them — a throw here must never stop the save (fail-open on the INFO value).
+  let neutral = null;
+  try { neutral = (await computeNeutral(appId, changes, db)).neutral; } catch (_) { neutral = null; }
+
+  // Final freeze gate (pure) — belt-and-suspenders on super-admin + explicit request. The
+  // STATUS freeze (checked above) still always stands; neutrality no longer gates.
+  const block = fileLock.asIsArvTermSheetOverride(row, neutral, { actor, overrideRequested: true });
   if (block) return { status: 'refused', code: 409, message: block };
 
-  return { status: 'apply', changes, reason };
+  return { status: 'apply', changes, reason, neutral };
 }
 
 // Map a `changes` key to its applications column. The ONLY writable targets — anything

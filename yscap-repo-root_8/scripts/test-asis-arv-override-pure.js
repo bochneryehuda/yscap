@@ -3,8 +3,10 @@
  * AS-IS / ARV super-admin override — the PURE pieces (no DB):
  *   · asisArvOverride.isAsIsArvOnly — the request must touch ONLY as-is / ARV.
  *   · fileLock.asIsArvTermSheetOverride — the freeze decision matrix (sibling of
- *     termsNeutralReregister): allow ONLY a super_admin, only when explicitly requested
- *     AND terms-neutral, and NEVER over a STATUS freeze (unlock is the path there).
+ *     termsNeutralReregister): allow ONLY a super_admin, only when explicitly requested,
+ *     REGARDLESS of neutrality (owner-directed 2026-08 "Save ARV, keep the loan" — the loan
+ *     is held frozen by apply()'s re-assert, not by refusing a non-neutral save), and NEVER
+ *     over a STATUS freeze (unlock is the path there).
  */
 const assert = require('assert');
 const ov = require('../src/lib/asis-arv-override');
@@ -40,17 +42,22 @@ eqNull(A(notFrozen, true, { actor: superA, overrideRequested: true }),
   'not frozen at all → nothing to override (null)');
 eqNull(A(tsFrozen, true, { actor: superA, overrideRequested: true }),
   'term-sheet frozen + super_admin + requested + neutral → ALLOWED');
-notNull(A(tsFrozen, false, { actor: superA, overrideRequested: true }),
-  'term-sheet frozen + NOT neutral → refused (the freeze stands)');
+// Owner-directed 2026-08 ("Save ARV, keep the loan"): a NON-neutral change is now ALSO
+// allowed for a super_admin who requests it — the loan is kept frozen by apply()'s
+// re-assert, not by refusing the save. Neutrality (true/false/unknown) no longer gates.
+eqNull(A(tsFrozen, false, { actor: superA, overrideRequested: true }),
+  'term-sheet frozen + NOT neutral + super_admin + requested → NOW ALLOWED (loan kept frozen by apply)');
+eqNull(A(tsFrozen, null, { actor: superA, overrideRequested: true }),
+  'term-sheet frozen + neutrality UNKNOWN (computeNeutral threw) + super_admin + requested → ALLOWED');
 notNull(A(tsFrozen, true, { actor: superA, overrideRequested: false }),
-  'term-sheet frozen + neutral but NOT requested → refused');
-notNull(A(tsFrozen, true, { actor: adminA, overrideRequested: true }),
-  'term-sheet frozen + neutral + requested but a plain admin → refused (super_admin only)');
-notNull(A(ctcFrozen, true, { actor: superA, overrideRequested: true }),
-  'a STATUS freeze (clear-to-close) is NEVER lifted by this override, even neutral+super_admin — unlock is the path');
-eqNull(A(ctcUnlocked, true, { actor: superA, overrideRequested: true }),
+  'term-sheet frozen but NOT explicitly requested → refused (the override must be asked for)');
+notNull(A(tsFrozen, false, { actor: adminA, overrideRequested: true }),
+  'term-sheet frozen + requested but a plain admin → refused (super_admin only)');
+notNull(A(ctcFrozen, false, { actor: superA, overrideRequested: true }),
+  'a STATUS freeze (clear-to-close) is NEVER lifted by this override, even super_admin+requested — unlock is the path');
+eqNull(A(ctcUnlocked, false, { actor: superA, overrideRequested: true }),
   'a super-admin-UNLOCKED clear-to-close file → both freezes already lifted, so nothing to override (null)');
-eqNull(A(null, true, { actor: superA, overrideRequested: true }),
+eqNull(A(null, false, { actor: superA, overrideRequested: true }),
   'no row → null (parity with the other lock helpers)');
 
 console.log(`\n✓ asis-arv-override pure: ${n} assertions passed`);

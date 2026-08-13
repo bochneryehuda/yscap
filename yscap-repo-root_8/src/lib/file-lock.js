@@ -402,20 +402,26 @@ function termsNeutralReregister(row, isNeutral, opts = {}) {
 
 /**
  * AS-IS / ARV super-admin OVERRIDE of the term-sheet-sent freeze (owner-directed
- * 2026-08). A super_admin editing ONLY the as-is value + ARV on a term-sheet-frozen
- * file — with a DOUBLE WARNING + a typed reason — may save when the change is
- * terms-neutral (re-pricing at the new values keeps every borrower-visible figure
- * byte-identical, so the sent term sheet still matches the file). This is the pure
- * freeze decision, a sibling of termsNeutralReregister: returns null when the save is
- * allowed, else the freeze reason. The caller (asis-arv-override.js) has already
- * computed `isNeutral` (fail-closed) and validated the request is as-is/ARV-only.
+ * 2026-08 — "Save ARV, keep the loan"). A super_admin editing ONLY the as-is value +
+ * ARV on a term-sheet-frozen file — behind a DOUBLE WARNING + a typed reason — may
+ * RECORD the new figures whether or not re-pricing at them WOULD move the loan. The
+ * loan itself never moves: apply() (asis-arv-override.js) writes only as_is_value/arv
+ * and RE-ASSERTS the Products & Pricing item, the signed-term-sheet condition and the
+ * registration's stale flag to their before-state, so loan_amount, the registration,
+ * the sent term sheet and its conditions stay EXACTLY as they are — the owner keeps the
+ * loan and only the recorded ARV/as-is changes. This is the pure freeze decision, a
+ * sibling of termsNeutralReregister: returns null when the save is allowed, else the
+ * freeze reason.
  *
  *   · The STATUS freeze (CTC / funded / declined / withdrawn) ALWAYS stands — a
  *     super-admin UNLOCK is the recorded way through those, never this override.
  *   · The override lifts ONLY the term-sheet freeze, ONLY for a super_admin, ONLY when
- *     the change is neutral AND was explicitly requested (opts.overrideRequested).
- *   · Anyone else, no request, or any moved figure → the freeze stands (clear the
- *     package and re-register).
+ *     it was explicitly requested (opts.overrideRequested). Neutrality no longer gates
+ *     (owner-directed 2026-08): a change that would move the loan is still allowed, and
+ *     the loan is held frozen by apply()'s re-assert rather than by refusing the save.
+ *   · Anyone else, or no explicit request → the freeze stands (clear the package and
+ *     re-register). The `isNeutral` argument is retained for signature stability and
+ *     audit callers but no longer affects the decision.
  */
 function asIsArvTermSheetOverride(row, isNeutral, opts = {}) {
   if (!row) return null;
@@ -424,7 +430,7 @@ function asIsArvTermSheetOverride(row, isNeutral, opts = {}) {
   const tsReason = termSheetFreezeReason(row, opts);
   if (!tsReason) return null;                        // not frozen — nothing to override
   const isSuper = !!(opts.actor && opts.actor.kind === 'staff' && opts.actor.role === 'super_admin');
-  return (isSuper && opts.overrideRequested && isNeutral) ? null : tsReason;
+  return (isSuper && opts.overrideRequested) ? null : tsReason;
 }
 
 module.exports = {
