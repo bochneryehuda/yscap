@@ -140,14 +140,19 @@ function buildCreateAppraisal(spec, ctx) {
   if (p.investorId != null) parties.push({ partyRoleType: 'Investor', partyRoleTypeIdentifier: String(p.investorId) });
   // AppraisalScope's REQUIRED `client_displayed_id` is the "Client Displayed on Report"
   // (the client/lender alias AppraisalScope prints ON the appraisal). The vendor mapping
-  // carries it as a deal party partyRoleType="Lender" — the "Lender Alias (dba) Identifier"
-  // in **partyRoleIdentifier** (NOT partyRoleTypeIdentifier, which the other parties use).
-  // The gateway derives its snake_case client_displayed_id from this party, so with no
-  // Lender party the order was rejected for a missing client_displayed_id. The id is the
-  // tenant's own GetClientDisplayOnReport id, resolved in order-service (config override or
-  // the account's single client-on-report profile).
-  if (spec.clientDisplayedId != null && spec.clientDisplayedId !== '') {
-    parties.push({ partyRoleType: 'Lender', partyRoleIdentifier: String(spec.clientDisplayedId) });
+  // carries it as a deal party partyRoleType="Lender": the "Lender Alias (dba) Identifier" in
+  // **partyRoleIdentifier** (the resolved id, NOT partyRoleTypeIdentifier), and/or the
+  // "Lender Alias (dba) Full Name and Address" in **fullNameAddress** (the name). The gateway
+  // derives client_displayed_id from this party, so with no Lender party the order was
+  // rejected. order-service resolves the id from the account's GetClientDisplayOnReport list
+  // (matched to the default name "YS Capital Group"); when only the name is known, send the
+  // name so the order still goes out rather than being blocked.
+  if ((spec.clientDisplayedId != null && spec.clientDisplayedId !== '')
+      || (spec.clientDisplayedName != null && spec.clientDisplayedName !== '')) {
+    const lender = { partyRoleType: 'Lender' };
+    if (spec.clientDisplayedId != null && spec.clientDisplayedId !== '') lender.partyRoleIdentifier = String(spec.clientDisplayedId);
+    if (spec.clientDisplayedName != null && spec.clientDisplayedName !== '') lender.fullNameAddress = String(spec.clientDisplayedName);
+    parties.push(lender);
   }
   // Best-person-to-contact is REQUIRED, and AppraisalScope derives its own required
   // `primary_contact` from it. The vendor's mapping is exact: the selection goes in

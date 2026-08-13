@@ -95,14 +95,34 @@ function get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? o
   ok(deal.parties.find((x) => x.partyRoleType === 'LoanOfficer').partyRoleTypeIdentifier === '429', 'create loan officer');
 })();
 
-// ---- No Lender party when no client-displayed-on-report id is resolved ----
-// (so an unresolved CDOR doesn't emit an empty Lender party; the order is blocked earlier
-// by missingRequired instead — see the order-build test.)
+// ---- No Lender party when neither a client-displayed id NOR name is resolved ----
 (() => {
   const deal = cdg.buildCreateAppraisal(
     { productCode: '76', loan: { loanNumber: '1' }, borrowers: [], property: {} },
     { apiKey: 'K', subdomain: 's' }).message.deals[0];
-  ok(!(deal.parties || []).some((x) => x.partyRoleType === 'Lender'), 'omits the Lender party when no client-displayed id');
+  ok(!(deal.parties || []).some((x) => x.partyRoleType === 'Lender'), 'omits the Lender party when no client-displayed id or name');
+})();
+
+// ---- Client-displayed by NAME only (no id resolved) → Lender party carries fullNameAddress ----
+// The vendor mapping's "Lender Alias (dba) Full Name and Address" = the Client Displayed on
+// Report. When the account's list can't be read, we send the default NAME so the order still
+// goes out (owner-directed: default "YS Capital Group") instead of blocking.
+(() => {
+  const deal = cdg.buildCreateAppraisal(
+    { productCode: '76', clientDisplayedName: 'YS Capital Group', loan: { loanNumber: '1' }, borrowers: [], property: {} },
+    { apiKey: 'K', subdomain: 's' }).message.deals[0];
+  const lender = (deal.parties || []).find((x) => x.partyRoleType === 'Lender');
+  ok(lender && lender.fullNameAddress === 'YS Capital Group', 'Lender party carries the client-displayed NAME (fullNameAddress) when only a name is known');
+  ok(lender && lender.partyRoleIdentifier === undefined, 'no partyRoleIdentifier when only a name is known');
+})();
+
+// ---- Client-displayed with BOTH id and name → Lender party carries both ----
+(() => {
+  const deal = cdg.buildCreateAppraisal(
+    { productCode: '76', clientDisplayedId: '297', clientDisplayedName: 'YS Capital Group', loan: { loanNumber: '1' }, borrowers: [], property: {} },
+    { apiKey: 'K', subdomain: 's' }).message.deals[0];
+  const lender = (deal.parties || []).find((x) => x.partyRoleType === 'Lender');
+  ok(lender && lender.partyRoleIdentifier === '297' && lender.fullNameAddress === 'YS Capital Group', 'Lender party carries both id and name when both are known');
 })();
 
 // ---- BestContact names the borrower it resolves to; the reachable contact lives on the

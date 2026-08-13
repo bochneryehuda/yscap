@@ -128,6 +128,34 @@ function dealShapeFor(ctx) {
 //         managementFee, bestContact, embeddedFiles, requestAction, parentSpOrderNumber }
 function buildOrderSpec(ctx, form, opts = {}) {
   const pr = ctx.property || {};
+
+  // Client Displayed on Report (AppraisalScope's client_displayed_id). A pinned id (opts)
+  // wins; its display name is taken from the matching resolved option so a pinned id NEVER
+  // rides a stale default name for a different profile. With no pin, carry the ctx-resolved
+  // id + name (the owner-directed default "YS Capital Group").
+  const pinnedCdId = opts.clientDisplayedId != null && opts.clientDisplayedId !== ''
+    ? String(opts.clientDisplayedId) : null;
+  const pinnedCdName = opts.clientDisplayedName != null && opts.clientDisplayedName !== ''
+    ? String(opts.clientDisplayedName) : null;
+  let clientDisplayedId;
+  let clientDisplayedName;
+  if (pinnedCdId != null) {
+    clientDisplayedId = pinnedCdId;
+    if (pinnedCdName != null) {
+      clientDisplayedName = pinnedCdName;
+    } else {
+      const match = (Array.isArray(ctx.clientDisplayedOptions) ? ctx.clientDisplayedOptions : [])
+        .find((o) => o && String(o.id) === pinnedCdId);
+      clientDisplayedName = match && match.name != null ? String(match.name) : null;
+    }
+  } else {
+    clientDisplayedId = ctx.clientDisplayedId != null && ctx.clientDisplayedId !== ''
+      ? String(ctx.clientDisplayedId) : null;
+    clientDisplayedName = pinnedCdName != null ? pinnedCdName
+      : (ctx.clientDisplayedName != null && ctx.clientDisplayedName !== ''
+        ? String(ctx.clientDisplayedName) : null);
+  }
+
   const spec = {
     requestAction: opts.requestAction || 'CreateAppraisal',
     parentSpOrderNumber: opts.parentSpOrderNumber || null,
@@ -140,13 +168,13 @@ function buildOrderSpec(ctx, form, opts = {}) {
     clientOrderNumber: ctx.clientOrderNumber || ctx.loanNumber || null,
     clientReferenceNumber: ctx.clientReferenceNumber || null,
 
-    // The "Client Displayed on Report" id (AppraisalScope's REQUIRED client_displayed_id).
-    // Resolved in order-service (config override, else the account's single client-on-report
-    // profile) and attached to ctx; a staffer can pin a specific one via opts. cdg.js emits
-    // it as the deal's partyRoleType="Lender" party. Null when the account has several and
-    // none is chosen — missingRequired blocks the order rather than let NAN reject it.
-    clientDisplayedId: opts.clientDisplayedId != null ? String(opts.clientDisplayedId)
-      : (ctx.clientDisplayedId != null ? String(ctx.clientDisplayedId) : null),
+    // The "Client Displayed on Report" (AppraisalScope's REQUIRED client_displayed_id) —
+    // resolved in order-service (config id, else the account's profile matched to the default
+    // name "YS Capital Group", else the name itself). cdg.js emits it as the deal's
+    // partyRoleType="Lender" party: its id when known, else its name (fullNameAddress).
+    // A staffer can pin a specific id via opts (its name comes from the matching option).
+    clientDisplayedId,
+    clientDisplayedName,
 
     rush: opts.rush != null ? !!opts.rush : false,
     needByDate: opts.needByDate || null,
@@ -277,12 +305,13 @@ function missingRequired(spec) {
   if (!primary || (!primary.firstName && !primary.legalEntityName)) missing.push('borrower first name');
   if (!primary || (!primary.lastName && !primary.legalEntityName)) missing.push('borrower last name');
   if (!spec.parties || !spec.parties.bestContact) missing.push('best person to contact');
-  // AppraisalScope REQUIRES a `client_displayed_id` — the client/lender profile shown on
-  // the report. It auto-selects when the account has one profile; when it can't be
-  // resolved (account has several and none picked, or the lookups aren't cached yet), block
-  // HERE with a plain reason instead of sending an order NAN rejects for a missing
-  // client_displayed_id. Resolving it = refresh the AMC lookups, or set AMC_CLIENT_DISPLAYED_ID.
-  if (!spec.clientDisplayedId) missing.push('the client shown on the appraisal report');
+  // AppraisalScope REQUIRES a `client_displayed_id` — the client/lender profile shown on the
+  // report. It resolves to an id (config, or the account's profile matched to the default
+  // name), else falls back to the default NAME ("YS Capital Group"), which is still sent — so
+  // this only blocks when neither an id NOR a name is available (e.g. the account has several
+  // profiles and none is picked — the preview shows a picker). It is never blocked just
+  // because the lookups aren't cached, since the default name is always sent.
+  if (!spec.clientDisplayedId && !spec.clientDisplayedName) missing.push('the client shown on the appraisal report');
   // AppraisalScope REQUIRES a purchase/property amount and a real, reachable main
   // contact (its `purchase_amount` / `primary_contact`). Validate them HERE so a blank
   // shows on the preview as a plain "still needed" line and the submit refuses — never
@@ -337,12 +366,20 @@ function orderAssumptions(ctx, form, opts = {}, spec = null) {
     add('titleCategory', 'Property type', property.titleCategory,
       'Worked out from the property type on the file.', 'derived');
   }
-  // The client shown on the appraisal report — auto-selected when the account has exactly
-  // one client-on-report profile, so the desk knows what will print on the report.
-  if (opts.clientDisplayedId == null && s.clientDisplayedId && ctx.clientDisplayedSource === 'catalog') {
-    add('clientDisplayedId', 'Client shown on the report',
-      ctx.clientDisplayedName ? `${ctx.clientDisplayedName} (#${s.clientDisplayedId})` : ('#' + s.clientDisplayedId),
-      'Auto-selected because your AppraisalScope account has one client-on-report profile.', 'catalog');
+  // The client shown on the appraisal report — always surfaced so the desk sees what will
+  // print on the report (defaults to "YS Capital Group"). Not shown when the staffer picked
+  // one explicitly, or when the account has several to choose from (a picker handles that).
+  if (opts.clientDisplayedId == null && opts.clientDisplayedName == null
+      && ctx.clientDisplayedSource && ctx.clientDisplayedSource !== 'multiple' && ctx.clientDisplayedSource !== 'none') {
+    const shown = ctx.clientDisplayedName
+      ? (s.clientDisplayedId ? `${ctx.clientDisplayedName} (#${s.clientDisplayedId})` : ctx.clientDisplayedName)
+      : (s.clientDisplayedId ? ('#' + s.clientDisplayedId) : null);
+    const why = ctx.clientDisplayedSource === 'catalog'
+      ? 'Matched to a profile in your AppraisalScope account.'
+      : ctx.clientDisplayedSource === 'config'
+        ? 'Set for your AppraisalScope account.'
+        : 'Filled in with your default — change it if the report should show a different client.';
+    add('clientDisplayedId', 'Client shown on the report', shown, why, ctx.clientDisplayedSource);
   }
   // Property value on a refinance: there is no purchase price, so the value the loan is
   // sized on was used. The appraisal gateway requires an amount, so this is worth a look.

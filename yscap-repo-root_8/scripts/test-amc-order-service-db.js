@@ -165,15 +165,24 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
 
     await setCdor([{ id: '297', name: 'YS Capital Group' }]);
     const one = await orderService.resolveClientDisplayed(c, '');
-    ok(one.id === '297' && one.source === 'catalog', 'one cached profile → auto-selected');
+    ok(one.id === '297' && one.source === 'catalog', 'one cached profile matching the default name → auto-selected');
 
+    // NAME MATCH wins even when the account has several profiles: "YS Capital Group" is
+    // matched to its id, so the order is not blocked (owner-directed default).
+    await setCdor([{ id: '297', name: 'YS Capital Group' }, { id: '512', name: 'Other Client' }]);
+    const matched = await orderService.resolveClientDisplayed(c, '');
+    ok(matched.id === '297' && matched.source === 'catalog', 'default name matched to its id even among several profiles');
+
+    // Several profiles, NONE matching the default name → not guessed; the picker chooses.
     await setCdor([{ id: '297', name: 'A' }, { id: '512', name: 'B' }]);
     const many = await orderService.resolveClientDisplayed(c, '');
-    ok(many.id === null && many.source === 'multiple' && many.options.length === 2, 'several profiles → not guessed (order will be blocked until one is chosen)');
+    ok(many.id === null && many.source === 'multiple' && many.options.length === 2, 'several profiles, none matching the default → picker (blocked until chosen)');
 
+    // No cached profile at all → fall back to the configured NAME so the order still goes out.
     await setCdor([]);
-    const none = await orderService.resolveClientDisplayed(c, '');
-    ok(none.id === null && none.source === 'none', 'no cached profile → unresolved (order blocked with a plain reason)');
+    const nameOnly = await orderService.resolveClientDisplayed(c, '');
+    ok(nameOnly.id === null && nameOnly.source === 'name_default' && nameOnly.name === 'YS Capital Group',
+      'empty cache → default name sent (order NOT blocked)');
     // Restore the single-profile cache for any later reads in this transaction.
     await setCdor([{ id: '297', name: 'YS Capital Group' }]);
 

@@ -71,27 +71,28 @@ function borrowerCtx(row, i) {
   };
 }
 
-// The "Client Displayed on Report" (CDOR) — AppraisalScope's REQUIRED client_displayed_id.
-// It is the client/lender alias AppraisalScope prints ON the appraisal report, chosen from
-// the tenant's own GetClientDisplayOnReport list. The gateway derives its snake_case
-// client_displayed_id from a deal party partyRoleType="Lender" (the "Lender Alias (dba)"),
-// so cdg.js emits that party; here we resolve WHICH id to send:
-//   1. AMC_CLIENT_DISPLAYED_ID (config) — an explicit choice always wins.
-//   2. else the cached GetClientDisplayOnReport list: exactly ONE entry → auto-use it
-//      (the common case — most tenants have a single client-on-report profile).
-//   3. several entries and no config override → don't guess (the wrong alias would print
-//      the wrong company on the report). Leave it unresolved so missingRequired blocks the
-//      order with a plain reason instead of sending an order NAN rejects.
-// Best-effort + read-only: any cache miss / query error resolves to 'none' (blocked), never
-// throws, so building a draft/preview never fails on the CDOR lookup.
-async function resolveClientDisplayed(db, subdomain) {
-  const configured = (cfg.amc && cfg.amc.clientDisplayedId) || null;
-  if (configured) return { id: String(configured), name: null, source: 'config', options: [] };
+// Normalize a client-on-report name for matching (case/spacing/punctuation-insensitive),
+// e.g. "YS Capital Group" / "ys capital group, llc" → "yscapitalgroup(llc)".
+function normName(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+// Does a catalog entry's name mean the configured client-on-report name? Exact-normalized,
+// else one contains the other — but ONLY when the shorter string is substantial (>= 5 chars)
+// so a stray short token ("A", "LLC") can't spuriously match a long company name. So
+// "YS Capital Group" matches "YS Capital Group, LLC" and "YS Capital", but never "A".
+function nameMeans(entryName, wantName) {
+  const a = normName(entryName), b = normName(wantName);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (Math.min(a.length, b.length) < 5) return false;
+  return a.includes(b) || b.includes(a);
+}
+
+// The freshest cached GetClientDisplayOnReport rows for a subdomain, then (if empty) under
+// ANY subdomain (the seed/cache may live under a different one than the live tenant, exactly
+// like formsCatalog). Never throws.
+async function cachedClientDisplayed(db, subdomain) {
   let rows = [];
   try { rows = await lookups.list(db, 'GetClientDisplayOnReport', subdomain || ''); } catch (_) { rows = []; }
   if (!rows.length) {
-    // The seed/cache may live under a different subdomain than the live tenant — take the
-    // freshest cached list under ANY subdomain (mirrors formsCatalog's fallback).
     try {
       const r = await db.query(
         `SELECT payload FROM amc_lookup_cache WHERE lookup_type = 'GetClientDisplayOnReport'
@@ -99,12 +100,91 @@ async function resolveClientDisplayed(db, subdomain) {
       if (r.rows[0] && Array.isArray(r.rows[0].payload)) rows = r.rows[0].payload;
     } catch (_) { /* none cached yet */ }
   }
-  const opts = (Array.isArray(rows) ? rows : [])
+  return (Array.isArray(rows) ? rows : [])
     .map((x) => ({ id: x && x.id != null ? String(x.id) : null, name: (x && x.name) || null }))
     .filter((x) => x.id);
+}
+
+// Self-heal an EMPTY client-on-report cache: refresh the GetClientDisplayOnReport lookup ONCE
+// live so the account's profiles (incl. "YS Capital Group" + its id) become available. Only
+// when the AMC is actually configured to authenticate; single-flight + throttled so an empty
+// cache can't hammer the vendor on every preview; best-effort — a failure leaves the cache
+// empty and resolution falls back to the configured name.
+//
+// The wait is BOUNDED (CDOR_REFRESH_WAIT_MS): a preview is a GET, and the live refresh is a
+// login+lookup that normally answers sub-second — but a hung AMC endpoint has a long transport
+// budget (90s × retries), so we wait only a few seconds for the id and otherwise return,
+// letting the refresh finish in the BACKGROUND (this preview uses the name default; the next
+// one picks up the populated id). So a preview never blocks for minutes on a hung vendor.
+const CDOR_REFRESH_WAIT_MS = 8000;
+let _cdorRefreshAt = 0;
+let _cdorRefreshInflight = null;
+async function ensureClientDisplayedCache(db) {
+  let cfgd;
+  try { cfgd = client.configured(); } catch (_) { cfgd = null; }
+  if (!cfgd || !cfgd.enabled || !cfgd.ready) return;   // never trigger a DoLogin off a draft/no-AMC env
+  if (!_cdorRefreshInflight) {
+    if (Date.now() - _cdorRefreshAt < 5 * 60 * 1000) return;   // at most once / 5 min per instance
+    _cdorRefreshAt = Date.now();
+    _cdorRefreshInflight = (async () => {
+      try { await lookups.refreshOne(db, 'GetClientDisplayOnReport'); }
+      catch (_) { /* best-effort — leave the cache empty, fall back to the name default */ }
+    })().finally(() => { _cdorRefreshInflight = null; });
+  }
+  // Bounded wait — never block a preview for minutes on a hung AMC (both the initiator and a
+  // concurrent caller wait at most CDOR_REFRESH_WAIT_MS; the refresh keeps running after).
+  const inflight = _cdorRefreshInflight;
+  let to = null;
+  try {
+    await Promise.race([
+      inflight ? inflight.catch(() => {}) : Promise.resolve(),
+      new Promise((resolve) => { to = setTimeout(resolve, CDOR_REFRESH_WAIT_MS); }),
+    ]);
+  } catch (_) { /* ignore */ }
+  finally { if (to) clearTimeout(to); }
+}
+
+// The "Client Displayed on Report" (CDOR) — AppraisalScope's REQUIRED client_displayed_id.
+// It is the client/lender alias AppraisalScope prints ON the appraisal report, chosen from
+// the tenant's own GetClientDisplayOnReport list. The gateway derives its snake_case
+// client_displayed_id from a deal party partyRoleType="Lender" (the "Lender Alias (dba)"),
+// so cdg.js emits that party; here we resolve WHICH id (or name) to send:
+//   1. AMC_CLIENT_DISPLAYED_ID (config) — an explicit id always wins.
+//   2. else the cached GetClientDisplayOnReport list (refreshed live once if empty):
+//      a. an entry whose name means the configured default ("YS Capital Group") → its id.
+//      b. exactly ONE entry → auto-use it.
+//      c. several entries, none matching the default → don't guess; a picker chooses. It's
+//         'multiple' → missingRequired blocks (with the picker) rather than print the wrong
+//         company on the report.
+//   3. the list can't be read at all → send the configured NAME (source 'name_default') so
+//      the order is NEVER blocked for a missing value — owner-directed: it should always
+//      default to "YS Capital Group".
+// Best-effort + never throws.
+async function resolveClientDisplayed(db, subdomain) {
+  const wantName = (cfg.amc && cfg.amc.clientDisplayedName) || null;
+  const configured = (cfg.amc && cfg.amc.clientDisplayedId) || null;
+  if (configured) return { id: String(configured), name: wantName, source: 'config', options: [] };
+
+  let opts = await cachedClientDisplayed(db, subdomain);
+  if (!opts.length) {                       // empty cache → try to populate it live, once
+    try { await ensureClientDisplayedCache(db); } catch (_) { /* best-effort */ }
+    opts = await cachedClientDisplayed(db, subdomain);
+  }
+
+  if (wantName) {
+    const matches = opts.filter((o) => nameMeans(o.name, wantName));
+    if (matches.length === 1) return { id: matches[0].id, name: matches[0].name, source: 'catalog', options: opts };
+    // Several profiles match the default name (e.g. "YS Capital Group" + "YS Capital Group LLC")
+    // → genuinely ambiguous; name left null so missingRequired blocks and the picker chooses.
+    if (matches.length > 1) return { id: null, name: null, source: 'multiple', options: matches };
+  }
   if (opts.length === 1) return { id: opts[0].id, name: opts[0].name, source: 'catalog', options: opts };
+  // Several distinct profiles and none matches the default name → can't default; the picker
+  // chooses (name null so the order blocks until one is picked rather than sending a guess).
   if (opts.length > 1) return { id: null, name: null, source: 'multiple', options: opts };
-  return { id: null, name: null, source: 'none', options: [] };
+  // Nothing in the catalog at all — fall back to the configured name so the order still goes
+  // out (owner-directed: default to "YS Capital Group"), never blocked for a missing value.
+  return { id: null, name: wantName || null, source: wantName ? 'name_default' : 'none', options: [] };
 }
 
 async function loadContext(db, appId) {
@@ -604,7 +684,7 @@ function orderSummary(order) {
       add('Main contact', [best.fullName, c.contactPhone, c.contactEmail].filter(Boolean).join(' · '));
     }
     const lender = (deal.parties || []).find((p) => p.partyRoleType === 'Lender');
-    if (lender) add('Client shown on report', lender.partyRoleIdentifier);
+    if (lender) add('Client shown on report', lender.fullNameAddress || lender.partyRoleIdentifier);
     const emails = (((msg.products && msg.products[0]) || {}).notifications || [])
       .map((n) => n && n.contactEmail).filter(Boolean);
     if (emails.length) add('Update emails to', emails.join(', '));
