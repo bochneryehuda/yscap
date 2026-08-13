@@ -390,6 +390,11 @@ function DrawRequestCard({ appId }) {
       .then((r) => setD(r)).catch(() => setD(null)).finally(() => setLoading(false));
   }, [appId]);
   useEffect(() => { reload(); }, [reload]);
+  // Hidden file input for the manual wire-form upload. Declared HERE, with the other hooks and
+  // BEFORE the first early return, so hook order is stable across renders (a useRef after the
+  // `return null` below would crash the card with "Rendered more hooks than during the previous
+  // render" once `d` loads). The manual-upload handlers that use it live further down.
+  const manualRef = useRef(null);
   if (loading || !d) return null;
   const opts = d.recipient_options || {};
   const coBorrower = opts.coBorrower && opts.coBorrower.email ? opts.coBorrower : null;
@@ -481,8 +486,7 @@ function DrawRequestCard({ appId }) {
   // the form, so the coordinator uploads it here instead of (or after clearing) the DocuSign flow.
   // It files onto the same draw condition as a draw_request_signed, so the money gate, the accept
   // step and investor delivery treat it exactly like a DocuSign copy; the coordinator still
-  // ACCEPTS it below before any wire moves.
-  const manualRef = useRef(null);
+  // ACCEPTS it below before any wire moves. (manualRef is declared up top with the other hooks.)
   async function uploadManual(e) {
     const f = (e.target.files || [])[0];
     e.target.value = '';
