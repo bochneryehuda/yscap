@@ -4166,6 +4166,99 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .seg > button + button{border-left:0;border-top:1px solid var(--border)}
 }
 
+/* ==== Unified appraisal order section — modern / airy (.aord-*) =============
+   A scoped design system: soft shadowed cards (no hard borders), generous
+   whitespace, a compact vendor TAG on the header (not a side rail), a slim
+   timeline, and a quiet action row. Every state modifier is namespaced
+   (.aord-node.now — never a bare .now) and every text colour is an explicit
+   dark hex, per the white-first HARD RULE. */
+.aord{color:#141B22}
+.aord-card{background:#fff;border:1px solid #F2EDE2;border-radius:16px;
+  box-shadow:0 1px 2px rgba(20,27,34,.04),0 16px 36px -26px rgba(20,27,34,.22);
+  padding:20px 22px;margin-bottom:14px}
+.aord-card.flush{padding:0;overflow:hidden}
+@media(max-width:560px){.aord-card{padding:16px}}
+
+/* header row: title cluster grows, tag/status sit on the end and wrap under */
+.aord-h{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap}
+.aord-h .grow{flex:1 1 240px;min-width:0}
+.aord-title{font-size:16px;font-weight:650;color:#141B22;letter-spacing:-.01em;line-height:1.25}
+.aord-sub{font-size:12.5px;color:#8A93A0;margin-top:4px;line-height:1.45}
+
+/* vendor tag — the identity, as a small pill (gold NAN / teal Class) */
+.aord-tag{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;
+  letter-spacing:.03em;padding:3px 9px 3px 8px;border-radius:999px;white-space:nowrap;text-transform:uppercase}
+.aord-tag .d{width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 auto}
+.aord-tag.nan{background:#FBF3E1;color:#8A6520}
+.aord-tag.class{background:#E7F1F1;color:#276167}
+
+/* status pill — soft filled */
+.aord-pill{font-size:12px;font-weight:600;padding:3px 11px;border-radius:999px;white-space:nowrap}
+
+/* connection status — a quiet inline dot + text, never a box */
+.aord-conn{display:inline-flex;align-items:center;gap:7px;margin-top:10px;font-size:12.5px;color:#54606C}
+.aord-conn .d{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+
+/* section label above the active list / drawer */
+.aord-eyebrow{font-size:11.5px;font-weight:600;color:#9AA1AC;letter-spacing:.06em;
+  text-transform:uppercase;margin:24px 2px 10px}
+
+/* slim milestone timeline — scrolls inside its OWN overflow-x:auto container */
+.aord-rail{display:flex;gap:0;overflow-x:auto;margin:16px 0 6px;padding-bottom:2px}
+.aord-node{flex:1 1 0;min-width:72px;position:relative;display:flex;flex-direction:column;
+  align-items:center;text-align:center}
+.aord-node::before{content:'';position:absolute;top:5px;left:-50%;width:100%;height:2px;
+  background:#EAE4D6;z-index:0}
+.aord-node:first-child::before{display:none}
+.aord-node i{width:11px;height:11px;border-radius:50%;background:#fff;border:2px solid #D9D2C2;
+  position:relative;z-index:1;box-sizing:border-box}
+.aord-node span{font-size:10.5px;line-height:1.25;color:#9AA1AC;margin-top:8px;overflow-wrap:anywhere}
+.aord-node.done i{background:#2F7F86;border-color:#2F7F86}
+.aord-node.done::before{background:#2F7F86}
+.aord-node.done span{color:#67707B}
+.aord-node.now i{background:#AE8746;border-color:#AE8746;box-shadow:0 0 0 4px #F7EEDA}
+.aord-node.now::before{background:linear-gradient(90deg,#2F7F86,#AE8746)}
+.aord-node.now span{color:#7A5B1E;font-weight:700}
+
+/* small state chips under the timeline (on hold / revision) */
+.aord-chip{display:inline-flex;align-items:center;font-size:11.5px;font-weight:600;
+  padding:2px 9px;border-radius:999px}
+
+/* subtle "Details" toggle — a text link, not a button box */
+.aord-more{appearance:none;border:0;background:transparent;color:#2F7F86;cursor:pointer;
+  font:inherit;font-size:12.5px;font-weight:600;padding:8px 0 2px;display:inline-flex;align-items:center;gap:5px}
+.aord-more:hover{color:#276167}
+
+/* quiet action row — grouped by a hairline, primary filled, rest ghost */
+.aord-acts{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:16px}
+.aord-acts .sep{width:1px;height:22px;background:#EDE8DD;margin:0 4px;flex:0 0 auto}
+.aord-btn{appearance:none;border:0;background:transparent;cursor:pointer;font:inherit;font-size:13px;
+  font-weight:550;color:#3B4550;padding:8px 13px;border-radius:10px;display:inline-flex;align-items:center;gap:7px}
+.aord-btn:hover{background:#F4F0E7}
+.aord-btn:disabled{opacity:.5;cursor:not-allowed}
+.aord-btn.pri{background:#2F7F86;color:#fff;font-weight:600;padding:9px 18px}
+.aord-btn.pri:hover:not(:disabled){background:#276167}
+.aord-btn.paid{background:#EAF3EE;color:#1E7B4F;font-weight:600}
+.aord-btn.danger{color:#B4453B}
+.aord-btn.danger:hover{background:#FBEEEC}
+.aord-btn .n{background:#2F7F86;color:#fff;border-radius:999px;font-size:10px;font-weight:700;
+  padding:1px 6px;line-height:1.5}
+
+/* soft inner block (details / sub-surfaces) — a tint, never a hard border */
+.aord-inner{background:#FBF9F4;border:1px solid #F2EDE2;border-radius:12px;padding:16px;margin-top:12px}
+.aord-inner.plain{background:#fff}
+
+/* two-column money read-out (What was ordered) */
+.aord-figs{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;margin-top:12px}
+.aord-figs dt{font-size:12.5px;color:#8A93A0}
+.aord-figs dd{font-size:12.5px;color:#141B22;margin:0;text-align:right;font-variant-numeric:tabular-nums}
+.aord-figs .rule{grid-column:1/-1;height:1px;background:#EDE8DD;margin:6px 0 3px}
+.aord-figs .tot{font-weight:700;color:#141B22}
+
+/* empty state */
+.aord-empty{margin-top:18px;padding:26px 20px;text-align:center;color:#8A93A0;font-size:13px;
+  background:#FBF9F4;border-radius:14px}
+
 /* ---- Investor draw-delivery contacts (draw rules screen) ---- */
 .inv-buyer{margin-bottom:14px}
 .inv-buyer > .act-label{display:block;margin-bottom:5px}
