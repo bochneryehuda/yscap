@@ -58,8 +58,7 @@ import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import GuarantyWaiverCard from '../components/GuarantyWaiverCard.jsx';
 import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
-import AmcAppraisalPanel from '../components/AmcAppraisalPanel.jsx';
-import ClassAppraisalPanel from '../components/ClassAppraisalPanel.jsx';
+import AppraisalOrderSection from '../components/AppraisalOrderSection.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import EncompassSyncPanel from '../components/EncompassSyncPanel.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
@@ -4239,20 +4238,6 @@ const IconBell = () => (
 // mistake, then re-lock it. Shows the lock state to everyone; the Unlock / Re-lock
 // buttons are super-admin-only (the server enforces this too).
 const STRUCTURAL_LOCK_STATUSES = ['clear_to_close', 'funded', 'declined', 'withdrawn'];
-// Names the vendor a desk belongs to. The Appraisal section carries TWO of them and
-// neither is the default, so each one has to say whose it is on its face — a person
-// must never be able to place an order without knowing which company gets it.
-function VendorHeading({ children }) {
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 8, margin: '18px 0 8px',
-      color: '#141B22', fontWeight: 700, fontSize: 15,
-    }}>
-      <span style={{ width: 4, height: 16, borderRadius: 2, background: '#AE8746', display: 'inline-block' }} />
-      {children}
-    </div>
-  );
-}
 
 function StructuralLockBanner({ app, role, onChanged }) {
   const [busy, setBusy] = useState(false);
@@ -6060,16 +6045,14 @@ export default function StaffApplication() {
       </Section>
 
       <Section hidden={!show('sec-order-appraisal')} id="sec-order-appraisal" summary={summaries['sec-order-appraisal']} title="Appraisal"
-        info="Order the appraisal with every field filled in and shown to you first. Two places can do it — AppraisalScope / NAN and Class Valuation — and you pick which one per file; neither is the default. Track the status, message them back and forth, request revisions or dispute the value, and send documents up. Each turns on once its login is set up.">
-      {/* TWO VENDORS, SIDE BY SIDE, NEITHER THE DEFAULT. The owner has not picked one
-          ("we don't need to set a default … none of them are ready right now"), so the
-          two desks sit next to each other under their own names and a person chooses.
-          Do NOT quietly grow a default here, and do NOT merge the two panels — each
-          answers only for its own vendor. */}
-      <VendorHeading>AppraisalScope / NAN</VendorHeading>
-      <AmcAppraisalPanel appId={id} />
-      <VendorHeading>Class Valuation</VendorHeading>
-      <ClassAppraisalPanel appId={id} />
+        info="Order the appraisal with every field filled in and shown to you first. Two places can do it — AppraisalScope / NAN and Class Valuation — and you pick which one per file; neither is the default. Track the status, message them back and forth, request revisions or dispute the value, send documents up, and pay the appraisal card. Each turns on once its login is set up.">
+      {/* ONE unified "Appraisal order" section. A vendor selector chooses which backend
+          the BUILDER targets; the active-order cards and the one drafts+failed drawer
+          show orders from BOTH vendors together, each carrying its own vendor stamp.
+          The two vendors stay TECHNICALLY SEPARATE — no mixing of backends. The owner
+          has not picked a default ("none of them are ready right now"), so the selector
+          only chooses the display/builder target; it never registers a file preference. */}
+      <AppraisalOrderSection appId={id} onChanged={load} />
       </Section>
 
       <Section hidden={!show('sec-order-closing')} id="sec-order-closing" summary={summaries['sec-order-closing']} title="Attorney closing prep"

@@ -4166,6 +4166,46 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .seg > button + button{border-left:0;border-top:1px solid var(--border)}
 }
 
+/* ---- Unified appraisal order section (.aord-*) ------------------------------
+   The tiny new CSS the unified section needs; everything else reuses existing
+   classes (.act-card / .act-bar / .seg / .dd-chip / .dd-note / .cv-modal). Every
+   state modifier is namespaced (.aord-step.now — never a bare .now) and every
+   text/mark colour is an explicit dark hex, per the white-first HARD RULE. */
+.aord-active{display:flex;gap:12px;align-items:stretch}
+.aord-active > .act-card{flex:1 1 auto;min-width:0}
+/* The vendor stamp — a compact side rail: a 4px gold bar + the vendor short name in
+   bold ink, the VendorHeading language turned vertical. On the inline-end side. */
+.aord-stamp{flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+  padding:10px 8px;border:1px solid var(--border);border-inline-start:4px solid #AE8746;
+  border-radius:var(--radius);background:var(--surface)}
+.aord-stamp b{font-size:12px;font-weight:700;color:#141B22;letter-spacing:.02em;
+  writing-mode:vertical-rl;transform:rotate(180deg)}
+@media(max-width:720px){
+  /* On a phone the stamp drops ABOVE the card header instead of beside it. */
+  .aord-active{flex-direction:column-reverse}
+  .aord-stamp{width:100%;padding:6px 12px;border-inline-start:1px solid var(--border);
+    border-block-start:4px solid #AE8746;justify-content:flex-start}
+  .aord-stamp b{writing-mode:horizontal-tb;transform:none}
+}
+/* The normalized milestone stepper. Wraps/scrolls in its OWN overflow-x:auto
+   container so it never widens the card (the standing mobile rule). */
+.aord-timeline{display:flex;gap:0;overflow-x:auto;margin:12px 0 2px;padding-bottom:2px}
+.aord-step{flex:1 1 0;min-width:78px;position:relative;display:flex;flex-direction:column;
+  align-items:center;text-align:center}
+.aord-step::before{content:'';position:absolute;top:6px;left:-50%;width:100%;height:2px;
+  background:#D9D4C8;z-index:0}
+.aord-step:first-child::before{display:none}
+.aord-step .aord-dot{width:14px;height:14px;border-radius:50%;background:#FFFFFF;
+  border:2px solid #D9D4C8;position:relative;z-index:1}
+.aord-step .aord-slabel{font-size:11px;line-height:1.2;color:#636B6E;margin-top:6px;
+  overflow-wrap:anywhere}
+.aord-step.done .aord-dot{background:#2F7F86;border-color:#2F7F86}
+.aord-step.done::before{background:#2F7F86}
+.aord-step.done .aord-slabel{color:#4B585C}
+.aord-step.now .aord-dot{background:#AE8746;border-color:#AE8746;box-shadow:0 0 0 4px #F6EEDD}
+.aord-step.now::before{background:linear-gradient(90deg,#2F7F86,#AE8746)}
+.aord-step.now .aord-slabel{color:#856529;font-weight:700}
+
 /* ---- Investor draw-delivery contacts (draw rules screen) ---- */
 .inv-buyer{margin-bottom:14px}
 .inv-buyer > .act-label{display:block;margin-bottom:5px}
