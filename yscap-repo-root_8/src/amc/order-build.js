@@ -54,6 +54,34 @@ function loanPurposeFor(loanPurpose) {
   return /refi|refinance/.test(k) ? 'Refinance' : 'Purchase';
 }
 
+// AppraisalScope REQUIRES loan.estimatedClosingDate to be TODAY OR LATER — it rejects an
+// absent or past value with "-1008 Service Provider Processing Error: Invalid request data.
+// missing_field_array: estimated_closing_date: Date must be greater than or equal to current
+// date." A file's est_closing_date is frequently blank, or has drifted into the past by the
+// time an appraisal is ordered, so the value we SEND to the gateway is clamped forward to a
+// valid future date. This is display/order-context only — the appraiser's scheduling estimate;
+// it is NEVER written back onto applications.est_closing_date (that field feeds the
+// first-payment/maturity derivation and the closing chain, and must stay the staff's own value).
+const DEFAULT_CLOSING_BUFFER_DAYS = 30;
+const ISO_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+function utcTodayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+function addDaysISO(iso, n) {
+  return new Date(Date.parse(iso + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+}
+// Resolve the estimated closing date to send to the gateway. Returns the file's date when it
+// is a valid calendar day that is today-or-later (the staff's real estimate); otherwise a
+// future default (today + buffer). ALWAYS returns a 'YYYY-MM-DD' string >= today, so the
+// required field is never absent or in the past. opts.today / opts.bufferDays are for tests.
+function orderClosingDate(fileDate, opts = {}) {
+  const today = ISO_DAY_RE.test(opts.today || '') ? opts.today : utcTodayISO();
+  const buffer = Number.isFinite(opts.bufferDays) ? opts.bufferDays : DEFAULT_CLOSING_BUFFER_DAYS;
+  const d = (typeof fileDate === 'string' && ISO_DAY_RE.test(fileDate)) ? fileDate : null;
+  if (d && d >= today) return d;                 // valid future estimate — keep the staff's date
+  return addDaysISO(today, buffer);              // blank or past → a valid future default
+}
+
 // THE RTL STRATEGY the form defaults key on — one of the exact tokens db/481 seeds:
 // `fix_and_flip` / `bridge` / `dscr` / `ground_up` (or null = can't tell, so the desk
 // asks a human rather than guess a wrong form).
@@ -125,7 +153,8 @@ function dealShapeFor(ctx) {
 // form: { productCode, subproductCodes, amcIdentifier } (from form-select) — productCode
 //   may be overridden by opts.productCode when staff pick a different form.
 // opts: { mortgageType, requestComment, rush, needByDate, notifyEmails, jobFee,
-//         managementFee, bestContact, embeddedFiles, requestAction, parentSpOrderNumber }
+//         managementFee, bestContact, embeddedFiles, requestAction, parentSpOrderNumber,
+//         estimatedClosingDate }
 function buildOrderSpec(ctx, form, opts = {}) {
   const pr = ctx.property || {};
 
@@ -194,7 +223,10 @@ function buildOrderSpec(ctx, form, opts = {}) {
       mortgageType: opts.mortgageType || ctx.mortgageType || 'Conventional',
       loanPurpose: loanPurposeFor(ctx.loanPurpose),
       baseLoanAmount: ctx.loanAmount != null ? ctx.loanAmount : null,
-      estimatedClosingDate: ctx.estimatedClosingDate || null,
+      // The gateway REQUIRES this to be today-or-later — clamp the file's value forward so a
+      // blank or drifted-past closing date can never reject the order (see orderClosingDate).
+      // A staffer may pin one on the preview (opts.estimatedClosingDate); it is clamped too.
+      estimatedClosingDate: orderClosingDate(opts.estimatedClosingDate || ctx.estimatedClosingDate, { today: opts.today }),
       lienPriority: ctx.lienPriority || null,
     },
 
@@ -396,5 +428,5 @@ function orderAssumptions(ctx, form, opts = {}, spec = null) {
 
 module.exports = {
   buildOrderSpec, orderAssumptions, dealShapeFor, dealStrategyKey, missingRequired,
-  titleCategoryFor, occupancyFor, loanPurposeFor, resolvePrimaryContact,
+  titleCategoryFor, occupancyFor, loanPurposeFor, resolvePrimaryContact, orderClosingDate,
 };

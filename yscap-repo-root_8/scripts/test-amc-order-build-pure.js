@@ -170,6 +170,44 @@ const ctx = {
   ok(!em.includes('borrower first name') && !em.includes('borrower last name'), 'entity-only borrower satisfies name requirement');
 }
 
+// ---- estimated closing date clamp (AppraisalScope requires today-or-later) ----
+// today injected everywhere so these stay deterministic regardless of when the suite runs.
+{
+  const T = '2026-08-13';
+  // a valid FUTURE date is kept verbatim (the staff's real estimate)
+  ok(ob.orderClosingDate('2026-09-15', { today: T }) === '2026-09-15', 'closing: future date kept as-is');
+  // exactly today satisfies ">= current date"
+  ok(ob.orderClosingDate('2026-08-13', { today: T }) === '2026-08-13', 'closing: today kept as-is');
+  // a PAST date is clamped forward to today + default buffer (30 days)
+  ok(ob.orderClosingDate('2026-08-01', { today: T }) === '2026-09-12', 'closing: past date → today+30');
+  // blank / null / garbage → today + buffer (never absent, never past)
+  ok(ob.orderClosingDate(null, { today: T }) === '2026-09-12', 'closing: null → today+30');
+  ok(ob.orderClosingDate('', { today: T }) === '2026-09-12', 'closing: empty → today+30');
+  ok(ob.orderClosingDate('not-a-date', { today: T }) === '2026-09-12', 'closing: garbage → today+30');
+  ok(ob.orderClosingDate(20260901, { today: T }) === '2026-09-12', 'closing: non-string → today+30');
+  // custom buffer + month/year rollover in the date math
+  ok(ob.orderClosingDate('', { today: T, bufferDays: 0 }) === '2026-08-13', 'closing: buffer 0 → today');
+  ok(ob.orderClosingDate(null, { today: '2026-12-20', bufferDays: 30 }) === '2027-01-19', 'closing: rollover Dec→Jan');
+  // the result is always a valid calendar day >= today
+  const r = ob.orderClosingDate('2020-01-01', { today: T });
+  ok(/^\d{4}-\d{2}-\d{2}$/.test(r) && r >= T, 'closing: result is a YYYY-MM-DD >= today');
+
+  // buildOrderSpec applies the clamp at the one chokepoint, so a blank/past file date can
+  // never reject the order, and a future date is preserved. NOTE the signature is
+  // buildOrderSpec(ctx, form, opts) — `today` is injected via opts (3rd arg) for determinism.
+  const base = { loanNumber: 'L', property: { category: 'SFR', addressLine: 'a', city: 'c', state: 'NY', postalCode: '1' }, borrowers: [{ firstName: 'A', lastName: 'B' }] };
+  const F = { productCode: '5' };
+  ok(ob.buildOrderSpec({ ...base, estimatedClosingDate: '2026-08-01' }, F, { today: T }).loan.estimatedClosingDate === '2026-09-12', 'spec: past file date clamped forward');
+  ok(ob.buildOrderSpec({ ...base, estimatedClosingDate: '2026-09-15' }, F, { today: T }).loan.estimatedClosingDate === '2026-09-15', 'spec: future file date kept');
+  ok(ob.buildOrderSpec({ ...base, estimatedClosingDate: null }, F, { today: T }).loan.estimatedClosingDate === '2026-09-12', 'spec: missing file date defaulted (never null)');
+  // a staff-pinned date on the preview wins (and is itself clamped)
+  ok(ob.buildOrderSpec({ ...base, estimatedClosingDate: '2026-09-15' }, F, { today: T, estimatedClosingDate: '2026-10-01' }).loan.estimatedClosingDate === '2026-10-01', 'spec: staff override wins');
+  ok(ob.buildOrderSpec({ ...base, estimatedClosingDate: '2026-09-15' }, F, { today: T, estimatedClosingDate: '2020-01-01' }).loan.estimatedClosingDate === '2026-09-12', 'spec: staff override past date clamped');
+  // the clamped date rides onto the wire message (never omitted from the loan block)
+  const wm = cdg.buildCreateAppraisal(ob.buildOrderSpec({ ...base, estimatedClosingDate: null }, F, { today: T }), { apiKey: 'K', subdomain: 's', lenderIdentifier: 'G' }).message;
+  ok(wm.deals[0].loans[0].estimatedClosingDate === '2026-09-12', 'e2e: clamped closing date on the wire');
+}
+
 // ---- end to end: auto-filled spec → valid CreateAppraisal wire message ----
 {
   const spec = ob.buildOrderSpec(ctx, { productCode: '5', amcIdentifier: '426' });
