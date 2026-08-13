@@ -425,6 +425,13 @@ const VALUE_MAPS = Object.freeze({
     'direct rtl / with tpr': 'direct', 'direct rtl with tpr': 'direct',
     'direct / w tpr': 'direct', 'direct w tpr': 'direct',
     'w tpr': 'direct', 'with tpr': 'direct', 'tpr': 'direct',
+    // ClickUp "Wholesale/correspondent" dropdown spellings (owner-directed 2026-08, Task L):
+    // the non-table-funded ClickUp values read as `direct` so the closing reconciliation can
+    // align ClickUp with Encompass + PILOT. Additive + safe — these never appear in Encompass
+    // CX.TABLEFUNDER. A table-funded ClickUp value ("table funding") is already covered above.
+    'delegate correspondent': 'direct', 'delegated correspondent': 'direct',
+    'correspondent': 'direct', 'correspondent w tpr': 'direct',
+    'correspondent with tpr': 'direct', 'correspondent / w tpr': 'direct',
   },
   // CX.REHABTYPE ↔ applications.rehab_type (Cosmetic/Moderate/Heavy/Adding SF/Ground-up)
   // Owner-directed 2026-07-26: Encompass only has Light / Heavy / Expansion, so our

@@ -257,27 +257,28 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false, r
       }
       if (onSaved) { resyncPending.current = true; onSaved(); }
     } catch (e) {
-      // AS-IS / ARV super-admin OVERRIDE of a sent term sheet (owner-directed 2026-08).
-      // When Save is refused because the term sheet is frozen and the super_admin changed
-      // ONLY the as-is value / ARV, offer a DOUBLE-WARNING override that updates just those
-      // two. The server applies it ONLY when the change is terms-neutral (loan amount +
-      // every fee unchanged), keeping the sent term sheet valid; otherwise it refuses.
+      // AS-IS / ARV super-admin OVERRIDE of a sent term sheet (owner-directed 2026-08,
+      // "Save ARV, keep the loan"). When Save is refused because the term sheet is frozen and
+      // the super_admin changed ONLY the as-is value / ARV, offer a DOUBLE-WARNING override
+      // that updates just those two. The server RECORDS the new figures whether or not
+      // re-pricing at them would move the loan, and keeps the loan amount, the registration
+      // and the sent term sheet EXACTLY as they are — only the recorded ARV/as-is changes.
       const tsFrozen = e && e.status === 409 && /term sheet/i.test((e.data && e.data.error) || e.message || '');
       const asIsChanged = String(f.asIsValue ?? '') !== String(app.as_is_value ?? '');
       const arvChanged = String(f.arv ?? '') !== String(app.arv ?? '');
       if (tsFrozen && canOverride(role) && (asIsChanged || arvChanged)) {
         const ok1 = await askConfirm(
-          'The Term Sheet package has already been sent, so this file is frozen. As a super admin you can override to update ONLY the as-is value and the ARV — and only if the loan amount and every fee stay exactly the same. Any other changes on this form will NOT be saved.',
+          'The Term Sheet package has already been sent, so this file is frozen. As a super admin you can override to update ONLY the recorded as-is value and ARV. The loan amount and the sent term sheet stay EXACTLY as they are — nothing about the loan changes, you are only updating the recorded value. Any other changes on this form will NOT be saved.',
           { title: 'Override the frozen term sheet?', confirmLabel: 'Continue' });
         const ok2 = ok1 && await askConfirm(
-          'Second check: this changes the recorded as-is value and ARV on a file whose term sheet has gone out. Your name, the time and your reason are saved on the file permanently.',
+          'Second check: this changes the recorded as-is value and ARV on a file whose term sheet has gone out. The loan and the sent term sheet are kept as-is — only the recorded value changes. Your name, the time and your reason are saved on the file permanently.',
           { title: 'Are you sure?', confirmLabel: 'Override now' });
         if (ok2) {
           const reason = await askPrompt('Why are you overriding to update the as-is value / ARV? (required — saved on the file and visible to the team)');
           if (reason != null && reason.trim()) {
             try {
               await api.staffEditApplication(app.id, { asIsValue: f.asIsValue, arv: f.arv, adminOverride: true, overrideReason: reason.trim() });
-              setMsg('As-is value and ARV updated (admin override). The sent term sheet was kept as-is.');
+              setMsg('Recorded as-is value and ARV updated (admin override). The loan and the sent term sheet were kept exactly as they are.');
               if (onSaved) { resyncPending.current = true; onSaved(); }
               return;
             } catch (e2) {

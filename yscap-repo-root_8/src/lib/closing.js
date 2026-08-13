@@ -266,6 +266,71 @@ function readEncompassFundedDate(app) {
   } catch (_) { return null; }
 }
 
+// The raw Encompass CX.TABLEFUNDER value (the funding channel), READ-ONLY. Null when the file
+// isn't in Encompass or the field is blank. Encompass is never written — this only reads.
+function readEncompassChannelRaw(app) {
+  try {
+    const map = require('./integrations/encompass-field-map');
+    const extra = app && app.encompass_extra;
+    if (!extra) return null;
+    const fields = map.extractFields(extra) || {};
+    const v = fields.funding_channel;
+    return v == null || String(v).trim() === '' ? null : String(v).trim();
+  } catch (_) { return null; }
+}
+
+// ---------------------------------------------------------------------------
+// FUNDING CHANNEL — table-funding status ALIGNED across the three systems
+// (owner-directed 2026-08, Task L): PILOT's own selector (the closer's warehouse pick),
+// ClickUp's "Wholesale/correspondent" field, and Encompass's CX.TABLEFUNDER — all shown
+// side by side so the closer can see they agree BEFORE reconciling. A table-funded loan was
+// sold at the closing table, so it SKIPS post-closing purchasing + draws + investor delivery
+// and its button is "Reconcile"; a direct loan goes to the purchasing workflow.
+//
+// Every reading is null-when-unknown, and the alignment declines to judge when fewer than two
+// systems have an opinion (mirrors funding-channel.js — never guess). Encompass is READ-ONLY.
+// ---------------------------------------------------------------------------
+function fundingChannelStatus(app, closing) {
+  const FC = require('./funding-channel');
+  const buyerKey = FC.toBuyerKey(app && app.lender);
+  // PILOT — the closer's warehouse pick. null = not chosen yet.
+  const warehouse = (closing && closing.warehouse) || null;
+  const pilotTable = warehouse ? tableFundedFor(warehouse) : null;
+  // Encompass — CX.TABLEFUNDER (read-only).
+  const encRaw = readEncompassChannelRaw(app);
+  const encChannel = encRaw ? FC.channelKey(encRaw) : null;
+  const encTable = encChannel == null ? null : FC.isTableFunding(encChannel);
+  // ClickUp — the "Wholesale/correspondent" field (applications.channel, a free dropdown).
+  const cuRaw = app && app.channel ? String(app.channel).trim() : null;
+  const cuChannel = cuRaw ? FC.channelKey(cuRaw) : null;
+  const cuTable = cuChannel == null ? null : FC.isTableFunding(cuChannel);
+
+  const readings = [pilotTable, encTable, cuTable].filter((v) => v !== null);
+  // Agree = every system that has an opinion says the same thing. Fewer than two opinions →
+  // nothing to disagree about (agree = true), so the panel doesn't cry wolf on a half-filled file.
+  const agree = readings.length < 2 ? true : readings.every((v) => v === readings[0]);
+  // "Sold at the table" is PILOT's pick OR Encompass — the same definition the purchase-advice
+  // logic uses, so this panel and the PA chase can never disagree about whether a loan is sold.
+  const soldAtTable = FC.soldAtTable({ tableFunded: pilotTable, channel: encChannel });
+
+  return {
+    note_buyer: FC.label(buyerKey),
+    may_table_fund: FC.mayTableFund(buyerKey),        // true / false / null (no rule)
+    pilot: { warehouse, table_funded: pilotTable },
+    clickup: { raw: cuRaw, channel: cuChannel, table_funded: cuTable },
+    encompass: { raw: encRaw, channel: encChannel, table_funded: encTable },
+    sold_at_table: soldAtTable,
+    agree,
+    // The owner's hard rule: a direct-only buyer (Blue Lake / EMCAP / CorrFirst) can never be
+    // table funded. { code, message, violation } or null. Advisory here (the Encompass panel
+    // owns the blocking version) — surfaced so the closer sees it before reconciling.
+    rule: FC.channelProblem({ buyer: app && app.lender, channelRaw: encRaw }),
+    // Which action the file takes: a sold-at-table loan is Reconciled (skips purchasing +
+    // draws); a direct loan is added to the purchasing workflow.
+    button: soldAtTable ? 'reconcile' : 'purchasing',
+  };
+}
+
 // THE RECONCILIATION GATE — the funded date must match across all three systems
 // before the file can be marked "fully reconciled". PILOT + ClickUp are the hard
 // requirement (both present + equal); the Encompass leg is enforced only when a
@@ -463,7 +528,8 @@ async function getClosingWorkspace(appId, client) {
   const c = client || db;
   const app = (await c.query(
     `SELECT a.id, a.ys_loan_number, a.llc_id, a.status, a.funded_date, a.actual_closing,
-            a.expected_closing, a.closer_id, a.lender, a.clickup_pipeline_task_id, s.full_name AS closer_name
+            a.expected_closing, a.closer_id, a.lender, a.channel, a.encompass_extra,
+            a.encompass_loan_guid, a.clickup_pipeline_task_id, s.full_name AS closer_name
        FROM applications a LEFT JOIN staff_users s ON s.id = a.closer_id
       WHERE a.id=$1 AND a.deleted_at IS NULL`, [appId])).rows[0];
   if (!app) return null;
@@ -478,6 +544,8 @@ async function getClosingWorkspace(appId, client) {
   const notes = await safe(() => readNotes(appId, c), []);
   const reconciliation = await safe(() => reconcileClosingDates(appId, c), null);
   const structure = await safe(() => readRegisteredStructure(appId, c), null);
+  let fundingChannel = null;
+  try { fundingChannel = fundingChannelStatus(app, closing); } catch (_) { /* best-effort */ }
 
   return {
     structure,
@@ -499,6 +567,9 @@ async function getClosingWorkspace(appId, client) {
     checklists,
     notes,
     reconciliation,
+    // The table-funding status aligned across PILOT / ClickUp / Encompass + which action the
+    // file takes (Reconcile vs Add to purchasing). Owner-directed 2026-08 (Task L).
+    fundingChannel,
     warehouses: WAREHOUSES,
     // THE USUAL ANSWER FOR THIS NOTE BUYER — a SUGGESTION for the closer, never a decision
     // (owner-directed 2026-08-09: "most of the properties that have Fidelis as a note buyer should
@@ -551,6 +622,8 @@ module.exports = {
   readVerifiedLiquidity,
   runCashToCloseCheck,
   readEncompassFundedDate,
+  readEncompassChannelRaw,
+  fundingChannelStatus,
   reconcileClosingDates,
   readQuickLinks,
   readClosingConditions,

@@ -188,13 +188,18 @@ async function gatherAttachments(appId, drawId, mode) {
   // form's signed, executed version should be sent to the investor").
   if (mode === 'investor_direct') {
     try {
+      // Deliver the ACCEPTED wire form — a DocuSign copy OR a manually-uploaded one (both are
+      // draw_request_signed; the manual one is told apart only by source_type). Selecting the
+      // newest ACCEPTED current copy (not just the newest current) keeps what is DELIVERED in
+      // lock-step with what the money gate (wireFormStatus) approved: if two current copies ever
+      // coexist, the investor never receives an unaccepted one.
       const w = (await db.query(
         `SELECT id, filename, storage_ref, storage_provider FROM documents
-          WHERE application_id=$1 AND is_current AND doc_kind='draw_request_signed'
+          WHERE application_id=$1 AND is_current AND doc_kind='draw_request_signed' AND ${ACCEPT.ACCEPTED_SQL('')}
           ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0];
       const buf = w ? await readDoc(w) : null;
       if (buf) items.push({ what: 'Signed wire instructions', filename: w.filename || 'wire-instructions-signed.pdf', contentType: 'application/pdf', buf });
-      else skipped.push({ what: 'Signed wire instructions', reason: w ? 'the stored copy could not be read' : 'the borrower has not signed the wire instructions form yet' });
+      else skipped.push({ what: 'Signed wire instructions', reason: w ? 'the stored copy could not be read' : 'the accepted wire instructions form is not on file yet' });
     } catch (_) { skipped.push({ what: 'Signed wire instructions', reason: 'the stored copy could not be read' }); }
 
     // --- 5. the wire-recipient entity's operating agreement, when the wire goes to a NEW entity

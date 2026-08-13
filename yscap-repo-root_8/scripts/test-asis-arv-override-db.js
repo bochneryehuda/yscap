@@ -1,14 +1,16 @@
 'use strict';
 /**
  * AS-IS / ARV super-admin OVERRIDE of the term-sheet-sent freeze — end to end against a
- * real Postgres (owner-directed 2026-08).
+ * real Postgres (owner-directed 2026-08, "Save ARV, keep the loan").
  *
- * On a term-sheet-frozen file a super_admin may update ONLY the as-is value + ARV when the
- * change is terms-neutral, keeping the sent term sheet VALID. The load-bearing proof is that
- * the db/486 trigger — which reopens Products & Pricing + the signed-term-sheet condition +
- * marks the registration stale on ANY as_is/arv write — is UNDONE by the override's
- * re-assert, so a neutral change leaves those conditions signed off. A CONTROL file shows the
- * trigger genuinely reopens them on a plain write, so the re-assert is doing real work.
+ * On a term-sheet-frozen file a super_admin may RECORD the new as-is value + ARV whether or
+ * not re-pricing at them would move the loan — keeping the loan amount, the registration and
+ * the sent term sheet EXACTLY as they are. The load-bearing proof is that the db/486 trigger
+ * — which reopens Products & Pricing + the signed-term-sheet condition + marks the
+ * registration stale on ANY as_is/arv write — is UNDONE by the override's re-assert, so BOTH
+ * a neutral change AND a non-neutral change leave those conditions signed off and the loan
+ * frozen. A CONTROL file shows the trigger genuinely reopens them on a plain write, so the
+ * re-assert is doing real work.
  *
  * DB-gated: skips when DATABASE_URL is unset.
  */
@@ -83,6 +85,8 @@ const stsState = async (appId) => (await db.query(
     WHERE ci.application_id=$1 AND t.code='rtl_cond_signedts' LIMIT 1`, [appId])).rows[0];
 const regStale = async (appId) => (await db.query(
   `SELECT stale FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId])).rows[0];
+const regTotal = async (appId) => (await db.query(
+  `SELECT total_loan FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId])).rows[0].total_loan;
 const appAsIsArv = async (appId) => (await db.query(`SELECT as_is_value, arv FROM applications WHERE id=$1`, [appId])).rows[0];
 
 (async () => {
@@ -188,15 +192,35 @@ const appAsIsArv = async (appId) => (await db.query(`SELECT as_is_value, arv FRO
     }
   }
 
+  /* ── "SAVE ARV, KEEP THE LOAN": a NON-neutral override APPLIES and keeps the loan frozen
+     (owner-directed 2026-08). Lowering as-is below the price WOULD shrink the loan on a
+     re-register — but the override records it while re-asserting the pricing conditions and
+     the registration, so loan_amount, the sent term sheet and its conditions never move. ── */
+  {
+    const t = await mkRegisteredFrozen();
+    const regBefore = await regTotal(t.appId);
+    const body = { asIsValue: 80000, arv: 600000, adminOverride: true, overrideReason: 'Appraised low; record the value, keep the loan.' };
+    const decision = await asisArv.evaluate({ appId: t.appId, body, actor: superA });
+    assert(decision.status === 'apply', `a NON-neutral super_admin override → evaluate says apply (got ${decision.status}: ${decision.message || ''})`);
+    assert(decision.neutral === false, 'the override records the (advisory) verdict: this change was NOT terms-neutral');
+    if (decision.status === 'apply') {
+      await asisArv.apply({ appId: t.appId, changes: decision.changes });
+      const v = await appAsIsArv(t.appId);
+      assert(Number(v.as_is_value) === 80000 && Number(v.arv) === 600000, 'the NON-neutral override wrote the new as-is + ARV');
+      const pp = await ppState(t.appId);
+      assert(pp.status === 'satisfied' && pp.signed_off_at !== null,
+        'even on a NON-neutral change, Products & Pricing is STILL satisfied + signed off (the loan is kept, not re-sized)');
+      const sts = await stsState(t.appId);
+      assert(sts.status === 'satisfied' && sts.signed_off_at !== null,
+        'even on a NON-neutral change, the signed-term-sheet condition is STILL satisfied + signed off');
+      assert((await regStale(t.appId)).stale === false, 'the registration is NOT stale — the sent term sheet is kept exactly as it is');
+      assert(Number(regBefore) === Number(await regTotal(t.appId)), 'the registered loan amount did NOT move (the loan is kept)');
+    }
+  }
+
   /* ── refusals ── */
   {
     const t = await mkRegisteredFrozen();
-    // non-neutral (lower as-is below the price → the loan shrinks)
-    const r1 = await asisArv.evaluate({ appId: t.appId, body: { asIsValue: 80000, adminOverride: true, overrideReason: 'x' }, actor: superA });
-    assert(r1.status === 'refused' && r1.code === 409 && /move the loan amount or a fee/i.test(r1.message),
-      'a NON-neutral change is refused (409) — clear the package');
-    assert((await ppState(t.appId)).status === 'satisfied', 'a refused override changed NOTHING (P&P still satisfied)');
-
     // a plain admin (not super_admin)
     const r2 = await asisArv.evaluate({ appId: t.appId, body: { asIsValue: 250000, adminOverride: true, overrideReason: 'x' }, actor: adminA });
     assert(r2.status === 'refused' && r2.code === 403, 'a plain admin is refused (403 — super_admin only)');

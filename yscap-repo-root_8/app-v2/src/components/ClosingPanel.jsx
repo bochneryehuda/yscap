@@ -162,7 +162,7 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
       <ChecklistsSection appId={appId} checklists={ws.checklists || []} isCloser={isCloser} onChanged={refresh} setErr={setErr} />
 
       {/* Sign-offs + reconciliation */}
-      <SignoffSection appId={appId} cw={cw} rec={rec} isCloser={isCloser} busy={busy} run={run} setWarn={setWarn} say={say} hasLoan={!!ws.ys_loan_number} hasClickup={!!ws.clickup_linked} />
+      <SignoffSection appId={appId} cw={cw} rec={rec} fc={ws.fundingChannel} isCloser={isCloser} busy={busy} run={run} setWarn={setWarn} say={say} hasLoan={!!ws.ys_loan_number} hasClickup={!!ws.clickup_linked} />
 
       {/* Notes */}
       <NotesSection appId={appId} notes={ws.notes || []} onChanged={refresh} setErr={setErr} />
@@ -573,7 +573,7 @@ function AddItem({ onAdd }) {
   );
 }
 
-function SignoffSection({ appId, cw, rec, isCloser, busy, run, setWarn, say, hasLoan, hasClickup }) {
+function SignoffSection({ appId, cw, rec, fc, isCloser, busy, run, setWarn, say, hasLoan, hasClickup }) {
   const recOk = rec && rec.ok;
   return (
     <div className="panel" style={{ marginBottom: 14 }}>
@@ -589,22 +589,14 @@ function SignoffSection({ appId, cw, rec, isCloser, busy, run, setWarn, say, has
             <SignRow label="TPR signed off" done={!!cw.tpr_signed_off_at} isCloser={isCloser} busy={busy === 'tpr'}
               onSign={(on) => run('tpr', () => api.closingSignOff(appId, 'tpr', on))} />
           </>}
-          {/* TABLE FUNDING sits directly ABOVE the investor-delivery sign-off,
-              because it is the question you answer BEFORE you sign it off. It is
-              READ-ONLY here: the WAREHOUSE decides it (owner-directed) — funding
-              on the Table Funding line means the loan was sold at closing, so it
-              skips the purchasing desk. One control, in Funding, so the two can
-              never disagree. */}
-          <div className="cl-signrow cl-tf">
-            <span className="cl-tf-main">
-              <b>{cw.table_funded ? '✓ Table funded — sold at closing' : 'Not table funded'}</b>
-              <span className="cl-tf-hint">
-                {cw.table_funded
-                  ? 'Funded on the Table Funding warehouse, so this loan was sold at closing and does not go to purchasing.'
-                  : 'Signing off investor delivery sends this file to the purchasing desk to be sold. If it was sold at closing, set the warehouse to “Table Funding” in Funding above first.'}
-              </span>
-            </span>
-          </div>
+          {/* FUNDING CHANNEL — the table-funding status ALIGNED across PILOT / ClickUp /
+              Encompass (owner-directed 2026-08, Task L). It sits directly ABOVE the
+              investor-delivery sign-off because it is the question you answer BEFORE you
+              sign off: a table-funded loan was sold at the closing table and skips
+              purchasing + draws + delivery; a direct loan goes to the purchasing desk.
+              READ-ONLY — PILOT's answer is the warehouse pick (in Funding above); Encompass
+              is never written. */}
+          <FundingChannelBlock fc={fc} tableFunded={!!cw.table_funded} />
           <SignRow label="Investor delivery signed off" done={!!cw.investor_delivery_signed_off_at} isCloser={isCloser} busy={busy === 'inv'}
             onSign={(on) => run('inv', () => api.closingSignOff(appId, 'investor_delivery', on))} />
           {!!cw.investor_delivery_signed_off_at && (
@@ -716,6 +708,54 @@ function SignRow({ label, done, isCloser, busy, onSign, onToggle, isToggle }) {
 function ReconCell({ k, v, status }) {
   const tone = status === 'mismatch' || status === 'missing' ? 'err' : status === 'match' ? 'ok' : '';
   return <div className={`cl-recon-cell ${tone}`}><div className="muted small">{k}</div><div className="cl-recon-v">{v}</div></div>;
+}
+
+// FUNDING CHANNEL — table-funding status aligned across PILOT / ClickUp / Encompass, so the
+// closer sees the three systems agree BEFORE reconciling (owner-directed 2026-08, Task L).
+function FundingChannelBlock({ fc, tableFunded }) {
+  // Degrade gracefully if the server couldn't build the block: fall back to PILOT's own answer.
+  if (!fc) {
+    return (
+      <div className="cl-signrow" style={{ display: 'block' }}>
+        <b style={{ color: '#141B22' }}>{tableFunded ? '✓ Table funded — sold at closing' : 'Not table funded'}</b>
+      </div>
+    );
+  }
+  const sold = fc.sold_at_table;
+  // Each system's cell — green when it agrees with the overall reading, red when it disagrees.
+  const cell = (k, reading, present, naText) => {
+    const label = !present ? (naText || '—') : (reading === true ? 'Table funded' : reading === false ? 'Direct' : 'Unclassified');
+    const status = reading == null ? '' : (reading === sold ? 'match' : 'mismatch');
+    return <ReconCell k={k} v={label} status={status} />;
+  };
+  return (
+    <div style={{ margin: '4px 0 6px' }}>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+        <b style={{ color: '#141B22' }}>Funding channel{fc.note_buyer && fc.note_buyer !== 'This buyer' ? ` · ${fc.note_buyer}` : ''}</b>
+        <span className="dd-chip" style={{ background: sold ? '#EAF3EF' : '#F2EEE4', color: '#141B22', borderColor: sold ? '#2E7A5E' : '#AE8746' }}>
+          {sold ? 'Sold at closing (table funded)' : 'Sold later (direct RTL)'}
+        </span>
+      </div>
+      <div className="cl-recon-grid">
+        {cell('PILOT', fc.pilot.table_funded, !!fc.pilot.warehouse, 'Not chosen')}
+        {cell('ClickUp', fc.clickup.table_funded, !!fc.clickup.raw, 'No value')}
+        {cell('Encompass', fc.encompass.table_funded, !!fc.encompass.raw, 'Not in Encompass')}
+      </div>
+      {!fc.agree && (
+        <div className="notice warn" style={{ marginTop: 8, color: '#141B22' }}>
+          The three systems don’t agree on how this loan funded — line them up (the warehouse here, the “Wholesale/correspondent” field in ClickUp, CX.TABLEFUNDER in Encompass) before reconciling.
+        </div>
+      )}
+      {fc.rule && fc.rule.violation && (
+        <div className="notice err" style={{ marginTop: 8, color: '#141B22' }}>{fc.rule.message}</div>
+      )}
+      <div className="muted small" style={{ marginTop: 6 }}>
+        {sold
+          ? 'Table funded — this loan was sold at the closing table, so it skips purchasing, draws and post-closing delivery. Reconcile to close it out.'
+          : 'Direct RTL — this loan is sold later, so after investor delivery is signed off it goes to the purchasing desk.'}
+      </div>
+    </div>
+  );
 }
 
 function NotesSection({ appId, notes, onChanged, setErr }) {

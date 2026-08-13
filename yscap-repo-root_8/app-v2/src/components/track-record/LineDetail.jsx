@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { api, saveBlob } from '../../lib/api.js';
+import { fileToBase64 } from '../../lib/files.js';
 import { askConfirm, askPrompt } from '../../lib/dialog.js';
 import DocPreview from '../DocPreview.jsx';
 import { useMenuAutoClose, closeMenu } from '../ConditionActions.jsx';
@@ -111,6 +112,8 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
   const [rowErr, setRowErr] = useState({});
   const [ask, setAsk] = useState(null);         // the typed doc-request sheet
   const [docTypes, setDocTypes] = useState([]);
+  const [upType, setUpType] = useState('');     // doc-type for a staff upload
+  const upRef = useRef(null);                    // the hidden file input
   const [previewDoc, setPreviewDoc] = useState(null);
   const [editing, setEditing] = useState(null); // the inline edit draft, or null
   const [focusPillar, setFocusPillar] = useState(0);
@@ -247,6 +250,28 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
     finally { setBusy(''); }
   }
 
+  // MARK NOT VERIFIED without notifying (owner-directed 2026-08 — the THIRD revoke option,
+  // alongside revoke+notify and the quiet set-to-pending). This takes a verified line OFF
+  // verified into a TERMINAL "Not verified" state (NOT "Pending review"), silently — for a
+  // line the reviewer checked and concluded does not count, where the borrower has nothing
+  // to act on. The backend records verification_status='not_verified' + is_verified=false,
+  // reopens the experience condition (it genuinely no longer counts), and sends NO email.
+  async function revokeNotVerified() {
+    const note = await askPrompt(
+      'Mark this project NOT VERIFIED WITHOUT notifying the borrower — use this when you checked it and concluded it does not count (not just “pending another look”).\n\nOptional internal note (staff-only; the borrower never sees it). Leave blank and press OK to proceed.',
+      { multiline: true, confirmLabel: 'Mark not verified — don’t notify' });
+    if (note == null) return;   // Cancel
+    setBusy('verify');
+    try {
+      const body = { status: 'not_verified', silent: true };
+      if (note.trim()) body.reason = note.trim();
+      await api.staffVerifyTrackRecord(trackRecordId, body);
+      flash(true, 'Marked not verified — the borrower was not notified.');
+      changed();
+    } catch (e) { flash(false, (e && e.message) || 'could not update'); }
+    finally { setBusy(''); }
+  }
+
   async function bulkConfirm() {
     if (!detail || !detail.bulk || !detail.bulk.ok) { rowError('verify', detail && detail.bulk && detail.bulk.reason); return; }
     if (!(await askConfirm(`Confirm all three checks on ${detail.line.address}? The records already prove each one.`))) return;
@@ -272,6 +297,27 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
       flash(true, 'Checked against the public records.' + (errs.length ? ` ${errs.length} source${errs.length === 1 ? '' : 's'} could not be read.` : ''));
       changed();
     } catch (e) { flash(false, (e && e.message) || 'could not check the records'); }
+    finally { setBusy(''); }
+  }
+
+  // UPLOAD a document straight onto this line (owner-directed: "staff can add MULTIPLE documents
+  // per line, doc-type dropdown, add as many as wanted — the upload slots must be obvious"). It
+  // files onto the line (track_record_id), auto-attaches to any open request, and lands pending
+  // for review right below. Available to any staffer on the file, like "Ask for a document".
+  async function uploadDoc(e) {
+    const f = (e.target.files || [])[0];
+    if (e.target) e.target.value = '';
+    if (!f) return;
+    setBusy('upload');
+    try {
+      const dataBase64 = await fileToBase64(f);
+      await api.post(`/api/staff/track-records/${trackRecordId}/documents`, {
+        filename: f.name, contentType: f.type || 'application/octet-stream', dataBase64,
+        docType: upType || undefined,
+      });
+      flash(true, 'Document uploaded — it’s on the line below, ready to review.');
+      changed();
+    } catch (ex) { flash(false, (ex && ex.message) || 'could not upload that document'); }
     finally { setBusy(''); }
   }
 
@@ -562,15 +608,23 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
 
                 {extraActions && <><div className="cond-more-sep" />{extraActions(line)}</>}
 
-                {/* The two verified-state actions say IN WORDS whether the borrower
-                    is told, so the notify-vs-silent choice is unmistakable. */}
-                {maySignOff && line.isVerified && (
+                {/* The THREE verified-state revoke actions say IN WORDS what each does — the
+                    resulting status AND whether the borrower is told — so the choice is
+                    unmistakable (owner-directed 2026-08): revoke+notify (→ pending), quiet
+                    set-to-pending (no notify), and mark-not-verified (terminal, no notify).
+                    Deliberately NOT gated on maySignOff: a loan officer may NOT mark a line
+                    verified, but they CAN take a verified line OFF verified (owner-directed —
+                    "LOs can mark it not-verified"). The server enforces the real rule (a
+                    counting verify needs sign_off_conditions; a revoke needs only file access). */}
+                {line.isVerified && (
                   <>
                     <div className="cond-more-sep" />
                     <button className="btn ghost small" disabled={busy === 'verify'} onClick={revoke}
-                      title="Revoke this project’s verification. The borrower is emailed.">Revoke — the borrower is emailed</button>
+                      title="Revoke this project’s verification (sets it back to Pending review). The borrower is emailed.">Revoke — the borrower is emailed</button>
                     <button className="btn ghost small" disabled={busy === 'verify'} onClick={quietRevoke}
                       title="Set back to Pending review WITHOUT notifying the borrower — for a verification set by mistake.">Set to pending — the borrower is not told</button>
+                    <button className="btn ghost small" disabled={busy === 'verify'} onClick={revokeNotVerified}
+                      title="Mark this project NOT verified (a terminal outcome, not just pending) WITHOUT notifying the borrower — for a line you checked and concluded does not count.">Mark not verified — the borrower is not told</button>
                   </>
                 )}
 
@@ -717,10 +771,24 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
           document keeps ONE clear action and tucks Preview / Download / Reject /
           Delete into a popup, the same shape as a condition's document row. */}
       <div className="tr-deal" style={{ marginBottom: 10 }}>
-        <div className="tr-deal-h" style={{ justifyContent: 'space-between' }}>
+        <div className="tr-deal-h" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
           <h3 style={{ fontSize: 15 }}>Documents</h3>
-          <button className="btn soft small" onClick={() => openAsk('')}
-            title="Ask the borrower for a document on this project — it becomes a real request.">Ask for a document…</button>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            {/* UPLOAD — an obvious slot: pick a type, add a file, repeat for as many as you need. */}
+            <select className="input" value={upType} onChange={(e) => setUpType(e.target.value)}
+              title="What kind of document is this?" aria-label="Document type"
+              style={{ height: 32, padding: '0 8px', fontSize: 13, maxWidth: 190 }}>
+              <option value="">Type (optional)…</option>
+              {docTypes.map((d) => <option key={d.slug} value={d.slug}>{d.label}</option>)}
+            </select>
+            <button className="btn small" disabled={busy === 'upload'} onClick={() => upRef.current && upRef.current.click()}
+              title="Upload a document onto this project. Add as many as you need — each one waits for review below.">
+              {busy === 'upload' ? 'Uploading…' : '↑ Upload a document'}
+            </button>
+            <input ref={upRef} type="file" style={{ display: 'none' }} onChange={uploadDoc} />
+            <button className="btn soft small" onClick={() => openAsk('')}
+              title="Ask the borrower for a document on this project — it becomes a real request.">Ask for a document…</button>
+          </div>
         </div>
         {detail.documents.length
           ? <div className="tr-docs">
@@ -758,7 +826,7 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
               );
             })}
           </div>
-          : <p className="tr-hint">Nothing has been uploaded on this project.</p>}
+          : <p className="tr-hint">No documents yet — pick a type and use <b>Upload a document</b> above to add the closing statement, deed, lease or anything else that proves this project. Add as many as you need.</p>}
 
         {detail.requests.length > 0 && (
           <div className="tr-edit-sec">

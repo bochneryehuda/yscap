@@ -169,6 +169,34 @@ const tag = `trstatus_${process.pid}`;
     ok((await notifCount()) === beforeQuiet, 'the QUIET revoke wrote NO borrower notification');
   }
 
+  console.log('\n§8  the THIRD revoke option — mark NOT VERIFIED, no notification (owner 2026-08)');
+  {
+    const notifCount = async () => (await db.query(
+      `SELECT count(*)::int AS n FROM notifications WHERE borrower_id=$1 AND type='track_record_unverified'`,
+      [borrowerId])).rows[0].n;
+    const k = await mkLine('K');
+    await verify(k, { status: 'verified' });
+    ok((await rowOf(k)).is_verified === true, 'verified first');
+    const before = await notifCount();
+    // The NEW option: mark NOT VERIFIED (a terminal outcome, not "pending"), silently.
+    const r = await verify(k, { status: 'not_verified', silent: true });
+    ok(r.status === 200, 'mark-not-verified-silently is applied — 200 (no reason required)');
+    const body = await r.json().catch(() => ({}));
+    ok(body.revoked === true && body.silent === true, 'the response reports it as a silent revoke');
+    const row = await rowOf(k);
+    ok(row.verification_status === 'not_verified' && row.is_verified === false,
+      'the line is NOT VERIFIED (not "pending") and no longer counts');
+    ok((await notifCount()) === before, 'it wrote NO borrower notification');
+
+    // H — a staffer WITHOUT sign-off (a loan officer's shape) may still take a verified line
+    // OFF verified: a REVOKE needs only file access, never sign_off_conditions.
+    await verify(k, { status: 'verified' });                      // re-verify via the signer
+    ok((await rowOf(k)).is_verified === true, 're-verified for the no-sign-off revoke test');
+    const loRevoke = await verify(k, { status: 'not_verified', silent: true }, noSignoff);
+    ok(loRevoke.status === 200 && (await rowOf(k)).is_verified === false,
+      'a staffer without sign-off CAN take a verified line off verified (owner: "LOs can mark it not-verified")');
+  }
+
   // Cleanup.
   await db.query(`DELETE FROM notifications WHERE borrower_id=$1`, [borrowerId]).catch(() => {});
   await db.query(`DELETE FROM track_records WHERE borrower_id=$1`, [borrowerId]);

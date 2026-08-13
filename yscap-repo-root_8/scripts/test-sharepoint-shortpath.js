@@ -93,6 +93,25 @@ ok('a PLAIN address folder matches going forward', M.addressMatches('62 Highland
 ok('an EXISTING marked address folder still matches', M.addressMatches('62 Highland Street, Wethersfield, CT 06109, Synced by Pilot', '62 Highland Street'));
 ok('a PLAIN officer folder matches', M.officerMatches('Josef Schnitzler', 'Josef Schnitzler'));
 
+// ── 2b) shortAddressName: NEW address folders use just street number + street name ──
+//    (owner-directed 2026-08: "don't repeat the full property address at every folder level").
+//    The full one-line still MATCHES the short folder, so an existing full-named folder is
+//    never duplicated and a new short-named folder is re-found on the next file.
+eq('shortAddressName keeps just the street number + street name',
+   M.shortAddressName('62 Highland Street, Wethersfield, CT 06109'), '62 Highland Street');
+eq('shortAddressName preserves a unit that sits in the pre-comma segment',
+   M.shortAddressName('62 Highland St Apt 4, Brooklyn, NY 11249'), '62 Highland St Apt 4');
+ok('the short name is materially shorter than the full one-line',
+   M.shortAddressName('62 Highland Street, Wethersfield, CT 06109').length < '62 Highland Street, Wethersfield, CT 06109'.length);
+ok('a NEW short-named address folder is still matched by the full one-line (no duplication next time)',
+   M.addressMatches('62 Highland Street', '62 Highland Street, Wethersfield, CT 06109'));
+ok('an EXISTING full-named address folder is still matched by the full one-line (never duplicated)',
+   M.addressMatches('62 Highland Street, Wethersfield, CT 06109', '62 Highland Street, Wethersfield, CT 06109'));
+eq('a comma-less one-line is returned unchanged (safe — no comma to split on)',
+   M.shortAddressName('62 Highland St'), '62 Highland St');
+eq('an empty one-line is safe', M.shortAddressName(''), '');
+eq('a null one-line is safe', M.shortAddressName(null), '');
+
 // ── 3) backwards repair: dropSyncMarker un-marks the app's OWN folders ───────
 eq('drops the new marker', SP.dropSyncMarker('Aron Goldman, Synced by Pilot'), 'Aron Goldman');
 eq('drops the legacy marker', SP.dropSyncMarker('62 Highland Street, Wethersfield, CT 06109, YS portal syncing'), '62 Highland Street, Wethersfield, CT 06109');

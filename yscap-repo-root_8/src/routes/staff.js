@@ -12162,12 +12162,13 @@ router.get('/applications/:id/status-history', async (req, res) => {
 router.patch('/applications/:id/details', async (req, res) => {
   const b = req.body || {};
   // AS-IS / ARV super-admin OVERRIDE of the term-sheet-sent freeze (owner-directed
-  // 2026-08). When Save Changes is refused because the term sheet was already sent, the
-  // studio re-submits with {adminOverride:true, overrideReason} for an as-is/ARV-only
-  // edit. A super_admin may then update ONLY the as-is value + ARV when the change is
-  // terms-neutral (re-pricing keeps every borrower-visible figure identical, so the sent
-  // sheet still matches) — kept valid by re-asserting the pricing conditions the db/486
-  // trigger would reopen. Refused otherwise. See src/lib/asis-arv-override.js.
+  // 2026-08, "Save ARV, keep the loan"). When Save Changes is refused because the term
+  // sheet was already sent, the studio re-submits with {adminOverride:true, overrideReason}
+  // for an as-is/ARV-only edit. A super_admin may then RECORD the new as-is value + ARV
+  // whether or not re-pricing at them would move the loan — the loan amount, the
+  // registration and the sent term sheet are kept EXACTLY as they are by re-asserting the
+  // pricing conditions the db/486 trigger would reopen. Only the STATUS freeze (CTC/funded)
+  // still refuses. See src/lib/asis-arv-override.js.
   if (b.adminOverride === true) {
     const asisArv = require('../lib/asis-arv-override');
     const ov = await asisArv.evaluate({ appId: req.params.id, body: b, actor: req.actor });
@@ -12175,8 +12176,10 @@ router.patch('/applications/:id/details', async (req, res) => {
     if (ov.status === 'apply') {
       try {
         const result = await asisArv.apply({ appId: req.params.id, changes: ov.changes });
+        // Record the advisory neutrality verdict so the file's Activity shows whether this
+        // override kept the borrower-visible terms or deliberately moved past them.
         await audit(req, 'asis_arv_override', 'application', req.params.id,
-          { changes: ov.changes, reason: ov.reason, changed: result.changed });
+          { changes: ov.changes, reason: ov.reason, changed: result.changed, neutral: ov.neutral });
         // Let the Condition Center re-check its RULE-driven conditions (it never touches
         // the pricing / signed-term-sheet conditions the re-assert just preserved).
         try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'asis_arv_override' }); }
@@ -15836,8 +15839,15 @@ router.post('/applications/:id/documents', async (req, res) => {
   // SharePoint never-mirror list, the TPR-export denylist and closing-prep's FROZEN_KINDS,
   // exactly like heter_iska_signed (owner policy: the Heter Iska never leaves the building).
   // A client can never forge heter_iska_signed here (only term_sheet is client-settable).
+  // A wire form uploaded onto the draw condition (draw_cond_signed_request) — whether from
+  // the draw desk's own manual-upload route or straight from the conditions list — gets
+  // doc_kind='draw_request_signed' so it's picked up by the money gate AND the investor-delivery
+  // attachment exactly like a DocuSign-fed copy (owner-directed 2026-08). A manual copy is told
+  // apart from a DocuSign one only by source_type (this door → not 'system'). Unlike the Heter
+  // Iska, the wire form DOES leave the building (it goes to the investor), so it is on no denylist.
   const docKind = b.docKind === 'term_sheet' ? 'term_sheet'
-    : (itemCode === 'rtl_cond_iska' ? 'heter_iska_manual' : null);
+    : (itemCode === 'rtl_cond_iska' ? 'heter_iska_manual'
+      : (itemCode === 'draw_cond_signed_request' ? 'draw_request_signed' : null));
   // WHICH STAMP these bytes print (owner-directed 2026-08-02, db/404). The
   // INITIAL/FINAL wording is drawn into the PDF at generation time, so the
   // generator is the only thing that knows — it reports what it printed and we
@@ -15889,6 +15899,20 @@ router.post('/applications/:id/documents', async (req, res) => {
       `UPDATE documents SET is_current=false,
           review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
         WHERE application_id=$1 AND doc_kind='term_sheet' AND id<>$2 AND is_current=true`,
+      [req.params.id, r.rows[0].id]);
+  }
+  // A wire form is a ONE-CURRENT document like the term sheet: a wire form uploaded onto the
+  // draw condition supersedes any OTHER current draw_request_signed so the money gate and the
+  // investor-delivery attachment see EXACTLY ONE (mirrors the draw-desk manual route and the
+  // DocuSign completion). Without this, a corrected wire form uploaded from the conditions list
+  // after a prior accept would leave two current copies — the gate green off the old accepted
+  // one while delivery attached the new unaccepted one. A superseded ACCEPTED copy drops off the
+  // gate (is_current=false), forcing the new form to be re-accepted before any wire can move.
+  if (docKind === 'draw_request_signed') {
+    await db.query(
+      `UPDATE documents SET is_current=false,
+          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+        WHERE application_id=$1 AND doc_kind='draw_request_signed' AND id<>$2 AND is_current=true`,
       [req.params.id, r.rows[0].id]);
   }
   if (b.checklistItemId) {

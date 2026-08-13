@@ -477,6 +477,40 @@ function DrawRequestCard({ appId }) {
     } catch (e) { setMsg((e && e.data && e.data.error) || e.message || 'Could not update the file email automatically — update it in the borrower section.'); }
     finally { setBusy(false); }
   }
+  // UPLOAD THE WIRE FORM MANUALLY (owner-directed 2026-08) — some files make manual changes to
+  // the form, so the coordinator uploads it here instead of (or after clearing) the DocuSign flow.
+  // It files onto the same draw condition as a draw_request_signed, so the money gate, the accept
+  // step and investor delivery treat it exactly like a DocuSign copy; the coordinator still
+  // ACCEPTS it below before any wire moves.
+  const manualRef = useRef(null);
+  async function uploadManual(e) {
+    const f = (e.target.files || [])[0];
+    e.target.value = '';
+    if (!f) return;
+    setBusy(true); setMsg('');
+    try {
+      const up = await readAsUpload(f);
+      await api.post(`/api/sitewire/files/${appId}/draw-request/upload-manual`, up);
+      setMsg('Manual wire form uploaded. Review it below and accept it — once accepted it goes to the investor with the draw.');
+      reload();
+    } catch (ex) { setMsg((ex && ex.data && ex.data.error) || ex.message || 'Could not upload the wire form.'); }
+    finally { setBusy(false); }
+  }
+  // CLEAR THE DOCUSIGN FORM so a manual one can replace it (owner-directed 2026-08) — voids the
+  // sent envelope (the borrower's signing link stops working) or clears a completed one PILOT-side,
+  // and reopens the draw condition. Afterward the "Upload the wire form manually" button appears.
+  async function clearDocuSign() {
+    if (!(await askConfirm(
+      'Clear the DocuSign wire form?\n\nThis voids the form (the borrower’s signing link stops working) and removes the signed copy from the file, so you can upload the wire form manually instead. You can always send a fresh DocuSign form later.',
+      { title: 'Clear the DocuSign form', confirmLabel: 'Clear it' }))) return;
+    setBusy(true); setMsg('');
+    try {
+      await api.post(`/api/sitewire/files/${appId}/draw-request/clear`, {});
+      setMsg('DocuSign form cleared. You can now upload the wire form manually below.');
+      reload();
+    } catch (ex) { setMsg((ex && ex.data && ex.data.error) || ex.message || 'Could not clear the DocuSign form.'); }
+    finally { setBusy(false); }
+  }
 
   const envLabel = env ? ({
     sent: 'Sent — awaiting the borrower', delivered: 'Opened by the borrower',
@@ -644,13 +678,18 @@ function DrawRequestCard({ appId }) {
             style={{ marginTop: 12, borderLeft: '3px solid ' + (accepted ? 'var(--success,#2E7A5E)' : rejected ? 'var(--danger,#A32A2A)' : 'var(--gold,#ae8746)') }}>
             <div className="act-card-head">
               <div style={{ minWidth: 200, flex: 1 }}>
-                <div className="act-card-title">{accepted ? 'Wire instructions accepted' : rejected ? 'Wire instructions rejected' : 'Accept the wire instructions'}</div>
+                <div className="act-card-title">
+                  {accepted ? 'Wire instructions accepted' : rejected ? 'Wire instructions rejected' : 'Accept the wire instructions'}
+                  {d.signed_document.manual && <span className="dd-sub" style={{ fontWeight: 500 }}> · uploaded manually</span>}
+                </div>
                 <div className="act-card-sub">
                   {accepted
                     ? 'These wire instructions are approved — the draw can be delivered and the money can move.'
                     : rejected
                       ? 'These were rejected — the borrower needs to re-sign the form before any money can move.'
-                      : 'The borrower signed and their wire details are captured above. Review them and accept — the money can’t be released until you do.'}
+                      : d.signed_document.manual
+                        ? 'This wire form was uploaded manually. Open it, check the bank wire details, and accept — the money can’t be released until you do. It goes to the investor with the draw once accepted.'
+                        : 'The borrower signed and their wire details are captured above. Review them and accept — the money can’t be released until you do.'}
                 </div>
               </div>
               <span className={'dd-chip ' + (accepted ? 'on' : rejected ? 'off' : 'warn')}><span className="dot" />{accepted ? 'Accepted' : rejected ? 'Rejected' : 'Needs review'}</span>
@@ -682,7 +721,8 @@ function DrawRequestCard({ appId }) {
         </div>
       )}
 
-      {/* the action button */}
+      {/* the action row — send / re-send DocuSign, remind the signer, upload the form manually,
+          or clear a sent/signed form to switch to a manual one (owner-directed 2026-08). */}
       <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
         {(!env || terminal) && (
           <button className="btn" disabled={busy || !d.can_send} onClick={() => send(terminal)}
@@ -700,7 +740,26 @@ function DrawRequestCard({ appId }) {
             {busy ? 'Sending…' : 'Resend reminder'}
           </button>
         )}
-        {env && !terminal && <span className="dd-sub" style={{ alignSelf: 'center' }}>The form is out for signature — send a reminder, change the email, or void &amp; re-issue.</span>}
+        {/* UPLOAD THE WIRE FORM MANUALLY — offered whenever no form is out for signature (no
+            envelope, declined/voided, or already signed). Some files make manual changes to the
+            wire form; a manual copy supersedes the current one and still needs accepting. */}
+        {(!env || terminal) && (
+          <>
+            <button className="btn soft" disabled={busy} onClick={() => manualRef.current && manualRef.current.click()}
+              title="Upload a wire form you filled in by hand instead of sending it through DocuSign. It goes to the investor with the draw once you accept it.">
+              {busy ? 'Uploading…' : (d.signed_document ? 'Replace with a manual wire form' : 'Upload the wire form manually')}
+            </button>
+            <input ref={manualRef} type="file" accept="application/pdf,image/*" disabled={busy} onChange={uploadManual} style={{ display: 'none' }} />
+          </>
+        )}
+        {/* CLEAR the DocuSign form while it is OUT for signature, so a manual one can replace it. */}
+        {env && !terminal && env.clearable && (
+          <button className="btn btn-sm ghost" disabled={busy} onClick={clearDocuSign}
+            title="Void the DocuSign form (its signing link stops working) and remove the signed copy, so you can upload the wire form manually instead.">
+            Clear &amp; upload manually
+          </button>
+        )}
+        {env && !terminal && <span className="dd-sub" style={{ alignSelf: 'center' }}>The form is out for signature — send a reminder, change the email, or clear it to upload one manually.</span>}
       </div>
     </div>
   );
