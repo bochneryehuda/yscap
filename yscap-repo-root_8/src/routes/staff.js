@@ -34,6 +34,7 @@ const workflowAuto = require('../lib/workflow-automation');
 const trackRecordFromFile = require('../lib/track-record-from-file');
 const closing = require('../lib/closing');
 const numberBounds = require('../lib/number-bounds');     // ONE definition of every column's ceiling
+const detailsFields = require('../lib/details-fields');   // ONE definition of the details door's key→column map
 const portalInvite = require('../lib/portal-invite');
 // EVERYONE ON THIS CONVERSATION, including whoever the other side added — one
 // definition for the title/insurance orders and the closing chain (owner-directed
@@ -12208,7 +12209,14 @@ router.patch('/applications/:id/details', async (req, res) => {
   // registration and the sent term sheet are kept EXACTLY as they are by re-asserting the
   // pricing conditions the db/486 trigger would reopen. Only the STATUS freeze (CTC/funded)
   // still refuses. See src/lib/asis-arv-override.js.
-  if (b.adminOverride === true) {
+  /* THE AS-IS/ARV OVERRIDE ONLY CLAIMS AN AS-IS/ARV-ONLY REQUEST (owner-directed
+     2026-08-13). It used to claim EVERY `adminOverride:true` body and answer 400
+     ("can update ONLY the as-is value and the ARV") for anything else — which is
+     now the wrong answer, because a super-admin may override ANY details field
+     behind the double warning. Its own `isAsIsArvOnly` is the gate, so the two
+     paths can never both claim a request; anything else falls through to
+     `details-freeze`, which owns the general override. */
+  if (b.adminOverride === true && require('../lib/asis-arv-override').isAsIsArvOnly(b)) {
     const asisArv = require('../lib/asis-arv-override');
     const ov = await asisArv.evaluate({ appId: req.params.id, body: b, actor: req.actor });
     if (ov.status === 'refused') return res.status(ov.code).json({ error: ov.message, locked: ov.code === 409 || undefined });
@@ -12245,8 +12253,36 @@ router.patch('/applications/:id/details', async (req, res) => {
      to Close, long after the term sheet went out — and neither carries money nor
      enters any calculation. Every other field, the payoff AMOUNT included, falls
      through to the ordinary freeze unchanged. See the function's own note. */
-  const detailsLock = await require('../lib/file-lock').payoffContactLockReason(req.params.id, req.body || {}, db, { actor: req.actor });
-  if (detailsLock) return res.status(409).json({ error: detailsLock, locked: true });
+  /* TWO CARVE-OUTS SIT ON TOP OF IT (owner-directed 2026-08-13), and BOTH are
+     decided here so the freeze is answered before a single column is written:
+
+       · an EXPERIENCE RE-ALLOCATION — deals moved between fix-and-flip and
+         fix-and-hold with the qualified total and the ground-up count unchanged.
+         Provably priced-identical in all three frozen engines, so it is allowed for
+         EVERY user; the predicate is on the DATA, like the budget-neutral Scope-of-
+         Work carve-out.
+       · a SUPER-ADMIN OVERRIDE of any details field, behind a double warning + a
+         typed reason.
+
+     `details-freeze.evaluate` calls `payoffContactLockReason` itself and returns
+     mode 'none' whenever the file is editable, so an unfrozen file is unchanged.
+     `freezeMode` is carried down to the UPDATE, where the conditions the reopen
+     trigger would destroy are captured and put back — "without clearing the term
+     sheet" is an active job, not the absence of a refusal. */
+  const detailsFreeze = require('../lib/details-freeze');
+  const freeze = await detailsFreeze.evaluate(req.params.id, req.body || {}, db, { actor: req.actor });
+  if (freeze.mode === 'refused') {
+    const code = freeze.code || 409;
+    return res.status(code).json({ error: freeze.reason, locked: code === 409 || undefined });
+  }
+  const freezeMode = freeze.mode;
+  // The override's control keys are never columns — drop them before the SET is
+  // built, exactly as the as-is/ARV path does on its `not_needed` branch. Dropped
+  // unconditionally: a super-admin can send them on a file that turns out not to be
+  // frozen at all (mode 'none'), and they must not survive into the audit's field
+  // list there either.
+  const overrideReason = freezeMode === 'admin_override' ? freeze.reason : '';
+  delete b.adminOverride; delete b.overrideReason;
   // sqft only applies to a square-footage / ground-up rehab. When the rehab type
   // is being changed to something else, null any stale sqft in the SAME update so
   // it can't keep flipping the pricing engine's sqftAddition flag (its
@@ -12304,26 +12340,21 @@ router.patch('/applications/:id/details', async (req, res) => {
       if (b.isAssignment) { b.isAssignment = false; b.underlyingContractPrice = null; b.assignmentFee = null; }
     }
   }
-  const NUM = { units: 'units', purchasePrice: 'purchase_price', asIsValue: 'as_is_value',
-    arv: 'arv', rehabBudget: 'rehab_budget', sqftPre: 'sqft_pre', sqftPost: 'sqft_post',
-    requestedExpFlips: 'requested_exp_flips', requestedExpHolds: 'requested_exp_holds', requestedExpGround: 'requested_exp_ground',
-    requestedExpReo: 'requested_exp_reo', requestedIrMonths: 'requested_ir_months', requestedIrAmount: 'requested_ir_amount',
-    payoffAmount: 'payoff_amount', originalPurchasePrice: 'original_purchase_price',
-    // WHAT THE BORROWER WALKS AWAY WITH on a cash-out refinance (db/267's
-    // `estimated_cash_out`, which until now had no writer anywhere in the app).
-    // The payoff section fills it from the structure and lets a human override
-    // it; see src/lib/payoff.js for the one definition of that arithmetic.
-    estimatedCashOut: 'estimated_cash_out',
-    underlyingContractPrice: 'underlying_contract_price', assignmentFee: 'assignment_fee' };
-  const STR = { propertyType: 'property_type', loanType: 'loan_type', program: 'program', occupancy: 'occupancy',
-    rehabType: 'rehab_type', term: 'term', lender: 'lender', channel: 'channel', ppp: 'ppp',
-    // WHO we pay off and WHICH loan (db/386) — free text beside the payoff AMOUNT
-    // that has lived in NUM since db/032. Refinance only in the UI; stored
-    // unconditionally here because the door does not know the purpose, and a
-    // purchase simply never sends them.
-    payoffLender: 'payoff_lender', payoffLoanNumber: 'payoff_loan_number' };
-  const DATE = { acquisitionDate: 'acquisition_date' };
-  const INT_KEYS = /^(requestedExp|requestedIr)/;
+  /* THE FIELD MAP IS SHARED (2026-08-13) — `src/lib/details-fields.js`. It used to
+     be inline here and nowhere else, but the experience re-allocation carve-out has
+     to answer "would this request change anything OTHER than the experience counts?"
+     BEFORE the write, using the same key→column map. A second hand-kept copy of
+     forty field names is the drift this repo keeps getting bitten by, so there is
+     now exactly one. Nothing about how a value is coerced, bounded or audited moved
+     — these locals are the same objects the door has always read. ADD A FIELD THERE,
+     not here. */
+  const NUM = detailsFields.NUM;
+  const STR = detailsFields.STR;
+  const DATE = detailsFields.DATE;
+  /* Also shared (2026-08-13) — a blank on one of these stores 0, not NULL, and the
+     re-allocation carve-out has to know that to judge a blank box correctly before
+     the write. Same object the door has always used. */
+  const INT_KEYS = detailsFields.INT_KEYS;
   /* THE CEILING IS THE COLUMN'S OWN, NOT ONE NUMBER FOR ALL OF THEM (audit round
      6, 2026-07-31). The first cut of this guard reused `INT_KEYS` — which exists
      to decide how a BLANK resolves, a different question entirely — and a single
@@ -12466,8 +12497,36 @@ router.patch('/applications/:id/details', async (req, res) => {
     // the underwriter re-signs the new structure, and the Clear-to-Close / Funded /
     // term-sheet-sent freeze (structuralLockReason, checked above as detailsLock)
     // still blocks everyone equally once the file is locked.
+    /* KEEP THE SENT TERM SHEET (owner-directed 2026-08-13). On a carved-out save the
+       db/072 + db/486 trigger is about to reopen Products & Pricing, the
+       signed-term-sheet condition (and, when the loan amount / budget move under a
+       super-admin override, the Heter Iska and the Scope of Work) and flag the
+       registration stale. Capture those exact rows now and put them back below, so
+       the owner gets what they asked for — the edit lands and the signed term sheet
+       stays in place — instead of the "reprice and reissue" the freeze was forcing.
+       A capture that fails returns null and restores nothing, which fails SAFE: the
+       conditions stay reopened, so the file honestly reads as needing a
+       re-registration rather than silently claiming the sheet still matches. */
+    const freezeSnap = freezeMode === 'none' ? null : await detailsFreeze.capture(req.params.id, freezeMode, db);
     const upd = await db.query(`UPDATE applications SET ${sets.join(',')} WHERE id=$${i}`, vals);
     if (upd.rowCount === 0) return res.status(404).json({ error: 'application not found' });
+    if (freezeSnap) {
+      /* THE REGISTRATION'S STORED SPLIT MOVES WITH A RE-ALLOCATION, and only with
+         one. `signOffGate` measures the verified track record against the CURRENT
+         REGISTRATION's experience, not the application's claim — so without this the
+         application would say "2 flips + 1 hold" while the condition went on
+         demanding 3 verified flips, and the sign-off the owner is trying to reach
+         would still be refused. Safe because every engine reads expFlips + expHolds
+         as ONE number, so the registration still records the experience the loan was
+         priced on. NEVER done for the super-admin override — that change is not
+         priced-neutral, and rewriting the priced basis to match would falsify the
+         record of what the borrower was quoted (the db/344 condition override is the
+         recorded way through there). */
+      if (freezeMode === 'reallocation') {
+        await detailsFreeze.syncRegistrationExperience(req.params.id, freeze.after, db);
+      }
+      await detailsFreeze.restore(req.params.id, freezeSnap, db);
+    }
     // A deliberate removal of the assignment must ALSO clear the two money
     // fields on the ClickUp card (owner-directed 2026-08-10: "when we are
     // deleting the assignment fee from the file, the assignment fee should
@@ -12536,7 +12595,22 @@ router.patch('/applications/:id/details', async (req, res) => {
         .map(({ col, label }) => ({ field: col, label, value: norm(after[col]) }));
     } catch (_) { /* advisory only — never fails a save */ }
     await audit(req, 'edit_application', 'application', req.params.id,
-      { fields: Object.keys(b), changes: Object.keys(changes).length ? changes : undefined });
+      { fields: Object.keys(b), changes: Object.keys(changes).length ? changes : undefined,
+        termSheetCarveOut: freezeMode === 'none' ? undefined : freezeMode });
+    /* A SAVE THAT WENT THROUGH A SENT TERM SHEET IS NEVER SILENT. Its own audit
+       action, so the file's Activity feed can be read years later for "who changed
+       this while the term sheet was already out, and why" — the same posture as
+       `asis_arv_override`. Best-effort: it may never reverse or 500 the save that
+       already happened. */
+    if (freezeMode !== 'none') {
+      try {
+        await audit(req, freezeMode === 'admin_override' ? 'details_admin_override' : 'experience_reallocation',
+          'application', req.params.id,
+          { reason: overrideReason || undefined, note: freeze.note,
+            before: freeze.before, after: freeze.after,
+            changes: Object.keys(changes).length ? changes : undefined });
+      } catch (_) { /* best-effort */ }
+    }
     // Field data changed — let the Condition Center engine re-check its rules.
     let conditions = null;
     if (Object.keys(changes).length) {

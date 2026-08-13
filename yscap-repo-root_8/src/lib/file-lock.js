@@ -433,8 +433,90 @@ function asIsArvTermSheetOverride(row, isNeutral, opts = {}) {
   return (isSuper && opts.overrideRequested) ? null : tsReason;
 }
 
+/**
+ * THE EXPERIENCE RE-ALLOCATION CARVE-OUT (owner-directed 2026-08-13).
+ *
+ * WHY IT EXISTS. A term sheet was signed and issued on an application claiming
+ * THREE fix-and-flips; verification came back TWO fix-and-flips and ONE
+ * fix-and-hold — the same three deals, the same experience level. The track-record
+ * condition can only be signed off once the application MATCHES what was verified,
+ * and the application could not be edited: "It doesn't let it, and it says that you
+ * need to clear the term sheet, you need to delete, you need to change, and then you
+ * need to reprice and reissue." The owner's rule: "between fix-and-flip and
+ * fix-and-hold, as long as it keeps the same backend amount, it should not be
+ * considered something that you need to clear the term sheet."
+ *
+ * WHY IT IS SAFE — the same test the SOW / payoff / terms-neutral carve-outs are
+ * held to. The freeze exists so a sent term sheet can never silently disagree with
+ * the file. All three frozen engines count fix-and-flip and fix-and-hold TOGETHER
+ * and never separately (standard `projectCount` = flips + holds + ground, or ground
+ * alone on a ground-up; gold `renoCount` = expFlips + expHolds), so with ground held
+ * equal and flips + holds held equal EVERY engine's project count — hence the tier,
+ * hence every number on the sheet — is byte-identical BY CONSTRUCTION. That is a
+ * property of the engines, not a tolerance, which is why this needs no per-file
+ * re-price and why it is granted to EVERYONE rather than only a super-admin: the
+ * predicate is on the DATA, exactly like `sowLockReason`.
+ *
+ * DELIBERATELY NARROW: the STATUS freeze (Clear-to-Close / Funded / Declined /
+ * Withdrawn) still stands, so this is PRE-CTC only; and the caller must have proved
+ * the request touches NOTHING but the experience counts (experience-realloc.js
+ * `changesOnlyExperience` + `isNeutralReallocation`). Anything else falls straight
+ * through to the ordinary freeze.
+ *
+ * PURE, like `termsNeutralReregister`: it takes the file's already-read lock row (so
+ * it never re-reads — a second read that failed could lift a freeze the caller
+ * already established) plus the caller's neutrality verdict.
+ */
+function experienceReallocation(row, isNeutralRealloc, opts = {}) {
+  if (!row) return null;                             // no row → caller decides (parity with structuralLockReason)
+  const statusReason = statusFreezeReason(row, opts);
+  if (statusReason) return statusReason;             // the STATUS freeze always stands
+  const tsReason = termSheetFreezeReason(row, opts);
+  if (!tsReason) return null;                        // nothing frozen — save away
+  return isNeutralRealloc ? null : tsReason;
+}
+
+/**
+ * THE SUPER-ADMIN DOUBLE-WARNING OVERRIDE of the term-sheet-sent freeze, for the
+ * APPLICATION DETAILS editor (owner-directed 2026-08-13).
+ *
+ * THE OWNER'S WORDS: "superadmin with double warning should be able to overwrite and
+ * change anything in the file without clearing the term sheet. Even if we have 10
+ * fix-and-flips and we're switching it to 5 fix-and-flips and 5 REO, superadmin
+ * should be able to do this with a double warning. Only superadmin, not regular
+ * admins." Asked to choose how wide, the owner picked EVERY FIELD on the Application
+ * Details screen.
+ *
+ * So this is the general sibling of `asIsArvTermSheetOverride`, and it is the same
+ * shape and the same three conditions:
+ *   · the STATUS freeze (CTC / funded / declined / withdrawn) ALWAYS stands — a
+ *     super-admin UNLOCK is the recorded way through those, never this override;
+ *   · it lifts ONLY the term-sheet freeze, ONLY for a `super_admin`, and ONLY when
+ *     it was explicitly requested (`opts.overrideRequested`, which the editor sets
+ *     behind a DOUBLE WARNING + a typed reason). Holding the role clears nothing;
+ *   · anyone else, or no explicit request → the freeze stands.
+ *
+ * KEEPING THE SENT TERM SHEET INTACT IS THE CALLER'S JOB, not this function's — the
+ * owner's ask is "without clearing the term sheet", so `details-freeze.js` captures
+ * and re-asserts the conditions the db/486 trigger would reopen, exactly as
+ * `asis-arv-override.apply()` does. Neutrality is NOT a gate here by design: this
+ * override exists precisely for the changes that are NOT neutral (10 flips → 5 flips
+ * + 5 REO genuinely lowers the qualified experience), and the double warning, the
+ * typed reason and the permanent audit record are the control.
+ */
+function detailsAdminOverride(row, opts = {}) {
+  if (!row) return null;
+  const statusReason = statusFreezeReason(row, opts);
+  if (statusReason) return statusReason;
+  const tsReason = termSheetFreezeReason(row, opts);
+  if (!tsReason) return null;                        // not frozen — nothing to override
+  const isSuper = !!(opts.actor && opts.actor.kind === 'staff' && opts.actor.role === 'super_admin');
+  return (isSuper && opts.overrideRequested) ? null : tsReason;
+}
+
 module.exports = {
   structuralLockReason, STRUCTURE_LOCKED, TS_SENT_STATUSES, termSheetSentLock,
+  experienceReallocation, detailsAdminOverride,
   sowLockReason, sowBudgetNeutral, SOW_INVESTOR_STATUSES,
   payoffContactLockReason,
   termsNeutralReregister, asIsArvTermSheetOverride, finalNumbersKey,
