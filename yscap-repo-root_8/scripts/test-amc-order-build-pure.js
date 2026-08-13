@@ -19,8 +19,12 @@ ok(ob.titleCategoryFor('SFR') === 'Single Family', 'title category SFR');
 ok(ob.titleCategoryFor('Multi 2-4') === '2-4 Family', 'title category multi 2-4');
 ok(ob.titleCategoryFor('Condo') === 'Condominium', 'title category condo');
 ok(ob.titleCategoryFor('Something New') === 'Something New', 'title category unknown passes through');
-ok(ob.occupancyFor('Investment') === 'Tenant Occupied', 'occupancy investment → tenant occupied');
+ok(ob.occupancyFor('Investment') === 'Vacant', 'occupancy investment → vacant (RTL default)');
+ok(ob.occupancyFor('Non-Owner Occupied') === 'Vacant', 'occupancy non-owner-occupied → vacant');
+ok(ob.occupancyFor('Tenant Occupied') === 'Tenant Occupied', 'occupancy explicit tenant → tenant occupied');
+ok(ob.occupancyFor('Vacant') === 'Vacant', 'occupancy vacant → vacant');
 ok(ob.occupancyFor('Primary') === 'Owner Occupied', 'occupancy primary → owner occupied');
+ok(ob.occupancyFor('') === null, 'occupancy blank → null (field omitted, vendor default)');
 ok(ob.loanPurposeFor('Refi Cash-Out') === 'Refinance', 'purpose refi → Refinance');
 ok(ob.loanPurposeFor('Purchase') === 'Purchase', 'purpose purchase → Purchase');
 
@@ -54,7 +58,7 @@ const ctx = {
   ok(spec.loan.baseLoanAmount === 300000, 'base loan amount');
   ok(spec.property.titleCategory === 'Single Family', 'property title category');
   ok(spec.property.addressLine === '12 Oak St' && spec.property.state === 'NY' && spec.property.postalCode === '11249', 'property address');
-  ok(spec.property.occupancy === 'Tenant Occupied', 'property occupancy mapped');
+  ok(spec.property.occupancy === 'Vacant', 'property occupancy mapped (investment → vacant)');
   ok(spec.property.salesContractAmount === 400000, 'sales contract amount');
   ok(spec.borrowers.length === 2, 'both borrowers');
   ok(spec.borrowers[0].classification === 'Primary' && spec.borrowers[1].classification === 'Secondary', 'borrower classifications defaulted');

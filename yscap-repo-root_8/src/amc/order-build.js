@@ -34,13 +34,18 @@ function titleCategoryFor(propertyCategory) {
   return TITLE_CATEGORY[k] || (propertyCategory ? String(propertyCategory) : null);
 }
 
-// Our occupancy → AppraisalScope propertyCurrentOccupancyType (out-of-the-box values
-// are Owner Occupied / Tenant Occupied / Vacant). RTL is overwhelmingly investment.
+// Our occupancy → AppraisalScope propertyCurrentOccupancyType. NAN's out-of-the-box
+// values (per the Enum Mapping sheet) are Owner Occupied / Tenant Occupied / Vacant.
+// RTL is overwhelmingly investment, and the owner directs those go out as VACANT — the
+// properties are being renovated/flipped/built, not tenant-occupied — while a file that
+// EXPLICITLY says tenant-occupied still sends Tenant Occupied (a genuine, distinct fact).
+// The value stays overridable per order (buildOrderSpec reads pr.occupancy || ctx.occupancy).
 function occupancyFor(occupancy) {
   const k = norm(occupancy);
   if (!k) return null;
   if (k === 'primary' || k === 'owneroccupied' || k === 'primaryresidence') return 'Owner Occupied';
-  if (k === 'investment' || k === 'investor' || k === 'tenantoccupied' || k === 'nonowneroccupied') return 'Tenant Occupied';
+  if (k === 'tenant' || k === 'tenantoccupied') return 'Tenant Occupied';
+  if (k === 'investment' || k === 'investor' || k === 'nonowneroccupied') return 'Vacant';
   if (k === 'vacant') return 'Vacant';
   if (k === 'secondary' || k === 'secondhome') return 'Owner Occupied';
   return null;
