@@ -1260,6 +1260,8 @@ export const api = {
   appraisalXmlWaiverSet:    (appId, body) => req('POST', `/api/staff/applications/${appId}/appraisal-xml-waiver`, body),
   appraisalXmlWaiverRemove: (appId) => req('DELETE', `/api/staff/applications/${appId}/appraisal-xml-waiver`),
   staffSaveAppraisalCard:(appId, b) => req('POST', `/api/staff/applications/${appId}/appraisal-card`, b),
+  // Permanently deletes the card off the file — there is no undo (the UI double-confirms).
+  staffClearAppraisalCard:(appId) => req('DELETE', `/api/staff/applications/${appId}/appraisal-card`),
 
   // ---- Appraisal desk: import the appraisal XML, read the property profile, resolve findings ----
   appraisalGet:            (appId) => req('GET', `/api/appraisal/${appId}`),
