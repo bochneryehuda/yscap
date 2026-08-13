@@ -191,8 +191,9 @@ async function resolveClientDisplayed(db, subdomain) {
   // Several distinct profiles and none matches the default name → can't default; the picker
   // chooses (name null so the order blocks until one is picked rather than sending a guess).
   if (opts.length > 1) return { id: null, name: null, source: 'multiple', options: opts };
-  // Nothing in the catalog at all — fall back to the configured name so the order still goes
-  // out (owner-directed: default to "YS Capital Group"), never blocked for a missing value.
+  // Nothing in the catalog at all — fall back to the configured NAME as the default label
+  // (owner-directed: default to "YS Capital Group"). A numeric id is REQUIRED, so id stays null
+  // and missingRequired blocks the order up-front rather than sending a name the gateway rejects.
   return { id: null, name: wantName || null, source: wantName ? 'name_default' : 'none', options: [] };
 }
 
