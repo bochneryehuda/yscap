@@ -809,16 +809,6 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
     const a = await orchestrator.loadFile(appId);
     if (!a) return res.status(404).json({ error: 'file not found' });
     if (a.status !== 'funded') return res.status(409).json({ error: 'the draw process starts once the loan is funded' });
-    // A TABLE-FUNDED loan was SOLD at the closing table (owner-directed 2026-08, Task L): the
-    // capital partner owns it from closing, so there are no post-closing draws for us to run.
-    // Skip the draw setup with a clear reason — the same fork that already skips purchasing.
-    const cwTf = (await db.query(`SELECT table_funded FROM closing_workflow WHERE application_id=$1`, [appId])).rows[0];
-    if (cwTf && cwTf.table_funded === true) {
-      return res.status(422).json({
-        error: 'This file is table funded — it was sold at the closing table, so there is no draw process for us to run. Table-funded loans skip draws, purchasing and post-closing delivery.',
-        code: 'table_funded',
-      });
-    }
     const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
     const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
     const rule = await orchestrator.resolveRule(a.lender, cp.id, program);

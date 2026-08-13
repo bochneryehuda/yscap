@@ -724,13 +724,6 @@ router.post('/applications/:id/request-draw', async (req, res) => {
   const a = own.rows[0];
   if (!a) return res.status(404).json({ error: 'not found' });
   if (a.status !== 'funded') return res.status(400).json({ error: 'Draws can be requested once your loan is funded.' });
-  // A table-funded loan was SOLD at the closing table (owner-directed 2026-08, Task L) — the
-  // investor runs any draws directly, so there is no PILOT draw process to start. Refuse plainly
-  // rather than birthing a Sitewire setup that will be skipped everywhere downstream.
-  const cwTf = (await db.query(`SELECT table_funded FROM closing_workflow WHERE application_id=$1`, [a.id])).rows[0];
-  if (cwTf && cwTf.table_funded === true) {
-    return res.status(409).json({ error: 'This loan was sold at closing, so draws are handled directly by the investor — there is nothing to set up here. Please contact your loan officer with any draw questions.' });
-  }
   // ONE request per file (owner-directed 2026-07-14): repeat clicks used to
   // fan out the full email set every time. The atomic claim below wins exactly
   // once — every later call answers ok/already with the original timestamp and
