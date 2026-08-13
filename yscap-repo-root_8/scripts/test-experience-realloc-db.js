@@ -122,7 +122,14 @@ function fullBody(app, over = {}) {
     requestedExpHolds: String(app.requested_exp_holds ?? 0),
     requestedExpGround: String(app.requested_exp_ground ?? 0),
     requestedExpReo: String(app.requested_exp_reo ?? 0),
-    requestedIrMonths: String(app.requested_ir_months ?? 0), requestedIrAmount: '',
+    /* MIRROR THE FORM EXACTLY: EditFileDetails renders a NULL column as '' (its
+       `num()` helper), never as '0'. Writing `?? 0` here made the fixture post a
+       value the real screen never sends — which is how the first run of this suite
+       reported a failure the product did not have, while ALSO exposing a real one
+       (blank vs NULL vs '0' are the same stored value on a zero-default column, and
+       the comparison did not know it). Keep this in step with `formFrom`. */
+    requestedIrMonths: app.requested_ir_months == null ? '' : String(app.requested_ir_months),
+    requestedIrAmount: '',
     term: app.term || '', payoffAmount: '', payoffLender: '', payoffLoanNumber: '',
     estimatedCashOut: '', originalPurchasePrice: '', acquisitionDate: '',
     isAssignment: !!app.is_assignment, underlyingContractPrice: '', assignmentFee: '',
@@ -185,6 +192,26 @@ const load = async (appId) => (await db.query(`SELECT * FROM applications WHERE 
     assert(v2.mode === 'refused', 'B3 a neutral swap does NOT license a price change riding along');
 
     // Lowering ground-up.
+    /* THE ZERO-DEFAULT COLUMNS, against a REAL row where they are NULL. This is the
+       case that failed the first time this suite ran against Postgres: the form posts
+       a blank interest-reserve box, the column is NULL, the door would store 0, and
+       the comparison called it a change — blocking the carve-out on essentially every
+       real file over a field nobody had touched. All three spellings of zero must
+       read as the same stored value, and a REAL number must still block. */
+    const z = await mkRegisteredFrozen({ flips: 3 });
+    const zapp = await load(z.appId);
+    assert(zapp.requested_ir_months == null, 'B5 (fixture) the interest-reserve column really is NULL');
+    for (const [blankish, label] of [['', 'a blank box'], ['0', 'a typed 0']]) {
+      const v = await detailsFreeze.evaluate(z.appId,
+        fullBody(zapp, { requestedExpFlips: '2', requestedExpHolds: '1', requestedIrMonths: blankish }),
+        db, { actor: lo });
+      assert(v.mode === 'reallocation', `B6 ${label} on a NULL zero-default column is NOT a change (got ${v.mode})`);
+    }
+    const vReal = await detailsFreeze.evaluate(z.appId,
+      fullBody(zapp, { requestedExpFlips: '2', requestedExpHolds: '1', requestedIrMonths: '6' }),
+      db, { actor: lo });
+    assert(vReal.mode === 'refused', 'B7 …but a REAL interest-reserve figure still blocks it');
+
     const g = await mkRegisteredFrozen({ flips: 3, ground: 2 });
     const gapp = await load(g.appId);
     const v3 = await detailsFreeze.evaluate(g.appId,

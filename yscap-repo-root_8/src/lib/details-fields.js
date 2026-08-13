@@ -58,6 +58,26 @@ const JSONB = { propertyAddress: 'property_address' };
 /** Every request key the door understands → its column. */
 const ALL = { ...NUM, ...STR, ...DATE, ...BOOL, ...JSONB };
 
+/**
+ * THE KEYS WHOSE BLANK IS A ZERO, NOT A NULL — the door's own `INT_KEYS`, moved
+ * here so the write and any before-the-write comparison read ONE definition.
+ *
+ * The door coerces these through `intField`, where `parseInt('')` is NaN and the
+ * function answers **0**. So on this door a blank experience count or interest-
+ * reserve field STORES 0; it does not clear the column. (That is deliberate — it is
+ * what lets switching an interest reserve from an amount back to months reliably
+ * clear the amount.)
+ *
+ * The consequence anything comparing a proposed value to a stored one must know:
+ * for these columns **blank, '0' and NULL are all the same stored value**, because
+ * the engines read `int(null)` as 0 too. A comparison that misses this calls a blank
+ * box a change on every file whose column is still NULL — which is most of them.
+ */
+const INT_KEYS = /^(requestedExp|requestedIr)/;
+
+/** True when this key's blank means 0 rather than NULL (see INT_KEYS). */
+function blankIsZero(key) { return INT_KEYS.test(String(key || '')); }
+
 /** The KIND of each request key, for callers that must compare a proposed value to
  *  a stored one (see details-freeze.changesOnlyExperience). */
 function kindOf(key) {
@@ -69,4 +89,4 @@ function kindOf(key) {
   return null;
 }
 
-module.exports = { NUM, STR, DATE, BOOL, JSONB, ALL, kindOf };
+module.exports = { NUM, STR, DATE, BOOL, JSONB, ALL, kindOf, INT_KEYS, blankIsZero };

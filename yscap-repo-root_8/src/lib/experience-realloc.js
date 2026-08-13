@@ -159,7 +159,8 @@ function changesOnlyExperience(current, body, fields) {
     // when it changed), both read as "something else changed" — fail closed.
     if (!kind || kind === 'jsonb') return { onlyExperience: false, blockedBy: key };
     const col = fields.ALL[key];
-    if (!sameStoredValue(kind, b[key], current ? current[col] : undefined)) {
+    const zeroDefault = !!(fields.blankIsZero && fields.blankIsZero(key));
+    if (!sameStoredValue(kind, b[key], current ? current[col] : undefined, { zeroDefault })) {
       return { onlyExperience: false, blockedBy: key };
     }
   }
@@ -174,9 +175,25 @@ function changesOnlyExperience(current, body, fields) {
  * whatever shape it rendered them. A pair it cannot CONFIDENTLY call equal is
  * reported as different, which refuses the carve-out: the safe way round.
  */
-function sameStoredValue(kind, proposed, stored) {
+function sameStoredValue(kind, proposed, stored, opts = {}) {
   const blank = (v) => v == null || String(v).trim() === '';
   if (kind === 'bool') return !!proposed === !!stored;
+  /* A ZERO-DEFAULT COLUMN HAS NO "EMPTY" — blank, '0' and NULL are ALL zero.
+     The door coerces the experience counts and the interest-reserve fields through
+     `intField`, where a blank stores 0 rather than clearing the column, and the
+     engines read a NULL as 0 too. So for these three spellings of the same number
+     the comparison must be by MEANING, not by emptiness.
+
+     This was found by running the DB suite against a real Postgres: the details form
+     posts a blank interest-reserve box on a file whose column is still NULL, and the
+     emptiness test below called that a change — which blocked the re-allocation on
+     essentially every real file, for a field nobody had touched. The general rule
+     ("one side blank and the other not is a change") is right for money and text and
+     stays; these columns are the documented exception. */
+  if (opts.zeroDefault) {
+    const z = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) && n > 0 ? n : 0; };
+    return z(proposed) === z(stored);
+  }
   if (blank(proposed) && blank(stored)) return true;
   if (blank(proposed) !== blank(stored)) return false;
   if (kind === 'num') {

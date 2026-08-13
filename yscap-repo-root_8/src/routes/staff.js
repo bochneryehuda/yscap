@@ -12312,7 +12312,10 @@ router.patch('/applications/:id/details', async (req, res) => {
   const NUM = detailsFields.NUM;
   const STR = detailsFields.STR;
   const DATE = detailsFields.DATE;
-  const INT_KEYS = /^(requestedExp|requestedIr)/;
+  /* Also shared (2026-08-13) — a blank on one of these stores 0, not NULL, and the
+     re-allocation carve-out has to know that to judge a blank box correctly before
+     the write. Same object the door has always used. */
+  const INT_KEYS = detailsFields.INT_KEYS;
   /* THE CEILING IS THE COLUMN'S OWN, NOT ONE NUMBER FOR ALL OF THEM (audit round
      6, 2026-07-31). The first cut of this guard reused `INT_KEYS` — which exists
      to decide how a BLANK resolves, a different question entirely — and a single
