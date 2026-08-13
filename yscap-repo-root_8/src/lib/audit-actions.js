@@ -17,6 +17,7 @@ const ACTIONS = {
   // ---- Access to PII (GLBA sensitive) -------------------------------------
   view_ssn: { label: 'Viewed a Social Security number', cat: 'pii' },
   view_appraisal_card: { label: 'Revealed an appraisal payment card', cat: 'pii' },
+  clear_appraisal_card: { label: 'Cleared the appraisal payment card off a file', cat: 'pii' },
   download_document: { label: 'Downloaded a document', cat: 'pii' },
   pii_redacted: { label: 'Redacted PII from a message', cat: 'pii' },
 

@@ -9326,6 +9326,45 @@ router.post('/applications/:id/appraisal-card', async (req, res) => {
     res.status(201).json({ ok: true, last4, brand });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
+// CLEAR the appraisal payment card OFF the file (owner-directed): once the appraisal
+// has been paid for, the back office should be able to shred the card rather than
+// leave a live card number sitting on the file. This is a DESTRUCTIVE, ONE-WAY
+// delete — the number/CVC are encrypted at rest and there is no copy to restore
+// from, which is why the UI double-confirms before calling this. Audited like every
+// other card action (GLBA-grade payment data).
+router.delete('/applications/:id/appraisal-card', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const gone = await db.query(
+      `DELETE FROM application_payment_cards WHERE application_id=$1 RETURNING last4, brand`, [req.params.id]);
+    if (!gone.rows[0]) return res.status(404).json({ error: 'no card on file' });
+    const { last4, brand } = gone.rows[0];
+    // The condition only reads 'received' BECAUSE a card was entered — with the card
+    // gone it is outstanding again, so nobody signs off on a card that is no longer
+    // there (the sign-off gate would refuse it anyway, with a confusing message).
+    // A condition already signed off / satisfied / waived is LEFT ALONE: it was
+    // cleared by a human decision (usually "the appraisal is already paid"), and
+    // reopening it would put finished work back on someone's list.
+    const reopened = await db.query(
+      `UPDATE checklist_items SET status='outstanding', updated_at=now()
+        WHERE application_id=$1 AND tool_key='appraisal_card'
+          AND status='received' AND signed_off_at IS NULL AND waived_at IS NULL
+        RETURNING id`, [req.params.id]);
+    // The borrower's OWN saved card (their opt-in "use it on my next file" copy) lives
+    // on their PROFILE, not on this file, so clearing the file never touches it. Report
+    // whether one is still there so the team is told exactly what is and isn't gone.
+    let savedCopyRemains = false;
+    try {
+      const app = (await db.query(
+        `SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id])).rows[0];
+      if (app && app.borrower_id) {
+        savedCopyRemains = !!(await require('../lib/appraisal-card').getSavedCard(app.borrower_id)).available;
+      }
+    } catch (_) { /* best-effort — never fail the clear on this */ }
+    await audit(req, 'clear_appraisal_card', 'application', req.params.id, { last4, brand });
+    res.json({ ok: true, last4, brand, reopened: reopened.rows.length > 0, savedCopyRemains });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
 // Borrower name typeahead for staff origination (StaffNewFile): match prior
 // borrowers by name so a new file can LINK to the existing borrower instead of
 // creating a duplicate, and known contact info can be pre-filled. Registered
