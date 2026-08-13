@@ -705,7 +705,7 @@ async function loadReportMeta(appId, { sitewireDrawId = null, mode = 'staff' } =
            FROM draw_finding_lines WHERE finding_id=$1 AND retired_at IS NULL ORDER BY id`, [f.id])).rows;
       // durable archived photos for this draw, grouped by request id (kind='image' only)
       const media = (await lazy.db.query(
-        `SELECT sitewire_request_id, storage_ref, storage_provider, display_ref, content_type, note, lat, lng, captured_at
+        `SELECT sitewire_request_id, storage_ref, storage_provider, display_ref, compact_ref, content_type, note, lat, lng, captured_at
            FROM draw_media WHERE application_id=$1 AND sitewire_draw_id=$2 AND kind='image' ORDER BY id`, [appId, did])).rows;
       const mediaByReq = new Map();
       for (const m of media) {
@@ -732,6 +732,8 @@ async function loadReportMeta(appId, { sitewireDrawId = null, mode = 'staff' } =
           // attachPhotoBytes; the full-size original is the fallback, so a photo with no display
           // copy yet still appears exactly as it does today.
           display_ref: m.display_ref || null,
+          // The email-sized rendition. Only the delivery copy asks for it; see attachPhotoBytes.
+          compact_ref: m.compact_ref || null,
           content_type: m.content_type,
           // staff caption keeps GPS + time; borrower caption is time-only (no location leak)
           caption: mode === 'borrower'
@@ -810,7 +812,14 @@ function round5(n) { const x = Number(n); return Number.isFinite(x) ? Math.round
 // Read the photo bytes for each section's lines from PILOT storage (cache-miss path only). Bounded by the
 // same budget the builder enforces; a missing/oversized/unreadable blob is skipped (photo dropped), never
 // thrown. Mutates `sections` in place, replacing each photo's { storage_ref } with { buf, caption }.
-async function attachPhotoBytes(sections) {
+async function attachPhotoBytes(sections, opts) {
+  // 'display' (the default) is the page-sized copy the reports we KEEP embed. 'compact' is the
+  // much smaller rendition the delivery email carries; it falls through display → original, so a
+  // photo the background worker has not reached yet is never dropped, only larger.
+  const rendition = (opts && opts.rendition) === 'compact' ? 'compact' : 'display';
+  const refsFor = (ph) => (rendition === 'compact'
+    ? [ph.compact_ref, ph.display_ref, ph.storage_ref]
+    : [ph.display_ref, ph.storage_ref]).filter(Boolean);
   let bytes = 0, count = 0, omitted = 0;
   for (const s of sections) {
     for (const l of (s.lines || [])) {
@@ -822,17 +831,20 @@ async function attachPhotoBytes(sections) {
         // photos dropped here were invisible: no note, no count, nothing in the report saying the
         // inspection had more to show. Count them and carry the number to the builder instead.
         if (count >= MAX_PHOTOS_TOTAL || bytes >= EMBED_BYTE_BUDGET) { omitted++; continue; }
-        if (!ph.storage_ref && !ph.display_ref) continue;
+        const refs = refsFor(ph);
+        if (!refs.length) continue;
         try {
-          // PREFER THE REPORT-SIZED COPY. jsPDF embeds JPEG bytes verbatim, so a full-size phone
-          // photo costs ~3.5 MB of the embed budget against ~0.25 MB for its display copy — which
-          // is the whole reason ~85 of a 100-photo inspection never reached the report. The
-          // original is the fallback and is never deleted; see db/540 and lib/image-fit.js.
+          // PREFER THE SMALLEST RENDITION THAT SUITS THIS COPY, AND FALL BACK RATHER THAN DROP.
+          // jsPDF embeds JPEG bytes verbatim, so a full-size phone photo costs ~3.5 MB of the embed
+          // budget against ~0.25 MB for its display copy and ~0.05 MB for its compact one — which
+          // is the whole reason ~85 of a 100-photo inspection never reached the report. Every
+          // fallback ends at the ORIGINAL, which is never deleted; see db/540, db/541 and
+          // lib/image-fit.js.
           let raw = null;
-          if (ph.display_ref) {
-            try { raw = await lazy.storage.read(ph.display_ref); } catch (_) { raw = null; }
+          for (const ref of refs) {
+            try { raw = await lazy.storage.read(ref); } catch (_) { raw = null; }
+            if (raw && raw.length) break;
           }
-          if (!raw || !raw.length) raw = await lazy.storage.read(ph.storage_ref);
           if (!raw || !raw.length || raw.length > EMBED_BYTE_BUDGET) continue;
           // Belt-and-suspenders GPS scrub on the embed path too: go-forward the archived bytes are already
           // clean (media-archive strips before storing), but a photo archived BEFORE the F-3 fix still carries
@@ -970,6 +982,44 @@ async function storeDrawReport({ appId, borrowerId, filename, bytes, mode }) {
    load -> attach photos -> build PDF -> store+supersede -> cache-by-version sequence lives, shared by the
    on-demand report route and the auto-deliver-on-findings path so both cache identically by version hash
    (an unchanged draw reuses the stored row; a change mints a fresh one and supersedes the old). */
+/**
+ * Build a report IN MEMORY and hand back the bytes. Nothing is stored, nothing is looked up, and
+ * NO `documents` row is ever created (owner-directed 2026-08-13 — the send-time compressed copy).
+ *
+ * WHY THIS IS NOT A STORED SECOND REPORT, and why that must not be "simplified" later. The stored
+ * report is found by a VERSION-HASHED FILENAME computed from the DRAW'S DATA — the loan, the
+ * amounts, the findings, the photo set. It says nothing about how large the pictures inside are.
+ * So a compact rendering of the same draw computes the IDENTICAL filename: `buildOrGetReportDoc`
+ * would find the full-quality report already sitting there and hand THAT back — the email would go
+ * out oversized again with nothing anywhere explaining why. Fold the rendition into the hash to
+ * tell them apart and it gets worse: the compact copy then SUPERSEDES the full-quality one
+ * (`is_current=false`), dropping the good report off every screen and package that reads it and
+ * shelving it into SharePoint's "Old Versions". A separate doc_kind is the third trap — it falls
+ * OUT of the regeneration rules that stop the Version-N folder churn and INTO the investor TPR
+ * package, where a low-resolution copy does not belong.
+ *
+ * Built, attached, sent, and recorded on the delivery row. Never filed.
+ */
+async function buildReportBytes(appId, { sitewireDrawId = null, scope, mode = 'staff', rendition = 'display' } = {}) {
+  const meta = await loadReportMeta(appId, { sitewireDrawId, mode });
+  if (!meta || !meta.hasScope || !Array.isArray(meta.sections) || !meta.sections.length) return null;
+  const photoLoad = await attachPhotoBytes(meta.sections, { rendition });
+  const bytes = buildDrawReport({
+    app: meta.app, rollup: meta.rollup, sections: meta.sections, scope, mode,
+    photosOmitted: (photoLoad && photoLoad.omitted) || 0,
+  });
+  const drawNumber = scope === 'draw' && meta.sections[0] ? meta.sections[0].number : null;
+  return {
+    bytes,
+    rendition,
+    photoCount: (photoLoad && photoLoad.photoCount) || 0,
+    photosOmitted: (photoLoad && photoLoad.omitted) || 0,
+    // A plain, human filename — this copy has no version identity because it is never stored, and
+    // giving it the stored report's version-hashed name would invite exactly the confusion above.
+    filename: reportFilename({ scope, mode, drawNumber, version: 'email', loanNo: meta.app.loanNo }),
+  };
+}
+
 async function buildOrGetReportDoc(appId, { sitewireDrawId = null, scope, mode = 'staff' } = {}) {
   const meta = await loadReportMeta(appId, { sitewireDrawId, mode });
   if (!meta || !meta.hasScope || !Array.isArray(meta.sections) || !meta.sections.length) return null;
@@ -1060,6 +1110,6 @@ function reportFilename({ scope, mode, drawNumber, version, loanNo }) {
 
 module.exports = {
   buildDrawReport, loadReportMeta, attachPhotoBytes, storeDrawReport, reportVersion, reportFilename,
-  buildOrGetReportDoc, autoDeliverArtifacts, refreshDrawFromSitewire,
+  buildOrGetReportDoc, buildReportBytes, autoDeliverArtifacts, refreshDrawFromSitewire,
   imageFormat, getJsPDF, MAX_PHOTOS_TOTAL, MAX_PHOTOS_PER_LINE, EMBED_BYTE_BUDGET,
 };

@@ -43,6 +43,14 @@ const photos = require('./appraisal/photos');
 const DISPLAY_MAX_SIDE = Math.max(320, Number(process.env.REPORT_PHOTO_MAX_SIDE) || 1600);
 // JPEG quality for the re-encode. 82 is visually transparent for photographic content.
 const DISPLAY_QUALITY = Math.min(95, Math.max(40, Number(process.env.REPORT_PHOTO_QUALITY) || 82));
+// THE COPY THAT GOES OUT BY EMAIL (owner-directed 2026-08-13: "while you click Deliver to Investor
+// it should take all the photos and redraw a new report on a much more compressed version that
+// should definitely fit in all the email versions"). 700px is still ~1.4x what the 118pt grid cell
+// can show at 300 DPI, and measured at ~50 KB a photo — so a 100-photo draw is a ~5 MB report that
+// clears Resend's cap, Gmail's 25 MB receive limit and Outlook's 35 MB with room to spare, even
+// after email encoding inflates it by about a third.
+const COMPACT_MAX_SIDE = Math.max(320, Number(process.env.REPORT_PHOTO_EMAIL_MAX_SIDE) || 700);
+const COMPACT_QUALITY = Math.min(95, Math.max(40, Number(process.env.REPORT_PHOTO_EMAIL_QUALITY) || 76));
 // Refuse to decode a source above this many megapixels. jpeg-js allocates w*h*4 for the pixels, so
 // 60 MP is ~240 MB of RGBA — already far beyond any camera a field inspector carries, and an OOM
 // cannot be caught. Passed to the decoder too, so IT refuses rather than us guessing from a header.
@@ -84,25 +92,54 @@ function fitJpeg(buf, opts) {
   const o = opts || {};
   const maxSide = Math.max(64, Number(o.maxSide) || DISPLAY_MAX_SIDE);
   const quality = Math.min(95, Math.max(40, Number(o.quality) || DISPLAY_QUALITY));
+  return fitJpegSizes(buf, [{ key: 'only', maxSide, quality }]).only;
+}
+
+/**
+ * The same six rules, applied to SEVERAL target sizes from ONE decode.
+ *
+ * WHY THIS EXISTS AS ITS OWN FUNCTION: the decode is the whole cost — ~3 SECONDS for a 12
+ * megapixel photo in pure JavaScript, against ~0.2s to resample and re-encode each rendition. The
+ * report needs a page-sized copy AND the delivery email needs a much smaller one, so calling
+ * fitJpeg twice would DOUBLE the most expensive part of the job for no reason. Decode once, hand
+ * the pixels to each spec.
+ *
+ * EVERY SPEC IS JUDGED INDEPENDENTLY: one rendition coming back 'no_saving' or 'already_small'
+ * says nothing about the others, and no spec can affect another's result.
+ *
+ * @param {Buffer} buf
+ * @param {Array<{key:string,maxSide:number,quality:number}>} specs
+ * @returns {Object<string, ReturnType<fitJpeg>>} keyed by each spec's `key`
+ */
+function fitJpegSizes(buf, specs) {
+  const list = (Array.isArray(specs) ? specs : []).filter((s) => s && s.key);
   const original = {
     buf, changed: false, reason: '', from: null, to: null,
     bytesBefore: buf ? buf.length : 0, bytesAfter: buf ? buf.length : 0,
   };
+  const all = (reason, extra) => {
+    const out = {};
+    for (const s of list) out[s.key] = { ...original, reason, ...(extra || {}) };
+    return out;
+  };
   try {
-    if (!buf || !buf.length) return { ...original, reason: 'empty' };
+    if (!list.length) return {};
+    if (!buf || !buf.length) return all('empty');
     // RULE 2 — a format we cannot decode is carried through untouched, never guessed at.
-    if (!isJpeg(buf)) return { ...original, reason: 'not_jpeg' };
+    if (!isJpeg(buf)) return all('not_jpeg');
 
     const size = jpegSize(buf);
     // RULE 5 — bound BEFORE the decode; an OOM kill cannot be caught.
-    if (size && (size.w * size.h) > MAX_SRC_MEGAPIXELS * 1e6) {
-      return { ...original, reason: 'source_too_large', from: size };
+    if (size && (size.w * size.h) > MAX_SRC_MEGAPIXELS * 1e6) return all('source_too_large', { from: size });
+
+    // RULE 3 — a spec the photo is already small enough for needs no decode at all. If EVERY spec
+    // is in that position we never decode, which is the common case for an already-modest photo.
+    const needsWork = list.filter((s) => !(size && Math.max(size.w, size.h) <= Math.max(64, Number(s.maxSide) || DISPLAY_MAX_SIDE)));
+    const out = {};
+    for (const s of list) {
+      if (!needsWork.includes(s)) out[s.key] = { ...original, reason: 'already_small', from: size, to: size };
     }
-    // RULE 3 — already small enough: return the SAME BYTES. Re-encoding here would only add a
-    // second generation of JPEG loss and could even grow the file.
-    if (size && Math.max(size.w, size.h) <= maxSide) {
-      return { ...original, reason: 'already_small', from: size, to: size };
-    }
+    if (!needsWork.length) return out;
 
     const jpeg = require('jpeg-js');
     // The decoder enforces its own ceilings too, so a header that LIED about the dimensions still
@@ -113,48 +150,55 @@ function fitJpeg(buf, opts) {
       maxMemoryUsageInMB: MAX_DECODE_MB,
     });
     if (!dec || !dec.width || !dec.height || !dec.data || !dec.data.length) {
-      return { ...original, reason: 'undecodable' };
+      for (const s of needsWork) out[s.key] = { ...original, reason: 'undecodable' };
+      return out;
     }
     const from = { w: dec.width, h: dec.height };
-    // Re-check against the DECODED dimensions (the header may have been unreadable above).
-    if (Math.max(from.w, from.h) <= maxSide) {
-      return { ...original, reason: 'already_small', from, to: from };
-    }
     // A VIEW over the decoder's own memory, never a copy — a 12 MP frame is 48 MB of RGBA and
     // copying it doubles the peak for no reason.
     const px = Buffer.from(dec.data.buffer, dec.data.byteOffset, dec.data.length);
-    // ONE definition of the box filter — the same area-average resampler the appraisal photo
-    // pipeline uses. Never re-implement it here.
-    const ds = photos.downscale(px, from.w, from.h, 4, maxSide);
-    if (!ds || !ds.w || !ds.h || !ds.px || !ds.px.length) return { ...original, reason: 'resize_failed', from };
 
-    const enc = jpeg.encode({ data: ds.px, width: ds.w, height: ds.h }, quality);
-    const out = enc && enc.data ? Buffer.from(enc.data) : null;
-    // RULE 6 — trust the bytes, not the call returning.
-    if (!out || !out.length || !isJpeg(out)) return { ...original, reason: 'encode_failed', from };
-    // RULE 4 — a "smaller" copy that is bigger is not an improvement.
-    if (out.length >= buf.length) return { ...original, reason: 'no_saving', from, to: { w: ds.w, h: ds.h } };
-
-    return {
-      buf: out,
-      changed: true,
-      reason: 'resized',
-      from,
-      to: { w: ds.w, h: ds.h },
-      bytesBefore: buf.length,
-      bytesAfter: out.length,
-    };
+    for (const s of needsWork) {
+      const maxSide = Math.max(64, Number(s.maxSide) || DISPLAY_MAX_SIDE);
+      const quality = Math.min(95, Math.max(40, Number(s.quality) || DISPLAY_QUALITY));
+      try {
+        // Re-check against the DECODED dimensions (the header may have been unreadable above).
+        if (Math.max(from.w, from.h) <= maxSide) { out[s.key] = { ...original, reason: 'already_small', from, to: from }; continue; }
+        // ONE definition of the box filter — the same area-average resampler the appraisal photo
+        // pipeline uses. Never re-implement it here.
+        const ds = photos.downscale(px, from.w, from.h, 4, maxSide);
+        if (!ds || !ds.w || !ds.h || !ds.px || !ds.px.length) { out[s.key] = { ...original, reason: 'resize_failed', from }; continue; }
+        const enc = jpeg.encode({ data: ds.px, width: ds.w, height: ds.h }, quality);
+        const bytes = enc && enc.data ? Buffer.from(enc.data) : null;
+        // RULE 6 — trust the bytes, not the call returning.
+        if (!bytes || !bytes.length || !isJpeg(bytes)) { out[s.key] = { ...original, reason: 'encode_failed', from }; continue; }
+        // RULE 4 — a "smaller" copy that is bigger is not an improvement.
+        if (bytes.length >= buf.length) { out[s.key] = { ...original, reason: 'no_saving', from, to: { w: ds.w, h: ds.h } }; continue; }
+        out[s.key] = {
+          buf: bytes, changed: true, reason: 'resized',
+          from, to: { w: ds.w, h: ds.h },
+          bytesBefore: buf.length, bytesAfter: bytes.length,
+        };
+      } catch (_) {
+        // One rendition failing must never cost the others theirs.
+        out[s.key] = { ...original, reason: 'error' };
+      }
+    }
+    return out;
   } catch (_) {
     // RULE 1 — every failure path ends here with the photo intact.
-    return { ...original, reason: 'error' };
+    return all('error');
   }
 }
 
 module.exports = {
   fitJpeg,
+  fitJpegSizes,
   isJpeg,
   jpegSize,
   DISPLAY_MAX_SIDE,
   DISPLAY_QUALITY,
+  COMPACT_MAX_SIDE,
+  COMPACT_QUALITY,
   MAX_SRC_MEGAPIXELS,
 };

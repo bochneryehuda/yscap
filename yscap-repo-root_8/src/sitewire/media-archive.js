@@ -399,26 +399,41 @@ async function buildDisplayMediaOnce(limit = 20, opts = {}) {
         // Pace BEFORE the expensive part, so a backlog can never hold the event loop for more
         // than one photo's decode at a time.
         if (pauseMs > 0) await new Promise((res) => setTimeout(res, pauseMs));
-        const fit = imageFit.fitJpeg(buf);
-        if (!fit.changed) {
-          // A real answer — "this one is already small", "this is a PNG", "shrinking made it
-          // bigger". Stamped so it drains; the reports simply keep using the original bytes.
-          await db.query(
-            `UPDATE draw_media SET display_checked_at = now(), display_skip_reason = $2 WHERE id = $1`,
-            [r.id, String(fit.reason || 'unchanged').slice(0, 40)]);
-          out.skipped++; progressed++;
-          continue;
+        // BOTH RENDITIONS FROM ONE DECODE. The decode is ~3s and each extra resample+encode is
+        // ~0.2s, so asking for the email-sized copy here is nearly free — whereas a second pass
+        // over the same photo would double the only expensive part of the job.
+        const fits = imageFit.fitJpegSizes(buf, [
+          { key: 'display', maxSide: imageFit.DISPLAY_MAX_SIDE, quality: imageFit.DISPLAY_QUALITY },
+          { key: 'compact', maxSide: imageFit.COMPACT_MAX_SIDE, quality: imageFit.COMPACT_QUALITY },
+        ]);
+        // Each rendition is stored on its own; one being unnecessary says nothing about the other.
+        // A rendition that was NOT produced records WHY, which is what makes db/541's reset
+        // self-terminating — a row the worker has answered can never come round again.
+        const cols = { display: {}, compact: {} };
+        for (const key of ['display', 'compact']) {
+          const fit = fits[key];
+          if (!fit || !fit.changed) { cols[key] = { reason: String((fit && fit.reason) || 'unchanged').slice(0, 40) }; continue; }
+          const saved = await storage.save(fit.buf, { filename: `draw-media-${r.id}-${key}.jpg` });
+          cols[key] = { ref: saved.ref, bytes: fit.buf.length, w: fit.to && fit.to.w, h: fit.to && fit.to.h, saved: Math.max(0, fit.bytesBefore - fit.bytesAfter) };
         }
-        const saved = await storage.save(fit.buf, { filename: `draw-media-${r.id}-display.jpg` });
         // Pinned to the ref we actually read from: a concurrent re-archive (which re-points
-        // storage_ref) must win, rather than have us attach a display copy of the OLD bytes.
+        // storage_ref) must win, rather than have us attach renditions of the OLD bytes.
         const upd = await db.query(
           `UPDATE draw_media
               SET display_ref = $2, display_bytes = $3, display_width = $4, display_height = $5,
-                  display_checked_at = now(), display_skip_reason = NULL
-            WHERE id = $1 AND storage_ref = $6`,
-          [r.id, saved.ref, fit.buf.length, fit.to && fit.to.w, fit.to && fit.to.h, r.storage_ref]);
-        if (upd.rowCount) { out.built++; progressed++; out.savedBytes += Math.max(0, fit.bytesBefore - fit.bytesAfter); }
+                  display_skip_reason = $6,
+                  compact_ref = $7, compact_bytes = $8, compact_width = $9, compact_height = $10,
+                  compact_skip_reason = $11,
+                  display_checked_at = now()
+            WHERE id = $1 AND storage_ref = $12`,
+          [r.id,
+           cols.display.ref || null, cols.display.bytes || null, cols.display.w || null, cols.display.h || null, cols.display.reason || null,
+           cols.compact.ref || null, cols.compact.bytes || null, cols.compact.w || null, cols.compact.h || null, cols.compact.reason || null,
+           r.storage_ref]);
+        if (upd.rowCount) {
+          progressed++;
+          if (cols.display.ref || cols.compact.ref) { out.built++; out.savedBytes += cols.display.saved || 0; } else out.skipped++;
+        }
       } catch (_) { /* one bad row never stops the pass; it stays unstamped and is retried */ }
     }
     // `more` means "come back soon, there is real work left" — a FULL batch that made NO progress

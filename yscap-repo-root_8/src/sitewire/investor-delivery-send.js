@@ -14,9 +14,15 @@
  *   3. the draw packet (Excel)         — the whole schedule of values with this draw on every line
  *   4. the signed wire instructions     — the borrower's own DocuSign form, so the investor can pay
  *
- * NOTHING IS EVER SILENTLY DROPPED: anything that cannot be attached comes back in `skipped` WITH
- * A REASON, is shown on the desk before the send, is printed in the email itself, and is stored on
- * the delivery record. An investor quietly one document short is the failure this exists to avoid.
+ * NOTHING IS EVER SILENTLY DROPPED — INTERNALLY. Anything that cannot be attached comes back in
+ * `skipped` WITH A REASON on the send response, is stored on the delivery record, and is read back
+ * into the desk's delivery history. It is deliberately NOT said in the email itself (owner-directed 2026-08-13: "even if
+ * it's not attached, it shouldn't say 'Hey, this was not attached' — it makes it unprofessional"),
+ * because that read as an apology to a capital partner for our own plumbing. An investor quietly
+ * one document short is still the failure this exists to avoid — the team is the one told.
+ *
+ * OUR report is built FRESH at send time at email size (~5 MB for a 100-photo draw instead of
+ * ~25 MB) and is never filed as a document; the full-quality copy on the file is untouched.
  */
 
 const db = require('../db');
@@ -163,11 +169,31 @@ async function gatherAttachments(appId, drawId, mode) {
   if (!inspectorFound) skipped.push({ what: 'Inspection report', reason: "the inspector's report has not been archived for this draw yet" });
 
   // --- 2. our own branded report ------------------------------------------------------
+  // BUILT FRESH, AT EMAIL SIZE, AND NEVER FILED (owner-directed 2026-08-13: "while you click
+  // Deliver to Investor it should take all the photos and redraw a new report on a much more
+  // compressed version that should definitely fit in all the email versions").
+  //
+  // The report we KEEP embeds page-sized photos and runs ~25 MB on a 100-photo draw — right for
+  // the copy on the file, too big for any mailbox (Gmail refuses over 25 MB RECEIVED, and email
+  // encoding inflates a file by about a third on the way out). This copy embeds the ~700px
+  // rendition instead: same report, every photo, ~5 MB.
+  //
+  // It is NEVER stored — see buildReportBytes for the three traps that made a second stored
+  // report the wrong answer. The full-quality report on the file is untouched by this.
+  //
+  // FALLING BACK IS DELIBERATE, NOT A LEFTOVER: a draw whose photos have no compact rendition yet
+  // (the background worker is paced, so a freshly archived draw can be ahead of it) still gets a
+  // report — just a larger one, which the budget below then judges on its merits. Sending a
+  // bigger report is a far better failure than sending none.
+  let reportRendition = null;
   try {
-    const r = await drawReport.buildOrGetReportDoc(appId, { sitewireDrawId: drawId, scope: 'draw', mode: 'staff' });
-    const buf = r && r.doc ? await readDoc(r.doc) : null;
-    if (buf) items.push({ what: 'PILOT draw report', filename: r.doc.filename, contentType: 'application/pdf', buf });
-    else skipped.push({ what: 'PILOT draw report', reason: 'the report could not be built for this draw' });
+    const built = await drawReport.buildReportBytes(appId, {
+      sitewireDrawId: drawId, scope: 'draw', mode: 'staff', rendition: 'compact',
+    });
+    if (built && built.bytes && built.bytes.length) {
+      reportRendition = { rendition: built.rendition, bytes: built.bytes.length, photos: built.photoCount, omitted: built.photosOmitted };
+      items.push({ what: 'PILOT draw report', filename: built.filename, contentType: 'application/pdf', buf: built.bytes, rendition: built.rendition });
+    } else skipped.push({ what: 'PILOT draw report', reason: 'the report could not be built for this draw' });
   } catch (_) { skipped.push({ what: 'PILOT draw report', reason: 'the report could not be built for this draw' }); }
 
   // --- 3. the draw packet (Excel) -----------------------------------------------------
@@ -258,7 +284,10 @@ async function gatherAttachments(appId, drawId, mode) {
     total += it.buf.length;
     fit.push(it);
   }
-  return { items: fit, skipped };
+  // `reportRendition` is carried so the delivery ROW can record which rendering of the report
+  // actually went out — the compact copy is never filed as a document, so this is the only place
+  // that answers "what did that investor receive?" later.
+  return { items: fit, skipped, reportRendition, totalBytes: total, budgetBytes: budget };
 }
 
 // ---------------------------------------------------------------------------
@@ -380,8 +409,10 @@ async function deliveryPreview(appId, drawId) {
   catch (_) { soldState = null; }
 
   const history = (await db.query(
+    // `attachments` + `skipped` ride along deliberately: the email no longer names what it could
+    // not carry (owner-directed 2026-08-13), so the desk's own history is where our team reads it.
     `SELECT id, funding_mode, investor_total_cents, to_borrower_cents, to_us_cents, to_emails,
-            status, error, sent_at, sent_by
+            status, error, sent_at, sent_by, attachments, skipped
        FROM draw_investor_deliveries WHERE application_id=$1 AND sitewire_draw_id=$2
       ORDER BY sent_at DESC LIMIT 10`, [appId, drawId])).rows;
 
@@ -471,7 +502,7 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
     };
   }
 
-  const { items, skipped } = await gatherAttachments(appId, drawId, useMode);
+  const { items, skipped, reportRendition } = await gatherAttachments(appId, drawId, useMode);
 
   let inspectionBy = null;
   try {
@@ -495,10 +526,12 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
   // and stops there.
   //
   // NOTHING IS LOST INTERNALLY, which is what makes this safe rather than a cover-up: every skipped
-  // item and its reason is still returned to the caller, still shown on the delivery card BEFORE
-  // anyone presses send, and still written to `draw_investor_deliveries.skipped` — the permanent
-  // record of what this email did and did not carry. The team simply no longer says it out loud to
-  // the investor.
+  // item and its reason is returned to the caller on the send, written to
+  // `draw_investor_deliveries.skipped`, and read back into the desk's delivery history — so our
+  // team can always answer "what did that email actually carry?". It is simply no longer said out
+  // loud to the investor. NOTE it is NOT known before the send: deliveryPreview deliberately does
+  // not gather the attachments, because that would build the report and the packet on every page
+  // load. If the desk ever needs to warn beforehand, that is a new, deliberate cost.
   if (items.length) {
     lines.push('Enclosed: ' + items.map((it) => it.what).join(', ') + '.');
   }
@@ -549,7 +582,10 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
       money.requested_cents, money.approved_cents, money.fee_cents, money.retainage_held_cents,
       money.to_borrower_cents, money.to_us_cents, money.investor_total_cents,
       F.jsonbText(pre.to), F.jsonbText(pre.cc),
-      F.jsonbText(items.map((i) => ({ filename: i.filename, what: i.what, bytes: i.buf.length }))),
+      // WHICH RENDERING WENT OUT is recorded per item. The compact report is built into the email
+      // and never filed as a document, so this row is the only lasting answer to "what did the
+      // investor actually receive?".
+      F.jsonbText(items.map((i) => ({ filename: i.filename, what: i.what, bytes: i.buf.length, rendition: i.rendition || null }))),
       F.jsonbText(skipped), status, errText, noteText, staffId])).rows[0];
 
   if (status === 'error') { const e = new Error(errText || 'the delivery email could not be sent'); e.status = 502; throw e; }
@@ -557,8 +593,11 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
   return {
     id: rec.id, sent_at: rec.sent_at, funding_mode: useMode, money,
     to: pre.to, cc: pre.cc,
-    attachments: items.map((i) => ({ filename: i.filename, what: i.what, bytes: i.buf.length })),
+    attachments: items.map((i) => ({ filename: i.filename, what: i.what, bytes: i.buf.length, rendition: i.rendition || null })),
     skipped,
+    // Which rendering of OUR report went out, and how many photos it carried — the compact copy is
+    // never filed, so this is the only place that answers it.
+    reportRendition,
   };
 }
 

@@ -214,4 +214,66 @@ function makeJpeg(w, h, quality, flat) {
   ok(imageFit.MAX_SRC_MEGAPIXELS <= 100, 'G4 …and still bounds the allocation');
 }
 
+// ── H. MANY SIZES FROM ONE DECODE ───────────────────────────────────────────────
+{
+  /* The decode is ~3 SECONDS for a 12-megapixel photo and each extra resample+encode is ~0.2s, so
+     the report's page-sized copy and the email's much smaller one MUST come out of a single
+     decode. Calling fitJpeg twice would double the only expensive part of the whole job. */
+  const src = makeJpeg(1200, 900, 92);
+  const out = imageFit.fitJpegSizes(src, [
+    { key: 'display', maxSide: 600, quality: 82 },
+    { key: 'compact', maxSide: 200, quality: 76 },
+  ]);
+  eq(Object.keys(out).sort().join(','), 'compact,display', 'H1 every spec gets an answer');
+  eq(out.display.to.w, 600, 'H2 the display rendition lands on its target');
+  eq(out.compact.to.w, 200, 'H3 …and the compact one on its own, from the SAME decode');
+  ok(out.compact.bytesAfter < out.display.bytesAfter, 'H4 the compact copy is the smaller of the two');
+  ok(imageFit.isJpeg(out.display.buf) && imageFit.isJpeg(out.compact.buf), 'H5 both are real JPEGs');
+  const d1 = jpeg.decode(out.compact.buf, { useTArray: true });
+  eq(d1.width, 200, 'H6 …and the compact one genuinely decodes at its size');
+
+  /* SPECS ARE JUDGED INDEPENDENTLY. A photo can be too small to need the display rendition while
+     still being worth shrinking for email — treating one answer as the other's would either skip
+     a needed shrink or re-encode something already correct. */
+  const mid = makeJpeg(500, 400, 88);
+  const both = imageFit.fitJpegSizes(mid, [
+    { key: 'display', maxSide: 1600, quality: 82 },
+    { key: 'compact', maxSide: 200, quality: 76 },
+  ]);
+  eq(both.display.reason, 'already_small', 'H7 a spec the photo already satisfies says so…');
+  ok(both.display.buf === mid, 'H8 …and returns the original bytes');
+  eq(both.compact.reason, 'resized', 'H9 …while the smaller spec still shrinks it');
+  ok(both.compact.buf !== mid, 'H10 …into genuinely different bytes');
+
+  // Every failure mode answers for EVERY spec rather than dropping one silently.
+  for (const [name, buf, reason] of [['garbage', Buffer.from('nope'), 'not_jpeg'], ['empty', Buffer.alloc(0), 'empty']]) {
+    const r = imageFit.fitJpegSizes(buf, [{ key: 'a', maxSide: 100 }, { key: 'b', maxSide: 50 }]);
+    eq(Object.keys(r).sort().join(','), 'a,b', `H:${name} every spec still gets an answer`);
+    eq(r.a.reason, reason, `H:${name} …with the real reason`);
+    ok(r.a.buf === buf && r.b.buf === buf, `H:${name} …and the original bytes`);
+  }
+  eq(Object.keys(imageFit.fitJpegSizes(makeJpeg(50, 50, 80), [])).length, 0, 'H11 no specs, no work, no throw');
+
+  // fitJpeg must still behave exactly as before — it is now a one-spec call through the same code.
+  const single = imageFit.fitJpeg(src, { maxSide: 600, quality: 82 });
+  eq(single.reason, 'resized', 'H12 the single-size helper still works…');
+  eq(single.to.w, 600, 'H13 …at the size asked for');
+  eq(single.bytesAfter, out.display.bytesAfter, 'H14 …and agrees byte-for-byte with the multi-size path');
+}
+
+// ── I. THE EMAIL RENDITION IS SIZED TO ACTUALLY FIT A MAILBOX ──────────────────
+{
+  /* The whole point of the compact copy is that it clears every mailbox limit. Gmail refuses over
+     25 MB RECEIVED and email encoding inflates a file by ~33% on the way, so the report has to
+     land far under that. Measured at ~50 KB a photo, a 100-photo draw is ~5 MB → ~6.7 MB on the
+     wire. Guard the constants that make that true. */
+  ok(imageFit.COMPACT_MAX_SIDE < imageFit.DISPLAY_MAX_SIDE,
+    'I1 the email rendition is smaller than the one the report we keep uses');
+  const gridCell300 = Math.ceil((118 / 72) * 300);   // the photo grid cell at print quality
+  ok(imageFit.COMPACT_MAX_SIDE >= gridCell300,
+    `I2 …but still at least the ${gridCell300}px the 118pt photo cell shows at 300 DPI — it is a `
+    + 'smaller FILE, not a worse-looking page');
+  ok(imageFit.COMPACT_QUALITY >= 70, 'I3 the quality stays out of the visibly-blocky range');
+}
+
 console.log(`test-image-fit-pure: ${checks} checks passed`);

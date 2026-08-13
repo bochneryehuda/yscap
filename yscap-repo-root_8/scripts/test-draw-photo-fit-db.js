@@ -95,6 +95,12 @@ function makeJpeg(w, h, quality) {
 
     const big = (await db.query(`SELECT * FROM draw_media WHERE id=$1`, [bigRow.id])).rows[0];
     ok(big.display_ref, 'A3 the oversized photo got a display copy');
+    // BOTH renditions come out of the one decode — the email-sized copy is built at the same time,
+    // because the decode is the whole cost and doing it twice would double the job.
+    ok(big.compact_ref, 'A3a …and an email-sized copy in the same pass');
+    ok(big.compact_bytes < big.display_bytes, 'A3b …which is the smaller of the two');
+    eq(big.compact_width, imageFit.COMPACT_MAX_SIDE, 'A3c …sized for email');
+    ok(big.compact_ref !== big.display_ref, 'A3d …and is genuinely its own blob');
     ok(big.display_bytes < big.bytes, 'A4 …which is smaller than the original');
     eq(big.display_width, imageFit.DISPLAY_MAX_SIDE, 'A5 …sized to the report target on its long side');
     ok(big.display_checked_at, 'A6 …and is stamped so the queue drains');
@@ -190,6 +196,49 @@ function makeJpeg(w, h, quality) {
     eq(broken[0].lines[0].photos[0].buf.length, bigBuf.length, 'C7 …embedding the full-size photo rather than dropping it');
   }
 
+  // ── C2. THE EMAIL COPY USES THE SMALLEST RENDITION, AND STILL FALLS BACK ──────
+  {
+    const big = (await db.query(`SELECT * FROM draw_media WHERE id=$1`, [bigRow.id])).rows[0];
+    const mk = () => ([{ number: 1, lines: [{ name: 'Roof', photos: [
+      { storage_ref: big.storage_ref, display_ref: big.display_ref, compact_ref: big.compact_ref, caption: '' },
+    ] }], attachments: [] }]);
+
+    const forEmail = mk();
+    await report.attachPhotoBytes(forEmail, { rendition: 'compact' });
+    eq(forEmail[0].lines[0].photos[0].buf.length, big.compact_bytes,
+      'C2.1 the delivery copy embeds the EMAIL-sized rendition');
+
+    const forFile = mk();
+    await report.attachPhotoBytes(forFile, { rendition: 'display' });
+    eq(forFile[0].lines[0].photos[0].buf.length, big.display_bytes,
+      'C2.2 …while the report we keep still embeds the page-sized one');
+    // The default must stay 'display' — the copy on the file must never silently become the small one.
+    const dflt = mk();
+    await report.attachPhotoBytes(dflt);
+    eq(dflt[0].lines[0].photos[0].buf.length, big.display_bytes, 'C2.3 …which is also the default');
+
+    /* THE FALLBACK CHAIN IS WHAT MAKES THE EMAIL COPY SAFE TO SHIP AHEAD OF THE WORKER. A draw
+       archived minutes ago can be ahead of the paced background pass, and sending a LARGER report
+       is a far better failure than sending none. */
+    const noCompact = [{ number: 1, lines: [{ name: 'Roof', photos: [
+      { storage_ref: big.storage_ref, display_ref: big.display_ref, compact_ref: null, caption: '' },
+    ] }], attachments: [] }];
+    await report.attachPhotoBytes(noCompact, { rendition: 'compact' });
+    eq(noCompact[0].lines[0].photos[0].buf.length, big.display_bytes,
+      'C2.4 no email copy yet → falls back to the page-sized one, never drops the photo');
+
+    const neither = [{ number: 1, lines: [{ name: 'Roof', photos: [
+      { storage_ref: big.storage_ref, display_ref: null, compact_ref: null, caption: '' },
+    ] }], attachments: [] }];
+    await report.attachPhotoBytes(neither, { rendition: 'compact' });
+    eq(neither[0].lines[0].photos[0].buf.length, bigBuf.length,
+      'C2.5 …and with no rendition at all, straight to the untouched original');
+
+    /* THE EMAIL COPY IS DRAMATICALLY SMALLER — the reason it exists. */
+    ok(big.compact_bytes * 100 < 12 * 1024 * 1024,
+      'C2.6 a 100-photo draw of these photos would be well under 12 MB at email size');
+  }
+
   // ── D. NOTHING IS DROPPED IN SILENCE ──────────────────────────────────────────
   {
     /* Force the loader past its own ceiling and prove the overflow is COUNTED. Before this, those
@@ -223,6 +272,49 @@ function makeJpeg(w, h, quality) {
     ok(!/additional photo/.test(clean.toString('latin1')), 'D4 …and stays quiet when nothing was left out');
   }
 
+  // ── D2. db/541's RESET MUST TERMINATE, OR IT BURNS CPU FOREVER ────────────────
+  {
+    /* db/540 and db/541 ship together, so in production no row can be stamped by a display-only
+       worker — but a database that already ran db/540 alone would hold rows stamped done with no
+       email copy, and those photos would silently never gain one. db/541 un-stamps exactly those.
+       EVERY MIGRATION RE-RUNS ON EVERY BOOT, so the danger is the opposite one: a row the worker
+       has answered with "no email copy needed" must NEVER be un-stamped again, or it is re-decoded
+       (~3 seconds of blocked event loop) on every single deploy, forever. Run the REAL migration
+       file rather than a retyped copy of its SQL. */
+    const sql = require('fs').readFileSync(require.resolve('../db/541_draw_media_compact.sql'), 'utf8');
+
+    // (a) the half-built row db/541 exists for
+    const half = await addMedia('half.jpg', makeJpeg(1500, 1000, 90));
+    await db.query(`UPDATE draw_media SET display_ref='x/y.jpg', display_checked_at=now(),
+                      compact_ref=NULL, compact_skip_reason=NULL WHERE id=$1`, [half.id]);
+    await db.query(sql);
+    eq((await db.query(`SELECT display_checked_at FROM draw_media WHERE id=$1`, [half.id])).rows[0].display_checked_at, null,
+      'D2.1 a row left half-built by the display-only worker is put back in the queue');
+
+    // (b) once the worker has ANSWERED it, the migration must leave it alone — for both answers.
+    for (const [label, set] of [
+      ['built an email copy', `compact_ref='c/d.jpg', compact_skip_reason=NULL`],
+      ['decided none was needed', `compact_ref=NULL, compact_skip_reason='already_small'`],
+    ]) {
+      await db.query(`UPDATE draw_media SET display_checked_at=now(), ${set} WHERE id=$1`, [half.id]);
+      await db.query(sql);
+      await db.query(sql);   // twice — two deploys
+      ok((await db.query(`SELECT display_checked_at FROM draw_media WHERE id=$1`, [half.id])).rows[0].display_checked_at,
+        `D2.2 …but a row the worker ${label} is never un-stamped again (no endless re-decode)`);
+    }
+
+    // (c) end to end: the worker's own answer survives a re-run of the migration.
+    await db.query(`UPDATE draw_media SET display_ref=NULL, display_checked_at=NULL,
+                      compact_ref=NULL, compact_skip_reason=NULL WHERE id=$1`, [half.id]);
+    await media.buildDisplayMediaOnce(50, { pauseMs: 0 });
+    const after = (await db.query(`SELECT * FROM draw_media WHERE id=$1`, [half.id])).rows[0];
+    ok(after.display_checked_at, 'D2.3 the worker stamps the row…');
+    ok(after.compact_ref || after.compact_skip_reason, 'D2.4 …and always answers the email-copy question');
+    await db.query(sql);
+    ok((await db.query(`SELECT display_checked_at FROM draw_media WHERE id=$1`, [half.id])).rows[0].display_checked_at,
+      'D2.5 …so the migration converges on the very next boot');
+  }
+
   // ── E. A CACHED REPORT CANNOT OUTLIVE THE PHOTOS IT IS MISSING ────────────────
   {
     /* The stored report is looked up by a version-hashed filename. Building a display copy changes
@@ -247,10 +339,31 @@ function makeJpeg(w, h, quality) {
     ok(!/'Not attached: '/.test(code), 'F2 …and never leads with what it failed to attach');
     ok(/Enclosed: /.test(code), 'F3 …it names what it IS sending instead');
     /* NOTHING IS LOST INTERNALLY — that is what makes the quieter email honest rather than a
-       cover-up. The skipped list must still be returned and still be written to the delivery
-       record, which is the permanent answer to "what did that email actually carry?". */
+       cover-up. The skipped list must still be returned on the send, still written to the delivery
+       record, and still readable by our own team afterwards. It is deliberately NOT known before
+       the send: deliveryPreview does not gather attachments, because that would build the report
+       and the packet on every page load. */
     ok(/skipped,/.test(code) || /skipped\b/.test(code), 'F4 the skipped list is still tracked');
     ok(/F\.jsonbText\(skipped\)/.test(code), 'F5 …and still recorded on the delivery row');
+    ok(/sent_by, attachments, skipped/.test(code),
+      'F5a …and read back into the desk history, which is where our team now sees it');
+
+    /* THE EMAILED REPORT IS BUILT FRESH AT EMAIL SIZE AND NEVER FILED. A stored second report
+       would compute the SAME version-hashed filename as the full-quality one (the hash is over the
+       draw's DATA, not the photo size), so the lookup would hand back the big one and the email
+       would go out oversized again — and once told apart, the compact copy would SUPERSEDE the
+       good report and drop it off every screen that reads is_current. */
+    ok(/buildReportBytes\(/.test(code), 'F6 the delivery builds its own copy in memory…');
+    ok(/rendition: 'compact'/.test(code), 'F7 …at email size');
+    ok(!/buildOrGetReportDoc\(/.test(code),
+      'F8 …and NEVER through the storing path — a second stored report is the trap this avoids');
+
+    const rsrc = require('fs').readFileSync(require.resolve('../src/sitewire/draw-report.js'), 'utf8');
+    const rcode = rsrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    const fn = rcode.slice(rcode.indexOf('async function buildReportBytes'), rcode.indexOf('async function buildOrGetReportDoc'));
+    ok(fn.length > 200, 'F9 (fixture) found the in-memory builder');
+    ok(!/storeDrawReport|INSERT INTO documents|storage\.save/.test(fn),
+      'F10 the in-memory builder stores nothing — no document row, no blob');
   }
 
   await db.query(`DELETE FROM applications WHERE id=$1`, [app.id]);
