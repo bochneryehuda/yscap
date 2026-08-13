@@ -356,15 +356,16 @@ function missingRequired(spec) {
   // an order that fails at the vendor with a cryptic "client_displayed_id: Required". For a
   // normal single-profile account this auto-resolves and never blocks.
   if (!spec.clientDisplayedId) missing.push('the client shown on the appraisal report');
-  // AppraisalScope REQUIRES purchasePriceAmount (its `purchase_amount`) ONLY on a purchase
-  // (its mapping: "Required when Intended Use is Purchase") — NOT salesContractAmount, which
-  // the vendor treats as a separate optional field. Validate the field NAN actually reads,
-  // and only when the order goes out as a Purchase, so a blank shows on the preview as a plain
-  // "still needed" line and the submit refuses — never a silent bad order that only fails at
-  // the vendor with a cryptic 400. (A refinance does not require purchase_amount.)
-  if (spec.loan && spec.loan.loanPurpose === 'Purchase' && (!p || p.purchasePriceAmount == null)) {
-    missing.push('purchase price');
-  }
+  // AppraisalScope REQUIRES purchasePriceAmount (its `purchase_amount`) on a purchase (its
+  // mapping: "Required when Intended Use is Purchase") — NOT salesContractAmount, which the
+  // vendor treats as a separate optional field. Validate the field NAN actually reads. A
+  // "purchase" here is anything that is NOT an explicit refinance — mirroring loadContext's
+  // `isPurchase = !/refi/` (a blank/unknown loan_type is treated as a purchase, which is also
+  // how the file's purchasePriceAmount gets populated), so a blank-loan-type purchase with no
+  // price is still flagged rather than slipping through to a cryptic vendor 400. Only an
+  // explicit refinance is exempt (NAN does not require purchase_amount on a refi).
+  const isRefinanceOrder = !!(spec.loan && spec.loan.loanPurpose === 'Refinance');
+  if (!isRefinanceOrder && (!p || p.purchasePriceAmount == null)) missing.push('purchase price');
   const pc = spec.primaryContact;
   if (!pc || (!pc.phone && !pc.email)) missing.push('a phone or email for the main contact');
   return missing;

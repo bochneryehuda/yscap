@@ -235,6 +235,12 @@ const ctx = {
   // a REFINANCE does NOT require purchase_amount
   const missRefi = ob.missingRequired(ob.buildOrderSpec({ ...buyBase, loanPurpose: 'Refinance', property: { ...buyBase.property, purchasePriceAmount: null } }, F, {}));
   ok(!missRefi.includes('purchase price'), 'preflight: refinance does not require purchase price');
+  // a BLANK/unknown loan purpose is treated as a purchase (mirrors loadContext isPurchase), so
+  // a missing purchase price is still flagged — closing the gap where a blank loan_type slips through.
+  const missBlank = ob.missingRequired(ob.buildOrderSpec({ ...buyBase, loanPurpose: null, property: { ...buyBase.property, purchasePriceAmount: null } }, F, {}));
+  ok(missBlank.includes('purchase price'), 'preflight: blank loan purpose (treated as purchase) still requires purchase price');
+  const missBlankOk = ob.missingRequired(ob.buildOrderSpec({ ...buyBase, loanPurpose: null, property: { ...buyBase.property, purchasePriceAmount: 400000 } }, F, {}));
+  ok(!missBlankOk.includes('purchase price'), 'preflight: blank loan purpose with a purchase price passes');
 }
 
 // ---- end to end: auto-filled spec → valid CreateAppraisal wire message ----

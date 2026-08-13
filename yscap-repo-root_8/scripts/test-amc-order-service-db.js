@@ -136,6 +136,27 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     ok(preview.spec.clientDisplayedId === '297', 'spec carries the client-displayed-on-report id → sourceClientIdentifier');
     ok(preview.canPlace === true && preview.missing.length === 0, 'preview is complete → placeable');
 
+    // ---- estimated closing date through the REAL pg `date` parser (loadContext → buildPreview
+    //      → spec). Guards the omit-not-fabricate path against a change to db.js's
+    //      setTypeParser(1082): if the column stopped coming back as 'YYYY-MM-DD', every closing
+    //      date would silently fail the ISO regex and be dropped. Uses computed dates so it is
+    //      never time-fragile. ----
+    {
+      const isoDay = (ms) => new Date(ms).toISOString().slice(0, 10);
+      const DAY = 86400000;
+      const fut = isoDay(Date.now() + 45 * DAY);   // a real future date
+      const past = isoDay(Date.now() - 10 * DAY);  // a real past date
+      await c.query('UPDATE applications SET est_closing_date = $2 WHERE id = $1', [appId, fut]);
+      const pFut = await orderService.buildPreview(c, appId);
+      ok(pFut.spec.loan.estimatedClosingDate === fut, 'a valid future closing date reaches the spec through the real pg date parser');
+      ok(!pFut.assumptions.some((a) => a.field === 'estimatedClosingDate'), 'a valid future closing date raises no stale warning');
+      await c.query('UPDATE applications SET est_closing_date = $2 WHERE id = $1', [appId, past]);
+      const pPast = await orderService.buildPreview(c, appId);
+      ok(pPast.spec.loan.estimatedClosingDate == null, 'a PAST closing date is omitted from the spec (not fabricated)');
+      ok(pPast.assumptions.some((a) => a.field === 'estimatedClosingDate' && a.warn === true), 'a PAST closing date raises the stale warning on the preview');
+      await c.query('UPDATE applications SET est_closing_date = $2 WHERE id = $1', [appId, fut]); // restore forward-dated
+    }
+
     // ---- createOrder (draft, no network) ----
     const draft = await orderService.createOrder(c, appId, { place: false, staffId: null });
     ok(draft.ok === true && draft.draft === true, 'createOrder(place:false) returns a draft');
