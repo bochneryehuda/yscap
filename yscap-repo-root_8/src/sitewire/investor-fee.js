@@ -21,19 +21,22 @@
  * handling the release, and therefore how much of it reaches our bank. Nothing here can move a
  * borrower's money, and nothing here belongs on a borrower surface.
  *
- * TWO THINGS HAVE TO BE TRUE BEFORE A CUT IS FILLED IN, and both are facts we already hold:
+ * TWO THINGS HAVE TO BE TRUE BEFORE A CUT EXISTS AT ALL, and both are facts we already hold:
  *   1. the note buyer has a rate in the table below (CorrFirst / Blue Lake — the owner's hard
  *      rules, and the ONLY place those numbers live in this codebase);
- *   2. the loan is actually SOLD to them — "if it's not sold yet, then we get all of the entire
- *      fee". Sold is `release-party.soldStatus`, the same three-valued answer ('sold' / 'not_sold'
- *      / 'unknown') the draw desk already shows, so this can never disagree with the card above it
- *      about whether the investor owns the loan.
+ *   2. the loan is actually SOLD to them. Sold is `release-party` — and specifically its EFFECTIVE
+ *      answer (`soldEffective`), so the draw desk's "process this file as sold" override carries
+ *      here too and this can never disagree with the badge on the screen above it.
  *
- * AND IT NEVER GUESSES. Only a positive 'sold' fills the box in; 'not_sold' and 'unknown' fill in
- * nothing and say so in words, naming the rate so a coordinator who knows the file is sold can
- * apply it with one press. Filling it in on a maybe would quietly under-report our income on every
- * file PILOT cannot read — and the figure is editable precisely because the human at the ledger is
- * the one who knows.
+ * AN UNSOLD LOAN HAS NO INVESTOR FEE — NOT $0 THAT SOMEBODY MIGHT EDIT, NONE (owner-directed
+ * 2026-08-13): *"if it's not sold yet, then it should not fill out the investor fee, because the
+ * investor is not charging it yet — they're not reimbursing it and they're not releasing it.
+ * They're going to buy the loan with the draw released already, so it's not going to be an extra
+ * charge."* Before the sale WE release the draw out of our own money and our fee simply stays out
+ * of the wire; there is no remittance for anybody to deduct from. So on an unsold file the box is
+ * not offered at all (`offer:false`), and the sentence says why. The moment the file is sold — or
+ * a coordinator processes it as sold — the rate applies and the box appears, still editable,
+ * because the human at the ledger is the one who knows.
  *
  * PURE — no database, no network, integer cents, never throws. The one require is the shared
  * note-buyer table (itself pure), so a buyer's spelling still has exactly ONE home in this
@@ -119,12 +122,13 @@ function splitFee({ feeCents = 0, investorFeeCents = 0 } = {}) {
  *   feeCents   OUR fee on this draw (the figure the draw already carries)
  *
  * Returns, always (an unknown buyer simply has no rule and no cut):
- *   { buyer_key, buyer_label, rule_cents, applies, sold, suggested_cents,
+ *   { buyer_key, buyer_label, rule_cents, applies, offer, sold, suggested_cents,
  *     fee_cents, net_fee_cents, reason, headline, hint }
  *
- * `suggested_cents` is what the box fills in with — the rule, capped at our own fee, and ONLY on a
- * positive 'sold'. `hint` is the sentence a coordinator reads when it did not fill itself in, and
- * it always names the amount so applying it is one press rather than a hunt for the rate.
+ * `offer` is whether the ledger should show the investor-fee box at all — false on an unsold loan
+ * (nobody is charging anything) and on a buyer with no such deal. `suggested_cents` is what it
+ * fills in with: the rule, capped at our own fee. `hint` is the sentence a coordinator reads when
+ * the box is not offered, and it says what IS happening rather than only what is not.
  */
 function describe({ noteBuyer = null, sold = null, feeCents = 0 } = {}) {
   const fee = Math.max(0, Math.round(N(feeCents)));
@@ -139,25 +143,30 @@ function describe({ noteBuyer = null, sold = null, feeCents = 0 } = {}) {
   };
   // No rule: this buyer keeps nothing out of our fee, and neither does an unrecognised one.
   if (!rule) {
-    return { ...base, applies: false, suggested_cents: 0, net_fee_cents: fee, reason: 'no_rule', headline: null, hint: null };
+    return { ...base, applies: false, offer: false, suggested_cents: 0, net_fee_cents: fee, reason: 'no_rule', headline: null, hint: null };
   }
   const capped = Math.min(rule.per_draw_cents, fee);
   // Sold to them → the cut applies, and the box fills itself in.
   if (isSold) {
     return {
-      ...base, applies: true, suggested_cents: capped, net_fee_cents: fee - capped, reason: 'sold_to_buyer',
-      headline: `${rule.label} keeps ${usd(capped)} of our ${usd(fee)} fee on this draw — ${usd(fee - capped)} is deposited to us.`,
+      ...base, applies: true, offer: true, suggested_cents: capped, net_fee_cents: fee - capped, reason: 'sold_to_buyer',
+      headline: `${rule.label} keeps ${usd(capped)} of our ${usd(fee)} fee on this draw — ${usd(fee - capped)} comes to us.`,
       hint: null,
     };
   }
-  // Not sold (or we cannot tell) → we keep the whole fee, and we say why, with the rate named.
+  // NOT SOLD (or we cannot tell) → there is no investor fee to record, and the box is not offered.
+  // They are neither releasing this draw nor reimbursing it, so there is nothing for them to deduct
+  // from: they buy the loan later with the draw already released. We wire the borrower the net out
+  // of our own money and our fee never leaves it.
   const certain = String(sold || '') === SOLD.NOT_SOLD;
   return {
-    ...base, applies: false, suggested_cents: 0, net_fee_cents: fee, reason: certain ? 'not_sold' : 'sold_unknown',
+    ...base, applies: false, offer: false, suggested_cents: 0, net_fee_cents: fee,
+    reason: certain ? 'not_sold' : 'sold_unknown',
     headline: null,
-    hint: certain
-      ? `This loan has not been sold to ${rule.label} yet, so we keep the whole ${usd(fee)} fee. Once they own it they keep ${usd(rule.per_draw_cents)} of every draw fee.`
-      : `PILOT cannot tell whether ${rule.label} has bought this loan yet — there is no purchase advice date on file — so it is keeping the whole ${usd(fee)} fee for us. If they already own it, put their ${usd(rule.per_draw_cents)} in the investor-fee box.`,
+    hint: (certain
+      ? `This loan has not been sold to ${rule.label} yet, so they charge nothing on this draw — `
+      : `PILOT cannot tell whether ${rule.label} has bought this loan yet (no purchase advice date on file), so nothing is charged on this draw — `)
+      + `we release the net ourselves and our ${usd(fee)} fee simply stays out of the wire. Once they own the loan they keep ${usd(rule.per_draw_cents)} of every draw fee. If the loan IS already sold, process the file as sold on the "Who releases the money" card and the fee will apply.`,
   };
 }
 

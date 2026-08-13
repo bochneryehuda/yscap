@@ -11,9 +11,10 @@
  *      to the cent, whether the investor keeps part of our fee or not;
  *   3. the box is EDITABLE — a typed figure wins, in both directions — and a cut bigger than our own
  *      fee is refused rather than recorded;
- *   4. "if it's not sold yet, then we get all of the entire fee" — the same CorrFirst file with no
- *      purchase advice date keeps the whole $299;
- *   5. Blue Lake keeps the whole $250, so that release deposits nothing and the investor owes us
+ *   4. AN UNSOLD LOAN CARRIES NO INVESTOR FEE AT ALL and is released by US, whatever the file's
+ *      setting says — the box is not offered, a fee typed against one is refused, and the draw
+ *      desk's "process this file as sold" (with its confirmation) puts both back;
+ *   5. Blue Lake keeps the whole $250, so that release banks nothing and the investor owes us
  *      nothing;
  *   6. the deposit is computed by the DATABASE, so nobody can type a ledger into disagreeing with
  *      itself;
@@ -86,8 +87,8 @@ function call(server, method, p, token, body) {
     let seq = 0;
     async function mkFile({ buyer, paDate, approvedCents, count = 1 }) {
       const appId = (await db.query(
-        `INSERT INTO applications(borrower_id,status,ys_loan_number,lender,purchase_advice_date,property_address,rehab_budget,loan_amount)
-         VALUES($1,'funded',$2,$3,$4,'{"oneLine":"109 Chapel St","city":"New Haven","state":"CT","zip":"06511"}',100000,400000) RETURNING id`,
+        `INSERT INTO applications(borrower_id,status,ys_loan_number,lender,purchase_advice_date,encompass_last_pulled_at,property_address,rehab_budget,loan_amount)
+         VALUES($1,'funded',$2,$3,$4,now(),'{"oneLine":"109 Chapel St","city":"New Haven","state":"CT","zip":"06511"}',100000,400000) RETURNING id`,
         [bor, `IF${sfx.slice(-6)}${seq}`, buyer, paDate])).rows[0].id;
       await db.query(
         `INSERT INTO sitewire_property_links(application_id,sitewire_property_id,matched_by,state,pushed_at,inspection_method)
@@ -158,16 +159,62 @@ function call(server, method, p, token, body) {
     }
 
     // ======================================================================
-    // 3. NOT SOLD YET → WE GET THE ENTIRE FEE
+    // 3. NOT SOLD YET → NO INVESTOR FEE AT ALL, and WE release
+    //    (owner-directed 2026-08-13)
     // ======================================================================
     {
-      const unsold = await mkFile({ buyer: 'CorrFirst', paDate: null, approvedCents: APPROVED });
+      const unsold = await mkFile({ buyer: 'CorrFirst', paDate: null, approvedCents: APPROVED, count: 3 });
+      // The file is set to "the investor releases" — and it makes no difference until it is sold.
+      await db.query(`UPDATE sitewire_property_links SET investor_funding_mode='investor_direct' WHERE application_id=$1`, [unsold.appId]);
+
+      const desk = await call(server, 'GET', `/api/sitewire/files/${unsold.appId}/rollup`, token);
+      eq('3a the desk answers', desk.status, 200);
+      eq('3b an unsold loan is released by US, whatever the file says',
+        [desk.body.release.mode, desk.body.release.party], ['reimbursement', 'us']);
+      eq('3c …with the file’s own setting still reported, ready to resume', desk.body.release.configuredMode, 'investor_direct');
+      eq('3d …and the file carries the "not sold yet" badge', desk.body.release.badge.code, 'not_sold_yet');
+      eq('3e …and NO investor-fee box is offered — nobody is charging anything',
+        [desk.body.investor_fee.offer, desk.body.investor_fee.applies], [false, false]);
+
       const r = await record(unsold.appId, unsold.drawIds[0], { approved_cents: APPROVED, fee_cents: FEE });
-      eq('3a the release records', r.status, 200);
+      eq('3f the release still records', r.status, 200);
       const row = await rowFor(unsold.drawIds[0]);
-      eq('3b a CorrFirst file that is not sold yet keeps the WHOLE fee for us',
+      eq('3g …with no investor fee, and the whole $299 ours',
         [n(row.investor_fee_cents), n(row.net_fee_cents)], [0, FEE]);
-      eq('3c …and nobody is named as having kept anything', row.investor_fee_key, null);
+      eq('3h …nobody named as having kept anything', row.investor_fee_key, null);
+      eq('3i …and OUR wire recorded, not the investor’s', row.release_party, 'us');
+
+      // Typing one in anyway is a mistake worth naming, not a figure worth recording.
+      const typed = await record(unsold.appId, unsold.drawIds[1], { approved_cents: APPROVED, fee_cents: FEE, investor_fee_cents: CORR_CUT });
+      eq('3j an investor fee typed on an unsold loan is refused', typed.status, 422);
+      ok('3k …explaining that they are not charging on this draw yet', /hasn.t been sold to them yet/.test((typed.body && typed.body.error) || ''));
+      eq('3l …and nothing was recorded', await rowFor(unsold.drawIds[1]), null);
+
+      // ---- the draw coordinator processes the file as sold (the double warning's second half) ----
+      const noConfirm = await call(server, 'POST', `/api/sitewire/files/${unsold.appId}/treat-as-sold`, token, { on: true });
+      eq('3m processing a file as sold without confirming is refused', noConfirm.status, 400);
+
+      const flip = await call(server, 'POST', `/api/sitewire/files/${unsold.appId}/treat-as-sold`, token, { on: true, confirm: true, note: 'Investor confirmed the purchase by email' });
+      eq('3n …and with the confirmation it is set', flip.status, 200);
+      eq('3o the money now reads the file as sold', flip.body.release.soldEffective, 'sold');
+      eq('3p …while the FACT about the loan is untouched', flip.body.release.sold, 'not_sold');
+      eq('3q …the file’s own setting governs again', flip.body.release.mode, 'investor_direct');
+
+      const desk2 = await call(server, 'GET', `/api/sitewire/files/${unsold.appId}/rollup`, token);
+      eq('3r …and the investor fee now applies, at their rate',
+        [desk2.body.investor_fee.offer, desk2.body.investor_fee.suggested_cents], [true, CORR_CUT]);
+
+      const after = await record(unsold.appId, unsold.drawIds[1], { approved_cents: APPROVED, fee_cents: FEE });
+      eq('3s a release recorded now takes the cut', after.status, 200);
+      const row2 = await rowFor(unsold.drawIds[1]);
+      eq('3t …$95 to CorrFirst, $204 ours', [n(row2.investor_fee_cents), n(row2.net_fee_cents)], [CORR_CUT, FEE - CORR_CUT]);
+      eq('3u …and the investor recorded as the side that wired', row2.release_party, 'investor');
+
+      // …and it is reversible, straight back to what Encompass says.
+      const undo = await call(server, 'POST', `/api/sitewire/files/${unsold.appId}/treat-as-sold`, token, { on: false });
+      eq('3v it can be turned back off', undo.status, 200);
+      eq('3w …and the file is released by us again, with no fee offered',
+        [undo.body.release.mode, undo.body.release.soldEffective], ['reimbursement', 'not_sold']);
     }
 
     // ======================================================================

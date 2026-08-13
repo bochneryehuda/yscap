@@ -1696,9 +1696,22 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
     // so the ledger can never book a cut for an investor the desk says does not own the loan yet.
     const feeRule = investorFee.describe({
       noteBuyer: releaseState ? releaseState.noteBuyer : null,
-      sold: releaseState ? releaseState.sold : null,
+      // The EFFECTIVE sold answer — the fact, or the draw desk's "process this file as sold" — so
+      // the ledger and the badge on the desk can never disagree about whether a cut applies.
+      sold: releaseState ? releaseState.soldEffective : null,
       feeCents: fee,
     });
+    // AN UNSOLD LOAN CANNOT CARRY AN INVESTOR FEE (owner-directed 2026-08-13). They are neither
+    // releasing this draw nor reimbursing it, so there is nothing for them to deduct from — a cut
+    // typed against one is a mistake worth naming rather than a figure worth recording.
+    if (investorCut > 0 && !feeRule.applies) {
+      await client.query('ROLLBACK');
+      return res.status(422).json({
+        error: feeRule.buyer_label
+          ? `${feeRule.buyer_label} isn’t charging a fee on this draw — this loan hasn’t been sold to them yet, so we release the net ourselves and keep the whole fee. If it is already sold, use “Process this file as sold” on the “Who releases the money” card first.`
+          : 'There is no investor fee on this draw — this file’s note buyer has no draw-fee deal with us.',
+      });
+    }
     const feeSplit = investorFee.splitFee({
       feeCents: fee,
       investorFeeCents: investorCut == null ? feeRule.suggested_cents : investorCut,
@@ -2587,7 +2600,7 @@ router.get('/files/:id/rollup', requireDrawView, async (req, res) => {
     try {
       investorFeeRule = investorFee.describe({
         noteBuyer: release ? release.noteBuyer : null,
-        sold: release ? release.sold : null,
+        sold: release ? release.soldEffective : null,
         feeCents: (rollup.fees && rollup.fees.per_draw_cents) || 0,
       });
     } catch (_) { /* the ledger simply offers no default */ }
@@ -3611,6 +3624,44 @@ router.post('/files/:id/release-party', requirePermission('manage_draws'), async
       oldValue: null, newValue: { mode: clear ? null : mode, actor: req.actor.id }, source: 'money_override' });
   } catch (_) {}
   res.json({ ok: true, release: await releaseParty.releaseStateFor(db, appId).catch(() => null) });
+});
+
+// ---- POST /files/:id/treat-as-sold — "process this file as sold" (owner-directed 2026-08-13) ----
+// The draw coordinator's way past an unsold file: *"even if Encompass doesn't have a PA date yet —
+// technically the loan is not sold yet — the draw coordinator should be able to switch a file …
+// imagine if it was sold already. In case anything goes wrong, she should have this ability, which
+// should give her a double warning when she's changing it."*
+//
+// It changes NOTHING about the loan: `applications.purchase_advice_date` is Encompass's, read-only,
+// and untouched. What it changes is what the DRAW DESK processes this file as — who releases the
+// money (the file's own setting comes back into force) and whether the investor's draw fee is
+// deducted from ours. `confirm:true` is the second half of the double warning: the screen asks, and
+// the route refuses to act on anything that did not explicitly confirm. Every flip is journaled.
+router.post('/files/:id/treat-as-sold', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const on = req.body && (req.body.on === undefined ? true : !!req.body.on);
+  // Turning it ON is the consequential direction — it lets the ledger book an investor's cut and
+  // lets the investor release. Turning it OFF only returns the file to what Encompass says, which
+  // is always the safe direction, so it needs no confirmation.
+  if (on && !(req.body && req.body.confirm === true)) {
+    return res.status(400).json({ error: 'Confirm that you know this loan has already been sold before processing this file as sold.' });
+  }
+  const r = await releaseParty.setTreatAsSold(db, appId, {
+    on, by: req.actor.id, note: req.body && req.body.note ? String(req.body.note) : null,
+  }).catch(() => ({ ok: false, reason: 'error' }));
+  if (!r.ok) {
+    return res.status(r.reason === 'no_draw_project' ? 409 : 500).json({
+      error: r.reason === 'no_draw_project'
+        ? 'This file has no draw project yet — start the draw process first.'
+        : 'Could not change that setting — please try again.',
+    });
+  }
+  try {
+    await orchestrator.journal({ appId, entity: 'file', entityId: null, field: 'treat_as_sold',
+      oldValue: null, newValue: { on, note: (req.body && req.body.note) ? String(req.body.note).slice(0, 500) : null, actor: req.actor.id }, source: 'money_override' });
+  } catch (_) { /* best-effort audit */ }
+  res.json({ ok: true, treat_as_sold: r.treatAsSold, release: await releaseParty.releaseStateFor(db, appId).catch(() => null) });
 });
 
 // ---- POST /files/:id/refresh-pa-date — re-read the Encompass Purchase Advice date (READ-ONLY) ----

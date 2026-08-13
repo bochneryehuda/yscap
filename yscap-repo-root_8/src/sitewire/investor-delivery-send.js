@@ -329,10 +329,27 @@ async function deliveryPreview(appId, drawId) {
     `SELECT investor_funding_mode FROM sitewire_property_links
       WHERE application_id=$1 AND matched_by='created' LIMIT 1`, [appId])).rows[0] || {};
 
-  const mode = ID.resolveFundingMode({
+  // HAS THIS LOAN ACTUALLY BEEN SOLD? Read BEFORE the mode, because since 2026-08-13 it decides
+  // the mode rather than merely commenting on it (see below). Best-effort: an unreadable state
+  // leaves the file's own setting exactly as it was.
+  let soldState = null;
+  try { soldState = await require('./release-party').releaseStateFor(db, appId, { sitewireDrawId: drawId }); }
+  catch (_) { soldState = null; }
+
+  // AN UNSOLD LOAN IS RELEASED BY US (owner-directed 2026-08-13): *"if it's not yet sold, then it
+  // should always be set up that we release the net amount"*. Applied through the SAME pure rule
+  // the draw desk and the money ledger use, so the figures in this email can never contradict the
+  // card the coordinator was just looking at — an investor who has not bought the loan is not
+  // wiring this borrower. A sold loan (or one the desk is processing as sold) keeps the file's own
+  // setting, whichever way it points.
+  const configuredMode = ID.resolveFundingMode({
     drawMode: finding && finding.funding_mode,
     fileMode: link.investor_funding_mode,
   });
+  const enforced = soldState
+    ? require('./release-party').enforcedMode({ mode: configuredMode, sold: soldState.soldEffective })
+    : { mode: configuredMode, forced: false };
+  const mode = enforced.mode;
 
   // The SAME money the report and the packet were built from — never re-derived here.
   let money = ID.investorMoney({}, mode);
@@ -365,19 +382,12 @@ async function deliveryPreview(appId, drawId) {
 
   const blockers = ID.deliveryBlockers({ finding, investorContacts: contacts, noteBuyer: app.note_buyer, mode, wireForm });
 
-  // HAS THIS LOAN ACTUALLY BEEN SOLD? A WARNING, NEVER A BLOCKER — this is the exact moment the
-  // owner named (2026-08-09: "default should be like it was sold already, but it should give you a
-  // warning that it doesn't have a PA date if you're sure you want to do investor delivery"). It is
-  // deliberately kept OUT of `blockers`, so `can_send` is untouched and the send is never refused
-  // over it; the screen shows it beside the button and the coordinator decides.
-  //
-  // A table-funded loan was sold at the closing table and produces NO warning at all, which is the
-  // whole point — otherwise every Fidelis delivery would carry a nag about a date that is never
-  // coming. Best-effort: an unreadable state simply shows nothing rather than blocking a send or
-  // inventing a doubt.
-  let soldState = null;
-  try { soldState = await require('./release-party').releaseStateFor(db, appId, { sitewireDrawId: drawId }); }
-  catch (_) { soldState = null; }
+  // THE BADGE IS STILL NEVER A BLOCKER. It is deliberately kept OUT of `blockers`, so `can_send`
+  // is untouched and the send is never refused over it; the screen shows it beside the button and
+  // the coordinator decides — and now it also explains the figures, since an unsold loan has
+  // already moved the mode to "we release" above. A table-funded loan carries no badge at all,
+  // which is the whole point: otherwise every Fidelis delivery would nag about a date that is
+  // never coming. (`soldState` is read further up, because the mode depends on it.)
 
   const history = (await db.query(
     `SELECT id, funding_mode, investor_total_cents, to_borrower_cents, to_us_cents, to_emails,

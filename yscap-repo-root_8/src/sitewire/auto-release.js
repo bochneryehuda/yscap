@@ -162,10 +162,12 @@ async function recordInvestorRelease(appId, drawId, { staffId = null, note = nul
       //    the hand-recorded release uses — so a release PILOT books itself and one a coordinator
       //    types can never book different income. It splits OUR fee only: the approved amount, the
       //    retainage and the borrower's net above are untouched. It applies only once the loan is
-      //    actually sold to that buyer, which `release.sold` already answered.
+      //    actually sold to that buyer, which `release.soldEffective` already answered (the sold fact,
+    //    or the draw desk's "process this file as sold"). This path only runs on an investor-released
+    //    draw, which the same sold rule already restricts to a sold loan.
       const feeSplit = INVESTOR_FEE.splitFee({
         feeCents: fee,
-        investorFeeCents: INVESTOR_FEE.defaultInvestorFeeCents({ noteBuyer: release.noteBuyer || app.lender, sold: release.sold, feeCents: fee }),
+        investorFeeCents: INVESTOR_FEE.defaultInvestorFeeCents({ noteBuyer: release.noteBuyer || app.lender, sold: release.soldEffective, feeCents: fee }),
       });
 
       // 8. THE RECEIVABLE. On an investor-released draw the investor wires the borrower the net and

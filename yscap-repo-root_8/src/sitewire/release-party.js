@@ -57,10 +57,12 @@ const SOLD_LABEL = {
 };
 
 /** How we know a loan was sold — so a screen can say WHY, not just that it was. */
-const SOLD_VIA = { TABLE: 'table_funding', ADVICE: 'purchase_advice' };
+const SOLD_VIA = { TABLE: 'table_funding', ADVICE: 'purchase_advice', OVERRIDE: 'coordinator' };
 const SOLD_VIA_LABEL = {
   table_funding: 'Table funded — sold at the closing table',
   purchase_advice: 'Purchase advice received',
+  // NOT a claim that the loan is sold — a record that a human decided to proceed as if it were.
+  coordinator: 'Processed as sold — set by the draw desk',
 };
 
 /**
@@ -122,11 +124,32 @@ function soldStatus({ paDate = null, fieldConfigured = false, pulled = true,
   return SOLD.NOT_SOLD;
 }
 
-/** Why we say a loan is sold — 'table_funding' | 'purchase_advice' | null (we do not say it is). */
-function soldVia({ paDate = null, tableFunded = null, channel = null } = {}) {
+/** Why we say a loan is sold — 'table_funding' | 'purchase_advice' | 'coordinator' | null. */
+function soldVia({ paDate = null, tableFunded = null, channel = null, treatAsSold = false } = {}) {
   if (FC.soldAtTable({ tableFunded, channel })) return SOLD_VIA.TABLE;
   if (paDateOf(paDate)) return SOLD_VIA.ADVICE;
+  if (treatAsSold) return SOLD_VIA.OVERRIDE;
   return null;
+}
+
+/**
+ * WHAT THE DRAW DESK ACTS ON — the sold FACT, or the coordinator's decision to proceed as if.
+ *
+ * `soldStatus` above answers what Encompass and the closing desk actually know, and it keeps that
+ * job unchanged: it is the FACT, and nothing a human clicks may rewrite it. This is the separate,
+ * second question — "what do we process this draw as?" — and it is the one the money reads.
+ *
+ * The override exists because Encompass is read-only and its purchase advice date lands on its own
+ * schedule, so a loan really can be sold before PILOT can see it (owner-directed 2026-08-13: *"even
+ * if Encompass doesn't have a PA date yet — technically the loan is not sold yet — the draw
+ * coordinator should be able to switch a file … imagine if it was sold already. In case anything
+ * goes wrong, she should have this ability"*). It only ever moves the answer TOWARDS sold: a file
+ * Encompass says IS sold cannot be un-sold by a click, because that is a fact about a loan sale and
+ * not a preference.
+ */
+function effectiveSold({ sold = SOLD.UNKNOWN, treatAsSold = false } = {}) {
+  if (sold === SOLD.SOLD) return SOLD.SOLD;
+  return treatAsSold ? SOLD.SOLD : (sold || SOLD.UNKNOWN);
 }
 
 // ---------------------------------------------------------------------------
@@ -155,41 +178,88 @@ function ledgerParty(mode) {
 /** Does PILOT write the money ledger row itself for this mode? Only when the investor released. */
 function autoLedgers(mode) { return ledgerParty(mode) === 'investor'; }
 
+/** The mode an UNSOLD loan is always processed as: we wire the borrower their net ourselves. */
+const NOT_SOLD_MODE = 'reimbursement';
+
+/**
+ * THE SOLD SIGNAL NOW DECIDES WHO RELEASES (owner-directed 2026-08-13, superseding the advisory
+ * warning of 2026-08-09): *"If Encompass has a PA date already, then it should always proceed with
+ * the setting of the file — if the investor releases directly, or if we release and we get
+ * reimbursed. If it's not yet sold, then it should always be set up that we release the net
+ * amount."*
+ *
+ * SOLD (or processed as sold) → the file's own setting stands, untouched, whichever way it points.
+ * NOT SOLD / CANNOT TELL → we release, always. An investor who has not bought the loan is not
+ * wiring this borrower and is not reimbursing us: the money is ours, we wire the net, and our fee
+ * simply stays out of the wire. Recording it any other way would put a wire in the ledger against
+ * a party that never sent one, and would book a fee receivable nobody owes.
+ *
+ * `manual` is left alone deliberately — it means the money moved outside PILOT entirely, so PILOT
+ * has no business claiming it knows who wired.
+ *
+ * Returns { mode, forced, configured } — `forced` is true only when this actually changed the
+ * answer, so a screen can say WHY the file is on "we release" without guessing.
+ */
+function enforcedMode({ mode = null, sold = SOLD.UNKNOWN } = {}) {
+  const configured = String(mode || '');
+  if (sold === SOLD.SOLD) return { mode: configured, forced: false, configured };
+  if (configured === 'manual') return { mode: configured, forced: false, configured };
+  return { mode: NOT_SOLD_MODE, forced: configured !== NOT_SOLD_MODE, configured };
+}
+
 // ---------------------------------------------------------------------------
 // The not-sold warning
 // ---------------------------------------------------------------------------
 
-const NOT_SOLD_TITLE = 'No purchase advice date on this file';
+const NOT_SOLD_TITLE = 'This file was not sold yet';
 
 /**
- * The warning, or null when there is nothing to warn about.
+ * THE NOT-SOLD BADGE — on every file the sold signal cannot confirm, and null on the rest.
  *
- * IT IS A CHECK, NOT A STOP, AND THE DEFAULT IS TO CARRY ON (owner-directed 2026-08-09: "default
- * should be like it was sold already, but it should give you a warning that it doesn't have a PA
- * date if you're sure you want to do investor delivery"). Nothing here changes a stored value,
- * nothing refuses the delivery, and the wording leads with the FACT (no purchase advice date)
- * rather than the old conclusion ("this loan isn't sold yet") — which was too strong now that a
- * table-funded loan is correctly read as sold without one, and which read as an accusation on a
- * file that was merely waiting on paperwork.
+ * It replaces the advisory warning of 2026-08-09, which asked a question and changed nothing. The
+ * owner's 2026-08-13 rule answers that question up front — an unsold loan is released by us — so
+ * the badge STATES what is happening and offers the coordinator the one thing they may still need:
+ * *"every file that is not sold yet should have a badge … but the draw coordinator can click
+ * Change Setting and process the draw. Imagine if it was sold already. In case anything goes
+ * wrong, she should have this ability, which should give her a double warning."*
  *
- * It fires only when BOTH halves are true: the money is set to come from the investor, AND we
- * cannot confirm the investor owns this loan. Switching to "We release" stays offered as the
- * SECOND option rather than the recommendation.
+ * `certain` separates a proven "no purchase advice date" from "we cannot tell", because those are
+ * different things to say to a person. `treated` flips the badge into its second state: the file
+ * IS being processed as sold, by a named human, and the way back is offered instead.
+ *
+ * It still refuses nothing and writes nothing.
  */
-function notSoldWarning({ mode = null, sold = SOLD.UNKNOWN } = {}) {
-  if (ledgerParty(mode) !== 'investor') return null;          // we release, or manual — not our question
-  if (sold === SOLD.SOLD) return null;
+function notSoldBadge({ sold = SOLD.UNKNOWN, treatAsSold = false, treatedBy = null, treatedAt = null } = {}) {
+  if (sold === SOLD.SOLD) return null;                  // really sold — no badge at all
+  if (treatAsSold) {
+    return {
+      code: 'treated_as_sold',
+      title: 'Being processed as sold',
+      body: 'Encompass has no purchase advice date on this file yet, but the draw desk set it to be '
+        + 'processed as if the loan is already sold. Draws follow the file’s own release setting, and '
+        + 'the investor’s draw fee is deducted from ours.'
+        + (treatedBy ? ` Set by ${treatedBy}` : '') + (treatedAt ? ` on ${String(treatedAt).slice(0, 10)}.` : (treatedBy ? '.' : '')),
+      treated: true,
+      certain: sold === SOLD.NOT_SOLD,
+      actionLabel: 'Go back to “not sold yet”',
+      action: 'clear',
+    };
+  }
   const certain = sold === SOLD.NOT_SOLD;
   return {
     code: 'not_sold_yet',
     title: NOT_SOLD_TITLE,
     body: (certain
-      ? 'This file has no purchase advice date, so PILOT cannot confirm the loan has been sold to the investor yet. '
+      ? 'There is no purchase advice date on this file, so the loan has not been sold to the investor yet. '
       : 'PILOT cannot tell whether this loan has been sold yet — there is no purchase advice date on file. ')
-      + 'You can go ahead with the investor delivery if you know it is sold. If it is not, you can release the money yourself instead.',
-    suggestMode: 'reimbursement',
-    suggestLabel: 'Switch to “We release”',
+      + 'Until it is sold, WE release the draw: the borrower is wired the net amount out of our own money, '
+      + 'our fee simply stays out of that wire, and the investor charges no draw fee because they are '
+      + 'neither releasing nor reimbursing. If you know the loan is already sold, you can process this '
+      + 'file as sold.',
+    treated: false,
     certain,
+    actionLabel: 'Process this file as sold',
+    action: 'treat_as_sold',
   };
 }
 
@@ -207,19 +277,33 @@ function notSoldWarning({ mode = null, sold = SOLD.UNKNOWN } = {}) {
  */
 function describe({ drawMode = null, fileMode = null, ruleMode = null, companyMode = null,
   paDate = null, fieldConfigured = false, pulled = true,
-  tableFunded = null, channel = null } = {}) {
+  tableFunded = null, channel = null,
+  treatAsSold = false, treatedBy = null, treatedAt = null } = {}) {
   const at = ID.resolveFundingModeAt({ drawMode, fileMode, ruleMode, companyMode });
+  // The FACT, then what we PROCESS this draw as (the coordinator's override can only move it
+  // towards sold), then the mode that fact enforces. `mode` is the EFFECTIVE answer — the one the
+  // ledger, the checklist and the investor email all act on — and `configuredMode` is what the
+  // settings ladder holds, so a screen can say "we release, because this loan is not sold yet"
+  // without either half having to re-derive the other.
   const sold = soldStatus({ paDate, fieldConfigured, pulled, tableFunded, channel });
-  const via = soldVia({ paDate, tableFunded, channel });
+  const effective = effectiveSold({ sold, treatAsSold });
+  const enforced = enforcedMode({ mode: at.mode, sold: effective });
+  const via = soldVia({ paDate, tableFunded, channel, treatAsSold });
   const keep = (v) => (ID.MODES.includes(String(v || '')) ? String(v) : null);
   return {
-    mode: at.mode,
+    mode: enforced.mode,
     level: at.level,
     levelLabel: ID.LEVEL_LABEL[at.level] || ID.LEVEL_LABEL.default,
-    modeLabel: ID.MODE_LABEL[at.mode] || at.mode,
-    modeHelp: ID.MODE_HELP[at.mode] || '',
-    party: ledgerParty(at.mode),
-    autoLedger: autoLedgers(at.mode),
+    modeLabel: ID.MODE_LABEL[enforced.mode] || enforced.mode,
+    modeHelp: ID.MODE_HELP[enforced.mode] || '',
+    party: ledgerParty(enforced.mode),
+    autoLedger: autoLedgers(enforced.mode),
+    // What the settings ladder actually holds, and whether the sold rule overrode it. The segmented
+    // control on the desk keeps showing the coordinator's own choice (`levels.project`); this says
+    // why the file is nonetheless releasing the way it is.
+    configuredMode: enforced.configured || null,
+    configuredModeLabel: ID.MODE_LABEL[enforced.configured] || null,
+    forcedByNotSold: enforced.forced,
     sold,
     // A table-funded loan reads "Table funded — sold at the closing table" rather than the generic
     // "Sold to the investor", so a coordinator can see WHY there is no purchase advice date on a
@@ -233,7 +317,17 @@ function describe({ drawMode = null, fileMode = null, ruleMode = null, companyMo
     // screen can offer a "re-pull the PA date" button only where a re-pull can actually read
     // it. With no field id the read does nothing and the button would be a dead action.
     paConfigured: !!fieldConfigured,
-    warning: notSoldWarning({ mode: at.mode, sold }),
+    // WHAT WE PROCESS THIS DRAW AS — the sold fact, or the coordinator's decision to proceed as if.
+    // The money (who released, and whether the investor keeps part of our fee) reads THIS, never
+    // `sold`, so the ledger and the badge on the screen can never say different things.
+    soldEffective: effective,
+    treatedAsSold: !!(treatAsSold && sold !== SOLD.SOLD),
+    treatedBy: treatAsSold ? (treatedBy || null) : null,
+    treatedAt: treatAsSold ? (treatedAt || null) : null,
+    // The badge every not-sold file carries, with the coordinator's way past it. `warning` is kept
+    // as its old name so the existing screens and the delivery preview keep rendering it.
+    badge: notSoldBadge({ sold, treatAsSold, treatedBy, treatedAt }),
+    warning: notSoldBadge({ sold, treatAsSold, treatedBy, treatedAt }),
     // The levels are reported RAW (an unrecognised stored value reads as null, exactly as the
     // resolver treats it) so the settings screen can show what each level holds without having
     // to re-implement the fall-through.
@@ -278,9 +372,20 @@ async function releaseStateFor(db, appId, { sitewireDrawId = null } = {}) {
        LEFT JOIN closing_workflow cw ON cw.application_id = a.id
       WHERE a.id=$1`, [appId]))[0] || {};
 
-  const link = (await q(
-    `SELECT investor_funding_mode FROM sitewire_property_links
-      WHERE application_id=$1 AND matched_by='created'`, [appId]))[0] || {};
+  // The project's own release setting, plus the draw desk's "process this file as sold" override
+  // (db/541) with WHO set it and WHEN, so the badge is never anonymous. A database that predates
+  // the override answers nothing here and the file simply has none — `q` swallows the error.
+  let link = (await q(
+    `SELECT pl.investor_funding_mode, pl.treat_as_sold_at, pl.treat_as_sold_note,
+            su.full_name AS treat_as_sold_by_name
+       FROM sitewire_property_links pl
+       LEFT JOIN staff_users su ON su.id = pl.treat_as_sold_by
+      WHERE pl.application_id=$1 AND pl.matched_by='created'`, [appId]))[0];
+  if (!link) {
+    link = (await q(
+      `SELECT investor_funding_mode FROM sitewire_property_links
+        WHERE application_id=$1 AND matched_by='created'`, [appId]))[0] || {};
+  }
 
   let drawMode = null;
   if (sitewireDrawId != null && /^\d+$/.test(String(sitewireDrawId))) {
@@ -326,6 +431,9 @@ async function releaseStateFor(db, appId, { sitewireDrawId = null } = {}) {
     pulled: !!app.encompass_last_pulled_at,
     tableFunded: app.table_funded === true ? true : (app.table_funded === false ? false : null),
     channel,
+    treatAsSold: !!link.treat_as_sold_at,
+    treatedBy: link.treat_as_sold_by_name || null,
+    treatedAt: link.treat_as_sold_at || null,
   });
   // STAFF-ONLY: the note buyer's name rides along so the desk can say "Fidelis releases the
   // money" instead of the anonymous "the investor". Every consumer of this is behind
@@ -365,8 +473,35 @@ async function syncPurchaseAdviceDate(db, appId, fieldValues) {
   } catch (_) { return { skipped: 'error' }; }
 }
 
+/**
+ * SET (or clear) "process this file as sold" — the draw desk's override (db/541).
+ *
+ * It writes ONE thing, on the draw project, and it never touches
+ * `applications.purchase_advice_date`: Encompass owns the sold FACT and stays read-only, so this
+ * records that a human decided to proceed as if, with their name and the moment attached. Clearing
+ * it puts the file straight back on the fact.
+ *
+ * Returns { ok:false, reason:'no_draw_project' } when the file has no draw project yet — the same
+ * shape the release-party route already answers with, rather than silently succeeding.
+ */
+async function setTreatAsSold(db, appId, { on = true, by = null, note = null } = {}) {
+  const r = await db.query(
+    `UPDATE sitewire_property_links
+        SET treat_as_sold_at   = CASE WHEN $2 THEN COALESCE(treat_as_sold_at, now()) ELSE NULL END,
+            treat_as_sold_by   = CASE WHEN $2 THEN COALESCE(treat_as_sold_by, $3::uuid) ELSE NULL END,
+            treat_as_sold_note = CASE WHEN $2 THEN $4 ELSE NULL END,
+            updated_at = now()
+      WHERE application_id=$1 AND matched_by='created'
+      RETURNING treat_as_sold_at`, [appId, !!on, by, note ? String(note).slice(0, 500) : null]);
+  if (!r.rowCount) return { ok: false, reason: 'no_draw_project' };
+  return { ok: true, treatAsSold: !!r.rows[0].treat_as_sold_at };
+}
+
 module.exports = {
-  SOLD, SOLD_LABEL, SOLD_VIA, SOLD_VIA_LABEL, NOT_SOLD_TITLE,
-  paDateOf, soldStatus, soldVia, ledgerParty, autoLedgers, notSoldWarning, describe,
-  paFieldConfigured, releaseStateFor, syncPurchaseAdviceDate,
+  SOLD, SOLD_LABEL, SOLD_VIA, SOLD_VIA_LABEL, NOT_SOLD_TITLE, NOT_SOLD_MODE,
+  paDateOf, soldStatus, soldVia, effectiveSold, enforcedMode,
+  ledgerParty, autoLedgers, notSoldBadge, describe,
+  // The badge kept its old export name too, so nothing that already imports it has to change.
+  notSoldWarning: notSoldBadge,
+  paFieldConfigured, releaseStateFor, syncPurchaseAdviceDate, setTreatAsSold,
 };

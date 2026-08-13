@@ -304,7 +304,7 @@ export default function DrawsPanel({ appId }) {
             {/* MONEY — the ledger + retainage/waivers. */}
             <Section id="dsec-ledger" title="Money ledger" defaultOpen={false}>
               <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} oop={oop} fees={rollup.fees || null}
-                investorFee={data.investor_fee || null} onSaved={load} act={act} busy={busy} />
+                investorFee={data.investor_fee || null} release={data.release || null} onSaved={load} act={act} busy={busy} />
             </Section>
             <Section id="dsec-waivers" title="Retainage & lien waivers" defaultOpen={false}>
               <LienWaivers appId={appId} enabled={lien_waivers_enabled} fileOverride={data.lien_waivers_file_override}
@@ -2569,11 +2569,11 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
             </ul>
           )}
 
-          {/* HAS THIS LOAN BEEN SOLD? A CHECK, NOT A STOP — the Deliver button stays enabled
-              (owner-directed 2026-08-09: "default should be like it was sold already, but it
-              should give you a warning that it doesn't have a PA date if you're sure you want to
-              do investor delivery"). Gold, not red: red is for the blockers above, which do refuse.
-              A table-funded loan produces no warning at all — it was sold at the closing table. */}
+          {/* HAS THIS LOAN BEEN SOLD? STILL A CHECK, NEVER A STOP — the Deliver button stays
+              enabled. Since 2026-08-13 the answer also decides the split above: an unsold loan is
+              released by us, so this says what is happening rather than only asking. Gold, not red:
+              red is for the blockers above, which do refuse. A table-funded loan shows nothing at
+              all — it was sold at the closing table. */}
           {p.sold_warning && (
             <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 8, background: 'var(--gold-soft,#F7F1E4)', border: '1px solid var(--gold,#AE8746)' }}>
               <div style={{ fontWeight: 700, color: '#141B22' }}>{p.sold_warning.title}</div>
@@ -2703,6 +2703,29 @@ function ReleasePartyCard({ appId, release, reload }) {
   // to see if the file was sold … it should verify for itself that it was sold already"). This is
   // a READ-ONLY Encompass pull — nothing is written to Encompass. On success the card reloads with
   // the recomputed sold state.
+  // PROCESS THIS FILE AS SOLD — the draw coordinator's way past an unsold file (owner-directed
+  // 2026-08-13: "in case anything goes wrong, she should have this ability, which should give her a
+  // double warning when she's changing it"). TWO warnings, deliberately: the first says what it
+  // changes about the money, the second asks her to confirm the fact itself. Turning it back OFF
+  // only returns the file to what Encompass says, so it asks once.
+  async function setTreatAsSold(on) {
+    if (on) {
+      if (!(await askConfirm(
+        'Process this file as if the loan is already sold?\n\n'
+        + 'Encompass has no purchase advice date on this file, so PILOT reads it as NOT sold.\n\n'
+        + 'If you continue, draws on this file follow the file’s own release setting (the investor can '
+        + 'release directly), and the investor’s draw fee is deducted from our fee on the money ledger.'))) return;
+      if (!(await askConfirm(
+        'Second check — this changes real money.\n\n'
+        + 'Only do this if you know the loan HAS already been sold to the investor. If it has not, we '
+        + 'release the draw ourselves and the investor charges us nothing.\n\nAre you sure the loan is sold?'))) return;
+    } else if (!(await askConfirm('Go back to reading this file as not sold yet? Draws will be released by us again, with no investor fee.'))) return;
+    setBusy(true); setErr('');
+    try { await api.post(`/api/sitewire/files/${appId}/treat-as-sold`, on ? { on: true, confirm: true } : { on: false }); reload(); }
+    catch (e) { setErr(e?.data?.error || 'Could not change that setting.'); }
+    finally { setBusy(false); }
+  }
+
   async function refreshPaDate() {
     setPaBusy(true); setPaMsg(''); setErr('');
     try {
@@ -2728,7 +2751,7 @@ function ReleasePartyCard({ appId, release, reload }) {
             closing table and is never getting a purchase advice date, so "no PA date" on one of
             those is completely normal and must not read as a problem (owner-directed 2026-08-09). */}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
-          <span className={`chip ${release.sold === 'sold' ? 'good' : ''}`}
+          <span className={`chip ${release.soldEffective === 'sold' || release.sold === 'sold' ? 'good' : ''}`}
             title={release.soldVia === 'table_funding'
               ? 'Funded on the Table Funding warehouse line — sold at the closing table, so no purchase advice date is expected'
               : 'Read from the purchase advice date in Encompass'}>
@@ -2751,13 +2774,22 @@ function ReleasePartyCard({ appId, release, reload }) {
 
       <div className="act-card-sub" style={{ marginTop: 8, color: '#4B585C' }}>{release.modeHelp}</div>
 
-      {/* THE QUESTION — never a refusal. The coordinator can carry on, or take the one-click switch. */}
+      {/* WHY it is on "we release" when the file says otherwise: an unsold loan is always released
+          by us (owner-directed 2026-08-13), and the file's own choice comes back the day it sells. */}
+      {release.forcedByNotSold && release.configuredModeLabel && (
+        <div className="act-card-sub" style={{ marginTop: 4, color: '#4B585C' }}>
+          This file is set to “{release.configuredModeLabel}”, which resumes as soon as the loan is sold.
+        </div>
+      )}
+
+      {/* THE BADGE every not-sold file carries — it states what is happening, and offers the draw
+          coordinator the way past it (behind a double warning). Never a refusal. */}
       {w && (
         <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 8, background: 'var(--gold-soft,#F7F1E4)', border: '1px solid var(--gold,#AE8746)' }}>
           <div style={{ fontWeight: 700, color: '#141B22' }}>{w.title}</div>
           <div className="small" style={{ marginTop: 4, color: '#3A4550' }}>{w.body}</div>
           <button className="btn btn-sm ghost" style={{ marginTop: 8 }} disabled={busy}
-            onClick={() => setProjectMode(w.suggestMode)}>{w.suggestLabel}</button>
+            onClick={() => setTreatAsSold(w.action !== 'clear')}>{w.actionLabel}</button>
         </div>
       )}
 
@@ -3290,7 +3322,7 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
   );
 }
 
-function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null, investorFee = null, onSaved, act, busy: parentBusy }) {
+function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null, investorFee = null, release = null, onSaved, act, busy: parentBusy }) {
   // map the Sitewire draw id -> the friendly draw number so the ledger reads "Draw #1", not "#8001"
   const numByDraw = {};
   for (const d of draws) if (d.number != null) numByDraw[String(d.sitewire_draw_id)] = d.number;
@@ -3331,9 +3363,18 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
   const invCutC = centsOrNull(f.investor_fee) || 0;   // a $0 cut is legitimate — most files have one
   const invOverFee = invCutC > feeC;                  // they can never keep more than we charge
   const netFeeC = Math.max(0, feeC - Math.min(invCutC, feeC));
-  // Show the two fee columns only on a file that actually has such a deal — either a recorded cut
-  // or a rule for this buyer — so every other file's ledger reads exactly as it did before.
-  const showInvestorFee = invRuleCents > 0 || ledger.some((d) => Number(d.investor_fee_cents) > 0);
+  // AN UNSOLD LOAN CARRIES NO INVESTOR FEE AT ALL, so the box is not offered — not a $0 somebody
+  // might type over (owner-directed 2026-08-13: "if it's not sold yet it should not fill out the
+  // investor fee, because the investor is not charging it yet"). The server decides that, in
+  // `investor_fee.offer`, from the same sold answer the badge on the draw desk shows.
+  const invOffer = !!(investorFee && investorFee.offer);
+  // The columns stay visible for a file that already has a recorded cut, so history never vanishes.
+  const showInvestorFee = invOffer || ledger.some((d) => Number(d.investor_fee_cents) > 0);
+  // WHO WIRES decides how our own fee reaches us, and the ledger must not claim a deposit that
+  // never happens: when WE release, the fee simply stays out of the wire — the borrower's release
+  // is smaller and there is nothing to collect. When the INVESTOR releases, they collect our fee
+  // out of the draw and send it on, less whatever they keep.
+  const weRelease = !release || release.party !== 'investor';
 
   // AUTO-POPULATE + MATCH GUARD (owner-directed 2026-08-12). The approved amount and our fee are
   // already known per draw (the system computed them — see rollup.draws), so selecting a draw fills
@@ -3428,7 +3469,7 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
             actually reached our bank (owner-directed 2026-08-13). */}
         <KpiTile label="Our fees" value={usd(totFee)} tone="gold"
           sub={totInvestorFee > 0
-            ? `${usd(totInvestorFee)} kept by the investor · ${usd(Math.max(0, totFee - totInvestorFee))} deposited to us`
+            ? `${usd(totInvestorFee)} kept by the investor · ${usd(Math.max(0, totFee - totInvestorFee))} ours`
             : (fees && Number(fees.projected_cents) > 0
               ? `+ ${usd(fees.projected_cents)} expected on draws not yet released`
               : (fees && fees.per_draw_cents != null ? `${usd(fees.per_draw_cents)} per draw` : undefined))} />
@@ -3447,7 +3488,7 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
       {ledger.length > 0 && (
         <div className="dd-tablecard" style={{ overflowX: 'auto', marginTop: 12 }}>
           <table className="dd-table" style={{ minWidth: 720 }}>
-            <thead><tr><th>Draw</th><th className="num">Approved</th><th className="num">Fee</th>{showInvestorFee && <th className="num">Investor fee</th>}{showInvestorFee && <th className="num">Deposited to us</th>}{showRetainage && <th className="num">Retainage</th>}<th className="num">Net release</th><th>Date</th><th>Released by</th><th>Status</th></tr></thead>
+            <thead><tr><th>Draw</th><th className="num">Approved</th><th className="num">Fee</th>{showInvestorFee && <th className="num">Investor fee</th>}{showInvestorFee && <th className="num">Our net fee</th>}{showRetainage && <th className="num">Retainage</th>}<th className="num">Net release</th><th>Date</th><th>Released by</th><th>Status</th></tr></thead>
             <tbody>
               {ledger.map((d) => {
                 const st = LEDGER_STATUS[d.funded_status] || { label: d.funded_status, cls: 'sw-draft' };
@@ -3488,8 +3529,9 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
           <label className="small">Approved $<input className="input" style={{ width: 110 }} value={f.approved} onChange={(e) => setF({ ...f, approved: e.target.value })} /></label>
           <label className="small">Our fee $<input className="input" style={{ width: 90 }} value={f.fee} onChange={(e) => setF({ ...f, fee: e.target.value })} /></label>
           {/* THE INVESTOR'S CUT — ledger only. It comes out of OUR fee, never out of the borrower's
-              money, so the "Borrower nets" figure beneath is untouched by it. */}
-          {showInvestorFee && (
+              money, so the "Borrower nets" figure beneath is untouched by it. It appears only once
+              the loan is sold to a buyer who charges one: before that, nobody is charging anything. */}
+          {invOffer && (
             <label className="small" title={`What ${invBuyer} keeps out of our fee for handling this release. It comes out of our fee only — the borrower nets the same either way.`}>
               Investor fee $<input className="input" style={{ width: 90 }} value={f.investor_fee} onChange={(e) => setF({ ...f, investor_fee: e.target.value })} />
             </label>
@@ -3515,32 +3557,29 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
             {usd2(oopHeldC)} of this draw is within the borrower’s out-of-pocket rehab ({usd2(floorC)}) and won’t be reimbursed — only {usd2(reimbursableC)} is reimbursable.
           </div>
         )}
-        {showInvestorFee && invOverFee && (
+        {invOffer && invOverFee && (
           <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 8 }}>
             {invBuyer} can’t keep {usd2(invCutC)} — that is more than our {usd2(feeC)} fee on this draw.
           </div>
         )}
-        {/* Not sold to them yet (or PILOT can’t tell) — we keep the whole fee, and the note says so
-            in words and names their rate, so applying it is one press rather than a hunt. */}
-        {showInvestorFee && !invApplies && invRuleCents > 0 && investorFee && investorFee.hint && (
-          <div className="small" style={{ color: 'var(--warning)', marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <span>{investorFee.hint}</span>
-            {feeC > 0 && invCutC === 0 && (
-              <button type="button" className="btn btn-sm soft"
-                onClick={() => setF({ ...f, investor_fee: centsToInput(Math.min(invRuleCents, feeC)) })}>
-                Use {usd2(Math.min(invRuleCents, feeC))}
-              </button>
-            )}
-          </div>
+        {/* Not sold to them yet (or PILOT can’t tell): there is no investor fee to record at all,
+            and the note says what IS happening — we release the net and keep the whole fee — and
+            where to go if the loan is in fact already sold. */}
+        {!invOffer && investorFee && investorFee.hint && (
+          <div className="small" style={{ color: 'var(--warning)', marginTop: 8 }}>{investorFee.hint}</div>
         )}
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginTop: 12, flexWrap: 'wrap', gap: 10 }}>
           <div>
             <div className="small">{floorC > 0 ? <>Reimbursable: <b>{usd2(reimbursableC)}</b> · </> : null}{pct > 0 ? <>Retainage held: <b>{usd2(retC)}</b> · </> : null}Borrower nets: <b style={{ fontSize: 16, color: 'var(--teal-br)' }}>{usd2(net)}</b></div>
-            {/* OUR side of the same fee — what lands in our bank. Deliberately on its own line under
-                the borrower's figure: the two never affect each other. */}
-            {showInvestorFee && feeC > 0 && (
+            {/* OUR side of the same fee. Deliberately on its own line under the borrower's figure:
+                the two never affect each other. It says what actually happens to our fee, which is
+                NOT the same thing on both kinds of release — when we release, nothing is deposited
+                to us at all; the wire is simply smaller by our fee. */}
+            {feeC > 0 && (
               <div className="small muted" style={{ marginTop: 2 }}>
-                Our fee {usd2(feeC)}{invCutC > 0 ? <> · {invBuyer} keeps <b>{usd2(Math.min(invCutC, feeC))}</b></> : null} · Deposited to us: <b style={{ color: 'var(--gold,#AE8746)' }}>{usd2(netFeeC)}</b>
+                {weRelease
+                  ? <>Our fee <b>{usd2(feeC)}</b> stays out of this wire — we release the net, so there is nothing to collect afterwards.</>
+                  : <>Our fee {usd2(feeC)}{invCutC > 0 ? <> · {invBuyer} keeps <b>{usd2(Math.min(invCutC, feeC))}</b></> : null} · Coming to us from {invCutC > 0 ? invBuyer : 'the investor'}: <b style={{ color: 'var(--gold,#AE8746)' }}>{usd2(netFeeC)}</b></>}
               </div>
             )}
           </div>

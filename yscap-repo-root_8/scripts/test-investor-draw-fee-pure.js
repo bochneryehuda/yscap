@@ -49,25 +49,38 @@ eq(IF.ruleFor('Some New Buyer LLC'), null, 'A10 …and neither does a buyer nobo
   eq([d.applies, d.suggested_cents, d.net_fee_cents], [true, 25000, 0], 'B5 Blue Lake keeps the whole $250 draw fee — we bank nothing');
 }
 
-// ---------------------------------------------------------------- C. not sold = we keep it all
-// "any file that is funding with CorrFirst that is already sold to CorrFirst … if it's not sold
-// yet, then we get all of the entire fee."
+// ---------------------------------------------------------------- C. not sold = NO investor fee
+// The owner sharpened this on 2026-08-13: an unsold loan does not carry a $0 investor fee that
+// somebody might edit — it carries none at all. "If it's not sold yet, then it should not fill out
+// the investor fee, because the investor is not charging it yet: they're not reimbursing it and
+// they're not releasing it. They're going to buy the loan with the draw released already."
 {
   const notSold = IF.describe({ noteBuyer: 'CorrFirst', sold: 'not_sold', feeCents: 29900 });
   eq([notSold.applies, notSold.suggested_cents, notSold.net_fee_cents], [false, 0, 29900],
-    'C1 not sold to them yet → we keep the entire $299');
-  ok(/\$95\.00/.test(notSold.hint), 'C2 …and the note still names their rate, so it is one press if the desk knows better');
+    'C1 not sold to them yet → no cut, and the whole $299 stays ours');
+  eq(notSold.offer, false, 'C2 …and the box is not even offered — there is nothing to charge');
+  ok(/charge[sd]? nothing/i.test(notSold.hint), 'C3 …the note says the investor charges nothing on this draw');
+  ok(/we release the net ourselves/i.test(notSold.hint), 'C4 …states what happens instead: we release the net');
+  ok(/stays out of the wire/i.test(notSold.hint), 'C5 …and that our fee is simply not in that wire, never collected later');
+  ok(/process the file as sold/i.test(notSold.hint), 'C6 …and points at the way past it if the loan really is sold');
 
   const unknown = IF.describe({ noteBuyer: 'CorrFirst', sold: 'unknown', feeCents: 29900 });
-  eq([unknown.applies, unknown.suggested_cents], [false, 0],
-    'C3 a loan we cannot confirm is sold fills in NOTHING — it never guesses money off our own books');
-  eq(unknown.reason, 'sold_unknown', 'C4 …and it says which of the two it is');
-  ok(/purchase advice/i.test(unknown.hint), 'C5 …naming the missing fact a coordinator can go and check');
+  eq([unknown.applies, unknown.offer, unknown.suggested_cents], [false, false, 0],
+    'C7 a loan we cannot confirm is sold charges nothing either — it never guesses money off our own books');
+  eq(unknown.reason, 'sold_unknown', 'C8 …and it says which of the two it is');
+  ok(/purchase advice/i.test(unknown.hint), 'C9 …naming the missing fact a coordinator can go and check');
+
+  // The draw desk's "process this file as sold" arrives here as a plain 'sold' — release-party
+  // resolves the override, so this module has exactly one thing to answer.
+  eq(IF.describe({ noteBuyer: 'CorrFirst', sold: 'sold', feeCents: 29900 }).offer, true,
+    'C10 once the file is sold (or processed as sold) the box is offered again');
 
   eq(IF.describe({ noteBuyer: 'Fidelis', sold: 'sold', feeCents: 29900 }).suggested_cents, 0,
-    'C6 a sold loan whose buyer has no such deal still keeps the whole fee for us');
+    'C11 a sold loan whose buyer has no such deal still keeps the whole fee for us');
+  eq(IF.describe({ noteBuyer: 'Fidelis', sold: 'sold', feeCents: 29900 }).offer, false,
+    'C12 …and offers no box at all');
   eq(IF.describe({ noteBuyer: null, sold: 'sold', feeCents: 29900 }).suggested_cents, 0,
-    'C7 …and so does a file with no note buyer on it at all');
+    'C13 …and so does a file with no note buyer on it at all');
 }
 
 // ---------------------------------------------------------------- D. the split can never lie
