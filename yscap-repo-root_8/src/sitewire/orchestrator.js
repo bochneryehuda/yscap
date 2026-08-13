@@ -319,6 +319,20 @@ async function pushFile(appId, opts = {}) {
   if (!a) return { skipped: 'file not found/deleted' };
   if (a.status !== 'funded' && !opts.allowUnfunded) return { skipped: 'file not funded' };
 
+  // TABLE FUNDING (owner-directed 2026-08): a loan sold at the closing table has NO post-closing
+  // draws — table-funded SKIPS delivery + purchasing + draws. The two request-draw routes (borrower
+  // request-draw, coordinator start-draw) already refuse a table-funded file, but the Sitewire draw
+  // integration is BORN here in pushFile, and several birth paths reach it WITHOUT passing through
+  // those routes: backfillStrandedBirthsOnce (a file that carried draw_setup_requested_at BEFORE it
+  // became table-funded), the outbox drain (pushOutboxOnce), the manual admin push (POST /files/:id/push),
+  // and sync-review re-enqueues. Guarding at this ONE chokepoint closes them all — a table-funded file is
+  // never pushed to Sitewire, so a borrower can never submit a draw against a loan that was sold at the
+  // table. This is a legitimate PERMANENT skip (like handled_externally), not a park. A DB read error
+  // throws and the push is retried by the caller (the codebase's own style — loadFile/requiredRehabBudget
+  // throw the same way), so a transient error never silently pushes a table-funded file.
+  const cw = (await db.query(`SELECT table_funded FROM closing_workflow WHERE application_id=$1`, [appId])).rows[0];
+  if (cw && cw.table_funded === true) return { skipped: 'table_funded' };
+
   // Resolve the capital partner + inspection/fee rule up front. resolveRule matches by the note-buyer
   // LABEL first, so a "handled externally" partner is recognized even when it isn't in the Sitewire
   // directory. A handled-externally partner runs its own draws — the file is NEVER pushed to Sitewire,

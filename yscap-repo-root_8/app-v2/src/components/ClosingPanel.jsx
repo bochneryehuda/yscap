@@ -722,10 +722,15 @@ function FundingChannelBlock({ fc, tableFunded }) {
     );
   }
   const sold = fc.sold_at_table;
-  // Each system's cell — green when it agrees with the overall reading, red when it disagrees.
+  // Each system's cell. Color by the server's THREE-SYSTEM AGREEMENT (fc.agree), never against
+  // sold_at_table — sold_at_table is PILOT-OR-Encompass by the owner's rule (ClickUp doesn't drive it),
+  // so coloring a cell against it turned a lone ClickUp opinion red while the header said "they agree"
+  // (a state the closer can't reconcile). Now: a system with an opinion is green when the systems agree
+  // and red only when they genuinely disagree (and the warn banner below explains) — cells and banner
+  // can never contradict. A system with no opinion is neutral.
   const cell = (k, reading, present, naText) => {
     const label = !present ? (naText || '—') : (reading === true ? 'Table funded' : reading === false ? 'Direct' : 'Unclassified');
-    const status = reading == null ? '' : (reading === sold ? 'match' : 'mismatch');
+    const status = reading == null ? '' : (fc.agree ? 'match' : 'mismatch');
     return <ReconCell k={k} v={label} status={status} />;
   };
   return (

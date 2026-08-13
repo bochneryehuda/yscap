@@ -135,6 +135,26 @@ function call(server, method, path, token, body) {
       ok('D the refused request did not birth the draw setup', still.draw_setup_requested_at === null);
     }
 
+    // ── CHOKEPOINT: the table-funded skip-draws guard lives at orchestrator.pushFile (the BIRTH of the
+    //    Sitewire draw integration), so EVERY birth path — backfillStrandedBirthsOnce, the outbox drain,
+    //    the manual admin push, sync-review re-enqueues — skips a table-funded file, not just the two
+    //    request-draw routes. (Pre-merge audit Finding 1.) The guard sits before any network I/O.
+    {
+      const switches = require('../src/lib/integrations/switches');
+      const origOn = switches.on;
+      switches.on = (k) => ((k === 'SITEWIRE_ENABLED' || k === 'SITEWIRE_OUTBOUND_ENABLED') ? true : origOn(k));
+      try {
+        const orchestrator = require('../src/sitewire/orchestrator');
+        const { appId: tfApp } = await mkFunded(true);
+        const r1 = await orchestrator.pushFile(tfApp, {}).catch((e) => ({ threw: String((e && e.message) || e) }));
+        ok('D pushFile SKIPS a table-funded file at the chokepoint (covers every birth path)', r1 && r1.skipped === 'table_funded');
+
+        const { appId: dirApp } = await mkFunded(false);
+        const r2 = await orchestrator.pushFile(dirApp, {}).catch((e) => ({ threw: String((e && e.message) || e) }));
+        ok('D pushFile does NOT skip a direct file for the table-funded reason', !(r2 && r2.skipped === 'table_funded'));
+      } finally { switches.on = origOn; }
+    }
+
     console.log(`\n${fail ? 'FAIL' : 'PASS'} test-closing-funding-channel-db: ${pass} passed, ${fail} failed`);
   } catch (e) { console.error(e); fail++; }
   finally { server.close(); await db.pool.end().catch(() => {}); }
