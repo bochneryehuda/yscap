@@ -291,7 +291,8 @@ async function loadRollup(db, appId, { sowState = null } = {}) {
        FROM sitewire_draw_requests r JOIN sitewire_draws d ON d.sitewire_draw_id=r.sitewire_draw_id
       WHERE d.application_id=$1`, [appId])).rows;
   const ledger = (await db.query(
-    `SELECT sitewire_draw_id, approved_cents, fee_cents, net_release_cents, retainage_held_cents, fee_kind, release_date, funded_status
+    `SELECT sitewire_draw_id, approved_cents, fee_cents, net_release_cents, retainage_held_cents, fee_kind, release_date, funded_status,
+            investor_fee_cents, net_fee_cents
        FROM draw_disbursements WHERE application_id=$1 ORDER BY created_at`, [appId])).rows;
   // The delivered-findings snapshot — the second source the approval ladder reads for "what did the
   // inspector approve on this draw". Best-effort: a file with no delivered findings simply has none.
@@ -318,9 +319,12 @@ async function loadRollup(db, appId, { sowState = null } = {}) {
   const ledgerByDraw = new Map();
   for (const d of ledger) {
     const k = N(d.sitewire_draw_id);
-    const cur = ledgerByDraw.get(k) || { fee_cents: 0, net_release_cents: 0, retainage_held_cents: 0, released: false, release_date: null, fee_kind: null };
+    const cur = ledgerByDraw.get(k) || { fee_cents: 0, net_release_cents: 0, retainage_held_cents: 0, investor_fee_cents: 0, released: false, release_date: null, fee_kind: null };
     cur.fee_cents += N(d.fee_cents); cur.net_release_cents += N(d.net_release_cents);
     cur.retainage_held_cents += N(d.retainage_held_cents);
+    // What the note buyer kept out of OUR fee on this release (0 on every file with no such deal).
+    // It never touches the draw's own money — only the fee TOTALS below, which are our income.
+    cur.investor_fee_cents += N(d.investor_fee_cents);
     if (d.funded_status === 'released') { cur.released = true; cur.release_date = d.release_date || cur.release_date; }
     cur.fee_kind = d.fee_kind || cur.fee_kind;
     ledgerByDraw.set(k, cur);
@@ -356,7 +360,7 @@ async function loadRollup(db, appId, { sowState = null } = {}) {
   for (const r of requests) { const k = N(r.sitewire_draw_id); const a = reqRowsByDraw.get(k) || []; a.push(r); reqRowsByDraw.set(k, a); }
   const flByDraw = new Map();
   for (const l of findingLines) { const k = N(l.sitewire_draw_id); const a = flByDraw.get(k) || []; a.push(l); flByDraw.set(k, a); }
-  let feesCharged = 0, feesProjected = 0;
+  let feesCharged = 0, feesProjected = 0, feesToInvestor = 0;
   for (const d of rollup.draws) {
     const l = ledgerByDraw.get(d.sitewire_draw_id);
     const m = APPROVAL.drawMoney({
@@ -405,6 +409,7 @@ async function loadRollup(db, appId, { sowState = null } = {}) {
       released_at: (l && l.release_date) || null,
     };
     if (l) feesCharged += m.fee_cents; else feesProjected += m.fee_cents;
+    if (l) feesToInvestor += N(l.investor_fee_cents);
   }
   // OUR fees on this project, kept separately from the borrower's money (owner-directed 2026-08-03:
   // "it should keep track separately of our fees for this project").
@@ -412,6 +417,12 @@ async function loadRollup(db, appId, { sowState = null } = {}) {
     charged_cents: feesCharged,           // recorded on a release — actually earned
     projected_cents: feesProjected,       // the standard fee on draws not yet released
     total_cents: feesCharged + feesProjected,
+    // WHAT ACTUALLY REACHES OUR BANK (owner-directed 2026-08-13). `charged_cents` keeps its exact
+    // meaning — the fee taken out of the borrower's approved draws — and these two say how that
+    // same money split: what the note buyer kept for handling the release, and our deposit. 0 and
+    // charged_cents on every file with no such deal, so nothing about those files reads differently.
+    investor_cents: feesToInvestor,
+    net_cents: Math.max(0, feesCharged - feesToInvestor),
     per_draw_cents: projected ? projected.fee_cents : null,
     fee_kind: projected ? projected.fee_kind : null,
     inspection_method: projected ? projected.method : null,

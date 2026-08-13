@@ -72,33 +72,63 @@ eq(RP.autoLedgers('investor_direct'), true, 'C5 PILOT writes the ledger itself o
 eq(RP.autoLedgers('reimbursement'), false, 'C6 on a we-release draw the typed-in wire stays the record');
 eq(RP.autoLedgers('manual'), false, 'C7 …and a manual delivery writes nothing automatically');
 
-// ─────────────────────────────────────────────── D. the not-sold question
-ok(RP.notSoldWarning({ mode: 'investor_direct', sold: 'not_sold' }), 'D1 investor releases + not sold → ask');
-ok(RP.notSoldWarning({ mode: 'investor_direct', sold: 'unknown' }), 'D2 investor releases + cannot tell → ask (fails toward asking)');
-eq(RP.notSoldWarning({ mode: 'investor_direct', sold: 'sold' }), null, 'D3 investor releases + sold → nothing to ask');
-eq(RP.notSoldWarning({ mode: 'reimbursement', sold: 'not_sold' }), null, 'D4 we release → not our question');
-eq(RP.notSoldWarning({ mode: 'manual', sold: 'not_sold' }), null, 'D5 manual → not our question either');
-eq(RP.notSoldWarning({}), null, 'D6 asked with nothing → nothing');
+// ─────────────────────────────────────────────── D. NOT SOLD → WE RELEASE, and the way past it
+// THE OWNER CHANGED THIS RULE ON 2026-08-13, superseding the advisory warning of 2026-08-09:
+// "if Encompass has a PA date already, then it should always proceed with the setting of the file
+//  … if it's not yet sold, then it should always be set up that we release the net amount."
+// So the sold signal now DECIDES the mode instead of commenting on it.
+eq(RP.enforcedMode({ mode: 'investor_direct', sold: 'sold' }).mode, 'investor_direct',
+  'D1 a SOLD loan keeps the file’s own setting — the investor releases if that is what it says');
+eq(RP.enforcedMode({ mode: 'reimbursement', sold: 'sold' }).mode, 'reimbursement',
+  'D2 …and the other way round too — a sold loan is never redirected');
+eq(RP.enforcedMode({ mode: 'investor_direct', sold: 'not_sold' }).mode, 'reimbursement',
+  'D3 an UNSOLD loan is released by US, whatever the file says');
+eq(RP.enforcedMode({ mode: 'investor_direct', sold: 'unknown' }).mode, 'reimbursement',
+  'D4 …and so is one we cannot confirm — it fails towards our own money, never towards the investor’s');
+eq(RP.enforcedMode({ mode: 'investor_direct', sold: 'not_sold' }).forced, true,
+  'D5 …and it says the answer was overridden, so a screen can explain why');
+eq(RP.enforcedMode({ mode: 'reimbursement', sold: 'not_sold' }).forced, false,
+  'D6 a file already on "we release" was not overridden by anything');
+eq(RP.enforcedMode({ mode: 'manual', sold: 'not_sold' }).mode, 'manual',
+  'D7 a manual delivery is left alone — PILOT never witnessed that money and must not claim to know');
+eq(RP.enforcedMode({ mode: 'investor_direct', sold: 'not_sold' }).configured, 'investor_direct',
+  'D8 the file’s own setting is still reported, so it can be shown and resumed when the loan sells');
 
-const w = RP.notSoldWarning({ mode: 'investor_direct', sold: 'not_sold' });
-eq(w.suggestMode, 'reimbursement', 'D7 the one-click way out is "we release"');
-ok(ID.MODES.includes(w.suggestMode), 'D8 …and it is a real mode the switch can store');
-// The owner CHANGED the default on 2026-08-09 ("default should be like it was sold already, but
-// it should give you a warning that it doesn't have a PA date if you're sure you want to do
-// investor delivery"), so the wording had to move with it: it now leads with permission to carry
-// on and offers releasing it ourselves second. Both halves are pinned — proceeding is offered
-// FIRST, and the way out is still there.
-ok(/go ahead/i.test(w.body), 'D9 carrying on is offered — the owner\'s new default is "treat it as sold"');
-ok(/release the money yourself/i.test(w.body), 'D9b …and releasing it ourselves is still offered as the alternative');
-ok(w.body.search(/go ahead/i) < w.body.search(/release the money yourself/i),
-  'D9c …in that ORDER: the default reads first, the alternative second');
-ok(!/isn.t sold yet/i.test(w.title), 'D9d the title states the FACT (no PA date), not the old conclusion');
-eq(w.certain, true, 'D10 a proven "no PA date" says so plainly');
-eq(RP.notSoldWarning({ mode: 'investor_direct', sold: 'unknown' }).certain, false, 'D11 …and an unreadable one is honest that it cannot tell');
-ok(!/\bmust\b|cannot proceed|blocked/i.test(w.body), 'D12 it is a QUESTION, never a refusal');
+// THE COORDINATOR'S OVERRIDE — "the draw coordinator should be able to switch a file … imagine if
+// it was sold already. In case anything goes wrong, she should have this ability."
+eq(RP.effectiveSold({ sold: 'not_sold', treatAsSold: true }), 'sold', 'D9 processing a file as sold moves the answer to sold');
+eq(RP.effectiveSold({ sold: 'unknown', treatAsSold: true }), 'sold', 'D9b …from either of the two unconfirmed states');
+eq(RP.effectiveSold({ sold: 'not_sold', treatAsSold: false }), 'not_sold', 'D9c …and without it nothing moves');
+eq(RP.effectiveSold({ sold: 'sold', treatAsSold: false }), 'sold', 'D9d a really-sold loan needs no override');
+eq(RP.enforcedMode({ mode: 'investor_direct', sold: RP.effectiveSold({ sold: 'not_sold', treatAsSold: true }) }).mode,
+  'investor_direct', 'D10 with the override on, the file’s own setting governs again');
+eq(RP.effectiveSold({}), 'unknown', 'D11 asked with nothing → we cannot tell, never a confident answer');
+
+// THE BADGE — on every not-sold file, stating what happens and offering the way past it.
+const w = RP.notSoldBadge({ sold: 'not_sold' });
+eq(w.code, 'not_sold_yet', 'D12 an unsold file carries the badge');
+eq(RP.notSoldBadge({ sold: 'sold' }), null, 'D13 a sold one carries none at all');
+ok(/not sold yet/i.test(w.title), 'D14 the badge says so in the owner’s own words');
+ok(/WE release/i.test(w.body), 'D15 …and states what happens instead: we release the draw');
+ok(/stays out of that wire/i.test(w.body), 'D16 …that our fee is simply not in the wire, rather than collected later');
+ok(/charges no draw fee/i.test(w.body), 'D17 …and that the investor charges nothing on it');
+eq(w.action, 'treat_as_sold', 'D18 the way past it is offered as an action a screen can wire up');
+eq(w.certain, true, 'D19 a proven "no PA date" says so plainly');
+eq(RP.notSoldBadge({ sold: 'unknown' }).certain, false, 'D20 …and an unreadable one is honest that it cannot tell');
+ok(!/\bmust\b|cannot proceed|blocked/i.test(w.body), 'D21 it still refuses nothing');
+
+const t = RP.notSoldBadge({ sold: 'not_sold', treatAsSold: true, treatedBy: 'Dana Coordinator', treatedAt: '2026-08-13T10:00:00Z' });
+eq(t.code, 'treated_as_sold', 'D22 once processed as sold the badge flips to its second state');
+eq(t.treated, true, 'D23 …and says which state it is in');
+ok(/Dana Coordinator/.test(t.body), 'D24 …naming WHO decided it, so the override is never anonymous');
+ok(/2026-08-13/.test(t.body), 'D25 …and when');
+eq(t.action, 'clear', 'D26 …and offers the way back rather than the way forward');
+// The badge never rewrites the loan: the FACT stays whatever Encompass says.
+eq(RP.soldStatus({ fieldConfigured: true, pulled: true }), 'not_sold', 'D27 the sold FACT is untouched by any override');
 
 // ─────────────────────────────────────────────── E. the whole answer, assembled
-const d = RP.describe({ companyMode: 'reimbursement', ruleMode: 'investor_direct', fileMode: 'TYPO' });
+// A SOLD loan is the case where the settings ladder decides, so the ladder is proven there.
+const d = RP.describe({ companyMode: 'reimbursement', ruleMode: 'investor_direct', fileMode: 'TYPO', paDate: '2026-05-12' });
 eq(d.mode, 'investor_direct', 'E1 describe() resolves through the same ladder');
 eq(d.level, 'capital_provider', 'E2 …and reports which level decided');
 eq(d.levelLabel, ID.LEVEL_LABEL.capital_provider, 'E3 …in words a person reads');
@@ -108,13 +138,35 @@ eq(d.levels.company, 'reimbursement', 'E6 …at every level, so a settings scree
 ok(d.modeLabel && d.modeHelp, 'E7 the mode carries its own label and explanation');
 eq(d.party, 'investor', 'E8 the assembled answer names who wires');
 eq(d.autoLedger, true, 'E9 …and whether PILOT records it itself');
-ok(d.warning, 'E10 an unsold investor-released draw asks the question');
-eq(RP.describe({ companyMode: 'investor_direct', paDate: '2026-05-12' }).warning, null, 'E11 a sold one does not');
+eq(d.badge, null, 'E10 a sold file carries no badge');
+eq(d.forcedByNotSold, false, 'E10b …and nothing overrode its setting');
+eq(d.soldEffective, 'sold', 'E10c …and it is processed as what it is');
+
+// THE SAME FILE, NOT SOLD: the ladder still reports what it holds, but WE release.
+const u = RP.describe({ companyMode: 'reimbursement', ruleMode: 'investor_direct', fieldConfigured: true, pulled: true });
+eq(u.mode, 'reimbursement', 'E11 an unsold loan is released by us, whatever the ladder says');
+eq(u.configuredMode, 'investor_direct', 'E11b …with the file’s own setting still reported, ready to resume');
+eq(u.forcedByNotSold, true, 'E11c …and flagged as overridden, so the screen can say why');
+eq(u.party, 'us', 'E11d …so the ledger records OUR wire, not the investor’s');
+eq(u.autoLedger, false, 'E11e …and PILOT never writes an investor release row for it');
+ok(u.badge && u.badge.code === 'not_sold_yet', 'E11f …and it carries the not-sold badge');
+eq(u.soldEffective, 'not_sold', 'E11g …and is processed as not sold');
+
+// …until the draw desk processes it as sold, which puts the ladder back in charge.
+const o = RP.describe({ companyMode: 'reimbursement', ruleMode: 'investor_direct', fieldConfigured: true, pulled: true,
+  treatAsSold: true, treatedBy: 'Dana Coordinator', treatedAt: '2026-08-13T10:00:00Z' });
+eq(o.mode, 'investor_direct', 'E12 processed as sold → the file’s own setting governs again');
+eq(o.soldEffective, 'sold', 'E12b …the money reads it as sold');
+eq(o.sold, 'not_sold', 'E12c …while the FACT about the loan is untouched');
+eq(o.treatedAsSold, true, 'E12d …and the screen is told it is an override, not a sale');
+eq(o.soldVia, 'coordinator', 'E12e …attributed to the desk rather than to Encompass');
+ok(o.badge && o.badge.code === 'treated_as_sold', 'E12f …with the badge in its second state');
+eq(o.party, 'investor', 'E12g …so an investor-released draw is recorded as theirs again');
 
 // describe() must never throw, whatever it is handed — it feeds a screen, not a decision.
 for (const bad of [undefined, {}, { drawMode: {} }, { paDate: 12345 }, { companyMode: [] }]) {
   const r = RP.describe(bad);
-  ok(r && ID.MODES.includes(r.mode), `E12 describe(${JSON.stringify(bad)}) still returns a real mode`);
+  ok(r && ID.MODES.includes(r.mode), `E13 describe(${JSON.stringify(bad)}) still returns a real mode`);
 }
 
 console.log(`test-draw-release-party-pure: all ${n} release-party rule checks passed.`);

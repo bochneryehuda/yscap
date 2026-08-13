@@ -45,6 +45,8 @@ const db = require('../db');
 const RP = require('./release-party');
 const SETTINGS = require('./draw-settings');   // retainage % + the lien-waiver switch, ONE definition
 const { computeRelease, waiverGate } = require('./money');
+// The investor's cut of OUR draw fee — the ONE definition, shared with the hand-recorded release.
+const INVESTOR_FEE = require('./investor-fee');
 
 const N = (x) => Number(x || 0) || 0;
 const usd = (c) => '$' + (Math.round(N(c)) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -156,22 +158,45 @@ async function recordInvestorRelease(appId, drawId, { staffId = null, note = nul
       }
       const fundedStatus = missing.length ? 'held' : 'released';
 
-      // 7. THE RECEIVABLE. On an investor-released draw the investor wires the borrower the net and
+      // 7. THE INVESTOR'S CUT OF OUR FEE (owner-directed 2026-08-13), through the SAME shared rule
+      //    the hand-recorded release uses — so a release PILOT books itself and one a coordinator
+      //    types can never book different income. It splits OUR fee only: the approved amount, the
+      //    retainage and the borrower's net above are untouched. It applies only once the loan is
+      //    actually sold to that buyer, which `release.soldEffective` already answered (the sold fact,
+    //    or the draw desk's "process this file as sold"). This path only runs on an investor-released
+    //    draw, which the same sold rule already restricts to a sold loan.
+      const feeSplit = INVESTOR_FEE.splitFee({
+        feeCents: fee,
+        investorFeeCents: INVESTOR_FEE.defaultInvestorFeeCents({ noteBuyer: release.noteBuyer || app.lender, sold: release.soldEffective, feeCents: fee }),
+      });
+
+      // 8. THE RECEIVABLE. On an investor-released draw the investor wires the borrower the net and
       //    wires US the fee separately, so our fee is money we are owed rather than money we have
       //    already netted. `fee_cents` records what came out of the borrower's release (unchanged
-      //    meaning); `fee_receivable_cents` records what the investor still owes us. A draw with no
-      //    fee is 'n_a' — an owed row of $0 would clutter the chase list forever.
+      //    meaning); `fee_receivable_cents` records what the investor still owes us — and that is
+      //    the NET fee, because a buyer who keeps $95 of our $299 sends us $204 and owes us $204,
+      //    never $299. A Blue Lake draw, where they keep the whole fee, therefore owes us nothing
+      //    and is 'n_a' — exactly how the observed TrustPoint rows have always been stamped. A draw
+      //    with no fee left for us is 'n_a' too: an owed row of $0 would clutter the chase list
+      //    forever.
+      const owedToUs = feeSplit.net_fee_cents;
       const row = (await client.query(
         `INSERT INTO draw_disbursements
            (application_id, sitewire_draw_id, approved_cents, fee_cents, retainage_held_cents,
             net_release_cents, release_date, funded_status, kind, note, created_by,
-            release_party, fee_receivable_cents, fee_status, note_buyer_label, note_buyer_key)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'draw',$9,$10,'investor',$11,$12,$13,$14) RETURNING *`,
+            release_party, fee_receivable_cents, fee_status, note_buyer_label, note_buyer_key,
+            investor_fee_cents, investor_fee_key)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'draw',$9,$10,'investor',$11,$12,$13,$14,$15,$16) RETURNING *`,
         [appId, drawId, approved, fee, split.retainage_held_cents, split.net_release_cents,
           todayNy(), fundedStatus,
           (note ? String(note).slice(0, 1800) + ' — ' : '')
-            + `Recorded automatically on final approval: ${app.lender || 'the investor'} releases this file's draws directly.`,
-          staffId, fee > 0 ? fee : 0, fee > 0 ? 'owed' : 'n_a', app.lender || null, buyerKey])).rows[0];
+            + `Recorded automatically on final approval: ${app.lender || 'the investor'} releases this file's draws directly.`
+            + (feeSplit.investor_fee_cents > 0
+              ? ` They keep ${usd(feeSplit.investor_fee_cents)} of our ${usd(fee)} draw fee, so ${usd(owedToUs)} is due to us.`
+              : ''),
+          staffId, owedToUs > 0 ? owedToUs : 0, owedToUs > 0 ? 'owed' : 'n_a', app.lender || null, buyerKey,
+          feeSplit.investor_fee_cents,
+          feeSplit.investor_fee_cents > 0 ? (INVESTOR_FEE.ruleFor(release.noteBuyer || app.lender) || {}).key || null : null])).rows[0];
       await client.query('COMMIT');
       return { recorded: true, row, money: split, waiversMissing: missing, release };
     } catch (e) {

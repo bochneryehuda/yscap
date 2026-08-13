@@ -217,8 +217,11 @@ eq(RP.soldVia({}), null, 'F14 …and claiming nothing when it is not sold');
 {
   const d = RP.describe({ companyMode: 'investor_direct', tableFunded: false, fieldConfigured: true, pulled: true });
   eq(d.sold, 'not_sold', 'F19 a direct file with no PA date is not sold');
-  ok(d.warning, 'F20 …and it does warn');
-  ok(/go ahead/i.test(d.warning.body), 'F21 …while defaulting to carrying on, which is the owner\'s revised rule');
+  ok(d.warning, 'F20 …and it does carry the badge');
+  // The owner replaced the 2026-08-09 "carry on" default on 2026-08-13: an unsold loan is now
+  // RELEASED BY US, and the badge states that rather than asking permission to proceed.
+  ok(/WE release/i.test(d.warning.body), 'F21 …which states that we release it, the owner\'s current rule');
+  eq(d.mode, 'reimbursement', 'F22 …and the mode says the same thing, whatever the file was set to');
 }
 
 // ─────────────────────────────────────────── G. the registry wiring

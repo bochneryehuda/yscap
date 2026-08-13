@@ -44,9 +44,13 @@ const n = (x) => Number(x || 0);
   const bor = (await db.query(`INSERT INTO borrowers(first_name,last_name,email) VALUES('Release','Party',$1) RETURNING id`, [email])).rows[0].id;
   const loan = 'RP' + crypto.randomBytes(3).toString('hex');
   const BUYER = 'Fidelis Investors LLC';
+  // SOLD FROM THE START (owner-directed 2026-08-13): an UNSOLD loan is now always released by us,
+  // whatever the settings say, so a fixture with no purchase advice date would have every section
+  // below testing the override instead of the thing it is about. Section 2 clears it deliberately,
+  // to prove exactly that rule, and puts it back.
   const app = (await db.query(
-    `INSERT INTO applications(borrower_id,status,ys_loan_number,lender,property_address,rehab_budget,loan_amount)
-     VALUES($1,'funded',$2,$3,'{"oneLine":"825 Bishop St","city":"Scranton","state":"PA","zip":"18505"}',100000,400000) RETURNING id`,
+    `INSERT INTO applications(borrower_id,status,ys_loan_number,lender,purchase_advice_date,encompass_last_pulled_at,property_address,rehab_budget,loan_amount)
+     VALUES($1,'funded',$2,$3,'2026-03-04',now(),'{"oneLine":"825 Bishop St","city":"Scranton","state":"PA","zip":"18505"}',100000,400000) RETURNING id`,
     [bor, loan, BUYER])).rows[0].id;
 
   const BASE = 910000 + crypto.randomBytes(2).readUInt16BE(0) * 10;
@@ -112,18 +116,53 @@ const n = (x) => Number(x || 0);
   }
 
   // ======================================================================
-  // 2. THE SOLD SIGNAL
+  // 2. THE SOLD SIGNAL NOW DECIDES WHO RELEASES — and the desk's way past it
+  //    (owner-directed 2026-08-13, superseding the advisory warning of 2026-08-09)
   // ======================================================================
   {
-    const before = await RP.releaseStateFor(db, app);
-    ok('2a an investor-released draw on an unsold loan asks the question', !!before.warning);
-    eq('2b …and the way out it offers is a real mode', before.warning.suggestMode, 'reimbursement');
-    await db.query(`UPDATE applications SET purchase_advice_date='2026-03-04' WHERE id=$1`, [app]);
+    // The file is set to "the investor releases" and IS sold — the ladder governs.
+    await setLevel('investor_funding_mode', 'investor_direct');
     const sold = await RP.releaseStateFor(db, app);
-    eq('2c a purchase advice date means sold', sold.sold, 'sold');
-    eq('2d …and the question goes away', sold.warning, null);
+    eq('2a a purchase advice date means sold', sold.sold, 'sold');
+    eq('2b …the file’s own setting governs', [sold.mode, sold.party], ['investor_direct', 'investor']);
+    eq('2c …and there is no badge on it', sold.badge, null);
+
+    // Take the purchase advice date away: the SAME file is now released by us.
     await db.query(`UPDATE applications SET purchase_advice_date=NULL WHERE id=$1`, [app]);
-    ok('2e clearing it brings the question back', !!(await RP.releaseStateFor(db, app)).warning);
+    const unsold = await RP.releaseStateFor(db, app);
+    eq('2d with no PA date the loan is not sold', unsold.sold, 'not_sold');
+    eq('2e …so WE release it, whatever the file says', [unsold.mode, unsold.party], ['reimbursement', 'us']);
+    eq('2f …the file’s own setting is still reported, ready to resume', unsold.configuredMode, 'investor_direct');
+    eq('2g …and it is flagged as overridden, so the screen can say why', unsold.forcedByNotSold, true);
+    eq('2h …PILOT never writes an investor release row for it', unsold.autoLedger, false);
+    eq('2i …and the file carries the "not sold yet" badge', unsold.badge.code, 'not_sold_yet');
+
+    // The draw coordinator processes it as sold — the ladder is back in charge.
+    const set = await RP.setTreatAsSold(db, app, { on: true, by: null, note: 'Investor confirmed the purchase by email' });
+    eq('2j the desk can process the file as sold', set.ok, true);
+    const treated = await RP.releaseStateFor(db, app);
+    eq('2k …the money now reads it as sold', treated.soldEffective, 'sold');
+    eq('2l …while the FACT about the loan is untouched', treated.sold, 'not_sold');
+    eq('2m …the file’s own setting governs again', [treated.mode, treated.party], ['investor_direct', 'investor']);
+    eq('2n …and the badge says it is an override, not a sale', treated.badge.code, 'treated_as_sold');
+    eq('2o …attributed to the desk rather than to Encompass', treated.soldVia, 'coordinator');
+
+    // …and it is reversible, straight back to what Encompass says.
+    eq('2p clearing it works', (await RP.setTreatAsSold(db, app, { on: false })).ok, true);
+    const back = await RP.releaseStateFor(db, app);
+    eq('2q …and the file is released by us again', [back.mode, back.soldEffective], ['reimbursement', 'not_sold']);
+
+    // A file with no draw project cannot carry the override — it is told, not silently ignored.
+    const orphan = (await db.query(
+      `INSERT INTO applications(borrower_id,status,ys_loan_number) VALUES($1,'funded',$2) RETURNING id`,
+      [bor, loan + 'X'])).rows[0].id;
+    eq('2r a file with no draw project is refused, with a reason',
+      (await RP.setTreatAsSold(db, orphan, { on: true })).reason, 'no_draw_project');
+    await db.query(`DELETE FROM applications WHERE id=$1`, [orphan]);
+
+    // Put the sale back for everything below.
+    await db.query(`UPDATE applications SET purchase_advice_date='2026-03-04' WHERE id=$1`, [app]);
+    await setLevel('investor_funding_mode', null);
   }
 
   // ======================================================================

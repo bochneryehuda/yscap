@@ -133,14 +133,26 @@ const read = (rel) => fs.readFileSync(path.join(SRC, rel), 'utf8');
     const s2 = read(f);
     ok(!/INSERT INTO draw_disbursements/i.test(s2), `4e ${f} never writes to the money ledger`);
   }
-  // The release-party module writes exactly ONE column, and it is the read-only PA date.
+  // The release-party module writes TWO things and only two: the read-only PA date it materializes
+  // from Encompass (on `applications`), and the draw desk's "process this file as sold" override
+  // (on the draw project, db/543 — owner-directed 2026-08-13). The guard is unchanged in substance:
+  // what it exists to prove is that this module never sets who releases the money by itself.
   const rp = read('sitewire/release-party.js');
   // Match real SQL only (`UPDATE <table> SET`) — a bare /UPDATE\s+\w+/ also catches the word in a
   // sentence, which is how this first read "is" as a table name.
   const updates = [...rp.matchAll(/UPDATE\s+(\w+)\s+SET/gi)].map((m) => m[1]);
-  eq(updates, ['applications'], '4f release-party writes one table only');
-  ok(/purchase_advice_date/.test(rp) && !/investor_funding_mode\s*=/.test(rp),
-    '4g …and only the read-only sold signal — it never changes who releases the money by itself');
+  eq(updates, ['applications', 'sitewire_property_links'], '4f release-party writes two tables only');
+  ok(/purchase_advice_date/.test(rp) && !/investor_funding_mode\s*=\s*[^=]/.test(rp),
+    '4g …and never the funding mode — it never changes who releases the money by itself');
+  // Every column it writes on the draw project is the override and nothing else.
+  const linkCols = [...rp.matchAll(/UPDATE\s+sitewire_property_links\s+SET([\s\S]*?)WHERE/gi)]
+    .flatMap((m) => [...m[1].matchAll(/(\w+)\s*=/g)].map((c) => c[1]))
+    .filter((c) => c !== 'now');
+  eq([...new Set(linkCols)].sort(), ['treat_as_sold_at', 'treat_as_sold_by', 'treat_as_sold_note', 'updated_at'],
+    '4h …and the override is ALL it writes there — never the release setting, never money');
+  // The override moves the answer towards SOLD only; it can never write the sold FACT itself.
+  ok(!/purchase_advice_date\s*=\s*\$?\d?\s*(?!.*fieldValues)/.test(rp.split('syncPurchaseAdviceDate')[0] || ''),
+    '4i …and nothing outside the Encompass sync writes the purchase advice date');
 }
 
 // ─────────────────────────────────────────── 5. Encompass is still read-only
