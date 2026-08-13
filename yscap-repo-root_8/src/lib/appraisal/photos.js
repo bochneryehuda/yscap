@@ -250,4 +250,7 @@ async function extractPhotos(pdfBase64, opts = {}) {
   };
 }
 
-module.exports = { extractPhotos, encodePng, imageStats, classifyImage, MIN_W, MIN_H, MAX_PHOTOS, MAX_GRAPHICS };
+// `downscale` is exported so lib/image-fit.js can reuse THIS resampler rather than growing a second
+// copy of the box filter — two implementations would drift and two surfaces would then disagree
+// about what a shrunk photo looks like.
+module.exports = { extractPhotos, encodePng, downscale, imageStats, classifyImage, MIN_W, MIN_H, MAX_PHOTOS, MAX_GRAPHICS };

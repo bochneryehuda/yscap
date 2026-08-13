@@ -24,16 +24,20 @@
  *     closer forever over a date that does not exist. See ../lib/funding-channel.js.
  *   PURCHASE ADVICE — sold later, to the investor, and the PA date from Encompass records it.
  *
- * Both are read-only reference data — Encompass stays read-only, forever — and NEITHER flips the
- * release party by itself. All they do is raise a WARNING when the money is set to come from an
- * investor who may not own the loan yet.
+ * Both are read-only reference data — Encompass stays read-only, forever.
  *
- * THE DEFAULT IS TO CARRY ON (owner-directed 2026-08-09: "default should be like it was sold
- * already, but it should give you a warning that it doesn't have a PA date if you're sure you want
- * to do investor delivery"). Sold is still a three-valued answer — sold / not sold / we cannot
- * tell — and both of the last two show the warning, because the only state that should silence it
- * is an affirmative "yes, it was sold". But the warning refuses nothing and writes nothing: it
- * offers going ahead first and releasing it ourselves second.
+ * THE SOLD SIGNAL NOW DECIDES WHO RELEASES (owner-directed 2026-08-13, superseding the advisory
+ * warning of 2026-08-09): *"if Encompass has a PA date already, then it should always proceed with
+ * the setting of the file … if it's not yet sold, then it should always be set up that we release
+ * the net amount."* Sold is still a three-valued answer — sold / not sold / we cannot tell — and
+ * both of the last two put the file on "we release", because an investor who has not bought the
+ * loan is neither wiring this borrower nor reimbursing us. See `enforcedMode`.
+ *
+ * AND THE DRAW DESK CAN STILL SAY OTHERWISE. Encompass's PA date lands on its own schedule, so a
+ * loan really can be sold before PILOT can see it: `treat_as_sold` (db/543) records a coordinator's
+ * decision to process a file as sold, with who and when, behind a double warning on the screen. It
+ * never rewrites the loan — `soldStatus` keeps answering the FACT and `effectiveSold` answers what
+ * we process this draw as, so a sale and a decision to proceed as if are never confused.
  *
  * The decision half is PURE (no DB, no network). The reader at the bottom takes its `db` as an
  * argument, so the whole file unit-tests against a stub.
@@ -373,7 +377,7 @@ async function releaseStateFor(db, appId, { sitewireDrawId = null } = {}) {
       WHERE a.id=$1`, [appId]))[0] || {};
 
   // The project's own release setting, plus the draw desk's "process this file as sold" override
-  // (db/541) with WHO set it and WHEN, so the badge is never anonymous. A database that predates
+  // (db/543) with WHO set it and WHEN, so the badge is never anonymous. A database that predates
   // the override answers nothing here and the file simply has none — `q` swallows the error.
   let link = (await q(
     `SELECT pl.investor_funding_mode, pl.treat_as_sold_at, pl.treat_as_sold_note,
@@ -474,7 +478,7 @@ async function syncPurchaseAdviceDate(db, appId, fieldValues) {
 }
 
 /**
- * SET (or clear) "process this file as sold" — the draw desk's override (db/541).
+ * SET (or clear) "process this file as sold" — the draw desk's override (db/543).
  *
  * It writes ONE thing, on the draw project, and it never touches
  * `applications.purchase_advice_date`: Encompass owns the sold FACT and stays read-only, so this

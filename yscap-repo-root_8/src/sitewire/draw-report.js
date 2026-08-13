@@ -58,6 +58,17 @@ const LENDER = { name: 'YS Capital Group', nmls: '2609746', addr: '5 New Montros
 // not editorial limits — high enough that a real inspection never reaches them, low enough that a
 // runaway archive can't build a PDF nobody can open. Anything beyond is REPORTED at the end of the
 // report, never silently missing.
+// 2026-08-13: THE BYTE BUDGET USED TO BE THE REAL LIMIT, AND IT BIT AT ABOUT FIFTEEN PHOTOS.
+// jsPDF copies JPEG bytes in verbatim, so a ~3.5 MB phone photo cost 3.5 MB of budget: 60 MB ran
+// out after ~15 of the ~100 an inspection carries, and — worse — the rest vanished with nothing in
+// the report saying so (attachPhotoBytes used to `break`, and the note below only ever counted what
+// THIS function skipped). Photos are now embedded from a report-sized display copy (~0.25 MB, built
+// once by the background worker in media-archive.js; see db/540 + lib/image-fit.js for why that
+// loses nothing visible), so the same 60 MB now holds ~230 photos and the COUNT caps are what a
+// real inspection would have to reach. The budget stays at 60 MB deliberately: it is a memory
+// guard on the build, not an editorial limit, and raising it would only matter for a draw whose
+// display copies have not been built yet — exactly the case where a giant PDF helps nobody.
+// Anything still left out is COUNTED and REPORTED at the end of the report, never silently missing.
 const MAX_PHOTOS_PER_LINE = 250;
 const MAX_PHOTOS_TOTAL = 400;
 const EMBED_BYTE_BUDGET = 60 * 1024 * 1024;
@@ -88,7 +99,7 @@ function imageFormat(buf) {
  * @param {'staff'|'borrower'} args.mode
  * @returns {Buffer} PDF bytes
  */
-function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw', mode = 'staff' } = {}) {
+function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw', mode = 'staff', photosOmitted = 0 } = {}) {
   const jsPDF = getJsPDF();
   const borrower = mode === 'borrower';
   // borrower copy: scrub any capital-partner name out of every free-text value that lands in the PDF.
@@ -457,7 +468,10 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
   }
 
   // ---- Per-draw inspection sections ----
-  let embeddedBytes = 0, embeddedCount = 0, skippedPhotos = 0;
+  // Seeded with the photos the LOADER already had to leave out (attachPhotoBytes hits the same
+  // budget first, and those photos never reach this function at all) so the note at the end of the
+  // report accounts for EVERY omitted photo, not only the ones this builder itself skipped.
+  let embeddedBytes = 0, embeddedCount = 0, skippedPhotos = Math.max(0, Number(photosOmitted) || 0);
   for (const s of sections) {
     band((scope === 'project' ? 'Draw #' + (s.number != null ? s.number : '—') : 'This draw') + ' — inspection findings');
     // money summary line — the requested/approved pair is the HERO on a per-draw report, so it is
@@ -691,7 +705,7 @@ async function loadReportMeta(appId, { sitewireDrawId = null, mode = 'staff' } =
            FROM draw_finding_lines WHERE finding_id=$1 AND retired_at IS NULL ORDER BY id`, [f.id])).rows;
       // durable archived photos for this draw, grouped by request id (kind='image' only)
       const media = (await lazy.db.query(
-        `SELECT sitewire_request_id, storage_ref, content_type, note, lat, lng, captured_at
+        `SELECT sitewire_request_id, storage_ref, storage_provider, display_ref, compact_ref, content_type, note, lat, lng, captured_at
            FROM draw_media WHERE application_id=$1 AND sitewire_draw_id=$2 AND kind='image' ORDER BY id`, [appId, did])).rows;
       const mediaByReq = new Map();
       for (const m of media) {
@@ -714,6 +728,12 @@ async function loadReportMeta(appId, { sitewireDrawId = null, mode = 'staff' } =
         not_approved_cents: r.not_approved_cents,
         photos: (mediaByReq.get(r.sitewire_request_id != null ? Number(r.sitewire_request_id) : null) || []).map((m) => ({
           storage_ref: m.storage_ref,
+          // The report-sized rendering, when the background worker has built one. Preferred by
+          // attachPhotoBytes; the full-size original is the fallback, so a photo with no display
+          // copy yet still appears exactly as it does today.
+          display_ref: m.display_ref || null,
+          // The email-sized rendition. Only the delivery copy asks for it; see attachPhotoBytes.
+          compact_ref: m.compact_ref || null,
           content_type: m.content_type,
           // staff caption keeps GPS + time; borrower caption is time-only (no location leak)
           caption: mode === 'borrower'
@@ -792,16 +812,39 @@ function round5(n) { const x = Number(n); return Number.isFinite(x) ? Math.round
 // Read the photo bytes for each section's lines from PILOT storage (cache-miss path only). Bounded by the
 // same budget the builder enforces; a missing/oversized/unreadable blob is skipped (photo dropped), never
 // thrown. Mutates `sections` in place, replacing each photo's { storage_ref } with { buf, caption }.
-async function attachPhotoBytes(sections) {
-  let bytes = 0, count = 0;
+async function attachPhotoBytes(sections, opts) {
+  // 'display' (the default) is the page-sized copy the reports we KEEP embed. 'compact' is the
+  // much smaller rendition the delivery email carries; it falls through display → original, so a
+  // photo the background worker has not reached yet is never dropped, only larger.
+  const rendition = (opts && opts.rendition) === 'compact' ? 'compact' : 'display';
+  const refsFor = (ph) => (rendition === 'compact'
+    ? [ph.compact_ref, ph.display_ref, ph.storage_ref]
+    : [ph.display_ref, ph.storage_ref]).filter(Boolean);
+  let bytes = 0, count = 0, omitted = 0;
   for (const s of sections) {
     for (const l of (s.lines || [])) {
       const out = [];
       for (const ph of (l.photos || [])) {
-        if (count >= MAX_PHOTOS_TOTAL || bytes >= EMBED_BYTE_BUDGET) break;
-        if (!ph.storage_ref) continue;
+        // THE BUDGET MUST BE COUNTED OUT LOUD. This used to `break`, leaving every remaining photo
+        // — and every photo on every LATER line — simply absent from `l.photos`. The builder's
+        // "N additional photo(s) are saved in PILOT" note counts only what the BUILDER skipped, so
+        // photos dropped here were invisible: no note, no count, nothing in the report saying the
+        // inspection had more to show. Count them and carry the number to the builder instead.
+        if (count >= MAX_PHOTOS_TOTAL || bytes >= EMBED_BYTE_BUDGET) { omitted++; continue; }
+        const refs = refsFor(ph);
+        if (!refs.length) continue;
         try {
-          const raw = await lazy.storage.read(ph.storage_ref);
+          // PREFER THE SMALLEST RENDITION THAT SUITS THIS COPY, AND FALL BACK RATHER THAN DROP.
+          // jsPDF embeds JPEG bytes verbatim, so a full-size phone photo costs ~3.5 MB of the embed
+          // budget against ~0.25 MB for its display copy and ~0.05 MB for its compact one — which
+          // is the whole reason ~85 of a 100-photo inspection never reached the report. Every
+          // fallback ends at the ORIGINAL, which is never deleted; see db/540, db/541 and
+          // lib/image-fit.js.
+          let raw = null;
+          for (const ref of refs) {
+            try { raw = await lazy.storage.read(ref); } catch (_) { raw = null; }
+            if (raw && raw.length) break;
+          }
           if (!raw || !raw.length || raw.length > EMBED_BYTE_BUDGET) continue;
           // Belt-and-suspenders GPS scrub on the embed path too: go-forward the archived bytes are already
           // clean (media-archive strips before storing), but a photo archived BEFORE the F-3 fix still carries
@@ -838,7 +881,7 @@ async function attachPhotoBytes(sections) {
     }
     s.attachments = out2;
   }
-  return { photoCount: count, photoBytes: bytes };
+  return { photoCount: count, photoBytes: bytes, omitted };
 }
 
 /** A short content hash so an unchanged draw reuses its stored report (and a change mints a fresh one). */
@@ -849,9 +892,22 @@ async function reportVersion(appId, drawId) {
   const fq = drawId != null
     ? await lazy.db.query(`SELECT COALESCE(max(fl.updated_at), max(f.updated_at)) m, count(fl.*) c FROM draw_findings f LEFT JOIN draw_finding_lines fl ON fl.finding_id=f.id WHERE f.application_id=$1 AND f.sitewire_draw_id=$2`, [appId, drawId])
     : await lazy.db.query(`SELECT COALESCE(max(fl.updated_at), max(f.updated_at)) m, count(fl.*) c FROM draw_findings f LEFT JOIN draw_finding_lines fl ON fl.finding_id=f.id WHERE f.application_id=$1`, [appId]);
-  const mq = drawId != null
-    ? await lazy.db.query(`SELECT count(*) c, max(archived_at) m FROM draw_media WHERE application_id=$1 AND sitewire_draw_id=$2 AND kind='image'`, [appId, drawId])
-    : await lazy.db.query(`SELECT count(*) c, max(archived_at) m FROM draw_media WHERE application_id=$1 AND kind='image'`, [appId]);
+  // The photo set — count + newest archive stamp, AND how many now have a report-sized display copy.
+  // That last part is load-bearing: building a display copy changes neither the count nor
+  // archived_at, but it changes WHICH photos fit in the report (a full-size photo costs ~3.5 MB of
+  // the embed budget, its display copy ~0.25 MB). Without it, a report cached while the photos were
+  // still full-size would be served forever and would never pick up the ones that now fit.
+  // Guarded so an older database without the column still hashes the rest rather than throwing.
+  let mq;
+  try {
+    mq = drawId != null
+      ? await lazy.db.query(`SELECT count(*) c, max(archived_at) m, COALESCE(sum(CASE WHEN display_ref IS NOT NULL THEN 1 ELSE 0 END),0) dsp, COALESCE(count(display_checked_at),0) chk FROM draw_media WHERE application_id=$1 AND sitewire_draw_id=$2 AND kind='image'`, [appId, drawId])
+      : await lazy.db.query(`SELECT count(*) c, max(archived_at) m, COALESCE(sum(CASE WHEN display_ref IS NOT NULL THEN 1 ELSE 0 END),0) dsp, COALESCE(count(display_checked_at),0) chk FROM draw_media WHERE application_id=$1 AND kind='image'`, [appId]);
+  } catch (_) {
+    mq = drawId != null
+      ? await lazy.db.query(`SELECT count(*) c, max(archived_at) m FROM draw_media WHERE application_id=$1 AND sitewire_draw_id=$2 AND kind='image'`, [appId, drawId])
+      : await lazy.db.query(`SELECT count(*) c, max(archived_at) m FROM draw_media WHERE application_id=$1 AND kind='image'`, [appId]);
+  }
   const lq = drawId != null
     ? await lazy.db.query(`SELECT COALESCE(sum(fee_cents),0) fee, COALESCE(sum(net_release_cents),0) net, max(created_at) m FROM draw_disbursements WHERE application_id=$1 AND sitewire_draw_id=$2`, [appId, drawId])
     : await lazy.db.query(`SELECT COALESCE(sum(fee_cents),0) fee, COALESCE(sum(net_release_cents),0) net, max(created_at) m FROM draw_disbursements WHERE application_id=$1`, [appId]);
@@ -926,6 +982,44 @@ async function storeDrawReport({ appId, borrowerId, filename, bytes, mode }) {
    load -> attach photos -> build PDF -> store+supersede -> cache-by-version sequence lives, shared by the
    on-demand report route and the auto-deliver-on-findings path so both cache identically by version hash
    (an unchanged draw reuses the stored row; a change mints a fresh one and supersedes the old). */
+/**
+ * Build a report IN MEMORY and hand back the bytes. Nothing is stored, nothing is looked up, and
+ * NO `documents` row is ever created (owner-directed 2026-08-13 — the send-time compressed copy).
+ *
+ * WHY THIS IS NOT A STORED SECOND REPORT, and why that must not be "simplified" later. The stored
+ * report is found by a VERSION-HASHED FILENAME computed from the DRAW'S DATA — the loan, the
+ * amounts, the findings, the photo set. It says nothing about how large the pictures inside are.
+ * So a compact rendering of the same draw computes the IDENTICAL filename: `buildOrGetReportDoc`
+ * would find the full-quality report already sitting there and hand THAT back — the email would go
+ * out oversized again with nothing anywhere explaining why. Fold the rendition into the hash to
+ * tell them apart and it gets worse: the compact copy then SUPERSEDES the full-quality one
+ * (`is_current=false`), dropping the good report off every screen and package that reads it and
+ * shelving it into SharePoint's "Old Versions". A separate doc_kind is the third trap — it falls
+ * OUT of the regeneration rules that stop the Version-N folder churn and INTO the investor TPR
+ * package, where a low-resolution copy does not belong.
+ *
+ * Built, attached, sent, and recorded on the delivery row. Never filed.
+ */
+async function buildReportBytes(appId, { sitewireDrawId = null, scope, mode = 'staff', rendition = 'display' } = {}) {
+  const meta = await loadReportMeta(appId, { sitewireDrawId, mode });
+  if (!meta || !meta.hasScope || !Array.isArray(meta.sections) || !meta.sections.length) return null;
+  const photoLoad = await attachPhotoBytes(meta.sections, { rendition });
+  const bytes = buildDrawReport({
+    app: meta.app, rollup: meta.rollup, sections: meta.sections, scope, mode,
+    photosOmitted: (photoLoad && photoLoad.omitted) || 0,
+  });
+  const drawNumber = scope === 'draw' && meta.sections[0] ? meta.sections[0].number : null;
+  return {
+    bytes,
+    rendition,
+    photoCount: (photoLoad && photoLoad.photoCount) || 0,
+    photosOmitted: (photoLoad && photoLoad.omitted) || 0,
+    // A plain, human filename — this copy has no version identity because it is never stored, and
+    // giving it the stored report's version-hashed name would invite exactly the confusion above.
+    filename: reportFilename({ scope, mode, drawNumber, version: 'email', loanNo: meta.app.loanNo }),
+  };
+}
+
 async function buildOrGetReportDoc(appId, { sitewireDrawId = null, scope, mode = 'staff' } = {}) {
   const meta = await loadReportMeta(appId, { sitewireDrawId, mode });
   if (!meta || !meta.hasScope || !Array.isArray(meta.sections) || !meta.sections.length) return null;
@@ -936,8 +1030,12 @@ async function buildOrGetReportDoc(appId, { sitewireDrawId = null, scope, mode =
     `SELECT * FROM documents WHERE application_id=$1 AND doc_kind='draw_inspection_report' AND filename=$2 LIMIT 1`,
     [appId, filename])).rows[0];
   if (doc) return { doc, built: false };
-  await attachPhotoBytes(meta.sections);                                 // read the durable photo bytes (bounded)
-  const bytes = buildDrawReport({ app: meta.app, rollup: meta.rollup, sections: meta.sections, scope, mode });
+  const photoLoad = await attachPhotoBytes(meta.sections);               // read the durable photo bytes (bounded)
+  const bytes = buildDrawReport({
+    app: meta.app, rollup: meta.rollup, sections: meta.sections, scope, mode,
+    // No silent caps: whatever the budget forced out is reported in the report itself.
+    photosOmitted: (photoLoad && photoLoad.omitted) || 0,
+  });
   const docId = await storeDrawReport({ appId, borrowerId: borrowerRow.borrower_id, filename, bytes, mode });
   doc = (await lazy.db.query(`SELECT * FROM documents WHERE id=$1`, [docId])).rows[0];
   return { doc, built: true };
@@ -1012,6 +1110,6 @@ function reportFilename({ scope, mode, drawNumber, version, loanNo }) {
 
 module.exports = {
   buildDrawReport, loadReportMeta, attachPhotoBytes, storeDrawReport, reportVersion, reportFilename,
-  buildOrGetReportDoc, autoDeliverArtifacts, refreshDrawFromSitewire,
+  buildOrGetReportDoc, buildReportBytes, autoDeliverArtifacts, refreshDrawFromSitewire,
   imageFormat, getJsPDF, MAX_PHOTOS_TOTAL, MAX_PHOTOS_PER_LINE, EMBED_BYTE_BUDGET,
 };

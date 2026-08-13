@@ -135,7 +135,7 @@ const read = (rel) => fs.readFileSync(path.join(SRC, rel), 'utf8');
   }
   // The release-party module writes TWO things and only two: the read-only PA date it materializes
   // from Encompass (on `applications`), and the draw desk's "process this file as sold" override
-  // (on the draw project, db/541 — owner-directed 2026-08-13). The guard is unchanged in substance:
+  // (on the draw project, db/543 — owner-directed 2026-08-13). The guard is unchanged in substance:
   // what it exists to prove is that this module never sets who releases the money by itself.
   const rp = read('sitewire/release-party.js');
   // Match real SQL only (`UPDATE <table> SET`) — a bare /UPDATE\s+\w+/ also catches the word in a

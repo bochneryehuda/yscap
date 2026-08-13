@@ -1,5 +1,5 @@
 -- ============================================================================
--- 540_investor_draw_fee.sql — THE INVESTOR'S CUT OF OUR DRAW FEE, on the money
+-- 542_investor_draw_fee.sql — THE INVESTOR'S CUT OF OUR DRAW FEE, on the money
 -- ledger only (owner-directed 2026-08-13).
 --
 -- THE PROBLEM. Our draw fee ($299 / $250 / $499, per the inspection rule) is the

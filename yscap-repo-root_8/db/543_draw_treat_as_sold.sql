@@ -1,5 +1,5 @@
 -- ============================================================================
--- 541_draw_treat_as_sold.sql — "this file was not sold yet", and the draw
+-- 543_draw_treat_as_sold.sql — "this file was not sold yet", and the draw
 -- coordinator's way past it (owner-directed 2026-08-13).
 --
 -- THE RULE THIS SERVES, in the owner's words: *"If Encompass has a PA date
@@ -17,7 +17,7 @@
 --     that investor does not own yet;
 --   · THE INVESTOR'S FEE — an unsold loan carries none. They are not releasing
 --     and not reimbursing, so they are not charging: they buy the loan later
---     with the draw already released. (db/540 added the fee itself.)
+--     with the draw already released. (db/542 added the fee itself.)
 --
 -- AND THE COORDINATOR CAN STILL SAY OTHERWISE. Encompass is read-only and its PA
 -- date lands on its own schedule, so a loan really can be sold before PILOT can
