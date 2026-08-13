@@ -612,8 +612,12 @@ const INTEGRATIONS = [
     env: [{ name: 'AMC_CLIENT_ID', required: true }, { name: 'AMC_CLIENT_SECRET', required: true },
       { name: 'AMC_LOGIN_ACCOUNT', required: true }, { name: 'AMC_LOGIN_PASSWORD', required: true },
       { name: 'AMC_SUBDOMAIN', required: true }, { name: 'AMC_LENDER_IDENTIFIER', required: true },
-      // OPTIONAL — the vendor confirmed there is no source-client id for this tenant; DoLogin
-      // and every read work without it, and the order builder omits it when unset.
+      // AppraisalScope's REQUIRED client_displayed_id (the "Client Displayed on Report" id, e.g.
+      // 199384 = "YS Capital Group"), sent on both sourceInformation.sourceClientIdentifier AND a
+      // Lender party. Not flagged required here because it can also resolve from the account's
+      // GetClientDisplayOnReport list (a static check would false-alarm) — pin it to be explicit.
+      { name: 'AMC_CLIENT_DISPLAYED_ID', required: false },
+      // LEGACY FALLBACK for the SAME value as AMC_CLIENT_DISPLAYED_ID above.
       { name: 'AMC_SOURCE_CLIENT_ID', required: false }],
     switches: [{ name: 'AMC_ENABLED', label: 'Reading + polling' }, { name: 'AMC_OUTBOUND_ENABLED', label: 'Ordering + writing' }],
     liveProbe: true,
