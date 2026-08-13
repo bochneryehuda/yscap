@@ -125,7 +125,10 @@ async function recordInvestorRelease(appId, drawId, { staffId = null, note = nul
     let buyerKey = null;
     try { buyerKey = require('../lib/conditions/field-registry').normNoteBuyer(app.lender) || null; } catch (_) {}
 
-    // The SAME resolvers the manual release route uses — never a second copy.
+    // The SAME resolvers the manual release route uses — never a second copy. `investorRates` is the
+    // owner's admin-settings table (db/545) — read here, outside the money transaction, so a release
+    // PILOT books itself uses the same rates a coordinator sees on the screen.
+    const investorRates = await INVESTOR_FEE.loadConfiguredRates(db);
     const pct = await SETTINGS.retainagePctFor(appId);
     const lienOn = await SETTINGS.lienGateEnabled(appId);
 
@@ -167,7 +170,9 @@ async function recordInvestorRelease(appId, drawId, { staffId = null, note = nul
     //    draw, which the same sold rule already restricts to a sold loan.
       const feeSplit = INVESTOR_FEE.splitFee({
         feeCents: fee,
-        investorFeeCents: INVESTOR_FEE.defaultInvestorFeeCents({ noteBuyer: release.noteBuyer || app.lender, sold: release.soldEffective, feeCents: fee }),
+        investorFeeCents: INVESTOR_FEE.defaultInvestorFeeCents({
+          noteBuyer: release.noteBuyer || app.lender, sold: release.soldEffective, feeCents: fee, rates: investorRates,
+        }),
       });
 
       // 8. THE RECEIVABLE. On an investor-released draw the investor wires the borrower the net and
@@ -196,7 +201,7 @@ async function recordInvestorRelease(appId, drawId, { staffId = null, note = nul
               : ''),
           staffId, owedToUs > 0 ? owedToUs : 0, owedToUs > 0 ? 'owed' : 'n_a', app.lender || null, buyerKey,
           feeSplit.investor_fee_cents,
-          feeSplit.investor_fee_cents > 0 ? (INVESTOR_FEE.ruleFor(release.noteBuyer || app.lender) || {}).key || null : null])).rows[0];
+          feeSplit.investor_fee_cents > 0 ? (INVESTOR_FEE.ruleFor(release.noteBuyer || app.lender, investorRates) || {}).key || null : null])).rows[0];
       await client.query('COMMIT');
       return { recorded: true, row, money: split, waiversMissing: missing, release };
     } catch (e) {

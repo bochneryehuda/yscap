@@ -140,7 +140,7 @@ const read = (rel) => fs.readFileSync(path.join(SRC, rel), 'utf8');
   const rp = read('sitewire/release-party.js');
   // Match real SQL only (`UPDATE <table> SET`) — a bare /UPDATE\s+\w+/ also catches the word in a
   // sentence, which is how this first read "is" as a table name.
-  const updates = [...rp.matchAll(/UPDATE\s+(\w+)\s+SET/gi)].map((m) => m[1]);
+  const updates = [...new Set([...rp.matchAll(/UPDATE\s+(\w+)\s+SET/gi)].map((m) => m[1]))].sort();
   eq(updates, ['applications', 'sitewire_property_links'], '4f release-party writes two tables only');
   ok(/purchase_advice_date/.test(rp) && !/investor_funding_mode\s*=\s*[^=]/.test(rp),
     '4g …and never the funding mode — it never changes who releases the money by itself');
@@ -148,8 +148,9 @@ const read = (rel) => fs.readFileSync(path.join(SRC, rel), 'utf8');
   const linkCols = [...rp.matchAll(/UPDATE\s+sitewire_property_links\s+SET([\s\S]*?)WHERE/gi)]
     .flatMap((m) => [...m[1].matchAll(/(\w+)\s*=/g)].map((c) => c[1]))
     .filter((c) => c !== 'now');
-  eq([...new Set(linkCols)].sort(), ['treat_as_sold_at', 'treat_as_sold_by', 'treat_as_sold_note', 'updated_at'],
-    '4h …and the override is ALL it writes there — never the release setting, never money');
+  eq([...new Set(linkCols)].sort(),
+    ['sold_check_at', 'treat_as_sold_at', 'treat_as_sold_by', 'treat_as_sold_note', 'updated_at'],
+    '4h …and the override + the sold-recheck stamp are ALL it writes there — never the release setting, never money');
   // The override moves the answer towards SOLD only; it can never write the sold FACT itself.
   ok(!/purchase_advice_date\s*=\s*\$?\d?\s*(?!.*fieldValues)/.test(rp.split('syncPurchaseAdviceDate')[0] || ''),
     '4i …and nothing outside the Encompass sync writes the purchase advice date');

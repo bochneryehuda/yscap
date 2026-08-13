@@ -27,6 +27,18 @@ const centsOrNull = (v) => {
 // back through centsOrNull to the exact same cents (no float drift): 625000 → "6250.00" →
 // centsOrNull → 625000. Blank when the cents are missing.
 const centsToInput = (c) => { const n = Number(c); return Number.isFinite(n) ? (n / 100).toFixed(2) : ''; };
+// One line of a money breakdown: a label, a figure, and the bottom line in bold. Used by the
+// release card's two columns so the arithmetic reads as arithmetic rather than as a sentence.
+function MoneyLine({ label, value, strong, color }) {
+  return (
+    <div className="row" style={{ justifyContent: 'space-between', gap: 12, alignItems: 'baseline',
+      marginTop: strong ? 6 : 2, paddingTop: strong ? 6 : 0, borderTop: strong ? '1px solid var(--hairline,#E4E0D6)' : 'none' }}>
+      <span className={strong ? 'small' : 'small muted'} style={strong ? { fontWeight: 700, color: '#141B22' } : undefined}>{label}</span>
+      <span className="num" style={{ fontVariantNumeric: 'tabular-nums', fontWeight: strong ? 700 : 500, fontSize: strong ? 16 : undefined, color: strong ? (color || '#141B22') : '#3A4550' }}>{value}</span>
+    </div>
+  );
+}
+
 const fmtDay = (v) => {   // MM/DD/YYYY (industry standard), shift-free for date-only values
   if (!v) return '—';
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v));
@@ -3473,6 +3485,12 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
             : (fees && Number(fees.projected_cents) > 0
               ? `+ ${usd(fees.projected_cents)} expected on draws not yet released`
               : (fees && fees.per_draw_cents != null ? `${usd(fees.per_draw_cents)} per draw` : undefined))} />
+        {/* WHAT ACTUALLY REACHES OUR BANK across this project — our fee less whatever the investor
+            keeps. Only on a file that has such a deal, so every other file's tiles are unchanged. */}
+        {totInvestorFee > 0 && (
+          <KpiTile label="Reaching our bank" value={usd(Math.max(0, totFee - totInvestorFee))} tone="gold"
+            sub={`after ${usd(totInvestorFee)} kept by the investor`} />
+        )}
         <KpiTile label="Net wired to borrower" value={usd(totNet)} tone="teal" sub="released" />
         {showRetainage && <KpiTile label="Retainage held" value={usd(retainage.holding_cents)} sub={retainage.released_cents > 0 ? `released ${usd2(retainage.released_cents)}` : 'held back'} />}
         {floorC > 0 && <KpiTile label="Out-of-pocket rehab" value={usd(floorC)} tone="gold" sub={oop && oop.remaining_cents > 0 ? `${usd2(oop.remaining_cents)} left before draws reimburse` : 'met — draws now reimburse'} />}
@@ -3568,23 +3586,38 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
         {!invOffer && investorFee && investorFee.hint && (
           <div className="small" style={{ color: 'var(--warning)', marginTop: 8 }}>{investorFee.hint}</div>
         )}
-        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginTop: 12, flexWrap: 'wrap', gap: 10 }}>
-          <div>
-            <div className="small">{floorC > 0 ? <>Reimbursable: <b>{usd2(reimbursableC)}</b> · </> : null}{pct > 0 ? <>Retainage held: <b>{usd2(retC)}</b> · </> : null}Borrower nets: <b style={{ fontSize: 16, color: 'var(--teal-br)' }}>{usd2(net)}</b></div>
-            {/* OUR side of the same fee. Deliberately on its own line under the borrower's figure:
-                the two never affect each other. It says what actually happens to our fee, which is
-                NOT the same thing on both kinds of release — when we release, nothing is deposited
-                to us at all; the wire is simply smaller by our fee. */}
-            {feeC > 0 && (
-              <div className="small muted" style={{ marginTop: 2 }}>
-                {weRelease
-                  ? <>Our fee <b>{usd2(feeC)}</b> stays out of this wire — we release the net, so there is nothing to collect afterwards.</>
-                  : <>Our fee {usd2(feeC)}{invCutC > 0 ? <> · {invBuyer} keeps <b>{usd2(Math.min(invCutC, feeC))}</b></> : null} · Coming to us from {invCutC > 0 ? invBuyer : 'the investor'}: <b style={{ color: 'var(--gold,#AE8746)' }}>{usd2(netFeeC)}</b></>}
-              </div>
-            )}
+        {/* WHERE EVERY DOLLAR OF THIS DRAW GOES, side by side (owner-directed 2026-08-13: "it should
+            be nicer and more visible to understand everything"). TWO separate sums that never touch
+            each other: the borrower is wired the approved amount less our fee (and retainage), and
+            OUR fee is separately split with the investor. Showing the subtraction rather than a
+            sentence is the whole point — the bottom line of each column is the number that moves. */}
+        <div style={{ marginTop: 12, display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))' }}>
+          <div className="dd-tablecard" style={{ padding: '10px 12px' }}>
+            <div className="dd-field-l" style={{ marginBottom: 4 }}>The borrower</div>
+            <MoneyLine label="Approved on this draw" value={usd2(approvedC || 0)} />
+            {floorC > 0 && oopHeldC > 0 && <MoneyLine label="Out of pocket (not reimbursed)" value={'\u2212 ' + usd2(oopHeldC)} />}
+            <MoneyLine label="Our draw fee" value={'\u2212 ' + usd2(feeC)} />
+            {pct > 0 && <MoneyLine label={`Retainage held (${pct}%)`} value={'\u2212 ' + usd2(retC)} />}
+            <MoneyLine label="Wired to the borrower" value={usd2(net)} strong color="var(--teal-br)" />
           </div>
+          <div className="dd-tablecard" style={{ padding: '10px 12px' }}>
+            <div className="dd-field-l" style={{ marginBottom: 4 }}>Our fee</div>
+            <MoneyLine label="Charged on this draw" value={usd2(feeC)} />
+            {invCutC > 0 && <MoneyLine label={`${invBuyer} keeps`} value={'\u2212 ' + usd2(Math.min(invCutC, feeC))} />}
+            <MoneyLine label={weRelease ? 'Stays with us out of the wire' : 'Reaching our bank'}
+              value={usd2(netFeeC)} strong color="var(--gold,#AE8746)" />
+            <div className="small muted" style={{ marginTop: 4 }}>
+              {weRelease
+                ? 'We release the net, so this never arrives separately \u2014 the wire is simply smaller by our fee.'
+                : (invCutC > 0
+                  ? `${invBuyer} takes their cut out of our fee and sends us the rest.`
+                  : 'The investor collects our fee out of the draw and sends it to us.')}
+            </div>
+          </div>
+        </div>
+        <div className="row" style={{ justifyContent: 'flex-end', alignItems: 'center', marginTop: 12, flexWrap: 'wrap', gap: 10 }}>
           <button className="btn btn-sm primary" disabled={busy || !f.sitewire_draw_id || approvedC == null || approvedC <= 0 || net < 0 || !figuresMatch || invOverFee}
-            title={!figuresMatch && f.sitewire_draw_id ? 'The approved amount and our fee must match the draw first' : (invOverFee ? 'The investor’s cut can’t be more than our fee' : undefined)} onClick={save}>Record release</button>
+            title={!figuresMatch && f.sitewire_draw_id ? 'The approved amount and our fee must match the draw first' : (invOverFee ? 'The investor\u2019s cut can\u2019t be more than our fee' : undefined)} onClick={save}>Record release</button>
         </div>
         {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}
       </div>

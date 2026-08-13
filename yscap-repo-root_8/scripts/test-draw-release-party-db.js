@@ -160,9 +160,74 @@ const n = (x) => Number(x || 0);
       (await RP.setTreatAsSold(db, orphan, { on: true })).reason, 'no_draw_project');
     await db.query(`DELETE FROM applications WHERE id=$1`, [orphan]);
 
+    // OUR OWN PURCHASING DESK'S RECORD IS ALSO PROOF (owner-reported 2026-08-13). With Encompass
+    // still blank, an advice recorded by our purchasing team sells the loan for the draw desk too —
+    // this is the bug where a file sold two weeks earlier kept reading as "not sold" until somebody
+    // pressed Refresh. Proven against the REAL table the purchasing screen writes.
+    await setLevel('investor_funding_mode', 'investor_direct');
+    await db.query(
+      `INSERT INTO purchasing_advice (application_id, advice_date) VALUES ($1,'2026-07-31')
+       ON CONFLICT (application_id) DO UPDATE SET advice_date=EXCLUDED.advice_date`, [app]);
+    const ours = await RP.releaseStateFor(db, app);
+    eq('2s our own recorded purchase advice sells the loan', ours.sold, 'sold');
+    eq('2t …attributed to the desk that recorded it', ours.soldVia, 'our_purchase_advice');
+    eq('2u …so the file releases the way it is set, with nobody pressing anything',
+      [ours.mode, ours.party], ['investor_direct', 'investor']);
+    eq('2v …and it carries no "not sold" badge', ours.badge, null);
+    eq('2w …and reports the date it actually holds', ours.paDate, '2026-07-31');
+    await db.query(`DELETE FROM purchasing_advice WHERE application_id=$1`, [app]);
+    eq('2x removing it puts the file back on "we release"', (await RP.releaseStateFor(db, app)).mode, 'reimbursement');
+
     // Put the sale back for everything below.
     await db.query(`UPDATE applications SET purchase_advice_date='2026-03-04' WHERE id=$1`, [app]);
     await setLevel('investor_funding_mode', null);
+  }
+
+  // ======================================================================
+  // 2B. THE SOLD SIGNAL REFRESHES ITSELF — no Refresh button
+  //     (owner-reported 2026-08-13: "it was sold more than two weeks ago. Why
+  //      did we need to click the Refresh button?")
+  // ======================================================================
+  {
+    // A stub Encompass client, so the whole path is provable with no network and no credentials.
+    // It records exactly what was asked for, which is half the point: this must read ONE field,
+    // not the whole loan, or it would be as expensive as the poll it exists to get ahead of.
+    const asked = [];
+    const stub = (value) => ({ configured: () => true,
+      readFields: async (guid, ids) => { asked.push({ guid, ids }); return { [String(ids[0])]: value }; } });
+
+    await db.query(`UPDATE applications SET purchase_advice_date=NULL, encompass_loan_guid='guid-abc' WHERE id=$1`, [app]);
+    await db.query(`UPDATE sitewire_property_links SET sold_check_at=NULL WHERE application_id=$1`, [app]);
+    eq('2y before the check the file reads as not sold', (await RP.releaseStateFor(db, app)).sold, 'not_sold');
+
+    const r1 = await RP.refreshSoldSignal(db, app, { sold: 'not_sold', client: stub('07/31/2026') });
+    eq('2z the check runs and lands the date', [r1.checked, r1.paDate, r1.changed], [true, '2026-07-31', true]);
+    eq('2z1 …reading ONE field by number, not the whole loan', asked.length && asked[0].ids.length, 1);
+    eq('2z2 …and the file now reads as sold, with nobody pressing anything',
+      (await RP.releaseStateFor(db, app)).sold, 'sold');
+
+    // The guards, each proven rather than assumed.
+    eq('2z3 a file that is already sold is never looked up at all',
+      (await RP.refreshSoldSignal(db, app, { sold: 'sold', client: stub('07/31/2026') })).reason, 'already_sold');
+    await db.query(`UPDATE applications SET purchase_advice_date=NULL WHERE id=$1`, [app]);
+    eq('2z4 …and a second look inside the throttle window does not call Encompass again',
+      (await RP.refreshSoldSignal(db, app, { sold: 'not_sold', client: stub('07/31/2026') })).reason, 'checked_recently');
+    eq('2z5 …the stub was called exactly once across all of it', asked.length, 1);
+    ok('2z6 …and `force` still gets through for the manual button',
+      (await RP.refreshSoldSignal(db, app, { sold: 'not_sold', force: true, client: stub('07/31/2026') })).checked === true);
+
+    // A file with no loan GUID must never trigger a pipeline SEARCH — that is the expensive path
+    // the round-robin poll owns.
+    await db.query(`UPDATE applications SET encompass_loan_guid=NULL, purchase_advice_date=NULL WHERE id=$1`, [app]);
+    eq('2z7 a file with no cached loan id is left to the ordinary poll',
+      (await RP.refreshSoldSignal(db, app, { sold: 'not_sold', force: true, client: stub('07/31/2026') })).reason, 'no_loan_guid');
+    // A read that throws must leave the answer where it was, never break the desk.
+    await db.query(`UPDATE applications SET encompass_loan_guid='guid-abc' WHERE id=$1`, [app]);
+    const bad = { configured: () => true, readFields: async () => { throw new Error('Encompass is down'); } };
+    eq('2z8 a failing read is swallowed, with a reason', (await RP.refreshSoldSignal(db, app, { sold: 'not_sold', force: true, client: bad })).checked, false);
+    eq('2z9 …and the file is unchanged by it', (await RP.releaseStateFor(db, app)).sold, 'not_sold');
+
+    await db.query(`UPDATE applications SET purchase_advice_date='2026-03-04' WHERE id=$1`, [app]);
   }
 
   // ======================================================================
