@@ -500,6 +500,14 @@ async function getClosingWorkspace(appId, client) {
     notes,
     reconciliation,
     warehouses: WAREHOUSES,
+    /* THE NAME OF THE TABLE-FUNDING LINE, sent rather than spelled in the client
+       (owner-directed 2026-08-13). The Sign-offs panel now offers "Mark table
+       funded" directly, and that button has to write the warehouse — the ONE thing
+       that decides `table_funded`. A hard-coded 'Table Funding' in the client would
+       be a second copy of this constant that silently stops matching the day the
+       line is renamed, leaving a button that writes an unrecognised warehouse and a
+       file that never reads as table funded. */
+    tableFundingWarehouse: TABLE_FUNDING,
     // THE USUAL ANSWER FOR THIS NOTE BUYER — a SUGGESTION for the closer, never a decision
     // (owner-directed 2026-08-09: "most of the properties that have Fidelis as a note buyer should
     // be defaulted to table funding … but there are a few Fidelis deals that are not being table
