@@ -1026,14 +1026,14 @@ module.exports = {
   // Credentials come from Render env ONLY (never source, never chat). CoreLogic/the
   // vendor provide: the OAuth client id/secret (GetToken), the DoLogin account
   // id/password, the ServiceProviderSubDomain and the DigitalGatewayLenderIdentifier
-  // (a CoreLogic reporting id / GGID). The sourceClientIdentifier (AMC_SOURCE_CLIENT_ID)
-  // is OPTIONAL — the vendor (Tony Pham, 2026-08-11) confirmed this tenant has none, and
-  // the order builder omits it when unset. It is NOT what the gateway means by
-  // `client_displayed_id`: that is the "Client Displayed on Report" (the client/lender
-  // alias printed ON the report), which comes from the tenant's own GetClientDisplayOnReport
-  // list and is emitted as a deal party partyRoleType="Lender" (see src/amc/cdg.js). The
-  // order builder auto-selects it when the account has exactly one such profile; set
-  // AMC_CLIENT_DISPLAYED_ID only to pin a specific one when the account has several.
+  // (a CoreLogic reporting id / GGID). AppraisalScope's REQUIRED `client_displayed_id` (the
+  // "Client Displayed on Report" printed ON the appraisal) is carried on the wire as
+  // message.clientSystem.sourceInformation.sourceClientIdentifier — the vendor's own
+  // createappraisal sample + field mapping confirm this; the id is one of the tenant's
+  // GetClientDisplayOnReport profiles (e.g. 267/297). AMC_CLIENT_DISPLAYED_ID pins that id
+  // directly; otherwise the order builder resolves it from the account's
+  // GetClientDisplayOnReport list (the sole profile, or the one matching the default name
+  // "YS Capital Group"). AMC_SOURCE_CLIENT_ID is a legacy fallback for the SAME field.
   // Nothing talks to the AMC until AMC_ENABLED=1 and these are set.
   amc: {
     enabled:        process.env.AMC_ENABLED === '1',            // master (default OFF)
@@ -1075,15 +1075,18 @@ module.exports = {
     // ---- required message identifiers (provided by CoreLogic / the vendor) ----
     subdomain:       process.env.AMC_SUBDOMAIN || null,        // ServiceProviderSubDomain (e.g. integrations.uat)
     lenderIdentifier: process.env.AMC_LENDER_IDENTIFIER || null, // DigitalGatewayLenderIdentifier (CoreLogic reporting id)
-    sourceClientId:  process.env.AMC_SOURCE_CLIENT_ID || null, // clientSystem.sourceInformation.sourceClientIdentifier (OPTIONAL)
-    // The "Client Displayed on Report" (AppraisalScope's REQUIRED client_displayed_id) — the
-    // client/lender name printed ON the appraisal report. Two knobs, both optional:
-    //   AMC_CLIENT_DISPLAYED_ID   — pin a specific id (skips all lookup/name resolution).
+    sourceClientId:  process.env.AMC_SOURCE_CLIENT_ID || null, // legacy fallback for sourceClientIdentifier (= client_displayed_id)
+    // The "Client Displayed on Report" (AppraisalScope's REQUIRED client_displayed_id, sent as
+    // sourceClientIdentifier — see the note above). Two knobs:
+    //   AMC_CLIENT_DISPLAYED_ID   — pin the exact id (skips all lookup/name resolution). Set
+    //                               this to the tenant's real GetClientDisplayOnReport id when
+    //                               the account has several profiles or the list can't be read.
     //   AMC_CLIENT_DISPLAYED_NAME — the DEFAULT client-on-report name (owner-directed:
     //                               "by default it should always be YS Capital Group").
-    // The order builder resolves the id from the account's GetClientDisplayOnReport list by
-    // matching this name; if the list has just one profile it uses that; if the list can't
-    // be read it sends this name so the order is never blocked for a missing value.
+    // The order builder resolves the id from the account's GetClientDisplayOnReport list (the
+    // sole profile, or the one matching this name). The gateway REQUIRES a numeric id — a name
+    // alone cannot satisfy it — so if no id resolves and none is pinned, the order is refused
+    // with a clear message rather than sent to fail at the vendor.
     clientDisplayedId: process.env.AMC_CLIENT_DISPLAYED_ID || null,
     clientDisplayedName: process.env.AMC_CLIENT_DISPLAYED_NAME || 'YS Capital Group',
 

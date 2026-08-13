@@ -124,20 +124,20 @@ const ctx = {
   ok(picked.clientDisplayedId === '512' && picked.clientDisplayedName === 'YS Capital Group LLC',
     'a pinned id from the picker carries that profile’s own name');
 
-  // NAME-DEFAULT: the account's list can't be read, so only the default name is known. The
-  // order is NOT blocked — the name is sent as the client shown on the report (owner-directed
-  // default "YS Capital Group") and surfaced as an assumption.
+  // NAME-DEFAULT: the account's list can't be read, so only the default NAME is known and no id
+  // resolved. The gateway REQUIRES a numeric client_displayed_id, so a name alone cannot satisfy
+  // it — the order is BLOCKED with a plain message (fix the account / pin AMC_CLIENT_DISPLAYED_ID)
+  // rather than sent to fail at the vendor. It is NOT shown as a satisfied assumption.
   const nameOnly = ob.buildOrderSpec(
     { ...ctx, clientDisplayedId: null, clientDisplayedName: 'YS Capital Group', clientDisplayedSource: 'name_default' },
     { productCode: '5' });
-  ok(!ob.missingRequired(nameOnly).includes('the client shown on the appraisal report'),
-    'a name-default client-displayed is NOT blocked (the default name is sent)');
-  ok(nameOnly.clientDisplayedName === 'YS Capital Group', 'the default client-displayed name is carried');
+  ok(ob.missingRequired(nameOnly).includes('the client shown on the appraisal report'),
+    'a name-only client-displayed (no id) is BLOCKED — the gateway requires the numeric id');
   const nameAssumptions = ob.orderAssumptions(
     { ...ctx, clientDisplayedId: null, clientDisplayedName: 'YS Capital Group', clientDisplayedSource: 'name_default' },
     { productCode: '5' }, {}, nameOnly);
-  ok(nameAssumptions.some((a) => a.field === 'clientDisplayedId' && /YS Capital Group/.test(a.value)),
-    'the default client-displayed name is shown as an assumption');
+  ok(!nameAssumptions.some((a) => a.field === 'clientDisplayedId'),
+    'a name-only client-displayed is NOT shown as a satisfied assumption (no id resolved)');
 
   // MULTIPLE with no default match: neither an id nor a name is resolvable (the picker
   // chooses) → blocked, so the wrong company can never print on the report.
@@ -182,7 +182,8 @@ const ctx = {
   ok(msg.deals[0].borrowers[0].firstName === 'Peter', 'e2e: borrower on the wire');
   ok(msg.deals[0].appraisers[0].identifier === '426', 'e2e: preferred AMC on the wire');
   ok(msg.deals[0].parties.some((p) => p.partyRoleType === 'BestContact' && p.partyRoleTypeOtherDescription === 'Borrower'), 'e2e: best contact (primary_contact) on the wire');
-  ok(msg.deals[0].parties.some((p) => p.partyRoleType === 'Lender' && p.partyRoleIdentifier === '297'), 'e2e: client-displayed-on-report (client_displayed_id) on the wire');
+  ok(msg.clientSystem.sourceInformation.sourceClientIdentifier === '297', 'e2e: client_displayed_id on the wire via sourceClientIdentifier (resolved id wins over config)');
+  ok(!msg.deals[0].parties.some((p) => p.partyRoleType === 'Lender'), 'e2e: no Lender party is emitted for client_displayed_id');
   ok(msg.deals[0].properties[0].purchasePriceAmount === '400000.00', 'e2e: purchase price amount (purchase_amount) on the wire');
 }
 
