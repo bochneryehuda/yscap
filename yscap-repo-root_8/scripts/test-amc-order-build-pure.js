@@ -83,9 +83,10 @@ const ctx = {
   ok(co.primaryContact.fullName === 'Mary Jane', 'best-contact Co-Borrower resolves to the secondary borrower');
   ok(co.primaryContact.phone === '555-5', 'and carries the co-borrower’s own reach');
 
-  // No property value (a refinance with nothing on file, or a blank price) → flagged.
-  const noVal = ob.buildOrderSpec({ ...ctx, property: { ...ctx.property, salesContractAmount: null } }, { productCode: '5' });
-  ok(ob.missingRequired(noVal).includes('purchase price or property value'), 'a missing purchase/property value is flagged, not sent');
+  // On a purchase (ctx is a purchase), a missing purchasePriceAmount — NAN's required
+  // purchase_amount — is flagged, not silently sent. (salesContractAmount is separate/optional.)
+  const noVal = ob.buildOrderSpec({ ...ctx, property: { ...ctx.property, purchasePriceAmount: null } }, { productCode: '5' });
+  ok(ob.missingRequired(noVal).includes('purchase price'), 'a missing purchase price is flagged, not sent');
 
   // A main contact with no phone AND no email → the vendor cannot build primary_contact.
   const noReach = ob.buildOrderSpec({ ...ctx, borrowers: [{ firstName: 'A', lastName: 'B' }] }, { productCode: '5' });
@@ -168,6 +169,78 @@ const ctx = {
   const ent = ob.buildOrderSpec({ loanNumber: 'L', property: { category: 'SFR', addressLine: 'a', city: 'c', state: 'NY', postalCode: '1' }, borrowers: [{ entityName: 'Acme LLC' }] }, { productCode: '5' });
   const em = ob.missingRequired(ent);
   ok(!em.includes('borrower first name') && !em.includes('borrower last name'), 'entity-only borrower satisfies name requirement');
+}
+
+// ---- estimated closing date: OPTIONAL, but omit a past/blank value (never fabricate) ----
+// AppraisalScope rejects a PAST estimatedClosingDate but the field is optional, so we send it
+// only when it is today-or-later and OMIT it otherwise. today injected for determinism.
+{
+  const T = '2026-08-13';
+  // orderClosingDate → the value to SEND (or null to omit)
+  ok(ob.orderClosingDate('2026-09-15', { today: T }) === '2026-09-15', 'closing: future date sent as-is');
+  ok(ob.orderClosingDate('2026-08-13', { today: T }) === '2026-08-13', 'closing: exactly-today sent (>= current date)');
+  ok(ob.orderClosingDate('2026-08-01', { today: T }) === null, 'closing: PAST date omitted (null), never fabricated');
+  ok(ob.orderClosingDate(null, { today: T }) === null, 'closing: null → omitted');
+  ok(ob.orderClosingDate('', { today: T }) === null, 'closing: empty → omitted');
+  ok(ob.orderClosingDate('not-a-date', { today: T }) === null, 'closing: garbage → omitted');
+  ok(ob.orderClosingDate(20260901, { today: T }) === null, 'closing: non-string → omitted');
+
+  // closingDateStatus → how the preview classifies the file's date
+  ok(ob.closingDateStatus('2026-09-15', { today: T }) === 'ok', 'status: future → ok');
+  ok(ob.closingDateStatus('2026-08-13', { today: T }) === 'ok', 'status: today → ok');
+  ok(ob.closingDateStatus('2026-08-01', { today: T }) === 'stale', 'status: past → stale');
+  ok(ob.closingDateStatus(null, { today: T }) === 'none', 'status: null → none');
+  ok(ob.closingDateStatus('', { today: T }) === 'none', 'status: empty → none');
+  ok(ob.closingDateStatus('not-a-date', { today: T }) === 'none', 'status: garbage → none');
+
+  // buildOrderSpec applies it at the one chokepoint. NOTE the signature is
+  // buildOrderSpec(ctx, form, opts) — `today` is injected via opts (3rd arg) for determinism.
+  const base = { loanNumber: 'L', loanPurpose: 'Purchase', property: { category: 'SFR', addressLine: 'a', city: 'c', state: 'NY', postalCode: '1', purchasePriceAmount: 400000 }, borrowers: [{ firstName: 'A', lastName: 'B' }] };
+  const F = { productCode: '5' };
+  ok(ob.buildOrderSpec({ ...base, estimatedClosingDate: '2026-08-01' }, F, { today: T }).loan.estimatedClosingDate === null, 'spec: past file date omitted');
+  ok(ob.buildOrderSpec({ ...base, estimatedClosingDate: '2026-09-15' }, F, { today: T }).loan.estimatedClosingDate === '2026-09-15', 'spec: future file date kept');
+  ok(ob.buildOrderSpec({ ...base, estimatedClosingDate: null }, F, { today: T }).loan.estimatedClosingDate === null, 'spec: missing file date → null (omit)');
+  // a staff-pinned future date wins; a staff-pinned past date is omitted too
+  ok(ob.buildOrderSpec({ ...base, estimatedClosingDate: '2026-08-01' }, F, { today: T, estimatedClosingDate: '2026-10-01' }).loan.estimatedClosingDate === '2026-10-01', 'spec: staff override (future) wins');
+  ok(ob.buildOrderSpec({ ...base, estimatedClosingDate: '2026-09-15' }, F, { today: T, estimatedClosingDate: '2020-01-01' }).loan.estimatedClosingDate === null, 'spec: staff override (past) omitted');
+
+  // the wire message OMITS the field entirely when there is no valid future date...
+  const wmNone = cdg.buildCreateAppraisal(ob.buildOrderSpec({ ...base, estimatedClosingDate: '2026-08-01' }, F, { today: T }), { apiKey: 'K', subdomain: 's', lenderIdentifier: 'G' }).message;
+  ok(!('estimatedClosingDate' in wmNone.deals[0].loans[0]), 'e2e: past date → estimatedClosingDate absent from the loan block');
+  // ...and carries it when the file has a valid future date
+  const wmOk = cdg.buildCreateAppraisal(ob.buildOrderSpec({ ...base, estimatedClosingDate: '2026-09-15' }, F, { today: T }), { apiKey: 'K', subdomain: 's', lenderIdentifier: 'G' }).message;
+  ok(wmOk.deals[0].loans[0].estimatedClosingDate === '2026-09-15', 'e2e: future date on the wire');
+
+  // the preview WARNS on a stale closing date (owner-directed), stays quiet on a missing one
+  const ctxStale = { ...base, estimatedClosingDate: '2026-07-27', propertyCategory: 'SFR' };
+  const aStale = ob.orderAssumptions(ctxStale, F, { today: T });
+  const warn = aStale.find((x) => x.field === 'estimatedClosingDate');
+  ok(warn && warn.warn === true && warn.value === '2026-07-27', 'preview: stale closing date raises a visible warning');
+  const aFuture = ob.orderAssumptions({ ...base, estimatedClosingDate: '2026-09-15' }, F, { today: T });
+  ok(!aFuture.some((x) => x.field === 'estimatedClosingDate'), 'preview: a valid future date raises no warning');
+  const aNone = ob.orderAssumptions({ ...base, estimatedClosingDate: null }, F, { today: T });
+  ok(!aNone.some((x) => x.field === 'estimatedClosingDate'), 'preview: a missing date is silently omitted (no warning)');
+}
+
+// ---- purchase preflight requires purchasePriceAmount (NAN's purchase_amount), not sales price ----
+{
+  const F = { productCode: '5' };
+  const buyBase = { loanNumber: 'L', loanPurpose: 'Purchase', property: { category: 'SFR', titleCategory: 'Single Family', addressLine: 'a', city: 'c', state: 'NY', postalCode: '1' }, borrowers: [{ firstName: 'A', lastName: 'B' }], clientDisplayedId: '199384', parties: { bestContact: 'Borrower' }, primaryContact: { phone: '5551212' } };
+  // a PURCHASE missing purchasePriceAmount is flagged — even if salesContractAmount is present
+  const missNoPP = ob.missingRequired(ob.buildOrderSpec({ ...buyBase, property: { ...buyBase.property, salesContractAmount: 400000 } }, F, {}));
+  ok(missNoPP.includes('purchase price'), 'preflight: purchase w/ salesContractAmount but no purchasePriceAmount is still flagged');
+  // a PURCHASE with purchasePriceAmount is satisfied
+  const missOk = ob.missingRequired(ob.buildOrderSpec({ ...buyBase, property: { ...buyBase.property, purchasePriceAmount: 400000 } }, F, {}));
+  ok(!missOk.includes('purchase price'), 'preflight: purchase w/ purchasePriceAmount passes');
+  // a REFINANCE does NOT require purchase_amount
+  const missRefi = ob.missingRequired(ob.buildOrderSpec({ ...buyBase, loanPurpose: 'Refinance', property: { ...buyBase.property, purchasePriceAmount: null } }, F, {}));
+  ok(!missRefi.includes('purchase price'), 'preflight: refinance does not require purchase price');
+  // a BLANK/unknown loan purpose is treated as a purchase (mirrors loadContext isPurchase), so
+  // a missing purchase price is still flagged — closing the gap where a blank loan_type slips through.
+  const missBlank = ob.missingRequired(ob.buildOrderSpec({ ...buyBase, loanPurpose: null, property: { ...buyBase.property, purchasePriceAmount: null } }, F, {}));
+  ok(missBlank.includes('purchase price'), 'preflight: blank loan purpose (treated as purchase) still requires purchase price');
+  const missBlankOk = ob.missingRequired(ob.buildOrderSpec({ ...buyBase, loanPurpose: null, property: { ...buyBase.property, purchasePriceAmount: 400000 } }, F, {}));
+  ok(!missBlankOk.includes('purchase price'), 'preflight: blank loan purpose with a purchase price passes');
 }
 
 // ---- end to end: auto-filled spec → valid CreateAppraisal wire message ----
