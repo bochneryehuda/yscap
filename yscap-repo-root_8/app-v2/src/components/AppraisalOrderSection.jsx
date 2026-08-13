@@ -21,9 +21,14 @@ import OrderFailure, { parseOrderFailure } from './OrderFailure.jsx';
  * which resolves LIGHT in this portal) — per the white-first HARD RULE.
  */
 
-const INK = '#141B22', MUTED = '#4B585C', SOFT = '#636B6E', LINE = '#E7E1D4', GOLD = '#AE8746', TEAL = '#2F7F86';
+// Airy, modern palette. Text is always an explicit dark hex (INK primary, MUTED
+// secondary, SOFT tertiary) on the white canvas — never a var(--ink*) token,
+// which resolves LIGHT in this portal. LINE is a whisper border; surfaces are
+// warm-white so nested content reads as a soft panel, not a boxed-in block.
+const INK = '#141B22', MUTED = '#54606C', SOFT = '#8A93A0', LINE = '#EFEADF', GOLD = '#AE8746', TEAL = '#2F7F86';
+const SURFACE = '#FBF9F4';                    // warm-white inner panel (matches .aord-inner)
 const BAD = '#B4453B', GOOD = '#1E7B4F';
-// Amber caution palette (from AmcAppraisalPanel) — dark amber text on a light amber card, AA on white.
+// Amber caution palette — dark amber text on a light amber card, AA on white.
 const WARN = '#9A3412', WARN_BG = '#FDF4E7', WARN_LINE = '#EAD4AE';
 
 function money(n) { return n == null ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'); }
@@ -174,40 +179,40 @@ export default function AppraisalOrderSection({ appId, onChanged }) {
   const selectedCfg = vendor === 'nan' ? nanCfg : classCfg;
   const adapter = ADAPTERS[vendor];
 
-  if (loading) return <div style={{ color: MUTED, padding: 12 }}>Loading the appraisal order…</div>;
+  if (loading) return <div style={{ color: MUTED, padding: '8px 2px', fontSize: 13 }}>Loading the appraisal order…</div>;
 
   return (
-    <div style={{ color: INK }}>
-      {/* ── Order builder card: header (title + vendor selector + status chip) + the
-             selected vendor's builder body. */}
-      <div className="act-card is-open">
-        <div className="act-card-head" style={{ flexWrap: 'wrap', gap: 10 }}>
-          <div style={{ minWidth: 0 }}>
-            <div className="act-card-title">New appraisal order</div>
-            <div className="act-card-sub">
-              Order directly from the vendor with every field filled in and shown to you first — pick which one handles this file. Neither is the default.
+    <div className="aord">
+      {/* ── Active orders first (both vendors, newest first) — the live work is
+             what matters; the builder sits quietly below it. */}
+      {active.length ? (
+        <>
+          <div className="aord-eyebrow" style={{ marginTop: 0 }}>Active {active.length > 1 ? 'orders' : 'order'}</div>
+          {active.map((o) => (
+            <ActiveOrderCard key={o._vendor + ':' + o.id} order={o} appId={appId} card={card}
+              onChanged={afterChange} onPay={setPayFor} />
+          ))}
+        </>
+      ) : null}
+
+      {/* ── Order builder: a soft card. Header (title + vendor selector) + the
+             connection line + the selected vendor's builder body. */}
+      <div className="aord-card">
+        <div className="aord-h">
+          <div className="grow">
+            <div className="aord-title">{active.length ? 'Order another appraisal' : 'Order an appraisal'}</div>
+            <div className="aord-sub">
+              Filled in from the file and shown to you before anything is sent. Pick which vendor handles it.
             </div>
+            <VendorStatusChip cfg={selectedCfg} />
           </div>
           <VendorSelector vendor={vendor} onPick={setVendor} />
         </div>
-
-        <VendorStatusChip cfg={selectedCfg} />
 
         {vendor === 'nan'
           ? <NanBuilder appId={appId} cfg={nanCfg} onPlaced={afterChange} />
           : <ClassBuilder appId={appId} cfg={classCfg} onPlaced={afterChange} />}
       </div>
-
-      {/* ── Active orders (both vendors, newest first). Open by default. */}
-      {active.length ? (
-        <div style={{ marginTop: 16 }}>
-          <SectionTitle>Active orders</SectionTitle>
-          {active.map((o) => (
-            <ActiveOrderCard key={o._vendor + ':' + o.id} order={o} appId={appId} card={card}
-              onChanged={afterChange} onPay={setPayFor} />
-          ))}
-        </div>
-      ) : null}
 
       {/* ── ONE collapsed drawer for drafts + failed + closed, across both vendors. */}
       {drawerCount ? (
@@ -216,7 +221,7 @@ export default function AppraisalOrderSection({ appId, onChanged }) {
       ) : null}
 
       {!active.length && !drawerCount ? (
-        <div style={{ marginTop: 14, color: MUTED, fontSize: 13 }}>No appraisal orders on this file yet.</div>
+        <div className="aord-empty">No appraisal orders on this file yet — build one above.</div>
       ) : null}
 
       {payFor ? (
@@ -252,9 +257,9 @@ function VendorStatusChip({ cfg }) {
     }
   }
   return (
-    <span className="dd-chip" style={{ marginTop: 8 }}>
-      <span className="dot" style={{ background: dot }} />
-      <span style={{ color: INK }}>{text}</span>
+    <span className="aord-conn">
+      <span className="d" style={{ background: dot }} />
+      {text}
     </span>
   );
 }
@@ -339,9 +344,9 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound, formValue, onP
   const cdorName = (cdorOptions.find((o) => String(o.id) === cdorCode) || {}).name || ctx.clientDisplayedName || null;
   const needsCdorPick = !cdorCode && cdorOptions.length > 1;
   return (
-    <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 12 }}>
+    <div className="aord-inner">
       <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 11, color: MUTED, textTransform: 'uppercase', letterSpacing: 0.3 }}>Form</div>
+        <div className="aord-eyebrow" style={{ margin: '0 0 3px' }}>Form</div>
         <div style={{ fontWeight: 600, color: INK, marginTop: 2 }}>
           {chosenName || (code ? 'Form #' + code : 'No default for this deal — pick one below')}
           {code ? <span style={{ color: MUTED, fontWeight: 400 }}> · #{code}</span> : null}
@@ -419,15 +424,15 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound, formValue, onP
         </details>
       ) : null}
 
-      <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-        <button className="btn soft" disabled={busy} onClick={onDraft}>Save draft</button>
-        <button className="btn primary" disabled={busy || missing.length > 0 || !outbound} onClick={onPlace}
+      <div className="aord-acts">
+        <button className="aord-btn" disabled={busy} onClick={onDraft}>Save draft</button>
+        <button className="aord-btn pri" disabled={busy || missing.length > 0 || !outbound} onClick={onPlace}
           title={!outbound ? 'Turn on sending to the AMC first' : (missing.length ? 'Fill in what’s still needed' : '')}>
-          {busy ? 'Working…' : 'Place order · AppraisalScope / NAN'}
+          {busy ? 'Working…' : 'Place order'}
         </button>
       </div>
       {!outbound ? (
-        <div className="dd-notes"><div className="dd-note warn">Sending to the AMC is off — you can save a draft now and place it once it’s turned on.</div></div>
+        <div style={{ marginTop: 10 }}><Banner tone="warn">Sending to the AMC is off — you can save a draft now and place it once it’s turned on.</Banner></div>
       ) : null}
     </div>
   );
@@ -786,16 +791,16 @@ function PlaceOrder({ cfg, canPlace, busy, onPlace, uad, derivedCount }) {
       : !outbound ? { title: 'This is ready — but sending to Class is still switched off.', help: 'To actually send it, turn ON “Place appraisal orders with Class Valuation (write)” on the API Health page. The reading switch on its own does NOT send orders.' }
         : null;
   return (
-    <div style={{ marginTop: 14, borderTop: `1px solid ${LINE}`, paddingTop: 12 }}>
+    <div style={{ marginTop: 16, borderTop: `1px solid ${LINE}`, paddingTop: 14 }}>
       {derivedCount ? (
         <div style={{ fontSize: 13, color: '#856529', marginBottom: 8 }}>
           {derivedCount === 1 ? 'One value was' : `${derivedCount} values were`} worked out by PILOT rather than read off the file. Please read {derivedCount === 1 ? 'it' : 'them'} above before ordering — you can change {derivedCount === 1 ? 'it' : 'them'} on the spot.
         </div>
       ) : null}
-      <button className="btn primary" disabled={busy || !!block} onClick={onPlace} title={block ? block.title : ''}>
-        {busy ? 'Working…' : dry ? 'Build the order · Class (test mode — nothing is sent)' : 'Place order · Class'}
+      <button className="aord-btn pri" disabled={busy || !!block} onClick={onPlace} title={block ? block.title : ''}>
+        {busy ? 'Working…' : dry ? 'Build the order (test mode — nothing is sent)' : 'Place order'}
       </button>
-      <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>Goes out on their {uad} form.</div>
+      <div style={{ marginTop: 8, fontSize: 12, color: MUTED }}>Goes out on their {uad} form.</div>
       {block ? <WhyBox title={block.title}>{block.help}</WhyBox>
         : dry ? <WhyBox title="Test mode is on — this button will NOT send anything.">To place the order for real, turn OFF “Class Valuation orders — TEST MODE” on the API Health page.</WhyBox>
           : <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>This costs money and sends an appraiser to the property.</div>}
@@ -822,54 +827,48 @@ function ActiveOrderCard({ order, appId, card, onChanged, onPay }) {
   if (order.appointment_date) numberBits.push('inspection ' + fmtDate(order.appointment_date));
   if (order.dryrun) numberBits.push('test');
 
+  const statusLabel = STATUS_LABEL[order.status] || order.status;
+  const sc = statusColor(order.status);
+
   return (
-    <div className="aord-active" style={{ marginBottom: 12 }}>
-      <div className="act-card is-open" style={{ marginBottom: 0 }}>
-        <div className="act-card-head" style={{ flexWrap: 'wrap', gap: 8 }}>
-          <div style={{ minWidth: 0 }}>
-            <div className="act-card-title">
-              {ad.orderTitle(order)}{order._vendor === 'class' && order.uad ? ` · UAD ${order.uad}` : ''}
-            </div>
-            <div className="act-card-sub">{numberBits.join(' · ')}</div>
+    <div className="aord-card">
+      {/* Header: vendor tag · title/details · status pill */}
+      <div className="aord-h">
+        <span className={'aord-tag ' + order._vendor}><span className="d" />{ad.stamp}</span>
+        <div className="grow">
+          <div className="aord-title">
+            {ad.orderTitle(order)}{order._vendor === 'class' && order.uad ? ` · UAD ${order.uad}` : ''}
           </div>
-          <span style={{ border: `1px solid ${statusColor(order.status)}`, color: statusColor(order.status), borderRadius: 999, padding: '2px 9px', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>
-            {STATUS_LABEL[order.status] || order.status}
-          </span>
+          <div className="aord-sub">{numberBits.join(' · ')}</div>
         </div>
+        <span className="aord-pill" style={{ background: sc + '18', color: sc }}>{statusLabel}</span>
+      </div>
 
-        <StatusTimeline ms={ms} order={order} asks={order._asks} />
+      <StatusTimeline ms={ms} order={order} asks={order._asks} />
 
-        <button className="btn soft" style={{ marginTop: 8 }} onClick={() => setShowDetails((v) => !v)}>
+      {/* Quiet action row: communicate · pay · cancel */}
+      <div className="aord-acts">
+        <button className="aord-btn" onClick={() => toggle('messages')} aria-pressed={open === 'messages'}>
+          Messages{order._vendor === 'class' && order._unread ? <span className="n">{order._unread}</span> : null}
+        </button>
+        <button className="aord-btn" onClick={() => toggle('documents')} aria-pressed={open === 'documents'}>Documents</button>
+        <button className="aord-btn" onClick={() => toggle('revision')} aria-pressed={open === 'revision'}>Revision</button>
+        <span className="sep" />
+        {paid ? (
+          <button className="aord-btn paid" onClick={() => onPay(order)}>Paid ✓{card && card.last4 ? ` · ••${card.last4}` : ''}</button>
+        ) : (
+          <button className="aord-btn pri" onClick={() => onPay(order)}>{fee != null ? `Pay ${money(fee)}` : 'Pay'}</button>
+        )}
+        {ad.canCancel(order) ? <NanCancelButton orderId={order.id} onChanged={onChanged} /> : null}
+        <button className="aord-more" style={{ marginLeft: 'auto' }} onClick={() => setShowDetails((v) => !v)}>
           {showDetails ? 'Hide details' : 'Details'}
         </button>
-        {showDetails ? <WhatWasOrdered order={order} fee={fee} /> : null}
-
-        <div className="act-bar">
-          <div className="act-group">
-            <span className="act-label">Communicate</span>
-            <button className="btn soft" onClick={() => toggle('messages')}>
-              Messages{order._vendor === 'class' && order._unread ? ` (${order._unread})` : ''}
-            </button>
-            <button className="btn soft" onClick={() => toggle('documents')}>Documents</button>
-            <button className="btn soft" onClick={() => toggle('revision')}>Revision</button>
-          </div>
-          <span className="act-sep" />
-          <div className="act-group">
-            <span className="act-label">Payment</span>
-            {paid ? (
-              <button className="btn soft" onClick={() => onPay(order)}>Paid ✓{card && card.last4 ? ` · ••${card.last4}` : ''}</button>
-            ) : (
-              <button className="btn primary" onClick={() => onPay(order)}>{fee != null ? `Pay ${money(fee)}` : 'Pay'}</button>
-            )}
-            {ad.canCancel(order) ? <NanCancelButton orderId={order.id} onChanged={onChanged} /> : null}
-          </div>
-        </div>
-
-        {open === 'messages' ? <SubMessages order={order} appId={appId} onChanged={onChanged} /> : null}
-        {open === 'documents' ? <SubDocuments order={order} appId={appId} onChanged={onChanged} /> : null}
-        {open === 'revision' ? <SubRevision order={order} appId={appId} onChanged={onChanged} /> : null}
       </div>
-      <div className="aord-stamp"><b>{ad.stamp}</b></div>
+
+      {showDetails ? <WhatWasOrdered order={order} fee={fee} /> : null}
+      {open === 'messages' ? <SubMessages order={order} appId={appId} onChanged={onChanged} /> : null}
+      {open === 'documents' ? <SubDocuments order={order} appId={appId} onChanged={onChanged} /> : null}
+      {open === 'revision' ? <SubRevision order={order} appId={appId} onChanged={onChanged} /> : null}
     </div>
   );
 }
@@ -878,13 +877,13 @@ function StatusTimeline({ ms, order, asks }) {
   const cur = ms.index;
   return (
     <div>
-      <div className="aord-timeline" role="list">
+      <div className="aord-rail" role="list">
         {MILESTONES.map((label, i) => {
-          const cls = i < cur ? 'done' : i === cur ? 'now' : 'todo';
+          const cls = i < cur ? 'done' : i === cur ? 'now' : '';
           return (
-            <div key={i} className={'aord-step ' + cls} role="listitem">
-              <span className="aord-dot" />
-              <span className="aord-slabel">
+            <div key={i} className={'aord-node ' + cls} role="listitem">
+              <i />
+              <span>
                 {label}
                 {i === 1 && order.appointment_date ? <><br />{fmtDate(order.appointment_date)}</> : null}
               </span>
@@ -893,7 +892,7 @@ function StatusTimeline({ ms, order, asks }) {
         })}
       </div>
       {(ms.overlay || (asks && asks.length)) ? (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
           {ms.overlay ? <TimelineChip tone={ms.overlay.tone}>{ms.overlay.label}</TimelineChip> : null}
           {asks && asks.length ? <TimelineChip tone="gold">{asks.some((a) => a.kind === 'rov') ? 'Value disputed' : 'Revision requested'}</TimelineChip> : null}
         </div>
@@ -912,27 +911,24 @@ function TimelineChip({ tone, children }) {
 function WhatWasOrdered({ order, fee }) {
   const summary = Array.isArray(order.summary) ? order.summary : [];
   return (
-    <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 12, marginTop: 10, background: '#FBF9F4' }}>
-      <div style={{ fontSize: 11, color: MUTED, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 8, fontWeight: 600 }}>
-        What was ordered · <span style={{ color: statusColor(order.status) }}>{STATUS_LABEL[order.status] || order.status}</span>
-      </div>
+    <div className="aord-inner">
+      <div className="aord-eyebrow" style={{ margin: '0 0 10px' }}>What was ordered</div>
       {summary.length ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '5px 14px' }}>
+        <dl className="aord-figs" style={{ marginTop: 0 }}>
           {summary.map((s, i) => (
             <React.Fragment key={i}>
-              <div style={{ color: MUTED, fontSize: 12.5 }}>{s.label}</div>
-              <div style={{ color: INK, fontSize: 12.5, wordBreak: 'break-word' }}>{s.value}</div>
+              <dt style={{ textAlign: 'left' }}>{s.label}</dt>
+              <dd style={{ wordBreak: 'break-word' }}>{s.value}</dd>
             </React.Fragment>
           ))}
-        </div>
-      ) : <div style={{ color: MUTED, fontSize: 13 }}>No order summary available.</div>}
-      {fee != null ? (
-        <dl className="act-figs">
-          <dt>Appraisal fee</dt><dd>{money(fee)}</dd>
-          <div className="rule" />
-          <dt className="tot">Amount due</dt><dd className="tot">{money(fee)}</dd>
+          {fee != null ? (
+            <>
+              <div className="rule" />
+              <dt className="tot" style={{ textAlign: 'left' }}>Appraisal fee</dt><dd className="tot">{money(fee)}</dd>
+            </>
+          ) : null}
         </dl>
-      ) : null}
+      ) : <div style={{ color: MUTED, fontSize: 13 }}>No order summary available.</div>}
     </div>
   );
 }
@@ -1460,7 +1456,7 @@ function NanCancelButton({ orderId, onChanged }) {
     catch (_) { /* surfaced by re-fetch */ }
     setBusy(false);
   };
-  return <button className="btn ghost" disabled={busy} onClick={doCancel} style={{ color: BAD }}>{busy ? 'Cancelling…' : 'Cancel order'}</button>;
+  return <button className="aord-btn danger" disabled={busy} onClick={doCancel}>{busy ? 'Cancelling…' : 'Cancel order'}</button>;
 }
 
 /* ================================================ drafts + failed drawer === */
@@ -1651,11 +1647,13 @@ const inputStyle = { border: `1px solid ${LINE}`, borderRadius: 8, padding: '6px
 const linkBtn = { border: 'none', background: 'none', color: TEAL, cursor: 'pointer', padding: 0, fontSize: 12, fontWeight: 550 };
 
 function Banner({ tone, children }) {
-  const bad = tone === 'bad';
-  return <div style={{ border: `1px solid ${bad ? '#E4B4AE' : '#B7D8C4'}`, background: bad ? '#FBEEEC' : '#EEF7F1', color: bad ? '#8A2F27' : '#1E5E3C', borderRadius: 8, padding: '8px 10px', marginBottom: 10, fontSize: 13 }}>{children}</div>;
+  const c = tone === 'bad' ? { bd: '#EBC9C4', bg: '#FBEEEC', fg: '#8A2F27' }
+    : tone === 'warn' ? { bd: WARN_LINE, bg: WARN_BG, fg: WARN }
+      : { bd: '#CFE6D8', bg: '#EEF7F1', fg: '#1E5E3C' };
+  return <div style={{ border: `1px solid ${c.bd}`, background: c.bg, color: c.fg, borderRadius: 10, padding: '9px 12px', marginBottom: 10, fontSize: 13 }}>{children}</div>;
 }
 function SectionTitle({ children }) {
-  return <div style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.04em', color: MUTED, marginBottom: 6 }}>{children}</div>;
+  return <div className="aord-eyebrow" style={{ margin: '0 0 6px' }}>{children}</div>;
 }
 function Field({ label, children }) {
   return <div style={{ minWidth: 120 }}><div style={{ fontSize: 11, color: MUTED, textTransform: 'uppercase', letterSpacing: '.03em' }}>{label}</div><div style={{ color: INK, fontWeight: 550 }}>{children}</div></div>;
