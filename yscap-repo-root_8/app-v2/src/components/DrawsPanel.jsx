@@ -303,7 +303,8 @@ export default function DrawsPanel({ appId }) {
 
             {/* MONEY — the ledger + retainage/waivers. */}
             <Section id="dsec-ledger" title="Money ledger" defaultOpen={false}>
-              <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} oop={oop} fees={rollup.fees || null} onSaved={load} act={act} busy={busy} />
+              <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} oop={oop} fees={rollup.fees || null}
+                investorFee={data.investor_fee || null} onSaved={load} act={act} busy={busy} />
             </Section>
             <Section id="dsec-waivers" title="Retainage & lien waivers" defaultOpen={false}>
               <LienWaivers appId={appId} enabled={lien_waivers_enabled} fileOverride={data.lien_waivers_file_override}
@@ -3289,11 +3290,11 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
   );
 }
 
-function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null, onSaved, act, busy: parentBusy }) {
+function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null, investorFee = null, onSaved, act, busy: parentBusy }) {
   // map the Sitewire draw id -> the friendly draw number so the ledger reads "Draw #1", not "#8001"
   const numByDraw = {};
   for (const d of draws) if (d.number != null) numByDraw[String(d.sitewire_draw_id)] = d.number;
-  const [f, setF] = useState({ sitewire_draw_id: '', approved: '', fee: '', fee_kind: 'virtual', release_date: '', funded_status: 'released' });
+  const [f, setF] = useState({ sitewire_draw_id: '', approved: '', fee: '', investor_fee: '', fee_kind: 'virtual', release_date: '', funded_status: 'released' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const pct = retainage ? Number(retainage.pct) || 0 : 0;
@@ -3315,6 +3316,24 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
   const oopHeldC = (approvedC || 0) - reimbursableC; // the part of this draw that stays out of pocket
   const retC = Math.round(reimbursableC * pct / 100);
   const net = reimbursableC - feeC - retC;
+
+  // THE INVESTOR'S CUT OF OUR FEE (owner-directed 2026-08-13). THIS SPLITS OUR FEE, IT NEVER MOVES
+  // THE BORROWER'S MONEY: `net` above — what the borrower is wired — is computed from the same
+  // `feeC` it always was, and nothing on the borrower's screen, the emails or the draw itself
+  // changes. The only question here is where our own fee ends up: some note buyers keep a fixed
+  // amount for handling the release and send us the rest, so a $299 CorrFirst fee deposits $204.
+  // The server fills the box in from the hard rule (and only once the loan is sold to that buyer);
+  // it stays editable, because the coordinator at the ledger is the one who knows.
+  const invRuleCents = investorFee ? Number(investorFee.rule_cents) || 0 : 0;
+  const invApplies = !!(investorFee && investorFee.applies);
+  const invBuyer = (investorFee && investorFee.buyer_label) || 'the investor';
+  const investorCutFor = (drawFeeCents) => (invApplies ? Math.min(invRuleCents, Math.max(0, Number(drawFeeCents) || 0)) : 0);
+  const invCutC = centsOrNull(f.investor_fee) || 0;   // a $0 cut is legitimate — most files have one
+  const invOverFee = invCutC > feeC;                  // they can never keep more than we charge
+  const netFeeC = Math.max(0, feeC - Math.min(invCutC, feeC));
+  // Show the two fee columns only on a file that actually has such a deal — either a recorded cut
+  // or a rule for this buyer — so every other file's ledger reads exactly as it did before.
+  const showInvestorFee = invRuleCents > 0 || ledger.some((d) => Number(d.investor_fee_cents) > 0);
 
   // AUTO-POPULATE + MATCH GUARD (owner-directed 2026-08-12). The approved amount and our fee are
   // already known per draw (the system computed them — see rollup.draws), so selecting a draw fills
@@ -3342,6 +3361,10 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
       ...extra,
       approved: d && Number(d.final_approved_cents) > 0 ? centsToInput(d.final_approved_cents) : '',
       fee: d ? centsToInput(d.fee_cents) : '',
+      // The investor's cut fills itself in from the hard rule for this file's note buyer — but only
+      // on a loan they have actually bought. Not sold (or we cannot tell) seeds $0: we keep the
+      // whole fee, and the note under the box names their rate so it is one press to apply.
+      investor_fee: d ? centsToInput(investorCutFor(d.fee_cents)) : '',
       fee_kind: d && d.fee_kind ? d.fee_kind : s.fee_kind,
     }));
     setErr('');
@@ -3355,13 +3378,20 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
       setErr(`The approved amount and our fee must match Draw #${selDraw ? selDraw.number : ''} before you can record the release — approved ${usd2(expApprovedC)}, our fee ${usd2(expFeeC)}. Use the draw’s figures, or correct the numbers.`);
       return;
     }
+    // The investor's cut comes OUT of our fee, so it can never be bigger than it — that would
+    // report a deposit that never arrives. (The server refuses it too; this is the clean message.)
+    if (invOverFee) {
+      setErr(`${invBuyer} can’t keep ${usd2(invCutC)} — that is more than our ${usd2(feeC)} fee on this draw.`);
+      return;
+    }
     setBusy(true); setErr('');
     try {
       await api.post('/api/sitewire/disbursements', {
         application_id: appId, sitewire_draw_id: f.sitewire_draw_id,
-        approved_cents: approvedC, fee_cents: feeC, fee_kind: f.fee_kind, release_date: f.release_date || null, funded_status: f.funded_status,
+        approved_cents: approvedC, fee_cents: feeC, investor_fee_cents: invCutC,
+        fee_kind: f.fee_kind, release_date: f.release_date || null, funded_status: f.funded_status,
       });
-      setF({ sitewire_draw_id: '', approved: '', fee: '', fee_kind: 'virtual', release_date: '', funded_status: 'released' });
+      setF({ sitewire_draw_id: '', approved: '', fee: '', investor_fee: '', fee_kind: 'virtual', release_date: '', funded_status: 'released' });
       onSaved();
     } catch (e) { setErr(e?.data?.error || e.message || 'Could not save.'); } finally { setBusy(false); }
   }
@@ -3369,6 +3399,7 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
   const sum = (k, only) => ledger.reduce((s, d) => s + ((!only || d.funded_status === only) ? (Number(d[k]) || 0) : 0), 0);
   const totApproved = sum('approved_cents');
   const totFee = sum('fee_cents');
+  const totInvestorFee = sum('investor_fee_cents');   // 0 on every file with no such deal
   const totNet = sum('net_release_cents', 'released');
   const LEDGER_STATUS = { released: { label: 'Released', cls: 'sw-approved' }, held: { label: 'Held', cls: 'sw-pending' }, pending: { label: 'Pending', cls: 'sw-draft' } };
   // Who actually wired the money, per the file's "Who releases the money" setting (release-party).
@@ -3392,10 +3423,15 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
         {/* OUR fee income on this project, kept separate from the borrower's money (owner-directed
             2026-08-03). `charged` is what recorded releases actually took; `projected` is the file's
             standard fee on draws that have not been released yet. */}
+        {/* The tile keeps showing the fee we CHARGED — that is the figure every other surface
+            prints. When a note buyer keeps part of it, the line beneath says how much of it
+            actually reached our bank (owner-directed 2026-08-13). */}
         <KpiTile label="Our fees" value={usd(totFee)} tone="gold"
-          sub={fees && Number(fees.projected_cents) > 0
-            ? `+ ${usd(fees.projected_cents)} expected on draws not yet released`
-            : (fees && fees.per_draw_cents != null ? `${usd(fees.per_draw_cents)} per draw` : undefined)} />
+          sub={totInvestorFee > 0
+            ? `${usd(totInvestorFee)} kept by the investor · ${usd(Math.max(0, totFee - totInvestorFee))} deposited to us`
+            : (fees && Number(fees.projected_cents) > 0
+              ? `+ ${usd(fees.projected_cents)} expected on draws not yet released`
+              : (fees && fees.per_draw_cents != null ? `${usd(fees.per_draw_cents)} per draw` : undefined))} />
         <KpiTile label="Net wired to borrower" value={usd(totNet)} tone="teal" sub="released" />
         {showRetainage && <KpiTile label="Retainage held" value={usd(retainage.holding_cents)} sub={retainage.released_cents > 0 ? `released ${usd2(retainage.released_cents)}` : 'held back'} />}
         {floorC > 0 && <KpiTile label="Out-of-pocket rehab" value={usd(floorC)} tone="gold" sub={oop && oop.remaining_cents > 0 ? `${usd2(oop.remaining_cents)} left before draws reimburse` : 'met — draws now reimburse'} />}
@@ -3411,7 +3447,7 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
       {ledger.length > 0 && (
         <div className="dd-tablecard" style={{ overflowX: 'auto', marginTop: 12 }}>
           <table className="dd-table" style={{ minWidth: 720 }}>
-            <thead><tr><th>Draw</th><th className="num">Approved</th><th className="num">Fee</th>{showRetainage && <th className="num">Retainage</th>}<th className="num">Net release</th><th>Date</th><th>Released by</th><th>Status</th></tr></thead>
+            <thead><tr><th>Draw</th><th className="num">Approved</th><th className="num">Fee</th>{showInvestorFee && <th className="num">Investor fee</th>}{showInvestorFee && <th className="num">Deposited to us</th>}{showRetainage && <th className="num">Retainage</th>}<th className="num">Net release</th><th>Date</th><th>Released by</th><th>Status</th></tr></thead>
             <tbody>
               {ledger.map((d) => {
                 const st = LEDGER_STATUS[d.funded_status] || { label: d.funded_status, cls: 'sw-draft' };
@@ -3420,6 +3456,10 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
                     <td style={{ fontWeight: 600 }}>{d.kind === 'retainage_release' ? 'Retainage' : (d.sitewire_draw_id ? 'Draw #' + (numByDraw[String(d.sitewire_draw_id)] ?? d.sitewire_draw_id) : '—')}</td>
                     <td className="num" style={{ fontVariantNumeric: 'tabular-nums' }}>{usd2(d.approved_cents)}</td>
                     <td className="num" style={{ fontVariantNumeric: 'tabular-nums' }}>{usd2(d.fee_cents)}</td>
+                    {/* The SAME fee, split: what the note buyer kept, and the deposit left for us.
+                        `net_fee_cents` is computed by the database itself, so it can never drift. */}
+                    {showInvestorFee && <td className="num" style={{ fontVariantNumeric: 'tabular-nums' }}>{Number(d.investor_fee_cents) > 0 ? usd2(d.investor_fee_cents) : '—'}</td>}
+                    {showInvestorFee && <td className="num" style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{d.kind === 'retainage_release' ? '—' : usd2(d.net_fee_cents != null ? d.net_fee_cents : Math.max(0, Number(d.fee_cents || 0) - Number(d.investor_fee_cents || 0)))}</td>}
                     {showRetainage && <td className="num" style={{ fontVariantNumeric: 'tabular-nums' }}>{usd2(d.retainage_held_cents)}</td>}
                     <td className="num" style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: 'var(--teal-br)' }}>{usd2(d.net_release_cents)}</td>
                     <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDay(d.release_date)}</td>
@@ -3447,6 +3487,13 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
           </label>
           <label className="small">Approved $<input className="input" style={{ width: 110 }} value={f.approved} onChange={(e) => setF({ ...f, approved: e.target.value })} /></label>
           <label className="small">Our fee $<input className="input" style={{ width: 90 }} value={f.fee} onChange={(e) => setF({ ...f, fee: e.target.value })} /></label>
+          {/* THE INVESTOR'S CUT — ledger only. It comes out of OUR fee, never out of the borrower's
+              money, so the "Borrower nets" figure beneath is untouched by it. */}
+          {showInvestorFee && (
+            <label className="small" title={`What ${invBuyer} keeps out of our fee for handling this release. It comes out of our fee only — the borrower nets the same either way.`}>
+              Investor fee $<input className="input" style={{ width: 90 }} value={f.investor_fee} onChange={(e) => setF({ ...f, investor_fee: e.target.value })} />
+            </label>
+          )}
           <label className="small">Kind
             <select className="input" value={f.fee_kind} onChange={(e) => setF({ ...f, fee_kind: e.target.value })}><option value="virtual">Virtual</option><option value="physical">Physical</option></select>
           </label>
@@ -3468,10 +3515,37 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
             {usd2(oopHeldC)} of this draw is within the borrower’s out-of-pocket rehab ({usd2(floorC)}) and won’t be reimbursed — only {usd2(reimbursableC)} is reimbursable.
           </div>
         )}
+        {showInvestorFee && invOverFee && (
+          <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 8 }}>
+            {invBuyer} can’t keep {usd2(invCutC)} — that is more than our {usd2(feeC)} fee on this draw.
+          </div>
+        )}
+        {/* Not sold to them yet (or PILOT can’t tell) — we keep the whole fee, and the note says so
+            in words and names their rate, so applying it is one press rather than a hunt. */}
+        {showInvestorFee && !invApplies && invRuleCents > 0 && investorFee && investorFee.hint && (
+          <div className="small" style={{ color: 'var(--warning)', marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span>{investorFee.hint}</span>
+            {feeC > 0 && invCutC === 0 && (
+              <button type="button" className="btn btn-sm soft"
+                onClick={() => setF({ ...f, investor_fee: centsToInput(Math.min(invRuleCents, feeC)) })}>
+                Use {usd2(Math.min(invRuleCents, feeC))}
+              </button>
+            )}
+          </div>
+        )}
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginTop: 12, flexWrap: 'wrap', gap: 10 }}>
-          <div className="small">{floorC > 0 ? <>Reimbursable: <b>{usd2(reimbursableC)}</b> · </> : null}{pct > 0 ? <>Retainage held: <b>{usd2(retC)}</b> · </> : null}Borrower nets: <b style={{ fontSize: 16, color: 'var(--teal-br)' }}>{usd2(net)}</b></div>
-          <button className="btn btn-sm primary" disabled={busy || !f.sitewire_draw_id || approvedC == null || approvedC <= 0 || net < 0 || !figuresMatch}
-            title={!figuresMatch && f.sitewire_draw_id ? 'The approved amount and our fee must match the draw first' : undefined} onClick={save}>Record release</button>
+          <div>
+            <div className="small">{floorC > 0 ? <>Reimbursable: <b>{usd2(reimbursableC)}</b> · </> : null}{pct > 0 ? <>Retainage held: <b>{usd2(retC)}</b> · </> : null}Borrower nets: <b style={{ fontSize: 16, color: 'var(--teal-br)' }}>{usd2(net)}</b></div>
+            {/* OUR side of the same fee — what lands in our bank. Deliberately on its own line under
+                the borrower's figure: the two never affect each other. */}
+            {showInvestorFee && feeC > 0 && (
+              <div className="small muted" style={{ marginTop: 2 }}>
+                Our fee {usd2(feeC)}{invCutC > 0 ? <> · {invBuyer} keeps <b>{usd2(Math.min(invCutC, feeC))}</b></> : null} · Deposited to us: <b style={{ color: 'var(--gold,#AE8746)' }}>{usd2(netFeeC)}</b>
+              </div>
+            )}
+          </div>
+          <button className="btn btn-sm primary" disabled={busy || !f.sitewire_draw_id || approvedC == null || approvedC <= 0 || net < 0 || !figuresMatch || invOverFee}
+            title={!figuresMatch && f.sitewire_draw_id ? 'The approved amount and our fee must match the draw first' : (invOverFee ? 'The investor’s cut can’t be more than our fee' : undefined)} onClick={save}>Record release</button>
         </div>
         {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}
       </div>

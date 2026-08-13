@@ -78,6 +78,10 @@ const storage = require('../lib/storage');
 const { setMediaHeaders } = require('../lib/media-headers');
 const { serveDocument } = require('../lib/serve-document');
 const { computeRelease, waiverGate } = require('../sitewire/money');
+// THE INVESTOR'S CUT OF OUR DRAW FEE — pure, and the ONE place the CorrFirst/Blue Lake rates live.
+// It splits our fee into what the note buyer keeps and what reaches our bank; it can never move
+// the borrower's money or the fee any other surface prints.
+const investorFee = require('../sitewire/investor-fee');
 const { keyedRateLimit } = require('../lib/rate-limit');
 // Coordinator-message spam throttle (audit finding B-7, 2026-07-21). Per-(file, actor) so a whole team
 // isn't rate-limited by one coordinator on a different file. 5/min is generous for a real conversation
@@ -1580,6 +1584,19 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   }
   const approved = Math.round(approvedRaw);
   const fee = Math.round(feeRaw);
+  // THE INVESTOR'S CUT of our fee (owner-directed 2026-08-13). OPTIONAL and EDITABLE: absent/blank
+  // means "use the rule for this file's note buyer", which is what the box on the screen shows and
+  // what the automatic writer books. A typed figure wins — the coordinator at the ledger is the one
+  // who knows — but it is validated exactly like the other two money fields: a NaN/garbage value
+  // must 400, never be coerced to $0 and recorded as income we never received.
+  let investorCut = null;
+  if (req.body.investor_fee_cents != null && req.body.investor_fee_cents !== '') {
+    const cutRaw = Number(req.body.investor_fee_cents);
+    if (!Number.isFinite(cutRaw) || cutRaw < 0) {
+      return res.status(400).json({ error: 'investor_fee_cents must be a non-negative whole number of cents' });
+    }
+    investorCut = Math.round(cutRaw);
+  }
   const feeKind = ['virtual', 'physical'].includes(req.body.fee_kind) ? req.body.fee_kind : null;
   // Validate a supplied date up front — a malformed value hitting the `date` column throws Postgres 22007;
   // reject it as a clean 400 instead. Blank/absent = no date (allowed).
@@ -1667,11 +1684,33 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
     // investor_direct → investor, manual/unset → us (the column's own default). Resolved under the
     // txn's client; never fatal — a lookup miss keeps the safe default.
     let releaseParty = 'us';
-    try { releaseParty = (await require('../sitewire/release-party').releaseStateFor(client, application_id, { sitewireDrawId: drawId })).party || 'us'; } catch (_) {}
+    let releaseState = null;
+    try {
+      releaseState = await require('../sitewire/release-party').releaseStateFor(client, application_id, { sitewireDrawId: drawId });
+      releaseParty = (releaseState && releaseState.party) || 'us';
+    } catch (_) {}
+    // THE INVESTOR'S CUT OF OUR FEE (owner-directed 2026-08-13). It splits OUR fee only: the
+    // borrower's money — approved, retainage, the net wired — is already settled above and is not
+    // touched here. The default comes from the shared rule (the buyer's rate, and only once the
+    // loan is actually sold to them), read off the SAME release state that just decided who wired,
+    // so the ledger can never book a cut for an investor the desk says does not own the loan yet.
+    const feeRule = investorFee.describe({
+      noteBuyer: releaseState ? releaseState.noteBuyer : null,
+      sold: releaseState ? releaseState.sold : null,
+      feeCents: fee,
+    });
+    const feeSplit = investorFee.splitFee({
+      feeCents: fee,
+      investorFeeCents: investorCut == null ? feeRule.suggested_cents : investorCut,
+    });
+    if (!feeSplit.ok) { await client.query('ROLLBACK'); return res.status(422).json({ error: feeSplit.violation }); }
+    // WHO kept it — the note-buyer token, so "what did each investor take off us" is one query.
+    // Null when nothing was kept, or when the buyer's spelling is one the shared table cannot name.
+    const investorFeeKey = feeSplit.investor_fee_cents > 0 ? (feeRule.buyer_key || null) : null;
     const row = (await client.query(
-      `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents, fee_kind, retainage_held_cents, net_release_cents, release_date, funded_status, kind, note, created_by, release_party)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draw',$10,$11,$12) RETURNING *`,
-      [application_id, drawId, approved, fee, feeKind, split.retainage_held_cents, split.net_release_cents, releaseDate, fundedStatus, req.body.note ? String(req.body.note).slice(0, 2000) : null, req.actor.id, releaseParty])).rows[0];
+      `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents, fee_kind, retainage_held_cents, net_release_cents, release_date, funded_status, kind, note, created_by, release_party, investor_fee_cents, investor_fee_key)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draw',$10,$11,$12,$13,$14) RETURNING *`,
+      [application_id, drawId, approved, fee, feeKind, split.retainage_held_cents, split.net_release_cents, releaseDate, fundedStatus, req.body.note ? String(req.body.note).slice(0, 2000) : null, req.actor.id, releaseParty, feeSplit.investor_fee_cents, investorFeeKey])).rows[0];
     await client.query('COMMIT');
     // Milestone → borrower (owner-directed 2026-07-20): a construction draw was released. Tell them the NET
     // amount actually on its way (reimbursable − fee − retainage), only on an actual release. type 'draw'
@@ -1840,6 +1879,7 @@ router.get('/files/:id/gl-export', requirePermission('manage_draws'), async (req
     const rows = (await db.query(
       `SELECT d.created_at, d.release_date, d.sitewire_draw_id, d.kind, d.approved_cents, d.fee_cents, d.retainage_held_cents, d.net_release_cents, d.funded_status,
               d.release_party, d.fee_receivable_cents, d.fee_status, d.fee_received_date, d.note_buyer_label,
+              d.investor_fee_cents, d.net_fee_cents, d.investor_fee_key,
               a.ys_loan_number, a.property_address->>'oneLine' AS address
          FROM draw_disbursements d JOIN applications a ON a.id=d.application_id
         WHERE d.application_id=$1 ORDER BY d.created_at`, [req.params.id])).rows;
@@ -1857,8 +1897,13 @@ router.get('/files/:id/gl-export', requirePermission('manage_draws'), async (req
     // it. Every existing column keeps its position and meaning; these are appended.
     const RELEASED_BY = { us: 'Us', investor: 'Investor' };
     const FEE_STATUS = { n_a: '', owed: 'Owed by investor', received: 'Received' };
-    const out = [['Loan', 'Property', 'Recorded', 'Release date', 'Draw', 'Type', 'Approved', 'Fee', 'Retainage held', 'Net release', 'Out-of-pocket held', 'Status', 'Released by', 'Investor', 'Fee owed to us', 'Fee status', 'Fee received']];
-    for (const r of rows) out.push([r.ys_loan_number || '', r.address || '', new Date(r.created_at).toISOString().slice(0, 10), r.release_date || '', r.sitewire_draw_id ? '#' + r.sitewire_draw_id : '', r.kind, c(r.approved_cents), c(r.fee_cents), c(r.retainage_held_cents), c(r.net_release_cents), c(oopHeldCents(r)), r.funded_status,
+    // WHAT ACTUALLY REACHED OUR BANK (owner-directed 2026-08-13). 'Fee' stays exactly what it was —
+    // the fee charged out of the borrower's approved draw, which is what every other surface prints
+    // and what the row's own arithmetic balances against. The two new columns say how that one fee
+    // was split: what the note buyer kept for handling the release, and the deposit left for us.
+    // Both are 0 / the whole fee on every file with no such deal, so those workbooks read the same.
+    const out = [['Loan', 'Property', 'Recorded', 'Release date', 'Draw', 'Type', 'Approved', 'Fee', 'Investor fee', 'Net fee to us', 'Retainage held', 'Net release', 'Out-of-pocket held', 'Status', 'Released by', 'Investor', 'Fee owed to us', 'Fee status', 'Fee received']];
+    for (const r of rows) out.push([r.ys_loan_number || '', r.address || '', new Date(r.created_at).toISOString().slice(0, 10), r.release_date || '', r.sitewire_draw_id ? '#' + r.sitewire_draw_id : '', r.kind, c(r.approved_cents), c(r.fee_cents), c(r.investor_fee_cents), c(r.net_fee_cents), c(r.retainage_held_cents), c(r.net_release_cents), c(oopHeldCents(r)), r.funded_status,
       RELEASED_BY[r.release_party] || r.release_party || '', r.note_buyer_label || '',
       // Only a fee actually OWED is a receivable — a received one is history and a we-release draw
       // never had one, so printing 0.00 in those rows would read as a debt of nothing.
@@ -2533,6 +2578,19 @@ router.get('/files/:id/rollup', requireDrawView, async (req, res) => {
     // card needs no second call. Best-effort: the card simply does not render if it cannot be read.
     let release = null;
     try { release = await releaseParty.releaseStateFor(db, appId); } catch (_) {}
+    // THE INVESTOR'S CUT OF OUR DRAW FEE (owner-directed 2026-08-13) — the rule for THIS file's note
+    // buyer, whether it applies yet (only once the loan is sold to them), and therefore what the
+    // ledger's investor-fee box fills itself in with. Read off the SAME release state above, so the
+    // ledger and the "who releases the money" card can never disagree about whether it is sold.
+    // A DESCRIPTION, never a gate: it defaults one editable box and changes nothing else on the file.
+    let investorFeeRule = null;
+    try {
+      investorFeeRule = investorFee.describe({
+        noteBuyer: release ? release.noteBuyer : null,
+        sold: release ? release.sold : null,
+        feeCents: (rollup.fees && rollup.fees.per_draw_cents) || 0,
+      });
+    } catch (_) { /* the ledger simply offers no default */ }
     // WHAT THE INVESTOR SAID — the latest send per draw and the answer that came back, so the desk
     // shows "with the investor since Tuesday" or "they asked for one more photo" instead of just
     // "delivered". DISTINCT ON keeps the newest send per draw; a re-send is a separate row and the
@@ -2550,6 +2608,7 @@ router.get('/files/:id/rollup', requireDrawView, async (req, res) => {
           ORDER BY sitewire_draw_id, sent_at DESC`, [appId])).rows;
     } catch (_) { /* an older database has no answer columns — the desk simply shows less */ }
     res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, oop, waivers, release,
+      investor_fee: investorFeeRule,
       investor_deliveries: investorDeliveries,
       investor_answers: investorDelivery.ANSWERS.map((a) => ({ answer: a, label: investorDelivery.ANSWER_LABEL[a], next: investorDelivery.ANSWER_NEXT[a] })),
       lien_waivers_enabled: lienWaiversEnabled, lien_waivers_file_override: link ? link.require_lien_waivers : null,
