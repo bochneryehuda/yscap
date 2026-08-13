@@ -136,6 +136,25 @@ const load = async (appId) => (await db.query(`SELECT * FROM applications WHERE 
   const admin = { kind: 'staff', role: 'admin' };
   const superA = { kind: 'staff', role: 'super_admin' };
 
+  /* ── 0. EVERY MAPPED COLUMN REALLY EXISTS ON `applications` ──────────────────
+     `evaluate` SELECTs every column in details-fields.ALL to compare the request
+     against the file. A key mapped to a column that does not exist would throw
+     there, be caught, and refuse EVERY re-allocation forever — reading, to anyone
+     looking, exactly like the ordinary freeze doing its job. That is the
+     phantom-column-inside-a-swallowing-catch class this repo has been bitten by
+     more than once (`b.full_name`, `a.registered_program`, `is_current` on
+     appraisals), and only a real database can catch it. Asserted FIRST so a
+     mis-mapped field fails here with a clear message rather than as a confusing
+     "mode: refused" three sections down. */
+  {
+    const fields = require('../src/lib/details-fields');
+    const cols = [...new Set(Object.values(fields.ALL))];
+    let readOk = true; let err = '';
+    try { await db.query(`SELECT ${cols.join(', ')} FROM applications WHERE false`); }
+    catch (e) { readOk = false; err = e.message; }
+    assert(readOk, `0.1 every column in details-fields.ALL exists on applications (${cols.length} columns)${readOk ? '' : ' — ' + err}`);
+  }
+
   /* ── A. CONTROL: the trigger really fires on an experience write ─────────────── */
   {
     const c = await mkRegisteredFrozen({ flips: 3 });

@@ -136,7 +136,18 @@ async function evaluate(appId, body, client = db, opts = {}) {
   const cols = [...new Set(Object.values(fields.ALL))].join(', ');
   let cur = null;
   try { cur = (await client.query(`SELECT ${cols} FROM applications WHERE id=$1`, [appId])).rows[0]; }
-  catch (_) { return { mode: 'refused', reason: baseReason }; }
+  catch (e) {
+    /* A FAILURE HERE IS SAFE BUT MUST NOT BE SILENT. Refusing is the right answer —
+       a file we cannot read is not a file we can prove a change is neutral on. But
+       this SELECT names every column in `details-fields.ALL`, so a key mapped to a
+       column that does not exist would refuse EVERY re-allocation forever while
+       reading, to anyone looking, exactly like the ordinary freeze doing its job.
+       That is the phantom-column-inside-a-swallowing-catch class this repo has been
+       bitten by more than once, so it says so out loud. */
+    console.warn('[details-freeze] could not read the file for the re-allocation check —'
+      + ' the carve-out is disabled on this file:', db.describeError ? db.describeError(e) : e.message);
+    return { mode: 'refused', reason: baseReason };
+  }
   if (!cur) return { mode: 'refused', reason: baseReason };
 
   const scope = realloc.changesOnlyExperience(cur, b, fields);
