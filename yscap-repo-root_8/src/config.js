@@ -1076,10 +1076,16 @@ module.exports = {
     subdomain:       process.env.AMC_SUBDOMAIN || null,        // ServiceProviderSubDomain (e.g. integrations.uat)
     lenderIdentifier: process.env.AMC_LENDER_IDENTIFIER || null, // DigitalGatewayLenderIdentifier (CoreLogic reporting id)
     sourceClientId:  process.env.AMC_SOURCE_CLIENT_ID || null, // clientSystem.sourceInformation.sourceClientIdentifier (OPTIONAL)
-    // The "Client Displayed on Report" id (AppraisalScope's REQUIRED client_displayed_id).
-    // Leave UNSET to auto-select when the account has exactly one client-on-report profile
-    // (the common case); set it to pin a specific id when the account has several.
+    // The "Client Displayed on Report" (AppraisalScope's REQUIRED client_displayed_id) — the
+    // client/lender name printed ON the appraisal report. Two knobs, both optional:
+    //   AMC_CLIENT_DISPLAYED_ID   — pin a specific id (skips all lookup/name resolution).
+    //   AMC_CLIENT_DISPLAYED_NAME — the DEFAULT client-on-report name (owner-directed:
+    //                               "by default it should always be YS Capital Group").
+    // The order builder resolves the id from the account's GetClientDisplayOnReport list by
+    // matching this name; if the list has just one profile it uses that; if the list can't
+    // be read it sends this name so the order is never blocked for a missing value.
     clientDisplayedId: process.env.AMC_CLIENT_DISPLAYED_ID || null,
+    clientDisplayedName: process.env.AMC_CLIENT_DISPLAYED_NAME || 'YS Capital Group',
 
     // Which tenant environment the form defaults + note-buyer/processor party map are
     // read from (amc_form_map.environment / amc_party_map.environment). Ids are

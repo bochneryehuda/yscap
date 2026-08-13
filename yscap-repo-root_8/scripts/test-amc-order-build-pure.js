@@ -103,9 +103,10 @@ const ctx = {
 
 // ---- client-displayed-on-report (AppraisalScope required client_displayed_id) ----
 {
-  // Auto-resolved (from ctx) → carried, and surfaced as an assumption so the desk sees it.
+  // Auto-resolved to an id (from ctx) → carried, and surfaced as an assumption so the desk sees it.
   const spec = ob.buildOrderSpec(ctx, { productCode: '5' });
   ok(spec.clientDisplayedId === '297', 'client-displayed id auto-selected from the account profile');
+  ok(spec.clientDisplayedName === 'YS Capital Group', 'client-displayed name carried alongside the id');
   const assumptions = ob.orderAssumptions(ctx, { productCode: '5' }, {}, spec);
   ok(assumptions.some((a) => a.field === 'clientDisplayedId' && /YS Capital Group/.test(a.value)),
     'the client shown on the report is listed as an auto-filled assumption');
@@ -113,13 +114,38 @@ const ctx = {
   // A staffer can pin a specific one (opts wins over the auto-resolved account profile).
   const pinned = ob.buildOrderSpec(ctx, { productCode: '5' }, { clientDisplayedId: '512' });
   ok(pinned.clientDisplayedId === '512', 'an explicitly chosen client-displayed id wins');
+  // A pinned id NEVER rides the stale default name of a DIFFERENT (auto-resolved) profile.
+  ok(pinned.clientDisplayedName === null, 'a pinned id with no matching option carries no stale name');
+  // When the pinned id IS one of the resolved options (the picker case), its own name is used.
+  const picked = ob.buildOrderSpec(
+    { ...ctx, clientDisplayedId: null, clientDisplayedName: null, clientDisplayedSource: 'multiple',
+      clientDisplayedOptions: [{ id: '512', name: 'YS Capital Group LLC' }, { id: '640', name: 'YS Capital Group' }] },
+    { productCode: '5' }, { clientDisplayedId: '512' });
+  ok(picked.clientDisplayedId === '512' && picked.clientDisplayedName === 'YS Capital Group LLC',
+    'a pinned id from the picker carries that profile’s own name');
 
-  // Unresolved (account has several profiles and none picked, or lookups not cached) →
-  // blocked with a plain reason instead of sending an order NAN rejects for a missing
-  // client_displayed_id. missingRequired must NOT include it once it is resolved.
-  const unresolved = ob.buildOrderSpec({ ...ctx, clientDisplayedId: null, clientDisplayedSource: 'multiple' }, { productCode: '5' });
+  // NAME-DEFAULT: the account's list can't be read, so only the default name is known. The
+  // order is NOT blocked — the name is sent as the client shown on the report (owner-directed
+  // default "YS Capital Group") and surfaced as an assumption.
+  const nameOnly = ob.buildOrderSpec(
+    { ...ctx, clientDisplayedId: null, clientDisplayedName: 'YS Capital Group', clientDisplayedSource: 'name_default' },
+    { productCode: '5' });
+  ok(!ob.missingRequired(nameOnly).includes('the client shown on the appraisal report'),
+    'a name-default client-displayed is NOT blocked (the default name is sent)');
+  ok(nameOnly.clientDisplayedName === 'YS Capital Group', 'the default client-displayed name is carried');
+  const nameAssumptions = ob.orderAssumptions(
+    { ...ctx, clientDisplayedId: null, clientDisplayedName: 'YS Capital Group', clientDisplayedSource: 'name_default' },
+    { productCode: '5' }, {}, nameOnly);
+  ok(nameAssumptions.some((a) => a.field === 'clientDisplayedId' && /YS Capital Group/.test(a.value)),
+    'the default client-displayed name is shown as an assumption');
+
+  // MULTIPLE with no default match: neither an id nor a name is resolvable (the picker
+  // chooses) → blocked, so the wrong company can never print on the report.
+  const unresolved = ob.buildOrderSpec(
+    { ...ctx, clientDisplayedId: null, clientDisplayedName: null, clientDisplayedSource: 'multiple' },
+    { productCode: '5' });
   ok(ob.missingRequired(unresolved).includes('the client shown on the appraisal report'),
-    'an unresolved client-displayed-on-report is flagged, not sent');
+    'a client-displayed with several profiles and none picked is flagged, not sent');
   ok(!ob.missingRequired(spec).includes('the client shown on the appraisal report'),
     'a resolved client-displayed-on-report is not flagged');
 }
