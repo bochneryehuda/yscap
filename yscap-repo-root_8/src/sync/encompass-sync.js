@@ -71,11 +71,23 @@ async function refreshCatalogOnce() {
 // staff panel (encompass_last_error) instead of a burst of failures.
 async function pullOldestActiveOnce() {
   if (!client.configured()) return null;
+  // A PRIORITY LANE FOR FILES WHERE THE ANSWER IS ABOUT TO MOVE MONEY (owner-reported 2026-08-13:
+  // a loan sold two weeks earlier still read as "not sold" on the draw desk). Pure staleness order
+  // is fair but slow: one file per tick over the whole book means a given file's turn comes around
+  // once every (files ÷ ~96) days. A FUNDED file with a live draw project and no purchase advice
+  // yet is the one case where that delay has a cost — the draw desk reads "not sold", so PILOT
+  // releases the draw as ours and books no investor fee. Those files go first; everything else
+  // keeps its exact previous order behind them, so nothing is starved, only re-ordered.
   const row = (await db.query(
-    `SELECT id FROM applications
-      WHERE ys_loan_number IS NOT NULL
-        AND status NOT IN ('declined','withdrawn')
-      ORDER BY encompass_last_pulled_at NULLS FIRST
+    `SELECT a.id FROM applications a
+      WHERE a.ys_loan_number IS NOT NULL
+        AND a.status NOT IN ('declined','withdrawn')
+      ORDER BY (a.status = 'funded'
+                AND a.purchase_advice_date IS NULL
+                AND EXISTS (SELECT 1 FROM sitewire_property_links pl
+                             WHERE pl.application_id = a.id AND pl.matched_by='created'
+                               AND COALESCE(pl.lifecycle_state,'active') = 'active')) DESC,
+               a.encompass_last_pulled_at NULLS FIRST
       LIMIT 1`,
   )).rows[0];
   if (!row) return null;

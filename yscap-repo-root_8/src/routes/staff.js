@@ -42,6 +42,9 @@ const portalInvite = require('../lib/portal-invite');
 const threadParticipants = require('../lib/thread-participants');     // ONE definition of "where do they stand with the portal"
 const { jsonbText } = require('../lib/fields');            // NUL-safe serializer for every jsonb bind
 const purchasing = require('../lib/purchasing');
+// The hand-off between Encompass's purchase advice and PILOT's own purchase record — the gate on
+// finishing the purchase, and the once-only email to the post-purchase team (owner-directed 2026-08-13).
+const postPurchase = require('../lib/post-purchase');
 const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
 const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/enqueue');
 const statusMap = require('../clickup/status');
@@ -14691,6 +14694,50 @@ async function setWorkflowRemoval(req, res, removing) {
 router.post('/applications/:id/workflow/:workflow/remove', (req, res) => setWorkflowRemoval(req, res, true));
 router.post('/applications/:id/workflow/:workflow/restore', (req, res) => setWorkflowRemoval(req, res, false));
 
+// ---------------------------------------------------------------------------
+// WHO IS TOLD WHEN A LOAN SELLS — the post-purchase team (owner-directed 2026-08-13:
+// "it should email the post-purchase people on the file — which right now should be, for
+// every file by default, Malky Katz and Chaya Gruber. Going forward you should make it so
+// that we can set different post-purchasing.")
+//
+// A company-wide list, seeded with those two (db/546) and editable here, so changing who
+// handles post-purchase is a screen action rather than a deploy. Reading it is open to the
+// purchasing desk; changing it is admin-only, because it decides who hears about a sale.
+// ---------------------------------------------------------------------------
+router.get('/purchasing/notify-list', purchasingGate, async (req, res) => {
+  try {
+    const people = await postPurchase.recipients(db);
+    // The roster to pick from — active internal staff, so an external/broker account can never
+    // be added to an internal hand-off.
+    const staff = (await db.query(
+      `SELECT id, full_name, email, role FROM staff_users
+        WHERE is_active = true AND COALESCE(is_external,false) = false
+        ORDER BY lower(full_name)`)).rows;
+    res.json({ people, staff, can_edit: !!(req.actor && ['admin', 'super_admin'].includes(req.actor.role)) });
+  } catch (e) { console.warn('[purchasing] notify-list read:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/purchasing/notify-list', async (req, res) => {
+  if (!(req.actor && ['admin', 'super_admin'].includes(req.actor.role))) return res.status(403).json({ error: 'forbidden' });
+  const staffId = req.body && req.body.staff_id;
+  const remove = !!(req.body && req.body.remove);
+  if (!looksLikeId(staffId)) return res.status(400).json({ error: 'Pick a person first.' });
+  try {
+    if (remove) {
+      await db.query(`DELETE FROM post_purchase_notify WHERE staff_id=$1`, [staffId]);
+    } else {
+      const ok = (await db.query(
+        `SELECT 1 FROM staff_users WHERE id=$1 AND is_active = true AND COALESCE(is_external,false) = false`, [staffId])).rows[0];
+      if (!ok) return res.status(400).json({ error: 'That has to be an active member of our own team.' });
+      await db.query(
+        `INSERT INTO post_purchase_notify (staff_id, added_by) VALUES ($1,$2) ON CONFLICT (staff_id) DO NOTHING`,
+        [staffId, req.actor.id]);
+    }
+    await audit(req, remove ? 'post_purchase_notify_remove' : 'post_purchase_notify_add', 'staff', staffId, {});
+    res.json({ ok: true, people: await postPurchase.recipients(db) });
+  } catch (e) { console.warn('[purchasing] notify-list write:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
 // Per-file purchasing detail (status + notes + tasks). File-scoped by the
 // /applications/:id path middleware.
 router.get('/applications/:id/purchasing', purchasingGate, async (req, res) => {
@@ -14707,6 +14754,35 @@ router.post('/applications/:id/purchasing/status', purchasingGate, async (req, r
   const status = req.body && req.body.status;
   if (!purchasing.PURCHASING_STATUSES.includes(status))
     return res.status(400).json({ error: 'unknown purchasing status' });
+  // THE TWO PURCHASE ADVICE DATES MUST AGREE BEFORE THE PURCHASE IS FINISHED (owner-directed
+  // 2026-08-13: "the purchase advice date you enter manually in PILOT needs to match the purchase
+  // advice date in Encompass … and Encompass needs to have a purchase advice date filled in in
+  // order for you to be able to mark purchase completed").
+  //
+  // ONLY ON THE WAY TO COMPLETE. Moving a file BACK to outstanding is always allowed — that is how
+  // somebody corrects a mistake, and a gate on it would trap the file.
+  //
+  // IT NEVER TOUCHES THE DRAW SIDE. Draws proceed the moment either source says the loan is sold;
+  // this is purely about finishing the purchase record here.
+  if (status === 'complete') {
+    const dates = (await db.query(
+      `SELECT a.purchase_advice_date AS encompass_date, pa.advice_date AS pilot_date
+         FROM applications a LEFT JOIN purchasing_advice pa ON pa.application_id = a.id
+        WHERE a.id=$1`, [req.params.id])).rows[0] || {};
+    const gate = postPurchase.adviceGate({ encompassDate: dates.encompass_date, pilotDate: dates.pilot_date });
+    if (!gate.ok) {
+      // A SUPER-ADMIN MAY STILL FINISH IT, with a typed reason that is journaled. Encompass is
+      // read-only to PILOT, so without a way through, a file whose date is wrong THERE could never
+      // be closed out HERE — the dead-end class this codebase warns about. The override is
+      // deliberately narrow: super_admin, a real reason, and it is recorded against the file.
+      const reason = req.body && req.body.override_reason ? String(req.body.override_reason).trim() : '';
+      if (!(req.body && req.body.override === true)) return res.status(422).json({ error: gate.message, code: gate.code });
+      if (!(req.actor && req.actor.role === 'super_admin')) return res.status(403).json({ error: `${gate.message}\n\nOnly a super admin can complete the purchase anyway.`, code: gate.code });
+      if (reason.length < 8) return res.status(400).json({ error: 'Say why the purchase is being completed with the dates as they are (at least 8 characters).', code: gate.code });
+      await audit(req, 'purchasing_complete_override', 'application', req.params.id,
+        { code: gate.code, pilot_date: gate.pilot_date || null, encompass_date: gate.encompass_date || null, reason: reason.slice(0, 500) });
+    }
+  }
   try {
     const row = await purchasing.setPurchasingStatus(db, req.params.id, status, req.actor.id);
     if (!row) return res.status(404).json({ error: 'This file is not in purchasing.' });

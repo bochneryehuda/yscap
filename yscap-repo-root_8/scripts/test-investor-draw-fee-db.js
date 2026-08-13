@@ -281,6 +281,45 @@ function call(server, method, p, token, body) {
         n(fees.charged_cents) - n(fees.investor_cents), n(fees.net_cents));
     }
 
+    // ======================================================================
+    // 8. THE RATES ARE ADMIN SETTINGS, not code (owner-directed 2026-08-13)
+    // ======================================================================
+    {
+      const list = await call(server, 'GET', '/api/sitewire/investor-fees', token);
+      eq('8a the settings screen answers', list.status, 200);
+      const by = Object.fromEntries((list.body.rows || []).map((r) => [r.key, r]));
+      eq('8b …seeded with the rates we agreed', [by.corrfirst.per_draw_cents, by.bluelake.per_draw_cents], [CORR_CUT, 25000]);
+      ok('8c …and every note buyer on our files is listed, ready to set', (list.body.rows || []).length >= 2);
+
+      // Change CorrFirst's rate — and a release recorded afterwards must book the NEW rate.
+      const set = await call(server, 'PATCH', '/api/sitewire/investor-fees', token, { buyer: 'CorrFirst', per_draw_cents: 12500 });
+      eq('8d a rate can be changed with no deploy', set.status, 200);
+      const corr2 = await mkFile({ buyer: 'CorrFirst', paDate: '2026-05-04', approvedCents: APPROVED });
+      const rec = await record(corr2.appId, corr2.drawIds[0], { approved_cents: APPROVED, fee_cents: FEE });
+      eq('8e the release records', rec.status, 200);
+      const row = await rowFor(corr2.drawIds[0]);
+      eq('8f …and books the CONFIGURED rate, not the built-in one',
+        [n(row.investor_fee_cents), n(row.net_fee_cents)], [12500, FEE - 12500]);
+
+      // …and the desk offers the same figure, so the screen and the ledger cannot disagree.
+      const desk = await call(server, 'GET', `/api/sitewire/files/${corr2.appId}/rollup`, token);
+      eq('8g the draw desk offers the same configured rate', desk.body.investor_fee.rule_cents, 12500);
+
+      // Reset puts it back on the rate we ship with.
+      const reset = await call(server, 'PATCH', '/api/sitewire/investor-fees', token, { buyer: 'CorrFirst', per_draw_cents: null });
+      eq('8h it can be reset', reset.status, 200);
+      eq('8i …back to the agreed rate',
+        (reset.body.rows || []).find((r) => r.key === 'corrfirst').per_draw_cents, CORR_CUT);
+
+      // Guards: an unknown investor and a dollars/cents slip are both refused rather than stored.
+      eq('8j a buyer the shared table cannot name is refused',
+        (await call(server, 'PATCH', '/api/sitewire/investor-fees', token, { buyer: '', per_draw_cents: 100 })).status, 400);
+      eq('8k …and so is a rate far bigger than any draw fee we charge (a decimal slip)',
+        (await call(server, 'PATCH', '/api/sitewire/investor-fees', token, { buyer: 'CorrFirst', per_draw_cents: 950000 })).status, 400);
+      eq('8l …with the agreed rate still in force afterwards',
+        (await call(server, 'GET', '/api/sitewire/investor-fees', token)).body.rows.find((r) => r.key === 'corrfirst').per_draw_cents, CORR_CUT);
+    }
+
     bad = fail;
   } finally {
     await db.query(`DELETE FROM applications WHERE ys_loan_number LIKE $1`, [`IF${sfx.slice(-6)}%`]).catch(() => {});

@@ -63,6 +63,31 @@ eq(RP.soldStatus({ fieldConfigured: true, pulled: false }), 'unknown', 'B13 a fi
 eq(RP.soldStatus({ fieldConfigured: false }), 'unknown', 'B14 no field id configured → we cannot tell (never a confident "not sold")');
 eq(RP.soldStatus({}), 'unknown', 'B15 asked with nothing at all → we cannot tell');
 
+// OUR OWN PURCHASING DESK'S RECORD IS ALSO PROOF (owner-reported 2026-08-13: a loan sold two weeks
+// earlier still read as "not sold" on the draw desk). The purchasing team records the advice the
+// day it arrives; Encompass's column is filled by a poll that reaches each file on a rota. Reading
+// only Encompass made PILOT disagree with itself — the 30-day chase has always accepted either.
+eq(RP.soldStatus({ ourAdviceDate: '2026-07-31', fieldConfigured: true, pulled: true }), 'sold',
+  'B16 an advice recorded on OUR purchasing desk means sold, with no Encompass date at all');
+eq(RP.soldVia({ ourAdviceDate: '2026-07-31' }), 'our_purchase_advice',
+  'B17 …and the desk can say which record answered');
+eq(RP.soldVia({ paDate: '2026-07-01', ourAdviceDate: '2026-07-31' }), 'purchase_advice',
+  'B18 …with Encompass named first when both hold one');
+eq(RP.adviceDateOf({ ourAdviceDate: '2026-07-31' }), '2026-07-31', 'B19 the date we hold is reported whichever source has it');
+eq(RP.adviceDateOf({ paDate: '2026-07-01', ourAdviceDate: '2026-07-31' }), '2026-07-01', 'B20 …Encompass first when both do');
+eq(RP.adviceDateOf({}), null, 'B21 …and null when neither does');
+eq(RP.soldStatus({ ourAdviceDate: 'not a date', fieldConfigured: true, pulled: true }), 'not_sold',
+  'B22 a garbage date proves nothing — it is read through the SAME parser as Encompass\'s');
+{
+  const d = RP.describe({ ourAdviceDate: '2026-07-31', fieldConfigured: true, pulled: true, companyMode: 'investor_direct' });
+  eq(d.sold, 'sold', 'B23 describe() reads it too');
+  eq(d.mode, 'investor_direct', 'B24 …so the file releases the way it is set, with nobody having to press anything');
+  eq(d.badge, null, 'B25 …and it carries no "not sold" badge');
+  eq(d.paDate, '2026-07-31', 'B26 …and reports the date it actually holds');
+  eq(d.paDateEncompass, null, 'B27 …naming which source does NOT hold it');
+  eq(d.ourAdviceDate, '2026-07-31', 'B28 …and which one does');
+}
+
 // ─────────────────────────────────────────────── C. who actually wires, and the ledger
 eq(RP.ledgerParty('investor_direct'), 'investor', 'C1 investor_direct: the investor wires');
 eq(RP.ledgerParty('reimbursement'), 'us', 'C2 reimbursement: we wire');

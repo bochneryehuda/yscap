@@ -14,17 +14,22 @@
  * "which mode?" has exactly one definition in this codebase and this module can never disagree
  * with the email that goes to the investor.
  *
- * THERE ARE TWO WAYS A LOAN IS SOLD, and missing the first is what would make this feature a
- * nuisance (owner-directed 2026-08-09):
+ * THERE ARE THREE WAYS WE KNOW A LOAN IS SOLD, and missing any of them makes this feature a
+ * nuisance — a file everyone knows is sold reading as unsold on the draw desk:
  *
  *   TABLE FUNDED — sold AT the closing table. The closer funded it on the "Table Funding"
  *     warehouse line, or Encompass's own funding channel says so. Such a loan is sold the day it
  *     closes and a purchase advice date is NEVER coming, so the absence of one proves nothing.
  *     Checked FIRST, or every Fidelis deal we ever close would warn the coordinator and chase the
  *     closer forever over a date that does not exist. See ../lib/funding-channel.js.
- *   PURCHASE ADVICE — sold later, to the investor, and the PA date from Encompass records it.
+ *   PURCHASE ADVICE, FROM ENCOMPASS — sold later, and the PA date (field 2370) records it.
+ *   PURCHASE ADVICE, FROM OUR OWN PURCHASING DESK — `purchasing_advice.advice_date`, written by our
+ *     team the day the advice arrives, usually with the advice document filed alongside it
+ *     (owner-reported 2026-08-13). It is the same fact recorded a different way, and usually
+ *     EARLIER than Encompass, which is re-read on a rota. Leaving it out is what made PILOT
+ *     disagree with itself: the 30-day "no purchase advice" chase has always accepted either.
  *
- * Both are read-only reference data — Encompass stays read-only, forever.
+ * All three are read-only reference data — Encompass stays read-only, forever.
  *
  * THE SOLD SIGNAL NOW DECIDES WHO RELEASES (owner-directed 2026-08-13, superseding the advisory
  * warning of 2026-08-09): *"if Encompass has a PA date already, then it should always proceed with
@@ -61,10 +66,19 @@ const SOLD_LABEL = {
 };
 
 /** How we know a loan was sold — so a screen can say WHY, not just that it was. */
-const SOLD_VIA = { TABLE: 'table_funding', ADVICE: 'purchase_advice', OVERRIDE: 'coordinator' };
+const SOLD_VIA = {
+  TABLE: 'table_funding',
+  ADVICE: 'purchase_advice',
+  OUR_RECORD: 'our_purchase_advice',
+  OVERRIDE: 'coordinator',
+};
 const SOLD_VIA_LABEL = {
   table_funding: 'Table funded — sold at the closing table',
   purchase_advice: 'Purchase advice received',
+  // OUR OWN DESK'S RECORD of the same advice — the purchasing team recorded the date (and usually
+  // filed the advice document itself) on the purchasing desk. Just as real as the Encompass field,
+  // and usually EARLIER: Encompass is re-read on a rota, our own screen is written the day it lands.
+  our_purchase_advice: 'Purchase advice recorded on the purchasing desk',
   // NOT a claim that the loan is sold — a record that a human decided to proceed as if it were.
   coordinator: 'Processed as sold — set by the draw desk',
 };
@@ -113,7 +127,7 @@ function paDateOf(v) {
  * Never throws. Anything it cannot read is 'unknown', which shows the warning.
  */
 function soldStatus({ paDate = null, fieldConfigured = false, pulled = true,
-  tableFunded = null, channel = null } = {}) {
+  tableFunded = null, channel = null, ourAdviceDate = null } = {}) {
   // TABLE FUNDED IS SOLD, FULL STOP, AND IT IS CHECKED FIRST (owner-directed 2026-08-09:
   // "anything that is set in Encompass for table funding means that it's right away sold, so you
   // can right away consider it for the investor to release … if that says table funding, then it
@@ -123,17 +137,30 @@ function soldStatus({ paDate = null, fieldConfigured = false, pulled = true,
   // warn the coordinator, and chase the closer, on every single Fidelis deal, forever.
   if (FC.soldAtTable({ tableFunded, channel })) return SOLD.SOLD;
   if (paDateOf(paDate)) return SOLD.SOLD;      // a real date is proof, whatever else is missing
+  // OUR OWN DESK'S RECORD COUNTS TOO (owner-reported 2026-08-13: a file sold two weeks earlier was
+  // still reading as not sold on the draw desk). The purchasing team records the purchase advice —
+  // date, and usually the advice document — in `purchasing_advice` the day it arrives, while the
+  // Encompass column is filled by a read-only poll that reaches each file on a rota. Reading only
+  // Encompass therefore made OUR OWN system disagree with itself: the 30-day "no purchase advice"
+  // chase has always treated EITHER source as an advice, and the draw desk did not. It does now.
+  if (paDateOf(ourAdviceDate)) return SOLD.SOLD;
   if (!fieldConfigured) return SOLD.UNKNOWN;
   if (!pulled) return SOLD.UNKNOWN;
   return SOLD.NOT_SOLD;
 }
 
-/** Why we say a loan is sold — 'table_funding' | 'purchase_advice' | 'coordinator' | null. */
-function soldVia({ paDate = null, tableFunded = null, channel = null, treatAsSold = false } = {}) {
+/** Why we say a loan is sold — table funding / Encompass / our own desk / the override, or null. */
+function soldVia({ paDate = null, tableFunded = null, channel = null, ourAdviceDate = null, treatAsSold = false } = {}) {
   if (FC.soldAtTable({ tableFunded, channel })) return SOLD_VIA.TABLE;
   if (paDateOf(paDate)) return SOLD_VIA.ADVICE;
+  if (paDateOf(ourAdviceDate)) return SOLD_VIA.OUR_RECORD;
   if (treatAsSold) return SOLD_VIA.OVERRIDE;
   return null;
+}
+
+/** The purchase advice date we actually hold, from either source — Encompass first. */
+function adviceDateOf({ paDate = null, ourAdviceDate = null } = {}) {
+  return paDateOf(paDate) || paDateOf(ourAdviceDate) || null;
 }
 
 /**
@@ -281,7 +308,7 @@ function notSoldBadge({ sold = SOLD.UNKNOWN, treatAsSold = false, treatedBy = nu
  */
 function describe({ drawMode = null, fileMode = null, ruleMode = null, companyMode = null,
   paDate = null, fieldConfigured = false, pulled = true,
-  tableFunded = null, channel = null,
+  tableFunded = null, channel = null, ourAdviceDate = null,
   treatAsSold = false, treatedBy = null, treatedAt = null } = {}) {
   const at = ID.resolveFundingModeAt({ drawMode, fileMode, ruleMode, companyMode });
   // The FACT, then what we PROCESS this draw as (the coordinator's override can only move it
@@ -289,10 +316,10 @@ function describe({ drawMode = null, fileMode = null, ruleMode = null, companyMo
   // ledger, the checklist and the investor email all act on — and `configuredMode` is what the
   // settings ladder holds, so a screen can say "we release, because this loan is not sold yet"
   // without either half having to re-derive the other.
-  const sold = soldStatus({ paDate, fieldConfigured, pulled, tableFunded, channel });
+  const sold = soldStatus({ paDate, fieldConfigured, pulled, tableFunded, channel, ourAdviceDate });
   const effective = effectiveSold({ sold, treatAsSold });
   const enforced = enforcedMode({ mode: at.mode, sold: effective });
-  const via = soldVia({ paDate, tableFunded, channel, treatAsSold });
+  const via = soldVia({ paDate, tableFunded, channel, ourAdviceDate, treatAsSold });
   const keep = (v) => (ID.MODES.includes(String(v || '')) ? String(v) : null);
   return {
     mode: enforced.mode,
@@ -316,7 +343,11 @@ function describe({ drawMode = null, fileMode = null, ruleMode = null, companyMo
     soldVia: via,
     soldViaLabel: via ? SOLD_VIA_LABEL[via] : null,
     tableFunded: FC.soldAtTable({ tableFunded, channel }),
-    paDate: paDateOf(paDate),
+    // The date itself, from EITHER source (Encompass first), so a screen never has to ask twice —
+    // plus each source on its own, so it can say which one answered.
+    paDate: adviceDateOf({ paDate, ourAdviceDate }),
+    paDateEncompass: paDateOf(paDate),
+    ourAdviceDate: paDateOf(ourAdviceDate),
     // Whether this deployment has the owner's Encompass PA-date field id configured — so a
     // screen can offer a "re-pull the PA date" button only where a re-pull can actually read
     // it. With no field id the read does nothing and the button would be a dead action.
@@ -371,9 +402,10 @@ async function releaseStateFor(db, appId, { sitewireDrawId = null } = {}) {
   // see FC.soldAtTable for why either alone is enough.
   const app = (await q(
     `SELECT a.purchase_advice_date, a.encompass_last_pulled_at, a.lender, a.encompass_extra,
-            cw.table_funded
+            cw.table_funded, pa.advice_date AS our_advice_date
        FROM applications a
        LEFT JOIN closing_workflow cw ON cw.application_id = a.id
+       LEFT JOIN purchasing_advice pa ON pa.application_id = a.id
       WHERE a.id=$1`, [appId]))[0] || {};
 
   // The project's own release setting, plus the draw desk's "process this file as sold" override
@@ -435,6 +467,7 @@ async function releaseStateFor(db, appId, { sitewireDrawId = null } = {}) {
     pulled: !!app.encompass_last_pulled_at,
     tableFunded: app.table_funded === true ? true : (app.table_funded === false ? false : null),
     channel,
+    ourAdviceDate: app.our_advice_date || null,
     treatAsSold: !!link.treat_as_sold_at,
     treatedBy: link.treat_as_sold_by_name || null,
     treatedAt: link.treat_as_sold_at || null,
@@ -473,8 +506,92 @@ async function syncPurchaseAdviceDate(db, appId, fieldValues) {
       `UPDATE applications SET purchase_advice_date=$2, updated_at=now()
         WHERE id=$1 AND purchase_advice_date IS DISTINCT FROM $2::date
         RETURNING id`, [appId, paDate]);
-    return { paDate, changed: !!(r && r.rowCount) };
+    const changed = !!(r && r.rowCount);
+    // ENCOMPASS SAYS THIS LOAN SOLD — TELL THE POST-PURCHASE TEAM (owner-directed 2026-08-13).
+    // THIS is the place to do it, and only this place: all three ways the date can arrive (the poll
+    // worker, the draw desk's own refresh, the manual button) land here, so the hand-off cannot
+    // depend on which of them happened to notice. Once-only and every "stay quiet" case is decided
+    // inside `announceSold`, which never throws — a mail problem must never break a sync.
+    if (changed && paDate) {
+      try { await require('../lib/post-purchase').announceSold(appId, paDate); } catch (_) { /* best-effort */ }
+    }
+    return { paDate, changed };
   } catch (_) { return { skipped: 'error' }; }
+}
+
+// ---------------------------------------------------------------------------
+// KEEPING THE SOLD SIGNAL FRESH BY ITSELF — no Refresh button (owner-reported 2026-08-13)
+// ---------------------------------------------------------------------------
+
+/**
+ * THE PROBLEM THIS SOLVES, in the owner's words: *"it was sold more than two weeks ago. Why did we
+ * need to click the Refresh button? This should automatically realize."*
+ *
+ * ROOT CAUSE. The purchase advice date reaches PILOT two ways, and BOTH were slow for one file:
+ *   · our own purchasing desk records it — now read directly (`soldStatus` above), which fixes
+ *     every file whose advice our team has already logged;
+ *   · Encompass is re-read by `src/sync/encompass-sync.js`, which pulls ONE file every 15 minutes,
+ *     round-robin by staleness across every non-declined file with a loan number. A given file's
+ *     turn therefore comes around once every (files ÷ ~96) days — days to weeks on a real book.
+ *     Nothing re-read a SPECIFIC file on demand except the manual button.
+ *
+ * SO THE FILE BEING LOOKED AT REFRESHES ITSELF. When the draw desk reads a file that still says
+ * "not sold", this re-reads the purchase advice date ALONE — one field by number, not the whole
+ * loan — and lands it through the same `syncPurchaseAdviceDate` the full pull uses. That is the
+ * cheapest possible Encompass call, and it happens exactly where the answer is about to matter.
+ *
+ * EVERY GUARD IS DELIBERATE:
+ *   · it runs ONLY when the file is not already sold — a sold file has nothing to look up;
+ *   · it needs a CACHED loan GUID, so it never triggers a pipeline search (the expensive path the
+ *     round-robin owns);
+ *   · it is THROTTLED per file (`sold_check_at`, db/544 — default 30 minutes), so a desk left open
+ *     on a genuinely unsold file cannot hammer the API;
+ *   · it has its own TIMEOUT, so a slow Encompass can never hold up a screen;
+ *   · it is READ-ONLY into our own column, like every other Encompass read in this codebase;
+ *   · and it NEVER throws — a failure just leaves the answer where it was, and the manual Refresh
+ *     button still exists for "check right now".
+ *
+ * Returns { checked:false, reason } when it declined, or { checked:true, paDate, changed }.
+ */
+const SOLD_RECHECK_MINUTES = Math.max(1, Number(process.env.DRAW_SOLD_RECHECK_MINUTES) || 30);
+
+async function refreshSoldSignal(db, appId, { sold = null, timeoutMs = 2500, force = false, client = null } = {}) {
+  try {
+    if (!appId) return { checked: false, reason: 'no_file' };
+    if (sold === SOLD.SOLD) return { checked: false, reason: 'already_sold' };
+    const fieldId = paFieldConfigured() && require('../lib/integrations/encompass-field-map').PA_DATE_FIELD_ID;
+    if (!fieldId) return { checked: false, reason: 'no_field_id' };
+    // The Encompass client is INJECTABLE for the same reason `db` is: the whole path — the throttle,
+    // the one-field read, the landing — is then provable against a stub, with no network and no
+    // credentials. Production passes nothing and gets the real read-only client.
+    const api = client || require('../encompass/client');
+    if (!api.configured()) return { checked: false, reason: 'encompass_not_configured' };
+
+    // The throttle and the GUID in one read. `sold_check_at` lives on the draw project, so a file
+    // with no draw project is not a draw file and is left to the ordinary poll.
+    const row = (await db.query(
+      `SELECT a.encompass_loan_guid AS guid, pl.sold_check_at
+         FROM sitewire_property_links pl JOIN applications a ON a.id = pl.application_id
+        WHERE pl.application_id=$1 AND pl.matched_by='created'`, [appId])).rows[0];
+    if (!row) return { checked: false, reason: 'no_draw_project' };
+    if (!row.guid) return { checked: false, reason: 'no_loan_guid' };
+    if (!force && row.sold_check_at
+        && (Date.now() - new Date(row.sold_check_at).getTime()) < SOLD_RECHECK_MINUTES * 60000) {
+      return { checked: false, reason: 'checked_recently' };
+    }
+    // Stamp BEFORE the call, not after: a slow or failing Encompass must not let every page load
+    // start another read.
+    await db.query(`UPDATE sitewire_property_links SET sold_check_at=now() WHERE application_id=$1 AND matched_by='created'`, [appId]);
+
+    const vals = await Promise.race([
+      api.readFields(row.guid, [String(fieldId)]),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), Math.max(500, timeoutMs))),
+    ]);
+    const out = await syncPurchaseAdviceDate(db, appId, vals);
+    return { checked: true, paDate: out && out.paDate, changed: !!(out && out.changed) };
+  } catch (e) {
+    return { checked: false, reason: (e && e.message) ? String(e.message).slice(0, 120) : 'error' };
+  }
 }
 
 /**
@@ -503,9 +620,10 @@ async function setTreatAsSold(db, appId, { on = true, by = null, note = null } =
 
 module.exports = {
   SOLD, SOLD_LABEL, SOLD_VIA, SOLD_VIA_LABEL, NOT_SOLD_TITLE, NOT_SOLD_MODE,
-  paDateOf, soldStatus, soldVia, effectiveSold, enforcedMode,
+  paDateOf, adviceDateOf, soldStatus, soldVia, effectiveSold, enforcedMode,
   ledgerParty, autoLedgers, notSoldBadge, describe,
   // The badge kept its old export name too, so nothing that already imports it has to change.
   notSoldWarning: notSoldBadge,
   paFieldConfigured, releaseStateFor, syncPurchaseAdviceDate, setTreatAsSold,
+  refreshSoldSignal, SOLD_RECHECK_MINUTES,
 };

@@ -1700,6 +1700,8 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
       // the ledger and the badge on the desk can never disagree about whether a cut applies.
       sold: releaseState ? releaseState.soldEffective : null,
       feeCents: fee,
+      // The rates the owner set in the admin settings (db/545), falling back to the built-in ones.
+      rates: await investorFee.loadConfiguredRates(db),
     });
     // AN UNSOLD LOAN CANNOT CARRY AN INVESTOR FEE (owner-directed 2026-08-13). They are neither
     // releasing this draw nor reimbursing it, so there is nothing for them to deduct from — a cut
@@ -2310,6 +2312,69 @@ router.get('/settings', requirePermission(['manage_draws', 'platform_setup']), a
   });
 });
 
+// =====================================================================================
+//  INVESTOR DRAW FEES — what each investor keeps out of OUR fee, per released draw
+//  (owner-directed 2026-08-13: "we need to add these investor fee settings in the admin
+//   settings … every investor that we add to our system should automatically come up with
+//   their option to set how much their fee is. It should already preset the rules that we
+//   set together.")
+//
+//  The LIST is every note buyer the system knows about — the same directory the completeness
+//  picker uses — so an investor added to PILOT appears here on their own with a box ready to
+//  fill in. The RATE is the admin-settings table (db/545), seeded with the agreed CorrFirst
+//  $95 / Blue Lake $250, with the built-in figures as the fallback underneath.
+// =====================================================================================
+
+router.get('/investor-fees', requirePermission(['manage_draws', 'platform_setup']), async (req, res) => {
+  try {
+    // Best-effort on the buyer directory: a ClickUp outage must not empty the settings screen —
+    // the configured rows and the ones we ship with are still listed.
+    let buyers = [];
+    try { buyers = (await require('../lib/note-buyers').listNoteBuyers()).map((b) => b.label || b.value); } catch (_) { buyers = []; }
+    const rates = await investorFee.loadConfiguredRates(db);
+    res.json({
+      rows: investorFee.settingsRows({ buyers, rates }),
+      built_in: investorFee.INVESTOR_DRAW_FEE_CENTS,
+      // Every rate on this screen changes ONE thing: how much of our own draw fee reaches our bank.
+      // Nothing here can move a borrower's money, and it never applies until a loan is sold.
+      help: 'What this investor keeps out of our draw fee on every released draw, once the loan has been sold to them. It comes out of OUR fee only — the borrower is charged the same either way — and it is what the money ledger deducts to show the deposit we actually receive.',
+    });
+  } catch (e) { console.warn('[sitewire] investor fees:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// Set (or clear) one investor's rate. platform_setup only — it is a money rule for every future
+// release on that buyer, so it sits with the other setup knobs rather than with the draw desk.
+router.patch('/investor-fees', requirePermission('platform_setup'), async (req, res) => {
+  const raw = req.body && req.body.buyer;
+  const key = raw ? require('../lib/funding-channel').toBuyerKey(raw) : null;
+  if (!key) return res.status(400).json({ error: 'Pick which investor this rate is for.' });
+  // Clearing (null/blank) puts the buyer back on the built-in rate — a real choice, and the way
+  // back from a typo, so it is not the same as setting 0 ("they keep nothing").
+  if (req.body.per_draw_cents === null || req.body.per_draw_cents === '') {
+    await db.query(`DELETE FROM investor_draw_fees WHERE buyer_key=$1`, [key]);
+  } else {
+    const cents = Number(req.body.per_draw_cents);
+    if (!Number.isFinite(cents) || cents < 0) return res.status(400).json({ error: 'The fee must be a non-negative whole number of cents.' });
+    // A rate bigger than any draw fee we charge is almost certainly a typo (a dollars/cents slip),
+    // and it would silently zero our income on every release for that buyer. Refuse it here rather
+    // than let the release route clamp it draw by draw.
+    if (cents > 500000) return res.status(400).json({ error: 'That is more than $5,000 per draw — check the amount.' });
+    await db.query(
+      `INSERT INTO investor_draw_fees (buyer_key, per_draw_cents, label, updated_at, updated_by)
+       VALUES ($1,$2,$3,now(),$4)
+       ON CONFLICT (buyer_key) DO UPDATE SET per_draw_cents=EXCLUDED.per_draw_cents, label=COALESCE(EXCLUDED.label, investor_draw_fees.label), updated_at=now(), updated_by=EXCLUDED.updated_by`,
+      [key, Math.round(cents), require('../lib/funding-channel').label(key) || String(raw).trim(), req.actor.id]);
+  }
+  try {
+    await orchestrator.journal({ appId: null, entity: 'settings', entityId: null, field: 'investor_draw_fee',
+      oldValue: null, newValue: { buyer: key, per_draw_cents: req.body.per_draw_cents ?? null, actor: req.actor.id }, source: 'money_override' });
+  } catch (_) { /* best-effort audit */ }
+  const rates = await investorFee.loadConfiguredRates(db);
+  let buyers = [];
+  try { buyers = (await require('../lib/note-buyers').listNoteBuyers()).map((b) => b.label || b.value); } catch (_) { buyers = []; }
+  res.json({ ok: true, rows: investorFee.settingsRows({ buyers, rates }) });
+});
+
 // ---- GET /files/:id/draw-settings — every knob for ONE file, and WHICH LEVEL decided it ----
 // The owner's "where did this come from?": a coordinator looking at a $250 fee should never have
 // to guess whether it came from the project, the capital provider or the company default.
@@ -2591,6 +2656,19 @@ router.get('/files/:id/rollup', requireDrawView, async (req, res) => {
     // card needs no second call. Best-effort: the card simply does not render if it cannot be read.
     let release = null;
     try { release = await releaseParty.releaseStateFor(db, appId); } catch (_) {}
+    // THE SOLD SIGNAL KEEPS ITSELF FRESH (owner-reported 2026-08-13: "it was sold more than two
+    // weeks ago — why did we need to click the Refresh button?"). A file that still reads as not
+    // sold re-reads the purchase advice date from Encompass right here — ONE field by number, not
+    // the whole loan — throttled per file and with its own timeout, so the coordinator gets the
+    // right answer on the FIRST look instead of waiting for the round-robin poll to reach this
+    // file. Best-effort in every direction: it never throws, and a slow Encompass simply leaves the
+    // answer where it was rather than holding up the desk.
+    if (release && release.sold !== 'sold') {
+      try {
+        const r = await releaseParty.refreshSoldSignal(db, appId, { sold: release.sold });
+        if (r && r.changed) release = await releaseParty.releaseStateFor(db, appId);
+      } catch (_) { /* the desk renders with what it already had */ }
+    }
     // THE INVESTOR'S CUT OF OUR DRAW FEE (owner-directed 2026-08-13) — the rule for THIS file's note
     // buyer, whether it applies yet (only once the loan is sold to them), and therefore what the
     // ledger's investor-fee box fills itself in with. Read off the SAME release state above, so the
@@ -2602,6 +2680,7 @@ router.get('/files/:id/rollup', requireDrawView, async (req, res) => {
         noteBuyer: release ? release.noteBuyer : null,
         sold: release ? release.soldEffective : null,
         feeCents: (rollup.fees && rollup.fees.per_draw_cents) || 0,
+        rates: await investorFee.loadConfiguredRates(db),
       });
     } catch (_) { /* the ledger simply offers no default */ }
     // WHAT THE INVESTOR SAID — the latest send per draw and the answer that came back, so the desk

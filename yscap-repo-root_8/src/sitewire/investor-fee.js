@@ -22,8 +22,8 @@
  * borrower's money, and nothing here belongs on a borrower surface.
  *
  * TWO THINGS HAVE TO BE TRUE BEFORE A CUT EXISTS AT ALL, and both are facts we already hold:
- *   1. the note buyer has a rate in the table below (CorrFirst / Blue Lake — the owner's hard
- *      rules, and the ONLY place those numbers live in this codebase);
+ *   1. the note buyer has a rate — the admin settings table (db/545, editable per investor), or
+ *      the built-in figures below when nothing is configured;
  *   2. the loan is actually SOLD to them. Sold is `release-party` — and specifically its EFFECTIVE
  *      answer (`soldEffective`), so the draw desk's "process this file as sold" override carries
  *      here too and this can never disagree with the badge on the screen above it.
@@ -53,10 +53,12 @@ const usd = (c) => '$' + (Math.round(N(c)) / 100).toLocaleString('en-US', { mini
 /**
  * THE HARD RULES — what each note buyer charges us per released draw, in cents.
  *
- * OWNER-SET NUMBERS. They are not derived from anything and must not be "improved": changing one
- * changes what we book as income on every future release for that buyer, so it takes the owner
- * saying so. Adding a buyer is one line here (keyed by the shared capital-provider token) and
- * nothing else in the codebase changes.
+ * OWNER-SET NUMBERS, and the FALLBACK rather than the last word: the live rates are the admin
+ * settings table (`investor_draw_fees`, db/545), which is seeded with exactly these two and is
+ * where the owner changes a rate or adds a new investor's — no deploy. These stay because a
+ * deployment whose table is empty or unreadable must still behave exactly as it does today, and
+ * because they record what was agreed. Changing one changes what we book as income on every future
+ * release for that buyer where nothing is configured, so it takes the owner saying so.
  */
 const INVESTOR_DRAW_FEE_CENTS = Object.freeze({
   corrfirst: 9500,    // $95 per draw
@@ -67,23 +69,32 @@ const INVESTOR_DRAW_FEE_CENTS = Object.freeze({
 const SOLD = Object.freeze({ SOLD: 'sold', NOT_SOLD: 'not_sold', UNKNOWN: 'unknown' });
 
 /**
- * The rule for a note buyer — { key, label, per_draw_cents } — or null when this buyer keeps
- * nothing out of our fee. A blank/unknown buyer is null: we do not know whose rule to apply, and
- * inventing one would take money off our own books.
+ * The rule for a note buyer — { key, label, per_draw_cents, source } — or null when this buyer
+ * keeps nothing out of our fee. A blank/unknown buyer is null: we do not know whose rule to apply,
+ * and inventing one would take money off our own books.
+ *
+ * `rates` is the CONFIGURED table from the admin settings (`investor_draw_fees`, keyed by the same
+ * buyer token). It wins over the built-in figures, so the owner can change what an investor keeps —
+ * or add a brand-new investor's rate — without a deploy. A configured **0** is a real answer
+ * ("this investor keeps nothing"), not a missing one, which is why the lookup tests for the KEY
+ * rather than for a truthy amount. With no table passed the built-in rates apply exactly as before.
  */
-function ruleFor(noteBuyer) {
+function ruleFor(noteBuyer, rates = null) {
   const key = FC.toBuyerKey(noteBuyer);
   if (!key) return null;
-  const cents = INVESTOR_DRAW_FEE_CENTS[key];
+  const configured = rates && Object.prototype.hasOwnProperty.call(rates, key) ? Math.max(0, Math.round(N(rates[key]))) : null;
+  const cents = configured != null ? configured : INVESTOR_DRAW_FEE_CENTS[key];
   if (!(cents > 0)) return null;
-  return { key, label: FC.label(key), per_draw_cents: cents };
+  return { key, label: FC.label(key), per_draw_cents: cents, source: configured != null ? 'configured' : 'built_in' };
 }
 
-/** Every buyer with a rule, for a settings screen that wants to show them. */
-function rules() {
-  return Object.keys(INVESTOR_DRAW_FEE_CENTS).map((key) => ({
-    key, label: FC.label(key), per_draw_cents: INVESTOR_DRAW_FEE_CENTS[key],
-  }));
+/** Every buyer with a rate, for a settings screen that wants to show them. */
+function rules(rates = null) {
+  const keys = new Set(Object.keys(INVESTOR_DRAW_FEE_CENTS).concat(Object.keys(rates || {})));
+  return [...keys].map((key) => {
+    const r = ruleFor(key, rates);
+    return r || { key, label: FC.label(key), per_draw_cents: 0, source: rates && key in rates ? 'configured' : 'built_in' };
+  });
 }
 
 /**
@@ -130,9 +141,9 @@ function splitFee({ feeCents = 0, investorFeeCents = 0 } = {}) {
  * fills in with: the rule, capped at our own fee. `hint` is the sentence a coordinator reads when
  * the box is not offered, and it says what IS happening rather than only what is not.
  */
-function describe({ noteBuyer = null, sold = null, feeCents = 0 } = {}) {
+function describe({ noteBuyer = null, sold = null, feeCents = 0, rates = null } = {}) {
   const fee = Math.max(0, Math.round(N(feeCents)));
-  const rule = ruleFor(noteBuyer);
+  const rule = ruleFor(noteBuyer, rates);
   const isSold = String(sold || '') === SOLD.SOLD;
   const base = {
     buyer_key: rule ? rule.key : (FC.toBuyerKey(noteBuyer) || null),
@@ -175,11 +186,60 @@ function describe({ noteBuyer = null, sold = null, feeCents = 0 } = {}) {
  * The route's fallback and the automatic (investor-released) ledger writer use exactly this, so a
  * release recorded by hand and one recorded by PILOT itself can never book different income.
  */
-function defaultInvestorFeeCents({ noteBuyer = null, sold = null, feeCents = 0 } = {}) {
-  return describe({ noteBuyer, sold, feeCents }).suggested_cents;
+function defaultInvestorFeeCents({ noteBuyer = null, sold = null, feeCents = 0, rates = null } = {}) {
+  return describe({ noteBuyer, sold, feeCents, rates }).suggested_cents;
+}
+
+// ---------------------------------------------------------------------------
+// The IO half — the configured rates. Takes its `db`, so everything above stays pure.
+// ---------------------------------------------------------------------------
+
+/**
+ * The admin-settings rate table as a plain { buyerKey: cents } map (db/545).
+ *
+ * NEVER THROWS, and an unreadable table answers `{}` — which falls the whole feature back to the
+ * built-in rates rather than silently booking every investor's cut as nothing. That direction
+ * matters: `{}` means "CorrFirst still keeps $95", while a table read as all-zeros would quietly
+ * report income we never received.
+ */
+async function loadConfiguredRates(db) {
+  try {
+    const rows = (await db.query(`SELECT buyer_key, per_draw_cents FROM investor_draw_fees`)).rows || [];
+    const out = {};
+    for (const r of rows) if (r && r.buyer_key) out[String(r.buyer_key)] = Math.max(0, Math.round(N(r.per_draw_cents)));
+    return out;
+  } catch (_) { return {}; }
+}
+
+/**
+ * Every note buyer the settings screen should offer, each with the rate in force — the CONFIGURED
+ * one, else the built-in, else nothing. `buyers` is the list of note buyers the system knows about
+ * (`lib/note-buyers.listNoteBuyers`), so an investor added to the system appears here on their own
+ * with a box ready to fill in, which is exactly what the owner asked for.
+ */
+function settingsRows({ buyers = [], rates = null } = {}) {
+  const seen = new Map();
+  const add = (label) => {
+    const key = FC.toBuyerKey(label);
+    if (!key || seen.has(key)) return;
+    const r = ruleFor(key, rates);
+    seen.set(key, {
+      key,
+      label: FC.label(key),
+      // The spelling the system actually carries, when it differs from our canonical one.
+      as_named: String(label || '').trim() || null,
+      per_draw_cents: r ? r.per_draw_cents : 0,
+      source: r ? r.source : (rates && key in rates ? 'configured' : 'none'),
+    });
+  };
+  for (const b of buyers || []) add(typeof b === 'string' ? b : (b && (b.label || b.value)));
+  for (const key of Object.keys(rates || {})) add(key);          // configured, even if unused today
+  for (const key of Object.keys(INVESTOR_DRAW_FEE_CENTS)) add(key); // and the ones we ship with
+  return [...seen.values()].sort((a, b) => String(a.label).localeCompare(String(b.label)));
 }
 
 module.exports = {
   INVESTOR_DRAW_FEE_CENTS, SOLD,
   ruleFor, rules, splitFee, describe, defaultInvestorFeeCents,
+  loadConfiguredRates, settingsRows,
 };

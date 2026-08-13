@@ -129,4 +129,44 @@ eq(IF.ruleFor('Some New Buyer LLC'), null, 'A10 …and neither does a buyer nobo
   ok(IF.rules().every((r) => r.label && r.per_draw_cents > 0), 'F4 …each with a name a person would write and a real rate');
 }
 
+// ---------------------------------------------------------------- G. the rates are CONFIGURABLE
+// Owner-directed 2026-08-13: "we need to add these investor fee settings in the admin settings to
+// be able to control, in general, each investor's fee … every investor that we add to our system
+// should automatically come up with their option to set how much their fee is. It should already
+// preset the rules that we set together."
+{
+  const rates = { corrfirst: 12500, fidelis: 5000 };
+  eq(IF.ruleFor('CorrFirst', rates).per_draw_cents, 12500, 'G1 a configured rate beats the built-in one');
+  eq(IF.ruleFor('CorrFirst', rates).source, 'configured', 'G2 …and says where it came from');
+  eq(IF.ruleFor('Blue Lake', rates).per_draw_cents, 25000, 'G3 a buyer nobody configured keeps the rate we ship with');
+  eq(IF.ruleFor('Blue Lake', rates).source, 'built_in', 'G4 …and says so');
+  eq(IF.ruleFor('Fidelis', rates).per_draw_cents, 5000, 'G5 a NEW investor gets a rate with no code change at all');
+  // A configured 0 is a real answer — "this investor keeps nothing" — not a missing one.
+  eq(IF.ruleFor('CorrFirst', { corrfirst: 0 }), null, 'G6 configuring $0 turns the cut off for that buyer');
+  eq(IF.describe({ noteBuyer: 'CorrFirst', sold: 'sold', feeCents: 29900, rates: { corrfirst: 0 } }).offer, false,
+    'G7 …and the box stops being offered, exactly like a buyer with no deal');
+  eq(IF.describe({ noteBuyer: 'CorrFirst', sold: 'sold', feeCents: 29900, rates }).suggested_cents, 12500,
+    'G8 the release fills in the CONFIGURED rate');
+  eq(IF.defaultInvestorFeeCents({ noteBuyer: 'Fidelis', sold: 'sold', feeCents: 29900, rates }), 5000,
+    'G9 …and so does the automatic writer, through the same shared default');
+  // With nothing configured — an empty or unreadable table — everything behaves exactly as before.
+  eq(IF.describe({ noteBuyer: 'CorrFirst', sold: 'sold', feeCents: 29900, rates: {} }).suggested_cents, 9500,
+    'G10 an empty table falls back to the rates we agreed, never to nothing');
+}
+
+// The settings screen lists EVERY investor the system knows about, each with the rate in force.
+{
+  const rows = IF.settingsRows({ buyers: ['Fidelis Investors LLC', 'CorrFirst', 'Some New Buyer'], rates: { fidelis: 5000 } });
+  const by = Object.fromEntries(rows.map((r) => [r.key, r]));
+  ok(by.fidelis && by.corrfirst && by.bluelake, 'G11 every buyer on file AND the ones we ship with are listed');
+  eq(by.fidelis.per_draw_cents, 5000, 'G12 a configured buyer shows its configured rate');
+  eq(by.corrfirst.per_draw_cents, 9500, 'G13 …an unconfigured one shows the rate we agreed');
+  eq(by.bluelake.source, 'built_in', 'G14 …and says which is which');
+  eq(by.fidelis.as_named, 'Fidelis Investors LLC', 'G15 …under the spelling the files actually carry');
+  ok(!rows.some((r) => r.key === null || r.key === undefined), 'G16 a buyer the shared table cannot name is never listed as a blank row');
+  // Deduped by the canonical buyer, so one investor can never be configured twice with two answers.
+  const dup = IF.settingsRows({ buyers: ['CorrFirst', 'Corr First', 'corrfirst'], rates: null });
+  eq(dup.filter((r) => r.key === 'corrfirst').length, 1, 'G17 the same buyer spelled three ways is ONE row');
+}
+
 console.log(`investor draw fee (pure): ${n} assertions passed`);
