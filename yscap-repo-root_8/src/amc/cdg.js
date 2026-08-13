@@ -29,13 +29,22 @@ function refValue(refs, type) {
 }
 
 // The clientSystem block carried on every authenticated call (api key + our order refs).
-function clientSystem({ apiKey, clientOrderNumber, clientReferenceNumber, sourceClientId } = {}) {
+// sourceInformation.sourceClientIdentifier is AppraisalScope's REQUIRED `client_displayed_id`
+// (the "Client Displayed on Report" id from GetClientDisplayOnReport); sourceClientName is the
+// matching name (the vendor's ClientDisplayedGetJobType sample carries both).
+function clientSystem({ apiKey, clientOrderNumber, clientReferenceNumber, sourceClientId, sourceClientName } = {}) {
   const refs = [];
   if (apiKey != null) refs.push(ref('ApiKey', apiKey));
   if (clientOrderNumber != null) refs.push(ref('ClientOrderNumber', String(clientOrderNumber)));
   if (clientReferenceNumber != null) refs.push(ref('ClientReferenceNumber', String(clientReferenceNumber)));
   const cs = { referenceIdentifiers: refs };
-  if (sourceClientId != null) cs.sourceInformation = { sourceClientIdentifier: String(sourceClientId) };
+  const hasId = sourceClientId != null && sourceClientId !== '';
+  const hasName = sourceClientName != null && sourceClientName !== '';
+  if (hasId || hasName) {
+    cs.sourceInformation = {};
+    if (hasId) cs.sourceInformation.sourceClientIdentifier = String(sourceClientId);
+    if (hasName) cs.sourceInformation.sourceClientName = String(sourceClientName);
+  }
   return cs;
 }
 
@@ -133,25 +142,33 @@ function buildCreateAppraisal(spec, ctx) {
   deal.loans = [loan];
   deal.properties = [property(spec.property || {})];
 
+  // The resolved "Client Displayed on Report" id/name (AppraisalScope's REQUIRED
+  // client_displayed_id). The spec's resolved id wins; the config AMC_SOURCE_CLIENT_ID is a
+  // fallback. The SAME value is sent BOTH ways below so the order is satisfied whichever the
+  // gateway reads it from.
+  const cdId = (spec.clientDisplayedId != null && spec.clientDisplayedId !== '')
+    ? String(spec.clientDisplayedId)
+    : (sourceClientId != null && sourceClientId !== '' ? String(sourceClientId) : null);
+  const cdName = (spec.clientDisplayedName != null && spec.clientDisplayedName !== '')
+    ? String(spec.clientDisplayedName) : null;
+
   const parties = [];
   const p = spec.parties || {};
   if (p.loanOfficerId != null) parties.push({ partyRoleType: 'LoanOfficer', partyRoleTypeIdentifier: String(p.loanOfficerId) });
   if (p.loanProcessorId != null) parties.push({ partyRoleType: 'LoanProcessor', partyRoleTypeIdentifier: String(p.loanProcessorId) });
   if (p.investorId != null) parties.push({ partyRoleType: 'Investor', partyRoleTypeIdentifier: String(p.investorId) });
-  // AppraisalScope's REQUIRED `client_displayed_id` is the "Client Displayed on Report"
-  // (the client/lender alias AppraisalScope prints ON the appraisal). The vendor mapping
-  // carries it as a deal party partyRoleType="Lender": the "Lender Alias (dba) Identifier" in
-  // **partyRoleIdentifier** (the resolved id, NOT partyRoleTypeIdentifier), and/or the
-  // "Lender Alias (dba) Full Name and Address" in **fullNameAddress** (the name). The gateway
-  // derives client_displayed_id from this party, so with no Lender party the order was
-  // rejected. order-service resolves the id from the account's GetClientDisplayOnReport list
-  // (matched to the default name "YS Capital Group"); when only the name is known, send the
-  // name so the order still goes out rather than being blocked.
-  if ((spec.clientDisplayedId != null && spec.clientDisplayedId !== '')
-      || (spec.clientDisplayedName != null && spec.clientDisplayedName !== '')) {
-    const lender = { partyRoleType: 'Lender' };
-    if (spec.clientDisplayedId != null && spec.clientDisplayedId !== '') lender.partyRoleIdentifier = String(spec.clientDisplayedId);
-    if (spec.clientDisplayedName != null && spec.clientDisplayedName !== '') lender.fullNameAddress = String(spec.clientDisplayedName);
+  // AppraisalScope's REQUIRED `client_displayed_id` (the "Client Displayed on Report") is sent
+  // TWO ways with the SAME value: (1) on message.clientSystem.sourceInformation.sourceClientIdentifier
+  // (the id from the account's GetClientDisplayOnReport list, e.g. 199384), emitted in the
+  // clientSystem() call below; AND (2) here, on a partyRoleType="Lender" party whose
+  // partyRoleIdentifier the gateway maps to client_displayed_id (fullNameAddress = the client
+  // name). Belt-and-suspenders — the gateway reads it from either, and the value matches. A
+  // numeric id is REQUIRED (a name alone cannot satisfy the gateway), so a Lender party is
+  // emitted only when an id resolved. order-service resolves WHICH id (config AMC_CLIENT_DISPLAYED_ID,
+  // else the account's profile matched to the default name "YS Capital Group").
+  if (cdId) {
+    const lender = { partyRoleType: 'Lender', partyRoleIdentifier: cdId };
+    if (cdName) lender.fullNameAddress = cdName;
     parties.push(lender);
   }
   // Best-person-to-contact is REQUIRED, and AppraisalScope derives its own required
@@ -176,7 +193,11 @@ function buildCreateAppraisal(spec, ctx) {
       apiKey,
       clientOrderNumber: spec.clientOrderNumber,
       clientReferenceNumber: spec.clientReferenceNumber,
-      sourceClientId,
+      // AppraisalScope's REQUIRED client_displayed_id ← sourceClientIdentifier — the SAME
+      // resolved id also sent on the Lender party above (cdId/cdName). The name rides along as
+      // sourceClientName (the vendor's ClientDisplayedGetJobType sample sends both).
+      sourceClientId: cdId,
+      sourceClientName: cdName,
     }),
     digitalGatewaySystem: digitalGatewaySystem({ lenderIdentifier }),
     serviceProviderSystem: serviceProviderSystem({

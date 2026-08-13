@@ -55,7 +55,10 @@ function get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? o
   ok(m.requestActionType === 'CreateAppraisal', 'create action');
   ok(cdg.refValue(m.clientSystem.referenceIdentifiers, 'ApiKey') === 'K', 'create api key');
   ok(cdg.refValue(m.clientSystem.referenceIdentifiers, 'ClientOrderNumber') === '1234AB', 'create client order number');
-  ok(m.clientSystem.sourceInformation.sourceClientIdentifier === '267', 'create sourceClientIdentifier');
+  // AppraisalScope's REQUIRED client_displayed_id ← sourceClientIdentifier. The resolved
+  // "Client Displayed on Report" id (spec.clientDisplayedId='297') WINS over the legacy config
+  // sourceClientId ('267') passed in the ctx — the resolved id is the authoritative source.
+  ok(m.clientSystem.sourceInformation.sourceClientIdentifier === '297', 'create client_displayed_id via sourceClientIdentifier (resolved id wins over config)');
   ok(cdg.refValue(m.digitalGatewaySystem.referenceIdentifiers, 'DigitalGatewayLenderIdentifier') === 'GG000146', 'create lender identifier');
   ok(cdg.refValue(m.serviceProviderSystem.referenceIdentifiers, 'ServiceProviderSubDomain') === 'integrations.uat', 'create subdomain');
   ok(m.products[0].productCode === '76', 'create product code (form)');
@@ -86,43 +89,51 @@ function get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? o
   // gateway couldn't tell WHO the best contact was and reported primary_contact missing.
   ok(bestContact && bestContact.partyRoleTypeOtherDescription === 'Borrower', 'create best contact (primary_contact) via partyRoleTypeOtherDescription');
   ok(bestContact && bestContact.partyRoleTypeIdentifier === undefined, 'best contact does not use the wrong leaf');
-  // AppraisalScope's REQUIRED `client_displayed_id` — the "Client Displayed on Report" —
-  // is emitted as a deal party partyRoleType="Lender" in partyRoleIdentifier (the vendor
-  // mapping's "Lender Alias (dba) Identifier"). With no Lender party the order was rejected
-  // for a missing client_displayed_id.
-  const lender = deal.parties.find((x) => x.partyRoleType === 'Lender');
-  ok(lender && lender.partyRoleIdentifier === '297', 'create client displayed on report (client_displayed_id) via Lender party');
+  // client_displayed_id is ALSO carried on a partyRoleType="Lender" party (belt-and-suspenders
+  // alongside sourceInformation), with the SAME resolved id (297). The gateway maps its
+  // partyRoleIdentifier to client_displayed_id; fullNameAddress carries the client name.
+  {
+    const lender = deal.parties.find((x) => x.partyRoleType === 'Lender');
+    ok(lender && lender.partyRoleIdentifier === '297', 'Lender party carries client_displayed_id (resolved id wins over config)');
+  }
   ok(deal.parties.find((x) => x.partyRoleType === 'LoanOfficer').partyRoleTypeIdentifier === '429', 'create loan officer');
 })();
 
-// ---- No Lender party when neither a client-displayed id NOR name is resolved ----
+// ---- No client-displayed id/name and no config source-client id → sourceInformation omitted, no Lender party ----
 (() => {
-  const deal = cdg.buildCreateAppraisal(
+  const m = cdg.buildCreateAppraisal(
     { productCode: '76', loan: { loanNumber: '1' }, borrowers: [], property: {} },
-    { apiKey: 'K', subdomain: 's' }).message.deals[0];
-  ok(!(deal.parties || []).some((x) => x.partyRoleType === 'Lender'), 'omits the Lender party when no client-displayed id or name');
+    { apiKey: 'K', subdomain: 's' }).message;
+  ok(m.clientSystem.sourceInformation === undefined, 'omits sourceInformation when nothing is resolved');
+  ok(!(m.deals[0].parties || []).some((x) => x.partyRoleType === 'Lender'), 'never emits a Lender party for client_displayed_id');
 })();
 
-// ---- Client-displayed by NAME only (no id resolved) → Lender party carries fullNameAddress ----
-// The vendor mapping's "Lender Alias (dba) Full Name and Address" = the Client Displayed on
-// Report. When the account's list can't be read, we send the default NAME so the order still
-// goes out (owner-directed: default "YS Capital Group") instead of blocking.
+// ---- Client-displayed by NAME only (no id) → sourceClientName sent, no invented id ----
+// The gateway REQUIRES the numeric id (order-build.missingRequired blocks a name-only order);
+// but if a name-only spec is ever built, the name rides as sourceClientName and no bogus id
+// is invented — client_displayed_id is only ever the real resolved id.
 (() => {
-  const deal = cdg.buildCreateAppraisal(
+  const m = cdg.buildCreateAppraisal(
     { productCode: '76', clientDisplayedName: 'YS Capital Group', loan: { loanNumber: '1' }, borrowers: [], property: {} },
-    { apiKey: 'K', subdomain: 's' }).message.deals[0];
-  const lender = (deal.parties || []).find((x) => x.partyRoleType === 'Lender');
-  ok(lender && lender.fullNameAddress === 'YS Capital Group', 'Lender party carries the client-displayed NAME (fullNameAddress) when only a name is known');
-  ok(lender && lender.partyRoleIdentifier === undefined, 'no partyRoleIdentifier when only a name is known');
+    { apiKey: 'K', subdomain: 's' }).message;
+  const cs = m.clientSystem;
+  ok(cs.sourceInformation && cs.sourceInformation.sourceClientName === 'YS Capital Group', 'sourceClientName carries the client-displayed NAME when only a name is known');
+  ok(cs.sourceInformation.sourceClientIdentifier === undefined, 'no sourceClientIdentifier is invented when only a name is known');
+  // A numeric id is REQUIRED for the Lender party — a name alone never invents one.
+  ok(!(m.deals[0].parties || []).some((x) => x.partyRoleType === 'Lender'), 'no Lender party when only a name is known (no id to send)');
 })();
 
-// ---- Client-displayed with BOTH id and name → Lender party carries both ----
+// ---- Client-displayed with BOTH id and name → sent BOTH ways with the same values ----
 (() => {
-  const deal = cdg.buildCreateAppraisal(
+  const m = cdg.buildCreateAppraisal(
     { productCode: '76', clientDisplayedId: '297', clientDisplayedName: 'YS Capital Group', loan: { loanNumber: '1' }, borrowers: [], property: {} },
-    { apiKey: 'K', subdomain: 's' }).message.deals[0];
-  const lender = (deal.parties || []).find((x) => x.partyRoleType === 'Lender');
-  ok(lender && lender.partyRoleIdentifier === '297' && lender.fullNameAddress === 'YS Capital Group', 'Lender party carries both id and name when both are known');
+    { apiKey: 'K', subdomain: 's' }).message;
+  const cs = m.clientSystem;
+  ok(cs.sourceInformation.sourceClientIdentifier === '297' && cs.sourceInformation.sourceClientName === 'YS Capital Group',
+    'sourceInformation carries both the client-displayed id and name');
+  const lender = (m.deals[0].parties || []).find((x) => x.partyRoleType === 'Lender');
+  ok(lender && lender.partyRoleIdentifier === '297' && lender.fullNameAddress === 'YS Capital Group',
+    'Lender party carries the same client-displayed id and name');
 })();
 
 // ---- BestContact names the borrower it resolves to; the reachable contact lives on the

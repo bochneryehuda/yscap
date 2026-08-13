@@ -133,7 +133,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     ok(Array.isArray(preview.notifyEmails) && preview.notifyEmails.length >= 3, 'preview exposes the update-email recipients');
     ok(preview.spec.notifyEmails && preview.spec.notifyEmails.length >= 3, 'the spec carries the notify emails → products[].notifications');
     ok(preview.spec.loan.loanNumber === 'YSCAP-AMC-1' && preview.spec.property.titleCategory === 'Single Family', 'spec filled from the file');
-    ok(preview.spec.clientDisplayedId === '297', 'spec carries the client-displayed-on-report id → the Lender party');
+    ok(preview.spec.clientDisplayedId === '297', 'spec carries the client-displayed-on-report id → sourceClientIdentifier');
     ok(preview.canPlace === true && preview.missing.length === 0, 'preview is complete → placeable');
 
     // ---- createOrder (draft, no network) ----
@@ -142,12 +142,17 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     ok(draft.order && draft.order.status === 'draft' && draft.order.product_code === '5', 'draft persisted with the chosen form');
     ok(draft.order.request_payload && JSON.stringify(draft.order.request_payload).includes('YSCAP-AMC-1'), 'draft stores the (masked) request payload');
     ok(!JSON.stringify(draft.order.request_payload).includes('DoLogin'), 'draft payload carries no login credentials');
-    // The stored (masked) payload carries the Lender party (client_displayed_id) — proof the
-    // whole chain resolves the CDOR through to the wire message a draft records.
+    // The stored (masked) payload carries the client-displayed id BOTH ways — on the
+    // clientSystem sourceInformation AND on a Lender party's partyRoleIdentifier, with the
+    // SAME value — proof the whole chain resolves the CDOR through to the wire message a
+    // draft records (belt-and-suspenders so the gateway is satisfied whichever it reads).
     {
-      const lender = ((((draft.order.request_payload.message || {}).deals || [])[0] || {}).parties || [])
-        .find((p) => p.partyRoleType === 'Lender');
-      ok(lender && lender.partyRoleIdentifier === '297', 'draft payload carries the Lender party (client_displayed_id)');
+      const cs = (draft.order.request_payload.message || {}).clientSystem || {};
+      ok(cs.sourceInformation && cs.sourceInformation.sourceClientIdentifier === '297',
+        'draft payload carries client_displayed_id via clientSystem.sourceInformation.sourceClientIdentifier');
+      const parties = ((((draft.order.request_payload.message || {}).deals || [])[0] || {}).parties || []);
+      ok(parties.some((p) => p.partyRoleType === 'Lender' && p.partyRoleIdentifier === '297'),
+        'draft payload ALSO carries client_displayed_id on a Lender party (same value)');
     }
 
     // ---- listOrders ----

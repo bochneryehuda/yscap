@@ -170,9 +170,10 @@ function buildOrderSpec(ctx, form, opts = {}) {
 
     // The "Client Displayed on Report" (AppraisalScope's REQUIRED client_displayed_id) —
     // resolved in order-service (config id, else the account's profile matched to the default
-    // name "YS Capital Group", else the name itself). cdg.js emits it as the deal's
-    // partyRoleType="Lender" party: its id when known, else its name (fullNameAddress).
-    // A staffer can pin a specific id via opts (its name comes from the matching option).
+    // name "YS Capital Group"). cdg.js sends the resolved id TWO ways with the same value —
+    // on message.clientSystem.sourceInformation.sourceClientIdentifier AND on a
+    // partyRoleType="Lender" party's partyRoleIdentifier — so the gateway is satisfied
+    // whichever it reads. A staffer can pin a specific id via opts (its name comes from the matching option).
     clientDisplayedId,
     clientDisplayedName,
 
@@ -305,13 +306,14 @@ function missingRequired(spec) {
   if (!primary || (!primary.firstName && !primary.legalEntityName)) missing.push('borrower first name');
   if (!primary || (!primary.lastName && !primary.legalEntityName)) missing.push('borrower last name');
   if (!spec.parties || !spec.parties.bestContact) missing.push('best person to contact');
-  // AppraisalScope REQUIRES a `client_displayed_id` — the client/lender profile shown on the
-  // report. It resolves to an id (config, or the account's profile matched to the default
-  // name), else falls back to the default NAME ("YS Capital Group"), which is still sent — so
-  // this only blocks when neither an id NOR a name is available (e.g. the account has several
-  // profiles and none is picked — the preview shows a picker). It is never blocked just
-  // because the lookups aren't cached, since the default name is always sent.
-  if (!spec.clientDisplayedId && !spec.clientDisplayedName) missing.push('the client shown on the appraisal report');
+  // AppraisalScope REQUIRES a numeric `client_displayed_id` — the client/lender profile shown
+  // on the report, sent on the wire as sourceClientIdentifier (see cdg.js). It resolves to an
+  // id from AMC_CLIENT_DISPLAYED_ID, or the account's GetClientDisplayOnReport profile matched
+  // to the default name "YS Capital Group" (or the sole profile). A NAME alone cannot satisfy
+  // the gateway, so we refuse HERE with a plain message when no id resolves — rather than send
+  // an order that fails at the vendor with a cryptic "client_displayed_id: Required". For a
+  // normal single-profile account this auto-resolves and never blocks.
+  if (!spec.clientDisplayedId) missing.push('the client shown on the appraisal report');
   // AppraisalScope REQUIRES a purchase/property amount and a real, reachable main
   // contact (its `purchase_amount` / `primary_contact`). Validate them HERE so a blank
   // shows on the preview as a plain "still needed" line and the submit refuses — never
@@ -366,10 +368,11 @@ function orderAssumptions(ctx, form, opts = {}, spec = null) {
     add('titleCategory', 'Property type', property.titleCategory,
       'Worked out from the property type on the file.', 'derived');
   }
-  // The client shown on the appraisal report — always surfaced so the desk sees what will
-  // print on the report (defaults to "YS Capital Group"). Not shown when the staffer picked
-  // one explicitly, or when the account has several to choose from (a picker handles that).
-  if (opts.clientDisplayedId == null && opts.clientDisplayedName == null
+  // The client shown on the appraisal report — surfaced so the desk sees what will print on
+  // the report (defaults to "YS Capital Group"). Shown only when an id actually resolved (the
+  // gateway requires the id); not shown when the staffer picked one explicitly, or when the
+  // account has several to choose from / none resolvable (missingRequired flags those).
+  if (opts.clientDisplayedId == null && opts.clientDisplayedName == null && s.clientDisplayedId
       && ctx.clientDisplayedSource && ctx.clientDisplayedSource !== 'multiple' && ctx.clientDisplayedSource !== 'none') {
     const shown = ctx.clientDisplayedName
       ? (s.clientDisplayedId ? `${ctx.clientDisplayedName} (#${s.clientDisplayedId})` : ctx.clientDisplayedName)
