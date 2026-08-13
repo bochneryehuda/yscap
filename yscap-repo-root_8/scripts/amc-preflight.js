@@ -76,7 +76,8 @@ function printInventory(inv) {
   if (!inv.canOrder) {
     console.log(color(DIM, '  (AMC_LENDER_IDENTIFIER — the GGID — is not needed to authenticate, but every'));
     console.log(color(DIM, '   order message carries it, so ordering stays blocked until it is set.'));
-    console.log(color(DIM, '   AMC_SOURCE_CLIENT_ID is OPTIONAL — this tenant is not issued one.)'));
+    console.log(color(DIM, '   The REQUIRED client_displayed_id is pinned by AMC_CLIENT_DISPLAYED_ID'));
+    console.log(color(DIM, '   (or resolved from the account\'s GetClientDisplayOnReport list at order time).)'));
   }
 }
 

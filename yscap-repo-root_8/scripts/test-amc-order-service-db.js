@@ -183,11 +183,30 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     const many = await orderService.resolveClientDisplayed(c, '');
     ok(many.id === null && many.source === 'multiple' && many.options.length === 2, 'several profiles, none matching the default → picker (blocked until chosen)');
 
-    // No cached profile at all → fall back to the configured NAME so the order still goes out.
+    // No cached profile at all → fall back to the configured NAME. A numeric id is REQUIRED, so
+    // this carries id=null and missingRequired blocks the order up-front (belt-and-suspenders);
+    // the name rides along only as the default label.
     await setCdor([]);
     const nameOnly = await orderService.resolveClientDisplayed(c, '');
     ok(nameOnly.id === null && nameOnly.source === 'name_default' && nameOnly.name === 'YS Capital Group',
-      'empty cache → default name sent (order NOT blocked)');
+      'empty cache → default NAME only (id null → missingRequired blocks up-front)');
+
+    // The LEGACY AMC_SOURCE_CLIENT_ID pins the SAME id when AMC_CLIENT_DISPLAYED_ID is unset,
+    // resolved as source 'config' exactly like the primary var (back-compat: an older deploy
+    // that set only the legacy var must still resolve an id, not silently block). This returns
+    // early from config, so the empty cache above does not matter.
+    const _cfg = require('../src/config');
+    const _savedCd = _cfg.amc.clientDisplayedId, _savedSrc = _cfg.amc.sourceClientId;
+    _cfg.amc.clientDisplayedId = null; _cfg.amc.sourceClientId = '267';
+    const viaLegacy = await orderService.resolveClientDisplayed(c, '');
+    ok(viaLegacy.id === '267' && viaLegacy.source === 'config',
+      'legacy AMC_SOURCE_CLIENT_ID pins the id when AMC_CLIENT_DISPLAYED_ID is unset');
+    // The primary AMC_CLIENT_DISPLAYED_ID wins over the legacy fallback when both are set.
+    _cfg.amc.clientDisplayedId = '999';
+    const bothSet = await orderService.resolveClientDisplayed(c, '');
+    ok(bothSet.id === '999', 'AMC_CLIENT_DISPLAYED_ID wins over the legacy AMC_SOURCE_CLIENT_ID');
+    _cfg.amc.clientDisplayedId = _savedCd; _cfg.amc.sourceClientId = _savedSrc; // restore
+
     // Restore the single-profile cache for any later reads in this transaction.
     await setCdor([{ id: '297', name: 'YS Capital Group' }]);
 
