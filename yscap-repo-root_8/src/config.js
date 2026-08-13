@@ -1027,14 +1027,15 @@ module.exports = {
   // vendor provide: the OAuth client id/secret (GetToken), the DoLogin account
   // id/password, the ServiceProviderSubDomain and the DigitalGatewayLenderIdentifier
   // (a CoreLogic reporting id / GGID). AppraisalScope's REQUIRED `client_displayed_id` (the
-  // "Client Displayed on Report" printed ON the appraisal) is carried on the wire as
-  // message.clientSystem.sourceInformation.sourceClientIdentifier — the vendor's own
-  // createappraisal sample + field mapping confirm this; the id is one of the tenant's
-  // GetClientDisplayOnReport profiles (e.g. 267/297). AMC_CLIENT_DISPLAYED_ID pins that id
-  // directly; otherwise the order builder resolves it from the account's
-  // GetClientDisplayOnReport list (the sole profile, or the one matching the default name
-  // "YS Capital Group"). AMC_SOURCE_CLIENT_ID is a legacy fallback for the SAME field.
-  // Nothing talks to the AMC until AMC_ENABLED=1 and these are set.
+  // "Client Displayed on Report" printed ON the appraisal) is carried on the wire TWO ways with
+  // the SAME value — message.clientSystem.sourceInformation.sourceClientIdentifier AND a
+  // partyRoleType="Lender" party's partyRoleIdentifier — so the gateway is satisfied whichever
+  // it reads; the id is one of the tenant's GetClientDisplayOnReport profiles (e.g. 199384 =
+  // "YS Capital Group" for this tenant). AMC_CLIENT_DISPLAYED_ID pins that id directly;
+  // otherwise the order builder resolves it from the account's GetClientDisplayOnReport list
+  // (the sole profile, or the one matching the default name "YS Capital Group"). A numeric id
+  // is required — a name alone cannot satisfy the gateway. AMC_SOURCE_CLIENT_ID is a legacy
+  // fallback for the SAME id. Nothing talks to the AMC until AMC_ENABLED=1 and these are set.
   amc: {
     enabled:        process.env.AMC_ENABLED === '1',            // master (default OFF)
     outboundEnabled: process.env.AMC_OUTBOUND_ENABLED === '1',  // write gate (default OFF)

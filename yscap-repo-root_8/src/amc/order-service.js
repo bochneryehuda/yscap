@@ -151,20 +151,27 @@ async function ensureClientDisplayedCache(db) {
 // ways (clientSystem.sourceInformation.sourceClientIdentifier AND a Lender party's
 // partyRoleIdentifier) so the gateway is satisfied whichever it reads. Here we resolve
 // WHICH id (or name) to send:
-//   1. AMC_CLIENT_DISPLAYED_ID (config) — an explicit id always wins.
+//   1. AMC_CLIENT_DISPLAYED_ID (config) — an explicit id always wins; the LEGACY
+//      AMC_SOURCE_CLIENT_ID pins the SAME id when AMC_CLIENT_DISPLAYED_ID is unset
+//      (back-compat, so an older deploy that set only the legacy var still resolves an id
+//      rather than silently blocking). Both surface as source 'config'.
 //   2. else the cached GetClientDisplayOnReport list (refreshed live once if empty):
 //      a. an entry whose name means the configured default ("YS Capital Group") → its id.
 //      b. exactly ONE entry → auto-use it.
 //      c. several entries, none matching the default → don't guess; a picker chooses. It's
 //         'multiple' → missingRequired blocks (with the picker) rather than print the wrong
 //         company on the report.
-//   3. the list can't be read at all → send the configured NAME (source 'name_default') so
-//      the order is NEVER blocked for a missing value — owner-directed: it should always
-//      default to "YS Capital Group".
+//   3. the list can't be read at all → fall back to the configured NAME (source 'name_default').
+//      A numeric id is REQUIRED (cdg.js sends the id, not a name), so a name-only result carries
+//      id=null and missingRequired blocks the order up-front (belt-and-suspenders) rather than
+//      sending a name the gateway rejects. The name still rides along as the default label
+//      ("YS Capital Group", owner-directed) for the missingRequired message / picker.
 // Best-effort + never throws.
 async function resolveClientDisplayed(db, subdomain) {
   const wantName = (cfg.amc && cfg.amc.clientDisplayedName) || null;
-  const configured = (cfg.amc && cfg.amc.clientDisplayedId) || null;
+  // AMC_CLIENT_DISPLAYED_ID wins; AMC_SOURCE_CLIENT_ID is the legacy fallback for the SAME id.
+  const configured = (cfg.amc && cfg.amc.clientDisplayedId)
+    || (cfg.amc && cfg.amc.sourceClientId) || null;
   if (configured) return { id: String(configured), name: wantName, source: 'config', options: [] };
 
   let opts = await cachedClientDisplayed(db, subdomain);
