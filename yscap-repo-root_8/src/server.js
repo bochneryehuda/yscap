@@ -857,6 +857,31 @@ if (require.main === module) {
         require('./sitewire/media-archive').backfillHeicMediaOnce(Number(process.env.DRAW_MEDIA_HEIC_BOOT || 40))
           .then((r) => r && r.converted && console.log('[boot] draw-media HEIC backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] draw-media HEIC backfill failed:', e.message));
+        // ALL THE PHOTOS REACH THE REPORT (owner-directed 2026-08-13). jsPDF embeds JPEG bytes
+        // verbatim, so a ~3.5 MB phone photo costs 3.5 MB of report and the 60 MB embed budget
+        // ran out after about FIFTEEN of them — on inspections that carry ~100. This worker
+        // builds a report-sized copy of each photo BESIDE the untouched original, so every photo
+        // fits. It is PACED (a pure-JS JPEG decode blocks the event loop ~3s per photo) and
+        // self-rescheduling: it comes back quickly while a backlog drains and then idles.
+        // Off with DRAW_MEDIA_DISPLAY_DISABLED=1.
+        if (process.env.DRAW_MEDIA_DISPLAY_DISABLED !== '1') {
+          const displayBatch = Number(process.env.DRAW_MEDIA_DISPLAY_BATCH || 20);
+          const idleMs = Number(process.env.DRAW_MEDIA_DISPLAY_IDLE_MS || 30 * 60 * 1000);
+          const busyMs = Number(process.env.DRAW_MEDIA_DISPLAY_BUSY_MS || 60 * 1000);
+          const runDisplayPass = () => {
+            require('./sitewire/media-archive').buildDisplayMediaOnce(displayBatch)
+              .then((r) => {
+                if (r && (r.built || r.skipped)) console.log('[boot] draw-media display copies:', JSON.stringify(r));
+                // A timer must never hold the process open on a shutdown.
+                setTimeout(runDisplayPass, r && r.more ? busyMs : idleMs).unref();
+              })
+              .catch((e) => {
+                console.error('[boot] draw-media display pass failed:', e.message);
+                setTimeout(runDisplayPass, idleMs).unref();
+              });
+          };
+          runDisplayPass();
+        }
         // PREVIOUS FILES for the email-signature filter (owner-reported 2026-08-03:
         // the tiny pictures out of a title / insurance agent's signature "still
         // coming in as documents … we still need to manually reject it on every

@@ -329,4 +329,105 @@ async function backfillHeicMediaOnce(limit = 40) {
   return out;
 }
 
-module.exports = { planArchive, archiveDrawMedia, archivedMediaFor, fetchBinary, assertPublicHttps, isPrivateIp, sha256, extFor, backfillHeicMediaOnce, PER_FILE_CAP, MAX_ITEMS };
+/* THE DISPLAY COPY — a report-sized rendering of each photo, stored BESIDE the original
+ * (owner-directed 2026-08-13: "the report itself should be able to handle more pictures").
+ *
+ * WHY THIS IS A BACKGROUND WORKER AND NOT PART OF archiveDrawMedia. Shrinking a photo means
+ * decoding it, and `jpeg-js` is pure JavaScript (the repo's no-native-dependency rule): ~3
+ * SECONDS per 12-megapixel photo, all of it BLOCKING THE EVENT LOOP. An 80-photo archive run
+ * would freeze the whole server for four minutes — every request, every health probe. So the
+ * archive path stays exactly as fast as it was, and the fitting happens here, ONE photo at a
+ * time with a real pause between them, the same discipline as backfillHeicMediaOnce.
+ *
+ * IT IS A CONTINUOUS QUEUE, NOT A ONE-SHOT SWEEP. `display_checked_at IS NULL` is the work list
+ * and stamping it is the drain, so newly archived photos and the whole back book flow through
+ * the identical path — there is no second mechanism for new photos that could drift from this one.
+ *
+ * A ROW WHOSE BYTES CANNOT BE READ IS RETRIED A FEW TIMES AND THEN LEFT ALONE, which is the only
+ * shape that survives both failure modes. Stamping it done on the first failure would let ONE
+ * storage blip permanently condemn a whole draw's photos to being embedded at full size again.
+ * Never giving up would be worse: the queue is ordered by id, so a handful of permanently missing
+ * blobs would sit at its head forever and starve every real photo behind them. So the attempt
+ * count rides in `display_skip_reason` ('unreadable:1'…) and the row drops out of the queue at
+ * MAX_DISPLAY_READ_TRIES — still UNSTAMPED, so a deliberate re-sweep is one UPDATE away.
+ *
+ * FAILING TO BUILD A DISPLAY COPY COSTS NOTHING BUT SIZE. The report falls back to the original
+ * bytes, so the worst case of every guess here is exactly the behaviour we had before — no photo
+ * is ever lost by this worker.
+ *
+ * NOTHING IS EVER REPLACED OR DELETED: storage_ref keeps the inspector's original bytes and every
+ * existing reader is untouched. Never throws.
+ */
+const MAX_DISPLAY_READ_TRIES = 3;
+
+async function buildDisplayMediaOnce(limit = 20, opts = {}) {
+  // `more` lets the caller come back sooner while a backlog is draining and back off once it is
+  // empty, instead of picking one fixed interval that is either too slow or pointless churn.
+  const out = { scanned: 0, built: 0, skipped: 0, unreadable: 0, savedBytes: 0, more: false };
+  const pauseMs = Number.isFinite(opts.pauseMs) ? opts.pauseMs : 2000;
+  try {
+    const imageFit = require('../lib/image-fit');
+    const rows = (await db.query(
+      `SELECT id, storage_ref, storage_provider, content_type, bytes, display_skip_reason FROM draw_media
+        WHERE display_checked_at IS NULL AND kind = 'image' AND storage_ref IS NOT NULL
+          AND COALESCE(display_skip_reason,'') <> $2
+        ORDER BY id ASC LIMIT $1`,
+      [Math.max(1, limit), `unreadable:${MAX_DISPLAY_READ_TRIES}`])).rows;
+    let progressed = 0;
+    for (const r of rows) {
+      out.scanned++;
+      let buf = null;
+      try {
+        // Read from the row's OWN provider — on an s3 deployment a 'local' row would otherwise
+        // cost a wasted S3 GET before the dual-read fallback found it on disk.
+        buf = await storage.forRow(r).read(r.storage_ref);
+      } catch (_) { buf = null; }
+      if (!buf || !buf.length) {
+        // Count the attempt so a blob that is genuinely gone eventually stops holding the head of
+        // the queue — but leave display_checked_at NULL, so this is never confused with "we looked
+        // at this photo and decided it needs no display copy".
+        out.unreadable++;
+        const tries = Math.min(MAX_DISPLAY_READ_TRIES,
+          (parseInt(String(r.display_skip_reason || '').split(':')[1], 10) || 0) + 1);
+        try {
+          await db.query(`UPDATE draw_media SET display_skip_reason=$2 WHERE id=$1`, [r.id, `unreadable:${tries}`]);
+          if (tries >= MAX_DISPLAY_READ_TRIES) progressed++;   // it left the queue — that IS progress
+        } catch (_) { /* the retry simply happens again next pass */ }
+        continue;
+      }
+      try {
+        // Pace BEFORE the expensive part, so a backlog can never hold the event loop for more
+        // than one photo's decode at a time.
+        if (pauseMs > 0) await new Promise((res) => setTimeout(res, pauseMs));
+        const fit = imageFit.fitJpeg(buf);
+        if (!fit.changed) {
+          // A real answer — "this one is already small", "this is a PNG", "shrinking made it
+          // bigger". Stamped so it drains; the reports simply keep using the original bytes.
+          await db.query(
+            `UPDATE draw_media SET display_checked_at = now(), display_skip_reason = $2 WHERE id = $1`,
+            [r.id, String(fit.reason || 'unchanged').slice(0, 40)]);
+          out.skipped++; progressed++;
+          continue;
+        }
+        const saved = await storage.save(fit.buf, { filename: `draw-media-${r.id}-display.jpg` });
+        // Pinned to the ref we actually read from: a concurrent re-archive (which re-points
+        // storage_ref) must win, rather than have us attach a display copy of the OLD bytes.
+        const upd = await db.query(
+          `UPDATE draw_media
+              SET display_ref = $2, display_bytes = $3, display_width = $4, display_height = $5,
+                  display_checked_at = now(), display_skip_reason = NULL
+            WHERE id = $1 AND storage_ref = $6`,
+          [r.id, saved.ref, fit.buf.length, fit.to && fit.to.w, fit.to && fit.to.h, r.storage_ref]);
+        if (upd.rowCount) { out.built++; progressed++; out.savedBytes += Math.max(0, fit.bytesBefore - fit.bytesAfter); }
+      } catch (_) { /* one bad row never stops the pass; it stays unstamped and is retried */ }
+    }
+    // `more` means "come back soon, there is real work left" — a FULL batch that made NO progress
+    // (every row unreadable) must back off to the idle interval instead of spinning every minute.
+    out.more = rows.length >= Math.max(1, limit) && progressed > 0;
+  } catch (e) {
+    try { console.warn(`[sitewire] display-media pass: ${(e && e.message) || e}`); } catch (_) {}
+  }
+  return out;
+}
+
+module.exports = { planArchive, archiveDrawMedia, archivedMediaFor, fetchBinary, assertPublicHttps, isPrivateIp, sha256, extFor, backfillHeicMediaOnce, buildDisplayMediaOnce, PER_FILE_CAP, MAX_ITEMS };

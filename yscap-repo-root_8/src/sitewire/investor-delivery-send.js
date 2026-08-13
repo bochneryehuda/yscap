@@ -486,8 +486,21 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
 
   const meta = [...wording.rows, ...wording.detail];
   const lines = [wording.intro];
-  if (skipped.length) {
-    lines.push('Not attached: ' + skipped.map((s) => `${s.what} (${s.reason})`).join('; ') + '. Let us know and we will send it over.');
+  // WHAT WE SENT, NOT WHAT WE COULDN'T (owner-directed 2026-08-13: "even if it's not attached, it
+  // shouldn't say 'Hey, this was not attached' — it makes it unprofessional").
+  //
+  // This used to append "Not attached: PILOT draw report (too large to attach to one email — send
+  // it separately). Let us know and we will send it over." — an apology for our own plumbing, in a
+  // letter to a capital partner, ending by asking THEM to chase US. It now names what IS enclosed
+  // and stops there.
+  //
+  // NOTHING IS LOST INTERNALLY, which is what makes this safe rather than a cover-up: every skipped
+  // item and its reason is still returned to the caller, still shown on the delivery card BEFORE
+  // anyone presses send, and still written to `draw_investor_deliveries.skipped` — the permanent
+  // record of what this email did and did not carry. The team simply no longer says it out loud to
+  // the investor.
+  if (items.length) {
+    lines.push('Enclosed: ' + items.map((it) => it.what).join(', ') + '.');
   }
 
   // template.render returns { subject, html, text } — take BOTH bodies from it so the HTML and the
