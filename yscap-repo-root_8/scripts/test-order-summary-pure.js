@@ -18,6 +18,9 @@ const valOf = (rows, label) => (rows.find((r) => r.label === label) || {}).value
     form_description: 'Single-family Appraisal (1004)', product_code: '5',
     client_order_number: 'YSCAP-123', status: 'ordered',
     request_payload: { message: {
+      // The client_displayed_id rides here (sourceInformation.sourceClientIdentifier) AND on a
+      // Lender party, both with the same value; the summary reads it back off sourceInformation.
+      clientSystem: { sourceInformation: { sourceClientName: 'YS Capital Group', sourceClientIdentifier: '199384' } },
       products: [{ productCode: '5', notifications: [{ contactEmail: 'lo@x.com' }, { contactEmail: 'p@x.com' }] }],
       deals: [{
         loans: [{ loanIdentifiers: { lenderLoanIdentifier: 'YSCAP-123' }, loanPurposeType: 'Purchase', baseLoanAmount: '300000.00' }],
@@ -41,6 +44,15 @@ const valOf = (rows, label) => (rows.find((r) => r.label === label) || {}).value
   ok(valOf(s, 'Borrowers') === 'Peter Parker, Mary Jane', 'NAN both borrowers');
   ok(valOf(s, 'Main contact') === 'Peter Parker · 555-1 · p@x.com', 'NAN main contact name + reach');
   ok(valOf(s, 'Update emails to') === 'lo@x.com, p@x.com', 'NAN notify emails');
+  ok(valOf(s, 'Client shown on report') === 'YS Capital Group (#199384)', 'NAN client-displayed name (#id) from sourceInformation');
+
+  // Id-only sourceInformation (no name) shows just "#id"; and an envelope with no
+  // sourceInformation omits the line entirely rather than printing a blank.
+  const idOnly = amc.orderSummary({ form_description: 'Form', request_payload: { message: {
+    clientSystem: { sourceInformation: { sourceClientIdentifier: '199384' } } } } });
+  ok(valOf(idOnly, 'Client shown on report') === '#199384', 'NAN client-displayed id-only shows #id');
+  const noClient = amc.orderSummary({ form_description: 'Form', request_payload: { message: { deals: [{}] } } });
+  ok(valOf(noClient, 'Client shown on report') === undefined, 'NAN omits the client-shown line when there is no sourceInformation');
 
   // A draft with no stored envelope still names the loan number, never crashes.
   const bare = amc.orderSummary({ form_description: 'Form', client_order_number: 'L1' });

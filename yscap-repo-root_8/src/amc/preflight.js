@@ -49,13 +49,23 @@ const CREDENTIALS = [
     what: 'our AppraisalScope tenant, e.g. "integrations.uat" (ServiceProviderSubDomain)' },
   { env: 'AMC_LENDER_IDENTIFIER', cfgKey: 'lenderIdentifier', step: 'order', required: true,
     what: 'the GGID — CoreLogic\'s lender id, e.g. GG000000 (DigitalGatewayLenderIdentifier)' },
-  // OPTIONAL: the vendor (Tony Pham, 2026-08-11) confirmed there is no such credential
-  // for this tenant — DoLogin issues an api_key without it and no auth / lookup / status /
-  // comment / revision / document call carries it. Only CreateAppraisal references it, and
-  // the builder (src/amc/cdg.js) omits sourceInformation entirely when it is unset, so an
-  // order is valid without it. Left settable in case a future tenant is issued one.
+  // AppraisalScope's REQUIRED client_displayed_id — the "Client Displayed on Report" printed
+  // ON the appraisal (this tenant's GetClientDisplayOnReport profile, e.g. 199384 =
+  // "YS Capital Group"). CreateAppraisal sends this id TWO ways with the SAME value: on
+  // message.clientSystem.sourceInformation.sourceClientIdentifier AND on a partyRoleType=
+  // "Lender" party (partyRoleIdentifier). The gateway REQUIRES a numeric id — a name alone
+  // cannot satisfy it — so an order with no resolvable id is refused up-front by the order
+  // builder (order-build.missingRequired). Pin it HERE; otherwise the builder resolves it
+  // from the account's GetClientDisplayOnReport list. NOT flagged required, because the id
+  // can also come from that lookup list (or the legacy fallback below) — so a static
+  // "missing" check would false-alarm — but this is the knob the operator sets to pin it.
+  { env: 'AMC_CLIENT_DISPLAYED_ID', cfgKey: 'clientDisplayedId', step: 'order', required: false,
+    what: 'the "Client Displayed on Report" id (client_displayed_id; e.g. 199384 = "YS Capital Group") — pins the REQUIRED client-shown id; else resolved from GetClientDisplayOnReport' },
+  // LEGACY FALLBACK for the SAME value as AMC_CLIENT_DISPLAYED_ID above — an older knob for
+  // sourceInformation.sourceClientIdentifier. AMC_CLIENT_DISPLAYED_ID wins when both are set.
+  // Kept settable so an existing deploy that pinned the id here keeps working.
   { env: 'AMC_SOURCE_CLIENT_ID', cfgKey: 'sourceClientId', step: 'order', required: false,
-    what: 'OPTIONAL — our client/user id inside AppraisalScope (sourceInformation.sourceClientIdentifier); not issued for this tenant' },
+    what: 'LEGACY FALLBACK for client_displayed_id / sourceClientIdentifier — superseded by AMC_CLIENT_DISPLAYED_ID' },
   { env: 'AMC_FALLBACK_APIKEY', cfgKey: 'fallbackApiKey', step: 'login', required: false, secret: true,
     what: 'UAT-only: a pre-issued api_key that skips DoLogin entirely' },
 ];
@@ -130,8 +140,11 @@ function inventory(amc) {
     // A lookup needs a token (or the fallback key) AND a session.
     canLookup: canLogin && (canToken || hasFallback),
     // Ordering additionally needs the GGID (DigitalGatewayLenderIdentifier) that rides on
-    // every order message. AMC_SOURCE_CLIENT_ID is OPTIONAL (the tenant is not issued one),
-    // so it does not gate ordering — the builder omits it when unset.
+    // every order message. The REQUIRED client_displayed_id (AMC_CLIENT_DISPLAYED_ID, or the
+    // legacy AMC_SOURCE_CLIENT_ID) is deliberately NOT gated here: when neither is pinned the
+    // order builder resolves it from the account's GetClientDisplayOnReport list, and an order
+    // with no resolvable id is refused up-front by the builder — so preflight cannot statically
+    // decide it, and gating canOrder on the env would false-alarm on a lookup-resolved tenant.
     canOrder: isSet('AMC_LENDER_IDENTIFIER'),
   };
 }
