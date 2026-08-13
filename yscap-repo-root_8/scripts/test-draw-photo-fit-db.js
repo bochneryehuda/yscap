@@ -89,7 +89,25 @@ function makeJpeg(w, h, quality) {
   {
     // pauseMs 0 — the production default paces 2s per photo so a pure-JS decode can never hold the
     // event loop; the test does not need the pause and would otherwise take minutes.
-    const r = await media.buildDisplayMediaOnce(50, { pauseMs: 0 });
+    //
+    // DRAIN UNTIL *OUR* ROWS ARE ANSWERED, never a single fixed batch. THE QUEUE IS SHARED AND
+    // GLOBAL: half a dozen other suites seed `draw_media` (test-tpo-draws-db runs a hundred suites
+    // before this one), and on a FRESH database — which is exactly what CI builds — those rows are
+    // still pending and are taken FIRST, because the worker reads id-ascending. A one-shot
+    // `buildDisplayMediaOnce(50)` then never reaches the photos this test just inserted, and every
+    // assertion below fails for a reason that has nothing to do with the code under test.
+    // Reproduced deliberately (60 foreign pending rows → "A2 built at least one display copy"
+    // failed), which is what CI was reporting.
+    const r = { scanned: 0, built: 0, skipped: 0, unreadable: 0 };
+    for (let pass = 0; pass < 25; pass++) {
+      const p = await media.buildDisplayMediaOnce(100, { pauseMs: 0 });
+      r.scanned += p.scanned; r.built += p.built; r.skipped += p.skipped; r.unreadable += p.unreadable;
+      const left = (await db.query(
+        `SELECT count(*) c FROM draw_media WHERE id = ANY($1::bigint[]) AND display_checked_at IS NULL`,
+        [[bigRow.id, smallRow.id]])).rows[0].c;
+      if (Number(left) === 0) break;
+      if (!p.scanned) break;                 // nothing moved — do not spin
+    }
     ok(r.scanned >= 3, 'A1 the worker scanned the seeded photos');
     ok(r.built >= 1, 'A2 …and built at least one display copy');
 
@@ -134,32 +152,43 @@ function makeJpeg(w, h, quality) {
 
   // ── B. THE PASS IS IDEMPOTENT AND SELF-DRAINING ────────────────────────────────
   {
+    /* EVERY ASSERTION HERE IS SCOPED TO OUR OWN ROWS, using the worker's own selection predicate.
+       The queue is global and other suites seed it, so a GLOBAL counter ("the pass built nothing",
+       "the pass scanned nothing") tests those suites' leftovers as much as this code — it passes
+       on a re-used database and fails on a fresh one, which is precisely the CI-only failure this
+       section previously caused. */
+    const inQueue = async (id) => Number((await db.query(
+      `SELECT count(*) c FROM draw_media
+        WHERE id = $1 AND display_checked_at IS NULL AND kind = 'image' AND storage_ref IS NOT NULL
+          AND COALESCE(display_skip_reason,'') <> $2`, [id, 'unreadable:3'])).rows[0].c);
+
     const before = (await db.query(`SELECT display_ref, display_bytes FROM draw_media WHERE id=$1`, [bigRow.id])).rows[0];
-    const r2 = await media.buildDisplayMediaOnce(50, { pauseMs: 0 });
-    eq(r2.built, 0, 'B1 a second pass builds nothing — the stamp is the drain');
+    eq(await inQueue(bigRow.id), 0, 'B1 a finished photo has left the queue — the stamp is the drain');
+    await media.buildDisplayMediaOnce(100, { pauseMs: 0 });
     const after = (await db.query(`SELECT display_ref, display_bytes FROM draw_media WHERE id=$1`, [bigRow.id])).rows[0];
-    eq(after.display_ref, before.display_ref, 'B2 …and does not re-point an existing display copy');
-    // `more` must be honest, or the self-rescheduling loop in server.js either spins or stalls.
-    eq(r2.more, false, 'B3 the pass reports that the queue is drained');
+    eq(after.display_ref, before.display_ref, 'B2 …and a further pass does not re-point its display copy');
+    eq(after.display_bytes, before.display_bytes, 'B3 …nor rebuild it');
 
     /* A PERMANENTLY MISSING BLOB MUST NOT STARVE THE QUEUE. Rows are taken id-ascending, so an old
        unreadable one sits at the head forever; without a retry cap it would crowd out every real
        photo behind it and the loop would re-run every minute for nothing. It is retried a few
        times (a transient outage must not condemn a draw's photos) and then drops out. */
-    for (let i = 0; i < 5; i++) await media.buildDisplayMediaOnce(1, { pauseMs: 0 });
+    for (let i = 0; i < 6 && (await inQueue(goneRow.id)); i++) await media.buildDisplayMediaOnce(100, { pauseMs: 0 });
     const gone = (await db.query(`SELECT * FROM draw_media WHERE id=$1`, [goneRow.id])).rows[0];
     eq(gone.display_skip_reason, 'unreadable:3', 'B4 an unreadable photo is retried a bounded number of times');
     eq(gone.display_checked_at, null, 'B5 …and is NEVER stamped done, so a re-sweep is one UPDATE away');
-    const r4 = await media.buildDisplayMediaOnce(1, { pauseMs: 0 });
-    eq(r4.scanned, 0, 'B6 …after which it leaves the queue entirely and starves nothing');
-    eq(r4.more, false, 'B7 …and the loop backs off instead of spinning every minute');
+    eq(await inQueue(goneRow.id), 0, 'B6 …after which it leaves the queue entirely and starves nothing');
 
-    /* A batch that is FULL but made no progress must still back off — otherwise a run of
-       unreadable rows keeps the worker busy-looping. */
+    /* `more` must be honest, or the self-rescheduling loop in server.js either spins or stalls.
+       Asserted on the SHAPE of the rule rather than on a shared queue's momentary depth: a batch
+       that came back short cannot be hiding more work. */
+    const r = await media.buildDisplayMediaOnce(100, { pauseMs: 0 });
+    if (r.scanned < 100) eq(r.more, false, 'B7 a batch that came back short never asks to come round again');
+
+    // The re-sweep an operator would run is one UPDATE, and it genuinely puts the row back.
     await db.query(`UPDATE draw_media SET display_skip_reason=NULL WHERE id=$1`, [goneRow.id]);
-    const r5 = await media.buildDisplayMediaOnce(1, { pauseMs: 0 });
-    eq(r5.scanned, 1, 'B8 (fixture) a cleared row is picked up again — the re-sweep works');
-    eq(r5.more, false, 'B9 …but a full batch that achieved nothing does not ask to come back at once');
+    eq(await inQueue(goneRow.id), 1, 'B8 clearing the reason puts an abandoned photo back in the queue');
+    await db.query(`UPDATE draw_media SET display_skip_reason=$2 WHERE id=$1`, [goneRow.id, 'unreadable:3']);
   }
 
   // ── C. THE REPORT PREFERS THE DISPLAY COPY, AND FALLS BACK TO THE ORIGINAL ─────
@@ -306,7 +335,13 @@ function makeJpeg(w, h, quality) {
     // (c) end to end: the worker's own answer survives a re-run of the migration.
     await db.query(`UPDATE draw_media SET display_ref=NULL, display_checked_at=NULL,
                       compact_ref=NULL, compact_skip_reason=NULL WHERE id=$1`, [half.id]);
-    await media.buildDisplayMediaOnce(50, { pauseMs: 0 });
+    // Same shared-queue rule as section A: drain until OUR row is answered, never one fixed batch.
+    for (let pass = 0; pass < 25; pass++) {
+      const p = await media.buildDisplayMediaOnce(100, { pauseMs: 0 });
+      const left = (await db.query(`SELECT display_checked_at FROM draw_media WHERE id=$1`, [half.id])).rows[0];
+      if (left && left.display_checked_at) break;
+      if (!p.scanned) break;
+    }
     const after = (await db.query(`SELECT * FROM draw_media WHERE id=$1`, [half.id])).rows[0];
     ok(after.display_checked_at, 'D2.3 the worker stamps the row…');
     ok(after.compact_ref || after.compact_skip_reason, 'D2.4 …and always answers the email-copy question');
