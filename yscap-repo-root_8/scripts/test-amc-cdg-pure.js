@@ -169,9 +169,11 @@ function get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? o
   ok(cdg.refValue(req.message.serviceProviderSystem.referenceIdentifiers, 'ServiceProviderOrderNumber') === 'SP345', 'addform parent order number');
 })();
 
-// ---- CreateAppraisal OMITS sourceInformation when no source-client id is configured ----
-// The vendor confirmed this tenant has none; the order must be valid without it, so the
-// builder must not emit an empty/undefined sourceClientIdentifier.
+// ---- CreateAppraisal OMITS sourceInformation when NO client-displayed id or name resolves ----
+// A numeric client_displayed_id is REQUIRED for a real order (order-build.missingRequired blocks
+// up-front when it can't resolve one), but the low-level builder must still never emit an empty/
+// undefined sourceClientIdentifier when the spec carries neither an id (clientDisplayedId /
+// sourceClientId) nor a name — it omits sourceInformation entirely.
 (() => {
   const req = cdg.buildCreateAppraisal(
     { productCode: '76', loan: { loanNumber: '1' }, borrowers: [], property: {} },
