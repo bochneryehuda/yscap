@@ -26,7 +26,6 @@ import OrderFailure, { parseOrderFailure } from './OrderFailure.jsx';
 // which resolves LIGHT in this portal. LINE is a whisper border; surfaces are
 // warm-white so nested content reads as a soft panel, not a boxed-in block.
 const INK = '#141B22', MUTED = '#54606C', SOFT = '#8A93A0', LINE = '#EFEADF', GOLD = '#AE8746', TEAL = '#2F7F86';
-const SURFACE = '#FBF9F4';                    // warm-white inner panel (matches .aord-inner)
 const BAD = '#B4453B', GOOD = '#1E7B4F';
 // Amber caution palette — dark amber text on a light amber card, AA on white.
 const WARN = '#9A3412', WARN_BG = '#FDF4E7', WARN_LINE = '#EAD4AE';
