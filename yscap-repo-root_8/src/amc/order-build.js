@@ -54,32 +54,41 @@ function loanPurposeFor(loanPurpose) {
   return /refi|refinance/.test(k) ? 'Refinance' : 'Purchase';
 }
 
-// AppraisalScope REQUIRES loan.estimatedClosingDate to be TODAY OR LATER — it rejects an
-// absent or past value with "-1008 Service Provider Processing Error: Invalid request data.
-// missing_field_array: estimated_closing_date: Date must be greater than or equal to current
-// date." A file's est_closing_date is frequently blank, or has drifted into the past by the
-// time an appraisal is ordered, so the value we SEND to the gateway is clamped forward to a
-// valid future date. This is display/order-context only — the appraiser's scheduling estimate;
-// it is NEVER written back onto applications.est_closing_date (that field feeds the
-// first-payment/maturity derivation and the closing chain, and must stay the staff's own value).
-const DEFAULT_CLOSING_BUFFER_DAYS = 30;
+// AppraisalScope's loan.estimatedClosingDate is OPTIONAL, but when SUPPLIED it must be TODAY
+// OR LATER — the gateway rejects a past value with "-1008 Service Provider Processing Error:
+// Invalid request data. missing_field_array: estimated_closing_date: Date must be greater than
+// or equal to current date." A file's est_closing_date is frequently blank, or has drifted
+// into the past by the time an appraisal is ordered. So we send the file's date ONLY when it
+// is a valid calendar day on or after today; a blank, malformed, or PAST date is OMITTED
+// (returns null → cdg.js drops the field) rather than fabricated forward. We deliberately do
+// NOT substitute a made-up future date just to pass validation — that would feed the appraiser
+// a closing date that isn't real; staff enter the real revised date on the file, and the order
+// preview flags a stale/missing one (see closingDateStatus / orderAssumptions). This never
+// writes back onto applications.est_closing_date (that field feeds first-payment/maturity
+// derivation and the closing chain, and stays the staff's own value).
 const ISO_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 function utcTodayISO() {
   return new Date().toISOString().slice(0, 10);
 }
-function addDaysISO(iso, n) {
-  return new Date(Date.parse(iso + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+function isoDayOrNull(v) {
+  return (typeof v === 'string' && ISO_DAY_RE.test(v)) ? v : null;
 }
-// Resolve the estimated closing date to send to the gateway. Returns the file's date when it
-// is a valid calendar day that is today-or-later (the staff's real estimate); otherwise a
-// future default (today + buffer). ALWAYS returns a 'YYYY-MM-DD' string >= today, so the
-// required field is never absent or in the past. opts.today / opts.bufferDays are for tests.
+// The estimated closing date to send to the gateway: the file's date when it is a valid
+// calendar day that is today-or-later, else null (OMIT — the field is optional). Never
+// fabricates a date. opts.today is for tests.
 function orderClosingDate(fileDate, opts = {}) {
-  const today = ISO_DAY_RE.test(opts.today || '') ? opts.today : utcTodayISO();
-  const buffer = Number.isFinite(opts.bufferDays) ? opts.bufferDays : DEFAULT_CLOSING_BUFFER_DAYS;
-  const d = (typeof fileDate === 'string' && ISO_DAY_RE.test(fileDate)) ? fileDate : null;
-  if (d && d >= today) return d;                 // valid future estimate — keep the staff's date
-  return addDaysISO(today, buffer);              // blank or past → a valid future default
+  const today = isoDayOrNull(opts.today) || utcTodayISO();
+  const d = isoDayOrNull(fileDate);
+  return (d && d >= today) ? d : null;           // valid future date → send it; else omit
+}
+// Classify the file's closing date for the preview: 'ok' (a valid future date we'll send),
+// 'stale' (a real date that has already passed — omitted, and worth flagging so staff enter
+// the real revised date), or 'none' (blank/unparseable — nothing to send).
+function closingDateStatus(fileDate, opts = {}) {
+  const today = isoDayOrNull(opts.today) || utcTodayISO();
+  const d = isoDayOrNull(fileDate);
+  if (d && d >= today) return 'ok';
+  return d ? 'stale' : 'none';
 }
 
 // THE RTL STRATEGY the form defaults key on — one of the exact tokens db/481 seeds:
@@ -223,9 +232,10 @@ function buildOrderSpec(ctx, form, opts = {}) {
       mortgageType: opts.mortgageType || ctx.mortgageType || 'Conventional',
       loanPurpose: loanPurposeFor(ctx.loanPurpose),
       baseLoanAmount: ctx.loanAmount != null ? ctx.loanAmount : null,
-      // The gateway REQUIRES this to be today-or-later — clamp the file's value forward so a
-      // blank or drifted-past closing date can never reject the order (see orderClosingDate).
-      // A staffer may pin one on the preview (opts.estimatedClosingDate); it is clamped too.
+      // Optional field, but the gateway rejects a PAST value — so send the file's closing date
+      // only when it is today-or-later, else OMIT it (orderClosingDate returns null → cdg.js
+      // drops it). We never fabricate a date to pass validation; a stale/missing one is flagged
+      // on the preview. A staffer may pin one (opts.estimatedClosingDate); it is checked too.
       estimatedClosingDate: orderClosingDate(opts.estimatedClosingDate || ctx.estimatedClosingDate, { today: opts.today }),
       lienPriority: ctx.lienPriority || null,
     },
@@ -346,11 +356,15 @@ function missingRequired(spec) {
   // an order that fails at the vendor with a cryptic "client_displayed_id: Required". For a
   // normal single-profile account this auto-resolves and never blocks.
   if (!spec.clientDisplayedId) missing.push('the client shown on the appraisal report');
-  // AppraisalScope REQUIRES a purchase/property amount and a real, reachable main
-  // contact (its `purchase_amount` / `primary_contact`). Validate them HERE so a blank
-  // shows on the preview as a plain "still needed" line and the submit refuses — never
-  // a silent bad order that only fails at the vendor with a cryptic 400.
-  if (!p || p.salesContractAmount == null) missing.push('purchase price or property value');
+  // AppraisalScope REQUIRES purchasePriceAmount (its `purchase_amount`) ONLY on a purchase
+  // (its mapping: "Required when Intended Use is Purchase") — NOT salesContractAmount, which
+  // the vendor treats as a separate optional field. Validate the field NAN actually reads,
+  // and only when the order goes out as a Purchase, so a blank shows on the preview as a plain
+  // "still needed" line and the submit refuses — never a silent bad order that only fails at
+  // the vendor with a cryptic 400. (A refinance does not require purchase_amount.)
+  if (spec.loan && spec.loan.loanPurpose === 'Purchase' && (!p || p.purchasePriceAmount == null)) {
+    missing.push('purchase price');
+  }
   const pc = spec.primaryContact;
   if (!pc || (!pc.phone && !pc.email)) missing.push('a phone or email for the main contact');
   return missing;
@@ -423,10 +437,25 @@ function orderAssumptions(ctx, form, opts = {}, spec = null) {
     add('salesContractAmount', 'Property value', property.salesContractAmount,
       'This is a refinance, so there’s no purchase price — the estimated value on file was used.', 'derived');
   }
+  // Closing date: the appraiser's system rejects a date in the past, so a stale file date is
+  // NOT sent (the field is optional). Flag it as a warning so staff can enter the real revised
+  // closing date on the file. A missing date is simply omitted (no warning — that's allowed).
+  const closingRaw = opts.estimatedClosingDate || ctx.estimatedClosingDate;
+  if (closingDateStatus(closingRaw, { today: opts.today }) === 'stale') {
+    out.push({
+      field: 'estimatedClosingDate',
+      label: 'Closing date on file',
+      value: String(isoDayOrNull(closingRaw) || ''),
+      why: 'This has already passed, so it won’t be sent to the appraiser (their system needs a future date). Enter the file’s real revised closing date if you have one.',
+      source: 'warning',
+      warn: true,
+    });
+  }
   return out;
 }
 
 module.exports = {
   buildOrderSpec, orderAssumptions, dealShapeFor, dealStrategyKey, missingRequired,
-  titleCategoryFor, occupancyFor, loanPurposeFor, resolvePrimaryContact, orderClosingDate,
+  titleCategoryFor, occupancyFor, loanPurposeFor, resolvePrimaryContact,
+  orderClosingDate, closingDateStatus,
 };

@@ -16,6 +16,9 @@ import OrderFailure, { parseOrderFailure } from './OrderFailure.jsx';
  */
 
 const INK = '#141B22', MUTED = '#4B585C', LINE = '#E7E1D4', GOLD = '#AE8746', TEAL = '#2F7F86';
+// Warning palette for a preview caution (e.g. a stale closing date that won't be sent) —
+// dark amber text on a light amber card so it reads as a warning yet stays AA on white.
+const WARN = '#9A3412', WARN_BG = '#FDF4E7', WARN_LINE = '#EAD4AE';
 
 const STATUS_LABEL = {
   draft: 'Draft', placing: 'Placing…', ordered: 'Ordered', in_process: 'In process',
@@ -282,12 +285,26 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound, formValue, onP
         </div>
       ) : null}
 
+      {/* Cautions PILOT wants staff to see before ordering (e.g. a stale closing date that
+          won't be sent to the appraiser) — styled distinctly from the neutral auto-fills. */}
+      {assumptions.some((a) => a.warn) ? (
+        <div style={{ marginTop: 10, border: `1px solid ${WARN_LINE}`, borderRadius: 8, padding: '8px 10px', background: WARN_BG }}>
+          <div style={{ fontSize: 11, color: WARN, textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 2 }}>Before you order — please check</div>
+          {assumptions.filter((a) => a.warn).map((a) => (
+            <div key={a.field} style={{ fontSize: 13, color: INK, marginTop: 4 }}>
+              <span style={{ fontWeight: 600, color: WARN }}>⚠ {a.label}:</span> {a.value}
+              {a.why ? <span style={{ color: MUTED }}> — {a.why}</span> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
       {/* What PILOT auto-filled that staff should eyeball before ordering (defaults /
           rule-picked form / derived mappings) — the NAN mirror of the Class assumptions. */}
-      {assumptions.length ? (
+      {assumptions.some((a) => !a.warn) ? (
         <div style={{ marginTop: 10, border: `1px solid ${LINE}`, borderRadius: 8, padding: '8px 10px', background: '#FBF9F4' }}>
           <div style={{ fontSize: 11, color: MUTED, textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 2 }}>What PILOT filled in for you</div>
-          {assumptions.map((a) => (
+          {assumptions.filter((a) => !a.warn).map((a) => (
             <div key={a.field} style={{ fontSize: 13, color: INK, marginTop: 4 }}>
               <span style={{ fontWeight: 600 }}>{a.label}:</span> {a.value}
               {a.why ? <span style={{ color: MUTED }}> — {a.why}</span> : null}
