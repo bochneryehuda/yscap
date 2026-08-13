@@ -506,7 +506,16 @@ async function syncPurchaseAdviceDate(db, appId, fieldValues) {
       `UPDATE applications SET purchase_advice_date=$2, updated_at=now()
         WHERE id=$1 AND purchase_advice_date IS DISTINCT FROM $2::date
         RETURNING id`, [appId, paDate]);
-    return { paDate, changed: !!(r && r.rowCount) };
+    const changed = !!(r && r.rowCount);
+    // ENCOMPASS SAYS THIS LOAN SOLD — TELL THE POST-PURCHASE TEAM (owner-directed 2026-08-13).
+    // THIS is the place to do it, and only this place: all three ways the date can arrive (the poll
+    // worker, the draw desk's own refresh, the manual button) land here, so the hand-off cannot
+    // depend on which of them happened to notice. Once-only and every "stay quiet" case is decided
+    // inside `announceSold`, which never throws — a mail problem must never break a sync.
+    if (changed && paDate) {
+      try { await require('../lib/post-purchase').announceSold(appId, paDate); } catch (_) { /* best-effort */ }
+    }
+    return { paDate, changed };
   } catch (_) { return { skipped: 'error' }; }
 }
 

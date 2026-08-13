@@ -31,6 +31,79 @@ const FILTERS = [
   { key: 'removed', label: 'Removed' },
 ];
 
+/* WHO HEARS THAT A LOAN SOLD (owner-directed 2026-08-13). The moment Encompass shows a purchase
+   advice date, PILOT emails these people: come in, upload the advice, enter the same date, mark the
+   purchase complete. Seeded with the two the owner named; an admin can change who is on it here.
+   Everyone on the desk can SEE the list — knowing who was told is half of not chasing twice. */
+function NotifyList() {
+  const [state, setState] = useState(null);
+  const [pick, setPick] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [open, setOpen] = useState(false);
+
+  const load = useCallback(() => {
+    api.get('/api/staff/purchasing/notify-list').then(setState).catch(() => setState({ people: [], staff: [], can_edit: false }));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function change(staffId, remove) {
+    setBusy(true); setErr('');
+    try {
+      const r = await api.post('/api/staff/purchasing/notify-list', { staff_id: staffId, remove });
+      setState((s) => ({ ...s, people: r.people || [] })); setPick('');
+    } catch (e) { setErr(e?.data?.error || 'Could not change that.'); }
+    finally { setBusy(false); }
+  }
+
+  if (!state) return null;
+  const people = state.people || [];
+  const chosen = new Set(people.map((p) => p.id));
+  return (
+    <div className="panel" style={{ marginBottom: 12 }}>
+      <div className="panel-b" style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+        <div style={{ minWidth: 280, flex: 1 }}>
+          <div style={{ fontWeight: 700 }}>Told when a loan sells</div>
+          <div className="sub" style={{ marginTop: 2 }}>
+            As soon as Encompass shows a purchase advice date, these people are emailed to come in,
+            upload the advice, enter the same date and mark the purchase complete.
+            {' '}
+            {people.length
+              ? <>Right now: <b>{people.map((p) => p.full_name).join(', ')}</b>.</>
+              : <b style={{ color: 'var(--danger,#B4453C)' }}>Nobody is on this list — nobody will be told.</b>}
+          </div>
+        </div>
+        {state.can_edit && (
+          <button className="btn btn-sm ghost" onClick={() => setOpen(!open)}>{open ? 'Done' : 'Change who'}</button>
+        )}
+      </div>
+      {open && state.can_edit && (
+        <div className="panel-b" style={{ borderTop: '1px solid var(--hairline,#E4E0D6)' }}>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <select className="input" value={pick} onChange={(e) => setPick(e.target.value)} style={{ maxWidth: 280 }}>
+              <option value="">Add someone…</option>
+              {(state.staff || []).filter((p) => !chosen.has(p.id)).map((p) => (
+                <option key={p.id} value={p.id}>{p.full_name}</option>
+              ))}
+            </select>
+            <button className="btn btn-sm" disabled={!pick || busy} onClick={() => change(pick, false)}>Add</button>
+          </div>
+          <ul style={{ listStyle: 'none', padding: 0, margin: '10px 0 0' }}>
+            {people.map((p) => (
+              <li key={p.id} className="row" style={{ justifyContent: 'space-between', gap: 10, padding: '4px 0' }}>
+                <span>{p.full_name} <span className="muted">· {p.email}</span></span>
+                <button className="btn btn-sm soft" disabled={busy} onClick={() => change(p.id, true)}>Remove</button>
+              </li>
+            ))}
+            {!people.length && <li className="muted">Nobody yet.</li>}
+          </ul>
+          {err ? <div className="notice err" style={{ marginTop: 8 }}>{err}</div> : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function StaffPurchasing() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
@@ -89,6 +162,8 @@ export default function StaffPurchasing() {
 
       {err && rows && <div role="alert" className="notice err" style={{ marginBottom: 12 }}>{err}
         <button className="btn link small" onClick={() => setErr('')}>Dismiss</button></div>}
+
+      <NotifyList />
 
       {!rows ? <div className="panel pad muted">Loading…</div> : rows.length === 0 ? (
         <div className="panel"><div className="panel-b"><div className="empty-state">
