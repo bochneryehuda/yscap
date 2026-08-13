@@ -142,16 +142,17 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     ok(draft.order && draft.order.status === 'draft' && draft.order.product_code === '5', 'draft persisted with the chosen form');
     ok(draft.order.request_payload && JSON.stringify(draft.order.request_payload).includes('YSCAP-AMC-1'), 'draft stores the (masked) request payload');
     ok(!JSON.stringify(draft.order.request_payload).includes('DoLogin'), 'draft payload carries no login credentials');
-    // The stored (masked) payload carries the client-displayed id on the clientSystem
-    // sourceInformation (the field the gateway maps to client_displayed_id) — proof the
-    // whole chain resolves the CDOR through to the wire message a draft records, and that
-    // no Lender party is emitted for this purpose.
+    // The stored (masked) payload carries the client-displayed id BOTH ways — on the
+    // clientSystem sourceInformation AND on a Lender party's partyRoleIdentifier, with the
+    // SAME value — proof the whole chain resolves the CDOR through to the wire message a
+    // draft records (belt-and-suspenders so the gateway is satisfied whichever it reads).
     {
       const cs = (draft.order.request_payload.message || {}).clientSystem || {};
       ok(cs.sourceInformation && cs.sourceInformation.sourceClientIdentifier === '297',
         'draft payload carries client_displayed_id via clientSystem.sourceInformation.sourceClientIdentifier');
       const parties = ((((draft.order.request_payload.message || {}).deals || [])[0] || {}).parties || []);
-      ok(!parties.some((p) => p.partyRoleType === 'Lender'), 'draft payload emits no Lender party for client_displayed_id');
+      ok(parties.some((p) => p.partyRoleType === 'Lender' && p.partyRoleIdentifier === '297'),
+        'draft payload ALSO carries client_displayed_id on a Lender party (same value)');
     }
 
     // ---- listOrders ----

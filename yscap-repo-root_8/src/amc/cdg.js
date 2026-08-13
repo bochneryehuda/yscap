@@ -142,19 +142,35 @@ function buildCreateAppraisal(spec, ctx) {
   deal.loans = [loan];
   deal.properties = [property(spec.property || {})];
 
+  // The resolved "Client Displayed on Report" id/name (AppraisalScope's REQUIRED
+  // client_displayed_id). The spec's resolved id wins; the config AMC_SOURCE_CLIENT_ID is a
+  // fallback. The SAME value is sent BOTH ways below so the order is satisfied whichever the
+  // gateway reads it from.
+  const cdId = (spec.clientDisplayedId != null && spec.clientDisplayedId !== '')
+    ? String(spec.clientDisplayedId)
+    : (sourceClientId != null && sourceClientId !== '' ? String(sourceClientId) : null);
+  const cdName = (spec.clientDisplayedName != null && spec.clientDisplayedName !== '')
+    ? String(spec.clientDisplayedName) : null;
+
   const parties = [];
   const p = spec.parties || {};
   if (p.loanOfficerId != null) parties.push({ partyRoleType: 'LoanOfficer', partyRoleTypeIdentifier: String(p.loanOfficerId) });
   if (p.loanProcessorId != null) parties.push({ partyRoleType: 'LoanProcessor', partyRoleTypeIdentifier: String(p.loanProcessorId) });
   if (p.investorId != null) parties.push({ partyRoleType: 'Investor', partyRoleTypeIdentifier: String(p.investorId) });
-  // NOTE: AppraisalScope's REQUIRED `client_displayed_id` (the "Client Displayed on Report")
-  // is NOT a deal party. The vendor's own createappraisal sample + field mapping carry it as
-  // message.clientSystem.sourceInformation.sourceClientIdentifier (the id from the account's
-  // GetClientDisplayOnReport list, e.g. 267/297) — emitted in the clientSystem() call below.
-  // An earlier version emitted a partyRoleType="Lender" party for it, which the gateway
-  // ignores for this purpose (a Lender party carries fdicInformation), so the order kept
-  // failing "client_displayed_id: Required". order-service resolves WHICH id (config id, else
-  // the account's profile matched to the default name "YS Capital Group").
+  // AppraisalScope's REQUIRED `client_displayed_id` (the "Client Displayed on Report") is sent
+  // TWO ways with the SAME value: (1) on message.clientSystem.sourceInformation.sourceClientIdentifier
+  // (the id from the account's GetClientDisplayOnReport list, e.g. 199384), emitted in the
+  // clientSystem() call below; AND (2) here, on a partyRoleType="Lender" party whose
+  // partyRoleIdentifier the gateway maps to client_displayed_id (fullNameAddress = the client
+  // name). Belt-and-suspenders — the gateway reads it from either, and the value matches. A
+  // numeric id is REQUIRED (a name alone cannot satisfy the gateway), so a Lender party is
+  // emitted only when an id resolved. order-service resolves WHICH id (config AMC_CLIENT_DISPLAYED_ID,
+  // else the account's profile matched to the default name "YS Capital Group").
+  if (cdId) {
+    const lender = { partyRoleType: 'Lender', partyRoleIdentifier: cdId };
+    if (cdName) lender.fullNameAddress = cdName;
+    parties.push(lender);
+  }
   // Best-person-to-contact is REQUIRED, and AppraisalScope derives its own required
   // `primary_contact` from it. The vendor's mapping is exact: the selection goes in
   // parties[].partyRoleType="BestContact" → **partyRoleTypeOtherDescription** (an
@@ -177,13 +193,11 @@ function buildCreateAppraisal(spec, ctx) {
       apiKey,
       clientOrderNumber: spec.clientOrderNumber,
       clientReferenceNumber: spec.clientReferenceNumber,
-      // AppraisalScope's REQUIRED client_displayed_id ← sourceClientIdentifier. The resolved
-      // "Client Displayed on Report" id (order-service) wins; the config AMC_SOURCE_CLIENT_ID
-      // is only a fallback. The name rides along as sourceClientName (the vendor's
-      // ClientDisplayedGetJobType sample sends both) — but the id is what the gateway requires.
-      sourceClientId: (spec.clientDisplayedId != null && spec.clientDisplayedId !== '')
-        ? spec.clientDisplayedId : sourceClientId,
-      sourceClientName: spec.clientDisplayedName,
+      // AppraisalScope's REQUIRED client_displayed_id ← sourceClientIdentifier — the SAME
+      // resolved id also sent on the Lender party above (cdId/cdName). The name rides along as
+      // sourceClientName (the vendor's ClientDisplayedGetJobType sample sends both).
+      sourceClientId: cdId,
+      sourceClientName: cdName,
     }),
     digitalGatewaySystem: digitalGatewaySystem({ lenderIdentifier }),
     serviceProviderSystem: serviceProviderSystem({

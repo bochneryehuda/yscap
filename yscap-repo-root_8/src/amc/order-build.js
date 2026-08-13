@@ -170,9 +170,10 @@ function buildOrderSpec(ctx, form, opts = {}) {
 
     // The "Client Displayed on Report" (AppraisalScope's REQUIRED client_displayed_id) —
     // resolved in order-service (config id, else the account's profile matched to the default
-    // name "YS Capital Group", else the name itself). cdg.js sends it on the wire as
-    // message.clientSystem.sourceInformation.sourceClientIdentifier (with sourceClientName
-    // alongside). A staffer can pin a specific id via opts (its name comes from the matching option).
+    // name "YS Capital Group"). cdg.js sends the resolved id TWO ways with the same value —
+    // on message.clientSystem.sourceInformation.sourceClientIdentifier AND on a
+    // partyRoleType="Lender" party's partyRoleIdentifier — so the gateway is satisfied
+    // whichever it reads. A staffer can pin a specific id via opts (its name comes from the matching option).
     clientDisplayedId,
     clientDisplayedName,
 

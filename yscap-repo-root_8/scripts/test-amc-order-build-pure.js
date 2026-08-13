@@ -183,7 +183,7 @@ const ctx = {
   ok(msg.deals[0].appraisers[0].identifier === '426', 'e2e: preferred AMC on the wire');
   ok(msg.deals[0].parties.some((p) => p.partyRoleType === 'BestContact' && p.partyRoleTypeOtherDescription === 'Borrower'), 'e2e: best contact (primary_contact) on the wire');
   ok(msg.clientSystem.sourceInformation.sourceClientIdentifier === '297', 'e2e: client_displayed_id on the wire via sourceClientIdentifier (resolved id wins over config)');
-  ok(!msg.deals[0].parties.some((p) => p.partyRoleType === 'Lender'), 'e2e: no Lender party is emitted for client_displayed_id');
+  ok(msg.deals[0].parties.some((p) => p.partyRoleType === 'Lender' && p.partyRoleIdentifier === '297'), 'e2e: client_displayed_id ALSO on a Lender party (belt-and-suspenders, same value)');
   ok(msg.deals[0].properties[0].purchasePriceAmount === '400000.00', 'e2e: purchase price amount (purchase_amount) on the wire');
 }
 

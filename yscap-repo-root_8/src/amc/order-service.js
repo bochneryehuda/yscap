@@ -147,9 +147,10 @@ async function ensureClientDisplayedCache(db) {
 // The "Client Displayed on Report" (CDOR) — AppraisalScope's REQUIRED client_displayed_id.
 // It is the client/lender alias AppraisalScope prints ON the appraisal report, chosen from
 // the tenant's own GetClientDisplayOnReport list. The gateway maps its snake_case
-// client_displayed_id from message.clientSystem.sourceInformation.sourceClientIdentifier
-// (a numeric id from that list), so cdg.js sends it there; here we resolve WHICH id (or
-// name) to send:
+// client_displayed_id from the numeric id in that list; cdg.js sends the resolved id TWO
+// ways (clientSystem.sourceInformation.sourceClientIdentifier AND a Lender party's
+// partyRoleIdentifier) so the gateway is satisfied whichever it reads. Here we resolve
+// WHICH id (or name) to send:
 //   1. AMC_CLIENT_DISPLAYED_ID (config) — an explicit id always wins.
 //   2. else the cached GetClientDisplayOnReport list (refreshed live once if empty):
 //      a. an entry whose name means the configured default ("YS Capital Group") → its id.
