@@ -20,7 +20,7 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-32core-runner
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: yscap-repo-root_8
@@ -44,7 +44,7 @@ jobs:
   # blocks the auto-publish exactly like a pure-suite failure.
   # ---------------------------------------------------------------------------
   test-db:
-    runs-on: ubuntu-32core-runner
+    runs-on: ubuntu-latest
     # NO job-level timeout-minutes — deliberately. A JOB's clock starts when the
     # job is QUEUED, not when it gets a runner, so the old `timeout-minutes: 30`
     # here was spent waiting in line: on 2026-08-09 (main, sha f9cb8a17) this job
@@ -121,7 +121,7 @@ jobs:
     # regression now blocks the deploy exactly like a pure-suite failure.
     needs: [test, test-db]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-32core-runner
+    runs-on: ubuntu-latest
     steps:
       - name: Trigger Render deploys
         env:
