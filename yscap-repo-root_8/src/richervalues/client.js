@@ -129,13 +129,62 @@ function configured() {
 // field they refused rather than "data validation failed".
 // ---------------------------------------------------------------------------
 function httpError(label, status, body, retryAfterSec) {
-  const e = new Error(`Richer Values ${label} failed: HTTP ${status}`);
+  const fieldErrors = fieldErrorsOf(body);
+  const vendorMessage = vendorMessageOf(body);
+  const detail = explain(vendorMessage, fieldErrors, body);
+  // THE STATUS ALONE IS NEVER THE ANSWER. Their 422 carries the whole diagnosis in
+  // words — "At least one of Intake token or Order token is required!", "The intake
+  // token you provided, is either invalid OR you don't have access of the order
+  // associated with it!", `"company_token" is not allowed` — and a bare
+  // "HTTP 422" throws every one of them away. That text is what a desk reads, what
+  // `sync.js` stores in `last_error`, and what its own "no order has been created"
+  // suppression matches on, so dropping it ALSO made that suppression dead code on
+  // every HTTP-error reply. Compose it into the message once, here.
+  const e = new Error(`Richer Values ${label} failed: HTTP ${status}${detail ? ` — ${detail}` : ''}`);
   e.status = status;
   e.body = body;
-  e.fieldErrors = fieldErrorsOf(body);
+  e.vendorMessage = vendorMessage;
+  e.fieldErrors = fieldErrors;
   e.retryable = status === 429 || (status >= 500 && status <= 599);
   if (retryAfterSec) e.retryAfterSec = retryAfterSec;
   return e;
+}
+
+/**
+ * Their own sentence for the failure. `message` is the documented envelope field;
+ * `error` is what a gateway in front of them tends to use. Anything that is not a
+ * non-empty string states nothing, so it is reported as nothing rather than as
+ * "[object Object]" or "undefined".
+ */
+function vendorMessageOf(body) {
+  if (!body || typeof body !== 'object') return null;
+  for (const k of ['message', 'error', 'detail']) {
+    const v = body[k];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return null;
+}
+
+/**
+ * One readable sentence from whatever the reply carried: their message, then the
+ * per-field refusals they listed, then — when they said neither — the raw body,
+ * which on a proxy or allowlist refusal is the ONLY explanation there is (the
+ * lesson in this file's header). Never throws, and never invents wording.
+ */
+function explain(vendorMessage, fieldErrors, body) {
+  const parts = [];
+  if (vendorMessage) parts.push(vendorMessage);
+  const fields = (fieldErrors || [])
+    .map((f) => (f.field && f.message ? `${f.field}: ${f.message}` : f.message || f.field))
+    .filter(Boolean);
+  // Their `errors[]` routinely restates the message ("Data validation failed." +
+  // `"company_token" is not allowed`), so the fields are additive, not a repeat.
+  if (fields.length) parts.push(fields.join('; '));
+  if (!parts.length) {
+    const raw = body && typeof body.raw === 'string' ? body.raw.trim() : '';
+    if (raw) parts.push(raw.slice(0, 300));
+  }
+  return parts.join(' — ').slice(0, 400);
 }
 function gateError(code, message) { const e = new Error(`${code}: ${message}`); e.code = code; return e; }
 
@@ -331,8 +380,15 @@ async function request(method, path, { body, form, query, write, label } = {}) {
     // Their envelope carries `success:false` WITH an HTTP 200 on a validation
     // failure, so a 2xx is not on its own proof the thing worked.
     if (data && data.success === false) {
-      const e = new Error(`Richer Values ${label || path} refused: ${data.message || 'no message'}`);
-      e.status = res.status; e.body = data; e.fieldErrors = fieldErrorsOf(data); e.retryable = false;
+      const fieldErrors = fieldErrorsOf(data);
+      const vendorMessage = vendorMessageOf(data);
+      // Same composer as the HTTP-error path, so the two failure shapes read alike
+      // and a desk never has to know which one it is looking at. Their per-field
+      // list is carried here too — it was being dropped from the wording before.
+      const e = new Error(
+        `Richer Values ${label || path} refused: ${explain(vendorMessage, fieldErrors, data) || 'no message'}`);
+      e.status = res.status; e.body = data; e.vendorMessage = vendorMessage;
+      e.fieldErrors = fieldErrors; e.retryable = false;
       throw e;
     }
     return data;
@@ -459,5 +515,5 @@ module.exports = {
   reopenOrder:   (body) => request('PUT', '/api/v1/order/reopen', { body, write: true, label: 'reopenOrder' }),
   uploadDocuments: (form) => request('POST', '/api/v1/order/upload-documents', { form, write: true, label: 'uploadDocuments' }),
 
-  _internals: { maskSafe, readBody, backoff, toFormData, HOSTS, baseUrl, fieldErrorsOf },
+  _internals: { maskSafe, readBody, backoff, toFormData, HOSTS, baseUrl, fieldErrorsOf, httpError, explain, vendorMessageOf },
 };
