@@ -122,6 +122,59 @@ function ok(name, cond) { assert.ok(cond, name); passed++; console.log(`  ok  ${
   const days = (new Date(forever.expiresAt) - Date.now()) / 86400000;
   ok(`a huge expiry is clamped to the ceiling (${Math.round(days)} days)`, days <= share.MAX_EXPIRY_DAYS + 1);
 
+  console.log('\n== the PUBLIC door, over real HTTP ==');
+  // The module-level checks above prove the RECORD behaves. They say nothing about whether the
+  // route is mounted, whether it is reachable ahead of the static catch-all, or what headers it
+  // actually sets — and the headers are the security half of this feature. So this boots the real
+  // server and fetches the real URL a capital partner would click.
+  {
+    const app = require('../src/server');
+    const srv = app.listen(0);
+    await new Promise((r) => srv.once('listening', r));
+    const base = `http://127.0.0.1:${srv.address().port}`;
+    const get = async (p) => {
+      const res = await fetch(base + p, { redirect: 'manual' });
+      return { status: res.status, ct: res.headers.get('content-type'), cd: res.headers.get('content-disposition'),
+        robots: res.headers.get('x-robots-tag'), cache: res.headers.get('cache-control'),
+        nosniff: res.headers.get('x-content-type-options'), frame: res.headers.get('x-frame-options'),
+        body: await res.text() };
+    };
+    try {
+      const pdfBytes = Buffer.from('%PDF-1.7\n' + 'report'.repeat(400));
+      const live = await share.createShareLink({ buf: pdfBytes, filename: 'inspection report.pdf', contentType: 'application/pdf', purpose: 'test' });
+
+      const a = await get(`/d/${live.token}`);
+      ok('a live link serves 200 — so the route is mounted AHEAD of the static catch-all', a.status === 200);
+      ok('it serves the exact bytes', a.body.startsWith('%PDF-1.7'));
+      ok('a PDF opens inline, which is the whole point of "takes them directly to the PDF"',
+        a.ct === 'application/pdf' && /^inline/.test(a.cd));
+      ok('the filename survives, with anything header-breaking stripped', /filename="inspection report.pdf"/.test(a.cd));
+      ok('it is never indexed', /noindex/.test(a.robots || ''));
+      ok('and never kept by a shared cache, or the expiry would not hold', /no-store/.test(a.cache || ''));
+      ok('nosniff + DENY, so a mislabelled file cannot be re-read as HTML in someone else\'s frame',
+        a.nosniff === 'nosniff' && a.frame === 'DENY');
+      ok('the open was counted through the real route',
+        (await db.query(`SELECT opened_count FROM document_share_links WHERE id=$1`, [live.id])).rows[0].opened_count >= 1);
+
+      // A NON-pdf must NOT come back inline — an arbitrary stored type served inline is the
+      // stored-XSS vector lib/media-headers.js exists to close.
+      const html = await share.createShareLink({ buf: Buffer.from('<script>alert(1)</script>'), filename: 'evil.html', contentType: 'text/html' });
+      const h = await get(`/d/${html.token}`);
+      ok('a non-PDF is forced to a download, never rendered', h.ct === 'application/octet-stream' && /^attachment/.test(h.cd));
+
+      const revoked = await share.createShareLink({ buf: pdfBytes, filename: 'r.pdf', contentType: 'application/pdf' });
+      await share.revokeShareLink(revoked.id, null);
+      const rv = await get(`/d/${revoked.token}`);
+      ok('a revoked link answers 410 — the honest status, not a broken page', rv.status === 410);
+      ok('…in plain English, because the reader is an outsider, not a developer',
+        /turned off/i.test(rv.body) && /<!doctype html>/i.test(rv.body));
+
+      const unknown = await get(`/d/${'f'.repeat(32)}`);
+      ok('an unknown token is 404 and says so readably', unknown.status === 404 && /not found/i.test(unknown.body));
+      ok('a malformed token never reaches the database', (await get('/d/not-a-token')).status === 404);
+    } finally { srv.close(); }
+  }
+
   console.log('\n== the double warning is one definition, used everywhere ==');
   ok('there are TWO distinct warnings, not one worded twice',
     share.LINK_WARNINGS.length === 2 && share.LINK_WARNINGS[0] !== share.LINK_WARNINGS[1]);
