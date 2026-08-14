@@ -112,75 +112,34 @@ ok(stampReason([]).length > 0, 'stampReason always says something, even with no 
 ok(typeof REGENERATE_MESSAGE === 'string', 'the stamp module still exports its wording constant');
 
 // ============================================================================
-// THE FIX (owner-directed 2026-08-06): the term sheet is now BUILT ON OUR SERVER
-// at send time — pressing Send always produces the FINAL from the last
-// registration, so the old "reuse the stored initial → refuse the send →
-// re-register" loop (the owner's reported bug) is GONE. The stamp rule above is
-// still exercised (staff.js reports termSheetFinal), but it no longer gates the
-// send. These checks pin the new wiring.
+// THE SEND STILL GATES ON THE STAMP (owner-directed 2026-08-14, restoring the
+// 2026-08-02 rule). Between 2026-08-06 and 2026-08-14 the sender BUILT its own
+// term sheet, so the stamp stopped gating anything — and the renderer it used
+// drew a shorter, different document. The sender attaches the studio's six-pager
+// again, so the stamp is a real blocker once more.
+//
+// The SHAPE of that arrangement (one renderer, no server-side builder, the
+// refusal's wording, the panel's finalize buttons) is pinned by its own suite,
+// scripts/test-one-term-sheet.js. Here we pin only what belongs to the STAMP:
+// that the send consults it, and that the way past it is named.
 // ============================================================================
 {
   const src = require('fs').readFileSync(R + '/src/lib/esign/orchestrate.js', 'utf8');
-  ok(/kind: 'term_sheet',[\s\S]{0,200}?generate: true/.test(src),
-    'the term_sheet package doc is generate:true — BUILT fresh at send time, never reused from the stored P&P copy');
-  ok(!/doc\.term_sheet_final !== true/.test(src),
-    'the old "only initial → refuse the send" block is REMOVED (the sender generates the final now)');
-  ok(!/TERM_SHEET_NOT_FINAL/.test(src),
-    'the TERM_SHEET_NOT_FINAL refusal code is gone');
-  ok(/function buildTermSheetView/.test(src) && /termsheet: buildTermSheetView/.test(src),
-    'loadDocGenData assembles the term-sheet view from the registered quote (parity)');
-  ok(/prefix: 'ts_b1'/.test(src) && /prefix: 'ts_b2'/.test(src) && /prefix: 'ts_lo'/.test(src) && /prefix: 'ts_admin'/.test(src),
-    'the view emits all four signer prefixes (borrower/co/LO/admin) — matching buildRoster + tabsFor, so no recipient anchor is ever missing');
+  ok(/d\.kind === 'term_sheet' && doc\.term_sheet_final !== true/.test(src),
+    'the send refuses a stored term sheet not recorded FINAL');
+  ok(/TERM_SHEET_NOT_FINAL/.test(src),
+    'that refusal carries its own error code, so the panel can offer the way out');
+  ok(/ts_final_override_by/.test(src),
+    'a super-admin may still force the send past it (recorded on the envelope row)');
 }
 {
-  const src = require('fs').readFileSync(R + '/src/lib/esign/docgen.js', 'utf8');
-  ok(/term_sheet: buildTermSheet/.test(src),
-    'docgen dispatches the term_sheet doc_kind to the server-side builder');
-}
-{
-  const src = require('fs').readFileSync(R + '/src/lib/esign/tracking.js', 'utf8');
-  ok(/block: false/.test(src) && !/REGENERATE_MESSAGE/.test(src),
-    'the panel no longer hard-holds the term-sheet Send on a stored "initial" stamp — the send builds the final (real esignSendGate still governs the send)');
-}
-{
-  const src = require('fs').readFileSync(R + '/app-v2/src/components/ProductStudioPanel.jsx', 'utf8');
-  ok(/const stampFinal = false;/.test(src),
-    "Products & Pricing produces ONLY the initial (owner's rule) — the FINAL is built by the sender");
-}
-
-// ---- the server builder produces a valid FINAL PDF carrying EXACTLY the
-// DocuSign anchors the send engine seeds (orchestrate.tabsFor, prefix ts). ----
-{
-  const { buildTermSheet } = require(R + '/src/lib/esign/term-sheet-pdf');
-  const data = {
-    application: { loanNo: 'YSCAP1' },
-    termsheet: {
-      final: true, programName: 'Gold Standard Program', primaryName: 'MW Trading LLC',
-      partiesSub: 'Vesting entity', purposeLine: 'Purchase', propertyLine: 'Property: 1 Main St, NY',
-      validThrough: 'Valid through Jan 1, 2027', loanAmount: '$487,500', noteRate: '9.625%',
-      termLine: '12-month term',
-      structureRows: [{ k: 'Purchase price', v: '$400,000' }, { k: 'Total loan amount', v: '$487,500', opts: { bold: true, accent: true } }, { k: 'Omitted', v: '' }],
-      termRows: [{ k: 'Loan term', v: '12 months' }],
-      disclosures: [{ h: 'Business purpose only', body: 'Business purpose.' }],
-      signers: [
-        { name: 'A B', role: 'Borrower / guarantor', prefix: 'ts_b1' },
-        { name: 'C D', role: 'Co-borrower / guarantor', prefix: 'ts_b2' },
-        { name: 'Officer', role: 'Loan officer', prefix: 'ts_lo' },
-        { name: 'YS Capital Group', role: 'Authorized signer', prefix: 'ts_admin' },
-      ],
-    },
-  };
-  const buf = buildTermSheet(data);
-  ok(Buffer.isBuffer(buf) && buf.slice(0, 5).toString() === '%PDF-', 'buildTermSheet returns a real PDF');
-  const s = buf.toString('latin1');
-  for (const a of ['/ts_b1_sig/', '/ts_b1_dt/', '/ts_b2_sig/', '/ts_b2_dt/', '/ts_lo_sig/', '/ts_lo_dt/', '/ts_admin_sig/', '/ts_admin_dt/']) {
-    ok(s.includes(a), `the FINAL term sheet carries the ${a} anchor for the send engine`);
-  }
-  ok(/FINAL TERM SHEET/.test(s), 'a final sheet prints the FINAL stamp');
-  ok(!/INITIAL TERM SHEET/.test(s), 'a final sheet never prints "INITIAL TERM SHEET — NOT FINAL"');
-  // A draft renders the initial stamp (used only for a preview/record copy).
-  const draft = buildTermSheet({ application: {}, termsheet: { ...data.termsheet, final: false } });
-  ok(/INITIAL TERM SHEET/.test(draft.toString('latin1')), 'final:false prints the INITIAL stamp');
+  // The refusal must name a remedy that CAN produce a FINAL sheet. "Re-register
+  // the product" could not — registering stamps FINAL only when the file is
+  // already ready — and that dead end is what got the whole document replaced.
+  ok(/Finalize & send/.test(REGENERATE_MESSAGE),
+    'the refusal points at the Finalize & send button');
+  ok(!/re-register the product/i.test(REGENERATE_MESSAGE),
+    'the refusal never sends anyone back to re-register (the loop)');
 }
 
 console.log(`term-sheet final stamp: ${pass} checks passed`);
