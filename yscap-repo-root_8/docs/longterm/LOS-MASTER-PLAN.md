@@ -96,11 +96,60 @@ Two more things the census settles:
 Beyond the loan team, the same `contacts[]` array carries the **outside** parties, and the
 plan reads them in the same pass: Title (411/412/413/88), Escrow (610/611/87), Appraisal
 (617–623/89), Credit agency (624/626–629), Seller (638/701–703), MI (93/707–711), Flood
-insurance (1500).
+insurance (1500). `GET /encompass/v3/loans/{id}?entities=contacts` returns **17 contacts in
+one call**, which is the whole outside chain in a single read.
 
-`GET /encompass/v1/loans/{id}/associates` also answers (array of 3 live) and gives the
-Encompass-side roster with role ids. The **v3** form and `/roles` both 403 on our client
-registration — see §11.
+### 2.1.1 What the live probe corrected — read this before building the map
+
+A read-only probe of the live tenant (2026-08-14, full write-up in
+`ENCOMPASS-LIVE-API-PROBE.md`) changed three things about this section. Each one would have
+produced a wrong map.
+
+**1. This tenant has no role called "Loan Officer." The loan-officer slot is
+`Loan Coordinator`, roleId `1`.** Field 317's *label* says "Loan Officer Name", but the
+team-member role the tenant actually assigns is Loan Coordinator. `Loan Opener`, `Shipper`
+and `Insurer` do not exist here and always read empty. **Never assume a role name — read the
+tenant's own list** (`/settings/roles`, 12 live).
+
+**2. The join key is the Encompass login id, not the email.** The best surface is the
+field-reader family `LoanTeamMember.{Name|UserId|Email|Phone}.<exact role name>`:
+
+```
+LoanTeamMember.UserId.Loan Coordinator  → "sweiss"
+LoanTeamMember.UserId.Loan Processor    → "ebochner"
+LoanTeamMember.UserId.Closer            → "mkatz"
+LoanTeamMember.UserId.Funder            → "mkatz"
+LoanTeamMember.UserId.Post Closer       → "mkatz"
+```
+
+`UserId` is the Encompass login id and equals `/company/users[].id`. (It is `UserId` — a
+`LoanTeamMember.Id.*` read returns 400.) `LOID` is the only staff id that is
+**pipeline-queryable**, so filtering a pipeline by loan officer is
+`{"canonicalName":"Fields.LOID","matchType":"exact","value":"sweiss"}`.
+
+**3. Email auto-matching cannot be trusted on its own — and this changes the design.**
+The roster is 46 users, and **10 of them share the placeholder `change.me@email.com`**.
+Names are worse (double and trailing spaces). So the auto-match in §2.4 must:
+
+- match on email **only when that email is unique across the roster and is not a known
+  placeholder**;
+- leave everything else **unmatched for a human**, rather than suggesting a pair it cannot
+  stand behind.
+
+A suggestion an admin is likely to approve without looking is worse than no suggestion. This
+is the same reasoning that made a confirmed link — not a suggested one — the thing that
+decides whose pipeline a file appears in.
+
+**`/associates` is history only, and carries two traps.** It answers on v1 (v3 403s), and:
+it is **not deduplicated** — one row per milestone slot, so a reassigned role appears twice
+with two different users; and its **name and email can be a stale snapshot that disagrees
+with its own `id`** (a real row read `{"id":"mschwimmer","name":"Malky Katz"}` — two
+different people). **Trust the `id`; re-resolve the name from the roster.** Do not build the
+current assignment from this endpoint.
+
+**Roster paths that work:** `/encompass/v1/company/users` (46 users with personas and org),
+`/settings/roles` (12), `/settings/personas` (17), `/organizations`. `/company/roles`,
+`/company/organizations` and `/company/personas` all **403**.
 
 ### 2.2 The tables
 
@@ -236,21 +285,101 @@ LTV · Milestone · Days in milestone · Loan officer · Processor · Conditions
 The **Conditions column does real work on its own** — a red count of what is outstanding
 means a user triages urgency from the list without opening a file.
 
-**Stages.** The pipeline speaks Encompass's own 19 milestones (Started → LO Prep → Loan
-Setup → Submittal → Cond. Approval → Processing → Waiting for Docs → Resubmittal → Clear To
-Close → Schedule Closing → Ready for Docs → Docs Out → Wire Order → Funding → Investor
-Delivery → Purchasing Conditions → Final Docs → Closed → Completion), because they already
-carry TPO-facing and borrower-facing wording and need no translation. **The stage list is a
-setting**, so a buyer with different milestones changes it without a migration.
-
-Read the current milestone from **`MS.STATUS`** — the pipeline's own `Loan.CurrentMilestone`
-column is blank on every loan in this tenant.
-
-**Scope.** Whose files an officer sees resolves through the confirmed links in
-`lt_staff_links` → `lt_loan_contacts`. LT gets its own scope function in `src/longterm/` —
-it does not import RTL's, and does not need to.
-
 **Saved views** are per-user rows in an `lt_pipeline_views` table, not a code change.
+
+### 4.1.1 Stages — three layers, not one
+
+Owner-directed 2026-08-14: *"we're going to use the Encompass stages, but we're going to map
+those Encompass stages to our own stages. We're not going to have, on the consumer side, all
+stages from Encompass. You can use the Encompass consumer-visible stages for the consumer
+side."*
+
+So a loan carries **one milestone and two stage labels**, and they are never conflated:
+
+```
+   Encompass milestone           our stage              what the borrower sees
+   (19, mirrored verbatim)  ──▶  (ours, ~9)       ──▶   (Encompass consumer wording)
+   e.g. "Waiting for Docs"       "Conditions Out"       "Conditionally Approved -
+                                                         Waiting for Docs"
+```
+
+1. **The Encompass milestone is mirrored verbatim** and never edited. It is the truth about
+   where the file is in Encompass, and it is what an internal user sees when they want the
+   real answer. Read it from **`MS.STATUS`** — the pipeline's own `Loan.CurrentMilestone`
+   column is blank on every loan in this tenant.
+2. **Our stage** is what the internal pipeline groups and sorts by. Nineteen milestones is
+   too many to read at a glance and several of them mean the same thing to us.
+3. **The borrower's stage is Encompass's own consumer wording**, which is already stored —
+   `lt_encompass_milestones.consumer_status`, seeded in `db/547` for all 19 rows. It
+   collapses the 19 to about 11 by itself, which is exactly why the owner pointed at it. We
+   do not invent borrower wording; we use theirs.
+
+**The proposed mapping** — a starting point, to be confirmed, and a **setting** so it can be
+changed without a migration:
+
+| Our stage | Encompass milestones it covers | Borrower sees (Encompass consumer wording) |
+|---|---|---|
+| New | Started | Collecting Information |
+| Setup | LO Prep, Loan Setup | Application Received · Processing |
+| Submitted | Submittal | Submitted for Approval |
+| In Underwriting | Cond. Approval, Processing, Resubmittal | Submitted for Approval · Conditionally Approved · Condition Review |
+| Conditions Out | Waiting for Docs | Conditionally Approved - Waiting for Docs |
+| Clear to Close | Clear To Close | Final Approval |
+| Closing | Schedule Closing, Ready for Docs, Docs Out, Wire Order | Closing Scheduled · Closing Preparation · Active Closing |
+| Funded | Funding | Funded |
+| Post-Closing | Investor Delivery, Purchasing Conditions, Final Docs, Closed, Completion | Funded |
+
+**Two rules this arrangement has to keep:**
+
+- **A milestone with no mapping is shown, not hidden.** If Encompass gains a milestone
+  tomorrow, an unmapped file must appear in the pipeline under its raw Encompass name rather
+  than vanish from every view. Failing closed here means losing a loan off a screen, which
+  is the worse error.
+- **The borrower's label never comes from our stage.** It comes from the milestone's own
+  `consumer_status`. Two hops would let our internal renaming leak into what a borrower
+  reads.
+
+### 4.1.2 Who sees which files
+
+Owner-directed 2026-08-14. This is the answer to charter open question 8:
+
+| Role | Long-term pipeline |
+|---|---|
+| Admin (and super-admin) | **Entire pipeline** |
+| Closer | **Entire pipeline** — including files not yet assigned to them |
+| Funder | **Entire pipeline** — including files not yet assigned to them |
+| Loan officer | **Their own files only** |
+| Processor | **Their own files only** |
+
+The closer and funder deliberately get everything *before* assignment, because a closing or a
+wire is picked up off the queue rather than handed over — they have to see the file to take it.
+
+**How this is built, and why not the obvious way.** `staff_users.role` has no `funder` value
+— its CHECK lists `super_admin, admin, underwriter, loan_officer, loan_coordinator,
+draw_coordinator, processor, closer, software_setup, tpo_officer, tpo_processor`. Adding one
+would be changing an RTL table to make LT work, which rule 5 forbids.
+
+So LT gets its **own** access model in `src/longterm/access.js`, and it is settings-driven,
+which the sellable rule requires anyway:
+
+- A map from **PILOT role → long-term scope** (`all` | `own`), pre-filled with the table
+  above. A buyer with a different org chart changes the map, not the code.
+- A per-person **long-term role override**, for staff whose RTL role does not describe their
+  long-term job — which is exactly the funder's case today. This lives in `lt_settings`, not
+  on `staff_users`.
+- **A role with no entry resolves to `own`**, never to `all`. An unmapped role must not
+  silently inherit the whole book.
+- **`own` resolves through the confirmed links** in `lt_staff_links` → `lt_loan_contacts`,
+  which is why the people map is phase 1. Until a link is confirmed, an officer's own
+  pipeline is empty — so phase 1 and phase 3 ship in that order for a reason.
+
+LT does not import RTL's `permissions.js` or its scope SQL, and does not need to.
+
+**Still to confirm:** the owner named admin, closer, funder, loan officer and processor. The
+**underwriter** was not named. The plan assumes **entire pipeline**, matching what the
+underwriter already has on the RTL side (`see_all_files`) and matching the closer and funder
+— an underwriter reviews across the book rather than a personal queue. Flagged in §11 rather
+than left silent.
 
 ### 4.2 The loan workspace
 
@@ -283,12 +412,46 @@ because their user *is* the broker; ours cannot. `AUDIENCE-RULES.md` outranks an
 The owner called this a major part of the build, and the reference portal's own condition
 screen is the interaction the whole product is judged on.
 
-### 5.1 What the live book looks like
+### 5.0 UNRESOLVED — two of our own measurements disagree about whether conditions exist
 
-12 loans carry conditions — the delegated files we underwrote ourselves — holding **348
-conditions**, 5 to 67 per loan, **213 still open**. Most long-term files are underwritten by
-the investor rather than in Encompass, which is why the number is small. Those 12 files are
-exactly what a condition centre has to handle, and they are enough to build against.
+**This must be settled before phase 5 is scoped, and it cannot be settled by choosing the
+more convenient answer.**
+
+| Measurement | Says |
+|---|---|
+| The committed research (`ENCOMPASS-CONDITIONS-AND-EFOLDER.md`, `condition-library.json`, 2026-08-14) | **348 conditions across 12 loans**, 213 open, via `GET /encompass/v3/loans/{id}/conditions` |
+| The live probe (`ENCOMPASS-LIVE-API-PROBE.md`, 2026-08-14) | **Every condition endpoint returns `[]`**, and condition alert counts are **0 on 200 of 200 loans sampled** — despite `useEnhancedConditionIndicator: true` |
+
+Both were run read-only against the same tenant on the same day. They cannot both describe
+the same population.
+
+**The likely explanations, none of them yet confirmed:**
+
+- The 12 loans with conditions are **1.6% of the book**, and the probe's 200-loan sample may
+  have drawn from a folder or milestone range that excludes them.
+- The two runs may have used **different loan sets** — the probe reports 696 loans via the
+  pipeline against 772 in the census, so they were not looking at the same population.
+- A **persona or scope difference** between the two runs could make conditions readable in
+  one and invisible in the other, which would be the most dangerous case: it would mean the
+  condition centre works for whoever built it and is empty for everyone else.
+
+**What to do before building:** re-read conditions on the **twelve named loan GUIDs the
+census recorded**, with the same credentials the product will ship with. If they return
+conditions, the census is right and the probe sampled around them. If they return `[]`, the
+census needs re-deriving and the condition centre needs re-scoping before a line is written.
+
+**Why this matters beyond the module.** The probe also reports that the real day-to-day
+workflow in this tenant is **eFolder documents, not conditions** — 101 documents on a mature
+loan, in groups like `Needs List - Initial`. If that is the true picture, then "the condition
+centre" the owner asked for is mostly a **document-needs-list centre**, and building it
+around Encompass conditions would produce a screen that is empty on most files. That is a
+product question for the owner, and §12 records it as a risk rather than a decision.
+
+### 5.1 What the census recorded
+
+*(Subject to §5.0.)* 12 loans carry conditions — the delegated files we underwrote ourselves
+— holding **348 conditions**, 5 to 67 per loan, **213 still open**. Most long-term files are
+underwritten by the investor rather than in Encompass, which is why the number is small.
 
 Alongside them: **20,569 eFolder documents across 673 loans, 28,822 attachments, 179
 document→condition links, 230 configured document types, 197 condition templates, 19
@@ -363,18 +526,29 @@ Note also: the v1 attachment endpoints are **sunset in ICE release 26.3**.
 The owner called this a major, major part, and it is also where the read-only rule bites
 hardest — so the plan splits it deliberately.
 
-### 6.1 Read-only first, and that is not a compromise
+### 6.1 Read-only first — and the readable surface is narrower than the docs suggest
 
-Everything about a lock can be **read**: `GET /v1/loans/{id}/ratelockrequests` (the full
-request history), `.../{lockId}?view=detailed`, `.../{lockId}/snapshot`, the loan rollup
-`rateLock.rateStatus` (`notLocked | locked | expired | cancelled`), and the whole
-`LOCKRATE.*` family — 17 fields including `RATESTATUS`, `CURRENTSTATUS` and
-`REQUESTPENDING`, which return the entire lock posture in one call.
+**The live probe changed this section.** The earlier research described a rich read surface:
+`GET /v1/loans/{id}/ratelockrequests` (full request history), `.../{lockId}?view=detailed`,
+`.../{lockId}/snapshot`. Against the live tenant, **every lock-specific endpoint and every
+EPPS pricing endpoint answers 403.** So the lock *history* is not readable today.
 
-So the lock desk gets built in full — the data model, the pipeline column, the workspace
-section, the expiry countdown, the history, the alerts — and it is **read-only against
-Encompass**. Requesting, confirming, extending, re-locking and cancelling are all writes and
-all stay off until the owner authorises a specific endpoint in writing.
+**What genuinely reads right now:**
+
+- `GET /encompass/v3/loans/{id}?entities=rateLock` — 51 keys, the current lock posture.
+- Fields **`761`** and **`762`**. Note that **`2148` is empty on this tenant** — it is quoted
+  as the lock date in a lot of general Encompass material, and here it holds nothing.
+- The `Loan.Lock*` pipeline canonicals, so lock status can be a pipeline column.
+- The Trade buy-side / sell-side canonicals.
+
+So the plan stands but shrinks honestly: we can show **where a loan's lock stands right now**
+— status, rate, dates, expiry countdown — on the pipeline and in the workspace. We cannot yet
+show the **history** of how it got there. `lt_lock_events` is still the right table, and it
+will be thin until the 403s are lifted (§11, item 4 — the same client-registration scope
+problem).
+
+Requesting, confirming, extending, re-locking and cancelling are all writes and stay off
+until the owner authorises a specific endpoint in writing.
 
 > **HARD RULE, recorded from the API research: trust `lockExpirationDate`. Never recompute
 > it from lock date plus days.** Extensions and re-locks move it, and a recomputed date will
@@ -511,20 +685,24 @@ that is not in the ledger.
 - `sql-ref borrowers` / `sql-read borrowers` — authorised. Read-only, as it must stay.
 - `import src/auth/index.js` — authorised. One login.
 
-**What this plan needs and does NOT have — the owner's word is required before the code:**
+- **The front-end mount seam** — authorised 2026-08-14: *"You were authorized to touch that
+  switch of the short-term shell."* Recorded in the ledger as `rtl-import app-v2/src/App.jsx`
+  (the router mounts the LT screens) and `rtl-import app-v2/src/components/StaffLayout.jsx`
+  (the shell renders the switch). Deliberately as narrow as the back-end seam: those two files
+  may reference LT code **only** to mount it and to render the switch. **No RTL screen may
+  import an LT component for its own use, and no LT logic may move into a shared file.**
 
-1. **The front-end mount seam.** The back end has a sanctioned seam (`src/server.js` mounts
-   the LT router). The front end has no equivalent: something has to route to
-   `app-v2/src/longterm/**` and render the switch, and that means touching `App.jsx` and the
-   shell — RTL files. The separation gate does not scan front-end files for this, but rule 5
-   ("do not touch RTL to build LT") is a judgement rule, and the honest thing is to record it.
-   The owner asked for the switch by name, so this is recording an existing instruction, not
-   seeking a new one.
+**What this plan needs and does NOT have:**
 
-2. **Nothing from RTL's condition machinery.** Not `checklist_templates`, not
+1. **Nothing from RTL's condition machinery.** Not `checklist_templates`, not
    `checklist_items`, not `src/lib/conditions/**`, not the rules engine, not the document or
    eFolder code. The LT condition centre is a brand-new build. This is stated here so nobody
    later mistakes silence for permission.
+
+2. **Nothing from RTL's permissions or pipeline scope.** `src/lib/permissions.js`,
+   `visibleOfficersSql` and the RTL pipeline filter stay where they are. LT's access model
+   (§4.1.2) is its own, and it has to be — it is settings-driven and keyed on long-term roles
+   that `staff_users.role` does not carry.
 
 **What is free and needs nothing:** the stylesheet. `app-v2/src/styles.css` is one global
 sheet, so every LT screen gets the PILOT tokens and component classes with no import and no
@@ -554,31 +732,49 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
 
 ## 11. What only the owner can answer
 
-Recorded rather than guessed at. The first three block work in this plan.
+**Answered 2026-08-14** — recorded here so the answers do not scroll away:
 
-1. **Do long-term files use the Encompass milestones as their pipeline stages, or our own
-   status set?** This plan assumes **the Encompass 19 as-is**, because they already carry
-   TPO-facing and borrower-facing wording, and it makes the stage list a setting so the
-   answer can change without a migration. *(Charter open question 7.)*
-2. **Who may see the long-term side** — the whole team, or named people? *(Charter open
-   question 8.)*
-3. **Is there a TPO / broker portal on the long-term side at all**, or is the client a
-   borrower only? The audience model already assumes both exist, and the investor-name rule
-   is stricter for brokers than the RTL equivalent.
-4. **ICE entitlement.** Client id `z1xx73r` lacks the `encompass_admin` scope — the token
+1. ~~**Encompass milestones or our own stages?**~~ **Both, in layers.** *"we're going to use
+   the Encompass stages, but we're going to map those Encompass stages to our own stages. We're
+   not going to have, on the consumer side, all stages from Encompass. You can use the Encompass
+   consumer-visible stages for the consumer side."* Designed in §4.1.1. *(Charter open question 7,
+   closed.)*
+2. ~~**Who may see the long-term side?**~~ **Admin, closer and funder see the entire pipeline;
+   loan officers and processors see their own.** Closer and funder get everything even before
+   assignment. Designed in §4.1.2. *(Charter open question 8, closed.)* **Still to confirm: the
+   underwriter**, who was not named — the plan assumes the entire pipeline, matching their RTL
+   access.
+3. ~~**Is there a TPO / broker portal on the long-term side?**~~ **Not for now — the client is
+   the borrower**, on the login they already have. *"Right now, it's the borrower, which will
+   automatically be connected to the borrower login that they already have."* That is the already
+   authorised shared identity zone, so it needs nothing new. The investor-name rule still applies
+   in full to that borrower.
+4. ~~**May the front-end shell be touched to add the switch?**~~ **Yes** — recorded in the ledger.
+
+**Still open:**
+
+5. **§5.0 — do conditions exist in this tenant or not?** Two of our own measurements disagree.
+   This is the largest open question in the plan and it blocks phase 5.
+6. **ICE entitlement.** Client id `z1xx73r` lacks the `encompass_admin` scope — the token
    endpoint refuses it. That is why 68 endpoints answer 403, including the loan-folder list,
    milestone logs, the v3 associates roster and **69 of the 91 Milestone Completion rules**.
    Asking ICE to add the scope to the client registration unblocks all of it. This is the
    **client registration**, not the persona.
-5. **Is there a sandbox instance?** Today every read runs against production, which carries
+7. **Is there a sandbox instance?** Today every read runs against production, which carries
    real borrower PII. This matters before anything writes.
-6. **The ten files** carrying a 12- or 24-month interest-only period on the plain 30-year
+8. **The ten files** carrying a 12- or 24-month interest-only period on the plain 30-year
    program — real short-I/O deals, or values left behind from a file that started as a bridge?
-7. **The loan doc type stores `DSCR` on 486 files**, which is not a valid code — and the
+9. **The loan doc type stores `DSCR` on 486 files**, which is not a valid code — and the
    tenant's base Milestone Completion rule is conditioned on Doc Type = "No Documentation",
    so those files never switch those requirements on.
-8. **Do long-term files appear in the RTL dashboards and KPIs**, or are the two books counted
-   separately?
+10. **Do long-term files appear in the RTL dashboards and KPIs**, or are the two books counted
+    separately?
+11. **The underwriter's long-term access** (see item 2) — entire pipeline, or their own files?
+12. **A webhook subscription already exists on this tenant** pointing at
+    `automations.drivekosher.com` for `milestone` and `milestoneupdate` events. It is not ours.
+    Long-Term would need its own subscription — which is a **write** to Encompass configuration
+    and would need its own pad entry. Worth knowing who owns the existing one before anything
+    is added beside it.
 
 ---
 
@@ -591,10 +787,25 @@ Recorded rather than guessed at. The first three block work in this plan.
 - **The 403s are a real ceiling.** Until the client registration gains `encompass_admin`, we
   cannot read the loan-folder list, the milestone logs, or most of the completion rules — and
   custom dropdown option sets are inferred floors, not the real lists.
-- **Conditions are thin on this book.** 12 of 490 long-term loans carry them, because the
-  investor underwrites most files. A condition centre built only against Encompass conditions
-  will be quiet on most files. Whether PILOT should also carry *its own* long-term conditions
-  is a product question the owner has not been asked.
+- **The condition centre may be built on sand — see §5.0.** Our own two measurements disagree
+  about whether this tenant holds any conditions at all. Even on the optimistic reading, 12 of
+  490 long-term loans carry them, because the investor underwrites most files — so a centre
+  built only against Encompass conditions is quiet on 97% of the book. On the pessimistic
+  reading the live workflow is the eFolder needs-list instead, and the module is a different
+  product. **This is the single biggest scoping risk in the plan**, and it is a question for
+  the owner rather than a decision for us.
+- **The URLA arrays are not where a modern reader would look.** In this tenant the loan
+  carries its data in `vols[]` / `vods[]` / `otherAssets[]`, while the modern `assets[]` and
+  `liabilities[]` arrays are **empty**. A 1003 screen built against the modern arrays would
+  render blank on every real file. The whole application is readable in one GET via 18 accepted
+  sub-entity names.
+- **The token has no stated lifetime, and the client already survives it.** It lasts 30 minutes
+  and `expires_in` is **not returned** by this tenant — so a client caching on `expires_in - 60`
+  would be caching on `undefined`. Checked: `src/longterm/encompass/client.js:138` reads
+  `(j.expires_in || 1800) - 60`, and 1800s is exactly the measured lifetime. Correct by
+  accident or by design, it holds — **do not remove that fallback.**
+- **The API budget is 500,000 calls a day with a ceiling of 30 concurrent** — shared across
+  every integration touching this tenant, not just ours.
 - **The appraisal XML is unrecoverable for historical files.** The download URLs are minted at
   delivery with a ~15-minute life; all 298 historical ones are expired. The durable fix is to
   have the vendor deliver the XML to us directly.
