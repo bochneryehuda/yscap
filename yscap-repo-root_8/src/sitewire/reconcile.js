@@ -345,7 +345,13 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
     // change by construction: the mirror upsert above already stored the new amount, so the next
     // poll sees no difference. Only an UNDECIDED delivery ('delivered') is stale-able — an
     // accepted/disputed finding is being worked at the number the borrower actually saw.
-    if (!released) {
+    // When the borrower-delivery AUTOPILOT is ON (owner-directed 2026-08-14), an amount change on a
+    // still-'delivered' finding is AUTO-re-sent by deliver-findings.maybeAutoDeliver — which compares
+    // the current per-line inspector sum to what the borrower was actually shown. So this "deliver it
+    // again" nudge would be redundant, or — when only the draw-level total moved (0 → total at final
+    // approval) to MATCH an amount the borrower already has — a false alarm. Keep the manual nudge only
+    // when the autopilot is switched off (DRAW_BORROWER_AUTODELIVER_ENABLED=0).
+    if (!released && !require('./deliver-findings').autopilotEnabled()) {
       try {
         const delivered = (await db.query(
           `SELECT id FROM draw_findings WHERE application_id=$1 AND sitewire_draw_id=$2 AND status='delivered' LIMIT 1`,
@@ -522,6 +528,13 @@ async function reconcileOne(appId) {
     // React to any inbound status transition on this draw (notify the team + audit the change).
     // Fully best-effort + self-guarded: it never throws out of the per-draw try, never blocks the mirror.
     try { await reactToInboundDraw(appId, { sitewire_draw_id: d.id, number: d.number, status: d.status, total_approved_cents: d.total_approved_cents || 0, historical: !!d.historical }, prevDraw, firstReconcile, addrText, fileCtx); } catch (_) {}
+    // AUTOPILOT — borrower delivery (owner-directed 2026-08-14). Once the inspector's approved amounts
+    // are on the draw, PILOT delivers the findings to the borrower AUTOMATICALLY (no coordinator click);
+    // it also auto re-sends if the inspector's amount later moves while the borrower has not yet acted.
+    // The manual "Deliver / Re-send findings" button stays. Runs AFTER the mirror upsert above so it
+    // reads the fresh per-line amounts. Fully best-effort in its own try — it never throws into the
+    // per-draw mirror loop, and a file's first-ever reconcile is skipped (go-forward only).
+    try { await require('./deliver-findings').maybeAutoDeliver(appId, d.id, fileCtx, { firstReconcile }); } catch (_) {}
     n++;
    } catch (drawErr) {
      const emsg = db.describeError ? db.describeError(drawErr) : (drawErr && drawErr.message) || String(drawErr);

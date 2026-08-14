@@ -96,14 +96,17 @@ ok('D4 …and no heads-up row', !counted.rows.some((r) => /isn’t counted|isn't
   const src = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
   const graph = src('src/lib/email/graph.js');
   ok('F1 graph.js carries the same Buffer→base64 belt', /Buffer\.isBuffer\(a\.content\) \? a\.content\.toString\('base64'\)/.test(graph));
-  const route = src('src/routes/sitewire.js');
-  ok('F2 the deliver route\'s release promise is gated on a KNOWN inspector answer',
-    /d\.has_inspector_amounts && d\.net_release_cents != null && Number\(d\.net_release_cents\) > 0/.test(route));
-  ok('F3 the inspector-$0 callout exists and promises nothing', /approved \$0 this time, so confirming accepts the results — nothing is wired/.test(route));
+  // The deliver core moved to the shared chokepoint src/sitewire/deliver-findings.js (owner-directed
+  // 2026-08-14 borrower-delivery autopilot) so the manual button and the autopilot build ONE borrower
+  // email. These contracts follow the code to its new home.
+  const deliverMod = src('src/sitewire/deliver-findings.js');
+  ok('F2 the deliver core\'s release promise is gated on a KNOWN inspector answer',
+    /d\.has_inspector_amounts && d\.net_release_cents != null && Number\(d\.net_release_cents\) > 0/.test(deliverMod));
+  ok('F3 the inspector-$0 callout exists and promises nothing', /approved \$0 this time, so confirming accepts the results — nothing is wired/.test(deliverMod));
   ok('F4 the findings attachments are produced as base64, never a raw Buffer',
-    /content: content\.toString\('base64'\)/.test(route));
+    /content: content\.toString\('base64'\)/.test(deliverMod));
   ok('F5 the Sitewire inspector PDF is sourced from the durable draw_media archive',
-    /kind='draw_pdf' AND storage_ref IS NOT NULL/.test(route));
+    /kind='draw_pdf' AND storage_ref IS NOT NULL/.test(deliverMod));
   const pub = src('src/routes/draw-findings-public.js');
   ok('F6 the public media route sniffs the BYTES for the content type (nosniff-safe)',
     /sniffKind\(buf\)/.test(pub));
@@ -134,7 +137,7 @@ ok('D4 …and no heads-up row', !counted.rows.some((r) => /isn’t counted|isn't
   ok('G7 the borrower results table too', /Not reviewed yet/.test(bdraws));
   const deliver = src('src/routes/sitewire.js');
   ok('G8 the findings email\'s per-line grid too',
-    /not yet reviewed/.test(deliver) && /l\.approved_cents == null \?/.test(deliver));
+    /not yet reviewed/.test(deliverMod) && /l\.approved_cents == null \?/.test(deliverMod));
   // The dispute lifecycle must not leak the denied-$0 lie either (pre-merge audit of db/518):
   ok('G9 a rejected dispute on an unreviewed line never emails "kept at $0"',
     /still awaiting the inspector/.test(deliver)
@@ -144,7 +147,7 @@ ok('D4 …and no heads-up row', !counted.rows.some((r) => /isn’t counted|isn't
   ok('G11 an omitted per-request amount falls back to the request DETAIL before reading as unanswered',
     /detail\.approved_cents != null \? detail\.approved_cents : null/.test(rec));
   ok('G12 retired lines never join the findings email grid',
-    /FROM draw_finding_lines WHERE finding_id=\$1 AND retired_at IS NULL ORDER BY id/.test(deliver));
+    /FROM draw_finding_lines WHERE finding_id=\$1 AND retired_at IS NULL ORDER BY id/.test(deliverMod));
 
   console.log(`test-draw-money-honesty-pure: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
