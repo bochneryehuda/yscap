@@ -205,6 +205,18 @@ function bigPhoto(w, h) {
     eq('D3 and mints no link', (await db.query(`SELECT count(*)::int n FROM document_share_links WHERE application_id=$1`, [app])).rows[0].n, linksBefore);
     const deliveries = (await db.query(`SELECT count(*)::int n FROM draw_investor_deliveries WHERE application_id=$1`, [app])).rows[0].n;
     eq('D4 and records no delivery', deliveries, 3);   // A, B(acknowledged) and C only
+
+    // A PREFLIGHT ON A **MANUAL** DELIVERY MUST ALSO WRITE NOTHING. Found by self-review: the
+    // manual branch returns early — it composes no email and gathers no documents — and it sat
+    // AHEAD of the preflight guard, so asking "what would be attached?" on a manual delivery fell
+    // straight into the INSERT and recorded a delivery nobody sent. There is nothing to plan in
+    // that mode, so the honest answer is an empty plan and no row.
+    const manPre = await send.sendInvestorDelivery(app, DRAW, { mode: 'manual', preflight: true });
+    ok('D5 a manual preflight returns an empty plan', manPre.preflight === true && manPre.plan.manual === true && manPre.plan.attach.length === 0);
+    ok('D6 …and needs no consent, since nothing is being carried', manPre.plan.needs_consent === false);
+    eq('D7 …and RECORDS NOTHING — the bug this pins',
+      (await db.query(`SELECT count(*)::int n FROM draw_investor_deliveries WHERE application_id=$1`, [app])).rows[0].n, 3);
+    eq('D8 …and sends nothing', outbox.length, 0);
   } finally {
     noop.sendMail = realProviderSend;
     delete process.env.INVESTOR_ATTACH_BUDGET_MB;

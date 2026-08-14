@@ -566,6 +566,20 @@ async function sendInvestorDelivery(appId, drawId, {
   // MANUAL — the coordinator delivered to the investor outside PILOT. Record it (so the "deliver to
   // the investor" reminders stop and the history shows it) and stop here: no email is composed or
   // sent, and no documents are gathered. The money figures are still stored for the record.
+  // A PREFLIGHT MAY NEVER WRITE, and on a MANUAL delivery that has to be checked HERE rather than
+  // alongside the attachment plan further down. A manual delivery returns early — it composes no
+  // email and gathers no documents — so a preflight on one would have fallen straight into the
+  // INSERT below and RECORDED A DELIVERY NOBODY SENT. There is nothing to plan in that mode, so an
+  // empty plan is the honest answer. (The non-manual preflight returns after the plan is built.)
+  if (preflight && useMode === 'manual') {
+    return {
+      preflight: true, funding_mode: 'manual', money,
+      plan: { attach: [], links: [], omitted: [], total_bytes: 0, budget_bytes: budgetBytes(),
+        compressed_n: 0, saved_bytes: 0, needs_consent: false, summary: null, manual: true },
+      linkWarnings: shareLink.LINK_WARNINGS,
+    };
+  }
+
   if (useMode === 'manual') {
     const rec = (await db.query(
       `INSERT INTO draw_investor_deliveries
