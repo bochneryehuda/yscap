@@ -201,24 +201,42 @@ async function encompassSendBlock(applicationId) {
  * the orchestrator's own missing-document message rather than duplicated here.
  */
 async function termSheetStampBlock(db, applicationId) {
-  // THE TERM SHEET IS NOW BUILT ON OUR SERVER AT SEND TIME (owner-directed
-  // 2026-08-06; term-sheet-pdf.js → docgen, generate:true). Pressing Send always
-  // produces the FINAL from the last registration — the stored Products & Pricing
-  // sheet is only a preview and is never what goes out. So the old "the stored
-  // sheet still says INITIAL → block the send / re-register" state no longer
-  // exists: `block` is always false, and the panel never hard-holds the term-sheet
-  // Send button on the stamp (the real esignSendGate still governs whether the
-  // package MAY send). `onFile` is reported for display only.
+  /* THE STORED SHEET IS WHAT GOES OUT, so its stamp is a real send blocker again
+     (owner-directed 2026-08-14). Between 2026-08-06 and 2026-08-14 this reported a
+     hard-coded `{ final: true, block: false, canFinalize: false }` because the
+     sender was building its own sheet — which ALSO switched off the panel's
+     "Finalize & send" / "Finalize now" buttons, since both are gated on `block` +
+     `canFinalize`. The buttons were still in the bundle, just permanently
+     unreachable. Reporting the truth here is what turns them back on. */
   try {
     const r = await db.query(
-      `SELECT id FROM documents
+      `SELECT id, term_sheet_final, created_at
+         FROM documents
         WHERE application_id = $1 AND doc_kind = 'term_sheet'
           AND COALESCE(review_status,'') <> 'rejected'
         ORDER BY is_current DESC NULLS LAST, created_at DESC
         LIMIT 1`, [applicationId]);
-    return { onFile: !!r.rows[0], final: true, block: false, message: null, canFinalize: false, blockers: [] };
+    const doc = r.rows[0];
+    // Is the FILE ready to produce a FINAL term sheet RIGHT NOW? — the same rule the
+    // studio uses when it stamps one (every send requirement met EXCEPT the P&P
+    // sign-off, which is the registration itself). This is what lets the panel offer
+    // to finalize the sheet ON THE SPOT (owner-directed 2026-08-04: "that button …
+    // should be the button that is generating the final term sheet after all the
+    // conditions are met") instead of only pointing staff back to Products & Pricing.
+    let stamp = { final: false, blockers: [], unreadable: true };
+    try { stamp = await require('./term-sheet-stamp').termSheetStamp(applicationId, { db }); } catch (_) { /* fail closed → canFinalize false */ }
+    const blockers = (stamp.blockers || []).map((b) => ({ code: b.code, label: b.label, reason: b.reason }));
+    const final = !!(doc && doc.term_sheet_final === true);
+    // canFinalize: the file may be stamped final now, and it is not already final.
+    const canFinalize = !!stamp.final && !final;
+    if (!doc) return { onFile: false, final: false, block: false, message: null, canFinalize, blockers };
+    return {
+      onFile: true, final, block: !final, generatedAt: doc.created_at,
+      message: final ? null : require('./term-sheet-stamp').REGENERATE_MESSAGE,
+      canFinalize, blockers,
+    };
   } catch (_) {
-    return { onFile: false, final: true, block: false, message: null, canFinalize: false, blockers: [] };
+    return { onFile: false, final: false, block: false, message: null, canFinalize: false, blockers: [] };
   }
 }
 
