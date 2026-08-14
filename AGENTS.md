@@ -46,7 +46,12 @@ Treat them as two different companies' software that happen to share one reposit
    `src/server.js` mounting the LT router and `scripts/test-lt-*.js`, which exist to test it.
 5. **Never change RTL to make LT work** — no new column on `applications`, no new ClickUp/Encompass/SharePoint/
    DocuSign/Sitewire/Trustpoint mapping, no new checklist template, unless the owner asked for that exact thing.
-6. **LT is explicitly not getting, for now: conditions, document underwriting, orders.**
+6. **LT is explicitly not getting, for now: document underwriting, orders.** **Conditions ARE now in scope** — the
+   owner reopened this in writing on 2026-08-14 and asked for a long-term condition center that reads its conditions
+   from Encompass. It is a brand-new LT build: rule 3 still applies in full, so nothing may be copied or generalized
+   from RTL's conditions / checklists / templates / rules engine without a per-item entry in the ledger. Writing a
+   document into the Encompass eFolder is a WRITE and is separately governed by
+   `docs/ENCOMPASS-WRITE-AUTHORIZATIONS.md` — nothing writes there until that pad entry is completed.
 7. **The front end may show both; the back end may not.** A combined pipeline is allowed, read-only, with a visible
    product stamp on every row and a Both / RTL only / Long-Term only filter. Never a SQL join or a shared write path.
 8. **A feature built for one side never automatically applies to the other.**

@@ -44,8 +44,15 @@ eBay — you ask."*
 5. **Do not touch RTL in order to build LT.** No new column on `applications` or any RTL table, no new ClickUp
    mapping, no new Encompass / SharePoint / DocuSign / Sitewire / Trustpoint wiring, no new checklist template,
    no new enum value — unless the owner asked for **that exact thing**.
-6. **LT is explicitly NOT getting, for now: conditions, document underwriting, orders.** Don't build them, don't
+6. **LT is explicitly NOT getting, for now: document underwriting, orders.** Don't build them, don't
    stub them, don't "leave room" for them by copying RTL shapes.
+   **CONDITIONS ARE NOW IN SCOPE (owner-directed 2026-08-14)** — the owner asked in writing for a long-term
+   condition center that pulls its conditions from Encompass and links their documents. It is a brand-new build in
+   `src/longterm/**` / `lt_*` / `/api/lt/*`; **rule 3 is unchanged**, so nothing may be copied, re-used or
+   generalized from RTL's conditions, checklists, `checklist_templates`/`checklist_items`, the Condition Center
+   rules engine or the document/eFolder code without a per-item entry in the ledger. Reading Encompass conditions is
+   a read; writing a document into the Encompass eFolder is a WRITE, governed by
+   `docs/ENCOMPASS-WRITE-AUTHORIZATIONS.md`, and is not permitted until that pad entry is completed.
 7. **The front end may show both; the back end may not.** One pipeline may list both, with filters
    (Both / RTL only / Long-Term only) and a **visible product stamp** on every row and every file header. The merge
    happens in the read/view layer only — never a SQL join, a shared table, or a shared write path.
