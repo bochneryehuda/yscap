@@ -51,10 +51,32 @@ async function sendMail(opts = {}) {
   try {
     res = await provider.sendMail(send);
   } catch (e) { err = e; }
+  const status = err ? 'error' : (res && res.ok ? 'sent' : 'skipped');
+  // THE ATTACHMENT LINE (owner-directed 2026-08-14: "every single thing here should
+  // leave logs in the future"). An investor delivery went out carrying two of its four
+  // documents and the running log said NOTHING — not the send, not the omission, not a
+  // reason — so the only way to find out what had happened was to read the code and
+  // guess. This prints ONE line per email that involved documents at all, naming what
+  // rode along and what did not, so a Render log search answers the question directly.
+  //
+  // Silent for the ordinary email that carries nothing, so it can never become noise.
+  // Never throws: a logging failure may not touch a send.
+  try {
+    const att = Array.isArray(send.attachments) ? send.attachments : [];
+    const omitted = Array.isArray(ctx.omitted) ? ctx.omitted : [];
+    if (att.length || omitted.length) {
+      const bytes = att.reduce((n, a) => n + (typeof a.content === 'string' ? Math.round(a.content.length * 0.75) : 0), 0);
+      const missed = omitted.map((o) => `${o.what || o.filename || 'document'}[${o.code || 'unspecified'}]`).join(', ');
+      console.log(
+        `[email-attach] ${ctx.type || 'email'} ${status}`
+        + (ctx.applicationId ? ` app=${ctx.applicationId}` : '')
+        + ` attached=${att.length} (${Math.round(bytes / 1024)}KB)`
+        + ` omitted=${omitted.length}${missed ? ` — ${missed}` : ''}`);
+    }
+  } catch (_) { /* the line is a courtesy; the durable record is the DB row below */ }
   if (!_skipCapture) {
     try {
       const emailLog = require('../email-log');
-      const status = err ? 'error' : (res && res.ok ? 'sent' : 'skipped');
       await emailLog.captureOutbound(send, { ...ctx, status, providerId: res && res.id, error: err && err.message });
     } catch (_) { /* capture is best-effort */ }
   }

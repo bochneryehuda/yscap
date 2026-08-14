@@ -39,6 +39,7 @@
 
 const db = require('../db');
 const drawReport = require('./draw-report');
+const attachPlan = require('../lib/attachments/plan');   // compress before dropping; never drop silently
 const notify = require('../lib/notify');
 const rollupMod = require('./rollup');
 const approval = require('./approval');
@@ -137,24 +138,33 @@ async function borrowerFindingAttachments(appId, sitewireDrawId) {
       ORDER BY d.created_at DESC`,
     [appId, drawNo, tpNo && tpNo.number != null ? String(tpNo.number) : null, TP_BORROWER_SAFE])).rows;
 
+  // COMPRESS BEFORE DROPPING, HERE TOO (owner-directed 2026-08-14).
+  //
+  // This loop used to read `if (size > budget) continue;` — the same silent, reasonless drop that
+  // sent an investor a draw email missing its inspection report. On this side it is the BORROWER
+  // who is told to "download your inspection report (PDF)" in an email that quietly has no PDF on
+  // it. Nothing tried to compress, and nothing anywhere recorded that a report had been left off.
+  //
+  // Candidates are gathered here and lib/attachments/plan.js decides: it shrinks the photo-heavy
+  // reports to fit and only then drops anything, and whatever it does drop comes back with a reason
+  // that is written to the email audit below.
   const seen = new Set();
-  let budget = FINDING_ATTACH_MAX_BYTES;
+  const candidates = [];
   for (const r of rows) {
     // one per KIND — the newest wins, so a re-inspection's latest report is the one sent
     const kind = r.filename.startsWith('pilot-') ? 'pilot' : r.filename.replace(/-\d{4}-\d{2}-\d{2}-[^.]*\.pdf$/, '');
     if (seen.has(kind)) continue;
-    if (Number(r.size_bytes) > budget) continue;
+    seen.add(kind);
+    // The filename is BORROWER-FACING (rendered in the email body + shown in their mail client), so
+    // it is renamed to a neutral, factual name; the stored document keeps its own filename for staff.
+    const what = borrowerSafeAttachmentName(r.filename, drawNo);
     try {
       const content = await storage.read(r.storage_ref);
-      if (!content || !content.length || content.length > budget) continue;
-      // The filename is BORROWER-FACING (rendered in the email body + shown in their mail client),
-      // so it is renamed to a neutral, factual name; the stored document keeps its own filename for
-      // staff. BASE64, never a raw Buffer — both mail providers do String(a.content) expecting
-      // base64, and a Buffer stringifies as a lossy UTF-8 decode of PDF binary (never opens).
-      out.push({ filename: borrowerSafeAttachmentName(r.filename, drawNo), content: content.toString('base64'), contentType: 'application/pdf' });
-      seen.add(kind);
-      budget -= content.length;
-    } catch (e) { /* a missing file never blocks the findings email */ }
+      if (!content || !content.length) { candidates.push({ key: `doc_${r.id}`, what, filename: what, error: { code: 'unreadable', reason: 'the stored copy could not be read' } }); continue; }
+      candidates.push({ key: `doc_${r.id}`, what, filename: what, contentType: 'application/pdf', buf: content });
+    } catch (_) {
+      candidates.push({ key: `doc_${r.id}`, what, filename: what, error: { code: 'unreadable', reason: 'the stored copy could not be read' } });
+    }
   }
   // THE SITEWIRE INSPECTOR'S OWN PER-DRAW PDF IS NEVER A `documents` ROW — it lives only in the
   // durable draw_media archive (kind='draw_pdf'), which is where the investor delivery already
@@ -167,13 +177,23 @@ async function borrowerFindingAttachments(appId, sitewireDrawId) {
         ORDER BY archived_at DESC LIMIT 1`, [appId, sitewireDrawId])).rows[0];
     if (m) {
       const buf = await storage.read(m.storage_ref);
-      if (buf && buf.length && buf.length <= budget) {
-        out.push({ filename: `inspector-report${drawNo != null ? `-draw-${drawNo}` : ''}.pdf`,
-          content: buf.toString('base64'), contentType: 'application/pdf' });
-        budget -= buf.length;
-      }
+      const what = `inspector-report${drawNo != null ? `-draw-${drawNo}` : ''}.pdf`;
+      if (buf && buf.length) candidates.push({ key: 'inspector', what, filename: what, contentType: 'application/pdf', buf });
+      else candidates.push({ key: 'inspector', what, filename: what, error: { code: 'unreadable', reason: 'the stored copy could not be read' } });
     }
   } catch (_) { /* best-effort — the findings email still goes with whatever attached */ }
+
+  const plan = await attachPlan.buildAttachmentPlan(candidates, { budgetBytes: FINDING_ATTACH_MAX_BYTES });
+  for (const a of plan.attach) {
+    // BASE64, never a raw Buffer — both mail providers do String(a.content) expecting base64, and a
+    // Buffer stringifies as a lossy UTF-8 decode of PDF binary (which never opens).
+    out.push({ filename: a.filename, content: a.buf.toString('base64'), contentType: a.contentType || 'application/pdf' });
+  }
+  // The array is what every caller and every test already reads. The audit rides alongside it as a
+  // non-enumerable property so the shape is byte-identical to before — `out.length`, `map`,
+  // destructuring and JSON.stringify all behave exactly as they did — while the delivery path can
+  // still hand the omissions to the email audit.
+  Object.defineProperty(out, 'plan', { value: plan, enumerable: false });
   return out;
 }
 
@@ -296,6 +316,10 @@ async function deliverFindings(appId, drawId, opts = {}) {
       applicationId: appId, link: acceptLink, ctaLabel: 'Review & confirm',
       cta2Label: 'Push back on a line', cta2Link: disputeLink,
       attachments: findingAttachments,
+      // The audit rides with the send (db/550): if a report could not be carried, the email row
+      // records which one and why. This email tells the borrower to "download your inspection
+      // report (PDF)", so one going missing is exactly the thing somebody has to be able to find.
+      ...attachPlan.auditFrom(findingAttachments.plan || { attach: findingAttachments, omitted: [] }),
     }).catch(() => null);
   }
   // Did the borrower actually receive their copy? `emailedTogether` is the thread's own answer.
@@ -306,13 +330,23 @@ async function deliverFindings(appId, drawId, opts = {}) {
         : (sentThread ? 'suppressed' : 'send_failed')));
   // In-app desk marker (owner-directed 2026-07-20) — the borrower's own "results ready" email above is
   // the real send; this is a desk marker that TELLS THE TRUTH about the borrower's copy.
+  // A DOCUMENT LEFT OFF IS TOLD TO THE TEAM (owner-directed 2026-08-14). This path can run on the
+  // autopilot with nobody watching, so a hard consent gate would stall an automatic delivery the
+  // borrower is waiting on — the answer here is to send AND say so, loudly, on the desk. A human
+  // can then re-send or reach them another way, which is the same choice the investor desk offers.
+  const attachMissing = (findingAttachments.plan && findingAttachments.plan.omitted) || [];
+  const missingLine = attachMissing.length
+    ? ` NOTE: ${attachMissing.length} document${attachMissing.length === 1 ? '' : 's'} could not be attached to their email — ${attachMissing.map((m) => `${m.what} (${m.reason})`).join('; ')}.`
+    : '';
   await notify.notifyAppStaff(appId, { type: 'draw_findings', title: 'Draw findings delivered to borrower', inAppOnly: true,
-    body: borrowerEmailed
+    body: (borrowerEmailed
       ? `Inspection findings for ${addr} were delivered to the borrower to accept or dispute.${opts.source === 'autopilot' ? ' (Delivered automatically once the inspection came in.)' : ''}`
-      : `Inspection findings for ${addr} were recorded, but the borrower could NOT be emailed (${borrowerEmailReason === 'no_borrower_email' ? 'no email address on file' : 'their copy was blocked or failed'}). Reach them another way — the draw is waiting on their confirmation.`,
+      : `Inspection findings for ${addr} were recorded, but the borrower could NOT be emailed (${borrowerEmailReason === 'no_borrower_email' ? 'no email address on file' : 'their copy was blocked or failed'}). Reach them another way — the draw is waiting on their confirmation.`)
+      + missingLine,
     applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
   return { ...result, media_archived: artifacts.archived, reports_ready: artifacts.reports,
     reports_pending: !!artifacts.pending, attachments_sent: findingAttachments.map((a) => a.filename),
+    attachments_omitted: attachMissing,
     borrower_emailed: borrowerEmailed, borrower_email_reason: borrowerEmailReason };
 }
 

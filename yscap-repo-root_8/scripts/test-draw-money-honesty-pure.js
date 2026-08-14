@@ -103,8 +103,15 @@ ok('D4 …and no heads-up row', !counted.rows.some((r) => /isn’t counted|isn't
   ok('F2 the deliver core\'s release promise is gated on a KNOWN inspector answer',
     /d\.has_inspector_amounts && d\.net_release_cents != null && Number\(d\.net_release_cents\) > 0/.test(deliverMod));
   ok('F3 the inspector-$0 callout exists and promises nothing', /approved \$0 this time, so confirming accepts the results — nothing is wired/.test(deliverMod));
+  // The regex used to pin the local variable's NAME (`content`), which broke the moment the gather
+  // was refactored onto the shared attachment planner (2026-08-14) even though the contract it
+  // exists to protect never moved. It now states the contract itself, in both directions: whatever
+  // the buffer is called it must be base64-encoded, and a raw Buffer must never be handed over.
+  // (Both providers do String(a.content) expecting base64; a Buffer stringifies as a lossy UTF-8
+  // decode of PDF binary and never opens.)
   ok('F4 the findings attachments are produced as base64, never a raw Buffer',
-    /content: content\.toString\('base64'\)/.test(deliverMod));
+    /content: [\w.]+\.toString\('base64'\)/.test(deliverMod)
+    && !/content: (?:buf|content|bytes)\s*[,}]/.test(deliverMod));
   ok('F5 the Sitewire inspector PDF is sourced from the durable draw_media archive',
     /kind='draw_pdf' AND storage_ref IS NOT NULL/.test(deliverMod));
   const pub = src('src/routes/draw-findings-public.js');
