@@ -136,6 +136,64 @@ check(S.classifyProgram('DSCR I/O 40 Year FRM') === 'long-term', 'DSCR I/O class
 check(S.classifyProgram('Fix & Flip Purchase + reno') === 'short-term', 'Fix & Flip classifies as short-term');
 check(S.classifyProgram('') === 'other', 'an unknown program classifies as other, never as ours');
 
+// ── 5. The investor registry resolves the mess to one identity ───────────────
+const INV = enc.investors;
+check(INV.INVESTORS.length >= 25, `${INV.INVESTORS.length} canonical investors registered`);
+check(INV.summary().recordedSpellings >= 100,
+  `${INV.summary().recordedSpellings} observed spellings recorded`);
+
+// Every canonical entry must resolve to ITSELF from its own label and every alias.
+let aliasMiss = 0;
+for (const inv of INV.INVESTORS) {
+  for (const a of [inv.label, ...inv.aliases]) {
+    const r = INV.resolve(a);
+    if (r.key !== inv.key) { aliasMiss++; console.error(`       ${JSON.stringify(a)} -> ${r.key} (want ${inv.key})`); }
+  }
+}
+check(aliasMiss === 0, `every recorded spelling resolves to its own investor (${aliasMiss} misses)`);
+
+// The specific pairs the owner named.
+check(INV.sameInvestor('EmCap', 'EMCAP Financial'), 'EmCap === EMCAP Financial');
+check(INV.sameInvestor('Oaktree', 'OAK TREE'), 'Oaktree === OAK TREE (the space does not matter)');
+check(INV.sameInvestor('Deephaven Mortgage LLC', 'Deepahven'), 'a typo still resolves to Deephaven');
+check(INV.sameInvestor('A&D Mortgage, LLC', 'AD'), 'the short code AD === A&D Mortgage');
+check(!INV.sameInvestor('Deephaven', 'Oaktree'), 'two different investors never collapse');
+
+// Junk must never resolve into a real company.
+for (const nv of INV.NON_VALUES) {
+  const r = INV.resolve(nv.raw);
+  check(r.key === null, `${JSON.stringify(nv.raw)} does not resolve to an investor`);
+}
+check(INV.resolve('').key === null, 'a blank name resolves to nothing');
+check(INV.resolve(null).key === null, 'a null name resolves to nothing');
+check(!INV.sameInvestor('---', '--'), 'two placeholders are not "the same investor"');
+
+// A company we have never seen must come back unresolved rather than guessed.
+check(INV.resolve('Wells Fargo Home Mortgage').key === null,
+  'an unknown investor is left unresolved, never guessed');
+
+// ── 6. The dropdown catalog is usable for mapping ────────────────────────────
+const DD = enc.dropdowns;
+check(Object.keys(DD.FIELDS).length > 500,
+  `${Object.keys(DD.FIELDS).length} constrained fields catalogued`);
+check(DD.normalizeValue('Y') === 'true' && DD.normalizeValue(false) === 'false'
+  && DD.normalizeValue('N') === 'false' && DD.normalizeValue(true) === 'true',
+  'Y/N and true/false normalize to one representation');
+check(DD.normalizeValue('Purchase') === 'Purchase', 'a non-boolean value passes through unchanged');
+check(DD.normalizeValue(null) === null, 'a missing value stays missing');
+
+// Custom dropdowns publish no options — their inferred set must say so.
+const inferred = DD.list({ inferredOnly: true });
+check(inferred.length > 0, `${inferred.length} custom dropdowns carry INFERRED options`);
+check(inferred.every((f) => DD.options(f.id).every((o) => o.inferred)),
+  'every option on a custom dropdown is flagged inferred, never presented as authoritative');
+
+// The doc-type finding must stay recorded — the base milestone rule depends on it.
+const docType = DD.NOTABLE.find((n) => n.fieldId === '2867');
+check(!!docType && docType.observed.includes('DSCR'),
+  "the loan-doc-type drift ('DSCR' is not a valid code) is recorded");
+check(DD.isKnownValue('2867', 'NoDocumentation'), 'NoDocumentation is a known doc-type value');
+
 // ── done ─────────────────────────────────────────────────────────────────────
 if (failures) {
   console.error(`\nFAILED — ${failures} check(s).`);

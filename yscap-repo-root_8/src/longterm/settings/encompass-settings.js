@@ -80,6 +80,19 @@ const SETTINGS = [
     type: 'number', default: 1.2,
     description: 'At or above this, the file sits in the conventional DSCR comfort zone.',
     evidence: 'Industry convention.' },
+  { key: 'dscr.rentBasis', group: 'DSCR', label: 'Which rent feeds the DSCR',
+    type: 'enum', default: 'estimated-market', options: ['estimated-market', 'actual-in-place', 'lower-of-both'],
+    description: 'The appraisal reports BOTH the rent in place and the market rent the appraiser '
+      + 'supports. Which one qualifies the file is a credit-policy decision, not a technical one.',
+    evidence: 'Live appraisals show gaps of 56% (2,500 in place vs 3,900 market) and vacant '
+      + 'properties where no actual rent exists at all. Encompass field 1005 currently receives '
+      + 'the market figure, so that is the shipped default — but it is the more generous of the two.' },
+  { key: 'dscr.carryBothRents', group: 'DSCR', label: 'Always store both rents',
+    type: 'boolean', default: true,
+    description: 'Keep actual rent, market rent and the occupancy state on the file so an '
+      + 'underwriter can see what the ratio rests on.',
+    evidence: 'MULTIFAMILY_RENT_SCHEDULE in the appraisal XML carries both, plus a comment that '
+      + 'often says no lease was supplied.' },
   { key: 'dscr.recomputeLocally', group: 'DSCR', label: 'Recompute DSCR ourselves',
     type: 'boolean', default: true,
     description: 'Recompute rent ÷ housing expense on our side rather than trusting the stored value, '

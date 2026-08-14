@@ -133,6 +133,43 @@ router.get('/api-surface', (req, res) => {
   } catch (e) { console.error('[lt] encompass api surface failed:', e && e.message); res.status(500).json({ error: 'Could not load the API surface.' }); }
 });
 
+// GET /api/lt/encompass/investors — the canonical investor list and every spelling
+// seen in the tenant. ?resolve=<typed name> answers "which investor is this?".
+router.get('/investors', (req, res) => {
+  try {
+    const I = enc.investors;
+    if (req.query.resolve != null) return res.json(I.resolve(String(req.query.resolve)));
+    res.json({
+      summary: I.summary(),
+      investors: I.list(),
+      nonValues: I.NON_VALUES,
+      investorFields: I.INVESTOR_FIELDS,
+      tableFunderValues: I.TABLE_FUNDER_VALUES,
+    });
+  } catch (e) { console.error('[lt] encompass investors failed:', e && e.message); res.status(500).json({ error: 'Could not load the investor registry.' }); }
+});
+
+// GET /api/lt/encompass/dropdowns — every constrained field with its option set.
+// ?id=<fieldId> one field · ?kind=standard|custom · ?minLoans=<n> · ?drift=true
+router.get('/dropdowns', (req, res) => {
+  try {
+    const D = enc.dropdowns;
+    const { id, kind, minLoans, drift, inferred } = req.query;
+    if (id) {
+      const f = D.field(id);
+      if (!f) return res.status(404).json({ error: 'That field is not a known dropdown.' });
+      return res.json({ field: f, options: D.options(id) });
+    }
+    const fields = D.list({
+      kind: kind || null,
+      minLoans: minLoans ? Number(minLoans) : 0,
+      inferredOnly: String(inferred) === 'true',
+      driftOnly: String(drift) === 'true',
+    });
+    res.json({ summary: D.summary(), driftKinds: D.DRIFT_KINDS, notable: D.NOTABLE, count: fields.length, fields });
+  } catch (e) { console.error('[lt] encompass dropdowns failed:', e && e.message); res.status(500).json({ error: 'Could not load the dropdown catalog.' }); }
+});
+
 // GET /api/lt/encompass/settings — every tenant-specific choice, with OUR value as
 // the default and the evidence behind it. This is the layer a future buyer edits.
 router.get('/settings', (req, res) => {

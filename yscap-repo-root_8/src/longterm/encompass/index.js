@@ -24,6 +24,9 @@ const anatomy = require('./loan-anatomy');
 const formulas = require('./formulas');
 const conditions = require('./conditions');
 const apiSurface = require('./api-surface');
+const investors = require('./investors');
+const dropdowns = require('./dropdowns');
+const mismo = require('./mismo');
 const programs = require('./dictionary/program-taxonomy.json');
 const conditionLibrary = require('./dictionary/condition-library.json');
 const efolderCatalog = require('./dictionary/efolder-catalog.json');
@@ -131,6 +134,8 @@ function summary() {
     conditionTemplates: conditionLibrary.templates.length,
     efolderDocumentTypes: efolderCatalog.documentTypes.length,
     apiSurface: apiSurface.summary(),
+    investors: investors.summary(),
+    dropdowns: dropdowns.summary(),
   };
 }
 
@@ -149,6 +154,9 @@ module.exports = {
   formulas,
   conditions,
   apiSurface,
+  investors,
+  dropdowns,
+  mismo,
   programs,
   conditionLibrary,
   efolderCatalog,
