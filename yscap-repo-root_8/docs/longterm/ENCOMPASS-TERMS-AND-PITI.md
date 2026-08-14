@@ -23,11 +23,14 @@ book.
 | Structure | Program | Term | Interest-only | Then amortizes over | Loans |
 |---|---|---:|---:|---:|---:|
 | **30-year fixed** | Investor DSCR 30 YEAR FRM | 360 | — | 360 | **444** |
-| 30-year term, 10 years I/O | DSCR I/O 30 Year FRM | 360 | 120 | 240 | 26 |
+| 30-year term, 10 years I/O ¹ | DSCR I/O 30 Year FRM | 360 | 120 | 240 | 26 |
 | 40-year term, 10 years I/O | DSCR I/O 40 Year FRM | 480 | 120 | 360 | 3 |
 | 40-year fixed | Investor DSCR 40 YEAR FRM | 480 | — | 480 | 2 |
 | DSCR ARM | DSCR ARM | 360 | one file has 120, one none | — | 2 |
 | 30-year fixed with a 12- or 24-month I/O | Investor DSCR 30 YEAR FRM | 360 | 12 or 24 | — | 10 |
+
+¹ **This is the one the owner calls "a 20-year mortgage"** — meaning its 240 amortizing
+months, not a 240-month loan. See below.
 
 **The ordinary 30-year fixed is nine out of every ten long-term files.** Everything
 else is a rounding error by volume — which does not make it unimportant, but it does
@@ -35,11 +38,13 @@ mean the plain case must be effortless and the rest must be possible.
 
 ### Two shapes you named that the book does not contain
 
-- **A 20-year term.** There is not one long-term loan at 240 months in the tenant —
-  every single one is 360 or 480. Two readings, and it is worth one answer rather
-  than a guess: either it is a product we have not written yet, or you mean the
-  **240 amortizing months that follow the ten interest-only years** on the 30-year
-  I/O program, which is exactly 20 years and is in the table above.
+- **A 20-year term — ✅ ANSWERED 2026-08-14, and there is no such product.** The owner:
+  *"when I say 20-year term, it means usually 30-year term, 10-year interest-only, and
+  then a 20-year mortgage. It was a typo."* So **"20-year" is his name for the
+  amortizing tail** of the 30-year / 10-year-I/O structure in the table above, where
+  `amortizingMonths = 240`. The measurement was right: there is not one long-term loan
+  at 240 months in the tenant, and none is expected. **Do not build a 20-year product**
+  — when someone says it, they mean 30-year with ten years interest-only.
 - **A 10-year term.** Nothing at 120 months either. **In this book 120 is always the
   interest-only PERIOD (field 1177), never the loan term (field 4).** Reading one as
   the other would size the payment on a ten-year loan instead of a thirty-year one.

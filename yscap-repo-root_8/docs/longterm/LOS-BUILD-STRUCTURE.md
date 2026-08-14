@@ -259,15 +259,17 @@ depends on it.
 
 Recorded here rather than guessed at.
 
-1. **The 20-year term.** Nothing in the tenant is 240 months. Is it a product we have
-   not written, or do you mean the 240 amortising months after the ten interest-only
-   years on the 30-year I/O program?
+1. ~~**The 20-year term.**~~ **ANSWERED 2026-08-14: it was a typo, and there is no
+   20-year product.** *"When I say 20-year term, it means usually 30-year term, 10-year
+   interest-only, and then a 20-year mortgage."* So "20-year" names the **amortising
+   tail** of the 30-year / 10-year-I/O structure (`amortizingMonths = 240`). Do not
+   build one.
 2. **The ten files with a 12- or 24-month interest-only period** on the plain 30-year
    program. Real short-I/O deals, or values left behind from a file that started as a
    bridge?
-3. **The investor loan number.** You named `VEND.X267`; in the live tenant that field
-   holds ZIP codes (11 distinct, all postcodes) and the 379 real investor loan numbers
-   are in `VEND.X276`, which is what the code uses. Confirm.
+3. ~~**The investor loan number.**~~ **ANSWERED 2026-08-14: `VEND.X276`, confirmed by
+   the owner** — which is what the code already keys on. (`VEND.X267` holds ZIP codes.)
+   Measurement and the owner agree; settled.
 4. ~~**`CX.PITIA`**~~ **ANSWERED 2026-08-14.** The finding was challenged, re-tested
    four ways and held: its formula adds the purchase price and cash-to-close into a
    monthly payment, so **0 of 451** long-term files land within 2% of the real housing

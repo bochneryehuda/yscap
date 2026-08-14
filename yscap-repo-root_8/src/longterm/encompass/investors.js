@@ -158,17 +158,21 @@ const NON_VALUES = [
 //   2. WHO EXACTLY       (VEND.X263)        — the fuller contact-record name, later
 //   3. THEIR LOAN NUMBER (VEND.X276)        — how THEY refer to this loan, last
 //
-// ⚠️ A NOTE ON THE FIELD ID. The owner named VEND.X267 for the loan number; the live
-// tenant says otherwise and the data is unambiguous, so this follows the data:
+// ✅ SETTLED — the field id is VEND.X276, and both the data and the owner say so.
+// It was first raised as a discrepancy: the owner originally named VEND.X267, the live
+// tenant said otherwise, and this followed the data —
 //   VEND.X267 = "File Contacts Investor Zip"    — 11 distinct values, all postcodes
 //                                                 (19101, 80155, 75265, 10036 …)
 //   VEND.X276 = "File Contacts Investor Ref #"  — 379 distinct values, the 8-11 digit
 //                                                 investor loan numbers (25098221,
 //                                                 5260318508, 12025062483 …)
-// Keying the investor loan number on X267 would store a PO-Box postcode as the
-// investor's loan number on every file. If the tenant ever remaps these, change
-// INVESTOR_LOAN_NUMBER_FIELD — nothing else reads the id directly.
+// — because keying it on X267 would have stored a PO-Box postcode as the investor's
+// loan number on every file. The owner CONFIRMED X276 on 2026-08-14 ("Investor loan
+// number is vend.x276"), so measurement and the owner now agree and this is settled.
+// If the tenant ever remaps these, change INVESTOR_LOAN_NUMBER_FIELD — nothing else
+// reads the id directly.
 const INVESTOR_LOAN_NUMBER_FIELD = 'VEND.X276';
+const INVESTOR_LOAN_NUMBER_OWNER_CONFIRMED = '2026-08-14';
 
 const IDENTITY_CHAIN = [
   { step: 1, fieldId: 'CX.WHICHINVESTOR', role: 'shorthand name',
@@ -182,6 +186,7 @@ const IDENTITY_CHAIN = [
   { step: 3, fieldId: INVESTOR_LOAN_NUMBER_FIELD, role: 'the investor\'s own loan number',
     when: 'last — once the loan is bought / boarded on their system',
     loans: 379, distinct: 379,
+    ownerConfirmed: INVESTOR_LOAN_NUMBER_OWNER_CONFIRMED,
     durability: 'MUST SURVIVE. It is the only shared key between our file and the '
       + 'investor\'s system, it is issued once, and nothing can regenerate it.' },
 ];
@@ -347,12 +352,14 @@ function summary() {
     investorFields: INVESTOR_FIELDS.length,
     identityChain: IDENTITY_CHAIN.map((s) => s.fieldId),
     investorLoanNumberField: INVESTOR_LOAN_NUMBER_FIELD,
+    investorLoanNumberOwnerConfirmed: INVESTOR_LOAN_NUMBER_OWNER_CONFIRMED,
     source: '772 loans read from the live tenant, 2026-08-14',
   };
 }
 
 module.exports = {
   INVESTORS, NON_VALUES, INVESTOR_FIELDS, TABLE_FUNDER_VALUES,
-  IDENTITY_CHAIN, INVESTOR_LOAN_NUMBER_FIELD, investorLoanNumber,
+  IDENTITY_CHAIN, INVESTOR_LOAN_NUMBER_FIELD, INVESTOR_LOAN_NUMBER_OWNER_CONFIRMED,
+  investorLoanNumber,
   normalize, resolve, sameInvestor, byKey, list, summary,
 };

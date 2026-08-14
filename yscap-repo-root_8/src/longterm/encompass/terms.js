@@ -119,6 +119,12 @@ const TERM_STRUCTURES = [
       'Interest only for ten years, then the balance amortizes over the REMAINING twenty. '
       + 'The payment steps UP at month 121 because the same principal now has 240 payments '
       + 'instead of 360 — this is the owner\'s "30 year term 10 year interest only".',
+    // OWNER VOCABULARY, confirmed 2026-08-14. When the owner says "20-year term" he
+    // means THIS structure's amortizing tail, not a 240-month loan: "usually 30-year
+    // term, 10-year interest-only, and then a 20-year mortgage." There is no separate
+    // 20-year product — hearing one would be a misunderstanding, not a gap.
+    alsoCalled: '"a 20-year mortgage" — meaning the 240 amortizing months after the I/O period',
+    ownerConfirmed: '2026-08-14',
     watchOut:
       'The DSCR is normally struck on the interest-only payment, which is the lower one. A file '
       + 'that qualifies at 1.25 today can fall under 1.00 the day it starts amortizing.',
@@ -183,12 +189,15 @@ const TERM_STRUCTURES_NOT_PRESENT = [
     label: '20-year term',
     termMonths: 240,
     loans: 0,
+    answered: '2026-08-14',
     note:
-      'The owner named a 20-year term. There is NOT ONE long-term loan at 240 months in the '
-      + 'whole tenant — every long-term file is 360 or 480. Either it is a product we have not '
-      + 'written yet, or he means the 240 AMORTIZING months that follow the ten interest-only '
-      + 'years on the 30-year I/O program (see io_10_then_30, where amortizingMonths = 240). '
-      + 'Worth one question rather than a guess.',
+      'ANSWERED BY THE OWNER — there is no 20-year product, and there never was. In his own '
+      + 'words: "when I say 20-year term, it means usually 30-year term, 10-year interest-only, '
+      + 'and then a 20-year mortgage. It was a typo." So "20-year" is his name for the '
+      + 'AMORTIZING TAIL of the io_10_then_30 structure (amortizingMonths = 240), which the '
+      + 'measurement had offered as the likely reading. The data was right: there is NOT ONE '
+      + 'long-term loan at 240 months in the tenant, and none is expected. Do not build a '
+      + '20-year product; when someone says it, they mean 30-year with ten years interest-only.',
   },
   {
     label: '10-year term',
@@ -343,6 +352,7 @@ function summary() {
     longTermLoansMeasured: 490,
     structuresInTheBook: TERM_STRUCTURES.length,
     structuresTheOwnerNamedThatDoNotExist: TERM_STRUCTURES_NOT_PRESENT.length,
+    ownerAnswered: TERM_STRUCTURES_NOT_PRESENT.filter((s) => s.answered).length,
     everyLongTermLoanIsFixedRateExcept: 2,
     termMonthsObserved: { 360: 485, 480: 5 },
     interestOnlyMonthsObserved: { none: 447, 120: 33, 12: 7, 24: 3 },

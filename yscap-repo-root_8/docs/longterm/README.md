@@ -136,10 +136,13 @@ Five things that are not obvious and cost real time to discover:
 5. **Never compare an investor name as a string.** 151 spellings for ~30 companies.
    Compare `investors.resolve(x).key`, or call `sameInvestor(a, b)`.
 
-And one that needs an owner answer: the investor loan number the owner named as
-`VEND.X267` is, in the live tenant, `VEND.X267 = "File Contacts Investor Zip"` — 11
-distinct values, all postcodes. The 379 real investor loan numbers are in
-**`VEND.X276`**, which is what the code keys on.
+And two the owner has now settled (2026-08-14):
+
+- **The investor loan number is `VEND.X276`** — owner-confirmed, and what the code
+  already keys on. It had been raised as a discrepancy because `VEND.X267` holds ZIP
+  codes; measurement and the owner now agree.
+- **There is no 20-year product.** "20-year" is the owner's name for the amortising
+  tail of the 30-year / 10-year-interest-only structure. Do not build one.
 
 ---
 

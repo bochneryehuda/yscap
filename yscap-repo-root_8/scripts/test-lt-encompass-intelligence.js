@@ -187,6 +187,12 @@ check(INV.IDENTITY_CHAIN[0].fieldId === 'CX.WHICHINVESTOR', 'step 1 is the short
 check(INV.IDENTITY_CHAIN[1].fieldId === 'VEND.X263', 'step 2 is the accurate name');
 check(INV.IDENTITY_CHAIN[2].fieldId === 'VEND.X276', "step 3 is the investor's loan number");
 check(INV.INVESTOR_LOAN_NUMBER_FIELD === 'VEND.X276', 'the loan-number field is VEND.X276');
+// Owner-confirmed 2026-08-14, so measurement and the owner now agree — settled, and
+// not a discrepancy anyone needs to re-investigate.
+check(INV.INVESTOR_LOAN_NUMBER_OWNER_CONFIRMED === '2026-08-14',
+  'the investor loan-number field is OWNER-CONFIRMED, not just measured');
+check(INV.IDENTITY_CHAIN[2].ownerConfirmed === '2026-08-14',
+  'the identity chain carries that confirmation on its last step');
 
 // The field id this is NOT. VEND.X267 holds postcodes in the live tenant, so keying
 // the loan number on it would store a PO-Box postcode as the investor's loan number.
@@ -266,6 +272,15 @@ check(T.TERM_FIELDS.termMonths.fieldId === '4' && T.TERM_FIELDS.termMonths.unit 
 // never quietly added as though we had seen it.
 const twenty = T.TERM_STRUCTURES_NOT_PRESENT.find((s) => s.termMonths === 240);
 check(!!twenty && twenty.loans === 0, 'the 20-year term is recorded as NOT present in the book');
+// ANSWERED 2026-08-14 — it was a typo. "20-year" is the owner's name for the AMORTIZING
+// TAIL of the 30-year / 10-year-IO structure, not a 240-month loan. Pinned so nobody
+// re-opens it as a gap, and so nobody builds a 20-year product.
+check(twenty.answered === '2026-08-14', 'the 20-year question is marked answered by the owner');
+check(/typo/i.test(twenty.note) && /Do not build a/.test(twenty.note),
+  'and the answer says plainly: it was a typo, do not build a 20-year product');
+check(io30.alsoCalled && /20-year mortgage/.test(io30.alsoCalled),
+  'the 30/10-IO structure records that the owner calls its tail "a 20-year mortgage"');
+check(io30.ownerConfirmed === '2026-08-14', 'that vocabulary is owner-confirmed, not inferred');
 check(!T.TERM_STRUCTURES.some((s) => s.termMonths === 240),
   'no 20-year structure is claimed as observed');
 check(!T.TERM_STRUCTURES.some((s) => s.termMonths === 120),
@@ -297,6 +312,10 @@ const d2 = T.describeStructure(240, null);
 check(d2 && d2.termMonths === 240 && d2.knownStructure === false,
   'a 20-year is described honestly and flagged as NOT a structure we have seen');
 check(T.describeStructure(null, 120) === null, 'no term means no structure, never a guess');
+// A 240-month loan must still describe honestly if one ever turned up — the answer is
+// that we do not WRITE them, not that the code cannot read one.
+check(T.describeStructure(240, null).knownStructure === false,
+  'a real 240-month loan would still be described, and flagged as one we have never seen');
 check(T.describeStructure(0, 0) === null, 'a zero term is refused');
 check(T.amortizingMonths(360, 400) === 0,
   'an interest-only period longer than the term leaves nothing amortizing, never a negative');
