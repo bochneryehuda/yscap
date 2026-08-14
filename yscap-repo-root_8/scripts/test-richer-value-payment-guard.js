@@ -183,6 +183,32 @@ const payment = require(R + '/src/richervalues/payment');
   'E the message says who can fix it AND what to do today');
 }
 
+/* ═══ E2. paying has THREE outcomes, and the screen must not collapse them ═ */
+// A false success on a money action is the one thing that must be impossible. So
+// `ok` ("did what you pressed happen?") and `settled` ("has the money moved?") are
+// separate, and the order card's own handler is checked here at the SOURCE, since
+// a passing HTTP call proves nothing about what the screen then says.
+{
+  const fs = require('fs');
+  const card = fs.readFileSync(R + '/app-v2/src/components/AppraisalOrderSection.jsx', 'utf8');
+  ok(/out\.ok === false/.test(card),
+    'E2 the order card treats an explicit ok:false as a FAILURE — a refused charge can never read as “charged”');
+  ok(/setNotice\(\(out && out\.note\)/.test(card),
+    'E2 and it prefers the server’s own wording, so an asked-for payment link is reported as what it is');
+
+  const svc = fs.readFileSync(R + '/src/richervalues/order-service.js', 'utf8');
+  ok(/__payment/.test(svc) && /settled: true/.test(svc) && /settled: false/.test(svc),
+    'E2 the server carries the verdict back rather than leaving the screen to infer it from paid_at');
+  ok(/ok: askedForLink/.test(svc),
+    'E2 a payment link the staffer CHOSE is a success; one a refused card fell through to is not');
+
+  const route = fs.readFileSync(R + '/src/routes/richervalues.js', 'utf8');
+  ok(/ok: !!p\.ok, settled: !!p\.settled/.test(route),
+    'E2 and the pay route answers both, never one standing in for the other');
+  ok(/payment\.METHODS\.includes\(method\)/.test(route),
+    'E2 the pay route refuses any method outside the three — invoice and ACH cannot be asked for');
+}
+
 /* ═══ F. an expired card is not a usable card ═══════════════════════════ */
 {
   const isExpired = payment._internals.isExpired;

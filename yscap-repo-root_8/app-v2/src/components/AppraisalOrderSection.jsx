@@ -1399,7 +1399,14 @@ function RvOrderCard({ order, onChanged }) {
     setBusy(what); setErr(''); setNotice('');
     try {
       const out = await fn();
-      setNotice(okMsg || 'Done.');
+      // A ROUTE THAT ANSWERS 200 HAS NOT NECESSARILY DONE THE THING. Paying is the
+      // case that matters: a card charge Richer Value refuses falls through to the
+      // payment link and comes back `ok:false` with the reason in `note` — and
+      // announcing "charged, it is a real order now" over that would be a false
+      // success on a MONEY action, which is the one place it must never happen.
+      // Every other action here answers `ok:true`, so they are unaffected.
+      if (out && out.ok === false) setErr(out.note || out.detail || 'That did not go through.');
+      else setNotice((out && out.note) || okMsg || 'Done.');
       if (out && out.order) setDetail(out);
       await onChanged();
     } catch (e) { setErr(e.message || 'That did not work.'); }

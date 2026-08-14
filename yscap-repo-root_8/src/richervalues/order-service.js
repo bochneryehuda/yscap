@@ -745,25 +745,36 @@ async function payIntake(db, order, { staffId = null, method: methodIn = null, c
     method: 'POST', path: `/api/v1/public/${order.intake_token}/payment`, ...entry,
   });
 
+  // WHAT ACTUALLY HAPPENED, carried back on the returned row as `__payment`.
+  //
+  // It is a TRANSIENT property on the object, never a column: three different
+  // things can come out of one press and the row alone cannot tell them apart.
+  // Settled, "not settled but the borrower has been asked", and "nothing worked"
+  // are three different messages, and a screen that reads only `paid_at` would
+  // either call a payment link a failure or call a failed charge a success. A
+  // false success on a money action is the one outcome that must be impossible.
   const settle = async (result, usedMethod) => {
-    if (result.dryrun) return order;
+    if (result.dryrun) return { ...order, __payment: { ok: true, settled: false, note: null, via: usedMethod } };
     const tokens = result.orderTokens || [];
     const orderToken = (tokens[0] && tokens[0].order_token) || null;
     const r = await db.query(
       `UPDATE rv_orders SET order_token=$2, payment_method=$3, paid_at=now(), status='ordered',
               last_event_at=now(), last_error=NULL
         WHERE id=$1 RETURNING *`, [order.id, orderToken, usedMethod]);
-    return r.rows[0];
+    return { ...r.rows[0], __payment: { ok: true, settled: true, note: null, via: usedMethod } };
   };
 
-  const unpaid = async (usedMethod, note) => {
+  const unpaid = async (usedMethod, note, { ok = false } = {}) => {
     const r = await db.query(
       `UPDATE rv_orders SET payment_method=$2, last_error=$3, last_event_at=now() WHERE id=$1 RETURNING *`,
       [order.id, usedMethod, note]);
-    return r.rows[0];
+    return { ...r.rows[0], __payment: { ok, settled: false, note, via: usedMethod } };
   };
 
   // ---- the payment link, asked for or fallen back to ---------------------
+  // Whether the link was CHOSEN or is where a refused card landed changes what the
+  // outcome means, so it is decided once here rather than at each call.
+  const askedForLink = method === 'PAYMENT_LINK';
   const sendLink = async (why) => {
     const to = paymentLinkTo || (await borrowerEmailFor(db, order.application_id));
     if (!to) {
@@ -774,9 +785,15 @@ async function payIntake(db, order, { staffId = null, method: methodIn = null, c
     try {
       const out = await payment.sendPaymentLink(order.intake_token, { to, cc: paymentLinkCc, comment: 'Payment for your property valuation.' });
       await j({ action: 'payment_link', ok: true, request: { to: out.sentTo }, response: {} });
+      // The link going out IS the success when a link is what was asked for. It is
+      // still `settled:false` — nobody has paid yet, and the row must not pretend
+      // otherwise — but reporting it as a FAILURE would be just as wrong in the
+      // other direction. `ok` answers "did what you pressed happen?", `settled`
+      // answers "has the money moved?", and they are different questions.
       return unpaid('PAYMENT_LINK',
         `${why}Richer Value has emailed the payment link to ${Array.isArray(out.sentTo) ? out.sentTo.join(', ') : out.sentTo}. `
-        + 'The order starts once it is paid.');
+        + 'The order starts once it is paid.',
+        { ok: askedForLink });
     } catch (e) {
       await j({ action: 'payment_link', ok: false, error: e.message, response: e.body || null });
       return unpaid('PAYMENT_LINK', `${why}The payment link could not be sent: ${describeVendorError(e)}. Use the payment link on the order card.`);

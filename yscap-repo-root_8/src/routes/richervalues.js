@@ -465,13 +465,19 @@ router.post('/orders/:orderId/pay', async (req, res) => {
       paymentLinkTo: b.paymentLinkTo || null,
       borrowerId: b.borrowerId || null,
     });
+    // THREE OUTCOMES, NOT TWO. `ok` = did what you pressed happen; `settled` = has
+    // the money actually moved. A payment link the staffer ASKED for is ok-but-not-
+    // settled; a card charge that fell through to one is neither, and must never be
+    // announced as "charged". `payIntake` carries that verdict back rather than
+    // leaving the screen to guess it from `paid_at`.
+    const p = updated.__payment || { ok: !!updated.paid_at, settled: !!updated.paid_at, note: updated.last_error || null };
     await audit(req, 'rv_order_paid', 'application', order.application_id, {
-      orderId: order.id, method: updated.payment_method, settled: !!updated.paid_at,
+      orderId: order.id, method: updated.payment_method, settled: !!p.settled, ok: !!p.ok,
     });
     const detail = await orderService.orderDetail(db, order.id);
     // `payIntake` never throws for a payment problem — it records what happened in
     // words on the row, so the desk reads the outcome rather than a 500.
-    return res.json({ ok: !!updated.paid_at, settled: !!updated.paid_at, note: updated.last_error || null, ...detail });
+    return res.json({ ok: !!p.ok, settled: !!p.settled, note: p.note || null, ...detail });
   } catch (e) { return vendorFail(res, e, 'pay_failed'); }
 });
 
