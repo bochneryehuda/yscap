@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Richer Value Order Intake API — the guarded transport.
+ * Richer Values Order Intake API — the guarded transport.
  *
  * ONE way in and out, so every safety property is enforced in a single place: the
  * three switches, the dry-run, the write gate, the token lifecycle, the timeout,
@@ -123,7 +123,7 @@ function configured() {
 // field they refused rather than "data validation failed".
 // ---------------------------------------------------------------------------
 function httpError(label, status, body, retryAfterSec) {
-  const e = new Error(`Richer Value ${label} failed: HTTP ${status}`);
+  const e = new Error(`Richer Values ${label} failed: HTTP ${status}`);
   e.status = status;
   e.body = body;
   e.fieldErrors = fieldErrorsOf(body);
@@ -189,7 +189,7 @@ function mintedIdentity() {
 }
 
 async function getAccessToken() {
-  if (!switches.on('RV_ENABLED')) throw gateError('RV_DISABLED', 'the Richer Value integration master switch is off');
+  if (!switches.on('RV_ENABLED')) throw gateError('RV_DISABLED', 'the Richer Values integration master switch is off');
   const c = RV();
   if (c.apiToken) return c.apiToken;
   if (!c.username || !c.password) {
@@ -260,14 +260,14 @@ async function loanOfficerToken(preferred) {
 
 // ---------------------------------------------------------------------------
 // The one request path.
-//   opts.write  — this call CHANGES something at Richer Value. Gated by
+//   opts.write  — this call CHANGES something at Richer Values. Gated by
 //                 RV_OUTBOUND_ENABLED and short-circuited by RV_DRYRUN.
 //   opts.form   — a plain object sent as multipart/form-data (their order intake
 //                 is multipart even when it carries no file).
 //   opts.label  — what to call it in an error.
 // ---------------------------------------------------------------------------
 async function request(method, path, { body, form, query, write, label } = {}) {
-  if (!switches.on('RV_ENABLED')) throw gateError('RV_DISABLED', 'the Richer Value integration master switch is off');
+  if (!switches.on('RV_ENABLED')) throw gateError('RV_DISABLED', 'the Richer Values integration master switch is off');
 
   // Dry-run is checked BEFORE the write gate, so it is always safe to leave on
   // while verifying — exactly the AMC and Class ordering.
@@ -325,13 +325,13 @@ async function request(method, path, { body, form, query, write, label } = {}) {
     // Their envelope carries `success:false` WITH an HTTP 200 on a validation
     // failure, so a 2xx is not on its own proof the thing worked.
     if (data && data.success === false) {
-      const e = new Error(`Richer Value ${label || path} refused: ${data.message || 'no message'}`);
+      const e = new Error(`Richer Values ${label || path} refused: ${data.message || 'no message'}`);
       e.status = res.status; e.body = data; e.fieldErrors = fieldErrorsOf(data); e.retryable = false;
       throw e;
     }
     return data;
   }
-  throw lastErr || new Error(`Richer Value ${label || path} failed after ${MAX_TRIES} attempts`);
+  throw lastErr || new Error(`Richer Values ${label || path} failed after ${MAX_TRIES} attempts`);
 }
 
 /**

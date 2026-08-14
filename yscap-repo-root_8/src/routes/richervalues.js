@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Richer Value — the staff order desk for the Hybrid Appraisal. STAFF ONLY,
+ * Richer Values — the staff order desk for the Hybrid Appraisal. STAFF ONLY,
  * file-scoped.
  *
  * Read-shaped except the routes that reach the vendor in a way that costs money.
@@ -9,12 +9,12 @@
  * `confirm:true` from the screen. A GET can never place an order.
  *
  * NOTHING HERE DECIDES BETWEEN VENDORS. There are three appraisal desks now and
- * none of them is the default — this one answers only for Richer Value, exactly as
+ * none of them is the default — this one answers only for Richer Values, exactly as
  * the AMC desk answers only for the AMC and the Class desk only for Class.
  * Whichever surface chooses between them is the unified order section, which
  * dispatches; do not grow a default in here.
  *
- * A VENDOR'S HTTP STATUS IS NEVER RELAYED. A 401 from Richer Value relayed as a
+ * A VENDOR'S HTTP STATUS IS NEVER RELAYED. A 401 from Richer Values relayed as a
  * 401 from PILOT would sign the STAFFER out (the session chokepoint in
  * src/auth/index.js documents this class), so every vendor failure comes back as
  * a 502 carrying their own words in the body.
@@ -330,7 +330,7 @@ async function vendorAction(req, res, order, { action, run, patch, auditAction, 
       request: detail || {}, response: e.body || null, ok: false, error: e.message, staffId: req.actor.id,
     });
     if (e.code === 'RV_OUTBOUND_DISABLED') {
-      return res.status(409).json({ error: 'outbound_disabled', detail: 'Writing to Richer Value is switched off — turn it on on the API Health page.' });
+      return res.status(409).json({ error: 'outbound_disabled', detail: 'Writing to Richer Values is switched off — turn it on on the API Health page.' });
     }
     return vendorFail(res, e, `${action}_failed`);
   }
@@ -344,7 +344,7 @@ router.post('/orders/:orderId/cancel', async (req, res) => {
   const order = await loadOrder(req, res, req.params.orderId);
   if (!order) return undefined;
   const reason = String((req.body && req.body.reason) || '').trim();
-  if (reason.length < 8) return res.status(400).json({ error: 'reason_required', detail: 'Add a short reason for cancelling — it goes to Richer Value and onto the file.' });
+  if (reason.length < 8) return res.status(400).json({ error: 'reason_required', detail: 'Add a short reason for cancelling — it goes to Richer Values and onto the file.' });
   if (req.body && req.body.confirm !== true) return res.status(400).json({ error: 'confirm_required', detail: 'Cancelling has to be confirmed.' });
 
   return vendorAction(req, res, order, {
@@ -454,7 +454,7 @@ router.post('/orders/:orderId/pay', async (req, res) => {
   if (method && !payment.METHODS.includes(method)) {
     return res.status(400).json({
       error: 'bad_method',
-      detail: `Richer Value orders are paid by ${payment.METHODS.join(', ')} — not by invoice and not by ACH.`,
+      detail: `Richer Values orders are paid by ${payment.METHODS.join(', ')} — not by invoice and not by ACH.`,
     });
   }
   try {
@@ -572,7 +572,7 @@ router.post('/orders/:orderId/documents', async (req, res) => {
   const field = String((req.body && req.body.field) || 'other_files');
   const ALLOWED = new Set(['budget_files', 'photo_files', 'video_files', 'inspection_files', 'plan_files', 'contract_files', 'other_files']);
   if (!ids.length) return res.status(400).json({ error: 'documents_required', detail: 'Pick at least one document to send.' });
-  if (!ALLOWED.has(field)) return res.status(400).json({ error: 'bad_field', detail: 'That is not a kind of file Richer Value accepts.' });
+  if (!ALLOWED.has(field)) return res.status(400).json({ error: 'bad_field', detail: 'That is not a kind of file Richer Values accepts.' });
 
   const rows = (await db.query(
     `SELECT id, filename, content_type, storage_provider, storage_ref FROM documents

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Richer Value — status intake, the finished report, and the poller.
+ * Richer Values — status intake, the finished report, and the poller.
  *
  * THEY PUSH AND WE POLL, and both roads lead here. Their webhook posts one small
  * event per change (`{order_type, intake_token, order_token, data:{action_type,
@@ -415,7 +415,7 @@ function start() {
     pollOnce().catch((e) => console.error('[rv] poll failed:', (e && e.message) || e));
   }, every);
   if (timer.unref) timer.unref();
-  console.log(`[rv] Richer Value poller started (every ${Math.round(every / 1000)}s)`);
+  console.log(`[rv] Richer Values poller started (every ${Math.round(every / 1000)}s)`);
   return timer;
 }
 function stop() { if (timer) { clearInterval(timer); timer = null; } }

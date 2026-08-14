@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Richer Value — PAYING FOR THE ORDER.
+ * Richer Values — PAYING FOR THE ORDER.
  *
  * THE OWNER'S RULE (2026-08-14): *"We don't want to allow Add to Invoice. We don't
  * want to allow ACH. We want the system to automatically be able to put in the
@@ -13,13 +13,13 @@
  *
  *   CARD_ON_FILE   the card the borrower (or a staffer on their behalf) entered on
  *                  the appraisal-card condition. PILOT reveals it through the
- *                  existing audited chokepoint, hands it to Richer Value, charges
+ *                  existing audited chokepoint, hands it to Richer Values, charges
  *                  the order, and REMOVES the card from their side again.
  *   NEW_CARD       no card on the file yet: a staffer types one here. It is saved
  *                  onto the file FIRST through the SAME shared chokepoint
  *                  (`lib/appraisal-card.js`), so the appraisal-card condition is
  *                  filled by the act of paying, and only then charged.
- *   PAYMENT_LINK   Richer Value emails the borrower their own hosted payment page.
+ *   PAYMENT_LINK   Richer Values emails the borrower their own hosted payment page.
  *                  The order exists but does not start until they pay.
  *
  * ─────────────────────────────────────────────────────────────────────────────
@@ -36,7 +36,7 @@
  * And a Stripe TOKEN cannot be used instead, because their own validator refuses
  * it before it ever reaches Stripe: `"card_number" must be a number`.
  *
- * That is a setting on RICHER VALUE'S Stripe account, not a bug in this code. So
+ * That is a setting on RICHER VALUES' Stripe account, not a bug in this code. So
  * this module is written the documented way — add the card, charge the order,
  * remove the card — and it will work the day they enable raw card data (or add a
  * tokenised endpoint). Until then `chargeCardOnFile` catches THAT SPECIFIC
@@ -71,14 +71,26 @@ const METHODS = ['CARD_ON_FILE', 'NEW_CARD', 'PAYMENT_LINK'];
  * NEGATIVE would show "something went wrong" for a problem with a known answer.
  */
 function isRawCardBlocked(e) {
-  const text = `${(e && e.message) || ''} ${JSON.stringify((e && e.body) || {})}`.toLowerCase();
+  // READ THE REFUSAL WHEREVER IT IS. Recognising it is what turns a dead end into
+  // a payment link, so this errs towards looking in one more place rather than
+  // one fewer: a thrown STRING has no `.message`, and their envelope carries the
+  // sentence on `body.message` as often as on the error itself. Missing it does
+  // not fail loudly — it strands the desk on a card that can never be charged.
+  let text;
+  try {
+    text = [
+      typeof e === 'string' ? e : '',
+      (e && e.message) || '',
+      JSON.stringify((e && e.body) || {}),
+    ].join(' ').toLowerCase();
+  } catch { text = String((e && e.message) || e || '').toLowerCase(); }
   return /raw card data/.test(text)
     || /sending credit card numbers directly to the stripe api/.test(text);
 }
 
 const RAW_CARD_BLOCKED_MESSAGE =
-  'Richer Value cannot take a card number through their system yet — their payment provider (Stripe) '
-  + 'refuses it on their account, so this is something only Richer Value can switch on. Ask their tech '
+  'Richer Values cannot take a card number through their system yet — their payment provider (Stripe) '
+  + 'refuses it on their account, so this is something only Richer Values can switch on. Ask their tech '
   + 'team to enable raw card data on their Stripe account (tech@richervalues.com). In the meantime, use '
   + '“Send the borrower a payment link”, which works today.';
 
@@ -177,11 +189,11 @@ async function chargeCard(db, { intakeToken, companyToken, card, journal }) {
     if (isRawCardBlocked(e)) {
       return { ok: false, code: 'raw_card_blocked', error: RAW_CARD_BLOCKED_MESSAGE };
     }
-    return { ok: false, code: 'add_card_failed', error: `Richer Value would not take the card: ${e.message}` };
+    return { ok: false, code: 'add_card_failed', error: `Richer Values would not take the card: ${e.message}` };
   }
 
   if (!paymentSourceId) {
-    return { ok: false, code: 'no_payment_source', error: 'Richer Value took the card but did not say which payment method it became, so nothing was charged. Try the payment link.' };
+    return { ok: false, code: 'no_payment_source', error: 'Richer Values took the card but did not say which payment method it became, so nothing was charged. Try the payment link.' };
   }
 
   // ---- 2. charge it, and 3. take it back off their account ----------------
@@ -203,10 +215,10 @@ async function chargeCard(db, { intakeToken, companyToken, card, journal }) {
     if (!removed) {
       // LOUD, not swallowed: a borrower's card left on the company account at a
       // vendor is exactly what nobody notices for a year.
-      console.error('[rv] COULD NOT REMOVE the card from Richer Value after paying —',
+      console.error('[rv] COULD NOT REMOVE the card from Richer Values after paying —',
         `payment source ${paymentSourceId} is still on the company account. Remove it in their portal.`);
       if (journal) {
-        await journal({ action: 'remove_card', ok: false, error: 'the card could not be removed from Richer Value — remove it in their portal', request: { last4 } });
+        await journal({ action: 'remove_card', ok: false, error: 'the card could not be removed from Richer Values — remove it in their portal', request: { last4 } });
       }
     } else if (journal) {
       await journal({ action: 'remove_card', ok: true, request: { last4 } });
@@ -230,7 +242,7 @@ async function removeSource(paymentSourceId) {
 }
 
 /**
- * Ask Richer Value to email the borrower their hosted payment page. Verified
+ * Ask Richer Values to email the borrower their hosted payment page. Verified
  * working against their training tenant.
  */
 async function sendPaymentLink(intakeToken, { to, cc = [], comment }) {

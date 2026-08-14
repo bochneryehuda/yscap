@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Richer Value — THE SCOPE OF WORK: attached to every order, and re-sent when ours
+ * Richer Values — THE SCOPE OF WORK: attached to every order, and re-sent when ours
  * changes.
  *
  * TWO OWNER RULES, one module:
@@ -103,7 +103,7 @@ async function findScopeOfWork(db, appId) {
     const human = choose(onCondition.rows);
     if (human) return { present: true, source: 'condition', ...describe(human) };
 
-    return none('There is no scope of work on this file yet. Richer Value usually puts an order with no scope of work On Hold, so it is worth adding one first.');
+    return none('There is no scope of work on this file yet. Richer Values usually puts an order with no scope of work On Hold, so it is worth adding one first.');
   } catch (e) {
     return none(`PILOT could not look up the scope of work (${e.message}).`);
   }
@@ -163,10 +163,32 @@ async function readScopeOfWork(db, appId, found = null) {
 // THE REVISION.
 // ---------------------------------------------------------------------------
 
-/** Their statuses, grouped by what a revision has to DO about them. */
+/**
+ * OUR OWN statuses, grouped by what a revision has to DO about them. They are
+ * `rv_orders.status`, whose vocabulary is `sync.js`'s RANK table — NOT the
+ * vendor's wording, which `mapReportStatus` has already translated by the time a
+ * row is stored.
+ *
+ * `product_available` IS FINISHED, and getting that wrong was a real defect the
+ * A-to-Z audit engine caught. It means the report is ready and readable — so its
+ * after-repair value was worked out against the OLD scope of work, which is
+ * exactly the condition the `reopen` branch exists for. Left out of every set, it
+ * fell through to the unknown-status default and was quietly filed as an
+ * `upload`: Richer Values would have received the new budget as an attachment on
+ * a report they had already finished, and the ARV on the file would still have
+ * been the one computed against the scope we had just replaced. Nothing would
+ * have errored.
+ *
+ * `in_process` and `revision` are deliberately IN_PROGRESS: work is under way, so
+ * the new scope goes straight over with a note.
+ *
+ * The vendor-flavoured spellings (`delivered`, `report_ready`, `in_progress`,
+ * `quality_review`, `scheduled`) are kept because they cost nothing and a status
+ * that reaches here unmapped should still land in the right group.
+ */
 const NOT_STARTED = new Set(['intake', 'placing', 'ordered', 'on_hold', 'assigned', 'scheduled']);
-const IN_PROGRESS = new Set(['inspected', 'in_review', 'in_progress', 'quality_review']);
-const FINISHED = new Set(['completed', 'delivered', 'report_ready']);
+const IN_PROGRESS = new Set(['inspected', 'in_review', 'in_progress', 'quality_review', 'in_process', 'revision']);
+const FINISHED = new Set(['completed', 'delivered', 'report_ready', 'product_available']);
 const DEAD = new Set(['cancelled', 'rejected', 'dryrun', 'error', 'draft']);
 
 /**
@@ -179,13 +201,13 @@ const DEAD = new Set(['cancelled', 'rejected', 'dryrun', 'error', 'draft']);
 function revisionPlanFor(order) {
   const status = String((order && order.status) || '').toLowerCase();
   if (!order || !order.intake_token || order.dryrun || DEAD.has(status)) {
-    return { action: 'none', why: 'There is no live Richer Value order on this file to update.' };
+    return { action: 'none', why: 'There is no live Richer Values order on this file to update.' };
   }
   if (FINISHED.has(status)) {
     return {
       action: 'reopen',
       reopenReason: 'new-budget',
-      why: 'The report is already finished, so Richer Value is asked to REOPEN it with the new scope of work — '
+      why: 'The report is already finished, so Richer Values is asked to REOPEN it with the new scope of work — '
         + 'the after-repair value was worked out against the old one.',
     };
   }
@@ -203,11 +225,11 @@ function revisionPlanFor(order) {
   }
   // A status we have never seen. Sending the file is the safe move: it can never
   // undo work, and it always reaches the appraiser.
-  return { action: 'upload', why: `Richer Value has this order at “${order.status}”, so the new scope of work is sent over with a note.` };
+  return { action: 'upload', why: `Richer Values has this order at “${order.status}”, so the new scope of work is sent over with a note.` };
 }
 
 /**
- * Send the revised scope of work to Richer Value for ONE order, following the plan
+ * Send the revised scope of work to Richer Values for ONE order, following the plan
  * above. Every vendor call is journalled by the caller-supplied `journal`.
  *
  * @returns {Promise<{ok:boolean, action:string, why:string, error?:string, dryrun?:boolean}>}

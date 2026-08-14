@@ -5414,6 +5414,11 @@ function emailRowShape(r) {
     status: r.status,
     error: r.error,
     attachments: Array.isArray(r.attachments) ? r.attachments : [],
+    // WHAT THIS EMAIL COULD NOT CARRY (db/550). On the SHARED shaper deliberately, so the file's
+    // own Email Center and the global mailbox both surface it from one definition — "which emails
+    // went out short, and why" has to be answerable on a screen, not only in SQL.
+    omitted: Array.isArray(r.omitted) ? r.omitted : [],
+    attach_summary: r.attach_summary || null,
     meta: r.meta || null,
     reconstructed: r.reconstructed,
     has_body: r.has_body,
@@ -5609,7 +5614,7 @@ router.get('/applications/:id/emails', async (req, res) => {
     const r = await db.query(
       `SELECT em.id, em.direction, em.msg_type, em.category, em.subject, em.preview,
               em.from_email, em.from_name, em.to_emails, em.reply_to, em.recipient_kind,
-              em.audience, em.status, em.error, em.attachments, em.meta, em.reconstructed,
+              em.audience, em.status, em.error, em.attachments, em.omitted, em.attach_summary, em.meta, em.reconstructed,
               (em.body_html IS NOT NULL) AS has_body, em.thread_key, em.occurred_at, em.application_id,
               eo.first_opened_at AS opened_at, eo.open_count,
               COALESCE(su.full_name,
@@ -7076,6 +7081,19 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
       staffId: req.actor.id,
       msgType: 'closing_order',
       subject: closingPrep.CLOSING_PREP_TITLE,
+      // A closing package that reaches outside counsel one document short must be answerable
+      // months later, not only on the card while somebody is looking at it (db/550). The reasons
+      // are `packAttachments`' own — one definition, already shown in the email and on the screen.
+      omitted: (pack.skipped || []).map((d) => ({
+        what: d.filename || d.label || 'document', filename: d.filename || null,
+        code: /too large/i.test(String(d.reason)) ? 'too_large' : /could not be read/i.test(String(d.reason)) ? 'unreadable' : 'not_on_file',
+        reason: d.reason, bytes: d.size_bytes || null,
+      })),
+      attachSummary: {
+        attached_n: (pack.attached || []).length, omitted_n: (pack.skipped || []).length,
+        bytes: pack.totalBytes || 0, budget: pack.oneMessageBytes || 0, part_count: partCount,
+        compressed_n: (pack.attached || []).filter((a) => a.compression).length,
+      },
       build: ({ address }) => closingPrep.buildClosingPrepEmail(data, pkg, { address, attach, note, senderName }),
     });
     if (!sent.ok) {
@@ -7604,7 +7622,7 @@ router.get('/emails', async (req, res) => {
     const r = await db.query(
       `SELECT em.id, em.direction, em.msg_type, em.category, em.subject, em.preview,
               em.from_email, em.from_name, em.to_emails, em.reply_to, em.recipient_kind,
-              em.audience, em.status, em.error, em.attachments, em.meta, em.reconstructed,
+              em.audience, em.status, em.error, em.attachments, em.omitted, em.attach_summary, em.meta, em.reconstructed,
               (em.body_html IS NOT NULL) AS has_body, em.thread_key, em.occurred_at, em.application_id,
               eo.first_opened_at AS opened_at, eo.open_count,
               a.ys_loan_number, a.property_address, b.first_name AS b_first, b.last_name AS b_last,
@@ -8309,7 +8327,7 @@ async function signOffGate(itemId, actor) {
           === require('../lib/appraisal/xml-waiver').PRODUCT_NO_XML_REASON;
         if (!hasSlot('pdf')) {
           if (isHybridProduct) {
-            return 'The Hybrid Appraisal report (PDF) is not on this condition yet. It files itself as soon as Richer Value finishes the report — check the appraisal order for where it is up to, or upload the PDF here if you already have it. There is no data file (XML) on this product, so that half is waived.';
+            return 'The Hybrid Appraisal report (PDF) is not on this condition yet. It files itself as soon as Richer Values finishes the report — check the appraisal order for where it is up to, or upload the PDF here if you already have it. There is no data file (XML) on this product, so that half is waived.';
           }
           return waiver.requires_transfer_letter
             ? 'Upload the appraisal TRANSFER LETTER (PDF) before signing off — a transferred appraisal still needs the transfer letter in the PDF slot.'
@@ -8318,7 +8336,7 @@ async function signOffGate(itemId, actor) {
         const av = (await db.query(`SELECT as_is_value, arv FROM applications WHERE id=$1`, [item.application_id])).rows[0] || {};
         if (!(Number(av.as_is_value) > 0) || !(Number(av.arv) > 0)) {
           if (isHybridProduct) {
-            return 'The As-Is value and the ARV are not both on the file yet. PILOT fills them in from the Richer Value report the moment it comes back — if the report is in and they are still blank, open the appraisal order and use “Apply to the file”, or type them in by hand.';
+            return 'The As-Is value and the ARV are not both on the file yet. PILOT fills them in from the Richer Values report the moment it comes back — if the report is in and they are still blank, open the appraisal order and use “Apply to the file”, or type them in by hand.';
           }
           return 'Enter the ARV and the As-Is value by hand before signing off — with no XML there is nothing to read them from (use “No XML available”).';
         }

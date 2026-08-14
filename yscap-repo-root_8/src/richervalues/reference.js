@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Richer Value — their catalogue, cached.
+ * Richer Values — their catalogue, cached.
  *
  * WHAT THE CATALOGUE IS, AND WHY IT IS NOT A LIST IN THE CODE. Which reports a
  * client may order, which inspections go with each report, what each costs and

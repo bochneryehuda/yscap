@@ -1197,7 +1197,7 @@ module.exports = {
     timeoutMs: Math.max(1000, parseInt(process.env.CLASS_TIMEOUT_MS || '60000', 10) || 60000),
   },
 
-  // ---- Richer Value — the THIRD appraisal vendor, the "Hybrid Appraisal". RTL ONLY. ----
+  // ---- Richer Values — the THIRD appraisal vendor, the "Hybrid Appraisal". RTL ONLY. ----
   //
   // A DIFFERENT KIND OF PRODUCT, which is why it is a separate integration rather
   // than a form on one of the other two: this is an EVALUATION (their "Reno ARV"

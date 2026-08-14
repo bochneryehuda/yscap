@@ -35,7 +35,7 @@ const dbDefault = require('../../db');
  *
  * `hybrid_appraisal` is the SECOND self-clearing reason, and it is the strongest
  * of the three: it is not a report that happens to be missing its data file, it is
- * a PRODUCT THAT HAS NO DATA FILE AT ALL. Richer Value's Hybrid Appraisal is an
+ * a PRODUCT THAT HAS NO DATA FILE AT ALL. Richer Values's Hybrid Appraisal is an
  * evaluation — it returns a PDF and structured figures over their API, and there
  * has never been a MISMO XML to ask for. Sending that to an admin as an exception
  * would ask them to approve the same fact on every single order forever, which is

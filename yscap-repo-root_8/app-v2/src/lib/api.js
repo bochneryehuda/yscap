@@ -636,7 +636,7 @@ export const api = {
   classCancelOrder: (appId, o, body) => req('POST', `/api/class/files/${appId}/orders/${o}/cancel`, body),
   classReasons:     (kind) => req('GET', `/api/class/revision-reasons?kind=${encodeURIComponent(kind || 'revision')}`),
 
-  // ---- Richer Value — the THIRD vendor, and the "Hybrid Appraisal" ----
+  // ---- Richer Values — the THIRD vendor, and the "Hybrid Appraisal" ----
   // Deliberately its own set of calls, never shared with the other two: this is a
   // different PRODUCT (an evaluation giving an As-Is value and an ARV, with no
   // appraisal data file), and the vendor selector's default deliberately stays
