@@ -88,6 +88,31 @@ const ADAPTERS = {
     canCancel: (o) => !!(o.sp_order_number && o.status !== 'cancelled' && o.status !== 'completed'
       && o.status !== 'cancel_requested' && o.status !== 'rejected'),
   },
+  // THE THIRD VENDOR, AND A DIFFERENT PRODUCT. Richer Value's Hybrid Appraisal is
+  // an EVALUATION: it comes back with an As-Is value AND an After Repair Value on
+  // one order, for well under half the price of a full appraisal — and it produces
+  // no appraisal data file (XML), which is why ordering one waives that half of
+  // the appraisal condition automatically. Its report PDF files itself into the
+  // SAME appraisal condition every other vendor's report goes to.
+  //
+  // IT IS NOT THE DEFAULT AND MUST NOT BECOME ONE (owner-directed 2026-08-14:
+  // "whenever they choose, the default should still stay NAN"). The selector below
+  // starts on NAN and this is a deliberate third choice.
+  rv: {
+    key: 'rv',
+    name: 'Richer Value (Hybrid Appraisal)',
+    stamp: 'Richer Value',
+    loadConfig: () => api.rvConfig().then((c) => (c && c.richerValue) ? c.richerValue : null),
+    // Returns the whole payload {orders, xmlWaiver}; the caller keeps it.
+    loadOrders: (appId) => api.rvOrders(appId),
+    orderTitle: (o) => (o.report_type === 'reno-arv' ? 'Hybrid Appraisal (As-Is + ARV)' : `Richer Value ${o.report_type || 'report'}`),
+    orderNumber: (o) => (o.order_token ? 'Richer Value #' + String(o.order_token).slice(0, 12) : null),
+    orderedAt: (o) => o.placed_at || o.created_at,
+    // Their price is a dollar figure on the order row, in cents.
+    orderFee: (o) => (o.total_price_cents != null ? o.total_price_cents / 100 : null),
+    orderPaid: (o) => !!o.paid_at,
+    canCancel: (o) => !!(o.intake_token && !['cancelled', 'completed', 'cancel_requested', 'rejected'].includes(o.status)),
+  },
   class: {
     key: 'class',
     name: 'Class Valuation',
@@ -108,22 +133,30 @@ const ADAPTERS = {
  *  Section
  * ======================================================================= */
 export default function AppraisalOrderSection({ appId, onChanged }) {
-  const [vendor, setVendor] = useState('nan');       // display start point only; no file-level default
+  // THE DEFAULT STAYS NAN (owner-directed 2026-08-14: "whenever they choose, the
+  // default should still stay NAN"). This is a display start point, not a
+  // file-level default — nothing is ordered until a human picks and confirms —
+  // and adding a third vendor deliberately did not move it.
+  const [vendor, setVendor] = useState('nan');
   const [nanCfg, setNanCfg] = useState(null);
   const [classCfg, setClassCfg] = useState(null);
+  const [rvCfg, setRvCfg] = useState(null);
   const [nanOrders, setNanOrders] = useState([]);
   const [classData, setClassData] = useState(null);  // { orders, unread, openAsks, attachments }
+  const [rvData, setRvData] = useState(null);        // { orders, xmlWaiver }
   const [card, setCard] = useState(null);            // appraisal payment card on file, or null
   const [loading, setLoading] = useState(true);
   const [payFor, setPayFor] = useState(null);        // the order whose Pay modal is open
 
   const loadOrders = useCallback(async () => {
-    const [nan, cls] = await Promise.all([
+    const [nan, cls, rv] = await Promise.all([
       ADAPTERS.nan.loadOrders(appId).catch(() => []),
       ADAPTERS.class.loadOrders(appId).catch(() => ({ orders: [] })),
+      ADAPTERS.rv.loadOrders(appId).catch(() => ({ orders: [] })),
     ]);
     setNanOrders(nan || []);
     setClassData(cls || { orders: [] });
+    setRvData(rv || { orders: [] });
   }, [appId]);
 
   const loadCard = useCallback(async () => {
@@ -135,12 +168,13 @@ export default function AppraisalOrderSection({ appId, onChanged }) {
     let alive = true;
     (async () => {
       setLoading(true);
-      const [nc, cc] = await Promise.all([
+      const [nc, cc, rc] = await Promise.all([
         ADAPTERS.nan.loadConfig().catch(() => null),
         ADAPTERS.class.loadConfig().catch(() => null),
+        ADAPTERS.rv.loadConfig().catch(() => null),
       ]);
       if (!alive) return;
-      setNanCfg(nc); setClassCfg(cc);
+      setNanCfg(nc); setClassCfg(cc); setRvCfg(rc);
       await loadOrders();
       await loadCard();
       if (alive) setLoading(false);
@@ -157,8 +191,9 @@ export default function AppraisalOrderSection({ appId, onChanged }) {
     const cls = ((classData && classData.orders) || []).map((o) => ({
       ...o, _vendor: 'class', _unread: unreadFor(o.id), _asks: asksFor(o.id), _attachments: attFor(o.id),
     }));
-    return [...nan, ...cls];
-  }, [nanOrders, classData]);
+    const rv = ((rvData && rvData.orders) || []).map((o) => ({ ...o, _vendor: 'rv' }));
+    return [...nan, ...cls, ...rv];
+  }, [nanOrders, classData, rvData]);
 
   const ts = (o) => { const d = ADAPTERS[o._vendor].orderedAt(o); return d ? new Date(d).getTime() : 0; };
   const active = useMemo(
@@ -175,7 +210,7 @@ export default function AppraisalOrderSection({ appId, onChanged }) {
     if (onChanged) onChanged();
   }, [loadOrders, loadCard, onChanged]);
 
-  const selectedCfg = vendor === 'nan' ? nanCfg : classCfg;
+  const selectedCfg = vendor === 'nan' ? nanCfg : (vendor === 'class' ? classCfg : rvCfg);
   const adapter = ADAPTERS[vendor];
 
   if (loading) return <div style={{ color: MUTED, padding: '8px 2px', fontSize: 13 }}>Loading the appraisal order…</div>;
@@ -187,10 +222,14 @@ export default function AppraisalOrderSection({ appId, onChanged }) {
       {active.length ? (
         <>
           <div className="aord-eyebrow" style={{ marginTop: 0 }}>Active {active.length > 1 ? 'orders' : 'order'}</div>
-          {active.map((o) => (
-            <ActiveOrderCard key={o._vendor + ':' + o.id} order={o} appId={appId} card={card}
-              onChanged={afterChange} onPay={setPayFor} />
-          ))}
+          {active.map((o) => (o._vendor === 'rv'
+            // Richer Value's order card is its own, because its actions are its
+            // own: there are no appraiser messages and no document exchange on an
+            // evaluation, and there ARE two figures to read and put on the file.
+            // The SHELL around it — the list, the ordering, the drawer — is shared.
+            ? <RvOrderCard key={'rv:' + o.id} order={o} onChanged={afterChange} />
+            : <ActiveOrderCard key={o._vendor + ':' + o.id} order={o} appId={appId} card={card}
+              onChanged={afterChange} onPay={setPayFor} />))}
         </>
       ) : null}
 
@@ -208,9 +247,9 @@ export default function AppraisalOrderSection({ appId, onChanged }) {
           <VendorSelector vendor={vendor} onPick={setVendor} />
         </div>
 
-        {vendor === 'nan'
-          ? <NanBuilder appId={appId} cfg={nanCfg} onPlaced={afterChange} />
-          : <ClassBuilder appId={appId} cfg={classCfg} onPlaced={afterChange} />}
+        {vendor === 'nan' ? <NanBuilder appId={appId} cfg={nanCfg} onPlaced={afterChange} /> : null}
+        {vendor === 'class' ? <ClassBuilder appId={appId} cfg={classCfg} onPlaced={afterChange} /> : null}
+        {vendor === 'rv' ? <RicherValueBuilder appId={appId} cfg={rvCfg} onPlaced={afterChange} /> : null}
       </div>
 
       {/* ── ONE collapsed drawer for drafts + failed + closed, across both vendors. */}
@@ -234,9 +273,12 @@ export default function AppraisalOrderSection({ appId, onChanged }) {
 
 /* ---------------------------------------------------------------- header --- */
 function VendorSelector({ vendor, onPick }) {
+  // NAN IS FIRST AND IS WHERE THIS STARTS. Richer Value is a deliberate third
+  // choice for a cheaper, different report — never a default (owner-directed
+  // 2026-08-14). Do not reorder these to put a new vendor in front.
   return (
     <div className="seg" role="group" aria-label="Appraisal vendor">
-      {[['nan', 'AppraisalScope / NAN'], ['class', 'Class']].map(([k, lbl]) => (
+      {[['nan', 'AppraisalScope / NAN'], ['class', 'Class'], ['rv', 'Richer Value']].map(([k, lbl]) => (
         <button key={k} type="button" className={vendor === k ? 'on' : ''} aria-pressed={vendor === k}
           onClick={() => onPick(k)}>{lbl}</button>
       ))}
@@ -803,6 +845,578 @@ function PlaceOrder({ cfg, canPlace, busy, onPlace, uad, derivedCount }) {
       {block ? <WhyBox title={block.title}>{block.help}</WhyBox>
         : dry ? <WhyBox title="Test mode is on — this button will NOT send anything.">To place the order for real, turn OFF “Class Valuation orders — TEST MODE” on the API Health page.</WhyBox>
           : <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>This costs money and sends an appraiser to the property.</div>}
+    </div>
+  );
+}
+
+/* =================================================== Richer Value builder === */
+/*
+ * The Hybrid Appraisal builder.
+ *
+ * SAME SHAPE AS THE OTHER TWO: the SERVER builds the order and hands back every
+ * field that would be sent, labelled with where its value came from; the screen
+ * renders that and posts overrides back. It never decides what is required, never
+ * re-derives a value and never keeps its own copy of the vendor's rules — a rule
+ * living in two places is a rule that drifts.
+ *
+ * TWO THINGS ARE SAID BEFORE ANYBODY ORDERS, not after:
+ *   • WHAT IT COSTS, priced for THIS property (their pricing moves with the state
+ *     and the ZIP), broken into the report, the inspection and the rush fee.
+ *   • WHAT IT DOES TO THE APPRAISAL CONDITION — ordering this waives the appraisal
+ *     data file, because the product does not produce one. A surprise about a
+ *     condition is worse than a slower screen.
+ */
+function RicherValueBuilder({ appId, cfg, onPlaced }) {
+  const [preview, setPreview] = useState(null);
+  const [overrides, setOverrides] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [notice, setNotice] = useState('');
+  const [showAll, setShowAll] = useState(false);
+
+  const load = useCallback(async (ov) => {
+    setErr('');
+    try { setPreview(await api.rvPreview(appId, ov || {})); }
+    catch (e) { setErr(e.message || 'Could not load the order preview.'); }
+  }, [appId]);
+
+  useEffect(() => { load({}); }, [load]);
+
+  const setOverride = useCallback((key, value) => {
+    setOverrides((prev) => {
+      const next = { ...prev };
+      if (value == null || value === '') delete next[key]; else next[key] = value;
+      load(next);
+      return next;
+    });
+  }, [load]);
+
+  const clearOverrides = useCallback(() => { setOverrides({}); load({}); }, [load]);
+
+  const place = useCallback(async () => {
+    setBusy(true); setErr(''); setNotice('');
+    try {
+      const out = await api.rvPlaceOrder(appId, { confirm: true, ...overrides });
+      if (out && out.ok) {
+        setNotice(out.dryrun
+          ? 'Test mode — the order was built and written to the log. Nothing was sent to Richer Value.'
+          : 'Order placed with Richer Value.'
+            + (out.xmlWaiver && out.xmlWaiver.applied
+              ? ' The appraisal data file (XML) is now waived on this file — this report does not produce one.'
+              : ''));
+        await onPlaced();
+        await load(overrides);
+      } else setErr(parseOrderFailure(null, out));
+    } catch (e) { setErr(parseOrderFailure(e, null)); }
+    setBusy(false);
+  }, [appId, overrides, load, onPlaced]);
+
+  const cat = (preview && preview.catalogue) || {};
+  const opts = (preview && preview.options) || {};
+  const choices = (preview && preview.choices) || {};
+  const rows = (preview && preview.rows) || [];
+  const notable = useMemo(() => rows.filter((r) => r.provenance !== 'read'), [rows]);
+  const shown = showAll ? rows : notable;
+  const enabled = !!(cfg && cfg.enabled);
+  const price = (preview && preview.price && preview.price.single_report_amount) || null;
+  const waive = (preview && preview.xmlWaiver) || null;
+
+  if (!preview && !err) return <div style={{ marginTop: 12, color: MUTED, fontSize: 13 }}>Loading the order…</div>;
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <OrderFailure info={err} vendor="Richer Value" />
+      {notice ? <Banner tone="good">{notice}</Banner> : null}
+      {preview && preview.blocked ? <Banner tone="warn">{preview.blocked}</Banner> : null}
+
+      {preview ? (
+        <>
+          {/* ── what we are buying ─────────────────────────────────────── */}
+          <div className="aord-row3">
+            <Field label="Report">
+              <select className="input" value={choices.reportType || ''}
+                onChange={(e) => setOverride('reportType', e.target.value)}>
+                {(cat.reportTypes || []).map((t) => (
+                  <option key={t.slug} value={t.slug}>
+                    {t.name}{t.baseFee != null ? ` — ${money(t.baseFee)}` : ''}
+                  </option>
+                ))}
+                {!(cat.reportTypes || []).length ? <option value="">(their list is not loaded)</option> : null}
+              </select>
+            </Field>
+            <Field label="Inspection">
+              <select className="input" value={choices.inspectionType == null ? '' : choices.inspectionType}
+                onChange={(e) => setOverride('inspectionType', e.target.value)}>
+                {(cat.inspectionTypes || []).map((t) => (
+                  <option key={t.slug} value={t.slug}>
+                    {t.name}{t.fee ? ` — +${money(t.fee)}` : (t.slug === 'none' ? '' : ' — included')}
+                  </option>
+                ))}
+                {!(cat.inspectionTypes || []).length ? <option value="">(their list is not loaded)</option> : null}
+              </select>
+            </Field>
+            <Field label="How fast">
+              <select className="input" value={choices.turnaroundTime || ''}
+                onChange={(e) => setOverride('turnaroundTime', e.target.value)}>
+                {(cat.turnaroundTimes || []).map((t) => (
+                  <option key={t.slug} value={t.slug}>
+                    {t.name}{t.text ? ` (${t.text})` : ''}{t.fee ? ` — +${money(t.fee)}` : ''}
+                  </option>
+                ))}
+                {!(cat.turnaroundTimes || []).length ? <option value="">(their list is not loaded)</option> : null}
+              </select>
+            </Field>
+          </div>
+
+          {cat.stale ? (
+            <div style={{ fontSize: 12, color: WARN, marginTop: 6 }}>
+              Richer Value’s list of what we can order could not be refreshed just now, so this is the last one we saw
+              {cat.fetchedAt ? ` (${fmtWhen(cat.fetchedAt)})` : ''}. You can still order.
+            </div>
+          ) : null}
+
+          {/* ── the add-ons ─────────────────────────────────────────────── */}
+          <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginTop: 12, fontSize: 13, color: INK }}>
+            <label style={{ display: 'inline-flex', gap: 7, alignItems: 'center', cursor: 'pointer' }}>
+              <input type="checkbox" checked={!!choices.glaInclude}
+                onChange={(e) => setOverride('glaInclude', e.target.checked ? '1' : '0')} />
+              Measure the living area + floor plan
+            </label>
+            <label style={{ display: 'inline-flex', gap: 7, alignItems: 'center', cursor: 'pointer' }}>
+              <input type="checkbox" checked={!!choices.licensingRequired}
+                onChange={(e) => setOverride('licensingRequired', e.target.checked ? '1' : '0')} />
+              Require a licensed inspector
+            </label>
+            <label style={{ display: 'inline-flex', gap: 7, alignItems: 'center', cursor: 'pointer' }}>
+              <input type="checkbox" checked={!!choices.includeFloodCertification}
+                onChange={(e) => setOverride('includeFloodCertification', e.target.checked ? '1' : '0')} />
+              Include their flood certificate
+            </label>
+          </div>
+          {choices.includeFloodCertification ? (
+            <div style={{ fontSize: 12, color: MUTED, marginTop: 5 }}>
+              PILOT already orders a flood determination on every file, so this is usually a second one you do not need.
+            </div>
+          ) : null}
+
+          {/* ── what it costs, for this property ────────────────────────── */}
+          {price ? (
+            <div className="aord-figs" style={{ gridTemplateColumns: '1fr' }}>
+              <div className="aord-fig">
+                <div className="k">Price for this property</div>
+                <div className="v">{money(price.total_price)}</div>
+                <div className="n">
+                  {[
+                    price.report_type_fee ? `report ${money(price.report_type_fee)}` : null,
+                    price.inspection_fee ? `inspection ${money(price.inspection_fee)}` : null,
+                    price.rush_fee ? `rush ${money(price.rush_fee)}` : null,
+                    price.gla_surcharge ? `floor plan ${money(price.gla_surcharge)}` : null,
+                    price.licensing_surcharge ? `licensed ${money(price.licensing_surcharge)}` : null,
+                    price.flood_charge ? `flood ${money(price.flood_charge)}` : null,
+                  ].filter(Boolean).join(' · ')}
+                  {price.due_date ? ` · report due ${fmtDate(price.due_date)}` : ''}
+                </div>
+              </div>
+            </div>
+          ) : preview.priceError ? (
+            <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>
+              Richer Value could not price this right now, so the figure above is not shown. You can still order.
+            </div>
+          ) : null}
+
+          {/* ── what ordering does to the appraisal condition ───────────── */}
+          {waive ? (
+            <div className="aord-waive">
+              <b>The appraisal data file:</b> {waive.note}
+            </div>
+          ) : null}
+
+          {/* ── every field that would be sent ──────────────────────────── */}
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
+            <SectionTitle>What we will send to Richer Value</SectionTitle>
+            <button type="button" onClick={() => setShowAll((v) => !v)} style={linkBtn}>
+              {showAll ? `Show only what needs a look (${notable.length})` : `Show every field (${rows.length})`}
+            </button>
+            {Object.keys(overrides).length ? <button type="button" onClick={clearOverrides} style={linkBtn}>Undo my changes</button> : null}
+          </div>
+          <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>
+            Anything PILOT worked out, or still missing, is called out — the rest came straight off the loan file.
+            {preview.context && preview.context.warehouseHit
+              ? ' Some of the property details came from an appraisal PILOT has seen of this same property before; please check them.'
+              : ''}
+          </div>
+
+          <Legend />
+          <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden' }}>
+            {shown.length ? shown.map((r) => (
+              <RvFieldRow key={r.field} row={r} options={opts}
+                value={overrides[rvOverrideKey(r.field)]}
+                onChange={(v) => { const k = rvOverrideKey(r.field); if (k) setOverride(k, v); }} />
+            )) : (
+              <div style={{ padding: 12, color: MUTED, fontSize: 13 }}>
+                Nothing needs a second look — every value came straight off the loan file.
+              </div>
+            )}
+          </div>
+
+          {/* ── things Richer Value refuses on this branch ──────────────── */}
+          {(preview.dropped || []).length ? (
+            <WhyBox title={`${preview.dropped.length} field${preview.dropped.length === 1 ? '' : 's'} left out on purpose`}>
+              {preview.dropped.map((d) => (
+                <div key={d.field} style={{ marginTop: 3 }}>
+                  <b>{d.field}</b> — {d.why}
+                </div>
+              ))}
+            </WhyBox>
+          ) : null}
+
+          <RvPlaceOrder cfg={cfg} preview={preview} busy={busy} onPlace={place} enabled={enabled} price={price} />
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Their field name → the override key the server accepts. A field with no key is
+ * one the screen may SHOW but not change (the vendor tokens, the derived booleans
+ * that have their own checkbox above) — returning null is what makes those rows
+ * read-only rather than a control that silently does nothing.
+ */
+const RV_OVERRIDE_KEYS = {
+  property_address: 'propertyAddress', property_address_line_2: 'propertyAddressLine2',
+  unit_number: 'unitNumber', city: 'city', state: 'state', postal_code: 'postalCode',
+  residential_property_type: 'residentialPropertyType', residential_prop_type_units: 'residentialPropTypeUnits',
+  property_condition: 'propertyCondition',
+  above_grade_sqft: 'aboveGradeSqft', below_grade_sqft: 'belowGradeSqft',
+  bedrooms: 'bedrooms', bathrooms: 'bathrooms', year_built: 'yearBuilt',
+  lot_size_square_feet: 'lotSizeSquareFeet', stories: 'stories', garage_spaces: 'garageSpaces',
+  proposed_above_grade_sqft: 'proposedAboveGradeSqft', proposed_below_grade_sqft: 'proposedBelowGradeSqft',
+  proposed_bedrooms: 'proposedBedrooms', proposed_bathrooms: 'proposedBathrooms',
+  borrower_budget: 'borrowerBudget', borrower_name: 'borrowerName',
+  closing_date: 'closingDate', effective_date: 'effectiveDate',
+  lockbox_code: 'lockboxCode', lockbox_location: 'lockboxLocation', lockbox_entrance: 'lockboxEntrance',
+  gate_code: 'gateCode',
+  report_contact_name: 'reportContactName', report_contact_email: 'reportContactEmail',
+  report_contact_phone: 'reportContactPhone',
+  inspection_notes_or_instruction: 'inspectionNotes',
+  valuation_commentary_or_instruction: 'valuationNotes',
+  notes: 'notes',
+};
+function rvOverrideKey(field) { return RV_OVERRIDE_KEYS[field] || null; }
+
+/** The picker a field gets, when the vendor's vocabulary is a closed list. */
+const RV_PICKERS = {
+  property_condition: (o) => o.propertyConditions,
+  residential_property_type: (o) => o.residentialTypes,
+  lockbox_location: (o) => o.lockboxLocations,
+  lockbox_entrance: (o) => o.lockboxEntrances,
+};
+
+function RvFieldRow({ row, options, value, onChange }) {
+  const key = rvOverrideKey(row.field);
+  const picker = RV_PICKERS[row.field] ? RV_PICKERS[row.field](options || {}) : null;
+  const tone = row.provenance === 'missing' ? BAD
+    : row.provenance === 'derived' ? '#8A5F14'
+      : row.provenance === 'overridden' ? TEAL : SOFT;
+  const tag = row.provenance === 'missing' ? 'needed'
+    : row.provenance === 'derived' ? 'PILOT filled this in'
+      : row.provenance === 'overridden' ? 'you changed this' : '';
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(150px, 1fr) minmax(160px, 1.2fr)', gap: 10,
+      alignItems: 'center', padding: '9px 11px', borderTop: `1px solid ${LINE}` }}>
+      <div>
+        <div style={{ fontSize: 13, color: INK, fontWeight: 550 }}>{row.label}</div>
+        {tag ? <div style={{ fontSize: 11, color: tone, marginTop: 1 }}>{tag}</div> : null}
+        {row.why ? <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2, lineHeight: 1.4 }}>{row.why}</div> : null}
+      </div>
+      <div>
+        {key ? (
+          picker ? (
+            <select className="input" value={value != null ? value : ''} onChange={(e) => onChange(e.target.value)}>
+              <option value="">{row.value != null ? String(row.value) : '— pick one —'}</option>
+              {picker.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+            </select>
+          ) : (
+            <input className="input" value={value != null ? value : ''}
+              placeholder={row.value != null ? String(row.value) : 'not set'}
+              onChange={(e) => onChange(e.target.value)} />
+          )
+        ) : (
+          <div style={{ fontSize: 13, color: row.value == null ? SOFT : INK }}>
+            {row.value == null ? '—' : String(row.value)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RvPlaceOrder({ cfg, preview, busy, onPlace, enabled, price }) {
+  const missing = (preview && preview.missing) || [];
+  const canPlace = !!(preview && preview.canPlace);
+  const dry = !!(cfg && cfg.dryrun);
+  const outbound = !!(cfg && cfg.outbound);
+
+  let block = null;
+  if (!enabled) block = { title: 'Richer Value is not turned on yet.', help: 'You can see exactly what would be sent. Turn on “Order Hybrid Appraisals from Richer Value” on the API Health page to order for real.' };
+  else if (cfg && !cfg.orderReady) block = { title: 'Richer Value is not fully set up yet.', help: 'A sign-in or an API token is set, but PILOT still needs to know which of their companies to order for. See the API Health page.' };
+  else if (preview && preview.blocked) block = { title: 'This property cannot be ordered on this product.', help: preview.blocked };
+  else if (missing.length) {
+    block = {
+      title: `${missing.length} thing${missing.length === 1 ? '' : 's'} still needed before this can be ordered.`,
+      help: missing.map((m) => `${m.label}${m.why ? ` — ${m.why}` : ''}`).join(' · '),
+    };
+  } else if (!outbound && !dry) block = { title: 'Ordering is switched off.', help: 'Turn on “Place Hybrid Appraisal orders with Richer Value” on the API Health page.' };
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <button className="btn primary" disabled={busy || !canPlace || (!outbound && !dry)}
+        aria-disabled={busy || !canPlace} onClick={onPlace}>
+        {busy ? 'Ordering…' : dry ? 'Build the order (test mode)'
+          : price ? `Order the Hybrid Appraisal — ${money(price.total_price)}` : 'Order the Hybrid Appraisal'}
+      </button>
+      {block ? <WhyBox title={block.title}>{block.help}</WhyBox>
+        : dry ? <WhyBox title="Test mode is on — this button will NOT send anything.">To place the order for real, turn OFF “Richer Value orders — TEST MODE” on the API Health page.</WhyBox>
+          : (
+            <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>
+              This costs money{price ? ` (${money(price.total_price)})` : ''} and sends an inspector to the property.
+              It also waives the appraisal data file on this file — this report does not produce one.
+            </div>
+          )}
+    </div>
+  );
+}
+
+/* =============================================== Richer Value order card === */
+/*
+ * An evaluation has no appraiser to message and no documents to exchange, so this
+ * card shows what the other two do not have: THE TWO FIGURES. It also carries the
+ * one action that exists because the automatic write can legitimately be refused —
+ * "Put these on the file" — which is what a frozen file or a value somebody has
+ * already decided by hand leaves for a human to settle.
+ */
+function RvOrderCard({ order, onChanged }) {
+  const ad = ADAPTERS.rv;
+  const [detail, setDetail] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const [notice, setNotice] = useState('');
+
+  const load = useCallback(async () => {
+    try { setDetail(await api.rvOrder(order.id)); } catch (_) { setDetail(null); }
+  }, [order.id]);
+  useEffect(() => { if (open && !detail) load(); }, [open, detail, load]);
+
+  const run = useCallback(async (what, fn, okMsg) => {
+    setBusy(what); setErr(''); setNotice('');
+    try {
+      const out = await fn();
+      setNotice(okMsg || 'Done.');
+      if (out && out.order) setDetail(out);
+      await onChanged();
+    } catch (e) { setErr(e.message || 'That did not work.'); }
+    setBusy('');
+  }, [onChanged]);
+
+  const statusLabel = RV_STATUS_LABEL[order.status] || STATUS_LABEL[order.status] || order.status;
+  const sc = statusColor(order.status === 'intake' ? 'ordered' : order.status);
+  const report = detail && detail.report;
+  const asIs = order.as_is_value != null ? Number(order.as_is_value) : (report ? report.asIs : null);
+  const arv = order.arv != null ? Number(order.arv) : (report ? report.arv : null);
+  const applied = !!order.values_applied_at;
+
+  const bits = [];
+  if (order.client_loan_number) bits.push(order.client_loan_number);
+  const numLabel = ad.orderNumber(order);
+  if (numLabel) bits.push(numLabel);
+  bits.push('ordered ' + fmtDate(ad.orderedAt(order)));
+  if (order.due_date) bits.push('due ' + fmtDate(order.due_date));
+  if (order.dryrun) bits.push('test');
+
+  return (
+    <div className="aord-card">
+      <div className="aord-h">
+        <span className="aord-tag rv"><span className="d" />{ad.stamp}</span>
+        <div className="grow">
+          <div className="aord-title">{ad.orderTitle(order)}</div>
+          <div className="aord-sub">{bits.join(' · ')}</div>
+        </div>
+        <span className="aord-pill" style={{ background: sc + '18', color: sc }}>{statusLabel}</span>
+      </div>
+
+      {order.vendor_status || order.vendor_inspection_status ? (
+        <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>
+          Richer Value says: {order.vendor_status || '—'}
+          {order.vendor_inspection_status ? ` · inspection ${order.vendor_inspection_status}` : ''}
+          {order.inspection_scheduled_date ? ` · booked ${fmtDate(order.inspection_scheduled_date)}` : ''}
+        </div>
+      ) : null}
+
+      {err ? <Banner tone="bad">{err}</Banner> : null}
+      {notice ? <Banner tone="good">{notice}</Banner> : null}
+      {order.last_error ? <Banner tone="warn">{order.last_error}</Banner> : null}
+
+      {/* THE TWO FIGURES — the whole reason this product was bought. */}
+      {(asIs != null || arv != null) ? (
+        <div className="aord-figs">
+          <div className="aord-fig">
+            <div className="k">As-Is value</div>
+            <div className="v">{money(asIs)}</div>
+            <div className="n">{applied ? 'on the loan file' : 'not on the file yet'}</div>
+          </div>
+          <div className="aord-fig">
+            <div className="k">After repair value</div>
+            <div className="v">{money(arv)}</div>
+            <div className="n">
+              {order.arv_basis && order.arv_basis !== 'best'
+                ? `their ${order.arv_basis} renovation strategy`
+                : 'their recommended renovation strategy'}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="aord-acts">
+        <button className="aord-btn" disabled={!!busy}
+          onClick={() => run('refresh', () => api.rvRefresh(order.id), 'Checked with Richer Value.')}>
+          {busy === 'refresh' ? 'Checking…' : 'Check with Richer Value'}
+        </button>
+        {asIs != null && arv != null && !applied ? (
+          <button className="aord-btn pri" disabled={!!busy}
+            onClick={() => run('apply', () => api.rvApplyValues(order.id), 'The As-Is value and the ARV are now on the file.')}>
+            {busy === 'apply' ? 'Putting them on the file…' : 'Put these on the file'}
+          </button>
+        ) : null}
+        {!order.pdf_document_id && (order.status === 'completed') ? (
+          <button className="aord-btn" disabled={!!busy}
+            onClick={() => run('report', () => api.rvFetchReport(order.id), 'The report is now on the appraisal condition.')}>
+            {busy === 'report' ? 'Fetching…' : 'Fetch the report'}
+          </button>
+        ) : null}
+        {!order.paid_at && order.intake_token ? (
+          <button className="aord-btn" disabled={!!busy}
+            onClick={() => run('pay', () => api.rvPay(order.id), 'Settled — it is a real order now.')}>
+            {busy === 'pay' ? 'Settling…' : 'Settle this order'}
+          </button>
+        ) : null}
+        <span className="sep" />
+        {ad.canCancel(order) ? (
+          <button className="aord-btn" disabled={!!busy} onClick={async () => {
+            const reason = await askPrompt('Why is this order being cancelled? It goes to Richer Value and onto the file.',
+              { title: 'Cancel the Hybrid Appraisal' });
+            if (reason == null) return;
+            if (String(reason).trim().length < 8) { setErr('Add a slightly longer reason — Richer Value is told what it says.'); return; }
+            await run('cancel', () => api.rvCancel(order.id, String(reason).trim()), 'Cancellation asked for. It shows as cancelled once Richer Value confirms.');
+          }}>Cancel</button>
+        ) : null}
+        <button className="aord-more" style={{ marginLeft: 'auto' }} onClick={() => setOpen((v) => !v)}>
+          {open ? 'Hide details' : 'Details'}
+        </button>
+      </div>
+
+      {open ? <RvOrderDetail order={order} detail={detail} /> : null}
+    </div>
+  );
+}
+
+// The states an evaluation goes through, in their words rather than an appraisal's.
+const RV_STATUS_LABEL = {
+  placing: 'Placing…',
+  intake: 'Submitted — not paid yet',
+  ordered: 'Ordered',
+  in_process: 'Being worked on',
+  in_review: 'In review',
+  revision: 'Revision',
+  completed: 'Report ready',
+  on_hold: 'On hold',
+  cancel_requested: 'Cancelling…',
+  cancelled: 'Cancelled',
+  error: 'Needs attention',
+  dryrun: 'Test build',
+};
+
+function RvOrderDetail({ order, detail }) {
+  const report = detail && detail.report;
+  const timeline = (detail && detail.timeline) || [];
+  return (
+    <div style={{ marginTop: 12, borderTop: `1px solid ${LINE}`, paddingTop: 12 }}>
+      <div style={{ fontSize: 12.5, color: MUTED, lineHeight: 1.6 }}>
+        <div><b style={{ color: INK }}>What was ordered:</b> {order.report_type}
+          {order.inspection_type && order.inspection_type !== 'none' ? ` · ${order.inspection_type}` : ' · no inspection'}
+          {order.turnaround_time ? ` · ${order.turnaround_time}` : ''}
+          {order.gla_include ? ' · floor plan' : ''}
+          {order.licensing_required ? ' · licensed inspector' : ''}
+          {order.include_flood_certification ? ' · flood certificate' : ''}
+        </div>
+        {order.xml_waiver_applied ? (
+          <div><b style={{ color: INK }}>The appraisal data file:</b> waived on this file because this report does not produce one.</div>
+        ) : null}
+        {order.pdf_document_id ? (
+          <div><b style={{ color: INK }}>The report:</b> filed on the appraisal condition.</div>
+        ) : null}
+        {order.payment_link && !order.paid_at ? (
+          <div><b style={{ color: INK }}>Not settled yet.</b> Their payment page: <a href={order.payment_link} target="_blank" rel="noreferrer">open it</a>.</div>
+        ) : null}
+      </div>
+
+      {/* Their renovation-strategy grid — what the property is worth under each
+          plan. It is the point of the report, so it is shown in full. */}
+      {report && report.strategies && report.strategies.length ? (
+        <>
+          <div style={{ marginTop: 12 }}><SectionTitle>What Richer Value found</SectionTitle></div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', minWidth: 460, borderCollapse: 'collapse', fontSize: 12.5, color: INK }}>
+              <thead>
+                <tr style={{ textAlign: 'left', color: MUTED }}>
+                  <th style={{ padding: '5px 8px' }} />
+                  <th style={{ padding: '5px 8px' }}>Minimum</th>
+                  <th style={{ padding: '5px 8px' }}>Partial</th>
+                  <th style={{ padding: '5px 8px' }}>Full</th>
+                  <th style={{ padding: '5px 8px' }}>Recommended</th>
+                </tr>
+              </thead>
+              <tbody>
+                {report.strategies.filter((s) => s.title).map((s) => (
+                  <tr key={s.title} style={{ borderTop: `1px solid ${LINE}` }}>
+                    <td style={{ padding: '5px 8px', fontWeight: 600 }}>{s.title}</td>
+                    <td style={{ padding: '5px 8px' }}>{s.min || '—'}</td>
+                    <td style={{ padding: '5px 8px' }}>{s.partial || '—'}</td>
+                    <td style={{ padding: '5px 8px' }}>{s.full || '—'}</td>
+                    <td style={{ padding: '5px 8px', fontWeight: 600 }}>{s.best || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {report.confidence && report.confidence.reliability ? (
+            <div style={{ fontSize: 12, color: MUTED, marginTop: 6 }}>
+              Their confidence: {report.confidence.reliability}
+              {report.confidence.rvConfidence != null ? ` · ${report.confidence.rvConfidence}%` : ''}
+              {report.market && report.market.demandLevel ? ` · market demand ${report.market.demandLevel}` : ''}
+            </div>
+          ) : null}
+          {report.commentary && report.commentary.valuation ? (
+            <div style={{ fontSize: 12.5, color: MUTED, marginTop: 8, lineHeight: 1.5 }}>{report.commentary.valuation}</div>
+          ) : null}
+        </>
+      ) : null}
+
+      {timeline.length ? (
+        <>
+          <div style={{ marginTop: 12 }}><SectionTitle>What has happened</SectionTitle></div>
+          <div style={{ fontSize: 12.5, color: MUTED }}>
+            {timeline.slice(0, 12).map((t, i) => (
+              <div key={i} style={{ padding: '3px 0' }}>
+                {fmtWhen(t.occurred_at)} — {t.status}{t.event_type === 'inspection' ? ' (inspection)' : ''}
+                {t.comment ? ` · ${t.comment}` : ''}
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }

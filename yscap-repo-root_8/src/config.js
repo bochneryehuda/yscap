@@ -1197,6 +1197,82 @@ module.exports = {
     timeoutMs: Math.max(1000, parseInt(process.env.CLASS_TIMEOUT_MS || '60000', 10) || 60000),
   },
 
+  // ---- Richer Value — the THIRD appraisal vendor, the "Hybrid Appraisal". RTL ONLY. ----
+  //
+  // A DIFFERENT KIND OF PRODUCT, which is why it is a separate integration rather
+  // than a form on one of the other two: this is an EVALUATION (their "Reno ARV"
+  // report — an As-Is value together with an After Repair Value), not a URAR
+  // appraisal. It is cheaper, it is ordered as a form of its own, and — the fact
+  // everything downstream turns on — it does NOT produce a MISMO XML data file.
+  //
+  // ONE TOKEN, TWO WAYS TO GET IT. The vendor issues a long-lived API token AND a
+  // create-token endpoint that mints one from a username + password. Either is
+  // enough: with a token set we use it; with only a login we mint one and cache it.
+  // The create-token reply also returns the COMPANY token, which most other calls
+  // need — so a deployment that sets only the login still resolves everything.
+  //
+  // TRAINING AND PRODUCTION ARE DIFFERENT HOSTS (unlike DocLab, where only the
+  // credential decides). `environment` picks the host, and every URL stays
+  // overridable so a vendor change is a config edit rather than a deploy.
+  richerValue: {
+    enabled:         process.env.RV_ENABLED === '1',           // master (default OFF)
+    outboundEnabled: process.env.RV_OUTBOUND_ENABLED === '1',  // write gate (default OFF)
+    dryrun:          process.env.RV_DRYRUN === '1',            // build + log, send nothing
+
+    // 'training' (default) | 'production'. Deliberately defaults to training so an
+    // unlabelled deployment can never place a real order by accident.
+    environment: (process.env.RV_ENVIRONMENT || 'training').trim().toLowerCase(),
+    baseUrl: (process.env.RV_BASE_URL || '').trim().replace(/\/+$/, '') || null,
+
+    // ---- credentials (Render env ONLY, never committed) ----
+    // Either a ready-made bearer token, or a login the client exchanges for one.
+    apiToken: process.env.RV_API_TOKEN || null,
+    username: process.env.RV_USERNAME || null,
+    password: process.env.RV_PASSWORD || null,
+    // Which of THEIR companies we order for. Resolved from the create-token reply
+    // when a login is configured; set this when only a raw token is available.
+    companyToken: process.env.RV_COMPANY_TOKEN || null,
+    // The vendor user an order is placed "by" — their `loan_officer_token`, which
+    // is REQUIRED on every EVAL order. Resolved from the create-token reply (the
+    // API user is a loan officer) or from their loan-officers list; overridable.
+    loanOfficerToken: process.env.RV_LOAN_OFFICER_TOKEN || null,
+
+    // ---- what a new Hybrid order starts as (owner-directed 2026-08-14) ----
+    // Every one of these is a STARTING POINT the staffer can change on the screen
+    // before ordering — never a value forced onto an order.
+    defaultReportType:     (process.env.RV_DEFAULT_REPORT_TYPE || 'reno-arv').trim(),
+    defaultInspectionType: (process.env.RV_DEFAULT_INSPECTION_TYPE || 'interior-w-exterior').trim(),
+    defaultTurnaround:     (process.env.RV_DEFAULT_TURNAROUND || 'standard').trim(),
+    // GLA measurement + floor plan ON by default; flood certification and the
+    // licensed-agent requirement OFF. Flood is off because PILOT orders its own
+    // flood determination on every file (db/374) and buying it again here would
+    // double-order.
+    defaultGlaInclude:     process.env.RV_DEFAULT_GLA_INCLUDE !== '0',
+    defaultLicensing:      process.env.RV_DEFAULT_LICENSING === '1',
+    defaultFloodCert:      process.env.RV_DEFAULT_FLOOD_CERT === '1',
+
+    // How the intake is paid so it becomes a real order. An invoiced client (their
+    // `report_invoicing` flag) uses ADD_TO_INVOICE; a card client uses a stored
+    // payment source. 'none' leaves the intake unpaid for a human to settle.
+    paymentMethod: (process.env.RV_PAYMENT_METHOD || 'ADD_TO_INVOICE').trim().toUpperCase(),
+
+    // Apply the vendor's returned As-Is + ARV to the loan file automatically
+    // (owner-directed 2026-08-14). Off = the figures are still read and shown on
+    // the order card with an "Apply to the file" button; nothing is written.
+    autoApplyValues: process.env.RV_AUTO_APPLY_VALUES !== '0',
+
+    // ---- the webhook half: credentials WE issue to them ----
+    webhookUrl:      (process.env.RV_WEBHOOK_URL || '').trim() || null,
+    webhookUser:     process.env.RV_WEBHOOK_USER || null,
+    webhookPassword: process.env.RV_WEBHOOK_PASSWORD || null,
+    webhookToken:       process.env.RV_WEBHOOK_TOKEN || null,
+    webhookTokenHeader: (process.env.RV_WEBHOOK_TOKEN_HEADER || 'x-api-key').trim(),
+
+    pollSec:   Math.max(60, parseInt(process.env.RV_POLL_SEC || '300', 10) || 300),
+    pollBatch: Math.max(1, parseInt(process.env.RV_POLL_BATCH || '25', 10) || 25),
+    timeoutMs: Math.max(1000, parseInt(process.env.RV_TIMEOUT_MS || '60000', 10) || 60000),
+  },
+
   // ---- DocLab (Private Lender Law) — loan-document drafting. RTL ONLY. ----
   // The API form of the closing-prep step lib/closing-prep.js already emails to
   // TeamAG@privatelenderlaw.com. Research + the field map: docs/doclab/.
