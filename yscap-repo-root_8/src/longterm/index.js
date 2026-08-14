@@ -37,4 +37,9 @@ router.use('/encompass', require('./routes/encompass-knowledge'));
 // /api/lt/people
 router.use('/people', require('./routes/people'));
 
+// The loan sync: discovery from the pipeline, then a full read of what moved.
+// Reading how fresh the book is is open to any staff member ("why does this file
+// look old?"); running a pass is admin-only. /api/lt/sync
+router.use('/sync', require('./routes/sync'));
+
 module.exports = { router };
