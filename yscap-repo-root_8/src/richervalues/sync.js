@@ -224,7 +224,10 @@ async function syncOne(order, { staffId = null } = {}) {
     // ---- the values onto the loan file ----------------------------------
     if (read && read.valuesUsable && RV().autoApplyValues !== false && !fresh.values_applied_at) {
       try {
-        const applied = await orderService.applyValues(db, { ...fresh, results: (await orderService.getOrder(db, order.id)).results }, { staffId });
+        // `fresh` was read AFTER the patch above, so it already carries the
+        // results we just stored — re-reading them would be a second query for
+        // the same row.
+        const applied = await orderService.applyValues(db, fresh, { staffId });
         out.valuesApplied = !!applied.ok;
         if (!applied.ok) {
           // A refusal here is nearly always the file freeze or a human's own

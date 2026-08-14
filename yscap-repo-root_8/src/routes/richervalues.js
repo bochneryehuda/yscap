@@ -31,9 +31,31 @@ const reference = require('../richervalues/reference');
 const sync = require('../richervalues/sync');
 const documents = require('../richervalues/documents');
 const xmlWaiver = require('../lib/appraisal/xml-waiver');
-const { audit } = require('../lib/activity');
 
 router.use(requireAuth, requireStaff);
+
+/**
+ * The house audit helper, the same shape every staff route defines for itself.
+ * Two things it must keep doing:
+ *   • `detail` lands in a jsonb column, and pg hands a bare SCALAR to jsonb
+ *     verbatim, which is rejected — so a scalar is wrapped rather than turning an
+ *     otherwise-successful action into a failed request;
+ *   • it is BEST-EFFORT. A logging write must never fail an action that already
+ *     happened at the vendor — an order has been placed and money is committed by
+ *     the time we get here.
+ */
+async function audit(req, action, entityType, entityId, detail) {
+  let d = detail;
+  if (d != null && typeof d !== 'object') d = { note: String(d) };
+  try {
+    await db.query(
+      `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+       VALUES ('staff',$1,$2,$3,$4,$5,$6,$7)`,
+      [req.actor.id, action, entityType, entityId || null, req.ip, req.get('user-agent') || null, d || null]);
+  } catch (e) {
+    console.warn(`[audit] failed to log ${action}: ${(e && e.message) || e}`);
+  }
+}
 
 // The same per-file scope every staff surface uses — never a hand-written one.
 async function canSeeFile(req, appId) {
