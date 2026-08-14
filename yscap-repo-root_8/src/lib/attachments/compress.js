@@ -336,9 +336,19 @@ async function compressToFit(buf, targetBytes, opts) {
     attempts.push({ level: lvl, reason: r.reason, after: r.after, changed: r.changed });
     if (r.changed && (!best || r.after < best.after)) best = r;
     if (r.changed && target && r.after <= target) return { ...r, fits: true, attempts };
-    // Level 1 only ever repacks; if the document has no images to shrink, no higher level can do
-    // anything either, so stop rather than burn the deadline proving it four more times.
-    if (r.reason === 'nothing_to_compress' && r.method !== 'pdf') break;
+    // GIVE UP EARLY ONLY WHEN A HIGHER LEVEL PROVABLY CANNOT HELP — and the test for that is the
+    // METHOD, never the reason.
+    //
+    // This was keyed on `reason === 'nothing_to_compress'` and it silently broke every photo. Level
+    // 1 is a structural repack, which for an IMAGE is a no-op BY DESIGN — so a JPEG reported
+    // 'nothing_to_compress' at level 1, the loop stopped, and levels 2..5 (the ones that actually
+    // shrink a picture) never ran. A 6 MB inspection photo came back 6 MB and was dropped from the
+    // email, which is the exact class of failure this whole module exists to end. Caught by the
+    // end-to-end test, not by the unit tests, because those compressed PDFs.
+    //
+    // A format we cannot touch at all will not improve at a higher level either.
+    if (r.method === 'none') break;
+    // Nor will a PDF that turned out to carry no images to shrink.
     if (r.method === 'pdf' && lvl > 1 && r.images && r.images.seen === 0) break;
   }
   if (best) return { ...best, fits: !target || best.after <= target, attempts };

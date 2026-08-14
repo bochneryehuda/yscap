@@ -163,5 +163,22 @@ async function imagesIn(buf) {
   ok('an unreachable target still returns the best effort, honestly flagged',
     impossible.fits === false && impossible.after < big.length);
 
+  // A PHOTO MUST ESCALATE. Level 1 is a structural repack, which for an image is a no-op by
+  // design — so an early-exit keyed on "level 1 did nothing" stops before levels 2..5, the only
+  // ones that shrink a picture, and every oversized photo comes back unchanged. That shipped and
+  // was caught by the end-to-end delivery test, not here; this is the unit-level guard.
+  const bigPhoto = photo(2400, 1800, 94);
+  const pf = await C.compressToFit(bigPhoto, Math.round(bigPhoto.length * 0.25));
+  ok(`a standalone JPEG escalates past level 1 (${(bigPhoto.length / 1024) | 0}KB -> ${(pf.after / 1024) | 0}KB at level ${pf.level})`,
+    pf.changed && pf.level >= 2 && pf.after < bigPhoto.length);
+  ok('and it reached the target', pf.fits);
+  ok('level 1 alone genuinely does nothing to an image — which is why the loop must not stop there',
+    (await C.compressOnce(bigPhoto, { level: 1 })).changed === false);
+
+  // A format with nothing to win DOES stop at once, rather than burning the deadline five times.
+  const zipish = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(5000, 9)]);
+  const zf = await C.compressToFit(zipish, 10);
+  ok(`an untouchable format stops immediately (${zf.attempts.length} attempt)`, zf.attempts.length === 1);
+
   console.log(`\nAll ${passed} assertions passed.\n`);
 })().catch((e) => { console.error('\nFAILED:', e && e.message, '\n', e); process.exit(1); });
