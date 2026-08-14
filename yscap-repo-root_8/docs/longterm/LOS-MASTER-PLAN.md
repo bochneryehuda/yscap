@@ -412,46 +412,76 @@ because their user *is* the broker; ours cannot. `AUDIENCE-RULES.md` outranks an
 The owner called this a major part of the build, and the reference portal's own condition
 screen is the interaction the whole product is judged on.
 
-### 5.0 UNRESOLVED — two of our own measurements disagree about whether conditions exist
+### 5.0 SETTLED — conditions exist, and they are a POST-PURCHASE artifact
 
-**This must be settled before phase 5 is scoped, and it cannot be settled by choosing the
-more convenient answer.**
+Two of our own measurements disagreed: the census recorded **348 conditions across 12
+loans**; the live probe found **`[]` on 200 of 200 loans**. Rather than pick the convenient
+answer, a read-only sweep settled it on 2026-08-14.
 
-| Measurement | Says |
-|---|---|
-| The committed research (`ENCOMPASS-CONDITIONS-AND-EFOLDER.md`, `condition-library.json`, 2026-08-14) | **348 conditions across 12 loans**, 213 open, via `GET /encompass/v3/loans/{id}/conditions` |
-| The live probe (`ENCOMPASS-LIVE-API-PROBE.md`, 2026-08-14) | **Every condition endpoint returns `[]`**, and condition alert counts are **0 on 200 of 200 loans sampled** — despite `useEnhancedConditionIndicator: true` |
+**Method.** 400 loans off the v3 pipeline (of ~696 in the tenant), 235 of them DSCR;
+`GET /encompass/v3/loans/{id}/conditions` on every one. Zero read errors. Script:
+`scratchpad/settle-conditions.js` — reads only.
 
-Both were run read-only against the same tenant on the same day. They cannot both describe
-the same population.
+**Result: the census was right, and the probe sampled around them.**
 
-**The likely explanations, none of them yet confirmed:**
+| | Sweep | Census |
+|---|---:|---:|
+| Loans with conditions | **10** | 12 |
+| Conditions found | **337** | 348 |
+| Cleared / Fulfilled / Waived / Rejected / Received / Requested | 124 / 12 / 11 / 4 / 1 / 1 | 124 / 12 / 11 / 4 / 1 / 1 |
 
-- The 12 loans with conditions are **1.6% of the book**, and the probe's 200-loan sample may
-  have drawn from a folder or milestone range that excludes them.
-- The two runs may have used **different loan sets** — the probe reports 696 loans via the
-  pipeline against 772 in the census, so they were not looking at the same population.
-- A **persona or scope difference** between the two runs could make conditions readable in
-  one and invisible in the other, which would be the most dangerous case: it would mean the
-  condition centre works for whoever built it and is empty for everyone else.
+Six of the seven status buckets match **exactly**; the sweep saw 400 of ~696 loans, so it
+missed two loans holding the other 11 conditions. The census is confirmed.
 
-**What to do before building:** re-read conditions on the **twelve named loan GUIDs the
-census recorded**, with the same credentials the product will ship with. If they return
-conditions, the census is right and the probe sampled around them. If they return `[]`, the
-census needs re-deriving and the condition centre needs re-scoping before a line is written.
+**And the sweep found the thing neither earlier run reported — WHERE they live.** All ten
+loans sit in the correspondent post-close folders. Cross-referencing the folder census:
 
-**Why this matters beyond the module.** The probe also reports that the real day-to-day
-workflow in this tenant is **eFolder documents, not conditions** — 101 documents on a mature
-loan, in groups like `Needs List - Initial`. If that is the true picture, then "the condition
-centre" the owner asked for is mostly a **document-needs-list centre**, and building it
-around Encompass conditions would produce a screen that is empty on most files. That is a
-product question for the owner, and §12 records it as a risk rather than a decision.
+| Folder | Loans (of 400) | DSCR | Loans carrying conditions |
+|---|---:|---:|---:|
+| **Pipeline** (the active book) | 136 | 70 | **0** |
+| Corr Post Purchase | 110 | 103 | 8 |
+| Corr Post Closing | 22 | 14 | 2 |
+| Corr Clear To Close | 12 | 10 | **0** |
+| Broker CLOSED | 56 | 2 | 0 |
+| Started / Prospect / Pre-Approval | 31 | 15 | 0 |
+
+**Not one active long-term loan in this tenant carries a single Encompass condition.**
+Neither does anything at Clear to Close. Every condition in the system is on a loan that is
+already closed and sold, and even there only ~8% of them (10 of 132) have any.
+
+### 5.0.1 What that means for what gets built
+
+These are **investor post-purchase conditions** — the trailing documents and deficiencies the
+buyer of the loan raises *after* purchase. That is consistent with everything else measured:
+most long-term files are underwritten by the investor rather than by us, and the milestone
+list carries `Investor Delivery` → `Purchasing Conditions` → `Final Docs` as its own late
+stage.
+
+So a condition centre built **only** on Encompass conditions would be empty on every live
+file an officer is working, and would light up only after the loan is sold. That is a real
+product, but it is a **post-purchase deficiency tracker**, not the underwriting condition
+centre the phrase usually means.
+
+The live day-to-day work happens in the **eFolder** instead — the probe counted 101 documents
+on a mature loan, in groups including `Needs List - Initial`.
+
+**The recommendation, on the evidence: build it to read both, and let the file decide which
+face it shows.** They are the same shape — a requirement, its documents, its status — and
+Encompass already links them (the document carries `conditions[]`, 179 links recorded). One
+module, two feeds:
+
+- **Encompass conditions** → populate on post-purchase files. This is also literally what the
+  owner asked for: *"linked on the condition for existing files that had conditions, with all
+  the documents in there linked."*
+- **The eFolder needs list** → populates on live files, which is where the work is.
+
+**This is a recommendation, not a decision.** Confirming that the team really works the
+needs-list rather than conditions on a live file is a question for the owner (§11).
 
 ### 5.1 What the census recorded
 
-*(Subject to §5.0.)* 12 loans carry conditions — the delegated files we underwrote ourselves
-— holding **348 conditions**, 5 to 67 per loan, **213 still open**. Most long-term files are
-underwritten by the investor rather than in Encompass, which is why the number is small.
+12 loans carry conditions, holding **348 conditions**, 5 to 67 per loan, **213 still open** —
+all of them, per §5.0, on already-sold files.
 
 Alongside them: **20,569 eFolder documents across 673 loans, 28,822 attachments, 179
 document→condition links, 230 configured document types, 197 condition templates, 19
