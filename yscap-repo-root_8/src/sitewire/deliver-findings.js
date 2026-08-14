@@ -416,7 +416,30 @@ async function maybeAutoDeliver(appId, drawId, fileCtx, opts = {}) {
       [appId, drawId])).rowCount > 0;
     const requests = (await db.query(
       `SELECT approved_cents FROM sitewire_draw_requests WHERE sitewire_draw_id=$1`, [drawId])).rows;
-    const insp = approval.inspectorApproved({ draw, requests });
+    let insp = approval.inspectorApproved({ draw, requests });
+    // AUTO RE-SEND must compare the current inspector total against what the borrower was SHOWN using
+    // the IDENTICAL computation, or it loops. `finding.total_approved_cents` is stored from
+    // fetchDrawFindings(...).totals.approved_cents — getDraw PLUS a per-request GET /requests/:id
+    // fallback for an amount the draw payload omitted. The mirror read above is getDraw-ONLY, so on a
+    // draw whose payload drops a per-request approved_cents that getRequest still carries, the mirror
+    // sum sits permanently BELOW the stored total and this would return 'resend' every poll — re-emailing
+    // the borrower and resetting the wire clock forever (pre-merge audit 2026-08-14). Only when a
+    // still-'delivered' finding's stored total actually DISAGREES with the cheap mirror do we pay one
+    // fresh authoritative read and compare like-for-like: equal → it was the mirror's missing fallback,
+    // not a real re-inspection → skip. First delivery has no finding to diverge from, so it stays on the
+    // cheap mirror; a Sitewire outage keeps the mirror read (never loop, never throw — the manual button
+    // still re-sends).
+    if (finding && String(finding.status || '') === 'delivered'
+        && Number(insp.cents) !== Number((finding && finding.total_approved_cents) || 0)) {
+      try {
+        const detail = await require('./reconcile').fetchDrawFindings(drawId);
+        insp = {
+          cents: Number((detail.totals && detail.totals.approved_cents) || 0),
+          hasAmounts: (detail.lines || []).some((l) => l && l.approved_cents != null),
+          source: 'findings_authoritative',
+        };
+      } catch (_) { /* Sitewire unreachable — keep the mirror read; never loop, never throw */ }
+    }
     const decision = decideAutoDeliver({
       autopilotOn, sitewireReadsOn, platform, method,
       drawStatus: draw.status, historical: !!draw.historical,

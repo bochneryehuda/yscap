@@ -128,6 +128,33 @@ const findingCount = async (draw) => Number((await db.query(`SELECT count(*)::in
   ok('8a firstReconcile → skip', r9.action === 'skip' && r9.reason === 'first_reconcile');
   ok('8b firstReconcile: no finding', (await findingCount(DRAW3)) === 0);
 
+  // ---- 9. AUTO RE-SEND never LOOPS when the mirror undercounts the getRequest fallback ----
+  // The borrower's finding total is stored from fetchDrawFindings (getDraw + the per-request
+  // GET /requests/:id fallback). The live request mirror is getDraw-ONLY, so a draw payload that omits
+  // a per-request approved amount which getRequest still supplies leaves the mirror sum permanently
+  // BELOW the finding total. The re-send must NOT fire on that gap — it re-reads authoritatively and
+  // compares like-for-like. Pre-merge audit 2026-08-14: without the authoritative re-read decideAutoDeliver
+  // returned 'resend' EVERY poll → re-emailed the borrower and reset delivered_at (the wire clock).
+  const r10 = await df.maybeAutoDeliver(app, DRAW3, SW, {});   // real first delivery (mirror == finding == 1.6M)
+  ok('9a DRAW3 first delivery', r10.action === 'deliver' && r10.reason === 'first_delivery');
+  const f10 = await findingOf(DRAW3);
+  ok('9b finding total = 1600000', f10 && Number(f10.total_approved_cents) === 1600000);
+  const deliveredAt0 = (await db.query(`SELECT delivered_at FROM draw_findings WHERE sitewire_draw_id=$1`, [DRAW3])).rows[0].delivered_at;
+  // Drop ONLY the mirror below the finding total — the REAL inspector value is unchanged (getDraw and
+  // getRequest still say 1.6M), exactly as when the draw payload omits an amount getRequest carries.
+  await db.query(`UPDATE sitewire_draw_requests SET approved_cents=1000000 WHERE sitewire_draw_id=$1`, [DRAW3]);
+  const r11 = await df.maybeAutoDeliver(app, DRAW3, SW, {});
+  ok('9c mirror below finding, real value unchanged → skip unchanged (NO loop)', r11.action === 'skip' && r11.reason === 'unchanged');
+  ok('9d still exactly one finding', (await findingCount(DRAW3)) === 1);
+  const deliveredAt1 = (await db.query(`SELECT delivered_at FROM draw_findings WHERE sitewire_draw_id=$1`, [DRAW3])).rows[0].delivered_at;
+  ok('9e delivered_at NOT reset (wire clock intact)', String(deliveredAt0) === String(deliveredAt1));
+  // A GENUINE re-inspection still re-sends: move the real inspector value (stub + mirror) up.
+  STUB_APPROVED[DRAW3] = 1750000;
+  await db.query(`UPDATE sitewire_draw_requests SET approved_cents=1750000 WHERE sitewire_draw_id=$1`, [DRAW3]);
+  const r12 = await df.maybeAutoDeliver(app, DRAW3, SW, {});
+  ok('9f real inspector change → resend', r12.action === 'resend' && r12.reason === 'amount_changed');
+  ok('9g finding total updated to 1750000', Number((await findingOf(DRAW3)).total_approved_cents) === 1750000);
+
   console.log(`\n${fail === 0 ? 'ALL' : fail + ' FAILED,'} ${pass} auto-deliver wiring assertions ${fail === 0 ? 'passed' : ''}`);
   await db.query(`DELETE FROM applications WHERE id=$1`, [app]);
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [bor]);
