@@ -1,4 +1,4 @@
--- 548_email_attachment_audit.sql — EVERY EMAIL RECORDS WHAT IT COULD NOT CARRY
+-- 550_email_attachment_audit.sql — EVERY EMAIL RECORDS WHAT IT COULD NOT CARRY
 -- (owner-directed 2026-08-14, after an investor delivery went out with the inspection
 -- report silently missing: "everything should be left locked, so we should always be
 -- able to audit the audit log. Every single thing here should leave logs in the future.").

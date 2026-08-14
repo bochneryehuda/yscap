@@ -265,11 +265,68 @@ existing shared visibility rule then admits that officer with no change to RTL, 
 it"*), so a long-term row can carry `source='longterm'` without any schema change. If you would rather it reuse an
 existing value, say so — it changes nothing about access.
 
-### What Long-Term does NOT get (2026-08-02)
+### What a CLIENT never gets: the investor's name (owner-directed 2026-08-14)
 
-**Conditions. Document underwriting. Orders.** Explicitly out of scope by the owner's instruction. They are not to
+**HARD RULE, and it applies to every surface Long-Term will ever have.** The owner:
+
+> *"You also need to make sure that you put a hard rule to block the investor name. The client should not be
+> able to see the investor name. Never ever! Not borrowers, not TPOs, only internal staff."*
+
+The investor / capital provider who buys a long-term loan — **their name in any spelling, their contact
+details, their own loan number, and the funding channel** — is internal knowledge. It never reaches a borrower
+and it never reaches a broker: not a field, not a label, not a document name, not an email, not a PDF, not an
+export, not a filter option, not a tooltip, not an error message.
+
+Three audiences, and exactly one may see it: `internal` **yes**, `borrower` **no**, `tpo` **no**. Anything not
+exactly `internal` is treated as a client — it fails closed.
+
+`src/longterm/audience.js` is the ONE definition. It is built on the investor REGISTRY rather than a hard-coded
+list, because the name is typed by hand and spelled **151 ways** across the live book — a `!== 'Deephaven'`
+check passes `Deepahven approval.pdf` straight to a borrower. `scripts/test-lt-investor-block.js` sweeps every
+recorded spelling through five sentence shapes and fails if one survives. Full reasoning and the judgement
+calls: `docs/longterm/AUDIENCE-RULES.md`.
+
+This is the Long-Term analogue of the standing RTL rule *"never expose a note buyer / capital partner name on
+any borrower-facing surface"*, and it is **stricter**: RTL permits staff-only surfaces to name them; Long-Term
+additionally blocks **TPOs**.
+
+---
+
+### What Long-Term does NOT get (2026-08-02, amended 2026-08-14)
+
+**Document underwriting. Orders.** Explicitly out of scope by the owner's instruction. They are not to
 be built, stubbed, or "left room for" by copying RTL shapes. Also out: any new ClickUp / Encompass / SharePoint /
 DocuSign / Sitewire / Trustpoint mapping, and any new column anywhere, unless specifically requested.
+
+#### Conditions came BACK into scope (owner-directed 2026-08-14)
+
+The original rule said conditions were out **"until the owner says otherwise in writing"**, and on 2026-08-14 he did,
+twice, in his own words:
+
+> "look on the delegate files that we underwritten by ourselves and understand how to pull conditions … how you can
+> potentially push back documents directly to somewhere in the e-folder and link it to a certain condition … you
+> should set up your DSCR condition center — it should pull the conditions directly from Encompass"
+
+> "We should build a condition center that should be linked on the condition for existing files that had
+> conditions, with all the documents in there linked to certain files … The condition center should be built very
+> enhanced with the documentation logic and all other sections."
+
+**This changes the SCOPE, not the SEPARATION.** Three things stay exactly as they were:
+
+1. **Rule 3 applies in full.** The LT condition center is a brand-new build in `src/longterm/**`, `lt_*`,
+   `/api/lt/*`. Not one line, table, column, template, endpoint, screen or mapping may be copied, re-used, imported,
+   extended or generalized from RTL's `checklist_templates` / `checklist_items` / `conditions`, its Condition Center
+   rules engine (`src/lib/conditions/**`), its document machinery or its eFolder/SharePoint code — unless the owner
+   authorizes that exact item and it is recorded in `docs/LONG-TERM-AUTHORIZED-COPIES.md` first. Wanting to re-use
+   the rules engine is normal and expected; **ask, get it in writing, record it, then write code.**
+2. **Reading is already allowed; writing is not.** Pulling conditions, condition documents and the eFolder catalog
+   out of Encompass is a READ, covered by the existing read-only integration. **Uploading a document into the
+   Encompass eFolder is a WRITE**, governed by `docs/ENCOMPASS-WRITE-AUTHORIZATIONS.md`. The owner authorized it in
+   principle on 2026-08-14, but that pad entry records the request/response shape as **UNVERIFIED**, and the
+   read-only CI gate does not list an LT writer — so **nothing writes to the eFolder yet.** Building the condition
+   center's read side does not wait on that.
+3. **Document underwriting and orders are still out.** Reading a condition's documents and letting a human attach
+   one is not document underwriting.
 
 ---
 
@@ -367,8 +424,10 @@ Long-Term gets built until they are answered.
 6. **What should the stamp say on screen** — "Long-Term" and "RTL"? "Long Term" and "Short Term"? Something else?
 7. **What does the pipeline show by default** — both products together, or RTL only until you switch it on?
 8. **Who is allowed to see the Long-Term side** — the whole team, or only certain people?
-9. **Does a Long-Term file need documents at all right now** (just uploading and storing files), given that
-   conditions, document underwriting and orders are all out of scope?
+9. ~~**Does a Long-Term file need documents at all right now** (just uploading and storing files), given that
+   conditions, document underwriting and orders are all out of scope?~~ **ANSWERED 2026-08-14: yes — conditions came
+   back into scope and the owner asked for a condition center with "all the documents in there linked". Documents on
+   a long-term file exist to hang off a condition.** Document underwriting and orders are still out.
 10. **Anything Long-Term must NOT show** — e.g. does the note-buyer / capital-partner name rule apply there too?
 11. **May Long-Term share the database connection (`src/db.js`) with RTL?** Until you say yes, Long-Term opens its
     own — which costs nothing and keeps the door open to moving Long-Term to its own database later. Say the word
@@ -387,3 +446,5 @@ Long-Term gets built until they are answered.
 | Date | Change |
 |---|---|
 | 2026-08-02 | Charter written. Rules recorded in CLAUDE.md, AGENTS.md, `.github/`, the PR template and the CI gate. Ledger opened, empty. No Long-Term code built. |
+| 2026-08-14 | **HARD RULE: the investor name never reaches a client** — not a borrower, not a TPO, internal staff only (§4). One definition in `src/longterm/audience.js`, built on the investor registry, failing closed; guarded by `scripts/test-lt-investor-block.js`. Mirrored into CLAUDE.md rule 10, AGENTS.md rule 10 and `.github/PRODUCT-SEPARATION.md` rule 10. |
+| 2026-08-14 | **Conditions came back into scope** by the owner's written instruction (§4 "What Long-Term does NOT get"). Document underwriting and orders remain out. Separation rules unchanged; the LT condition center is a brand-new build and every RTL re-use still needs a ledger entry first. Mirrored into CLAUDE.md rule 6, AGENTS.md rule 6 and `.github/PRODUCT-SEPARATION.md` rule 6. |

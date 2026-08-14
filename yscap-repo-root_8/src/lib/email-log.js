@@ -221,7 +221,7 @@ async function captureOutbound(send = {}, ctx = {}) {
           size: a.size || (typeof a.content === 'string' ? Math.round(a.content.length * 0.75) : null),
         }))
       : null;
-    // WHAT THIS EMAIL COULD NOT CARRY, and why (db/548, owner-directed 2026-08-14).
+    // WHAT THIS EMAIL COULD NOT CARRY, and why (db/550, owner-directed 2026-08-14).
     // Recorded HERE — at the one chokepoint every send flows through — rather than by
     // each caller, so an email added next year records it without knowing this rule
     // exists. A caller that supplies nothing writes NULL and behaves exactly as before.

@@ -316,7 +316,7 @@ async function deliverFindings(appId, drawId, opts = {}) {
       applicationId: appId, link: acceptLink, ctaLabel: 'Review & confirm',
       cta2Label: 'Push back on a line', cta2Link: disputeLink,
       attachments: findingAttachments,
-      // The audit rides with the send (db/548): if a report could not be carried, the email row
+      // The audit rides with the send (db/550): if a report could not be carried, the email row
       // records which one and why. This email tells the borrower to "download your inspection
       // report (PDF)", so one going missing is exactly the thing somebody has to be able to find.
       ...attachPlan.auditFrom(findingAttachments.plan || { attach: findingAttachments, omitted: [] }),

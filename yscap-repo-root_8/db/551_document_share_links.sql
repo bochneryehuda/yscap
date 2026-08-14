@@ -1,4 +1,4 @@
--- 549_document_share_links.sql — A PILOT LINK INSTEAD OF AN ATTACHMENT
+-- 551_document_share_links.sql — A PILOT LINK INSTEAD OF AN ATTACHMENT
 -- (owner-directed 2026-08-14: "we should always have also an option to save that PDF into a pilot
 -- URL and put that URL instead of the document. Just give a double warning that the person may not
 -- be able to open it, and we should rather try compressing it.").

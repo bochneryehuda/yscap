@@ -57,6 +57,10 @@ app.use('/api/trustpoint/webhook', require('./routes/trustpoint-webhook'));
 // discipline as the three above: its own small JSON parser + rate limit, mounted
 // before the global one, HTTP Basic (their contract) and failing closed.
 app.use('/api/class/callbacks', require('./routes/class-webhook'));
+// Richer Value webhooks — the THIRD appraisal vendor also PUSHES order events.
+// Same discipline as the four above: its own small JSON parser + rate limit,
+// mounted before the global one, HTTP Basic (or a token header) and failing closed.
+app.use('/api/richer-value/webhook', require('./routes/richervalues-webhook'));
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 /* THE NUL BYTE IS REMOVED ONCE, AT THE DOOR (third audit, 2026-08-02).
@@ -404,7 +408,7 @@ app.use('/api/admin/elementix/callback',
 // Public token-authenticated draw-findings accept (the one-click "Accept" link we email the
 // borrower — the reply_token is the capability; no login needed to release their own money).
 app.use('/api/public/draw-findings', rateLimit({ bucket: 'draw-public', windowMs: 60000, max: 60 }), require('./routes/draw-findings-public'));
-// A PILOT LINK to a document too large to attach (db/549, owner-directed 2026-08-14). Public by
+// A PILOT LINK to a document too large to attach (db/551, owner-directed 2026-08-14). Public by
 // design — the recipient is a capital partner or a borrower clicking straight out of an email and
 // has no login — with the 128-bit token as the whole capability, exactly like the draw reply_token
 // above. Mounted at the short `/d/:token` because it is printed in an email body and gets retyped.
@@ -460,6 +464,13 @@ app.use('/api/amc', require('./routes/amc'));
 // The SECOND appraisal vendor, mounted alongside — never inside — the AMC desk.
 // Each answers only for itself; nothing here picks between them.
 app.use('/api/class', require('./routes/class'));
+// The THIRD appraisal vendor — Richer Value's Hybrid Appraisal, a cheaper
+// EVALUATION that returns an As-Is value and an ARV together and produces no
+// MISMO XML (which is why ordering one waives the appraisal data file on the
+// file). Mounted alongside the other two, never inside one: each answers only for
+// itself, and the vendor selector on the order screen is the only thing that
+// chooses — its default stays AppraisalScope / NAN (owner-directed 2026-08-14).
+app.use('/api/richer-value', require('./routes/richervalues'));
 // The research desk: the cross-file property / comparable / appraiser database built
 // out of every appraisal XML we have ever imported (db/415), its search engine, and
 // the build-your-own valuation grid (db/410). Staff-wide by design — it holds
@@ -1220,6 +1231,15 @@ if (require.main === module) {
     // starts polling with no redeploy. On product-available it files the report back into
     // the Document Center and runs the appraisal import automatically.
     try { require('./amc/sync').start(); } catch (e) { console.warn('amc sync not started:', e.message); }
+    // Richer Value poll worker. They PUSH order events to the webhook above, so
+    // this is the BACKSTOP as well as the drain: it re-processes any delivery whose
+    // handling failed, and re-reads every order still moving — which is also the
+    // ONLY way status reaches a file while the webhook half is not registered.
+    // Self-gates on RV_ENABLED per tick, so an idle tick is a cheap no-op and
+    // flipping the switch on starts polling with no redeploy. On completion it
+    // files the PDF report onto the appraisal condition and puts the As-Is + ARV
+    // on the file through the shared As-Is desk.
+    try { require('./richervalues/sync').start(); } catch (e) { console.warn('richer value sync not started:', e.message); }
     // Scheduled notification digests (owner-directed 2026-07-20): weekly borrower
     // "what's still needed", daily per-officer pipeline snapshot, stale-file
     // alerts, and the Monday admin summary. Each self-gates via audit_log so it

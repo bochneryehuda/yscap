@@ -16,6 +16,21 @@ const client = require('./client');
 const rules = require('./completion-rules');
 const reconciliation = require('./reconciliation-map');
 const requests = require('./requests');
+// The 2026-08-14 live census of the tenant — what the fields actually CONTAIN, how a
+// loan file is SHAPED, the tenant's own formulas, the condition/eFolder model, and
+// which API calls really answer. See each module's header for provenance.
+const intelligence = require('./field-intelligence');
+const anatomy = require('./loan-anatomy');
+const formulas = require('./formulas');
+const terms = require('./terms');
+const conditions = require('./conditions');
+const apiSurface = require('./api-surface');
+const investors = require('./investors');
+const dropdowns = require('./dropdowns');
+const mismo = require('./mismo');
+const programs = require('./dictionary/program-taxonomy.json');
+const conditionLibrary = require('./dictionary/condition-library.json');
+const efolderCatalog = require('./dictionary/efolder-catalog.json');
 
 // Classify a field id into a family for grouping/reading.
 function familyOf(id) {
@@ -114,6 +129,15 @@ function summary() {
     reconciliationFields: reconciliation.REGISTRY.length,
     requestEndpoints: requests.REQUESTS.length,
     readOnly: client.READ_ONLY,
+    // The live census layered on top of the rule-derived catalog above.
+    intelligence: intelligence.summary(),
+    programs: programs.programs.length,
+    conditionTemplates: conditionLibrary.templates.length,
+    efolderDocumentTypes: efolderCatalog.documentTypes.length,
+    apiSurface: apiSurface.summary(),
+    investors: investors.summary(),
+    dropdowns: dropdowns.summary(),
+    terms: terms.summary(),
   };
 }
 
@@ -126,4 +150,17 @@ module.exports = {
   fieldById,
   familyOf,
   summary,
+  // The live-census layer.
+  intelligence,
+  anatomy,
+  formulas,
+  terms,
+  conditions,
+  apiSurface,
+  investors,
+  dropdowns,
+  mismo,
+  programs,
+  conditionLibrary,
+  efolderCatalog,
 };

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * THE PUBLIC DOOR FOR A PILOT LINK (owner-directed 2026-08-14; db/549).
+ * THE PUBLIC DOOR FOR A PILOT LINK (owner-directed 2026-08-14; db/551).
  *
  * Mounted at `/d/:token` with NO auth middleware — the 128-bit token IS the capability, exactly as
  * the borrower's draw `reply_token` is. Rate-limited at the mount so guessing is not free, though

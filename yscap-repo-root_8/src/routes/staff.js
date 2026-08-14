@@ -5414,7 +5414,7 @@ function emailRowShape(r) {
     status: r.status,
     error: r.error,
     attachments: Array.isArray(r.attachments) ? r.attachments : [],
-    // WHAT THIS EMAIL COULD NOT CARRY (db/548). On the SHARED shaper deliberately, so the file's
+    // WHAT THIS EMAIL COULD NOT CARRY (db/550). On the SHARED shaper deliberately, so the file's
     // own Email Center and the global mailbox both surface it from one definition — "which emails
     // went out short, and why" has to be answerable on a screen, not only in SQL.
     omitted: Array.isArray(r.omitted) ? r.omitted : [],
@@ -7082,7 +7082,7 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
       msgType: 'closing_order',
       subject: closingPrep.CLOSING_PREP_TITLE,
       // A closing package that reaches outside counsel one document short must be answerable
-      // months later, not only on the card while somebody is looking at it (db/548). The reasons
+      // months later, not only on the card while somebody is looking at it (db/550). The reasons
       // are `packAttachments`' own — one definition, already shown in the email and on the screen.
       omitted: (pack.skipped || []).map((d) => ({
         what: d.filename || d.label || 'document', filename: d.filename || null,
@@ -8313,14 +8313,33 @@ async function signOffGate(itemId, actor) {
         `SELECT reason, requires_transfer_letter, exception_id FROM appraisal_xml_waivers WHERE application_id=$1`,
         [item.application_id])).rows[0];
       if (waiver) {
+        // A HYBRID APPRAISAL is a waiver of a different kind, and the wording has
+        // to say so or the reviewer is sent looking for a data file that does not
+        // exist for this product (owner-directed 2026-08-14). Everything the
+        // waiver still REQUIRES is identical — the PDF, and both values on the
+        // file; only the sentences explaining them differ, because on this product
+        // both of those things arrive by themselves and the useful instruction is
+        // "wait, or fetch it", not "type it in".
+        // Lazily required: the reason string lives in the ONE module that owns the
+        // waiver, so the gate and the order desk can never disagree about which
+        // waiver is the self-clearing product one.
+        const isHybridProduct = String(waiver.reason || '')
+          === require('../lib/appraisal/xml-waiver').PRODUCT_NO_XML_REASON;
         if (!hasSlot('pdf')) {
+          if (isHybridProduct) {
+            return 'The Hybrid Appraisal report (PDF) is not on this condition yet. It files itself as soon as Richer Value finishes the report — check the appraisal order for where it is up to, or upload the PDF here if you already have it. There is no data file (XML) on this product, so that half is waived.';
+          }
           return waiver.requires_transfer_letter
             ? 'Upload the appraisal TRANSFER LETTER (PDF) before signing off — a transferred appraisal still needs the transfer letter in the PDF slot.'
             : 'Upload the appraisal report (PDF) before signing off — the XML is waived, but the PDF is still required.';
         }
         const av = (await db.query(`SELECT as_is_value, arv FROM applications WHERE id=$1`, [item.application_id])).rows[0] || {};
-        if (!(Number(av.as_is_value) > 0) || !(Number(av.arv) > 0))
+        if (!(Number(av.as_is_value) > 0) || !(Number(av.arv) > 0)) {
+          if (isHybridProduct) {
+            return 'The As-Is value and the ARV are not both on the file yet. PILOT fills them in from the Richer Value report the moment it comes back — if the report is in and they are still blank, open the appraisal order and use “Apply to the file”, or type them in by hand.';
+          }
           return 'Enter the ARV and the As-Is value by hand before signing off — with no XML there is nothing to read them from (use “No XML available”).';
+        }
         if (!waiver.requires_transfer_letter && waiver.exception_id) {
           const ex = (await db.query(`SELECT status FROM loan_exceptions WHERE id=$1`, [waiver.exception_id])).rows[0];
           if (!ex || ex.status !== 'approved')

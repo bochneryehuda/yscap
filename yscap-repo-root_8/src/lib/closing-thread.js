@@ -458,7 +458,7 @@ async function sendOnThread(p = {}) {
         // Pin the capture to the CHAIN, not to this message's subject — the whole
         // point of a stored thread key.
         threadKey: thread.thread_key,
-        // WHAT THIS MESSAGE COULD NOT CARRY (db/548) — a closing package that goes to outside
+        // WHAT THIS MESSAGE COULD NOT CARRY (db/550) — a closing package that goes to outside
         // counsel one document short must be answerable months later, not only on the card.
         omitted: p.omitted, attachSummary: p.attachSummary,
       },

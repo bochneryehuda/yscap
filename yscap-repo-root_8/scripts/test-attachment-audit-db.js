@@ -22,7 +22,7 @@ let passed = 0;
 function ok(name, cond) { assert.ok(cond, name); passed++; console.log(`  ok  ${name}`); }
 
 (async () => {
-  console.log('\n== db/548 — the columns exist, on the real table ==');
+  console.log('\n== db/550 — the columns exist, on the real table ==');
   const cols = (await db.query(
     `SELECT column_name, data_type FROM information_schema.columns
       WHERE table_name='email_messages' AND column_name IN ('omitted','attach_summary')`)).rows;
@@ -82,7 +82,7 @@ function ok(name, cond) { assert.ok(cond, name); passed++; console.log(`  ok  ${
   const after = (await db.query(`SELECT omitted FROM email_messages WHERE notification_id=$1`, [notifId])).rows[0];
   ok('the omission is still there after a second, attachment-blind touch', after && after.omitted && after.omitted.length === 1);
 
-  console.log('\n== db/549 — a PILOT link ==');
+  console.log('\n== db/551 — a PILOT link ==');
   const bytes = Buffer.from('%PDF-1.7\n' + 'x'.repeat(4000));
   const link = await share.createShareLink({
     buf: bytes, filename: 'inspection-report.pdf', contentType: 'application/pdf',

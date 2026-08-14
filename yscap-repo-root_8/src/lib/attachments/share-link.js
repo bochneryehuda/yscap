@@ -1,6 +1,6 @@
 'use strict';
 /**
- * A PILOT LINK INSTEAD OF AN ATTACHMENT (owner-directed 2026-08-14; db/549).
+ * A PILOT LINK INSTEAD OF AN ATTACHMENT (owner-directed 2026-08-14; db/551).
  *
  * When a document genuinely cannot be made small enough to email, the fallback is a link that takes
  * the recipient straight to the PDF. The owner's own ordering, kept here because it is a judgement

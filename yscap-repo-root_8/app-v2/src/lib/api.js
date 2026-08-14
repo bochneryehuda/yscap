@@ -635,6 +635,48 @@ export const api = {
   classRevision:    (appId, o, body) => req('POST', `/api/class/files/${appId}/orders/${o}/revision`, body),
   classCancelOrder: (appId, o, body) => req('POST', `/api/class/files/${appId}/orders/${o}/cancel`, body),
   classReasons:     (kind) => req('GET', `/api/class/revision-reasons?kind=${encodeURIComponent(kind || 'revision')}`),
+
+  // ---- Richer Value — the THIRD vendor, and the "Hybrid Appraisal" ----
+  // Deliberately its own set of calls, never shared with the other two: this is a
+  // different PRODUCT (an evaluation giving an As-Is value and an ARV, with no
+  // appraisal data file), and the vendor selector's default deliberately stays
+  // AppraisalScope / NAN — nothing here may quietly become "the" appraisal desk.
+  rvConfig:     () => req('GET', '/api/richer-value/config'),
+  rvCatalogue:  (q = {}) => {
+    const qs = new URLSearchParams(Object.entries(q).filter(([, v]) => v != null && v !== '')).toString();
+    return req('GET', `/api/richer-value/catalogue${qs ? '?' + qs : ''}`);
+  },
+  // The preview re-runs as the staffer types, so the SERVER stays the one that
+  // decides what a change does — the overrides go up, the whole answer comes back.
+  rvPreview: (appId, overrides) => {
+    const flat = { ...(overrides || {}) };
+    if (flat.propertyAccessContacts) flat.propertyAccessContacts = JSON.stringify(flat.propertyAccessContacts);
+    const qs = new URLSearchParams(Object.entries(flat).filter(([, v]) => v != null && v !== '')).toString();
+    return req('GET', `/api/richer-value/files/${appId}/preview${qs ? '?' + qs : ''}`);
+  },
+  rvPrice:       (appId, overrides) => req('POST', `/api/richer-value/files/${appId}/price`, overrides || {}),
+  rvPlaceOrder:  (appId, body) => req('POST', `/api/richer-value/files/${appId}/order`, body),
+  rvOrders:      (appId) => req('GET', `/api/richer-value/files/${appId}/orders`),
+  rvOrder:       (orderId) => req('GET', `/api/richer-value/orders/${orderId}`),
+  rvRefresh:     (orderId) => req('POST', `/api/richer-value/orders/${orderId}/refresh`, {}),
+  rvApplyValues: (orderId) => req('POST', `/api/richer-value/orders/${orderId}/apply-values`, {}),
+  rvFetchReport: (orderId) => req('POST', `/api/richer-value/orders/${orderId}/fetch-report`, {}),
+  rvCancel:      (orderId, reason) => req('POST', `/api/richer-value/orders/${orderId}/cancel`, { reason, confirm: true }),
+  rvHold:        (orderId, reason) => req('POST', `/api/richer-value/orders/${orderId}/hold`, { reason }),
+  rvReleaseHold: (orderId, notes) => req('POST', `/api/richer-value/orders/${orderId}/release-hold`, { notes }),
+  rvReopen:      (orderId, body) => req('POST', `/api/richer-value/orders/${orderId}/reopen`, body),
+  // Paying takes a METHOD — the card on the file, a card typed now, or a payment
+  // link to the borrower. Add to Invoice and ACH are not offered anywhere.
+  rvPay:         (orderId, body) => req('POST', `/api/richer-value/orders/${orderId}/pay`, body || {}),
+  rvPaymentState: (appId) => req('GET', `/api/richer-value/files/${appId}/payment`),
+  rvScopeOfWork: (appId) => req('GET', `/api/richer-value/files/${appId}/scope-of-work`),
+  rvSendScopeOfWork: (orderId, note) => req('POST', `/api/richer-value/orders/${orderId}/scope-of-work`, { note: note || null }),
+  rvSendPaymentLink: (orderId, body) => req('POST', `/api/richer-value/orders/${orderId}/send-payment-link`, body),
+  rvSetInspection: (orderId, inspectionType) => req('POST', `/api/richer-value/orders/${orderId}/inspection-type`, { inspectionType }),
+  rvSetReportType: (orderId, reportType) => req('POST', `/api/richer-value/orders/${orderId}/report-type`, { reportType }),
+  rvDismiss:     (orderId) => req('POST', `/api/richer-value/orders/${orderId}/dismiss`, {}),
+  rvReactivate:  (orderId) => req('POST', `/api/richer-value/orders/${orderId}/reactivate`, {}),
+  rvSendDocuments: (orderId, documentIds, field) => req('POST', `/api/richer-value/orders/${orderId}/documents`, { documentIds, field }),
   staffBorrowerResetPassword: (id) => req('POST', `/api/staff/borrowers/${id}/reset-password`),
   staffBorrowerSetPassword: (id, password) => req('POST', `/api/staff/borrowers/${id}/set-password`, { password }),
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),

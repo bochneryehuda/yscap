@@ -727,7 +727,7 @@ async function sendInvestorDelivery(appId, drawId, {
       text,
       html,
       attachments: items.map((i) => ({ filename: i.filename, content: i.buf.toString('base64'), contentType: i.contentType })),
-      // THE AUDIT RIDES WITH THE SEND (db/548). The chokepoint writes `omitted` + `attach_summary`
+      // THE AUDIT RIDES WITH THE SEND (db/550). The chokepoint writes `omitted` + `attach_summary`
       // onto the email_messages row and prints the [email-attach] log line, so "which documents did
       // that investor actually get, and why not the others?" is answerable from the audit log and
       // from a log search — not only from this one table that one card reads.

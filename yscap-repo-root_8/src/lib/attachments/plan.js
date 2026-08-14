@@ -50,7 +50,7 @@ const compress = require('./compress');
 
 /**
  * WHY SOMETHING IS NOT ON THE EMAIL. The code is the durable, queryable half — it goes into
- * `email_messages.omitted` (db/548) and must stay stable; the sentence is what a person reads.
+ * `email_messages.omitted` (db/550) and must stay stable; the sentence is what a person reads.
  *
  * `remedy` names the ONE action that would fix this item. It is what the desk turns into a button.
  */
@@ -232,7 +232,7 @@ function omissionSummary(plan) {
 }
 
 /**
- * The plan, shaped for `email_messages.omitted` + `.attach_summary` (db/548) — so every surface
+ * The plan, shaped for `email_messages.omitted` + `.attach_summary` (db/550) — so every surface
  * records the same thing in the same shape and the audit log is queryable across all of them.
  */
 function auditFrom(plan, extra) {

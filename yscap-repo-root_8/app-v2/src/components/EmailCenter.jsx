@@ -222,7 +222,7 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
   const html = full && ((trimmed && !showQuoted && full.replyHtml) || full.body_html);
   const text = full && ((trimmed && !showQuoted && full.replyText) || full.body_text);
   const attachments = (full && Array.isArray(full.attachments) && full.attachments.length) ? full.attachments : (Array.isArray(row.attachments) ? row.attachments : []);
-  // The audit of what could NOT be carried, and who knowingly sent it short (db/548). Prefer the
+  // The audit of what could NOT be carried, and who knowingly sent it short (db/550). Prefer the
   // fully-loaded row, exactly as the attachment list above does.
   const omitted = (full && Array.isArray(full.omitted) && full.omitted.length) ? full.omitted : (Array.isArray(row.omitted) ? row.omitted : []);
   const consent = ((full && full.attach_summary) || row.attach_summary || {}).consent || null;
@@ -315,7 +315,7 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
                         : <span className="ec-attach" key={i}>📎 {a.filename}{a.size ? <span className="muted"> · {Math.max(1, Math.round(a.size / 1024))} KB</span> : null}</span>))}
                   </div>
                 : null}
-              {/* WHAT THIS EMAIL COULD NOT CARRY (db/548, owner-directed 2026-08-14: "everything
+              {/* WHAT THIS EMAIL COULD NOT CARRY (db/550, owner-directed 2026-08-14: "everything
                   should be left locked, so we should always be able to audit the audit log").
                   It sits directly under the attachment list on purpose — the question is always
                   "what came with this email?", and an attachment list that quietly omits two
