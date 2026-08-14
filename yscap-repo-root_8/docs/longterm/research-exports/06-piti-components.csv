@@ -1,0 +1,9 @@
+﻿Field ID,What it is,JSON path,Filled on (long-term loans),Out of,Filled (%),Note
+228,First mortgage P&I,loan.proposedFirstMortgageAmount,449,490,91.6,The payment on THIS loan. Always the largest part.
+230,Hazard insurance,loan.proposedHazardInsuranceAmount,401,490,81.8,
+1405,Real-estate taxes,loan.proposedRealEstateTaxesAmount,371,490,75.7,
+234,Other housing expense,loan.proposedOtherAmount,18,490,3.7,
+233,Association (HOA) dues,loan.proposedDuesAmount,17,490,3.5,
+URLA.X144,Supplemental property insurance,loan.supplementalPropertyInsuranceAmount,12,490,2.4,"Flood, wind or hurricane cover carried separately from the hazard policy."
+229,Other financing P&I,loan.proposedOtherMortgagesAmount,1,490,0.2,Subordinate financing. Essentially unused on the long-term book.
+912,TOTAL — Expenses Proposed Total Housing,loan.proposedHousingExpenseTotal,,,,"READ THIS, never rebuild it from the parts. Read the TOTAL from field 912. Never rebuild it by adding the components up — on 8% of files you would understate the housing expense by about $1,300 a month, which inflates the DSCR and makes a deal look better than it is."
