@@ -219,6 +219,7 @@ export default function DrawsPanel({ appId }) {
           <StartDrawCard appId={appId} onStarted={load} />
           <TrustpointPanel appId={appId} />
           <PortalDrawsCard appId={appId} />
+          <TrinityInspectionCard appId={appId} />
           {/* Send the DocuSign Draw Request & Wire Instructions form right from the start-draw screen. */}
           <DrawRequestCard appId={appId} />
           {/* The draw email center is visible on the construction-draw screen even BEFORE the file is
@@ -230,6 +231,7 @@ export default function DrawsPanel({ appId }) {
           {msg && <div className="dd-card" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>{msg}</div>}
           <TrustpointPanel appId={appId} />
           <PortalDrawsCard appId={appId} />
+          <TrinityInspectionCard appId={appId} />
 
           {/* Redesigned draw desk: a sticky left section rail (like the loan file) + collapsible sections,
               so the whole draw process is scannable without endless scrolling. Each section opens on demand;
@@ -1194,6 +1196,212 @@ function CheckRow({ ok, label }) {
 // files. A request born here (or on the borrower's draws screen) is hand-run through the
 // administered/inspection process by the draw coordinator; once fully approved it closes out
 // into Sitewire as a HISTORICAL draw so the per-line ledger and rollups stay whole.
+/**
+ * The Trinity physical-inspection card.
+ *
+ * Where the inspection is up to in Trinity's own words, the line-by-line result once
+ * the report is back (including WHY a line was not fully approved), the photos, the
+ * two-way message thread with the Trinity team, and the one manual action that reaches
+ * the borrower.
+ *
+ * There is NO autopilot here on purpose (owner-directed 2026-08-14): the figures fill
+ * themselves in, and a person decides when they go out. The card says so out loud so
+ * nobody assumes otherwise.
+ */
+function TrinityInspectionCard({ appId }) {
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [note, setNote] = useState({});          // per-order message box
+  const [openId, setOpenId] = useState(null);    // which order's detail is expanded
+  const usd = (c) => (c == null ? '—' : '$' + (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 }));
+  const load = useCallback(() => {
+    api.get(`/api/trinity/files/${appId}`).then(setData).catch(() => setData(null));
+  }, [appId]);
+  useEffect(() => { load(); }, [load]);
+  if (!data || !Array.isArray(data.orders) || !data.orders.length) return null;
+
+  const conn = data.connection || {};
+  const STATE = {
+    requested: { label: 'Not ordered yet', cls: 'sw-draft' },
+    ordered: { label: 'Ordered — finding an inspector', cls: 'sw-pending' },
+    scheduled: { label: 'Inspector assigned', cls: 'sw-insp' },
+    inspected: { label: 'Inspected — Trinity reviewing', cls: 'sw-insp' },
+    report_received: { label: 'Report received', cls: 'sw-approved' },
+    entered: { label: 'Delivered to the borrower', cls: 'sw-approved' },
+    cancelled: { label: 'Cancelled', cls: 'sw-draft' },
+  };
+
+  async function act(fn, okMsg) {
+    setBusy(true); setMsg('');
+    try { const r = await fn(); load(); if (okMsg) setMsg(typeof okMsg === 'function' ? okMsg(r) : okMsg); }
+    catch (e) { setMsg(e?.data?.error || e?.data?.message || e.message || 'That didn’t work.'); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="dd-card" style={{ marginTop: 12 }}>
+      <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span className="dd-card-ic"><SdIcon name="list" /></span>
+          <div>
+            <h3>Trinity physical inspection</h3>
+            <div className="dd-sub" style={{ marginTop: 1, color: '#4B585C' }}>
+              The inspection company we order from on this file. Nothing reaches the borrower on its own —
+              when the report is back, you check the figures and send them.
+            </div>
+          </div>
+        </div>
+        {!conn.enabled && <span className="dd-chip warn"><span className="dot" />Connection off</span>}
+        {conn.dryrun && <span className="dd-chip warn"><span className="dot" />Test mode</span>}
+      </div>
+
+      {msg && <div className="small" style={{ marginTop: 8, fontWeight: 600, color: '#141B22' }}>{msg}</div>}
+
+      {data.orders.map((o) => {
+        const s = STATE[o.status] || { label: o.status, cls: 'sw-draft' };
+        const open = openId === o.id;
+        const resultLines = (o.lines || []).filter((l) => Number(l.requested_cents || 0) > 0 || l.approved_cents != null);
+        return (
+          <div key={o.id} className="dd-note" style={{ marginTop: 10 }}>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+              <div>
+                <span className={'pill ' + s.cls}>{s.label}</span>
+                {/* Trinity's own wording, so the desk sees exactly what they see. */}
+                {o.trinity_status && (
+                  <span className="small" style={{ marginLeft: 8, color: '#4B585C' }}>
+                    Trinity says: “{o.trinity_status}”{o.trinity_substatus ? ` · ${o.trinity_substatus}` : ''}
+                  </span>
+                )}
+                {o.progress && o.progress.attention && (
+                  <span className="dd-chip warn" style={{ marginLeft: 8 }}><span className="dot" />Trinity is waiting on something</span>
+                )}
+              </div>
+              <div className="row" style={{ gap: 6 }}>
+                {!o.trinity_order_id && (
+                  <button className="btn small" disabled={busy}
+                    onClick={() => act(() => api.post(`/api/trinity/files/${appId}/orders/${o.id}/place`), 'Order placed with Trinity.')}>
+                    Order the inspection
+                  </button>
+                )}
+                {o.trinity_order_id && (
+                  <button className="btn soft small" disabled={busy}
+                    onClick={() => act(() => api.post(`/api/trinity/files/${appId}/orders/${o.id}/refresh`), 'Refreshed from Trinity.')}>
+                    Refresh
+                  </button>
+                )}
+                <button className="btn ghost small" onClick={() => setOpenId(open ? null : o.id)}>
+                  {open ? 'Hide' : 'Details'}
+                </button>
+              </div>
+            </div>
+
+            {o.blocked_reason && (
+              <div className="small" style={{ marginTop: 6, color: '#B04A3F', fontWeight: 600 }}>{o.blocked_reason}</div>
+            )}
+
+            {o.approved_cents != null && (
+              <div className="small" style={{ marginTop: 6, color: '#141B22' }}>
+                The inspector approved <b>{usd(o.approved_cents)}</b>. Nothing has been sent to the borrower yet.
+              </div>
+            )}
+
+            {open && (
+              <div style={{ marginTop: 10 }}>
+                {/* What the inspector approved, line by line, and why. */}
+                {!!resultLines.length && (
+                  <table className="dd-table" style={{ marginTop: 4 }}>
+                    <thead><tr><th>Line</th><th>Requested</th><th>Approved</th><th>Inspector’s note</th></tr></thead>
+                    <tbody>
+                      {resultLines.map((l) => (
+                        <tr key={l.id}>
+                          <td style={{ color: '#141B22' }}>{l.name}</td>
+                          <td>{usd(l.requested_cents)}</td>
+                          <td style={{ color: '#141B22', fontWeight: 600 }}>{l.approved_cents == null ? '—' : usd(l.approved_cents)}</td>
+                          <td className="small" style={{ color: '#4B585C' }}>{l.inspector_remarks || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+
+                <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                  {o.report_document_id && (
+                    <a className="btn soft small" target="_blank" rel="noreferrer"
+                      href={`/api/trinity/files/${appId}/orders/${o.id}/trinity-report`}>Trinity’s report</a>
+                  )}
+                  {o.results_read_at && (
+                    <a className="btn soft small" target="_blank" rel="noreferrer"
+                      href={`/api/trinity/files/${appId}/orders/${o.id}/report`}>Our PILOT report</a>
+                  )}
+                  {o.trinity_order_id && !['entered', 'cancelled'].includes(o.status) && (
+                    <button className="btn ghost small" disabled={busy}
+                      onClick={() => act(() => api.post(`/api/trinity/files/${appId}/orders/${o.id}/cancel`),
+                        (r) => r.message)}>Ask Trinity to cancel</button>
+                  )}
+                </div>
+
+                {!!(o.photos || []).length && (
+                  <div style={{ marginTop: 10 }}>
+                    <div className="small" style={{ fontWeight: 600, color: '#141B22' }}>Inspection photos ({o.photos.length})</div>
+                    <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+                      {o.photos.filter((p) => p.archived_at).map((p) => (
+                        <AuthImg key={p.id} path={`/api/trinity/files/${appId}/photos/${p.id}`} alt={p.file_name || 'Inspection photo'}
+                          style={{ width: 92, height: 92, objectFit: 'cover', borderRadius: 6 }} />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Two-way messaging with the Trinity team. */}
+                <div style={{ marginTop: 12 }}>
+                  <div className="small" style={{ fontWeight: 600, color: '#141B22' }}>Messages with Trinity</div>
+                  {(o.comments || []).slice(0, 8).map((c) => (
+                    <div key={c.id} className="small" style={{ marginTop: 5, color: '#3A4550' }}>
+                      <b>{c.direction === 'in' ? (c.author_name || 'Trinity') : 'Us'}:</b>{' '}
+                      <span style={{ whiteSpace: 'pre-wrap' }}>{c.content}</span>
+                    </div>
+                  ))}
+                  {o.trinity_order_id && (
+                    <div className="row" style={{ gap: 6, marginTop: 8 }}>
+                      <input className="input" style={{ flex: 1 }} placeholder="Message the Trinity team…"
+                        value={note[o.id] || ''} onChange={(e) => setNote({ ...note, [o.id]: e.target.value })} />
+                      <button className="btn small" disabled={busy || !(note[o.id] || '').trim()}
+                        onClick={() => act(async () => {
+                          await api.post(`/api/trinity/files/${appId}/orders/${o.id}/comments`, { content: note[o.id] });
+                          setNote({ ...note, [o.id]: '' });
+                        }, 'Message sent to Trinity.')}>Send</button>
+                    </div>
+                  )}
+                </div>
+
+                {/* THE manual step. Deliberately the only thing here that reaches a borrower. */}
+                {o.results_read_at && o.status !== 'entered' && o.portal_draw_request_id && (
+                  <div className="act-card" style={{ marginTop: 12 }}>
+                    <div>
+                      <div style={{ fontWeight: 600, color: '#141B22' }}>Deliver the findings to the borrower</div>
+                      <div className="small" style={{ color: '#4B585C' }}>
+                        Sends the amounts above to the borrower to accept or dispute, exactly as a virtual
+                        inspection does. Nothing has gone out yet.
+                      </div>
+                    </div>
+                    <button className="btn" disabled={busy || !!o.blocked_reason}
+                      onClick={async () => {
+                        if (!(await askConfirm('Send these findings to the borrower now?'))) return;
+                        act(() => api.post(`/api/trinity/files/${appId}/orders/${o.id}/deliver`, {}),
+                          'Delivered — the borrower can now accept or dispute.');
+                      }}>Deliver to the borrower</button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function PortalDrawsCard({ appId }) {
   const [data, setData] = useState(null);
   const [openForm, setOpenForm] = useState(false);

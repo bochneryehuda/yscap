@@ -53,6 +53,11 @@ app.use('/api/esign/webhook', require('./routes/esign-webhook'));
 // TrustPoint webhook — its OWN small JSON parser + rate limit (never the global 32MB
 // parser: unauthenticated callers must not force huge parses), token-authenticated.
 app.use('/api/trustpoint/webhook', require('./routes/trustpoint-webhook'));
+// Trinity webhook — the physical-inspection company. Same discipline: its own small
+// JSON parser + rate limit, never the global 32MB one. Trinity's deliveries carry NO
+// signature, so it authenticates on a secret PATH token and believes nothing in the
+// body — every fact is re-read from the authenticated API before it is acted on.
+app.use('/api/public/trinity-webhook', require('./routes/trinity-webhook'));
 // Class Valuation callbacks — the appraisal vendor PUSHES order events to us. Same
 // discipline as the three above: its own small JSON parser + rate limit, mounted
 // before the global one, HTTP Basic (their contract) and failing closed.
@@ -453,6 +458,10 @@ app.use('/api/sitewire', require('./routes/sitewire'));
 // TrustPoint mirror (physical-draw workflow phases 2-3): the STAFF router (auth wall
 // + per-route capability gates). The public webhook is mounted earlier, pre-parser.
 app.use('/api/trustpoint', require('./routes/trustpoint'));
+// Trinity desk (the general physical program — a physical draw whose note buyer is NOT
+// Blue Lake). Staff router: auth wall + per-file scoping + per-route capability gates.
+// Deliberately has no autopilot — the borrower hears nothing until a human delivers.
+app.use('/api/trinity', require('./routes/trinity'));
 // Appraisal desk: import the appraisal XML, reconcile it against the file, and resolve
 // PILOT findings. The router applies requireAuth + requireStaff + per-file scoping itself.
 app.use('/api/appraisal', require('./routes/appraisal'));
@@ -1211,6 +1220,12 @@ if (require.main === module) {
     // + the API key; read-only toward TrustPoint (webhook registration is the one
     // journaled write, and it only happens from the admin route).
     try { require('./trustpoint/poller').start(); } catch (e) { console.warn('trustpoint poller not started:', e.message); }
+    // Trinity poller — follows OPEN physical inspection orders (status, messages, and
+    // once complete the report, the per-line numbers and the photos). Trinity's
+    // webhooks are unsigned notifications that are never redelivered on failure, so
+    // this poll is the correctness machinery and the webhook only makes it prompt.
+    // It never notifies a borrower — completion cues the DESK.
+    try { require('./trinity/poller').start(); } catch (e) { console.warn('trinity poller not started:', e.message); }
     // Class Valuation callback-inbox drain. The receiver drains on delivery, so this
     // is only the BACKSTOP: a delivery whose processing failed would otherwise wait
     // for the next unrelated callback to sweep it up, and on a quiet file there may
