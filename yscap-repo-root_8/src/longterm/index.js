@@ -42,4 +42,9 @@ router.use('/people', require('./routes/people'));
 // look old?"); running a pass is admin-only. /api/lt/sync
 router.use('/sync', require('./routes/sync'));
 
+// The long-term pipeline itself: an officer's own book, the closer's and funder's
+// whole book, the admin's everything — narrowed by the ONE access rule.
+// /api/lt/pipeline
+router.use('/pipeline', require('./routes/pipeline'));
+
 module.exports = { router };
