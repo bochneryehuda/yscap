@@ -1,5 +1,5 @@
 /**
- * PURE test — the Richer Value order builder (src/richervalues/order-build.js)
+ * PURE test — the Richer Values order builder (src/richervalues/order-build.js)
  * and the report reader (src/richervalues/results.js).
  *
  *   node scripts/test-richer-value-order-build.js
@@ -384,7 +384,7 @@ const REPORT = () => ({
   eq(RES.readEnvelope(tiny, 'ot-1').valuesUsable, false, 'H24 an implausibly small value is refused');
 }
 {
-  eq(RES.summaryLine(null), 'Richer Value has not sent the finished figures yet.', 'H25 no report says so plainly');
+  eq(RES.summaryLine(null), 'Richer Values has not sent the finished figures yet.', 'H25 no report says so plainly');
   const line = RES.summaryLine(RES.readEnvelope(REPORT(), 'ot-1'));
   ok(line.includes('$90,000') && line.includes('$164,700'), 'H26 the summary quotes both figures');
 }

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Richer Value — the PURE order builder.
+ * Richer Values — the PURE order builder.
  *
  * No database, no network, no config. It takes a normalized loan-file context
  * (built by order-service.js) plus the staffer's choices, and returns the exact
@@ -242,11 +242,11 @@ function buildOrder(ctx = {}, choices = {}) {
 
   // ---- identity -----------------------------------------------------------
   set('company_token', choices.companyToken);
-  if (!choices.companyToken) need('company_token', 'Which Richer Value company to order for',
+  if (!choices.companyToken) need('company_token', 'Which Richer Values company to order for',
     'Set RV_COMPANY_TOKEN, or configure a username and password so it can be worked out automatically.');
 
   set('loan_officer_token', choices.loanOfficerToken);
-  if (!choices.loanOfficerToken) need('loan_officer_token', 'Who the order is placed by at Richer Value',
+  if (!choices.loanOfficerToken) need('loan_officer_token', 'Who the order is placed by at Richer Values',
     'Set RV_LOAN_OFFICER_TOKEN, or configure a username and password so the API user is used.');
 
   // Their `order_placing_from` marks where an order came from. Documented value
@@ -295,7 +295,7 @@ function buildOrder(ctx = {}, choices = {}) {
   const closing = dayString(choices.closingDate) || dayString(ctx.expectedClosing);
   const today = todayString(choices.now);
   if (!closing) {
-    need('closing_date', 'Expected closing date', 'Richer Value requires a closing date on every order.');
+    need('closing_date', 'Expected closing date', 'Richer Values requires a closing date on every order.');
   } else if (closing < today) {
     need('closing_date', 'Expected closing date',
       `The closing date on the file (${closing}) has already passed, and they only accept today or later. Set the real expected closing date.`);
@@ -314,7 +314,7 @@ function buildOrder(ctx = {}, choices = {}) {
     if (!eff) need('effective_date', 'Historical valuation date', 'Pick the date the value should be as of.');
     else if (!atLeastDaysBefore(eff, today, 15)) {
       need('effective_date', 'Historical valuation date',
-        'Richer Value only accepts a historical date at least 15 days in the past.');
+        'Richer Values only accepts a historical date at least 15 days in the past.');
     } else set('effective_date', eff);
   } else {
     if (choices.effectiveDate) drop('effective_date', 'Only sent for a historical valuation date — sending it otherwise is refused.');
@@ -384,7 +384,7 @@ function buildOrder(ctx = {}, choices = {}) {
   }
   if (resType) set('residential_property_type', resType);
   else if (trim(property.categoryKey).toLowerCase() === 'multi_5_plus') {
-    blocked = 'Richer Value’s report covers one to four units. This file is a 5+ unit property, so it is not something they can value.';
+    blocked = 'Richer Values’s report covers one to four units. This file is a 5+ unit property, so it is not something they can value.';
   } else {
     need('residential_property_type', 'Property type', 'Pick what kind of property this is.');
   }
@@ -415,37 +415,55 @@ function buildOrder(ctx = {}, choices = {}) {
   // Their validator requires all five of these on a single-property order, plus a
   // lot size on anything that is not a condo. `specFor` records where each value
   // came from so the screen can show it.
+  //
+  // A MISSING SPEC IS A MISSING SPEC, NOT A CRASH. `ctx.specs` is whatever the
+  // caller happened to build, and every read here used to be `specs.<key>.value` —
+  // so a context that simply had no square footage on it (a brand-new file, a
+  // property PILOT knows nothing about yet) threw `Cannot read properties of
+  // undefined`, and the whole order PREVIEW answered 500 instead of showing the
+  // desk which figures it still needs. Found by the A-to-Z audit engine, which
+  // generates contexts nobody would sit down and type.
+  //
+  // THE CLASS: a builder that trusts a shape its one caller happens to produce is
+  // one refactor away from a crash on the screen. `spec()` is the whole fix — an
+  // absent key now reads as "nothing on file", which is exactly what `need()`
+  // already knows how to say.
+  const spec = (key) => {
+    const v = specs && specs[key];
+    return v && typeof v === 'object' ? v : { value: v == null ? null : v, source: null };
+  };
   const specField = (field, label, chosen, fromFile, opts = {}) => {
-    const v = opts.asInt !== false ? int(chosen != null && chosen !== '' ? chosen : fromFile.value)
-      : num(chosen != null && chosen !== '' ? chosen : fromFile.value);
+    const from = fromFile && typeof fromFile === 'object' ? fromFile : { value: null, source: null };
+    const v = opts.asInt !== false ? int(chosen != null && chosen !== '' ? chosen : from.value)
+      : num(chosen != null && chosen !== '' ? chosen : from.value);
     if (v == null || (opts.positive && v <= 0)) {
-      if (!opts.optional) need(field, label, opts.why || 'Richer Value needs this on every order.');
+      if (!opts.optional) need(field, label, opts.why || 'Richer Values needs this on every order.');
       return null;
     }
     set(field, String(v));
-    if ((chosen == null || chosen === '') && fromFile.source) derived(field, label, v, fromFile.source);
+    if ((chosen == null || chosen === '') && from.source) derived(field, label, v, from.source);
     return v;
   };
 
-  specField('above_grade_sqft', 'Living area (above grade)', choices.aboveGradeSqft, specs.aboveGradeSqft, { positive: true });
+  specField('above_grade_sqft', 'Living area (above grade)', choices.aboveGradeSqft, spec('aboveGradeSqft'), { positive: true });
   // Below-grade square footage is REQUIRED but is legitimately zero on most
   // properties, so a known-zero is a real answer and only an UNKNOWN is missing.
-  specField('below_grade_sqft', 'Below-grade area', choices.belowGradeSqft, specs.belowGradeSqft, {});
-  specField('bedrooms', 'Bedrooms', choices.bedrooms, specs.bedrooms, { positive: true });
-  specField('bathrooms', 'Bathrooms', choices.bathrooms, specs.bathrooms, { positive: true, asInt: false });
-  specField('year_built', 'Year built', choices.yearBuilt, specs.yearBuilt, { positive: true });
+  specField('below_grade_sqft', 'Below-grade area', choices.belowGradeSqft, spec('belowGradeSqft'), {});
+  specField('bedrooms', 'Bedrooms', choices.bedrooms, spec('bedrooms'), { positive: true });
+  specField('bathrooms', 'Bathrooms', choices.bathrooms, spec('bathrooms'), { positive: true, asInt: false });
+  specField('year_built', 'Year built', choices.yearBuilt, spec('yearBuilt'), { positive: true });
 
   if (resType && NO_LOT_TYPES.has(resType)) {
-    if (choices.lotSizeSquareFeet != null || specs.lotSizeSquareFeet.value != null) {
+    if (choices.lotSizeSquareFeet != null || spec('lotSizeSquareFeet').value != null) {
       drop('lot_size_square_feet', 'A condo has no lot of its own — sending a lot size for one is refused.');
     }
   } else {
-    specField('lot_size_square_feet', 'Lot size (sq ft)', choices.lotSizeSquareFeet, specs.lotSizeSquareFeet, { positive: true });
+    specField('lot_size_square_feet', 'Lot size (sq ft)', choices.lotSizeSquareFeet, spec('lotSizeSquareFeet'), { positive: true });
   }
 
   // Optional extras — never blocking, sent when known.
-  specField('stories', 'Stories', choices.stories, specs.stories, { optional: true, asInt: false });
-  specField('garage_spaces', 'Garage spaces', choices.garageSpaces, specs.garageSpaces, { optional: true });
+  specField('stories', 'Stories', choices.stories, spec('stories'), { optional: true, asInt: false });
+  specField('garage_spaces', 'Garage spaces', choices.garageSpaces, spec('garageSpaces'), { optional: true });
   if (choices.isBasement != null) set('is_basement', choices.isBasement ? '1' : '0');
   if (choices.isBasementFinished != null) set('is_basement_finished', choices.isBasementFinished ? '1' : '0');
 
@@ -544,7 +562,7 @@ function buildOrder(ctx = {}, choices = {}) {
     const phone = trim(c.phone) ? tenDigits(c.phone) : null;
     if (trim(c.phone) && !phone) {
       need(`property_access_contacts[${i}][phone]`, `Phone for ${name}`,
-        'Richer Value needs a 10-digit US mobile number — they text it to arrange the visit.');
+        'Richer Values needs a 10-digit US mobile number — they text it to arrange the visit.');
       return;
     }
     const email = trim(c.email);
@@ -558,7 +576,7 @@ function buildOrder(ctx = {}, choices = {}) {
   });
   if (contactsRequired(inspectionType, onLockbox) && !cleaned.length) {
     const why = inspectionKind(inspectionType) === 'direct'
-      ? 'This inspection is done by the borrower or their contact on their own phone, so Richer Value needs somebody to text.'
+      ? 'This inspection is done by the borrower or their contact on their own phone, so Richer Values needs somebody to text.'
       : 'The property is not on a lockbox, so somebody has to let the inspector in.';
     need('property_access_contacts', 'Who lets the inspector in', why);
   }
@@ -567,7 +585,7 @@ function buildOrder(ctx = {}, choices = {}) {
   // than something the vendor discovers on the day.
   if (inspectionKind(inspectionType) === 'direct' && cleaned.length && !cleaned.some((c) => c.phone)) {
     need('property_access_contacts', 'A mobile number for the contact',
-      'A homeowner-led inspection is done through a link Richer Value texts, so at least one contact needs a mobile number.');
+      'A homeowner-led inspection is done through a link Richer Values texts, so at least one contact needs a mobile number.');
   }
 
   // ---- who the report goes to -------------------------------------------
@@ -578,11 +596,11 @@ function buildOrder(ctx = {}, choices = {}) {
   set('report_contact_name', rcName);
   set('report_contact_email', rcEmail);
   set('report_contact_phone', rcPhone);
-  if (!rcName) need('report_contact_name', 'Who the report goes to', 'Richer Value needs a name for every order.');
-  if (!rcEmail || !isEmail(rcEmail)) need('report_contact_email', 'Their email', 'Richer Value needs a working email for every order.');
+  if (!rcName) need('report_contact_name', 'Who the report goes to', 'Richer Values needs a name for every order.');
+  if (!rcEmail || !isEmail(rcEmail)) need('report_contact_email', 'Their email', 'Richer Values needs a working email for every order.');
   if (!rcPhone) {
     need('report_contact_phone', 'Their phone number',
-      rcPhoneRaw ? 'Richer Value needs a 10-digit US number, and this one is not one.' : 'Richer Value needs a phone number for every order.');
+      rcPhoneRaw ? 'Richer Values needs a 10-digit US number, and this one is not one.' : 'Richer Values needs a phone number for every order.');
   }
   if (!trim(choices.reportContactName) && rcName) derived('report_contact_name', 'Who the report goes to', rcName, 'The loan officer on the file.');
   set('report_cc_user', trim(choices.reportCcUsers));
@@ -647,8 +665,8 @@ function screenOptions() {
 // reproduce the exact defect it was written to avoid.
 // ---------------------------------------------------------------------------
 const LABELS = {
-  company_token: 'Richer Value company',
-  loan_officer_token: 'Placed by (at Richer Value)',
+  company_token: 'Richer Values company',
+  loan_officer_token: 'Placed by (at Richer Values)',
   client_loan_number: 'Our loan number',
   report_type: 'Report',
   inspection_type: 'Inspection',

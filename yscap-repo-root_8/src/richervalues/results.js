@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Richer Value — READING THE FINISHED REPORT.
+ * Richer Values — READING THE FINISHED REPORT.
  *
  * PURE: no database, no network, no config. It takes their `retrieve-response`
  * payload and returns the two figures the whole product exists to produce — the
@@ -288,7 +288,7 @@ function readEnvelope(envelope, orderToken) {
  * says, in the words a loan officer uses. Never invents a number it was not given.
  */
 function summaryLine(read) {
-  if (!read) return 'Richer Value has not sent the finished figures yet.';
+  if (!read) return 'Richer Values has not sent the finished figures yet.';
   const fmt = (n) => (n == null ? null : '$' + Math.round(n).toLocaleString('en-US'));
   const asIs = fmt(read.asIs);
   const arv = fmt(read.arv);
@@ -296,7 +296,7 @@ function summaryLine(read) {
   const parts = [];
   if (asIs) parts.push(`As-Is ${asIs}`);
   if (arv) parts.push(`ARV ${arv}${read.arvBasis && read.arvBasis !== 'best' ? ` (${read.arvBasis} strategy)` : ''}`);
-  const head = `Richer Value: ${parts.join(' · ')}`;
+  const head = `Richer Values: ${parts.join(' · ')}`;
   if (!read.valuesUsable && read.unusableReason) return `${head}. ${read.unusableReason}`;
   return head + '.';
 }

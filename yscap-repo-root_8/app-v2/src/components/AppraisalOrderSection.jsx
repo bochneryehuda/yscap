@@ -88,7 +88,7 @@ const ADAPTERS = {
     canCancel: (o) => !!(o.sp_order_number && o.status !== 'cancelled' && o.status !== 'completed'
       && o.status !== 'cancel_requested' && o.status !== 'rejected'),
   },
-  // THE THIRD VENDOR, AND A DIFFERENT PRODUCT. Richer Value's Hybrid Appraisal is
+  // THE THIRD VENDOR, AND A DIFFERENT PRODUCT. Richer Values's Hybrid Appraisal is
   // an EVALUATION: it comes back with an As-Is value AND an After Repair Value on
   // one order, for well under half the price of a full appraisal — and it produces
   // no appraisal data file (XML), which is why ordering one waives that half of
@@ -100,13 +100,13 @@ const ADAPTERS = {
   // starts on NAN and this is a deliberate third choice.
   rv: {
     key: 'rv',
-    name: 'Richer Value (Hybrid Appraisal)',
-    stamp: 'Richer Value',
+    name: 'Richer Values (Hybrid Appraisal)',
+    stamp: 'Richer Values',
     loadConfig: () => api.rvConfig().then((c) => (c && c.richerValue) ? c.richerValue : null),
     // Returns the whole payload {orders, xmlWaiver}; the caller keeps it.
     loadOrders: (appId) => api.rvOrders(appId),
-    orderTitle: (o) => (o.report_type === 'reno-arv' ? 'Hybrid Appraisal (As-Is + ARV)' : `Richer Value ${o.report_type || 'report'}`),
-    orderNumber: (o) => (o.order_token ? 'Richer Value #' + String(o.order_token).slice(0, 12) : null),
+    orderTitle: (o) => (o.report_type === 'reno-arv' ? 'Hybrid Appraisal (As-Is + ARV)' : `Richer Values ${o.report_type || 'report'}`),
+    orderNumber: (o) => (o.order_token ? 'Richer Values #' + String(o.order_token).slice(0, 12) : null),
     orderedAt: (o) => o.placed_at || o.created_at,
     // Their price is a dollar figure on the order row, in cents.
     orderFee: (o) => (o.total_price_cents != null ? o.total_price_cents / 100 : null),
@@ -223,7 +223,7 @@ export default function AppraisalOrderSection({ appId, onChanged }) {
         <>
           <div className="aord-eyebrow" style={{ marginTop: 0 }}>Active {active.length > 1 ? 'orders' : 'order'}</div>
           {active.map((o) => (o._vendor === 'rv'
-            // Richer Value's order card is its own, because its actions are its
+            // Richer Values's order card is its own, because its actions are its
             // own: there are no appraiser messages and no document exchange on an
             // evaluation, and there ARE two figures to read and put on the file.
             // The SHELL around it — the list, the ordering, the drawer — is shared.
@@ -273,12 +273,12 @@ export default function AppraisalOrderSection({ appId, onChanged }) {
 
 /* ---------------------------------------------------------------- header --- */
 function VendorSelector({ vendor, onPick }) {
-  // NAN IS FIRST AND IS WHERE THIS STARTS. Richer Value is a deliberate third
+  // NAN IS FIRST AND IS WHERE THIS STARTS. Richer Values is a deliberate third
   // choice for a cheaper, different report — never a default (owner-directed
   // 2026-08-14). Do not reorder these to put a new vendor in front.
   return (
     <div className="seg" role="group" aria-label="Appraisal vendor">
-      {[['nan', 'AppraisalScope / NAN'], ['class', 'Class'], ['rv', 'Richer Value']].map(([k, lbl]) => (
+      {[['nan', 'AppraisalScope / NAN'], ['class', 'Class'], ['rv', 'Richer Values']].map(([k, lbl]) => (
         <button key={k} type="button" className={vendor === k ? 'on' : ''} aria-pressed={vendor === k}
           onClick={() => onPick(k)}>{lbl}</button>
       ))}
@@ -849,7 +849,7 @@ function PlaceOrder({ cfg, canPlace, busy, onPlace, uad, derivedCount }) {
   );
 }
 
-/* =================================================== Richer Value builder === */
+/* =================================================== Richer Values builder === */
 /*
  * The Hybrid Appraisal builder.
  *
@@ -935,8 +935,8 @@ function RicherValueBuilder({ appId, cfg, onPlaced }) {
       });
       if (out && out.ok) {
         const bits = [out.dryrun
-          ? 'Test mode — the order was built and written to the log. Nothing was sent to Richer Value.'
-          : 'Order placed with Richer Value.'];
+          ? 'Test mode — the order was built and written to the log. Nothing was sent to Richer Values.'
+          : 'Order placed with Richer Values.'];
         if (out.xmlWaiver && out.xmlWaiver.applied) {
           bits.push('The appraisal data file (XML) is now waived on this file — this report does not produce one.');
         }
@@ -968,7 +968,7 @@ function RicherValueBuilder({ appId, cfg, onPlaced }) {
 
   return (
     <div style={{ marginTop: 12 }}>
-      <OrderFailure info={err} vendor="Richer Value" />
+      <OrderFailure info={err} vendor="Richer Values" />
       {notice ? <Banner tone="good">{notice}</Banner> : null}
       {preview && preview.blocked ? <Banner tone="warn">{preview.blocked}</Banner> : null}
 
@@ -1013,7 +1013,7 @@ function RicherValueBuilder({ appId, cfg, onPlaced }) {
 
           {cat.stale ? (
             <div style={{ fontSize: 12, color: WARN, marginTop: 6 }}>
-              Richer Value’s list of what we can order could not be refreshed just now, so this is the last one we saw
+              Richer Values’s list of what we can order could not be refreshed just now, so this is the last one we saw
               {cat.fetchedAt ? ` (${fmtWhen(cat.fetchedAt)})` : ''}. You can still order.
             </div>
           ) : null}
@@ -1063,7 +1063,7 @@ function RicherValueBuilder({ appId, cfg, onPlaced }) {
             </div>
           ) : preview.priceError ? (
             <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>
-              Richer Value could not price this right now, so the figure above is not shown. You can still order.
+              Richer Values could not price this right now, so the figure above is not shown. You can still order.
             </div>
           ) : null}
 
@@ -1076,7 +1076,7 @@ function RicherValueBuilder({ appId, cfg, onPlaced }) {
 
           {/* ── every field that would be sent ──────────────────────────── */}
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
-            <SectionTitle>What we will send to Richer Value</SectionTitle>
+            <SectionTitle>What we will send to Richer Values</SectionTitle>
             <button type="button" onClick={() => setShowAll((v) => !v)} style={linkBtn}>
               {showAll ? `Show only what needs a look (${notable.length})` : `Show every field (${rows.length})`}
             </button>
@@ -1102,7 +1102,7 @@ function RicherValueBuilder({ appId, cfg, onPlaced }) {
             )}
           </div>
 
-          {/* ── things Richer Value refuses on this branch ──────────────── */}
+          {/* ── things Richer Values refuses on this branch ──────────────── */}
           {(preview.dropped || []).length ? (
             <WhyBox title={`${preview.dropped.length} field${preview.dropped.length === 1 ? '' : 's'} left out on purpose`}>
               {preview.dropped.map((d) => (
@@ -1203,7 +1203,7 @@ function RvFieldRow({ row, options, value, onChange }) {
 
 /* ── the scope of work, which decides "Ordered" vs "On Hold" ─────────────── */
 /*
- * MEASURED against Richer Value's own training tenant: the same order WITH a scope
+ * MEASURED against Richer Values's own training tenant: the same order WITH a scope
  * of work came back "Ordered" and WITHOUT one came back "On Hold". So this is not a
  * nicety on the screen — it is the difference between an appraiser starting today
  * and the file sitting in their queue, and it is said BEFORE the button.
@@ -1219,7 +1219,7 @@ function RvScopeOfWork({ sow }) {
       </div>
       <div style={{ fontSize: 12, color: MUTED, marginTop: 3, lineHeight: 1.45 }}>
         {sow.present
-          ? <>PILOT attaches <b>{sow.filename}</b> automatically, so Richer Value can value the property after the work.</>
+          ? <>PILOT attaches <b>{sow.filename}</b> automatically, so Richer Values can value the property after the work.</>
           : sow.why}
       </div>
       {sow.warning ? <div style={{ fontSize: 12, color: WARN, marginTop: 4 }}>{sow.warning}</div> : null}
@@ -1306,7 +1306,7 @@ function RvPayment({ payment, method, onMethod, card, onCard, linkTo, onLinkTo }
 
       {chosen === 'PAYMENT_LINK' ? (
         <div style={{ fontSize: 12, color: MUTED, marginTop: 5, lineHeight: 1.45 }}>
-          The order is placed either way — Richer Value starts work once the borrower has paid.
+          The order is placed either way — Richer Values starts work once the borrower has paid.
         </div>
       ) : null}
     </div>
@@ -1345,15 +1345,15 @@ function RvPlaceOrder({ cfg, preview, busy, onPlace, enabled, price }) {
   const outbound = !!(cfg && cfg.outbound);
 
   let block = null;
-  if (!enabled) block = { title: 'Richer Value is not turned on yet.', help: 'You can see exactly what would be sent. Turn on “Order Hybrid Appraisals from Richer Value” on the API Health page to order for real.' };
-  else if (cfg && !cfg.orderReady) block = { title: 'Richer Value is not fully set up yet.', help: 'A sign-in or an API token is set, but PILOT still needs to know which of their companies to order for. See the API Health page.' };
+  if (!enabled) block = { title: 'Richer Values is not turned on yet.', help: 'You can see exactly what would be sent. Turn on “Order Hybrid Appraisals from Richer Values” on the API Health page to order for real.' };
+  else if (cfg && !cfg.orderReady) block = { title: 'Richer Values is not fully set up yet.', help: 'A sign-in or an API token is set, but PILOT still needs to know which of their companies to order for. See the API Health page.' };
   else if (preview && preview.blocked) block = { title: 'This property cannot be ordered on this product.', help: preview.blocked };
   else if (missing.length) {
     block = {
       title: `${missing.length} thing${missing.length === 1 ? '' : 's'} still needed before this can be ordered.`,
       help: missing.map((m) => `${m.label}${m.why ? ` — ${m.why}` : ''}`).join(' · '),
     };
-  } else if (!outbound && !dry) block = { title: 'Ordering is switched off.', help: 'Turn on “Place Hybrid Appraisal orders with Richer Value” on the API Health page.' };
+  } else if (!outbound && !dry) block = { title: 'Ordering is switched off.', help: 'Turn on “Place Hybrid Appraisal orders with Richer Values” on the API Health page.' };
 
   return (
     <div style={{ marginTop: 16 }}>
@@ -1363,7 +1363,7 @@ function RvPlaceOrder({ cfg, preview, busy, onPlace, enabled, price }) {
           : price ? `Order the Hybrid Appraisal — ${money(price.total_price)}` : 'Order the Hybrid Appraisal'}
       </button>
       {block ? <WhyBox title={block.title}>{block.help}</WhyBox>
-        : dry ? <WhyBox title="Test mode is on — this button will NOT send anything.">To place the order for real, turn OFF “Richer Value orders — TEST MODE” on the API Health page.</WhyBox>
+        : dry ? <WhyBox title="Test mode is on — this button will NOT send anything.">To place the order for real, turn OFF “Richer Values orders — TEST MODE” on the API Health page.</WhyBox>
           : (
             <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>
               This costs money{price ? ` (${money(price.total_price)})` : ''} and sends an inspector to the property.
@@ -1374,7 +1374,7 @@ function RvPlaceOrder({ cfg, preview, busy, onPlace, enabled, price }) {
   );
 }
 
-/* =============================================== Richer Value order card === */
+/* =============================================== Richer Values order card === */
 /*
  * An evaluation has no appraiser to message and no documents to exchange, so this
  * card shows what the other two do not have: THE TWO FIGURES. It also carries the
@@ -1400,7 +1400,7 @@ function RvOrderCard({ order, onChanged }) {
     try {
       const out = await fn();
       // A ROUTE THAT ANSWERS 200 HAS NOT NECESSARILY DONE THE THING. Paying is the
-      // case that matters: a card charge Richer Value refuses falls through to the
+      // case that matters: a card charge Richer Values refuses falls through to the
       // payment link and comes back `ok:false` with the reason in `note` — and
       // announcing "charged, it is a real order now" over that would be a false
       // success on a MONEY action, which is the one place it must never happen.
@@ -1445,7 +1445,7 @@ function RvOrderCard({ order, onChanged }) {
 
       {order.vendor_status || order.vendor_inspection_status ? (
         <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>
-          Richer Value says: {order.vendor_status || '—'}
+          Richer Values says: {order.vendor_status || '—'}
           {order.vendor_inspection_status ? ` · inspection ${order.vendor_inspection_status}` : ''}
           {order.inspection_scheduled_date ? ` · booked ${fmtDate(order.inspection_scheduled_date)}` : ''}
         </div>
@@ -1477,8 +1477,8 @@ function RvOrderCard({ order, onChanged }) {
 
       <div className="aord-acts">
         <button className="aord-btn" disabled={!!busy}
-          onClick={() => run('refresh', () => api.rvRefresh(order.id), 'Checked with Richer Value.')}>
-          {busy === 'refresh' ? 'Checking…' : 'Check with Richer Value'}
+          onClick={() => run('refresh', () => api.rvRefresh(order.id), 'Checked with Richer Values.')}>
+          {busy === 'refresh' ? 'Checking…' : 'Check with Richer Values'}
         </button>
         {asIs != null && arv != null && !applied ? (
           <button className="aord-btn pri" disabled={!!busy}
@@ -1501,7 +1501,7 @@ function RvOrderCard({ order, onChanged }) {
             </button>
             <button className="aord-btn" disabled={!!busy}
               onClick={() => run('link', () => api.rvPay(order.id, { method: 'PAYMENT_LINK' }),
-                'Richer Value has emailed the borrower their payment link.')}>
+                'Richer Values has emailed the borrower their payment link.')}>
               {busy === 'link' ? 'Sending…' : 'Send the borrower a payment link'}
             </button>
           </>
@@ -1512,10 +1512,10 @@ function RvOrderCard({ order, onChanged }) {
         {order.intake_token && !order.dryrun && !['cancelled', 'rejected'].includes(order.status) ? (
           <button className="aord-btn" disabled={!!busy} onClick={async () => {
             if (!(await askConfirm(
-              'Send Richer Value the scope of work as it stands on this file now? If they have already finished the report, '
+              'Send Richer Values the scope of work as it stands on this file now? If they have already finished the report, '
               + 'they will be asked to redo the after-repair value against the new one.',
               { title: 'Send the updated scope of work', confirmLabel: 'Send it' }))) return;
-            await run('sow', () => api.rvSendScopeOfWork(order.id), 'Richer Value has the updated scope of work.');
+            await run('sow', () => api.rvSendScopeOfWork(order.id), 'Richer Values has the updated scope of work.');
           }}>
             {busy === 'sow' ? 'Sending…' : 'Send the updated scope of work'}
           </button>
@@ -1523,11 +1523,11 @@ function RvOrderCard({ order, onChanged }) {
         <span className="sep" />
         {ad.canCancel(order) ? (
           <button className="aord-btn" disabled={!!busy} onClick={async () => {
-            const reason = await askPrompt('Why is this order being cancelled? It goes to Richer Value and onto the file.',
+            const reason = await askPrompt('Why is this order being cancelled? It goes to Richer Values and onto the file.',
               { title: 'Cancel the Hybrid Appraisal' });
             if (reason == null) return;
-            if (String(reason).trim().length < 8) { setErr('Add a slightly longer reason — Richer Value is told what it says.'); return; }
-            await run('cancel', () => api.rvCancel(order.id, String(reason).trim()), 'Cancellation asked for. It shows as cancelled once Richer Value confirms.');
+            if (String(reason).trim().length < 8) { setErr('Add a slightly longer reason — Richer Values is told what it says.'); return; }
+            await run('cancel', () => api.rvCancel(order.id, String(reason).trim()), 'Cancellation asked for. It shows as cancelled once Richer Values confirms.');
           }}>Cancel</button>
         ) : null}
         <button className="aord-more" style={{ marginLeft: 'auto' }} onClick={() => setOpen((v) => !v)}>
@@ -1584,7 +1584,7 @@ function RvOrderDetail({ order, detail }) {
           plan. It is the point of the report, so it is shown in full. */}
       {report && report.strategies && report.strategies.length ? (
         <>
-          <div style={{ marginTop: 12 }}><SectionTitle>What Richer Value found</SectionTitle></div>
+          <div style={{ marginTop: 12 }}><SectionTitle>What Richer Values found</SectionTitle></div>
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', minWidth: 460, borderCollapse: 'collapse', fontSize: 12.5, color: INK }}>
               <thead>

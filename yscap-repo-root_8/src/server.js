@@ -57,7 +57,7 @@ app.use('/api/trustpoint/webhook', require('./routes/trustpoint-webhook'));
 // discipline as the three above: its own small JSON parser + rate limit, mounted
 // before the global one, HTTP Basic (their contract) and failing closed.
 app.use('/api/class/callbacks', require('./routes/class-webhook'));
-// Richer Value webhooks — the THIRD appraisal vendor also PUSHES order events.
+// Richer Values webhooks — the THIRD appraisal vendor also PUSHES order events.
 // Same discipline as the four above: its own small JSON parser + rate limit,
 // mounted before the global one, HTTP Basic (or a token header) and failing closed.
 app.use('/api/richer-value/webhook', require('./routes/richervalues-webhook'));
@@ -458,7 +458,7 @@ app.use('/api/amc', require('./routes/amc'));
 // The SECOND appraisal vendor, mounted alongside — never inside — the AMC desk.
 // Each answers only for itself; nothing here picks between them.
 app.use('/api/class', require('./routes/class'));
-// The THIRD appraisal vendor — Richer Value's Hybrid Appraisal, a cheaper
+// The THIRD appraisal vendor — Richer Values's Hybrid Appraisal, a cheaper
 // EVALUATION that returns an As-Is value and an ARV together and produces no
 // MISMO XML (which is why ordering one waives the appraisal data file on the
 // file). Mounted alongside the other two, never inside one: each answers only for
@@ -1225,7 +1225,7 @@ if (require.main === module) {
     // starts polling with no redeploy. On product-available it files the report back into
     // the Document Center and runs the appraisal import automatically.
     try { require('./amc/sync').start(); } catch (e) { console.warn('amc sync not started:', e.message); }
-    // Richer Value poll worker. They PUSH order events to the webhook above, so
+    // Richer Values poll worker. They PUSH order events to the webhook above, so
     // this is the BACKSTOP as well as the drain: it re-processes any delivery whose
     // handling failed, and re-reads every order still moving — which is also the
     // ONLY way status reaches a file while the webhook half is not registered.
@@ -1233,7 +1233,7 @@ if (require.main === module) {
     // flipping the switch on starts polling with no redeploy. On completion it
     // files the PDF report onto the appraisal condition and puts the As-Is + ARV
     // on the file through the shared As-Is desk.
-    try { require('./richervalues/sync').start(); } catch (e) { console.warn('richer value sync not started:', e.message); }
+    try { require('./richervalues/sync').start(); } catch (e) { console.warn('richer values sync not started:', e.message); }
     // Scheduled notification digests (owner-directed 2026-07-20): weekly borrower
     // "what's still needed", daily per-officer pipeline snapshot, stale-file
     // alerts, and the Monday admin summary. Each self-gates via audit_log so it

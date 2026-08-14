@@ -1,9 +1,9 @@
 -- ============================================================================
--- 548 — Richer Value "Hybrid Appraisal" ordering: the placed order, their
+-- 548 — Richer Values "Hybrid Appraisal" ordering: the placed order, their
 --       webhook inbox, the status timeline, the write journal, and the
 --       reference cache.
 --
--- Richer Value is the THIRD appraisal vendor (AppraisalScope / NAN is the first,
+-- Richer Values is the THIRD appraisal vendor (AppraisalScope / NAN is the first,
 -- db/480; Class Valuation the second, db/490). It is a different KIND of product:
 -- an EVALUATION (their "Reno ARV" report — an As-Is value together with an After
 -- Repair Value), not a URAR appraisal, so it is cheaper and it does NOT produce a
@@ -38,7 +38,7 @@
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
--- One row per order placed with Richer Value.
+-- One row per order placed with Richer Values.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS rv_orders (
   id                  bigserial PRIMARY KEY,
@@ -209,7 +209,7 @@ CREATE INDEX IF NOT EXISTS idx_rv_status_order ON rv_status_events (rv_order_row
 
 -- ---------------------------------------------------------------------------
 -- The vendor WRITE journal — the amc_write_log equivalent. Every call that
--- CHANGES something at Richer Value (submit, pay, update, cancel, hold, reopen,
+-- CHANGES something at Richer Values (submit, pay, update, cancel, hold, reopen,
 -- upload) with the masked request, the response, and who did it.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS rv_write_log (

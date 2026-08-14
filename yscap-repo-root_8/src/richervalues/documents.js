@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Richer Value — filing the finished report onto the loan file.
+ * Richer Values — filing the finished report onto the loan file.
  *
  * ONE document comes back from this product: the PDF report. There is no MISMO
  * XML and there never will be (that is the whole reason this desk waives the data
