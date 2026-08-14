@@ -3501,11 +3501,22 @@ router.post('/files/:id/draws/:drawId/investor-delivery', requirePermission('man
       return res.status(400).json({ error: `Confirm the investor before sending — this file's note buyer is ${app.lender || '(not set)'}.` });
     }
     const who = (await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    const b = req.body || {};
     const out = await investorSend.sendInvestorDelivery(appId, drawId, {
       staffId: req.actor.id, staffName: who.full_name || null,
-      mode: (req.body && req.body.mode) || null,
-      note: (req.body && req.body.note) || null,
+      mode: b.mode || null,
+      note: b.note || null,
+      // THE CONSENT GATE (owner-directed 2026-08-14). Without these the send REFUSES with a 409 and
+      // the full plan whenever a document cannot be carried — the desk then shows exactly what and
+      // why, and offers to compress harder, turn it into a PILOT link, or send it short on the
+      // record. `preflight` shows that same picture without committing to anything.
+      preflight: b.preflight === true,
+      acknowledgeOmissions: b.acknowledge_omissions === true,
+      shareLinkKeys: Array.isArray(b.share_link_keys) ? b.share_link_keys : [],
+      compressLevel: Number(b.compress_level) || null,
     });
+    // A preflight is a read: nothing was sent, nothing was journaled, nobody was notified.
+    if (out && out.preflight) return res.json({ ok: true, ...out });
     try { await orchestrator.journal({ appId, entity: 'draw', entityId: Number(drawId), field: 'investor_delivery', oldValue: null, newValue: { to: out.to, mode: out.funding_mode, total: out.money.investor_total_cents, actor: req.actor.id }, source: 'money_override' }); } catch (_) {}
     await notify.notifyAppStaff(appId, { type: 'draw', title: out.manual ? 'Draw delivery recorded (handled manually)' : 'Draw delivered to the investor', inAppOnly: true,
       body: out.manual
@@ -3514,7 +3525,17 @@ router.post('/files/:id/draws/:drawId/investor-delivery', requirePermission('man
       applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     res.json({ ok: true, ...out });
   } catch (e) {
-    if (e && e.status) return res.status(e.status).json({ error: e.message, blockers: e.blockers || undefined });
+    if (e && e.status) {
+      return res.status(e.status).json({
+        error: e.message,
+        blockers: e.blockers || undefined,
+        // The attachment refusal is a QUESTION, not a failure — it carries everything the desk
+        // needs to name each missing document, say why, and offer the remedy for each one.
+        code: e.code || undefined,
+        plan: e.plan || undefined,
+        linkWarnings: e.linkWarnings || undefined,
+      });
+    }
     console.warn('[sitewire] investor delivery:', e && e.message);
     res.status(500).json({ error: 'server error' });
   }

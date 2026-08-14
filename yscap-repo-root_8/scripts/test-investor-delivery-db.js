@@ -231,7 +231,29 @@ const ID = require('../src/sitewire/investor-delivery');
   const outbox = [];
   mailer.sendMail = async (m) => { outbox.push(m); return { ok: true, id: 'test' }; };
 
-  const sent = await send.sendInvestorDelivery(app, DRAW, { staffId: null, staffName: 'Lisa Katz', mode: 'reimbursement' });
+  // ---- THE CONSENT GATE FIRES FIRST (owner-directed 2026-08-14) ----
+  // This fixture deliberately has no archived inspector report, which is exactly the state the
+  // reported email went out in. The send must now REFUSE rather than quietly go short.
+  let gated = null;
+  try { await send.sendInvestorDelivery(app, DRAW, { staffId: null, staffName: 'Lisa Katz', mode: 'reimbursement' }); }
+  catch (e) { gated = e; }
+  ok('I0a a delivery that cannot carry a document REFUSES instead of sending short', !!gated && gated.status === 409);
+  eq('I0b with a code the desk can branch on', gated && gated.code, 'attachments_incomplete');
+  ok('I0c naming the document in plain words', /Inspection report/.test(String(gated && gated.message)));
+  ok('I0d and handing over the whole plan', !!(gated && gated.plan && gated.plan.omitted.length));
+  ok('I0e every omission carries a code and a remedy',
+    gated.plan.omitted.every((m) => m.code && (m.remedy || m.code === 'unspecified')));
+  ok('I0f plus the double warning for the link option', Array.isArray(gated.linkWarnings) && gated.linkWarnings.length === 2);
+  eq('I0g NOTHING was sent', outbox.length, 0);
+
+  // A preflight shows the same picture and still sends nothing.
+  const pre0 = await send.sendInvestorDelivery(app, DRAW, { mode: 'reimbursement', preflight: true });
+  ok('I0h preflight returns the plan', pre0.preflight === true && !!pre0.plan);
+  eq('I0i and still sends nothing', outbox.length, 0);
+
+  // With the coordinator's explicit acknowledgement, it goes — and the fact that they knowingly
+  // sent it short is what the audit records.
+  const sent = await send.sendInvestorDelivery(app, DRAW, { staffId: null, staffName: 'Lisa Katz', mode: 'reimbursement', acknowledgeOmissions: true });
   ok('I1 the send completes and returns a record id', !!sent.id);
   eq('I2 it went out under the mode asked for', sent.funding_mode, 'reimbursement');
   eq('I3 the three investor contacts received it', sent.to.length, 3);
@@ -276,7 +298,7 @@ const ID = require('../src/sitewire/investor-delivery');
     && !(msg.attachments || []).some((a) => /wire/i.test(String(a.filename || ''))));
 
   // A second send is a second row — the investor genuinely received two emails.
-  const again = await send.sendInvestorDelivery(app, DRAW, { staffId: null, staffName: 'Lisa Katz' });
+  const again = await send.sendInvestorDelivery(app, DRAW, { staffId: null, staffName: 'Lisa Katz', acknowledgeOmissions: true });
   ok('I14 a re-send is recorded separately, never overwritten', again.id !== sent.id);
   const p3 = await send.deliveryPreview(app, DRAW);
   ok('I15 both deliveries show in the history', p3.history.length >= 2);
