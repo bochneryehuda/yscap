@@ -92,13 +92,26 @@ function stampReason(blockers) {
 }
 
 /**
- * The message shown when a package cannot be sent because the term sheet on
- * file prints the initial wording. Actionable on purpose — re-registering in the
- * Term Sheet Studio regenerates and re-attaches the sheet, which is the same
- * "re-register on the appraised value" step the gate already asks for.
+ * The message shown when a package cannot be sent because the term sheet on file
+ * prints the initial wording.
+ *
+ * IT NAMES THE BUTTON, NOT A RE-REGISTER — and that is the fix for the loop the
+ * owner hit (2026-08-06, and again 2026-08-14). This used to read "open Products &
+ * Pricing and re-register the product", which is only true when the file is ALREADY
+ * ready to issue a final sheet: registering stamps FINAL solely when every send
+ * requirement is met, so on an unready file re-registering produced another INITIAL
+ * and the same refusal came back with the same advice. A remedy that cannot produce
+ * the state the refusal demands is a dead end, and it is what made a later session
+ * replace the whole document rather than fix the sentence.
+ *
+ * "Finalize & send" (EsignFileSection → ProductStudioPanel.finalizeTermSheet)
+ * regenerates the SAME six-page sheet stamped FINAL and attaches it in one click,
+ * and when the file is not ready it refuses by NAMING what is outstanding — so the
+ * reader always has a next step. Keep any future wording pointing there.
  */
 const REGENERATE_MESSAGE =
   'The Term Sheet on file is stamped "INITIAL TERM SHEET — NOT FINAL", so it cannot go out for signature. '
-  + 'Open Products & Pricing and re-register the product — that regenerates and re-attaches the term sheet as the FINAL one — then send.';
+  + 'Press "Finalize & send" — that regenerates the same term sheet stamped FINAL and sends it. '
+  + 'If anything is still outstanding it will say exactly what.';
 
 module.exports = { termSheetStamp, stampFromDisposition, stampReason, IGNORED_AT_STAMP, REGENERATE_MESSAGE };
