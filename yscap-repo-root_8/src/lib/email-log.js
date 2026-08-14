@@ -221,6 +221,25 @@ async function captureOutbound(send = {}, ctx = {}) {
           size: a.size || (typeof a.content === 'string' ? Math.round(a.content.length * 0.75) : null),
         }))
       : null;
+    // WHAT THIS EMAIL COULD NOT CARRY, and why (db/548, owner-directed 2026-08-14).
+    // Recorded HERE — at the one chokepoint every send flows through — rather than by
+    // each caller, so an email added next year records it without knowing this rule
+    // exists. A caller that supplies nothing writes NULL and behaves exactly as before.
+    const omitted = Array.isArray(ctx.omitted) && ctx.omitted.length
+      ? ctx.omitted.filter(Boolean).slice(0, 50).map((o) => ({
+          what: String(o.what || o.filename || 'document').slice(0, 200),
+          filename: o.filename ? String(o.filename).slice(0, 200) : null,
+          reason: String(o.reason || 'no reason recorded').slice(0, 300),
+          code: o.code ? String(o.code).slice(0, 40) : 'unspecified',
+          bytes: Number.isFinite(Number(o.bytes)) ? Number(o.bytes) : null,
+          remedy: o.remedy ? String(o.remedy).slice(0, 120) : null,
+        }))
+      : null;
+    const attachSummary = ctx.attachSummary && typeof ctx.attachSummary === 'object'
+      ? ctx.attachSummary
+      : (attachments || omitted
+        ? { attached_n: (attachments || []).length, omitted_n: (omitted || []).length }
+        : null);
     const recipientKind = ctx.recipientKind
       || (ctx.audience === 'staff' ? 'staff' : ctx.audience === 'borrower' ? 'borrower' : 'external');
     // Visible CC list (#orders) — stored so the Email Center can show WHO was on
@@ -235,14 +254,21 @@ async function captureOutbound(send = {}, ctx = {}) {
          (application_id, thread_key, direction, notification_id, msg_type, category,
           from_email, from_name, to_emails, cc_emails, reply_to, subject, preview, body_html, body_text,
           recipient_kind, audience, provider, provider_message_id, status, error, attachments, meta,
-          reconstructed, occurred_at)
-       VALUES ($1,$2,'outbound',$3,$4,$5,$6,$7,$8,$22,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,false, now())
+          omitted, attach_summary, reconstructed, occurred_at)
+       VALUES ($1,$2,'outbound',$3,$4,$5,$6,$7,$8,$22,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$23,$24,false, now())
        ON CONFLICT (notification_id) WHERE notification_id IS NOT NULL
        DO UPDATE SET status = EXCLUDED.status,
                      provider_message_id = COALESCE(EXCLUDED.provider_message_id, email_messages.provider_message_id),
                      error = EXCLUDED.error,
                      body_html = COALESCE(EXCLUDED.body_html, email_messages.body_html),
                      body_text = COALESCE(EXCLUDED.body_text, email_messages.body_text),
+                     -- COALESCE, never overwrite-with-NULL: the notification row is
+                     -- upserted more than once (notify writes a lightweight row, the
+                     -- real send updates it), and only ONE of those passes knows about
+                     -- the attachments. A plain assignment would erase the audit trail
+                     -- on the very next touch of the same notification.
+                     omitted = COALESCE(EXCLUDED.omitted, email_messages.omitted),
+                     attach_summary = COALESCE(EXCLUDED.attach_summary, email_messages.attach_summary),
                      to_emails = CASE WHEN jsonb_array_length(EXCLUDED.to_emails) > 0 THEN EXCLUDED.to_emails ELSE email_messages.to_emails END`,
       [applicationId, ctx.threadKey || threadKeyFor(applicationId, subject), ctx.notificationId || null,
        ctx.type || null, categoryOf(ctx.type),
@@ -254,7 +280,9 @@ async function captureOutbound(send = {}, ctx = {}) {
        ctx.status || 'sent', ctx.error ? String(ctx.error).slice(0, 400) : null,
        attachments ? JSON.stringify(attachments) : null,
        Object.keys(meta).length ? JSON.stringify(meta) : null,
-       cc.length ? JSON.stringify(cc) : null]);
+       cc.length ? JSON.stringify(cc) : null,
+       omitted ? JSON.stringify(omitted) : null,
+       attachSummary ? JSON.stringify(attachSummary) : null]);
   } catch (e) {
     // recording is best-effort; a capture failure must never surface to a send
     if (process.env.EMAIL_LOG_DEBUG) console.warn('[email-log] captureOutbound failed:', e.message);
