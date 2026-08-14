@@ -137,20 +137,33 @@ async function imagesIn(buf) {
     manyDoc.addPage([612, 792]).drawImage(img, { x: 0, y: 200, width: 612, height: 400 });
   }
   const many = Buffer.from(await manyDoc.save());
+  // A CLOCK PROVES ONLY WHAT A CLOCK CAN PROVE, AND THAT IS THE LESSON HERE.
+  //
+  // This assertion has now been wrong twice for the same reason: it tried to prove, using a
+  // wall-clock deadline, that work had been ABANDONED. It cannot. The deadline has a deliberate
+  // one-second FLOOR (below that, zero work happens and the compressor merely looks broken), and
+  // how many photos fit inside one second is a property of the MACHINE. My box took 1,255ms for
+  // these four and the bound bit; CI's runner did all four in 699ms and it correctly did not.
+  // Asserting `partial === true` there was asserting that the test host is slow.
+  //
+  // So the clock case asserts only the machine-independent facts — it comes back quickly, and it
+  // comes back with a usable document — and the "a bound that bites is REPORTED" rule is proven
+  // below by the IMAGE CAP, which has no clock in it at all.
   const t0 = Date.now();
   const rd = await C.compressPdf(many, { level: 5, deadlineMs: 1 });
   const elapsed = Date.now() - t0;
-  ok(`an exhausted deadline returns promptly (${elapsed}ms for 4 photos)`, elapsed < 6000);
-  ok(`and says so rather than pretending it finished (partial=${rd.partial})`, rd.partial === true);
-  ok('what it DID manage is still returned, not thrown away', rd.changed && rd.after < rd.before);
+  ok(`an exhausted deadline returns promptly (${elapsed}ms for 4 photos)`, elapsed < 8000);
+  ok('and returns a usable document rather than throwing or emptying it',
+    Buffer.isBuffer(rd.buf) && rd.buf.length > 0 && rd.after > 0);
+  ok('with its bookkeeping intact whichever way the clock fell',
+    typeof rd.partial === 'boolean' && rd.images.resized <= 4);
 
-  // THE WORK CAP IS THE DETERMINISTIC HALF. A wall-clock deadline cannot prove that work was
-  // ABANDONED — how many photos fit inside the one-second floor depends on the machine, and this
-  // assertion was flaky for exactly that reason. The image cap bounds the same behaviour with no
-  // clock in it: exactly two of the four are done, and the bound is reported rather than silent.
-  const rCap = await C.compressPdf(many, { level: 5, maxImages: 2, deadlineMs: 60000 });
+  // THE DETERMINISTIC HALF — a hard work cap, identical on every machine: exactly two of the four
+  // are done, and the bound is reported rather than passing silently as a finished job.
+  const rCap = await C.compressPdf(many, { level: 5, maxImages: 2, deadlineMs: 120000 });
   ok(`a work cap stops at the cap (${rCap.images.resized} of 4 resized)`, rCap.images.resized === 2);
   ok('and reports that it did — a bound that is not reported is a silent cap', rCap.partial === true);
+  ok('what it DID manage is still returned, not thrown away', rCap.changed && rCap.after < rCap.before);
 
   // The same document with a real deadline finishes the job — the control proving the case above is
   // the bound biting, not a document that could never have been compressed.
