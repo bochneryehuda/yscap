@@ -326,6 +326,13 @@ const SETTINGS = [
       + 'does not describe their long-term job.',
     evidence: 'staff_users.role has no "funder" value, and adding one would be changing an RTL '
       + 'table to make Long-Term work. This is how a funder is recognised without touching it.' },
+  { key: 'access.adminRoles', group: 'Access', label: 'Who may administer the long-term side',
+    type: 'list', default: ['super_admin', 'admin'],
+    description: 'The PILOT roles allowed to confirm who an Encompass login belongs to, and to '
+      + 'change the people map.',
+    evidence: 'Deliberately narrower than "sees the whole pipeline": the owner gave closers and '
+      + 'funders the entire book so they can pick work off the queue, which is a different '
+      + 'question from who may decide whose book is whose.' },
 
   // ── Contacts (db/552) ─────────────────────────────────────────────────────
   { key: 'contacts.roles', group: 'Contacts', label: 'Loan team roles we track',

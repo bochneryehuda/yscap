@@ -157,6 +157,38 @@ function mayOpenLoan(access, staffId, contacts = []) {
 }
 
 /**
+ * The roles allowed to ADMINISTER the long-term side — today, to confirm who an
+ * Encompass login belongs to. Deliberately narrower than "sees the whole pipeline":
+ * a closer and a funder see every file (the owner's rule) and have no business
+ * deciding whose book is whose.
+ *
+ * Settings-driven (`access.adminRoles`) like every other org-chart assumption here.
+ * Fails CLOSED: an unreadable or non-list setting falls back to OUR default rather
+ * than to "everybody".
+ */
+const DEFAULT_ADMIN_ROLES = ['super_admin', 'admin'];
+
+function adminRoles(settings = {}) {
+  const v = settings['access.adminRoles'];
+  return Array.isArray(v) && v.length ? v.map(String) : DEFAULT_ADMIN_ROLES;
+}
+
+/**
+ * May this person confirm, reject or change a people-map link?
+ *
+ * Reads the person's REAL role, not the long-term override: an override exists so
+ * somebody can be recognised as the long-term funder without touching an RTL table,
+ * and letting one grant ADMIN rights would turn a settings typo into a privilege
+ * escalation. Administering is an identity-zone decision, so it stays on the
+ * identity-zone role.
+ */
+function mayManagePeople(staff, settings = {}) {
+  const role = staff && staff.role ? String(staff.role) : '';
+  if (!role) return false;
+  return adminRoles(settings).includes(role);
+}
+
+/**
  * A plain-language reason, for a screen that has to explain an empty pipeline.
  * "You have no long-term files" and "nobody has linked your Encompass account yet"
  * look identical to a user and need completely different actions.
@@ -174,6 +206,9 @@ module.exports = {
   SCOPE_OWN,
   LT_ROLES,
   DEFAULT_ROLE_SCOPES,
+  DEFAULT_ADMIN_ROLES,
+  adminRoles,
+  mayManagePeople,
   longTermRoleFor,
   scopeForRole,
   accessFor,

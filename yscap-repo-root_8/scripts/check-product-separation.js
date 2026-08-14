@@ -304,7 +304,12 @@ const ENGLISH_NOT_A_TABLE = new Set(['the', 'a', 'an', 'this', 'that', 'these', 
   'one', 'all', 'any', 'each', 'my', 'your', 'our', 'their', 'us', 'me', 'you', 'here', 'there',
   'master', 'now', 'then', 'both', 'either', 'every']);
 
-const SQL_NON_TABLE = new Set(['lateral', 'only', 'select', 'unnest', 'values', 'dual', 'generate_series',
+// `excluded` and `new`/`old` are Postgres PSEUDO-RELATIONS — the proposed row inside
+// an upsert, and the trigger rows. They are never a real table and can never be a
+// crossing, so naming one must never be reported (and a report naming "EXCLUDED"
+// as an RTL table sends the reader hunting for a table that does not exist).
+const SQL_NON_TABLE = new Set(['excluded', 'new', 'old',
+  'lateral', 'only', 'select', 'unnest', 'values', 'dual', 'generate_series',
   'jsonb_array_elements', 'jsonb_array_elements_text', 'jsonb_each', 'jsonb_each_text', 'jsonb_to_recordset',
   'json_array_elements', 'json_each', 'regexp_split_to_table', 'string_to_table', 'each', 'rows', 'set']);
 
@@ -362,10 +367,26 @@ function tablesNamedIn(sqlText) {
     }
   }
 
+  // `IS DISTINCT FROM x` / `IS NOT DISTINCT FROM x` is a COMPARISON OPERATOR whose
+  // last word happens to be FROM. It names no table and opens no clause. Without
+  // this, the ordinary upsert guard `WHERE t.col IS DISTINCT FROM EXCLUDED.col` —
+  // the idiom that stops a no-op write churning a row — is reported as a
+  // cross-product table read, and the report even names "EXCLUDED.col" as the
+  // table. Narrow on purpose: it exempts only the two spellings of that operator,
+  // never a FROM that could be a clause.
+  const DISTINCT_FROM = /\bIS\s+(?:NOT\s+)?DISTINCT\s+FROM\b/gi;
+  const distinctSpans = [];
+  for (let d; (d = DISTINCT_FROM.exec(sqlText));) {
+    // The span starts at this match's own FROM, so a table named anywhere else is
+    // still seen.
+    distinctSpans.push(d.index + d[0].length - 'FROM'.length);
+  }
+
   const READ = /\b(?:FROM|JOIN)\s+(?:ONLY\s+)?("?[\w."]+"?)/gi;
   let m;
   while ((m = READ.exec(sqlText))) {
     if (writeSpans.some(([s, e]) => m.index >= s && m.index < e)) continue;
+    if (distinctSpans.includes(m.index)) continue;
     const name = cleanIdent(m[1]);
     if (keep(name, m.index, m[0])) out.push({ name, mode: 'read' });
     // The old-style comma join — `FROM lt_loans l, applications a`. Walked only
