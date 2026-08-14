@@ -180,29 +180,98 @@ can use.
 
 ---
 
-## 6. `CX.PITIA` is wrong on every file that has it
+## 6. `CX.PITIA` — the evidence, and the one-line fix
 
-The tenant has a custom field named **Total PITIA (P&I + Taxes + Insurance + MI +
-HOA)**, filled on **99.6% of long-term files**. Its calculation is:
+> This section was rewritten on 2026-08-14 after the owner challenged the finding
+> directly: *"I do believe it's correct… I cannot understand why you're claiming that
+> it's wrong."* That was fair — the original write-up rested on field LABELS, which is
+> not proof. It was re-tested four ways. Everything below is reproducible from the
+> harvested loans.
+
+The tenant has a custom field **Total PITIA (P&I + Taxes + Insurance + MI + HOA)**,
+filled on **99.6% of long-term files**, calculated as:
 
 ```
 Sum([#228], [#140], [#136], [#142], [#144])
 ```
 
-- `228` — proposed mortgage payment. **Correct ingredient.**
-- `140` — subordinate financing. Not a housing expense.
-- `136` — **purchase price.** Not a housing expense.
-- `142` — cash from borrower. Not a housing expense.
-- `144` — a string income field.
+### Proof 1 — the formula really is that sum
 
-**Measured: on the 452 files carrying both `CX.PITIA` and field 912, ZERO agree.**
-Sample values: −170.55, −3,446.71, −37,295.03, and 361,195.33. The export
-`01-every-field.csv` shows its range in the raw: minimum **−584,076.36**, maximum
-**1,075,763.75**.
+`Sum(228, 140, 136, 142, 144)` was computed from the live loan values and compared
+with the **stored** `CX.PITIA`: **760 of 761 reproduce it to the cent.** So those
+field ids are genuinely the ones being read, and Encompass is doing exactly what the
+formula says. Nothing is being misread on our side.
 
-**Our rule: the long-term side never reads `CX.PITIA`. It reads field 912.** Fixing
-or retiring the field in Encompass is an owner-side decision — nothing we build
-depends on it.
+### Proof 2 — the field meanings are ICE's, not our interpretation
+
+Straight from the tenant's own `GET /encompass/v3/schemas/loan/standardFields`
+(23,704 fields):
+
+| | Encompass's own description | In the formula? |
+|---|---|---|
+| `228` | Expenses Proposed **Mtg Pymt** — P&I | ✅ correct ingredient |
+| `140` | Trans Details **Subordinate Financing** | ❌ not a housing expense |
+| `136` | Trans Details **Purchase Price** | ❌ not a housing expense |
+| `142` | Trans Details **Cash From Borr** | ❌ not a housing expense |
+| `144` | Income Borr/Co-Borr **Other Income 1** — a *String* field | ❌ not a housing expense |
+
+**The same tenant confirms `136` independently:** its own `CX.RTLDOWNPAYMENT` formula
+uses `VAL([136])` as the **purchase price** to work out a down payment.
+
+### Proof 3 — what it produces is not a monthly payment
+
+Of the 451 long-term loans carrying both `CX.PITIA` and field 912:
+
+| | |
+|---|---:|
+| Within 2% of the real housing expense | **0** |
+| Within 50% | 10 |
+| **Negative** (a payment cannot be) | **297** |
+| Over $50,000 a month | 120 |
+| Plausible ($100 – $50,000) | 34 |
+| **Median gap from field 912** | **$166,197.97** |
+
+Which parts actually carry a value: `142` cash-from-borrower on **760** files, `136`
+purchase price on **328**, `228` P&I on 662. `140` and `144` are empty on every file.
+And it is never merely P&I — on all 662 files with a P&I, something else was added.
+
+**A real file:** P&I `3,048.46` + purchase price `689,000.00` + cash from borrower
+`219,940.44` = `CX.PITIA` **911,988.90**. That property's actual total monthly housing
+expense is **3,478.46**.
+
+### Proof 4 — the gap points the wrong way
+
+If `CX.PITIA` were merely *missing* taxes and insurance, then `912 − CX.PITIA` would
+be **positive** and look like a monthly tax bill (~$400). It is **negative, median
+−$2,963** — the signature of one-time amounts being added into a monthly figure.
+
+### The fix — the label's own five fields
+
+The label names five things, and Encompass has all five in one block, **Expenses
+Proposed**: `228` Mtg Pymt (P&I), `1405` Taxes, `230` Haz Ins, `232` Mtg Ins (MI),
+`233` HOA. **Only the first id in the current formula comes from that block.**
+
+```
+Sum([#228], [#1405], [#230], [#232], [#233])
+```
+
+Computed on the same 451 loans and compared with field 912:
+
+| Formula | Within 2% of the real expense | Median gap |
+|---|---:|---:|
+| As it is today `Sum(228,140,136,142,144)` | **0%** | $166,197.97 |
+| The label's own fields `Sum(228,1405,230,232,233)` | **88%** | **$0.00** |
+
+The remaining 12% are files where 912 legitimately carries something the label does
+not name (`234` other housing, `229` other financing), or where the tax line is blank
+— the same 38-file case in §4.
+
+**Owner action:** one line, in Encompass → Settings → Loan Custom Fields → `CX.PITIA`.
+Or retire the field and use `912`.
+
+**Our rule either way: the long-term side never reads `CX.PITIA`. It reads field
+912** — which is also what the DSCR ratio itself uses. Nothing we build depends on
+`CX.PITIA` being fixed.
 
 ---
 

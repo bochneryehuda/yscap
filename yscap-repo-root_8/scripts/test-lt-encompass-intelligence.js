@@ -301,6 +301,43 @@ const armDefect = T.KNOWN_TERM_DEFECTS.find((x) => x.key === 'DEFECT-AMORT-ARM')
 check(!!armDefect && /program name/i.test(armDefect.ourRule),
   'our rule is to read fixed-vs-adjustable from the program name, not field 608');
 
+// ── 8. The CX.PITIA finding, and the fix ─────────────────────────────────────
+// The owner challenged this one directly ("I do believe it's correct"), so the
+// evidence is pinned rather than left as a comment. Field LABELS alone are not
+// proof; what settles it is that the formula REPRODUCES the stored value, that the
+// result is not a monthly payment, and that the label's own five fields land on the
+// real housing expense exactly.
+check(!!defect, 'the CX.PITIA finding is recorded');
+check(defect.calculation === 'Sum([#228], [#140], [#136], [#142], [#144])',
+  'the tenant formula is recorded verbatim, not paraphrased');
+check(Object.keys(defect.proof || {}).length === 4,
+  'the finding carries all four independent proofs, not just the field labels');
+check(/760 of 761/.test(defect.proof['1']),
+  'proof 1: the formula was shown to REPRODUCE the stored value on the live loans');
+check(/standardFields/.test(defect.proof['2']) && /CX\.RTLDOWNPAYMENT/.test(defect.proof['2']),
+  "proof 2: the field ids come from ICE's own schema, corroborated by the tenant's own other formula");
+check(/ZERO land within 2%/.test(defect.proof['3']),
+  'proof 3: the result is not a monthly payment on a single one of 451 loans');
+
+// The fix must be the label's OWN five fields, all from the Expenses Proposed block.
+check(defect.theFix.calculation === 'Sum([#228], [#1405], [#230], [#232], [#233])',
+  'the recorded fix is P&I + Taxes + Insurance + MI + HOA — exactly what the label promises');
+for (const id of ['228', '1405', '230', '232', '233']) {
+  check(defect.theFix.calculation.includes(`[#${id}]`), `the fix uses field ${id}`);
+}
+for (const id of ['140', '136', '142', '144']) {
+  check(!defect.theFix.calculation.includes(`[#${id}]`),
+    `the fix drops field ${id} — it is not a monthly housing expense`);
+}
+check(/88% land\s+within 2%/.test(defect.theFix.verified) && /median gap \$0\.00/.test(defect.theFix.verified),
+  'the fix was VERIFIED against the real housing expense, not merely proposed');
+
+// And the rule that makes all of this harmless to us either way.
+check(/never reads CX\.PITIA/i.test(defect.ourRule) && /912/.test(defect.ourRule),
+  'our own rule stands: the long-term side reads field 912, never CX.PITIA');
+check(!/CX\.PITIA/.test(enc.formulas.DSCR_RATIO.calculation),
+  'the DSCR formula itself does not touch CX.PITIA');
+
 // ── done ─────────────────────────────────────────────────────────────────────
 if (failures) {
   console.error(`\nFAILED — ${failures} check(s).`);

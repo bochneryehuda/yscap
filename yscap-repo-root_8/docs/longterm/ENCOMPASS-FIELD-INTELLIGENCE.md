@@ -170,14 +170,25 @@ long-term files, is defined as:
 Sum([#228], [#140], [#136], [#142], [#144])
 ```
 
-Only the first is a housing expense. `140` is subordinate financing, `136` is the
-**purchase price**, `142` is **cash from borrower** (usually negative), `144` is a
-string income field. Observed live values: **−310,736.26**, **−121,121.93**,
-**+794,804.17** — against real monthly PITIAs of 1,132 to 5,121. It is wrong by
-orders of magnitude and frequently by sign.
+Only the first is a housing expense. Per Encompass's own field schema, `140` is
+subordinate financing, `136` is the **purchase price**, `142` is **cash from
+borrower** (usually negative) and `144` is a string income field.
 
-Long-Term never reads `CX.PITIA`; it reads `912`. Worth fixing in Encompass, but that
-is an Encompass-side change — we are read-only.
+**Proven four ways, not inferred from the labels** — the formula reproduces the stored
+value on **760 of 761** loans, so those ids really are what is read; **0 of 451**
+long-term files land within 2% of the real housing expense (median gap
+**$166,197.97**); **297 are negative** and 120 exceed $50,000 a month; and the gap
+points the wrong way for a field that were merely *missing* taxes. One real file:
+P&I 3,048.46 + purchase price 689,000.00 + cash from borrower 219,940.44 =
+**911,988.90**, against an actual monthly housing expense of **3,478.46**.
+
+**The fix is one line** — the five fields the label already names, all from the
+*Expenses Proposed* block: `Sum([#228], [#1405], [#230], [#232], [#233])`. Tested on
+the same 451 loans: **88% land within 2% of field 912, median gap $0.00.**
+
+Long-Term never reads `CX.PITIA`; it reads `912`. Full evidence in
+`ENCOMPASS-TERMS-AND-PITI.md` §6. Changing it is an Encompass-side action — we are
+read-only.
 
 ---
 
