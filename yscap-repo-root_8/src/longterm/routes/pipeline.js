@@ -15,6 +15,8 @@ const router = express.Router();
 const pipeline = require('../pipeline');
 const access = require('../access');
 const contacts = require('../people/contacts');
+const workspace = require('../workspace');
+const stages = require('../stages');
 const settingsStore = require('../settings/store');
 const db = require('../db');
 
@@ -76,9 +78,28 @@ router.get('/:loanId', async (req, res) => {
       for (const p of people) names.set(String(p.id), p.full_name);
     }
 
+    // The workspace's three regions, built from what we already read — the section
+    // menu, the stepper, and the rail. The rail is assembled ONCE here so the screen
+    // can mount it and not re-render it while somebody moves between sections.
+    // db/547's columns are `milestone_name` and `sequence` — NOT name/sort_order.
+    // Aliased to what the workspace expects rather than renamed there, so the
+    // stepper stays a pure function of a plain shape. `is_archived` milestones are
+    // excluded: a retired step must not sit in the middle of a live file's progress.
+    const { rows: catalog } = await db.query(
+      `SELECT milestone_name AS name, sequence AS sort_order
+         FROM lt_encompass_milestones
+        WHERE COALESCE(is_archived, false) = false
+        ORDER BY sequence`,
+    ).catch(() => ({ rows: [] }));
+
     const labels = settings['contacts.roleLabels'] || {};
     res.json({
       loan: rows[0],
+      sections: workspace.sectionMenu(rows[0], {
+        conditionsEnabled: settings['conditions.enabled'] === true,
+      }),
+      stepper: workspace.milestoneStepper(rows[0], catalog),
+      rail: workspace.summaryRail(rows[0], { stageConfig: stages.configFrom(settings) }),
       contacts: team.map((t) => contacts.describeContact(t, {
         staffName: t.staff_id ? names.get(String(t.staff_id)) : null,
         overrideName: t.override_staff_id ? names.get(String(t.override_staff_id)) : null,
