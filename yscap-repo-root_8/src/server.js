@@ -426,6 +426,16 @@ app.use('/api/staff', require('./routes/staff'));
 // structurally refused by /api/staff and /api/borrower (requireStaff /
 // requireBorrower), and an internal/borrower session is refused here.
 app.use('/api/tpo', require('./routes/tpo'));
+// LONG-TERM (LT) — the brand-new SECOND product, mounted at its own /api/lt/*
+// namespace. This block is the ONE permitted back-end seam between RTL and LT
+// (docs/LONG-TERM-LOANS-SEPARATION-CHARTER.md §4): server.js mounts the LT router,
+// and nothing else in RTL may reach into src/longterm/. Staff-authenticated here
+// at the mount (like the /api/admin routers), so the LT module imports no RTL
+// code. LT is a side build for visibility — it is not live and never touches RTL.
+{
+  const { requireAuth, requireStaff } = require('./auth');
+  app.use('/api/lt', requireAuth, requireStaff, require('./longterm').router);
+}
 // Sitewire construction-draw desk + admin. The router applies requireAuth +
 // requireStaff + per-route capability gates (manage_draws / platform_setup) itself.
 app.use('/api/sitewire', require('./routes/sitewire'));

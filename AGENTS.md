@@ -62,3 +62,21 @@ folder, a plainly-named column added to an RTL table for LT, or a new field mapp
 on you.
 
 Design and research behind the split: `yscap-repo-root_8/docs/LONG-TERM-LOANS-SEPARATION-CHARTER.md`.
+
+## 3. Encompass is READ-ONLY — the hardest rule, on top of all the rules
+
+**Owner-directed 2026-08-14. Applies to BOTH products and every program.** PILOT ↔ Encompass is **one-way**.
+We **READ** — loans, fields, milestones, settings, and inbound **webhooks** — as much as we want. We **NEVER
+WRITE** to Encompass: no PATCH/PUT/POST/DELETE that changes a loan, a field, a milestone, an eFolder document, or
+anything else.
+
+- **The ONLY writes allowed are the ones the owner authorized IN WRITING for a specific endpoint/field**, recorded
+  in `yscap-repo-root_8/docs/ENCOMPASS-WRITE-AUTHORIZATIONS.md` (the pad). Today that is exactly one: flood-
+  determination ordering (`src/encompass/flood-order.js`, RTL only).
+- **No agent, and no person, may ever GUESS a write.** "It probably needs updating" is never authorization. Only
+  the specific thing the owner wrote, super-admin-gated and audited.
+- Enforced by `yscap-repo-root_8/scripts/check-encompass-readonly.js` (runs in `npm test`, blocks CI/deploy). Any
+  Encompass write not in the pad fails the build. **Do not weaken or bypass this gate** — to add a write, get the
+  owner's written authorization and add it to the pad.
+- The strongest enforcement is ALSO at the credential level: the Encompass API user's persona should be set
+  read-only in ICE, so a write is refused by Encompass itself — see the pad.

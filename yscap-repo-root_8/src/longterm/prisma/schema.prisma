@@ -1,0 +1,94 @@
+// =============================================================================
+// LONG-TERM LOANS (LT) — Prisma schema
+// =============================================================================
+//
+// This file is the SINGLE SOURCE OF TRUTH for the Long-Term product's data model.
+// LT is a brand-new build that shares NOTHING with the RTL product except the
+// shared identity zone (see docs/LONG-TERM-LOANS-SEPARATION-CHARTER.md and the
+// ledger docs/LONG-TERM-AUTHORIZED-COPIES.md). Every model here maps to an `lt_*`
+// table, and no model references an RTL table.
+//
+// HOW THIS SCHEMA REACHES POSTGRES — read this before adding a model:
+//   • Prisma is used here as a DEV tool only (to define the model and generate the
+//     DDL). It is deliberately NOT a runtime or build dependency of the app, so the
+//     shared Render build stays exactly as clean as it is today.
+//   • The actual DDL is applied through the repo's ONE migration path:
+//     db/NNN_lt_*.sql, run by src/migrate-boot.js on every boot. That keeps a
+//     single migration system, keeps the product-separation CI gate effective over
+//     LT schema, and keeps the off-site backup covering LT with no table list.
+//   • So: define/adjust the model HERE, then write the matching idempotent
+//     db/NNN_lt_*.sql (see src/longterm/README.md for the exact commands to
+//     generate + verify the DDL from this schema). The two must always agree.
+//
+// The runtime reads these tables through LT's own `pg` pool (src/longterm/db.js),
+// matching the pattern every other backend module in this repo uses.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  // Generated ONLY into node_modules (never committed, never scanned by the CI
+  // gate — Prisma's own runtime files contain example SQL the gate would read as a
+  // crossing). The generated client is optional dev tooling; the app does not use
+  // it at runtime. See src/longterm/README.md.
+  output   = "../../../node_modules/.cache/lt-prisma-client"
+}
+
+datasource db {
+  // LT connects to the SAME Postgres as RTL (Option B: one database, two
+  // namespaces), but through its own pool and only ever touches lt_* tables.
+  provider = "postgresql"
+}
+
+/// The Encompass milestone / status catalog — the "memory of the long-term side of
+/// Encompass". One row per milestone in the Encompass pipeline. Encompass is the
+/// long-term source of truth; this table records, for each milestone, the internal
+/// name, the status shown to the TPO (broker), the status shown to the borrower
+/// (consumer), the assigned role, the expected duration, and Encompass's own
+/// identifiers — every detail that should live with a long-term file.
+///
+/// This is a reference catalog only. Attaching a milestone to an actual long-term
+/// file, moving/rolling back a file's status, and syncing with Encompass are future
+/// work and are NOT modeled here yet.
+model LtEncompassMilestone {
+  /// Encompass's own milestone identifier — the "old ID". It is integer-like ("1")
+  /// for some milestones and a UUID for others, so it is kept verbatim as text.
+  /// This is the natural, stable identity of a milestone.
+  milestoneId String @id @map("milestone_id")
+
+  /// Position of this milestone in the Encompass pipeline (1 = first). Used for
+  /// ordered display. Expected to be distinct across the catalog, but not enforced
+  /// unique so a future re-sync from Encompass can never fail on a transient
+  /// re-ordering.
+  sequence Int
+
+  /// Internal milestone name (staff-facing), e.g. "Clear To Close".
+  milestoneName String @map("milestone_name")
+
+  /// Assigned staff role for this milestone, or null (e.g. "Started" has none).
+  role String?
+
+  /// Encompass's identifier for that role, kept verbatim as text.
+  roleId String? @map("role_id")
+
+  /// Whether the file must be assigned to that role for the milestone to complete.
+  assignmentRequired Boolean @map("assignment_required")
+
+  /// Expected number of days a file spends at this milestone.
+  expectedDays Int @map("expected_days")
+
+  /// The status shown to the TPO (broker) while a file sits at this milestone.
+  tpoStatus String @map("tpo_status")
+
+  /// The status shown to the borrower (consumer) at this milestone.
+  consumerStatus String @map("consumer_status")
+
+  /// Whether Encompass has archived this milestone.
+  isArchived Boolean @default(false) @map("is_archived")
+
+  /// LT-owned bookkeeping.
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([sequence])
+  @@map("lt_encompass_milestones")
+}
