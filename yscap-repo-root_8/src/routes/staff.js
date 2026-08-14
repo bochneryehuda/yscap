@@ -7076,6 +7076,19 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
       staffId: req.actor.id,
       msgType: 'closing_order',
       subject: closingPrep.CLOSING_PREP_TITLE,
+      // A closing package that reaches outside counsel one document short must be answerable
+      // months later, not only on the card while somebody is looking at it (db/548). The reasons
+      // are `packAttachments`' own — one definition, already shown in the email and on the screen.
+      omitted: (pack.skipped || []).map((d) => ({
+        what: d.filename || d.label || 'document', filename: d.filename || null,
+        code: /too large/i.test(String(d.reason)) ? 'too_large' : /could not be read/i.test(String(d.reason)) ? 'unreadable' : 'not_on_file',
+        reason: d.reason, bytes: d.size_bytes || null,
+      })),
+      attachSummary: {
+        attached_n: (pack.attached || []).length, omitted_n: (pack.skipped || []).length,
+        bytes: pack.totalBytes || 0, budget: pack.oneMessageBytes || 0, part_count: partCount,
+        compressed_n: (pack.attached || []).filter((a) => a.compression).length,
+      },
       build: ({ address }) => closingPrep.buildClosingPrepEmail(data, pkg, { address, attach, note, senderName }),
     });
     if (!sent.ok) {
