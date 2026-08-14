@@ -63,8 +63,9 @@ Field syntax in conditions: `[<id>]` reads a loan field, `[#FR0112]` a form fiel
 DSCR / long-term is a **no-income-doc** product, so the tenant models it as
 **Loan Doc Type = "No Documentation"**. That is the exact condition on the base rule,
 **"milestone completion field requirements"** (rule #12), which therefore carries the
-**long-term core field set** — ~111 fields tagged to LO Prep / Submittal / Clear To
-Close. The complete list is in `completion-rules.js` → `BASE_RULE_FIELDS`.
+**long-term core field set** — **117 fields** (video-confirmed end-to-end) tagged to
+LO Prep / Submittal / Ready for Docs / Docs Out / Clear To Close. The complete list is
+in `completion-rules.js` → `BASE_RULE_FIELDS`.
 
 DSCR-specific fields worth knowing: `1005` Gross Rent, `CUST01FV` DSCR,
 `CX.DSCRLOANAMOUNT`, `CX.DSCRLTV` (the DSCR ratio inputs); `CX.PPPTERM` / `CX.PPPTYPE`
@@ -141,11 +142,12 @@ Declarations G", `outstandingJudgementsIndicator`.)
 | Part | Status |
 |---|---|
 | 19 milestone settings | ✅ **Confirmed** live from the API |
-| 22 of 91 Milestone Completion rules (names, channels, conditions) | ✅ **Confirmed** (visible in the recording, normalized in the audit CSVs) |
-| Field→milestone requirements captured in the audit CSVs | ✅ **Confirmed** |
-| The base rule's full ~111-field list | ⚠️ **Reconstructed** from ~20 scroll frames — each field is marked `source: 'reconstructed'` vs `'audit_csv'`. Treat reconstructed values as needing a second look. |
+| 22 of 91 Milestone Completion rules (names, channels, conditions, last-modified) | ✅ **Confirmed** (visible in the recording, normalized in the audit CSVs) |
+| Field→milestone requirements for the 6 rules opened on camera (#12, #13, #15, #16, #18, #21) | ✅ **Confirmed** (video, each field `source: 'video'`/`'audit_csv'`) |
+| The base rule's full **117-field** list | ✅ **Confirmed** end-to-end across two frame passes (was reconstructed at ~111; the deeper pass added L72 "HUD1 File #" → Ready for Docs, and URLA.X100/X102/X104/X106/X170). |
 | **69 of 91 rules** | ❌ **Missing** — the master list was never scrolled past rule 22. |
-| Required-Fields tabs for rules 15/17/18/20/22 | ❌ Not opened on camera. |
+| Required-Fields tabs for rule 17 (iska) + the RTL rules 14/19/20/22 | ❌ Not opened on camera. |
+| Required Tasks / Advanced Conditions tabs (any rule) | ❌ Not opened (Required Docs was shown empty for every opened rule). |
 | Audio narration | ❌ Not transcribable in the capture environment. |
 
 **How to get the rest** (in `completion-rules.js` → `MISSING.howToGetTheRest`): an
