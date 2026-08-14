@@ -66,6 +66,82 @@ router.get('/reconciliation-map', (req, res) => {
   catch (e) { console.error('[lt] encompass recon map failed:', e && e.message); res.status(500).json({ error: 'Could not load the reconciliation map.' }); }
 });
 
+// ── The live census (2026-08-14) ─────────────────────────────────────────────
+
+// GET /api/lt/encompass/intelligence — what the fields actually CONTAIN.
+// ?q=<text> search · ?view=always-on|differences|shared|calculated · ?stage=<milestone>
+// ?minPct=<n> · ?kind=standard|custom
+router.get('/intelligence', (req, res) => {
+  try {
+    const I = enc.intelligence;
+    const { q, view, stage, minPct, kind } = req.query;
+    let fields;
+    if (q) fields = I.search(q, { limit: 200 });
+    else if (stage) fields = I.populatedAt(stage);
+    else if (view === 'always-on') fields = I.alwaysOnDscr(minPct ? Number(minPct) : 95);
+    else if (view === 'differences') fields = I.productDifferences({ minGap: minPct ? Number(minPct) : 40 });
+    else if (view === 'shared') fields = I.sharedCore();
+    else if (view === 'calculated') fields = I.calculatedFields();
+    else fields = I.dscrFields({ minPct: minPct ? Number(minPct) : 1, kind: kind || null });
+    res.json({ meta: I.META, count: fields.length, fields });
+  } catch (e) { console.error('[lt] encompass intelligence failed:', e && e.message); res.status(500).json({ error: 'Could not load the field intelligence.' }); }
+});
+
+// GET /api/lt/encompass/intelligence/:id — one field's measured behaviour.
+router.get('/intelligence/:id', (req, res) => {
+  try {
+    const f = enc.intelligence.field(req.params.id);
+    if (!f) return res.status(404).json({ error: 'No evidence for that field id in the census.' });
+    res.json(f);
+  } catch (e) { console.error('[lt] encompass field intel failed:', e && e.message); res.status(500).json({ error: 'Could not load the field.' }); }
+});
+
+// GET /api/lt/encompass/anatomy — how an Encompass loan file is structured.
+router.get('/anatomy', (req, res) => {
+  try { res.json({ ...enc.anatomy, formulas: enc.formulas }); }
+  catch (e) { console.error('[lt] encompass anatomy failed:', e && e.message); res.status(500).json({ error: 'Could not load the loan anatomy.' }); }
+});
+
+// GET /api/lt/encompass/programs — the loan-program taxonomy (term, IO, purpose mix).
+router.get('/programs', (req, res) => {
+  try { res.json(enc.programs); }
+  catch (e) { console.error('[lt] encompass programs failed:', e && e.message); res.status(500).json({ error: 'Could not load the program taxonomy.' }); }
+});
+
+// GET /api/lt/encompass/conditions — the condition + eFolder model and the tenant's
+// condition library. Reference knowledge; performs no Encompass call.
+router.get('/conditions', (req, res) => {
+  try {
+    res.json({
+      model: enc.conditions,
+      library: enc.conditionLibrary,
+      efolderCatalog: enc.efolderCatalog,
+    });
+  } catch (e) { console.error('[lt] encompass conditions failed:', e && e.message); res.status(500).json({ error: 'Could not load the condition model.' }); }
+});
+
+// GET /api/lt/encompass/api-surface — which Encompass requests work, and which error.
+router.get('/api-surface', (req, res) => {
+  try {
+    res.json({
+      summary: enc.apiSurface.summary(),
+      access: enc.apiSurface.ACCESS_NOTES,
+      falseNegatives: enc.apiSurface.FALSE_NEGATIVES,
+      working: enc.apiSurface.working(),
+      blocked: enc.apiSurface.blocked(),
+    });
+  } catch (e) { console.error('[lt] encompass api surface failed:', e && e.message); res.status(500).json({ error: 'Could not load the API surface.' }); }
+});
+
+// GET /api/lt/encompass/settings — every tenant-specific choice, with OUR value as
+// the default and the evidence behind it. This is the layer a future buyer edits.
+router.get('/settings', (req, res) => {
+  try {
+    const s = require('../settings/encompass-settings');
+    res.json({ groups: s.groups(), defaults: s.defaults(), count: s.SETTINGS.length });
+  } catch (e) { console.error('[lt] encompass settings failed:', e && e.message); res.status(500).json({ error: 'Could not load the settings registry.' }); }
+});
+
 // GET /api/lt/encompass/status — is the LT Encompass connection configured/reachable?
 // (Reachability only; never returns credentials.)
 router.get('/status', async (req, res) => {

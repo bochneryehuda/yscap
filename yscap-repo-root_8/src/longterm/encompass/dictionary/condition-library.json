@@ -1,0 +1,3033 @@
+{
+ "meta": {
+  "source": "GET /encompass/v3/settings/loan/conditions/{types,templates,sets}",
+  "generated": "2026-08-14",
+  "note": "Tenant configuration. Contains no borrower data."
+ },
+ "conditionTypes": [
+  {
+   "id": "51e3158c-1362-4d33-b3dc-10f5e28fbe74",
+   "title": "Investor Delivery",
+   "active": true
+  },
+  {
+   "id": "681f2246-dbcd-4f1a-abce-f58bb3d71e83",
+   "title": "Preliminary",
+   "active": true
+  },
+  {
+   "id": "fb6a43a1-7273-4005-90de-3be708cf8075",
+   "title": "Underwriting",
+   "active": true
+  },
+  {
+   "id": "63a66727-bea9-47e8-8f0f-bc53d2f40df0",
+   "title": "Post-Closing",
+   "active": true
+  },
+  {
+   "id": "b3e3e8b1-564a-42c5-aa3d-abdedcbbb377",
+   "title": "Closing",
+   "active": true
+  }
+ ],
+ "conditionSets": [
+  {
+   "id": "bbd7c314-3a7a-4d23-ab10-078db0e21e3b",
+   "title": "Credit Conditions",
+   "conditionType": null
+  },
+  {
+   "id": "c0918b90-2832-4dd7-a2b5-08eaa778d7f7",
+   "title": "Income Conditions",
+   "conditionType": null
+  },
+  {
+   "id": "50888aea-c35d-49fe-9764-0d398ab0eedd",
+   "title": "All Closing Conditions",
+   "conditionType": null
+  },
+  {
+   "id": "48316667-050a-4952-9077-0de1a741283c",
+   "title": "All UW Conditions",
+   "conditionType": null
+  },
+  {
+   "id": "a1b8ef0a-9f4d-4128-b490-4562f887859c",
+   "title": "DSCR DEEPHAVEN",
+   "conditionType": null
+  },
+  {
+   "id": "2ff2b375-a910-4eac-b01c-45feff8916dc",
+   "title": "DSCR AMERICAN HERITAGE LENDING INVESTOR SPECIFIC",
+   "conditionType": null
+  },
+  {
+   "id": "cd1b4254-ee1d-48d9-b1ff-730a44a3367d",
+   "title": "DSCR OAK TREE INVESTOR SPECIFIC",
+   "conditionType": null
+  },
+  {
+   "id": "680ed894-5dff-45dd-95d6-7715ab9e8d27",
+   "title": "All Preliminary Conditions",
+   "conditionType": null
+  },
+  {
+   "id": "c38354d6-2b73-4063-b934-793678b28cba",
+   "title": "All Conditions",
+   "conditionType": null
+  },
+  {
+   "id": "6c8f6a44-cd23-4b79-bf27-7b188714d52f",
+   "title": "Conventional Conditions",
+   "conditionType": null
+  },
+  {
+   "id": "740b1873-e427-4905-b3fc-9d5cfb1e5af2",
+   "title": "USDA",
+   "conditionType": null
+  },
+  {
+   "id": "8629442c-5651-4f30-be24-a45c5368cea8",
+   "title": "DSCR MASTER SET (YSCAP)",
+   "conditionType": null
+  },
+  {
+   "id": "c71c57b9-9535-42e9-bdea-b1081889c12f",
+   "title": "Misc Conditions",
+   "conditionType": null
+  },
+  {
+   "id": "c05f1738-5669-4551-8178-d36e6ffe89b2",
+   "title": "All Post-Closing Conditions",
+   "conditionType": null
+  },
+  {
+   "id": "5c5bafee-6168-4b25-9435-d85a7b10f5c4",
+   "title": "Property Conditions",
+   "conditionType": null
+  },
+  {
+   "id": "eb9a3ad3-fadd-4df7-aee6-dcced3d25d83",
+   "title": "DSCR NQM FUNDING INVESTOR SPECIFIC",
+   "conditionType": null
+  },
+  {
+   "id": "c21d2cb7-148c-452a-9ae0-e250de301983",
+   "title": "FHA Conditions",
+   "conditionType": null
+  },
+  {
+   "id": "4a416694-3d42-4205-9c42-e770d1cd7cb5",
+   "title": "Asset Conditions",
+   "conditionType": null
+  },
+  {
+   "id": "6dde5381-d25d-4a90-b6b9-ea92f5fd89c7",
+   "title": "VA Conditions",
+   "conditionType": null
+  }
+ ],
+ "templates": [
+  {
+   "id": "2681298d-ce01-4c06-ad59-000b3a8acde2",
+   "title": "LLC Documents",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Submittal",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "LLC Documents",
+   "externalDescription": "\r\n- EIN Letter  - Certificate of Formation - Operating agreement - Recent Certificate of Good Standing (If you do not have this, let us know\u2014we can request it from title.)"
+  },
+  {
+   "id": "e9ef861d-c210-46f8-93f7-013437a37d73",
+   "title": "Sale Proceeds",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Assets",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide a copy of the fully executed HUD-1 Settlement Statement or Closing Disclosure to verify the proceeds from the sale or pending sale of your property. "
+  },
+  {
+   "id": "f53ffcd8-13fb-41ff-9733-01eed178cdda",
+   "title": "Earnest Money Verification",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Assets",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Amount of earnest money deposit shown on Closing Disclosure."
+  },
+  {
+   "id": "d4e83481-034f-47c2-9988-044d69fffe93",
+   "title": "Perm/Non-Perm Resident",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Miscellaneous",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide evidence that borrower is a legal resident of the United States"
+  },
+  {
+   "id": "e3816e41-4fd2-440c-93b2-046fa1d06bbd",
+   "title": "Appraisal Recertification by the original appraiser",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": "Provide recertification of value Form 1004D-Appraisal Update and/or Completion Report",
+   "externalDescription": null
+  },
+  {
+   "id": "065f5b03-8cf0-4b7c-b9df-061f68c55eec",
+   "title": "Tax Returns Sign & Date",
+   "conditionType": "Closing",
+   "internalId": "CL",
+   "category": "Income",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Borrower(s) to sign and date tax returns"
+  },
+  {
+   "id": "43836ecb-bf17-4110-b2d6-0712a91f4def",
+   "title": "Lock Confirmation- Floating Loan",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": "Interest Rate is currently floating.",
+   "externalDescription": "Interest Rate is currently floating."
+  },
+  {
+   "id": "ae15c7d0-e093-41dc-8988-092cbc3e6b4a",
+   "title": "Exclusionary List- Appraiser",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Underwriter to check the appraiser against the applicable investor exclusionary list."
+  },
+  {
+   "id": "63fd86d7-3cbe-4894-8403-0aab8f7f4d5a",
+   "title": "VA - Mobilization Info",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Reserve/NG Statement Regarding Income When Mobilized"
+  },
+  {
+   "id": "797d2f54-77ec-4911-9869-0ebb0651e300",
+   "title": "Certificate of Occupancy",
+   "conditionType": "Closing",
+   "internalId": "CL",
+   "category": "Property",
+   "priorTo": "Closing",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide certificate of occupancy from municipality."
+  },
+  {
+   "id": "beb257c9-2478-4b1b-9ec1-10358312308f",
+   "title": "LPOA",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Legal",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide a signed and notarized copy of the Power of Attorney, Statement of Indemnity and Agent's Affidavit."
+  },
+  {
+   "id": "0f6c81e5-3344-48fe-970d-10b7e39245c4",
+   "title": "Bank Statements for Cash to Close and Reserves (x% own funds) - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Assets",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "minimum required % of downpayment and remaining gift funds",
+   "externalDescription": "Submit your most recent bank statements with all pages. This is to verify the estimated minimum required assets of $xxxx. And additional $xxxx for reserves. Reserves may be sourced from gift funds however, it will need to be deposited in your bank account before closing.\r\nRemaining Assets - Gift Funds -Please provide the following information for the Donor of the Gift funds. We will prepare a gift letter and send it to you and Donor for Signature Via Docusign; - Name of Donor - Donor Phone Number - Donor Address - Donor's email address - Borrower(s) relationship to Donor - Name of Depository (Name of Bank money will come from) - Account Number - Gift Amount"
+  },
+  {
+   "id": "0ba6bcc8-8b9c-4615-a27b-10cebbfc9113",
+   "title": "Rider \u2013 1-4 Unit",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "(Only if property type is 1-4 units.)",
+   "externalDescription": "Executed 1-4 unit/Assignment of Leases rider to the security instrument. "
+  },
+  {
+   "id": "4c238d1c-7af5-4cf9-8243-11550074ae1a",
+   "title": "Utility Bill / Proof of Address",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": "Deephaven ONLY",
+   "externalDescription": "If the address on the borrower's government-issued ID does not match the borrower's primary/mailing address on the 1003, provide a recent utility bill (gas, electric, water, or cable) dated within the last 60 days, in the borrower's name, showing the primary address."
+  },
+  {
+   "id": "4b92bf85-5029-4941-8f16-11d63c171e8e",
+   "title": "Standard Loan Information",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint",
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "STANDARD LOAN INFORMATION| Investor____ Program_____| 30 YR FIXED | R/T REFI | 4 UNIT | FICO = 780 | DSCR = 1.35 | MAX LTV = 80% | RESERVES = 3 MONTHS (Additional conditions may apply.)"
+  },
+  {
+   "id": "aa90f2b1-db43-4497-b35e-11dbd6d85abd",
+   "title": "Assets - Gift Funds - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Assets",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Please provide the following information for the Donor of the Gift funds. We will prepare a gift letter and send it to you and Donor for Signature Via Docusign: - Name of Donor - Donor Phone Number - Donor Address - \tDonor's email address - Borrower's  relationship to Donor - Name of Depository (Name of Bank money will come from) - Account Number -  Gift Amount"
+  },
+  {
+   "id": "cfe011aa-8394-4651-90ce-1219f06e11d9",
+   "title": "Housing History",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Credit",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide most recent 12 months housing history for lien holder not reporting on credit. Options: 1) Transaction History printout, 2) Mortgage statement(s) showing payment history, 3) 12 months cancelled checks. (If verified on credit, provide credit supplement to confirm all mortgages paid through month of closing.)"
+  },
+  {
+   "id": "d6645389-d105-434b-b5e7-12bbbd163089",
+   "title": "Delayed Financing",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Amount of interest in the property as of ________."
+  },
+  {
+   "id": "b30df6f4-c861-465f-8960-13a7ac64625d",
+   "title": "Rental Income",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Income",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide rental/lease agreement for subject property."
+  },
+  {
+   "id": "b7472e64-6cfc-46b1-8875-13afa5b0be31",
+   "title": "Rental/Lease Agreement",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide a signed rental/lease agreement for (address) to confirm rental income. "
+  },
+  {
+   "id": "97e58fc4-fdf0-4a72-8627-14364799f66a",
+   "title": "Cash Out Limitation (R&T)",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Legal",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": "Update per investor at each review",
+   "externalDescription": "Cash out to borrower(s) cannot exceed ________% or $________, whichever is less"
+  },
+  {
+   "id": "0750c090-0445-429f-a258-17777dbdb8c3",
+   "title": "Derogatory credit LOE",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide an explanation for the derogatory credit indicated on the credit report."
+  },
+  {
+   "id": "0bdfa4fa-1b0d-4f9e-9869-18785b23e8ee",
+   "title": "Profit & Loss/Balance Sheet",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide a signed year to date profit and loss statement and balance sheet for (business name) to verify income. "
+  },
+  {
+   "id": "87e6e7b9-61bc-4eb7-9646-1d392ed7e007",
+   "title": "Invoices",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Examples of invoices: Appraisal fees, Hazard Insurance, , etc."
+  },
+  {
+   "id": "01e0f660-75c4-46e5-bc16-1d986f468f2e",
+   "title": "QC Condition",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "QC review required by management."
+  },
+  {
+   "id": "16a10f12-3ee3-47bb-a36b-1e0bfa34ca4b",
+   "title": "Flood Certificate",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint",
+    "ExternalPrint"
+   ],
+   "internalDescription": "To obtain flood certificate to indicate if property is in a flood zone",
+   "externalDescription": "Lender to obtain Life of Loan flood certificate to indicate if property is in a flood zone"
+  },
+  {
+   "id": "f2754ffe-a644-4cc6-8d8c-1fbf3a1ec5d3",
+   "title": "USDA - RD 3555-18 Conditional Commitment",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Miscellaneous",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": "Approval and issuance of completed RD 3555-18 Conditional Commitment required with no outstanding conditions",
+   "externalDescription": null
+  },
+  {
+   "id": "cae2fffb-9f50-458f-8e53-20a16c2f5cf4",
+   "title": "Survey",
+   "conditionType": "Closing",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint",
+    "ExternalPrint"
+   ],
+   "internalDescription": "Surveys are subject to review prior to Closing. There can be no survey exceptions on the Final Title Policy. ",
+   "externalDescription": "Provide Survey or Plat Map. When survey is not customary, title must provide ALTA 9 endorsement in the absence of a survey when a survey is customary Or email confirm of survey exception\u00a0."
+  },
+  {
+   "id": "ce8d30a5-5f6a-4832-a075-20c61b95dd29",
+   "title": "Escrow Holdback",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Attorney to return $ <<escrowed.amount>> to be held from the <<sellers.or.applicants>> funds. Escrow Holdback Agreement to be signed at closing for the following items <<>> to be completed by MM/DD/YYYY."
+  },
+  {
+   "id": "66d79250-aa6f-463d-aef0-21499bad0626",
+   "title": "Coop Insurance Certificate",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Current Insurance certificate showing all coverage and limitations (100% Building Replacement, General Liability with Bodily Injury, $1,000,000)  Association or all unit owners to be shown as insured."
+  },
+  {
+   "id": "a26999f0-e6ce-464c-a0f4-2169d0e68edb",
+   "title": "Cash out Limit",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Max Cash out: "
+  },
+  {
+   "id": "ea7a7f14-7458-420c-976b-2176132c3b82",
+   "title": "USDA - Confirm Property Eligibility",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": "Obtain determination from USDA that subject property is geographically eligible for USDA program.GUS unable to determine.",
+   "externalDescription": null
+  },
+  {
+   "id": "dbdd9adb-d7be-4773-8465-21d81a12ecd9",
+   "title": "Pay Stubs",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": ".",
+   "externalDescription": "Provide copies of the most recent pay statements for the last 30 days "
+  },
+  {
+   "id": "0c8a3f51-40d1-485f-a5c4-2249cf58536f",
+   "title": "Flood Insurance Escrow Required",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "The property is in a flood zone \u2014 flood insurance escrow required."
+  },
+  {
+   "id": "8529759f-ea87-47a5-b7a7-23549f5c0842",
+   "title": "Sales Contract - ",
+   "conditionType": "Preliminary",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Submittal",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Fully executed sales contract including all addendums"
+  },
+  {
+   "id": "14146b08-5a7a-40e5-95b7-2430633acd12",
+   "title": "Lock Expiration",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Loan documents may not be dated beyond lock expiration date."
+  },
+  {
+   "id": "591c44ce-8089-47db-b408-24579e2ff04f",
+   "title": "Proof of Primary Address - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Please provide documentation verifying your primary address, can be utility bill or any form of ID."
+  },
+  {
+   "id": "9950a427-9eb3-4fbb-92eb-24fef5ca0489",
+   "title": "Collect Verification of Mortgage (VOM)",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": null
+  },
+  {
+   "id": "a1b6b376-29b1-4193-aca1-26921f0e2f96",
+   "title": "Inquiries LOE",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide signed letter of explanation to explain the credit inquiries shown on the borrower's credit report"
+  },
+  {
+   "id": "aedb02b2-4805-49d8-a223-2694bba4a8c8",
+   "title": "Building Permit (or Description of Materials)",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide building permit issued by local governing authority"
+  },
+  {
+   "id": "e6a88ccb-ebf0-47a1-a66f-26f079b0a583",
+   "title": "Appraisal \u2013 1073 Condo",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": "Appraisal \u2013 1073 Condo",
+   "externalDescription": "Appraisal report on FNMA form 1073 Condo report with XML, AIR, SSRs, License, E&O, and rental addendum (if applicable). Do NOT add the 1004 SFR condition if this applies."
+  },
+  {
+   "id": "ff7ace2b-a207-48a7-ad37-2b096387b392",
+   "title": "SSN Verification",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Credit",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": "Deephaven ONLY",
+   "externalDescription": "Provide a legible copy of the Social Security card OR an executed SSA-89 (Authorization for the Social Security Administration to Release SSN Verification) for each borrower on the loan."
+  },
+  {
+   "id": "3beded4e-238d-4096-b76a-2dddeb57eec6",
+   "title": "Retirement/Pension",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide copies of the most recent retirement/pension income statements for all borrowers receiving retirement/pension income. If the retirement income is from a monthly distribution, the most recent asset statement is also required."
+  },
+  {
+   "id": "992d7cdf-095f-493d-a62c-2e16e7256d52",
+   "title": "Tax Transcripts",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": " 2 years' transcripts from the IRS must be reviewed by the Underwriter",
+   "externalDescription": " 2 years' transcripts from the IRS must be reviewed by the Underwriter"
+  },
+  {
+   "id": "06c3a984-bce8-4be8-a132-35ba8ada25c2",
+   "title": "Septic Inspection",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Must meet state/municipal standards"
+  },
+  {
+   "id": "6904df15-8de4-4293-a90d-3826471d37c6",
+   "title": "VA - Community Well Facility",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide verification of approval for the community well facilities by the appropriate state or local public utility and health authorities."
+  },
+  {
+   "id": "7c1bc457-71db-477a-ad4a-394380523cd4",
+   "title": "Verification of Mortgage (VOM) - Subject property - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Please request a VOM from your bank confirming on-time payments. If your bank has a specific email address to submit the request, feel free to share it and we\u2019ll send the request directly. (Note: This may take some time to receive, so we recommend reaching out to your bank as soon as possible.)"
+  },
+  {
+   "id": "b1200a9f-6e86-40a9-80f5-398b88555e45",
+   "title": "Bank Statements",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Assets",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": "Large or irregular deposits may require additional documentation. Check Guidelines for each investor",
+   "externalDescription": "Provide all pages of bank statements for a ___ month period.  "
+  },
+  {
+   "id": "f701ef5c-3176-487f-ae62-39d4301ca6ee",
+   "title": "MIC / LGC",
+   "conditionType": "Post-Closing",
+   "internalId": "PC",
+   "category": "Miscellaneous",
+   "priorTo": "Purchase",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Mortgage Insurance Certificate / Loan Guaranty Certificate",
+   "externalDescription": "Mortgage Insurance Certificate / Loan Guaranty Certificate"
+  },
+  {
+   "id": "cb389122-d9dd-4088-a44a-3af7b6848d9a",
+   "title": "VOD - Verification of Deposit",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Assets",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Provide written verification of deposit evidencing a minimum of $_______  available.  Prove source of any large increases in average balance.",
+   "externalDescription": "Provide written verification of deposit evidencing a minimum of $_______  available.  Prove source of any large increases in average balance."
+  },
+  {
+   "id": "7d612653-c163-43f0-a3b3-3c7ea5837d56",
+   "title": "Order CDA",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": null
+  },
+  {
+   "id": "67fda649-988a-4441-9676-41ccb4660e4a",
+   "title": "FHA/V.A - Builder's Cert of Plans, Specs & Site",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "FHA/V.A. Builder's Certification of Plans, Specifications & Site"
+  },
+  {
+   "id": "9324225b-a41d-49aa-a2e5-4210796f641d",
+   "title": "VA - Repairs Completed",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide evidence that all required repairs have been completed and certified by the appraiser."
+  },
+  {
+   "id": "032bf957-1088-4ce5-a850-4306699c0dad",
+   "title": "Change of Circumstance (COC)",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide all required Change of Circumstance (COC) documentation supporting any changes to APR, fees, loan terms, loan amount, or borrower-paid items. Re-disclosure must be issued and acknowledged within compliance timing prior to closing."
+  },
+  {
+   "id": "c0394af4-1c60-476c-9786-435c2cc93836",
+   "title": "Alimony/Child Support",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide a copy of the written legal agreement or court decree stating the terms of the child support or alimony income.  Also provide copies of six months bank statements or canceled checks to verify receipt."
+  },
+  {
+   "id": "d621db9f-2bcc-4c85-b679-45b6dc784002",
+   "title": "DocuSign Package - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Miscellaneous",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "A DocuSign folder has also been sent separately. Please review and sign all documents included."
+  },
+  {
+   "id": "dde3364a-1f4b-420b-8d16-46aae0a4cc89",
+   "title": "Bankruptcy",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Credit",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide documentation verifying the bankruptcy terms and satisfied/discharge dates."
+  },
+  {
+   "id": "9d711a2b-2cf3-4118-8f1e-4844dabf7632",
+   "title": "Liens Against Subject Property",
+   "conditionType": "Closing",
+   "internalId": "CL",
+   "category": "Property",
+   "priorTo": "Closing",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide evidence that all liens against subject property have been paid in full."
+  },
+  {
+   "id": "6270be4b-078f-4ca8-a193-48b49028f3a8",
+   "title": "Second Appraisal Required",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Additional appraisal is required to process this application for approval. An appraiser will be in contact with the borrower to schedule an appointment in order to complete the required appraisal on the subject property.",
+   "externalDescription": "Additional appraisal is required to process this application for approval. An appraiser will be in contact with the borrower to schedule an appointment in order to complete the required appraisal on the subject property."
+  },
+  {
+   "id": "95bad9f5-287c-496d-9e3a-4d41b4c6a520",
+   "title": "AHL Appraisal",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Appraisal report on FNMA form 1004|1025/SFR/PUD report with XML, AIR, SSRs, License, E&O, and rental addendum (if applicable). (If Condo \u2013 use 1073; do not add this condition.) Appraiser to provide 1007 rent schedule.Provide proof of delivery of appraisal report and any subsequent appraisal to borrower. If delivered electronically, record of borrower e-consent must be on file. If closing in the name of a LLC the appraisal to be in the name of the entity."
+  },
+  {
+   "id": "0ed8b5d1-b46c-42f2-8083-4d95016e5218",
+   "title": "Title Endorsements Required",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "The following endorsements are required on the title policy:",
+   "externalDescription": "The following endorsements are required on the title policy:"
+  },
+  {
+   "id": "2249c93e-5859-4016-87af-4de582956504",
+   "title": "Occupancy Affidavit",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Occupancy Affidavit to be completed and signed by all borrowers."
+  },
+  {
+   "id": "f9b3facf-f35f-41e1-801f-4ec84dde5097",
+   "title": "Contacts confirmation - ",
+   "conditionType": "Preliminary",
+   "internalId": "Pre",
+   "category": "Miscellaneous",
+   "priorTo": "Submittal",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Title, Insurance contacts",
+   "externalDescription": "Please confirm your preferred title company and provide your insurance agent\u2019s contact information"
+  },
+  {
+   "id": "ea9cebd6-0b60-4421-b69e-50261b010e3f",
+   "title": "Retirement Account Withdrawal Terms",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Assets",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide documentation verifying the terms for withdrawals from the retirement account."
+  },
+  {
+   "id": "f206eaa6-f4d5-48a5-b221-511eda6c7b7e",
+   "title": "Stock Statements",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Assets",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide the most recent stock or bond brokerage statement to verify assets required for down payment, closing costs, and/or reserves. If the funds will be used for down payment or closing costs, additional documentation may be required."
+  },
+  {
+   "id": "34f0c0bd-5113-4b8e-bf95-513a838ce4ca",
+   "title": "Appraisal",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint",
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Appraisal report on FNMA form 1004|1025/SFR/PUD report with XML, AIR, SSRs, License, E&O, and rental addendum (if applicable). (If Condo \u2013 use 1073; do not add this condition.) Appraiser to provide 1007 rent schedule.Provide proof of delivery of appraisal report and any subsequent appraisal to borrower. If delivered electronically, record of borrower e-consent must be on file."
+  },
+  {
+   "id": "4058f53d-4cb7-44fb-9857-53a7c10668fa",
+   "title": "Rate and Term Benefit",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": "Oaktree ONLY",
+   "externalDescription": "Net tangible benefit form to be completed."
+  },
+  {
+   "id": "52e58c84-a0d0-45e0-975d-58be92a6a80f",
+   "title": "Insurance Agent Contact - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Miscellaneous",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Please provide your insurance agent\u2019s contact information."
+  },
+  {
+   "id": "4c29dc60-cc1d-4a66-9417-5d35d43bb65e",
+   "title": "1099 Statements",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide copies of 1099s for previous 2 years"
+  },
+  {
+   "id": "72e99d36-0b18-4eb8-8dd9-5dd5d2d002fa",
+   "title": "VA - Live and Well Statement",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Miscellaneous",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Provide a Live and Well statement.",
+   "externalDescription": "Provide a Live and Well statement."
+  },
+  {
+   "id": "dd7c1bd6-e52c-4ad9-a67e-5e4f6bb102ba",
+   "title": "Business Purpose Affidavit",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Business Purpose Affidavit \u2013 Required on all Business Purpose loans."
+  },
+  {
+   "id": "80fa870e-609e-486c-bb42-606e2f1173d7",
+   "title": "Collect Insurance documentation ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": "Proof of Insurance, Invoice and RCE when applicable",
+   "externalDescription": null
+  },
+  {
+   "id": "9db44cf5-622c-44ec-b275-6094feebaf75",
+   "title": "USDA - Appraiser Certification Required",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": "Appraiser to certify on page 3 that property meets the requirements of HUD handbooks 4905.1 and 4150.2",
+   "externalDescription": null
+  },
+  {
+   "id": "a6f64a52-597c-4497-abd2-62f221d88877",
+   "title": "K1(s)",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide K1(s) "
+  },
+  {
+   "id": "cb076ae9-5abd-479f-b8e5-63f15bf60d5d",
+   "title": "Cash out LOE",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide a signed and dated letter of explanation detailing the purpose for the cash-out proceeds."
+  },
+  {
+   "id": "5dadf019-f8a8-4422-9104-644a7afbd6ce",
+   "title": "Housing History through Closing (Investor Specific)VOR",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Credit",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Remove if no VOR is required",
+   "externalDescription": "Provide proof rent has been paid current through closing with any of the following: Bank statement showing cleared, cancelled checks or VOR."
+  },
+  {
+   "id": "e711ae91-e669-4e39-bed9-66b8a4bb1519",
+   "title": "Final Fraud Report",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Processor to provide final fraud report to include all loan participants."
+  },
+  {
+   "id": "a43ca68c-7481-4b87-b473-67302fd6a1a5",
+   "title": "LOE Address Variations",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide signed and dated letter of explanation for address variations. (Only if variations show on the credit report or documentation.)"
+  },
+  {
+   "id": "2f7f926e-3593-4b86-99d6-67eeeda4e88f",
+   "title": "Verification of Rent",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide copies of the most recent 12 months cancelled checks to landlord for rent paid on current residence to evidence a satisfactory payment history."
+  },
+  {
+   "id": "34f7ddf5-46ef-424f-a15e-69185066ca3f",
+   "title": "Seller Contribution",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Seller contribution cannot exceed ____% ($__________).\r\n"
+  },
+  {
+   "id": "6c1e35d0-8952-42b5-9f6c-69199b43639b",
+   "title": "Identification",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Credit",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Government-issued ID",
+   "externalDescription": "Unexpired Government-issued ID"
+  },
+  {
+   "id": "fc784c92-81f8-4cd6-946a-69958b1dd1b8",
+   "title": "Amendatory Clause",
+   "conditionType": "Closing",
+   "internalId": "CL",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint",
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "FHA Amendatory Clause signed and dated by all parties"
+  },
+  {
+   "id": "054a7b2b-f8fc-4f8d-b216-69f26e6572d0",
+   "title": "Vesting \u2013 Individual",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Borrower(s) closing in individual name(s). Confirm vesting language on deed and note matches 1003."
+  },
+  {
+   "id": "18fd4f74-df20-407b-a3c5-6b62a03943b5",
+   "title": "Trust Funds",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Assets",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide a one month statement to verify trust fund assets. Trust documentation to verify access to trust funds."
+  },
+  {
+   "id": "cec06001-b1de-46c6-a593-6bba8fad2529",
+   "title": "Trust Documents",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Legal",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide a copy of the trust documents."
+  },
+  {
+   "id": "73c445c0-c32d-449f-8342-6ce70224b78d",
+   "title": "USDA - Site Value",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Site value cannot exceed 30% of total appraised value. If site value exceeds 30%, appraiser must confirm a site value over 30% is typical for the area and that property cannot be subdivided and value limitation exception must be approved by USDA.",
+   "externalDescription": "Site value cannot exceed 30% of total appraised value. If site value exceeds 30%, appraiser must confirm a site value over 30% is typical for the area and that property cannot be subdivided and value limitation exception must be approved by USDA."
+  },
+  {
+   "id": "d7a11aef-b004-421b-a2ed-6d92c02120e3",
+   "title": "Final Inspection For Completion Per Specs And Plans",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Final Inspection For Completion Per Specs And Plans"
+  },
+  {
+   "id": "a5fd3a05-39ac-4d55-906c-6dafe4d01b27",
+   "title": "Appraisal Expires",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": "Provide recertification of value Form 1004D-Appraisal Update and/or Completion Report",
+   "externalDescription": null
+  },
+  {
+   "id": "3b215475-d9c4-412f-a3c7-6dcbeb53c31c",
+   "title": "Termite/Pest Inspection",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Termite/Pest Inspection"
+  },
+  {
+   "id": "c61a9498-4c93-4086-af8c-6e51b1bf9f23",
+   "title": "Flood Insurance Evidence w/ Paid Receipt",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide evidence of flood insurance"
+  },
+  {
+   "id": "0e355b04-b898-4e2c-973c-6eefef80bb14",
+   "title": "VA - Disability Award Letter",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Current award letter for VA disability"
+  },
+  {
+   "id": "10b56d94-f0d5-4cf1-a1eb-6ff47fc6336b",
+   "title": "Bank Statements for Cash to Close and Reserves - ",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Assets",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Assets - Cash to clsoe and reserves: amount. Review Per investor",
+   "externalDescription": "Submit your most recent bank statements with all pages. This is to verify the estimated required assets of ________ (comprised of $____ cash to close and $_____ reserves).  Gift funds may not be used for reserves."
+  },
+  {
+   "id": "e955ffbc-bcb6-46bd-8c5d-7004ea8a14a0",
+   "title": "Letter of Explanation - Credit Inquiries on credit - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Please advise the reason for the following credit inquires reflecting on your credit report DAtexxx -  inquirycrednamexxxx; DAtexxx - inquirycrednamexxxx; DAtexxx - Inquirycrednamexxxx"
+  },
+  {
+   "id": "73710ab6-ba81-4795-90a8-70cb1cb071dc",
+   "title": "VOE - Verification of Employment",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Provide a written VOE to show a breakdown of (type) income.",
+   "externalDescription": "Provide a written VOE to show a breakdown of (type) income."
+  },
+  {
+   "id": "b1001498-f05c-45c9-9005-711d4cb07402",
+   "title": "FHA - Warranty Of Completion Form 92544 Signed",
+   "conditionType": "Closing",
+   "internalId": "CL",
+   "category": "Property",
+   "priorTo": "Closing",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "FHA Warranty of Completion Form 92544 signed by builder and borrower"
+  },
+  {
+   "id": "160b8a43-7f83-4c1b-ac6c-721b35ef926d",
+   "title": "Verification of Mortgage Subject propert -  Credit supplement - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "We will need 12 months of mortgage payment history for the subject property. Our credit verification company will contact you shortly and will connect with your bank to confirm payment history. Please expect a verification phone call for this process."
+  },
+  {
+   "id": "c7ad4b59-47c5-4a8c-8586-7539d91f7197",
+   "title": "Construction Contract, Plans, and Specs",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide fully executed building contract, plans, specs, and itemization costs."
+  },
+  {
+   "id": "9f7c0518-bd56-4b64-8b9d-769259e06d30",
+   "title": "Credit- LOE Inquiries",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Credit",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": "Oak Tree ONLY",
+   "externalDescription": "Borrower to provide a letter of explanation on all credit inquiries in the past  120 days. "
+  },
+  {
+   "id": "02061cca-6941-4dc7-81bb-79edd9f6eac9",
+   "title": "Payoff",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Credit",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide current payoff statement(s) with a date good through the date of closing/funding for the mortgage account(s) to be paid with this transaction. Account: ____________________________________ Acct#____________ "
+  },
+  {
+   "id": "67ee923a-6d19-4e7f-8aae-7be1d8643a78",
+   "title": "Property Review",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Underwriter to confirm the property is not unique in structure and the value is not overstated or unsupported."
+  },
+  {
+   "id": "11cec00a-7840-4707-b0ba-7c8024bd94bf",
+   "title": "CDA order - Credit card information and authorization - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "We need to order a secondary review on the appraisal. Price per file is aprox $92. Please provide authorization to charge your credit card on file or provide a new card  to place the order"
+  },
+  {
+   "id": "0ff75986-2ab0-4283-9077-8038bd811ecd",
+   "title": "Gift Letter",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Assets",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide a signed gift letter. The letter must state; the amount of the gift, funds do not need to be repaid, the donor's name, address, phone number and the relationship to recipient."
+  },
+  {
+   "id": "f3868e9e-6c27-4365-abc2-822373d4a727",
+   "title": "VOM-Subject",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Credit",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide a verification of mortgage for the mortgage secured against the subject property. "
+  },
+  {
+   "id": "46bd475e-018a-440f-b291-82bf9dbd1436",
+   "title": "Request appraisal update ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": "Per underwriter's notes",
+   "externalDescription": null
+  },
+  {
+   "id": "e4777812-62d8-4deb-b0c9-82dda6e40f93",
+   "title": "Vesting \u2013 LLC / Corporation- Borrower Certificate",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Obtain a fully executed Multi-Member Borrower Certificate when the operating agreement does not clearly grant signing authority or when no authorization amendment is provided."
+  },
+  {
+   "id": "a7aa78ca-31e0-466f-beb8-838d77852224",
+   "title": "AKA Affidavit",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint",
+    "ExternalPrint"
+   ],
+   "internalDescription": "(Only if variation shows on the credit report, fraud report, or any documentation.)",
+   "externalDescription": "To be completed for all borrowers, non-obligated spouses, and/or non-obligated co-owners."
+  },
+  {
+   "id": "c6c719b1-b373-4122-b9bf-83c47407f925",
+   "title": "Lock Confirmation- Locked Loan",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Interest Rate is currently locked. Provide investor lock confirmation. Underwriter to review and confirm lock, DSCR, PPP, all match up at final CTC. If not loan will be subject to new pricing."
+  },
+  {
+   "id": "e60eb71f-8c19-4614-8319-84e2c78337df",
+   "title": "Lease Agreement(s) ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Please provide the lease agreement(s) for subject property"
+  },
+  {
+   "id": "ac5f96c6-d3ba-4f35-9009-85c3cdb93edc",
+   "title": "Verification of Mortgage All Mortgages on Credit -  Credit supplement - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "We will need 12 months of payment history for all mortgages reflecting on your credit report. Our credit verification company will contact you shortly and will connect with your bank to confirm payment history. Please expect a verification phone call for this process."
+  },
+  {
+   "id": "399d267f-a463-4b1b-9dbd-860471f5728a",
+   "title": "VA - Cash On Hand",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Assets",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide documentation to verify available cash on hand used for closing and an explanation regarding the source. "
+  },
+  {
+   "id": "b2fea204-6710-44ee-a312-860dcb08d09c",
+   "title": "Title Estimated HUD / Pre-CD",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Title to provide estimated HUD or Pre-CD to include all closing agent/title agent, and lender fees."
+  },
+  {
+   "id": "46d62a5a-e9e5-4401-8991-86612cdee45b",
+   "title": "DSCR \u2013 Minimum Ratio 1.00",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Income",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Final DSCR must be 1.00 or greater."
+  },
+  {
+   "id": "6f7d0b05-0051-476c-bdb3-86afe9413ad9",
+   "title": "Verification of Mortgage Primary Housing -  Credit supplement - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Credit supplement Primary housing",
+   "externalDescription": "We will need 12 months of mortgage payment history for your primary residence. Our credit verification company will contact you shortly and will connect with your bank to confirm payment history. Please expect a verification phone call for this process."
+  },
+  {
+   "id": "5a3ce2b7-c8fb-493e-ad6e-87cc62b0b938",
+   "title": "Condo Project Approval",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Condominium Project must meet Program Requirements. Condo review will be completed upon receipt of all required Condo documents, Appraisal, title, and HO6."
+  },
+  {
+   "id": "14faa116-b196-4be6-84ab-88cae2444462",
+   "title": "Short Sale Approval",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide evidence of short sale approval"
+  },
+  {
+   "id": "a25d4833-42df-4990-9a00-8cbe7353f01b",
+   "title": "Personal Tax Returns",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide signed and dated returns with all pages and schedules"
+  },
+  {
+   "id": "6c320893-cc99-4143-b068-8d0743872a5c",
+   "title": "Divorce Decree / Child Support Order",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Legal",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide Copy Of Recorded Final Divorce Decree and/or Child Support Order"
+  },
+  {
+   "id": "b35e636c-766d-4882-a2ee-8f7ba73cf3e5",
+   "title": "Seller Affiliation Letter - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": null,
+   "internalDescription": "Purchase - LOE Affiliation with seller",
+   "externalDescription": "Please sign the  letter confirming you are not affiliated with the seller"
+  },
+  {
+   "id": "298176d2-bc09-4ae3-bcdd-8faa0c8f0442",
+   "title": "Appraisal Order - ",
+   "conditionType": "Preliminary",
+   "internalId": "Pre",
+   "category": "Property",
+   "priorTo": "Submittal",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Credit card info",
+   "externalDescription": "Please provide credit card information"
+  },
+  {
+   "id": "bbb02bc2-82fd-447d-aab6-9103bfc34514",
+   "title": "Verification of Rent (VOR) - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": "VOR",
+   "externalDescription": "We need your property management company to complete a VOR form. Please send us the following: - Name, phone number, and address and Email address of the management company collecting rent for your primary housing"
+  },
+  {
+   "id": "98a7c480-7735-48d7-a6c9-93b2c3a9ad04",
+   "title": "Credit \u2013 Housing History VOR",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Credit",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide most recent 12 months rental housing history. Options: 1) Third Party VOR or Private Party VOR with 12 months cancelled checks to support ontime payments. (Must document that it has been paid through the month of closing.)"
+  },
+  {
+   "id": "efe75135-08fe-4682-ac43-94c3ea20d968",
+   "title": "Addendum(s) To Purchase Contract",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide a signed addendum to the purchase contract."
+  },
+  {
+   "id": "d983626f-034f-4e0e-8d82-96b03504feac",
+   "title": "Title Vesting",
+   "conditionType": "Closing",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint",
+    "ExternalPrint"
+   ],
+   "internalDescription": "Title must be vested in borrower(s) individual names and not in a trust",
+   "externalDescription": "Vesting is approved as follows: ________.\r\n"
+  },
+  {
+   "id": "37d5df8a-f78b-45f1-b87e-99db5ab7cd94",
+   "title": "Business Tax Returns",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide the last two years signed and dated business tax returns including all pages and schedules, for any business with 25% or greater ownership."
+  },
+  {
+   "id": "8a3f375a-5f9c-43c4-b641-9ab8da69096c",
+   "title": "PMI Cert ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Miscellaneous",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Mortgage insurance will be required based on down payment or equity in the subject property at less than 20%.",
+   "externalDescription": "Mortgage insurance will be required based on down payment or equity in the subject property at less than 20%."
+  },
+  {
+   "id": "841c9e0b-b00f-4e8c-acdf-9ca07b448ef1",
+   "title": "Gift Receipt",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Assets",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide evidence borrower is in receipt of gift funds"
+  },
+  {
+   "id": "b1d1b2bb-1b42-4961-b590-9d12222c5a66",
+   "title": "COG",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": "Oak Tree ONLY",
+   "externalDescription": "COGS required Always even if it's a newly created entity"
+  },
+  {
+   "id": "aef59f75-3532-485d-904e-9dda158942db",
+   "title": "VVOE - Verbal Verification of Employment",
+   "conditionType": "Closing",
+   "internalId": "CL",
+   "category": "Income",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": "Verbal Verification of Employment must be obtained 5 days prior to funding the loan.  Closing to obtain employer contact information independently from documentation that is in file",
+   "externalDescription": "Verbal Verification of Employment must be obtained 5 days prior to funding the loan.  Closing to obtain employer contact information independently from documentation that is in file"
+  },
+  {
+   "id": "9948217c-beba-42ea-a8f3-9e340253fa26",
+   "title": "Vacant unit(s) - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Please provide Proof that the units are actively listed for rent."
+  },
+  {
+   "id": "b6b17b8b-6741-43c6-a98c-9e58b8aa53c3",
+   "title": "Verification of Improvements (<6 Mo Seasoning)",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": null,
+   "internalDescription": "Underwriter to confirm improvements support the appraised value increase.",
+   "externalDescription": "If the subject property has less than 6 months of ownership seasoning from the acquisition date, provide documentation verifying improvements / rehab work completed since acquisition: itemized scope of work, paid contractor invoices and receipts, copies of permits (where required), and before/after photos. "
+  },
+  {
+   "id": "c7312bed-3bc8-42dc-ba41-a3c23a463d52",
+   "title": "Condo Review Documentation",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": "This property is located in a condominium project.  Order Condo Docs",
+   "externalDescription": "Full review: HOA/Condo questionnaire, annual budget, balance sheet dated within 90 days, Master Insurance Policy (Property, Liability, Fidelity Coverage and Loss Payee), Appraisal, CC&Rs and any amendments, Bylaws. May be subject to additional documentation upon review."
+  },
+  {
+   "id": "4f6b1d40-fcd3-4574-995a-a460b023f19e",
+   "title": "USPS",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "USPS look-up for address and zip code for the subject property."
+  },
+  {
+   "id": "caee7e70-2b3d-4e88-96d9-a57196de5deb",
+   "title": "USDA - Form RD 3555-21 Signatures Required",
+   "conditionType": "Closing",
+   "internalId": "CL",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Borrower and Lender to sign all required USDA forms (Form RD 3555-21) as needed for submission to USDA",
+   "externalDescription": "Borrower and Lender to sign all required USDA forms (Form RD 3555-21) as needed for submission to USDA"
+  },
+  {
+   "id": "17d8197d-c824-4a26-846d-a59bfaf44472",
+   "title": "Picture ID w/ Social Security Number",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Miscellaneous",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Picture ID w/ Social Security Number"
+  },
+  {
+   "id": "a4c98ba6-8ad9-4cca-a165-a66462bb8b01",
+   "title": "VA - Child Care Letter",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Legal",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Child care letter signed by provider documenting actual child care cost"
+  },
+  {
+   "id": "e8a3beb7-38f9-4901-9099-a666093814e8",
+   "title": "Appraisal Field Review",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": "Appraisal Field Review To Be Ordered.  Field Reviewer Must Not Be Related To Appraiser",
+   "externalDescription": null
+  },
+  {
+   "id": "582543c6-1072-464d-8736-a7a8a3e94122",
+   "title": "Max PITIA",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "PITIA cannot exceed: $________."
+  },
+  {
+   "id": "e5c98071-b46a-460a-a60e-a8c4e71a0116",
+   "title": "Request verifcation of Rent",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": null
+  },
+  {
+   "id": "bd112694-948d-49f4-8044-ab00ac8f3313",
+   "title": "Final Inspection",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "A certification of completion is required to verify the home improvements have been completed."
+  },
+  {
+   "id": "d2bc2b15-da71-4d0d-b831-abbd21efd63f",
+   "title": "Collect Title commitment and related title documents",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": null
+  },
+  {
+   "id": "82525587-186c-4912-8355-ad4675ac5778",
+   "title": "Homeowner's Insurance Policy",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Homeowner's hazard insurance policy or dec page with correct mortgagee clause to include adequate coverages and deductible, with minimum of 3 months continued coverage. It must also have evidence of rent loss coverage equal to 6 months rental income and liability coverage for a minimum of $100,000. Mortgagee Clause to read: YS Capital Group, ISAOA/ATIMA 5 New Montrose\u00a0Avenue, #Bsmt Brooklyn, NY 11211. (Proof Hazard Premium is paid in full prior to funding. Any Hazard premium balance can be paid at closing.)"
+  },
+  {
+   "id": "11a5f892-64ec-41d2-80c6-b193012bdc69",
+   "title": "Private Road Maintenance Agreement",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide evidence that the Private Road or Common-Use Driveway is protected by a recorded permanent easement or recorded right-of-way from the property to a public road and that a provision exists for it s continued maintenance."
+  },
+  {
+   "id": "ae762aca-2f4a-45b8-8595-b366f1ee4fa9",
+   "title": "Earnest Money Deposit",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Assets",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Earnest Money Deposit verification",
+   "externalDescription": "Provide a copy of earnest money deposit check/wire receipt and corresponding asset statement showing proof of funds, along with a receipt from escrow/closing agent/attorney."
+  },
+  {
+   "id": "2a25787a-e061-4037-84d7-b6a861501875",
+   "title": "USDA - Pool Requirement",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "No swimming pools allowed on property (unless USDA specific requirements are met).",
+   "externalDescription": "No swimming pools allowed on property (unless USDA specific requirements are met)."
+  },
+  {
+   "id": "fdc4c27e-568b-4cfa-a96d-b82251d9ed46",
+   "title": "Funds to Close: Max",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Max Funds to Close:__________________. **Total Liquid Verified for Cash to Close:**__________________. Verified for Reserves:$__________________"
+  },
+  {
+   "id": "3b08b4f4-73da-4a72-bab1-b92a50a5344f",
+   "title": "Final Title Policy",
+   "conditionType": "Post-Closing",
+   "internalId": "PC",
+   "category": "Legal",
+   "priorTo": "Purchase",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Final Title Policy",
+   "externalDescription": "Final Title Policy"
+  },
+  {
+   "id": "4b1a3668-7a7b-4736-bf4d-ba2f9c338fc6",
+   "title": "SSN Verification - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Please provide a copy of your Social Security Card"
+  },
+  {
+   "id": "7945c1ca-ddc2-4df7-89c3-bab052da0959",
+   "title": "Appraisal \u2013 Review",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint",
+    "ExternalPrint"
+   ],
+   "internalDescription": "Investor Oak Tree or AHL- Required. They require a CDA regardless of SSR- Update",
+   "externalDescription": "Obtain SSRs for Fannie Mae's Collateral Underwriter (CU) and Freddie Mac's Loan Collateral Adviser (LCA). If risk score is not available or greater than threshold then a CDA is required. "
+  },
+  {
+   "id": "0bba39d8-6191-4287-9e56-bad722b45850",
+   "title": "VA - Statement of Military Service",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide a Statement of Military Service."
+  },
+  {
+   "id": "096cafdb-e478-4042-b161-bb693cafc898",
+   "title": "Collateral  Second Level Required",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": "Must be Reviewed by: ACooper and then her write up is to be sent to Esther Bochner | [contact redacted] \u2014 Final sign-off escalates to management as needed.She will escalate to President for review. ",
+   "externalDescription": "Appraisal value must be reviewed for accuracy. Reviewer to verify purchase date and previous purchase price against public records to confirm the rider is completed correctly. Any appraisal value exceeding 145% of the previous purchase price must follow the escalation route for final sign-off. "
+  },
+  {
+   "id": "71ecef1c-d823-43d7-b3b0-bde2247585db",
+   "title": "Verification of Mortgage Subject property and Primary housing-  Credit supplement - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Credit supplement",
+   "externalDescription": "We will need 12 months of payment history for both the subject property and your primary residence. Our credit verification company will contact you shortly and will connect with your bank to confirm payment history. Please expect a verification phone call for this process."
+  },
+  {
+   "id": "ad18f535-52d8-4183-a3f8-bf27770c9230",
+   "title": "Gift Funds",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Assets",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "If any portion of funds to close is being gifted, provide: (1) executed gift letter showing donor name, donor relationship, gift amount, and confirming no repayment is required; (2) proof of donor ability to gift (donor asset statement showing sourced funds); and (3) proof of transfer of gift funds from donor to borrower (or directly to title at closing). Borrower must also meet the minimum borrower own-funds contribution toward down payment / cash to close per investor matrix."
+  },
+  {
+   "id": "628dd6d0-01fd-4588-8374-bf65992f4cfc",
+   "title": "Mortgage Statements - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "All Mortgages on Credit report",
+   "externalDescription": "Please provide your Mortgage Statement for all Mortgages reflecting on your credit report. creddxxx acc#xxxx"
+  },
+  {
+   "id": "dade4d80-a65e-47f6-9451-c498e8c0dd83",
+   "title": "VA - Certificate of Eligibility",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Miscellaneous",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Certificate Of Eligibility Documenting Full Entitlement"
+  },
+  {
+   "id": "96865b5b-6a7c-42de-8985-c4a7c2a7b7d9",
+   "title": "Proof Collections, Judgments, etc are paid",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Assets",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Supporting documentation as evidence there are no open collections/judgements"
+  },
+  {
+   "id": "a383eb30-7af7-4a7d-884d-cb59a55e06e3",
+   "title": "Max Cash to Close",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Maximum cash to close $________. If additional cash is required the loan file must be re-underwritten prior to funding showing sufficient assets to close."
+  },
+  {
+   "id": "be9e0381-61a9-4738-bab7-ce3f5f2e9084",
+   "title": "W2's",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide copy of W2's for the past 2 years"
+  },
+  {
+   "id": "4d6e0938-1458-4baa-9fa5-ceb69d69e9a0",
+   "title": "VA - Nearest Relative",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Legal",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Veteran To Provide Name, Address, Telephone Number & Relationship For Nearest Living Relative.  Statement Must Be Signed By Veteran"
+  },
+  {
+   "id": "a8313c81-e074-4f20-b0c3-cf97b00dbb21",
+   "title": "Vesting \u2013 LLC / Corporation",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide: Articles of Organization/Incorporation, Operating Agreement/Bylaws, EIN confirmation, Resolution/Authorization from entity authorizing loan and identifying authorized signatory. All members/managers with ______%+ interest must be identified."
+  },
+  {
+   "id": "ce39da00-8840-4955-aa90-d1df6b009269",
+   "title": "Seasoning Requirement - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "under 6 months - prove costs and improvements",
+   "externalDescription": "Please Provide a copy of the Closing Disclosure (CD)  and Appraisal from the original purchase.\r\nPlease provide Scope of work to prove imporovements"
+  },
+  {
+   "id": "138c6b9c-6300-41b1-a0d7-d1fa1b096992",
+   "title": "Credit Supplement",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint",
+    "ExternalPrint"
+   ],
+   "internalDescription": "Lender to obtain satisfactory credit supplement",
+   "externalDescription": "Lender to obtain satisfactory credit supplement"
+  },
+  {
+   "id": "9a57ec92-2428-4fc6-9e65-d4ab5d886d57",
+   "title": "REO Section",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Credit",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": "Oak Tree ONLY",
+   "externalDescription": "Provide updated 1003 with REO section completed in its entirety (including the Taxes, Insurance, HOA info) for the primary residence and provide a LOE language. Provide an LOE confirming that all expenses are escrowed and included in the attached mortgage payment, and that there is no HOA on any of the properties."
+  },
+  {
+   "id": "70b5c311-68b4-4e7c-bdd8-d57fdea0d1cf",
+   "title": "RCE",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": "Oak Tree ONLY",
+   "externalDescription": "Provide a replacement cost estimator for all loans. "
+  },
+  {
+   "id": "32a1d37a-1508-4801-a886-d59b201de4d0",
+   "title": "Mortgage Statement - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Primary housing",
+   "externalDescription": "Please provide your most recent mortgage statement for Your primary housing mortgage, credxxx acc #xxxx"
+  },
+  {
+   "id": "8e345661-5a21-4094-a554-d604766f1db6",
+   "title": "Order credit supplements",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": "as needed",
+   "externalDescription": null
+  },
+  {
+   "id": "38c11c8c-272f-4622-8ef6-d761d41cb1aa",
+   "title": "Seller Contribution",
+   "conditionType": "Closing",
+   "internalId": "CL",
+   "category": "Assets",
+   "priorTo": "Closing",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Seller contribution cannot exceed  ____ %  ($__________________)"
+  },
+  {
+   "id": "ffa5eada-12c2-4f9d-b554-d837d1c0b396",
+   "title": "Evidence Loan is Paid Off",
+   "conditionType": "Closing",
+   "internalId": "CL",
+   "category": "Credit",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide documentation verifying the following lien(s) has been paid in full and released. (                                )"
+  },
+  {
+   "id": "bdc968a4-9fbd-4ad2-879f-da645535e108",
+   "title": "USDA - GUS/Ratio Restrictions",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": "GUS (Guaranteed Underwriting System) Approval required or max ratios cannot exceed 29/41%. Increase to 31/43% allowed for home built post 1/2001",
+   "externalDescription": null
+  },
+  {
+   "id": "2439bf32-9bfc-45d5-a459-db5df33edc23",
+   "title": "Credit \u2013 Housing History (Investor Specific) VOR",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Credit",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": "NQMF ONLY   For Primary home, subject and depending on investor it may be other REO for DSCR. Also if reporting on the credit report must conditon for proof current through closing. ",
+   "externalDescription": "Provide most recent 12 months rental housing history. Options: 1) Third Party VOR or Private Party VOR with 12 months cancelled checks to support ontime payments. (Must document that it has been paid through the month of closing.) Also provide current lease fully executed. "
+  },
+  {
+   "id": "d7f33648-4859-4b95-99b6-de3a9d866bc7",
+   "title": "VOR  -Verification of Rent",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Provide verification of rent history from landlord or property manager to evidence payment history for last 12 months has been satisfactory.",
+   "externalDescription": "Provide verification of rent history from landlord or property manager to evidence payment history for last 12 months has been satisfactory."
+  },
+  {
+   "id": "77c6cc84-4b16-4f49-8f2e-de8ca40643b4",
+   "title": "Customer Identification",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": " NOTE: Check 1003 to confirm type of ID required.",
+   "externalDescription": "Notary/Closing Agent  to complete Customer Identification Form and provide legible copy of driver's license or other acceptable form of identification."
+  },
+  {
+   "id": "cce2ce5a-5a2a-4f44-a9bb-df0fda130fb4",
+   "title": "Rider \u2013 PPP",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Transaction has a Prepayment Penalty. Confirm we have the PPP Note and if PPP Rider is selected on the Mortgage, confirm we have the PPP Rider. (Add if shows PPP on lock screen floating or locked.)"
+  },
+  {
+   "id": "ebcb26d7-bda8-4245-b3f8-e0a99376d74c",
+   "title": "VA - Termite Inspection Report & Invoice",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide a borrower signed clear termite inspection report and invoice dated within the last 90 days."
+  },
+  {
+   "id": "9927acc7-e404-4624-aa1f-e0da237d6a9a",
+   "title": "Sales Contract",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Property",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Fully executed sales contract including all addendums"
+  },
+  {
+   "id": "5e020792-bee2-4db9-8ea3-e1ac29071688",
+   "title": "Closing Doc Request",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Funding",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide completed closing docs package."
+  },
+  {
+   "id": "8db8184f-9851-436f-92e2-e2c0d2344c61",
+   "title": "Housing History through Closing VOM",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Credit",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": "OakTree ONLY",
+   "externalDescription": "Provide proof all mortgages reporting on the credit report are paid current through closing with any of the following a credit supplement, Bank statement showing cleared, Mortgage statement or VOM."
+  },
+  {
+   "id": "741f8af9-1b6a-40ed-8020-e4feec73b136",
+   "title": "Vesting \u2013 LLC / Corporation- Signature Block",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Subject loan is closing in the name of an entity. The signature block is to appear as shown below:"
+  },
+  {
+   "id": "dc3f0489-138f-4f91-9c22-e52873455154",
+   "title": "Coop Budget",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Current Year Budget with Annual Income, Expenses and Cash Reserve Balance"
+  },
+  {
+   "id": "91f098c9-2748-4acf-bf84-e5299b3f10f3",
+   "title": "Large Deposit(s)",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Assets",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide documentation reflecting the source of the large deposit into (bank/last four digits of account#) for (amount) on (date). "
+  },
+  {
+   "id": "59a5bc18-ddea-482a-9d1a-e6366253840a",
+   "title": "Pay Stub Loan(s) Letter of Explanation",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Written/Signed letter of explanation for any non 401(k) Loans on paystub"
+  },
+  {
+   "id": "8eb8ad40-05b1-4221-86bb-e65dbb7a30ef",
+   "title": "Letter of Explanation - Address Variations - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "We'll need a signed and dated Letter of Explanation covering the following address reported on your credit and/or fraud report: AdressXXXXXXXXXX; Adressxxxxxxxxxxxxx. The letter must include your affiliation to these addresses. You can either provide the details for each address, and we\u2019ll draft the letter for you ; or you may write and sign it yourself."
+  },
+  {
+   "id": "79648c01-e490-4587-9833-ea14f304a69e",
+   "title": "REO - ",
+   "conditionType": "Preliminary",
+   "internalId": "Pre",
+   "category": "Credit",
+   "priorTo": "Submittal",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "confirm address, creditor, open balance",
+   "externalDescription": "Please email the most recent monthly mortgage statements for each mortgaeg account showing on credit. I listed them below for easy reference - creditorxxxx - Account number: X6X93-8X79X2-56 - Approx monthly payment: $X3,6XX29 - Date opened: 0X/0X/20X20"
+  },
+  {
+   "id": "e075fd69-833b-48eb-87a4-eb17fb706504",
+   "title": "Request Gift Letter",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Assets",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": null
+  },
+  {
+   "id": "e686d8c9-aee7-4c4a-9d7e-eb4843d6f6ac",
+   "title": "VA - Benefits",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide a copy of the most recent VA income letter or distribution form for each borrower receiving VA benefits."
+  },
+  {
+   "id": "db4d8982-baff-455b-b665-eb9e1af8a332",
+   "title": "Customer Identification",
+   "conditionType": "Closing",
+   "internalId": "CL",
+   "category": "Miscellaneous",
+   "priorTo": "Closing",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Complete Customer Identification Form and provide legible copy of driver's license or other acceptable form of identification"
+  },
+  {
+   "id": "c522dc82-b7cc-4899-b9e9-ec2165fcbbd6",
+   "title": "VA - Soil Treatment Guarantee",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide evidence of soil treatment guarantee."
+  },
+  {
+   "id": "52dc7a66-0c28-4e36-8f44-ec4d53057f98",
+   "title": "Child Care Letter",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Credit",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide letter from child care provider to show amount of monthly child care"
+  },
+  {
+   "id": "c75d95bf-b9dd-499e-a988-edb6df4736ab",
+   "title": "Payoff Letter - ",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "For all existing Leins"
+  },
+  {
+   "id": "3cc58416-5674-4037-93b4-ee43d5d82da4",
+   "title": "Title Work",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Receipt and review of required title work with a 24 month chain of title. Outstanding liens and exceptions to the final policy have all been addressed.",
+   "externalDescription": "Provide Title Report with a 24-month chain of title, CPL, E&O, Tax Cert, Estimated HUD with lender/title/closing agent fees, and Title Wire Instructions.\r\n"
+  },
+  {
+   "id": "eea59160-6985-47d9-8ca3-f0264170ab7d",
+   "title": "Proof Manufactured Home taxed as real estate",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Proof Manufactured Home taxed as real estate"
+  },
+  {
+   "id": "410490b3-9eb2-4e7a-936f-f08e07bc0927",
+   "title": "Retirement Statements",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Assets",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide the most recent depository or brokerage retirement account statements to verify assets required for down payment, closing costs, and/or reserves. If the funds will be used for down payment or closing costs, additional documentation may be required."
+  },
+  {
+   "id": "81b53861-7747-43b1-8c02-f324f65faeda",
+   "title": "Tax Certificate",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Miscellaneous",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide Tax Certificate/Information sheet. If current tax bill is for vacant/unimproved loan, estimated account is required for proposed taxes. For properties with tax abatements, provide documentation of abatement details and expiration."
+  },
+  {
+   "id": "3c7cf04e-3359-401c-9ccf-f9277f5c4ae6",
+   "title": "Rental Income Receipt",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Income",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide proof ____ months of bank statements showing receipt of rental deposits.\r\n"
+  },
+  {
+   "id": "4935da42-bd82-4b05-8c82-f962dbd2ca1e",
+   "title": "Social Security Income",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Income",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "Provide a copy of most recent Social Security award letter for all borrowers receiving Social Security income. "
+  },
+  {
+   "id": "3c7b28dd-a5c9-43c3-a0d8-fac29de4b3dd",
+   "title": "VA - Benefit Related Debt Letter",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Miscellaneous",
+   "priorTo": "Approval",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint",
+    "InternalPrint"
+   ],
+   "internalDescription": "Benefit Related Debt Letter To Be Completed By VA To Document Any Disability And Funding Fee Waivers",
+   "externalDescription": "Benefit Related Debt Letter To Be Completed By VA To Document Any Disability And Funding Fee Waivers"
+  },
+  {
+   "id": "987f1cc9-37c7-4aa9-88ff-fed63a790e74",
+   "title": "Lease Agreement (Rent Primary)",
+   "conditionType": "Underwriting",
+   "internalId": "YSCAP",
+   "category": "Income",
+   "priorTo": "Docs",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "If the borrower is renting their primary home, we will require a fully executed lease agreement in addition to the VOR."
+  },
+  {
+   "id": "53e14563-b078-41d8-abc4-ff48ead681bd",
+   "title": "Termite Soil/Wood Treatment Guaranty",
+   "conditionType": "Underwriting",
+   "internalId": "UW",
+   "category": "Property",
+   "priorTo": "Closing",
+   "active": true,
+   "printDefinitions": [
+    "ExternalPrint"
+   ],
+   "internalDescription": null,
+   "externalDescription": "5 Year Termite Soil/Wood Treatment Guaranty"
+  }
+ ],
+ "observedOnLiveLoans": {
+  "loansWithConditions": 12,
+  "conditionsSeen": 348,
+  "byType": {
+   "Underwriting": 333,
+   "Closing": 14,
+   "Preliminary": 1
+  },
+  "byStatus": {
+   "Added": 195,
+   "Cleared": 124,
+   "Fulfilled": 12,
+   "Waived": 11,
+   "Rejected": 4,
+   "Received": 1,
+   "Requested": 1
+  },
+  "byCategory": {
+   "Miscellaneous": 128,
+   "Property": 91,
+   "Credit": 84,
+   "Legal": 15,
+   "Assets": 13,
+   "None": 11,
+   "Income": 6
+  },
+  "byPriorTo": {
+   "Docs": 207,
+   "Funding": 102,
+   "Approval": 34,
+   "Submittal": 3,
+   "None": 2
+  },
+  "bySource": {
+   "Other": 146,
+   "None": 100,
+   "Borrowers": 75,
+   "Internal": 12,
+   "Title / Settlement Agent": 11,
+   "Appraiser / AMC": 2,
+   "Insurance Agent": 1,
+   "Borrower": 1
+  },
+  "bySourceOfCondition": {
+   "ConditionList": 248,
+   "User": 66,
+   "AutomatedByUser": 18,
+   "Manual": 16
+  },
+  "statusOpen": {
+   "True": 213,
+   "False": 135
+  },
+  "conditionShape": [
+   "application",
+   "assignedTo",
+   "category",
+   "commentsCount",
+   "conditionType",
+   "createdBy",
+   "createdDate",
+   "daysToReceive",
+   "externalDescription",
+   "externalPrintDate",
+   "id",
+   "internalDescription",
+   "internalId",
+   "isRemoved",
+   "lastModifiedBy",
+   "lastModifiedDate",
+   "owner",
+   "printDefinitions",
+   "priorTo",
+   "recipient",
+   "source",
+   "sourceOfCondition",
+   "status",
+   "statusDate",
+   "statusOpen",
+   "title"
+  ]
+ }
+}

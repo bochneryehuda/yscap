@@ -1,0 +1,432 @@
+{
+ "meta": {
+  "generated": "2026-08-14",
+  "loansAnalyzed": 772,
+  "programFieldId": "1401",
+  "source": "live tenant"
+ },
+ "programs": [
+  {
+   "program": "Investor DSCR 30 YEAR FRM",
+   "loans": 457,
+   "family": "long-term (DSCR)",
+   "termMonths": {
+    "360": 457
+   },
+   "amortizationType": {
+    "Fixed": 457
+   },
+   "loanType": {
+    "Conventional": 457
+   },
+   "loanPurpose": {
+    "Cash-Out Refinance": 262,
+    "Purchase": 108,
+    "NoCash-Out Refinance": 58,
+    "None": 29
+   },
+   "occupancy": {
+    "Investor": 456,
+    "PrimaryResidence": 1
+   },
+   "interestOnly": {
+    "False": 444,
+    "True": 13
+   },
+   "interestOnlyMonths": {
+    "None": 444,
+    "12": 7,
+    "24": 3,
+    "120": 3
+   },
+   "units": {
+    "1": 231,
+    "2": 94,
+    "3": 50,
+    "None": 35,
+    "4": 26,
+    "5": 7
+   },
+   "propertyType": {
+    "Detached": 455,
+    "Condominium": 1,
+    "PUD": 1
+   }
+  },
+  {
+   "program": "Fix & Flip Purchase + reno",
+   "loans": 251,
+   "family": "short-term (RTL)",
+   "termMonths": {
+    "12": 246,
+    "18": 3,
+    "11": 1,
+    "24": 1
+   },
+   "amortizationType": {
+    "Fixed": 251
+   },
+   "loanType": {
+    "Conventional": 251
+   },
+   "loanPurpose": {
+    "Purchase": 241,
+    "Cash-Out Refinance": 5,
+    "NoCash-Out Refinance": 5
+   },
+   "occupancy": {
+    "Investor": 251
+   },
+   "interestOnly": {
+    "True": 251
+   },
+   "interestOnlyMonths": {
+    "12": 192,
+    "24": 59
+   },
+   "units": {
+    "1": 100,
+    "None": 51,
+    "2": 51,
+    "3": 31,
+    "4": 16,
+    "6": 2
+   },
+   "propertyType": {
+    "None": 207,
+    "Detached": 39,
+    "Attached": 3,
+    "DetachedCondo": 1,
+    "PUD": 1
+   }
+  },
+  {
+   "program": "DSCR I/O 30 Year FRM",
+   "loans": 26,
+   "family": "long-term (DSCR)",
+   "termMonths": {
+    "360": 26
+   },
+   "amortizationType": {
+    "Fixed": 26
+   },
+   "loanType": {
+    "Conventional": 26
+   },
+   "loanPurpose": {
+    "Cash-Out Refinance": 19,
+    "NoCash-Out Refinance": 6,
+    "Purchase": 1
+   },
+   "occupancy": {
+    "Investor": 26
+   },
+   "interestOnly": {
+    "True": 26
+   },
+   "interestOnlyMonths": {
+    "120": 26
+   },
+   "units": {
+    "1": 23,
+    "4": 1,
+    "2": 1,
+    "None": 1
+   },
+   "propertyType": {
+    "Detached": 26
+   }
+  },
+  {
+   "program": "(blank)",
+   "loans": 18,
+   "family": "other",
+   "termMonths": {
+    "360": 10,
+    "None": 7,
+    "12": 1
+   },
+   "amortizationType": {
+    "Fixed": 12,
+    "None": 6
+   },
+   "loanType": {
+    "Conventional": 12,
+    "None": 5,
+    "Other": 1
+   },
+   "loanPurpose": {
+    "Purchase": 8,
+    "Cash-Out Refinance": 5,
+    "None": 4,
+    "NoCash-Out Refinance": 1
+   },
+   "occupancy": {
+    "Investor": 13,
+    "None": 5
+   },
+   "interestOnly": {
+    "False": 17,
+    "True": 1
+   },
+   "interestOnlyMonths": {
+    "None": 17,
+    "12": 1
+   },
+   "units": {
+    "1": 7,
+    "2": 5,
+    "None": 4,
+    "3": 2
+   },
+   "propertyType": {
+    "None": 16,
+    "Detached": 2
+   }
+  },
+  {
+   "program": "Conventional Fixed",
+   "loans": 8,
+   "family": "other",
+   "termMonths": {
+    "None": 5,
+    "360": 3
+   },
+   "amortizationType": {
+    "Fixed": 8
+   },
+   "loanType": {
+    "Conventional": 8
+   },
+   "loanPurpose": {
+    "Purchase": 3,
+    "Cash-Out Refinance": 3,
+    "None": 2
+   },
+   "occupancy": {
+    "Investor": 3,
+    "None": 3,
+    "PrimaryResidence": 2
+   },
+   "interestOnly": {
+    "False": 8
+   },
+   "interestOnlyMonths": {
+    "None": 8
+   },
+   "units": {
+    "None": 6,
+    "2": 1,
+    "1": 1
+   },
+   "propertyType": {
+    "Detached": 8
+   }
+  },
+  {
+   "program": "DSCR I/O 40 Year FRM",
+   "loans": 3,
+   "family": "long-term (DSCR)",
+   "termMonths": {
+    "480": 3
+   },
+   "amortizationType": {
+    "Fixed": 3
+   },
+   "loanType": {
+    "Conventional": 3
+   },
+   "loanPurpose": {
+    "NoCash-Out Refinance": 2,
+    "Cash-Out Refinance": 1
+   },
+   "occupancy": {
+    "Investor": 3
+   },
+   "interestOnly": {
+    "True": 3
+   },
+   "interestOnlyMonths": {
+    "120": 3
+   },
+   "units": {
+    "1": 2,
+    "None": 1
+   },
+   "propertyType": {
+    "Detached": 3
+   }
+  },
+  {
+   "program": "Closed End Second",
+   "loans": 3,
+   "family": "other",
+   "termMonths": {
+    "360": 2,
+    "1": 1
+   },
+   "amortizationType": {
+    "Fixed": 3
+   },
+   "loanType": {
+    "Conventional": 3
+   },
+   "loanPurpose": {
+    "Cash-Out Refinance": 2,
+    "Purchase": 1
+   },
+   "occupancy": {
+    "Investor": 3
+   },
+   "interestOnly": {
+    "True": 2,
+    "False": 1
+   },
+   "interestOnlyMonths": {
+    "1": 1,
+    "None": 1,
+    "24": 1
+   },
+   "units": {
+    "3": 1,
+    "1": 1,
+    "2": 1
+   },
+   "propertyType": {
+    "Detached": 3
+   }
+  },
+  {
+   "program": "Investor DSCR 40 YEAR FRM",
+   "loans": 2,
+   "family": "long-term (DSCR)",
+   "termMonths": {
+    "480": 2
+   },
+   "amortizationType": {
+    "Fixed": 2
+   },
+   "loanType": {
+    "Conventional": 2
+   },
+   "loanPurpose": {
+    "Cash-Out Refinance": 2
+   },
+   "occupancy": {
+    "Investor": 2
+   },
+   "interestOnly": {
+    "False": 2
+   },
+   "interestOnlyMonths": {
+    "None": 2
+   },
+   "units": {
+    "6": 1,
+    "1": 1
+   },
+   "propertyType": {
+    "Detached": 2
+   }
+  },
+  {
+   "program": "DSCR ARM",
+   "loans": 2,
+   "family": "long-term (DSCR)",
+   "termMonths": {
+    "360": 2
+   },
+   "amortizationType": {
+    "Fixed": 2
+   },
+   "loanType": {
+    "Conventional": 2
+   },
+   "loanPurpose": {
+    "Purchase": 1,
+    "None": 1
+   },
+   "occupancy": {
+    "Investor": 2
+   },
+   "interestOnly": {
+    "True": 1,
+    "False": 1
+   },
+   "interestOnlyMonths": {
+    "120": 1,
+    "None": 1
+   },
+   "units": {
+    "None": 2
+   },
+   "propertyType": {
+    "Detached": 2
+   }
+  },
+  {
+   "program": "HELOC- Qualify Using Rate/Index",
+   "loans": 1,
+   "family": "other",
+   "termMonths": {
+    "360": 1
+   },
+   "amortizationType": {
+    "AdjustableRate": 1
+   },
+   "loanType": {
+    "HELOC": 1
+   },
+   "loanPurpose": {
+    "Cash-Out Refinance": 1
+   },
+   "occupancy": {
+    "PrimaryResidence": 1
+   },
+   "interestOnly": {
+    "False": 1
+   },
+   "interestOnlyMonths": {
+    "None": 1
+   },
+   "units": {
+    "3": 1
+   },
+   "propertyType": {
+    "Detached": 1
+   }
+  },
+  {
+   "program": "Closed End Second Alt Doc",
+   "loans": 1,
+   "family": "other",
+   "termMonths": {
+    "360": 1
+   },
+   "amortizationType": {
+    "Fixed": 1
+   },
+   "loanType": {
+    "Conventional": 1
+   },
+   "loanPurpose": {
+    "Cash-Out Refinance": 1
+   },
+   "occupancy": {
+    "Investor": 1
+   },
+   "interestOnly": {
+    "False": 1
+   },
+   "interestOnlyMonths": {
+    "None": 1
+   },
+   "units": {
+    "1": 1
+   },
+   "propertyType": {
+    "Detached": 1
+   }
+  }
+ ]
+}
