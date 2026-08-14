@@ -20,8 +20,28 @@ function sslConfig() {
   return env === 'production' ? { rejectUnauthorized: false } : false;
 }
 
+// Encompass (ICE Mortgage Technology / Ellie Mae) — Long-Term's OWN copy of the
+// integration config. Owner-authorized 2026-08-14 to bring the RTL Encompass
+// integration into Long-Term (recorded in docs/LONG-TERM-AUTHORIZED-COPIES.md).
+//
+// LT reads its OWN LT_ENCOMPASS_* env vars, FALLING BACK to the shared ENCOMPASS_*
+// ones — so LT works out of the box against the same Encompass tenant/credentials
+// as RTL ("copy the credentials"), but can be pointed at a separate Encompass or a
+// dedicated API user later WITHOUT touching RTL. No secret VALUES ever live in
+// code — only the env-var names. LT's Encompass connection is READ-ONLY (see
+// src/longterm/encompass/client.js); it has NO flood/write config, deliberately.
+const encompass = {
+  clientId:     process.env.LT_ENCOMPASS_CLIENT_ID     || process.env.ENCOMPASS_CLIENT_ID,
+  clientSecret: process.env.LT_ENCOMPASS_CLIENT_SECRET || process.env.ENCOMPASS_CLIENT_SECRET,
+  instanceId:   process.env.LT_ENCOMPASS_INSTANCE_ID   || process.env.ENCOMPASS_INSTANCE_ID,
+  username:     process.env.LT_ENCOMPASS_USERNAME      || process.env.ENCOMPASS_USERNAME,
+  password:     process.env.LT_ENCOMPASS_PASSWORD      || process.env.ENCOMPASS_PASSWORD,
+  baseUrl:      (process.env.LT_ENCOMPASS_API_BASE || process.env.ENCOMPASS_API_BASE || 'https://api.elliemae.com').replace(/\/+$/, ''),
+};
+
 module.exports = {
   env,
   databaseUrl: process.env.DATABASE_URL || '',
   sslConfig,
+  encompass,
 };

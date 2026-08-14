@@ -25,4 +25,10 @@ router.get('/health', (req, res) => res.json({ ok: true, product: 'long-term' })
 // Encompass"): /api/lt/encompass/milestones
 router.use('/encompass', require('./routes/encompass-milestones'));
 
+// The Encompass "memory": the unified field catalog, the Milestone Completion
+// rules, the request/authorization catalog, and the RTL reconciliation map —
+// read-only reference knowledge under /api/lt/encompass/{summary,fields,
+// completion-rules,requests,reconciliation-map,status}.
+router.use('/encompass', require('./routes/encompass-knowledge'));
+
 module.exports = { router };

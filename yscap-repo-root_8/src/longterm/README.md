@@ -67,6 +67,14 @@ same commit — the schema and the migration must always agree.
 - **`lt_encompass_milestones`** — the Encompass milestone / status catalog (the
   "memory of the long-term side of Encompass"), seeded by `db/547`. Read-only via
   `GET /api/lt/encompass/milestones[/:id]`.
+- **`encompass/`** — Long-Term's full Encompass integration + knowledge (owner-
+  authorized 2026-08-14). A self-contained **read-only** API client, plus the
+  "memory": the Milestone Completion rules, a unified field catalog (every known
+  Encompass field, with when/why it's needed and any RTL usage), the request/auth
+  catalog, and the RTL reconciliation map (labeled). All reference-only — nothing is
+  enforced. See **`docs/longterm/ENCOMPASS-INTEGRATION.md`** and `encompass/README.md`.
+  Served read-only at `/api/lt/encompass/{summary,fields,completion-rules,requests,
+  reconciliation-map,status}`.
 
 ## What is NOT built (future / owner-directed)
 
