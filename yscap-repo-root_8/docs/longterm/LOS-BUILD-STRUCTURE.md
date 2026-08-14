@@ -63,7 +63,7 @@ a private structure that has to be translated first.
 | Investors + dropdowns | `encompass/investors.js`, `dropdowns.js` | **Complete** — 117 spellings → 33 companies; 1,006 dropdowns |
 | Conditions + eFolder knowledge | `encompass/conditions.js` | **Complete** — the model is understood; nothing built on it yet |
 | Milestone catalog | `db/547`, `lib/encompass-milestones.js` | **Live** — 19 milestones with their TPO and borrower wording |
-| **The loan application data model** | `prisma/schema.prisma`, `db/548` | **Live** — 12 tables, 11 enums, proven against a real Postgres |
+| **The loan application data model** | `prisma/schema.prisma`, `db/549` | **Live** — 12 tables, 11 enums, proven against a real Postgres |
 | Settings layer | `settings/encompass-settings.js` | **Live** — 44 settings, 10 groups |
 | Read-only knowledge API | `routes/encompass-knowledge.js` | **Live** — 17 endpoints |
 

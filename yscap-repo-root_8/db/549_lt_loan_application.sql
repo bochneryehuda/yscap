@@ -1,5 +1,5 @@
 -- ============================================================================
--- LONG-TERM (LT) — db/548 — the loan application, laid out like a standard LOS.
+-- LONG-TERM (LT) — db/549 — the loan application, laid out like a standard LOS.
 --
 -- The SECOND Long-Term migration, and the one that turns the Encompass research
 -- into a data model. Creates 12 lt_* tables and 11 lt_* enum types covering the
