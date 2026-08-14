@@ -792,11 +792,15 @@ async function payIntake(db, order, { staffId = null, method: methodIn = null, c
   });
 
   if (method === 'NEW_CARD') {
+    // The card belongs to the FILE'S BORROWER even when a staffer types it — that
+    // is the rule the shared card chokepoint records, and leaving the owner blank
+    // here would file a card nobody is named on.
+    const owner = borrowerId || await borrowerIdFor(db, order.application_id);
     const out = await payment.saveThenCharge(db, order.application_id, {
       intakeToken: order.intake_token,
       companyToken: order.company_token,
       cardInput: card,
-      borrowerId,
+      borrowerId: owner,
       journal: journalCard,
     });
     if (out.ok) return settle(out, 'NEW_CARD');
@@ -831,6 +835,14 @@ async function borrowerEmailFor(db, appId) {
     const r = await db.query(
       `SELECT b.email FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
     return (r.rows[0] && r.rows[0].email) || null;
+  } catch (_) { return null; }
+}
+
+/** Whose card it is. Same discipline: unreadable is null, never an exception. */
+async function borrowerIdFor(db, appId) {
+  try {
+    const r = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId]);
+    return (r.rows[0] && r.rows[0].borrower_id) || null;
   } catch (_) { return null; }
 }
 
@@ -1010,5 +1022,5 @@ module.exports = {
   loadContext, buildPreview, placeOrder, payIntake, applyValues,
   listOrders, getOrder, orderDetail, journal, resolveChoices, catalogueFor,
   describeVendorError, sendScopeOfWorkRevision, scopeOfWorkState,
-  _internals: { addrParts, normalizeContacts, publicChoices, borrowerEmailFor },
+  _internals: { addrParts, normalizeContacts, publicChoices, borrowerEmailFor, borrowerIdFor },
 };

@@ -256,10 +256,135 @@ turnarounds, with fees) → build → live price **$489.99** → **submit** → 
 Two things worth knowing from that run:
 
 * their status went to **On Hold** shortly after ordering — their own workflow for
-  a renovation report whose scope-of-work document has not been attached. The desk
-  can send the file's scope of work through **"Send them a document"**.
+  a renovation report whose scope-of-work document has not been attached. The
+  identical order **with** the scope of work attached came back **"Ordered"**. That
+  measurement is why the scope of work is now attached automatically (§11).
 * `retrieve-response` and `pdf-file` answer **"not completed yet"** until the report
   is finished. That is an expected state and is not recorded as an error.
+
+---
+
+## 11. PAYING (owner-directed 2026-08-14)
+
+> *"We don't want to allow Add to Invoice. We don't want to allow ACH. We want the
+> system to automatically be able to put in the credit card details and process the
+> payment from the credit card that was entered under conditions. If there is no
+> credit card entered yet under conditions, you can pay it manually right over here,
+> put in the credit card information in our system, or we can send payment links."*
+
+Exactly three ways, in `src/richervalues/payment.js`. **Add to Invoice and ACH are
+not offered anywhere** — not as a config value, not as a control, not as an accepted
+request field.
+
+| | What it does |
+|---|---|
+| `CARD_ON_FILE` | charges the card on the file's **appraisal-card condition**, revealed through the one audited chokepoint (`view_appraisal_card` is written) |
+| `NEW_CARD` | a card typed at the moment of ordering: **saved onto the file first** through the shared `lib/appraisal-card.js` chokepoint — so paying also answers that condition — then charged |
+| `PAYMENT_LINK` | Richer Value emails the borrower their own hosted payment page; the order exists and starts once they pay |
+
+**The card is taken back off their account.** Their `add-card` is COMPANY-level, so
+a borrower's card added there is chargeable for anybody's order. The charge runs
+**add → pay → DELETE**, the delete in a `finally` so a failed *charge* cannot strand
+one either, and a failed delete is logged loudly rather than swallowed.
+
+**A card method with no card is not an error — it is the payment link.** Refusing
+would throw away an intake that already exists at the vendor. `payIntake` never
+throws for a payment problem; it records what happened in words on the row.
+
+### The one thing that is not in our hands — measured, not guessed
+
+Their `add-card` forwards the number straight to Stripe and **Stripe refuses it on
+their account**: *"Sending credit card numbers directly to the Stripe API is
+generally unsafe… To enable testing raw card data APIs, see …"*. A Stripe **token**
+cannot be used instead, because their own validator rejects it first: `"card_number"
+must be a number`. That is a setting on **their** Stripe account. The code is
+written the documented way and will work the day they enable it; until then that
+specific refusal is recognised, said in plain words with **tech@richervalues.com**
+named, and the order falls through to the payment link, which works today.
+
+---
+
+## 12. THE $400,000 GUARD (owner-directed 2026-08-14)
+
+> *"If any loan amount is more than $400,000, we don't recommend Richer Value, and
+> our investors might not accept… If there is no loan amount registered yet, just let
+> them know that it's better if they registered the loan amount before, because
+> Richer Value sees what we expect."*
+
+`src/richervalues/loan-guard.js` is **pure** and is the single definition, because
+both halves of a double confirmation have to agree about what is being confirmed —
+a threshold retyped in a React file is how a button comes to say one thing while the
+server does another.
+
+| Loan amount | What happens |
+|---|---|
+| ≤ $400,000 | orders normally, nothing said |
+| **> $400,000** | strict warning naming **both** numbers and the real cost (an investor may refuse the report, so the file could need a full appraisal on top) + a **double confirmation** whose two prompts deliberately say different things |
+| none registered | **advice, not a refusal** — register first, because they are *shown* what we expect — and the limit is stated |
+
+Exactly $400,000 is **inside** the product: the owner said *"more than"*.
+
+**The second confirmation is enforced on the server.** `placeOrder` refuses without
+the acknowledgement token, so a screen that never renders the warning cannot order.
+It is never a hard block — the owner's words are *"we don't recommend"*, a business
+judgement — and who ordered anyway, knowing, is on the audit row.
+
+---
+
+## 13. THE SCOPE OF WORK — attached, and kept in step
+
+> *"Auto-attach the scope of work."* … *"updated scopes of work can be sent for
+> revisions… we should be able to update the scope of work in their system if the
+> scope of work updates in our system."*
+
+`src/richervalues/scope-of-work.js`. **Which document counts** is the same
+definition the investor TPR package uses (`doc_kind='rehab_budget_export'`,
+`is_current`), so PILOT can never send an investor one scope of work and an
+appraiser another. PDF preferred (an appraiser opens it on a phone at a property),
+then the spreadsheet; the HTML snapshot never goes. With no tool export, a document
+a human filed on the scope-of-work condition is used — a contractor's own bid is
+still a scope of work, and sending it beats an order going On Hold.
+
+**A scope of work we cannot read never refuses the order.** The order goes and the
+row says the appraiser is waiting on the document.
+
+The **revision** reads what the order is DOING, never a clock:
+
+| Their order is | We |
+|---|---|
+| not started (intake / ordered / on hold / assigned / scheduled) | **update** the order's budget + re-send the file |
+| being worked on (inspected / in review) | **upload** the new file with a note |
+| finished (completed / delivered) | **reopen** with their `new-budget` reason — an ARV priced against a scope nobody is building any more is worse than no report |
+| cancelled / rejected / test | nothing |
+| a status we have never seen | **upload** — it can never undo work, and silence would not be safe |
+
+Nothing here ever **re-orders**: a reopen is their own revision of an order already
+paid for.
+
+---
+
+## 14. WHO IS ON THE ORDER
+
+They are not interchangeable, and mixing them up is how a lender's own valuation
+reaches a borrower:
+
+* **Report contact** — the loan officer, falling back to the processor. The finished
+  report carries **our** valuation, so this is never the borrower.
+* **Report Cc** — whichever of those two is not already the contact, so both people
+  who chase an appraisal see it land.
+* **Access contacts** — the borrower **and their cell phone**. A homeowner-led
+  inspection runs through a link Richer Value **texts**, so an access contact with no
+  mobile is an order that cannot start. This is the only place the borrower belongs.
+
+Every one of these is pre-filled and every one is changeable on the screen.
+
+### The communication surface, stated plainly
+
+Their API has **no message thread**. What exists is mapped onto what they do have:
+notes on **reopen** (a revision), **place-hold** / **release-hold**, a **cancel**
+reason, and **upload-documents** with a comment. There is no way to send Richer
+Value a free-form message and no way to read one back, and pretending otherwise
+would be worse than saying so.
 
 ---
 
