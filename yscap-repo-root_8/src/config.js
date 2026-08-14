@@ -1251,10 +1251,14 @@ module.exports = {
     defaultLicensing:      process.env.RV_DEFAULT_LICENSING === '1',
     defaultFloodCert:      process.env.RV_DEFAULT_FLOOD_CERT === '1',
 
-    // How the intake is paid so it becomes a real order. An invoiced client (their
-    // `report_invoicing` flag) uses ADD_TO_INVOICE; a card client uses a stored
-    // payment source. 'none' leaves the intake unpaid for a human to settle.
-    paymentMethod: (process.env.RV_PAYMENT_METHOD || 'ADD_TO_INVOICE').trim().toUpperCase(),
+    // How the intake is paid so it becomes a real order. The owner allows exactly
+    // THREE ways (2026-08-14): the card already on the file's appraisal-card
+    // condition, a card typed at the moment of ordering, or a payment link emailed
+    // to the borrower. ADD_TO_INVOICE and ACH are deliberately NOT offered — see
+    // `src/richervalues/payment.js`. 'NONE' leaves the intake unpaid so a human
+    // settles it, which is a real choice for a desk that wants a second look
+    // before the money moves.
+    paymentMethod: (process.env.RV_PAYMENT_METHOD || 'CARD_ON_FILE').trim().toUpperCase(),
 
     // Apply the vendor's returned As-Is + ARV to the loan file automatically
     // (owner-directed 2026-08-14). Off = the figures are still read and shown on

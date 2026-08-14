@@ -665,7 +665,12 @@ export const api = {
   rvHold:        (orderId, reason) => req('POST', `/api/richer-value/orders/${orderId}/hold`, { reason }),
   rvReleaseHold: (orderId, notes) => req('POST', `/api/richer-value/orders/${orderId}/release-hold`, { notes }),
   rvReopen:      (orderId, body) => req('POST', `/api/richer-value/orders/${orderId}/reopen`, body),
-  rvPay:         (orderId) => req('POST', `/api/richer-value/orders/${orderId}/pay`, {}),
+  // Paying takes a METHOD — the card on the file, a card typed now, or a payment
+  // link to the borrower. Add to Invoice and ACH are not offered anywhere.
+  rvPay:         (orderId, body) => req('POST', `/api/richer-value/orders/${orderId}/pay`, body || {}),
+  rvPaymentState: (appId) => req('GET', `/api/richer-value/files/${appId}/payment`),
+  rvScopeOfWork: (appId) => req('GET', `/api/richer-value/files/${appId}/scope-of-work`),
+  rvSendScopeOfWork: (orderId, note) => req('POST', `/api/richer-value/orders/${orderId}/scope-of-work`, { note: note || null }),
   rvSendPaymentLink: (orderId, body) => req('POST', `/api/richer-value/orders/${orderId}/send-payment-link`, body),
   rvSetInspection: (orderId, inspectionType) => req('POST', `/api/richer-value/orders/${orderId}/inspection-type`, { inspectionType }),
   rvSetReportType: (orderId, reportType) => req('POST', `/api/richer-value/orders/${orderId}/report-type`, { reportType }),

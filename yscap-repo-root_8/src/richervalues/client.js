@@ -104,7 +104,7 @@ function configured() {
     // tell us the order progressed except the poller.
     webhookReady: !!(c.webhookUrl && ((c.webhookUser && c.webhookPassword) || c.webhookToken)),
     autoApplyValues: c.autoApplyValues !== false,
-    paymentMethod: c.paymentMethod || 'ADD_TO_INVOICE',
+    paymentMethod: c.paymentMethod || 'CARD_ON_FILE',
     defaults: {
       reportType: c.defaultReportType || 'reno-arv',
       inspectionType: c.defaultInspectionType || 'interior-w-exterior',
@@ -427,6 +427,16 @@ module.exports = {
   submitOrder:   (form) => request('POST', '/api/v1/order/submit', { form, write: true, label: 'submitOrder' }),
   updateOrder:   (intakeToken, form) =>
     request('PUT', `/api/v1/order/${encodeURIComponent(intakeToken)}/update`, { form, write: true, label: 'updateOrder' }),
+  // A CARD, HANDED OVER AND THEN TAKEN BACK. Their add-card is COMPANY-level, so
+  // a borrower's card added here becomes a payment source on the YS Capital
+  // account until it is deleted again — which is why `payment.js` always runs
+  // add → pay → delete, and why the delete lives here beside the add rather than
+  // somewhere a future caller could forget about it.
+  addCard:       (body) => request('POST', '/api/v1/company/add-card', { body, write: true, label: 'addCard' }),
+  deletePaymentSource: (paymentSourceId) =>
+    request('DELETE', `/api/v1/company/payment-source/${encodeURIComponent(paymentSourceId)}`,
+      { write: true, label: 'deletePaymentSource' }),
+
   payForOrder:   (intakeToken, body) =>
     request('POST', `/api/v1/public/${encodeURIComponent(intakeToken)}/payment`, { body, write: true, label: 'payForOrder' }),
   sendPaymentLink: (intakeToken, body) =>

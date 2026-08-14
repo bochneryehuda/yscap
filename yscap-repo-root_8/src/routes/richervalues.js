@@ -30,6 +30,7 @@ const orderBuild = require('../richervalues/order-build');
 const reference = require('../richervalues/reference');
 const sync = require('../richervalues/sync');
 const documents = require('../richervalues/documents');
+const payment = require('../richervalues/payment');
 const xmlWaiver = require('../lib/appraisal/xml-waiver');
 
 router.use(requireAuth, requireStaff);
@@ -202,6 +203,16 @@ router.post('/files/:id/order', async (req, res) => {
       overrides: readOverrides(b),
       staffId: req.actor.id,
       confirm: b.confirm === true,
+      // The second half of the $400,000 double confirmation. A screen that does
+      // not render the warning cannot send its token, which is the point.
+      acknowledgements: Array.isArray(b.acknowledgements) ? b.acknowledgements
+        : (b.acknowledgements ? [b.acknowledgements] : []),
+      // How it gets paid, chosen at the moment of ordering. The card NEVER touches
+      // the loan file's ordinary columns or a log line — `payment.js` saves it
+      // through the shared encrypted chokepoint and hands it straight to them.
+      payWith: b.payWith || null,
+      card: b.card || null,
+      paymentLinkTo: b.paymentLinkTo || null,
     });
     await audit(req, 'rv_order_placed', 'application', appId, {
       orderId: out.order.id,
@@ -209,15 +220,24 @@ router.post('/files/:id/order', async (req, res) => {
       inspectionType: out.order.inspection_type,
       dryrun: !!out.dryrun,
       xmlWaiverApplied: !!(out.xmlWaiver && out.xmlWaiver.applied),
+      paymentMethod: out.order.payment_method || null,
+      scopeOfWorkAttached: !!(out.scopeOfWork && out.scopeOfWork.attached),
+      // WHO decided to order over the recommended limit, and that they were told.
+      loanAmountOverLimit: !!(out.loanGuard && out.loanGuard.level === 'warn'),
     });
     res.status(201).json({
       ok: true,
       dryrun: !!out.dryrun,
       order: out.order,
       xmlWaiver: out.xmlWaiver || null,
+      scopeOfWork: out.scopeOfWork || null,
+      loanGuard: out.loanGuard || null,
     });
   } catch (e) {
     if (e.code === 'confirm_required') return res.status(400).json({ error: e.code, detail: e.message });
+    if (e.code === 'loan_amount_over_limit') {
+      return res.status(422).json({ error: e.code, detail: e.message, loanGuard: e.loanGuard || null });
+    }
     if (e.code === 'incomplete') return res.status(422).json({ error: e.code, detail: e.message, missing: e.missing || [] });
     if (e.code === 'not_eligible') return res.status(422).json({ error: e.code, detail: e.message });
     if (e.code === 'rv_disabled' || e.code === 'rv_not_configured') return res.status(409).json({ error: e.code, detail: e.message });
@@ -429,12 +449,72 @@ router.post('/orders/:orderId/pay', async (req, res) => {
   const order = await loadOrder(req, res, req.params.orderId);
   if (!order) return undefined;
   if (order.paid_at) return res.status(409).json({ error: 'already_paid', detail: 'This order has already been settled.' });
+  const b = req.body || {};
+  const method = String(b.method || b.payWith || '').toUpperCase() || null;
+  if (method && !payment.METHODS.includes(method)) {
+    return res.status(400).json({
+      error: 'bad_method',
+      detail: `Richer Value orders are paid by ${payment.METHODS.join(', ')} — not by invoice and not by ACH.`,
+    });
+  }
   try {
-    const updated = await orderService.payIntake(db, order, { staffId: req.actor.id });
-    await audit(req, 'rv_order_paid', 'application', order.application_id, { orderId: order.id, method: updated.payment_method });
+    const updated = await orderService.payIntake(db, order, {
+      staffId: req.actor.id,
+      method,
+      card: b.card || null,
+      paymentLinkTo: b.paymentLinkTo || null,
+      borrowerId: b.borrowerId || null,
+    });
+    await audit(req, 'rv_order_paid', 'application', order.application_id, {
+      orderId: order.id, method: updated.payment_method, settled: !!updated.paid_at,
+    });
     const detail = await orderService.orderDetail(db, order.id);
-    return res.json({ ok: true, ...detail });
+    // `payIntake` never throws for a payment problem — it records what happened in
+    // words on the row, so the desk reads the outcome rather than a 500.
+    return res.json({ ok: !!updated.paid_at, settled: !!updated.paid_at, note: updated.last_error || null, ...detail });
   } catch (e) { return vendorFail(res, e, 'pay_failed'); }
+});
+
+// What paying will do, and what card the file already carries — never the number.
+router.get('/files/:id/payment', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const card = await payment.cardStatus(db, appId);
+  res.json({ methods: payment.METHODS, card });
+});
+
+// ---------------------------------------------------------------------------
+// THE SCOPE OF WORK: what would be sent, and sending it.
+//
+// Owner-directed (2026-08-14): *"updated scopes of work can be sent for revisions
+// … we should be able to update the scope of work in their system if the scope of
+// work updates in our system."* The PLAN is a read so the screen can say what will
+// happen — update the order, send the file, or reopen a finished report — before
+// anyone commits to it.
+// ---------------------------------------------------------------------------
+router.get('/files/:id/scope-of-work', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    res.json(await orderService.scopeOfWorkState(db, appId));
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/orders/:orderId/scope-of-work', async (req, res) => {
+  const order = await loadOrder(req, res, req.params.orderId);
+  if (!order) return undefined;
+  try {
+    const out = await orderService.sendScopeOfWorkRevision(db, order.id, {
+      note: (req.body && req.body.note) || null,
+      staffId: req.actor.id,
+    });
+    await audit(req, 'rv_sow_revision_sent', 'application', order.application_id, {
+      orderId: order.id, action: out.action || (out.plan && out.plan.action) || null, ok: !!out.ok,
+    });
+    if (!out.ok) return res.status(422).json({ error: 'sow_revision_failed', detail: out.error, plan: out.plan || null });
+    const detail = await orderService.orderDetail(db, order.id);
+    return res.json({ ok: true, action: out.action, why: out.why, dryrun: !!out.dryrun, ...detail });
+  } catch (e) { return vendorFail(res, e, 'sow_revision_failed'); }
 });
 
 // Ask THEM to collect from the borrower instead. Their own endpoint; used when a

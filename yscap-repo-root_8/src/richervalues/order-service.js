@@ -37,6 +37,9 @@ const orderBuild = require('./order-build');
 const results = require('./results');
 const reference = require('./reference');
 const client = require('./client');
+const payment = require('./payment');
+const loanGuard = require('./loan-guard');
+const scopeOfWork = require('./scope-of-work');
 const cfg = require('../config');
 const xmlWaiver = require('../lib/appraisal/xml-waiver');
 const { propertyTypeKey } = require('../lib/property-type');
@@ -177,12 +180,32 @@ async function loadContext(db, appId) {
     conditionUad: (appraisal && appraisal.condition_uad) || (warehouse && warehouse.condition_uad) || null,
   };
 
-  // Who the report goes to. The loan officer, then the processor — the two people
-  // who chase an appraisal. NEVER the borrower: this report carries the lender's
-  // own valuation and is a staff document.
-  const reportContact = a.loan_officer_id
-    ? { name: a.lo_name, email: a.lo_email, phone: a.lo_phone }
-    : (a.processor_id ? { name: a.pr_name, email: a.pr_email, phone: a.pr_phone } : { name: null, email: null, phone: null });
+  // ---- WHO IS ON THE ORDER (owner-directed 2026-08-14) -------------------
+  // *"We need: the loan officer, the processor for the report, a borrower, cell
+  // phone — recommended all the Max contacts possible."*
+  //
+  // They are NOT interchangeable, and mixing them up is how a lender's own
+  // valuation reaches a borrower:
+  //
+  //   report contact   the loan officer, falling back to the processor. This is
+  //                    where the FINISHED REPORT goes, and it carries our own
+  //                    valuation — so it is NEVER the borrower.
+  //   report Cc        the OTHER one of the two, so both people who chase an
+  //                    appraisal see it land. Also never the borrower.
+  //   access contacts  the borrower and their MOBILE. A homeowner-led inspection
+  //                    is done through a link Richer Value TEXTS, so the cell
+  //                    phone is the one that matters, and this is the only place
+  //                    the borrower belongs on the order.
+  const officer = { name: a.lo_name, email: a.lo_email, phone: a.lo_phone, role: 'Loan officer' };
+  const processor = { name: a.pr_name, email: a.pr_email, phone: a.pr_phone, role: 'Processor' };
+  const borrower = { name: a.b_full, email: a.b_email, phone: a.b_cell, role: 'Borrower' };
+
+  const reportContact = a.loan_officer_id && a.lo_email ? officer
+    : (a.processor_id && a.pr_email ? processor : { name: null, email: null, phone: null });
+  // The one who is NOT already the report contact, so nobody is sent to twice.
+  const reportCc = [officer, processor]
+    .filter((p) => p.email && p.email !== reportContact.email)
+    .map((p) => p.email);
 
   return {
     appId: a.id,
@@ -197,6 +220,7 @@ async function loadContext(db, appId) {
     rehabBudget: a.rehab_budget,
     loanAmount: a.loan_amount,
     borrowerName: a.b_full || null,
+    borrowerId: a.borrower_id || null,
     property: {
       ...pa,
       // The canonical key, not the raw stored label — "Condominium" and "Condo"
@@ -208,6 +232,10 @@ async function loadContext(db, appId) {
     specs,
     proposed: { aboveGradeSqft: a.sqft_post || null },
     reportContact,
+    reportCc,
+    contacts: { officer, processor, borrower },
+    borrowerEmail: a.b_email || null,
+    borrowerCell: a.b_cell || null,
     // Where each spec came from, so the screen can say so without re-deriving it.
     warehouseHit: !!warehouse,
     warehouseAddress: warehouse ? warehouse.display_address : null,
@@ -300,7 +328,12 @@ function resolveChoices(ctx, catalogue, overrides = {}, tokens = {}) {
     reportContactName: o.reportContactName,
     reportContactEmail: o.reportContactEmail,
     reportContactPhone: o.reportContactPhone,
-    reportCcUsers: o.reportCcUsers,
+    // Both of the two people who chase an appraisal see it land. A staffer's own
+    // list always wins — including an explicitly EMPTIED one, which is why this
+    // tests for null rather than falsiness.
+    reportCcUsers: o.reportCcUsers != null && o.reportCcUsers !== ''
+      ? o.reportCcUsers
+      : ((ctx && ctx.reportCc) || []).join(','),
     inspectionNotes: o.inspectionNotes,
     valuationNotes: o.valuationNotes,
     notes: o.notes,
@@ -325,7 +358,16 @@ function normalizeContacts(given, ctx) {
     return given.map((c) => ({ name: c && c.name, phone: c && c.phone, email: c && c.email }));
   }
   if (!ctx) return [];
-  const b = { name: ctx.borrowerName, phone: null, email: null };
+  // The borrower, WITH THEIR CELL PHONE (owner-directed 2026-08-14). The mobile
+  // is not decoration: a homeowner-led inspection is carried out through a link
+  // Richer Value texts, so an access contact with no mobile is an order that
+  // cannot start. The office numbers on the file are deliberately not used here —
+  // an appraiser standing at a door needs the person with the key.
+  const b = {
+    name: ctx.borrowerName,
+    phone: ctx.borrowerCell || null,
+    email: ctx.borrowerEmail || null,
+  };
   return b.name ? [b] : [];
 }
 
@@ -391,6 +433,20 @@ async function buildPreview(db, appId, { overrides = {}, refresh = false } = {})
   // how a surprise happens.
   const waiver = await xmlWaiver.loadWaiver(appId, db);
 
+  // The scope of work, NAMED but not READ. The preview only has to say whether one
+  // will ride along; reading a multi-megabyte file to draw a screen would be paid
+  // for on every keystroke of the builder.
+  const sow = await scopeOfWork.findScopeOfWork(db, appId);
+
+  // The $400,000 rule, judged here so the screen and the route can never disagree
+  // about what is being confirmed.
+  const guard = loanGuard.judgeLoanAmount(ctx.loanAmount);
+
+  // What paying will do, said in advance. A card is described by its last four and
+  // nothing else — a preview is not a reveal.
+  const card = await payment.cardStatus(db, appId);
+  const configuredMethod = String(RV().paymentMethod || 'CARD_ON_FILE').toUpperCase();
+
   return {
     vendor: 'richer_value',
     config: cfgd,
@@ -421,6 +477,34 @@ async function buildPreview(db, appId, { overrides = {}, refresh = false } = {})
     price,
     priceError,
     existingOrders: open.rows,
+    contacts: ctx.contacts,
+    // MEASURED against their training tenant: the same order WITH a scope of work
+    // came back "Ordered" and WITHOUT one came back "On Hold". So the screen says
+    // plainly which of the two this order is heading for.
+    scopeOfWork: {
+      present: sow.present,
+      filename: sow.present ? sow.filename : null,
+      source: sow.present ? sow.source : null,
+      why: sow.present
+        ? 'The scope of work on this file goes over with the order automatically.'
+        : sow.why,
+      warning: sow.present ? null
+        : 'Richer Value normally puts an order with no scope of work ON HOLD until they get one. Add the scope of work first if you can.',
+    },
+    loanGuard: guard,
+    payment: {
+      // Exactly the three the owner allows. Invoice and ACH are not offered here
+      // because they are not offered at all.
+      methods: payment.METHODS,
+      method: payment.METHODS.includes(configuredMethod) ? configuredMethod : 'CARD_ON_FILE',
+      card,
+      borrowerEmail: ctx.borrowerEmail,
+      note: card.present
+        ? (card.expired
+          ? `The card on this file (${card.brand || 'card'} ending ${card.last4}) has expired. Enter a new one, or send the borrower a payment link.`
+          : `The card entered on this file’s appraisal-card condition (${card.brand || 'card'} ending ${card.last4}) will be charged.`)
+        : 'There is no credit card on this file yet. Enter one here, or send the borrower a payment link.',
+    },
     xmlWaiver: {
       present: waiver.present,
       reason: waiver.reason || null,
@@ -475,7 +559,10 @@ async function journal(db, { orderRow, appId, action, method, path, request, res
 //      an order that then failed to place would be a claim about a file with
 //      nothing behind it.
 // ---------------------------------------------------------------------------
-async function placeOrder(db, appId, { overrides = {}, staffId = null, confirm = false } = {}) {
+async function placeOrder(db, appId, {
+  overrides = {}, staffId = null, confirm = false,
+  acknowledgements = [], payWith = null, card = null, paymentLinkTo = null,
+} = {}) {
   const cfgd = client.configured();
   if (!confirm) { const e = new Error('An order has to be confirmed before it is placed.'); e.code = 'confirm_required'; throw e; }
   if (!cfgd.enabled) { const e = new Error('The Richer Value integration is switched off.'); e.code = 'rv_disabled'; throw e; }
@@ -484,11 +571,39 @@ async function placeOrder(db, appId, { overrides = {}, staffId = null, confirm =
   const ctx = await loadContext(db, appId);
   if (!ctx) { const e = new Error('file not found'); e.code = 'not_found'; throw e; }
 
+  // ---- the $400,000 rule -------------------------------------------------
+  // The SECOND half of the double confirmation lives HERE, not on the screen: a
+  // confirmation a client can skip by not rendering it is not a confirmation. It
+  // refuses ONLY the over-limit case — the "no loan amount registered yet" advice
+  // is information, and refusing on it would stop ordering on every new file.
+  const guard = loanGuard.judgeLoanAmount(ctx.loanAmount);
+  const ack = loanGuard.checkAcknowledged(guard, acknowledgements);
+  if (!ack.ok) {
+    const e = new Error(ack.error);
+    e.code = ack.code;
+    e.loanGuard = guard;
+    throw e;
+  }
+
   const companyToken = await client.companyToken();
   const loanOfficerToken = await client.loanOfficerToken(overrides.loanOfficerToken);
   const reportType = overrides.reportType || RV().defaultReportType || 'reno-arv';
   const catalogue = await catalogueFor(db, companyToken, reportType);
   const choices = resolveChoices(ctx, catalogue, overrides, { companyToken, loanOfficerToken });
+
+  // ---- the scope of work rides along, automatically -----------------------
+  // Owner-directed, and measured: an order WITH one came back "Ordered", the same
+  // order WITHOUT one came back "On Hold". A staffer who attached their own file
+  // on the screen keeps it; otherwise the file's current scope of work is read and
+  // sent. A scope of work we cannot read is NOT a reason to refuse the order — the
+  // order still goes, and the row says the appraiser is waiting on the document.
+  let sowNote = null;
+  if (!(Array.isArray(choices.budgetFiles) && choices.budgetFiles.length)) {
+    const read = await scopeOfWork.readScopeOfWork(db, appId);
+    if (read.ok) choices.budgetFiles = [read.file];
+    else sowNote = read.error;
+  }
+
   const built = orderBuild.buildOrder(ctx, choices);
 
   if (built.blocked) { const e = new Error(built.blocked); e.code = 'not_eligible'; throw e; }
@@ -552,7 +667,13 @@ async function placeOrder(db, appId, { overrides = {}, staffId = null, confirm =
 
   // ---- 3 + 4. pay, and read back the order token ------------------------
   try {
-    order = await payIntake(db, order, { staffId });
+    order = await payIntake(db, order, {
+      staffId,
+      method: payWith,
+      card,
+      paymentLinkTo,
+      borrowerId: ctx.borrowerId || null,
+    });
   } catch (e) {
     // The intake EXISTS at the vendor — it is just unpaid, which is a state their
     // own screens show and a human can settle from the payment link. So this is
@@ -573,45 +694,156 @@ async function placeOrder(db, appId, { overrides = {}, staffId = null, confirm =
     order.xml_waiver_applied = true;
   }
 
-  return { order, dryrun: false, built, xmlWaiver: waived };
+  return {
+    order,
+    dryrun: false,
+    built,
+    xmlWaiver: waived,
+    // Said out loud rather than left for somebody to notice: an order with no
+    // scope of work is the one Richer Value puts On Hold.
+    scopeOfWork: sowNote
+      ? { attached: false, warning: `${sowNote} Richer Value may put this order on hold until they get one — send it from the order card as soon as you have it.` }
+      : { attached: true, warning: null },
+    loanGuard: guard,
+  };
 }
 
 /**
- * Turn the intake into a real order by settling it. An INVOICED client (their
- * `report_invoicing` flag, which our tenant carries) adds it to the invoice; a
- * card client charges a stored payment source. `none` deliberately leaves it
- * unpaid so a human settles it from the payment link — a real choice for a desk
- * that wants a second pair of eyes before the money moves.
+ * SETTLE THE INTAKE, so it becomes a real order.
+ *
+ * THE OWNER'S RULE (2026-08-14) — *"We don't want to allow Add to Invoice. We
+ * don't want to allow ACH."* — leaves exactly three ways, and this is the one
+ * place that chooses between them:
+ *
+ *   CARD_ON_FILE   charge the card on the appraisal-card condition.
+ *   NEW_CARD       a card typed at the moment of ordering; it is SAVED onto the
+ *                  file first (through the shared chokepoint, so the condition is
+ *                  filled by the act of paying) and then charged.
+ *   PAYMENT_LINK   Richer Value emails the borrower their hosted payment page. The
+ *                  order exists but does not start until they pay — which is the
+ *                  honest state, and the row says so.
+ *   NONE           leave it unpaid for a human to settle from the payment link.
+ *
+ * A CARD METHOD WITH NO CARD ANYWHERE IS NOT AN ERROR, IT IS THE PAYMENT LINK.
+ * The alternative — refusing the order because nobody has entered a card — would
+ * throw away an intake that already exists at the vendor and cost the desk the
+ * whole order. So the fall-through is recorded in words on the row: the order is
+ * placed, the borrower is asked to pay, and the desk can see exactly what happened.
+ *
+ * It NEVER throws for a payment problem. An unpaid intake is a state their own
+ * screens show and a human can settle; treating it as a failed order would hide an
+ * order that genuinely exists.
  */
-async function payIntake(db, order, { staffId = null } = {}) {
-  const method = (RV().paymentMethod || 'ADD_TO_INVOICE').toUpperCase();
+async function payIntake(db, order, { staffId = null, method: methodIn = null, card = null,
+  paymentLinkTo = null, paymentLinkCc = [], borrowerId = null } = {}) {
+  const method = String(methodIn || RV().paymentMethod || 'CARD_ON_FILE').toUpperCase();
   if (method === 'NONE') return order;
   if (!order.intake_token) return order;
 
-  const body = method === 'USE_EXISTING_SOURCE'
-    ? { payment_method: 'USE_EXISTING_SOURCE', payment_source_id: RV().paymentSourceId || null }
-    : { payment_method: 'ADD_TO_INVOICE' };
+  const j = (entry) => journal(db, {
+    orderRow: order.id, appId: order.application_id, staffId,
+    method: 'POST', path: `/api/v1/public/${order.intake_token}/payment`, ...entry,
+  });
 
-  let paid;
-  try {
-    paid = await client.payForOrder(order.intake_token, body);
-  } catch (e) {
-    await journal(db, { orderRow: order.id, appId: order.application_id, action: 'pay', method: 'POST',
-      path: `/api/v1/public/${order.intake_token}/payment`, request: body, response: e.body || null, ok: false, error: e.message, staffId });
-    throw e;
+  const settle = async (result, usedMethod) => {
+    if (result.dryrun) return order;
+    const tokens = result.orderTokens || [];
+    const orderToken = (tokens[0] && tokens[0].order_token) || null;
+    const r = await db.query(
+      `UPDATE rv_orders SET order_token=$2, payment_method=$3, paid_at=now(), status='ordered',
+              last_event_at=now(), last_error=NULL
+        WHERE id=$1 RETURNING *`, [order.id, orderToken, usedMethod]);
+    return r.rows[0];
+  };
+
+  const unpaid = async (usedMethod, note) => {
+    const r = await db.query(
+      `UPDATE rv_orders SET payment_method=$2, last_error=$3, last_event_at=now() WHERE id=$1 RETURNING *`,
+      [order.id, usedMethod, note]);
+    return r.rows[0];
+  };
+
+  // ---- the payment link, asked for or fallen back to ---------------------
+  const sendLink = async (why) => {
+    const to = paymentLinkTo || (await borrowerEmailFor(db, order.application_id));
+    if (!to) {
+      return unpaid('PAYMENT_LINK',
+        `${why}Richer Value has the order but it is not paid yet, and there is no borrower email on the file to send the payment link to. `
+        + 'Add an email, or open the payment link on the order card.');
+    }
+    try {
+      const out = await payment.sendPaymentLink(order.intake_token, { to, cc: paymentLinkCc, comment: 'Payment for your property valuation.' });
+      await j({ action: 'payment_link', ok: true, request: { to: out.sentTo }, response: {} });
+      return unpaid('PAYMENT_LINK',
+        `${why}Richer Value has emailed the payment link to ${Array.isArray(out.sentTo) ? out.sentTo.join(', ') : out.sentTo}. `
+        + 'The order starts once it is paid.');
+    } catch (e) {
+      await j({ action: 'payment_link', ok: false, error: e.message, response: e.body || null });
+      return unpaid('PAYMENT_LINK', `${why}The payment link could not be sent: ${describeVendorError(e)}. Use the payment link on the order card.`);
+    }
+  };
+
+  if (method === 'PAYMENT_LINK') return sendLink('');
+
+  // ---- a card ------------------------------------------------------------
+  const journalCard = (entry) => journal(db, {
+    orderRow: order.id, appId: order.application_id, staffId,
+    method: 'POST', path: '/api/v1/company/add-card', ...entry,
+  });
+
+  if (method === 'NEW_CARD') {
+    const out = await payment.saveThenCharge(db, order.application_id, {
+      intakeToken: order.intake_token,
+      companyToken: order.company_token,
+      cardInput: card,
+      borrowerId,
+      journal: journalCard,
+    });
+    if (out.ok) return settle(out, 'NEW_CARD');
+    // The card IS saved on the file even when the charge was refused (see
+    // payment.js) — re-typing it would be the second thing to go wrong in a row.
+    return sendLink(`${out.error} `);
   }
-  await journal(db, { orderRow: order.id, appId: order.application_id, action: 'pay', method: 'POST',
-    path: `/api/v1/public/${order.intake_token}/payment`, request: body, response: paid, ok: true, staffId });
 
-  if (paid && paid.__dryrun) return order;
+  // CARD_ON_FILE (and anything we do not recognise, which is the safest reading —
+  // it can only ever end at the payment link).
+  const onFile = await payment.readFileCard(db, order.application_id);
+  if (!onFile.present) {
+    return sendLink('There is no credit card on this file’s appraisal-card condition yet, so nothing could be charged. ');
+  }
+  // A reveal is a decryption, and a decryption nobody recorded is the one thing
+  // this data must never allow.
+  await auditCardView(db, order.application_id, staffId);
+  const out = await payment.chargeCard(db, {
+    intakeToken: order.intake_token,
+    companyToken: order.company_token,
+    card: { number: onFile.number, cvc: onFile.cvc, expMonth: onFile.expMonth, expYear: onFile.expYear },
+    journal: journalCard,
+  });
+  if (out.ok) return settle(out, 'CARD_ON_FILE');
+  return sendLink(`${out.error} `);
+}
 
-  const tokens = ((paid && paid.data && paid.data.order_tokens) || []);
-  const orderToken = tokens.length === 1 ? tokens[0].order_token : (tokens[0] && tokens[0].order_token) || null;
-  const r = await db.query(
-    `UPDATE rv_orders SET order_token=$2, payment_method=$3, paid_at=now(), status='ordered',
-            last_event_at=now(), last_error=NULL
-      WHERE id=$1 RETURNING *`, [order.id, orderToken, method]);
-  return r.rows[0];
+/** The borrower's email, for a payment link. Best-effort: no email is a state the
+ *  caller reports in words, never an exception. */
+async function borrowerEmailFor(db, appId) {
+  try {
+    const r = await db.query(
+      `SELECT b.email FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
+    return (r.rows[0] && r.rows[0].email) || null;
+  } catch (_) { return null; }
+}
+
+/** The audit row for revealing a stored card, written the same way the staff
+ *  reveal writes it. Never throws — an audit failure must not stop a payment that
+ *  is already under way, and the vendor journal records the charge either way. */
+async function auditCardView(db, appId, staffId) {
+  try {
+    await db.query(
+      `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+       VALUES ('staff',$1,'view_appraisal_card','application',$2,$3::jsonb)`,
+      [staffId || null, appId, JSON.stringify({ why: 'charging a Richer Value Hybrid Appraisal order' })]);
+  } catch (_) { /* the record is a record, never the thing that fails the action */ }
 }
 
 /**
@@ -717,9 +949,66 @@ async function orderDetail(db, id) {
   };
 }
 
+/**
+ * SEND THE UPDATED SCOPE OF WORK for one order — the owner's revision workflow.
+ *
+ * `revisionPlanFor` decides between updating the order, uploading the new file, and
+ * reopening a finished report with the new budget; this half only supplies the
+ * order's own budget and the journal. Returns the plan and the outcome so the desk
+ * is told what actually happened rather than just "sent".
+ */
+async function sendScopeOfWorkRevision(db, orderId, { note = null, staffId = null } = {}) {
+  const order = await getOrder(db, orderId);
+  if (!order) return { ok: false, error: 'That order could not be found.' };
+
+  const plan = scopeOfWork.revisionPlanFor(order);
+  if (plan.action === 'none') return { ok: false, error: plan.why, plan };
+
+  const budget = (await db.query(
+    `SELECT rehab_budget FROM applications WHERE id=$1`, [order.application_id])).rows[0];
+
+  const out = await scopeOfWork.sendRevision(db, order, {
+    budget: budget ? budget.rehab_budget : null,
+    note,
+    plan,
+    journal: (entry) => journal(db, {
+      orderRow: order.id, appId: order.application_id, staffId,
+      method: 'POST', path: '/api/v1/order/upload-documents', ...entry,
+    }),
+  });
+
+  if (out.ok) {
+    await db.query(
+      `UPDATE rv_orders SET last_event_at=now(), last_error=NULL WHERE id=$1`, [order.id]);
+    await db.query(
+      `INSERT INTO rv_status_events (rv_order_row, application_id, event_type, status, comment, occurred_at, dedupe_key)
+       VALUES ($1,$2,'sow_revision',$3,$4, now(), $5)
+       ON CONFLICT (rv_order_row, dedupe_key) DO NOTHING`,
+      [order.id, order.application_id, order.status || null,
+        `The updated scope of work was sent to Richer Value (${out.action}).`,
+        `sow:${order.id}:${Date.now()}`]);
+  } else {
+    await db.query(`UPDATE rv_orders SET last_error=$2 WHERE id=$1`,
+      [order.id, `The updated scope of work could not be sent: ${out.error}`]);
+  }
+  return { ...out, plan };
+}
+
+/** What a revision WOULD do, so the screen can say so before anyone presses it. */
+async function scopeOfWorkState(db, appId) {
+  const found = await scopeOfWork.findScopeOfWork(db, appId);
+  const orders = await db.query(
+    `SELECT id, status, intake_token, order_token, dryrun FROM rv_orders
+      WHERE application_id=$1 ORDER BY created_at DESC`, [appId]);
+  return {
+    document: found,
+    orders: orders.rows.map((o) => ({ id: o.id, status: o.status, plan: scopeOfWork.revisionPlanFor(o) })),
+  };
+}
+
 module.exports = {
   loadContext, buildPreview, placeOrder, payIntake, applyValues,
   listOrders, getOrder, orderDetail, journal, resolveChoices, catalogueFor,
-  describeVendorError,
-  _internals: { addrParts, normalizeContacts, publicChoices },
+  describeVendorError, sendScopeOfWorkRevision, scopeOfWorkState,
+  _internals: { addrParts, normalizeContacts, publicChoices, borrowerEmailFor },
 };

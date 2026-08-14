@@ -873,6 +873,13 @@ function RicherValueBuilder({ appId, cfg, onPlaced }) {
   const [err, setErr] = useState('');
   const [notice, setNotice] = useState('');
   const [showAll, setShowAll] = useState(false);
+  // How this order gets paid. It starts as whatever the server says it will do,
+  // and the staffer can change it before ordering. The card typed here NEVER
+  // becomes part of `overrides` — it goes over on its own, to be saved encrypted
+  // through the shared card chokepoint and charged, and it is wiped afterwards.
+  const [payMethod, setPayMethod] = useState(null);
+  const [newCard, setNewCard] = useState({ number: '', cvc: '', expMonth: '', expYear: '', zip: '' });
+  const [linkTo, setLinkTo] = useState('');
 
   const load = useCallback(async (ov) => {
     setErr('');
@@ -881,6 +888,14 @@ function RicherValueBuilder({ appId, cfg, onPlaced }) {
   }, [appId]);
 
   useEffect(() => { load({}); }, [load]);
+
+  // Adopt the server's own choice ONCE, then leave it alone — re-adopting on every
+  // preview refresh would undo the staffer's pick on the next keystroke.
+  useEffect(() => {
+    if (payMethod == null && preview && preview.payment && preview.payment.method) {
+      setPayMethod(preview.payment.method);
+    }
+  }, [preview, payMethod]);
 
   const setOverride = useCallback((key, value) => {
     setOverrides((prev) => {
@@ -894,22 +909,50 @@ function RicherValueBuilder({ appId, cfg, onPlaced }) {
   const clearOverrides = useCallback(() => { setOverrides({}); load({}); }, [load]);
 
   const place = useCallback(async () => {
+    const guard = (preview && preview.loanGuard) || null;
+    const pay = (preview && preview.payment) || {};
+
+    // THE DOUBLE CONFIRMATION. The owner asked for two, and they say DIFFERENT
+    // things on purpose: the first is about the number, the second is about what
+    // it costs us if an investor refuses the report. The server checks the token
+    // as well, so a screen that skipped this cannot order anyway.
+    const acknowledgements = [];
+    if (guard && guard.requiresDoubleConfirm) {
+      if (!(await askConfirm(guard.confirmPrompt, { title: guard.title, confirmLabel: 'Order it anyway' }))) return;
+      if (!(await askConfirm(guard.secondPrompt, { title: 'Are you sure?', confirmLabel: 'Yes, order it' }))) return;
+      acknowledgements.push(guard.ack);
+    }
+
     setBusy(true); setErr(''); setNotice('');
     try {
-      const out = await api.rvPlaceOrder(appId, { confirm: true, ...overrides });
+      const out = await api.rvPlaceOrder(appId, {
+        confirm: true,
+        acknowledgements,
+        payWith: payMethod,
+        card: payMethod === 'NEW_CARD' ? newCard : null,
+        paymentLinkTo: payMethod === 'PAYMENT_LINK' ? (linkTo || pay.borrowerEmail || null) : null,
+        ...overrides,
+      });
       if (out && out.ok) {
-        setNotice(out.dryrun
+        const bits = [out.dryrun
           ? 'Test mode — the order was built and written to the log. Nothing was sent to Richer Value.'
-          : 'Order placed with Richer Value.'
-            + (out.xmlWaiver && out.xmlWaiver.applied
-              ? ' The appraisal data file (XML) is now waived on this file — this report does not produce one.'
-              : ''));
+          : 'Order placed with Richer Value.'];
+        if (out.xmlWaiver && out.xmlWaiver.applied) {
+          bits.push('The appraisal data file (XML) is now waived on this file — this report does not produce one.');
+        }
+        // Whatever paying actually did is on the order row in words — including the
+        // fall-through to a payment link, which is a real outcome and not a failure.
+        if (out.order && out.order.last_error) bits.push(out.order.last_error);
+        else if (out.order && out.order.paid_at) bits.push('It has been paid, so it is a real order now.');
+        if (out.scopeOfWork && out.scopeOfWork.warning) bits.push(out.scopeOfWork.warning);
+        setNotice(bits.join(' '));
+        setNewCard({ number: '', cvc: '', expMonth: '', expYear: '', zip: '' });
         await onPlaced();
         await load(overrides);
       } else setErr(parseOrderFailure(null, out));
     } catch (e) { setErr(parseOrderFailure(e, null)); }
     setBusy(false);
-  }, [appId, overrides, load, onPlaced]);
+  }, [appId, overrides, load, onPlaced, preview, payMethod, newCard, linkTo]);
 
   const cat = (preview && preview.catalogue) || {};
   const opts = (preview && preview.options) || {};
@@ -1070,6 +1113,11 @@ function RicherValueBuilder({ appId, cfg, onPlaced }) {
             </WhyBox>
           ) : null}
 
+          <RvScopeOfWork sow={preview.scopeOfWork} />
+          <RvPayment
+            payment={preview.payment} method={payMethod} onMethod={setPayMethod}
+            card={newCard} onCard={setNewCard} linkTo={linkTo} onLinkTo={setLinkTo} />
+          <RvLoanGuard guard={preview.loanGuard} />
           <RvPlaceOrder cfg={cfg} preview={preview} busy={busy} onPlace={place} enabled={enabled} price={price} />
         </>
       ) : null}
@@ -1149,6 +1197,143 @@ function RvFieldRow({ row, options, value, onChange }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ── the scope of work, which decides "Ordered" vs "On Hold" ─────────────── */
+/*
+ * MEASURED against Richer Value's own training tenant: the same order WITH a scope
+ * of work came back "Ordered" and WITHOUT one came back "On Hold". So this is not a
+ * nicety on the screen — it is the difference between an appraiser starting today
+ * and the file sitting in their queue, and it is said BEFORE the button.
+ */
+function RvScopeOfWork({ sow }) {
+  if (!sow) return null;
+  return (
+    <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 10,
+      border: `1px solid ${sow.present ? LINE : WARN}`,
+      background: sow.present ? 'transparent' : '#FDF7EC' }}>
+      <div style={{ fontSize: 13, color: INK, fontWeight: 550 }}>
+        {sow.present ? 'The scope of work goes with this order' : 'No scope of work on this file yet'}
+      </div>
+      <div style={{ fontSize: 12, color: MUTED, marginTop: 3, lineHeight: 1.45 }}>
+        {sow.present
+          ? <>PILOT attaches <b>{sow.filename}</b> automatically, so Richer Value can value the property after the work.</>
+          : sow.why}
+      </div>
+      {sow.warning ? <div style={{ fontSize: 12, color: WARN, marginTop: 4 }}>{sow.warning}</div> : null}
+    </div>
+  );
+}
+
+/* ── how it gets paid ────────────────────────────────────────────────────── */
+/*
+ * Exactly the three ways the owner allows. Add to Invoice and ACH are not shown
+ * because they are not offered at all — a control for something the server refuses
+ * is worse than no control.
+ */
+const RV_PAY_LABEL = {
+  CARD_ON_FILE: 'Charge the card on this file',
+  NEW_CARD: 'Enter a card now',
+  PAYMENT_LINK: 'Send the borrower a payment link',
+};
+
+function RvPayment({ payment, method, onMethod, card, onCard, linkTo, onLinkTo }) {
+  if (!payment) return null;
+  const methods = payment.methods || ['CARD_ON_FILE', 'NEW_CARD', 'PAYMENT_LINK'];
+  const chosen = method || payment.method || 'CARD_ON_FILE';
+  const set = (k, v) => onCard({ ...card, [k]: v });
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <SectionTitle>How this order gets paid</SectionTitle>
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 6, fontSize: 13, color: INK }}>
+        {methods.map((m) => (
+          <label key={m} style={{ display: 'inline-flex', gap: 7, alignItems: 'center', cursor: 'pointer' }}>
+            <input type="radio" name="rv-pay" checked={chosen === m} onChange={() => onMethod(m)} />
+            {RV_PAY_LABEL[m] || m}
+          </label>
+        ))}
+      </div>
+
+      {chosen === 'CARD_ON_FILE' ? (
+        <div style={{ fontSize: 12, color: payment.card && payment.card.expired ? WARN : MUTED, marginTop: 6, lineHeight: 1.45 }}>
+          {payment.note}
+        </div>
+      ) : null}
+
+      {chosen === 'NEW_CARD' ? (
+        <>
+          <div style={{ fontSize: 12, color: MUTED, margin: '6px 0 8px', lineHeight: 1.45 }}>
+            This card is saved onto the file’s appraisal-card condition first — encrypted, the same way every card here
+            is — and then charged. So entering it also answers that condition.
+          </div>
+          <div className="aord-row3">
+            <Field label="Card number">
+              <input className="input" inputMode="numeric" autoComplete="off" value={card.number}
+                onChange={(e) => set('number', e.target.value)} />
+            </Field>
+            <Field label="Expiry month">
+              <input className="input" inputMode="numeric" placeholder="MM" value={card.expMonth}
+                onChange={(e) => set('expMonth', e.target.value)} />
+            </Field>
+            <Field label="Expiry year">
+              <input className="input" inputMode="numeric" placeholder="YYYY" value={card.expYear}
+                onChange={(e) => set('expYear', e.target.value)} />
+            </Field>
+          </div>
+          <div className="aord-row3">
+            <Field label="Security code">
+              <input className="input" inputMode="numeric" autoComplete="off" value={card.cvc}
+                onChange={(e) => set('cvc', e.target.value)} />
+            </Field>
+            <Field label="Billing ZIP">
+              <input className="input" inputMode="numeric" value={card.zip}
+                onChange={(e) => set('zip', e.target.value)} />
+            </Field>
+          </div>
+        </>
+      ) : null}
+
+      {chosen === 'PAYMENT_LINK' ? (
+        <Field label="Email the payment link to">
+          <input className="input" type="email" value={linkTo}
+            placeholder={payment.borrowerEmail || 'the borrower’s email'}
+            onChange={(e) => onLinkTo(e.target.value)} />
+        </Field>
+      ) : null}
+
+      {chosen === 'PAYMENT_LINK' ? (
+        <div style={{ fontSize: 12, color: MUTED, marginTop: 5, lineHeight: 1.45 }}>
+          The order is placed either way — Richer Value starts work once the borrower has paid.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* ── the $400,000 rule ───────────────────────────────────────────────────── */
+/*
+ * Owner-directed: over $400,000 we do not recommend this product and our investors
+ * might not accept it, so the warning is STRICT and ordering asks twice (the second
+ * confirmation is enforced on the server too). With no loan amount registered it is
+ * advice, not a refusal — a brand-new file must still be able to order.
+ */
+function RvLoanGuard({ guard }) {
+  if (!guard || guard.level === 'ok') return null;
+  const strict = guard.level === 'warn';
+  return (
+    <div style={{ marginTop: 14, padding: '11px 13px', borderRadius: 10,
+      border: `1px solid ${strict ? BAD : WARN}`,
+      background: strict ? '#FDF1F1' : '#FDF7EC' }}>
+      <div style={{ fontSize: 13.5, color: strict ? BAD : INK, fontWeight: 650 }}>{guard.title}</div>
+      <div style={{ fontSize: 12.5, color: INK, marginTop: 4, lineHeight: 1.5 }}>{guard.message}</div>
+      {strict ? (
+        <div style={{ fontSize: 12, color: MUTED, marginTop: 5 }}>
+          You will be asked to confirm this twice before the order goes.
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1297,9 +1482,31 @@ function RvOrderCard({ order, onChanged }) {
           </button>
         ) : null}
         {!order.paid_at && order.intake_token ? (
-          <button className="aord-btn" disabled={!!busy}
-            onClick={() => run('pay', () => api.rvPay(order.id), 'Settled — it is a real order now.')}>
-            {busy === 'pay' ? 'Settling…' : 'Settle this order'}
+          <>
+            <button className="aord-btn" disabled={!!busy}
+              onClick={() => run('pay', () => api.rvPay(order.id, { method: 'CARD_ON_FILE' }),
+                'Charged the card on this file — it is a real order now.')}>
+              {busy === 'pay' ? 'Charging…' : 'Charge the card on file'}
+            </button>
+            <button className="aord-btn" disabled={!!busy}
+              onClick={() => run('link', () => api.rvPay(order.id, { method: 'PAYMENT_LINK' }),
+                'Richer Value has emailed the borrower their payment link.')}>
+              {busy === 'link' ? 'Sending…' : 'Send the borrower a payment link'}
+            </button>
+          </>
+        ) : null}
+        {/* THE REVISION: our scope of work changed, so theirs has to. What it will
+            actually do — update the order, send the file, or reopen a finished
+            report — is decided by the order's own state on the server. */}
+        {order.intake_token && !order.dryrun && !['cancelled', 'rejected'].includes(order.status) ? (
+          <button className="aord-btn" disabled={!!busy} onClick={async () => {
+            if (!(await askConfirm(
+              'Send Richer Value the scope of work as it stands on this file now? If they have already finished the report, '
+              + 'they will be asked to redo the after-repair value against the new one.',
+              { title: 'Send the updated scope of work', confirmLabel: 'Send it' }))) return;
+            await run('sow', () => api.rvSendScopeOfWork(order.id), 'Richer Value has the updated scope of work.');
+          }}>
+            {busy === 'sow' ? 'Sending…' : 'Send the updated scope of work'}
           </button>
         ) : null}
         <span className="sep" />
