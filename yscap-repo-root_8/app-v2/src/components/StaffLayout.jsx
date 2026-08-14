@@ -4,6 +4,12 @@ import { useAuth } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
 import { subscribeChat } from '../lib/chatEvents.js';
 import { Brand } from './Layout.jsx';
+// LONG-TERM — the product switch. This is the mount seam the owner authorized on
+// 2026-08-14 ("rtl-import app-v2/src/components/StaffLayout.jsx" in the ledger);
+// the component itself lives in Long-Term's own folder and imports nothing from
+// RTL. It renders nothing at all when the long-term side is unreachable, so an
+// officer who has never heard of it is never shown a broken control.
+import ProductSwitch from '../longterm/ProductSwitch.jsx';
 import ChatBubble from './ChatBubble.jsx';
 import { useStaleBuild } from '../lib/useStaleBuild.jsx';
 import { RESEARCH_PAGES, inResearch as isResearchPath } from './ResearchNav.jsx';
@@ -276,6 +282,10 @@ export default function StaffLayout({ children }) {
   // The research desk's pages only appear in the sidebar while you are inside it,
   // so seven entries collapse to one without hiding where you can go from here.
   const inResearch = isResearchPath(useLocation().pathname);
+  // LONG-TERM: which side is on screen. The owner's switch "swaps the whole nav" —
+  // the two products are two systems, so showing RTL's nav beside a long-term
+  // pipeline would say the opposite of what the separation means.
+  const onLongTerm = useLocation().pathname.startsWith('/internal/lt');
   const [unread, setUnread] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   // Open sync-review count (scoped server-side: an LO sees THEIR rows' count).
@@ -424,6 +434,20 @@ export default function StaffLayout({ children }) {
         <div className="app-brandrow">
           <Brand to="/internal" ariaLabel="PILOT by YS Capital — Internal" console={consoleLabel} />
         </div>
+        <div style={{ padding: '6px 12px 10px' }} onClick={(e) => e.stopPropagation()}>
+          <ProductSwitch />
+        </div>
+        {onLongTerm ? (
+          /* LONG-TERM's own nav. Deliberately short: this side is a pipeline, the
+             people map behind it, and the sync that feeds it. */
+          <>
+            <div className="sb-sec">Long-term</div>
+            <NavLink className="sb-link" to="/internal/lt" end><NavIcon name="pipeline" />Pipeline</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/people"><NavIcon name="team" />People</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/conditions"><NavIcon name="conditions" />Condition Center</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/sync"><NavIcon name="health" />Sync</NavLink>
+          </>
+        ) : (<>
         <div className="sb-sec">Main</div>
         <NavLink className="sb-link" to="/internal" end><NavIcon name="pipeline" />Pipeline</NavLink>
         <NavLink className="sb-link" to="/internal/tasks"><NavIcon name="tasks" />My tasks</NavLink>
@@ -510,6 +534,7 @@ export default function StaffLayout({ children }) {
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/clickup" title="ClickUp Control Center — sync health, dry-run, backfill"><NavIcon name="clickup" />ClickUp</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/draw-rules" title="Inspection & fee rules — virtual vs on-site and the per-partner fee schedule for draws"><NavIcon name="pipeline" />Draw rules</NavLink>}
         {canViewAudit && <NavLink className="sb-link" to="/internal/audit" title="System audit log — every action across every file & borrower"><NavIcon name="audit" />Audit log</NavLink>}
+        </>)}
 
         <div className="sb-spacer" />
         <div className="sb-foot">
