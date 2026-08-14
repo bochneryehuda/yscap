@@ -5,7 +5,7 @@
 **Purpose:** External industry research to inform our own LOS build. Everything here is sourced from public
 web material; URLs are cited inline. This is a research document, not a spec.
 
-> Status legend: sections are appended incrementally as research completes.
+> Status: complete. All seven sections researched and written. ~110 cited sources.
 
 ---
 
@@ -1402,6 +1402,309 @@ pair-off terms), `hedge_position`, and `lock_extension_request` / `concession_re
 
 
 
-<!-- SECTION 6 -->
+---
 
-<!-- SECTION 7 -->
+## 6. Multi-Tenant / Sellable-LOS Architecture + Compliance
+
+### 6.1 Tenancy
+
+Three isolation models, and the industry consensus is a hybrid:
+
+| Model | Trade-off |
+|---|---|
+| **Separate database per tenant** | "Cleanest isolation but can be operationally heavy." Best for the largest/most regulated buyers. |
+| **Separate schema per tenant** | Middle ground; migrations get expensive at scale. |
+| **Shared schema + `tenant_id` on every row** | "Efficient but puts enormous pressure on your access control logic, because **one missed query filter and you have a very, very bad day.**" |
+
+The pattern most white-label SaaS converges on: *"Core services, shared logic, and infrastructure are
+centralized, while selected components — such as databases, integrations, or compliance-sensitive modules —
+are isolated per tenant."*
+([Clockwise: multi-tenant architecture 2026](https://clockwise.software/blog/multi-tenant-architecture/),
+[Developex: white-label SaaS architecture 2026](https://developex.com/blog/building-scalable-white-label-saas/),
+[AWS SaaS Architecture Fundamentals — tenant isolation](https://docs.aws.amazon.com/whitepapers/latest/saas-architecture-fundamentals/tenant-isolation.html),
+[Clerk: multi- vs single-tenant](https://clerk.com/blog/multi-tenant-vs-single-tenant))
+
+**Recommended for an LOS:**
+
+- Shared schema with `tenant_id` on every row, **enforced at the database layer** (Postgres Row-Level
+  Security), not in application code. Application bugs then cannot leak data across tenants.
+- **Per-tenant encryption keys** (envelope encryption) for PII/documents, so a tenant can be
+  cryptographically shredded on exit and so a key compromise is scoped.
+- **Per-tenant object storage prefixes** with tenant-scoped signed URLs; documents are the highest-risk asset.
+- **Escape hatch for enterprise buyers**: the ability to run a dedicated database/cluster for a single tenant
+  without forking the codebase. Sell it as a tier.
+- **Tenant hierarchy**, because lenders are not flat: `Tenant → Channel (retail/wholesale/correspondent) →
+  Region → Branch → Team → User`, plus **external orgs** (broker shops, title companies, AMCs) as first-class
+  parties with their own users. Broker shops must not see each other, ever.
+- **Noisy-neighbor controls**: per-tenant rate limits, job queues, and query budgets.
+- **Per-tenant data residency and retention policies**.
+
+### 6.2 Everything-as-settings
+
+This is the difference between an internal tool and a sellable product. Every one of these must be
+tenant-configurable *without a deploy*:
+
+- **Loan programs & products** — eligibility, guidelines, adjustment grids, required docs, condition sets.
+- **Workflow** — stages/milestones, allowed transitions, entry/exit criteria, required fields per stage,
+  SLA targets per stage.
+- **Fields** — custom fields with types, validation, conditional visibility, and **automatic availability in
+  pipeline columns, filters, reports, exports, and the API**. (Directly attacks Encompass's reporting-database
+  gap and MeridianLink's "lacks reportable fields" complaint.)
+- **Forms & screens** — layout per role, per program.
+- **Roles & permissions** — see 6.3.
+- **Conditions** — library, templates with merge fields, auto-clear rules, visibility.
+- **Pricing** — rate sheets, margins, adjustment rules, lock policies (§5.6).
+- **Documents** — templates, doc packages, disclosure packages, merge data, e-sign routing.
+- **Notifications & alerts** — triggers, recipients, channels, templates.
+- **Business rules / automations** — event → condition → action, authored in a no-code rule builder
+  (LoanPASS and Optimal Blue Rules Optimizer are the bar: one rule reused across products/investors).
+- **Integrations** — which vendors, which credentials, per channel/branch, with health monitoring.
+- **Calendars** — business hours, holidays, lock desk cutoffs, per tenant and per desk.
+- **Numbering** — loan number formats and sequences.
+- **Vocabulary** — tenants call things different names; stage/role/condition labels must be renameable.
+
+**Settings must themselves be versioned, effective-dated, diffable, promotable (sandbox → production), and
+auditable.** A loan should record which configuration version it was originated under — otherwise you cannot
+answer "why did this file behave that way in March?"
+
+### 6.3 Roles and permission matrix
+
+Do not model roles as an enum. Model:
+
+```
+permission          -- fine-grained verb on a resource: loan.read, loan.field.ssn.read,
+                    -- condition.clear, lock.approve, pricing.margin.edit, settings.write, …
+role                -- tenant-defined named bundle of permissions (Encompass calls these "personas")
+role_assignment     -- user × role × scope (org unit, branch, channel, or specific loans)
+data_scope          -- Own | Team | Branch | Channel | Tenant | Explicit-assignment
+field_policy        -- per-field read/write/mask by role (SSN, DOB, credit score, comp, margin)
+stage_policy        -- which roles can edit which fields at which stage
+external_policy     -- what a broker/borrower/title agent can see; default-deny
+```
+
+Requirements that are frequently missed:
+
+- **Field-level masking** (SSN, DOB, bank account numbers) with a "reveal" action that is itself audited.
+- **Stage-gated editability** — a locked loan's price fields become read-only except to the lock desk.
+- **Separation of duties** — the person who requests a concession cannot approve it; the underwriter who
+  raised a condition can clear it but a processor cannot; four-eyes on funding.
+- **Delegation / out-of-office** with expiry.
+- **Impersonation ("act as")** for support, heavily audited and time-boxed.
+- **External parties are principals**, not a special case bolted on.
+
+Encompass's persona model already lets admins *"create custom personas and restrict or grant access to
+individual screens, fields, and loan folders"* — that's the floor, not the ceiling.
+
+### 6.4 Audit trail
+
+Non-negotiable for a system of record:
+
+- **Append-only event log** for every state change: actor (user/system/vendor/AI agent), role, channel,
+  IP/device, timestamp, before/after values, reason code, correlation id.
+- **Field-level history** on the loan, queryable ("show every change to loan amount").
+- **Document lineage**: uploaded by, source, classification, versions, who viewed/downloaded, e-sign
+  envelope and certificate, retention/hold status.
+- **Disclosure/compliance timeline**: what was sent, to whom, when, delivery method, receipt evidence,
+  and the calculated regulatory deadline it satisfied.
+- **Decision provenance**: which guideline version, ruleset version, rate sheet, AUS response, and model
+  version produced each automated decision. With GSE AI-governance rules now live (below), **AI decisions
+  must be attributable and explainable**.
+- **Tamper evidence** — hash chaining or WORM storage for the log; exportable for exams and due diligence.
+- **Retention**: mortgage records generally 25–36 months minimum under various rules, but investors and
+  litigation practice push to 7+ years. Make retention a per-tenant, per-record-class policy with legal hold.
+
+### 6.5 SSO, identity, and API-first
+
+**Identity**
+- **SAML 2.0 and OIDC SSO** with SCIM user provisioning/deprovisioning — enterprise buyers will not
+  manually manage users, and offboarding must be automatic.
+- **MFA enforced**, with policy per role (mandatory for anyone who can move money or change pricing).
+- **Separate identity domains** for internal users, brokers, and borrowers, so a broker's password policy
+  isn't tied to the lender's IdP.
+- Session policy: idle timeout, device binding, IP allow-lists per tenant.
+- **Machine identities**: per-integration service accounts with scoped tokens, rotation, and their own
+  audit trail.
+
+**API-first**
+The reference implementation is **Encompass Developer Connect** — a REST platform covering *"loan
+manufacturing, loan pipeline, product and pricing, compliance, documents and eFolder, loan data extracts,
+and loan folders,"* with API docs, code examples, SDKs, template workflows, **sandbox environments**, and
+interactive API consoles.
+([ICE Developer Connect API reference](https://developer.icemortgagetechnology.com/developer-connect/reference/browse-apis),
+[API keys](https://developer.icemortgagetechnology.com/developer-connect/docs/get-an-api-key),
+[API-evangelist summary](https://github.com/api-evangelist/encompass-developer-connect))
+
+What we must ship:
+- Every UI action available as an API. Build the UI on the public API (no privileged back door).
+- **Webhooks** for every domain event, with signing, retries, replay, and a delivery log.
+- **Sandbox tenants** with seeded synthetic loans, sandbox vendor stubs, and a one-click reset. Encompass
+  and Optimal Blue both make sandbox access a headline developer feature; buyers' integration teams will ask.
+- Versioned API with deprecation policy; OpenAPI spec published.
+- **Bulk/export APIs and a data warehouse sync** — lenders want their data in Snowflake/BigQuery.
+- **MCP server / agent tooling.** Dark Matter shipped this in Feb 2026 for Empower. Ship it as a first-class,
+  permission-scoped surface: agents authenticate as principals, inherit role scopes, and every agent action
+  lands in the same audit log.
+
+**White-labeling**
+- Custom domain per tenant (and per channel: `brokers.lender.com`, `apply.lender.com`), with managed TLS.
+- Theme tokens (logo, colors, typography), email/SMS sender identity with SPF/DKIM/DMARC per tenant,
+  document/letterhead branding, and **co-branding** for LO + realtor/broker (nCino Mortgage Suite's
+  core selling point).
+- Tenant-controlled legal content: privacy policy, e-consent text, disclosures, licensing/NMLS footers.
+
+### 6.6 The compliance surface an LOS must track
+
+| Area | What the system must do |
+|---|---|
+| **TRID / Reg Z + Reg X** | LE within 3 business days of application; 7-business-day waiting period before consummation; CD received ≥3 business days before consummation; **revised LE within 3 business days of a changed circumstance, including a rate lock**; revised LE cannot be issued on/after the CD date and must be received ≥4 business days before consummation; tolerance buckets (0%, 10%, unlimited) with cure tracking; changed-circumstance reason + evidence on every redisclosure. ([CFPB TRID FAQs](https://www.consumerfinance.gov/compliance/compliance-resources/mortgage-resources/tila-respa-integrated-disclosures/tila-respa-integrated-disclosure-faqs/), [Wolters Kluwer](https://www.wolterskluwer.com/en/expert-insights/a-refresher-on-triggering-events-impacting-the-revised-loan-estimate), [LoanLogics](https://www.loanlogics.com/allowable-changes-circumstances-trid-need-know/)) |
+| **ECOA / Reg B + FCRA adverse action** | Notice required when an application is *"denied, countered or otherwise negatively impacted"*, with specific principal reasons (or notice of the right to request them), generally **within 30 days of a completed application**; separate FCRA §615 requirements including credit score disclosure; also the 30-day notice of incompleteness rule and record retention. Must handle counteroffers and withdrawals correctly. ([Philadelphia Fed: Adverse Action Notice Requirements](https://www.consumercomplianceoutlook.org/2013/second-quarter/adverse-action-notice-requirements-under-ecoa-fcra/), [Anders: common errors](https://anderscpa.com/learn/blog/ecoa-fcra-adverse-action-notice-requirements-errors/)) |
+| **HMDA / Reg C** | Collect and report the LAR: ULI, loan amount, action taken + date, demographic data (race, ethnicity, sex), income, collateral, rate spread, and the rest of the 2018 rule's field set. **2026 fields unchanged from 2025.** Coverage: ≥25 covered closed-end loans in each of the two preceding years (or ≥200 open-end LOCs) plus the asset threshold. **Annual LAR due March 1.** Must collect GMI at application even when the applicant declines, with the visual-observation rules. ([CFPB HMDA](https://www.consumerfinance.gov/compliance/compliance-resources/mortgage-resources/hmda-reporting-requirements/), [2026 Filing Instructions Guide](https://business.cch.com/BFLD/HMDA-2026-Filing-Instructions-Guide-10082025.pdf)) |
+| **NMLS** | NMLS IDs for company, branch, and individual LO stamped on the 1003 (§9) and required documents; state licensing matrix by entity and individual; **block origination in unlicensed states**; license expiration alerts; LO comp plan rules (Reg Z LO comp) with no comp varying by loan terms. |
+| **QM / ATR** | For consumer-purpose loans: documented evidence the lender considered and verified ability to repay; QM status (General/Price-based APR-APOR thresholds, Safe Harbor vs. Rebuttable Presumption, points-and-fees cap); HOEPA/high-cost and HPML tests with escrow and appraisal consequences. **For business-purpose DSCR loans, the critical control is the documented business-purpose determination itself** — model it as a per-loan test with evidence, not a global setting. |
+| **E-SIGN / UETA** | E-consent captured *before* electronic delivery, with hardware/software disclosure and demonstrable ability to access; consent withdrawal handling; tamper-evident audit certificates on every envelope. eNotes require the **MISMO SMART Doc® v1.02** format, a valid MIN, MERSCORP registry language, and **registration on the MERS® eRegistry immediately after closing**; the MERS eRegistry is *"the only Qualified eRegistry that meets the requirements of ESIGN and UETA."* An eNote ecosystem needs six pieces: UETA/ESIGN framework, investor requirements, eClosing platform, eVault, eNote language, MERS eRegistry. RON and IPEN are permitted subject to investor/agency rules. ([MERS eRegistry FAQ](https://www.mersinc.org/products-services/mers-esuite/eregistry/faq), [Fannie Mae eClosing/eMortgage FAQs](https://singlefamily.fanniemae.com/learning-center/delivering/faqs-eclosings-emortgages), [Ginnie Mae Digital Collateral FAQs](https://www.ginniemae.gov/issuers/issuer_training/Documents/digital_collateral_faqs.pdf)) |
+| **GLBA / Safeguards Rule** | Written information security program, designated qualified individual, risk assessment, encryption in transit and at rest, MFA, access controls, vendor oversight, incident response, and **breach notification**; privacy notices and opt-outs. Practical bar cited by buyers: contract terms requiring **vendor reporting of unauthorized access within 72 hours** and **customer notification within 30 days**. |
+| **SOC 2 (Type II)** | *"The mortgage banking industry has now entered a procurement environment in which a vendor's SOC 2 Type II report is necessary but no longer sufficient."* Plan for SOC 2 Type II across Security + Availability + Confidentiality, plus vendor-management evidence for your own subprocessors. |
+| **GSE AI governance (new, 2026)** | **Freddie Mac Bulletin 2025-16** live since **March 3, 2026**; **Fannie Mae Lender Letter LL-2026-04** issued **April 8, 2026**, effective **August 6, 2026** — each requires seller/servicers to govern vendor AI use, with Fannie expressly requiring management of subcontractor/vendor AI-ML risk *"no less protective"* than the letter's own requirements. **If we ship AI features, our lender customers inherit an obligation. We must supply model inventories, use-case documentation, human-in-the-loop evidence, and explainability artifacts as part of the product.** ([NMP: AI vendor audits](https://nationalmortgageprofessional.com/news/ai-vendor-audits-why-lenders-need-them-and-what-they-should-cover)) |
+| **Others to keep on the board** | Reg B appraisal-copy delivery; FCRA permissible purpose and credit-pull disclosures; OFAC/BSA-AML and beneficial-ownership screening (critical for entity borrowers); state high-cost/predatory lending tests; state-specific disclosures; flood (Biggert-Waters) notice and escrow; RESPA §8 marketing services / affiliated business; MLA/SCRA; UDAAP; CCPA/CPRA and state privacy laws; TCPA for borrower outreach. |
+
+### 6.7 Integration set a serious LOS needs
+
+| Category | What it does | Representative vendors / rails |
+|---|---|---|
+| **Credit** | Tri-merge, soft pulls, re-issue, credit supplements, score models, credit-report expiry | Equifax / Experian / TransUnion via CBCInnovis, Factual Data, MeridianLink Credit, Xactus, Informative Research; **soft-pull + monitoring for repeat sponsors** |
+| **AUS** | DU and LPA submissions (MISMO v3.4), findings retrieval, re-runs, casefile management | Fannie Mae DU (spec 1.9.x), Freddie Mac LPA (spec 5.1.x), USDA GUS, FHA TOTAL. Non-QM/DSCR uses **our own rules engine** (LoanPASS-style) instead |
+| **Verifications** | VOI/VOE/VOA, asset aggregation, tax transcripts (4506-C), SSA-89 | Plaid, Finicity/Mastercard, MX, Truv, AccountChek/Informative Research, The Work Number/Equifax, Point Service Providers / Halcyon for transcripts |
+| **Property valuation** | Appraisal ordering, AMC routing, status, revisions, **UCDP/EAD submission**, AVMs, rent estimates (1007/1025), desktop/hybrid, BPOs | Mercury Network, ServiceLink, Class Valuation, Reggora, ValueLink, ValuTrac; **UCDP** (conventional) and **EAD** (FHA) portals — auto-submit with hard-stop/warning handling ([Veros UCDP](https://www.veros.com/solutions/appraisal-management/ucdp), [Veros EAD](https://www.veros.com/solutions/appraisal-management/ead-portal), [ACI UAD/UCDP](https://www.aciweb.com/uaducdp/)); AVMs: HouseCanary, Clear Capital, CoreLogic; rents: AirDNA/Rabbu for STR |
+| **Title & settlement** | Title order, commitment, prelim, payoff, CPL/closing protection letter, wire instructions, closing scheduling, settlement-agent collaboration | Qualia, ResWare, SoftPro, Doma, First American, Fidelity/FNF, RamQuest; wire-fraud verification (CertifID) |
+| **Doc prep / closing docs** | Compliant disclosure and closing document generation, state-specific docs, eNote generation, redisclosure packages | Docutech/First American (Solex), DocMagic, Wolters Kluwer Expere, IDS. **For non-QM/BPL: business-purpose note/mortgage sets, guaranty, entity docs** |
+| **E-sign / e-close** | Envelopes, tabs, routing, audit certificates, RON/IPEN, eVault, eNote registration | DocuSign, Docutech Solex, DocMagic Total eClose, Notarize/Proof, Snapdocs, **MERS eRegistry** |
+| **Flood** | Standard Flood Hazard Determination Form, life-of-loan monitoring, zone/community data | CoreLogic, ServiceLink, LERETA, Xactus |
+| **Fraud / identity / AML** | Fraud scoring, misrepresentation detection, ID verification, OFAC/PEP/sanctions, **beneficial-ownership screening for entities**, undisclosed-debt monitoring | CoreLogic LoanSafe, First American FraudGuard, Sherlock, Persona/Socure, LexisNexis, Elementix-type entity/property intelligence |
+| **MI** | Rate quotes, order, certificate issuance, MI-specific conditions | Arch, Enact, Essent, MGIC, National MI, Radian; PMI Rate Pro (now inside LoanPASS) |
+| **Property tax / HOA / insurance** | Tax certs and escrow setup, HOA cert/dues, HOI/flood binder verification and mortgagee-clause checks, insurance tracking | LERETA, CoreLogic tax; insurance verification vendors |
+| **Entity & public records** | Secretary of State good standing, formation docs, UCC, litigation/lien search, deed/mortgage history, borrower portfolio and track record | SOS APIs, Middesk, CSC, Elementix/ATTOM/CoreLogic property-records rails |
+| **Pricing / secondary** | PPE, lock, best-execution, hedging, trading, investor commitment | Optimal Blue, Polly, Lender Price, ICE PPE, LoanPASS, MCT, Resitrader |
+| **Investor delivery / purchase** | Loan delivery files (MISMO/ULDD), doc imaging delivery, purchase advice, suspense/condition handling | Fannie Loan Delivery, Freddie Loan Selling Advisor, correspondent portals, private/aggregator delivery for DSCR (whole-loan tapes, securitization data files) |
+| **Servicing transfer** | Boarding files, goodbye/hello letters, escrow analysis handoff | MSP, Sagent, Servicing Digital, Mortgage Automator-style native servicing |
+| **Compliance testing** | TRID/HOEPA/HPML/QM/state high-cost testing engine, fee tolerance | ComplianceEase/ICE Compliance Analyzer, Mavent, Wolters Kluwer |
+| **Accounting / treasury** | Wire initiation and confirmation, funding ledger, warehouse line reporting, fee/GL export | Bank APIs, NetSuite/QuickBooks export, warehouse lender portals |
+| **CRM / marketing** | Lead capture, LO co-branding, borrower nurture, realtor/broker marketing | Total Expert, Salesforce/Jungo, HubSpot |
+| **Comms** | Email/SMS with per-tenant sender identity, call recording, secure messaging | SendGrid/SES, Twilio, Teams/Slack webhooks |
+| **BI / warehouse** | Reverse ETL to the tenant's warehouse, scheduled extracts | Snowflake, BigQuery, S3 |
+
+**Integration architecture principles**
+
+- **One adapter interface per category**, many vendor implementations. Tenants choose vendors in settings.
+  Never let a vendor's schema leak into the loan model.
+- **Every integration call is an auditable event** with request/response retained (redacted), status, latency,
+  cost, and retry history — **surfaced in the loan file**, since users say integrations are "where daily pain
+  lives."
+- **Idempotency and outbox pattern** for all outbound orders (never double-order an appraisal).
+- **Vendor sandboxes wired into our sandbox tenants** so a buyer can run an end-to-end test loan.
+- **Cost accounting per loan** — credit, appraisal, flood, fraud, verification, e-sign, PPE lock fees. Lenders
+  care intensely about cost-per-loan; almost no LOS reports it natively.
+- **Don't charge per integration.** It's the most-cited pricing complaint about Encompass.
+
+
+
+---
+
+## 7. Strategic Conclusions
+
+### 7.1 The seven biggest gaps in existing LOS products
+
+1. **No LOS is natively shaped for investor lending.** Every incumbent models a W-2 borrower buying a
+   primary residence. Entity borrowers are hacked in as "borrower + guarantor," employment sections can't be
+   removed, and there is no place for DSCR, market rent, prepay structure, sponsor experience, or portfolio
+   exposure. Specialists (LendingWise, Mortgage Automator, LoanPASS) exist precisely because the agency data
+   model breaks.
+
+2. **Custom data is second-class.** Encompass requires an admin to add a field to a separate *reporting
+   database* before it can even be a pipeline column; MeridianLink users complain it "lacks customizable
+   screens and reportable fields." Every lender's differentiating data lives outside the system's reporting
+   surface.
+
+3. **Condition management is a manual, un-instrumented mess.** Condition templates can't reference loan data.
+   Nobody can explain *why* their condition volume is high. Auto-clearing exists only as a third-party bolt-on
+   (Ocrolus, GA April 2026). Submission and review are not modeled as distinct events, so no SLA or
+   broker/underwriter scorecard is possible.
+
+4. **Pricing and lock records aren't auditable ledgers.** Prices are stored as fields, not as immutable
+   scenarios with adjustment-level attribution and reproducible inputs. "Why is my price 96?" and "reproduce
+   this quote from March" are hard questions everywhere.
+
+5. **Three pipelines, one loan.** Internal LOS, borrower POS, broker TPO portal are separate products with
+   sync problems. Blend's declining share (22%→19%→17%) and falling revenue per loan show the bolt-on POS
+   layer is being commoditized — the right answer is one system with three projections.
+
+6. **SLA/aging, cost-per-loan, and integration health are not native.** Shops rebuild them in spreadsheets
+   and BI tools.
+
+7. **Speed and time-to-value are terrible.** "Two minutes to open and close one loan." Implementations
+   "measured in quarters." Per-seat and per-integration pricing that compounds.
+
+### 7.2 What would make ours the best in the country
+
+**Positioning:** the LOS whose *native* object is a business-purpose investor loan — entity borrower,
+property cash flow, sponsor portfolio — that also does conventional and non-QM properly, sold as a
+multi-tenant product other lenders can buy.
+
+**The ten commitments:**
+
+1. **Property-and-sponsor-first data model.** `Party` is polymorphic (Individual | LegalEntity) with roles,
+   ownership graphs, beneficial-owner rollup, and good-standing tracking. A sponsor's whole portfolio and
+   exposure is a first-class object, not a report.
+
+2. **Declarative interview engine.** One schema compiles to the UI, the validations, the MISMO/URLA
+   projection, and the document checklist. DSCR, full-doc, and conventional are configurations, not
+   codebases. A DSCR borrower never sees an employment question. 1003 import on day one.
+
+3. **Everything reportable the instant it exists.** Any field — including tenant custom fields — is
+   immediately a pipeline column, a filter predicate, a report dimension, an export column, and an API field.
+   No separate reporting database, ever. This alone beats the two market leaders on their loudest complaint.
+
+4. **Condition Center as the flagship.** Coded condition library with merge fields that resolve against live
+   loan data; rule-triggered condition sets per program; expiry-aware conditions that re-open themselves;
+   three-tier auto-clearing (deterministic → AI-assisted → vendor-verified) with reversibility and model
+   attribution; document bursting and page-range matching; **submission and review as separate audited
+   events**; per-condition SLA clocks split by whose court the ball is in; and native "conditions per loan by
+   category, source, underwriter, and broker" analytics. Target ≥75% auto-clear on credit/income/asset
+   conditions — the published 2026 benchmark.
+
+5. **Pricing and locks as an immutable, hash-addressed ledger.** Every quote reproducible from
+   `(inputs_hash, rate_sheet_set, ruleset_version)`. Adjustment-level attribution so the price is explainable
+   line by line. **Ineligible products stored with human-readable reasons** — the single most valuable output
+   in non-QM/DSCR. Lock records are projections of an append-only event stream, with configurable lock
+   policies covering extensions, worst-case relocks, float-downs, repricing tolerance, and concession
+   approval matrices. Every lock event emits a disclosure obligation with a computed due date.
+
+6. **One system, three projections.** Internal, broker, and borrower views are permission-scoped views of the
+   *same* conditions, documents, statuses, and messages. No POS to buy, no TPO portal to sync.
+
+7. **SLA, aging, and cost-per-loan are native.** Every clock is a column, a filter, and a subscribable alert.
+   Kanban + list + calendar. Manager roll-ups with drill-down. Integration health and per-loan vendor cost
+   visible in the loan file.
+
+8. **Sellable from day one.** Postgres RLS tenant isolation with per-tenant keys; tenant hierarchy including
+   external broker orgs; versioned, effective-dated, sandbox-promotable settings; role/permission matrix with
+   field-level masking and separation of duties; SAML/OIDC + SCIM; append-only tamper-evident audit log;
+   white-label domains and branding; published OpenAPI with webhooks and real sandbox tenants; **SOC 2 Type II
+   on the roadmap before the first external customer**, because it is now "necessary but no longer sufficient."
+
+9. **Agent-native.** Dark Matter shipped an MCP server for Empower in Feb 2026 and Blend's Autopilot claims
+   4.5 hours of fulfillment work automated per loan. Build the agent surface as a permission-scoped principal
+   inside the same audit log from the start — and ship the AI governance artifacts (model inventory, use-case
+   docs, human-in-the-loop evidence, explainability) that Freddie Bulletin 2025-16 and Fannie LL-2026-04 now
+   force our lender customers to demand of us.
+
+10. **Transparent, predictable pricing and fast time-to-value.** Calyx publishes $3/application; Jupiter is
+    free until the loan funds; Encompass's compounding per-seat and per-integration fees are its most-cited
+    commercial complaint. Publish a price, never charge per integration, and make a new tenant able to
+    originate a test loan on day one instead of in a quarter.
+
+**The honest risk:** the incumbents' moat is integrations and investor delivery, not software quality. Our
+integration surface (§6.7) is the real work, and we should sequence it ruthlessly — credit, valuation +
+rent, flood, entity/public records, e-sign, doc prep, and investor delivery first; the agency AUS stack only
+when conventional volume justifies it.
+
+
