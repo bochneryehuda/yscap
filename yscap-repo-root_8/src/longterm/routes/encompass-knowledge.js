@@ -102,6 +102,30 @@ router.get('/anatomy', (req, res) => {
   catch (e) { console.error('[lt] encompass anatomy failed:', e && e.message); res.status(500).json({ error: 'Could not load the loan anatomy.' }); }
 });
 
+// GET /api/lt/encompass/terms — the term structures that actually exist in the book,
+// the PITI they build, and the DSCR arithmetic on top. Reference knowledge only.
+// ?term=360&io=120 describes a structure without classifying it into the nearest bucket.
+router.get('/terms', (req, res) => {
+  try {
+    const body = {
+      summary: enc.terms.summary(),
+      fields: enc.terms.TERM_FIELDS,
+      structures: enc.terms.TERM_STRUCTURES,
+      notPresent: enc.terms.TERM_STRUCTURES_NOT_PRESENT,
+      piti: enc.terms.PITI,
+      dscr: enc.terms.DSCR_MEASURED,
+      defects: enc.terms.KNOWN_TERM_DEFECTS,
+    };
+    if (req.query.term !== undefined) {
+      body.described = enc.terms.describeStructure(req.query.term, req.query.io);
+    }
+    res.json(body);
+  } catch (e) {
+    console.error('[lt] encompass terms failed:', e && e.message);
+    res.status(500).json({ error: 'Could not load the term structures.' });
+  }
+});
+
 // GET /api/lt/encompass/programs — the loan-program taxonomy (term, IO, purpose mix).
 router.get('/programs', (req, res) => {
   try { res.json(enc.programs); }

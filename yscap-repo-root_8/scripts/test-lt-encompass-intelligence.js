@@ -225,6 +225,82 @@ check(!!docType && docType.observed.includes('DSCR'),
   "the loan-doc-type drift ('DSCR' is not a valid code) is recorded");
 check(DD.isKnownValue('2867', 'NoDocumentation'), 'NoDocumentation is a known doc-type value');
 
+// ── 7. Term structures, PITI and the DSCR arithmetic ─────────────────────────
+// The owner named the shapes he expects ("10 years interest only and 40 year … regular
+// 30 year fix … 20 year term"). These pin what the LIVE book actually contains, so a
+// future edit cannot quietly invent a product the tenant has never written.
+const T = require(path.join(ROOT, 'src/longterm/encompass/terms'));
+
+check(T.TERM_STRUCTURES.length >= 6, `${T.TERM_STRUCTURES.length} term structures recorded`);
+check(T.TERM_STRUCTURES.every((s) => typeof s.plainEnglish === 'string' && s.plainEnglish.length > 30),
+  'every term structure is explained in plain words, not just numbers');
+
+const fixed30 = T.TERM_STRUCTURES.find((s) => s.key === 'fixed_30');
+check(fixed30 && fixed30.termMonths === 360 && fixed30.interestOnlyMonths === null,
+  'the 30-year fixed is 360 months with no interest-only period');
+check(fixed30 && fixed30.loans === 444, 'the 30-year fixed is the bulk of the book (444 loans)');
+
+const io30 = T.TERM_STRUCTURES.find((s) => s.key === 'io_10_then_30');
+check(io30 && io30.termMonths === 360 && io30.interestOnlyMonths === 120 && io30.amortizingMonths === 240,
+  "the owner's 30-year / 10-year-IO amortizes over the REMAINING 240 months");
+const io40 = T.TERM_STRUCTURES.find((s) => s.key === 'io_10_then_40');
+check(io40 && io40.termMonths === 480 && io40.interestOnlyMonths === 120 && io40.amortizingMonths === 360,
+  "the owner's 40-year / 10-year-IO amortizes over the remaining 360 months");
+
+// The interest-only period is in MONTHS. Reading 120 as years, or as a loan term,
+// would size the payment on a completely different loan.
+check(T.TERM_FIELDS.interestOnlyMonths.fieldId === '1177'
+  && T.TERM_FIELDS.interestOnlyMonths.unit === 'months',
+  'the interest-only period is field 1177 and is recorded in MONTHS');
+check(T.TERM_FIELDS.termMonths.fieldId === '4' && T.TERM_FIELDS.termMonths.unit === 'months',
+  'the loan term is field 4, also in months — a different field from the IO period');
+
+// What the owner named that the tenant does not contain must stay recorded as absent,
+// never quietly added as though we had seen it.
+const twenty = T.TERM_STRUCTURES_NOT_PRESENT.find((s) => s.termMonths === 240);
+check(!!twenty && twenty.loans === 0, 'the 20-year term is recorded as NOT present in the book');
+check(!T.TERM_STRUCTURES.some((s) => s.termMonths === 240),
+  'no 20-year structure is claimed as observed');
+check(!T.TERM_STRUCTURES.some((s) => s.termMonths === 120),
+  'no 10-year TERM is claimed — 120 in this book is always the interest-only period');
+
+// PITI: read the total, never rebuild it.
+check(T.PITI.totalFieldId === '912', 'the housing-expense total is field 912');
+check(T.PITI.components.length === 7, 'all seven PITI components are recorded');
+check(T.PITI.components.some((c) => c.fieldId === '228')
+  && T.PITI.components.some((c) => c.fieldId === '1405')
+  && T.PITI.components.some((c) => c.fieldId === '230'),
+  'P&I, taxes and hazard insurance are all named components');
+check(/never rebuild it/i.test(T.PITI.theOtherThirtyNine.consequence),
+  'the rule "read the total, never rebuild it" is written down with its reason');
+
+// DSCR: the formula is exact; the outlier is an input problem, and our own helper refuses it.
+check(T.DSCR_MEASURED.verification.includes('323'),
+  'the DSCR formula is recorded as verified on every file that carries one');
+check(T.DSCR_MEASURED.outlier.piti === 0.02,
+  'the 300,000 DSCR outlier is recorded as a two-cent PITI, not a formula fault');
+check(enc.formulas.computeDscr(6000, 0.02) === 300000,
+  'the formula itself does reproduce the outlier from those inputs');
+
+// describeStructure must DESCRIBE, never round an unseen shape into a known one.
+const d1 = T.describeStructure(360, 120);
+check(d1 && d1.amortizingMonths === 240 && d1.knownStructure === true,
+  'a 30-year with 120 IO months describes itself and is flagged known');
+const d2 = T.describeStructure(240, null);
+check(d2 && d2.termMonths === 240 && d2.knownStructure === false,
+  'a 20-year is described honestly and flagged as NOT a structure we have seen');
+check(T.describeStructure(null, 120) === null, 'no term means no structure, never a guess');
+check(T.describeStructure(0, 0) === null, 'a zero term is refused');
+check(T.amortizingMonths(360, 400) === 0,
+  'an interest-only period longer than the term leaves nothing amortizing, never a negative');
+check(T.amortizingMonths(360, '') === 360, 'a blank interest-only period means none');
+check(T.amortizingMonths('abc', 1) === null, 'junk in means null out, never NaN');
+
+// The ARM defect must stay recorded — field 608 says "Fixed" on both ARM files.
+const armDefect = T.KNOWN_TERM_DEFECTS.find((x) => x.key === 'DEFECT-AMORT-ARM');
+check(!!armDefect && /program name/i.test(armDefect.ourRule),
+  'our rule is to read fixed-vs-adjustable from the program name, not field 608');
+
 // ── done ─────────────────────────────────────────────────────────────────────
 if (failures) {
   console.error(`\nFAILED — ${failures} check(s).`);

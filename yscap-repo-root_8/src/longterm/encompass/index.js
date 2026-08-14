@@ -22,6 +22,7 @@ const requests = require('./requests');
 const intelligence = require('./field-intelligence');
 const anatomy = require('./loan-anatomy');
 const formulas = require('./formulas');
+const terms = require('./terms');
 const conditions = require('./conditions');
 const apiSurface = require('./api-surface');
 const investors = require('./investors');
@@ -136,6 +137,7 @@ function summary() {
     apiSurface: apiSurface.summary(),
     investors: investors.summary(),
     dropdowns: dropdowns.summary(),
+    terms: terms.summary(),
   };
 }
 
@@ -152,6 +154,7 @@ module.exports = {
   intelligence,
   anatomy,
   formulas,
+  terms,
   conditions,
   apiSurface,
   investors,
