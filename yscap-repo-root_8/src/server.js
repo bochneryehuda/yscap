@@ -404,6 +404,12 @@ app.use('/api/admin/elementix/callback',
 // Public token-authenticated draw-findings accept (the one-click "Accept" link we email the
 // borrower — the reply_token is the capability; no login needed to release their own money).
 app.use('/api/public/draw-findings', rateLimit({ bucket: 'draw-public', windowMs: 60000, max: 60 }), require('./routes/draw-findings-public'));
+// A PILOT LINK to a document too large to attach (db/549, owner-directed 2026-08-14). Public by
+// design — the recipient is a capital partner or a borrower clicking straight out of an email and
+// has no login — with the 128-bit token as the whole capability, exactly like the draw reply_token
+// above. Mounted at the short `/d/:token` because it is printed in an email body and gets retyped.
+// MUST stay ahead of the static/site mounts so `/d/...` is never swallowed by the catch-all.
+app.use('/d', rateLimit({ bucket: 'share-link', windowMs: 60000, max: 60 }), require('./routes/share-public'));
 // An emailed term sheet's own two doors (owner-directed 2026-08-07). Mounted OUTSIDE
 // /api/borrower because the read is public — the borrower clicking the officer's link
 // has no account yet, which is the whole point — and the token is the authorization.
