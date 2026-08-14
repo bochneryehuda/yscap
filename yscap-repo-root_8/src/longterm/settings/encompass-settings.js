@@ -387,6 +387,23 @@ const SETTINGS = [
     ],
     description: 'Which columns the long-term pipeline shows, in order.' },
 
+  // ── The product switch (owner-directed 2026-08-14) ────────────────────────
+  // "everybody should have a switch on his login to switch to the long-term side".
+  // Asked to choose the shape, the owner picked a TOP-BAR product switch remembered
+  // per user.
+  //
+  // It is a SETTING rather than a column on staff_users for the reason rule 5
+  // gives: adding a column to an RTL table to make Long-Term work is forbidden.
+  // `lt_settings.scope` already exists to be more than 'company', so a person's
+  // preference is stored under the scope `user:<staff id>` — the same declaration,
+  // the same validation, a different scope.
+  { key: 'ui.defaultProduct', group: 'Interface', label: 'Which side to open on',
+    type: 'enum', options: ['rtl', 'long_term'], default: 'rtl',
+    description: 'The product side a person lands on when they sign in. Saved per user; '
+      + 'the company default is what a brand-new user gets.',
+    evidence: 'Long-Term is a side build and is not live, so the default must stay RTL — '
+      + 'nobody should be moved to the new side by a deploy.' },
+
   // ── Condition Center — DEFERRED (owner-directed 2026-08-14) ───────────────
   // "put the condition center in side for now that center should say colming soom
   // continie building the rest non stop".

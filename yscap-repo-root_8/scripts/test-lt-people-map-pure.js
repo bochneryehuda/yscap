@@ -285,5 +285,26 @@ const unlinkedShown = contacts.describeContact(
 check(/not linked to a PILOT person yet/i.test(unlinkedShown.note),
   'an unlinked contact explains why the file is in nobody\'s pipeline');
 
+// ── The product switch ──────────────────────────────────────────────────────
+console.log('\nthe product switch');
+
+check(decl.definition('ui.defaultProduct') !== null, '"ui.defaultProduct" is declared');
+check(decl.defaults()['ui.defaultProduct'] === 'rtl',
+  'the default side is RTL — Long-Term is a side build that is not live, so nobody is moved to it by a deploy');
+const productDecl = decl.definition('ui.defaultProduct');
+check(Array.isArray(productDecl.options) && productDecl.options.join(',') === 'rtl,long_term',
+  'the two sides are an enum, so a typo can never park somebody on a side that does not exist');
+
+// The store rule the per-user scope depends on. A value equal to the declared
+// default is normally DELETED (the company scope must hold only real deviations);
+// `keepDefault` is what makes a person's explicit choice survive.
+const store = require('../src/longterm/settings/store');
+check(store.validate({ 'ui.defaultProduct': 'long_term' }).ok,
+  'the switch value passes validation');
+check(!store.validate({ 'ui.defaultSide': 'long_term' }).ok,
+  'a misspelled key is REFUSED — the declaration list is the whitelist');
+check(store.save.length >= 1 && /keepDefault/.test(store.save.toString()),
+  'the store honours keepDefault, which is what stops a per-user choice being deleted for matching the default');
+
 console.log(`\n${failures ? `${failures} FAILED` : 'all passed'}`);
 process.exit(failures ? 1 : 0);

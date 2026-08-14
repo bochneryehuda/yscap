@@ -47,4 +47,8 @@ router.use('/sync', require('./routes/sync'));
 // /api/lt/pipeline
 router.use('/pipeline', require('./routes/pipeline'));
 
+// The signed-in person's own long-term preferences — today, which product side
+// they open on (the owner's switch), remembered per user. /api/lt/me
+router.use('/me', require('./routes/me'));
+
 module.exports = { router };

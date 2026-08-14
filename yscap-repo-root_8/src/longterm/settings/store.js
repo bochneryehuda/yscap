@@ -33,8 +33,12 @@
  * SEPARATION: reads and writes only `lt_settings`. No RTL table, no RTL import.
  */
 
-const db = require('../db');
 const decl = require('./encompass-settings');
+// The pool is required LAZILY. `isKnown`, `defaults` and `validate` are pure
+// policy — the whitelist and the declared values — and must load without a database
+// driver in reach, so the rules can be unit-tested and so a caller that only
+// validates never opens a connection.
+const lazyDb = () => require('../db');
 
 const TTL_MS = Number(process.env.LT_SETTINGS_TTL_MS || 60000);
 const DEFAULT_SCOPE = 'company';
@@ -75,7 +79,7 @@ async function load(scope = DEFAULT_SCOPE, { fresh = false } = {}) {
   let degraded = false;
 
   try {
-    const { rows } = await db.query(
+    const { rows } = await lazyDb().query(
       'SELECT key, value FROM lt_settings WHERE scope = $1',
       [key],
     );
@@ -126,8 +130,17 @@ function validate(patch) {
  * A value equal to the declared default is DELETED rather than stored, so the
  * table only ever holds genuine deviations and "what has this lender changed?"
  * has an honest answer.
+ *
+ * `keepDefault: true` turns that off, and there is exactly one shape of caller that
+ * needs it: a PER-USER scope layered over a company one. There, "this person chose
+ * X" and "this person has never chosen" are different facts, and collapsing them
+ * loses a real choice — a lender whose company default is the long-term side would
+ * otherwise silently override the one person who deliberately chose RTL, because
+ * RTL is also the DECLARED default and their row would have been deleted. The
+ * company scope must never pass it: there, storing a value equal to the default is
+ * exactly the junk this rule exists to keep out.
  */
-async function save(patch, { scope = DEFAULT_SCOPE, staffId = null } = {}) {
+async function save(patch, { scope = DEFAULT_SCOPE, staffId = null, keepDefault = false } = {}) {
   const { ok, clean, rejected } = validate(patch);
   if (!ok) {
     const err = new Error(`unknown setting key(s): ${rejected.join(', ')}`);
@@ -140,11 +153,11 @@ async function save(patch, { scope = DEFAULT_SCOPE, staffId = null } = {}) {
   const written = [];
   const cleared = [];
 
-  const client = await db.getClient();
+  const client = await lazyDb().getClient();
   try {
     await client.query('BEGIN');
     for (const [k, v] of Object.entries(clean)) {
-      const isDefault = JSON.stringify(v) === JSON.stringify(base[k]);
+      const isDefault = !keepDefault && JSON.stringify(v) === JSON.stringify(base[k]);
       if (isDefault) {
         await client.query('DELETE FROM lt_settings WHERE scope = $1 AND key = $2', [scope, k]);
         cleared.push(k);
