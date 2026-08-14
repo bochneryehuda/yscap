@@ -158,10 +158,17 @@ async function buildAttachmentPlan(candidates, opts) {
       // rather than for the smallest possible file, is what stops a document being crushed to 600px
       // when 1600px would have been enough.
       const need = Math.max(32 * KB, w.buf.length - (currentTotal - budget));
-      const r = await compress.compressToFit(w.buf, need, {
-        maxLevel: o.maxLevel, deadlineMs: o.compressDeadlineMs,
-        totalDeadlineMs: Math.max(3000, deadline - Date.now()),
-      });
+      // BELT AND SUSPENDERS. compress.compressToFit is documented never to throw and every path in
+      // it is caught — but this runs on a SEND, and the worst outcome of a compressor bug must be
+      // "we could not shrink it", never "the delivery failed". A throw here degrades to leaving the
+      // document at its original size, which the placement loop below then reports honestly.
+      let r = null;
+      try {
+        r = await compress.compressToFit(w.buf, need, {
+          maxLevel: o.maxLevel, deadlineMs: o.compressDeadlineMs,
+          totalDeadlineMs: Math.max(3000, deadline - Date.now()),
+        });
+      } catch (_) { r = null; }
       if (r && r.changed && r.buf.length < w.buf.length) {
         savedBytes += w.buf.length - r.buf.length;
         compressedCount++;

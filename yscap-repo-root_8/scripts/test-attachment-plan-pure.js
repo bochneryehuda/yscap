@@ -149,5 +149,20 @@ function oldFirstFit(items, budget) {
   ok('an uncompressable item is reported, and the rest of the plan still stands',
     p6.attach.length + p6.omitted.length === 2);
 
+  console.log('\n== I. a compressor that throws must not break the send ==');
+  // compressToFit is documented never to throw, and every path in it is caught. But this runs on a
+  // SEND: the worst outcome of a compressor bug has to be "we could not shrink it", never "the
+  // delivery failed". Proven by making it throw for real.
+  const compressMod = require('../src/lib/attachments/compress');
+  const realFit = compressMod.compressToFit;
+  compressMod.compressToFit = async () => { throw new Error('boom'); };
+  try {
+    const p7 = await buildAttachmentPlan(items, { budgetBytes: 400 * 1024 });
+    ok('the plan is still produced', !!p7 && Array.isArray(p7.attach));
+    ok('the small documents still travel', p7.attach.length >= 1);
+    ok('and the ones that could not be shrunk are reported, not lost', p7.omitted.length >= 1);
+    ok('every omission still carries a code and a remedy', p7.omitted.every((m) => m.code && m.remedy));
+  } finally { compressMod.compressToFit = realFit; }
+
   console.log(`\nAll ${passed} assertions passed.\n`);
 })().catch((e) => { console.error('\nFAILED:', e && e.message, '\n', e); process.exit(1); });
