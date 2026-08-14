@@ -145,6 +145,68 @@ const NON_VALUES = [
   { raw: 'The lender', why: 'a form label typed into the value, not a company' },
 ];
 
+// ── The identity chain, in the order a file fills it ─────────────────────────
+// Owner-directed 2026-08-14: "investor name is usually CX.WHICHINVESTOR, and later
+// on in the process there is usually added a more accurate version on another field
+// which is VEND.X263. More important later on is going to be an investor loan
+// number — the loan number that an investor has in their system — and those should
+// survive like crazy."
+//
+// So an investor is established in THREE steps, each more durable than the last,
+// and none of them supersedes the one before it — they answer different questions:
+//   1. WHICH INVESTOR    (CX.WHICHINVESTOR) — staff shorthand, typed early
+//   2. WHO EXACTLY       (VEND.X263)        — the fuller contact-record name, later
+//   3. THEIR LOAN NUMBER (VEND.X276)        — how THEY refer to this loan, last
+//
+// ⚠️ A NOTE ON THE FIELD ID. The owner named VEND.X267 for the loan number; the live
+// tenant says otherwise and the data is unambiguous, so this follows the data:
+//   VEND.X267 = "File Contacts Investor Zip"    — 11 distinct values, all postcodes
+//                                                 (19101, 80155, 75265, 10036 …)
+//   VEND.X276 = "File Contacts Investor Ref #"  — 379 distinct values, the 8-11 digit
+//                                                 investor loan numbers (25098221,
+//                                                 5260318508, 12025062483 …)
+// Keying the investor loan number on X267 would store a PO-Box postcode as the
+// investor's loan number on every file. If the tenant ever remaps these, change
+// INVESTOR_LOAN_NUMBER_FIELD — nothing else reads the id directly.
+const INVESTOR_LOAN_NUMBER_FIELD = 'VEND.X276';
+
+const IDENTITY_CHAIN = [
+  { step: 1, fieldId: 'CX.WHICHINVESTOR', role: 'shorthand name',
+    when: 'early — as soon as staff know who the file is going to',
+    loans: 451, distinct: 83, durability: 'working value; expect it to be rough' },
+  { step: 2, fieldId: 'VEND.X263', role: 'accurate name',
+    when: 'later — when the investor contact record is filled in',
+    loans: 408, distinct: 68,
+    durability: 'more accurate than step 1, but still free text; also sometimes '
+      + 'holds the SERVICER rather than the investor (see INVESTOR_FIELDS)' },
+  { step: 3, fieldId: INVESTOR_LOAN_NUMBER_FIELD, role: 'the investor\'s own loan number',
+    when: 'last — once the loan is bought / boarded on their system',
+    loans: 379, distinct: 379,
+    durability: 'MUST SURVIVE. It is the only shared key between our file and the '
+      + 'investor\'s system, it is issued once, and nothing can regenerate it.' },
+];
+
+/**
+ * The investor loan number as it should be kept on our side: the raw value, whether
+ * it LOOKS like a real reference, and the reason when it does not.
+ *
+ * It is deliberately permissive about FORMAT — investors issue every shape (all
+ * digits, letters, dashes) and refusing an unfamiliar one would lose a real number.
+ * It only rejects what is provably not a reference: blank, a placeholder, or an
+ * INVESTOR NAME typed into the box (seen live: "Broadview funding"), which would
+ * otherwise be pushed to ClickUp as this loan's number on the investor's system.
+ */
+function investorLoanNumber(raw) {
+  const out = { fieldId: INVESTOR_LOAN_NUMBER_FIELD, raw, value: null, usable: false, reason: null };
+  if (raw == null || String(raw).trim() === '') return { ...out, reason: 'blank' };
+  const v = String(raw).trim();
+  if (NON_VALUE_SET.has(v.toLowerCase())) return { ...out, reason: 'placeholder' };
+  // A value that resolves to a known investor is that investor's NAME, not a number.
+  if (resolve(v).key && !/\d/.test(v)) return { ...out, reason: 'investor name typed into the loan-number box' };
+  if (!/[A-Za-z0-9]/.test(v)) return { ...out, reason: 'no letters or digits' };
+  return { ...out, value: v, usable: true };
+}
+
 // ── Where an investor name is entered ────────────────────────────────────────
 const INVESTOR_FIELDS = [
   { fieldId: 'VEND.X263', label: 'File Contacts Investor Name', type: 'free text',
@@ -154,9 +216,13 @@ const INVESTOR_FIELDS = [
     loans: 451, distinct: 83, role: 'the staff shorthand for the investor',
     note: 'The messiest of the two — short codes, lowercase, and most of the typos.' },
   { fieldId: 'VEND.X276', label: 'File Contacts Investor Ref #', type: 'free text',
-    loans: 379, role: 'the investor loan number',
-    note: 'Not always a number — some rows hold an investor NAME instead ("Broadview funding"), '
-      + 'so it cannot be trusted as an identifier without a shape check.' },
+    loans: 379, distinct: 379, role: 'THE INVESTOR LOAN NUMBER — step 3 of the identity chain',
+    mustSurvive: true,
+    note: 'The investor\'s own loan number for this file, and the only key shared with '
+      + 'their system. Issued once and unregenerable, so it must never be overwritten by '
+      + 'a sync, a re-pull or a blank. Not always a number — some rows hold an investor '
+      + 'NAME instead ("Broadview funding"), so run it through investorLoanNumber() '
+      + 'rather than storing it raw.' },
   { fieldId: 'CX.TABLEFUNDER', label: 'TABLE FUNDER', type: 'DROPDOWNLIST',
     role: 'HOW the loan is funded, not WHO buys it — keep the two apart' },
   { fieldId: 'VEND.X271', label: 'File Contacts Investor Contact Name', type: 'free text' },
@@ -168,7 +234,10 @@ const INVESTOR_FIELDS = [
   { fieldId: 'VEND.X264', label: 'File Contacts Investor Addr', type: 'free text' },
   { fieldId: 'VEND.X265', label: 'File Contacts Investor City', type: 'free text' },
   { fieldId: 'VEND.X266', label: 'File Contacts Investor State', type: 'free text' },
-  { fieldId: 'VEND.X267', label: 'File Contacts Investor Zip', type: 'free text' },
+  { fieldId: 'VEND.X267', label: 'File Contacts Investor Zip', type: 'free text',
+    note: 'POSTCODE, not a loan number — 11 distinct values, all postcodes. Named in '
+      + 'conversation as the investor loan number; the live data says otherwise, and the '
+      + 'loan number is VEND.X276. See the note on INVESTOR_LOAN_NUMBER_FIELD.' },
   { fieldId: '2031', label: 'Rate Lock Sell Side Investor Status', type: 'enum',
     observedValues: ['Purchased', 'Shipped'] },
 ];
@@ -276,11 +345,14 @@ function summary() {
     needingOwnerAnswer: INVESTORS.filter((i) => i.unverified).map((i) => i.key),
     sharedWithShortTerm: INVESTORS.filter((i) => i.alsoOnRtl).map((i) => i.key),
     investorFields: INVESTOR_FIELDS.length,
+    identityChain: IDENTITY_CHAIN.map((s) => s.fieldId),
+    investorLoanNumberField: INVESTOR_LOAN_NUMBER_FIELD,
     source: '772 loans read from the live tenant, 2026-08-14',
   };
 }
 
 module.exports = {
   INVESTORS, NON_VALUES, INVESTOR_FIELDS, TABLE_FUNDER_VALUES,
+  IDENTITY_CHAIN, INVESTOR_LOAN_NUMBER_FIELD, investorLoanNumber,
   normalize, resolve, sameInvestor, byKey, list, summary,
 };

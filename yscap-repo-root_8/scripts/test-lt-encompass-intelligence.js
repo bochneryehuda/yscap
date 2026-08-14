@@ -172,6 +172,37 @@ check(!INV.sameInvestor('---', '--'), 'two placeholders are not "the same invest
 check(INV.resolve('Wells Fargo Home Mortgage').key === null,
   'an unknown investor is left unresolved, never guessed');
 
+// ── 5b. The investor identity chain, and the number that must survive ────────
+// Owner-directed: the shorthand name comes first, the accurate name later, and the
+// investor's OWN loan number last — and that last one must survive everything.
+check(INV.IDENTITY_CHAIN.length === 3, 'the identity chain has three steps');
+check(INV.IDENTITY_CHAIN[0].fieldId === 'CX.WHICHINVESTOR', 'step 1 is the shorthand name');
+check(INV.IDENTITY_CHAIN[1].fieldId === 'VEND.X263', 'step 2 is the accurate name');
+check(INV.IDENTITY_CHAIN[2].fieldId === 'VEND.X276', "step 3 is the investor's loan number");
+check(INV.INVESTOR_LOAN_NUMBER_FIELD === 'VEND.X276', 'the loan-number field is VEND.X276');
+
+// The field id this is NOT. VEND.X267 holds postcodes in the live tenant, so keying
+// the loan number on it would store a PO-Box postcode as the investor's loan number.
+const zip = INV.INVESTOR_FIELDS.find((f) => f.fieldId === 'VEND.X267');
+check(!!zip && /zip/i.test(zip.label), 'VEND.X267 is recorded as the investor ZIP, not a loan number');
+check(INV.INVESTOR_LOAN_NUMBER_FIELD !== 'VEND.X267', 'the loan number is never keyed on the ZIP field');
+const refField = INV.INVESTOR_FIELDS.find((f) => f.fieldId === 'VEND.X276');
+check(!!refField && refField.mustSurvive === true, 'the investor loan number is marked must-survive');
+
+// Real investor loan numbers seen live must be kept verbatim, whatever their shape.
+for (const n of ['25098221', '5260318508', '12025062483', '175154', 'ABC-99/2']) {
+  const r = INV.investorLoanNumber(n);
+  check(r.usable && r.value === n, `investor loan number ${JSON.stringify(n)} is kept verbatim`);
+}
+// …and the things that are provably NOT a loan number are refused with a reason.
+for (const [bad, why] of [['Broadview funding', 'investor name'], ['---', 'placeholder'],
+  ['', 'blank'], [null, 'blank'], ['   ', 'blank'], ['//', 'no letters or digits']]) {
+  const r = INV.investorLoanNumber(bad);
+  check(!r.usable && !!r.reason, `${JSON.stringify(bad)} is refused as a loan number (${why})`);
+}
+check(INV.investorLoanNumber('Deephaven').usable === false,
+  'an investor NAME in the loan-number box never becomes a loan number');
+
 // ── 6. The dropdown catalog is usable for mapping ────────────────────────────
 const DD = enc.dropdowns;
 check(Object.keys(DD.FIELDS).length > 500,
