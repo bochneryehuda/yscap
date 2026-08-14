@@ -1409,8 +1409,12 @@ function RvOrderCard({ order, onChanged }) {
   const statusLabel = RV_STATUS_LABEL[order.status] || STATUS_LABEL[order.status] || order.status;
   const sc = statusColor(order.status === 'intake' ? 'ordered' : order.status);
   const report = detail && detail.report;
-  const asIs = order.as_is_value != null ? Number(order.as_is_value) : (report ? report.asIs : null);
-  const arv = order.arv != null ? Number(order.arv) : (report ? report.arv : null);
+  // Through the shared money parser, never a bare Number(): these arrive from a
+  // numeric column as a STRING, and the one rule for what a money string means
+  // lives in `lib/money.js` — a second reading here is how two screens come to
+  // disagree about one figure.
+  const asIs = order.as_is_value != null ? moneyNum(order.as_is_value) : (report ? report.asIs : null);
+  const arv = order.arv != null ? moneyNum(order.arv) : (report ? report.arv : null);
   const applied = !!order.values_applied_at;
 
   const bits = [];

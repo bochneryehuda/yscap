@@ -61,6 +61,12 @@ const payment = require(R + '/src/richervalues/payment');
   }
   // A string of digits IS a loan amount — every one of these arrives from a form.
   ok(guard.judgeLoanAmount('500000').level === 'warn', 'A a loan amount typed as text is still judged');
+  // AND SO IS ONE WRITTEN THE WAY PEOPLE WRITE MONEY. A bare Number() on a grouped
+  // value is NaN, which would read as "nothing registered" and let a $500,000 loan
+  // through with only advice — so this goes through the repo's one money parser.
+  ok(guard.judgeLoanAmount('500,000').level === 'warn', 'A a grouped "500,000" is judged, not read as “not registered”');
+  ok(guard.judgeLoanAmount('$1,250,000.00').level === 'warn', 'A and one with a currency symbol and cents');
+  ok(guard.judgeLoanAmount('$399,000').level === 'ok', 'A a grouped amount UNDER the limit is judged as under it, not warned about');
 }
 
 /* ═══ B. the double confirmation, on the SERVER ══════════════════════════ */

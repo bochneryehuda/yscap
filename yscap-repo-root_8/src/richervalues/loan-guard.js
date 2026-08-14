@@ -38,6 +38,13 @@
  * repo has been bitten by repeatedly.
  */
 
+// The repo's ONE definition of what a money value means. `lib/fields.js` has no
+// requires of its own, so taking it does not cost this module its purity — and it
+// matters here: a grouped "500,000" read by a bare `Number()` is NaN, which would
+// be judged as "no loan amount registered" and let an over-limit order through
+// with only advice instead of the strict warning.
+const { moneyValue } = require('../lib/fields');
+
 /** The owner's number. One definition; the screen reads it from the server. */
 const LOAN_LIMIT = 400000;
 
@@ -58,7 +65,7 @@ function money(n) {
  *            confirmPrompt:string|null, secondPrompt:string|null}}
  */
 function judgeLoanAmount(loanAmount) {
-  const n = loanAmount == null || loanAmount === '' ? null : Number(loanAmount);
+  const n = moneyValue(loanAmount);
   const amount = Number.isFinite(n) && n > 0 ? n : null;
 
   if (amount == null) {
