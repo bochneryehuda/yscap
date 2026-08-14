@@ -2434,10 +2434,21 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
   const [note, setNote] = useState('');   // optional note for a MANUAL delivery
+  // THE ATTACHMENT GATE (owner-directed 2026-08-14). When a document cannot be carried, the send
+  // REFUSES and the server hands back the whole plan; this holds it while the coordinator decides.
+  // `linkKeys` are the documents they chose to send as a PILOT link, `ack` is the deliberate
+  // "send it short anyway" tick, and `plan` is the last preflight so they can look before they act.
+  const [gate, setGate] = useState(null);
+  const [linkKeys, setLinkKeys] = useState([]);
+  const [ack, setAck] = useState(false);
+  const [plan, setPlan] = useState(null);
   const load = useCallback(() => {
     api.get(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`).then(setP).catch(() => {});
   }, [appId, drawId]);
   useEffect(() => { if (open) load(); }, [open, load]);
+  // A change of funding mode changes which documents ride along (the borrower's wire form is only
+  // sent on an investor-direct delivery), so a plan worked out under the old mode is stale.
+  useEffect(() => { setGate(null); setPlan(null); setLinkKeys([]); setAck(false); }, [p && p.funding_mode]);
 
   async function setMode(mode, scope) {
     setBusy(true); setErr(''); setMsg('');
@@ -2448,11 +2459,30 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
     finally { setBusy(false); }
   }
 
-  async function send() {
+  /** Look at what would travel, without sending anything or minting a link. */
+  async function checkDocuments() {
+    setBusy(true); setErr(''); setMsg(''); setGate(null);
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`, {
+        confirm_note_buyer: p.note_buyer, mode: p.funding_mode, preflight: true,
+      });
+      setPlan(r.plan);
+      if (r.plan.needs_consent) setGate({ plan: r.plan, warnings: r.linkWarnings || [] });
+    } catch (e) { setErr(e?.data?.error || 'Could not check the documents.'); }
+    finally { setBusy(false); }
+  }
+
+  /**
+   * `extra` carries the coordinator's decision from the gate — an acknowledgement, a set of
+   * documents to send as links, or a harder compression ceiling. Its presence also means they have
+   * already been shown and accepted the picture, so the plain confirm is not asked a second time.
+   */
+  async function send(extra) {
     if (!p) return;
     const manual = p.funding_mode === 'manual';
     let ok;
-    if (manual) {
+    if (extra) ok = true;
+    else if (manual) {
       ok = await askConfirm(`Record that this draw was delivered to ${p.note_buyer} outside PILOT?\n\nPILOT sends no email — this only records the delivery so the reminders stop.`);
     } else {
       const who = p.to.join(', ');
@@ -2466,16 +2496,31 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
     try {
       const r = await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`, {
         confirm_note_buyer: p.note_buyer, mode: p.funding_mode, note: manual ? note : undefined,
+        ...(extra || {}),
       });
       if (r.manual) {
         setMsg(`Recorded as delivered to ${p.note_buyer} manually — the "deliver to the investor" reminders will stop.`);
       } else {
         const missing = (r.skipped || []).length;
-        setMsg(`Delivered to ${p.note_buyer} (${r.to.length} contact${r.to.length === 1 ? '' : 's'}) with ${r.attachments.length} attachment${r.attachments.length === 1 ? '' : 's'}.${missing ? ` ${missing} item(s) could not be attached — see below.` : ''}`);
+        const links = (r.links || []).length;
+        const squeezed = (r.plan && r.plan.compressed_n) || 0;
+        setMsg(`Delivered to ${p.note_buyer} (${r.to.length} contact${r.to.length === 1 ? '' : 's'}) with ${r.attachments.length} attachment${r.attachments.length === 1 ? '' : 's'}`
+          + `${links ? `, ${links} sent as a PILOT link` : ''}`
+          + `${squeezed ? ` (${squeezed} compressed to fit)` : ''}.`
+          + `${missing ? ` ${missing} document${missing === 1 ? '' : 's'} could NOT be sent — recorded on the delivery record below.` : ''}`);
       }
-      setNote('');
+      setNote(''); setGate(null); setPlan(null); setLinkKeys([]); setAck(false);
       load(); reload();
-    } catch (e) { setErr(e?.data?.error || 'Could not deliver this draw to the investor.'); }
+    } catch (e) {
+      // NOT AN ERROR — a question. The server refused because a document cannot travel, and handed
+      // back everything needed to say what and why and offer the way through.
+      if (e?.data?.code === 'attachments_incomplete') {
+        setGate({ plan: e.data.plan, warnings: e.data.linkWarnings || [] });
+        setPlan(e.data.plan);
+        setAck(false);
+        setErr('');
+      } else setErr(e?.data?.error || 'Could not deliver this draw to the investor.');
+    }
     finally { setBusy(false); }
   }
 
@@ -2593,8 +2638,94 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
             </div>
           )}
 
+          {/* ── WHAT WILL ACTUALLY BE ATTACHED (owner-directed 2026-08-14) ────────────────────
+              "When you click send an email, if there's an attachment that cannot be attached, you
+              need to say clearly what cannot be attached and why. If the person still wants to send
+              it, they can send it, but it should not be ignored blindly."
+
+              The plan is only ever computed on demand — building it means generating the report and
+              the packet, which is far too expensive to do every time this card renders. So this is
+              blank until the coordinator presses Check, or until a send comes back refused. */}
+          {p.funding_mode !== 'manual' && plan && !gate && (
+            <div className="act-card-sub" style={{ marginTop: 12 }}>
+              <b style={{ color: 'var(--good,#2F7F53)' }}>All {plan.attach.length} document{plan.attach.length === 1 ? '' : 's'} will be attached.</b>{' '}
+              {plan.compressed_n > 0 && `${plan.compressed_n} compressed to fit (${Math.round(plan.saved_bytes / 1024)} KB saved). `}
+              {plan.attach.map((a) => a.what).join(', ')}.
+            </div>
+          )}
+
+          {gate && (
+            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 8, background: '#FBF3F2', border: '1px solid var(--danger,#B4453C)' }}>
+              <div style={{ fontWeight: 700, color: '#141B22' }}>
+                {gate.plan.omitted.length} document{gate.plan.omitted.length === 1 ? '' : 's'} cannot be attached to this email
+              </div>
+              <div className="small" style={{ marginTop: 4, color: '#3A4550' }}>
+                Nothing has been sent. Choose what to do with each one below — or send without them, which is recorded against your name.
+              </div>
+
+              <ul style={{ margin: '10px 0 0', paddingLeft: 0, listStyle: 'none' }}>
+                {gate.plan.omitted.map((m) => (
+                  <li key={m.key || m.what} style={{ padding: '8px 0', borderTop: '1px solid #EFE3E1' }}>
+                    <div style={{ fontWeight: 600, color: '#141B22' }}>{m.what}</div>
+                    <div className="small" style={{ color: '#4B585C' }}>{m.reason}</div>
+                    {m.remedy === 'share_link' && (
+                      <label className="small" style={{ display: 'flex', gap: 7, alignItems: 'flex-start', marginTop: 6, color: '#141B22', cursor: 'pointer' }}>
+                        <input type="checkbox" disabled={busy} checked={linkKeys.includes(m.key)}
+                          onChange={(e) => setLinkKeys((k) => (e.target.checked ? [...k, m.key] : k.filter((x) => x !== m.key)))} />
+                        <span>Send this one as a PILOT link instead</span>
+                      </label>
+                    )}
+                    {m.remedy === 'accept_the_document' && <div className="small" style={{ color: '#AE8746', marginTop: 4 }}>Review and accept it on the draw, then send again.</div>}
+                    {m.remedy === 'upload_it' && <div className="small" style={{ color: '#AE8746', marginTop: 4 }}>It needs to be on the file before it can be sent.</div>}
+                  </li>
+                ))}
+              </ul>
+
+              {/* THE DOUBLE WARNING (owner-directed): two distinct warnings, shown only once a link
+                  is actually chosen — and the second one says plainly that compressing is better. */}
+              {linkKeys.length > 0 && (
+                <div style={{ marginTop: 10, padding: '9px 11px', borderRadius: 7, background: 'var(--gold-soft,#F7F1E4)', border: '1px solid var(--gold,#AE8746)' }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: '#141B22' }}>Before you send a link — two things</div>
+                  <ol className="small" style={{ margin: '5px 0 0', paddingLeft: 17, color: '#3A4550' }}>
+                    {gate.warnings.map((w, i) => <li key={i} style={{ marginTop: 3 }}>{w}</li>)}
+                  </ol>
+                </div>
+              )}
+
+              <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button className="btn btn-sm soft" disabled={busy}
+                  title="Compress the documents as hard as the engine can and try again"
+                  onClick={() => send({ compress_level: 5 })}>
+                  {busy ? 'Compressing…' : 'Compress harder and retry'}
+                </button>
+                {linkKeys.length > 0 && (
+                  <button className="btn btn-sm primary" disabled={busy}
+                    onClick={() => send({ share_link_keys: linkKeys })}>
+                    Send with {linkKeys.length} PILOT link{linkKeys.length === 1 ? '' : 's'}
+                  </button>
+                )}
+                <button className="btn btn-sm ghost" disabled={busy} onClick={() => { setGate(null); setLinkKeys([]); setAck(false); }}>Cancel</button>
+              </div>
+
+              <label className="small" style={{ display: 'flex', gap: 7, alignItems: 'flex-start', marginTop: 12, color: '#141B22', cursor: 'pointer' }}>
+                <input type="checkbox" checked={ack} disabled={busy} onChange={(e) => setAck(e.target.checked)} />
+                <span>I understand {gate.plan.omitted.length === 1 ? 'this document' : 'these documents'} will not reach {p.note_buyer || 'the investor'}, and I want to send anyway.</span>
+              </label>
+              <button className="btn btn-sm" style={{ marginTop: 8 }} disabled={busy || !ack}
+                onClick={() => send({ acknowledge_omissions: true, share_link_keys: linkKeys })}>
+                Send without {gate.plan.omitted.length === 1 ? 'it' : 'them'}
+              </button>
+            </div>
+          )}
+
           <div className="row" style={{ gap: 10, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button className="btn btn-sm primary" disabled={busy || !p.can_send} onClick={send}
+            {p.funding_mode !== 'manual' && (
+              <button className="btn btn-sm soft" disabled={busy || !p.can_send} onClick={checkDocuments}
+                title="See exactly which documents will be attached before you send">
+                {busy ? 'Checking…' : 'Check documents'}
+              </button>
+            )}
+            <button className="btn btn-sm primary" disabled={busy || !p.can_send} onClick={() => send()}
               title={p.can_send ? (p.funding_mode === 'manual' ? 'Record this draw as delivered manually' : `Deliver this draw to ${p.note_buyer}`) : 'Clear the items above first'}>
               {busy ? (p.funding_mode === 'manual' ? 'Recording…' : 'Sending…')
                 : p.funding_mode === 'manual' ? 'Record manual delivery' : `Deliver to ${p.note_buyer || 'the investor'}`}

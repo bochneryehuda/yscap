@@ -222,6 +222,10 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
   const html = full && ((trimmed && !showQuoted && full.replyHtml) || full.body_html);
   const text = full && ((trimmed && !showQuoted && full.replyText) || full.body_text);
   const attachments = (full && Array.isArray(full.attachments) && full.attachments.length) ? full.attachments : (Array.isArray(row.attachments) ? row.attachments : []);
+  // The audit of what could NOT be carried, and who knowingly sent it short (db/550). Prefer the
+  // fully-loaded row, exactly as the attachment list above does.
+  const omitted = (full && Array.isArray(full.omitted) && full.omitted.length) ? full.omitted : (Array.isArray(row.omitted) ? row.omitted : []);
+  const consent = ((full && full.attach_summary) || row.attach_summary || {}).consent || null;
   // Fit the email to the available width so a fixed-width (e.g. 600px) design is
   // never cut off — scale it down to the reader's width and reserve the scaled
   // height. Re-fits when the container resizes (e.g. the Open-large popup).
@@ -309,6 +313,29 @@ function MessageCard({ appId, row, globalMode, expanded, onToggle, onChanged }) 
                             📎 {a.filename}{a.size ? <span className="muted"> · {Math.max(1, Math.round(a.size / 1024))} KB</span> : null} ⤓
                           </button>
                         : <span className="ec-attach" key={i}>📎 {a.filename}{a.size ? <span className="muted"> · {Math.max(1, Math.round(a.size / 1024))} KB</span> : null}</span>))}
+                  </div>
+                : null}
+              {/* WHAT THIS EMAIL COULD NOT CARRY (db/550, owner-directed 2026-08-14: "everything
+                  should be left locked, so we should always be able to audit the audit log").
+                  It sits directly under the attachment list on purpose — the question is always
+                  "what came with this email?", and an attachment list that quietly omits two
+                  documents is how an investor ended up without the inspection report and nobody
+                  knew. Explicit darks: an --ink token is a LIGHT paper colour in this palette. */}
+              {omitted.length
+                ? <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 6, background: '#FBF3F2', border: '1px solid #E3BDB8' }}>
+                    <div style={{ fontWeight: 700, fontSize: 12.5, color: '#141B22' }}>
+                      {omitted.length} document{omitted.length === 1 ? '' : 's'} could NOT be attached to this email
+                    </div>
+                    <ul style={{ margin: '4px 0 0', paddingLeft: 16, fontSize: 12.5, color: '#4B585C' }}>
+                      {omitted.map((m, i) => (
+                        <li key={i}><span style={{ color: '#141B22' }}>{m.what}</span>{m.reason ? ` — ${m.reason}` : ''}{m.code ? <span className="muted"> [{m.code}]</span> : null}</li>
+                      ))}
+                    </ul>
+                    {consent
+                      ? <div style={{ marginTop: 5, fontSize: 12.5, color: '#3A4550' }}>
+                          Sent anyway by {consent.name || 'a coordinator'}{consent.at ? ` on ${new Date(consent.at).toLocaleString('en-US')}` : ''}.
+                        </div>
+                      : null}
                   </div>
                 : null}
             </div>

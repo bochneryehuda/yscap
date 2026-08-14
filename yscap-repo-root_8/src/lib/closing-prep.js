@@ -59,6 +59,12 @@ const tpl = require('./email/template');
 // put on the chain, and cut at on the way back in (lib/email/reply-cut.js).
 const storage = require('./storage');
 const closingThread = require('./closing-thread');
+const compress = require('./attachments/compress');   // shrink a scan rather than leave it behind
+
+// How far over one message's ceiling a document may be and still be worth READING off storage to
+// attempt a compression. A scan routinely shrinks by 10x or more; past this it is not worth pulling
+// a very large file off disk to prove it cannot be sent.
+const COMPRESS_HEADROOM = Math.max(2, Number(process.env.CLOSING_COMPRESS_HEADROOM) || 12);
 
 /* ─────────────────────────────── the documents ─────────────────────────────── */
 
@@ -415,15 +421,35 @@ async function packAttachments(orderedDocs, { budget = null, parts: partLimit = 
 
   for (const d of orderedDocs || []) {
     if (!d.storage_ref) { skipped.push({ ...d, reason: 'no stored copy' }); continue; }
-    // The stored size is a free pre-check for the one size we genuinely cannot send.
-    if (Number(d.size_bytes) > one) { skipped.push({ ...d, reason: 'too large to email' }); continue; }
+    // The stored size is a free pre-check — but it can no longer decide on its own that a document
+    // is unsendable, because most oversized documents here are scans and shrink dramatically (see
+    // lib/attachments/compress.js). It now only declines to READ something so far over the ceiling
+    // that no compression could rescue it, which keeps a 200 MB file from being pulled off disk to
+    // prove the obvious.
+    if (Number(d.size_bytes) > one * COMPRESS_HEADROOM) { skipped.push({ ...d, reason: 'too large to email' }); continue; }
     let buf;
     try { buf = await storage.read(d.storage_ref); }
     catch (_) { skipped.push({ ...d, reason: 'could not be read' }); continue; }
     if (!buf || !buf.length) { skipped.push({ ...d, reason: 'empty file' }); continue; }
-    // Bigger than one whole message even by itself — the only size that is still
-    // left behind, and the reason the email gives for it says exactly that.
-    if (buf.length > one) { skipped.push({ ...d, reason: 'too large to email' }); continue; }
+
+    // COMPRESS BEFORE DROPPING (owner-directed 2026-08-14). A closing package is mostly scans, and
+    // a scan is a photograph of a page — so the document that "cannot be emailed" is very often one
+    // resample away from fitting comfortably. The ORIGINAL on the file is untouched; only the copy
+    // that rides the email is shrunk.
+    let compression = null;
+    if (buf.length > one) {
+      const r = await compress.compressToFit(buf, one);
+      if (r && r.changed && r.buf.length <= one) {
+        compression = { level: r.level, before: r.before, after: r.after, note: r.note || null };
+        buf = r.buf;
+      }
+    }
+    // Bigger than one whole message even after that — now genuinely unsendable, and the reason
+    // says which of the two it is so nobody re-tries a compression that already happened.
+    if (buf.length > one) {
+      skipped.push({ ...d, reason: compression ? 'too large to email even after compressing it' : 'too large to email' });
+      continue;
+    }
 
     let part = parts[parts.length - 1];
     if (!fits(part, buf.length)) {
@@ -443,7 +469,7 @@ async function packAttachments(orderedDocs, { budget = null, parts: partLimit = 
       contentType: d.content_type || 'application/octet-stream',
       content: buf.toString('base64'),
     });
-    const row = { ...d, bytes: buf.length, part: parts.length };
+    const row = { ...d, bytes: buf.length, part: parts.length, compression };
     part.attached.push(row);
     part.totalBytes += buf.length;
     part.encoded += encodedLen(buf.length);
