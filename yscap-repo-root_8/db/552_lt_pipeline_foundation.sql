@@ -349,9 +349,16 @@ BEGIN
       FOREIGN KEY (override_by) REFERENCES staff_users(id) ON DELETE SET NULL ON UPDATE CASCADE;
   END IF;
 
+  -- SET NULL, like every other identity link here — NOT the CASCADE a personal
+  -- saved view seems to invite. The invariant "no delete in the identity zone ever
+  -- removes a long-term row" is worth more than tidying away one dead preference
+  -- row: it is simple, auditable, asserted against the database itself by
+  -- test-lt-loan-schema-db, and an invariant with one convenience exception is how
+  -- invariants stop being believed. A view whose owner is gone belongs to nobody,
+  -- and every read is scoped to `staff_id = <me>`, so it simply stops appearing.
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'lt_pipeline_views_staff_fkey') THEN
     ALTER TABLE lt_pipeline_views ADD CONSTRAINT lt_pipeline_views_staff_fkey
-      FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE ON UPDATE CASCADE;
+      FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE SET NULL ON UPDATE CASCADE;
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'lt_locks_loan_fkey') THEN

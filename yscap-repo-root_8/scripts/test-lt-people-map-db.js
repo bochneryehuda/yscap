@@ -77,10 +77,17 @@ async function refuses(c, fn, msg) {
       '…and returns the name, the id and the active flag the matcher needs');
 
     // An outside broker must never be linkable to an Encompass login.
+    //
+    // The firm is not decoration: db/523's `staff_users_external_firm_check` makes
+    // an external account with no firm structurally unwritable, so a broker fixture
+    // without one does not test the exclusion — it fails to exist.
+    const { rows: firms } = await c.query(
+      `INSERT INTO tpo_firms (name) VALUES ($1) RETURNING id`, [`${stamp} Brokerage`],
+    );
     await c.query(
-      `INSERT INTO staff_users (email, full_name, role, is_active, is_external)
-            VALUES ($1, 'Outside Broker', 'loan_officer', true, true)`,
-      [`${stamp}.ext@example.test`],
+      `INSERT INTO staff_users (email, full_name, role, is_active, is_external, tpo_firm_id)
+            VALUES ($1, 'Outside Broker', 'loan_officer', true, true, $2::uuid)`,
+      [`${stamp}.ext@example.test`, firms[0].id],
     );
     const withExt = await roster._internals.loadStaff(c);
     check(!withExt.some((s) => String(s.email) === `${stamp}.ext@example.test`),
@@ -214,7 +221,7 @@ async function refuses(c, fn, msg) {
       'an unlinked contact is stored by NAME and attributed to nobody');
 
     // Somebody reassigns the file locally.
-    await contacts.setOverride(loanId, 'loan_officer', String(malky.id), String(malky.id), 'covering while he is away');
+    await contacts.setOverride(loanId, 'loan_officer', String(malky.id), String(malky.id), 'covering while he is away', c);
     // …and then Encompass is read again, saying exactly what it said before.
     await contacts.writeContacts(c, loanId, [
       { role: 'loan_officer', name: 'Solomon Weiss', email: `${stamp}.a@example.test`, phone: null, loginId: `${stamp}-sweiss`, staffId: String(shea.id) },
@@ -231,7 +238,7 @@ async function refuses(c, fn, msg) {
       'the reason a file was reassigned survives the sync too');
 
     // Clearing the override is how "Encompass was right after all" is expressed.
-    await contacts.setOverride(loanId, 'loan_officer', null, String(malky.id), null);
+    await contacts.setOverride(loanId, 'loan_officer', null, String(malky.id), null, c);
     const { rows: cleared } = await c.query(
       `SELECT * FROM lt_loan_contacts WHERE loan_id = $1::uuid AND role = 'loan_officer'`, [loanId],
     );

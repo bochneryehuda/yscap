@@ -315,9 +315,15 @@ async function reattributeAll(dbc = lazy.db) {
  * Reassign a file locally. PILOT-side only — nothing is written to Encompass.
  * Passing a null staff id CLEARS the override, which is how "actually, Encompass
  * was right" is expressed.
+ *
+ * Takes the repo's usual optional trailing `client` so a caller can reassign inside
+ * a transaction — a reassignment that has to happen together with something else
+ * (or not at all) would otherwise be forced onto its own connection, and the
+ * database would be left half-changed if the other half failed.
  */
-async function setOverride(loanId, role, staffId, actorId, reason) {
-  const { rows } = await lazy.db.query(
+async function setOverride(loanId, role, staffId, actorId, reason, dbc = null) {
+  const conn = dbc || lazy.db;
+  const { rows } = await conn.query(
     `UPDATE lt_loan_contacts
         SET override_staff_id = $3::uuid,
             override_by = CASE WHEN $3::uuid IS NULL THEN NULL ELSE $4::uuid END,
