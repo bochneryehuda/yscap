@@ -46,11 +46,23 @@ Treat them as two different companies' software that happen to share one reposit
    `src/server.js` mounting the LT router and `scripts/test-lt-*.js`, which exist to test it.
 5. **Never change RTL to make LT work** — no new column on `applications`, no new ClickUp/Encompass/SharePoint/
    DocuSign/Sitewire/Trustpoint mapping, no new checklist template, unless the owner asked for that exact thing.
-6. **LT is explicitly not getting, for now: conditions, document underwriting, orders.**
+6. **LT is explicitly not getting, for now: document underwriting, orders.** **Conditions ARE now in scope** — the
+   owner reopened this in writing on 2026-08-14 and asked for a long-term condition center that reads its conditions
+   from Encompass. It is a brand-new LT build: rule 3 still applies in full, so nothing may be copied or generalized
+   from RTL's conditions / checklists / templates / rules engine without a per-item entry in the ledger. Writing a
+   document into the Encompass eFolder is a WRITE and is separately governed by
+   `docs/ENCOMPASS-WRITE-AUTHORIZATIONS.md` — nothing writes there until that pad entry is completed.
 7. **The front end may show both; the back end may not.** A combined pipeline is allowed, read-only, with a visible
    product stamp on every row and a Both / RTL only / Long-Term only filter. Never a SQL join or a shared write path.
 8. **A feature built for one side never automatically applies to the other.**
 9. **When in doubt, ask. Silence is never permission.**
+10. **The investor name never reaches a client — HARD RULE (owner-directed 2026-08-14):** *"The client should
+    not be able to see the investor name. Never ever! Not borrowers, not TPOs, only internal staff."* The
+    investor who buys a long-term loan — their name in any spelling, their contact details, their own loan
+    number, and the funding channel — is internal knowledge, on every surface. `src/longterm/audience.js` is
+    the one definition, built on the investor registry because the name is spelled 151 ways; it fails closed
+    (anything not exactly `internal` is a client). Guarded by `scripts/test-lt-investor-block.js`. Never
+    re-implement the check. See `docs/longterm/AUDIENCE-RULES.md`.
 
 Enforced by `yscap-repo-root_8/scripts/check-product-separation.js` (runs in `npm test`, blocks CI and the deploy),
 `.github/pull_request_template.md`, and `.github/PRODUCT-SEPARATION.md`. Do not weaken or bypass the gate —

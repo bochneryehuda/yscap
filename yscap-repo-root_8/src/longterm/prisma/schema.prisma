@@ -89,6 +89,742 @@ model LtEncompassMilestone {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  /// Files currently sitting at this milestone. Back-relation only — a milestone
+  /// row is a catalog entry and never depends on a loan.
+  loans LtLoan[]
+
   @@index([sequence])
   @@map("lt_encompass_milestones")
+}
+
+// =============================================================================
+// THE LOAN APPLICATION — laid out like a standard LOS
+// =============================================================================
+//
+// The spine is the URLA / Form 1003 (MISMO 3.4 ULAD) section numbering, because
+// that is the shape every LOS, every investor and every closing package already
+// speaks. Keeping the section numbers means anything we build maps cleanly to the
+// GSE dataset and to the URLA.* fields Encompass already stores — which is what
+// makes the data portable to an investor later.
+//
+//   1a        Personal information .......... LtParty
+//   1b–1d     Employment .................... LtEmployment   (OFF for DSCR — see below)
+//   1e        Other income .................. LtOtherIncome
+//   2a/2b     Assets ........................ LtAsset
+//   2c/2d     Liabilities ................... LtLiability
+//   3a        Property you own (REO) ........ LtReoProperty
+//   4a        Loan and property ............. LtLoan + LtProperty
+//   4b/4c     Rental income ................. LtProperty.grossMonthlyRent
+//   5a/5b     Declarations .................. LtDeclaration
+//   6         Acknowledgements .............. LtAcknowledgement
+//
+// WHY EMPLOYMENT IS MODELLED BUT OFF: the owner's instruction is that the
+// employment section is disabled for DSCR and used only for the few conventional /
+// full-doc / bank-statement files. The live tenant agrees — URLA.X199 ("borrower
+// current employment does not apply") is true on 98% of long-term files, because a
+// DSCR loan qualifies on the property's rent, not the borrower's job. So employment
+// exists as a real table and `LtLoan.employmentApplies` decides whether the section
+// is shown at all. It is NOT a greyed-out 1003.
+//
+// SOLD-AND-RECUSTOMISED IS A HARD RULE. Nothing in this schema hard-codes a YS
+// Capital number, threshold, label or list. Every such value lives in the settings
+// layer (src/longterm/settings/**) pre-filled with our values and changeable by
+// whoever buys the system. If you find yourself about to write a company-specific
+// constant into a column default, put it in settings instead.
+//
+// FIELD IDS. Each field carries the Encompass field id it came from, so a value can
+// always be traced back to the system of record. `———` means we hold it and
+// Encompass does not.
+// =============================================================================
+
+/// A long-term loan file. One row per deal.
+model LtLoan {
+  id String @id @default(uuid()) @db.Uuid
+
+  // ── Identity ──────────────────────────────────────────────────────────────
+  /// Our own loan number. Encompass field 364.
+  loanNumber String? @unique @map("loan_number")
+  /// The Encompass loan GUID this file mirrors, when it has one. The join key back
+  /// to the system of record. Nullable: a file can be started here first.
+  encompassLoanGuid String? @unique @map("encompass_loan_guid")
+
+  /// The person this file belongs to — the SHARED identity record (`borrowers`).
+  /// Authorized crossing `sql-ref borrowers` (ledger, 2026-08-03). Long-Term READS
+  /// this record and never writes it.
+  borrowerId String? @map("borrower_id") @db.Uuid
+  /// The assigned officer — the shared `staff_users` roster. Authorized crossing
+  /// `sql-ref staff_users` (ledger, 2026-08-03).
+  loanOfficerId String? @map("loan_officer_id") @db.Uuid
+
+  // ── Program and purpose (URLA 4a) ─────────────────────────────────────────
+  /// Encompass field 1401 — e.g. "Investor DSCR 30 YEAR FRM". The program NAME is
+  /// what decides fixed-vs-adjustable, because field 608 says "Fixed" even on the
+  /// ARM files (DEFECT-AMORT-ARM in src/longterm/encompass/terms.js).
+  programName String? @map("program_name")
+  /// Which product family this file is, decided from the program name by the
+  /// settings-driven classifier (settings key `product.dscrProgramMatch`).
+  productKind LtProductKind @default(dscr) @map("product_kind")
+  /// Encompass field 19. The long-term book is a REFINANCE book first — 350 of the
+  /// 460 files stating a purpose are refinances.
+  loanPurpose LtLoanPurpose? @map("loan_purpose")
+  /// Encompass field 420.
+  lienPosition LtLienPosition @default(first) @map("lien_position")
+
+  // ── Money and terms (URLA 4a) ─────────────────────────────────────────────
+  /// Encompass field 1109 (field 2 carries the same value on every file measured).
+  loanAmount Decimal? @map("loan_amount") @db.Decimal(14, 2)
+  /// Encompass field 3. Observed 5.49–12.375, median 7.00.
+  noteRatePct Decimal? @map("note_rate_pct") @db.Decimal(9, 5)
+  /// Encompass field 4 — the AMORTIZATION term, in MONTHS. 360 on 485 long-term
+  /// files, 480 on 5. Never years: reading 120 here as a term instead of as an
+  /// interest-only period would size the payment on a completely different loan.
+  termMonths Int? @map("term_months")
+  /// Encompass field 1177 — the interest-only period, in MONTHS. 120 = the owner's
+  /// "10 years interest only". Null means none; a blank is NOT unknown.
+  interestOnlyMonths Int? @map("interest_only_months")
+  /// Encompass field 608. Recorded as stated, but never trusted on its own for
+  /// fixed-vs-adjustable — see programName above.
+  amortizationType LtAmortizationType @default(fixed) @map("amortization_type")
+
+  // ── ARM terms — we hold these, Encompass has nowhere to put them ──────────
+  // DEFECT-NO-ARM-FIELDS: no field in the census carries an index, margin or cap
+  // with data on it. So an ARM can be described properly on our side even while the
+  // system of record cannot describe it at all.
+  /// ———
+  armIndexName String? @map("arm_index_name")
+  /// ———
+  armMarginPct Decimal? @map("arm_margin_pct") @db.Decimal(9, 5)
+  /// ——— Months until the first rate change.
+  armFirstAdjustmentMonths Int? @map("arm_first_adjustment_months")
+  /// ——— Months between later changes.
+  armAdjustmentFrequencyMonths Int? @map("arm_adjustment_frequency_months")
+  /// ——— Cap on the FIRST change, in percentage points.
+  armInitialCapPct Decimal? @map("arm_initial_cap_pct") @db.Decimal(9, 5)
+  /// ——— Cap on each later change.
+  armPeriodicCapPct Decimal? @map("arm_periodic_cap_pct") @db.Decimal(9, 5)
+  /// ——— Cap over the life of the loan.
+  armLifetimeCapPct Decimal? @map("arm_lifetime_cap_pct") @db.Decimal(9, 5)
+  /// ——— The floor the rate can never go below.
+  armFloorPct Decimal? @map("arm_floor_pct") @db.Decimal(9, 5)
+
+  // ── Prepayment ────────────────────────────────────────────────────────────
+  /// ——— Months the prepayment penalty runs for. A long-term investor loan
+  /// normally carries one; a bridge loan does not.
+  prepaymentPenaltyMonths Int? @map("prepayment_penalty_months")
+  /// ——— How the penalty steps down, e.g. "5-4-3-2-1". Free text on purpose:
+  /// every investor writes it differently and we must not lose their wording.
+  prepaymentPenaltyStructure String? @map("prepayment_penalty_structure")
+
+  // ── The housing expense — the DSCR denominator ────────────────────────────
+  // READ THE TOTAL, NEVER REBUILD IT. Summed independently across the live book the
+  // seven components match field 912 on 414 of 453 files (91.4%); on 38 of the 39
+  // that differ the TAX LINE is blank while the total plainly contains taxes
+  // (shortfall $1,000–$5,410/mo, median $1,328, always positive). Rebuilding the
+  // total from the parts understates the housing expense on 8% of files by about
+  // $1,300 a month, which inflates the DSCR and makes a deal look better than it is.
+  /// Encompass field 912. THE authoritative housing expense.
+  housingExpenseTotal Decimal? @map("housing_expense_total") @db.Decimal(14, 2)
+  /// Encompass field 228 — principal and interest on this loan.
+  expenseFirstMortgagePi Decimal? @map("expense_first_mortgage_pi") @db.Decimal(14, 2)
+  /// Encompass field 229 — subordinate financing. Essentially unused here.
+  expenseOtherFinancingPi Decimal? @map("expense_other_financing_pi") @db.Decimal(14, 2)
+  /// Encompass field 230.
+  expenseHazardInsurance Decimal? @map("expense_hazard_insurance") @db.Decimal(14, 2)
+  /// Encompass field 1405. Blank on 38 files whose TOTAL includes taxes anyway.
+  expenseRealEstateTaxes Decimal? @map("expense_real_estate_taxes") @db.Decimal(14, 2)
+  /// Encompass field 233.
+  expenseAssociationDues Decimal? @map("expense_association_dues") @db.Decimal(14, 2)
+  /// Encompass field 234.
+  expenseOther Decimal? @map("expense_other") @db.Decimal(14, 2)
+  /// Encompass field URLA.X144 — flood / wind cover carried separately.
+  expenseSupplementalInsurance Decimal? @map("expense_supplemental_insurance") @db.Decimal(14, 2)
+
+  /// Encompass CUST01FV = Round([1005] / [912], 2). Verified on 323 of 323 files.
+  /// STORED, not computed on read, so the file keeps the ratio it was underwritten
+  /// at even after a later edit moves rent or the payment.
+  dscrRatio Decimal? @map("dscr_ratio") @db.Decimal(12, 4)
+
+  // ── Which sections apply ──────────────────────────────────────────────────
+  /// URLA.X199 inverted. FALSE on a DSCR file (98% of the live book), so the whole
+  /// employment section is off. True on the handful of conventional / full-doc /
+  /// bank-statement files. The DEFAULT IS FALSE because the default product is DSCR.
+  employmentApplies Boolean @default(false) @map("employment_applies")
+
+  // ── Where the file is ─────────────────────────────────────────────────────
+  /// The Encompass milestone this file sits at, when known.
+  milestoneId String? @map("milestone_id")
+  milestone   LtEncompassMilestone? @relation(fields: [milestoneId], references: [milestoneId])
+
+  // ── Bookkeeping ───────────────────────────────────────────────────────────
+  /// When Encompass was last read for this file. Encompass is the source of truth;
+  /// this records how fresh our copy is.
+  encompassSyncedAt DateTime? @map("encompass_synced_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  borrowerPairs LtBorrowerPair[]
+  property      LtProperty?
+  investor      LtLoanInvestor?
+
+  @@index([borrowerId])
+  @@index([loanOfficerId])
+  @@index([milestoneId])
+  @@index([productKind])
+  @@map("lt_loans")
+}
+
+/// WHO BOUGHT THE LOAN — the identity chain the owner said must "survive like crazy".
+/// Three steps, in the order they are filled: a shorthand name typed early
+/// (CX.WHICHINVESTOR), a more accurate name added later (VEND.X263), and finally the
+/// investor's OWN loan number (VEND.X276) — the only shared key between our file and
+/// their system. Kept in its own table so the investor can change without touching
+/// the loan row, and so the loan number is never one edit away from being lost.
+/// See src/longterm/encompass/investors.js for the resolver and the 117 spellings.
+model LtLoanInvestor {
+  loanId String @id @map("loan_id") @db.Uuid
+  loan   LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade)
+
+  /// Encompass CX.WHICHINVESTOR — step 1, the shorthand name. 451 loans, 83 spellings.
+  shorthandName String? @map("shorthand_name")
+  /// Encompass VEND.X263 — step 2, the accurate name. 408 loans, 68 spellings.
+  accurateName String? @map("accurate_name")
+  /// The canonical key both names resolve to (`investors.resolve().key`). NEVER
+  /// compare investor names as strings — compare this.
+  canonicalKey String? @map("canonical_key")
+
+  /// Encompass VEND.X276 — step 3, THE INVESTOR'S OWN LOAN NUMBER. 379 loans, 379
+  /// distinct values. This must survive every edit, every re-sync and every
+  /// migration: it is the only thing that lets us and the investor talk about the
+  /// same loan. Kept as text because investors issue every shape (25098221,
+  /// 5260318508, ABC-99/2).
+  ///
+  /// NOT VEND.X267. The owner named X267, but in the live tenant X267 is "File
+  /// Contacts Investor Zip" — 11 distinct values, all postcodes (19101, 80155,
+  /// 75265, 10036). Keying on it would store a PO-Box postcode as the investor's
+  /// loan number on every file.
+  investorLoanNumber String? @map("investor_loan_number")
+
+  /// Encompass VEND.X273. The email DOMAIN identifies the investor unambiguously
+  /// and is worth more than the typed name when the two disagree.
+  investorEmail String? @map("investor_email")
+
+  /// Encompass CX.TABLEFUNDER — HOW the loan is funded, which is a different
+  /// question from WHO buys it. Keep the two apart.
+  fundingChannel String? @map("funding_channel")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([canonicalKey])
+  @@index([investorLoanNumber])
+  @@map("lt_loan_investors")
+}
+
+/// A BORROWER PAIR — Encompass `loan.applications[]`. One pair is a borrower plus an
+/// optional co-borrower.
+///
+/// THIS IS A LIST, NOT TWO COLUMNS, AND THAT IS DELIBERATE. The live book has 737
+/// files with one pair, 31 with two and 4 with three — but the tenant defines
+/// CX.PAIR1..CX.PAIR6 FICO fields, so the workflow is built for SIX. Fixed
+/// borrower/co-borrower columns would hit a wall the day a fourth pair arrives.
+model LtBorrowerPair {
+  id     String @id @default(uuid()) @db.Uuid
+  loanId String @map("loan_id") @db.Uuid
+  loan   LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade)
+
+  /// 1-based position. Also what the Encompass eFolder uses (_borrower1, _borrower2).
+  pairNumber Int @map("pair_number")
+  /// Encompass's own application GUID for this pair, when mirrored.
+  encompassApplicationId String? @map("encompass_application_id")
+  /// Encompass field 1811 — "Investor" on every long-term file.
+  propertyUsageType String? @map("property_usage_type")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  parties LtParty[]
+
+  @@unique([loanId, pairNumber])
+  @@map("lt_borrower_pairs")
+}
+
+/// A PARTY on a borrower pair — the borrower, or the co-borrower (URLA 1a).
+///
+/// On a DSCR file the borrower is usually an ENTITY (an LLC) with the natural person
+/// behind it as guarantor, which is why `partyType` is a first-class field rather
+/// than an assumption.
+model LtParty {
+  id     String         @id @default(uuid()) @db.Uuid
+  pairId String         @map("pair_id") @db.Uuid
+  pair   LtBorrowerPair @relation(fields: [pairId], references: [id], onDelete: Cascade)
+
+  /// Borrower or co-borrower.
+  role LtPartyRole
+  /// A natural person, or the entity that actually takes title.
+  partyType LtPartyType @default(individual) @map("party_type")
+
+  /// The SHARED person record, when this party is one of our known borrowers.
+  /// Authorized crossing `sql-ref borrowers`. Long-Term reads it, never writes it —
+  /// an edit goes through the one shared borrower editor.
+  borrowerId String? @map("borrower_id") @db.Uuid
+
+  // ── Personal information (URLA 1a) ────────────────────────────────────────
+  /// Encompass field 4000 / 36. Held here as well as on the shared record so a
+  /// mirrored Encompass file is complete before it is matched to a person.
+  firstName  String? @map("first_name")
+  middleName String? @map("middle_name")
+  lastName   String? @map("last_name")
+  nameSuffix String? @map("name_suffix")
+  /// Encompass field 1402.
+  dateOfBirth DateTime? @map("date_of_birth") @db.Date
+  /// Encompass field 65. ENCRYPTED AT REST — never a plain column, and never
+  /// returned by an API that has not been asked for it specifically.
+  ssnEncrypted Bytes?  @map("ssn_encrypted")
+  ssnLast4     String? @map("ssn_last4")
+  citizenship  String? @map("citizenship")
+  maritalStatus String? @map("marital_status")
+  dependentCount Int?   @map("dependent_count")
+  email       String?
+  homePhone   String? @map("home_phone")
+  mobilePhone String? @map("mobile_phone")
+
+  // ── Credit (the tenant's per-pair FICO fields) ────────────────────────────
+  /// Encompass 67 / 1450 / 1414 (borrower) and 60 / 1452 / 1415 (co-borrower).
+  /// Declared STRING in the Encompass schema even though they hold integers — we
+  /// store them as integers and let the reader coerce.
+  ficoExperian   Int? @map("fico_experian")
+  ficoTransunion Int? @map("fico_transunion")
+  ficoEquifax    Int? @map("fico_equifax")
+  /// The middle of the three — the number that prices the deal.
+  ficoRepresentative Int? @map("fico_representative")
+
+  // ── Entity details, when this party is a company ──────────────────────────
+  /// Encompass field 1859. The vesting entity's legal name.
+  entityLegalName String? @map("entity_legal_name")
+  /// LLC / corporation / partnership / trust. Not every entity is an LLC, and the
+  /// documents each one is asked for differ.
+  entityType String? @map("entity_type")
+  entityStateOfFormation String? @map("entity_state_of_formation")
+  entityFormationDate    DateTime? @map("entity_formation_date") @db.Date
+  /// ENCRYPTED AT REST, same rule as an SSN.
+  entityEinEncrypted Bytes? @map("entity_ein_encrypted")
+  /// What this person's title is in the entity — it prints under a signature line
+  /// on a recorded instrument, so it is a chosen value, never free text.
+  entityTitle String? @map("entity_title")
+  entityOwnershipPct Decimal? @map("entity_ownership_pct") @db.Decimal(6, 3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  residences   LtResidence[]
+  employments  LtEmployment[]
+  otherIncomes LtOtherIncome[]
+  assets       LtAsset[]
+  liabilities  LtLiability[]
+  reoProperties LtReoProperty[]
+  declaration  LtDeclaration?
+
+  @@unique([pairId, role])
+  @@index([borrowerId])
+  @@map("lt_parties")
+}
+
+/// WHERE THE PARTY LIVES, AND FOR HOW LONG (URLA 1a) — Encompass
+/// `borrower.residences[]`. The owner's "primary residence, if he owns or rents and
+/// how long he lives there".
+///
+/// Across the tenant: Current/Rent 386, Current/Own 186, Current/no housing expense
+/// 70, plus Prior rows when the current address is under two years old.
+model LtResidence {
+  id      String  @id @default(uuid()) @db.Uuid
+  partyId String  @map("party_id") @db.Uuid
+  party   LtParty @relation(fields: [partyId], references: [id], onDelete: Cascade)
+
+  /// Current or Prior. A Prior row exists because the current address is recent.
+  residencyType LtResidencyType @map("residency_type")
+  /// Rent, Own, or no primary housing expense (living rent-free).
+  residencyBasis LtResidencyBasis @map("residency_basis")
+
+  street String?
+  city   String?
+  state  String?
+  zip    String?
+  country String? @default("US")
+
+  /// How long they have been there. The tenant rolls this up into
+  /// CX.YEARS.AT.RESIDENCE; we keep the months so the roll-up is derived, not typed.
+  durationMonths Int? @map("duration_months")
+  /// What they pay each month when renting. Meaningless when they own.
+  monthlyRent Decimal? @map("monthly_rent") @db.Decimal(14, 2)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([partyId, residencyType])
+  @@map("lt_residences")
+}
+
+/// EMPLOYMENT (URLA 1b–1d) — modelled, and OFF on a DSCR file.
+///
+/// `LtLoan.employmentApplies` is false by default and false on 98% of the live book,
+/// because a DSCR loan qualifies on the property's rent rather than the borrower's
+/// job. The section exists for the conventional / full-doc / bank-statement files.
+/// It is deliberately NOT enriched beyond what a standard 1003 asks for — the owner
+/// was explicit that this section does not need depth.
+model LtEmployment {
+  id      String  @id @default(uuid()) @db.Uuid
+  partyId String  @map("party_id") @db.Uuid
+  party   LtParty @relation(fields: [partyId], references: [id], onDelete: Cascade)
+
+  employerName String? @map("employer_name")
+  position     String?
+  /// Current, previous, or an additional job held alongside the main one.
+  employmentType LtEmploymentType @default(current) @map("employment_type")
+  isSelfEmployed Boolean @default(false) @map("is_self_employed")
+  /// Whether the borrower has an ownership interest in the business.
+  ownershipPct Decimal? @map("ownership_pct") @db.Decimal(6, 3)
+
+  startDate DateTime? @map("start_date") @db.Date
+  endDate   DateTime? @map("end_date") @db.Date
+
+  monthlyBaseIncome     Decimal? @map("monthly_base_income") @db.Decimal(14, 2)
+  monthlyOvertimeIncome Decimal? @map("monthly_overtime_income") @db.Decimal(14, 2)
+  monthlyBonusIncome    Decimal? @map("monthly_bonus_income") @db.Decimal(14, 2)
+  monthlyCommissionIncome Decimal? @map("monthly_commission_income") @db.Decimal(14, 2)
+  monthlyOtherIncome    Decimal? @map("monthly_other_income") @db.Decimal(14, 2)
+
+  employerStreet String? @map("employer_street")
+  employerCity   String? @map("employer_city")
+  employerState  String? @map("employer_state")
+  employerZip    String? @map("employer_zip")
+  employerPhone  String? @map("employer_phone")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([partyId, employmentType])
+  @@map("lt_employments")
+}
+
+/// INCOME FROM OTHER SOURCES (URLA 1e).
+/// On a conventional file this is where subject-property rent would sit. A DSCR file
+/// does NOT qualify here — it qualifies on field 1005 ÷ field 912 — so this table
+/// carries genuinely other income (a pension, alimony, another property's rent).
+model LtOtherIncome {
+  id      String  @id @default(uuid()) @db.Uuid
+  partyId String  @map("party_id") @db.Uuid
+  party   LtParty @relation(fields: [partyId], references: [id], onDelete: Cascade)
+
+  /// Free text on purpose — the URLA's own list is long and lenders extend it.
+  incomeType    String  @map("income_type")
+  monthlyAmount Decimal @map("monthly_amount") @db.Decimal(14, 2)
+  description   String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([partyId])
+  @@map("lt_other_incomes")
+}
+
+/// ASSETS (URLA 2a and 2b) — bank accounts, retirement, and the other credits.
+/// Still fully relevant on a DSCR file: reserves and cash to close are underwritten
+/// even though personal income is not.
+model LtAsset {
+  id      String  @id @default(uuid()) @db.Uuid
+  partyId String  @map("party_id") @db.Uuid
+  party   LtParty @relation(fields: [partyId], references: [id], onDelete: Cascade)
+
+  /// Which half of the section this is: an account you hold (2a) or a credit
+  /// toward closing (2b). They are added up differently, so the distinction is
+  /// structural rather than cosmetic.
+  section LtAssetSection @default(accounts)
+  /// Checking, savings, retirement, gift, earnest money…
+  assetType String @map("asset_type")
+
+  institutionName String?  @map("institution_name")
+  /// Store the last four only. A full account number has no underwriting use and
+  /// every extra copy of one is a liability.
+  accountLast4    String?  @map("account_last4")
+  value           Decimal? @db.Decimal(14, 2)
+
+  /// Whether a document has been seen for it. An asset nobody verified is a claim.
+  isVerified Boolean @default(false) @map("is_verified")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([partyId, section])
+  @@map("lt_assets")
+}
+
+/// LIABILITIES AND OTHER OBLIGATIONS (URLA 2c and 2d).
+model LtLiability {
+  id      String  @id @default(uuid()) @db.Uuid
+  partyId String  @map("party_id") @db.Uuid
+  party   LtParty @relation(fields: [partyId], references: [id], onDelete: Cascade)
+
+  /// A debt with a balance (2c), or an ongoing obligation like alimony (2d).
+  section LtLiabilitySection @default(debts)
+  /// Revolving, instalment, mortgage, HELOC, lease, open 30-day…
+  liabilityType String @map("liability_type")
+
+  creditorName   String?  @map("creditor_name")
+  accountLast4   String?  @map("account_last4")
+  unpaidBalance  Decimal? @map("unpaid_balance") @db.Decimal(14, 2)
+  monthlyPayment Decimal? @map("monthly_payment") @db.Decimal(14, 2)
+  monthsRemaining Int?    @map("months_remaining")
+
+  /// Whether this debt is cleared at or before closing — which takes it out of the
+  /// ratios, so it must be a recorded fact rather than an assumption.
+  toBePaidOff Boolean @default(false) @map("to_be_paid_off")
+  /// Which REO property secures it, when it is a mortgage. This is the join that
+  /// makes an REO schedule reconcile against the credit report.
+  reoPropertyId String? @map("reo_property_id") @db.Uuid
+  reoProperty   LtReoProperty? @relation(fields: [reoPropertyId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([partyId, section])
+  @@index([reoPropertyId])
+  @@map("lt_liabilities")
+}
+
+/// PROPERTY YOU OWN — the REO schedule (URLA 3a).
+///
+/// CENTRAL to long-term, not a formality: investor EXPERIENCE is counted from here,
+/// and experience decides leverage. A rental listed here also carries its own income
+/// and expenses, which is how a portfolio borrower's true cash flow is assembled.
+model LtReoProperty {
+  id      String  @id @default(uuid()) @db.Uuid
+  partyId String  @map("party_id") @db.Uuid
+  party   LtParty @relation(fields: [partyId], references: [id], onDelete: Cascade)
+
+  street String?
+  city   String?
+  state  String?
+  zip    String?
+
+  propertyType String? @map("property_type")
+  /// Investment, primary residence, second home. Only investment properties count
+  /// toward investor experience.
+  occupancyType String? @map("occupancy_type")
+  /// Sold, pending sale, or retained — a property under contract is not experience
+  /// and is not a liability either.
+  dispositionStatus String? @map("disposition_status")
+
+  presentValue Decimal? @map("present_value") @db.Decimal(14, 2)
+  /// What is owed against it. Reconciles against the linked liability rows.
+  mortgageBalance Decimal? @map("mortgage_balance") @db.Decimal(14, 2)
+  monthlyMortgagePayment Decimal? @map("monthly_mortgage_payment") @db.Decimal(14, 2)
+  /// Taxes, insurance and association dues on THIS property.
+  monthlyExpenses Decimal? @map("monthly_expenses") @db.Decimal(14, 2)
+  grossMonthlyRent Decimal? @map("gross_monthly_rent") @db.Decimal(14, 2)
+  /// Net after expenses. Stored rather than derived because the vacancy factor
+  /// applied is an underwriting judgement, not arithmetic.
+  netMonthlyRentalIncome Decimal? @map("net_monthly_rental_income") @db.Decimal(14, 2)
+
+  /// When they bought it. What makes an experience count is how recently it closed.
+  acquiredDate DateTime? @map("acquired_date") @db.Date
+
+  /// Whether a document has been seen for it. Experience counted from an unverified
+  /// claim is how a file gets priced on leverage it did not earn.
+  isVerified Boolean @default(false) @map("is_verified")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  liabilities LtLiability[]
+
+  @@index([partyId])
+  @@map("lt_reo_properties")
+}
+
+/// THE SUBJECT PROPERTY (URLA 4a and 4c) — the property this loan is secured on.
+/// One per loan.
+model LtProperty {
+  loanId String @id @map("loan_id") @db.Uuid
+  loan   LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade)
+
+  /// Encompass fields 11 / 12 / 13 / 14 / 15.
+  street String?
+  city   String?
+  county String?
+  state  String?
+  zip    String?
+
+  /// Encompass field 16.
+  unitCount Int? @map("unit_count")
+  /// Encompass field 1041 (`gsePropertyType`) — the RELIABLE one, filled on 100% of
+  /// long-term files. Field 1553 (tsum) is filled on 54% and is not authoritative.
+  gsePropertyType String? @map("gse_property_type")
+  /// Encompass field 1811 — "Investor" on 456 of 457 Investor DSCR files.
+  occupancyType String? @map("occupancy_type")
+  /// Encompass field 1487.
+  occupancyRatePct Decimal? @map("occupancy_rate_pct") @db.Decimal(6, 3)
+
+  /// Encompass field 356 — the appraised value used at closing.
+  appraisedValue Decimal? @map("appraised_value") @db.Decimal(14, 2)
+  /// Encompass field 1821 — the pre-appraisal estimate.
+  estimatedValue Decimal? @map("estimated_value") @db.Decimal(14, 2)
+  /// Encompass field 136 — purchases only (22.7% of long-term files).
+  purchasePrice Decimal? @map("purchase_price") @db.Decimal(14, 2)
+  /// Encompass field 25 — what they originally paid, on a refinance.
+  originalCost Decimal? @map("original_cost") @db.Decimal(14, 2)
+
+  /// Encompass field 1005 — GROSS MONTHLY market rent, and the NUMERATOR of the
+  /// DSCR. Not annual, and not net of vacancy.
+  grossMonthlyRent Decimal? @map("gross_monthly_rent") @db.Decimal(14, 2)
+  /// ——— The rent the property actually collects today, when it differs from the
+  /// appraiser's market rent. The two disagreeing is a real underwriting question,
+  /// so they get separate columns rather than one that quietly means either.
+  actualMonthlyRent Decimal? @map("actual_monthly_rent") @db.Decimal(14, 2)
+
+  /// Encompass field 353.
+  ltvPct Decimal? @map("ltv_pct") @db.Decimal(6, 3)
+  /// ——— Combined LTV, once subordinate financing exists.
+  cltvPct Decimal? @map("cltv_pct") @db.Decimal(6, 3)
+
+  /// ——— Whether the property sits in a special flood hazard area. Decides whether
+  /// flood cover is required, which changes the housing expense and so the DSCR.
+  inFloodZone Boolean? @map("in_flood_zone")
+  floodZone   String?  @map("flood_zone")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("lt_properties")
+}
+
+/// DECLARATIONS (URLA 5a and 5b) — the yes/no questions every applicant answers.
+/// One row per party. Every answer is a NULLABLE boolean on purpose: "not answered
+/// yet" and "answered no" are different facts, and treating an unanswered question
+/// as a no is how a file goes to closing with a declaration nobody made.
+model LtDeclaration {
+  partyId String  @id @map("party_id") @db.Uuid
+  party   LtParty @relation(fields: [partyId], references: [id], onDelete: Cascade)
+
+  // 5a — about this property and this loan
+  willOccupyAsPrimary        Boolean? @map("will_occupy_as_primary")
+  hadOwnershipLast3Years     Boolean? @map("had_ownership_last_3_years")
+  familyRelationshipToSeller Boolean? @map("family_relationship_to_seller")
+  borrowingOtherMoney        Boolean? @map("borrowing_other_money")
+  applyingOtherMortgage      Boolean? @map("applying_other_mortgage")
+  applyingNewCredit          Boolean? @map("applying_new_credit")
+  propertySubjectToLien      Boolean? @map("property_subject_to_lien")
+
+  // 5b — about the applicant
+  isCoSignerOrGuarantor    Boolean? @map("is_co_signer_or_guarantor")
+  hasOutstandingJudgments  Boolean? @map("has_outstanding_judgments")
+  isDelinquentOnFederalDebt Boolean? @map("is_delinquent_on_federal_debt")
+  isPartyToLawsuit         Boolean? @map("is_party_to_lawsuit")
+  hadTitleConveyedInLieu   Boolean? @map("had_title_conveyed_in_lieu")
+  hadPreForeclosureSale    Boolean? @map("had_pre_foreclosure_sale")
+  hadPropertyForeclosed    Boolean? @map("had_property_foreclosed")
+  hasDeclaredBankruptcy    Boolean? @map("has_declared_bankruptcy")
+  /// Which chapters. Only meaningful when hasDeclaredBankruptcy is true.
+  bankruptcyChapters String? @map("bankruptcy_chapters")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("lt_declarations")
+}
+
+// ── Enumerations ─────────────────────────────────────────────────────────────
+// Kept deliberately SMALL. A value that varies by lender (a program name, an
+// investor, a document type, a condition category) is free text plus a settings-
+// driven list, never a database enum — an enum is a migration every time the buyer
+// of this system wants a different word.
+
+enum LtProductKind {
+  /// Debt-service-coverage: qualifies on the property's rent. The default.
+  dscr
+  /// Full documentation — the handful of files where employment applies.
+  full_doc
+  /// Qualified on bank statements rather than tax returns.
+  bank_statement
+  /// Anything else, so an unrecognised program is never forced into a bucket.
+  other
+
+  @@map("lt_product_kind")
+}
+
+enum LtLoanPurpose {
+  purchase
+  rate_term_refinance
+  cash_out_refinance
+
+  @@map("lt_loan_purpose")
+}
+
+enum LtLienPosition {
+  first
+  second
+
+  @@map("lt_lien_position")
+}
+
+enum LtAmortizationType {
+  fixed
+  adjustable
+
+  @@map("lt_amortization_type")
+}
+
+enum LtPartyRole {
+  borrower
+  coborrower
+
+  @@map("lt_party_role")
+}
+
+enum LtPartyType {
+  individual
+  entity
+
+  @@map("lt_party_type")
+}
+
+enum LtResidencyType {
+  current
+  prior
+
+  @@map("lt_residency_type")
+}
+
+enum LtResidencyBasis {
+  own
+  rent
+  /// Living rent-free — 70 files in the live book.
+  no_primary_housing_expense
+
+  @@map("lt_residency_basis")
+}
+
+enum LtEmploymentType {
+  current
+  previous
+  additional
+
+  @@map("lt_employment_type")
+}
+
+enum LtAssetSection {
+  /// URLA 2a — bank accounts, retirement, other accounts you hold.
+  accounts
+  /// URLA 2b — other assets and credits toward closing.
+  credits
+
+  @@map("lt_asset_section")
+}
+
+enum LtLiabilitySection {
+  /// URLA 2c — debts with a balance.
+  debts
+  /// URLA 2d — ongoing obligations such as alimony or child support.
+  obligations
+
+  @@map("lt_liability_section")
 }

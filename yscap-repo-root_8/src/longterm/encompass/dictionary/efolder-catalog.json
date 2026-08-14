@@ -1,0 +1,1301 @@
+{
+ "meta": {
+  "source": "GET /encompass/v3/settings/efolder/documents + per-loan GET /v1/loans/{id}/documents",
+  "generated": "2026-08-14",
+  "note": "Document-type catalog is tenant config. Per-loan figures are aggregates only."
+ },
+ "documentTypes": [
+  {
+   "id": "30597132-861d-4adf-8c1b-118b6dcdd27b",
+   "name": "*Borrower Docs",
+   "description": "To be used with Data & Doc Automation"
+  },
+  {
+   "id": "286a9a1c-07a6-4fb1-a07d-57e394dc2d88",
+   "name": "1003 - URLA",
+   "description": null
+  },
+  {
+   "id": "f1ece125-7070-44ab-b441-40b9b6734dd7",
+   "name": "1st lein letter",
+   "description": null
+  },
+  {
+   "id": "bf834798-4aae-4748-9117-7053bb58fe0c",
+   "name": "4506T Settlement Service",
+   "description": "4506 Results"
+  },
+  {
+   "id": "98f32f4d-03cd-4166-ab28-e1dc35c2bb3d",
+   "name": "Ability To Repay Worksheet",
+   "description": null
+  },
+  {
+   "id": "540f81a7-b4c7-4c2b-8601-a32ce45b0292",
+   "name": "ACH Form",
+   "description": null
+  },
+  {
+   "id": "f0641694-03a7-4188-abf7-e79581254f82",
+   "name": "Acknowledgement Of Receipt Of Closing Disclosure",
+   "description": null
+  },
+  {
+   "id": "32117a39-028e-49ef-8008-87ec1d501596",
+   "name": "Acknowledgement Of Receipt Of Loan Estimate",
+   "description": null
+  },
+  {
+   "id": "f5116edd-210f-468e-8ea8-49c720488cfc",
+   "name": "ACKNOWLEDGMENT OF RECEIPT OF APPRAISAL REPORT",
+   "description": null
+  },
+  {
+   "id": "1dbc0f3d-a842-482b-b019-59a78a2dcde8",
+   "name": "Addendum To Closing Disclosure",
+   "description": null
+  },
+  {
+   "id": "6efae8e2-3439-4e27-b62f-c6b0c943e7c4",
+   "name": "Affiliated Business Arrangement Disclosure",
+   "description": "Affiliated Business Disclosure"
+  },
+  {
+   "id": "fd10a53c-8bc0-44e5-afc9-07877fa66c2f",
+   "name": "AKA Affidavit",
+   "description": "AKA Affidavit"
+  },
+  {
+   "id": "fef53af6-b04d-43c5-ad5b-327a67f0d7fb",
+   "name": "Amortization Schedule",
+   "description": "Amortization Schedule, Complete"
+  },
+  {
+   "id": "62feb48f-0e18-44df-ab38-d3bc08c188f3",
+   "name": "Anti-Steering Disclosure",
+   "description": "Anti-Steering Safe Harbor Disclosure"
+  },
+  {
+   "id": "cb89a958-d2b2-46c8-a2bb-4cde93848505",
+   "name": "Appraisal",
+   "description": null
+  },
+  {
+   "id": "74ce5ee2-ba78-4f1f-a376-1dc9fe239fb9",
+   "name": "Appraisal Completion Report",
+   "description": "442 Completion Certificate"
+  },
+  {
+   "id": "7ffd184f-e359-4f35-983f-83ca4863cf15",
+   "name": "Approval Letter",
+   "description": null
+  },
+  {
+   "id": "d4587dd3-e520-4733-a788-c831ed43c355",
+   "name": "ATR Document",
+   "description": null
+  },
+  {
+   "id": "d263f154-9199-4e21-97cc-4581975bc1b3",
+   "name": "AVM",
+   "description": null
+  },
+  {
+   "id": "a93f16a4-4e23-4e1a-9d7e-134b3f1e903f",
+   "name": "Bailee Letter",
+   "description": null
+  },
+  {
+   "id": "98675d9d-4d6c-4869-860e-032a29e09355",
+   "name": "Bank Statement",
+   "description": null
+  },
+  {
+   "id": "acc28e27-0c5b-43d4-8167-2f8b43a9102e",
+   "name": "Bankruptcy Court Reaffirmation",
+   "description": null
+  },
+  {
+   "id": "f13415db-2a98-43a2-90d2-1452b63b0400",
+   "name": "Bankruptcy Discharge Notice",
+   "description": null
+  },
+  {
+   "id": "f649c558-52ef-415c-acf0-d018396a82d0",
+   "name": "Bankruptcy Papers",
+   "description": null
+  },
+  {
+   "id": "89c7e1ce-8409-4534-a06b-7ae0f5654178",
+   "name": "Bankruptcy Schedules",
+   "description": null
+  },
+  {
+   "id": "b1176dcb-b84f-401c-aa6a-7560d8b7e5a7",
+   "name": "Birth Certificate",
+   "description": null
+  },
+  {
+   "id": "c759b49a-2dd8-4839-b6b7-7307ffb69677",
+   "name": "BORROWER BUSINESS PURPOSE DISCLOSURE AND CERTIFICATION",
+   "description": null
+  },
+  {
+   "id": "452a7606-0076-4eaf-a3ea-de60c5e3153a",
+   "name": "Borrower Correspondence",
+   "description": null
+  },
+  {
+   "id": "b0dd6c8a-4bf0-4c3d-b021-0940c25ad8e8",
+   "name": "BUSINESS PURPOSE & OCCUPANCY AFFIDAVIT",
+   "description": null
+  },
+  {
+   "id": "c3a346c2-7d63-45bb-a04a-c35115f5bbc6",
+   "name": "CA Privacy Policy Disclosure",
+   "description": null
+  },
+  {
+   "id": "fe2a247a-04fa-4341-b786-4db5a8e68469",
+   "name": "Certificate Of Completion Of Housing Counseling",
+   "description": null
+  },
+  {
+   "id": "90cc6a00-bcf0-4f1f-bcf0-b85e9e8c4096",
+   "name": "Certificate Of Occupancy",
+   "description": null
+  },
+  {
+   "id": "79eff11d-0863-4bb8-a52c-03197c34dec1",
+   "name": "Certificate Of Trust",
+   "description": null
+  },
+  {
+   "id": "b77f4260-8c73-40a9-a333-85403e881c04",
+   "name": "Certification Regarding Beneficial Owners of Legal Entity Customers",
+   "description": null
+  },
+  {
+   "id": "b788c4ee-120b-4db5-8f3b-da9a0c0a5b4e",
+   "name": "Change of Circumstance",
+   "description": null
+  },
+  {
+   "id": "d7e93ae1-266f-4313-8e01-ae69a45cf8cb",
+   "name": "Check",
+   "description": null
+  },
+  {
+   "id": "fc08621b-f70c-4cfe-8224-dbe8dd73942b",
+   "name": "Child Care Provider Certification",
+   "description": null
+  },
+  {
+   "id": "64f5ce11-5c0c-49d6-b076-2e2fb17e034d",
+   "name": "Closing Disclosure",
+   "description": null
+  },
+  {
+   "id": "41b228c2-40a9-49c8-a46a-72f2aafe01be",
+   "name": "Closing Disclosure (Alternate)",
+   "description": null
+  },
+  {
+   "id": "8c4611af-ef63-43a8-871f-a65d5a36ba7a",
+   "name": "Closing Disclosure (Seller)",
+   "description": null
+  },
+  {
+   "id": "ce3868dc-917c-4f59-a947-fe2346448891",
+   "name": "Closing Package",
+   "description": "Completed Closing Package"
+  },
+  {
+   "id": "86fb7ecd-e2cb-4269-af26-af13866e6a6b",
+   "name": "Compliance Report",
+   "description": null
+  },
+  {
+   "id": "aa46515c-a67a-47f9-aecc-b8f59ecf11c4",
+   "name": "Condominium Questionnaire Worksheet",
+   "description": null
+  },
+  {
+   "id": "9ad00e42-7552-4854-98fc-0339cc961355",
+   "name": "Construction Budget",
+   "description": "Approved budget for the construction of the new home"
+  },
+  {
+   "id": "049ce939-0bd3-4935-ba77-245ffbc5b27c",
+   "name": "Construction Contract",
+   "description": "Signed contract between builder and borrower."
+  },
+  {
+   "id": "b97cea13-ba62-4021-9034-d96d3f470ab3",
+   "name": "Construction Lien Waiver",
+   "description": null
+  },
+  {
+   "id": "ec8829f6-6136-4acb-85db-43006c4b36cf",
+   "name": "Construction Loan Agreement",
+   "description": null
+  },
+  {
+   "id": "5a3a00d1-162d-487d-91a8-7922d3a5f063",
+   "name": "Construction Plans & Specs",
+   "description": "Plans and specifications for the home to be built"
+  },
+  {
+   "id": "3c6fe9c0-cabd-4115-a219-7f9c40c7e6f1",
+   "name": "Construction Underwriting Documents",
+   "description": null
+  },
+  {
+   "id": "bd1243d2-7559-4316-ac39-497935539113",
+   "name": "Construction Water, Perc, Soil Tests",
+   "description": "All required tests for pre-construction"
+  },
+  {
+   "id": "8e5e7217-9337-47e4-8d6b-b96506921782",
+   "name": "Contact Information For Draws",
+   "description": null
+  },
+  {
+   "id": "23fd02b5-3a03-4273-a823-cc544025d738",
+   "name": "Convertible ARM Disclosure",
+   "description": null
+  },
+  {
+   "id": "d223010c-3672-4d77-87bd-2b029527e412",
+   "name": "cover page",
+   "description": null
+  },
+  {
+   "id": "6bcf65a2-39cc-457f-8ca9-3972f949e4c2",
+   "name": "Credit Analyzer Worksheet",
+   "description": "For Use with Encompass Credit Analyzer"
+  },
+  {
+   "id": "eee3dce6-c2b6-40b2-94bd-3bdeb521a8f4",
+   "name": "Credit Authorization",
+   "description": null
+  },
+  {
+   "id": "8032be4e-9e45-49a9-9dd1-b7ae91b5c408",
+   "name": "Credit Explanation",
+   "description": null
+  },
+  {
+   "id": "962b6436-b3cf-4da7-af62-7e0eeef51eb2",
+   "name": "Credit Report",
+   "description": null
+  },
+  {
+   "id": "1cfdb1c5-ff55-4fb9-9189-e3e08b3a161f",
+   "name": "Credit Supplement",
+   "description": "Credit Supplement"
+  },
+  {
+   "id": "d0f15977-b8f0-4a5f-864a-ff5f5cb77a1b",
+   "name": "Custom ARM Disclosure",
+   "description": null
+  },
+  {
+   "id": "396c1f34-b112-4fc3-9151-836648cea667",
+   "name": "Data Audit Report",
+   "description": null
+  },
+  {
+   "id": "48c04e88-e30e-4646-81d7-8f53f54325e7",
+   "name": "Debt Consolidation Worksheet",
+   "description": null
+  },
+  {
+   "id": "c1f9ce6e-5df9-4584-88df-5bea9ab8ee6c",
+   "name": "Delayed Financing",
+   "description": "Delayed Financing Documents"
+  },
+  {
+   "id": "d4a7e255-5bc3-4a4e-a6f2-ff2b945d2353",
+   "name": "Divorce Decree",
+   "description": null
+  },
+  {
+   "id": "b49d229a-243a-4d87-a97e-0b4afd23a0f1",
+   "name": "Document Checklist",
+   "description": null
+  },
+  {
+   "id": "03cc538e-3486-4974-a48e-84c7181fa69b",
+   "name": "Document Preparation",
+   "description": null
+  },
+  {
+   "id": "1b0bdd15-24ca-432a-a717-19d442c9515c",
+   "name": "DPA Grant Letter",
+   "description": null
+  },
+  {
+   "id": "b6fe6d22-6f79-4dff-a96b-5b36a0572e53",
+   "name": "EarlyCheck",
+   "description": null
+  },
+  {
+   "id": "161708b6-3632-4da2-af14-8de9f45a3c55",
+   "name": "Electronic Verification Of Employment",
+   "description": "Electronic Verification Of Employment"
+  },
+  {
+   "id": "b5d546b8-5288-45b6-99c4-b533f4b606c6",
+   "name": "Employment Contract",
+   "description": null
+  },
+  {
+   "id": "95471150-f0df-456d-9302-fda002707609",
+   "name": "Engineer Certificate of Construction",
+   "description": null
+  },
+  {
+   "id": "7a6d1204-8354-48f6-b303-82cba37544f5",
+   "name": "Entity documents",
+   "description": null
+  },
+  {
+   "id": "4ef8b424-03e2-4fa9-98ff-6552b466cb04",
+   "name": "Escrow Deposit Receipt",
+   "description": null
+  },
+  {
+   "id": "ca04626c-5949-4029-a6dc-b1b38ecf7f42",
+   "name": "Escrow Holdback",
+   "description": "Escrow Holdback Agreement"
+  },
+  {
+   "id": "55a03c09-1e54-4b88-8c73-9672dec13e80",
+   "name": "Escrow Instructions",
+   "description": null
+  },
+  {
+   "id": "b6ce3277-75f0-441f-bc79-b503816da1ac",
+   "name": "Escrow/Closing",
+   "description": null
+  },
+  {
+   "id": "477bde42-c9f4-47c5-8bcd-c56b826e50b0",
+   "name": "Fair Lending Notice",
+   "description": null
+  },
+  {
+   "id": "9403e797-c84d-413d-b807-6d0fff252993",
+   "name": "FHA Blanket Signature Authorization",
+   "description": null
+  },
+  {
+   "id": "2479148a-c2b3-456f-837b-7b88ecf8cd30",
+   "name": "FHA Builder's Certification",
+   "description": null
+  },
+  {
+   "id": "bf7d9ce3-50ed-4537-a1ba-7ffc752144b6",
+   "name": "FHA Case Number Assignment",
+   "description": "FHA Case Number Assignment"
+  },
+  {
+   "id": "4f773dc8-2d35-4bc9-b475-c17a22096e75",
+   "name": "FHA Counseling Certification",
+   "description": null
+  },
+  {
+   "id": "2b1eae07-7618-4b24-983e-4e7459de208f",
+   "name": "FHA Warranty Of Completion Of Construction",
+   "description": null
+  },
+  {
+   "id": "25d0a821-b072-434d-ad68-1b9265f1771c",
+   "name": "Final Inspection",
+   "description": "Final inspection from appaiser confirming construction is complete per plans and specifications"
+  },
+  {
+   "id": "b4f872b6-5375-4629-97f1-31e3af48f903",
+   "name": "Final Title Policy",
+   "description": "Final Title Policy"
+  },
+  {
+   "id": "2a7b46e1-e4c8-4de7-a164-05306054bbf1",
+   "name": "First Lien Letter",
+   "description": null
+  },
+  {
+   "id": "ac9946fd-b0e9-41cf-a24d-4ca38e9cb2e8",
+   "name": "First Payment Letter",
+   "description": null
+  },
+  {
+   "id": "c218cd8a-2220-4666-b1ad-1bc4206778df",
+   "name": "Flood Certificate",
+   "description": null
+  },
+  {
+   "id": "49ade821-bdbf-4429-8d26-1096c1332868",
+   "name": "Flood Insurance Agreement",
+   "description": null
+  },
+  {
+   "id": "6324a048-6e4b-4835-93c6-f8185283aa49",
+   "name": "Flood Insurance Policy",
+   "description": null
+  },
+  {
+   "id": "48dcbfb6-8caf-4722-95be-c6c833a0bdbd",
+   "name": "Flood Service",
+   "description": null
+  },
+  {
+   "id": "af4c3c42-9c57-486e-8a58-931ed351f4fb",
+   "name": "FNMA Cash Flow Analysis",
+   "description": "1084 Cash Flow Analysis"
+  },
+  {
+   "id": "cb0c6342-9324-4b5d-b960-b0059ee46943",
+   "name": "Fraud",
+   "description": null
+  },
+  {
+   "id": "53037f90-6c6a-4d1e-a02c-d5129f5fe9f2",
+   "name": "Fraud/Audit Services",
+   "description": null
+  },
+  {
+   "id": "8e47f51d-74d5-4988-8a34-fe13caf8c4b9",
+   "name": "Gift Letter",
+   "description": "Gift Letter/Source of Funds"
+  },
+  {
+   "id": "0360855f-fd0f-4e28-8c62-914bec410aee",
+   "name": "Good Faith Estimate",
+   "description": null
+  },
+  {
+   "id": "ca33f2b7-06fb-44ae-a087-049841127ac2",
+   "name": "Government issued ID",
+   "description": null
+  },
+  {
+   "id": "f356c8b3-c1a2-44da-98db-4b6cc693502d",
+   "name": "GUS Findings",
+   "description": null
+  },
+  {
+   "id": "1ec455a9-8031-446a-8431-7ed42a58e45b",
+   "name": "HAMP",
+   "description": null
+  },
+  {
+   "id": "de096430-f9a4-4ab9-bb65-45fbf700ec4b",
+   "name": "HAMP Modification Agreement",
+   "description": null
+  },
+  {
+   "id": "19d794c6-7c5d-432f-9f95-05fa27308eec",
+   "name": "Hardship Letter",
+   "description": null
+  },
+  {
+   "id": "75b6e3ad-0f57-44c6-9a9e-1b816ebec1b8",
+   "name": "Hazard insurance & invoice",
+   "description": null
+  },
+  {
+   "id": "7f15a7ba-e79a-4945-93b5-86be10f8a71b",
+   "name": "HFA Government Loan Delivery Checklist",
+   "description": null
+  },
+  {
+   "id": "ecf38cc9-b6aa-4211-8a0f-30da6d912b26",
+   "name": "Hold Harmless Agreement",
+   "description": null
+  },
+  {
+   "id": "f494d47b-a9c5-4c74-9c04-e1156eee6afc",
+   "name": "Home-Ownership Counseling Acknowledgement",
+   "description": null
+  },
+  {
+   "id": "7e1ea26d-d4b1-43aa-bfe4-81ecec50ee64",
+   "name": "Homebuyer Education Certification",
+   "description": null
+  },
+  {
+   "id": "b3afc300-d4da-4884-80b0-e28cc503bf21",
+   "name": "Homeowner's Association Certificate",
+   "description": null
+  },
+  {
+   "id": "64b019eb-3614-4f7f-a190-74fc1701c23c",
+   "name": "Homestead Waiver",
+   "description": null
+  },
+  {
+   "id": "6bcae567-0a0c-49f7-8ee5-ffed0d895972",
+   "name": "HUD Approved Homeownership Counseling Org List",
+   "description": null
+  },
+  {
+   "id": "acfb6ed2-81d2-4920-b025-be917bdb3579",
+   "name": "HUD Settlement Cost Booklet",
+   "description": null
+  },
+  {
+   "id": "11a6bdcd-38cc-457c-835d-f37a4cd03ddc",
+   "name": "HUD-314 203(k) Escrow Commitment",
+   "description": null
+  },
+  {
+   "id": "c200f448-39ed-4a16-bc78-6605b197e085",
+   "name": "HUD-54114 Direct Endorsement",
+   "description": null
+  },
+  {
+   "id": "eab2da83-4f4c-499c-a815-ee0291d66de5",
+   "name": "HUD-56001 Property Improvement",
+   "description": null
+  },
+  {
+   "id": "004c52b2-3cf5-44d9-a026-a85dc266c6b5",
+   "name": "HUD-92051 Inspection",
+   "description": null
+  },
+  {
+   "id": "638a33c3-9a7a-407d-a76e-ebe301854a8e",
+   "name": "HUD-92700 203(k) Purchase Worksheet",
+   "description": null
+  },
+  {
+   "id": "71359205-b973-454f-b008-de26fd218d2d",
+   "name": "HUD-92700 203(k) Refinance Worksheet",
+   "description": null
+  },
+  {
+   "id": "eb650791-1467-414b-a6ee-f4fa53af2f97",
+   "name": "HUD-92700-A 203(k) Acknowledgement",
+   "description": null
+  },
+  {
+   "id": "5ea4feb0-2407-43dc-b2fe-2cfa6e37a47b",
+   "name": "HUD-92900-LT FHA Loan Transmittal",
+   "description": null
+  },
+  {
+   "id": "8c439ff3-949d-4ee9-b62b-35d34ec9c0bf",
+   "name": "Identification",
+   "description": "DL"
+  },
+  {
+   "id": "efa60824-1d71-4835-9b06-58190e720d35",
+   "name": "Income Analyzer Worksheet",
+   "description": "For Use with Encompass Income Analyzer"
+  },
+  {
+   "id": "fb9ced80-c977-4e49-8775-5babe4728bff",
+   "name": "Insurance Policy Change Request",
+   "description": null
+  },
+  {
+   "id": "62583506-8083-4627-829f-3f7751fe4d6a",
+   "name": "Investment Statement",
+   "description": "Investment Statement"
+  },
+  {
+   "id": "fbecb175-ba05-4749-841b-22d3c20dc3e6",
+   "name": "Invoice",
+   "description": null
+  },
+  {
+   "id": "42052e17-ebed-443f-828a-ebd1f2d79681",
+   "name": "Invoices",
+   "description": null
+  },
+  {
+   "id": "8863f766-3703-4b17-b830-4afef72c550a",
+   "name": "IRS 1098",
+   "description": "IRS 1098"
+  },
+  {
+   "id": "41f324a2-db7f-44e9-a1c9-3254ca6ac1b0",
+   "name": "IRS 1099",
+   "description": "IRS 1099"
+  },
+  {
+   "id": "d830c59b-083a-4a48-9246-ac52d86b31e2",
+   "name": "IRS 4506C - Request for Transcript of Tax Return",
+   "description": null
+  },
+  {
+   "id": "f7bc394d-54c3-45c9-8edb-bf4f1c077ded",
+   "name": "IRS W-2",
+   "description": "W-2s - Last 2 years"
+  },
+  {
+   "id": "9ca80a3e-080b-46ec-a691-c2c344d48328",
+   "name": "Last Will And Testament",
+   "description": null
+  },
+  {
+   "id": "dc8e3a4c-bae7-43cf-8703-4ade58948489",
+   "name": "LDP-GSA Checklist",
+   "description": null
+  },
+  {
+   "id": "960f15f7-223f-4453-b3d7-466d3d550729",
+   "name": "Lease Agreement",
+   "description": null
+  },
+  {
+   "id": "a7465e49-07b3-4d0e-bdd5-e41bd2ff562b",
+   "name": "Lender Submission",
+   "description": null
+  },
+  {
+   "id": "3d073dc9-07bc-4c3c-9864-4c28a67f5b16",
+   "name": "Letter of Explanation",
+   "description": "Letter of Explanation"
+  },
+  {
+   "id": "ae343787-ff97-4597-9e99-69c8ac966e46",
+   "name": "Life Insurance",
+   "description": null
+  },
+  {
+   "id": "af9f3778-dbab-405d-8e23-ae3645c4f314",
+   "name": "Limited power of attorney",
+   "description": null
+  },
+  {
+   "id": "e928f219-14ec-4676-bf34-3911a2c8b827",
+   "name": "LLC Documents",
+   "description": "Operating Agreement, Articles of Org, COG and EIN"
+  },
+  {
+   "id": "63c4ed23-71a5-4a73-9e1f-745a17fc6ca1",
+   "name": "Loan Submission Sheet",
+   "description": null
+  },
+  {
+   "id": "d67a7b57-3ac7-4bf9-aa31-7c372d0ac352",
+   "name": "Lock Confirmation",
+   "description": null
+  },
+  {
+   "id": "fe0a8173-fc09-445d-9a11-11f259330927",
+   "name": "Map",
+   "description": null
+  },
+  {
+   "id": "acef7ab8-888f-4739-bd7e-a4c4787c68b8",
+   "name": "Marriage Certificate",
+   "description": null
+  },
+  {
+   "id": "e2bff02d-f23f-461e-833e-2402dab1f2b0",
+   "name": "MERS Inquiry Results",
+   "description": null
+  },
+  {
+   "id": "34692449-055e-4faf-bd25-ab0174063496",
+   "name": "Miscellaneous",
+   "description": null
+  },
+  {
+   "id": "385f5528-b9dd-4961-9dd3-fd8c683fe3e3",
+   "name": "Mortgage Insurance",
+   "description": null
+  },
+  {
+   "id": "2df6ba6c-7c87-4fa4-ad4e-286a6ce7a5e4",
+   "name": "Mortgage Loan Commitment",
+   "description": null
+  },
+  {
+   "id": "0b72234a-b54e-49a8-b625-890a9569b1f9",
+   "name": "Mortgage Loan Origination Agreement",
+   "description": null
+  },
+  {
+   "id": "f22587b2-9f96-4e4d-8fbf-590d8cf2fa27",
+   "name": "Net Tangible Benefit",
+   "description": "R&T NTB Form"
+  },
+  {
+   "id": "493b1e32-c2a9-4cb7-9c16-f1d313cd0f12",
+   "name": "NMLS Verification",
+   "description": null
+  },
+  {
+   "id": "0f123d89-52c6-4794-bbd9-b284fa0d0d1b",
+   "name": "Non-Convertible ARM Disclosure",
+   "description": null
+  },
+  {
+   "id": "8db8565e-60ff-45c2-9bcd-348e3f68c574",
+   "name": "Notary Page",
+   "description": null
+  },
+  {
+   "id": "a6d3e3f7-56f5-4956-a87e-6a8c8b9170c1",
+   "name": "Notary Public's Journal",
+   "description": null
+  },
+  {
+   "id": "8f42d292-40ea-4e50-b3d8-a43fd232759f",
+   "name": "Note & Deed for Subordinate Lien",
+   "description": null
+  },
+  {
+   "id": "05a02d8b-7db9-4354-b4b3-afca9b90b090",
+   "name": "Occupancy Certification",
+   "description": "Certificate of Occupancy for completed home"
+  },
+  {
+   "id": "7f2dee09-d226-49c7-9f21-2bc1f270e726",
+   "name": "Payment History",
+   "description": null
+  },
+  {
+   "id": "1188a935-849a-4afb-a476-459865aac932",
+   "name": "Payoff Statement",
+   "description": "Payoff Statements"
+  },
+  {
+   "id": "3ba38e34-1f11-4ac9-b1b7-f2af54df9327",
+   "name": "Paystub",
+   "description": "Paystubs"
+  },
+  {
+   "id": "c79cf887-9977-42fd-9c17-cc0b0be086f5",
+   "name": "Pension Award Letter",
+   "description": "Pension Award Letter"
+  },
+  {
+   "id": "c005724c-ca33-43c0-99e8-ff00e2762076",
+   "name": "Personal Identification",
+   "description": null
+  },
+  {
+   "id": "b0b03ee4-f90b-42b6-86db-f6b512cc2e7c",
+   "name": "Pest Inspection",
+   "description": "Termite/Pest Inspection"
+  },
+  {
+   "id": "489160ca-bbd2-4744-88ca-ad492ee20fa2",
+   "name": "Power Of Attorney",
+   "description": null
+  },
+  {
+   "id": "39feabab-f0e1-4016-b79a-d69aea26cb2d",
+   "name": "Pre-Approval Letter",
+   "description": null
+  },
+  {
+   "id": "5df6aa07-d408-4070-a155-d51153b9d07d",
+   "name": "Pre-Payment Penalty Rider",
+   "description": "Pre-Payment Penalty Rider signed at closing"
+  },
+  {
+   "id": "b9f3dd44-8ed0-4966-954a-05fafc10b3af",
+   "name": "Pre-Qualification Letter",
+   "description": null
+  },
+  {
+   "id": "41e7d990-cc13-4579-a089-6f8cab787a83",
+   "name": "Preliminary Title Commitment",
+   "description": "Preliminary Title Report/CC&R's"
+  },
+  {
+   "id": "bf33f9fc-e5c8-48a8-bfde-23758577c830",
+   "name": "Prequalification",
+   "description": null
+  },
+  {
+   "id": "c8dc4180-06b0-43a7-b52f-3187d4ad5244",
+   "name": "Price Table - Buy Side",
+   "description": null
+  },
+  {
+   "id": "9d8b5876-0656-421d-b870-d06af8d17171",
+   "name": "Price Table - Lock Request",
+   "description": null
+  },
+  {
+   "id": "531cdfc1-7b79-4533-8d07-511851eab515",
+   "name": "Price Table - Sell Side",
+   "description": null
+  },
+  {
+   "id": "48798d2e-9812-4a11-9e1a-04ff09c074ce",
+   "name": "Privacy Policy",
+   "description": null
+  },
+  {
+   "id": "7e8253a2-e5ff-4a72-89b2-058fc0d14cbe",
+   "name": "Product and Pricing",
+   "description": null
+  },
+  {
+   "id": "8e0167a1-8fa2-479f-b087-99e11f68d632",
+   "name": "Profit and Loss Statement",
+   "description": "P&L/Balance Sheet"
+  },
+  {
+   "id": "9e20ebca-84b4-4e7c-bff4-5fc384815af8",
+   "name": "Property Insurance Policy",
+   "description": "Homeowner's Insurance Policy"
+  },
+  {
+   "id": "efce0456-7e18-4547-a283-b6f8f92e968e",
+   "name": "Property Tax Bill",
+   "description": "Property Tax Bill"
+  },
+  {
+   "id": "aa76a89e-ce49-4742-96b5-f0bdc6ce3a22",
+   "name": "Purchase Agreement",
+   "description": "Purchase/Sales Contract"
+  },
+  {
+   "id": "34fb222b-2ce4-4131-9950-59350a4ed7cf",
+   "name": "Quit Claim Deed",
+   "description": null
+  },
+  {
+   "id": "7612d462-c715-4d66-9610-71e659823637",
+   "name": "RCE",
+   "description": "RCE"
+  },
+  {
+   "id": "d232c0df-57d7-411e-8d60-645b44b40c16",
+   "name": "Recycle",
+   "description": null
+  },
+  {
+   "id": "15fbafb4-4f9e-4bac-85c0-32ad3bf8d33d",
+   "name": "Rental Agreement",
+   "description": null
+  },
+  {
+   "id": "5978e401-3d6a-4a43-a8ad-06a83672fb6a",
+   "name": "Request for Evidence of Flood Insurance",
+   "description": null
+  },
+  {
+   "id": "497a3156-bb9b-45ef-ad77-43d1edf68b35",
+   "name": "Request for Evidence of Hazard Insurance",
+   "description": null
+  },
+  {
+   "id": "268688c0-559a-47bb-b5e0-3f709e6ff76b",
+   "name": "Reservation Accepted",
+   "description": null
+  },
+  {
+   "id": "670d183c-09bf-4714-b343-c1a35079a129",
+   "name": "Resident Alien Card",
+   "description": null
+  },
+  {
+   "id": "de765158-ebc6-49b0-9ab2-b4c63fa00c71",
+   "name": "Retirement Statement",
+   "description": "Retirement Statement"
+  },
+  {
+   "id": "3ecd2f45-8e9c-4c80-b9d7-80ee133a0d38",
+   "name": "Reverification Letter",
+   "description": null
+  },
+  {
+   "id": "49f191f9-8c18-4082-aeac-7e0db337ebf5",
+   "name": "Rider to Note",
+   "description": null
+  },
+  {
+   "id": "7bce059d-8e8c-42cc-9613-c457f4c9bf6e",
+   "name": "Septic System Certificate",
+   "description": null
+  },
+  {
+   "id": "b1c6dd0d-e58f-44e4-9a8f-c657bb64f6f4",
+   "name": "Signed Term Sheet",
+   "description": null
+  },
+  {
+   "id": "e0a4b73c-de98-45ea-a037-f0f21efbce08",
+   "name": "Social Security Award Letter",
+   "description": "Social Security Award Letter"
+  },
+  {
+   "id": "c169ed4b-b6e9-494a-8139-abdea08859ec",
+   "name": "Social Security Card",
+   "description": null
+  },
+  {
+   "id": "7d51bfc4-2f11-464a-9eb7-696ab443ef79",
+   "name": "SSA 1099",
+   "description": "SSA 1099"
+  },
+  {
+   "id": "69c2de83-90ba-4c20-9d7e-304cd95d95b9",
+   "name": "Statement of Credit Denial",
+   "description": "Statement of Denial"
+  },
+  {
+   "id": "2cb7a8a3-20b3-4f12-8672-adb7699bff97",
+   "name": "Subject - Mortgage Statement",
+   "description": "Subject property mortgage statement "
+  },
+  {
+   "id": "1150ab79-ee88-48e8-a233-eeeedfde7ec0",
+   "name": "Subordination Agreement",
+   "description": null
+  },
+  {
+   "id": "745e2beb-b4f4-4abf-a320-c8318f86faf5",
+   "name": "Substitution Of Trustee",
+   "description": null
+  },
+  {
+   "id": "762042de-604b-418f-bb39-7351a07b4dd0",
+   "name": "Supplemental Tax Bill",
+   "description": null
+  },
+  {
+   "id": "3c33fa43-bdf8-4ff3-8b00-933e3e22ce37",
+   "name": "Survey",
+   "description": null
+  },
+  {
+   "id": "a1b0c09a-aed3-468d-bd05-1f4aca94e347",
+   "name": "Survey Affidavit",
+   "description": null
+  },
+  {
+   "id": "616bf11f-045d-47f8-9636-21f15718984b",
+   "name": "Survey Request",
+   "description": null
+  },
+  {
+   "id": "12111eaa-6cc3-4d1f-b31a-2786e9e1e988",
+   "name": "Tax Certificate",
+   "description": "Tax Certificate"
+  },
+  {
+   "id": "c62c6124-947b-40d0-ad6b-7b1aa7afdb8e",
+   "name": "Tax Reproration",
+   "description": null
+  },
+  {
+   "id": "19feec60-c44c-4fee-a6e3-1971d5c4e1eb",
+   "name": "Tax Returns",
+   "description": "Tax Returns w/ Schedules - 2 Years"
+  },
+  {
+   "id": "cf68a91f-1832-4a40-95d4-84dde5180360",
+   "name": "Title Affidavit",
+   "description": "Affidavit of Title"
+  },
+  {
+   "id": "bb42c806-eb09-4dd5-bd2c-3776f5c051f6",
+   "name": "Title commitment",
+   "description": null
+  },
+  {
+   "id": "cd4dc65f-6c36-4cd1-a63f-e2e9d5526483",
+   "name": "Title Report",
+   "description": null
+  },
+  {
+   "id": "7e299bb6-9711-429b-b9b9-b6a63bb7333c",
+   "name": "Trust Account",
+   "description": null
+  },
+  {
+   "id": "f69122bc-2528-48c5-86e1-bef09d71d2fa",
+   "name": "Trust Agreement",
+   "description": null
+  },
+  {
+   "id": "d60c0530-7716-4b41-8461-1a3efd024e26",
+   "name": "Underwriting",
+   "description": null
+  },
+  {
+   "id": "a4a2bf78-60bc-4fda-8ff0-38e84a958f5b",
+   "name": "Underwriting Transmittal",
+   "description": "1008 - Transmittal Summary"
+  },
+  {
+   "id": "73b9c18d-bd38-40c1-9d51-fa850e1eb69a",
+   "name": "USDA Conditional Commitment",
+   "description": null
+  },
+  {
+   "id": "913a0fee-24bd-41f9-91b1-79632b0f84c5",
+   "name": "USDA Felony Convictions And Tax Delinquent Status",
+   "description": null
+  },
+  {
+   "id": "ffe8b800-1461-4dbe-978e-2e4d6769a9f3",
+   "name": "USPS Address Verification",
+   "description": null
+  },
+  {
+   "id": "26636f7b-d082-41e2-af09-667a8579c85a",
+   "name": "Utility Bill / Proof of Address",
+   "description": "Utility Bill to support proof of address"
+  },
+  {
+   "id": "f0071892-2c94-4126-b289-59a812472da0",
+   "name": "VA 26-0286 Loan Summary",
+   "description": null
+  },
+  {
+   "id": "504ed7a0-67ec-4d88-85c6-f2e9f3619a9c",
+   "name": "VA 26-1805 Reasonable Value",
+   "description": null
+  },
+  {
+   "id": "2e888be1-f591-4697-bbcd-7fbea9f65621",
+   "name": "VA 26-1820 Loan Disbursement",
+   "description": null
+  },
+  {
+   "id": "0d152d84-e8c6-4857-be53-e4fadcd2075d",
+   "name": "VA Amendment To Contract",
+   "description": null
+  },
+  {
+   "id": "1e426d07-c697-434b-8c48-285ade333924",
+   "name": "VA Benefit Letter",
+   "description": "For use with DDA Income Analyzer when VA Benefits are present."
+  },
+  {
+   "id": "7f9a6823-d852-45da-9a96-3f87b90842a1",
+   "name": "VA Certificate Of Eligibility",
+   "description": "For use with DDA Income Analyzer when VA Benefits are present."
+  },
+  {
+   "id": "0c2414e1-f371-48a3-a381-7cf83ef006a8",
+   "name": "VA Certificate Of Reasonable Value",
+   "description": "VA 26-1843 Cert of Reasonable Value"
+  },
+  {
+   "id": "5ae17a75-069a-41cf-b3b6-3d46ffd07ac9",
+   "name": "VA Interest Rate Reduction Refinancing Loan Worksheet",
+   "description": "VA 26-8923 Rate Reduction Worksheet"
+  },
+  {
+   "id": "9869a750-1225-4919-ac9f-214a0de2cf7d",
+   "name": "VA Loan Analysis",
+   "description": "VA 26-6393 Loan Analysis"
+  },
+  {
+   "id": "dd56a169-6de6-43e5-8421-bb35a7217478",
+   "name": "Verbal Verification Of Payoff",
+   "description": "Verbal Verification Of Payoff"
+  },
+  {
+   "id": "7246c982-e9d6-4d2b-91b8-a15dc8cf342b",
+   "name": "Verification Of Employment",
+   "description": "Verification Of Employment"
+  },
+  {
+   "id": "66c97723-33a8-4553-b5a2-4a6c5b9252e0",
+   "name": "Verification Of Mortgage Or Rent",
+   "description": "Verification Of Mortgage Or Rent"
+  },
+  {
+   "id": "cf1da29a-36a3-4e65-a1f3-56689ae2d42c",
+   "name": "Verifications",
+   "description": "Electronic Verification of Employment Service for Income Analyzer"
+  },
+  {
+   "id": "2e96f4a6-10ed-4e94-945b-9312ba2db958",
+   "name": "Warehouse CPL",
+   "description": null
+  },
+  {
+   "id": "58f08d05-f96f-4894-884b-0d4208192c81",
+   "name": "Warehouse credit report",
+   "description": null
+  },
+  {
+   "id": "18034922-6c1b-4771-bec7-92c0375c7eb7",
+   "name": "Warehouse Final appraisal",
+   "description": null
+  },
+  {
+   "id": "a208a92c-908a-4849-ae6d-24973068b4e5",
+   "name": "Warehouse final CTC",
+   "description": null
+  },
+  {
+   "id": "30d19c2b-a705-4a74-8e17-70d231978923",
+   "name": "Warehouse Rate Lock",
+   "description": null
+  },
+  {
+   "id": "1cffcd38-a2e6-4cc1-80c3-4511ecf6fd5d",
+   "name": "Warehouse title Wiring Instructions",
+   "description": null
+  },
+  {
+   "id": "ce0ea53d-c7df-4375-b1d5-6e067477e49d",
+   "name": "Wiring Instructions",
+   "description": null
+  },
+  {
+   "id": "a2ef297b-9c15-4669-a6c9-e764538e5a74",
+   "name": "Your Home Loan Toolkit",
+   "description": null
+  }
+ ],
+ "observed": {
+  "loansWithDocuments": 673,
+  "documentRows": 20569,
+  "attachments": 28822,
+  "documentToConditionLinks": 179,
+  "byStatus": {
+   "received": 16744,
+   "needed": 1277,
+   "reordered": 1207,
+   "ordered": 699,
+   "expired!": 276,
+   "ready to ship": 185,
+   "expected!": 79,
+   "ready for UW": 79,
+   "reviewed": 18,
+   "expected": 5
+  },
+  "byMilestone": {
+   "Docs Out": 6293,
+   "Submittal": 5083,
+   "LO Prep": 2378,
+   "Ready for Docs": 1826,
+   "Loan Setup": 1310,
+   "Funding": 1055,
+   "Cond. Approval": 916,
+   "Started": 448,
+   "Schedule Closing": 364,
+   "Clear To Close": 331,
+   "Wire Order": 270,
+   "Waiting for Docs": 194,
+   "Processing": 68,
+   "Purchasing Conditions": 23,
+   "Final Docs": 4,
+   "Completion": 4,
+   "Investor Delivery": 1,
+   "Resubmittal": 1
+  },
+  "topTitles": {
+   "Appraisal": 594,
+   "FEMA Disaster Search Results": 447,
+   "Credit Report": 414,
+   "Borrower Consent to the Use of Tax Return Information": 394,
+   "Borrower's Certification & Authorization": 394,
+   "Equal Credit Opportunity Act Notice": 394,
+   "Supplemental Consumer Information Form": 394,
+   "Servicing Disclosure Statement": 393,
+   "Federal Truth-in-Lending Disclosure Statement": 393,
+   "Social Security Administration Authorization": 392,
+   "Notice to Right to Copy of Appraisal": 391,
+   "Credit Score Disclosure Exception for Loans Secured by One to Four Units of Residential Real Property": 378,
+   "Hazard Insurance Authorization, Requirements and Disclosure": 315,
+   "Flood Certificate": 239,
+   "Itemization of Amount Financed": 235,
+   "Credit Authorization": 210,
+   "Privacy Policy": 208,
+   "Acknowledgement of Receipt of Good Faith Estimate": 207,
+   "Good Faith Estimate": 207,
+   "1003 - URLA": 207,
+   "Notice of Right to Receive Copy of Written Appraisal/Valuation": 207,
+   "Mortgage Fraud is Investigated by the FBI": 207,
+   "Fair Credit Reporting Act": 207,
+   "USA Patriot Act Information Disclosure": 207,
+   "BORROWER BUSINESS PURPOSE DISCLOSURE AND CERTIFICATION": 207,
+   "Definition of Truth-in-Lending Terms": 207,
+   "NJ Addendum to Residential Mortgage Loan Application": 207,
+   "Acknowledgement of Intent to Proceed": 206,
+   "Purchase Agreement": 198,
+   "Affidavit of Occupancy": 187,
+   "USA Patriot Act Information Form": 187,
+   "Tax Record Information Sheet": 187,
+   "Signature/Name Affidavit": 187,
+   "Compliance Agreement": 187,
+   "Loan Disbursement Instructions": 187,
+   "Request for Taxpayer ID Number & Certification (IRS W-9)": 187,
+   "Instructions to Escrow/Title/Closing Agent": 187,
+   "Printer Settings Document": 187,
+   "Data Entry Proof Sheet": 187,
+   "Data Entry Proof Sheet - Fees": 187
+  },
+  "documentShape": [
+   "applicationId",
+   "applicationName",
+   "attachments",
+   "comments",
+   "conditions",
+   "createdBy",
+   "dateCreated",
+   "dateExpected",
+   "dateExpires",
+   "dateReadyForUw",
+   "dateReadyToShip",
+   "dateReceived",
+   "dateRequested",
+   "dateRerequested",
+   "dateReviewed",
+   "daysDue",
+   "daysTillExpire",
+   "description",
+   "docGroups",
+   "documentId",
+   "edsDocumentSetName",
+   "emnSignature",
+   "isClosingDocument",
+   "isEDisclosuresDocument",
+   "isProtected",
+   "isReadyForUw",
+   "isReadyToShip",
+   "isReceived",
+   "isRequested",
+   "isRerequested",
+   "isReviewed",
+   "isSettlementServicesDocument",
+   "milestoneId",
+   "readyForUwBy",
+   "readyToShipBy",
+   "receivedBy",
+   "requestedBy",
+   "requestedFrom",
+   "rerequestedBy",
+   "reviewedBy",
+   "roles",
+   "status",
+   "statusDate",
+   "thirdPartyAllowed",
+   "title",
+   "titleWithIndex",
+   "tpoAllowed",
+   "webCenterAllowed"
+  ],
+  "applicationIds": {
+   "All": 11815,
+   "_borrower1": 8561,
+   "a79fc507-8e3d-45af-bf4b-21600cc35455": 32,
+   "_229568767": 29,
+   "_383156357": 28,
+   "_2002295477": 28,
+   "_471778229": 28,
+   "_168882766": 28,
+   "_73415271": 3,
+   "_756152463": 2
+  }
+ }
+}

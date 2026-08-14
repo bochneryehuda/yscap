@@ -66,6 +66,143 @@ router.get('/reconciliation-map', (req, res) => {
   catch (e) { console.error('[lt] encompass recon map failed:', e && e.message); res.status(500).json({ error: 'Could not load the reconciliation map.' }); }
 });
 
+// ── The live census (2026-08-14) ─────────────────────────────────────────────
+
+// GET /api/lt/encompass/intelligence — what the fields actually CONTAIN.
+// ?q=<text> search · ?view=always-on|differences|shared|calculated · ?stage=<milestone>
+// ?minPct=<n> · ?kind=standard|custom
+router.get('/intelligence', (req, res) => {
+  try {
+    const I = enc.intelligence;
+    const { q, view, stage, minPct, kind } = req.query;
+    let fields;
+    if (q) fields = I.search(q, { limit: 200 });
+    else if (stage) fields = I.populatedAt(stage);
+    else if (view === 'always-on') fields = I.alwaysOnDscr(minPct ? Number(minPct) : 95);
+    else if (view === 'differences') fields = I.productDifferences({ minGap: minPct ? Number(minPct) : 40 });
+    else if (view === 'shared') fields = I.sharedCore();
+    else if (view === 'calculated') fields = I.calculatedFields();
+    else fields = I.dscrFields({ minPct: minPct ? Number(minPct) : 1, kind: kind || null });
+    res.json({ meta: I.META, count: fields.length, fields });
+  } catch (e) { console.error('[lt] encompass intelligence failed:', e && e.message); res.status(500).json({ error: 'Could not load the field intelligence.' }); }
+});
+
+// GET /api/lt/encompass/intelligence/:id — one field's measured behaviour.
+router.get('/intelligence/:id', (req, res) => {
+  try {
+    const f = enc.intelligence.field(req.params.id);
+    if (!f) return res.status(404).json({ error: 'No evidence for that field id in the census.' });
+    res.json(f);
+  } catch (e) { console.error('[lt] encompass field intel failed:', e && e.message); res.status(500).json({ error: 'Could not load the field.' }); }
+});
+
+// GET /api/lt/encompass/anatomy — how an Encompass loan file is structured.
+router.get('/anatomy', (req, res) => {
+  try { res.json({ ...enc.anatomy, formulas: enc.formulas }); }
+  catch (e) { console.error('[lt] encompass anatomy failed:', e && e.message); res.status(500).json({ error: 'Could not load the loan anatomy.' }); }
+});
+
+// GET /api/lt/encompass/terms — the term structures that actually exist in the book,
+// the PITI they build, and the DSCR arithmetic on top. Reference knowledge only.
+// ?term=360&io=120 describes a structure without classifying it into the nearest bucket.
+router.get('/terms', (req, res) => {
+  try {
+    const body = {
+      summary: enc.terms.summary(),
+      fields: enc.terms.TERM_FIELDS,
+      structures: enc.terms.TERM_STRUCTURES,
+      notPresent: enc.terms.TERM_STRUCTURES_NOT_PRESENT,
+      piti: enc.terms.PITI,
+      dscr: enc.terms.DSCR_MEASURED,
+      defects: enc.terms.KNOWN_TERM_DEFECTS,
+    };
+    if (req.query.term !== undefined) {
+      body.described = enc.terms.describeStructure(req.query.term, req.query.io);
+    }
+    res.json(body);
+  } catch (e) {
+    console.error('[lt] encompass terms failed:', e && e.message);
+    res.status(500).json({ error: 'Could not load the term structures.' });
+  }
+});
+
+// GET /api/lt/encompass/programs — the loan-program taxonomy (term, IO, purpose mix).
+router.get('/programs', (req, res) => {
+  try { res.json(enc.programs); }
+  catch (e) { console.error('[lt] encompass programs failed:', e && e.message); res.status(500).json({ error: 'Could not load the program taxonomy.' }); }
+});
+
+// GET /api/lt/encompass/conditions — the condition + eFolder model and the tenant's
+// condition library. Reference knowledge; performs no Encompass call.
+router.get('/conditions', (req, res) => {
+  try {
+    res.json({
+      model: enc.conditions,
+      library: enc.conditionLibrary,
+      efolderCatalog: enc.efolderCatalog,
+    });
+  } catch (e) { console.error('[lt] encompass conditions failed:', e && e.message); res.status(500).json({ error: 'Could not load the condition model.' }); }
+});
+
+// GET /api/lt/encompass/api-surface — which Encompass requests work, and which error.
+router.get('/api-surface', (req, res) => {
+  try {
+    res.json({
+      summary: enc.apiSurface.summary(),
+      access: enc.apiSurface.ACCESS_NOTES,
+      falseNegatives: enc.apiSurface.FALSE_NEGATIVES,
+      working: enc.apiSurface.working(),
+      blocked: enc.apiSurface.blocked(),
+    });
+  } catch (e) { console.error('[lt] encompass api surface failed:', e && e.message); res.status(500).json({ error: 'Could not load the API surface.' }); }
+});
+
+// GET /api/lt/encompass/investors — the canonical investor list and every spelling
+// seen in the tenant. ?resolve=<typed name> answers "which investor is this?".
+router.get('/investors', (req, res) => {
+  try {
+    const I = enc.investors;
+    if (req.query.resolve != null) return res.json(I.resolve(String(req.query.resolve)));
+    res.json({
+      summary: I.summary(),
+      investors: I.list(),
+      nonValues: I.NON_VALUES,
+      investorFields: I.INVESTOR_FIELDS,
+      tableFunderValues: I.TABLE_FUNDER_VALUES,
+    });
+  } catch (e) { console.error('[lt] encompass investors failed:', e && e.message); res.status(500).json({ error: 'Could not load the investor registry.' }); }
+});
+
+// GET /api/lt/encompass/dropdowns — every constrained field with its option set.
+// ?id=<fieldId> one field · ?kind=standard|custom · ?minLoans=<n> · ?drift=true
+router.get('/dropdowns', (req, res) => {
+  try {
+    const D = enc.dropdowns;
+    const { id, kind, minLoans, drift, inferred } = req.query;
+    if (id) {
+      const f = D.field(id);
+      if (!f) return res.status(404).json({ error: 'That field is not a known dropdown.' });
+      return res.json({ field: f, options: D.options(id) });
+    }
+    const fields = D.list({
+      kind: kind || null,
+      minLoans: minLoans ? Number(minLoans) : 0,
+      inferredOnly: String(inferred) === 'true',
+      driftOnly: String(drift) === 'true',
+    });
+    res.json({ summary: D.summary(), driftKinds: D.DRIFT_KINDS, notable: D.NOTABLE, count: fields.length, fields });
+  } catch (e) { console.error('[lt] encompass dropdowns failed:', e && e.message); res.status(500).json({ error: 'Could not load the dropdown catalog.' }); }
+});
+
+// GET /api/lt/encompass/settings — every tenant-specific choice, with OUR value as
+// the default and the evidence behind it. This is the layer a future buyer edits.
+router.get('/settings', (req, res) => {
+  try {
+    const s = require('../settings/encompass-settings');
+    res.json({ groups: s.groups(), defaults: s.defaults(), count: s.SETTINGS.length });
+  } catch (e) { console.error('[lt] encompass settings failed:', e && e.message); res.status(500).json({ error: 'Could not load the settings registry.' }); }
+});
+
 // GET /api/lt/encompass/status — is the LT Encompass connection configured/reachable?
 // (Reachability only; never returns credentials.)
 router.get('/status', async (req, res) => {

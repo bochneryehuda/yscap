@@ -1,0 +1,112 @@
+﻿Endpoint,Result,HTTP status,What came back
+/encompass/v3/loans/{id}/documents,works,,array[0]
+/encompass/v3/loans/{id}/attachments,works,,array[0]
+/encompass/v3/loans/{id}/milestones,works,,array[18]
+/encompass/v3/loans/{id}/milestoneFreeRoles,works,,array[7]
+/encompass/v3/loans/{id}/applications,works,,array[1]
+/encompass/v1/loans/{id}/conditions/underwriting,works,,array[0]
+/encompass/v1/loans/{id}/conditions/preliminary,works,,array[0]
+/encompass/v1/loans/{id}/conditions/postclosing,works,,array[0]
+/encompass/v1/loans/{id}/documents,works,,array[0]
+/encompass/v1/loans/{id}/attachments,works,,array[0]
+/encompass/v1/loans/{id}/milestones,works,,array[18]
+/encompass/v1/loans/{id}/milestoneFreeRoles,works,,array[7]
+/encompass/v1/loans/{id}/associates,works,,array[3]
+/encompass/v1/loans/{id}/disclosureTracking2015,works,,array[0]
+/encompass/v1/loans/{id}/underwritingConditions,works,,array[0]
+/encompass/v1/loans/{id}/applications,works,,array[1]
+/encompass/v3/settings/milestones,works,,array[10]
+/encompass/v3/settings/loan/customFields,works,,array[856]
+/encompass/v3/settings/efolder/documents,works,,array[230]
+/encompass/v3/settings/personas,works,,array[17]
+/encompass/v3/settings/roles,works,,array[12]
+/encompass/v3/schemas/loan,works,,"object{title,definitions,type,additionalProperties,properties}"
+/encompass/v1/settings/loan/customFields,works,,array[856]
+/encompass/v1/settings/efolder/documents,works,,"object{documentDays,createDocumentEntry,saveCopyInfoDocs,applyTimestampToInfoDocs,useBackgroundConversion,ignoreIntendedFor}"
+/encompass/v1/settings/efolder/documentTemplates,works,,array[230]
+/encompass/v1/settings/personas,works,,array[17]
+/encompass/v1/settings/roles,works,,array[12]
+/encompass/v1/loanPipeline/fieldDefinitions,works,,object{pipelineLoanReportFieldDefs}
+/encompass/v3/settings/loan/conditions/types,works,,array[5]
+/encompass/v3/settings/loan/conditions/templates,works,,array[197]
+/encompass/v3/settings/loan/conditions/sets,works,,array[19]
+/encompass/v3/loans/{loanId}/conditions/{conditionId},works,,object
+/encompass/v3/loans/{loanId}/conditions/{conditionId}/comments,works,,array[0]
+/encompass/v3/loans/{loanId}/conditions/{conditionId}/tracking,works,,array[0]
+/encompass/v3/loans/{loanId}/attachments,works,,array[231]
+/encompass/v3/loans/{loanId}/documents,works,,array[137]
+/encompass/v3/loans/{id}/conditions/underwriting,blocked or empty,404,
+/encompass/v3/loans/{id}/conditions/preliminary,blocked or empty,404,
+/encompass/v3/loans/{id}/conditions/postclosing,blocked or empty,404,
+/encompass/v3/loans/{id}/conditions/document,blocked or empty,404,
+/encompass/v3/loans/{id}/documents/audit,blocked or empty,404,
+/encompass/v3/loans/{id}/efolder/documents,blocked or empty,403,
+/encompass/v3/loans/{id}/milestoneLogs,blocked or empty,403,
+/encompass/v3/loans/{id}/associates,blocked or empty,403,
+/encompass/v3/loans/{id}/roles,blocked or empty,403,
+/encompass/v3/loans/{id}/customFields,blocked or empty,403,
+/encompass/v3/loans/{id}/fieldLockSettings,blocked or empty,403,
+/encompass/v3/loans/{id}/logs,blocked or empty,403,
+/encompass/v3/loans/{id}/disclosureTracking2015,blocked or empty,403,
+/encompass/v3/loans/{id}/postclosingConditions,blocked or empty,403,
+/encompass/v3/loans/{id}/underwritingConditions,blocked or empty,403,
+/encompass/v3/loans/{id}/trackedDocuments,blocked or empty,403,
+/encompass/v1/loans/{id}/conditions/document,blocked or empty,404,
+/encompass/v1/loans/{id}/documents/audit,blocked or empty,400,
+/encompass/v1/loans/{id}/efolder/documents,blocked or empty,403,
+/encompass/v1/loans/{id}/milestoneLogs,blocked or empty,403,
+/encompass/v1/loans/{id}/roles,blocked or empty,403,
+/encompass/v1/loans/{id}/customFields,blocked or empty,403,
+/encompass/v1/loans/{id}/fieldLockSettings,blocked or empty,403,
+/encompass/v1/loans/{id}/logs,blocked or empty,403,
+/encompass/v1/loans/{id}/postclosingConditions,blocked or empty,403,
+/encompass/v1/loans/{id}/trackedDocuments,blocked or empty,403,
+/encompass/v3/settings/loan/folders,blocked or empty,403,
+/encompass/v3/settings/loan/programs,blocked or empty,403,
+/encompass/v3/settings/loan/templates,blocked or empty,403,
+/encompass/v3/settings/loan/templates/loanPrograms,blocked or empty,403,
+/encompass/v3/settings/loan/loanPrograms,blocked or empty,403,
+/encompass/v3/settings/templates/loanPrograms,blocked or empty,403,
+/encompass/v3/settings/templates/documentSets,blocked or empty,403,
+/encompass/v3/settings/templates/closingCosts,blocked or empty,403,
+/encompass/v3/settings/underwritingConditions,blocked or empty,403,
+/encompass/v3/settings/postClosingConditions,blocked or empty,403,
+/encompass/v3/settings/preliminaryConditions,blocked or empty,403,
+/encompass/v3/settings/conditions/underwriting,blocked or empty,403,
+/encompass/v3/settings/efolder/documentTemplates,blocked or empty,403,
+/encompass/v3/settings/efolder/customConditionSets,blocked or empty,403,
+/encompass/v3/settings/users,blocked or empty,403,
+/encompass/v3/settings/businessRules/fieldTriggers,blocked or empty,403,
+/encompass/v3/settings/businessRules/milestoneCompletion,blocked or empty,403,
+/encompass/v3/settings/loanTeamTemplates,blocked or empty,403,
+/encompass/v3/settings/organizations,blocked or empty,403,
+/encompass/v3/settings/company/organizations,blocked or empty,403,
+/encompass/v3/schemas/loan/contractDefinitions,blocked or empty,403,
+/encompass/v3/schemas/borrowerContact,blocked or empty,403,
+/encompass/v3/loanPipeline/fieldDefinitions,blocked or empty,403,
+/encompass/v1/settings/milestones,blocked or empty,403,
+/encompass/v1/settings/loan/folders,blocked or empty,403,
+/encompass/v1/settings/loan/programs,blocked or empty,403,
+/encompass/v1/settings/loan/templates,blocked or empty,403,
+/encompass/v1/settings/loan/templates/loanPrograms,blocked or empty,403,
+/encompass/v1/settings/loan/loanPrograms,blocked or empty,403,
+/encompass/v1/settings/templates/loanPrograms,blocked or empty,403,
+/encompass/v1/settings/templates/documentSets,blocked or empty,403,
+/encompass/v1/settings/templates/closingCosts,blocked or empty,403,
+/encompass/v1/settings/underwritingConditions,blocked or empty,403,
+/encompass/v1/settings/postClosingConditions,blocked or empty,403,
+/encompass/v1/settings/preliminaryConditions,blocked or empty,403,
+/encompass/v1/settings/conditions/underwriting,blocked or empty,403,
+/encompass/v1/settings/efolder/customConditionSets,blocked or empty,403,
+/encompass/v1/settings/users,blocked or empty,403,
+/encompass/v1/settings/businessRules/fieldTriggers,blocked or empty,403,
+/encompass/v1/settings/businessRules/milestoneCompletion,blocked or empty,403,
+/encompass/v1/settings/loanTeamTemplates,blocked or empty,403,
+/encompass/v1/settings/organizations,blocked or empty,403,
+/encompass/v1/settings/company/organizations,blocked or empty,403,
+/encompass/v1/schemas/loan,blocked or empty,403,
+/encompass/v1/schemas/loan/contractDefinitions,blocked or empty,403,
+/encompass/v1/schemas/borrowerContact,blocked or empty,403,
+/encompass/v3/settings/loan/conditions,blocked or empty,403,
+/encompass/v3/settings/loan/conditions/categories,blocked or empty,403,
+/encompass/v3/settings/loan/conditions/priorTo,blocked or empty,403,
