@@ -9,7 +9,13 @@ from ground up with the right perspective. Everything ground up from the PRISMA
 schema. It should be set up like a standard LOS."*
 
 Read `README.md` in this folder first — it is the index to all the research this plan
-rests on.
+rests on. Then `LOS-VISION-AIM-PORTAL.md` — the portal the owner wants this to FEEL
+like, saved in his own words. That document is direction, not a specification: **every
+section of it needs his confirmation before it is built.**
+
+**And before any screen: `AUDIENCE-RULES.md`.** The investor's name never reaches a
+borrower or a broker — a hard rule, with code and a test behind it. It outranks every
+layout idea in the vision document.
 
 ---
 
@@ -126,6 +132,25 @@ In practice:
 - Anything measured from *our* tenant (fill rates, the 12-vs-120 interest-only
   question, the investor spellings) is research about **our** data and must never
   become a rule another lender inherits.
+
+### The other hard rule that shapes every screen
+
+**The investor's name never reaches a client.** Owner-directed 2026-08-14: *"The client
+should not be able to see the investor name. Never ever! Not borrowers, not TPOs, only
+internal staff."*
+
+That is not a display preference — it decides what a payload may even contain. Three
+audiences, one of which may see it (`internal`), and it **fails closed**: anything not
+exactly internal is a client. `src/longterm/audience.js` is the one definition, built on
+the investor registry because the name is spelled 151 ways;
+`scripts/test-lt-investor-block.js` sweeps every recorded spelling and fails if one
+survives. Full reasoning: `AUDIENCE-RULES.md`.
+
+**Where this bites first:** the vision document's persistent Summary panel. AIM shows
+its user the counterparty context freely, because their user *is* the broker talking to
+*them*. Ours is not that shape — our Summary panel shows the investor to internal staff
+and never to a client, and the same is true of every condition body, comment, document
+name and email we put in front of one.
 
 ---
 
@@ -306,3 +331,72 @@ The useful questions to bring back, in rough order of how much they change:
   sold-and-recustomised line actually has to fall.
 - **What does it do that we have no data for?** That is the list that turns into
   questions for Encompass or new fields of our own.
+
+---
+
+## 18. What I take from the portal the owner loves, and what I would change
+
+`LOS-VISION-AIM-PORTAL.md` is the reference. This is my read of it — **opinion, to be
+confirmed section by section**, not a decision already taken.
+
+### Take, without argument
+
+- **One shell, one nested loan workspace.** Depth belongs inside the content area, never
+  in more top-level chrome.
+- **The three-region loan record**: milestone stepper on top, rules-driven section menu
+  on the left, a persistent Summary rail on the right that does not re-render as you
+  move between sections.
+- **The five habits in §15** — show where you are; show what matters without a click;
+  show the full menu and grey out what is not yet possible; **explain** unavailability
+  rather than leaving a dead end; default to outstanding work before everything. That
+  list is information architecture, not decoration, and it is the whole reason the
+  portal feels good.
+- **Conditions as individual upload targets.** Each condition is its own micro-upload
+  destination, so a user attaches exactly the right document to exactly the right
+  requirement instead of dumping everything into one folder. This is the single most
+  important interaction in the product and our condition-centre design already assumes
+  it.
+- **A submission event log distinct from condition status** — uploaded-but-not-submitted,
+  submitted-but-not-reviewed, reviewed-and-satisfied are three different states.
+  Encompass models it the same way (`Last Submitted` / `Last Reviewed`).
+- **Inactive loans stay in the one pipeline table**, distinguished by a status column
+  rather than exiled to an archive screen.
+- **One date model, two renderers** (list and calendar).
+- **Disabled-with-a-required-tooltip as a first-class component variant**, not an
+  afterthought.
+
+### Already solved differently, and better, in our data model
+
+| Their pattern | Ours |
+|---|---|
+| Fields re-asked between Loan Information and Products & Pricing | Property and Loan Terms are single entities (`lt_properties`, `lt_loans`) — the vision document calls their duplication out as a genuine weakness, and we already avoided it |
+| Sidebar hides Employment for DSCR | `lt_loans.employment_applies` defaults **false**; the section does not exist rather than being greyed out |
+| Multi-borrower via a borrower-type dropdown | `lt_borrower_pairs` is a list, and the tenant is configured for six |
+| Assets / Liabilities / REO as three bespoke forms | Three tables of the same shape — one list-and-detail component serves all three |
+
+### Where I would deliberately differ
+
+- **The investor never appears in our Summary panel for a client.** Theirs can be freer
+  because their user is the broker; ours cannot. See the hard rule in §5.
+- **Gamification (tiers, points, badges) stays out of the loan workspace**, exactly as
+  they kept CRM and the learning centre in separate apps. It is a distraction next to a
+  file someone is trying to close.
+- **"Approved With Conditions" is a real state**, not a flavour of approved — worth
+  modelling explicitly if we build the exception queue.
+- **Their auto-split of one combined PDF into individual documents** is genuinely clever
+  and worth adopting, but it is a document-processing feature and belongs after the
+  condition centre reads cleanly.
+
+### The questions the vision document raises for the owner
+
+1. Do we want a **TPO/broker portal at all** on long-term, or is the client a borrower
+   only? The whole audience model changes shape depending on the answer, and the
+   investor-name rule already assumes both exist.
+2. Which of their **top-level sections** do we actually want — Rate Lock, Quick Pricer,
+   Concierge, Learning Center — and which are out of scope for a first build?
+3. Their sidebar grows for a funded loan (Initial CD Progress, Fees, Disclosures
+   Tracking). **Do we need the post-closing half at all**, given Encompass is the system
+   of record for it?
+4. What belongs in **our** Summary panel? Theirs is ~25 fields. We have every one of
+   them, and adding the DSCR and the rent would make ours more useful than theirs — but
+   it is a decision, not a default.

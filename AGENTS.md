@@ -56,6 +56,13 @@ Treat them as two different companies' software that happen to share one reposit
    product stamp on every row and a Both / RTL only / Long-Term only filter. Never a SQL join or a shared write path.
 8. **A feature built for one side never automatically applies to the other.**
 9. **When in doubt, ask. Silence is never permission.**
+10. **The investor name never reaches a client — HARD RULE (owner-directed 2026-08-14):** *"The client should
+    not be able to see the investor name. Never ever! Not borrowers, not TPOs, only internal staff."* The
+    investor who buys a long-term loan — their name in any spelling, their contact details, their own loan
+    number, and the funding channel — is internal knowledge, on every surface. `src/longterm/audience.js` is
+    the one definition, built on the investor registry because the name is spelled 151 ways; it fails closed
+    (anything not exactly `internal` is a client). Guarded by `scripts/test-lt-investor-block.js`. Never
+    re-implement the check. See `docs/longterm/AUDIENCE-RULES.md`.
 
 Enforced by `yscap-repo-root_8/scripts/check-product-separation.js` (runs in `npm test`, blocks CI and the deploy),
 `.github/pull_request_template.md`, and `.github/PRODUCT-SEPARATION.md`. Do not weaken or bypass the gate —

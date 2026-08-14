@@ -53,6 +53,8 @@ alone will break.
 | **`ENCOMPASS-ACCESS-AND-PERSONA.md`** | What the API can and cannot reach, and **why** — the 403s are a client-registration scope, not the persona |
 | **`ENCOMPASS-INTEGRATION.md`** | The integration itself: credentials, the read-only rule, the request surface |
 | **`LOS-BUILD-STRUCTURE.md`** | **The plan** — what is built, what comes next, and in what order |
+| **`LOS-VISION-AIM-PORTAL.md`** | **The portal the owner wants this to feel like**, in his own words. Direction, not a spec — every section needs his confirmation before it is built |
+| **`AUDIENCE-RULES.md`** | **HARD RULE** — who may see what, and why the investor's name never reaches a borrower or a broker |
 
 Outside this folder:
 `docs/LONG-TERM-LOANS-SEPARATION-CHARTER.md` (why RTL and LT are two systems),
@@ -146,7 +148,15 @@ And two the owner has now settled (2026-08-14):
 
 ---
 
-## 6. The rule that shapes everything
+## 6. The rules that shape everything
+
+**The investor's name never reaches a client.** Owner-directed 2026-08-14: *"The client
+should not be able to see the investor name. Never ever! Not borrowers, not TPOs, only
+internal staff."* It covers the name in any spelling, the contact details, the
+investor's own loan number and the funding channel — on every surface. One definition
+in `src/longterm/audience.js`, built on the investor registry (the name is spelled 151
+ways), failing closed, guarded by `scripts/test-lt-investor-block.js`. Read
+`AUDIENCE-RULES.md` before you build a screen.
 
 **The system must be sellable and re-customisable.** Nothing may hard-code a YS
 Capital number, threshold, label or list. Every such value lives in the settings layer
@@ -169,7 +179,8 @@ settings instead.
   value-pattern scrub, and asserted by `scripts/test-lt-encompass-intelligence.js`.
   Where a field's sample values were withheld, the export says so in its own column.
 
-**Tests:** `scripts/test-lt-encompass-intelligence.js` (the research is well-formed,
+**Tests:** `scripts/test-lt-investor-block.js` (the investor name cannot reach a client),
+`scripts/test-lt-encompass-intelligence.js` (the research is well-formed,
 PII-free and settings-driven), `scripts/test-lt-encompass-readonly.js` (the
 integration is structurally read-only), `scripts/test-lt-loan-schema-db.js` (the data
 model holds a real file), `scripts/test-lt-encompass-milestones.js`. All in `npm test`.

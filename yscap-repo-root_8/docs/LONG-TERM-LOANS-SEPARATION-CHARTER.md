@@ -265,6 +265,33 @@ existing shared visibility rule then admits that officer with no change to RTL, 
 it"*), so a long-term row can carry `source='longterm'` without any schema change. If you would rather it reuse an
 existing value, say so — it changes nothing about access.
 
+### What a CLIENT never gets: the investor's name (owner-directed 2026-08-14)
+
+**HARD RULE, and it applies to every surface Long-Term will ever have.** The owner:
+
+> *"You also need to make sure that you put a hard rule to block the investor name. The client should not be
+> able to see the investor name. Never ever! Not borrowers, not TPOs, only internal staff."*
+
+The investor / capital provider who buys a long-term loan — **their name in any spelling, their contact
+details, their own loan number, and the funding channel** — is internal knowledge. It never reaches a borrower
+and it never reaches a broker: not a field, not a label, not a document name, not an email, not a PDF, not an
+export, not a filter option, not a tooltip, not an error message.
+
+Three audiences, and exactly one may see it: `internal` **yes**, `borrower` **no**, `tpo` **no**. Anything not
+exactly `internal` is treated as a client — it fails closed.
+
+`src/longterm/audience.js` is the ONE definition. It is built on the investor REGISTRY rather than a hard-coded
+list, because the name is typed by hand and spelled **151 ways** across the live book — a `!== 'Deephaven'`
+check passes `Deepahven approval.pdf` straight to a borrower. `scripts/test-lt-investor-block.js` sweeps every
+recorded spelling through five sentence shapes and fails if one survives. Full reasoning and the judgement
+calls: `docs/longterm/AUDIENCE-RULES.md`.
+
+This is the Long-Term analogue of the standing RTL rule *"never expose a note buyer / capital partner name on
+any borrower-facing surface"*, and it is **stricter**: RTL permits staff-only surfaces to name them; Long-Term
+additionally blocks **TPOs**.
+
+---
+
 ### What Long-Term does NOT get (2026-08-02, amended 2026-08-14)
 
 **Document underwriting. Orders.** Explicitly out of scope by the owner's instruction. They are not to
@@ -419,4 +446,5 @@ Long-Term gets built until they are answered.
 | Date | Change |
 |---|---|
 | 2026-08-02 | Charter written. Rules recorded in CLAUDE.md, AGENTS.md, `.github/`, the PR template and the CI gate. Ledger opened, empty. No Long-Term code built. |
+| 2026-08-14 | **HARD RULE: the investor name never reaches a client** — not a borrower, not a TPO, internal staff only (§4). One definition in `src/longterm/audience.js`, built on the investor registry, failing closed; guarded by `scripts/test-lt-investor-block.js`. Mirrored into CLAUDE.md rule 10, AGENTS.md rule 10 and `.github/PRODUCT-SEPARATION.md` rule 10. |
 | 2026-08-14 | **Conditions came back into scope** by the owner's written instruction (§4 "What Long-Term does NOT get"). Document underwriting and orders remain out. Separation rules unchanged; the LT condition center is a brand-new build and every RTL re-use still needs a ledger entry first. Mirrored into CLAUDE.md rule 6, AGENTS.md rule 6 and `.github/PRODUCT-SEPARATION.md` rule 6. |

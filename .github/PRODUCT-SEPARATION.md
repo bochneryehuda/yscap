@@ -15,7 +15,7 @@ Think of them as **two different companies' software that happen to share one re
 comparison: *"if I'm telling you to build something you don't know if you should build this for Amazon or for
 eBay — you ask."*
 
-## The nine rules
+## The ten rules
 
 1. **Never assume which side a request is for.** Not stated, or not 100% obvious? **Stop and ask.** Never guess,
    never "do both to be safe," never pick the likelier one.
@@ -59,6 +59,13 @@ eBay — you ask."*
 8. **A feature built for one side never automatically applies to the other.** "Every fix is all-sides" means every
    surface of *that* product. It never reaches across.
 9. **When in doubt, ask. Silence is never permission.**
+10. **The investor name never reaches a client — HARD RULE (owner-directed 2026-08-14).** *"The client should
+    not be able to see the investor name. Never ever! Not borrowers, not TPOs, only internal staff."* Covers
+    the name in any spelling, the contact details, the investor's own loan number and the funding channel, on
+    every surface — field, label, document name, email, PDF, export, filter, tooltip, error message.
+    `src/longterm/audience.js` is the one definition (built on the investor registry, because the name is
+    spelled 151 ways) and it fails closed. Guarded by `scripts/test-lt-investor-block.js`. Never re-implement
+    the check. Reasoning: `docs/longterm/AUDIENCE-RULES.md`.
 
 ## How this is enforced
 
