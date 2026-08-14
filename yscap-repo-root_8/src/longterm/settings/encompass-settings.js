@@ -249,6 +249,156 @@ const SETTINGS = [
     description: 'Which API generation to use by default.',
     evidence: 'v1 attachment endpoints are being sunset in ICE release 26.3. Conditions only '
       + 'work correctly on v3. A few reads (loan associates) still only answer on v1.' },
+
+  // ── Stages (db/552) ───────────────────────────────────────────────────────
+  // Owner-directed 2026-08-14: "use the Encompass stages, but map those Encompass
+  // stages to our own stages. We're not going to have, on the consumer side, all
+  // stages from Encompass." The Encompass milestone is mirrored verbatim; these
+  // two settings are the SECOND layer. The borrower's label is never configured
+  // here — it comes from the milestone's own consumer_status (db/547), so an
+  // internal rename can never leak into what a borrower reads.
+  { key: 'stages.order', group: 'Stages', label: 'Our pipeline stages',
+    type: 'list',
+    default: [
+      { key: 'new', label: 'New', order: 10 },
+      { key: 'setup', label: 'Setup', order: 20 },
+      { key: 'submitted', label: 'Submitted', order: 30 },
+      { key: 'underwriting', label: 'In Underwriting', order: 40 },
+      { key: 'conditions_out', label: 'Conditions Out', order: 50 },
+      { key: 'clear_to_close', label: 'Clear to Close', order: 60 },
+      { key: 'closing', label: 'Closing', order: 70 },
+      { key: 'funded', label: 'Funded', order: 80 },
+      { key: 'post_closing', label: 'Post-Closing', order: 90 },
+    ],
+    description: 'The stages the internal pipeline groups and sorts by.',
+    evidence: 'Nine, collapsed from the tenant\'s 19 Encompass milestones — nineteen is too '
+      + 'many to read at a glance and several mean the same thing to us.' },
+  { key: 'stages.map', group: 'Stages', label: 'Encompass milestone → our stage',
+    type: 'map',
+    default: {
+      'Started': 'new',
+      'LO Prep': 'setup',
+      'Loan Setup': 'setup',
+      'Submittal': 'submitted',
+      'Cond. Approval': 'underwriting',
+      'Processing': 'underwriting',
+      'Resubmittal': 'underwriting',
+      'Waiting for Docs': 'conditions_out',
+      'Clear To Close': 'clear_to_close',
+      'Schedule Closing': 'closing',
+      'Ready for Docs': 'closing',
+      'Docs Out': 'closing',
+      'Wire Order': 'closing',
+      'Funding': 'funded',
+      'Investor Delivery': 'post_closing',
+      'Purchasing Conditions': 'post_closing',
+      'Final Docs': 'post_closing',
+      'Closed': 'post_closing',
+      'Completion': 'post_closing',
+    },
+    description: 'Which of our stages each Encompass milestone belongs to. A milestone that is '
+      + 'not listed is SHOWN under its raw Encompass name in an "Other" bucket, never hidden.',
+    evidence: 'All 19 milestone names verified against the live tenant 2026-08-14 — db/547 '
+      + 'matched live exactly, zero diffs.' },
+
+  // ── Access (db/552) ───────────────────────────────────────────────────────
+  { key: 'access.roleScopes', group: 'Access', label: 'What each role sees',
+    type: 'map',
+    default: {
+      super_admin: 'all',
+      admin: 'all',
+      closer: 'all',
+      funder: 'all',
+      underwriter: 'all',
+      loan_officer: 'own',
+      processor: 'own',
+    },
+    description: 'Whether a role sees the entire long-term pipeline ("all") or only their own '
+      + 'files ("own"). A role with no entry resolves to "own" — never to "all".',
+    evidence: 'Owner-directed 2026-08-14: admin, closer and funder see the entire pipeline '
+      + '(closer and funder deliberately including files not yet assigned, because a closing or '
+      + 'a wire is picked up off the queue); loan officers and processors see their own. '
+      + 'The underwriter was NOT named and "all" here is an assumption matching their RTL '
+      + 'see_all_files — the one entry awaiting confirmation.' },
+  { key: 'access.roleOverrides', group: 'Access', label: 'Long-term role overrides',
+    type: 'map', default: {},
+    description: 'Per-person long-term role, keyed by PILOT staff id, for staff whose PILOT role '
+      + 'does not describe their long-term job.',
+    evidence: 'staff_users.role has no "funder" value, and adding one would be changing an RTL '
+      + 'table to make Long-Term work. This is how a funder is recognised without touching it.' },
+
+  // ── Contacts (db/552) ─────────────────────────────────────────────────────
+  { key: 'contacts.roles', group: 'Contacts', label: 'Loan team roles we track',
+    type: 'list',
+    default: ['loan_officer', 'processor', 'underwriter', 'closer', 'funder', 'post_closer'],
+    description: 'The loan-team roles mirrored onto every long-term file.',
+    evidence: 'Fill on the long-term book: loan officer 98.4%, processor 80.2%, closer 46.3%, '
+      + 'funder 45.7%, underwriter 31.2%. Closer and funder read 0% on short-term files, so they '
+      + 'are genuinely a long-term concern.' },
+  { key: 'contacts.encompassRoleNames', group: 'Contacts', label: 'Encompass role name per role',
+    type: 'map',
+    default: {
+      loan_officer: 'Loan Coordinator',
+      processor: 'Loan Processor',
+      underwriter: 'Underwriter',
+      closer: 'Closer',
+      funder: 'Funder',
+      post_closer: 'Post Closer',
+    },
+    description: 'What each role is CALLED in Encompass, for the LoanTeamMember.*.<role> reads.',
+    evidence: 'THIS TENANT HAS NO ROLE CALLED "Loan Officer" — its loan-officer slot is '
+      + '"Loan Coordinator" (roleId 1), verified live 2026-08-14. Field 317\'s LABEL says Loan '
+      + 'Officer; the role the tenant assigns does not. "Loan Opener", "Shipper" and "Insurer" '
+      + 'are standard Encompass roles that do not exist here at all — which is why this is a '
+      + 'setting and why contact role is text rather than an enum.' },
+  { key: 'contacts.roleLabels', group: 'Contacts', label: 'What we call each role on screen',
+    type: 'map',
+    default: {
+      loan_officer: 'Loan officer',
+      processor: 'Processor',
+      underwriter: 'Underwriter',
+      closer: 'Closer',
+      funder: 'Funder',
+      post_closer: 'Post-closer',
+    },
+    description: 'The on-screen label for each role. Separate from the Encompass name on purpose: '
+      + 'what a tenant calls a role internally and what we show our own staff are two decisions.' },
+  { key: 'contacts.placeholderEmails', group: 'Contacts', label: 'Emails that identify nobody',
+    type: 'list', default: ['change.me@email.com'],
+    description: 'Addresses that must never be used to auto-match an Encompass user to a PILOT '
+      + 'person, however many users carry them.',
+    evidence: '10 of the 46 users on this tenant share change.me@email.com. Auto-matching on it '
+      + 'would hand ten people each other\'s pipelines.' },
+
+  // ── Pipeline (db/552) ─────────────────────────────────────────────────────
+  { key: 'pipeline.columns', group: 'Pipeline', label: 'Pipeline columns',
+    type: 'list',
+    default: [
+      'loan_number', 'borrower', 'property', 'program', 'loan_amount', 'note_rate',
+      'dscr', 'ltv', 'stage', 'milestone', 'days_in_stage', 'loan_officer',
+      'processor', 'lock_status', 'expected_closing',
+    ],
+    description: 'Which columns the long-term pipeline shows, in order.' },
+
+  // ── Condition Center — DEFERRED (owner-directed 2026-08-14) ───────────────
+  // "put the condition center in side for now that center should say colming soom
+  // continie building the rest non stop".
+  //
+  // The deferral is a SETTING rather than a commented-out screen, for the same reason
+  // everything else here is one: a buyer's answer is not ours. Off, the nav entry and the
+  // workspace section render a "Coming soon" panel; on, they render the real thing — which
+  // is what makes lifting the deferral a settings change rather than a deploy.
+  //
+  // DEFAULT false, and it stays false until the owner says otherwise. Nothing may READ a
+  // condition while it is off: no stage, no access rule, no pipeline column. A feature that
+  // quietly half-works behind a flag is worse than one that plainly says it is coming.
+  { key: 'conditions.enabled', group: 'Conditions', label: 'Condition Center',
+    type: 'boolean', default: false,
+    description: 'Off: the Condition Center shows "Coming soon". On: it shows the real '
+      + 'conditions. Set aside by the owner on 2026-08-14 while the rest is built.',
+    evidence: 'The read-only sweep of 400 loans on 2026-08-14 found conditions ONLY on '
+      + 'investor post-purchase files — 0 on all 136 active-pipeline loans — so nothing in '
+      + 'the live book is waiting on this screen.' },
 ];
 
 const BY_KEY = new Map(SETTINGS.map((s) => [s.key, s]));

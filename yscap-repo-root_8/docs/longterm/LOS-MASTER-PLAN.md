@@ -409,6 +409,30 @@ because their user *is* the broker; ours cannot. `AUDIENCE-RULES.md` outranks an
 
 ## 5. The Condition Center
 
+> ### DEFERRED — owner-directed 2026-08-14
+>
+> *"put the condition center in side for now that center should say colming soom continie
+> building the rest non stop"*
+>
+> **The Condition Center is set aside.** It keeps its place in the shell — the nav entry and
+> the loan-workspace section both exist — and both render a **"Coming soon"** panel. Nothing
+> else changes:
+>
+> - **No `lt_conditions*` tables are created yet.** A migration that ships a table nobody
+>   reads is a schema we would have to live with before we know the shape is right; the
+>   research below (§5.0–§5.5) stays as the design of record for when it is taken up.
+> - **No condition sync runs.** The read-only sweep that settled §5.0 is a research script,
+>   not a worker, and it stays that way.
+> - **The placeholder is a SETTING, not a hard-coded screen** (`conditions.enabled`,
+>   default `false`). Turning it on is what un-hides the real screen when it is built — so
+>   the deferral is a switch, exactly like every other customisation in §7. A buyer who
+>   never wants it leaves it off.
+> - **Nothing downstream may depend on it.** No stage, no access rule, no pipeline column
+>   and no settings default may read a condition; if a later phase wants one, it waits.
+>
+> Everything below is the plan for the build, held in place, not deleted. When the owner
+> lifts the deferral, §8's phase order picks it up where it was.
+
 The owner called this a major part of the build, and the reference portal's own condition
 screen is the interaction the whole product is judged on.
 
@@ -682,9 +706,11 @@ The three-region layout, the URLA-sectioned read-only file, the Summary rail, th
 section, the milestone stepper. **Ends with:** a real file on our own screen — which is what
 surfaces the gaps in the model before anything depends on them.
 
-### Phase 5 — The Condition Center (read)
-The five tables, the sync, the grouped screen, per-condition documents, the submission log.
-**Ends with:** every condition on every long-term file, with its documents, in one place.
+### Phase 5 — The Condition Center (read) — **DEFERRED (owner-directed 2026-08-14)**
+Set aside. The nav entry and the workspace section ship as a **"Coming soon"** placeholder
+behind the `conditions.enabled` setting (default off); no tables, no sync, no dependants.
+The design is held in §5. **Ends with:** nothing — this phase does not run until the owner
+lifts the deferral, and the phases below moved up one to take its slot.
 
 ### Phase 6 — Settings
 `lt_settings`, both screens, and the pass that moves every value this plan named as a
