@@ -1,4 +1,4 @@
-# Richer Value — the Hybrid Appraisal (the THIRD appraisal vendor)
+# Richer Values — the Hybrid Appraisal (the THIRD appraisal vendor)
 
 **Owner-directed 2026-08-14.** RTL only. Off by default behind `RV_ENABLED` /
 `RV_OUTBOUND_ENABLED`.
@@ -7,7 +7,7 @@
 
 ## 1. What this is, and why it is not a form on one of the other two desks
 
-Richer Value sells **evaluations**, not URAR appraisals. The product we order —
+Richer Values sells **evaluations**, not URAR appraisals. The product we order —
 their `reno-arv`, "Renovation Analysis" — comes back with an **As-Is value AND an
 After Repair Value on one order**, priced off the renovation budget, for well
 under half the price of a full appraisal.
@@ -26,7 +26,7 @@ Three things follow from that, and every design decision below is one of them:
 
 **IT IS NOT THE DEFAULT.** Owner-directed: *"whenever they choose, the default
 should still stay NAN."* The vendor selector on the order screen starts on
-AppraisalScope / NAN; Richer Value is a deliberate third choice. Nothing in the
+AppraisalScope / NAN; Richer Values is a deliberate third choice. Nothing in the
 code picks between the three vendors.
 
 ---
@@ -280,7 +280,7 @@ request field.
 |---|---|
 | `CARD_ON_FILE` | charges the card on the file's **appraisal-card condition**, revealed through the one audited chokepoint (`view_appraisal_card` is written) |
 | `NEW_CARD` | a card typed at the moment of ordering: **saved onto the file first** through the shared `lib/appraisal-card.js` chokepoint — so paying also answers that condition — then charged |
-| `PAYMENT_LINK` | Richer Value emails the borrower their own hosted payment page; the order exists and starts once they pay |
+| `PAYMENT_LINK` | Richer Values emails the borrower their own hosted payment page; the order exists and starts once they pay |
 
 **The card is taken back off their account.** Their `add-card` is COMPANY-level, so
 a borrower's card added there is chargeable for anybody's order. The charge runs
@@ -306,10 +306,10 @@ named, and the order falls through to the payment link, which works today.
 
 ## 12. THE $400,000 GUARD (owner-directed 2026-08-14)
 
-> *"If any loan amount is more than $400,000, we don't recommend Richer Value, and
+> *"If any loan amount is more than $400,000, we don't recommend Richer Values, and
 > our investors might not accept… If there is no loan amount registered yet, just let
 > them know that it's better if they registered the loan amount before, because
-> Richer Value sees what we expect."*
+> Richer Values sees what we expect."*
 
 `src/richervalues/loan-guard.js` is **pure** and is the single definition, because
 both halves of a double confirmation have to agree about what is being confirmed —
@@ -373,7 +373,7 @@ reaches a borrower:
 * **Report Cc** — whichever of those two is not already the contact, so both people
   who chase an appraisal see it land.
 * **Access contacts** — the borrower **and their cell phone**. A homeowner-led
-  inspection runs through a link Richer Value **texts**, so an access contact with no
+  inspection runs through a link Richer Values **texts**, so an access contact with no
   mobile is an order that cannot start. This is the only place the borrower belongs.
 
 Every one of these is pre-filled and every one is changeable on the screen.
@@ -399,3 +399,108 @@ would be worse than saying so.
   already tolerates an AVM-shaped response so one arriving is never silently empty.
 * **Anything that picks between the three vendors.** Still a human's choice, and
   the default stays NAN.
+
+---
+
+## 15. What ELSE Richer Values sells that PILOT does not order yet
+
+Measured independently against their live training tenant on 2026-08-14, by talking to
+their API directly rather than through our own client — so this is what the VENDOR
+exposes, not what our integration happens to ask for. The sweep also probed 53 endpoint
+paths a REST API of this shape usually carries; **all 53 returned 404**, which is the
+evidence behind several "they do not have this" statements elsewhere in this document.
+
+### 15.1 They sell FOUR products. We order one.
+
+| Product (`report_type`) | Price | Needs a budget? | Land? | What it is |
+|---|---|---|---|---|
+| `prop-value` | **$349.99** | no | no | Property Valuation — as-is focused, still carries their ARV value curve |
+| `reno-arv` | **$419.99** | yes | no | Renovation Analysis — **the one we order** |
+| `new-construction` | **$449.99** | yes | **yes** | New Construction Analysis — vacant land, proposed build |
+| `partial-construction` | **$454.99** | yes | no | Partial / Incomplete Construction |
+
+Three of these line up with loan types PILOT already runs:
+
+- **`new-construction` is the ground-up product.** It is the only one flagged
+  `land_eligible`, and RTL ground-up construction is a core product here. Today a
+  ground-up file would have to be ordered as `reno-arv`, which asks for current
+  property statistics a vacant lot does not have.
+- **`partial-construction`** covers a half-built project — the mid-construction case
+  the appraisal desk already raises a finding about.
+- **`prop-value` is $70 cheaper** and is the right product for a bridge or a no-rehab
+  purchase, where there is no renovation budget to analyse.
+
+**What it would take:** the plumbing is already per-product — `catalogueFor()` fetches
+the report types, inspection types and turnaround times for whichever product is asked
+for, and `RV_DEFAULT_REPORT_TYPE` already selects one. What is missing is (a) letting
+the ordering screen choose between all four, and (b) the order builder's branches for
+vacant land and for "no current statistics", which their validator enforces per product
+(`ask_current_stats` / `ask_proposed_stats` / `land_eligible` are on the catalogue and
+are already read). Note the two construction products offer **no inspection at all** —
+their only inspection type is `none`.
+
+### 15.2 They sell DRAW INSPECTIONS — and PILOT runs a whole draw system
+
+| Inspection | Price as an add-on | Price standalone |
+|---|---|---|
+| `draw-inspection` | $150 | $150 (+$10 per extra unit) |
+| `draw-inspection-direct` | — | $80 (the client or their designee does it) |
+
+Their own description: *"an inspection of the interior and exterior of a property, for
+the purpose of verifying completion levels for a lender's approval to release funds for
+construction… an assessment of the completion percentage of each draw item requested,
+and one or more photos of each requested draw item."*
+
+That is exactly what the Sitewire / TrustPoint draw desk already commissions. This is the
+single largest unexplored overlap: a third draw-inspection source, at $150 crowdsourced
+or $80 client-performed, against the $299/$499 fees the draw desk currently works with.
+**It would need the owner's direction before anything is built** — who inspects a draw
+is a servicing decision, not a technical one.
+
+### 15.3 They sell STANDALONE inspections (no valuation attached)
+
+| Inspection | Price | + per extra unit |
+|---|---|---|
+| Interior (w Exterior) | $150.00 | $95.00 |
+| Interior — Homeowner Direct | $80.00 | $10.00 |
+| Exterior | $85.00 | $0.00 |
+| Post-Disaster Interior | $150.00 | $95.00 |
+| Post-Disaster Exterior | $85.00 | $0.00 |
+
+The **post-disaster** pair is a real servicing tool — after a named storm, order an
+exterior sweep of the affected properties in the book to see what was damaged.
+
+### 15.4 A card payment costs $3.50 more, and we do not say so
+
+Their company settings carry `cc_surcharge: {cc_surcharge: "3.50", cc_surcharge_type: "flat"}`,
+and every price quote returns `cc_surcharge: 3.5` **outside** `total_price`. So a $489.99
+Hybrid appraisal paid by card is **$493.49**. Since the owner's payment design is
+card-first, this applies to essentially every order. The quote already carries the
+figure; the ordering screen does not yet show it.
+
+### 15.5 The price quote cannot see three of the add-ons
+
+`POST /api/v1/order/pricing` **refuses** `gla_include`, `licensing_required`,
+`include_flood_certification` and `number_of_units` (`"…is not allowed"`), while the
+price block it returns carries `gla_surcharge`, `licensing_surcharge` and `flood_charge`
+lines — which are therefore always `0` on a quote. The quoted price is the base fee plus
+the inspection plus rush; if any of those three add-ons ever carries a surcharge, the
+real invoice will exceed the quote. Worth confirming with them what those three cost.
+
+### 15.6 Confirmed absent — do not go looking for these
+
+All 404 on the live tenant: any order **list / search** endpoint, **messages / notes /
+comments**, **revisions**, **invoices**, **webhook management**, **add-ons**, an
+**appointment or scheduling** endpoint, an **activity or timeline** endpoint, and any
+**OpenAPI / Swagger** document. In particular:
+
+- **There is no message thread.** Talking to their team about an order happens by email,
+  not through the API — which is why this desk has no messaging panel, unlike the other
+  two appraisal vendors.
+- **There is no order list.** PILOT can only ever ask about an order whose intake token
+  it already holds, which is why `rv_orders` is the system of record on our side.
+- **Webhooks are configured by them, not by us** — hence the credentials in Step 7 of
+  the setup guide.
+
+Also note `GET /api/v1/company/list` returns **401** for this API user. `client.listCompanies()`
+exists but cannot be used with these credentials; nothing depends on it.

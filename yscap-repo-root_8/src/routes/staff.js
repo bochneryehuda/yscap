@@ -8327,7 +8327,7 @@ async function signOffGate(itemId, actor) {
           === require('../lib/appraisal/xml-waiver').PRODUCT_NO_XML_REASON;
         if (!hasSlot('pdf')) {
           if (isHybridProduct) {
-            return 'The Hybrid Appraisal report (PDF) is not on this condition yet. It files itself as soon as Richer Value finishes the report — check the appraisal order for where it is up to, or upload the PDF here if you already have it. There is no data file (XML) on this product, so that half is waived.';
+            return 'The Hybrid Appraisal report (PDF) is not on this condition yet. It files itself as soon as Richer Values finishes the report — check the appraisal order for where it is up to, or upload the PDF here if you already have it. There is no data file (XML) on this product, so that half is waived.';
           }
           return waiver.requires_transfer_letter
             ? 'Upload the appraisal TRANSFER LETTER (PDF) before signing off — a transferred appraisal still needs the transfer letter in the PDF slot.'
@@ -8336,7 +8336,7 @@ async function signOffGate(itemId, actor) {
         const av = (await db.query(`SELECT as_is_value, arv FROM applications WHERE id=$1`, [item.application_id])).rows[0] || {};
         if (!(Number(av.as_is_value) > 0) || !(Number(av.arv) > 0)) {
           if (isHybridProduct) {
-            return 'The As-Is value and the ARV are not both on the file yet. PILOT fills them in from the Richer Value report the moment it comes back — if the report is in and they are still blank, open the appraisal order and use “Apply to the file”, or type them in by hand.';
+            return 'The As-Is value and the ARV are not both on the file yet. PILOT fills them in from the Richer Values report the moment it comes back — if the report is in and they are still blank, open the appraisal order and use “Apply to the file”, or type them in by hand.';
           }
           return 'Enter the ARV and the As-Is value by hand before signing off — with no XML there is nothing to read them from (use “No XML available”).';
         }

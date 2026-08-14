@@ -1,6 +1,6 @@
 'use strict';
 /**
- * DB-gated test — the Richer Value schema (db/548) and the wiring that hangs off
+ * DB-gated test — the Richer Values schema (db/548) and the wiring that hangs off
  * it. Skips without DATABASE_URL.
  *
  *   node scripts/test-richer-value-db.js

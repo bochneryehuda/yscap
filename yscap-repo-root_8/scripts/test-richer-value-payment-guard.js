@@ -1,6 +1,6 @@
 'use strict';
 /**
- * PURE test — the three things a Richer Value order now decides for itself before
+ * PURE test — the three things a Richer Values order now decides for itself before
  * it costs money: WHO pays, WHETHER the loan is one we recommend this product for,
  * and WHAT happens to the scope of work when ours changes.
  *

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Richer Value PUBLIC webhook receiver.
+ * Richer Values PUBLIC webhook receiver.
  *
  * They push rather than being polled: we give them a URL once, and they POST an
  * event whenever something happens to an order — `{order_type, intake_token,

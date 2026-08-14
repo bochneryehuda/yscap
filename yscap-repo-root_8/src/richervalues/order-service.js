@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Richer Value — read a loan file, build the order preview, and place the order.
+ * Richer Values — read a loan file, build the order preview, and place the order.
  *
  * The DB half. `order-build.js` stays pure and knows nothing about our schema;
  * this module owns the read, the normalization, the vendor round-trip and the
@@ -193,7 +193,7 @@ async function loadContext(db, appId) {
   //   report Cc        the OTHER one of the two, so both people who chase an
   //                    appraisal see it land. Also never the borrower.
   //   access contacts  the borrower and their MOBILE. A homeowner-led inspection
-  //                    is done through a link Richer Value TEXTS, so the cell
+  //                    is done through a link Richer Values TEXTS, so the cell
   //                    phone is the one that matters, and this is the only place
   //                    the borrower belongs on the order.
   const officer = { name: a.lo_name, email: a.lo_email, phone: a.lo_phone, role: 'Loan officer' };
@@ -348,7 +348,7 @@ function resolveChoices(ctx, catalogue, overrides = {}, tokens = {}) {
 /**
  * Property-access contacts. A staffer's list always wins; with none given, the
  * BORROWER is offered as the starting point — on an investment file they are the
- * one who arranges access, and they are the person Richer Value texts for a
+ * one who arranges access, and they are the person Richer Values texts for a
  * homeowner-led inspection. It is a suggestion the screen shows and the staffer
  * can replace, never something sent behind their back: `buildOrder` reports it as
  * derived, so it appears on the preview with its own explanation.
@@ -360,7 +360,7 @@ function normalizeContacts(given, ctx) {
   if (!ctx) return [];
   // The borrower, WITH THEIR CELL PHONE (owner-directed 2026-08-14). The mobile
   // is not decoration: a homeowner-led inspection is carried out through a link
-  // Richer Value texts, so an access contact with no mobile is an order that
+  // Richer Values texts, so an access contact with no mobile is an order that
   // cannot start. The office numbers on the file are deliberately not used here —
   // an appraiser standing at a door needs the person with the key.
   const b = {
@@ -489,7 +489,7 @@ async function buildPreview(db, appId, { overrides = {}, refresh = false } = {})
         ? 'The scope of work on this file goes over with the order automatically.'
         : sow.why,
       warning: sow.present ? null
-        : 'Richer Value normally puts an order with no scope of work ON HOLD until they get one. Add the scope of work first if you can.',
+        : 'Richer Values normally puts an order with no scope of work ON HOLD until they get one. Add the scope of work first if you can.',
     },
     loanGuard: guard,
     payment: {
@@ -565,8 +565,8 @@ async function placeOrder(db, appId, {
 } = {}) {
   const cfgd = client.configured();
   if (!confirm) { const e = new Error('An order has to be confirmed before it is placed.'); e.code = 'confirm_required'; throw e; }
-  if (!cfgd.enabled) { const e = new Error('The Richer Value integration is switched off.'); e.code = 'rv_disabled'; throw e; }
-  if (!cfgd.orderReady) { const e = new Error('Richer Value is not fully configured yet — see the API Health page.'); e.code = 'rv_not_configured'; throw e; }
+  if (!cfgd.enabled) { const e = new Error('The Richer Values integration is switched off.'); e.code = 'rv_disabled'; throw e; }
+  if (!cfgd.orderReady) { const e = new Error('Richer Values is not fully configured yet — see the API Health page.'); e.code = 'rv_not_configured'; throw e; }
 
   const ctx = await loadContext(db, appId);
   if (!ctx) { const e = new Error('file not found'); e.code = 'not_found'; throw e; }
@@ -685,7 +685,7 @@ async function placeOrder(db, appId, {
 
   // ---- 5. waive the XML -------------------------------------------------
   const waived = await xmlWaiver.applyProductNoXmlWaiver(appId, {
-    note: `Ordered a Hybrid Appraisal from Richer Value (${built.fields.report_type}). This product does not produce an appraisal data file (XML); the PDF report and the As-Is + ARV still apply.`,
+    note: `Ordered a Hybrid Appraisal from Richer Values (${built.fields.report_type}). This product does not produce an appraisal data file (XML); the PDF report and the As-Is + ARV still apply.`,
     staffId,
     db,
   });
@@ -700,9 +700,9 @@ async function placeOrder(db, appId, {
     built,
     xmlWaiver: waived,
     // Said out loud rather than left for somebody to notice: an order with no
-    // scope of work is the one Richer Value puts On Hold.
+    // scope of work is the one Richer Values puts On Hold.
     scopeOfWork: sowNote
-      ? { attached: false, warning: `${sowNote} Richer Value may put this order on hold until they get one — send it from the order card as soon as you have it.` }
+      ? { attached: false, warning: `${sowNote} Richer Values may put this order on hold until they get one — send it from the order card as soon as you have it.` }
       : { attached: true, warning: null },
     loanGuard: guard,
   };
@@ -719,7 +719,7 @@ async function placeOrder(db, appId, {
  *   NEW_CARD       a card typed at the moment of ordering; it is SAVED onto the
  *                  file first (through the shared chokepoint, so the condition is
  *                  filled by the act of paying) and then charged.
- *   PAYMENT_LINK   Richer Value emails the borrower their hosted payment page. The
+ *   PAYMENT_LINK   Richer Values emails the borrower their hosted payment page. The
  *                  order exists but does not start until they pay — which is the
  *                  honest state, and the row says so.
  *   NONE           leave it unpaid for a human to settle from the payment link.
@@ -779,7 +779,7 @@ async function payIntake(db, order, { staffId = null, method: methodIn = null, c
     const to = paymentLinkTo || (await borrowerEmailFor(db, order.application_id));
     if (!to) {
       return unpaid('PAYMENT_LINK',
-        `${why}Richer Value has the order but it is not paid yet, and there is no borrower email on the file to send the payment link to. `
+        `${why}Richer Values has the order but it is not paid yet, and there is no borrower email on the file to send the payment link to. `
         + 'Add an email, or open the payment link on the order card.');
     }
     try {
@@ -791,7 +791,7 @@ async function payIntake(db, order, { staffId = null, method: methodIn = null, c
       // other direction. `ok` answers "did what you pressed happen?", `settled`
       // answers "has the money moved?", and they are different questions.
       return unpaid('PAYMENT_LINK',
-        `${why}Richer Value has emailed the payment link to ${Array.isArray(out.sentTo) ? out.sentTo.join(', ') : out.sentTo}. `
+        `${why}Richer Values has emailed the payment link to ${Array.isArray(out.sentTo) ? out.sentTo.join(', ') : out.sentTo}. `
         + 'The order starts once it is paid.',
         { ok: askedForLink });
     } catch (e) {
@@ -871,7 +871,7 @@ async function auditCardView(db, appId, staffId) {
     await db.query(
       `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
        VALUES ('staff',$1,'view_appraisal_card','application',$2,$3::jsonb)`,
-      [staffId || null, appId, JSON.stringify({ why: 'charging a Richer Value Hybrid Appraisal order' })]);
+      [staffId || null, appId, JSON.stringify({ why: 'charging a Richer Values Hybrid Appraisal order' })]);
   } catch (_) { /* the record is a record, never the thing that fails the action */ }
 }
 
@@ -915,11 +915,11 @@ async function applyValues(db, orderRow, { staffId = null, actor = null } = {}) 
       unusableReason: null }
     : null);
 
-  if (!parsed) return { ok: false, error: 'Richer Value has not sent the finished figures yet.' };
+  if (!parsed) return { ok: false, error: 'Richer Values has not sent the finished figures yet.' };
   if (!parsed.valuesUsable) return { ok: false, error: parsed.unusableReason || 'The figures that came back cannot be used.' };
 
   const desk = require('../lib/appraisal/as-is-desk');
-  const note = `Richer Value Hybrid Appraisal${parsed.arvBasis ? ` (${parsed.arvBasis} renovation strategy)` : ''}`;
+  const note = `Richer Values Hybrid Appraisal${parsed.arvBasis ? ` (${parsed.arvBasis} renovation strategy)` : ''}`;
   const asIsRes = await desk.setAsIsByHuman(order.application_id, parsed.asIs, { actorId: staffId, actor, note });
   if (!asIsRes.ok) return { ok: false, error: asIsRes.error, status: asIsRes.status, locked: asIsRes.locked };
   const arvRes = await desk.setArvByHuman(order.application_id, parsed.arv, { actorId: staffId, actor, note });
@@ -1014,7 +1014,7 @@ async function sendScopeOfWorkRevision(db, orderId, { note = null, staffId = nul
        VALUES ($1,$2,'sow_revision',$3,$4, now(), $5)
        ON CONFLICT (rv_order_row, dedupe_key) DO NOTHING`,
       [order.id, order.application_id, order.status || null,
-        `The updated scope of work was sent to Richer Value (${out.action}).`,
+        `The updated scope of work was sent to Richer Values (${out.action}).`,
         `sow:${order.id}:${Date.now()}`]);
   } else {
     await db.query(`UPDATE rv_orders SET last_error=$2 WHERE id=$1`,

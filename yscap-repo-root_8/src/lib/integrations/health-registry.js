@@ -720,7 +720,7 @@ const INTEGRATIONS = [
     },
   },
   {
-    key: 'richer_value', name: 'Richer Value (Hybrid Appraisal ordering)', group: 'framework',
+    key: 'richer_value', name: 'Richer Values (Hybrid Appraisal ordering)', group: 'framework',
     purpose: 'The THIRD appraisal vendor, and a different KIND of report: an evaluation that gives an As-Is value AND an After Repair Value on one order, for well under half the price of a full appraisal. Because it is an evaluation there is no appraisal data file (XML) — only a PDF report — so ordering one waives the data-file requirement on the file automatically and fills the As-Is and the ARV from the finished report. It needs either their API token or a username and password; with a login it also works out which company to order for on its own. Nothing decides between the three vendors — that stays a deliberate choice on the order screen.',
     direction: 'Two-way — we place the order, they push status back by webhook (with a poll behind it in case one is lost)',
     auth: 'Bearer token — either issued by them, or created from a username + password',
@@ -742,12 +742,12 @@ const INTEGRATIONS = [
     async probe() {
       const c = require('../../richervalues/client').configured();
       if (!c.ready) {
-        return { configured: false, live: null, detail: 'Not connected — the Richer Value connector is built and off by default. It needs either their API token (RV_API_TOKEN) or a username and password (RV_USERNAME / RV_PASSWORD). A username and password is the easier one: their sign-in reply also tells us which company to order for.' };
+        return { configured: false, live: null, detail: 'Not connected — the Richer Values connector is built and off by default. It needs either their API token (RV_API_TOKEN) or a username and password (RV_USERNAME / RV_PASSWORD). A username and password is the easier one: their sign-in reply also tells us which company to order for.' };
       }
       if (!c.orderReady) {
         return { configured: false, live: null, detail: 'Almost there — the token is set, but a token on its own cannot tell us which of their companies to order for. Add RV_COMPANY_TOKEN, or switch to a username and password, which answers that by itself.' };
       }
-      if (!c.enabled) return { configured: true, enabled: false, live: null, detail: 'Credentials are set, but the master switch (RV_ENABLED) is off, so nothing talks to Richer Value yet.' };
+      if (!c.enabled) return { configured: true, enabled: false, live: null, detail: 'Credentials are set, but the master switch (RV_ENABLED) is off, so nothing talks to Richer Values yet.' };
       const env = c.environment === 'production'
         ? 'Pointed at their LIVE environment — orders placed here are real.'
         : 'Pointed at their TRAINING environment, so nothing placed here is a real order.';

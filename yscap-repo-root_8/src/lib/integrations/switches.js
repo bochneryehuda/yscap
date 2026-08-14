@@ -73,7 +73,7 @@ const SWITCHES = [
   { key: 'CLASS_DRYRUN', integration: 'class', label: 'Class Valuation orders — TEST MODE (build the request but don’t send it)', dangerous: false, envDefault: () => !!(cfg.class && cfg.class.dryrun) },
   { key: 'CLASS_OUTBOUND_ENABLED', integration: 'class', label: 'Place appraisal orders with Class Valuation (write)', dangerous: true, envDefault: () => !!(cfg.class && cfg.class.outboundEnabled) },
 
-  // Richer Value — the THIRD appraisal vendor, and a different KIND of product
+  // Richer Values — the THIRD appraisal vendor, and a different KIND of product
   // (a cheaper evaluation giving an As-Is value AND an ARV, with no MISMO XML).
   // Its own switches for the same reason the other two have their own: the three
   // vendors are turned on and off independently, and one being live must never
@@ -81,9 +81,9 @@ const SWITCHES = [
   // and the client) read the switch at CALL time, so turning it back on takes
   // effect immediately and claiming otherwise would send an admin for a redeploy
   // they do not need.
-  { key: 'RV_ENABLED', integration: 'richer_value', label: 'Order Hybrid Appraisals from Richer Value (reading + polling)', dangerous: false, envDefault: () => !!(cfg.richerValue && cfg.richerValue.enabled) },
-  { key: 'RV_DRYRUN', integration: 'richer_value', label: 'Richer Value orders — TEST MODE (build the order but don’t send it)', dangerous: false, envDefault: () => !!(cfg.richerValue && cfg.richerValue.dryrun) },
-  { key: 'RV_OUTBOUND_ENABLED', integration: 'richer_value', label: 'Place Hybrid Appraisal orders with Richer Value (write)', dangerous: true, envDefault: () => !!(cfg.richerValue && cfg.richerValue.outboundEnabled) },
+  { key: 'RV_ENABLED', integration: 'richer_value', label: 'Order Hybrid Appraisals from Richer Values (reading + polling)', dangerous: false, envDefault: () => !!(cfg.richerValue && cfg.richerValue.enabled) },
+  { key: 'RV_DRYRUN', integration: 'richer_value', label: 'Richer Values orders — TEST MODE (build the order but don’t send it)', dangerous: false, envDefault: () => !!(cfg.richerValue && cfg.richerValue.dryrun) },
+  { key: 'RV_OUTBOUND_ENABLED', integration: 'richer_value', label: 'Place Hybrid Appraisal orders with Richer Values (write)', dangerous: true, envDefault: () => !!(cfg.richerValue && cfg.richerValue.outboundEnabled) },
 
   // Elementix (recorded deeds / mortgages). Reading only — there is no write path to
   // Elementix at all, so neither switch is dangerous. NOT a switch: the paid contact

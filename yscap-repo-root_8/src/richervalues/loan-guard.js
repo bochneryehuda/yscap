@@ -1,20 +1,20 @@
 'use strict';
 /**
- * Richer Value — THE $400,000 LOAN-AMOUNT GUARD.
+ * Richer Values — THE $400,000 LOAN-AMOUNT GUARD.
  *
  * THE OWNER'S RULE (2026-08-14): *"We wanna put a strict warning and a double
  * confirmation. If any loan amount is more than $400,000, we don't recommend Richer
  * Value, and our investors might not accept. Before proceeding, you're gonna need a
  * warning if the loan amount is more than $400,000 registered. If there is no loan
  * amount registered yet, just let them know that it's better if they registered the
- * loan amount before, because Richer Value sees what we expect. You can tell them
+ * loan amount before, because Richer Values sees what we expect. You can tell them
  * that there's a limit of a $400,000 loan amount for this product type."*
  *
  * So there are THREE states, and only one of them is a plain go-ahead:
  *
  *   ok        a registered loan amount at or under $400,000 → order normally.
  *   advise    NO loan amount registered yet → say why registering first matters
- *             (Richer Value is SHOWN what we expect, so an order placed before the
+ *             (Richer Values is SHOWN what we expect, so an order placed before the
  *             loan is registered tells them nothing) and state the limit. The
  *             staffer may still proceed — this is advice, not a refusal.
  *   warn      a registered loan amount OVER $400,000 → the strict warning, and the
@@ -77,7 +77,7 @@ function judgeLoanAmount(loanAmount) {
       loanAmount: null,
       title: 'No loan amount is registered on this file yet',
       message:
-        'It is better to register the loan amount before ordering. Richer Value is SHOWN what we expect — '
+        'It is better to register the loan amount before ordering. Richer Values is SHOWN what we expect — '
         + 'the loan amount, the As-Is value and the ARV all go over with the order — so ordering before the '
         + `loan is registered tells them nothing about the deal. Also worth knowing: this product is meant for `
         + `loans up to ${money(LOAN_LIMIT)}. You can still order now if you need to.`,
@@ -93,7 +93,7 @@ function judgeLoanAmount(loanAmount) {
       ack: ACK,
       limit: LOAN_LIMIT,
       loanAmount: amount,
-      title: `This loan is ${money(amount)} — we do not recommend Richer Value over ${money(LOAN_LIMIT)}`,
+      title: `This loan is ${money(amount)} — we do not recommend Richer Values over ${money(LOAN_LIMIT)}`,
       message:
         `This product type is meant for loans up to ${money(LOAN_LIMIT)}, and this file is registered at `
         + `${money(amount)}. We do NOT recommend a Hybrid Appraisal here, and our investors might not accept it — `
