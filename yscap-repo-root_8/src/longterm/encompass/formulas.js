@@ -22,6 +22,11 @@ const DSCR_RATIO = {
   label: 'DSCR',
   format: 'DECIMAL_2',
   calculation: 'Round([1005] / [912], 2)',
+  // Measured from the tenant, then CONFIRMED BY THE OWNER on 2026-08-14 in his own
+  // words: "field id CUST01FV this field represents the DSCR ratio, which is the
+  // calculation of Round([1005] / [912], 2)". Both halves agree, so this is settled
+  // knowledge rather than an inference — do not re-derive it.
+  ownerConfirmed: '2026-08-14',
   plainEnglish:
     'Gross monthly market rent on the subject property (field 1005) divided by the '
     + 'proposed TOTAL monthly housing expense (field 912) — principal + interest + taxes '
@@ -96,28 +101,55 @@ const KNOWN_DEFECTS = [
     correctSource: 'Field 912 (loan.proposedHousingExpenseTotal) is the real total PITIA, '
       + 'and it is what the DSCR ratio itself uses.',
     ourRule: 'LT never reads CX.PITIA. It reads 912.',
-    // ── The fix, verified rather than suggested ────────────────────────────
+    // ── The fix. The owner proposed this one and it is better than the
+    // five-field rebuild that was suggested first; the data below is why.
     theFix: {
-      calculation: 'Sum([#228], [#1405], [#230], [#232], [#233])',
+      calculation: 'Sum([#912])',
       why:
-        'Those are the five fields the label already names, taken from the "Expenses '
-        + 'Proposed" block where the real monthly housing expense lives: 228 Mtg Pymt '
-        + '(P&I), 1405 Taxes, 230 Haz Ins, 232 Mtg Ins (MI), 233 HOA. Only the FIRST '
-        + 'id in the current formula is from that block; the other four are not.',
-      verified:
-        'Computed on the same 451 long-term loans and compared with field 912: 88% land '
-        + 'within 2%, median gap $0.00 — exact. Against 0% and $166,197.97 for the '
-        + 'formula as it stands today.',
-      note:
-        'The remaining 12% are the files where field 912 legitimately carries something '
-        + 'the label does not name (other housing 234, other financing 229) or where the '
-        + 'tax line is blank — the same 38-file case documented in terms.js.',
+        'Point the field at the total that already exists. Field 912 IS the proposed '
+        + 'total monthly housing expense — Encompass computes it, and it is the number '
+        + 'the DSCR ratio itself divides by. Copying it means CX.PITIA and the DSCR '
+        + 'denominator agree BY CONSTRUCTION and can never drift apart.',
+      verified: {
+        completeness:
+          'Right on 100% of the files that have a 912 (452 of 490, 92.2%). On the other '
+          + '38 it comes back BLANK — which is the honest answer, and far better than the '
+          + 'confident wrong number those files carry today.',
+        matchesTheLabel:
+          'On 459 of 490 long-term loans, 912 is EXACTLY P&I + taxes + insurance + HOA — '
+          + 'the label\'s own words. The extras it can also carry are rare: other housing '
+          + 'on 18 files, supplemental insurance on 12, other financing on 1.',
+        mi:
+          'Mortgage insurance (field 232) is ZERO on all 772 loans in the tenant — an '
+          + 'investor loan does not carry MI — so the "MI" in the label costs nothing '
+          + 'either way. (Whether 912 would pick MI up if it ever existed cannot be '
+          + 'confirmed from this data, because it never does.)',
+      },
+      syntaxNote:
+        'A bare [#912] should work too, but Sum() is the shape already proven to run in '
+        + 'this tenant, so Sum([#912]) is the safer edit.',
+      whyKeepTheFieldAtAll:
+        'Because anything already referencing CX.PITIA by name — a form, a report, a '
+        + 'business rule, an investor export — is fixed the moment the calculation '
+        + 'changes, with no hunting. Retiring the field would mean finding every one of '
+        + 'them first.',
+    },
+    // The first fix suggested, kept because it is a real option and because the
+    // measurement that rules it out is worth not repeating.
+    rejectedAlternative: {
+      calculation: 'Sum([#228], [#1405], [#230], [#232], [#233])',
+      idea: 'Rebuild the total from the five components the label names.',
+      whyWorse:
+        'It disagrees with field 912 on 62 of 452 files (13.7%), short by a median of '
+        + '$1,160 a month and up to $5,410. On 39 of those the TAX LINE (1405) is blank '
+        + 'while 912 already contains the taxes — so the rebuild UNDERSTATES the housing '
+        + 'expense, which INFLATES the DSCR and makes a deal look better than it is. '
+        + 'Copying 912 has that problem by definition zero times.',
     },
     ownerAction:
       'One line, in Encompass → Settings → Loan Custom Fields → CX.PITIA: replace the '
-      + 'calculation with Sum([#228],[#1405],[#230],[#232],[#233]). Or retire the field '
-      + 'and use 912. Not something we can change from here — Encompass is read-only to '
-      + 'us — and nothing we build depends on it either way.',
+      + 'calculation with Sum([#912]). Not something we can change from here — Encompass '
+      + 'is read-only to us — and nothing we build depends on it either way.',
   },
 ];
 

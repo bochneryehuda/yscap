@@ -268,13 +268,14 @@ Recorded here rather than guessed at.
 3. **The investor loan number.** You named `VEND.X267`; in the live tenant that field
    holds ZIP codes (11 distinct, all postcodes) and the 379 real investor loan numbers
    are in `VEND.X276`, which is what the code uses. Confirm.
-4. **`CX.PITIA`** — challenged and re-tested; the finding held and now comes with a
-   fix. Its formula adds the purchase price and cash-to-close into a monthly payment,
-   so **0 of 451** long-term files land within 2% of the real housing expense. Replace
-   the calculation with the five fields its own label names —
-   `Sum([#228],[#1405],[#230],[#232],[#233])`, which lands **88% within 2%, median gap
-   $0.00** — or retire the field. Nothing we build reads it either way. Full evidence:
-   `ENCOMPASS-TERMS-AND-PITI.md` §6.
+4. ~~**`CX.PITIA`**~~ **ANSWERED 2026-08-14.** The finding was challenged, re-tested
+   four ways and held: its formula adds the purchase price and cash-to-close into a
+   monthly payment, so **0 of 451** long-term files land within 2% of the real housing
+   expense. **The owner chose the fix: `CX.PITIA = Sum([#912])`** — point it at the
+   total that already exists, which is also the DSCR's own denominator, so the two can
+   never drift. Right on 100% of files that have a 912; blank rather than wrong on the
+   rest. Still to be applied in Encompass; nothing we build reads it either way. Full
+   evidence: `ENCOMPASS-TERMS-AND-PITI.md` §6.
 5. **The loan doc type** stores `DSCR` on 486 files, which is not a valid code — and
    the tenant's base Milestone Completion rule is conditioned on Doc Type = "No
    Documentation", so those files never switch those requirements on.

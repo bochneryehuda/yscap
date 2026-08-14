@@ -182,9 +182,12 @@ points the wrong way for a field that were merely *missing* taxes. One real file
 P&I 3,048.46 + purchase price 689,000.00 + cash from borrower 219,940.44 =
 **911,988.90**, against an actual monthly housing expense of **3,478.46**.
 
-**The fix is one line** — the five fields the label already names, all from the
-*Expenses Proposed* block: `Sum([#228], [#1405], [#230], [#232], [#233])`. Tested on
-the same 451 loans: **88% land within 2% of field 912, median gap $0.00.**
+**The fix is one line: `CX.PITIA = Sum([#912])`** — point it at the total that already
+exists, which is also the DSCR's own denominator, so the two can never drift. Right on
+100% of files that have a 912, and blank rather than wrong on the rest. (Rebuilding it
+from the five components the label names is the tempting alternative and is worse — it
+runs $1,160/month short on the 62 files whose tax line is blank, which inflates the
+DSCR.)
 
 Long-Term never reads `CX.PITIA`; it reads `912`. Full evidence in
 `ENCOMPASS-TERMS-AND-PITI.md` §6. Changing it is an Encompass-side action — we are

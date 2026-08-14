@@ -93,6 +93,13 @@ for (const [r, p, expected] of CASES) {
   if (enc.formulas.computeDscr(r, p) !== expected) dscrOk = false;
 }
 check(dscrOk, 'computeDscr reproduces the stored DSCR on every recorded live example');
+// The owner confirmed this formula in his own words on 2026-08-14. Measurement and
+// the owner agree, so it is settled knowledge — pinned so nobody re-derives it.
+check(enc.formulas.DSCR_RATIO.fieldId === 'CUST01FV'
+  && enc.formulas.DSCR_RATIO.calculation === 'Round([1005] / [912], 2)',
+  'CUST01FV = Round([1005] / [912], 2) — owner-confirmed and measured');
+check(enc.formulas.DSCR_RATIO.ownerConfirmed === '2026-08-14',
+  'the DSCR formula carries the date the owner confirmed it');
 check(enc.formulas.computeDscr(1000, 0) === null, 'computeDscr refuses a zero denominator');
 check(enc.formulas.computeDscr(null, 1000) === null, 'computeDscr refuses a missing numerator');
 
@@ -319,18 +326,30 @@ check(/standardFields/.test(defect.proof['2']) && /CX\.RTLDOWNPAYMENT/.test(defe
 check(/ZERO land within 2%/.test(defect.proof['3']),
   'proof 3: the result is not a monthly payment on a single one of 451 loans');
 
-// The fix must be the label's OWN five fields, all from the Expenses Proposed block.
-check(defect.theFix.calculation === 'Sum([#228], [#1405], [#230], [#232], [#233])',
-  'the recorded fix is P&I + Taxes + Insurance + MI + HOA — exactly what the label promises');
-for (const id of ['228', '1405', '230', '232', '233']) {
-  check(defect.theFix.calculation.includes(`[#${id}]`), `the fix uses field ${id}`);
-}
-for (const id of ['140', '136', '142', '144']) {
+// THE FIX IS THE OWNER'S: point the field at 912, the total that already exists.
+// It beats rebuilding from components precisely because of the blank-tax-line files.
+check(defect.theFix.calculation === 'Sum([#912])',
+  'the recorded fix points CX.PITIA at field 912 — the total that already exists');
+for (const id of ['140', '136', '142', '144', '228', '1405']) {
   check(!defect.theFix.calculation.includes(`[#${id}]`),
-    `the fix drops field ${id} — it is not a monthly housing expense`);
+    `the fix does not rebuild from field ${id} — it copies the finished total`);
 }
-check(/88% land\s+within 2%/.test(defect.theFix.verified) && /median gap \$0\.00/.test(defect.theFix.verified),
-  'the fix was VERIFIED against the real housing expense, not merely proposed');
+check(/100%/.test(defect.theFix.verified.completeness) && /blank/i.test(defect.theFix.verified.completeness),
+  'the fix is right on every file that has a 912, and BLANK — not wrong — on the rest');
+check(/459 of 490/.test(defect.theFix.verified.matchesTheLabel),
+  "912 was checked against the label's own words, not assumed to match");
+check(/ZERO on all 772/.test(defect.theFix.verified.mi),
+  'the MI question was settled: it is zero everywhere, so it costs nothing either way');
+
+// The runner-up must stay recorded WITH the measurement that rules it out, so the
+// same tempting idea is not re-proposed and re-tested in six months.
+const alt = defect.rejectedAlternative;
+check(alt.calculation === 'Sum([#228], [#1405], [#230], [#232], [#233])',
+  'the five-component rebuild is recorded as the alternative that was considered');
+check(/62 of 452/.test(alt.whyWorse) && /1,160/.test(alt.whyWorse),
+  'and why it is worse: short on 62 of 452 files, median $1,160 a month');
+check(/INFLATES the DSCR/.test(alt.whyWorse),
+  'stated in terms of the consequence — understating the expense inflates the DSCR');
 
 // And the rule that makes all of this harmless to us either way.
 check(/never reads CX\.PITIA/i.test(defect.ourRule) && /912/.test(defect.ourRule),

@@ -245,29 +245,51 @@ If `CX.PITIA` were merely *missing* taxes and insurance, then `912 − CX.PITIA`
 be **positive** and look like a monthly tax bill (~$400). It is **negative, median
 −$2,963** — the signature of one-time amounts being added into a monthly figure.
 
-### The fix — the label's own five fields
+### The fix — point it at 912
 
-The label names five things, and Encompass has all five in one block, **Expenses
-Proposed**: `228` Mtg Pymt (P&I), `1405` Taxes, `230` Haz Ins, `232` Mtg Ins (MI),
-`233` HOA. **Only the first id in the current formula comes from that block.**
+**The owner's own answer, and it is the better one:**
 
 ```
-Sum([#228], [#1405], [#230], [#232], [#233])
+CX.PITIA  =  Sum([#912])
 ```
 
-Computed on the same 451 loans and compared with field 912:
+Field `912` **is** the proposed total monthly housing expense. Encompass already
+computes it, and it is the number the DSCR ratio itself divides by — so `CX.PITIA` and
+the DSCR denominator would agree **by construction** and could never drift apart.
+
+| | |
+|---|---|
+| Right on | **100%** of files that have a 912 — 452 of 490 (92.2%) |
+| On the other 38 | **blank** — the honest answer, and far better than the confident wrong number they carry today |
+| Matches the label | On **459 of 490** loans, 912 is exactly *P&I + taxes + insurance + HOA* |
+| The extras 912 can also carry | other housing on 18 files, supplemental insurance on 12, other financing on 1 |
+| Mortgage insurance | **zero on all 772 loans** — an investor loan carries no MI, so the "MI" in the label costs nothing either way |
+
+A bare `[#912]` should work too, but `Sum()` is the shape already proven to run in this
+tenant, so **`Sum([#912])` is the safer edit**.
+
+**Why keep the field at all rather than retire it?** Because anything already
+referencing `CX.PITIA` by name — a form, a report, a business rule, an investor export
+— is fixed the moment the calculation changes, with no hunting for them first.
+
+#### The alternative that was suggested first, and why it is worse
+
+Rebuilding the total from the five components the label names —
+`Sum([#228], [#1405], [#230], [#232], [#233])` — looks right and is not:
 
 | Formula | Within 2% of the real expense | Median gap |
 |---|---:|---:|
-| As it is today `Sum(228,140,136,142,144)` | **0%** | $166,197.97 |
-| The label's own fields `Sum(228,1405,230,232,233)` | **88%** | **$0.00** |
+| As it is today `Sum(228,140,136,142,144)` | 0% | $166,197.97 |
+| The five components `Sum(228,1405,230,232,233)` | 88% | $0.00 |
+| **`Sum([#912])`** | **100%** | **$0.00** |
 
-The remaining 12% are files where 912 legitimately carries something the label does
-not name (`234` other housing, `229` other financing), or where the tax line is blank
-— the same 38-file case in §4.
+The five-component rebuild disagrees with 912 on **62 of 452 files (13.7%)**, short by
+a median of **$1,160 a month** and up to $5,410 — because on 39 of them the **tax line
+is blank while 912 already contains the taxes** (§4). Understating the housing expense
+**inflates the DSCR** and makes a deal look better than it is. Copying 912 has that
+problem exactly zero times.
 
 **Owner action:** one line, in Encompass → Settings → Loan Custom Fields → `CX.PITIA`.
-Or retire the field and use `912`.
 
 **Our rule either way: the long-term side never reads `CX.PITIA`. It reads field
 912** — which is also what the DSCR ratio itself uses. Nothing we build depends on
