@@ -61,11 +61,44 @@ prose can never quietly become a real permission).
 write src/encompass/flood-order.js | POST /encompass/v3/loans/{guid}/serviceOrders ; POST /services/v1/partners/{id}/transactions | Flood determination ordering (ICE flood service), owner-authorized 2026-07-30
 ```
 
+### Authorized, not yet built: Long-Term eFolder upload + condition link
+
+**Owner-authorized 2026-08-14.** Asked whether uploading a document into the Encompass
+eFolder and linking it to a condition should stay research-only or be authorized, the
+owner chose: *"Authorize eFolder upload + condition link now."* The intent, in their own
+words: *"we should be uploading documents in our system which should be uploaded directly
+to the e-folder and linked to a certain condition."*
+
+This authorization is **recorded but deliberately NOT yet in the `encompass-writes` block
+above**, because rule 3 of this pad forbids guessing a write and the exact request and
+response bodies for the upload are **not yet verified**. What is confirmed today is only
+the endpoint *names*, from ICE's documentation and our own live read probe:
+
+| Step | Endpoint | Verified? |
+|---|---|---|
+| 1. Get a cloud upload URL | `POST /encompass/v3/loans/{loanId}/attachmentUploadUrl` | name only |
+| 2. Upload the bytes | `PUT <returned cloud-storage URL>` | name only |
+| 3. Attach to an eFolder document | `PATCH /encompass/v3/loans/{loanId}/documents` | not verified |
+| 4. Link the document to the condition | `PATCH /encompass/v3/loans/{loanId}/conditions` | not verified |
+
+The full specification, the deprecation warning (v1 attachment endpoints are sunset in ICE
+release 26.3) and the pre-flight checklist live in `src/longterm/encompass/conditions.js`
+(`WRITE_PATH`). The master switch already exists as a setting — `efolder.writesEnabled`,
+**default `false`** — in `src/longterm/settings/encompass-settings.js`.
+
+**To turn this into a real permission:** verify each request/response against ICE's
+Developer Connect reference or a sandbox loan, build it in its own module with its own
+endpoint allowlist, super-admin gate and audit trail (the flood module is the pattern),
+add one `write` line to the block above and one row to the log table in the same PR, and
+test against a non-production loan first. Until that happens, Long-Term remains fully
+read-only and the CI gate keeps it that way.
+
 ## Log of authorized writes
 
 | Date | Write | Product | The owner's words | PR |
 |---|---|---|---|---|
 | 2026-07-30 | Flood-determination ordering (`src/encompass/flood-order.js`) | RTL | *"only be able to order flood right now and not anything extra"* | (flood PR) |
+| 2026-08-14 | eFolder document upload + link to a condition — **authorized, not yet built** (see the section under the block above) | LT | *"Authorize eFolder upload + condition link now"* / *"we should be uploading documents in our system which should be uploaded directly to the e-folder and linked to a certain condition"* | this PR |
 
 ## Log of things we did NOT authorize
 
