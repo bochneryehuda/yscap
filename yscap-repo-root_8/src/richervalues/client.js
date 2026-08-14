@@ -97,7 +97,13 @@ function configured() {
     // deployment with only a token must also carry RV_COMPANY_TOKEN. Reported
     // separately so a preflight can say exactly what is missing.
     hasCompanyToken: !!c.companyToken,
-    orderReady: (hasToken || hasLogin) && !!(c.companyToken || hasLogin),
+    // A RAW TOKEN SHORT-CIRCUITS THE LOGIN (getAccessToken returns c.apiToken
+    // before it ever signs in), so with RV_API_TOKEN set nothing can DERIVE a
+    // company token or a loan-officer token — even when a username/password is
+    // also configured. Reporting orderReady off `hasLogin` alone therefore said
+    // "ready to order" on a deployment whose every order would fail for want of
+    // a company token. Identity is derivable ONLY on the login-alone path.
+    orderReady: (hasToken || hasLogin) && !!(c.companyToken || (hasLogin && !hasToken)),
     environment: hosts().environment,
     baseUrl: baseUrl(),
     // The webhook half is independent: ordering works without it, but nothing will
