@@ -27,6 +27,7 @@ if (!process.env.DATABASE_URL) {
 
 const db = require('../src/longterm/db');
 const roster = require('../src/longterm/people/roster');
+const contacts = require('../src/longterm/people/contacts');
 
 let failures = 0;
 const check = (cond, msg) => {
@@ -187,6 +188,103 @@ async function refuses(c, fn, msg) {
     );
     check(gone.length === 1 && gone[0].is_active === false,
       'a user missing from the roster is DEACTIVATED, never deleted — their login id is on historical loans');
+
+    // ── The loan team, and the one thing a sync may never undo ──────────────
+    console.log('\nthe loan team');
+
+    const { rows: loans } = await c.query(
+      `INSERT INTO lt_loans (id, loan_number, encompass_loan_guid)
+            VALUES (gen_random_uuid(), $1, $2) RETURNING id`,
+      [`${stamp}-L1`, `${stamp}-guid`],
+    );
+    const loanId = loans[0].id;
+
+    await contacts.writeContacts(c, loanId, [
+      { role: 'loan_officer', name: 'Solomon Weiss', email: `${stamp}.a@example.test`, phone: null, loginId: `${stamp}-sweiss`, staffId: String(shea.id) },
+      { role: 'closer', name: 'Malky Katz', email: null, phone: null, loginId: `${stamp}-mkatz`, staffId: null },
+    ]);
+    const { rows: team } = await c.query(
+      'SELECT * FROM lt_loan_contacts WHERE loan_id = $1::uuid ORDER BY role', [loanId],
+    );
+    check(team.length === 2, 'both contacts are written, one row per role');
+    check(String(team.find((t) => t.role === 'loan_officer').staff_id) === String(shea.id),
+      'a contact whose login is CONFIRMED is attributed to that PILOT person');
+    check(team.find((t) => t.role === 'closer').staff_id === null
+       && team.find((t) => t.role === 'closer').encompass_name === 'Malky Katz',
+      'an unlinked contact is stored by NAME and attributed to nobody');
+
+    // Somebody reassigns the file locally.
+    await contacts.setOverride(loanId, 'loan_officer', String(malky.id), String(malky.id), 'covering while he is away');
+    // …and then Encompass is read again, saying exactly what it said before.
+    await contacts.writeContacts(c, loanId, [
+      { role: 'loan_officer', name: 'Solomon Weiss', email: `${stamp}.a@example.test`, phone: null, loginId: `${stamp}-sweiss`, staffId: String(shea.id) },
+      { role: 'closer', name: 'Malky Katz', email: null, phone: null, loginId: `${stamp}-mkatz`, staffId: null },
+    ]);
+    const { rows: afterSync } = await c.query(
+      `SELECT * FROM lt_loan_contacts WHERE loan_id = $1::uuid AND role = 'loan_officer'`, [loanId],
+    );
+    check(String(afterSync[0].override_staff_id) === String(malky.id),
+      'THE ONE THAT MATTERS: a re-sync from Encompass does NOT undo a local reassignment');
+    check(String(afterSync[0].staff_id) === String(shea.id),
+      '…while still refreshing what Encompass says, because they are separate columns');
+    check(afterSync[0].override_reason === 'covering while he is away',
+      'the reason a file was reassigned survives the sync too');
+
+    // Clearing the override is how "Encompass was right after all" is expressed.
+    await contacts.setOverride(loanId, 'loan_officer', null, String(malky.id), null);
+    const { rows: cleared } = await c.query(
+      `SELECT * FROM lt_loan_contacts WHERE loan_id = $1::uuid AND role = 'loan_officer'`, [loanId],
+    );
+    check(cleared[0].override_staff_id === null && cleared[0].override_by === null
+       && cleared[0].override_at === null && cleared[0].override_reason === null,
+      'clearing an override clears every trace of it, not just the pointer');
+
+    // A role Encompass stops naming must stop showing.
+    await contacts.writeContacts(c, loanId, [
+      { role: 'loan_officer', name: 'Solomon Weiss', email: null, phone: null, loginId: `${stamp}-sweiss`, staffId: String(shea.id) },
+    ]);
+    const { rows: left } = await c.query(
+      'SELECT role FROM lt_loan_contacts WHERE loan_id = $1::uuid', [loanId],
+    );
+    check(left.length === 1 && left[0].role === 'loan_officer',
+      'a role Encompass no longer names is removed — an unassigned closer must stop showing as the closer');
+
+    // ── Confirming a link is retroactive ────────────────────────────────────
+    console.log('\nconfirming a link reaches the files that login is already on');
+
+    await c.query(
+      `INSERT INTO lt_loan_contacts (id, loan_id, role, encompass_login_id, encompass_name)
+            VALUES (gen_random_uuid(), $1::uuid, 'closer', $2, 'Malky Katz')`,
+      [loanId, `${stamp}-mkatz`],
+    );
+    // mkatz was REJECTED earlier in this test, so nothing should attribute yet.
+    await contacts.reattributeAll(c);
+    const { rows: stillNone } = await c.query(
+      `SELECT staff_id FROM lt_loan_contacts WHERE loan_id = $1::uuid AND role = 'closer'`, [loanId],
+    );
+    check(stillNone[0].staff_id === null,
+      'a REJECTED login attributes nothing, however many files it appears on');
+
+    await c.query(
+      `UPDATE lt_staff_links SET status = 'confirmed', staff_id = $2::uuid, confirmed_at = now()
+        WHERE encompass_login_id = $1`, [`${stamp}-mkatz`, String(malky.id)],
+    );
+    const re = await contacts.reattributeAll(c);
+    const { rows: nowMine } = await c.query(
+      `SELECT staff_id FROM lt_loan_contacts WHERE loan_id = $1::uuid AND role = 'closer'`, [loanId],
+    );
+    check(String(nowMine[0].staff_id) === String(malky.id) && re.attributed >= 1,
+      'confirming a link makes every file that login is already on theirs — no Encompass call, no re-sync');
+
+    // …and undoing it takes them back off, or a file stays in the pipeline of
+    // somebody the admin just unlinked.
+    await c.query('DELETE FROM lt_staff_links WHERE encompass_login_id = $1', [`${stamp}-mkatz`]);
+    const undone = await contacts.reattributeAll(c);
+    const { rows: gone2 } = await c.query(
+      `SELECT staff_id FROM lt_loan_contacts WHERE loan_id = $1::uuid AND role = 'closer'`, [loanId],
+    );
+    check(gone2[0].staff_id === null && undone.cleared >= 1,
+      'unlinking takes the files back off them again');
 
     await c.query('ROLLBACK');
   } catch (e) {

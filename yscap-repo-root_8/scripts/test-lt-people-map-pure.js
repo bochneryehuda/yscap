@@ -20,6 +20,7 @@
 
 const match = require('../src/longterm/people/match');
 const roster = require('../src/longterm/people/roster');
+const contacts = require('../src/longterm/people/contacts');
 const access = require('../src/longterm/access');
 const decl = require('../src/longterm/settings/encompass-settings');
 
@@ -195,6 +196,94 @@ check(JSON.stringify(decl.defaults()['access.adminRoles']) === JSON.stringify(ac
   'the declared admin-role list matches access.js exactly');
 check(decl.defaults()['conditions.enabled'] === false,
   'the Condition Center is OFF — set aside by the owner on 2026-08-14, and a setting rather than a comment');
+
+// ── The loan team ───────────────────────────────────────────────────────────
+console.log('\ncontacts — who is on this loan');
+
+const ids = contacts.fieldIdsFor();
+check(ids.includes('LoanTeamMember.UserId.Loan Coordinator'),
+  "the loan-officer slot is read as the tenant's REAL role name, \"Loan Coordinator\"");
+check(!ids.some((i) => i.startsWith('LoanTeamMember.Id.')),
+  'it is UserId, never Id — `LoanTeamMember.Id.<role>` is an invalid field id');
+check(new Set(ids).size === ids.length,
+  'the field-id list is DEDUPLICATED — a duplicate answers 400 and loses the WHOLE batch');
+check(ids.length === contacts.DEFAULT_ROLES.length * contacts.PARTS.length,
+  'four parts are read for every tracked role');
+
+// Two of our roles pointed at one Encompass role is a plausible settings state, and
+// would otherwise post a duplicate id and lose every role on the loan.
+const collided = contacts.fieldIdsFor({
+  'contacts.roles': ['closer', 'funder'],
+  'contacts.encompassRoleNames': { closer: 'Closer', funder: 'Closer' },
+});
+check(new Set(collided).size === collided.length && collided.length === 4,
+  'two roles sharing one Encompass name still produce a unique id list');
+
+// A role with no Encompass name cannot be read, and an id built from `undefined`
+// would reject the batch for every other role too.
+const missingName = contacts.fieldIdsFor({
+  'contacts.roles': ['closer', 'wizard'],
+  'contacts.encompassRoleNames': { closer: 'Closer' },
+});
+check(missingName.length === 4 && !missingName.some((i) => i.includes('undefined')),
+  'a role with no Encompass name is DROPPED, never asked for as `undefined`');
+
+// The real payload shape, from the live probe.
+const VALUES = {
+  'LoanTeamMember.Name.Loan Coordinator': 'Solomon Weiss',
+  'LoanTeamMember.UserId.Loan Coordinator': 'sweiss',
+  'LoanTeamMember.Email.Loan Coordinator': 'Sol@yscapgroup.com',
+  'LoanTeamMember.Phone.Loan Coordinator': '718-635-0277',
+  'LoanTeamMember.Name.Closer': 'Malky  Katz',
+  'LoanTeamMember.UserId.Closer': 'mkatz',
+  'LoanTeamMember.Name.Underwriter': '',
+  'LoanTeamMember.UserId.Underwriter': '',
+};
+const team = contacts.contactsFromFields(VALUES);
+const byRole = (r) => team.find((c) => c.role === r) || null;
+
+check(byRole('loan_officer') && byRole('loan_officer').loginId === 'sweiss',
+  'the loan officer is read off the Loan Coordinator slot');
+check(byRole('loan_officer').email === 'sol@yscapgroup.com',
+  'the email is normalised once, at the door');
+check(byRole('closer') && byRole('closer').name === 'Malky Katz',
+  "the tenant's double spaces are squashed on the way in");
+check(!byRole('underwriter'),
+  'a slot Encompass leaves EMPTY is omitted, never stored as an empty contact that reads as assigned');
+check(!byRole('processor'),
+  'a role the payload does not mention at all is omitted too');
+
+// Attribution: only a CONFIRMED link decides whose file this is.
+const attributed = contacts.attribute(team, new Map([['sweiss', 'u-sweiss']]));
+check(attributed.find((c) => c.role === 'loan_officer').staffId === 'u-sweiss',
+  'a CONFIRMED link attributes the file to that PILOT person');
+check(attributed.find((c) => c.role === 'closer').staffId === null,
+  'an unlinked login attributes to NOBODY — a suggestion may never decide whose pipeline a file lands in');
+check(attributed.find((c) => c.role === 'closer').name === 'Malky Katz',
+  '…and still displays by name, so the file is never blank about who is on it');
+
+// What the screen says.
+const shown = contacts.describeContact(
+  { role: 'loan_officer', encompass_name: 'Solomon Weiss', encompass_login_id: 'sweiss', staff_id: 'u-1' },
+  { staffName: 'Solomon Weiss', labels: { loan_officer: 'Loan officer' } },
+);
+check(shown.effectiveStaffId === 'u-1' && shown.overridden === false && shown.note === null,
+  'an ordinary contact reads plainly');
+
+const overridden = contacts.describeContact(
+  { role: 'loan_officer', encompass_name: 'Solomon Weiss', encompass_login_id: 'sweiss', staff_id: 'u-1', override_staff_id: 'u-2' },
+  { staffName: 'Solomon Weiss', overrideName: 'Someone Else' },
+);
+check(overridden.effectiveStaffId === 'u-2' && overridden.overridden === true,
+  'a local override decides who the file actually belongs to');
+check(/nothing was written back/i.test(overridden.note),
+  '…and the screen SAYS the file disagrees with Encompass on purpose — Encompass is one-way');
+
+const unlinkedShown = contacts.describeContact(
+  { role: 'closer', encompass_name: 'Malky Katz', encompass_login_id: 'mkatz', staff_id: null },
+);
+check(/not linked to a PILOT person yet/i.test(unlinkedShown.note),
+  'an unlinked contact explains why the file is in nobody\'s pipeline');
 
 console.log(`\n${failures ? `${failures} FAILED` : 'all passed'}`);
 process.exit(failures ? 1 : 0);

@@ -38,6 +38,31 @@
  */
 
 const db = require('../db');
+// Required lazily — contacts.js requires this module back for the confirmed-link
+// map, and a plain top-level pair would leave one of the two holding a half-built
+// module depending on which is loaded first.
+const lazyContacts = () => require('./contacts');
+
+/**
+ * A decision about WHO somebody is has to reach the files they are already on.
+ *
+ * Confirming a link is retroactive by design: the moment an admin says "this login
+ * is that person", every long-term file that login appears on becomes theirs — with
+ * no Encompass call and no loan re-sync — and unlinking takes them back off. Without
+ * this, an admin would confirm a link, see nothing change, and re-confirm it.
+ *
+ * Best-effort on purpose: the decision itself is already committed and is the thing
+ * that matters. A failure here is corrected by the next sync or the next decision,
+ * so it may never turn a successful confirm into an error.
+ */
+async function reattribute(where) {
+  try {
+    return await lazyContacts().reattributeAll();
+  } catch (e) {
+    console.error(`[lt] re-attributing loan contacts after ${where} failed:`, (e && e.message) || e);
+    return null;
+  }
+}
 
 /** A refusal a screen can show verbatim. `status` is the HTTP code to answer with. */
 function refuse(status, message) {
@@ -114,6 +139,8 @@ async function confirmLink(loginId, staffId, actorId) {
     );
 
     await dbc.query('COMMIT');
+    // The link is decided; now make it true of the files that login is already on.
+    await reattribute('a confirm');
     return rows[0];
   } catch (e) {
     try { await dbc.query('ROLLBACK'); } catch (_) { /* the original error is the one that matters */ }
@@ -149,6 +176,8 @@ async function rejectLink(loginId, actorId) {
      RETURNING *`,
     [login, actorId || null],
   );
+  // A rejection can undo an earlier confirm, so the files must stop being theirs.
+  await reattribute('a reject');
   return rows[0];
 }
 
@@ -161,6 +190,7 @@ async function unlink(loginId) {
   const login = String(loginId || '').trim();
   if (!login) throw refuse(400, 'Which Encompass user? None was named.');
   const { rowCount } = await db.query('DELETE FROM lt_staff_links WHERE encompass_login_id = $1', [login]);
+  await reattribute('an unlink');
   return { removed: rowCount || 0 };
 }
 
