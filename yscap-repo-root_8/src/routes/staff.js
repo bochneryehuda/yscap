@@ -5414,6 +5414,11 @@ function emailRowShape(r) {
     status: r.status,
     error: r.error,
     attachments: Array.isArray(r.attachments) ? r.attachments : [],
+    // WHAT THIS EMAIL COULD NOT CARRY (db/548). On the SHARED shaper deliberately, so the file's
+    // own Email Center and the global mailbox both surface it from one definition — "which emails
+    // went out short, and why" has to be answerable on a screen, not only in SQL.
+    omitted: Array.isArray(r.omitted) ? r.omitted : [],
+    attach_summary: r.attach_summary || null,
     meta: r.meta || null,
     reconstructed: r.reconstructed,
     has_body: r.has_body,
@@ -5609,7 +5614,7 @@ router.get('/applications/:id/emails', async (req, res) => {
     const r = await db.query(
       `SELECT em.id, em.direction, em.msg_type, em.category, em.subject, em.preview,
               em.from_email, em.from_name, em.to_emails, em.reply_to, em.recipient_kind,
-              em.audience, em.status, em.error, em.attachments, em.meta, em.reconstructed,
+              em.audience, em.status, em.error, em.attachments, em.omitted, em.attach_summary, em.meta, em.reconstructed,
               (em.body_html IS NOT NULL) AS has_body, em.thread_key, em.occurred_at, em.application_id,
               eo.first_opened_at AS opened_at, eo.open_count,
               COALESCE(su.full_name,
@@ -7617,7 +7622,7 @@ router.get('/emails', async (req, res) => {
     const r = await db.query(
       `SELECT em.id, em.direction, em.msg_type, em.category, em.subject, em.preview,
               em.from_email, em.from_name, em.to_emails, em.reply_to, em.recipient_kind,
-              em.audience, em.status, em.error, em.attachments, em.meta, em.reconstructed,
+              em.audience, em.status, em.error, em.attachments, em.omitted, em.attach_summary, em.meta, em.reconstructed,
               (em.body_html IS NOT NULL) AS has_body, em.thread_key, em.occurred_at, em.application_id,
               eo.first_opened_at AS opened_at, eo.open_count,
               a.ys_loan_number, a.property_address, b.first_name AS b_first, b.last_name AS b_last,

@@ -141,9 +141,16 @@ async function imagesIn(buf) {
   const rd = await C.compressPdf(many, { level: 5, deadlineMs: 1 });
   const elapsed = Date.now() - t0;
   ok(`an exhausted deadline returns promptly (${elapsed}ms for 4 photos)`, elapsed < 6000);
-  ok(`and says so rather than pretending it finished (partial=${rd.partial}, resized=${rd.images.resized}/4)`,
-    rd.partial === true && rd.images.resized < 4);
+  ok(`and says so rather than pretending it finished (partial=${rd.partial})`, rd.partial === true);
   ok('what it DID manage is still returned, not thrown away', rd.changed && rd.after < rd.before);
+
+  // THE WORK CAP IS THE DETERMINISTIC HALF. A wall-clock deadline cannot prove that work was
+  // ABANDONED — how many photos fit inside the one-second floor depends on the machine, and this
+  // assertion was flaky for exactly that reason. The image cap bounds the same behaviour with no
+  // clock in it: exactly two of the four are done, and the bound is reported rather than silent.
+  const rCap = await C.compressPdf(many, { level: 5, maxImages: 2, deadlineMs: 60000 });
+  ok(`a work cap stops at the cap (${rCap.images.resized} of 4 resized)`, rCap.images.resized === 2);
+  ok('and reports that it did — a bound that is not reported is a silent cap', rCap.partial === true);
 
   // The same document with a real deadline finishes the job — the control proving the case above is
   // the bound biting, not a document that could never have been compressed.
