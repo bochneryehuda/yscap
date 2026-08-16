@@ -288,6 +288,13 @@ function offline() {
   ok(lp.hasStoredSearch(skey), 'storeKickoff registers the searchKey');
   ok(lp._internals.DISQ_STORE.get(skey).body.cachedDisqualified === false, 'stored kickoff body carries cachedDisqualified=false');
   ok(!lp.hasStoredSearch('deadbeefdeadbeefdeadbeefdeadbeef'), 'an unknown searchKey is not stored (poll returns unknown → tells caller to re-run /price)');
+  // the kickoff response carries results.baseSearch.requestId — the poll MUST echo it (the missing
+  // link that made the poll never find the async result).
+  ok(lp._internals.requestIdOf({ results: { baseSearch: { requestId: '6a8149b3de295a00071c3632' } } }) === '6a8149b3de295a00071c3632', 'requestIdOf reads results.baseSearch.requestId');
+  ok(lp._internals.requestIdOf({ results: {} }) === null && lp._internals.requestIdOf(null) === null, 'requestIdOf is null-safe when absent');
+  const kb2 = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60, io: true });
+  const skey2 = lp._internals.storeKickoff('https://api.digitallending.com/x', kb2, '6a8149b3de295a00071c3632');
+  ok(lp._internals.DISQ_STORE.get(skey2).requestId === '6a8149b3de295a00071c3632', 'storeKickoff persists the requestId for the poll to echo');
 
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }
