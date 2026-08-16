@@ -46,7 +46,7 @@ const dq = { ready: true, lenderCount: 3, itemCount: 8, reasonCount: 8, lenders:
   const eff = effectiveOf(payload);
   ok(eff.reserves === 'Reserves_24' && eff.addlOccupancyType === 'Long_Term_Rental_Property', 'effectiveScenario shows reserves + rental term');
   ok(eff.location && eff.location.state === 'FL' && eff.location.county === '12086', 'effectiveScenario shows the complete location');
-  ok(eff.cashoutAmount === 50000, 'effectiveScenario shows the transmitted cashoutAmount');
+  ok(eff.cashoutAmount === undefined && eff.cashoutAmountInternal === 50000, '§32.2 effectiveScenario shows cash-out as internal-only (retained, NOT transmitted)');
   ok(eff.attachmentType === 'Detached' && eff.nonWarrantableProject === true, 'effectiveScenario shows the independent attachment + non-warrantable');
   ok(Array.isArray(eff.specialMortgageOptions) && eff.specialMortgageOptions.every((s) => 'id' in s && 'name' in s), 'SMOs are reported as {id,name} identities');
   ok(unsupportedFields({ attachment: 'Detached', nonWarrantable: true, purpose: 'Purchase' }).length === 0, 'attachment + nonWarrantable are supported fields');

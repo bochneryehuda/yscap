@@ -90,9 +90,13 @@ ok(supplied.criteria.dscr === 1.25, 'REAPPLY-5 supplied dscr wins (never the sta
 ok(supplied.criteria.subordinateLoanAmount === 0 && supplied.criteria.rehabBudget === 0,
   'REAPPLY-6 unwired per-deal amounts stay neutral even on a full scenario');
 
-// ---- 5) a supplied cash-out amount still transmits (neutral is DELETE, not a block) ----
+// ---- 5) a supplied cash-out amount clears the stale foundation value and is retained INTERNALLY ----
+// §32.2 — the cash-out amount is NEVER transmitted as criteria.cashoutAmount (fail-closed); the stale
+// foundation value (55555) is cleared to neutral (DELETE) and the supplied value is retained on the
+// internal Symbol channel, not re-applied to criteria.
 const cashout = sm.buildSearch({ purpose: 'CashOut', value: 500000, loan: 300000, cashoutAmount: 47321 }, { base: dirtyBase() });
-ok(cashout.criteria.cashoutAmount === 47321, 'REAPPLY-7 a supplied cashoutAmount is re-applied after the clear (stale 55555 gone, real value kept)');
+ok(cashout.criteria.cashoutAmount === undefined && cashout[sm.CASHOUT_INTERNAL] === 47321,
+  'REAPPLY-7 the stale 55555 is cleared; a supplied cashoutAmount is retained INTERNALLY, never transmitted (§32.2)');
 
 // ---- 6) the clear runs on a CLONE — the caller's base object is never mutated ----
 const base = dirtyBase();

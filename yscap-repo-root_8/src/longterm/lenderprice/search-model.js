@@ -19,6 +19,11 @@ const registry = require('./field-registry');
 // are skipped by JSON.stringify, so attaching this to the built payload never pollutes the body
 // posted upstream; the route reads it to 422 an invalid value rather than silently ignoring it.
 const REGISTRY_WARNINGS = Symbol.for('lp.registryWarnings');
+// §32.2 — internal retention channel for the cash-out amount. Symbol-keyed (skipped by
+// JSON.stringify) so the value is retained on the built payload for diagnostics/storage but is NEVER
+// transmitted upstream. The live cash-out capture carried no legitimate vendor field, so we must not
+// invent or transmit one; the route surfaces this in effectiveScenario as an internal-only value.
+const CASHOUT_INTERNAL = Symbol.for('lp.cashoutInternal');
 
 // SMO ids observed in real captures. The DSCR pair selects the DSCR product; it is always sent.
 // These are FALLBACKS: when a live /pricing/smo registry is passed via opts.smo, the current
@@ -269,18 +274,21 @@ const SCENARIO_OWNED = [
   // base default (0), so a stale non-zero from a prior session is reset and no value the engine has
   // not already accepted is ever introduced. A real value would only reach these through a wired
   // caller field (none today), so on every current DSCR scenario they are correctly 0.
-  // FOOTGUN: unlike cashoutAmount (re-applied in buildSearch when supplied), these have NO re-apply
-  // path — so if you ever add a caller field for one, you MUST add its re-apply AFTER this clear runs,
-  // or the caller's value will be silently zeroed.
+  // FOOTGUN: these have NO re-apply path — so if you ever add a caller field for one, you MUST add its
+  // re-apply AFTER this clear runs, or the caller's value will be silently zeroed. (Contrast dscr /
+  // ltv / fico, which ARE re-applied to criteria; and cashoutAmount, whose supplied value is retained
+  // on the internal Symbol channel and NEVER transmitted per §32.2 — not re-applied to criteria.)
   { path: 'criteria.subordinateLoanAmount', neutral: 0, why: 'second-lien amount — audit §31.6 leak example' },
   { path: 'criteria.lineAmount',            neutral: 0, why: 'line-of-credit amount' },
   { path: 'criteria.rehabBudget',           neutral: 0, why: 'rehab budget' },
   { path: 'criteria.drawAmount',            neutral: 0, why: 'construction draw amount' },
   { path: 'criteria.downPaymentAmount',     neutral: 0, why: 'down-payment amount' },
-  // Cash-out "cash in hand": buildSearch adds it ONLY on a cash-out that supplies it, so its neutral
-  // is ABSENT (delete the key), never a null — a non-cash-out scenario must carry no cashoutAmount at
-  // all, and a stale one inherited from the foundation is removed.
-  { path: 'criteria.cashoutAmount', neutral: DELETE, why: 'cash-out amount; absent unless the caller supplies it' },
+  // Cash-out "cash in hand" — §32.2 FAIL-CLOSED. Neutral is ABSENT (delete the key): the amount is
+  // NEVER transmitted as a criteria field (the live capture carried no legitimate vendor field), so
+  // criteria.cashoutAmount must always be absent — cleared here and never re-applied. A supplied value
+  // is retained on the internal Symbol channel (buildSearch), and a stale one inherited from the
+  // foundation is removed here.
+  { path: 'criteria.cashoutAmount', neutral: DELETE, why: 'cash-out amount; §32.2 never transmitted, always cleared' },
   // §32.3 DSCR band token — a DYNAMIC property derived from the per-deal DSCR (dscrBand). It is
   // scenario-owned exactly like criteria.dscr, so a live foundation's stale DSCRRATIO must not leak
   // when this scenario omits dscr. Neutral is ABSENT (delete the whole {fieldId,value} object): on
@@ -455,17 +463,22 @@ function buildSearch(sc = {}, opts = {}) {
     setDyn('PrepayTerm', months === 0 ? 'None' : `${months} Months`);
     setDyn('PrePayment_Plan_Type', months === 0 ? null : 'Standard');
   }
-  // Cash-out amount ("cash in hand"). THE VENDOR FIXED THE FIELD: as of the post-repair capture
-  // (2026-08-16) the live frontend now sends a NUMERIC `criteria.cashoutAmount` (its request was
-  // `{criteria:{loanPurpose:'CashoutRefinance', cashoutAmount:50000}}`, HTTP 200). So we transmit it
-  // as a real criteria field — the previous "store but do not transmit / wait for a dynamic-property
-  // code" behavior is now OUTDATED and retired. LP_CASHOUT_AMOUNT_FIELD remains only as an optional
-  // override in case the vendor ever moves it back to a dynamic property.
+  // Cash-out amount ("cash in hand") — §32.2 FAIL-CLOSED. A clean live cash-out capture (2026-08-16)
+  // sent `criteria.loanPurpose="CashoutRefinance"` but its JSON contained NEITHER the numeric value
+  // (50000) NOR `criteria.cashoutAmount`; it carried only a frontend BUG,
+  // `dynamicPropertiesMap.undefined = { value: null }`. This SUPERSEDES the earlier "the vendor fixed
+  // the field" finding (§31.4) — in the live path the field is NOT fixed. So per the audit: retain the
+  // amount INTERNALLY but do NOT transmit it and do NOT invent a vendor key. We store it on a
+  // Symbol-keyed property (skipped by JSON.stringify, exactly like REGISTRY_WARNINGS), so it is
+  // available for diagnostics/storage but never reaches upstream — `criteria.cashoutAmount` stays
+  // CLEARED (SCENARIO_OWNED DELETE-neutral). LP_CASHOUT_AMOUNT_FIELD remains the DELIBERATE operator
+  // escape hatch: set it ONLY once a NEW live capture confirms a legitimate cash-out field, and it is
+  // then transmitted as that exact dynamic property. Unset (the default) → nothing is transmitted.
   const cashoutAmt = num(sc.cashoutAmount);
   if (cashoutAmt != null) {
-    c.cashoutAmount = cashoutAmt;
-    const cashoutField = process.env.LP_CASHOUT_AMOUNT_FIELD;
-    if (cashoutField) setDyn(cashoutField, cashoutAmt); // optional legacy dynamic-property override
+    m[CASHOUT_INTERNAL] = cashoutAmt;                    // retained internally, NEVER serialized upstream
+    const cashoutField = process.env.LP_CASHOUT_AMOUNT_FIELD; // set ONLY when a capture confirms the field
+    if (cashoutField) setDyn(cashoutField, cashoutAmt);
   }
   m.dynaToSmo = true;
 
@@ -680,5 +693,5 @@ function validateScenario(sc = {}) {
   return { ok: true, request };
 }
 
-module.exports = { BASE, buildSearch, clearScenarioOwnedFields, smoRegistryFromList, REGISTRY_WARNINGS, validateScenario, validateLocation, validateInputs, LpValidationError,
+module.exports = { BASE, buildSearch, clearScenarioOwnedFields, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
   _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE } };

@@ -14,7 +14,7 @@
 const express = require('express');
 const lp = require('../lenderprice/client');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
-const { REGISTRY_WARNINGS, validateScenario } = require('../lenderprice/search-model');
+const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario } = require('../lenderprice/search-model');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
 const BATTERY = [
@@ -65,7 +65,13 @@ function effectiveOf(payload) {
   const a = p.address || {};
   return {
     loanPurpose: c.loanPurpose, purchasePrice: c.purchasePrice, appraisedValue: c.appraisedValue,
-    cashoutAmount: c.cashoutAmount, // the vendor-fixed numeric criteria field (audit) — shown so a caller can verify it was sent
+    // §32.2 — cash-out amount is FAIL-CLOSED: the live capture carried no legitimate vendor field, so
+    // it is retained internally but NOT transmitted. `cashoutAmount` (the transmitted criteria field)
+    // is normally ABSENT (present only if an operator configured a confirmed dynamic field via
+    // LP_CASHOUT_AMOUNT_FIELD); `cashoutAmountInternal` is the received value we deliberately did not
+    // price, shown for transparency.
+    cashoutAmount: c.cashoutAmount,
+    cashoutAmountInternal: payload[CASHOUT_INTERNAL] != null ? payload[CASHOUT_INTERNAL] : undefined,
     loanAmount: c.loanAmount, ltv: c.ltv, fico: c.fico, dscr: c.dscr,
     // §32.3 — the derived DSCR band token actually transmitted (dynamicPropertiesMap.DSCRRATIO), so a
     // caller can confirm the reviewed threshold table was applied to the entered DSCR.
