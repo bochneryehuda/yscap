@@ -4411,12 +4411,43 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   display:inline-flex;align-items:baseline;gap:8px;overflow-wrap:anywhere}
 .tr-led-toggle:hover{color:var(--primary-hover)}
 .tr-led-caret{color:var(--primary);font-size:11px;flex:0 0 auto}
-.tr-led-tags{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;flex:0 0 auto}
+/* `flex:0 1 auto` + `min-width:0`, NOT `0 0 auto` — a tag row that refuses to
+   shrink never reaches its own `flex-wrap`, so on a phone the chips ran straight
+   off the card and took the VERIFIED badge and the Open button with them, out of
+   reach (the page-level `overflow-x:clip` hides the overflow rather than letting
+   you scroll to it, so it read as "the button is gone"). Found by rendering this
+   row at iPhone-12 width against the real stylesheet, not by eye. */
+.tr-led-tags{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;flex:0 1 auto;min-width:0}
 .tr-led-figs{font-size:12.5px;color:#4B585C;padding-left:18px;margin-top:3px;font-variant-numeric:tabular-nums}
 .tr-led-reo{font-size:12.5px;color:#8A6D3B;padding-left:18px;margin-top:2px}
 .tr-led-todo{font-size:12.5px;color:#4B585C;padding-left:18px;margin-top:2px}
 .tr-led-body{margin-top:10px}
-@media(max-width:720px){ .tr-led-toggle{flex-basis:100%} }
+/* On a phone the address takes the whole first line and the chips take the
+   whole second one, so Open is always reachable however many chips a line has. */
+@media(max-width:720px){ .tr-led-toggle{flex-basis:100%} .tr-led-tags{flex-basis:100%} }
+
+/* ---- Property type on a track-record line (owner-directed 2026-08-16) ----
+   A CLASSIFICATION chip, deliberately quieter than the status badges beside it:
+   a teal dot and a tinted ground, no border colour that competes with the
+   verified/pending pills a reviewer is actually scanning for.
+
+   `text-transform:none` is the load-bearing line. The base `.pill` capitalises,
+   which would render the governed spellings as "Single-Family", "Self Storage"
+   and "5+ Unit Multifamily" — three labels that then do not match the value in
+   the picker, the tool, the Excel export or the note buyer's CSV. The whole
+   point of one vocabulary is that the same string appears everywhere.
+
+   Colours are explicit darks on white per the standing rule — never an --ink*
+   token, every one of which is a LIGHT paper colour in this palette. */
+.tr-pt{text-transform:none;color:#1F5A60;border-color:rgba(47,127,134,.34);
+  background:rgba(47,127,134,.07)}
+.tr-pt::before{content:"";width:6px;height:6px;border-radius:50%;
+  background:#2F7F86;flex:0 0 auto}
+/* Nothing stated yet — a nudge, not a fault. Gold rather than red: an untyped
+   line is incomplete, not wrong, and it still counts toward experience. */
+.tr-pt.is-empty{color:#7A5B21;border-color:rgba(174,135,70,.38);
+  background:rgba(174,135,70,.08);font-weight:600}
+.tr-pt.is-empty::before{background:#AE8746}
 
 /* ---- Borrower draw notes (blocking reasons / next steps) ----
    Two blocks were hand-drawing the same bullet with inline styles; one class, two tones. */
