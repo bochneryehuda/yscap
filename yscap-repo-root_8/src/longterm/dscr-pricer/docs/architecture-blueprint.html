@@ -1,0 +1,603 @@
+<title>DSCR Pricer Blueprint</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --paper:#F4F6F9; --surface:#FFFFFF; --surface-2:#EDF1F6;
+    --ink:#141B26; --muted:#59636F; --line:#DCE1E8;
+    --accent:#2B54F0; --accent-soft:rgba(43,84,240,.10);
+    --ok:#0E9E6E; --ok-soft:rgba(14,158,110,.12);
+    --warn:#B5791A; --warn-soft:rgba(181,121,26,.13);
+    --risk:#CE3F34; --risk-soft:rgba(206,63,52,.12);
+    --maxw:1080px; --measure:66ch;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#0D1119; --surface:#141A24; --surface-2:#1B2330;
+      --ink:#E9EDF3; --muted:#98A3B3; --line:#263041;
+      --accent:#6E8CFF; --accent-soft:rgba(110,140,255,.14);
+      --ok:#34C08C; --ok-soft:rgba(52,192,140,.15);
+      --warn:#E0A94A; --warn-soft:rgba(224,169,74,.15);
+      --risk:#F0685C; --risk-soft:rgba(240,104,92,.15);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#0D1119; --surface:#141A24; --surface-2:#1B2330;
+    --ink:#E9EDF3; --muted:#98A3B3; --line:#263041;
+    --accent:#6E8CFF; --accent-soft:rgba(110,140,255,.14);
+    --ok:#34C08C; --ok-soft:rgba(52,192,140,.15);
+    --warn:#E0A94A; --warn-soft:rgba(224,169,74,.15);
+    --risk:#F0685C; --risk-soft:rgba(240,104,92,.15);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:var(--sans); font-size:16.5px; line-height:1.62;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 24px}
+  /* ---- top bar ---- */
+  header.top{
+    position:sticky; top:0; z-index:20; background:color-mix(in srgb,var(--paper) 88%, transparent);
+    backdrop-filter:blur(8px); border-bottom:1px solid var(--line);
+  }
+  .top .wrap{display:flex; align-items:center; gap:18px; height:54px}
+  .brand{font-weight:680; letter-spacing:-.01em; font-size:15px; white-space:nowrap}
+  .brand .dot{color:var(--accent)}
+  nav.toc{display:flex; gap:4px; flex-wrap:wrap; margin-left:auto}
+  nav.toc a{
+    font-size:12.5px; color:var(--muted); text-decoration:none; padding:5px 9px;
+    border-radius:7px; white-space:nowrap;
+  }
+  nav.toc a:hover{color:var(--ink); background:var(--surface-2)}
+  /* ---- hero ---- */
+  .hero{padding:60px 0 34px; border-bottom:1px solid var(--line)}
+  .eyebrow{
+    font-family:var(--mono); font-size:12px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--accent); margin:0 0 16px;
+  }
+  h1{
+    font-size:clamp(32px,5.4vw,52px); line-height:1.04; letter-spacing:-.028em;
+    margin:0 0 20px; text-wrap:balance; font-weight:720;
+  }
+  .lede{font-size:clamp(17px,2.3vw,20px); color:var(--muted); max-width:60ch; margin:0}
+  .metastrip{display:flex; flex-wrap:wrap; gap:10px; margin-top:26px}
+  .chip{
+    font-family:var(--mono); font-size:12px; padding:6px 11px; border:1px solid var(--line);
+    border-radius:999px; color:var(--muted); background:var(--surface); white-space:nowrap;
+  }
+  .chip b{color:var(--ink); font-weight:600}
+  /* ---- sections ---- */
+  section{padding:52px 0; border-bottom:1px solid var(--line)}
+  section:last-of-type{border-bottom:0}
+  .kicker{
+    font-family:var(--mono); font-size:12px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--muted); display:flex; align-items:center; gap:10px; margin:0 0 14px;
+  }
+  .kicker .n{color:var(--accent); font-weight:600}
+  h2{font-size:clamp(24px,3.4vw,32px); letter-spacing:-.02em; margin:0 0 8px; text-wrap:balance; font-weight:680}
+  h3{font-size:19px; letter-spacing:-.01em; margin:30px 0 6px; font-weight:640}
+  p{max-width:var(--measure)}
+  .muted{color:var(--muted)}
+  section p{margin:0 0 14px}
+  a.link{color:var(--accent); text-decoration:none; border-bottom:1px solid var(--accent-soft)}
+  a.link:hover{border-bottom-color:var(--accent)}
+  strong{font-weight:640}
+  code{font-family:var(--mono); font-size:.86em; background:var(--surface-2); padding:1.5px 6px; border-radius:5px; word-break:break-word}
+  ul,ol{max-width:var(--measure); padding-left:20px}
+  li{margin:7px 0}
+  li::marker{color:var(--muted)}
+  /* ---- cards / grid ---- */
+  .grid{display:grid; gap:16px; margin:22px 0}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  @media(max-width:760px){.g2,.g3{grid-template-columns:1fr}}
+  .card{
+    background:var(--surface); border:1px solid var(--line); border-radius:13px; padding:20px 20px;
+  }
+  .card h4{margin:0 0 6px; font-size:15.5px; font-weight:640; letter-spacing:-.01em; display:flex; align-items:center; gap:9px}
+  .card p{font-size:14.5px; color:var(--muted); margin:0; max-width:none}
+  .card .ic{width:26px;height:26px;flex:0 0 26px;border-radius:7px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent);font-family:var(--mono);font-size:13px;font-weight:700}
+  /* ---- callouts ---- */
+  .callout{border-radius:12px; padding:16px 18px; margin:22px 0; border:1px solid var(--line); background:var(--surface); display:flex; gap:14px}
+  .callout .tag{font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; font-weight:700; padding:3px 8px; border-radius:6px; height:fit-content; white-space:nowrap}
+  .callout p{margin:0; font-size:14.5px; max-width:none}
+  .callout p+p{margin-top:8px}
+  .co-risk{background:var(--risk-soft); border-color:color-mix(in srgb,var(--risk) 32%, var(--line))}
+  .co-risk .tag{background:var(--risk); color:#fff}
+  .co-warn{background:var(--warn-soft); border-color:color-mix(in srgb,var(--warn) 30%, var(--line))}
+  .co-warn .tag{background:var(--warn); color:#fff}
+  .co-ok{background:var(--ok-soft); border-color:color-mix(in srgb,var(--ok) 30%, var(--line))}
+  .co-ok .tag{background:var(--ok); color:#fff}
+  /* ---- figures ---- */
+  figure{margin:26px 0; background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:22px 20px 14px; overflow-x:auto}
+  figure svg{display:block; max-width:100%; height:auto; margin:0 auto; color:var(--ink)}
+  figcaption{color:var(--muted); font-size:13px; margin-top:12px; text-align:center; max-width:70ch; margin-left:auto; margin-right:auto}
+  /* ---- tables ---- */
+  .tablewrap{overflow-x:auto; margin:22px 0; border:1px solid var(--line); border-radius:13px; background:var(--surface)}
+  table{border-collapse:collapse; width:100%; font-size:14px; min-width:560px}
+  th,td{text-align:left; padding:12px 15px; border-bottom:1px solid var(--line); vertical-align:top}
+  thead th{font-size:11.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); font-weight:600; background:var(--surface-2)}
+  tbody tr:last-child td{border-bottom:0}
+  td.mono,th.mono{font-family:var(--mono); font-variant-numeric:tabular-nums}
+  .yes{color:var(--ok); font-weight:640}
+  .no{color:var(--risk); font-weight:640}
+  .rec{display:inline-block; font-family:var(--mono); font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--accent); border:1px solid var(--accent); border-radius:5px; padding:1px 6px; margin-left:8px; vertical-align:middle}
+  /* ---- phase list ---- */
+  .phase{display:flex; gap:16px; padding:16px 0; border-bottom:1px dashed var(--line)}
+  .phase:last-child{border-bottom:0}
+  .phase .num{font-family:var(--mono); font-size:13px; font-weight:700; color:var(--accent); flex:0 0 34px; padding-top:2px}
+  .phase h4{margin:0 0 3px; font-size:16px; font-weight:640}
+  .phase p{margin:0; font-size:14.5px; color:var(--muted); max-width:none}
+  .steplabel{font-family:var(--mono); font-size:12px; color:var(--muted)}
+  /* ---- footnote ---- */
+  footer{padding:40px 0 70px; color:var(--muted); font-size:13.5px}
+  footer .wrap{max-width:var(--maxw)}
+  .hr-space{height:2px}
+  ::selection{background:var(--accent-soft)}
+  :focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:4px}
+  @media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <span class="brand">DSCR Pricer <span class="dot">·</span> Blueprint</span>
+    <nav class="toc">
+      <a href="#proof">Evidence</a>
+      <a href="#sessions">Sessions</a>
+      <a href="#arch">Architecture</a>
+      <a href="#flow">Flow</a>
+      <a href="#security">Security</a>
+      <a href="#paths">Approach</a>
+      <a href="#home">Where it lives</a>
+      <a href="#decisions">Your calls</a>
+      <a href="#more">Recordings</a>
+    </nav>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Architecture plan · not yet built</p>
+    <h1>A backend agent that prices DSCR loans through Lender Price — one simple screen for everyone.</h1>
+    <p class="lede">The plan for how our own system logs into Lender Price, turns a short borrower/staff form into a full pricing search, and shows the results back — built so that many people can use it at once without ever bumping each other.</p>
+    <div class="metastrip">
+      <span class="chip"><b>Scope</b> &nbsp;Long-Term DSCR only</span>
+      <span class="chip"><b>Mode</b> &nbsp;view-only pricer · no API</span>
+      <span class="chip"><b>Source</b> &nbsp;~10 searches decoded</span>
+      <span class="chip"><b>Status</b> &nbsp;design — zero code committed</span>
+    </div>
+  </div>
+</div>
+
+<main class="wrap">
+
+  <!-- ============ EVIDENCE ============ -->
+  <section id="proof">
+    <p class="kicker"><span class="n">01</span> What the recording already proved</p>
+    <h2>The whole loop is reachable, end to end</h2>
+    <p>Before designing anything, we confirmed the capture actually contains everything the loop needs. It does. From your single recorded login-and-price, we decoded three moving parts — and replayed the pricing math against the real captured data to be sure the numbers come out identical.</p>
+
+    <div class="grid g3">
+      <div class="card">
+        <h4><span class="ic">1</span> Log&nbsp;in</h4>
+        <p>A standard OAuth2 password login to <code>auth.digitallending.com/oauth/token</code> returns a 1-hour bearer token plus the company and user IDs. Nothing exotic.</p>
+      </div>
+      <div class="card">
+        <h4><span class="ic">2</span> Price</h4>
+        <p>One <code>POST …/pricing/searchRaw</code> with the loan scenario returns the full investor rate stack — authenticated only by the bearer token.</p>
+      </div>
+      <div class="card">
+        <h4><span class="ic">3</span> Read</h4>
+        <p>The 6.7&nbsp;MB response is a nested tree. We can flatten it to a clean, human list of quotes — lender, program, rate, APR, points, monthly payment.</p>
+      </div>
+    </div>
+
+    <p>That one search returned a complete DSCR market:</p>
+    <div class="metastrip">
+      <span class="chip"><b>424</b> &nbsp;priced products</span>
+      <span class="chip"><b>8</b> &nbsp;investors</span>
+      <span class="chip"><b>12</b> &nbsp;DSCR programs</span>
+      <span class="chip"><b>5.875%</b> &nbsp;best rate</span>
+      <span class="chip"><b>6.203%</b> &nbsp;best APR</span>
+    </div>
+    <div class="callout co-ok">
+      <span class="tag">Verdict</span>
+      <p><strong>Feasible, with high confidence.</strong> The login, the pricing request, and the result format are all understood well enough to build against. The rest of this document is about building it <em>correctly</em> — so it is secure, and so it never breaks when several people use it together.</p>
+    </div>
+  </section>
+
+  <!-- ============ SESSIONS ============ -->
+  <section id="sessions">
+    <p class="kicker"><span class="n">02</span> The question you raised first — sessions &amp; concurrency</p>
+    <h2>Nobody gets bumped, because nobody logs in on demand</h2>
+    <p>Your instinct is exactly right, and it is the single most important design decision. The naive way to build this — have the system log into Lender Price fresh every time someone opens the form — is precisely what causes people to knock each other offline. The fix is to <strong>separate two different ideas of "session"</strong> that get confused all the time.</p>
+
+    <div class="grid g2">
+      <div class="card">
+        <h4>Their session with <em>us</em></h4>
+        <p>Each borrower or staff member has their own isolated workspace in our app: their own inputs, their own results, their own saved scenarios. Fully private, one per person, as many at once as we like.</p>
+      </div>
+      <div class="card">
+        <h4>Our connection to <em>Lender Price</em></h4>
+        <p>One shared, always-warm login that our backend manages centrally — refreshed quietly before it expires. Users never touch it and never trigger it, so they can't invalidate each other's.</p>
+      </div>
+    </div>
+
+    <figure role="img" aria-label="Two architectures compared. On the left, the broken pattern: three users each trigger their own login to Lender Price with the same shared account, and each new login invalidates the previous one, bumping the earlier users. On the right, the correct pattern: three users hold isolated app sessions in our backend, all served by one token manager that holds a single warm Lender Price token and refreshes it on a timer, so no user login ever reaches Lender Price.">
+      <svg viewBox="0 0 900 430" font-family="system-ui,sans-serif">
+        <defs>
+          <marker id="ah" markerWidth="9" markerHeight="9" refX="7.5" refY="4.2" orient="auto"><path d="M0,0 L8,4.2 L0,8.4 Z" fill="currentColor"/></marker>
+          <marker id="ahr" markerWidth="9" markerHeight="9" refX="7.5" refY="4.2" orient="auto"><path d="M0,0 L8,4.2 L0,8.4 Z" fill="#CE3F34"/></marker>
+          <marker id="aha" markerWidth="9" markerHeight="9" refX="7.5" refY="4.2" orient="auto"><path d="M0,0 L8,4.2 L0,8.4 Z" fill="#2B54F0"/></marker>
+        </defs>
+
+        <!-- divider -->
+        <line x1="450" y1="20" x2="450" y2="410" stroke="currentColor" stroke-opacity=".18" stroke-dasharray="4 6"/>
+
+        <!-- ===== LEFT: broken ===== -->
+        <text x="30" y="34" font-size="13" font-weight="700" fill="#CE3F34">✕ &nbsp;LOGIN PER USER — they bump each other</text>
+        <!-- users -->
+        <g font-size="12" text-anchor="middle">
+          <rect x="26" y="60" width="92" height="34" rx="7" fill="none" stroke="currentColor" stroke-opacity=".5"/><text x="72" y="82">User A</text>
+          <rect x="26" y="120" width="92" height="34" rx="7" fill="none" stroke="currentColor" stroke-opacity=".5"/><text x="72" y="142">User B</text>
+          <rect x="26" y="180" width="92" height="34" rx="7" fill="none" stroke="currentColor" stroke-opacity=".5"/><text x="72" y="202">User C</text>
+        </g>
+        <!-- each logs in -->
+        <line x1="120" y1="77" x2="250" y2="120" stroke="#CE3F34" stroke-width="1.6" marker-end="url(#ahr)"/>
+        <line x1="120" y1="137" x2="250" y2="137" stroke="#CE3F34" stroke-width="1.6" marker-end="url(#ahr)"/>
+        <line x1="120" y1="197" x2="250" y2="154" stroke="#CE3F34" stroke-width="1.6" marker-end="url(#ahr)"/>
+        <text x="150" y="100" font-size="10.5" fill="#CE3F34">login</text>
+        <!-- LP account -->
+        <rect x="252" y="104" width="150" height="66" rx="9" fill="none" stroke="#CE3F34" stroke-width="1.4"/>
+        <text x="327" y="130" font-size="12" font-weight="600" text-anchor="middle" fill="currentColor">Lender Price</text>
+        <text x="327" y="149" font-size="11" text-anchor="middle" fill="currentColor" opacity=".8">one account</text>
+        <text x="327" y="196" font-size="10.5" text-anchor="middle" fill="#CE3F34">each new login kills the last token</text>
+        <!-- bump icons -->
+        <text x="235" y="123" font-size="15" fill="#CE3F34">⚡</text>
+
+        <!-- ===== RIGHT: correct ===== -->
+        <text x="470" y="34" font-size="13" font-weight="700" fill="#0E9E6E">✓ &nbsp;MANAGED TOKEN — isolated, never bumped</text>
+        <!-- users -->
+        <g font-size="12" text-anchor="middle">
+          <rect x="466" y="60" width="92" height="34" rx="7" fill="none" stroke="currentColor" stroke-opacity=".5"/><text x="512" y="82">User A</text>
+          <rect x="466" y="120" width="92" height="34" rx="7" fill="none" stroke="currentColor" stroke-opacity=".5"/><text x="512" y="142">User B</text>
+          <rect x="466" y="180" width="92" height="34" rx="7" fill="none" stroke="currentColor" stroke-opacity=".5"/><text x="512" y="202">User C</text>
+        </g>
+        <!-- isolated app sessions to our backend -->
+        <line x1="560" y1="77" x2="612" y2="120" stroke="currentColor" stroke-width="1.4" marker-end="url(#ah)"/>
+        <line x1="560" y1="137" x2="612" y2="137" stroke="currentColor" stroke-width="1.4" marker-end="url(#ah)"/>
+        <line x1="560" y1="197" x2="612" y2="154" stroke="currentColor" stroke-width="1.4" marker-end="url(#ah)"/>
+        <!-- our backend -->
+        <rect x="614" y="96" width="126" height="82" rx="9" fill="var(--accent-soft)" stroke="#2B54F0" stroke-width="1.4"/>
+        <text x="677" y="123" font-size="12" font-weight="600" text-anchor="middle" fill="currentColor">Our backend</text>
+        <text x="677" y="141" font-size="10.5" text-anchor="middle" fill="currentColor" opacity=".85">isolated session</text>
+        <text x="677" y="156" font-size="10.5" text-anchor="middle" fill="currentColor" opacity=".85">per user</text>
+        <!-- token manager -->
+        <rect x="620" y="250" width="150" height="60" rx="9" fill="none" stroke="#2B54F0" stroke-width="1.4"/>
+        <text x="695" y="275" font-size="11.5" font-weight="600" text-anchor="middle" fill="currentColor">Token manager</text>
+        <text x="695" y="293" font-size="10.5" text-anchor="middle" fill="currentColor" opacity=".8">1 warm token</text>
+        <line x1="677" y1="178" x2="690" y2="248" stroke="#2B54F0" stroke-width="1.4" marker-end="url(#aha)"/>
+        <text x="700" y="220" font-size="10.5" fill="#2B54F0">reuses</text>
+        <!-- LP -->
+        <rect x="790" y="252" width="86" height="56" rx="9" fill="none" stroke="currentColor" stroke-opacity=".55"/>
+        <text x="833" y="277" font-size="11" font-weight="600" text-anchor="middle" fill="currentColor">Lender</text>
+        <text x="833" y="292" font-size="11" font-weight="600" text-anchor="middle" fill="currentColor">Price</text>
+        <line x1="770" y1="280" x2="788" y2="280" stroke="#2B54F0" stroke-width="1.4" marker-end="url(#aha)"/>
+        <!-- refresh loop -->
+        <path d="M645 250 q-34 -18 -14 -44" fill="none" stroke="#2B54F0" stroke-width="1.3" marker-end="url(#aha)" stroke-dasharray="3 3"/>
+        <text x="560" y="235" font-size="10" fill="#2B54F0">refresh on timer</text>
+      </svg>
+      <figcaption>The only difference that matters: on the right, a user's login stops at <em>our</em> door. One token manager holds a single Lender Price session and refreshes it on a timer, so concurrent users share it instead of fighting over it.</figcaption>
+    </figure>
+
+    <p>This works because two facts held true in the recording: the pricing call is <strong>stateless</strong> — each search is independent and saved under its own ID, so parallel searches don't collide — and the login carried <strong>no single-session lock</strong> (<code>limitOneSessionPerLoanApp: false</code>). One warm token can safely serve every concurrent pricing request.</p>
+
+    <div class="callout co-warn">
+      <span class="tag">If we're wrong</span>
+      <p>If Lender Price turns out to enforce one active token per account under load, the same design absorbs it with no rewrite: run a <strong>small pool</strong> of service logins behind the token manager, and hand each pricing request the next free one. Users still never log in themselves. This is a config change, not a redesign — which is the point of putting a manager in the middle.</p>
+    </div>
+  </section>
+
+  <!-- ============ ARCHITECTURE ============ -->
+  <section id="arch">
+    <p class="kicker"><span class="n">03</span> The backend, and the wall around the credentials</p>
+    <h2>One service in the middle, credentials behind a wall</h2>
+    <p>The frontend never talks to Lender Price directly, and never sees the Lender Price password or token. Everything goes through our own small backend service — the "agent." That wall is what makes it secure: a borrower's browser only ever holds a short-lived ticket to <em>our</em> system, never anything that could log into Lender Price.</p>
+
+    <figure role="img" aria-label="Layered architecture. The frontend (borrower or staff simple form) sits above a trust boundary. Below the boundary is our backend agent, containing four parts: an auth guard for our own users, a field-mapping and enrichment layer, a token manager holding the Lender Price credential, and a results parser. The token manager alone crosses out to the Lender Price API. The Lender Price password lives only in a secrets vault attached to the token manager.">
+      <svg viewBox="0 0 860 470" font-family="system-ui,sans-serif">
+        <defs>
+          <marker id="a2" markerWidth="9" markerHeight="9" refX="7.5" refY="4.2" orient="auto"><path d="M0,0 L8,4.2 L0,8.4 Z" fill="currentColor"/></marker>
+          <marker id="a2a" markerWidth="9" markerHeight="9" refX="7.5" refY="4.2" orient="auto"><path d="M0,0 L8,4.2 L0,8.4 Z" fill="#2B54F0"/></marker>
+        </defs>
+
+        <!-- Frontend -->
+        <rect x="250" y="20" width="360" height="66" rx="11" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".4"/>
+        <text x="430" y="47" font-size="14" font-weight="700" text-anchor="middle" fill="currentColor">FRONTEND — the simple DSCR screen</text>
+        <text x="430" y="68" font-size="11.5" text-anchor="middle" fill="currentColor" opacity=".75">borrower or staff · short form in, clean quotes out · holds only a ticket to our system</text>
+
+        <!-- trust boundary -->
+        <line x1="40" y1="112" x2="820" y2="112" stroke="#CE3F34" stroke-width="1.5" stroke-dasharray="7 6"/>
+        <text x="44" y="107" font-size="11" font-weight="700" fill="#CE3F34">TRUST BOUNDARY</text>
+        <text x="820" y="107" font-size="10.5" text-anchor="end" fill="#CE3F34">credentials never cross upward</text>
+        <line x1="430" y1="86" x2="430" y2="140" stroke="currentColor" stroke-width="1.5" marker-end="url(#a2)"/>
+        <text x="440" y="104" font-size="10.5" fill="currentColor">HTTPS · our API</text>
+
+        <!-- backend container -->
+        <rect x="40" y="140" width="780" height="210" rx="13" fill="none" stroke="#2B54F0" stroke-width="1.5"/>
+        <text x="60" y="163" font-size="12.5" font-weight="700" fill="#2B54F0">OUR BACKEND AGENT &nbsp;·&nbsp; src/longterm</text>
+
+        <!-- four parts -->
+        <g font-size="12">
+          <rect x="62" y="180" width="170" height="90" rx="9" fill="var(--surface)" stroke="currentColor" stroke-opacity=".4"/>
+          <text x="147" y="206" text-anchor="middle" font-weight="600" fill="currentColor">Auth guard</text>
+          <text x="147" y="226" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".78">checks OUR user,</text>
+          <text x="147" y="241" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".78">opens their</text>
+          <text x="147" y="256" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".78">isolated session</text>
+
+          <rect x="248" y="180" width="180" height="90" rx="9" fill="var(--surface)" stroke="currentColor" stroke-opacity=".4"/>
+          <text x="338" y="206" text-anchor="middle" font-weight="600" fill="currentColor">Map + enrich</text>
+          <text x="338" y="226" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".78">form → full search</text>
+          <text x="338" y="241" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".78">zip → county, AMI,</text>
+          <text x="338" y="256" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".78">loan limits</text>
+
+          <rect x="444" y="180" width="180" height="90" rx="9" fill="var(--accent-soft)" stroke="#2B54F0" stroke-width="1.4"/>
+          <text x="534" y="206" text-anchor="middle" font-weight="600" fill="currentColor">Token manager</text>
+          <text x="534" y="226" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".85">holds LP login,</text>
+          <text x="534" y="241" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".85">refreshes it,</text>
+          <text x="534" y="256" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".85">signs every call</text>
+
+          <rect x="640" y="180" width="160" height="90" rx="9" fill="var(--surface)" stroke="currentColor" stroke-opacity=".4"/>
+          <text x="720" y="206" text-anchor="middle" font-weight="600" fill="currentColor">Results parser</text>
+          <text x="720" y="226" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".78">6.7 MB tree →</text>
+          <text x="720" y="241" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".78">clean quote list</text>
+          <text x="720" y="256" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".78">+ summary</text>
+        </g>
+        <!-- internal flow arrows -->
+        <line x1="232" y1="225" x2="246" y2="225" stroke="currentColor" stroke-width="1.3" marker-end="url(#a2)"/>
+        <line x1="428" y1="225" x2="442" y2="225" stroke="currentColor" stroke-width="1.3" marker-end="url(#a2)"/>
+        <line x1="640" y1="225" x2="626" y2="225" stroke="currentColor" stroke-width="1.3" marker-end="url(#a2)" transform="translate(0,20)"/>
+        <text x="500" y="300" font-size="10.5" text-anchor="middle" fill="currentColor" opacity=".7">parser reads what the token manager fetched</text>
+
+        <!-- secrets vault -->
+        <rect x="444" y="300" width="180" height="34" rx="8" fill="none" stroke="#CE3F34" stroke-width="1.3" stroke-dasharray="4 3"/>
+        <text x="534" y="322" font-size="11" text-anchor="middle" fill="currentColor">🔒 secrets vault · LP password</text>
+
+        <!-- LP external -->
+        <rect x="330" y="392" width="200" height="58" rx="11" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".45"/>
+        <text x="430" y="418" font-size="13" font-weight="700" text-anchor="middle" fill="currentColor">LENDER PRICE API</text>
+        <text x="430" y="437" font-size="10.5" text-anchor="middle" fill="currentColor" opacity=".75">auth.digitallending.com · api.digitallending.com</text>
+        <!-- only token manager crosses out -->
+        <line x1="534" y1="270" x2="534" y2="298" stroke="#2B54F0" stroke-width="1.3" marker-end="url(#a2a)"/>
+        <path d="M534 334 L534 390" fill="none" stroke="#2B54F0" stroke-width="1.6" marker-end="url(#a2a)"/>
+        <text x="544" y="372" font-size="10.5" fill="#2B54F0">only this line leaves our system</text>
+      </svg>
+      <figcaption>Four small parts behind one wall. Only the token manager ever speaks to Lender Price, and the Lender Price password lives only in the secrets vault — never in code, never in the browser, never in a log.</figcaption>
+    </figure>
+  </section>
+
+  <!-- ============ FLOW ============ -->
+  <section id="flow">
+    <p class="kicker"><span class="n">04</span> What happens when someone clicks "Price it"</p>
+    <h2>One request, seven steps, a couple of seconds</h2>
+    <p>This is the actual sequence — the same order the recorded browser used, minus the parts a headless agent doesn't need. Steps 3 and 4 are the small lookups Lender Price runs before pricing; step 5 is the one big call.</p>
+
+    <figure role="img" aria-label="A left-to-right pipeline of seven steps: 1 user submits the short form, 2 our backend validates and opens the isolated session, 3 enrich the zip into county FIPS AMI and loan-limit class, 4 build the full search body from a saved template plus the user's inputs, 5 the token manager POSTs searchRaw to Lender Price with the warm bearer token, 6 the parser flattens the 6.7MB response into clean quotes, 7 the frontend renders the results table.">
+      <svg viewBox="0 0 900 250" font-family="system-ui,sans-serif">
+        <defs><marker id="a3" markerWidth="8" markerHeight="8" refX="6.5" refY="3.8" orient="auto"><path d="M0,0 L7,3.8 L0,7.6 Z" fill="#2B54F0"/></marker></defs>
+        <!-- lanes -->
+        <text x="10" y="30" font-size="10.5" fill="currentColor" opacity=".6">FRONTEND</text>
+        <text x="10" y="118" font-size="10.5" fill="currentColor" opacity=".6">OUR BACKEND</text>
+        <text x="10" y="220" font-size="10.5" fill="currentColor" opacity=".6">LENDER PRICE</text>
+        <line x1="0" y1="150" x2="900" y2="150" stroke="currentColor" stroke-opacity=".12"/>
+        <line x1="0" y1="60" x2="900" y2="60" stroke="currentColor" stroke-opacity=".12"/>
+
+        <g font-size="11.5" text-anchor="middle">
+          <!-- 1 frontend -->
+          <rect x="30" y="14" width="120" height="38" rx="8" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".4"/>
+          <text x="90" y="31" font-weight="600" fill="currentColor">1 · Submit form</text>
+          <text x="90" y="45" font-size="9.5" fill="currentColor" opacity=".7">value, LTV, FICO, DSCR…</text>
+          <!-- 2 backend validate -->
+          <rect x="30" y="92" width="120" height="46" rx="8" fill="var(--surface)" stroke="currentColor" stroke-opacity=".4"/>
+          <text x="90" y="110" font-weight="600" fill="currentColor">2 · Validate</text>
+          <text x="90" y="124" font-size="9.5" fill="currentColor" opacity=".7">open isolated session</text>
+          <!-- 3 enrich -->
+          <rect x="185" y="92" width="120" height="46" rx="8" fill="var(--surface)" stroke="currentColor" stroke-opacity=".4"/>
+          <text x="245" y="110" font-weight="600" fill="currentColor">3 · Enrich zip</text>
+          <text x="245" y="124" font-size="9.5" fill="currentColor" opacity=".7">county · AMI · limits</text>
+          <!-- 4 build -->
+          <rect x="340" y="92" width="120" height="46" rx="8" fill="var(--surface)" stroke="currentColor" stroke-opacity=".4"/>
+          <text x="400" y="110" font-weight="600" fill="currentColor">4 · Build search</text>
+          <text x="400" y="124" font-size="9.5" fill="currentColor" opacity=".7">template + inputs</text>
+          <!-- 5 price (crosses down) -->
+          <rect x="495" y="92" width="120" height="46" rx="8" fill="var(--accent-soft)" stroke="#2B54F0" stroke-width="1.3"/>
+          <text x="555" y="110" font-weight="600" fill="currentColor">5 · searchRaw</text>
+          <text x="555" y="124" font-size="9.5" fill="currentColor" opacity=".75">warm bearer token</text>
+          <rect x="495" y="186" width="120" height="40" rx="8" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".4"/>
+          <text x="555" y="210" font-size="10.5" fill="currentColor">rate stack ↩</text>
+          <!-- 6 parse -->
+          <rect x="650" y="92" width="120" height="46" rx="8" fill="var(--surface)" stroke="currentColor" stroke-opacity=".4"/>
+          <text x="710" y="110" font-weight="600" fill="currentColor">6 · Parse</text>
+          <text x="710" y="124" font-size="9.5" fill="currentColor" opacity=".7">tree → clean quotes</text>
+          <!-- 7 render -->
+          <rect x="775" y="14" width="115" height="38" rx="8" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".4"/>
+          <text x="832" y="31" font-weight="600" fill="currentColor">7 · Render</text>
+          <text x="832" y="45" font-size="9.5" fill="currentColor" opacity=".7">results table</text>
+        </g>
+        <!-- arrows -->
+        <g stroke="#2B54F0" stroke-width="1.5" fill="none">
+          <line x1="90" y1="52" x2="90" y2="90" marker-end="url(#a3)"/>
+          <line x1="150" y1="115" x2="183" y2="115" marker-end="url(#a3)"/>
+          <line x1="305" y1="115" x2="338" y2="115" marker-end="url(#a3)"/>
+          <line x1="460" y1="115" x2="493" y2="115" marker-end="url(#a3)"/>
+          <line x1="555" y1="138" x2="555" y2="184" marker-end="url(#a3)"/>
+          <line x1="615" y1="128" x2="648" y2="128" marker-end="url(#a3)"/>
+          <path d="M770 105 C 815 105, 832 90, 832 54" marker-end="url(#a3)"/>
+        </g>
+      </svg>
+      <figcaption>Enrichment (3) and pricing (5) are the only outbound calls. Everything else is our own work. The heavy lifting is turning step 6's 6.7&nbsp;MB reply into a list a person can read.</figcaption>
+    </figure>
+
+    <div class="callout co-ok">
+      <span class="tag">Nice-to-have</span>
+      <p>Because the zip lookups (county, AMI, loan limits) rarely change, we cache them. After the first search in an area, later searches skip straight to pricing — faster, and gentler on Lender Price.</p>
+    </div>
+  </section>
+
+  <!-- ============ SECURITY ============ -->
+  <section id="security">
+    <p class="kicker"><span class="n">05</span> Building it so it can't hurt us</p>
+    <h2>Security &amp; robustness, decided up front</h2>
+
+    <div class="callout co-risk">
+      <span class="tag">Do this now</span>
+      <p><strong>The recording you sent me contains your real Lender Price username and password in plain text.</strong> A HAR file captures everything the browser sent, including the login. Please treat that file as a secret — don't email or re-share it — and it's worth <strong>changing that password</strong>, since it has now left your machine. The production system will never store the password the way that file does.</p>
+    </div>
+
+    <div class="grid g2">
+      <div class="card">
+        <h4>🔑 Credentials in one place</h4>
+        <p>The Lender Price login lives only in a secrets manager, read by the token manager at runtime. Never in the code, never in the repo, never sent to a browser, never written to a log.</p>
+      </div>
+      <div class="card">
+        <h4>🎫 Short-lived, refreshed quietly</h4>
+        <p>The token lasts an hour. The manager refreshes it a few minutes early using a single-flight lock, so a hundred simultaneous requests trigger at most one refresh — never a stampede of logins.</p>
+      </div>
+      <div class="card">
+        <h4>🛡️ Our own front door</h4>
+        <p>Users log into <em>our</em> app (the shared identity you already have), not Lender Price. We decide who can price, we rate-limit them, and we can shut one user off without touching anyone else.</p>
+      </div>
+      <div class="card">
+        <h4>🧱 Fails softly</h4>
+        <p>Timeouts, retries with backoff, and a circuit breaker: if Lender Price is slow or down, one request fails cleanly with a clear message — it doesn't hang the whole system or spin a retry storm.</p>
+      </div>
+      <div class="card">
+        <h4>🧾 Every price is logged</h4>
+        <p>Who priced what, when, and the exact inputs and result — an audit trail. Important for a regulated mortgage context, and it lets us reproduce any quote a borrower questions later.</p>
+      </div>
+      <div class="card">
+        <h4>➗ Stateless workers</h4>
+        <p>Because each pricing call is independent, we can run several copies of the backend for scale and reliability; any one can handle any request. No shared in-memory session to corrupt.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ TWO PATHS ============ -->
+  <section id="paths">
+    <p class="kicker"><span class="n">06</span> How we connect — and the rules we hold</p>
+    <h2>Internal calls only, and three hard "never"s</h2>
+    <p>Settled: <strong>we do not use Lender Price's official API.</strong> That's a separate subscription on a separate account. We drive the same calls the website itself makes — the ones we've now decoded from your recordings — using your existing view access. This is a <strong>pricing viewer</strong>: it looks, it never books. No loan is submitted, locked, or registered through it.</p>
+
+    <div class="grid g3">
+      <div class="card" style="border-color:color-mix(in srgb,var(--risk) 34%,var(--line))">
+        <h4>⛔ Never touch favorites</h4>
+        <p>We never save a scenario to Lender Price favorites and never load one from them — no <code>getDefaultFavorite</code>, <code>upsertFavorites</code>, or <code>setDefaultFavorite</code>. Favorites cause problems; every search is built fresh from our own template.</p>
+      </div>
+      <div class="card" style="border-color:color-mix(in srgb,var(--risk) 34%,var(--line))">
+        <h4>⛔ Never book, only view</h4>
+        <p>No lock, no register, no application. The tool shows pricing and stops there — which also means there's no risky write path into Lender Price at all.</p>
+      </div>
+      <div class="card" style="border-color:color-mix(in srgb,var(--risk) 34%,var(--line))">
+        <h4>⛔ Never expose the account</h4>
+        <p>The one shared login stays server-side. Borrowers see prices, never the credential, the token, or that a single YSCAP account is behind it.</p>
+      </div>
+    </div>
+    <p class="muted" style="font-size:14px">Because we only ever <em>read</em> pricing and never write, the whole class of "we corrupted something in Lender Price" risk is off the table by design.</p>
+  </section>
+
+  <!-- ============ WHERE IT LIVES ============ -->
+  <section id="home">
+    <p class="kicker"><span class="n">07</span> Where it lives in your codebase</p>
+    <h2>Entirely inside the Long-Term product — nothing touches RTL</h2>
+    <p>Your repo keeps RTL and Long-Term strictly apart, enforced by an automated gate. This is unambiguously a Long-Term DSCR build, so it lives only in the Long-Term zones and imports nothing from the main product.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Piece</th><th class="mono">Home</th></tr></thead>
+        <tbody>
+          <tr><td>Backend agent (token manager, mapping, parser)</td><td class="mono">src/longterm/lenderprice/**</td></tr>
+          <tr><td>API the frontend calls</td><td class="mono">/api/lt/pricing</td></tr>
+          <tr><td>The simple DSCR screen</td><td class="mono">app-v2/src/longterm/**</td></tr>
+          <tr><td>Test harness &amp; fixtures</td><td class="mono">scripts/test-lt-lenderprice.js</td></tr>
+          <tr><td>Any stored scenarios / audit</td><td class="mono">lt_* tables · db/NNN_lt_*.sql</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The only seam into the shared system is our own login (so we know which staff member or borrower is pricing) — read-only against the identity you already have, exactly as your rules allow.</p>
+    <div class="callout co-warn" style="margin-top:22px">
+      <span class="tag">Go-live posture</span>
+      <p>Your own rules currently hold Long-Term as <em>visibility only — not live, no borrowers</em>. So we build this borrower-<strong>ready</strong>, but it stays behind that line, exercised with test scenarios, until you explicitly decide it goes live to real borrowers. Building it now doesn't flip that switch.</p>
+    </div>
+  </section>
+
+  <!-- ============ DECISIONS ============ -->
+  <section id="decisions">
+    <p class="kicker"><span class="n">08</span> Calls that are yours to make</p>
+    <h2>Two settled, two open</h2>
+    <div class="grid g2">
+      <div class="card" style="border-color:color-mix(in srgb,var(--ok) 40%,var(--line))">
+        <h4>✓ Whose Lender Price login <span class="rec" style="color:var(--ok);border-color:var(--ok)">decided</span></h4>
+        <p><strong>One YSCAP service account.</strong> The backend prices for everyone under a single dedicated login — always-warm, and the only model that works once borrowers use it.</p>
+      </div>
+      <div class="card" style="border-color:color-mix(in srgb,var(--ok) 40%,var(--line))">
+        <h4>✓ Who uses the screen <span class="rec" style="color:var(--ok);border-color:var(--ok)">decided</span></h4>
+        <p><strong>Borrowers directly.</strong> A borrower-facing tool. That raises the safety bar — see the box below on what a borrower is shown and how we guard the door.</p>
+      </div>
+      <div class="card" style="border-color:color-mix(in srgb,var(--ok) 40%,var(--line))">
+        <h4>✓ Official API <span class="rec" style="color:var(--ok);border-color:var(--ok)">decided</span></h4>
+        <p><strong>No.</strong> Separate subscription, separate account. We drive the internal calls with your existing view access — no API keys, no new contract.</p>
+      </div>
+      <div class="card">
+        <h4>④ How married to the term sheet?</h4>
+        <p>Is this pricer a standalone screen, or does its output feed the separate DSCR term-sheet generator you mentioned? Changes what the result needs to carry.</p>
+      </div>
+    </div>
+
+    <div class="callout co-warn" style="margin-top:24px">
+      <span class="tag">Because it's borrower-facing</span>
+      <p><strong>The recorded prices are wholesale.</strong> That rate stack — with points and lender compensation baked in — is what a broker sees, not a clean consumer quote. Showing it to a borrower raw would be confusing at best and a compliance problem at worst. So the borrower view needs its own layer: the price they see should be the one <em>you</em> decide to show (e.g. your rate after margin), with the right disclosures — not a naked dump of the wholesale board. The full detail stays available to staff.</p>
+      <p><strong>A public door needs a lock.</strong> Even for borrowers, we put our own login and rate-limiting in front, so the tool can't be scraped, abused, or used to hammer Lender Price. My working assumption: borrowers reach it <em>signed into your portal</em> (the identity you already have), not as anonymous web traffic — tell me if you meant a fully public lead form instead.</p>
+    </div>
+  </section>
+
+  <!-- ============ MORE RECORDINGS ============ -->
+  <section id="more">
+    <p class="kicker"><span class="n">09</span> Recording coverage</p>
+    <h2>What the three recordings now cover</h2>
+    <p>The second recording filled almost every gap. Between them we now have the full shape of the login, the pricing call, and roughly ten searches across different scenarios.</p>
+
+    <div class="grid g2">
+      <div class="card" style="border-color:color-mix(in srgb,var(--ok) 34%,var(--line))">
+        <h4 style="color:var(--ok)">✓ Now captured</h4>
+        <p style="color:var(--ink)">Login (success &amp; the <code>401 Bad Credentials</code> failure) · token refresh · ~10 searches spanning purchase / cash-out refi, SFR &amp; 2–4 unit, FICO 720–760, DSCR 1.0–1.6, three states, 36 &amp; 60-month prepay · the enrichment lookups · export. Logout turns out to be client-side only — there's no server call to mimic.</p>
+      </div>
+      <div class="card" style="border-color:color-mix(in srgb,var(--warn) 34%,var(--line))">
+        <h4 style="color:var(--warn)">◑ Optional, only if wanted</h4>
+        <p style="color:var(--ink)">The full <em>dropdown option lists</em> (every property type, occupancy, prepay term, reserve tier, borrower type) — we've seen the common ones, not every choice. And a single-product <em>detail drill-down</em>, though the search reply already carries each product's fees, APR, and payment, so this is likely unnecessary for a viewer.</p>
+      </div>
+    </div>
+    <div class="callout co-ok" style="margin-top:22px">
+      <span class="tag">Enough to proceed</span>
+      <p>For a view-only DSCR pricer, this is enough to build correctly. Nothing critical is missing — the next input needed isn't another recording, it's your <strong>field mapping</strong>: which fields to ask, which to default, which to hide.</p>
+    </div>
+  </section>
+
+  <!-- ============ ROADMAP ============ -->
+  <section id="roadmap">
+    <p class="kicker"><span class="n">10</span> The order we'd build in — when you say go</p>
+    <h2>A build sequence, not a build yet</h2>
+    <div class="phase"><span class="num">1</span><div><h4>The connection</h4><p>Token manager + login + auto-refresh, proven with a tiny script that logs in and pulls one price. No screen yet — just proof the door opens and stays open under load.</p></div></div>
+    <div class="phase"><span class="num">2</span><div><h4>The translation</h4><p>Field mapping + enrichment + parser, locked down against the recordings so a known input always yields the known output.</p></div></div>
+    <div class="phase"><span class="num">3</span><div><h4>The screen</h4><p>The simple form and the results table — the part borrowers and staff actually see. This is where your "which fields" decisions land.</p></div></div>
+    <div class="phase"><span class="num">4</span><div><h4>The hardening</h4><p>Audit log, rate limits, caching, and clean error states (including the <code>401 Bad Credentials</code> path). The unglamorous work that keeps it from causing the headaches you're rightly worried about.</p></div></div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p style="max-width:70ch"><strong>Status:</strong> plan only — no code committed. Decoded from three recorded Lender Price sessions (~10 DSCR searches). View-only, internal calls, no official API, no favorites. Long-Term DSCR scope, kept fully separate from RTL.</p>
+  </div>
+</footer>

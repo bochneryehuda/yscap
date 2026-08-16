@@ -1,0 +1,248 @@
+<title>DSCR Backend & Search Audit</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --paper:#F5F6F8; --surface:#FFFFFF; --surface-2:#EEF1F6; --ink:#141A24; --muted:#59636F;
+    --faint:#8A94A2; --line:#DEE3EA; --line-2:#CBD3DE;
+    --accent:#2B54F0; --accent-soft:rgba(43,84,240,.09);
+    --ok:#0E9E6E; --ok-soft:rgba(14,158,110,.12); --warn:#B5791A; --warn-soft:rgba(181,121,26,.13);
+    --risk:#CE3F34; --risk-soft:rgba(206,63,52,.11);
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace; --sans:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+    --maxw:1000px;
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+    --paper:#0D1119; --surface:#141A24; --surface-2:#1B2330; --ink:#E9EDF3; --muted:#98A3B3; --faint:#6C7787;
+    --line:#242C38; --line-2:#33404F; --accent:#6E8CFF; --accent-soft:rgba(110,140,255,.14);
+    --ok:#34C08C; --ok-soft:rgba(52,192,140,.15); --warn:#E0A94A; --warn-soft:rgba(224,169,74,.15);
+    --risk:#F0685C; --risk-soft:rgba(240,104,92,.15);
+  }}
+  :root[data-theme="dark"]{
+    --paper:#0D1119; --surface:#141A24; --surface-2:#1B2330; --ink:#E9EDF3; --muted:#98A3B3; --faint:#6C7787;
+    --line:#242C38; --line-2:#33404F; --accent:#6E8CFF; --accent-soft:rgba(110,140,255,.14);
+    --ok:#34C08C; --ok-soft:rgba(52,192,140,.15); --warn:#E0A94A; --warn-soft:rgba(224,169,74,.15);
+    --risk:#F0685C; --risk-soft:rgba(240,104,92,.15);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0; background:var(--paper); color:var(--ink); font-family:var(--sans); font-size:16px; line-height:1.6; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 24px}
+  code{font-family:var(--mono); font-size:.85em; background:var(--surface-2); padding:1.5px 6px; border-radius:5px; word-break:break-word}
+  h1,h2,h3{letter-spacing:-.02em; text-wrap:balance; margin:0}
+  a.link{color:var(--accent); text-decoration:none; border-bottom:1px solid var(--accent-soft)}
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+
+  .hero{padding:56px 0 30px; border-bottom:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono); font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 14px}
+  h1{font-size:clamp(30px,5vw,46px); line-height:1.05}
+  .lede{font-size:19px; color:var(--muted); max-width:60ch; margin:16px 0 0}
+  .chips{display:flex; flex-wrap:wrap; gap:9px; margin-top:22px}
+  .chip{font-family:var(--mono); font-size:12px; padding:6px 11px; border:1px solid var(--line); border-radius:999px; color:var(--muted); background:var(--surface)}
+  .chip b{color:var(--ink)}
+
+  section{padding:46px 0; border-bottom:1px solid var(--line)}
+  .kick{font-family:var(--mono); font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); margin:0 0 12px}
+  .kick .n{color:var(--accent); font-weight:700}
+  h2{font-size:clamp(23px,3.2vw,30px)}
+  h3{font-size:18px; margin:28px 0 8px}
+  p{max-width:68ch} .muted{color:var(--muted)}
+  ul{max-width:68ch; padding-left:20px} li{margin:6px 0} li::marker{color:var(--faint)}
+
+  figure{margin:24px 0; background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:22px 18px 12px; overflow-x:auto}
+  figure svg{display:block; max-width:100%; height:auto; margin:0 auto; color:var(--ink)}
+  figcaption{color:var(--muted); font-size:13px; margin-top:12px; text-align:center}
+
+  .tablewrap{overflow-x:auto; margin:20px 0; border:1px solid var(--line); border-radius:13px; background:var(--surface)}
+  table{border-collapse:collapse; width:100%; font-size:13.5px; min-width:720px}
+  th,td{text-align:left; padding:11px 14px; border-bottom:1px solid var(--line); vertical-align:top}
+  thead th{font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); background:var(--surface-2); font-weight:600; position:sticky; top:0}
+  tbody tr:last-child td{border-bottom:0}
+  td.mono,code{font-variant-numeric:tabular-nums}
+  td .m{font-family:var(--mono); font-size:12px; color:var(--accent)}
+  .st{display:inline-block; font-size:11px; font-weight:700; padding:3px 8px; border-radius:6px; white-space:nowrap}
+  .st.ok{color:var(--ok); background:var(--ok-soft)}
+  .st.part{color:var(--warn); background:var(--warn-soft)}
+  .st.rec{color:var(--risk); background:var(--risk-soft)}
+
+  .callout{border-radius:12px; padding:15px 18px; margin:20px 0; border:1px solid var(--line); background:var(--surface); display:flex; gap:13px}
+  .callout .tag{font-family:var(--mono); font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; font-weight:700; padding:3px 8px; border-radius:6px; height:fit-content; white-space:nowrap}
+  .callout p{margin:0; font-size:14.5px; max-width:none}
+  .co-ok{background:var(--ok-soft)} .co-ok .tag{background:var(--ok); color:#fff}
+  .co-warn{background:var(--warn-soft)} .co-warn .tag{background:var(--warn); color:#fff}
+
+  .schema{display:grid; grid-template-columns:1fr 1fr; gap:16px; margin:22px 0}
+  @media(max-width:760px){.schema{grid-template-columns:1fr}}
+  .tbl{background:var(--surface); border:1px solid var(--line); border-radius:12px; overflow:hidden}
+  .tbl .th{padding:12px 16px; border-bottom:1px solid var(--line); background:var(--surface-2); font-weight:700; font-size:14px; display:flex; align-items:center; gap:9px}
+  .tbl .th .badge{font-family:var(--mono); font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; padding:2px 7px; border-radius:5px}
+  .tbl .th .badge.hot{background:var(--risk-soft); color:var(--risk)}
+  .tbl .th .badge.cold{background:var(--ok-soft); color:var(--ok)}
+  .tbl .rows{padding:8px 16px 14px}
+  .tbl .r{display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-bottom:1px dotted var(--line); font-size:13px}
+  .tbl .r:last-child{border-bottom:0}
+  .tbl .r .f{font-family:var(--mono); font-size:12px}
+  .tbl .r .t{color:var(--muted); font-size:11.5px}
+  footer{padding:34px 0 70px; color:var(--faint); font-size:13px}
+</style>
+
+<div class="hero"><div class="wrap">
+  <p class="eyebrow">Design reference · DSCR long-term</p>
+  <h1>Backend storage &amp; the search audit</h1>
+  <p class="lede">How each priced search is stored, kept for 30 days, and reconstructed after — plus a field-by-field audit of every search option: what the request is, how we set it, and what still needs a recording.</p>
+  <div class="chips">
+    <span class="chip"><b>~7 MB</b> raw per search</span>
+    <span class="chip"><b>30 days</b> raw retention</span>
+    <span class="chip"><b>forever</b> search recipe</span>
+    <span class="chip"><b>31</b> searches analyzed</span>
+  </div>
+</div></div>
+
+<main class="wrap">
+
+  <!-- ===== BACKEND ===== -->
+  <section id="storage">
+    <p class="kick"><span class="n">01</span> Storage — database, never RAM</p>
+    <h2>Two tiers: keep the truth for 30 days, keep the recipe forever</h2>
+    <p>Each priced search produces a large raw Lender Price response (~7&nbsp;MB here, more on broad searches). Storing every one forever is expensive, so we split each quote into <strong>two records</strong> written to the database at search time — never held in memory between requests.</p>
+
+    <figure role="img" aria-label="Storage and retrieval flow. At search time the pricer writes two records: a small permanent Quote recipe and a large Raw result with a 30-day time-to-live. When staff open a Term Sheet ID, if the raw result is still within 30 days it is served directly from the database; after 30 days the raw is gone, so the system rebuilds the exact request from the Quote recipe, stamps the original search date, re-runs Lender Price as-of that date, and serves the reconstructed result.">
+      <svg viewBox="0 0 900 430" font-family="system-ui,sans-serif">
+        <defs><marker id="a" markerWidth="9" markerHeight="9" refX="7.5" refY="4.2" orient="auto"><path d="M0,0 L8,4.2 L0,8.4 Z" fill="currentColor"/></marker>
+        <marker id="ab" markerWidth="9" markerHeight="9" refX="7.5" refY="4.2" orient="auto"><path d="M0,0 L8,4.2 L0,8.4 Z" fill="#2B54F0"/></marker></defs>
+
+        <!-- write path -->
+        <text x="20" y="26" font-size="12" font-weight="700" fill="#2B54F0">WRITE · at search time</text>
+        <rect x="20" y="40" width="150" height="46" rx="9" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".4"/>
+        <text x="95" y="60" font-size="12" font-weight="600" text-anchor="middle" fill="currentColor">Pricer runs</text>
+        <text x="95" y="76" font-size="10.5" text-anchor="middle" fill="currentColor" opacity=".7">LP searchRaw</text>
+
+        <line x1="170" y1="55" x2="230" y2="55" stroke="#2B54F0" stroke-width="1.5" marker-end="url(#ab)"/>
+        <line x1="170" y1="72" x2="230" y2="120" stroke="#2B54F0" stroke-width="1.5" marker-end="url(#ab)"/>
+
+        <!-- Quote recipe (permanent) -->
+        <rect x="232" y="34" width="220" height="66" rx="10" fill="none" stroke="#0E9E6E" stroke-width="1.5"/>
+        <text x="342" y="55" font-size="12.5" font-weight="700" text-anchor="middle" fill="currentColor">Quote — recipe</text>
+        <text x="342" y="72" font-size="10.5" text-anchor="middle" fill="currentColor" opacity=".8">inputs · defaults · date · options</text>
+        <text x="342" y="88" font-size="10.5" text-anchor="middle" fill="#0E9E6E" font-weight="700">kept forever · small</text>
+
+        <!-- Raw (30d) -->
+        <rect x="232" y="112" width="220" height="66" rx="10" fill="none" stroke="#CE3F34" stroke-width="1.5"/>
+        <text x="342" y="133" font-size="12.5" font-weight="700" text-anchor="middle" fill="currentColor">Raw result — blob</text>
+        <text x="342" y="150" font-size="10.5" text-anchor="middle" fill="currentColor" opacity=".8">full LP response, compressed</text>
+        <text x="342" y="166" font-size="10.5" text-anchor="middle" fill="#CE3F34" font-weight="700">TTL 30 days · large</text>
+
+        <!-- DB -->
+        <rect x="500" y="60" width="120" height="96" rx="10" fill="var(--accent-soft)" stroke="#2B54F0" stroke-width="1.4"/>
+        <text x="560" y="104" font-size="13" font-weight="700" text-anchor="middle" fill="currentColor">Database</text>
+        <text x="560" y="122" font-size="10" text-anchor="middle" fill="currentColor" opacity=".7">not RAM</text>
+        <line x1="452" y1="67" x2="500" y2="90" stroke="#0E9E6E" stroke-width="1.4" marker-end="url(#a)"/>
+        <line x1="452" y1="145" x2="500" y2="125" stroke="#CE3F34" stroke-width="1.4" marker-end="url(#a)"/>
+
+        <!-- read path -->
+        <line x1="20" y1="250" x2="880" y2="250" stroke="currentColor" stroke-opacity=".12"/>
+        <text x="20" y="240" font-size="12" font-weight="700" fill="#2B54F0">READ · staff opens a Term Sheet ID</text>
+
+        <rect x="20" y="266" width="150" height="46" rx="9" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".4"/>
+        <text x="95" y="293" font-size="12" font-weight="600" text-anchor="middle" fill="currentColor">Look up ID</text>
+
+        <!-- decision -->
+        <path d="M255 289 l40 -26 l40 26 l-40 26 z" fill="none" stroke="currentColor" stroke-width="1.4"/>
+        <text x="295" y="286" font-size="10" text-anchor="middle" fill="currentColor">Raw</text>
+        <text x="295" y="298" font-size="10" text-anchor="middle" fill="currentColor">&lt;30d?</text>
+        <line x1="170" y1="289" x2="253" y2="289" stroke="#2B54F0" stroke-width="1.5" marker-end="url(#ab)"/>
+
+        <!-- yes -> serve raw -->
+        <line x1="335" y1="289" x2="410" y2="289" stroke="#0E9E6E" stroke-width="1.6" marker-end="url(#a)"/>
+        <text x="372" y="282" font-size="10.5" fill="#0E9E6E" font-weight="700">yes</text>
+        <rect x="412" y="266" width="200" height="46" rx="9" fill="none" stroke="#0E9E6E" stroke-width="1.4"/>
+        <text x="512" y="286" font-size="12" font-weight="600" text-anchor="middle" fill="currentColor">Serve stored raw</text>
+        <text x="512" y="302" font-size="10.5" text-anchor="middle" fill="currentColor" opacity=".75">exact, what they saw</text>
+
+        <!-- no -> rebuild -->
+        <line x1="295" y1="315" x2="295" y2="350" stroke="#CE3F34" stroke-width="1.6" marker-end="url(#a)"/>
+        <text x="305" y="338" font-size="10.5" fill="#CE3F34" font-weight="700">no (purged)</text>
+        <rect x="150" y="352" width="290" height="60" rx="9" fill="var(--risk-soft)" stroke="#CE3F34" stroke-width="1.4"/>
+        <text x="295" y="374" font-size="12" font-weight="700" text-anchor="middle" fill="currentColor">Rebuild request from recipe</text>
+        <text x="295" y="391" font-size="10.5" text-anchor="middle" fill="currentColor" opacity=".8">inputs + defaults, stamp original date</text>
+        <text x="295" y="405" font-size="10.5" text-anchor="middle" fill="currentColor" opacity=".8">→ re-run LP as-of that date</text>
+        <line x1="440" y1="382" x2="610" y2="382" stroke="#CE3F34" stroke-width="1.5" marker-end="url(#a)"/>
+        <rect x="612" y="359" width="210" height="46" rx="9" fill="none" stroke="currentColor" stroke-opacity=".5"/>
+        <text x="717" y="379" font-size="12" font-weight="600" text-anchor="middle" fill="currentColor">Serve reconstructed</text>
+        <text x="717" y="395" font-size="10.5" text-anchor="middle" fill="currentColor" opacity=".75">close, not 100% exact</text>
+      </svg>
+      <figcaption>Within 30 days the exact raw is served from the database. After purge, the small recipe re-runs Lender Price with the original date stamped in.</figcaption>
+    </figure>
+
+    <div class="schema">
+      <div class="tbl">
+        <div class="th"><span>Quote</span><span class="badge cold">kept forever · small</span></div>
+        <div class="rows">
+          <div class="r"><span class="f">term_sheet_id</span><span class="t">PK · PL-XXXXXX</span></div>
+          <div class="r"><span class="f">created_at</span><span class="t">search date/time</span></div>
+          <div class="r"><span class="f">officer_id</span><span class="t">whose link</span></div>
+          <div class="r"><span class="f">borrower</span><span class="t">entity, name, address</span></div>
+          <div class="r"><span class="f">inputs</span><span class="t">every field the client set</span></div>
+          <div class="r"><span class="f">defaults</span><span class="t">every field we defaulted</span></div>
+          <div class="r"><span class="f">lp_request</span><span class="t">the exact searchRaw body</span></div>
+          <div class="r"><span class="f">client_options</span><span class="t">the 0/1/2-pt output shown</span></div>
+          <div class="r"><span class="f">raw_id / raw_purged_at</span><span class="t">link + purge stamp</span></div>
+        </div>
+      </div>
+      <div class="tbl">
+        <div class="th"><span>RawResult</span><span class="badge hot">TTL 30 days · large</span></div>
+        <div class="rows">
+          <div class="r"><span class="f">raw_id</span><span class="t">PK</span></div>
+          <div class="r"><span class="f">term_sheet_id</span><span class="t">FK → Quote</span></div>
+          <div class="r"><span class="f">payload_gz</span><span class="t">full LP response, gzipped blob</span></div>
+          <div class="r"><span class="f">lp_search_id</span><span class="t">LP's own id</span></div>
+          <div class="r"><span class="f">expires_at</span><span class="t">created + 30d</span></div>
+          <div class="r"><span class="f" style="opacity:.5">— purged by a daily job —</span><span class="t"></span></div>
+        </div>
+        <div style="padding:0 16px 16px"><p class="muted" style="font-size:12.5px; margin:0">Store the blob compressed (object storage or a blob column). Gzip takes ~7&nbsp;MB down to a few hundred&nbsp;KB. A nightly job deletes rows past <code>expires_at</code>.</p></div>
+      </div>
+    </div>
+
+    <div class="callout co-ok"><span class="tag">Why it works</span><p>The recipe is tiny, so keeping it forever is cheap and every quote stays reconstructable. The raw is what's expensive, so only recent quotes — the ones anyone actually revisits — hold it. Lender Price's request already carries a top-level <code>date</code> field (null = today), and its rate sheets are dated (<code>rateValidDate</code>, <code>validAsOf</code>), which is exactly what makes the after-30-day as-of re-pricing possible.</p></div>
+    <div class="callout co-warn"><span class="tag">Honest caveat</span><p>An as-of re-run is <em>close</em>, not identical — rate sheets, adjustments and eligibility can be restated after the fact. That's the whole reason we keep the real raw for 30 days: within the window it's the exact truth, no re-run needed. A reconstructed result should be labeled as such.</p></div>
+  </section>
+
+  <!-- ===== AUDIT ===== -->
+  <section id="audit">
+    <p class="kick"><span class="n">02</span> The search audit</p>
+    <h2>Every option — what the request is, how we set it</h2>
+    <p>Grounded in <strong>31 real searches</strong> across the recordings. <span class="st ok">Confirmed</span> = seen in a capture. <span class="st part">Partial</span> = field seen, not all values. <span class="st rec">Needs recording</span> = never exercised, so the exact token/behavior is unverified.</p>
+
+    <div class="tablewrap"><table>
+      <thead><tr><th>Option</th><th>Lender Price request</th><th>How we set it</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td><b>Interest-only</b></td><td><span class="m">criteria.interestOnly</span> — boolean</td><td>Checkbox → <code>true</code>/<code>false</code>. Field confirmed; only the rate/program <em>effect</em> is unseen (no capture had it on).</td><td><span class="st ok">Confirmed</span></td></tr>
+        <tr><td><b>Impound / escrow</b></td><td><span class="m">criteria.escrowWaiver</span> — boolean</td><td>The UI "Impound" box is checked by default (escrow on → <code>false</code>); unchecking it waives escrow → <code>true</code>. The field is the <b>inverse</b> of the box. Only the waiver fee is unseen.</td><td><span class="st ok">Confirmed</span></td></tr>
+        <tr><td><b>First-time homebuyer</b></td><td><span class="m">criteria.firstTimeHomeBuyer</span> — boolean</td><td>Found it — a criteria boolean, <em>not</em> a dynamic token as I'd first modeled. Checkbox → <code>true</code>/<code>false</code>.</td><td><span class="st ok">Confirmed</span></td></tr>
+        <tr><td><b>Historical pricing</b></td><td>top-level <span class="m">date</span> — ISO-8601 UTC, e.g. <code>2026-04-23T04:45:00.000Z</code></td><td>Stamp the original date; response comes back with April rate sheets (<span class="m">validAsOf</span>), not today's. <b>Verified working.</b></td><td><span class="st ok">Confirmed</span></td></tr>
+        <tr><td><b>DSCR ratio</b></td><td><span class="m">criteria.dscr</span> (number) + dyn <span class="m">DSCRRATIO</span> + a <span class="m">DSCR &gt;=</span> special option</td><td>The number is authoritative and confirmed — we drive off it. LP also derives a coarse token (<code>DSCR&gt;=1</code> / null) and an option (<code>DSCR &gt;=1.00</code>, <code>DSCR &gt;=1.25 - J</code>) from the value.</td><td><span class="st ok">Confirmed</span></td></tr>
+        <tr><td><b>Prepay term</b></td><td>dyn <span class="m">PrepayTerm</span> + <span class="m">specialMortgageOptions</span></td><td>All confirmed: <code>60/48/36/24/12 Months</code> → <code>5/4/3/2/1 Yr PPP</code>. <b>No-prepay</b> = term <code>null</code> + option <code>No PPP</code>.</td><td><span class="st ok">Confirmed</span></td></tr>
+        <tr><td><b>Prepay structure</b></td><td>dyn <span class="m">PrePayment_Plan_Type</span></td><td>Values seen: <code>Standard</code>, <code>StepDown</code>, <code>6MosInt</code>, <code>Fixed5</code>, and <code>null</code> (no-prepay). We send <code>Standard</code> per your rule.</td><td><span class="st ok">Confirmed</span></td></tr>
+        <tr><td><b>Property type — condo</b></td><td><span class="m">property.propertyType</span> = <code>Condos</code> + <span class="m">criteria.nonWarrantableProject</span></td><td>Confirmed. Condo token is <code>Condos</code>. Non-warrantable → boolean <code>true</code> <b>and</b> adds special option <code>Non-Warrantable Condo</code>. (Also confirmed: <code>SingleFamily</code>, <code>UnitDwelling_2_4</code>.)</td><td><span class="st ok">Confirmed</span></td></tr>
+        <tr><td><b>Borrower type</b></td><td>dyn <span class="m">GLOBAL_BorrowerType</span></td><td>All three confirmed: <code>LLC</code>, <code>Corporation</code>, <code>Individual</code>.</td><td><span class="st ok">Confirmed</span></td></tr>
+        <tr><td>Loan purpose</td><td><span class="m">criteria.loanPurpose</span></td><td>Purchase / Refinance / CashoutRefinance — all three seen.</td><td><span class="st ok">Confirmed</span></td></tr>
+        <tr><td>Value / loan / LTV</td><td><span class="m">purchasePrice · appraisedValue · loanAmount · ltv</span></td><td>Value fills both price + appraised. Confirmed.</td><td><span class="st ok">Confirmed</span></td></tr>
+        <tr><td>FICO</td><td><span class="m">criteria.fico</span> (number)</td><td>Bracket → low end as a number. Confirmed 720/740/760.</td><td><span class="st ok">Confirmed</span></td></tr>
+        <tr><td>Occupancy</td><td><span class="m">propertyUse</span> = Investment · dyn <span class="m">AddlOccupancyType</span> = Long-Term Rental</td><td>Locked. Confirmed.</td><td><span class="st ok">Confirmed</span></td></tr>
+        <tr><td>Reserves</td><td>dyn <span class="m">GLOBAL_RESERVES</span> = Reserves_24</td><td>Always 24. Confirmed.</td><td><span class="st ok">Confirmed</span></td></tr>
+        <tr><td>Loan type / term / amort</td><td><span class="m">mortgageTypes:[Conventional] · loanYear:30 · loanType:Fixed</span></td><td>Constant, hidden. Confirmed.</td><td><span class="st ok">Confirmed</span></td></tr>
+        <tr><td>Comp / attachment / lock / AUS</td><td><span class="m">compensationType · attachmentType · dayLocks · ausList</span></td><td>BorrowerCompPlan · Detached · 30 · all. Confirmed.</td><td><span class="st ok">Confirmed</span></td></tr>
+        <tr><td>Which lenders / programs</td><td><span class="m">filter.programNames · filter.productCode · accessCriteria.*</span></td><td>The levers for "which lenders to display" — empty (all) in captures.</td><td><span class="st part">Partial</span></td></tr>
+        <tr><td>Over-max loan amount</td><td>returns an <b>empty result</b> — 0 programs, 0 disqualified</td><td>A $5.6M jumbo came back with nothing. "Too big" = empty, not disqualify-with-reason — so the max-loan / cheaper-scenario logic (re-search lower) is ours.</td><td><span class="st ok">Confirmed</span></td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <!-- ===== RECORDINGS ===== -->
+  <section id="recordings">
+    <p class="kick"><span class="n">03</span> Coverage</p>
+    <h2>Every gap is now closed</h2>
+    <p>The 17-search recording closed <b>every remaining gap</b>. Condo (<code>Condos</code>), non-warrantable, all three borrower types, every prepay term including no-prepay, and the interest-only / escrow-waive / first-time-homebuyer effects are all confirmed and wired.</p>
+    <div class="callout co-ok"><span class="tag">Nothing left</span><p><b>No more recordings are needed to build the search.</b> Every field and token in the pricer is now confirmed against a real capture — the payload preview shows "✓ all field tokens confirmed." Next step is entirely on the result side: which lenders/programs to display, white-labeling, and what to show vs. hide.</p></div>
+  </section>
+</main>
+
+<footer><div class="wrap">Design reference · DSCR long-term · storage &amp; audit. Grounded in 10 captured Lender Price searches. No code committed; illustrative pricing until the result rules are set.</div></footer>

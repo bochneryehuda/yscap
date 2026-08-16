@@ -448,6 +448,11 @@ app.use('/api/tpo', require('./routes/tpo'));
 // at the mount (like the /api/admin routers), so the LT module imports no RTL
 // code. LT is a side build for visibility — it is not live and never touches RTL.
 {
+  // Secret-gated LT Lender Price diagnostics (read-only pricing). Mounted BEFORE the
+  // staff-gated /api/lt so it is reachable with the LP_DIAG_TOKEN header instead of a
+  // staff login; it is OFF (404s) unless LP_DIAG_TOKEN is set. Still src/server.js →
+  // src/longterm/routes/ — the permitted seam.
+  app.use('/api/lt/_diag/lenderprice', require('./longterm/routes/lenderprice-diag'));
   const { requireAuth, requireStaff } = require('./auth');
   app.use('/api/lt', requireAuth, requireStaff, require('./longterm').router);
 }
