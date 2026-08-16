@@ -130,20 +130,33 @@ const yn = (b) => (b ? 'Y' : 'N');
 /**
  * Our property-type vocabulary → CorrFirst's.
  *
- * `proven: true` means the SAMPLE itself carries that value, so the import
- * cannot reject it. `proven: false` is our best reading of the same naming
- * convention for a shape the sample never showed — it is emitted (a blank would
- * lose the fact) and REPORTED, so staff can check it against CorrFirst's own list
- * before sending. When CorrFirst gives us their full list, this table is the one
- * place that changes.
+ * `proven: true` means one of CorrFirst's OWN FILES carries that value verbatim,
+ * so the import cannot reject it. `proven: false` is our best reading of the same
+ * naming convention for a shape they have not shown us — it is emitted (a blank
+ * would lose the fact) and REPORTED, so staff can check it against CorrFirst's
+ * own list before sending. This table is the one place that changes when they
+ * give us the rest of their list.
+ *
+ * PROVEN SO FAR, and where each came from:
+ *   SFR-Attached / SFR-Detached  — the two-row sample they sent.
+ *   2-4 Units                    — a REAL filled file of theirs (Track_Record_32170),
+ *                                  three Newark/Bronx/Brooklyn multis. Note the
+ *                                  PLURAL: it is "2-4 Units", not "2-4 Unit" —
+ *                                  which is exactly why a value is never called
+ *                                  proven until one of their files shows it.
+ *
+ * THE CONVENTION THOSE THREE REVEAL, which is what the unproven guesses follow:
+ * a one-dwelling home is "SFR-" plus how it sits on its lot, and anything bigger
+ * is a plain unit COUNT with a plural "Units". So 5+ is written "5+ Units" rather
+ * than "Multifamily" — same shape as the value they proved, one step further up.
  */
 const CORRFIRST_PROPERTY_TYPES = {
   sfr:          { value: 'SFR-Detached',   proven: true },
   pud:          { value: 'SFR-Detached',   proven: true },
   condo:        { value: 'SFR-Attached',   proven: true },
   townhouse:    { value: 'SFR-Attached',   proven: true },
-  multi_2_4:    { value: '2-4 Unit',       proven: false },
-  multi_5_plus: { value: 'Multifamily',    proven: false },
+  multi_2_4:    { value: '2-4 Units',      proven: true },
+  multi_5_plus: { value: '5+ Units',       proven: false },
   mixed_use:    { value: 'Mixed Use',      proven: false },
   other:        { value: 'Other',          proven: false },
 };
@@ -393,8 +406,32 @@ const CORRFIRST_SAMPLE_CSV =
   + '"112 N Main St","Windsor","NJ","08561","SFR-Attached","03/10/2021","100,000","100,000","N","02/05/2024","200,000","John Doe","50","Additional Note"\n'
   + '"112 N Main St","Windsor","NJ","08561","SFR-Detached","03/10/2021","100,000","100,000","Y","","","John Doe","50","Additional Note"';
 
+/**
+ * A REAL filled CorrFirst file (Track_Record_32170) — three multi-unit rentals
+ * held in the borrowers' own entities. It is the second half of the spec and
+ * carries what the two-row sample could not:
+ *   · the PLURAL "2-4 Units";
+ *   · an entity in Title Held in Name (the sample's "John Doe" left it ambiguous
+ *     whether they wanted a person or the vesting entity);
+ *   · a wholly-owned entity written as "100";
+ *   · a blank Additional Notes shipping as "" rather than being omitted;
+ *   · a seven-figure price grouped as "1,035,000";
+ *   · retained rentals with BOTH sold cells empty, three times over.
+ * Kept verbatim so the test can prove the builder reproduces it byte-for-byte —
+ * which is what stops a well-meaning edit from breaking the import.
+ *
+ * (Their own file lists each of the three properties TWICE. That is duplication
+ * in whatever produced it, not something to reproduce: this export writes one
+ * line per verified track record.)
+ */
+const CORRFIRST_REAL_FILE_CSV =
+  'Street,City,State,ZIP,Property Type,Purchase Date,Purchase Price,Renovation Budget,Rental Retained,Sold Date,Sold Price,Title Held in Name,% of Ownership,Additional Notes\n'
+  + '"195 Lehigh Ave","Newark","NJ","07112","2-4 Units","03/01/2026","426,000","65,000","Y","","","CBH Reno Home Tech LLC","100",""\n'
+  + '"1048 Clay Ave","Bronx","NY","10456","2-4 Units","03/01/2025","865,000","95,000","Y","","","CLAYAVE LLC","100",""\n'
+  + '"248 E 93rd St","Brooklyn","NY","11212","2-4 Units","12/01/2024","1,035,000","120,000","Y","","","248 e 93th LLC","100",""';
+
 module.exports = {
-  TEMPLATE_FILE, CORRFIRST_SAMPLE_CSV, CORRFIRST_PROPERTY_TYPES,
+  TEMPLATE_FILE, CORRFIRST_SAMPLE_CSV, CORRFIRST_REAL_FILE_CSV, CORRFIRST_PROPERTY_TYPES,
   corrfirstHeader, corrfirstColumns,
   csvField, mmddyyyy, money, zip5, pct, yn,
   corrfirstPropertyType, addressCellsOf, streetOf, wasSold, titleHeldInName, ownershipPctOf,

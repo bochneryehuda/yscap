@@ -69,6 +69,65 @@ ok(!built.endsWith('\n'), 'no trailing newline (the sample has none)');
 ok(built.indexOf('\r') === -1, 'LF line endings only');
 ok(built.split('\n').length === 3, 'header + one line per deal');
 
+// ── 2b) A REAL filled file of theirs, rebuilt the same way ──────────────────
+// Three multi-unit rentals held in the borrowers' own entities. This is what
+// pins the PLURAL "2-4 Units", an ENTITY in Title Held in Name, a wholly-owned
+// entity as "100", a blank note shipping as "", and a seven-figure price.
+const realFileDeals = [
+  {
+    id: 'bbbbbbbb-0000-0000-0000-000000000001',
+    property_address: { line1: '195 Lehigh Ave', city: 'Newark', state: 'NJ', zip: '07112' },
+    property_type: '2-4 unit residential', deal_type: 'rental',
+    purchase_price: '426000.00', rehab_amount: '65000.00',
+    purchase_date: '2026-03-01', rent_date: '2026-06-01',
+    owned_personally: false, entity_name: 'CBH Reno Home Tech LLC', entity_ownership_pct: '100.00',
+    borrower_name: 'Test Borrower', notes: null,
+  },
+  {
+    id: 'bbbbbbbb-0000-0000-0000-000000000002',
+    property_address: { line1: '1048 Clay Ave', city: 'Bronx', state: 'NY', zip: '10456' },
+    property_type: '2-4 unit residential', deal_type: 'rental',
+    purchase_price: 865000, rehab_amount: 95000,
+    purchase_date: '2025-03-01', rent_date: '2025-08-01',
+    // Trailing space exactly as their own file carries it — we trim, they don't.
+    owned_personally: false, entity_name: 'CLAYAVE LLC ', entity_ownership_pct: 100,
+    borrower_name: 'Test Borrower', notes: '',
+  },
+  {
+    id: 'bbbbbbbb-0000-0000-0000-000000000003',
+    property_address: { line1: '248 E 93rd St', city: 'Brooklyn', state: 'NY', zip: '11212' },
+    property_type: '2-4 unit residential', deal_type: 'rental',
+    purchase_price: 1035000, rehab_amount: 120000,
+    purchase_date: '2024-12-01', refi_date: '2025-05-01',
+    owned_personally: false, entity_name: '248 e 93th LLC', entity_ownership_pct: '100',
+    borrower_name: 'Test Borrower', notes: null,
+  },
+];
+const builtReal = cf.buildCorrfirstCsv(realFileDeals);
+ok(builtReal === cf.CORRFIRST_REAL_FILE_CSV, 'the builder reproduces a REAL CorrFirst file byte-for-byte');
+if (builtReal !== cf.CORRFIRST_REAL_FILE_CSV) {
+  console.log('  built:    ' + JSON.stringify(builtReal));
+  console.log('  expected: ' + JSON.stringify(cf.CORRFIRST_REAL_FILE_CSV));
+}
+ok(cf.CORRFIRST_REAL_FILE_CSV.split('\n')[0] === templateBytes.toString('utf8'),
+  'their real file carries the SAME header as the empty one they sent');
+ok(!builtReal.endsWith('\n') && builtReal.indexOf('\r') === -1,
+  'their real file is LF with no trailing newline too — same as the sample');
+{
+  // The three facts the two-row sample could not settle.
+  const cells = cf.corrfirstCells(realFileDeals[2]);
+  ok(cells[4] === '2-4 Units', 'a 2-4 unit is "2-4 Units" — PLURAL, as their own file writes it');
+  ok(cells[6] === '1,035,000', 'a seven-figure price groups both thousands separators');
+  ok(cells[11] === '248 e 93th LLC', 'Title Held in Name carries the ENTITY that held it');
+  ok(cells[12] === '100', 'a wholly-owned entity is written "100", no % and no decimals');
+  ok(cells[13] === '', 'a blank note ships as an empty cell, never omitted');
+  ok(cf.corrfirstCells(realFileDeals[1])[11] === 'CLAYAVE LLC', 'a stray trailing space in the entity name is trimmed');
+}
+ok(cf.corrfirstPropertyType({ property_type: '2-4 unit residential' }).proven === true,
+  '2-4 Units is PROVEN now — one of their own files carries it');
+ok(cf.CORRFIRST_REAL_FILE_CSV.includes('"2-4 Units"') && !cf.CORRFIRST_REAL_FILE_CSV.includes('"2-4 Unit"'),
+  'and the fixture is the evidence for it');
+
 // ── 3) Each formatting rule, on its own, read off the sample ─────────────────
 ok(cf.csvField('') === '""', 'an empty cell still ships as ""');
 ok(cf.csvField('John Doe') === '"John Doe"', 'every data cell is quoted');
@@ -125,18 +184,24 @@ ok(cf.corrfirstPropertyType({ property_type: 'Single-family' }).value === 'SFR-D
 ok(cf.corrfirstPropertyType({ property_type: 'Condo / townhome' }).value === 'SFR-Attached', 'condo/townhome → SFR-Attached');
 ok(cf.corrfirstPropertyType({ property_type: 'Single-family' }).proven === true, 'that value is one the sample proves');
 ok(cf.corrfirstPropertyType({ property_type: 'Condo / townhome' }).proven === true, 'so is that one');
-ok(cf.corrfirstPropertyType({ property_type: '2-4 unit residential' }).proven === false,
-  'a 2-4 unit uses a value CorrFirst has not confirmed — flagged, never shipped silently');
-ok(cf.corrfirstPropertyType({ property_type: '5+ unit multifamily' }).proven === false, 'same for 5+ multifamily');
+ok(cf.corrfirstPropertyType({ property_type: '5+ unit multifamily' }).proven === false,
+  'a 5+ multifamily uses a value CorrFirst has not confirmed — flagged, never shipped silently');
+ok(cf.corrfirstPropertyType({ property_type: '5+ unit multifamily' }).value === '5+ Units',
+  '…and it follows the convention their own "2-4 Units" proves, not a different word');
 ok(cf.corrfirstPropertyType({ property_type: 'Mixed-use' }).proven === false, 'same for mixed-use');
+ok(cf.corrfirstPropertyType({ property_type: 'Land / lot' }).proven === false, 'same for land');
 {
   const none = cf.corrfirstPropertyType({ property_type: '' });
   ok(none.missing === true && none.value === '',
     'no property type on the line → blank cell; a property fact is never invented');
 }
-// Every proven mapping lands on a value the sample itself contains.
+// THE MEANING OF `proven`, enforced: a mapping may only claim it when one of
+// CorrFirst's OWN files carries that exact value. Marking something proven
+// without the evidence fails right here.
+const CORRFIRST_EVIDENCE = cf.CORRFIRST_SAMPLE_CSV + '\n' + cf.CORRFIRST_REAL_FILE_CSV;
 for (const [k, v] of Object.entries(cf.CORRFIRST_PROPERTY_TYPES)) {
-  if (v.proven) ok(cf.CORRFIRST_SAMPLE_CSV.includes(`"${v.value}"`), `${k} → "${v.value}" appears in CorrFirst's sample`);
+  if (v.proven) ok(CORRFIRST_EVIDENCE.includes(`"${v.value}"`), `${k} → "${v.value}" appears in a file CorrFirst sent us`);
+  else ok(!CORRFIRST_EVIDENCE.includes(`"${v.value}"`), `${k} → "${v.value}" is honestly marked unproven (no file of theirs shows it)`);
 }
 
 // ── 6) Title Held in Name / % of Ownership ───────────────────────────────────
@@ -177,11 +242,14 @@ ok(cf.ownershipPctOf({ owned_personally: false, entity_ownership_pct: null }) ==
 {
   const w = cf.corrfirstWarnings([
     { id: '1', property_address: { line1: '1 A St' }, property_type: '', owned_personally: true, purchase_date: '2021-01-01', purchase_price: 100000, borrower_name: 'Jane Roe' },
-    { id: '2', property_address: { line1: '2 B St' }, property_type: '2-4 unit residential', owned_personally: false, entity_name: 'X LLC', entity_ownership_pct: null, purchase_date: null, purchase_price: null },
+    { id: '2', property_address: { line1: '2 B St' }, property_type: '5+ unit multifamily', owned_personally: false, entity_name: 'X LLC', entity_ownership_pct: null, purchase_date: null, purchase_price: null },
+    { id: '3', property_address: { line1: '3 C St' }, property_type: '2-4 unit residential', owned_personally: true, purchase_date: '2021-01-01', purchase_price: 100000, borrower_name: 'Jane Roe' },
   ]);
   ok(w.missingPropertyType.length === 1 && w.missingPropertyType[0] === '1 A St', 'the line with no property type is named');
   ok(w.unprovenPropertyType.length === 1 && w.unprovenPropertyType[0].property === '2 B St'
-     && w.unprovenPropertyType[0].value === '2-4 Unit', 'the unconfirmed property-type value is named with its value');
+     && w.unprovenPropertyType[0].value === '5+ Units', 'the unconfirmed property-type value is named with its value');
+  ok(!w.unprovenPropertyType.some((u) => u.property === '3 C St'),
+     'a 2-4 unit is NOT flagged any more — their own file proved that value');
   ok(w.missingOwnership.length === 1 && w.missingOwnership[0] === '2 B St', 'the line with no ownership share is named');
   ok(w.missingPurchase.length === 1 && w.missingPurchase[0] === '2 B St', 'the line missing purchase facts is named');
   ok(w.noTitleName.length === 0, 'a line that does have a title name is not flagged');

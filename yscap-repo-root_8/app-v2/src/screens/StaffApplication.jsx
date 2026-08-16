@@ -6499,8 +6499,9 @@ function CorrfirstExport({ appId }) {
               </ul>
               {unproven.length > 8 && <div className="small" style={{ color: '#4B585C' }}>…and {unproven.length - 8} more.</div>}
               <div className="small" style={{ color: '#4B585C', marginTop: 3 }}>
-                Their sample only shows <b style={{ color: '#141B22' }}>SFR-Attached</b> and <b style={{ color: '#141B22' }}>SFR-Detached</b>. Single-family and condo/townhome always
-                use those. Anything else follows the same naming as far as we can tell — confirm the wording with CorrFirst once and it is fixed for good.
+                CorrFirst’s own files show <b style={{ color: '#141B22' }}>SFR-Attached</b>, <b style={{ color: '#141B22' }}>SFR-Detached</b> and <b style={{ color: '#141B22' }}>2-4 Units</b>, so single-family,
+                condo/townhome and 2-4 family are certain. Anything bigger or unusual follows the same naming as far as we can tell — confirm the wording with
+                CorrFirst once and it is fixed for good.
               </div>
             </div>
           )}
