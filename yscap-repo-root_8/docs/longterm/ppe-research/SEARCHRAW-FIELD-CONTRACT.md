@@ -20,12 +20,8 @@ re-run the sweep and regenerate, or the table and the truth drift apart.
 `ok` = still HTTP 200. A number = the status the vendor answered. `·` = not probed (the empty probe
 is skipped where the good value is already empty).
 
-**Coverage: 320 probes over 129 of the request's 222 leaves; 46 refusals.**
+**Coverage: 569 probes over 222 of the request's 222 leaves; 55 refusals.**
 
-> **⚠ THIS RUN IS INCOMPLETE — 93 of 222 leaves have not been probed yet.**
-> Every row below is measured and true. What is NOT here is not evidence of anything: an absent
-> field has not been cleared, it has not been asked about. Do not read section 2 as "these are safe"
-> until the coverage line above reads 222 of 222.
 
 
 ---
@@ -45,6 +41,7 @@ what SHOULD a caller send when it has nothing to say?
 | `brokerCriteria.rangeComplan.@class` | `"com.cre8techlabs.entity.range.Double…` | 500 | 500 | 500 |
 | `brokerCriteria.sortView` | `"LenderPaid"` | ok | ok | 500 |
 | `closingCost.closingCostGroup` | `[]` | 500 | ok | · |
+| `closingCost.settlementCost.titleService.borrowerEscrowPaidPercent` | `0.5` | 500 | ok | ok |
 | `criteria.compensationType` | `"BorrowerCompPlan"` | ok | ok | 500 |
 | `criteria.fico` | `760` | 500 | 500 | ok |
 | `criteria.fundingFeeFinanced` | `"YES"` | ok | ok | 500 |
@@ -64,6 +61,11 @@ what SHOULD a caller send when it has nothing to say?
 | `criteria.varaiableLoanTypes` | `[]` | 500 | ok | · |
 | `filter.productCode` | `[]` | 500 | ok | · |
 | `filter.programNames` | `[]` | 500 | ok | · |
+| `groupConfig.leafSort` | `"Point"` | ok | ok | 500 |
+| `groupConfig.paths` | `[{"group":"CriteriaFromLineResultKey"…` | 500 | ok | ok |
+| `groupConfig.showFieldsInTitle` | `[{"label":"Loan Type","value":"loanTy…` | 500 | ok | ok |
+| `loanPurposeCriteria` | `["Refinance"]` | 500 | ok | 500 |
+| `loanTypeCriteria` | `["Fixed"]` | 500 | ok | ok |
 | `miCriteria.amortizationType` | `"FullyAmmortized"` | ok | ok | 500 |
 | `miCriteria.buyDownPercent` | `"None"` | ok | ok | 500 |
 | `miCriteria.duLpDecision` | `"DU_Approve_Eligible"` | ok | ok | 500 |
@@ -77,6 +79,8 @@ what SHOULD a caller send when it has nothing to say?
 | `property.propertyType` | `"SingleFamily"` | ok | ok | 500 |
 | `ratePeriodIds` | `[]` | 500 | ok | · |
 | `rateRange.@class` | `"com.cre8techlabs.entity.range.Double…` | 500 | 500 | 500 |
+| `targetInterpolatedPrices` | `[]` | 500 | ok | · |
+| `varLoanTypeCriteria` | `[]` | 500 | ok | · |
 
 ### What the pattern says
 
@@ -92,12 +96,12 @@ what SHOULD a caller send when it has nothing to say?
 
 ---
 
-## 2. The fields that tolerate every probe we ran SO FAR
+## 2. The fields that tolerate every probe we ran
 
 Proven harmless — worth recording so they stop being suspected during the next outage.
-**Partial run: this list will grow as the remaining leaves are probed.**
 
-<details><summary>90 leaves, all probes returned HTTP 200</summary>
+
+<details><summary>175 leaves, all probes returned HTTP 200</summary>
 
 - `accessCriteria.marketPlaceSearch`
 - `accessCriteria.mkSearchAllLenders`
@@ -120,6 +124,9 @@ Proven harmless — worth recording so they stop being suspected during the next
 - `brokerCriteria.rangeComplan.to`
 - `brokerCriteria.rateTypes`
 - `brokerCriteria.subRateTypes`
+- `cachedDisqualified`
+- `closingCost.allowErnstQuote`
+- `closingCost.settlementCost.closingCostGroup`
 - `closingCost.settlementCost.origination.administrationLabel`
 - `closingCost.settlementCost.origination.lenderCreditLabel`
 - `closingCost.settlementCost.origination.others`
@@ -127,14 +134,35 @@ Proven harmless — worth recording so they stop being suspected during the next
 - `closingCost.settlementCost.origination.total`
 - `closingCost.settlementCost.origination.underwriting`
 - `closingCost.settlementCost.origination.underwritingLabel`
+- `closingCost.settlementCost.thirdPartyServices.appraisal`
+- `closingCost.settlementCost.thirdPartyServices.appraisalLabel`
+- `closingCost.settlementCost.thirdPartyServices.creditReport`
+- `closingCost.settlementCost.thirdPartyServices.creditReportLabel`
+- `closingCost.settlementCost.thirdPartyServices.floodCertification`
+- `closingCost.settlementCost.thirdPartyServices.floodCertificationLabel`
+- `closingCost.settlementCost.thirdPartyServices.overnight`
+- `closingCost.settlementCost.thirdPartyServices.overnightLabel`
+- `closingCost.settlementCost.thirdPartyServices.recording`
+- `closingCost.settlementCost.thirdPartyServices.recordingLabel`
+- `closingCost.settlementCost.thirdPartyServices.taxService`
+- `closingCost.settlementCost.thirdPartyServices.taxServiceLabel`
+- `closingCost.settlementCost.thirdPartyServices.total`
 - `closingCost.settlementCost.titleService.borrowerEscrowPaidPercentLabel`
 - `closingCost.settlementCost.titleService.borrowerTitlePaidPercent`
 - `closingCost.settlementCost.titleService.borrowerTitlePaidPercentLabel`
 - `closingCost.settlementCost.titleService.escrowCostLabel`
+- `closingCost.settlementCost.titleService.notarySign`
+- `closingCost.settlementCost.titleService.notarySignLabel`
 - `closingCost.settlementCost.titleService.overrideEscrow`
 - `closingCost.settlementCost.titleService.overrideTitle`
 - `closingCost.settlementCost.titleService.titleInsurance`
 - `closingCost.settlementCost.titleService.titleInsuranceLabel`
+- `closingCost.settlementCost.titleService.total`
+- `closingCost.settlementCost.total`
+- `closingCost.total`
+- `closingCost.useClosingCost`
+- `closingCost.useCompanyDefaultClosingCost`
+- `closingCost.useErnstCost`
 - `companyId`
 - `criteria.ami`
 - `criteria.calculatedFeeByMortgageType.FHA`
@@ -171,7 +199,63 @@ Proven harmless — worth recording so they stop being suspected during the next
 - `criteria.totalLoanAmountByMortgageType.UsdaRural`
 - `criteria.totalLoanAmountByMortgageType.VA`
 - `date`
+- `dayLocksCriteria`
+- `disqualifyAsync`
+- `disqualifyFullResult`
+- `dynaToSmo`
+- `dynamicPropertiesMap.AddlOccupancyType.fieldId`
+- `dynamicPropertiesMap.AddlOccupancyType.value`
+- `dynamicPropertiesMap.Citizenship.fieldId`
+- `dynamicPropertiesMap.Citizenship.value`
+- `dynamicPropertiesMap.GLOBAL_BorrowerType.fieldId`
+- `dynamicPropertiesMap.GLOBAL_BorrowerType.value`
+- `dynamicPropertiesMap.GLOBAL_Cross_Collateralization_Product.fieldId`
+- `dynamicPropertiesMap.GLOBAL_Cross_Collateralization_Product.value`
+- `dynamicPropertiesMap.GLOBAL_DECLININGMARKET.fieldId`
+- `dynamicPropertiesMap.GLOBAL_DECLININGMARKET.value`
+- `dynamicPropertiesMap.GLOBAL_GIFTFUNDPERCENT.fieldId`
+- `dynamicPropertiesMap.GLOBAL_GIFTFUNDPERCENT.value`
+- `dynamicPropertiesMap.GLOBAL_NativeAmerican.fieldId`
+- `dynamicPropertiesMap.GLOBAL_NativeAmerican.value`
+- `dynamicPropertiesMap.GLOBAL_RESERVES.fieldId`
+- `dynamicPropertiesMap.GLOBAL_RESERVES.value`
+- `dynamicPropertiesMap.GLOBAL_Section184.fieldId`
+- `dynamicPropertiesMap.GLOBAL_Section184.value`
+- `dynamicPropertiesMap.Global_DSCR_Asset_Depletion.fieldId`
+- `dynamicPropertiesMap.Global_DSCR_Asset_Depletion.value`
+- `dynamicPropertiesMap.IncomeDocType.fieldId`
+- `dynamicPropertiesMap.IncomeDocType.value`
+- `dynamicPropertiesMap.MORT120LATESLAST12M.fieldId`
+- `dynamicPropertiesMap.MORT120LATESLAST12M.value`
+- `dynamicPropertiesMap.MORT30LATESLAST12M.fieldId`
+- `dynamicPropertiesMap.MORT30LATESLAST12M.value`
+- `dynamicPropertiesMap.MORT60LATESLAST12M.fieldId`
+- `dynamicPropertiesMap.MORT60LATESLAST12M.value`
+- `dynamicPropertiesMap.MORT90LATESLAST12M.fieldId`
+- `dynamicPropertiesMap.MORT90LATESLAST12M.value`
+- `dynamicPropertiesMap.PrePayment_Plan_Type.fieldId`
+- `dynamicPropertiesMap.PrePayment_Plan_Type.value`
+- `dynamicPropertiesMap.PrepayTerm.fieldId`
+- `dynamicPropertiesMap.PrepayTerm.value`
+- `fillLenderMap`
+- `groupConfig.backendGrouping`
+- `groupConfig.leafLimit`
+- `maxListingPerRate`
 - `miCriteria.numberOfDeferredPayments`
+- `miDataWrapper.miPriceDetail.errorInNotes`
+- `miDataWrapper.miPriceDetail.initialRate`
+- `miDataWrapper.miPriceDetail.miCompanyId`
+- `miDataWrapper.miPriceDetail.miCompanyName`
+- `miDataWrapper.miPriceDetail.miCoverage`
+- `miDataWrapper.miPriceDetail.miPayment`
+- `miDataWrapper.miPriceDetail.notes`
+- `miDataWrapper.miPriceDetail.numberOfPayments`
+- `miDataWrapper.miPriceDetail.paymentType`
+- `miDataWrapper.miPriceDetail.pdfQuoteLink`
+- `miDataWrapper.miPriceDetail.quoteId`
+- `miDataWrapper.miPriceDetail.secondRate`
+- `miDataWrapper.reportData`
+- `name`
 - `property.address.censustract`
 - `property.address.city`
 - `property.address.country`
@@ -183,12 +267,17 @@ Proven harmless — worth recording so they stop being suspected during the next
 - `property.address.zip`
 - `property.address.zipExt`
 - `property.numberOfUnit`
+- `rate`
 - `rateGridIds`
 - `rateRange.from`
 - `rateRange.to`
+- `rates`
 - `showDisqualify`
 - `showDisqualifyRules`
 - `showUnmatchCompPlan`
+- `skipAdjustments`
+- `termsCriteria`
+- `termsInMonths`
 
 </details>
 
