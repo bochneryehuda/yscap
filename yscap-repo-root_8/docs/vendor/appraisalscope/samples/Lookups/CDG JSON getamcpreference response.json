@@ -1,0 +1,116 @@
+{
+    "responseData": {
+        "responseType": "AMC Preferences",
+        "count": 5,
+        "responseFields": [
+            {
+                "num": 1,
+                "fieldlist": [
+                    {
+                        "fieldName": "user_id",
+                        "fieldValue": "426"
+                    },
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Integrations VP UAT AMC "
+                    },
+                    {
+                        "fieldName": "amcPreference",
+                        "fieldValue": "available"
+                    }
+                ]
+            },
+            {
+                "num": 2,
+                "fieldlist": [
+                    {
+                        "fieldName": "user_id",
+                        "fieldValue": "436"
+                    },
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Solidifi UAT "
+                    },
+                    {
+                        "fieldName": "amcPreference",
+                        "fieldValue": "available"
+                    }
+                ]
+            },
+            {
+                "num": 3,
+                "fieldlist": [
+                    {
+                        "fieldName": "user_id",
+                        "fieldValue": "450"
+                    },
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Appraisal Hub  "
+                    },
+                    {
+                        "fieldName": "amcPreference",
+                        "fieldValue": "available"
+                    }
+                ]
+            },
+            {
+                "num": 4,
+                "fieldlist": [
+                    {
+                        "fieldName": "user_id",
+                        "fieldValue": "436"
+                    },
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Solidifi UAT "
+                    },
+                    {
+                        "fieldName": "amcPreference",
+                        "fieldValue": "preferred"
+                    }
+                ]
+            },
+            {
+                "num": 5,
+                "fieldlist": [
+                    {
+                        "fieldName": "user_id",
+                        "fieldValue": "448"
+                    },
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "LRES UAT "
+                    },
+                    {
+                        "fieldName": "amcPreference",
+                        "fieldValue": "excluded"
+                    }
+                ]
+            }
+        ]
+    }
+}
+
+--------------------------------------------------------------------------------------------------------------
+
+{
+    "responseData": {
+        "responseType": "AMC Preferences",
+        "count": 1,
+        "responseFields": [
+            {
+                "num": 1,
+                "fieldlist": [
+                    {
+                        "fieldName": "Disabled",
+                        "fieldValue": "1"
+                    }
+                ]
+            }
+        ]
+    }
+}
+
+
+

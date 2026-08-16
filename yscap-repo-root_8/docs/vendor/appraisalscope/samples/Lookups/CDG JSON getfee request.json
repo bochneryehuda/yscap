@@ -1,0 +1,40 @@
+{
+    "message": {
+        "clientSystem": {
+            "referenceIdentifiers": [
+                {
+                    "referenceIdentifierType": "ApiKey",
+                    "referenceIdentifierValue": "{{api_key}}"
+                }
+            ]
+        },
+        "serviceProviderSystem": {
+        "referenceIdentifiers": [
+            {
+                "referenceIdentifierType": "ServiceProviderSubDomain",
+                "referenceIdentifierValue": "integrations.uat"
+            }
+        ]
+    },
+    "products": [
+            {
+                "productCode": "131",
+                "productDescription":"Rush - 1004 Conventional"
+            }
+    ],
+
+    "deals": [
+            {
+                "properties": [
+                    {
+                        "address":{
+                            "postalCode": "97229"
+                        }
+                    }                        
+                ]
+
+            }
+        ],
+    "requestActionType": "GetFee"
+    }
+}

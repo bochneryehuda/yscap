@@ -1,0 +1,59 @@
+https://integrations.uat.appraisalscope.com/index.php/api/resapi/update_client_user/442
+
+NOTE: user_id is included at the end of the above URL
+
+
+
+{
+	"message": {
+		"clientSystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "ApiKey",
+				"referenceIdentifierValue": "{{api_key}}"
+			    },
+				{
+					"referenceIdentifierType": "ClientOrderNumber",
+					"referenceIdentifierValue": "1234AB"
+				}]
+		},
+		"deals": [{
+			"parties": [{
+					"partyRoleType": "Processor",
+					"partyRoleIdentifier": "42986",
+					"identifier": "3",
+					"serviceProviderInternalIdentifier": "442",
+					"partyContacts": [{
+						"contactFirstName": "Sammy",
+						"contactLastName": "Smith",
+						"loginAccountIdentifier": "apivptest4",
+						"loginAccountPassword": "Happy123!",
+						"contacts": [{
+							"contactEmail": "cp@test.com",
+							"contactPhone": "555-555-5555"
+						}],
+						"address": {
+							"addressLine": "PO Box 123",
+							"addressLine2": "",
+							"cityName": "San Diego",
+							"postalCode": "92196",
+							"stateCode": "CA"
+						}
+					}]
+				},
+				{
+					"partyRoleType": "LenderBranch",
+					"partyRoleIdentifier": "101",
+					"identifier": "4"
+				}
+
+			]
+		}],
+		"serviceProviderSystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "ServiceProviderSubDomain",
+				"referenceIdentifierValue": "integrations.uat"
+			}]
+		},
+		"requestActionType": "Update_Client_User"
+	}
+}

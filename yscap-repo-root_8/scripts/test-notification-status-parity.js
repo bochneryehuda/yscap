@@ -129,6 +129,12 @@ function call(server, method, path, token, body) {
     if (appId) { await db.query(`DELETE FROM notifications WHERE application_id=$1`, [appId]).catch(() => {});
       await db.query(`DELETE FROM application_status_history WHERE application_id=$1`, [appId]).catch(() => {});
       await db.query(`DELETE FROM application_assignees WHERE application_id=$1`, [appId]).catch(() => {});
+      // DRAIN BEFORE TEARING DOWN. The email fan-out is fire-and-forget (a web request must
+      // never wait on an email), so a sent_emails INSERT can still be in flight here — and it
+      // points at a notifications row this teardown deletes. The two lock each other and
+      // Postgres kills one: deadlock detected (40P01), which fails a suite whose assertions
+      // all passed. A no-op when nothing is in flight.
+      await notify.drainEmails();
       await db.query(`DELETE FROM applications WHERE id=$1`, [appId]).catch(() => {}); }
     if (borrowerId) await db.query(`DELETE FROM borrowers WHERE id=$1`, [borrowerId]).catch(() => {});
     if (adminId) await db.query(`DELETE FROM staff_users WHERE id=$1`, [adminId]).catch(() => {});

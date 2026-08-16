@@ -1,0 +1,21 @@
+{
+"message": {
+    "clientSystem": {
+        "credentials": [
+{
+            "loginAccountIdentifier": "apitesting",
+            "loginAccountPassword": "AScope123$"
+}
+]
+},
+    "serviceProviderSystem": {
+        "referenceIdentifiers": [
+{
+            "referenceIdentifierType": "ServiceProviderSubDomain",
+            "referenceIdentifierValue": "integrations.uat"
+}
+]
+},
+    "requestActionType": "DoLogin"
+}
+}

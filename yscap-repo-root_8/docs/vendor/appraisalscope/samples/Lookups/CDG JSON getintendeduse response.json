@@ -1,0 +1,99 @@
+{
+    "responseData": {
+        "responseType": "Intended Use",
+        "count": 7,
+        "responseFields": [
+            {
+                "num": 1,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Refinance"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "1"
+                    }
+                ]
+            },
+            {
+                "num": 2,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Purchase"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "2"
+                    }
+                ]
+            },
+            {
+                "num": 3,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Ascertain Market Value"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "3"
+                    }
+                ]
+            },
+            {
+                "num": 4,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Other"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "8"
+                    }
+                ]
+            },
+            {
+                "num": 5,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "purchase"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "34"
+                    }
+                ]
+            },
+            {
+                "num": 6,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "pUrChAsE"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "35"
+                    }
+                ]
+            },
+            {
+                "num": 7,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "PURCHASE"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "36"
+                    }
+                ]
+            }
+        ]
+    }
+}

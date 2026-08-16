@@ -1,0 +1,99 @@
+{
+    "responseData": {
+        "responseType": "Additional Document Types",
+        "count": 7,
+        "responseFields": [
+            {
+                "num": 1,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Invoice"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "10"
+                    }
+                ]
+            },
+            {
+                "num": 2,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Appraiser E&O Document"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "3"
+                    }
+                ]
+            },
+            {
+                "num": 3,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Appraiser License"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "2"
+                    }
+                ]
+            },
+            {
+                "num": 4,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "EAD SSR"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "9"
+                    }
+                ]
+            },
+            {
+                "num": 5,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Fannie Mae SSR"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "7"
+                    }
+                ]
+            },
+            {
+                "num": 6,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Freddie Mac SSR"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "8"
+                    }
+                ]
+            },
+            {
+                "num": 7,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Other"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "1"
+                    }
+                ]
+            }
+        ]
+    }
+}

@@ -1,0 +1,29 @@
+{
+    "message": {
+        "clientSystem": {
+            "referenceIdentifiers": [
+                {
+                    "referenceIdentifierType": "ApiKey",
+                    "referenceIdentifierValue": "{{api_key}}"
+                },
+				{
+					"referenceIdentifierType": "ClientOrderNumber",
+					"referenceIdentifierValue": "1234AB"
+				}
+            ]
+        },
+        "serviceProviderSystem": {
+        	"referenceIdentifiers": [
+        		{
+        			"referenceIdentifierType": "ServiceProviderSubDomain",
+        			"referenceIdentifierValue": "integrations.uat"
+        		},
+        		{
+        			"referenceIdentifierType": "ServiceProviderOrderNumber",
+        			"referenceIdentifierValue": "SP123"
+        		}
+        	]
+        },
+        "requestActionType": "GetAppraisalStatus"
+    }   
+}

@@ -1,0 +1,46 @@
+{
+	"message": {
+		"clientSystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "ApiKey",
+				"referenceIdentifierValue": "{{api_key}}"
+    			},
+				{
+					"referenceIdentifierType": "ClientOrderNumber",
+					"referenceIdentifierValue": "1234AB"
+				}]
+		},
+		"products": [{
+			"payments": [{
+				"paymentReferenceIdentifier": "38298",
+				"paymentAccountCardHolderFirstName": "Bart",
+				"paymentAccountCardHolderLastName": "Borrower",
+				"paymentAccountCardHolderAddress1": "123 Any Street",
+				"paymentAccountCardHolderAddress2": "Apt B",
+				"paymentAccountCardHolderCity": "Portland",
+				"paymentAccountCardHolderState": "OR",
+				"paymentAccountCardHolderPostalCode": "97203",
+				"paymentAccountCardHolderPhone": "555-222-5555",
+				"paymentAccountCardHolderEmail": "fake@fake.com",
+				"paymentAccountBankName": "Fifth Third",
+				"paymentAccountIdentifier": "000999999991",
+				"paymentAccountABARoutingNumber": "063100277",
+				"paymentAccountNameOnAccount": "Demo",
+				"paymentMethodType": "checking",
+				"paymentTotalAmount": "50"
+			}]
+		}],
+		"serviceProviderSystem": {
+			"referenceIdentifiers": [{
+					"referenceIdentifierType": "ServiceProviderSubDomain",
+					"referenceIdentifierValue": "integrations.uat"
+				},
+				{
+					"referenceIdentifierType": "ServiceProviderOrderNumber",
+					"referenceIdentifierValue": 3648
+				}
+			]
+		},
+		"requestActionType": "eCheckPayment"
+	}
+}

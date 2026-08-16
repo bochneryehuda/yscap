@@ -1,0 +1,41 @@
+{
+	"message": {
+		"clientSystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "ApiKey",
+				"referenceIdentifierValue": "{{api_key}}"
+			}]
+		},
+		"deals": [{
+			"loans": [{
+				"loanIdentifiers": {
+					"lenderLoanIdentifier": "2020092902"
+				}
+			}]
+		}],
+		"products": [{
+			"productCode": "5"
+		}],
+		"serviceProviderSystem": {
+			"referenceIdentifiers": [{
+					"referenceIdentifierType": "ServiceProviderSubDomain",
+					"referenceIdentifierValue": "integrations.uat"
+				}
+			]
+		},
+		"searchCriteria": [{
+				"fieldName": "create_date_start",
+				"fieldValue": "2021-04-01"
+			},
+			{
+				"fieldName": "create_date_end",
+				"fieldValue": "2021-04-20"
+			},
+			{
+				"fieldName": "status",
+				"fieldValue": "New"
+			}
+		],
+		"requestActionType": "GetAppraisals"
+	}
+}

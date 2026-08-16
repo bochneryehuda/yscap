@@ -1,0 +1,784 @@
+{
+    "responseData": {
+        "responseType": "Branches",
+        "count": 8,
+        "responseFields": [
+            {
+                "num": 1,
+                "fieldlist": [
+                    {
+                        "fieldName": "zip",
+                        "fieldValue": ""
+                    },
+                    {
+                        "fieldName": "brachid",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "country",
+                        "fieldValue": "US"
+                    },
+                    {
+                        "fieldName": "contact_name",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "is_active",
+                        "fieldValue": "1"
+                    },
+                    {
+                        "fieldName": "company_id",
+                        "fieldValue": "267"
+                    },
+                    {
+                        "fieldName": "address2",
+                        "fieldValue": ""
+                    },
+                    {
+                        "fieldName": "city",
+                        "fieldValue": ""
+                    },
+                    {
+                        "fieldName": "address1",
+                        "fieldValue": ""
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "1"
+                    },
+                    {
+                        "fieldName": "is_delete",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "branch_group_id",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "internal_branch_id",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "estimate_amount_of_orders_in_month",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "branch_id",
+                        "fieldValue": "15"
+                    },
+                    {
+                        "fieldName": "phone",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "branch_name",
+                        "fieldValue": "Default Branch"
+                    },
+                    {
+                        "fieldName": "nmls_num",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "state",
+                        "fieldValue": ""
+                    },
+                    {
+                        "fieldName": "fax",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "create_date",
+                        "fieldValue": "2020-09-29 13:09:54"
+                    },
+                    {
+                        "fieldName": "email",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "phone_ext",
+                        "fieldValue": "null"
+                    }
+                ]
+            },
+            {
+                "num": 2,
+                "fieldlist": [
+                    {
+                        "fieldName": "zip",
+                        "fieldValue": "73112"
+                    },
+                    {
+                        "fieldName": "brachid",
+                        "fieldValue": "42"
+                    },
+                    {
+                        "fieldName": "country",
+                        "fieldValue": "US"
+                    },
+                    {
+                        "fieldName": "contact_name",
+                        "fieldValue": "Marsha Brady"
+                    },
+                    {
+                        "fieldName": "is_active",
+                        "fieldValue": "1"
+                    },
+                    {
+                        "fieldName": "company_id",
+                        "fieldValue": "267"
+                    },
+                    {
+                        "fieldName": "address2",
+                        "fieldValue": "Suite D"
+                    },
+                    {
+                        "fieldName": "city",
+                        "fieldValue": "Oklahoma City"
+                    },
+                    {
+                        "fieldName": "address1",
+                        "fieldValue": "321 Snickers St"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "is_delete",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "branch_group_id",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "internal_branch_id",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "estimate_amount_of_orders_in_month",
+                        "fieldValue": "500"
+                    },
+                    {
+                        "fieldName": "branch_id",
+                        "fieldValue": "43"
+                    },
+                    {
+                        "fieldName": "phone",
+                        "fieldValue": "555-888-9999"
+                    },
+                    {
+                        "fieldName": "branch_name",
+                        "fieldValue": "Super Branch"
+                    },
+                    {
+                        "fieldName": "nmls_num",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "state",
+                        "fieldValue": "OK"
+                    },
+                    {
+                        "fieldName": "fax",
+                        "fieldValue": "555-667-8888"
+                    },
+                    {
+                        "fieldName": "create_date",
+                        "fieldValue": "2021-04-21 18:25:40"
+                    },
+                    {
+                        "fieldName": "email",
+                        "fieldValue": "marsha@fake.com"
+                    },
+                    {
+                        "fieldName": "phone_ext",
+                        "fieldValue": "2222"
+                    }
+                ]
+            },
+            {
+                "num": 3,
+                "fieldlist": [
+                    {
+                        "fieldName": "zip",
+                        "fieldValue": "73132"
+                    },
+                    {
+                        "fieldName": "brachid",
+                        "fieldValue": "AB123"
+                    },
+                    {
+                        "fieldName": "country",
+                        "fieldValue": "US"
+                    },
+                    {
+                        "fieldName": "contact_name",
+                        "fieldValue": "Smithy Smitherton"
+                    },
+                    {
+                        "fieldName": "is_active",
+                        "fieldValue": "1"
+                    },
+                    {
+                        "fieldName": "company_id",
+                        "fieldValue": "267"
+                    },
+                    {
+                        "fieldName": "address2",
+                        "fieldValue": "Suite B-211"
+                    },
+                    {
+                        "fieldName": "city",
+                        "fieldValue": "Oklahoma City"
+                    },
+                    {
+                        "fieldName": "address1",
+                        "fieldValue": "1234 Happy Street"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "is_delete",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "branch_group_id",
+                        "fieldValue": "12"
+                    },
+                    {
+                        "fieldName": "internal_branch_id",
+                        "fieldValue": "AB12302"
+                    },
+                    {
+                        "fieldName": "estimate_amount_of_orders_in_month",
+                        "fieldValue": "500"
+                    },
+                    {
+                        "fieldName": "branch_id",
+                        "fieldValue": "39"
+                    },
+                    {
+                        "fieldName": "phone",
+                        "fieldValue": "405-555-2222"
+                    },
+                    {
+                        "fieldName": "branch_name",
+                        "fieldValue": "Test Branch"
+                    },
+                    {
+                        "fieldName": "nmls_num",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "state",
+                        "fieldValue": "OK"
+                    },
+                    {
+                        "fieldName": "fax",
+                        "fieldValue": "405-555-3333"
+                    },
+                    {
+                        "fieldName": "create_date",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "email",
+                        "fieldValue": "branch@fake.com"
+                    },
+                    {
+                        "fieldName": "phone_ext",
+                        "fieldValue": "2222"
+                    }
+                ]
+            },
+            {
+                "num": 4,
+                "fieldlist": [
+                    {
+                        "fieldName": "zip",
+                        "fieldValue": "73132"
+                    },
+                    {
+                        "fieldName": "brachid",
+                        "fieldValue": "40"
+                    },
+                    {
+                        "fieldName": "country",
+                        "fieldValue": "US"
+                    },
+                    {
+                        "fieldName": "contact_name",
+                        "fieldValue": "Smithy Smitherton"
+                    },
+                    {
+                        "fieldName": "is_active",
+                        "fieldValue": "1"
+                    },
+                    {
+                        "fieldName": "company_id",
+                        "fieldValue": "267"
+                    },
+                    {
+                        "fieldName": "address2",
+                        "fieldValue": "Suite B-211"
+                    },
+                    {
+                        "fieldName": "city",
+                        "fieldValue": "Oklahoma City"
+                    },
+                    {
+                        "fieldName": "address1",
+                        "fieldValue": "1234 Happy Street"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "is_delete",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "branch_group_id",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "internal_branch_id",
+                        "fieldValue": "AB12302"
+                    },
+                    {
+                        "fieldName": "estimate_amount_of_orders_in_month",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "branch_id",
+                        "fieldValue": "40"
+                    },
+                    {
+                        "fieldName": "phone",
+                        "fieldValue": "405-555-2222"
+                    },
+                    {
+                        "fieldName": "branch_name",
+                        "fieldValue": "Test Branch"
+                    },
+                    {
+                        "fieldName": "nmls_num",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "state",
+                        "fieldValue": "OK"
+                    },
+                    {
+                        "fieldName": "fax",
+                        "fieldValue": "405-555-3333"
+                    },
+                    {
+                        "fieldName": "create_date",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "email",
+                        "fieldValue": "branch@fake.com"
+                    },
+                    {
+                        "fieldName": "phone_ext",
+                        "fieldValue": "2222"
+                    }
+                ]
+            },
+            {
+                "num": 5,
+                "fieldlist": [
+                    {
+                        "fieldName": "zip",
+                        "fieldValue": "73132"
+                    },
+                    {
+                        "fieldName": "brachid",
+                        "fieldValue": "AB123"
+                    },
+                    {
+                        "fieldName": "country",
+                        "fieldValue": "US"
+                    },
+                    {
+                        "fieldName": "contact_name",
+                        "fieldValue": "Smithy Smitherton"
+                    },
+                    {
+                        "fieldName": "is_active",
+                        "fieldValue": "1"
+                    },
+                    {
+                        "fieldName": "company_id",
+                        "fieldValue": "267"
+                    },
+                    {
+                        "fieldName": "address2",
+                        "fieldValue": "Suite B-211"
+                    },
+                    {
+                        "fieldName": "city",
+                        "fieldValue": "Oklahoma City"
+                    },
+                    {
+                        "fieldName": "address1",
+                        "fieldValue": "1234 Happy Street"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "is_delete",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "branch_group_id",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "internal_branch_id",
+                        "fieldValue": "AB12302"
+                    },
+                    {
+                        "fieldName": "estimate_amount_of_orders_in_month",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "branch_id",
+                        "fieldValue": "42"
+                    },
+                    {
+                        "fieldName": "phone",
+                        "fieldValue": "405-555-2222"
+                    },
+                    {
+                        "fieldName": "branch_name",
+                        "fieldValue": "Test Branch"
+                    },
+                    {
+                        "fieldName": "nmls_num",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "state",
+                        "fieldValue": "OK"
+                    },
+                    {
+                        "fieldName": "fax",
+                        "fieldValue": "405-555-3333"
+                    },
+                    {
+                        "fieldName": "create_date",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "email",
+                        "fieldValue": "branch@fake.com"
+                    },
+                    {
+                        "fieldName": "phone_ext",
+                        "fieldValue": "2222"
+                    }
+                ]
+            },
+            {
+                "num": 6,
+                "fieldlist": [
+                    {
+                        "fieldName": "zip",
+                        "fieldValue": "73132"
+                    },
+                    {
+                        "fieldName": "brachid",
+                        "fieldValue": "AB555565326"
+                    },
+                    {
+                        "fieldName": "country",
+                        "fieldValue": "US"
+                    },
+                    {
+                        "fieldName": "contact_name",
+                        "fieldValue": "Smithy Smitherton"
+                    },
+                    {
+                        "fieldName": "is_active",
+                        "fieldValue": "1"
+                    },
+                    {
+                        "fieldName": "company_id",
+                        "fieldValue": "267"
+                    },
+                    {
+                        "fieldName": "address2",
+                        "fieldValue": "Suite B-211"
+                    },
+                    {
+                        "fieldName": "city",
+                        "fieldValue": "Oklahoma City"
+                    },
+                    {
+                        "fieldName": "address1",
+                        "fieldValue": "1234 Happy Street"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "is_delete",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "branch_group_id",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "internal_branch_id",
+                        "fieldValue": "AB12302"
+                    },
+                    {
+                        "fieldName": "estimate_amount_of_orders_in_month",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "branch_id",
+                        "fieldValue": "44"
+                    },
+                    {
+                        "fieldName": "phone",
+                        "fieldValue": "405-555-2222"
+                    },
+                    {
+                        "fieldName": "branch_name",
+                        "fieldValue": "Test Branch"
+                    },
+                    {
+                        "fieldName": "nmls_num",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "state",
+                        "fieldValue": "OK"
+                    },
+                    {
+                        "fieldName": "fax",
+                        "fieldValue": "405-555-3333"
+                    },
+                    {
+                        "fieldName": "create_date",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "email",
+                        "fieldValue": "branch@fake.com"
+                    },
+                    {
+                        "fieldName": "phone_ext",
+                        "fieldValue": "2222"
+                    }
+                ]
+            },
+            {
+                "num": 7,
+                "fieldlist": [
+                    {
+                        "fieldName": "zip",
+                        "fieldValue": "73132"
+                    },
+                    {
+                        "fieldName": "brachid",
+                        "fieldValue": "AB123"
+                    },
+                    {
+                        "fieldName": "country",
+                        "fieldValue": "US"
+                    },
+                    {
+                        "fieldName": "contact_name",
+                        "fieldValue": "Smithy Smitherton"
+                    },
+                    {
+                        "fieldName": "is_active",
+                        "fieldValue": "1"
+                    },
+                    {
+                        "fieldName": "company_id",
+                        "fieldValue": "267"
+                    },
+                    {
+                        "fieldName": "address2",
+                        "fieldValue": "Suite B-211"
+                    },
+                    {
+                        "fieldName": "city",
+                        "fieldValue": "Oklahoma City"
+                    },
+                    {
+                        "fieldName": "address1",
+                        "fieldValue": "1234 Happy Street"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "is_delete",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "branch_group_id",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "internal_branch_id",
+                        "fieldValue": "AB12302"
+                    },
+                    {
+                        "fieldName": "estimate_amount_of_orders_in_month",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "branch_id",
+                        "fieldValue": "45"
+                    },
+                    {
+                        "fieldName": "phone",
+                        "fieldValue": "405-555-2222"
+                    },
+                    {
+                        "fieldName": "branch_name",
+                        "fieldValue": "Test Branch"
+                    },
+                    {
+                        "fieldName": "nmls_num",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "state",
+                        "fieldValue": "OK"
+                    },
+                    {
+                        "fieldName": "fax",
+                        "fieldValue": "405-555-3333"
+                    },
+                    {
+                        "fieldName": "create_date",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "email",
+                        "fieldValue": "branch@fake.com"
+                    },
+                    {
+                        "fieldName": "phone_ext",
+                        "fieldValue": "2222"
+                    }
+                ]
+            },
+            {
+                "num": 8,
+                "fieldlist": [
+                    {
+                        "fieldName": "zip",
+                        "fieldValue": "73132"
+                    },
+                    {
+                        "fieldName": "brachid",
+                        "fieldValue": "AB123"
+                    },
+                    {
+                        "fieldName": "country",
+                        "fieldValue": "US"
+                    },
+                    {
+                        "fieldName": "contact_name",
+                        "fieldValue": "Smithy Smitherton"
+                    },
+                    {
+                        "fieldName": "is_active",
+                        "fieldValue": "1"
+                    },
+                    {
+                        "fieldName": "company_id",
+                        "fieldValue": "267"
+                    },
+                    {
+                        "fieldName": "address2",
+                        "fieldValue": "Suite B-211"
+                    },
+                    {
+                        "fieldName": "city",
+                        "fieldValue": "Oklahoma City"
+                    },
+                    {
+                        "fieldName": "address1",
+                        "fieldValue": "1234 Happy Street"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "is_delete",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "branch_group_id",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "internal_branch_id",
+                        "fieldValue": "AB12302"
+                    },
+                    {
+                        "fieldName": "estimate_amount_of_orders_in_month",
+                        "fieldValue": "0"
+                    },
+                    {
+                        "fieldName": "branch_id",
+                        "fieldValue": "46"
+                    },
+                    {
+                        "fieldName": "phone",
+                        "fieldValue": "405-555-2222"
+                    },
+                    {
+                        "fieldName": "branch_name",
+                        "fieldValue": "Test Branch"
+                    },
+                    {
+                        "fieldName": "nmls_num",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "state",
+                        "fieldValue": "OK"
+                    },
+                    {
+                        "fieldName": "fax",
+                        "fieldValue": "405-555-3333"
+                    },
+                    {
+                        "fieldName": "create_date",
+                        "fieldValue": "null"
+                    },
+                    {
+                        "fieldName": "email",
+                        "fieldValue": "branch@fake.com"
+                    },
+                    {
+                        "fieldName": "phone_ext",
+                        "fieldValue": "2222"
+                    }
+                ]
+            }
+        ]
+    }
+}
