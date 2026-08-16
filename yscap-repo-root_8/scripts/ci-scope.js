@@ -80,7 +80,12 @@ const ALWAYS_FULL = [
  *     committed map now describing a database that no longer exists. Selection
  *     could not be trusted to reach it: a Long-Term migration is provably
  *     Long-Term-only, so the reduced plan would skip it precisely when it
- *     matters. It never fails the build.
+ *     matters. It never fails the build;
+ *   - the Long-Term schema check proves that product's own stated invariant —
+ *     that its Prisma schema and its migrations always agree. An LT migration
+ *     is the exact change that can break it, and an LT migration is exactly
+ *     what the reduced plan is for, so selection cannot be trusted to reach it
+ *     either. It reads two committed files and never fails the build.
  */
 const ALWAYS_RUN_STEPS = [
   'check-product-separation.js',
@@ -90,6 +95,7 @@ const ALWAYS_RUN_STEPS = [
   'test-encompass-readonly-gate.js',
   'test-source-parses-pure.js',
   'check-schema-behind.js',
+  'check-lt-schema-drift.js',
 ];
 
 /** A step that is a Long-Term test. */

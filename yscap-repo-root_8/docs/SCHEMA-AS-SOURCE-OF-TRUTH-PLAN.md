@@ -387,6 +387,55 @@ so plainly rather than guessing when `db/` cannot be read. The 321 primary keys 
 **named as deliberately not listed**, with the reason — a reader who is not told they were left out
 reasonably concludes the database has none.
 
+#### Phase 3c — Long-Term already does Phase 3, and nothing was checking it (2026-08-16)
+
+Main's #1178 landed `src/longterm/prisma/schema.prisma` while this branch was open — so the Long-Term
+product now has exactly what §1.2 held it up as an example of: a hand-written schema that is the source
+of truth, with migrations written from it. **Its own header states the invariant** — *"define/adjust the
+model HERE, then write the matching idempotent `db/NNN_lt_*.sql` … The two must always agree."*
+
+**Nothing checked that.** It was an assertion in a comment, which is the shape CLAUDE.md rule 3 exists to
+forbid: *where a mirror is unavoidable, a test must fail the moment they disagree.* Two ways to break it,
+and both pass every other check in the repository:
+
+| what goes wrong | what happens |
+|---|---|
+| a model added with **no migration** | the code queries a column that does not exist — it fails at runtime, on the first query, in front of a user |
+| a migration added with **no model** | the single source of truth quietly stops describing the database — the exact rot this whole plan exists to stop, arriving on the one product built to be immune to it |
+
+**Measured first: they agree today.** All 20 declared tables exist, all 20 `lt_*` tables in the database
+are declared, and every column matches in both directions. So the guard was added to a clean state — it
+starts by confirming something true rather than by reporting a backlog.
+
+**`check-lt-schema-drift.js` needs no database either**, because both sides are committed files: the
+hand-written schema, and `beyond-prisma.json` read from the real catalogue. It is in `ALWAYS_RUN_STEPS`
+for the same reason the freshness check is — **an LT migration is *provably* Long-Term-only, so the
+reduced plan is exactly the mode in which this must not be skipped.** Verified: an LT migration now runs
+29 of 921 steps and this is one of them.
+
+**It abstains rather than guessing, and that is the part to keep.** The snapshot is a photograph with a
+date on it. If a migration has landed since, a table the schema declares and the snapshot lacks is most
+likely *brand new and correct* — so a stale map may not accuse in that direction. The opposite direction
+(a column that is IN the photograph and undeclared) is still reported, because that one is not in doubt.
+Without this it would have fired on every properly-added model, which is the fastest way to get a check
+switched off.
+
+**The near-miss worth recording: a Prisma relation is not a column.** The obvious filter — look for
+`@relation(` on the line — misses every one-to-many back-reference, because the list side carries no
+such marker. Run against the real schema it produced **17 phantom "missing columns" across 6 tables**,
+i.e. it would have cried wolf on a correct schema from its very first run. The reliable test is the
+field's TYPE. Ten mutations proven red, including one specifically for that filter and one for the
+abstention.
+
+**This is shared plumbing, not Long-Term product code.** It imports nothing from either product, queries
+nothing, and only ever reads the names of `lt_*` tables; a non-`lt_` table is ignored entirely and a test
+pins that. `check-product-separation.js` is clean on it.
+
+**It is advisory, but it is the one in this family most worth flipping.** Unlike its RTL sibling — where
+a difference is usually a documentation chore — a difference here is a real defect. It is left advisory
+today only because of the standing rule that nothing starts failing that passes now, and the flip is one
+variable (`LT_SCHEMA_DRIFT_ENFORCE=1`).
+
 ### Phase 4 — Renaming for beauty. Optional, slow, possibly never.
 The genuinely risky part, and the one that buys the least. `llcs` now holds corporations, partnerships
 and trusts; CLAUDE.md already records the decision **not** to rename it, because ~200 files, nine
