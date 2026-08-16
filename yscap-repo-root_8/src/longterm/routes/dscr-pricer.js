@@ -13,6 +13,8 @@
  */
 const express = require('express');
 const lp = require('../lenderprice/client');
+const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
+const { REGISTRY_WARNINGS } = require('../lenderprice/search-model');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
 const BATTERY = [
@@ -27,9 +29,86 @@ function trimPrograms(parsed, limit = 60) {
   return {
     meta: { programCount: parsed.programCount, lenderCount: parsed.lenderCount, rungCount: parsed.rungCount, disqualifiedCount: parsed.disqualifiedCount },
     programs: parsed.programs.slice(0, limit).map((p) => ({
-      lender: p.lender, program: p.program, minRate: p.minRate, maxPrice: p.maxPrice, rungCount: p.rungCount,
+      lender: p.lender, investor: p.investor || null, lenderId: p.lenderId || null,
+      program: p.program, product: p.product || null,
+      minRate: p.minRate, minPoints: p.minPoints, maxPrice: p.maxPrice, rungCount: p.rungCount,
     })),
   };
+}
+
+// The scenario fields the builder ACTUALLY honors. Anything else a caller sends must be REJECTED,
+// never silently ignored — otherwise the caller gets plausible pricing for a DIFFERENT scenario
+// (the "silent substitution" data-integrity bug). Grow this set (and the builder) together as
+// fields are implemented; a not-yet-implemented field is rejected with 422 unsupported_field.
+const SUPPORTED_FIELDS = new Set([
+  'purpose', 'value', 'appraisedValue', 'asIsValue', 'loan', 'ltv', 'fico', 'dscr',
+  'propertyType', 'units', 'zip', 'state', 'county', 'countyFps', 'city', 'countyName',
+  'borrowerType', 'prepayMonths', 'io', 'escrowWaive', 'fthb', 'date',
+  'term', 'termYears', 'lockDays',
+  // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). Each maps to an
+  // exact upstream path/token; an invalid VALUE for one is rejected as invalid_field_value (below).
+  ...REGISTRY_FIELDS,
+]);
+// Request-envelope keys the ROUTE consumes (not pricing inputs) — always allowed.
+const META_FIELDS = new Set(['scenario', 'debug', 'full', 'raw', 'poll', 'disqualify', 'maxWaitMs', 'pollMs', 'companyId']);
+function unsupportedFields(sc) {
+  return Object.keys(sc || {}).filter((k) => !SUPPORTED_FIELDS.has(k) && !META_FIELDS.has(k));
+}
+// The EFFECTIVE scenario actually sent upstream — so a caller can see requested-vs-effective and
+// catch any silent default. Read straight off the built searchRaw payload.
+function effectiveOf(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const c = payload.criteria || {};
+  const p = payload.property || {};
+  const dp = payload.dynamicPropertiesMap || {};
+  const dyn = (k) => (dp[k] && typeof dp[k] === 'object' ? dp[k].value : dp[k]);
+  return {
+    loanPurpose: c.loanPurpose, purchasePrice: c.purchasePrice, appraisedValue: c.appraisedValue,
+    loanAmount: c.loanAmount, ltv: c.ltv, fico: c.fico, dscr: c.dscr,
+    loanYear: c.loanYear, termsCriteria: payload.termsCriteria, termsInMonths: payload.termsInMonths,
+    dayLocks: payload.brokerCriteria && payload.brokerCriteria.dayLocks, dayLocksCriteria: payload.dayLocksCriteria,
+    loanType: c.loanType, loanTypeCriteria: payload.loanTypeCriteria,
+    propertyUse: c.propertyUse, propertyType: p.propertyType, numberOfUnit: p.numberOfUnit, attachmentType: p.attachmentType,
+    interestOnly: c.interestOnly, escrowWaiver: c.escrowWaiver, firstTimeHomeBuyer: c.firstTimeHomeBuyer,
+    compensationType: c.compensationType, incomeDocType: dyn('IncomeDocType'), borrowerType: dyn('GLOBAL_BorrowerType'),
+    prepayTerm: dyn('PrepayTerm'), specialMortgageOptions: Array.isArray(c.specialMortgageOptions) ? c.specialMortgageOptions.map((s) => s && s.name).filter(Boolean) : undefined,
+    // Registry-backed advanced fields ACTUALLY sent upstream — so a caller can confirm a supported
+    // advanced field was applied (not silently dropped). Only present when non-default.
+    nonWarrantableProject: c.nonWarrantableProject,
+    selfEmployed: c.selfEmployed, monthlyIncome: c.monthlyIncome, monthlyDebt: c.monthlyDebt,
+    clientDti: c.clientDti, numberOfBorrower: c.numberOfBorrower, ownProperties: c.ownProperties,
+    lenderFeeWaiver: c.lenderFeeWaiver, rural: c.rural,
+    citizenship: dyn('Citizenship'), tradelines: dyn('Tradelines'),
+    mixedUse: dyn('GLOBAL_MixedUse'), noMortgageHistory: dyn('GLOBAL_NoMortgageHistory'),
+    bankruptcyChapter: dyn('BankruptcyChapter'), bankruptcyStatus: dyn('BankruptcyStatus'), bankruptcySeasoning: dyn('BankruptcySeasoning'),
+    foreclosure: dyn('Global_FORECLOSURES'), shortSale: dyn('Global_SHORTSALES'), deedInLieu: dyn('Global_DEEDINLIEU'),
+    chargeOff: dyn('GLOBAL_MortgageLoanChargeOffs'), forbearance: dyn('GLOBAL_Forbearances'),
+  };
+}
+// 422 the caller if a SUPPORTED registry field carried an invalid enum value — the builder collects
+// these as warnings and does NOT apply the bad value, so returning pricing would again be a silent
+// substitution (accepted field, ignored value). Reads the JSON-invisible Symbol channel off the
+// built payload. Returns true if it responded. (Belongs AFTER the upstream call: warnings live on
+// the built request.)
+function rejectInvalidValues(request, res) {
+  const w = request && request[REGISTRY_WARNINGS];
+  if (Array.isArray(w) && w.length) {
+    res.status(422).json({ ok: false, error: 'invalid_field_value', warnings: w,
+      message: `One or more fields carried a value the pricing engine does not recognize; the value would be silently dropped, so the request is rejected rather than mis-priced: ${w.map((x) => x.field).join(', ')}.` });
+    return true;
+  }
+  return false;
+}
+
+// 422 the caller if they sent a field the builder does not implement (never silently ignore it).
+function rejectUnsupported(sc, res) {
+  const bad = unsupportedFields(sc);
+  if (bad.length) {
+    res.status(422).json({ ok: false, error: 'unsupported_field', fields: bad,
+      message: `These fields are not implemented yet and would be silently ignored, so the request is rejected rather than mis-priced: ${bad.join(', ')}. (Supported: ${Array.from(SUPPORTED_FIELDS).join(', ')}.)` });
+    return true;
+  }
+  return false;
 }
 
 // GET /health — is the module up and are Lender Price credentials configured (no login attempted).
@@ -48,17 +127,92 @@ async function loginCheck(req, res) {
 // POST /price — body is a scenario (or { scenario }). Returns the parsed program summary.
 async function price(req, res) {
   const sc = (req.body && req.body.scenario) ? req.body.scenario : (req.body || {});
+  if (rejectUnsupported(sc, res)) return; // never silently ignore an unimplemented field
   const r = await lp.price(sc);
   if (!r.ok) {
     const code = (r.http && r.http >= 500) ? 502 : 400;
     return res.status(code).json({ ok: false, error: r.error, http: r.http || null, message: r.message, upstream: r.upstream || r.body || null });
   }
+  if (rejectInvalidValues(r.request, res)) return; // a supported field carried an unrecognized value
+  const effective = effectiveOf(r.request); // requested-vs-effective transparency
+  // full:true → the COMPLETE capture (every option's price build, itemized LLPAs, margin/holdback,
+  // comp, fees, ratios, monthly payment). Add raw:true to also attach each option's untouched leaf.
+  if (req.body && req.body.full) {
+    const full = lp.parseFull(r.raw, { raw: !!req.body.raw });
+    const out = { ok: true, ...full, effectiveScenario: effective, request: r.request };
+    if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
+    return res.json(out);
+  }
   const parsed = lp.parse(r.raw);
-  const out = { ok: true, ...trimPrograms(parsed), request: r.request };
+  const out = { ok: true, ...trimPrograms(parsed), effectiveScenario: effective, request: r.request };
   // Secret-gated diagnostics (the whole router is behind the diag token / staff login): when the
   // caller asks, include a structural summary of the raw response so we can see whether Lender
   // Price returned programs the parser missed, or truly zero — and any disqualify reasons.
   if (req.body && req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
+  res.json(out);
+}
+
+// POST /disqualify — body is a scenario (or { scenario }). Returns the QUALIFIED summary plus the
+// DISQUALIFIED reasons per lender. Lender Price computes disqualifies ASYNCHRONOUSLY (a few minutes),
+// so this kicks the computation off and polls the cached result within a bounded window; if it isn't
+// ready in time it returns ready:false with the qualified data — call again and the cached result
+// (built from the identical body) comes back quickly. Optional body: { maxWaitMs, pollMs, debug }.
+async function disqualify(req, res) {
+  const body = req.body || {};
+  const sc = body.scenario ? body.scenario : body;
+  if (rejectUnsupported(sc, res)) return;
+  // POLL-ONLY mode ({poll:true}): a prior /price already kicked off the async computation. This
+  // just polls the cached result (no re-kickoff, no blocking loop) → 200 when ready, 202 while
+  // still computing. This is the recommended flow (kick off on /price, then poll here every ~2s).
+  if (body.poll) {
+    const pr = await lp.pollDisqualified(sc);
+    if (!pr.ok) {
+      const code = (pr.http && pr.http >= 500) ? 502 : 400;
+      return res.status(code).json({ ok: false, error: pr.error, http: pr.http || null, message: pr.message, upstream: pr.upstream || pr.body || null });
+    }
+    if (rejectInvalidValues(pr.request, res)) return;
+    if (!pr.ready) return res.status(202).json({ ok: true, ready: false, retryAfterMs: 2000, message: 'Disqualify reasons still computing — poll again shortly.' });
+    const d = lp.parseDisqualified(pr.raw);
+    const outp = {
+      ok: true, ready: true,
+      disqualified: { ready: true, lenderCount: d.lenderCount, itemCount: d.itemCount, reasonCount: d.reasonCount,
+        lenders: d.lenders.slice(0, 80).map((g) => ({ lender: g.lender, investor: g.investor || null, lenderId: g.lenderId || null, itemCount: g.itemCount, items: g.items.slice(0, 40) })) },
+    };
+    if (body.debug) outp.rawSummary = lp.summarizeRaw(pr.raw);
+    return res.json(outp);
+  }
+  const opts = {};
+  if (body.maxWaitMs != null) opts.maxWaitMs = Math.min(Number(body.maxWaitMs) || 0, 100000);
+  if (body.pollMs != null) opts.pollMs = Math.max(Number(body.pollMs) || 0, 1000);
+  const r = await lp.priceDisqualified(sc, opts);
+  if (!r.ok) {
+    const code = (r.http && r.http >= 500) ? 502 : 400;
+    return res.status(code).json({ ok: false, error: r.error, http: r.http || null, message: r.message, upstream: r.upstream || r.body || null });
+  }
+  if (rejectInvalidValues(r.request, res)) return;
+  const qualified = trimPrograms(lp.parse(r.qualified));
+  const disq = lp.parseDisqualified(r.disqualified);
+  const out = {
+    ok: true,
+    ready: r.ready,
+    polls: r.polls,
+    message: r.message || null,
+    qualified,
+    disqualified: {
+      ready: disq.ready,
+      lenderCount: disq.lenderCount,
+      itemCount: disq.itemCount,
+      reasonCount: disq.reasonCount,
+      lenders: disq.lenders.slice(0, 80).map((g) => ({
+        lender: g.lender,
+        investor: g.investor || null,
+        lenderId: g.lenderId || null,
+        itemCount: g.itemCount,
+        items: g.items.slice(0, 40),
+      })),
+    },
+  };
+  if (body.debug) out.rawSummary = lp.summarizeRaw(r.disqualified);
   res.json(out);
 }
 
@@ -84,8 +238,9 @@ function makeRouter() {
   router.get('/health', (req, res) => health(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_health_error' })));
   router.get('/login-check', (req, res) => loginCheck(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_login_error' })));
   router.post('/price', (req, res) => price(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_price_error' })));
+  router.post('/disqualify', (req, res) => disqualify(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualify_error' })));
   router.post('/selftest', (req, res) => selftest(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_selftest_error' })));
   return router;
 }
 
-module.exports = { makeRouter, handlers: { health, loginCheck, price, selftest }, BATTERY };
+module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, selftest }, BATTERY };

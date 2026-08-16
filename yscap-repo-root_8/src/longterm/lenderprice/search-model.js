@@ -13,6 +13,12 @@
  * Pure + offline — safe to unit-test with no network. LT-only; no RTL imports.
  */
 const BASE = require('./search-base.json');
+const registry = require('./field-registry');
+
+// Symbol channel for registry validation warnings (invalid enum values). Symbol-keyed properties
+// are skipped by JSON.stringify, so attaching this to the built payload never pollutes the body
+// posted upstream; the route reads it to 422 an invalid value rather than silently ignoring it.
+const REGISTRY_WARNINGS = Symbol.for('lp.registryWarnings');
 
 // SMO ids observed in real captures. The DSCR pair selects the DSCR product; it is always sent.
 // These are FALLBACKS: when a live /pricing/smo registry is passed via opts.smo, the current
@@ -24,9 +30,15 @@ const SMO_DSCR = [
 ];
 // Prepay-term SMOs by months. Terms without a known id fall back to dynaToSmo + the dynamic
 // PrepayTerm value (Lender Price derives the SMO because the request carries dynaToSmo:true).
+// 0 = No PPP: a no-prepay scenario MUST resolve to "No PPP" / PrepayTerm "None" — sending
+// "0 Yr PPP" / PrepayTerm 0 makes Lender Price reject the search with HTTP 400.
 const SMO_PPP = {
-  60: { id: '58263ae7e4b0e7f399741293', name: '5 Yr PPP' },
+  0: { id: '592868b74cedfd00015bdd64', name: 'No PPP' },
+  12: { id: '592868b74cedfd00015bdd61', name: '1 Yr PPP' },
+  24: { id: '592868b74cedfd00015bdd62', name: '2 Yr PPP' },
   36: { id: '592868b74cedfd00015bdd63', name: '3 Yr PPP' },
+  48: { id: '583608ece4b075381a196a57', name: '4 Yr PPP' },
+  60: { id: '58263ae7e4b0e7f399741293', name: '5 Yr PPP' },
 };
 
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -59,10 +71,12 @@ function mapPurpose(p) {
     : 'Refinance';
 }
 function mapProp(t) {
+  // Prefer the full registry enum (audit §17.1 — every upstream property.propertyType token).
+  const r = registry.resolvePropertyType(t);
+  if (r) return { propertyType: r.propertyType, nonWarrantableProject: !!r.nonWarrantableProject, attachmentType: r.attachmentType, units: r.units };
+  // Fallback for legacy scenario spellings the registry map does not carry; default SingleFamily.
   switch (t) {
-    case 'Unit2_4': case 'UnitDwelling_2_4': return { propertyType: 'UnitDwelling_2_4', nonWarrantableProject: false, attachmentType: 'Attached', units: 2 };
-    case 'CondoWarr': case 'Condos': case 'Condominium': return { propertyType: 'Condos', nonWarrantableProject: false, attachmentType: 'Attached', units: 1 };
-    case 'CondoNonWarr': return { propertyType: 'Condos', nonWarrantableProject: true, attachmentType: 'Attached', units: 1 };
+    case 'Condominium': return { propertyType: 'Condos', nonWarrantableProject: false, attachmentType: 'Attached', units: 1 };
     default: return { propertyType: 'SingleFamily', nonWarrantableProject: false, attachmentType: 'Detached', units: 1 };
   }
 }
@@ -87,23 +101,35 @@ function buildSearch(sc = {}, opts = {}) {
 
   const c = m.criteria || (m.criteria = {});
   if (value != null) { c.purchasePrice = value; c.appraisedValue = value; }
+  // Appraised (as-is) value is SEPARATE from the purchase price — do not always mirror it.
+  if (num(sc.appraisedValue != null ? sc.appraisedValue : sc.asIsValue) != null) c.appraisedValue = num(sc.appraisedValue != null ? sc.appraisedValue : sc.asIsValue);
   if (loan != null) c.loanAmount = loan;
   if (ltv != null) c.ltv = ltv;
   if (num(sc.fico) != null) c.fico = num(sc.fico);
   if (num(sc.dscr) != null) c.dscr = num(sc.dscr);
+  // Loan TERM (years) — honor it instead of silently sending the base's 30. loanYear +
+  // termsCriteria must agree; termsInMonths=false means the number is years, NOT a day-lock.
+  const termYears = num(sc.termYears != null ? sc.termYears : sc.term);
+  if (termYears != null) { c.loanYear = termYears; m.termsCriteria = [termYears]; m.termsInMonths = false; }
+  // Rate-LOCK days — honor it instead of the base's 30. Lives in brokerCriteria.dayLocks +
+  // dayLocksCriteria; this is a LOCK period (days), NOT the loan term (years).
+  const lockDays = num(sc.lockDays);
+  if (lockDays != null) { const bc = m.brokerCriteria || (m.brokerCriteria = {}); bc.dayLocks = lockDays; m.dayLocksCriteria = [lockDays]; }
   c.loanPurpose = purpose;
   c.propertyUse = 'Investment';
   c.compensationType = 'BorrowerCompPlan';
   c.interestOnly = !!sc.io;
   c.escrowWaiver = !!sc.escrowWaive;
+  c.firstTimeHomeBuyer = !!sc.fthb;
   c.nonWarrantableProject = pm.nonWarrantableProject;
 
   // Special mortgage options: DSCR pair (+ PPP), resolved to the company's CURRENT {id,name}
-  // via the live registry when present, else the captured built-in ids.
+  // via the live registry when present, else the captured built-in ids. months===0 → "No PPP".
   const smo = SMO_DSCR.map((d) => resolveSmo(d.name, smoReg, d));
   if (months != null) {
     const fb = SMO_PPP[months] || null;
-    const pppName = (months % 12 === 0) ? `${months / 12} Yr PPP` : `${months} Months PPP`;
+    const pppName = months === 0 ? 'No PPP'
+      : (months % 12 === 0) ? `${months / 12} Yr PPP` : `${months} Months PPP`;
     smo.unshift(resolveSmo(fb ? fb.name : pppName, smoReg, fb));
   }
   c.specialMortgageOptions = smo;
@@ -125,7 +151,8 @@ function buildSearch(sc = {}, opts = {}) {
   if (sc.state != null) a.state = sc.state;
   if (sc.city != null) a.city = sc.city;
   if (sc.countyFps != null) { a.county = sc.countyFps; a.censustract = sc.countyFps; }
-  if (sc.county != null) a.countyName = sc.county;
+  if (sc.countyName != null) a.countyName = sc.countyName;
+  else if (sc.county != null) a.countyName = sc.county;
 
   // Dynamic properties are {fieldId, value} objects — set values in place.
   const dp = m.dynamicPropertiesMap || (m.dynamicPropertiesMap = {});
@@ -133,11 +160,51 @@ function buildSearch(sc = {}, opts = {}) {
   setDyn('IncomeDocType', 'DSCR');
   setDyn('AddlOccupancyType', 'Long_Term_Rental_Property');
   setDyn('GLOBAL_BorrowerType', sc.borrowerType || 'LLC');
-  setDyn('PrepayTerm', months ? `${months} Months` : null);
+  // months===0 is an EXPLICIT "no prepay" (PrepayTerm "None"), NOT "unset" — sending 0/"0 Months"
+  // is what triggered the live HTTP 400. A missing prepayMonths leaves it null.
+  setDyn('PrepayTerm', months === 0 ? 'None' : (months ? `${months} Months` : null));
   setDyn('PrePayment_Plan_Type', months ? 'Standard' : null);
   m.dynaToSmo = true;
+
+  // ALL OPTIONS — the default the web app always searches with (confirmed byte-for-byte from the
+  // HAR): return EVERY rate and ALL of its points, never a targeted rate or price. We assert these
+  // knobs explicitly (rather than trusting the base) so a live /pricing/defaultSearch that happens
+  // to carry a saved target rate/price/favorite can never narrow a scenario's results.
+  m.rate = null;                          // no single target rate
+  m.rates = [];                           // no specific rate list
+  m.maxListingPerRate = -1;               // unlimited listings (all points) per rate
+  m.targetInterpolatedPrices = [];        // no target price
+  m.skipAdjustments = false;              // include all pricing adjustments
+  // Full rate range (no floor/ceiling), preserving the base's typed range shape when present.
+  if (m.rateRange && typeof m.rateRange === 'object') { m.rateRange.from = null; m.rateRange.to = null; }
+  else m.rateRange = { from: null, to: null };
+
+  // Disqualify workflow (mirrors the web app): a normal search is ALSO the async KICKOFF — it
+  // carries showDisqualify + disqualifyAsync so Lender Price starts computing the disqualify
+  // reasons in the background. A later POLL re-sends the byte-identical body with ONLY
+  // cachedDisqualified flipped to true, so its cache key matches the kickoff and the ready result
+  // comes back quickly (the frontend does exactly this — kick off on search, poll on the
+  // "ineligible" click). We set these flags EXPLICITLY (not inherited from the base) so the
+  // kickoff and poll bodies can differ ONLY in cachedDisqualified.
+  const polling = !!(opts.disqualify && opts.disqualify.cached);
+  m.showDisqualify = true;
+  m.showDisqualifyRules = true;     // include the actual failing RULE text, not just a flag
+  m.disqualifyAsync = true;
+  // Kickoff (cached=false) returns an EMPTY disqualify tree (the captured HAR confirms this) — it
+  // only STARTS the async computation. The POLL (cached=true) must ask for the FULL result, or the
+  // ready tree comes back empty. These are result-SHAPING flags, not search criteria, so flipping
+  // them does not change the cache slot (which is keyed on the scenario), only what is returned.
+  m.disqualifyFullResult = polling;
+  m.fillLenderMap = true;
+  m.cachedDisqualified = polling; // false = kick off; true = poll
+
+  // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). This runs AFTER
+  // the core overlay so it only ADDS the extensions; invalid enum values are collected as warnings
+  // (surfaced by the route as a 422 invalid_field_value — never applied, never silently ignored).
+  const reg = registry.applyRegistry(m, sc);
+  if (reg && reg.warnings && reg.warnings.length) m[REGISTRY_WARNINGS] = reg.warnings;
 
   return m;
 }
 
-module.exports = { BASE, buildSearch, smoRegistryFromList, _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp } };
+module.exports = { BASE, buildSearch, smoRegistryFromList, REGISTRY_WARNINGS, _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp } };

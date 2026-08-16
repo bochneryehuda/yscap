@@ -65,7 +65,28 @@ not hardcoded.
 | GET | `/api/lt/dscr/health` | Up? Are credentials configured? (no login attempted) |
 | GET | `/api/lt/dscr/login-check` | Actually log in and report ok/failure + companyId/userId |
 | POST | `/api/lt/dscr/price` | Body = a scenario (or `{scenario}`) → parsed program summary |
+| POST | `/api/lt/dscr/disqualify` | Body = a scenario → qualified summary **plus** the disqualify reasons per lender |
 | POST | `/api/lt/dscr/selftest` | Run the fixed scenario battery |
+
+### How the disqualify workflow works (the "show disqualified" button)
+
+A normal search returns only the **qualified** programs, fast. To also learn WHY each lender turned
+the scenario down, Lender Price mirrors its web app's two-phase, **asynchronous** flow:
+
+1. Re-send the same searchRaw body with the disqualify flags — `showDisqualify`,
+   `showDisqualifyRules` (include the actual failing rule text), `disqualifyAsync`, `fillLenderMap`,
+   and `cachedDisqualified:false`. This returns the qualified programs immediately and **kicks off**
+   the disqualify computation on Lender Price's side.
+2. Poll the same body with `cachedDisqualified:true`. While Lender Price is still computing (a few
+   minutes) it answers with an **empty body**; once ready it returns the full result with a populated
+   `results.disqualifiedData` tree (lender → program → failing rules + reasons).
+
+`priceDisqualified()` does both, polling within a bounded window (`LP_DISQUALIFY_MAX_WAIT_MS`, default
+80s; `LP_DISQUALIFY_POLL_MS`, default 5s). The poll body differs from the kickoff only in
+`cachedDisqualified`, so Lender Price's cache key matches — which means calling the endpoint **again**
+rebuilds the identical body and picks up the cached result quickly. If the window elapses the endpoint
+returns `ready:false` with the qualified data; call it again shortly. `parseDisqualified()` flattens
+the tree to `{ lenders: [{ lender, items: [{ program, reasons }] }] }`.
 
 **Secret-gated diagnostics** (no staff login; for backend verification):
 `/api/lt/_diag/lenderprice/{health,login-check,price,selftest}` — identical handlers, gated

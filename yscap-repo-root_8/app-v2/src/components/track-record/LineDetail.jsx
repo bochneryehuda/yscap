@@ -6,6 +6,7 @@ import { askConfirm, askPrompt } from '../../lib/dialog.js';
 import DocPreview from '../DocPreview.jsx';
 import { useMenuAutoClose, closeMenu } from '../ConditionActions.jsx';
 import { TR_STATUS_LABEL, TR_REVIEW_OUTCOMES, trStatusShort } from '../../lib/trackRecordStatus.js';
+import { trackRecordPropertyTypeLabel, trackRecordPropertyTypeOptions } from '../../lib/trackRecordPropertyTypes.js';
 
 /* ONE LINE'S WHOLE STORY, IN ONE COMPONENT (mega-workspace "one screen"
    enhancement, owner-directed 2026-08-09: "every single option available on the
@@ -390,6 +391,11 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
       exitKind: initialExitKind(l),
       ownedPersonally: !!l.ownedPersonally,
       entityName: l.entityName || '',
+      // Seeded from the line's OWN canonical label so the picker opens on what
+      // the line actually holds. A stored spelling the vocabulary does not carry
+      // is offered back to itself (trackRecordPropertyTypeOptions appends it),
+      // so opening the form can never silently blank a real answer.
+      propertyType: trackRecordPropertyTypeLabel(l.propertyType) || '',
       purchasePrice: l.purchasePrice ?? '', purchaseDate: day(l.purchaseDate) || '',
       rehabAmount: l.rehabAmount ?? '',
       salePrice: l.salePrice ?? '', saleDate: day(l.saleDate) || '',
@@ -417,6 +423,15 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
         entityName: e.ownedPersonally ? '' : e.entityName,
         purchasePrice: e.purchasePrice, purchaseDate: e.purchaseDate,
         rehabAmount: e.rehabAmount,
+        /* ALWAYS SENT, INCLUDING BLANK — and blank genuinely means "clear it".
+           The picker is on screen showing the line's current answer, so a blank
+           box is a deliberate "take this off", not a field the user never saw.
+           That is the distinction `trackRecordSentOnly` is built around: an
+           OMITTED key is preserved, a key carrying '' is written. It is also why
+           the exit fields above are omitted rather than blanked — those swap out
+           of sight with the deal type, and clearing what the user cannot see is
+           the bug that rule exists to prevent. */
+        propertyType: e.propertyType || '',
       };
       // DYNAMIC BY DEAL TYPE (owner-directed 2026-08-12): only the exit fields
       // that apply to this deal type + exit are shown, and only those are SENT.
@@ -510,6 +525,7 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
   const sp = readNum(line.salePrice);
   const rehab = readNum(line.rehabAmount);
   const grossSpread = (sp != null && pp != null) ? sp - pp - (rehab || 0) : null;
+  const ptLabel = trackRecordPropertyTypeLabel(line.propertyType);
   const exitFig = line.dealType && /hold|rental/i.test(line.dealType)
     ? (line.rentAmount != null
       ? { label: 'Rented', value: `${money(line.rentAmount)}/mo`, hint: day(line.rentDate) }
@@ -527,6 +543,18 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
         <div className="tr-deal-h">
           <h3>{line.address}</h3>
           <span className="pill small">{dealLabel(line.dealType)}</span>
+          {/* WHAT KIND OF BUILDING IT WAS. Beside the deal type because the two
+              answer one question together — "a fix & flip of WHAT?" — and a
+              reviewer reads them as a pair. Absent, it says so RIGHT HERE
+              rather than staying silent: this panel is opened deliberately, by
+              the person who can fix it, and it feeds a note buyer's own form
+              (an untyped line ships that column blank), so "nobody has said
+              yet" is information the reviewer wants. The ledger row above stays
+              silent for the opposite reason — nobody scanning twenty rows wants
+              twenty reminders. */}
+          {ptLabel
+            ? <span className="pill small tr-pt" title="Property type">{ptLabel}</span>
+            : <span className="pill small tr-pt is-empty" title="No property type on this project yet — add it with Edit details. A note buyer's form asks for it.">Property type not set</span>}
           {line.ownedPersonally
             ? <span className="pill small" title="Held under the borrower's personal name — no LLC">Personal name</span>
             : (line.entityName ? <span className="pill small" title={line.entityDocsVerified ? 'The company’s documents are complete' : 'The company’s documents are not complete yet'}>{line.entityName}{line.entityDocsVerified ? ' ✓' : ''}</span> : null)}
@@ -654,6 +682,23 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
                 <div className="tr-grid">
                   <label className="tr-field" style={{ gridColumn: '1 / -1' }}><span>Address (leave blank to keep it)</span>
                     <input className="input" placeholder={line.address} value={editing.addressText} onChange={(ev) => setEditing({ ...editing, addressText: ev.target.value })} /></label>
+                  {/* PROPERTY TYPE sits with the ADDRESS, not with the money:
+                      both describe the building, while the deal type and the
+                      figures describe what was done to it. `className="input"`
+                      is not optional — styles.css dresses the `.input` CLASS,
+                      not the `select` TAG, so a bare control renders unstyled. */}
+                  <label className="tr-field" style={{ gridColumn: '1 / -1' }}>
+                    <span>Property type</span>
+                    <select className="input" value={editing.propertyType}
+                      onChange={(ev) => setEditing({ ...editing, propertyType: ev.target.value })}>
+                      <option value="">Not stated</option>
+                      {trackRecordPropertyTypeOptions(editing.propertyType).map((g) => (
+                        <optgroup key={g.group} label={g.group}>
+                          {g.types.map((t) => <option key={t} value={t}>{t}</option>)}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </label>
                 </div>
               </div>
 

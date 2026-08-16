@@ -249,34 +249,129 @@ async function fetchSmoRegistry(companyId) {
 // Body is built by buildSearchPayload() from the decoded field mapping. Returns the full
 // investor rate stack (a large nested tree). VERIFY the exact body against a live searchRaw
 // on the first Render run — this module builds from the recordings' decoded mapping.
-async function price(scenario) {
+function sleep(ms) { return new Promise((rs) => setTimeout(rs, ms)); }
+
+// Resolve the session + company/user ids + the live base/SMO foundation once. Shared by the
+// qualified price() and the disqualify workflow so both build from the identical model.
+async function priceFoundation() {
   const s = await getSession();
   if (!s.ok) return { ok: false, ...s };
   const companyId = s.companyId || process.env.LP_COMPANY_ID;
   const userId = s.userId || process.env.LP_USER_ID;
   if (!companyId || !userId) return { ok: false, error: 'lp_no_ids', message: 'Missing companyId/userId from the Lender Price session.' };
+  const [liveBase, smoReg] = await Promise.all([fetchDefaultSearch(companyId, userId), fetchSmoRegistry(companyId)]);
+  const url = `${API_BASE}/rest/v1/lp-ppe-integration/pricing/searchRaw/${encodeURIComponent(companyId)}/${encodeURIComponent(userId)}`;
+  return { ok: true, session: s, companyId, userId, url, liveBase: liveBase || undefined, smo: smoReg || undefined };
+}
+
+// POST one searchRaw body (with a single 401 re-login retry). Returns { ok, http, raw, empty }.
+// `empty` marks an ACCEPTED-but-empty body — how Lender Price answers "the async result isn't
+// cached yet" during the disqualify poll.
+async function postSearchRaw(url, session, payload) {
+  let s = session;
+  let r;
+  try { r = await req(url, { method: 'POST', bearer: s.token, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
+  catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
+  if (r.status === 401) {
+    const s2 = await getSession({ force: true });
+    if (!s2.ok) return { ok: false, ...s2 };
+    s = s2;
+    try { r = await req(url, { method: 'POST', bearer: s.token, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
+    catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
+  }
+  if (r.status !== 200) return { ok: false, error: 'lp_price_status', http: r.status, message: `searchRaw → ${r.status}`, upstream: scrub((r.text || '').slice(0, 600)) };
+  const raw = r.json != null ? r.json : r.text;
+  const empty = raw == null || (typeof raw === 'string' && raw.trim() === '') || (typeof raw === 'object' && Object.keys(raw).length === 0);
+  return { ok: true, session: s, raw, empty };
+}
+
+async function price(scenario) {
+  const f = await priceFoundation();
+  if (!f.ok) return f;
   // Build the FULL canonical search model. Prefer the company's LIVE default search (so every
   // current default/config is preserved) and its LIVE special-mortgage-option ids; both fall
   // back to the captured static base / built-in ids when the endpoints are unavailable, so a
   // hand-built minimal payload (which Lender Price rejects with 500) is never sent.
-  const [liveBase, smoReg] = await Promise.all([
-    fetchDefaultSearch(companyId, userId),
-    fetchSmoRegistry(companyId),
-  ]);
-  const payload = buildSearch({ ...scenario, companyId }, { base: liveBase || undefined, smo: smoReg || undefined });
-  const url = `${API_BASE}/rest/v1/lp-ppe-integration/pricing/searchRaw/${encodeURIComponent(companyId)}/${encodeURIComponent(userId)}`;
-  let r;
-  try {
-    r = await req(url, { method: 'POST', bearer: s.token, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-  } catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
-  if (r.status === 401) {
-    const s2 = await getSession({ force: true });
-    if (!s2.ok) return { ok: false, ...s2 };
-    try { r = await req(url, { method: 'POST', bearer: s2.token, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
-    catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
+  const payload = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo });
+  const r = await postSearchRaw(f.url, f.session, payload);
+  if (!r.ok) return { ...r, request: payload };
+  return { ok: true, raw: r.raw, request: payload };
+}
+
+// Whether a searchRaw response carries a POPULATED disqualify tree (the async result is ready).
+function hasDisqualifyData(raw) {
+  const d = raw && typeof raw === 'object' && raw.results && raw.results.disqualifiedData;
+  if (!d || typeof d !== 'object') return false;
+  return (Array.isArray(d.childs) && d.childs.length > 0) || (Array.isArray(d.leafs) && d.leafs.length > 0);
+}
+
+// The disqualify workflow (mirrors the web app's "show disqualified" button):
+//  1. POST the search with the disqualify flags (cachedDisqualified=false) → returns the QUALIFIED
+//     programs fast AND kicks off the async disqualify computation server-side.
+//  2. Re-POST the SAME body with cachedDisqualified=true, polling until the cached disqualify tree
+//     is ready (Lender Price answers with an empty body while it is still computing — a few minutes).
+// The poll body differs from the kickoff only in cachedDisqualified, so Lender Price's cache key
+// matches — which means a later call rebuilds the identical body and picks up the ready result
+// instantly (so an external caller can also poll by calling this again). Bounded by maxWaitMs so it
+// never blocks an HTTP request indefinitely; returns ready:false with the qualified data when the
+// window elapses.
+async function priceDisqualified(scenario, opts = {}) {
+  const f = await priceFoundation();
+  if (!f.ok) return f;
+  const kickBody = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo, disqualify: { cached: false } });
+  const pollBody = { ...kickBody, cachedDisqualified: true };
+  const maxWaitMs = opts.maxWaitMs != null ? opts.maxWaitMs : Number(process.env.LP_DISQUALIFY_MAX_WAIT_MS || 80000);
+  const pollMs = opts.pollMs != null ? opts.pollMs : Number(process.env.LP_DISQUALIFY_POLL_MS || 5000);
+
+  // Phase 1 — kick off + qualified.
+  let session = f.session;
+  const first = await postSearchRaw(f.url, session, kickBody);
+  if (!first.ok) return { ...first, request: kickBody };
+  if (first.session) session = first.session;
+  if (hasDisqualifyData(first.raw)) {
+    return { ok: true, ready: true, polls: 0, qualified: first.raw, disqualified: first.raw, request: kickBody };
   }
-  if (r.status !== 200) return { ok: false, error: 'lp_price_status', http: r.status, message: `searchRaw → ${r.status}`, upstream: scrub((r.text || '').slice(0, 600)), request: payload };
-  return { ok: true, raw: r.json != null ? r.json : r.text, request: payload };
+
+  // Phase 2 — poll the cached async result.
+  const t0 = Date.now();
+  let polls = 0;
+  let last = null;
+  while (Date.now() - t0 < maxWaitMs) {
+    await sleep(pollMs);
+    polls += 1;
+    const p = await postSearchRaw(f.url, session, pollBody);
+    if (p.session) session = p.session;
+    if (!p.ok) continue;      // transient upstream error — keep polling within the window
+    if (p.empty) continue;    // still computing (empty body) — keep polling
+    last = p.raw;
+    if (hasDisqualifyData(p.raw)) {
+      return { ok: true, ready: true, polls, qualified: first.raw, disqualified: p.raw, request: pollBody };
+    }
+  }
+  return {
+    ok: true, ready: false, polls,
+    qualified: first.raw,
+    disqualified: last || first.raw,
+    request: pollBody,
+    message: 'Disqualify reasons are still being computed by Lender Price — call again shortly (the result is cached server-side, so the next call returns it quickly).',
+  };
+}
+
+// POLL-ONLY disqualify (the audit's design): a normal price() already KICKED OFF the async
+// computation (its body carries showDisqualify + disqualifyAsync). This rebuilds the byte-identical
+// body with ONLY cachedDisqualified=true and posts it ONCE — it does NOT kick off again, so it can
+// never reset the computation the price() started. Returns { ready:true, disqualified } when the
+// cached tree is populated, or { ready:false } while still computing (empty body). Because
+// buildSearch is deterministic (base/SMO cached), a caller can poll repeatedly over a few minutes,
+// exactly like the web app polls after its search.
+async function pollDisqualified(scenario) {
+  const f = await priceFoundation();
+  if (!f.ok) return f;
+  const body = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo, disqualify: { cached: true } });
+  const r = await postSearchRaw(f.url, f.session, body);
+  if (!r.ok) return { ...r, request: body };
+  if (r.empty || !hasDisqualifyData(r.raw)) return { ok: true, ready: false, request: body };
+  return { ok: true, ready: true, raw: r.raw, request: body };
 }
 
 // ---- request builder (decoded field mapping; README "Field mapping") -------
@@ -374,56 +469,151 @@ function monthlyOf(node) {
   return firstNum(node, ['payment', 'principalAndInterest']);
 }
 
-function parse(raw) {
-  const programs = [];
-  const seen = new Map();
-  // Only parse the results tree (qualifiedNonQMData / qualifiedQMData / …) — never the `search`
-  // echo, whose criteria carry FICO/DSCR/LTV but no rates.
-  const root = (raw && typeof raw === 'object' && raw.results) ? raw.results : raw;
-  walk(root, {});
-  function pushRung(ctx, node) {
-    const rate = firstNum(node, RATE_KEYS);
-    if (rate == null) return;
-    const points = firstNum(node, POINT_KEYS);
-    let price = firstNum(node, PRICE_KEYS);
-    if (price == null && points != null) price = Math.round((100 - points) * 1000) / 1000;
-    if (price == null && points == null) return; // a rate with no cost info at all → not a priced rung
-    const lender = ctx.lender || firstStr(node, LENDER_KEYS) || 'Lender';
-    const program = ctx.program || firstStr(node, PROGRAM_KEYS) || firstStr(node, ['mortgageType']) || 'DSCR';
-    const key = lender + '||' + program;
-    let p = seen.get(key);
-    if (!p) { p = { lender, program, rungs: [] }; seen.set(key, p); programs.push(p); }
-    p.rungs.push({
-      rate, price, points,
-      apr: firstNum(node, ['apr', 'annualPercentageRate', 'notRoundedAPR']),
-      monthly: monthlyOf(node),
-      loanAmount: firstNum(node, ['loanAmount']),
-      term: firstNum(node, ['term']),
-      lockDays: firstNum(node, ['dayLock', 'ratePeriod', 'lockPeriod', 'dayLocks']),
-    });
+// ---- FULL-DETAIL capture ---------------------------------------------------
+// Lender Price returns a deeply detailed tree: results.{qualifiedNonQMData,qualifiedQMData,
+// disqualifiedData} are grouped Program→Rate→Lender, and each priced LEAF carries 140+ fields —
+// the whole pricing build (base rate/points → itemized LLPA stack → margin/holdback → final
+// rate/points/price), lender + program identity, comp, fees, ratios, monthly payment, compliance.
+// We CAPTURE EVERYTHING: every option keeps its full raw leaf plus a clean structured breakdown.
+function unquote(s) { return typeof s === 'string' ? s.replace(/^"+|"+$/g, '') : s; }
+// id → {id,name,shortName} from results.lenderDtos.{lenderDtoQm,NonQm,Disq,sponsored}.
+function lenderDtoMap(R) {
+  const map = {};
+  const d = (R && R.lenderDtos) || {};
+  for (const k of ['lenderDtoQm', 'lenderDtoNonQm', 'lenderDtoDisq', 'sponsoredLenderDto']) {
+    const arr = d[k];
+    if (Array.isArray(arr)) for (const x of arr) if (x && x.id) map[x.id] = { id: x.id, name: x.name || null, shortName: x.shortName || null, ratePeriodId: x.ratePeriodId || null };
   }
-  // A priced rung is a terminal node: it carries a rate and does NOT itself branch into childs/leafs.
-  function isLeafRow(node) {
-    return RATE_KEYS.some((k) => k in node) && !Array.isArray(node.childs) && !Array.isArray(node.leafs);
-  }
-  function walk(node, ctx) {
-    if (node == null || typeof node !== 'object') return;
-    if (Array.isArray(node)) { for (const el of node) walk(el, ctx); return; }
-    if (isLeafRow(node)) { pushRung(ctx, node); return; }
-    const nextCtx = ctxFrom(node, ctx);
-    for (const k of Object.keys(node)) {
-      if (k === 'key') continue; // already consumed into nextCtx; its elements are grouping keys, not rungs
-      const v = node[k];
-      if (v && typeof v === 'object') walk(v, nextCtx);
+  return map;
+}
+// Flatten the itemized adjustment groups (groupAdjustmentProperties / groupRateAdjustmentProperties)
+// into a clean line list: each line's human reason (`key`), its value in points/rate, its group.
+function flattenAdjustments(groups) {
+  const out = [];
+  if (!Array.isArray(groups)) return out;
+  for (const g of groups) {
+    if (!g || typeof g !== 'object') continue;
+    const group = g.name || null;
+    const adjs = Array.isArray(g.adjustments) ? g.adjustments : [];
+    if (!adjs.length && (g.finalAdjustment != null || g.totalAdjustment != null)) {
+      out.push({ group, reason: group, type: g.type || null, valueType: null, value: num(g.finalAdjustment != null ? g.finalAdjustment : g.totalAdjustment) });
+    }
+    for (const a of adjs) {
+      if (!a || typeof a !== 'object') continue;
+      out.push({ group, reason: a.key || a.name || group, adjType: a.adjType || null, type: a.type || null, valueType: a.valueType || null, value: num(a.llpa != null ? a.llpa : a.adj) });
     }
   }
-  for (const p of programs) {
-    p.rungs.sort((a, b) => a.rate - b.rate);
-    p.rungCount = p.rungs.length;
-    p.minRate = p.rungs.length ? p.rungs[0].rate : null;
-    p.maxPrice = p.rungs.reduce((m, r) => (r.price != null && r.price > m ? r.price : m), -Infinity);
-    if (!isFinite(p.maxPrice)) p.maxPrice = null;
+  return out;
+}
+// The margin/holdback the lender/broker keeps (holdBackResult.{broker,lender,investor}.adjustments).
+function holdbackOf(leaf) {
+  const hb = leaf.holdBackResult;
+  if (!hb || typeof hb !== 'object') return null;
+  const out = {};
+  for (const party of ['broker', 'lender', 'investor']) {
+    const p = hb[party];
+    if (p && Array.isArray(p.adjustments) && p.adjustments.length) {
+      out[party] = p.adjustments.map((a) => ({ reason: a.key || a.name || null, type: a.type || null, valueType: a.valueType || null, value: num(a.adj != null ? a.adj : a.llpa) }));
+    }
   }
+  return Object.keys(out).length ? out : null;
+}
+// The bottom-up price build: par/base rate → rate adjustment → note rate; base points → LLPA
+// points → adjusted points → price (100 − points); plus APR / APOR.
+function priceBuildOf(leaf) {
+  const adjPts = firstNum(leaf, ['adjustedPoints']);
+  const price = adjPts != null ? Math.round((100 - adjPts) * 1000) / 1000 : firstNum(leaf, PRICE_KEYS);
+  return {
+    parRate: firstNum(leaf, ['undiscountedRate', 'startedAdjustedRate']), // the un-bought-down rate
+    baseRate: firstNum(leaf, ['baseRates', 'rawRates']),
+    rateAdjustment: firstNum(leaf, ['adjustmentRates']),
+    noteRate: firstNum(leaf, ['rate', 'adjustedRates']),
+    basePoints: firstNum(leaf, ['basePoints', 'rawBasePoints']),
+    adjustmentPoints: firstNum(leaf, ['adjustmentPoints']),          // the LLPA stack total, in points
+    adjustedPoints: adjPts,                                          // final points
+    borrowerPaidPoints: firstNum(leaf, ['adjustedPointsBorrowerPaid', 'borrowerPaidPoints']),
+    price,                                                           // 100 − adjustedPoints
+    priceDerivedFromPoints: firstNum(leaf, PRICE_KEYS) == null && adjPts != null,
+    apr: firstNum(leaf, ['apr', 'notRoundedAPR']),
+    apor: firstNum(leaf, ['apor']),
+  };
+}
+// One priced option = the full structured breakdown + (optionally) the entire raw leaf.
+function optionOf(leaf, ctx, dtoMap, keepRaw) {
+  const plenderId = unquote(ctx.plenderId) || leaf.companyId || null;
+  const dto = (plenderId && dtoMap[plenderId]) || null;
+  const lender = leaf.companyName || ctx.lender || (dto && dto.name) || 'Lender';
+  const program = leaf.programName || leaf.productName || ctx.program || firstStr(leaf, ['mortgageType']) || 'Program';
+  const mp = leaf.monthlyPayment;
+  const o = {
+    lender, lenderId: plenderId, investor: dto ? dto.name : null, lenderShort: dto ? dto.shortName : null,
+    program, product: leaf.productName || null, rateGridId: leaf.rateGridId || null, rateGridName: leaf.rateGridName || null,
+    priceBuild: priceBuildOf(leaf),
+    adjustments: flattenAdjustments(leaf.groupAdjustmentProperties),         // itemized LLPAs (point)
+    rateAdjustments: flattenAdjustments(leaf.groupRateAdjustmentProperties), // itemized LLPAs (rate)
+    holdback: holdbackOf(leaf),                                              // margin
+    comp: {
+      borrowerPaid: firstNum(leaf, ['borrowerPaid']), lenderPaid: firstNum(leaf, ['lenderPaid']),
+      compPlanBorrowerPaid: firstNum(leaf, ['compPlanBorrowerPaid']),
+      borrowerPaidDetails: leaf.borrowerPaidDetails || [], lenderPaidDetails: leaf.lenderPaidDetails || [],
+    },
+    fees: {
+      totalOriginationFee: firstNum(leaf, ['totalOriginationFee']), totalLenderFees: firstNum(leaf, ['totalLenderFees']),
+      finalClosingCost: firstNum(leaf, ['finalClosingCost']), cashToClose: firstNum(leaf, ['cashToCloseAmount']),
+      pointsFinanced: firstNum(leaf, ['pointsFinancedDollarAmount']),
+    },
+    terms: {
+      loanAmount: firstNum(leaf, ['loanAmount']), term: firstNum(leaf, ['term']), termInMonths: !!leaf.termInMonths,
+      dayLock: firstNum(leaf, ['dayLock']), mortgageType: leaf.mortgageType || null, loanPurpose: leaf.loanPurpose || null,
+      interestOnly: !!leaf.isInterestOnly, dscr: firstNum(leaf, ['dscr']), fico: firstNum(leaf, ['fico']),
+      ltv: firstNum(leaf, ['ltv']), cltv: firstNum(leaf, ['cltv']), dti: firstNum(leaf, ['dti']), hti: firstNum(leaf, ['hti']),
+    },
+    monthlyPayment: (mp && typeof mp === 'object') ? mp : null,
+    flags: { disqualified: !!leaf.disqualified, interpolated: !!leaf.interpolated, expired: !!leaf.expired, highBalance: !!leaf.highBalanceIndicator },
+  };
+  if (keepRaw) o.raw = leaf; // EVERY field, untouched — nothing left behind
+  return o;
+}
+// Walk the grouped tree(s) and collect every priced option (each leaf → one option).
+function collectOptions(raw, opts = {}) {
+  const R = (raw && typeof raw === 'object' && raw.results) ? raw.results : raw;
+  const dtoMap = lenderDtoMap(R);
+  const options = [];
+  const containers = opts.containers || ['qualifiedNonQMData', 'qualifiedQMData'];
+  for (const c of containers) { const root = R && R[c]; if (root) walkTree(root, { program: null, lender: null, plenderId: null }); }
+  function walkTree(node, ctx) {
+    if (!node || typeof node !== 'object') return;
+    const next = { ...ctx };
+    if (node.plenderId) next.plenderId = node.plenderId;
+    if (node.type === 'CriteriaFromLineResultKey' && node.keyLabel) next.program = node.keyLabel;
+    else if (node.type === 'LenderKey' && node.keyLabel) next.lender = node.keyLabel;
+    if (Array.isArray(node.leafs)) for (const lf of node.leafs) if (lf && typeof lf === 'object') options.push(optionOf(lf, next, dtoMap, opts.keepRaw));
+    if (Array.isArray(node.childs)) for (const c of node.childs) walkTree(c, next);
+  }
+  return { options, dtoMap, R };
+}
+
+// parse() — the DISPLAY summary: programs grouped by lender+program, each with a rate/point ladder
+// and the lender/investor identity. Captures the pricing build at a glance (base/adjustment/final
+// points + adjustment count) without the full raw dump.
+function parse(raw) {
+  const { options } = collectOptions(raw);
+  if (!options.length) return parseFallback(raw); // synthetic / non-grouped shapes
+  const seen = new Map();
+  const programs = [];
+  for (const o of options) {
+    const key = o.lender + '||' + o.program;
+    let p = seen.get(key);
+    if (!p) { p = { lender: o.lender, investor: o.investor, lenderId: o.lenderId, program: o.program, product: o.product, rungs: [] }; seen.set(key, p); programs.push(p); }
+    const pb = o.priceBuild;
+    p.rungs.push({
+      rate: pb.noteRate, price: pb.price, points: pb.adjustedPoints, priceDerivedFromPoints: pb.priceDerivedFromPoints,
+      basePoints: pb.basePoints, adjustmentPoints: pb.adjustmentPoints, apr: pb.apr,
+      monthly: o.monthlyPayment ? num(o.monthlyPayment.monthlyPI != null ? o.monthlyPayment.monthlyPI : o.monthlyPayment.total) : null,
+      lockDays: o.terms.dayLock, term: o.terms.term, adjustmentCount: o.adjustments.length,
+    });
+  }
+  finishPrograms(programs);
   return {
     programCount: programs.length,
     lenderCount: new Set(programs.map((p) => p.lender)).size,
@@ -432,8 +622,158 @@ function parse(raw) {
     programs,
   };
 }
+function finishPrograms(programs) {
+  for (const p of programs) {
+    p.rungs.sort((a, b) => a.rate - b.rate);
+    p.rungCount = p.rungs.length;
+    p.minRate = p.rungs.length ? p.rungs[0].rate : null;
+    p.minPoints = p.rungs.reduce((m, r) => (r.points != null && (m == null || r.points < m) ? r.points : m), null);
+    p.maxPrice = p.rungs.reduce((m, r) => (r.price != null && r.price > m ? r.price : m), -Infinity);
+    if (!isFinite(p.maxPrice)) p.maxPrice = null;
+  }
+}
+
+// parseFull() — CAPTURE EVERYTHING: every option's full structured breakdown (price build, itemized
+// LLPAs, margin/holdback, comp, fees, ratios, monthly payment). Pass {raw:true} to also attach the
+// entire untouched leaf per option. Returns programs → options, plus the lender registry.
+function parseFull(raw, opts = {}) {
+  const { options, dtoMap } = collectOptions(raw, { keepRaw: !!opts.raw });
+  const seen = new Map();
+  const programs = [];
+  for (const o of options) {
+    const key = o.lender + '||' + o.program;
+    let p = seen.get(key);
+    if (!p) { p = { lender: o.lender, investor: o.investor, lenderId: o.lenderId, lenderShort: o.lenderShort, program: o.program, product: o.product, rateGridId: o.rateGridId, options: [] }; seen.set(key, p); programs.push(p); }
+    p.options.push(o);
+  }
+  for (const p of programs) {
+    p.options.sort((a, b) => ((a.priceBuild.noteRate == null ? 99 : a.priceBuild.noteRate) - (b.priceBuild.noteRate == null ? 99 : b.priceBuild.noteRate)));
+    p.optionCount = p.options.length;
+    p.minRate = p.options.length ? p.options[0].priceBuild.noteRate : null;
+  }
+  return {
+    programCount: programs.length,
+    lenderCount: new Set(programs.map((p) => p.lender)).size,
+    optionCount: options.length,
+    disqualifiedCount: countArrays(raw, ['disqualifiedData', 'disqualified']),
+    lenders: Object.values(dtoMap),
+    programs,
+  };
+}
+
+// Fallback parser for non-grouped / synthetic shapes (older fixtures, odd responses): a generic
+// deep-walk that groups any object carrying a rate + a cost value.
+function parseFallback(raw) {
+  const programs = [];
+  const seen = new Map();
+  const root = (raw && typeof raw === 'object' && raw.results) ? raw.results : raw;
+  walk(root, {});
+  function pushRung(ctx, node) {
+    const rate = firstNum(node, RATE_KEYS);
+    if (rate == null) return;
+    const points = firstNum(node, POINT_KEYS);
+    const quoted = firstNum(node, PRICE_KEYS);
+    let price = quoted;
+    if (price == null && points != null) price = Math.round((100 - points) * 1000) / 1000;
+    if (price == null && points == null) return;
+    const lender = ctx.lender || firstStr(node, LENDER_KEYS) || 'Lender';
+    const program = ctx.program || firstStr(node, PROGRAM_KEYS) || firstStr(node, ['mortgageType']) || 'DSCR';
+    const key = lender + '||' + program;
+    let p = seen.get(key);
+    if (!p) { p = { lender, program, rungs: [] }; seen.set(key, p); programs.push(p); }
+    p.rungs.push({ rate, price, points, priceDerivedFromPoints: quoted == null, apr: firstNum(node, ['apr', 'annualPercentageRate', 'notRoundedAPR']), monthly: monthlyOf(node), loanAmount: firstNum(node, ['loanAmount']), term: firstNum(node, ['term']), lockDays: firstNum(node, ['dayLock', 'lockDays', 'lockPeriod']) });
+  }
+  function isLeafRow(node) { return RATE_KEYS.some((k) => k in node) && !Array.isArray(node.childs) && !Array.isArray(node.leafs); }
+  function walk(node, ctx) {
+    if (node == null || typeof node !== 'object') return;
+    if (Array.isArray(node)) { for (const el of node) walk(el, ctx); return; }
+    if (isLeafRow(node)) { pushRung(ctx, node); return; }
+    const nextCtx = ctxFrom(node, ctx);
+    for (const k of Object.keys(node)) { if (k === 'key') continue; const v = node[k]; if (v && typeof v === 'object') walk(v, nextCtx); }
+  }
+  finishPrograms(programs);
+  return { programCount: programs.length, lenderCount: new Set(programs.map((p) => p.lender)).size, rungCount: programs.reduce((n, p) => n + p.rungCount, 0), disqualifiedCount: countArrays(raw, ['disqualifiedData', 'disqualified']), programs };
+}
 function firstNum(o, keys) { for (const k of keys) { if (o[k] != null && isFinite(Number(o[k]))) return Number(o[k]); } return null; }
-function firstStr(o, keys) { for (const k of keys) { const v = o[k]; if (typeof v === 'string' && v.trim()) return v.trim(); } return null; }
+function firstStr(o, keys) { if (!o || typeof o !== 'object') return null; for (const k of keys) { const v = o[k]; if (typeof v === 'string' && v.trim()) return v.trim(); } return null; }
+
+// ---- disqualify parser -----------------------------------------------------
+// results.disqualifiedData is a grouped tree (ROOT → childs …, keyLabel naming each group's
+// value: lender, program, rate) whose deepest nodes hold the DISQUALIFIED programs and, because
+// the request set showDisqualifyRules=true, the RULE that failed + a human reason. It is defensive
+// about the exact leaf field names (they mirror the qualified leaves + a reasons/rules array):
+// it groups by the top group label (lender), names each item by its program group label, and
+// collects every reason/rule string it can find on the item and its descendants.
+const REASON_KEYS = ['disqualifyReason', 'disqualifyReasons', 'reason', 'reasons', 'message', 'messages', 'ruleMessage', 'ruleText', 'ruleName', 'rule', 'rules', 'guideline', 'description', 'failReason', 'ineligibleReason'];
+function collectReasons(node, out, depth) {
+  if (node == null || depth > 6) return;
+  if (typeof node === 'string') { const t = node.trim(); if (t) out.add(t.slice(0, 400)); return; }
+  if (Array.isArray(node)) { for (const el of node) collectReasons(el, out, depth + 1); return; }
+  if (typeof node !== 'object') return;
+  for (const k of Object.keys(node)) {
+    const v = node[k];
+    if (REASON_KEYS.includes(k)) collectReasons(v, out, depth + 1);
+    else if (v && typeof v === 'object' && !/^(childs|leafs|key)$/.test(k)) collectReasons(v, out, depth + 1);
+  }
+}
+// The structured failing rules for a disqualified leaf: the itemized disqualify adjustments
+// (groupAdjustmentProperties[].disqualifyAdjustments — each an eligibility rule with its key),
+// condition actions/advisories, then a defensive reason-string sweep as a fallback.
+function disqualifyRulesOf(leaf) {
+  const out = [];
+  const seenR = new Set();
+  const add = (rule, extra) => { const r = String(rule || '').trim(); if (r && !seenR.has(r)) { seenR.add(r); out.push({ rule: r.slice(0, 300), ...(extra || {}) }); } };
+  const groups = leaf.groupAdjustmentProperties;
+  if (Array.isArray(groups)) for (const g of groups) {
+    for (const key of ['disqualifyAdjustments', 'hideDisqualifyAdjustments', 'qualifyAdjustments']) {
+      const arr = g && g[key];
+      if (Array.isArray(arr)) for (const a of arr) add(a && (a.key || a.name), { group: g.name || null, value: num(a && (a.llpa != null ? a.llpa : a.adj)) });
+    }
+  }
+  if (Array.isArray(leaf.conditionActions)) for (const ca of leaf.conditionActions) add(ca && (ca.message || ca.description || ca.key || ca.name), { group: 'condition' });
+  if (leaf.holdBackResult && typeof leaf.holdBackResult === 'object') {
+    for (const party of ['broker', 'lender', 'investor']) {
+      const p = leaf.holdBackResult[party];
+      if (p && Array.isArray(p.disqualifications)) for (const d of p.disqualifications) add(d && (d.key || d.name || d.message), { group: party });
+    }
+  }
+  if (!out.length) { const set = new Set(); collectReasons(leaf, set, 0); for (const r of set) add(r); }
+  return out;
+}
+// Parse the DISQUALIFIED tree: which lender/investor declined which program, and the exact rules
+// that failed. Same Program→Rate→Lender grouping and lender identity as the qualified parser.
+function parseDisqualified(raw) {
+  const R = (raw && typeof raw === 'object' && raw.results) ? raw.results : null;
+  const root = R && R.disqualifiedData;
+  if (!root || typeof root !== 'object') return { ready: false, lenderCount: 0, itemCount: 0, reasonCount: 0, lenders: [] };
+  const dtoMap = lenderDtoMap(R);
+  const lenders = new Map();
+  let itemCount = 0;
+  let reasonCount = 0;
+  (function walk(node, ctx) {
+    if (!node || typeof node !== 'object') return;
+    const next = { ...ctx };
+    if (node.plenderId) next.plenderId = node.plenderId;
+    if (node.type === 'CriteriaFromLineResultKey' && node.keyLabel) next.program = node.keyLabel;
+    else if (node.type === 'LenderKey' && node.keyLabel) next.lender = node.keyLabel;
+    if (Array.isArray(node.leafs)) for (const lf of node.leafs) {
+      if (!lf || typeof lf !== 'object') continue;
+      const plenderId = unquote(next.plenderId) || lf.companyId || null;
+      const dto = (plenderId && dtoMap[plenderId]) || null;
+      const lender = lf.companyName || next.lender || (dto && dto.name) || 'Lender';
+      const program = lf.programName || lf.productName || next.program || firstStr(lf, PROGRAM_KEYS) || 'Program';
+      const rules = disqualifyRulesOf(lf);
+      let g = lenders.get(lender);
+      if (!g) { g = { lender, investor: dto ? dto.name : null, lenderId: plenderId, items: [] }; lenders.set(lender, g); }
+      g.items.push({ program, product: lf.productName || null, rate: firstNum(lf, RATE_KEYS), reasons: rules });
+      itemCount += 1; reasonCount += rules.length;
+    }
+    if (Array.isArray(node.childs)) for (const c of node.childs) walk(c, next);
+  })(root, { program: null, lender: null, plenderId: null });
+  const list = Array.from(lenders.values());
+  for (const g of list) g.itemCount = g.items.length;
+  return { ready: hasDisqualifyData(raw), lenderCount: list.length, itemCount, reasonCount, lenders: list };
+}
 
 // Structural summary of the raw searchRaw response — for diagnostics ONLY (secret-gated).
 // Tells us whether Lender Price actually returned programs (so the parser is the gap) or truly
@@ -465,6 +805,32 @@ function summarizeRaw(raw) {
       else if (v && typeof v === 'object') walk(v, p, depth + 1, false, false);
     }
   })(raw, '', 0, false, false);
+  // Drill specifically into the disqualify tree so we learn its real leaf/reason field names live.
+  let disqualify = null;
+  const dd = raw.results && raw.results.disqualifiedData;
+  if (dd && typeof dd === 'object') {
+    let sampleDisqLeaf = null;
+    let sampleDisqNode = null;
+    const dseen = new Set();
+    (function dwalk(node, path, depth, inLeafs) {
+      if (node == null || typeof node !== 'object' || depth > 8 || dseen.has(node)) return;
+      dseen.add(node);
+      if (!sampleDisqLeaf && inLeafs) sampleDisqLeaf = { path, node: shallow(node) };
+      if (!sampleDisqNode && (Array.isArray(node.childs) || Array.isArray(node.leafs))) sampleDisqNode = { path, keyLabel: node.keyLabel, node: shallow(node) };
+      for (const k of Object.keys(node)) {
+        const v = node[k];
+        if (Array.isArray(v)) v.slice(0, 1).forEach((el) => dwalk(el, `${path}.${k}[0]`, depth + 1, k === 'leafs'));
+        else if (v && typeof v === 'object') dwalk(v, `${path}.${k}`, depth + 1, false);
+      }
+    })(dd, 'disqualifiedData', 0, false);
+    disqualify = {
+      populated: hasDisqualifyData(raw),
+      topChilds: Array.isArray(dd.childs) ? dd.childs.length : 0,
+      topLeafs: Array.isArray(dd.leafs) ? dd.leafs.length : 0,
+      sampleDisqNode,
+      sampleDisqLeaf,
+    };
+  }
   return {
     topKeys: Object.keys(raw).slice(0, 60),
     nonEmptyArrays: Object.fromEntries(Object.entries(arrays).filter(([, n]) => n > 0).slice(0, 60)),
@@ -472,6 +838,7 @@ function summarizeRaw(raw) {
     sampleLeaf,
     sampleKeyNode,
     sampleGroupNode,
+    disqualify,
     disqualifyReasons: Array.from(reasons).slice(0, 12),
   };
 }
@@ -492,7 +859,7 @@ function countArrays(root, keys) {
 }
 
 module.exports = {
-  configured, login, getSession, apiGet, enrichZip, price, parse, summarizeRaw,
-  buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
+  configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, pollDisqualified, parse, parseFull, parseDisqualified, summarizeRaw,
+  hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
   _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID },
 };

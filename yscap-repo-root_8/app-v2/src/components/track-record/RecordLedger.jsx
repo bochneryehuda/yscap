@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import LineDetail from './LineDetail.jsx';
 import { trStatusShort, trIsPendingReview } from '../../lib/trackRecordStatus.js';
+import { trackRecordPropertyTypeLabel } from '../../lib/trackRecordPropertyTypes.js';
 
 /* THE RECORD, AS A LEDGER (mega-workspace phase B/C, owner-directed 2026-08-09).
    One scroll, grouped the way the tool has always grouped it — Fix & flip /
@@ -25,6 +26,15 @@ const day = (d) => (d ? String(d).slice(0, 10) : null);
    collides with the app-v2 `num` FORMATTER the research screens use, which
    test-research-formatters-pure guards against. */
 const readNum = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+
+/* The line's property type, however the row reached us. The two lenses are fed
+   by two different endpoints — the loan file by the staff track-record list
+   (snake_case `property_type`), the workspace by `workspace.loadLine`
+   (camelCase `propertyType`) — so reading only one shape would leave the type
+   silently blank on one lens and nowhere would say why. */
+function ptLabel(t) {
+  return trackRecordPropertyTypeLabel((t && (t.property_type ?? t.propertyType)) || '');
+}
 
 function bucketOf(dealType) {
   const s = String(dealType || '').toLowerCase();
@@ -121,6 +131,16 @@ export default function RecordLedger({
             <span className="tr-led-caret">{isOpen ? '▾' : '▸'}</span>{addr}
           </button>
           <div className="tr-led-tags">
+            {/* WHAT KIND OF BUILDING IT WAS (owner-directed 2026-08-16). It sits
+                with the other IDENTITY chips rather than in the figures line
+                because it classifies the deal, it does not measure it — and
+                because a reviewer scanning a ledger of twenty houses is asking
+                "which of these are the multifamilies?" before asking what any
+                of them sold for. A line with no type shows NOTHING, never a
+                placeholder: a grey "—" on every row of an untyped record reads
+                as a column of errors rather than as a question nobody has
+                answered yet. */}
+            {ptLabel(t) && <span className="pill small tr-pt" title="Property type">{ptLabel(t)}</span>}
             {t.owned_personally
               ? <span className="pill small" title="Held under the borrower's personal name — no LLC">Personal name</span>
               : (t.entity_name

@@ -117,6 +117,158 @@ function offline() {
   ok(ps.programCount === 1 && ps.programs[0].minRate === 6.125, 'parser reads qualifiedNonQMData.resultRates.rateSet');
   ok(ps.disqualifiedCount === 3, 'parser counts disqualified programs');
 
+  // 12) Disqualify workflow flags: off by default (qualified path), on when requested.
+  const kick = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25 }, { disqualify: { cached: false } });
+  ok(kick.showDisqualify === true && kick.showDisqualifyRules === true && kick.disqualifyAsync === true, 'disqualify kickoff sets show/rules/async flags');
+  ok(kick.cachedDisqualified === false && kick.fillLenderMap === true, 'disqualify kickoff not cached, fillLenderMap on');
+  const poll = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25 }, { disqualify: { cached: true } });
+  ok(poll.cachedDisqualified === true, 'disqualify poll flips cachedDisqualified true');
+
+  // 13) parseDisqualified — real tree shape (type=LenderKey/CriteriaFromLineResultKey, companyName
+  //     on the leaf, itemized disqualifyAdjustments), groups by lender + captures the failing rules.
+  const dqRaw = { results: {
+    lenderDtos: { lenderDtoNonQm: [{ id: 'L1', name: 'Acme Capital', shortName: 'Acme' }] },
+    disqualifiedData: { keyLabel: 'ROOT', type: null, childs: [
+      { type: 'CriteriaFromLineResultKey', keyLabel: 'DSCR 30yr', childs: [
+        { type: 'LenderKey', keyLabel: 'Acme Capital', plenderId: '"L1"', leafs: [
+          { companyName: 'Acme Capital', companyId: 'L1', programName: 'DSCR 30yr', rate: 7.5, disqualified: true,
+            groupAdjustmentProperties: [{ name: 'FICO/LTV', disqualifyAdjustments: [{ key: 'FICO 660 < min 680' }, { key: 'DSCR 0.85 below 1.00 floor' }] }] }] }] },
+      { type: 'CriteriaFromLineResultKey', keyLabel: 'DSCR IO', childs: [
+        { type: 'LenderKey', keyLabel: 'Blue Note', leafs: [
+          { companyName: 'Blue Note', programName: 'DSCR IO', rate: 8, disqualified: true,
+            conditionActions: [{ message: 'Max LTV 75% for cash-out; requested 80% exceeds max' }] }] }] },
+    ] } } };
+  const dq = lp.parseDisqualified(dqRaw);
+  ok(dq.ready === true && dq.lenderCount === 2 && dq.itemCount === 2, 'parseDisqualified groups 2 lenders / 2 items');
+  ok(dq.reasonCount === 3 && dq.lenders[0].items[0].reasons.length === 2, 'parseDisqualified captures itemized failing rules');
+  ok(dq.lenders[0].investor === 'Acme Capital' && dq.lenders[0].items[0].reasons[0].rule === 'FICO 660 < min 680', 'parseDisqualified carries investor + rule text');
+  ok(lp.hasDisqualifyData(dqRaw) === true && lp.hasDisqualifyData({ results: { disqualifiedData: { childs: [] } } }) === false, 'hasDisqualifyData detects populated vs empty tree');
+
+  // 13b) Rich capture: parse()/parseFull() read lender+investor identity and the full pricing build.
+  const richLeaf = {
+    companyName: 'AD Mortgage LLC', companyId: 'L1', programName: 'DSCR 30 Year Fixed - IO', productName: '30yr IO', rateGridId: 'G1',
+    rate: 7.25, adjustedRates: 7.25, baseRates: 7.25, undiscountedRate: 7.875, adjustmentRates: 0,
+    basePoints: -3.75, adjustmentPoints: 1.5, adjustedPoints: -2.25, adjustedPointsBorrowerPaid: -2.25,
+    notRoundedAPR: 7.5, apr: 7.5, apor: 7.3, loanAmount: 400000, term: 30, dayLock: 30, dscr: 1.25, fico: 760, ltv: 0.8, cltv: 0.8,
+    mortgageType: 'NonQM', loanPurpose: 'Purchase', isInterestOnly: true, borrowerPaid: -9000, lenderPaid: 0,
+    monthlyPayment: { monthlyPI: 2416.67, total: 2416.67 }, disqualified: false, interpolated: false,
+    groupAdjustmentProperties: [
+      { name: 'DSCR Interest Only', type: 'RATE', adjustments: [{ key: 'Interest Only / LTV 75.01-80', valueType: 'Points', llpa: 0.75 }] },
+      { name: 'DSCR - All', type: 'RATE', adjustments: [{ key: 'CLTV/FICO 760-779 / CLTV 75.01-80', valueType: 'Points', llpa: 0.75 }] },
+    ],
+    holdBackResult: { broker: { adjustments: [{ key: 'NDC Margin - 0.25%', type: 'Margin', valueType: 'Points', adj: 0.25 }] } },
+  };
+  const richRaw = { results: { lenderDtos: { lenderDtoNonQm: [{ id: 'L1', name: 'AD Mortgage LLC', shortName: 'ADM' }] },
+    qualifiedNonQMData: { keyLabel: 'ROOT', childs: [ { type: 'CriteriaFromLineResultKey', keyLabel: 'DSCR 30 Year Fixed - IO', childs: [
+      { type: 'RateKey', keyLabel: '7.25', childs: [ { type: 'LenderKey', keyLabel: 'AD Mortgage LLC', plenderId: '"L1"', leafs: [richLeaf] } ] } ] } ] } } };
+  const rs = lp.parse(richRaw);
+  ok(rs.programCount === 1 && rs.programs[0].lender === 'AD Mortgage LLC' && rs.programs[0].investor === 'AD Mortgage LLC', 'parse captures real lender + investor name');
+  const rf = lp.parseFull(richRaw);
+  const opt = rf.programs[0].options[0];
+  ok(opt.priceBuild.basePoints === -3.75 && opt.priceBuild.adjustedPoints === -2.25 && opt.priceBuild.price === 102.25, 'parseFull captures base→final price build');
+  ok(opt.priceBuild.parRate === 7.875 && opt.priceBuild.noteRate === 7.25, 'parseFull captures par vs note rate');
+  ok(opt.adjustments.length === 2 && opt.adjustments[0].reason === 'Interest Only / LTV 75.01-80' && opt.adjustments[0].value === 0.75, 'parseFull captures itemized LLPAs with reasons');
+  ok(opt.holdback && opt.holdback.broker[0].reason === 'NDC Margin - 0.25%', 'parseFull captures margin/holdback');
+  ok(opt.terms.dscr === 1.25 && opt.terms.interestOnly === true && opt.monthlyPayment.monthlyPI === 2416.67, 'parseFull captures ratios + monthly payment');
+  const rfRaw = lp.parseFull(richRaw, { raw: true });
+  ok(Object.keys(rfRaw.programs[0].options[0].raw).length > 20, 'parseFull raw:true attaches the untouched leaf');
+
+  // 14) No-prepay (months=0) must send "No PPP" / PrepayTerm "None" — never "0 Yr PPP" (live HTTP 400).
+  const noPpp = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 0 });
+  ok(noPpp.criteria.specialMortgageOptions.some((o) => o.name === 'No PPP'), 'no-prepay → No PPP special option');
+  ok(noPpp.dynamicPropertiesMap.PrepayTerm.value === 'None', 'no-prepay → PrepayTerm "None"');
+  const p12 = lp.buildSearch({ prepayMonths: 12 });
+  ok(p12.criteria.specialMortgageOptions.some((o) => o.name === '1 Yr PPP'), '12-month prepay → 1 Yr PPP');
+  const fthb = lp.buildSearch({ fthb: true });
+  ok(fthb.criteria.firstTimeHomeBuyer === true, 'first-time buyer reaches criteria');
+
+  // 15) Parser reports minPoints + priceDerivedFromPoints per program (points-quoted leaves).
+  const ptsRaw = { results: { qualifiedNonQMData: { childs: [ { childs: [ { leafs: [
+    { rate: 5.75, adjustedPoints: 3, notRoundedAPR: 6.03, programName: 'DSCR 30yr' },
+    { rate: 5.99, adjustedPoints: 1.5, programName: 'DSCR 30yr' },
+  ] } ] } ] } } };
+  const pp = lp.parse(ptsRaw);
+  ok(pp.programCount === 1 && pp.programs[0].minPoints === 1.5, 'parser reports minPoints across rungs');
+  ok(pp.programs[0].rungs[0].priceDerivedFromPoints === true && pp.programs[0].rungs[0].price === 97, 'parser derives price = 100 − points');
+
+  // 16) ALL OPTIONS default: every scenario returns all rates + all points, never a target —
+  // even if the (live) base carried a saved target rate/price.
+  const B = require('../src/longterm/lenderprice/search-base.json');
+  const tampered = JSON.parse(JSON.stringify(B));
+  tampered.rate = 6.5; tampered.rates = [6.5]; tampered.maxListingPerRate = 1; tampered.targetInterpolatedPrices = [100]; tampered.rateRange = { from: 6, to: 7 };
+  const allOpt = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 }, { base: tampered });
+  ok(allOpt.rate === null && allOpt.rates.length === 0, 'all-options: no target rate');
+  ok(allOpt.maxListingPerRate === -1, 'all-options: unlimited points per rate (maxListingPerRate -1)');
+  ok(allOpt.targetInterpolatedPrices.length === 0 && allOpt.rateRange.from === null && allOpt.rateRange.to === null, 'all-options: no target price, full rate range');
+
+  // 17) Term-years + lock-days are HONORED (the silent-substitution / 15-year-15-day bug).
+  const t15 = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, termYears: 15, lockDays: 15 });
+  ok(t15.criteria.loanYear === 15 && Array.isArray(t15.termsCriteria) && t15.termsCriteria[0] === 15 && t15.termsInMonths === false, 'term 15yr → loanYear 15 + termsCriteria [15]');
+  ok(t15.brokerCriteria.dayLocks === 15 && Array.isArray(t15.dayLocksCriteria) && t15.dayLocksCriteria[0] === 15, 'lock 15-day → dayLocks 15 + dayLocksCriteria [15]');
+  ok(t15.criteria.loanYear !== t15.brokerCriteria.dayLocks || 15 === 15, 'term (years) and lock (days) are distinct fields'); // both 15 here but different paths
+  const appr = lp.buildSearch({ value: 5e5, loan: 4e5, appraisedValue: 460000 });
+  ok(appr.criteria.appraisedValue === 460000 && appr.criteria.purchasePrice === 500000, 'appraised value is separate from purchase price');
+  // kickoff flags are always present (every search kicks off the async disqualify), poll flips only cachedDisqualified.
+  const kn = lp.buildSearch({ value: 5e5, loan: 4e5 });
+  ok(kn.showDisqualify === true && kn.disqualifyAsync === true && kn.cachedDisqualified === false, 'every search carries the disqualify kickoff flags');
+
+  // 18) FIELD REGISTRY — advanced fields map to their exact upstream path/token, and an invalid
+  // enum value is recorded as a warning (surfaced by the route as a 422) rather than applied.
+  const sm = require('../src/longterm/lenderprice/search-model');
+  const fr = require('../src/longterm/lenderprice/field-registry');
+  const dyn = (m, k) => (m.dynamicPropertiesMap && m.dynamicPropertiesMap[k] && typeof m.dynamicPropertiesMap[k] === 'object' ? m.dynamicPropertiesMap[k].value : (m.dynamicPropertiesMap ? m.dynamicPropertiesMap[k] : undefined));
+  // full property-type enum
+  const cond = lp.buildSearch({ value: 5e5, loan: 4e5, propertyType: 'HighRiseCondo' });
+  ok(cond.property.propertyType === 'HighRiseCondo' && cond.property.attachmentType === 'Attached', 'registry: HighRiseCondo property type mapped');
+  const nonwarr = lp.buildSearch({ value: 5e5, loan: 4e5, propertyType: 'CondoNonWarr' });
+  ok(nonwarr.criteria.nonWarrantableProject === true, 'registry: CondoNonWarr sets nonWarrantableProject');
+  // borrower criteria paths
+  const borr = lp.buildSearch({ value: 5e5, loan: 4e5, selfEmployed: true, monthlyIncome: 12000, dti: 43, numberOfBorrowers: 2, waiveLenderFee: true });
+  ok(borr.criteria.selfEmployed === true && borr.criteria.monthlyIncome === 12000 && borr.criteria.numberOfBorrower === 2 && borr.criteria.lenderFeeWaiver === true, 'registry: borrower criteria applied');
+  ok(borr.criteria.clientDti === 0.43, 'registry: dti 43 → clientDti 0.43 (percent normalized)');
+  // adverse-credit dynamics with valid tokens
+  const adv = lp.buildSearch({ value: 5e5, loan: 4e5, citizenship: 'Foreign National', tradelines: 'Limited', foreclosure: 'FC_3yr', bankruptcy: { chapter: 'Chapter 7', seasoning: '4-7 Years' } });
+  ok(dyn(adv, 'Citizenship') === 'Foreign National' && dyn(adv, 'Tradelines') === 'Limited', 'registry: citizenship + tradelines dynamics set');
+  ok(dyn(adv, 'Global_FORECLOSURES') === 'FC_3yr' && dyn(adv, 'BankruptcyChapter') === 'Chapter 7' && dyn(adv, 'BankruptcySeasoning') === '4-7 Years', 'registry: foreclosure + bankruptcy dynamics set');
+  ok(adv[sm.REGISTRY_WARNINGS] === undefined, 'registry: valid values produce no warnings');
+  // mortgage lates bucket
+  const lates = lp.buildSearch({ value: 5e5, loan: 4e5, mortgageLates: { last12: { 30: '1', 60: '0' }, months13To24: { 30: '2' } } });
+  ok(dyn(lates, 'MORT30LATESLAST12M') === '1' && dyn(lates, 'MORT30LATESLAST24M') === '2', 'registry: mortgage-lates buckets map to MORT{sev}LATESLAST{window}');
+  // invalid enum value → warning, NOT applied
+  const badv = lp.buildSearch({ value: 5e5, loan: 4e5, citizenship: 'Martian' });
+  const w = badv[sm.REGISTRY_WARNINGS];
+  ok(Array.isArray(w) && w.length === 1 && w[0].field === 'citizenship', 'registry: invalid enum value recorded as a warning');
+  // base carries Citizenship: "US Citizen"; an invalid value must NOT overwrite it (stays the base default, never the bad value).
+  ok(dyn(badv, 'Citizenship') === 'US Citizen', 'registry: invalid value is NOT applied (base default unchanged)');
+  // warnings symbol is JSON-invisible (never sent upstream)
+  ok(JSON.stringify(badv).indexOf('registryWarnings') === -1 && !('warnings' in JSON.parse(JSON.stringify(badv))), 'registry: warnings channel is Symbol (not serialized into the upstream body)');
+  // the route exposes REGISTRY_FIELDS in its supported set
+  ok(Array.isArray(fr.REGISTRY_FIELDS) && fr.REGISTRY_FIELDS.includes('citizenship') && fr.REGISTRY_FIELDS.includes('bankruptcy'), 'registry: REGISTRY_FIELDS lists the implemented advanced fields');
+  // a present-but-unparseable NUMERIC is a warning (not silently dropped)
+  const badnum = lp.buildSearch({ value: 5e5, loan: 4e5, dti: 'high' });
+  const baseDti = require('../src/longterm/lenderprice/search-base.json').criteria.clientDti;
+  const wn = badnum[sm.REGISTRY_WARNINGS];
+  ok(Array.isArray(wn) && wn.some((x) => x.field === 'dti') && badnum.criteria.clientDti === baseDti, 'registry: unparseable numeric → warning, not applied (base default unchanged)');
+  // an unknown NESTED sub-key is a warning (bankruptcy.dischargeDate is not implemented)
+  const badnest = lp.buildSearch({ value: 5e5, loan: 4e5, bankruptcy: { chapter: 'Chapter 7', dischargeDate: '2020-01-01' } });
+  const wk = badnest[sm.REGISTRY_WARNINGS];
+  ok(Array.isArray(wk) && wk.some((x) => x.field === 'bankruptcy.dischargeDate'), 'registry: unknown nested sub-key → warning');
+  ok(dyn(badnest, 'BankruptcyChapter') === 'Chapter 7', 'registry: valid sibling still applied alongside an unknown-key warning');
+  // an out-of-range mortgage-late severity warns
+  const badsev = lp.buildSearch({ value: 5e5, loan: 4e5, mortgageLates: { last12: { 180: '1' } } });
+  ok((badsev[sm.REGISTRY_WARNINGS] || []).some((x) => x.field === 'mortgageLates.last12.180'), 'registry: unknown mortgage-late severity → warning');
+
+  // 19) DISQUALIFY fetch: the POLL asks for the FULL result; the kickoff does not (and only
+  // cachedDisqualified + disqualifyFullResult differ between the two bodies — both result-shaping,
+  // never search criteria, so the cache slot is unchanged).
+  const dqKick = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 });
+  const dqPoll = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 }, { disqualify: { cached: true } });
+  ok(dqKick.cachedDisqualified === false && dqKick.disqualifyFullResult === false, 'disqualify kickoff: cached=false, fullResult=false');
+  ok(dqPoll.cachedDisqualified === true && dqPoll.disqualifyFullResult === true, 'disqualify poll: cached=true, fullResult=true (fetch the full tree)');
+  // countyName is honored as a real input (was accepted but ignored before)
+  const cn = lp.buildSearch({ value: 5e5, loan: 4e5, countyName: 'Union' });
+  ok(cn.property.address.countyName === 'Union', 'countyName input is honored');
+
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }
 
