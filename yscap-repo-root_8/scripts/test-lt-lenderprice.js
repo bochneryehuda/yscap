@@ -420,20 +420,23 @@ async function offline() {
   ok(gated && gated.error === 'lp_foundation_not_live' && gated.http === 502, '§28.2 gate refuses a fallback foundation with a named 502');
   delete process.env.LP_REQUIRE_LIVE_FOUNDATION;
 
-  // 30) Cash-out amount ("cash in hand"). THE VENDOR FIXED THE FIELD (audit): the frontend now sends a
-  // numeric criteria.cashoutAmount, so we transmit it there. It is still accepted + validated.
+  // 30) Cash-out amount ("cash in hand") — §32.2 FAIL-CLOSED (SUPERSEDES §31.4 "vendor fixed the
+  // field"): the clean live cash-out capture transmitted NEITHER criteria.cashoutAmount NOR the value,
+  // only a frontend bug. So the amount is accepted + validated + retained INTERNALLY, but NEVER
+  // transmitted as a criteria field and NEVER as an invented key.
   delete process.env.LP_CASHOUT_AMOUNT_FIELD;
   ok(sm.validateScenario({ purpose: 'Cash out', value: 5e5, loan: 3e5, cashoutAmount: 50000, state: 'NJ', countyFps: '34039' }).ok === true, 'cash-out amount is an accepted, validated field');
   ok(sm.validateScenario({ purpose: 'Cash out', value: 5e5, loan: 3e5, cashoutAmount: -5, state: 'NJ', countyFps: '34039' }).error === 'out_of_range', 'a negative cash-out amount is rejected');
   const coTx = lp.buildSearch({ purpose: 'CashOut', value: 5e5, loan: 3e5, cashoutAmount: 47321 });
-  ok(coTx.criteria.cashoutAmount === 47321, 'cash-out amount transmits as the numeric criteria.cashoutAmount (vendor fixed the field)');
+  ok(coTx.criteria.cashoutAmount === undefined && JSON.stringify(coTx).includes('47321') === false, '§32.2 cash-out amount is NOT transmitted (criteria.cashoutAmount absent, value not in the wire)');
+  ok(coTx[sm.CASHOUT_INTERNAL] === 47321, '§32.2 cash-out amount is retained internally (Symbol-keyed, not serialized)');
   ok(!Object.keys(coTx.dynamicPropertiesMap).some((k) => k === 'undefined'), 'no invented dynamicPropertiesMap.undefined key is ever emitted');
   const noCo = lp.buildSearch({ purpose: 'CashOut', value: 5e5, loan: 3e5 });
-  ok(noCo.criteria.cashoutAmount === undefined, 'no cash-out amount supplied → criteria.cashoutAmount is not set');
-  // The legacy dynamic-property override still works if the vendor ever moves the field back.
+  ok(noCo.criteria.cashoutAmount === undefined && noCo[sm.CASHOUT_INTERNAL] === undefined, 'no cash-out amount supplied → nothing set, nothing retained');
+  // The operator escape hatch transmits a CONFIRMED dynamic field (set only once a capture confirms one).
   process.env.LP_CASHOUT_AMOUNT_FIELD = 'CashInHand';
   const tx = lp.buildSearch({ purpose: 'CashOut', value: 5e5, loan: 3e5, cashoutAmount: 47321 });
-  ok(tx.criteria.cashoutAmount === 47321 && tx.dynamicPropertiesMap.CashInHand && tx.dynamicPropertiesMap.CashInHand.value === 47321, 'the legacy override ALSO transmits under the configured dynamic key');
+  ok(tx.criteria.cashoutAmount === undefined && tx.dynamicPropertiesMap.CashInHand && tx.dynamicPropertiesMap.CashInHand.value === 47321, 'the operator escape hatch transmits under the configured dynamic key ONLY (criteria still never set)');
   delete process.env.LP_CASHOUT_AMOUNT_FIELD;
 
   // 31) AUDIT §3 — appraised value is NOT manufactured from the estimated value.
@@ -495,7 +498,7 @@ async function offline() {
   ok(goldB.criteria.interestOnly === true, 'GOLDEN B: interest-only');
   ok(goldB.property.propertyType === 'Condos' && goldB.property.attachmentType === 'Detached' && goldB.criteria.nonWarrantableProject === true, 'GOLDEN B: non-warrantable condo, detached');
   ok(goldB.criteria.loanYear === 15 && goldB.brokerCriteria.dayLocks === 15, 'GOLDEN B: 15yr / 15-day lock');
-  ok(goldB.criteria.cashoutAmount === 50000, 'GOLDEN B: cashoutAmount 50000 transmits as criteria.cashoutAmount');
+  ok(goldB.criteria.cashoutAmount === undefined && goldB[sm.CASHOUT_INTERNAL] === 50000, 'GOLDEN B: §32.2 cashoutAmount 50000 is retained internally, NOT transmitted (fail-closed)');
 
   // 37) AUDIT — advanced numerics are STRICTLY validated (no more silent coercion of "12abc" → 123).
   ok(vErr({ ...G, monthlyIncome: '12abc' }) === 'invalid_field_value', 'a malformed monthlyIncome → 422 invalid_field_value');

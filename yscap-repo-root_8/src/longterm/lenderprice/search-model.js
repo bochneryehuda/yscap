@@ -19,6 +19,11 @@ const registry = require('./field-registry');
 // are skipped by JSON.stringify, so attaching this to the built payload never pollutes the body
 // posted upstream; the route reads it to 422 an invalid value rather than silently ignoring it.
 const REGISTRY_WARNINGS = Symbol.for('lp.registryWarnings');
+// §32.2 — internal retention channel for the cash-out amount. Symbol-keyed (skipped by
+// JSON.stringify) so the value is retained on the built payload for diagnostics/storage but is NEVER
+// transmitted upstream. The live cash-out capture carried no legitimate vendor field, so we must not
+// invent or transmit one; the route surfaces this in effectiveScenario as an internal-only value.
+const CASHOUT_INTERNAL = Symbol.for('lp.cashoutInternal');
 
 // SMO ids observed in real captures. The DSCR pair selects the DSCR product; it is always sent.
 // These are FALLBACKS: when a live /pricing/smo registry is passed via opts.smo, the current
@@ -166,6 +171,68 @@ function mapRentalTerm(v) {
   return t;
 }
 
+// ---- §32.3 DSCR THRESHOLD TABLE -------------------------------------------
+// The entered DSCR ratio (criteria.dscr, always the verbatim numeric value) ALSO drives a coarse
+// `DSCRRATIO` dynamic token AND — above 0.75 — one additional pricing-band special mortgage option,
+// on top of the always-present "Debt Service Coverage Ratio" + "DSCR" pair. The buckets are
+// NON-OBVIOUS and CANNOT be derived by formatting the number (0.50 → "0.75", 0.80 → "DSCR<1"), so
+// this is a REVIEWED RANGE TABLE from the confirmed §32.3 live capture, never a string built from the
+// input. Every token below is captured, not guessed. Discontinuities at 0, 0.75, 1.00, 1.25:
+//   dscr = 0            → DSCRRATIO "NoDSCR",  no band SMO
+//   0   < dscr < 0.75   → DSCRRATIO "0.75",    no band SMO
+//   0.75 ≤ dscr < 1.00  → DSCRRATIO "DSCR<1",  band SMO "DSCR <1.15"
+//   1.00 ≤ dscr < 1.25  → DSCRRATIO "DSCR>=1", band SMO "DSCR >=1.00"
+//   dscr ≥ 1.25         → DSCRRATIO "1.25",    band SMO "DSCR >=1.25 - J"
+// Returns { ratio, smo } — ratio = the DSCRRATIO dynamic value; smo = the derived band SMO name (null
+// when the band adds none). Caller passes a num()-parsed dscr (validated to [0, 2] upstream); null in
+// → null out (no DSCRRATIO written, matching an omitted DSCR).
+function dscrBand(dscr) {
+  // Absent OR non-finite → no band (defense-in-depth). The sole production caller passes a
+  // num()-parsed value (finite-or-null) and the route 422s garbage before buildSearch, but dscrBand
+  // is exported in _internals; without this guard a NaN would skip every < comparison and fall
+  // through to the top "1.25" band — a mis-price. Fail closed to "no band" instead.
+  if (dscr == null || !isFinite(dscr)) return null;
+  if (dscr <= 0)   return { ratio: 'NoDSCR',  smo: null };
+  if (dscr < 0.75) return { ratio: '0.75',    smo: null };
+  if (dscr < 1.00) return { ratio: 'DSCR<1',  smo: 'DSCR <1.15' };
+  if (dscr < 1.25) return { ratio: 'DSCR>=1', smo: 'DSCR >=1.00' };
+  return             { ratio: '1.25',    smo: 'DSCR >=1.25 - J' };
+}
+
+// ---- §32.4 RESERVES SELECTOR TABLE ----------------------------------------
+// GLOBAL_RESERVES dynamic token. The DSCR profile FORCES a default (Reserves_24, env-overridable via
+// LP_RESERVES_TOKEN) when the caller omits reserves — the audit's rule "explicitly override the
+// inherited live default to Reserves_24". A caller MAY instead choose a specific reserves requirement
+// via `reservesMonths`, mapped to the CONFIRMED live enum below — NEVER a token built by formatting
+// the number. The singular/plural prefixes are GENUINELY INCONSISTENT in the live app (`Reserve_6`
+// but `Reserves_3/12/18/24`, and `Reserve_none`); they are copied EXACTLY — do NOT "fix" Reserve_6 to
+// Reserves_6. `none` (or 0) → the explicit "None" state `Reserve_none`, which the capture stresses is
+// DISTINCT from blank/inherit (JSON null). We do NOT expose blank/inherit: the DSCR profile always
+// emits a reserves value, so a caller either takes the forced default or an explicit enum value.
+// An unrecognized value is REJECTED (422 via LpValidationError), never priced at a guessed token.
+const RESERVES_TOKENS = {
+  none: 'Reserve_none',
+  '0':  'Reserve_none',
+  '3':  'Reserves_3',
+  '6':  'Reserve_6',     // SINGULAR — confirmed live inconsistency (§32.4). Copy exactly.
+  '12': 'Reserves_12',
+  '18': 'Reserves_18',
+  '24': 'Reserves_24',
+};
+function reservesKey(v) { return String(v == null ? '' : v).trim().toLowerCase(); }
+// Returns the mapped GLOBAL_RESERVES token, or null when reserves is OMITTED (buildSearch then applies
+// the profile default). An unrecognized value throws LpValidationError (→ 422 upstream).
+function mapReserves(v) {
+  const k = reservesKey(v);
+  if (k === '') return null;                              // omitted → profile default (handled by caller)
+  const t = RESERVES_TOKENS[k];
+  if (!t) {
+    throw new LpValidationError('unknown_reserves', 'reservesMonths',
+      `Unknown reserves requirement ${JSON.stringify(String(v))}. Supported: "none" (or 0), 3, 6, 12, 18, 24 months. The request is rejected rather than priced at a guessed reserves token.`);
+  }
+  return t;
+}
+
 // ---- §31.6/§31.8 SCENARIO-OWNERSHIP CLEARING LAYER --------------------------
 // A live /pricing/defaultSearch foundation is a SNAPSHOT of the pricing model as some earlier
 // session last left it. Cloning it (buildSearch, below) inherits every default — which is CORRECT
@@ -207,18 +274,28 @@ const SCENARIO_OWNED = [
   // base default (0), so a stale non-zero from a prior session is reset and no value the engine has
   // not already accepted is ever introduced. A real value would only reach these through a wired
   // caller field (none today), so on every current DSCR scenario they are correctly 0.
-  // FOOTGUN: unlike cashoutAmount (re-applied in buildSearch when supplied), these have NO re-apply
-  // path — so if you ever add a caller field for one, you MUST add its re-apply AFTER this clear runs,
-  // or the caller's value will be silently zeroed.
+  // FOOTGUN: these have NO re-apply path — so if you ever add a caller field for one, you MUST add its
+  // re-apply AFTER this clear runs, or the caller's value will be silently zeroed. (Contrast dscr /
+  // ltv / fico, which ARE re-applied to criteria; and cashoutAmount, whose supplied value is retained
+  // on the internal Symbol channel and NEVER transmitted per §32.2 — not re-applied to criteria.)
   { path: 'criteria.subordinateLoanAmount', neutral: 0, why: 'second-lien amount — audit §31.6 leak example' },
   { path: 'criteria.lineAmount',            neutral: 0, why: 'line-of-credit amount' },
   { path: 'criteria.rehabBudget',           neutral: 0, why: 'rehab budget' },
   { path: 'criteria.drawAmount',            neutral: 0, why: 'construction draw amount' },
   { path: 'criteria.downPaymentAmount',     neutral: 0, why: 'down-payment amount' },
-  // Cash-out "cash in hand": buildSearch adds it ONLY on a cash-out that supplies it, so its neutral
-  // is ABSENT (delete the key), never a null — a non-cash-out scenario must carry no cashoutAmount at
-  // all, and a stale one inherited from the foundation is removed.
-  { path: 'criteria.cashoutAmount', neutral: DELETE, why: 'cash-out amount; absent unless the caller supplies it' },
+  // Cash-out "cash in hand" — §32.2 FAIL-CLOSED. Neutral is ABSENT (delete the key): the amount is
+  // NEVER transmitted as a criteria field (the live capture carried no legitimate vendor field), so
+  // criteria.cashoutAmount must always be absent — cleared here and never re-applied. A supplied value
+  // is retained on the internal Symbol channel (buildSearch), and a stale one inherited from the
+  // foundation is removed here.
+  { path: 'criteria.cashoutAmount', neutral: DELETE, why: 'cash-out amount; §32.2 never transmitted, always cleared' },
+  // §32.3 DSCR band token — a DYNAMIC property derived from the per-deal DSCR (dscrBand). It is
+  // scenario-owned exactly like criteria.dscr, so a live foundation's stale DSCRRATIO must not leak
+  // when this scenario omits dscr. Neutral is ABSENT (delete the whole {fieldId,value} object): on
+  // omission no DSCRRATIO is sent (matching an omitted DSCR); when dscr IS supplied, buildSearch's
+  // setDyn('DSCRRATIO', …) re-creates it AFTER this clear. Re-apply path is guaranteed (setDyn runs
+  // after clearScenarioOwnedFields), so the DELETE-neutral footgun above does not apply.
+  { path: 'dynamicPropertiesMap.DSCRRATIO', neutral: DELETE, why: 'DSCR band token derived from criteria.dscr — §32.3' },
   // Broker COMP-PLAN override — the audit's compPlan leak. Neutral is the base default false ("do not
   // override; the standard comp plan governs"), which neutralizes any per-session comp override
   // (rangeComplan only applies while this flag is true, so clearing the flag is sufficient and no
@@ -293,7 +370,12 @@ function buildSearch(sc = {}, opts = {}) {
   if (loan != null) c.loanAmount = loan;
   if (ltv != null) c.ltv = ltv;
   if (num(sc.fico) != null) c.fico = num(sc.fico);
-  if (num(sc.dscr) != null) c.dscr = num(sc.dscr);
+  const dscrVal = num(sc.dscr);
+  if (dscrVal != null) c.dscr = dscrVal;
+  // §32.3 — DSCR threshold band, derived ONCE from the entered DSCR. Drives both the DSCRRATIO
+  // dynamic token (set below) and the derived pricing-band SMO (pushed into specialMortgageOptions
+  // below). Null when dscr is omitted → no DSCRRATIO, no band SMO (DSCRRATIO was cleared to neutral).
+  const band = dscrBand(dscrVal);
   // Loan TERM (years). The intentional DSCR profile default is 30-year FIXED (audit §1): when the
   // scenario omits the term we FORCE 30 rather than inherit whatever a live default model carried
   // (the "some DSCR defaults are not enforced" finding). loanYear + termsCriteria must agree;
@@ -324,6 +406,11 @@ function buildSearch(sc = {}, opts = {}) {
   // Special mortgage options: DSCR pair (+ PPP), resolved to the company's CURRENT {id,name}
   // via the live registry when present, else the captured built-in ids. months===0 → "No PPP".
   const smo = SMO_DSCR.map((d) => resolveSmo(d.name, smoReg, d));
+  // §32.3 — the derived DSCR pricing-band SMO (name-only fallback; the live /pricing/smo registry
+  // supplies the id when present, else dynaToSmo lets Lender Price map the confirmed name). Pushed
+  // AFTER the DSCR pair and BEFORE the PPP unshift, so the final order matches the captured
+  // [PPP, DSCVR, DSCR, band]. Only bands ≥ 0.75 add one (band.smo null below 0.75).
+  if (band && band.smo) smo.push(resolveSmo(band.smo, smoReg, null));
   if (months != null) {
     const fb = SMO_PPP[months] || null;
     const pppName = months === 0 ? 'No PPP'
@@ -356,12 +443,18 @@ function buildSearch(sc = {}, opts = {}) {
   const dp = m.dynamicPropertiesMap || (m.dynamicPropertiesMap = {});
   const setDyn = (k, v) => { if (dp[k]) dp[k].value = v; else dp[k] = { fieldId: k, value: v }; };
   setDyn('IncomeDocType', 'DSCR');
+  // §32.3 — DSCRRATIO band token, from the reviewed threshold table (dscrBand). Written only when a
+  // DSCR was supplied; on omission it stays cleared to neutral (deleted above), never leaking a live
+  // foundation's stale token. NOT derived by formatting the number — the tokens are captured.
+  if (band) setDyn('DSCRRATIO', band.ratio);
   setDyn('AddlOccupancyType', mapRentalTerm(sc.rentalTerm));
   setDyn('GLOBAL_BorrowerType', sc.borrowerType || 'LLC');
-  // Reserves — the intentional DSCR profile default is 24 MONTHS (audit §1). Forced (the
-  // GLOBAL_RESERVES token is confirmed from the captured base) so a live default carrying blank or
-  // different reserves cannot silently override the profile. Env-overridable per company.
-  setDyn('GLOBAL_RESERVES', process.env.LP_RESERVES_TOKEN || 'Reserves_24');
+  // Reserves — §32.4. The intentional DSCR profile default is 24 MONTHS (audit §1), forced when the
+  // caller omits reserves so a live default carrying blank/different reserves cannot silently override
+  // the profile (env-overridable per company via LP_RESERVES_TOKEN). A caller MAY choose a specific
+  // reserves requirement via reservesMonths → the CONFIRMED live enum (mapReserves); an unknown value
+  // 422s (never a guessed token). Always set (GLOBAL_RESERVES is confirmed from the captured base).
+  setDyn('GLOBAL_RESERVES', mapReserves(sc.reservesMonths) || process.env.LP_RESERVES_TOKEN || 'Reserves_24');
   // Prepay term / structure. An OMITTED prepay INHERITS the live default (audit §2 — the backend used
   // to CLEAR PrepayTerm/PrePayment_Plan_Type to null on omission, changing the model the user left
   // alone). months===0 is an EXPLICIT "no prepay" (PrepayTerm "None"); a positive months sets the
@@ -370,17 +463,22 @@ function buildSearch(sc = {}, opts = {}) {
     setDyn('PrepayTerm', months === 0 ? 'None' : `${months} Months`);
     setDyn('PrePayment_Plan_Type', months === 0 ? null : 'Standard');
   }
-  // Cash-out amount ("cash in hand"). THE VENDOR FIXED THE FIELD: as of the post-repair capture
-  // (2026-08-16) the live frontend now sends a NUMERIC `criteria.cashoutAmount` (its request was
-  // `{criteria:{loanPurpose:'CashoutRefinance', cashoutAmount:50000}}`, HTTP 200). So we transmit it
-  // as a real criteria field — the previous "store but do not transmit / wait for a dynamic-property
-  // code" behavior is now OUTDATED and retired. LP_CASHOUT_AMOUNT_FIELD remains only as an optional
-  // override in case the vendor ever moves it back to a dynamic property.
+  // Cash-out amount ("cash in hand") — §32.2 FAIL-CLOSED. A clean live cash-out capture (2026-08-16)
+  // sent `criteria.loanPurpose="CashoutRefinance"` but its JSON contained NEITHER the numeric value
+  // (50000) NOR `criteria.cashoutAmount`; it carried only a frontend BUG,
+  // `dynamicPropertiesMap.undefined = { value: null }`. This SUPERSEDES the earlier "the vendor fixed
+  // the field" finding (§31.4) — in the live path the field is NOT fixed. So per the audit: retain the
+  // amount INTERNALLY but do NOT transmit it and do NOT invent a vendor key. We store it on a
+  // Symbol-keyed property (skipped by JSON.stringify, exactly like REGISTRY_WARNINGS), so it is
+  // available for diagnostics/storage but never reaches upstream — `criteria.cashoutAmount` stays
+  // CLEARED (SCENARIO_OWNED DELETE-neutral). LP_CASHOUT_AMOUNT_FIELD remains the DELIBERATE operator
+  // escape hatch: set it ONLY once a NEW live capture confirms a legitimate cash-out field, and it is
+  // then transmitted as that exact dynamic property. Unset (the default) → nothing is transmitted.
   const cashoutAmt = num(sc.cashoutAmount);
   if (cashoutAmt != null) {
-    c.cashoutAmount = cashoutAmt;
-    const cashoutField = process.env.LP_CASHOUT_AMOUNT_FIELD;
-    if (cashoutField) setDyn(cashoutField, cashoutAmt); // optional legacy dynamic-property override
+    m[CASHOUT_INTERNAL] = cashoutAmt;                    // retained internally, NEVER serialized upstream
+    const cashoutField = process.env.LP_CASHOUT_AMOUNT_FIELD; // set ONLY when a capture confirms the field
+    if (cashoutField) setDyn(cashoutField, cashoutAmt);
   }
   m.dynaToSmo = true;
 
@@ -595,5 +693,5 @@ function validateScenario(sc = {}) {
   return { ok: true, request };
 }
 
-module.exports = { BASE, buildSearch, clearScenarioOwnedFields, smoRegistryFromList, REGISTRY_WARNINGS, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE } };
+module.exports = { BASE, buildSearch, clearScenarioOwnedFields, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE } };
