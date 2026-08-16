@@ -125,6 +125,20 @@ function applyRegistry(m, sc) {
   // NOTE: `false` is sent as the off value; if a future capture shows the vendor's off token is
   // something else, change the representation here (one place).
   if (sc.mixedUse != null) setDyn(m, 'GLOBAL_MixedUse', !!sc.mixedUse);
+  // Confirmed-token dynamic flags. Unlike GLOBAL_MixedUse (a JSON boolean value), these vendor flags
+  // carry a STRING "true"/"false" value — a confirmed live quirk, so do NOT copy the boolean shape.
+  // We ONLY ever send a token confirmed from a live capture (never a guessed off-token):
+  //   • cross-collateral — BOTH "true" and "false" confirmed (§31.3), so a full tri-state: explicit
+  //     true→"true", false→"false", omitted→inherit the live default.
+  //   • first-time investor + living-rent-free — only "true" is confirmed (§31.7); the off-token was
+  //     never captured, so an explicit `false` DOES NOT write a guessed token — it inherits the live
+  //     default exactly like omission (a checkbox: checked→send confirmed "true", else inherit). When
+  //     a capture confirms the off-token, add the `: 'false'` here in ONE place.
+  // All three are strict booleans (search-model BOOLEAN_FIELDS), so a string like "false" is 422'd
+  // upstream and never reaches here.
+  if (sc.crossCollateral != null) setDyn(m, 'GLOBAL_Cross_Collateralization_Product', sc.crossCollateral ? 'true' : 'false');
+  if (sc.firstTimeInvestor === true) setDyn(m, 'FirstTimeInvestor', 'true');
+  if (sc.livingRentFree === true) setDyn(m, 'Global_Living_Rent_Free', 'true');
 
   // --- citizenship / tradelines ---
   if (sc.citizenship != null) { if (CITIZENSHIP.has(sc.citizenship)) setDyn(m, 'Citizenship', sc.citizenship); else bad('citizenship', sc.citizenship, CITIZENSHIP); }
@@ -179,7 +193,7 @@ const REGISTRY_FIELDS = [
   'selfEmployed', 'financedProperties', 'numberOfBorrowers', 'monthlyIncome', 'monthlyDebt', 'dti',
   'compensationType', 'waiveLenderFee', 'rural', 'mixedUse', 'citizenship', 'tradelines',
   'noMortgageHistory', 'bankruptcy', 'mortgageLates', 'foreclosure', 'shortSale', 'deedInLieu',
-  'chargeOff', 'forbearance',
+  'chargeOff', 'forbearance', 'crossCollateral', 'firstTimeInvestor', 'livingRentFree',
 ];
 
 module.exports = { applyRegistry, resolvePropertyType, PROPERTY_TYPES, REGISTRY_FIELDS,

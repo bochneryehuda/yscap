@@ -43,7 +43,7 @@ function trimPrograms(parsed, limit = 60) {
 const SUPPORTED_FIELDS = new Set([
   'purpose', 'value', 'appraisedValue', 'asIsValue', 'loan', 'ltv', 'fico', 'dscr',
   'propertyType', 'units', 'attachment', 'nonWarrantable', 'zip', 'state', 'county', 'countyFps', 'city', 'countyName',
-  'borrowerType', 'prepayMonths', 'io', 'escrowWaive', 'fthb', 'date',
+  'borrowerType', 'prepayMonths', 'io', 'escrowWaive', 'fthb', 'date', 'rentalTerm',
   'term', 'termYears', 'lockDays', 'cashoutAmount',
   // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). Each maps to an
   // exact upstream path/token; an invalid VALUE for one is rejected as invalid_field_value (below).
@@ -90,6 +90,7 @@ function effectiveOf(payload) {
     lenderFeeWaiver: c.lenderFeeWaiver, rural: c.rural,
     citizenship: dyn('Citizenship'), tradelines: dyn('Tradelines'),
     mixedUse: dyn('GLOBAL_MixedUse'), noMortgageHistory: dyn('GLOBAL_NoMortgageHistory'),
+    crossCollateral: dyn('GLOBAL_Cross_Collateralization_Product'), firstTimeInvestor: dyn('FirstTimeInvestor'), livingRentFree: dyn('Global_Living_Rent_Free'),
     bankruptcyChapter: dyn('BankruptcyChapter'), bankruptcyStatus: dyn('BankruptcyStatus'), bankruptcySeasoning: dyn('BankruptcySeasoning'),
     foreclosure: dyn('Global_FORECLOSURES'), shortSale: dyn('Global_SHORTSALES'), deedInLieu: dyn('Global_DEEDINLIEU'),
     chargeOff: dyn('GLOBAL_MortgageLoanChargeOffs'), forbearance: dyn('GLOBAL_Forbearances'),

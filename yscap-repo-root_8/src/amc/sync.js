@@ -28,6 +28,7 @@ const cdg = require('./cdg');
 const client = require('./client');
 const session = require('./session');
 const storage = require('../lib/storage');
+const conditionSlots = require('../lib/appraisal/condition-slots');
 
 // The order states that are still live at the AMC (mirror the partial index in db/480).
 // 'cancel_requested' stays open so the poll keeps checking for the vendor's Cancellation
@@ -144,6 +145,15 @@ async function ingestDocuments(dbh, order, deps = {}) {
   const docs = cdg.parseDocuments(resp);
   let xmlDocId = null, pdfDocId = null, xmlString = null, filed = 0;
 
+  // WHERE THE REPORT GOES ON THE FILE. The order row's own link is preferred (it
+  // records the condition this order was placed against); an order placed before
+  // that link was recorded — or by a door that did not send it — resolves the
+  // file's appraisal-documents condition here instead, so a delivery is never
+  // stranded off the condition it satisfies. Null on a file with no such
+  // condition, which files the document on the loan file exactly as before.
+  const itemId = order.checklist_item_id || (await conditionSlots.conditionItemId(dbh, order.application_id));
+  const slotLabels = await conditionSlots.slotLabels(dbh);
+
   for (const d of docs) {
     try {
       // Dedupe on the AMC's own document id so re-polling never double-files.
@@ -156,17 +166,33 @@ async function ingestDocuments(dbh, order, deps = {}) {
       if (!d.objectUrl) continue;
       const { bytes, contentType } = await transport.getDocument(d.objectUrl);
       const sha = crypto.createHash('sha256').update(bytes).digest('hex');
+      // CLASSIFY BEFORE FILING. The slot label and the doc_kind have to ride in
+      // the INSERT — the condition matches a document to a slot by that label,
+      // so a document filed first and labelled later is a document the condition
+      // cannot see in between. Only the FIRST data file and the FIRST report take
+      // the two slots; anything else the AMC returns (an invoice, a supplemental)
+      // is filed on the condition unslotted, for a human to classify.
+      const isXml = !xmlDocId && looksXml(d, contentType, bytes);
+      const isPdf = !isXml && !pdfDocId && looksPdf(d, contentType, bytes);
+      const kind = isXml ? 'xml' : (isPdf ? 'pdf' : null);
+      const slotLabel = kind ? await conditionSlots.labelFor(dbh, itemId, kind, slotLabels) : null;
       const { ref, provider } = await storage.save(bytes, { filename: d.objectName || 'appraisal-document' });
       const ins = await dbh.query(
         `INSERT INTO documents
            (application_id, borrower_id, checklist_item_id, filename, content_type, size_bytes,
             storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, review_status, sha256,
-            source_type, visibility)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',NULL,NULL,'pending',$9,'system','staff_only')
+            source_type, visibility, slot_label)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',NULL,$10,'pending',$9,'system','staff_only',$11)
          RETURNING id`,
-        [order.application_id, borrowerId, order.checklist_item_id || null,
+        // ONLY the two documents the condition is WAITING for go onto it. An extra
+        // the AMC returns (an invoice, a supplemental) is filed on the loan file, as
+        // it always has been: a condition refuses sign-off while ANY document on it
+        // is un-reviewed (the 2026-08-03 rule), so attaching the appraiser's invoice
+        // would make an unrelated document a clear-to-close blocker on every file.
+        [order.application_id, borrowerId, kind ? itemId : (order.checklist_item_id || null),
          String(d.objectName || 'appraisal-document').slice(0, 300),
-         contentType || 'application/octet-stream', bytes.length, provider, ref, sha]);
+         contentType || 'application/octet-stream', bytes.length, provider, ref, sha,
+         kind ? conditionSlots.DOC_KIND[kind] : null, slotLabel]);
       const docId = ins.rows[0].id;
       await dbh.query(
         `INSERT INTO amc_order_documents
@@ -177,8 +203,8 @@ async function ingestDocuments(dbh, order, deps = {}) {
          d.objectDescription || null, d.objectUrl || null, d.objectSize || null, !!d.isAdditional,
          d.raw ? JSON.stringify(d.raw) : null]);
       filed += 1;
-      if (!xmlString && looksXml(d, contentType, bytes)) { xmlDocId = docId; xmlString = bytes.toString('utf8'); }
-      else if (!pdfDocId && looksPdf(d, contentType, bytes)) { pdfDocId = docId; }
+      if (isXml) { xmlDocId = docId; xmlString = bytes.toString('utf8'); }
+      else if (isPdf) { pdfDocId = docId; }
     } catch (e) {
       console.error('[amc] could not file a returned document for order', order.id, (e && e.message) || e);
     }
@@ -199,6 +225,10 @@ async function ingestDocuments(dbh, order, deps = {}) {
     }
   }
   if (imported) {
+    // The import is the proof: these two documents ARE the appraisal we ordered,
+    // so they are accepted rather than left waiting for somebody to vouch for a
+    // report we commissioned. A delivery that did NOT import stays pending.
+    await conditionSlots.acceptImportedSources(dbh, [xmlDocId, pdfDocId]);
     await dbh.query(
       `UPDATE amc_orders SET status='completed', completed_at=COALESCE(completed_at, now()), updated_at=now() WHERE id=$1`,
       [order.id]);
@@ -228,6 +258,8 @@ async function syncOne(dbh, order) {
   // documents.id, gated by AMC_OUTBOUND_ENABLED). Best-effort — never breaks the poll.
   try { await require('./documents').autoUploadForOrder(dbh, order); }
   catch (e) { console.error('[amc] auto document upload failed for order', order.id, (e && e.message) || e); }
+  // Keep the Orders desk's copy of this appraisal in step with the vendor.
+  require('../lib/appraisal-order-mirror').fire(order.application_id);
   if (out.status === 'product_available') {
     try { await ingestDocuments(dbh, { ...order, status: out.status }); }
     catch (e) { console.error('[amc] document ingest failed for order', order.id, (e && e.message) || e); }

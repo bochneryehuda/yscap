@@ -4,6 +4,7 @@ import { moneyNum } from '../lib/money';
 import { rvOrderTotal, moneyExact } from '../lib/rvPrice.js';
 import { askConfirm, askPrompt } from '../lib/dialog.js';
 import OrderFailure, { parseOrderFailure } from './OrderFailure.jsx';
+import AppraisalCardEntry from './AppraisalCardEntry.jsx';
 
 /**
  * ONE unified "Appraisal order" section that replaces the two side-by-side panels
@@ -126,7 +127,10 @@ const ADAPTERS = {
     orderedAt: (o) => o.placed_at || o.created_at,
     orderFee: (o) => (o.client_fee_cents != null ? o.client_fee_cents / 100 : null),
     orderPaid: (o) => !!o.paid_at,
-    canCancel: () => false,                        // Class cancel needs a reason-picker not in the old panel
+    // A live Class order can be called off. The reason must come from Class's own
+    // closed list, which is what ClassCancelButton's picker is for; an order they
+    // have already finished or cancelled has nothing left to stop.
+    canCancel: (o) => !!(o.class_order_id && !['cancelled', 'completed', 'error'].includes(String(o.status || ''))),
   },
 };
 
@@ -188,7 +192,10 @@ export default function AppraisalOrderSection({ appId, onChanged }) {
     const unreadFor = (id) => ((classData && classData.unread || []).find((u) => String(u.class_order_row) === String(id)) || {}).n || 0;
     const asksFor = (id) => (classData && classData.openAsks || []).filter((a) => String(a.class_order_row) === String(id));
     const attFor = (id) => (classData && classData.attachments || []).filter((a) => String(a.class_order_row) === String(id));
-    const nan = (nanOrders || []).map((o) => ({ ...o, _vendor: 'nan' }));
+    // NAN carries its own unread count on the order row (the AMC's side of the
+    // two-way thread); Class carries it in a separate list. Both end up as
+    // `_unread` so the messages tab reads the same for either vendor.
+    const nan = (nanOrders || []).map((o) => ({ ...o, _vendor: 'nan', _unread: Number(o.unread) || 0 }));
     const cls = ((classData && classData.orders) || []).map((o) => ({
       ...o, _vendor: 'class', _unread: unreadFor(o.id), _asks: asksFor(o.id), _attachments: attFor(o.id),
     }));
@@ -263,10 +270,121 @@ export default function AppraisalOrderSection({ appId, onChanged }) {
         <div className="aord-empty">No appraisal orders on this file yet — build one above.</div>
       ) : null}
 
+      <OutsidePilotOrders />
+
       {payFor ? (
         <PayModal appId={appId} order={payFor} card={card}
           onClose={() => setPayFor(null)}
           onPaid={async () => { await afterChange(); }} />
+      ) : null}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   ORDERS THE APPRAISAL COMPANY HAS THAT PILOT DOES NOT (2026-08-16).
+
+   An appraisal ordered on AppraisalScope's own website — around an outage, out of
+   habit, or re-issued by them under a new number — exists at the vendor and not
+   here: nothing polls it, its report never files itself onto the condition, and
+   the file reads as though no appraisal was ever ordered.
+
+   IT REPORTS, IT DOES NOT ADOPT. Deciding that one of their orders IS a given
+   file's appraisal is a judgement whose wrong answer files a stranger's report
+   onto a loan, so this shows the evidence and leaves the decision with a person.
+
+   ADMIN-ONLY BY SELF-HIDING. The route is `platform_setup`; anybody else gets a
+   403 and this renders nothing at all rather than an error nobody can act on.
+   Nothing is fetched until it is opened, because it reads the whole account.
+   ════════════════════════════════════════════════════════════════════════════ */
+function OutsidePilotOrders() {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState(null);   // null = never asked
+  const [busy, setBusy] = useState(false);
+  const [denied, setDenied] = useState(false);
+
+  const check = useCallback(async () => {
+    setBusy(true);
+    try { setState(await api.amcReconcile({ days: 90 })); }
+    catch (e) {
+      if (e && (e.status === 403 || /forbidden/i.test(e.message || ''))) { setDenied(true); setOpen(false); }
+      else setState({ ok: false, error: 'error', message: (e && e.message) || 'Could not check.' });
+    }
+    setBusy(false);
+  }, []);
+
+  if (denied) return null;
+
+  if (!open) {
+    return (
+      <div style={{ marginTop: 14 }}>
+        <button className="aord-more" onClick={() => { setOpen(true); if (!state) check(); }}>
+          Check for appraisals ordered outside PILOT
+        </button>
+      </div>
+    );
+  }
+
+  const unknown = (state && state.unknown) || [];
+  return (
+    <div style={{ marginTop: 14, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14, background: '#fff' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+        <div className="aord-eyebrow" style={{ margin: 0 }}>Ordered outside PILOT</div>
+        <button className="btn ghost small" disabled={busy} onClick={check}>{busy ? 'Checking…' : 'Check again'}</button>
+        <button className="aord-more" style={{ marginLeft: 'auto' }} onClick={() => setOpen(false)}>Hide</button>
+      </div>
+
+      {busy && !state ? <div style={{ color: MUTED, fontSize: 13, marginTop: 8 }}>Asking the appraisal company…</div> : null}
+
+      {state && !state.ok ? (
+        <div style={{ marginTop: 8, fontSize: 13.5, color: MUTED }}>
+          {state.error === 'not_enabled' ? 'The appraisal-company connection is switched off, so there is nothing to compare against.'
+            : state.error === 'not_configured' ? 'The appraisal-company login is not set up yet.'
+              : `Could not check: ${state.message || 'the appraisal company did not answer'}.`}
+        </div>
+      ) : null}
+
+      {state && state.ok ? (
+        <>
+          <div style={{ marginTop: 8, fontSize: 13.5, color: MUTED }}>
+            Checked {state.checked} order{state.checked === 1 ? '' : 's'} they placed in the last {state.days} days.
+            {unknown.length === 0 ? ' Everything they hold is already tracked here.' : ''}
+          </div>
+          {unknown.length ? (
+            <div style={{ marginTop: 10, overflowX: 'auto' }}>
+              <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 13.5 }}>
+                <thead>
+                  <tr style={{ textAlign: 'left', color: MUTED }}>
+                    <th style={{ padding: '4px 10px 4px 0' }}>Their order</th>
+                    <th style={{ padding: '4px 10px 4px 0' }}>Loan #</th>
+                    <th style={{ padding: '4px 10px 4px 0' }}>Property</th>
+                    <th style={{ padding: '4px 10px 4px 0' }}>Their status</th>
+                    <th style={{ padding: '4px 0' }}>Our file</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {unknown.map((u) => (
+                    <tr key={u.spOrderNumber} style={{ borderTop: `1px solid ${LINE}`, color: INK }}>
+                      <td style={{ padding: '6px 10px 6px 0' }}>{u.fileNumber || u.spOrderNumber}</td>
+                      <td style={{ padding: '6px 10px 6px 0' }}>{u.loanNumber || '—'}</td>
+                      <td style={{ padding: '6px 10px 6px 0' }}>{u.address || '—'}</td>
+                      <td style={{ padding: '6px 10px 6px 0' }}>{u.status || '—'}</td>
+                      <td style={{ padding: '6px 0', color: u.file ? INK : '#9A3B33' }}>
+                        {u.file ? u.file.loanNumber : 'no matching file'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ marginTop: 8, fontSize: 12.5, color: MUTED, lineHeight: 1.5 }}>
+                These are at the appraisal company and not in PILOT, so nothing here is chasing them and
+                their reports will not file themselves onto a condition. Re-place the order from the right
+                file, or ask the appraisal company to cancel it — PILOT will not adopt one on its own,
+                because attaching the wrong property’s report to a loan is not a mistake it can undo.
+              </div>
+            </div>
+          ) : null}
+        </>
       ) : null}
     </div>
   );
@@ -355,7 +473,7 @@ function NanBuilder({ appId, cfg, onPlaced }) {
       {notice ? <Banner tone="good">{notice}</Banner> : null}
       {preview ? (
         <PreviewCard preview={preview} busy={busy} onDraft={() => place(false)} onPlace={() => place(true)}
-          outbound={!!(cfg && cfg.outbound)}
+          outbound={!!(cfg && cfg.outbound)} appId={appId} onCardSaved={load}
           formValue={formOverride || (preview.spec && preview.spec.productCode) || ''} onPickForm={setFormOverride}
           cdorValue={cdorOverride || (preview.spec && preview.spec.clientDisplayedId) || ''} onPickCdor={setCdorOverride} />
       ) : (
@@ -369,7 +487,54 @@ function NanBuilder({ appId, cfg, onPlaced }) {
   );
 }
 
-function PreviewCard({ preview, busy, onDraft, onPlace, outbound, formValue, onPickForm, cdorValue, onPickCdor }) {
+/* WHAT IT WILL COST, shown before the order goes out (2026-08-16).
+ *
+ * TWO NUMBERS, NEVER ONE. AppraisalScope answers two different questions and each
+ * is misleading on its own: `form` is what this FORM costs on our account, and
+ * `location` is what appraisers actually charge WHERE the property is. Showing
+ * only the list price hides a rural premium; showing only the market rate hides
+ * what we have agreed to pay.
+ *
+ * SILENT WHEN THERE IS NOTHING TO SAY. The quote is read from a cache and
+ * refreshed behind the scenes, so the first preview on a cold cache has no
+ * numbers — and an empty "Fee: —" row teaches people the figures are unreliable.
+ * It appears when there is something real to show.
+ */
+function FeeQuote({ quote }) {
+  if (!quote) return null;
+  const q = (h) => (h && h.typical != null ? h : null);
+  const form = q(quote.form);
+  const loc = q(quote.location);
+  if (!form && !loc) return null;
+  const usd = (n) => `$${Math.round(Number(n)).toLocaleString('en-US')}`;
+  const range = (h) => (h.low != null && h.high != null && h.high !== h.low
+    ? ` (${usd(h.low)}–${usd(h.high)})` : '');
+  return (
+    <div style={{
+      marginTop: 12, padding: '10px 12px', border: `1px solid ${LINE}`, borderRadius: 10,
+      background: '#fff', display: 'flex', flexDirection: 'column', gap: 5,
+    }}>
+      <div className="aord-eyebrow" style={{ margin: 0 }}>What it should cost</div>
+      {form ? (
+        <div style={{ fontSize: 14, color: INK }}>
+          <strong>{usd(form.typical)}</strong>
+          <span style={{ color: MUTED }}> — this form, on our account{range(form)}</span>
+        </div>
+      ) : null}
+      {loc ? (
+        <div style={{ fontSize: 14, color: INK }}>
+          <strong>{usd(loc.typical)}</strong>
+          <span style={{ color: MUTED }}> — what appraisers charge around this property{range(loc)}</span>
+        </div>
+      ) : null}
+      <div style={{ fontSize: 12, color: MUTED }}>
+        Quoted by the appraisal company{quote.stale ? ' — refreshing' : ''}. The invoice is theirs; this is a guide.
+      </div>
+    </div>
+  );
+}
+
+function PreviewCard({ preview, busy, onDraft, onPlace, outbound, appId, onCardSaved, formValue, onPickForm, cdorValue, onPickCdor }) {
   const spec = preview.spec || {};
   const missing = preview.missing || [];
   const cardOnFile = preview.card || {};
@@ -423,8 +588,22 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound, formValue, onP
         <Field label="Purpose">{loan.loanPurpose || '—'}</Field>
         <Field label="Loan amount">{money(loan.baseLoanAmount)}</Field>
         <Field label="Borrowers">{(spec.borrowers || []).map((b) => b.fullName || [b.firstName, b.lastName].filter(Boolean).join(' ') || b.legalEntityName).filter(Boolean).join(', ') || '—'}</Field>
-        <Field label="Payment card">{cardOnFile.onFile ? ((cardOnFile.brand || 'card') + ' ••' + (cardOnFile.last4 || '')) : 'not on file'}</Field>
+        {/* THE CARD IS ENTERABLE HERE, not only on the condition (owner-directed
+            2026-08-05: "one card, entered once, both places"). It saves through the
+            shared chokepoint, so typing it here fills the appraisal-card condition
+            too — and a card the borrower typed on the condition already shows here.
+            Payment stays manual; nothing is charged. */}
+        <div>
+          <Field label="Payment card">{cardOnFile.onFile ? ((cardOnFile.brand || 'card') + ' ••' + (cardOnFile.last4 || '')) : 'not on file'}</Field>
+          {appId ? (
+            <AppraisalCardEntry appId={appId} align="flex-start"
+              label={cardOnFile.onFile ? 'Replace card' : 'Enter card'}
+              onSaved={onCardSaved} />
+          ) : null}
+        </div>
       </div>
+
+      <FeeQuote quote={preview.feeQuote} />
 
       {missing.length ? (
         <div style={{ marginTop: 10, color: '#9A3B33', fontSize: 13 }}>
@@ -909,6 +1088,36 @@ function RicherValueBuilder({ appId, cfg, onPlaced }) {
 
   const clearOverrides = useCallback(() => { setOverrides({}); load({}); }, [load]);
 
+  /* WHAT WILL THEY CHARGE FOR *THIS* ORDER — asked live before it is placed
+     (2026-08-16: their pricing endpoint was built and nothing ever called it).
+     The preview carries a price for the DEFAULT product; the moment a staffer
+     changes the report, the inspection or the turnaround, that number describes a
+     different order from the one about to be placed. This asks them again with
+     the choices as they stand.
+
+     It never blocks and never orders: a re-price that fails leaves the preview's
+     own figure showing, which is stale rather than wrong. */
+  const [priceNow, setPriceNow] = useState(null);
+  const [pricing, setPricing] = useState(false);
+  const reprice = useCallback(async () => {
+    setPricing(true);
+    try { setPriceNow(await api.rvPrice(appId, overrides)); }
+    catch (e) { setPriceNow({ error: (e && e.message) || 'Could not get a price.' }); }
+    setPricing(false);
+  }, [appId, overrides]);
+  // A changed choice makes the last quote about a different order. Drop it rather
+  // than leave a number on screen that no longer describes what would be ordered.
+  useEffect(() => { setPriceNow(null); }, [overrides]);
+
+  /* WHAT WE WOULD SEND THEM AS THE SCOPE OF WORK — their own read of the file's
+     budget, so somebody can look BEFORE sending rather than after. */
+  const [sowPreview, setSowPreview] = useState(null);
+  const showScopeOfWork = useCallback(async () => {
+    if (sowPreview) { setSowPreview(null); return; }
+    try { setSowPreview(await api.rvScopeOfWork(appId)); }
+    catch (e) { setSowPreview({ error: (e && e.message) || 'Could not read the scope of work.' }); }
+  }, [appId, sowPreview]);
+
   const place = useCallback(async () => {
     const guard = (preview && preview.loanGuard) || null;
     const pay = (preview && preview.payment) || {};
@@ -1158,6 +1367,51 @@ function RicherValueBuilder({ appId, cfg, onPlaced }) {
           ) : null}
 
           <RvScopeOfWork sow={preview.scopeOfWork} />
+          {/* THEIR OWN READ of what we would send as the scope of work — asked
+              live, so somebody can check it before it goes rather than after. */}
+          <div style={{ marginTop: 8 }}>
+            <button className="aord-more" onClick={showScopeOfWork}>
+              {sowPreview ? 'Hide what we would send them' : 'See exactly what we would send them'}
+            </button>
+            {sowPreview ? (
+              <div style={{ marginTop: 8, border: `1px solid ${LINE}`, borderRadius: 10, padding: 12, background: '#fff' }}>
+                {sowPreview.error ? (
+                  <div style={{ color: MUTED, fontSize: 13 }}>{sowPreview.error}</div>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 13.5, color: INK }}>
+                      {sowPreview.file ? `${sowPreview.file.filename || 'The scope of work'}` : 'The scope of work on this file'}
+                      {sowPreview.total != null ? ` — ${money(sowPreview.total)}` : ''}
+                    </div>
+                    {sowPreview.error || sowPreview.reason ? (
+                      <div style={{ fontSize: 12.5, color: WARN, marginTop: 4 }}>{sowPreview.reason || sowPreview.error}</div>
+                    ) : null}
+                    {Array.isArray(sowPreview.lines) && sowPreview.lines.length ? (
+                      <div style={{ marginTop: 6, maxHeight: 200, overflowY: 'auto', fontSize: 13, color: MUTED }}>
+                        {sowPreview.lines.slice(0, 60).map((l, i) => (
+                          <div key={i}>{l.name || l.label || l.category || '—'}{l.amount != null ? ` · ${money(l.amount)}` : ''}</div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            ) : null}
+          </div>
+          {/* WHAT THEY WOULD CHARGE FOR THE ORDER AS IT NOW STANDS. The preview's
+              price is for the DEFAULT product; a changed report or inspection makes
+              it a price for a different order, so it can be asked again here. */}
+          <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+            <button className="aord-more" disabled={pricing} onClick={reprice}>
+              {pricing ? 'Asking them…' : 'Price this exact order'}
+            </button>
+            {priceNow && !priceNow.error ? (
+              <span style={{ fontSize: 13.5, color: INK }}>
+                Richer Values quote: <strong>{money(priceNow.total_price != null ? priceNow.total_price : (priceNow.price && priceNow.price.total_price))}</strong>
+              </span>
+            ) : null}
+            {priceNow && priceNow.error ? <span className="muted small">{priceNow.error}</span> : null}
+          </div>
           <RvPayment
             payment={preview.payment} method={payMethod} onMethod={setPayMethod}
             card={newCard} onCard={setNewCard} linkTo={linkTo} onLinkTo={setLinkTo} />
@@ -1439,6 +1693,271 @@ function RvPlaceOrder({ cfg, preview, busy, onPlace, enabled, price }) {
   );
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   EVERYTHING ELSE RICHER VALUES CAN DO (2026-08-16).
+
+   Eleven of their controls were fully built on the server — routed, validated,
+   journalled and audited — with no button anywhere, so an order could be placed
+   and then not paused, not resumed, not set aside, not brought back, not
+   reopened, its product not changed, its documents never sent, and its payment
+   picture never read. This is that surface.
+
+   IT IS ONE CONTROL, NOT ELEVEN MORE BUTTONS. These are the exceptions to a
+   normal order's life; putting them in the main row would bury "check with them"
+   and "put these on the file" among things almost nobody presses.
+
+   EACH ACTION APPEARS ONLY WHERE IT MEANS SOMETHING. Their own rules decide:
+   a hold can only be released on a held order, a finished report is the only
+   thing there is to reopen, and the product can only be changed while the order
+   is still live. A button that is always there and usually errors teaches people
+   to distrust the whole panel.
+
+   THE SERVER IS THE AUTHORITY ON ALL OF IT. Every refusal here mirrors a check
+   the route already makes (a reason of at least eight characters, one of their
+   five reopen reasons); the point of repeating it is a plain sentence instead of
+   a 400, never a second rule that could drift from theirs.
+   ════════════════════════════════════════════════════════════════════════════ */
+const RV_REOPEN_REASONS = [
+  ['edits', 'Corrections to the report'],
+  ['new-budget', 'The renovation budget changed'],
+  ['new-specs', 'The scope or specs changed'],
+  ['dispute', 'We disagree with the value'],
+  ['market-update', 'The market has moved'],
+];
+
+function RvMoreActions({ order, detail, busy, run }) {
+  const [open, setOpen] = useState(false);
+  const [pane, setPane] = useState('');          // '' | 'hold' | 'reopen' | 'product' | 'documents' | 'payment'
+  const [reason, setReason] = useState('');
+  const [reopenType, setReopenType] = useState('');
+  const [catalogue, setCatalogue] = useState(null);
+  const [pick, setPick] = useState({ reportType: '', inspectionType: '' });
+  const [docs, setDocs] = useState(null);
+  const [chosen, setChosen] = useState([]);
+  const [field, setField] = useState('other_files');
+  const [payment, setPayment] = useState(null);
+  const [localErr, setLocalErr] = useState('');
+
+  const status = String(order.status || '');
+  const held = status === 'on_hold';
+  const finished = status === 'completed';
+  const setAside = ['cancelled', 'dismissed'].includes(status);
+  const live = !setAside && !finished;
+
+  const openPane = async (p) => {
+    setPane(pane === p ? '' : p); setLocalErr(''); setReason('');
+    if (p === 'product' && !catalogue) {
+      try { setCatalogue(await api.rvCatalogue({})); } catch (_) { setCatalogue({ available: false, reportTypes: [], inspectionTypes: [] }); }
+    }
+    if (p === 'documents' && !docs) {
+      try {
+        const r = await api.amcDocuments(order.application_id);
+        setDocs((r && r.documents) || []);
+      } catch (_) { setDocs([]); }
+    }
+    if (p === 'payment' && !payment) {
+      try { setPayment(await api.rvPaymentState(order.application_id)); } catch (_) { setPayment({ error: true }); }
+    }
+  };
+
+  if (!open) {
+    return <button className="aord-btn" onClick={() => setOpen(true)}>More…</button>;
+  }
+
+  const need = (s, n, what) => {
+    if (String(s || '').trim().length < n) { setLocalErr(`Add a short ${what} — at least ${n} characters, so the record says why.`); return false; }
+    return true;
+  };
+
+  return (
+    <div style={{ flexBasis: '100%', marginTop: 8, border: `1px solid ${LINE}`, borderRadius: 10, padding: 12, background: '#fff' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <span className="aord-eyebrow" style={{ margin: 0 }}>More Richer Values actions</span>
+        <button className="aord-more" style={{ marginLeft: 'auto' }} onClick={() => { setOpen(false); setPane(''); }}>Close</button>
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+        {live ? (
+          <button className="aord-btn" onClick={() => openPane('hold')} aria-pressed={pane === 'hold'}>
+            {held ? 'Take the hold off' : 'Put the order on hold'}
+          </button>
+        ) : null}
+        {finished ? (
+          <button className="aord-btn" onClick={() => openPane('reopen')} aria-pressed={pane === 'reopen'}>Reopen the report</button>
+        ) : null}
+        {live ? (
+          <button className="aord-btn" onClick={() => openPane('product')} aria-pressed={pane === 'product'}>Change the report or inspection</button>
+        ) : null}
+        {live ? (
+          <button className="aord-btn" onClick={() => openPane('documents')} aria-pressed={pane === 'documents'}>Send them documents</button>
+        ) : null}
+        <button className="aord-btn" onClick={() => openPane('payment')} aria-pressed={pane === 'payment'}>Payment</button>
+        {live && !order.paid_at ? (
+          <button className="aord-btn" disabled={!!busy}
+            onClick={async () => {
+              if (!(await askConfirm('Set this order aside at Richer Values? It stops being worked; it can be brought back afterwards.',
+                { title: 'Set the order aside', confirmLabel: 'Set it aside' }))) return;
+              await run('dismiss', () => api.rvDismiss(order.id), 'Richer Values has set the order aside.');
+            }}>
+            {busy === 'dismiss' ? 'Setting aside…' : 'Set the order aside'}
+          </button>
+        ) : null}
+        {setAside ? (
+          <button className="aord-btn" disabled={!!busy}
+            onClick={() => run('reactivate', () => api.rvReactivate(order.id), 'Richer Values has brought the order back.')}>
+            {busy === 'reactivate' ? 'Bringing back…' : 'Bring the order back'}
+          </button>
+        ) : null}
+      </div>
+
+      {localErr ? <div style={{ marginTop: 8 }}><Banner tone="bad">{localErr}</Banner></div> : null}
+
+      {/* ---- hold / release ---- */}
+      {pane === 'hold' ? (
+        <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <input className="input" style={{ flex: 1, minWidth: 220 }}
+            placeholder={held ? 'Note (optional) — what changed?' : 'Why is this going on hold?'}
+            value={reason} onChange={(e) => { setReason(e.target.value); setLocalErr(''); }} />
+          <button className="btn small" disabled={!!busy} onClick={async () => {
+            if (held) { await run('hold', () => api.rvReleaseHold(order.id, reason.trim()), 'The hold is off — Richer Values is working it again.'); setPane(''); return; }
+            if (!need(reason, 8, 'reason')) return;
+            await run('hold', () => api.rvHold(order.id, reason.trim()), 'Richer Values has put the order on hold.');
+            setPane('');
+          }}>{busy === 'hold' ? 'Working…' : held ? 'Take the hold off' : 'Put it on hold'}</button>
+        </div>
+      ) : null}
+
+      {/* ---- reopen a finished report ---- */}
+      {pane === 'reopen' ? (
+        <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <select value={reopenType} onChange={(e) => { setReopenType(e.target.value); setLocalErr(''); }}
+            style={{ minWidth: 230, border: `1px solid ${LINE}`, borderRadius: 8, padding: '7px 8px', color: INK, background: '#fff', fontSize: 14 }}>
+            <option value="">Why is it being reopened…</option>
+            {RV_REOPEN_REASONS.map(([k, lbl]) => <option key={k} value={k}>{lbl}</option>)}
+          </select>
+          <input className="input" style={{ flex: 1, minWidth: 220 }} placeholder="What needs to change?"
+            value={reason} onChange={(e) => { setReason(e.target.value); setLocalErr(''); }} />
+          <button className="btn small" disabled={!!busy} onClick={async () => {
+            if (!reopenType) { setLocalErr('Pick why it is being reopened — Richer Values only accepts their own five reasons.'); return; }
+            if (!need(reason, 8, 'note')) return;
+            await run('reopen', () => api.rvReopen(order.id, { reopenType, notes: reason.trim() }),
+              'Richer Values is redoing the report.');
+            setPane('');
+          }}>{busy === 'reopen' ? 'Reopening…' : 'Reopen it'}</button>
+        </div>
+      ) : null}
+
+      {/* ---- change the product ---- */}
+      {pane === 'product' ? (
+        <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          {!catalogue ? <span className="muted small">Loading what they offer…</span> : null}
+          {catalogue && !catalogue.available ? <span className="muted small">Their catalogue is not readable right now.</span> : null}
+          {catalogue && catalogue.available ? (
+            <>
+              <select value={pick.reportType} onChange={(e) => setPick((p) => ({ ...p, reportType: e.target.value }))}
+                style={{ minWidth: 190, border: `1px solid ${LINE}`, borderRadius: 8, padding: '7px 8px', color: INK, background: '#fff', fontSize: 14 }}>
+                <option value="">Change the report…</option>
+                {(catalogue.reportTypes || []).map((r) => (
+                  <option key={r.value || r.id || r} value={r.value || r.id || r}>{r.label || r.name || r.value || r}</option>
+                ))}
+              </select>
+              <select value={pick.inspectionType} onChange={(e) => setPick((p) => ({ ...p, inspectionType: e.target.value }))}
+                style={{ minWidth: 190, border: `1px solid ${LINE}`, borderRadius: 8, padding: '7px 8px', color: INK, background: '#fff', fontSize: 14 }}>
+                <option value="">Change the inspection…</option>
+                {(catalogue.inspectionTypes || []).map((r) => (
+                  <option key={r.value || r.id || r} value={r.value || r.id || r}>{r.label || r.name || r.value || r}</option>
+                ))}
+              </select>
+              <button className="btn small" disabled={!!busy || (!pick.reportType && !pick.inspectionType)} onClick={async () => {
+                // Changing the REPORT re-prices, so it is confirmed; changing the
+                // inspection is the cheaper of the two and is not.
+                if (pick.reportType) {
+                  if (!(await askConfirm('Change the report Richer Values is producing? This re-prices the order.',
+                    { title: 'Change the report', confirmLabel: 'Change it' }))) return;
+                  await run('product', () => api.rvSetReportType(order.id, pick.reportType), 'Richer Values has the new report type.');
+                }
+                if (pick.inspectionType) {
+                  await run('product', () => api.rvSetInspection(order.id, pick.inspectionType), 'Richer Values has the new inspection type.');
+                }
+                setPane(''); setPick({ reportType: '', inspectionType: '' });
+              }}>{busy === 'product' ? 'Changing…' : 'Send the change'}</button>
+              <div className="muted small" style={{ flexBasis: '100%' }}>
+                Changing the report re-prices the order. Today it is {order.report_type || 'their default report'}
+                {order.inspection_type ? ` with a ${order.inspection_type} inspection` : ''}.
+              </div>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* ---- send them documents off this file ---- */}
+      {pane === 'documents' ? (
+        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {!docs ? <span className="muted small">Loading this file’s documents…</span> : null}
+          {docs && !docs.length ? <span className="muted small">There is nothing on this file to send yet.</span> : null}
+          {docs && docs.length ? (
+            <>
+              <select value={field} onChange={(e) => setField(e.target.value)}
+                style={{ maxWidth: 260, border: `1px solid ${LINE}`, borderRadius: 8, padding: '7px 8px', color: INK, background: '#fff', fontSize: 14 }}>
+                {[['budget_files', 'Renovation budget'], ['photo_files', 'Photos'], ['video_files', 'Video'],
+                  ['inspection_files', 'A prior inspection'], ['plan_files', 'Plans'], ['contract_files', 'The contract'],
+                  ['other_files', 'Something else']].map(([k, lbl]) => <option key={k} value={k}>{lbl}</option>)}
+              </select>
+              <div style={{ maxHeight: 190, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {docs.map((d) => (
+                  <label key={d.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13.5, color: INK }}>
+                    <input type="checkbox" checked={chosen.includes(d.id)}
+                      onChange={(e) => setChosen((c) => (e.target.checked ? c.concat(d.id) : c.filter((x) => x !== d.id)))} />
+                    <span>{d.filename}</span>
+                  </label>
+                ))}
+              </div>
+              <div>
+                <button className="btn small" disabled={!!busy || !chosen.length} onClick={async () => {
+                  await run('senddocs', () => api.rvSendDocuments(order.id, chosen, field),
+                    `Sent ${chosen.length} document${chosen.length === 1 ? '' : 's'} to Richer Values.`);
+                  setChosen([]); setPane('');
+                }}>{busy === 'senddocs' ? 'Sending…' : `Send ${chosen.length || ''} to Richer Values`}</button>
+              </div>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* ---- the payment picture ---- */}
+      {pane === 'payment' ? (
+        <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+          {!payment ? <span className="muted small">Loading…</span> : null}
+          {payment && payment.error ? <span className="muted small">The payment picture could not be read.</span> : null}
+          {payment && !payment.error ? (
+            <>
+              <span style={{ fontSize: 13.5, color: INK }}>
+                {order.paid_at ? 'This order is paid.' : 'This order has not been paid yet.'}
+                {payment.card && payment.card.last4 ? ` Card on file ••${payment.card.last4}.` : ''}
+                {payment.sources && payment.sources.length ? ` ${payment.sources.length} saved payment source(s) at Richer Values.` : ''}
+              </span>
+              {!order.paid_at ? (
+                <button className="aord-btn" disabled={!!busy}
+                  onClick={() => run('paylink', () => api.rvSendPaymentLink(order.id, {}),
+                    'Richer Values has emailed the borrower their payment link.')}>
+                  {busy === 'paylink' ? 'Sending…' : 'Email the borrower a payment link'}
+                </button>
+              ) : null}
+              {order.payment_link ? (
+                <a href={order.payment_link} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: TEAL }}>Open the payment link</a>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      ) : null}
+
+      {detail && detail.order && detail.order.status_reason ? (
+        <div className="muted small" style={{ marginTop: 10 }}>Their last note: {detail.order.status_reason}</div>
+      ) : null}
+    </div>
+  );
+}
+
 /* =============================================== Richer Values order card === */
 /*
  * An evaluation has no appraiser to message and no documents to exchange, so this
@@ -1586,6 +2105,16 @@ function RvOrderCard({ order, onChanged }) {
           }}>
             {busy === 'sow' ? 'Sending…' : 'Send the updated scope of work'}
           </button>
+        ) : null}
+        {/* MORE THINGS RICHER VALUES CAN DO — every one of these was built on the
+            server and had no button anywhere (audit, 2026-08-16), so an order could
+            be placed and then not paused, not set aside, not brought back, not
+            reopened, and its product not changed. They are grouped behind one
+            control rather than added to this row: they are the exceptions, and a
+            row of eleven equal buttons is how the two people use most stop being
+            findable. */}
+        {order.intake_token && !order.dryrun ? (
+          <RvMoreActions order={order} detail={detail} busy={busy} run={run} />
         ) : null}
         <span className="sep" />
         {ad.canCancel(order) ? (
@@ -1857,17 +2386,34 @@ function ActiveOrderCard({ order, appId, card, onChanged, onPay }) {
       {/* Quiet action row: communicate · pay · cancel */}
       <div className="aord-acts">
         <button className="aord-btn" onClick={() => toggle('messages')} aria-pressed={open === 'messages'}>
-          Messages{order._vendor === 'class' && order._unread ? <span className="n">{order._unread}</span> : null}
+          Messages{order._unread ? <span className="n">{order._unread}</span> : null}
         </button>
         <button className="aord-btn" onClick={() => toggle('documents')} aria-pressed={open === 'documents'}>Documents</button>
         <button className="aord-btn" onClick={() => toggle('revision')} aria-pressed={open === 'revision'}>Revision</button>
         <span className="sep" />
+        {/* THE BUTTON SAYS WHAT IT DOES. Payment on these two vendors is MANUAL
+            (owner-directed 2026-08-05: the back office charges the card by hand;
+            the vendors' own Payment* actions are deliberately unused). This
+            control stores the card on the file — it does not charge anything —
+            so it must not read "Pay $299" and leave somebody believing the
+            appraisal is paid for. "Paid ✓" on a Class order is their OWN
+            callback telling us they took payment, which is a different fact and
+            still worth showing. */}
         {paid ? (
           <button className="aord-btn paid" onClick={() => onPay(order)}>Paid ✓{card && card.last4 ? ` · ••${card.last4}` : ''}</button>
         ) : (
-          <button className="aord-btn pri" onClick={() => onPay(order)}>{fee != null ? `Pay ${money(fee)}` : 'Pay'}</button>
+          <button className="aord-btn pri" onClick={() => onPay(order)}>
+            {card && card.last4 ? `Card ••${card.last4}` : 'Add the payment card'}
+            {fee != null ? ` · ${money(fee)}` : ''}
+          </button>
         )}
-        {ad.canCancel(order) ? <NanCancelButton orderId={order.id} onChanged={onChanged} /> : null}
+        {/* Each vendor cancels through its OWN door — CDG takes free text, Class
+            takes a code from their closed list. Never one button for both. */}
+        {ad.canCancel(order) ? (
+          order._vendor === 'class'
+            ? <ClassCancelButton appId={appId} order={order} onChanged={onChanged} />
+            : <NanCancelButton orderId={order.id} onChanged={onChanged} />
+        ) : null}
         <button className="aord-more" style={{ marginLeft: 'auto' }} onClick={() => setShowDetails((v) => !v)}>
           {showDetails ? 'Hide details' : 'Details'}
         </button>
@@ -1944,7 +2490,7 @@ function WhatWasOrdered({ order, fee }) {
 /* ---------------------------------------------------- sub-surfaces (adapted) */
 function SubMessages({ order, appId, onChanged }) {
   return order._vendor === 'nan'
-    ? <NanMessages orderId={order.id} />
+    ? <NanMessages orderId={order.id} onChanged={onChanged} />
     : <ClassMessages appId={appId} order={order} onChanged={onChanged} />;
 }
 function SubDocuments({ order, appId, onChanged }) {
@@ -1961,7 +2507,7 @@ function SubRevision({ order, appId, onChanged }) {
 const surfaceWrap = { border: `1px solid ${LINE}`, borderRadius: 10, padding: 12, marginTop: 10, background: '#fff' };
 
 /* ---- NAN messages ---- */
-function NanMessages({ orderId }) {
+function NanMessages({ orderId, onChanged }) {
   const [rows, setRows] = useState([]);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1970,6 +2516,19 @@ function NanMessages({ orderId }) {
     try { const r = await api.amcComments(orderId); setRows((r && r.comments) || []); } catch (_) { /* ignore */ }
   }, [orderId]);
   useEffect(() => { load(); }, [load]);
+  // The AMC's own messages that nobody has marked read. The "mark read" door has
+  // existed on the server since this integration shipped and nothing ever called
+  // it, so an inbound message stayed unread for ever.
+  const unread = rows.filter((c) => c.direction === 'inbound' && !c.read_at);
+  const markRead = async () => {
+    setBusy(true); setErr('');
+    try {
+      for (const c of unread) await api.amcReadComment(orderId, c.id);
+      await load();
+      if (onChanged) await onChanged();
+    } catch (e) { setErr((e && e.message) || 'Could not mark these read.'); }
+    setBusy(false);
+  };
   const send = async () => {
     if (!text.trim()) return;
     setBusy(true); setErr('');
@@ -1980,6 +2539,13 @@ function NanMessages({ orderId }) {
   return (
     <div style={surfaceWrap}>
       {err ? <Banner tone="bad">{err}</Banner> : null}
+      {unread.length ? (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 6 }}>
+          <button className="btn ghost small" disabled={busy} onClick={markRead}>
+            {busy ? '…' : `Mark ${unread.length} read`}
+          </button>
+        </div>
+      ) : null}
       <div style={{ maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
         {rows.length ? rows.map((c) => (
           <div key={c.id} style={{ alignSelf: c.direction === 'outbound' ? 'flex-end' : 'flex-start', maxWidth: '80%', background: c.direction === 'outbound' ? '#EAF3F3' : '#F4F1EA', border: `1px solid ${LINE}`, borderRadius: 10, padding: '7px 10px' }}>
@@ -2447,6 +3013,86 @@ function AskForm({ appId, order, kind, reportIn, onDone }) {
 }
 
 /* ---- NAN cancel ---- */
+/**
+ * CANCELLING A CLASS ORDER — the reason picker the old panel never had.
+ *
+ * The whole back end has existed since the Class integration shipped
+ * (`POST /files/:id/orders/:o/cancel` → `messages.requestCancel`, validating the
+ * chosen codes against Class's OWN closed reason list), and the screen had no way
+ * to reach it — the adapter's `canCancel` returned a hard `false` with a note
+ * saying a reason picker was missing. So a Class order could be placed and never
+ * called off from PILOT.
+ *
+ * Class refuses a free-typed reason, which is why this is a picker and not a text
+ * box: the codes come from `classReasons('cancel')` — their list, read live, never
+ * a copy typed here that could drift out of their vocabulary. The note is the
+ * human sentence that rides along with it.
+ *
+ * Asking is not agreeing: the order is NOT marked cancelled here. It moves when
+ * Class's own StatusChanged callback says Cancelled — the same rule the NAN side
+ * follows while it waits for CDG's 1051.
+ */
+function ClassCancelButton({ appId, order, onChanged }) {
+  const [open, setOpen] = useState(false);
+  const [reasons, setReasons] = useState(null);
+  const [picked, setPicked] = useState('');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    if (!open || reasons) return;
+    let alive = true;
+    (async () => {
+      try { const r = await api.classReasons('cancel'); if (alive) setReasons(r); }
+      catch (_) { if (alive) setReasons({ common: [], all: [] }); }
+    })();
+    return () => { alive = false; };
+  }, [open, reasons]);
+
+  const list = (reasons && (reasons.common && reasons.common.length ? reasons.common : reasons.all)) || [];
+  const codeOf = (r) => (typeof r === 'string' ? r : (r.code || r.reasonType || ''));
+  const labelOf = (r) => (typeof r === 'string' ? r : (r.label || r.name || r.code || r.reasonType || ''));
+
+  const submit = async () => {
+    if (!picked) { setErr('Pick a reason — Class only accepts one from their own list.'); return; }
+    const ok = await askConfirm('Ask Class to cancel this appraisal order?', {
+      title: 'Cancel appraisal order', confirmLabel: 'Cancel the order', cancelLabel: 'Keep it',
+    });
+    if (!ok) return;
+    setBusy(true); setErr('');
+    try {
+      const out = await api.classCancelOrder(appId, order.id, {
+        confirm: true, reasons: [{ reasonType: picked }], note: note.trim() || undefined,
+      });
+      if (out && out.ok) { setOpen(false); setPicked(''); setNote(''); if (onChanged) await onChanged(); }
+      else setErr(parseOrderFailure(null, out));
+    } catch (e) { setErr(parseOrderFailure(e, null)); }
+    setBusy(false);
+  };
+
+  if (!open) return <button className="aord-btn danger" onClick={() => setOpen(true)}>Cancel order</button>;
+  return (
+    <div style={{ flexBasis: '100%', marginTop: 8, border: `1px solid ${LINE}`, borderRadius: 10, padding: 10, background: '#fff' }}>
+      {err ? <Banner tone="bad">{err}</Banner> : null}
+      <div style={{ fontSize: 13, color: MUTED, marginBottom: 6 }}>
+        Class only takes a reason from their own list. Pick the closest one; the note goes with it.
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <select value={picked} onChange={(e) => { setPicked(e.target.value); setErr(''); }}
+          style={{ minWidth: 240, border: `1px solid ${LINE}`, borderRadius: 8, padding: '7px 8px', color: INK, background: '#fff', fontSize: 14 }}>
+          <option value="">{reasons ? 'Choose a reason…' : 'Loading Class’s reasons…'}</option>
+          {list.map((r) => <option key={codeOf(r)} value={codeOf(r)}>{labelOf(r)}</option>)}
+        </select>
+        <input className="input" style={{ flex: 1, minWidth: 180 }} placeholder="Note (optional)"
+          value={note} onChange={(e) => setNote(e.target.value)} />
+        <button className="btn small" disabled={busy || !picked} onClick={submit}>{busy ? 'Cancelling…' : 'Send cancellation'}</button>
+        <button className="btn ghost small" disabled={busy} onClick={() => { setOpen(false); setErr(''); }}>Keep it</button>
+      </div>
+    </div>
+  );
+}
+
 function NanCancelButton({ orderId, onChanged }) {
   const [busy, setBusy] = useState(false);
   const doCancel = async () => {
@@ -2569,22 +3215,53 @@ function DrawerFailedDetail({ order }) {
   );
 }
 
-/* ============================================================= pay modal === */
-// Reuses the existing appraisal card-entry fields in the .cv-modal shell.
-// staffAppraisalCard prefill → staffSaveAppraisalCard save (which clears the
-// appraisal_card condition). The actual vendor CHARGE is a later phase.
+/* ============================================================= pay panel === */
+/* THE THREE WAYS TO PAY FOR AN APPRAISAL.
+ *
+ * Owner-directed 2026-08-16: *"We're gonna keep it manual. We're gonna have all
+ * the options over there … send the payment link … use the card on file … use the
+ * card manually. We should keep all the options open."*
+ *
+ * NOTHING IS RESTATED HERE. Which options exist, what each one does at this
+ * particular appraisal company, and which of them are pressable right now all come
+ * from the server (`GET …/appraisal-payment` → `lib/appraisal/payment-options.js`).
+ * A capability table copied into a screen is how a button ends up promising to
+ * charge something the back end cannot charge.
+ *
+ * TWO DESTINATIONS, ON PURPOSE. Richer Values genuinely takes the payment, so its
+ * own proven route does it (`api.rvPay` — reveal, add, charge, remove). The other
+ * two companies have no payment API we have verified, so the choice is RECORDED
+ * for the back office. The screen tells you plainly which of those two just
+ * happened rather than showing one confident "Paid" for both.
+ */
 function PayModal({ appId, order, card, onClose, onPaid }) {
   const ad = ADAPTERS[order._vendor];
   const fee = ad.orderFee(order);
   const paid = ad.orderPaid(order);
+  const prop = (order.summary || []).find((s) => s.label === 'Property');
+
+  const [state, setState] = useState(null);       // null = still loading
+  const [pick, setPick] = useState(null);
   const [f, setF] = useState({ number: '', expMonth: '', expYear: '', cvc: '', zip: '' });
-  const [prefilled, setPrefilled] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [linkTo, setLinkTo] = useState('');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
   const [done, setDone] = useState('');
   const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
-  const prop = (order.summary || []).find((s) => s.label === 'Property');
 
+  const load = useCallback(async () => {
+    try {
+      const s = await api.staffAppraisalPayment(appId);
+      setState(s);
+      return s;
+    } catch (e) { setErr((e && e.message) || 'Could not read the payment options.'); return null; }
+  }, [appId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Prefill the card fields from the file so "Enter a card now" starts from
+  // whatever is already there — the same prefill this modal has always done.
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -2592,58 +3269,185 @@ function PayModal({ appId, order, card, onClose, onPaid }) {
         const c = await api.staffAppraisalCard(appId);
         if (alive && c && c.number) {
           setF({
-            number: c.number || '', expMonth: c.expMonth != null ? String(c.expMonth) : '',
+            number: c.number, expMonth: c.expMonth != null ? String(c.expMonth) : '',
             expYear: c.expYear != null ? String(c.expYear) : '', cvc: c.cvc || '', zip: c.zip || '',
           });
-          setPrefilled(true);
         }
-      } catch (_) { /* no card on file */ }
+      } catch (_) { /* no card on file — the option says so on its own */ }
     })();
     return () => { alive = false; };
   }, [appId]);
 
-  const pay = async () => {
-    setBusy(true); setErr(''); setDone('');
+  const vendorBlock = state && state.vendors ? state.vendors[order._vendor] : null;
+  const opts = (vendorBlock && vendorBlock.options) || [];
+  const intent = state && state.intents ? state.intents[`${order._vendor}:${order.id}`] : null;
+  const chosen = opts.find((o) => o.method === pick) || null;
+
+  const submit = async () => {
+    if (!chosen || !chosen.available) return;
+    setBusy('pay'); setErr(''); setDone('');
     try {
-      await api.staffSaveAppraisalCard(appId, f);
-      // TODO(payment-phase): submit card to vendor + record paid status
-      setDone('Card saved — the appraisal payment condition is cleared.');
+      if (chosen.does === 'vendor') {
+        // Richer Values takes the money. Its route reports THREE outcomes — did
+        // what you pressed happen, and did the money actually move — so this
+        // never announces a sent payment link as a completed charge.
+        const r = await api.rvPay(order.id, {
+          method: chosen.method,
+          card: chosen.method === 'NEW_CARD' ? f : null,
+          paymentLinkTo: chosen.method === 'PAYMENT_LINK' ? (linkTo.trim() || null) : null,
+        });
+        if (!r || r.ok === false) {
+          setErr((r && r.note) || 'Richer Values did not take the payment.');
+        } else {
+          setDone(r.settled
+            ? 'Paid. Richer Values has the money.'
+            : 'Done — Richer Values has emailed the borrower their payment page. It is not paid until they pay it.');
+        }
+      } else {
+        const r = await api.staffChooseAppraisalPayment(appId, {
+          vendor: order._vendor, orderId: order.id, method: chosen.method,
+          card: chosen.method === 'NEW_CARD' ? f : undefined,
+          note: note.trim() || undefined,
+        });
+        setDone(chosen.method === 'NEW_CARD'
+          ? 'Card saved on the file, and recorded as the one to charge. Nothing has been charged yet.'
+          : 'Recorded. Nothing has been charged yet — the back office settles it from here.');
+        if (r && r.intent) setState((s) => (s ? { ...s, intents: { ...s.intents, [`${order._vendor}:${order.id}`]: r.intent } } : s));
+      }
+      await load();
       await onPaid();
-      setTimeout(onClose, 1000);
-    } catch (e) { setErr((e && e.message) || 'Could not save the card.'); }
-    setBusy(false);
+    } catch (e) { setErr((e && e.message) || 'Could not record how this is being paid.'); }
+    setBusy('');
+  };
+
+  const markPaid = async (undo) => {
+    setBusy(undo ? 'undo' : 'settle'); setErr(''); setDone('');
+    try {
+      await api.staffSettleAppraisalPayment(appId, { vendor: order._vendor, orderId: order.id, undo: undo || undefined });
+      setDone(undo ? 'Put back — it reads as still to be paid.' : 'Marked as paid.');
+      await load();
+      await onPaid();
+    } catch (e) { setErr((e && e.message) || 'Could not update it.'); }
+    setBusy('');
   };
 
   return (
     <div className="cv-modal-back" onClick={onClose}>
-      <div className="cv-modal" style={{ padding: 20, color: INK }} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontWeight: 700, fontSize: 17, color: INK }}>{paid ? 'Update the payment card' : 'Pay the appraisal order'}</div>
+      <div className="cv-modal" style={{ padding: 20, color: INK, maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ fontWeight: 700, fontSize: 17, color: INK }}>How is this appraisal being paid for?</div>
         <div style={{ fontSize: 13, color: MUTED, marginTop: 4 }}>
           {ad.name}{ad.orderTitle(order) ? ` · ${ad.orderTitle(order)}` : ''}{prop ? ` · ${prop.value}` : ''}
         </div>
         <div style={{ fontSize: 14, color: INK, marginTop: 6, fontVariantNumeric: 'tabular-nums' }}>
           {paid
-            ? <span style={{ color: GOOD, fontWeight: 600 }}>Paid ✓{card && card.last4 ? ` · ••${card.last4}` : ''} — update the card on file below if you need to.</span>
-            : fee != null ? <>Amount: <strong>{money(fee)}</strong></> : 'Amount is confirmed by the vendor.'}
+            ? <span style={{ color: GOOD, fontWeight: 600 }}>Paid ✓{card && card.last4 ? ` · ••${card.last4}` : ''}</span>
+            : fee != null ? <>Fee: <strong>{money(fee)}</strong></> : 'The fee is confirmed by the appraisal company.'}
         </div>
 
-        {err ? <div style={{ marginTop: 10 }}><OrderFailure info={err} vendor={ad.name} action="save the card" /></div> : null}
-        {done ? <div style={{ marginTop: 10 }}><Banner tone="good">{done}</Banner></div> : null}
-        {prefilled && !done ? <div style={{ marginTop: 10, fontSize: 12.5, color: MUTED }}>A card is already on file — update it below if you need to.</div> : null}
-
-        <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
-          <input className="input" inputMode="numeric" placeholder="Card number" value={f.number} onChange={set('number')} />
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <input className="input" style={{ maxWidth: 70 }} inputMode="numeric" placeholder="MM" value={f.expMonth} onChange={set('expMonth')} />
-            <input className="input" style={{ maxWidth: 90 }} inputMode="numeric" placeholder="YYYY" value={f.expYear} onChange={set('expYear')} />
-            <input className="input" style={{ maxWidth: 80 }} inputMode="numeric" placeholder="CVC" value={f.cvc} onChange={set('cvc')} />
-            <input className="input" style={{ maxWidth: 110 }} inputMode="numeric" placeholder="ZIP" value={f.zip} onChange={set('zip')} />
+        {/* WHAT WAS ALREADY DECIDED. Shown before the options, because the first
+            question on reopening this is "did somebody already deal with it?" */}
+        {intent && intent.describe ? (
+          <div style={{ marginTop: 12, border: `1px solid ${intent.describe.settled ? '#CFE6D8' : WARN_LINE}`,
+            background: intent.describe.settled ? '#EEF7F1' : WARN_BG, borderRadius: 10, padding: '10px 12px' }}>
+            <div style={{ fontWeight: 650, color: intent.describe.settled ? '#1E5E3C' : WARN }}>
+              {intent.describe.head}
+            </div>
+            <div style={{ fontSize: 12.5, color: MUTED, marginTop: 3 }}>
+              {intent.chosen_by_name ? `Chosen by ${intent.chosen_by_name}` : 'Chosen'}
+              {intent.chosen_at ? ` · ${new Date(intent.chosen_at).toLocaleDateString()}` : ''}
+              {intent.settled_by_name ? ` · marked paid by ${intent.settled_by_name}` : ''}
+            </div>
+            {intent.describe.awaitingBackOffice ? (
+              <button className="btn soft" style={{ marginTop: 8 }} disabled={!!busy}
+                onClick={() => markPaid(false)}>
+                {busy === 'settle' ? 'Saving…' : 'Mark it paid'}
+              </button>
+            ) : null}
+            {intent.describe.settled ? (
+              <button className="aord-more" style={{ marginTop: 8 }} disabled={!!busy}
+                onClick={() => markPaid(true)}>
+                {busy === 'undo' ? 'Saving…' : 'Not actually paid — put it back'}
+              </button>
+            ) : null}
           </div>
-        </div>
+        ) : null}
+
+        {err ? <div style={{ marginTop: 10 }}><OrderFailure info={err} vendor={ad.name} action="record the payment" /></div> : null}
+        {done ? <div style={{ marginTop: 10 }}><Banner tone="good">{done}</Banner></div> : null}
+
+        {state === null ? (
+          <div style={{ marginTop: 14, color: MUTED, fontSize: 13 }}>Reading the options…</div>
+        ) : (
+          <div style={{ display: 'grid', gap: 8, marginTop: 14 }}>
+            {opts.map((o) => {
+              const on = pick === o.method;
+              return (
+                <div key={o.method}>
+                  <button
+                    onClick={() => o.available && setPick(on ? null : o.method)}
+                    aria-pressed={on}
+                    disabled={!o.available}
+                    style={{
+                      width: '100%', textAlign: 'left', cursor: o.available ? 'pointer' : 'not-allowed',
+                      border: `1px solid ${on ? TEAL : LINE}`, borderRadius: 10, padding: '10px 12px',
+                      background: on ? '#F2F8F8' : '#fff', opacity: o.available ? 1 : 0.62,
+                    }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ fontWeight: 650, color: INK }}>{o.label}</span>
+                      {/* WHO PERFORMS IT, never blurred: pressing a Richer Values
+                          option does it; the others are written down for a person. */}
+                      <span style={{
+                        fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '.04em',
+                        border: `1px solid ${LINE}`, borderRadius: 999, padding: '1px 7px', color: MUTED,
+                      }}>{o.does === 'vendor' ? 'Done here' : 'By hand'}</span>
+                    </div>
+                    <div style={{ fontSize: 12.5, color: MUTED, marginTop: 3, lineHeight: 1.45 }}>{o.says}</div>
+                    {o.disabled ? (
+                      <div style={{ fontSize: 12.5, color: WARN, marginTop: 4 }}>{o.disabled}</div>
+                    ) : null}
+                  </button>
+
+                  {on && o.caveat ? (
+                    <div style={{ fontSize: 12.5, color: WARN, background: WARN_BG, border: `1px solid ${WARN_LINE}`,
+                      borderRadius: 8, padding: '8px 10px', marginTop: 6, lineHeight: 1.45 }}>{o.caveat}</div>
+                  ) : null}
+
+                  {on && o.method === 'NEW_CARD' ? (
+                    <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+                      <input className="input" inputMode="numeric" placeholder="Card number" value={f.number} onChange={set('number')} />
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <input className="input" style={{ maxWidth: 70 }} inputMode="numeric" placeholder="MM" value={f.expMonth} onChange={set('expMonth')} />
+                        <input className="input" style={{ maxWidth: 90 }} inputMode="numeric" placeholder="YYYY" value={f.expYear} onChange={set('expYear')} />
+                        <input className="input" style={{ maxWidth: 80 }} inputMode="numeric" placeholder="CVC" value={f.cvc} onChange={set('cvc')} />
+                        <input className="input" style={{ maxWidth: 110 }} inputMode="numeric" placeholder="ZIP" value={f.zip} onChange={set('zip')} />
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {on && o.method === 'PAYMENT_LINK' && o.does === 'vendor' ? (
+                    <input className="input" style={{ marginTop: 8 }} type="email"
+                      placeholder="Send it to (leave blank for the borrower on file)"
+                      value={linkTo} onChange={(e) => setLinkTo(e.target.value)} />
+                  ) : null}
+
+                  {on && o.does !== 'vendor' ? (
+                    <input className="input" style={{ marginTop: 8 }}
+                      placeholder="Anything the back office should know (optional)"
+                      value={note} onChange={(e) => setNote(e.target.value)} />
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16, flexWrap: 'wrap' }}>
-          <button className="btn ghost" disabled={busy} onClick={onClose}>Cancel</button>
-          <button className="btn primary" disabled={busy} onClick={pay}>{busy ? 'Saving…' : paid ? 'Save card' : (fee != null ? `Pay ${money(fee)}` : 'Pay')}</button>
+          <button className="btn ghost" disabled={!!busy} onClick={onClose}>Close</button>
+          <button className="btn primary" disabled={!!busy || !chosen || !chosen.available} onClick={submit}>
+            {busy === 'pay' ? 'Saving…'
+              : chosen && chosen.does === 'vendor' ? 'Do it now'
+                : 'Record it'}
+          </button>
         </div>
       </div>
     </div>

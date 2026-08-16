@@ -32,16 +32,30 @@ const { parseYMD, fmtYMD } = require('./term-options');
  * day quote, and closing prep is a package the attorney works through. These are
  * DEFAULTS — `file_orders.sla_days` overrides one order without touching the rest.
  */
-const SLA_BUSINESS_DAYS = Object.freeze({ title: 3, insurance: 2, attorney: 5 });
+/* THE APPRAISAL'S 10 DAYS IS THE LONGEST HERE, and it is not padding: a full
+   interior URAR needs an appraiser assigned, an appointment made with whoever
+   holds the keys, the inspection itself, the report written and then the AMC's own
+   review before it is released. Two calendar weeks is the ordinary case, and an
+   SLA shorter than the ordinary case makes the whole queue red and teaches people
+   to ignore it. `file_orders.sla_days` still overrides one order. */
+const SLA_BUSINESS_DAYS = Object.freeze({ title: 3, insurance: 2, attorney: 5, appraisal: 10 });
 const DEFAULT_SLA_DAYS = 3;
 
-/** The order types this desk tracks. Exactly three, done properly (owner-directed
-    2026-08-03: "Just the three, done excellently") — do not generalise this. */
-const ORDER_TYPES = Object.freeze(['title', 'insurance', 'attorney']);
-const ORDER_LABEL = Object.freeze({ title: 'Title', insurance: 'Insurance', attorney: 'Attorney closing prep' });
+/** The order types this desk tracks.
+ *
+ *  It was three — "Just the three, done excellently" (owner-directed 2026-08-03) —
+ *  and the appraisal is the FOURTH by the owner's later direction (2026-08-05:
+ *  *"Add 'Order an appraisal' as a new order type in the existing Orders section —
+ *  file_orders, alongside Title, Insurance, Attorney closing prep"*, re-confirmed
+ *  2026-08-16). That is an addition the owner asked for by name, not the
+ *  generalisation the earlier note refuses: the list is still a closed set of
+ *  named things a file waits on an outside company for, and it still may not be
+ *  turned into a generic "order type" registry anything can join. */
+const ORDER_TYPES = Object.freeze(['title', 'insurance', 'attorney', 'appraisal']);
+const ORDER_LABEL = Object.freeze({ title: 'Title', insurance: 'Insurance', attorney: 'Attorney closing prep', appraisal: 'Appraisal' });
 /** Who the file is waiting on. 'vendor' = they owe us; 'us' = they answered and
     the work came back to us. Both are outstanding; they are not the same job. */
-const VENDOR_LABEL = Object.freeze({ title: 'the title company', insurance: 'the insurance agent', attorney: 'the closing attorney' });
+const VENDOR_LABEL = Object.freeze({ title: 'the title company', insurance: 'the insurance agent', attorney: 'the closing attorney', appraisal: 'the appraisal company' });
 
 /** An order that is out and not yet finished. Mirrors the server's own live-order
     test (closing-prep.orderIsLive) — 'not_ordered' has not gone out, 'cancelled'

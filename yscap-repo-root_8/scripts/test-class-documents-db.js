@@ -122,14 +122,26 @@ function fakeImporter() {
 
     // documents rows: staff-only, system-sourced, pending review, sha256 present, on the condition
     const docs = (await c.query(
-      `SELECT filename, content_type, visibility, source_type, review_status, sha256, checklist_item_id, size_bytes
+      `SELECT filename, content_type, visibility, source_type, review_status, sha256, checklist_item_id, size_bytes, slot_label
          FROM documents WHERE application_id=$1 ORDER BY filename`, [appId])).rows;
     ok(docs.length === 2, `raw: two documents rows created (got ${docs.length})`);
     const xmlRow = docs.find((d) => d.filename === 'report.xml');
     const pdfRow = docs.find((d) => d.filename === 'report.pdf');
     ok(xmlRow && pdfRow, 'raw: both documents named from the attachment');
-    ok(xmlRow && xmlRow.visibility === 'staff_only' && xmlRow.source_type === 'system' && xmlRow.review_status === 'pending',
-      'raw: document filed staff-only / system / pending (mirrors NAN + db/424)');
+    // STAFF-ONLY + SYSTEM are unchanged. The REVIEW STATE moved deliberately
+    // (2026-08-16): a document PILOT ITSELF ORDERED is born accepted under db/424's
+    // own rule — the flood certificate PILOT orders from its vendor is the named
+    // precedent, and Richer Values files its report the same way. Here it is
+    // stronger than that: acceptance is gated on the MISMO import having actually
+    // succeeded, which is positive proof the file is the appraisal we ordered.
+    // A delivery that does NOT import stays pending for a human (asserted below).
+    ok(xmlRow && xmlRow.visibility === 'staff_only' && xmlRow.source_type === 'system' && xmlRow.review_status === 'accepted',
+      'raw: document filed staff-only / system, and accepted because the import vouched for it');
+    ok(pdfRow && pdfRow.review_status === 'accepted', 'raw: the report that rode in with it is accepted too');
+    // …and it is IN the condition's slot, which is what lets the condition be
+    // signed off without anybody re-filing the report by hand.
+    ok(xmlRow && /xml/i.test(String(xmlRow.slot_label || '')), 'raw: the data file is in the condition’s XML slot');
+    ok(pdfRow && /pdf/i.test(String(pdfRow.slot_label || '')), 'raw: the report is in the condition’s PDF slot');
     ok(xmlRow && xmlRow.sha256 && xmlRow.sha256.length === 64, 'raw: sha256 recorded');
     ok(xmlRow && String(xmlRow.checklist_item_id) === String(conditionId), 'raw: filed onto the appraisal condition');
     ok(pdfRow && Number(pdfRow.size_bytes) === PDF.length, 'raw: pdf size recorded');

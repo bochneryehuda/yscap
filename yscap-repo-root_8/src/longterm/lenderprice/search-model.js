@@ -138,6 +138,34 @@ function mapProp(t) {
     `Unknown property type ${JSON.stringify(String(t))}. The request is rejected rather than defaulted to single-family.`);
 }
 
+// §29.10/§31.3 — RENTAL TERM. The dynamic AddlOccupancyType selects long- vs short-term rental. The
+// DSCR profile default is LONG-term (audit §29.1), so an OMITTED rentalTerm forces long-term exactly
+// as before; an EXPLICIT rentalTerm overrides it. BOTH upstream tokens are confirmed from live
+// captures — Long_Term_Rental_Property (§30.6) and Short_Term_Rental_Property (§31.3) — so this is not
+// a guessed mapping. An unrecognized value is REJECTED (422 via LpValidationError), never priced as
+// long-term. The alias key strips to letters (case/space/underscore tolerant).
+const RENTAL_TERM_ALIASES = {
+  long: 'Long_Term_Rental_Property',
+  longterm: 'Long_Term_Rental_Property',
+  longtermrental: 'Long_Term_Rental_Property',
+  longtermrentalproperty: 'Long_Term_Rental_Property',
+  short: 'Short_Term_Rental_Property',
+  shortterm: 'Short_Term_Rental_Property',
+  shorttermrental: 'Short_Term_Rental_Property',
+  shorttermrentalproperty: 'Short_Term_Rental_Property',
+};
+function rentalKey(v) { return String(v == null ? '' : v).toLowerCase().replace(/[^a-z]/g, ''); }
+function mapRentalTerm(v) {
+  const k = rentalKey(v);
+  if (k === '') return 'Long_Term_Rental_Property';       // omitted → DSCR profile default (long-term)
+  const t = RENTAL_TERM_ALIASES[k];
+  if (!t) {
+    throw new LpValidationError('unknown_rental_term', 'rentalTerm',
+      `Unknown rental term ${JSON.stringify(String(v))}. Supported: "long" (long-term rental) or "short" (short-term rental).`);
+  }
+  return t;
+}
+
 // ---- §31.6/§31.8 SCENARIO-OWNERSHIP CLEARING LAYER --------------------------
 // A live /pricing/defaultSearch foundation is a SNAPSHOT of the pricing model as some earlier
 // session last left it. Cloning it (buildSearch, below) inherits every default — which is CORRECT
@@ -328,7 +356,7 @@ function buildSearch(sc = {}, opts = {}) {
   const dp = m.dynamicPropertiesMap || (m.dynamicPropertiesMap = {});
   const setDyn = (k, v) => { if (dp[k]) dp[k].value = v; else dp[k] = { fieldId: k, value: v }; };
   setDyn('IncomeDocType', 'DSCR');
-  setDyn('AddlOccupancyType', 'Long_Term_Rental_Property');
+  setDyn('AddlOccupancyType', mapRentalTerm(sc.rentalTerm));
   setDyn('GLOBAL_BorrowerType', sc.borrowerType || 'LLC');
   // Reserves — the intentional DSCR profile default is 24 MONTHS (audit §1). Forced (the
   // GLOBAL_RESERVES token is confirmed from the captured base) so a live default carrying blank or
@@ -445,9 +473,11 @@ function validateLocation(sc = {}) {
 // a conflicting LTV was silently replaced, and an unsupported term/lock was accepted. We reject
 // them (422) BEFORE any upstream call rather than mis-price.
 // Boolean scenario fields that must be a real JSON boolean (never a truthy string).
-const BOOLEAN_FIELDS = ['io', 'escrowWaive', 'fthb', 'selfEmployed', 'rural', 'mixedUse', 'waiveLenderFee', 'noMortgageHistory', 'nonWarrantable'];
+const BOOLEAN_FIELDS = ['io', 'escrowWaive', 'fthb', 'selfEmployed', 'rural', 'mixedUse', 'waiveLenderFee', 'noMortgageHistory', 'nonWarrantable', 'crossCollateral', 'firstTimeInvestor', 'livingRentFree'];
 // Attachment types the frontend exposes independently of property type (audit §6).
-const ATTACHMENT_TYPES = ['Detached', 'Attached'];
+// Attachment types the frontend exposes independently of property type (audit §6). SemiDetached is the
+// confirmed live upstream token (§31.3) — added so the validator stops rejecting a legitimate choice.
+const ATTACHMENT_TYPES = ['Detached', 'Attached', 'SemiDetached'];
 // Allowed rate-lock days — the LIVE frontend capability list (audit §7), env-overridable per company.
 // The captured base's dayLocksList ([14,15,21,30,45,60,90]) was STALE: it rejected legitimate visible
 // locks (10/12/25/40/75/120/180) and accepted a 14-day lock the frontend never offers. This is the
@@ -566,4 +596,4 @@ function validateScenario(sc = {}) {
 }
 
 module.exports = { BASE, buildSearch, clearScenarioOwnedFields, smoRegistryFromList, REGISTRY_WARNINGS, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE } };
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE } };
