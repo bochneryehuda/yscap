@@ -62,6 +62,46 @@ async function price(req, res) {
   res.json(out);
 }
 
+// POST /disqualify — body is a scenario (or { scenario }). Returns the QUALIFIED summary plus the
+// DISQUALIFIED reasons per lender. Lender Price computes disqualifies ASYNCHRONOUSLY (a few minutes),
+// so this kicks the computation off and polls the cached result within a bounded window; if it isn't
+// ready in time it returns ready:false with the qualified data — call again and the cached result
+// (built from the identical body) comes back quickly. Optional body: { maxWaitMs, pollMs, debug }.
+async function disqualify(req, res) {
+  const body = req.body || {};
+  const sc = body.scenario ? body.scenario : body;
+  const opts = {};
+  if (body.maxWaitMs != null) opts.maxWaitMs = Math.min(Number(body.maxWaitMs) || 0, 100000);
+  if (body.pollMs != null) opts.pollMs = Math.max(Number(body.pollMs) || 0, 1000);
+  const r = await lp.priceDisqualified(sc, opts);
+  if (!r.ok) {
+    const code = (r.http && r.http >= 500) ? 502 : 400;
+    return res.status(code).json({ ok: false, error: r.error, http: r.http || null, message: r.message, upstream: r.upstream || r.body || null });
+  }
+  const qualified = trimPrograms(lp.parse(r.qualified));
+  const disq = lp.parseDisqualified(r.disqualified);
+  const out = {
+    ok: true,
+    ready: r.ready,
+    polls: r.polls,
+    message: r.message || null,
+    qualified,
+    disqualified: {
+      ready: disq.ready,
+      lenderCount: disq.lenderCount,
+      itemCount: disq.itemCount,
+      reasonCount: disq.reasonCount,
+      lenders: disq.lenders.slice(0, 80).map((g) => ({
+        lender: g.lender,
+        itemCount: g.itemCount,
+        items: g.items.slice(0, 40),
+      })),
+    },
+  };
+  if (body.debug) out.rawSummary = lp.summarizeRaw(r.disqualified);
+  res.json(out);
+}
+
 // POST /selftest — run the fixed battery; returns one row per scenario. Paced, gentle on the login.
 async function selftest(req, res) {
   const results = [];
@@ -84,8 +124,9 @@ function makeRouter() {
   router.get('/health', (req, res) => health(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_health_error' })));
   router.get('/login-check', (req, res) => loginCheck(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_login_error' })));
   router.post('/price', (req, res) => price(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_price_error' })));
+  router.post('/disqualify', (req, res) => disqualify(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualify_error' })));
   router.post('/selftest', (req, res) => selftest(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_selftest_error' })));
   return router;
 }
 
-module.exports = { makeRouter, handlers: { health, loginCheck, price, selftest }, BATTERY };
+module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, selftest }, BATTERY };

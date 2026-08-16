@@ -137,6 +137,21 @@ function buildSearch(sc = {}, opts = {}) {
   setDyn('PrePayment_Plan_Type', months ? 'Standard' : null);
   m.dynaToSmo = true;
 
+  // Disqualify workflow (mirrors the web app's "show disqualified" button): a normal search
+  // returns only the QUALIFIED programs fast. To also learn WHY each lender turned the scenario
+  // down, the same body is re-sent with these flags — the server computes the disqualify reasons
+  // ASYNCHRONOUSLY (a few minutes) and the client polls with cachedDisqualified=true until the
+  // cached full result is ready. Off unless opts.disqualify is passed, so the qualified path is
+  // byte-identical to before (a normal price never triggers the slow computation).
+  if (opts.disqualify) {
+    m.showDisqualify = true;
+    m.showDisqualifyRules = true;   // include the actual failing RULE text, not just a flag
+    m.disqualifyAsync = true;
+    m.disqualifyFullResult = false;
+    m.cachedDisqualified = !!opts.disqualify.cached; // false = kick off; true = poll the cache
+    m.fillLenderMap = true;
+  }
+
   return m;
 }
 
