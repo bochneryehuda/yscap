@@ -111,13 +111,13 @@ footer p{max-width:74ch;margin:0 0 9px}
   This is a picture of a copy — nothing here can change anything.</p>
   <div class="figs">
     <div class="fig"><b>335</b><span>tables</span></div>
-    <div class="fig"><b>5,446</b><span>fields</span></div>
+    <div class="fig"><b>5,450</b><span>fields</span></div>
     <div class="fig"><b>695</b><span>connections</span></div>
     <div class="fig"><b>34</b><span>automatic rules</span></div>
     <div class="fig"><b>260</b><span>value guards</span></div>
-    <div class="fig"><b>1,156</b><span>lookups</span></div>
+    <div class="fig"><b>1,157</b><span>lookups</span></div>
   </div>
-  <p class="stamp">Generated from the committed schema map — built from 562 migration files, up to db/565. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
+  <p class="stamp">Generated from the committed schema map — built from 563 migration files, up to db/566. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
 </div></header>
 
 <section><div class="wrap">
@@ -1933,10 +1933,10 @@ footer p{max-width:74ch;margin:0 0 9px}
   </div>
 </div></details><details class="tbl" data-name="appraisal_payment_intents" data-note="">
 <summary><span class="tn">appraisal_payment_intents</span>
-<span class="tm">13 fields · 3 links</span>
+<span class="tm">17 fields · 3 links</span>
 </summary>
 <div class="detail">
-  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">application_id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">chosen_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">chosen_by</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">bigint</td><td class="t">nextval('appraisal_payment_intents_id_seq'::regclass)</td></tr><tr><td class="c">method <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">note</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">performed_by <span class="req">required</span></td><td class="t">text</td><td class="t">'back_office'::text</td></tr><tr><td class="c">settled_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">settled_by</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">settled_note</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">updated_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">vendor <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">vendor_order_id <span class="req">required</span></td><td class="t">bigint</td><td class="t"></td></tr></tbody></table></div>
+  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">application_id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">charge_error</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">charge_started_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">chosen_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">chosen_by</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">bigint</td><td class="t">nextval('appraisal_payment_intents_id_seq'::regclass)</td></tr><tr><td class="c">method <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">note</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">payment_reference</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">performed_by <span class="req">required</span></td><td class="t">text</td><td class="t">'back_office'::text</td></tr><tr><td class="c">settled_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">settled_by</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">settled_note</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">updated_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">vendor <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">vendor_order_id <span class="req">required</span></td><td class="t">bigint</td><td class="t"></td></tr><tr><td class="c">vendor_transaction_id</td><td class="t">text</td><td class="t"></td></tr></tbody></table></div>
   <div class="links">
     <div><h4>Depends on</h4><ul><li><span class="a">application_id</span> → <span class="a">applications</span><span class="tag cascade">on delete cascade</span></li><li><span class="a">chosen_by</span> → <span class="a">staff_users</span><span class="tag">on delete set null</span></li><li><span class="a">settled_by</span> → <span class="a">staff_users</span><span class="tag">on delete set null</span></li></ul></div>
     <div><h4>Depended on by</h4><ul><li style="color:var(--ink-3)">Nothing points at this table.</li></ul></div>
