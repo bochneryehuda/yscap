@@ -23,7 +23,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { Client } = require('pg');
+const { connectWhenReady } = require('../src/lib/backup/pg-ready');
 const { spawn, execFileSync } = require('child_process');
 const { pipeline } = require('stream/promises');
 
@@ -49,8 +49,14 @@ function sslFor(url) {
 /** Empty the scratch database completely — every non-system schema, not just `public`, or a
  *  leftover schema from a previous drill would be counted as if the backup had produced it. */
 async function wipeScratch(url) {
-  const client = new Client({ connectionString: url, ssl: sslFor(url) });
-  await client.connect();
+  // WAIT OUT A SERVER THAT IS STILL COMING UP. This is the first thing the
+  // drill asks of the scratch database, so it is where a restart lands — and on
+  // 2026-08-16 it did: "the database system is in recovery mode" (57P03) failed
+  // the whole weekly check while every backup was fine. The two safety guards
+  // (never the live database, never a target that does not look disposable) have
+  // ALREADY run in main() before this point, and must stay there — waiting must
+  // never become the first thing that happens to an unchecked target.
+  const client = await connectWhenReady(url, { ssl: sslFor(url), log });
   try {
     const schemas = (await client.query(
       `SELECT nspname FROM pg_namespace
@@ -168,8 +174,10 @@ async function main() {
         restoreReport = res;
         log(`test restore finished (exit ${res.code}, ${res.errors} errors)`);
 
-        const client = new Client({ connectionString: target, ssl: sslFor(target) });
-        await client.connect();
+        // Same wait here: a restore can take many minutes, and a server that
+        // restarts during it would otherwise lose the whole drill at the last
+        // step, after all the expensive work was already done.
+        const client = await connectWhenReady(target, { ssl: sslFor(target), log });
         try {
           const restored = await inventoryLib.takeInventory({ query: (t, p) => client.query(t, p) });
           // The full per-table inventory lives encrypted beside the dump — that is what makes an
