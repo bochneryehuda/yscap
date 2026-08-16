@@ -234,8 +234,28 @@ ok(/\{can\('export_data_tapes'\) && <TapeExport/.test(staff),
 ok(/id="sec-tapes"[^>]*title="Send to investor"/.test(staff)
   && !/\{can\('export_data_tapes'\) && \(\s*<Section/.test(staff),
   'the Send-to-investor SECTION itself is no longer permission-wrapped');
-ok(/<TprExport appId=\{id\} \/>\s*<MismoExport appId=\{id\} \/>/.test(staff.slice(staff.indexOf('id="sec-tapes"'))),
-  'the TPR and MISMO exports live in Send to investor, not in Documents');
+/* WHAT THIS ASSERTS IS WHERE THE EXPORTS LIVE, NOT WHAT ORDER THEY SIT IN.
+   It used to demand <TprExport> be IMMEDIATELY followed by <MismoExport>, which
+   made adding a THIRD export to this section (the CorrFirst track-record CSV) a
+   test failure — an over-specified source shape standing in for the real rule.
+   So: bound the slice to the section's own JSX (never to the end of the file,
+   or the components' own later definitions would satisfy it) and require each
+   export to render inside it. Add an export here when you add one to the
+   section, so this keeps biting. */
+{
+  const from = staff.indexOf('id="sec-tapes"');
+  const to = staff.indexOf('id="sec-messages"');
+  const delivery = (from >= 0 && to > from) ? staff.slice(from, to) : '';
+  ok(delivery.length > 0, 'the Send-to-investor section is locatable in the source');
+  for (const [name, what] of [
+    ['TprExport', 'the TPR clean-file export'],
+    ['MismoExport', 'the MISMO 3.4 export'],
+    ['CorrfirstExport', 'the Corrfirst track-record export'],
+  ]) {
+    ok(new RegExp(`<${name} appId=\\{id\\} ?/>`).test(delivery),
+      `${what} lives in Send to investor, not in Documents`);
+  }
+}
 ok(/id="sec-documents"[^>]*title="Documents"/.test(staff),
   'Documents is called just "Documents" now that the exports have left');
 /* A badge must follow its section. When sec-orders moved into its own room the
