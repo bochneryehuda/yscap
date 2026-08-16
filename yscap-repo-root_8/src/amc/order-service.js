@@ -666,6 +666,19 @@ async function createOrder(db, appId, opts = {}) {
   const ack = cdg.parseAck(resp);
   const updated = await applyAck(db, order.id, ack, resp);
   await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, response: resp, ok: true, staffId: opts.staffId });
+  // THE INVESTOR'S APPRAISAL REQUIREMENTS GO ON THE ORDER, right after it is
+  // placed (owner-directed 2026-08-16), so the appraiser is told up front what
+  // the report will be reviewed against instead of finding out from a revision
+  // request. Nothing here can fail the order: the appraisal is already placed,
+  // the poster never throws, and it names no capital partner (an AMC is an
+  // outside company). It IS awaited — one message on a request that has already
+  // made several, in exchange for the message not being lost if the process is
+  // recycled the moment the response goes out. A failure is logged + journalled,
+  // never surfaced as a failed order.
+  try {
+    await require('../lib/appraisal/order-requirements-post')
+      .postForAmcOrder(db, updated || order, { staffId: opts.staffId });
+  } catch (_) { /* the order stands regardless */ }
   // The Orders desk mirrors this order (lib/appraisal-order-mirror.js). Fired,
   // never awaited: the desk is a projection and must never delay or fail a placement.
   require('../lib/appraisal-order-mirror').fire(appId);

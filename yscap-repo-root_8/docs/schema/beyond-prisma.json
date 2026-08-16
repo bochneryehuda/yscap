@@ -17054,7 +17054,7 @@
         "current_address jsonb",
         "date_of_birth date",
         "dependents_count integer",
-        "email USER-DEFINED NOT NULL",
+        "email USER-DEFINED",
         "employer text",
         "employment_type text",
         "fico integer",
@@ -22958,8 +22958,8 @@
   ],
   "generatedFrom": {
     "migrations": {
-      "count": 565,
-      "highest": 568
+      "count": 566,
+      "highest": 569
     }
   }
 }

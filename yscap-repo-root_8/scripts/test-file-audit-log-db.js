@@ -143,6 +143,69 @@ const FAKE = '00000000-0000-0000-0000-0000000000ff';
     await db.query(`DELETE FROM borrowers WHERE id=$1`, [bId]);
   }
 
+  // ── 3c. AND A COMPLETE LOG NEVER CRIES WOLF ─────────────────────────────
+  // Owner-reported 2026-08-16, with the screenshot: "This log is incomplete —
+  // closing milestones: read 1 records, which is all this page reads". Nothing
+  // was missing. The rule was `rows >= LIMIT` ⇒ truncated, which reads a LIMIT
+  // as a BOUND when it can equally be a STATEMENT OF SHAPE: `closing_workflow`
+  // holds ONE row per file, so its trail is written LIMIT 1, and every file
+  // that ever reached closing read 1 of 1 and declared the whole audit log
+  // incomplete — in red, permanently, on exactly the files worth auditing.
+  //
+  // The claim is now MEASURED (the query asks for one row more than it wants),
+  // so both halves have to hold: no false alarm, and a real cut still reported.
+  {
+    const bId = (await db.query(
+      `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Wolf','Test',$1) RETURNING id`,
+      [`wolf-${Date.now()}@test.local`])).rows[0].id;
+    const appId = (await db.query(
+      `INSERT INTO applications (borrower_id,status,property_address)
+       VALUES ($1,'clear_to_close','{"line1":"3 Closing Way"}') RETURNING id`, [bId])).rows[0].id;
+    // The owner's own file shape: a closing workflow, which is one row per file
+    // and emits several events from that one row.
+    await db.query(
+      `INSERT INTO closing_workflow (application_id, stage, ready_for_docs_at, wire_sent_at, fully_closed_at)
+       VALUES ($1,'fully_closed', now() - interval '3 days', now() - interval '2 days', now() - interval '1 day')`, [appId]);
+
+    const feed = await activity.staffFeed(appId, { limit: 600 });
+    const wolf = feed.find((r) => r && r.source === 'meta' && /PARTIAL/.test(r.verb || ''));
+    if (wolf) bad(`a complete file claimed a trail was cut short: ${wolf.label}`);
+    else ok('a file whose closing-milestone trail is one row of one does NOT claim to be partial');
+    if (!feed.some((r) => r && /SENT THE WIRE/.test(r.verb || ''))) {
+      bad('the closing-milestone events themselves went missing');
+    } else ok('the closing-milestone events are still all there (the over-read changes nothing but the verdict)');
+
+    // THE GENERAL CLASS, not just the one trail the owner happened to see: a
+    // source holding EXACTLY its cap is complete, and must not say otherwise.
+    // (The outer WINDOW is genuinely short here, and still says so — that claim
+    // is true and is a different row.)
+    for (let i = 0; i < 50; i++) {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind,action,entity_type,entity_id,detail)
+         VALUES ('staff','edit_application','application',$1,'{}'::jsonb)`, [appId]);
+    }
+    const exact = await activity.staffFeed(appId, { limit: 50 });   // audit trail cap === 50 === rows
+    const exactWolf = exact.find((r) => r && r.source === 'meta' && /PARTIAL/.test(r.verb || ''));
+    if (exactWolf) bad(`a trail holding exactly its cap claimed to be cut short: ${exactWolf.label}`);
+    else ok('a trail holding EXACTLY its cap is reported complete');
+
+    // One more row than the cap IS a real cut, and must still be reported —
+    // the fix may not buy its silence by going blind.
+    await db.query(
+      `INSERT INTO audit_log (actor_kind,action,entity_type,entity_id,detail)
+       VALUES ('staff','edit_application','application',$1,'{}'::jsonb)`, [appId]);
+    const over = await activity.staffFeed(appId, { limit: 50 });
+    const real = over.find((r) => r && r.source === 'meta' && /PARTIAL/.test(r.verb || ''));
+    if (!real) bad('a trail that really WAS cut short reported nothing');
+    else if (!/audit log/.test(real.label || '')) bad(`the real cut does not name its trail: ${real.label}`);
+    else ok(`a trail that really was cut short still names itself: "${real.label}"`);
+
+    await db.query(`DELETE FROM audit_log WHERE entity_id=$1`, [appId]);
+    await db.query(`DELETE FROM closing_workflow WHERE application_id=$1`, [appId]);
+    await db.query(`DELETE FROM applications WHERE id=$1`, [appId]);
+    await db.query(`DELETE FROM borrowers WHERE id=$1`, [bId]);
+  }
+
   // ── 4. THE BORROWER FEED IS STRUCTURALLY SEPARATE ───────────────────────
   // Widening the staff log must never be able to leak an internal action onto
   // a borrower screen, so the two paths may not share a query.
