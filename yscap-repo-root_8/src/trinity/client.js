@@ -243,6 +243,56 @@ async function createOrder(payload) {
 }
 async function getOrder(id) { return call(`${P}/orders/${encodeURIComponent(id)}`); }
 async function getBudget(id) { return call(`${P}/forms/${formId()}/orders/${encodeURIComponent(id)}/budget`); }
+/**
+ * The same budget, grouped into named sections. Verified live: it answers
+ * `{ groups: [{ name, lineItems, subTotal }], total }` and, for an order created
+ * through the ungrouped endpoint, returns a single group whose `name` is null. Read-only
+ * here — we create ungrouped — and it is the natural home for a category-grouped budget
+ * if the desk ever wants one.
+ */
+async function getGroupedBudget(id) { return call(`${P}/forms/${formId()}/grouped/orders/${encodeURIComponent(id)}/budget`); }
+
+/**
+ * Update an order in flight. This is a PARTIAL patch: send ONLY what you intend to
+ * change, because a null is read as "set this to its default" (their words), not as
+ * "leave it alone". `actionBy` is required and is what they audit the change against.
+ *
+ * The three things worth changing, all verified live against the sandbox:
+ *   · `dateToPerformInspection` — RESCHEDULE. Trinity refuses anything under 24 hours
+ *     from now with a clean 400 ("Value cannot be earlier than 24 hours from now."), so
+ *     the caller validates first and never sends a date it knows will be refused.
+ *   · `rush` — priority, at additional cost.
+ *   · `setupOnly: false` — release an order created in the holding status so it starts
+ *     being worked.
+ */
+async function patchOrder(id, patch) {
+  return call(`${P}/orders/${encodeURIComponent(id)}`, { method: 'PATCH', body: patch });
+}
+
+/**
+ * Update the PROJECT — the property, the appraisal, the borrower, the contractor, the
+ * total cost — without placing an order. Same partial-patch rule: only send what you
+ * mean to change.
+ *
+ * Creating an order already refreshes the project, so this exists for the things that
+ * change BETWEEN draws and that an inspector needs before the next visit — most of all
+ * a lock box code, and a corrected contractor phone number.
+ */
+async function patchProject(id, patch) {
+  return call(`${P}/projects/${encodeURIComponent(id)}`, { method: 'PATCH', body: patch });
+}
+async function getProject(id) { return call(`${P}/projects/${encodeURIComponent(id)}`); }
+
+/**
+ * The INVOICE for a completed order — what this inspection COST US.
+ *
+ * docs/TRINITY-INSPECTION-API-RESEARCH.md §9.2 recorded this as an open question
+ * ("nothing in the API returns our cost"). That is answered: this endpoint does, once
+ * the order is complete. Before then it answers a clean 404 with
+ * "The invoice for this order is not ready." — exactly like the report — so "not yet"
+ * is unambiguous and is never mistaken for a failure.
+ */
+async function getInvoice(id) { return call(`${P}/orders/${encodeURIComponent(id)}/documents/invoice`); }
 async function getPhotos(id) { return call(`${P}/orders/${encodeURIComponent(id)}/photos`); }
 async function getDocuments(id) { return call(`${P}/orders/${encodeURIComponent(id)}/documents`); }
 /** The finished report. Answers 404 with detail "The report for this order is not ready." */
@@ -321,7 +371,8 @@ module.exports = {
   available, enabled, outboundEnabled, dryrun,
   authenticate, resetToken, call,
   defaultCompany, forms, orderStatuses, documentGroups, companyId, formId,
-  createOrder, getOrder, getBudget, getPhotos, getDocuments, getReport, getProjectOrders,
+  createOrder, getOrder, getBudget, getGroupedBudget, getPhotos, getDocuments, getReport, getProjectOrders,
+  patchOrder, patchProject, getProject, getInvoice,
   findOrderByCustomerKey, findProjectByNumber, requestCancel,
   addDocument, addComment, getComments,
   subscribe, subscriptions, unsubscribe, ping,

@@ -111,6 +111,23 @@ function cleanPhone(v, max = 20) {
   return formatted.length <= max ? formatted : undefined;
 }
 
+/**
+ * The first of several candidate numbers that Trinity will actually accept.
+ *
+ * Trinity requires at least ONE phone per party but does not care which field it
+ * arrives in, so a file that holds only a mobile number is perfectly orderable — we
+ * just have to look past the empty `phone` column to find it. Returns undefined when
+ * none of them can be cleaned, which is what makes the order refuse rather than send a
+ * payload we already know will be rejected.
+ */
+function firstUsablePhone(candidates, max = 20) {
+  for (const c of candidates || []) {
+    const p = cleanPhone(c, max);
+    if (p) return p;
+  }
+  return undefined;
+}
+
 const ZIP_RE = /^\d{5}(?:[-\s]\d{4})?$/;
 function cleanZip(v) {
   const raw = String(v || '').trim();
@@ -139,20 +156,48 @@ function splitName(full, fallbackFirst = 'Borrower', fallbackLast = 'Borrower') 
 // OUT: our budget + historical draws -> Trinity form-19 line items
 // ---------------------------------------------------------------------------
 /**
+ * The number of decimal places Trinity actually PRESERVES on a percentage.
+ *
+ * MEASURED, not assumed (sandbox, 2026-08-16, order 735315). The same true value —
+ * 33.333333% of a $1,000,000 line, i.e. exactly $333,333.33 drawn — was sent at 2, 4, 6,
+ * 8, 10 and 12 decimal places and read straight back:
+ *
+ *     dp | returned      | what the inspector is shown as drawn | drift
+ *     ---+---------------+--------------------------------------+---------
+ *      2 | 33.33         | $333,300.00                          | -$33.33
+ *      4 | 33.3333       | $333,333.00                          |  -$0.33
+ *      6 | 33.333333     | $333,333.33                          |   $0.00
+ *      8 | 33.333333     | $333,333.33                          |   $0.00
+ *     10 | 33.333333     | $333,333.33                          |   $0.00
+ *     12 | 33.333333     | $333,333.33                          |   $0.00
+ *
+ * Six is where it stops: anything finer is silently rounded to six, and anything
+ * coarser loses real money off the historical-draw figure. The first build used FOUR,
+ * on the stated belief that it "keeps even a $1,000,000 line accurate to well under a
+ * cent". That belief was wrong — the error scales with the size of the line
+ * (itemCost × 5e-7, so ±$0.50 on a $1,000,000 line), and it was showing the inspector
+ * $333,333.00 drawn where the borrower had actually been paid $333,333.33.
+ *
+ * At six the residual is itemCost × 5e-9 — half a cent on a $1,000,000 line, and under
+ * a cent on anything up to $2,000,000. A line item larger than that is not a line item.
+ */
+const PCT_DECIMALS = 6;
+
+/**
  * The percentage that carries the historical draws.
  *
- * Rounded to 4 decimals — their doubles hold it comfortably and it keeps even a
- * $1,000,000 line accurate to well under a cent — and CLAMPED to 0..100, because an
- * over-drawn line (possible after an approved over-limit request) would otherwise send
- * more than 100 and be refused outright. A zero/absent budget yields 0 rather than a
- * division by zero.
+ * Rounded to PCT_DECIMALS (see above — measured against the live API) and CLAMPED to
+ * 0..100, because an over-drawn line (possible after an approved over-limit request)
+ * would otherwise send more than 100 and be refused outright. A zero/absent budget
+ * yields 0 rather than a division by zero.
  */
 function previousPct(previousDrawnCents, budgetedCents) {
   const b = Math.round(Number(budgetedCents || 0));
   const d = Math.round(Number(previousDrawnCents || 0));
   if (b <= 0 || d <= 0) return 0;
   const pct = (d / b) * 100;
-  return Math.min(100, Math.max(0, Math.round(pct * 10000) / 10000));
+  const f = 10 ** PCT_DECIMALS;
+  return Math.min(100, Math.max(0, Math.round(pct * f) / f));
 }
 
 /**
@@ -180,19 +225,50 @@ function toLineItems(lines) {
       isRequested: requested > 0,
     });
   }
-  return out;
+  // Trinity REFUSES an order whose line keys collide (400, verified) — so this runs on
+  // the way out, always, rather than being left to the caller to remember.
+  return uniquifyKeys(out);
 }
 
 /**
  * The durable per-line crosswalk key. Our job-item id when we have one (it is the
  * identity the rest of the draw stack uses), else the SOW line key. This is what makes
  * "what did the inspector approve on OUR line" answerable — Trinity's budget read-back
- * returns `number: 0` (verified), so identity can NEVER come from the ordinal.
+ * returns `number: 0` (verified on every line of every order), so identity can NEVER
+ * come from the ordinal, and their `description` is not identity either (a real budget
+ * carries two lines called "Kitchen" — verified: both survive, told apart only by this
+ * key).
  */
 function customerKeyForLine(l) {
   if (l.sitewire_job_item_id != null && l.sitewire_job_item_id !== '') return `ji-${l.sitewire_job_item_id}`;
   if (l.sow_line_key) return `sow-${l.sow_line_key}`;
   return `line-${trim(l.name || 'x', 40).toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+}
+
+/**
+ * Make a set of keys unique, keeping the first occurrence untouched.
+ *
+ * TRINITY ENFORCES THIS AND REFUSES THE WHOLE ORDER OTHERWISE — verified 2026-08-16:
+ * two line items sharing a customerKey answers
+ *   400 `2 line items have CustomerKey "ji-3001", line item keys must be unique within
+ *        an order.`
+ * That is good news (their side polices the crosswalk too), but it means a collision is
+ * not a degraded line — it is a REFUSED INSPECTION. Our own keys are derived, and the
+ * last-resort form is a slug of the line's NAME, so two unnamed-but-identically-named
+ * lines on one budget would collide and take the whole order down. Suffixing the
+ * DUPLICATE (never the first) keeps every key stable across re-orders for every line
+ * that was already unique.
+ */
+function uniquifyKeys(items) {
+  const seen = new Map();
+  for (const it of items) {
+    const base = it.customerKey;
+    if (!seen.has(base)) { seen.set(base, 1); continue; }
+    const n = seen.get(base) + 1;
+    seen.set(base, n);
+    it.customerKey = trim(`${base}-${n}`, 255);
+  }
+  return items;
 }
 
 /**
@@ -231,6 +307,42 @@ function buildOrderPayload({
   if (!cCompany) problems.push("the contractor's company name is missing");
   if (!cEmail) problems.push("the contractor's email address is missing");
 
+  // ---- PHONES: required, and the swagger says the opposite ----------------
+  // Every phone field on BorrowerModel and ContractorModel is documented `nullable:
+  // true`. It is not true. Verified live (sandbox, 2026-08-16) — an order with no phone
+  // on either party is refused 400 with:
+  //
+  //   "Borrower.['Phone','OtherPhone','HomePhone,'MobilePhone']":
+  //       ["At least one is required ['Phone','OtherPhone','HomePhone,'MobilePhone']."]
+  //   "Contractor.['Phone','MobilePhone']":
+  //       ["At least one is required ['Phone','MobilePhone']."]
+  //
+  // (their message contains a typo — a missing quote before 'MobilePhone' — which is
+  // quoted here verbatim so a future reader can grep for what Trinity actually sends.)
+  //
+  // This matters because `cleanPhone` deliberately OMITS a phone it cannot parse rather
+  // than sending junk — the right call on its own, but it meant a file holding a
+  // malformed or missing phone produced a payload Trinity rejects, and the desk saw a
+  // raw validation error instead of "add the borrower's phone number first". An
+  // inspector has to be able to telephone somebody to get onto the property, so this is
+  // a genuine requirement rather than a schema quirk, and it is checked HERE, before
+  // anything is sent.
+  const bPhone = firstUsablePhone([
+    borrower && borrower.phone, borrower && borrower.mobilePhone,
+    borrower && borrower.homePhone, borrower && borrower.otherPhone,
+  ], 20);
+  if (!bPhone) {
+    problems.push(String(borrower && (borrower.phone || borrower.mobilePhone || borrower.homePhone || borrower.otherPhone) || '').trim()
+      ? "the borrower's phone number is not a number Trinity can accept"
+      : "the borrower's phone number is missing (Trinity requires one so the inspector can reach them)");
+  }
+  const cPhone = firstUsablePhone([contractor && contractor.phone, contractor && contractor.mobilePhone], 40);
+  if (!cPhone) {
+    problems.push(String(contractor && (contractor.phone || contractor.mobilePhone) || '').trim()
+      ? "the contractor's phone number is not a number Trinity can accept"
+      : "the contractor's phone number is missing (Trinity requires one so the inspector can arrange access)");
+  }
+
   const lineItems = toLineItems(lines);
   if (!lineItems.length) problems.push('the construction budget has no line items');
   if (!lineItems.some((l) => l.isRequested)) problems.push('no line on this draw has an amount requested');
@@ -259,11 +371,14 @@ function buildOrderPayload({
       firstName: bName.firstName || 'Borrower',
       lastName: bName.lastName || 'Borrower',
       emailAddress: cleanEmail(borrower && borrower.email, 150),
-      phone: cleanPhone(borrower && borrower.phone, 20),
+      // Whichever number we could actually use, sent in the field Trinity checks first.
+      phone: bPhone,
+      mobilePhone: cleanPhone(borrower && borrower.mobilePhone, 20),
     },
     contractor: {
       name: cName, companyName: cCompany, emailAddress: cEmail,
-      phone: cleanPhone(contractor && contractor.phone, 40),
+      phone: cPhone,
+      mobilePhone: cleanPhone(contractor && contractor.mobilePhone, 30),
     },
     order: {
       companyId,
@@ -279,6 +394,103 @@ function buildOrderPayload({
   };
 
   return { payload, problems };
+}
+
+// ---------------------------------------------------------------------------
+// PROOF: did their system actually take the budget we sent?
+// ---------------------------------------------------------------------------
+/**
+ * Reconcile Trinity's stored budget against the line items we sent, line by line.
+ *
+ * Owner-directed 2026-08-16: *"make sure their system really understands our
+ * construction budget … really understands how much was drawn already from each and
+ * every item … how we force them to be linked together."* Sending a budget and having
+ * the order accepted is NOT the same as knowing it arrived intact, and nothing checked.
+ * This is the check, and it runs on every order.
+ *
+ * It compares the four things an inspector actually works from, per line:
+ *   · `itemCost`                  — the construction budget for that item
+ *   · `previousPercentCompleted`  — reconstituted back to CENTS and compared to the
+ *                                   money already drawn (this is the one the owner
+ *                                   cares most about, and the one a rounding change
+ *                                   would silently break)
+ *   · `amountRequested`           — what this draw is asking for
+ *   · `customerKey`               — OUR key on THEIR line: the crosswalk itself
+ *
+ * PURE. `sent` is what `toLineItems` produced (dollars, as sent); `remote` is the budget
+ * read straight back. Returns `{ok, problems[], summary}` — `problems` is plain language
+ * for the desk, never a stack trace, and is capped so one badly-broken order cannot
+ * write a novel into a text column.
+ *
+ * THE CENTS TOLERANCE IS ONE CENT PER LINE, AND THAT IS NOT SLOP. The drawn figure makes
+ * a round trip through a percentage (cents → % at 6 dp → cents), which is exact for
+ * every realistic line but is still a conversion; a single cent of dust must not raise
+ * an alarm on an order that is in fact correct. Anything larger is a real disagreement.
+ */
+const CENT_TOLERANCE = 1;
+const MAX_PROBLEMS = 12;
+
+function verifyRemoteBudget(sent, remote) {
+  const problems = [];
+  const items = (remote && Array.isArray(remote.lineItems)) ? remote.lineItems : null;
+  if (!items) {
+    return { ok: false, problems: ['Trinity returned no budget to check.'], summary: null, checked: 0 };
+  }
+
+  const byKey = new Map();
+  for (const it of items) if (it && it.customerKey != null) byKey.set(String(it.customerKey), it);
+
+  let checked = 0;
+  for (const s of sent || []) {
+    const t = byKey.get(String(s.customerKey));
+    if (!t) {
+      // The crosswalk is broken for this line: whatever the inspector approves on it,
+      // we would not know which of our budget lines it belongs to.
+      problems.push(`"${trim(s.description, 40)}" is not on Trinity's budget under our reference.`);
+      continue;
+    }
+    checked++;
+    const ourCost = Math.round(Number(s.itemCost || 0) * 100);
+    const theirCost = Math.round(Number(t.itemCost || 0) * 100);
+    if (Math.abs(theirCost - ourCost) > CENT_TOLERANCE) {
+      problems.push(`"${trim(s.description, 40)}": budget ${usdish(ourCost)} on our side, ${usdish(theirCost)} on Trinity's.`);
+    }
+    const ourReq = Math.round(Number(s.amountRequested || 0) * 100);
+    const theirReq = Math.round(Number(t.amountRequested || 0) * 100);
+    if (Math.abs(theirReq - ourReq) > CENT_TOLERANCE) {
+      problems.push(`"${trim(s.description, 40)}": this draw asks for ${usdish(ourReq)}, Trinity recorded ${usdish(theirReq)}.`);
+    }
+    // The historical draw, converted back the way Trinity's own screen does it.
+    const ourDrawn = Math.round(ourCost * (Number(s.previousPercentCompleted || 0) / 100));
+    const theirDrawn = Math.round(theirCost * (Number(t.previousPercentCompleted || 0) / 100));
+    if (Math.abs(theirDrawn - ourDrawn) > CENT_TOLERANCE) {
+      problems.push(`"${trim(s.description, 40)}": already drawn ${usdish(ourDrawn)} on our side, Trinity shows ${usdish(theirDrawn)}.`);
+    }
+  }
+
+  // A line on THEIR budget that is not on ours is not an error — Trinity's team may add
+  // one (a trip fee) — but the desk should know it is there, because it will turn up in
+  // the results with no line of ours to belong to.
+  const extra = items.filter((it) => !(sent || []).some((s) => String(s.customerKey) === String(it.customerKey)));
+
+  const t = (remote && remote.total) || {};
+  const summary = {
+    lines: items.length,
+    checked,
+    extraLines: extra.length,
+    extraNames: extra.slice(0, 5).map((e) => trim(e.description, 40)),
+    remoteBudgetCents: Math.round(Number(t.totalCost || 0) * 100),
+    remoteDrawnCents: Math.round(Number(t.previousCostCompleted || 0) * 100),
+  };
+
+  const capped = problems.slice(0, MAX_PROBLEMS);
+  if (problems.length > MAX_PROBLEMS) capped.push(`…and ${problems.length - MAX_PROBLEMS} more.`);
+  return { ok: problems.length === 0, problems: capped, summary, checked };
+}
+
+/** Plain dollars for a desk message. Not money math — display only. */
+function usdish(cents) {
+  return '$' + (Number(cents || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 // ---------------------------------------------------------------------------
@@ -391,9 +603,9 @@ function toApprovalEntries(resultLines, requestLines) {
 }
 
 module.exports = {
-  STATUS, COMPLETED_IDS, ATTENTION_IDS, ORDER_OF_STATE,
+  STATUS, COMPLETED_IDS, ATTENTION_IDS, ORDER_OF_STATE, PCT_DECIMALS,
   readStatus, nextState,
-  previousPct, toLineItems, customerKeyForLine, buildOrderPayload,
-  readResults, toApprovalEntries,
-  _internals: { cleanPhone, cleanZip, cleanEmail, splitName, trim, centsToDollars },
+  previousPct, toLineItems, customerKeyForLine, uniquifyKeys, buildOrderPayload,
+  readResults, toApprovalEntries, verifyRemoteBudget,
+  _internals: { cleanPhone, firstUsablePhone, cleanZip, cleanEmail, splitName, trim, centsToDollars, usdish },
 };

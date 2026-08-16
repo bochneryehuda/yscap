@@ -1214,6 +1214,10 @@ function TrinityInspectionCard({ appId }) {
   const [msg, setMsg] = useState('');
   const [note, setNote] = useState({});          // per-order message box
   const [openId, setOpenId] = useState(null);    // which order's detail is expanded
+  const [when, setWhen] = useState({});          // per-order requested inspection date
+  // Trinity refuses a date inside 24 hours, so the picker cannot offer one. Two days
+  // out is the first date that is certainly acceptable in every timezone.
+  const earliestInspect = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
   const usd = (c) => (c == null ? '—' : '$' + (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 }));
   const load = useCallback(() => {
     api.get(`/api/trinity/files/${appId}`).then(setData).catch(() => setData(null));
@@ -1293,6 +1297,17 @@ function TrinityInspectionCard({ appId }) {
                 <button className="btn ghost small" onClick={() => setOpenId(open ? null : o.id)}>
                   {open ? 'Hide' : 'Details'}
                 </button>
+                {/* Rush is a real cost, so it asks before it fires. */}
+                {o.trinity_order_id && !['report_received', 'entered', 'cancelled'].includes(o.status) && !o.rush && (
+                  <button className="btn ghost small" disabled={busy}
+                    onClick={() => act(async () => {
+                      if (!(await askConfirm('Mark this inspection RUSH? Trinity prioritises it and may charge more.',
+                        { confirmLabel: 'Mark it rush' }))) return null;
+                      return api.post(`/api/trinity/files/${appId}/orders/${o.id}/schedule`, { rush: true });
+                    }, 'Trinity has been asked to rush this inspection.')}>
+                    Rush it
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1334,12 +1349,113 @@ function TrinityInspectionCard({ appId }) {
                     <a className="btn soft small" target="_blank" rel="noreferrer"
                       href={`/api/trinity/files/${appId}/orders/${o.id}/report`}>Our PILOT report</a>
                   )}
+                  {o.invoice_document_id && (
+                    <a className="btn soft small" target="_blank" rel="noreferrer"
+                      href={`/api/trinity/files/${appId}/orders/${o.id}/invoice`}>Trinity’s invoice</a>
+                  )}
                   {o.trinity_order_id && !['entered', 'cancelled'].includes(o.status) && (
                     <button className="btn ghost small" disabled={busy}
                       onClick={() => act(() => api.post(`/api/trinity/files/${appId}/orders/${o.id}/cancel`),
                         (r) => r.message)}>Ask Trinity to cancel</button>
                   )}
                 </div>
+
+                {/* Where this one gets delivered. Said up front rather than discovered
+                    by clicking a button that refuses. */}
+                {o.delivery && o.delivery.here === false && (
+                  <div className="small" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6,
+                    background: '#FBF7EC', border: '1px solid #E3D6B4', color: '#4B585C' }}>
+                    <span style={{ fontWeight: 600, color: '#141B22' }}>Delivered from the draw desk, not here. </span>
+                    {o.delivery.reason}
+                  </div>
+                )}
+                {/* A draw the borrower submitted in Sitewire reaches them the same way a
+                    virtual one does — but it gets there by writing Trinity's figures onto
+                    the draw first, so say that BEFORE the button, not after. */}
+                {o.delivery && o.delivery.here && o.delivery.note && (
+                  <div className="small" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6,
+                    background: '#F4F6F8', border: '1px solid #D8DFE5', color: '#4B585C' }}>
+                    {o.delivery.note}
+                  </div>
+                )}
+
+                {/* Did their system actually take our construction budget? Asked and
+                    answered on every order — a broken crosswalk is worth knowing about
+                    now, not when the report comes back and nothing can be matched. */}
+                {o.budget_verified_at && (
+                  <div className="small" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6,
+                    background: o.budget_mismatch ? '#FDF3F2' : '#F3F7F4',
+                    border: `1px solid ${o.budget_mismatch ? '#E4C4BF' : '#CFE0D4'}` }}>
+                    <div style={{ fontWeight: 600, color: o.budget_mismatch ? '#B04A3F' : '#2F6B4F' }}>
+                      {o.budget_mismatch
+                        ? 'Trinity’s copy of the budget does NOT match ours'
+                        : 'Trinity has our construction budget, checked line by line'}
+                    </div>
+                    <div style={{ color: '#4B585C', marginTop: 2 }}>
+                      {o.budget_mismatch || (
+                        `Their system holds ${usd(o.remote_budget_cents)} of budget with ${usd(o.remote_drawn_cents)} already drawn — `
+                        + 'the same figures as this file, to the cent.')}
+                    </div>
+                  </div>
+                )}
+
+                {/* THE PROGRESS TIMELINE. Trinity has no history endpoint, so this is
+                    the only record of the sequence — ordered, scheduled, inspected,
+                    report back — in their own words, with when each happened. */}
+                {!!(o.timeline || []).length && (
+                  <div style={{ marginTop: 12 }}>
+                    <div className="small" style={{ fontWeight: 600, color: '#141B22' }}>Progress</div>
+                    <ol style={{ listStyle: 'none', margin: '6px 0 0', padding: 0, borderLeft: '2px solid #E3DED2' }}>
+                      {o.timeline.map((ev) => (
+                        <li key={ev.id} className="small" style={{ position: 'relative', padding: '4px 0 4px 14px', color: '#4B585C' }}>
+                          <span style={{ position: 'absolute', left: -5, top: 10, width: 8, height: 8, borderRadius: 8,
+                            background: ev.kind === 'delivered' ? '#2F7F86' : (ev.kind === 'note' ? '#C9C2B2' : '#AE8746') }} />
+                          <span style={{ color: '#141B22', fontWeight: 550 }}>
+                            {ev.trinity_status || (ev.kind === 'ordered' ? 'Ordered from Trinity'
+                              : ev.kind === 'delivered' ? 'Delivered to the borrower'
+                                : ev.kind === 'writeback' ? 'Figures written onto the draw' : 'Note')}
+                          </span>
+                          {ev.trinity_substatus ? ` · ${ev.trinity_substatus}` : ''}
+                          <span style={{ color: '#8A8578' }}>
+                            {' — '}{new Date(ev.occurred_at).toLocaleString()}
+                          </span>
+                          {ev.detail ? <div style={{ marginTop: 1 }}>{ev.detail}</div> : null}
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+
+                {/* Scheduling — the owner's "schedule the inspection". Trinity needs at
+                    least 24 hours, so the picker's floor is two days out and the server
+                    refuses anything sooner in its own words. */}
+                {o.trinity_order_id && !['report_received', 'entered', 'cancelled'].includes(o.status) && (
+                  <div style={{ marginTop: 10 }}>
+                    <div className="small" style={{ fontWeight: 600, color: '#141B22' }}>Schedule the inspection</div>
+                    <div className="small" style={{ color: '#4B585C', marginTop: 2 }}>
+                      {o.inspect_on
+                        ? `We asked Trinity for ${new Date(o.inspect_on).toLocaleDateString()}.`
+                        : 'Trinity performs it as soon as an inspector is free. Pick a date to ask for a later one.'}
+                      {o.scheduled_at ? ' An inspector has accepted the job.' : ''}
+                      {o.rush ? ' This order is marked RUSH.' : ''}
+                    </div>
+                    <div className="row" style={{ gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                      <input className="input" type="date" style={{ maxWidth: 190 }}
+                        min={earliestInspect}
+                        value={when[o.id] || ''}
+                        onChange={(e) => setWhen({ ...when, [o.id]: e.target.value })} />
+                      <button className="btn soft small" disabled={busy || !when[o.id]}
+                        onClick={() => act(async () => {
+                          const r = await api.post(`/api/trinity/files/${appId}/orders/${o.id}/schedule`,
+                            { date: new Date(`${when[o.id]}T15:00:00Z`).toISOString() });
+                          setWhen({ ...when, [o.id]: '' });
+                          return r;
+                        }, 'Trinity has been asked for that date.')}>
+                        Ask Trinity for this date
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {!!(o.photos || []).length && (
                   <div style={{ marginTop: 10 }}>
@@ -1375,8 +1491,13 @@ function TrinityInspectionCard({ appId }) {
                   )}
                 </div>
 
-                {/* THE manual step. Deliberately the only thing here that reaches a borrower. */}
-                {o.results_read_at && o.status !== 'entered' && o.portal_draw_request_id && (
+                {/* THE manual step. Deliberately the only thing here that reaches a borrower.
+                    Shown for BOTH doors — a portal draw request and a draw the borrower
+                    submitted in Sitewire — because the server delivers both (the Sitewire one
+                    by writing Trinity's figures onto the draw first). Gating it on
+                    `portal_draw_request_id` is what used to leave a completed Sitewire
+                    inspection with no way out. */}
+                {o.results_read_at && o.status !== 'entered' && o.delivery && o.delivery.here && (
                   <div className="act-card" style={{ marginTop: 12 }}>
                     <div>
                       <div style={{ fontWeight: 600, color: '#141B22' }}>Deliver the findings to the borrower</div>

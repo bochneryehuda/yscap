@@ -1,5 +1,28 @@
 # Trinity physical-inspection API — verified research + integration spec
 
+> **UPDATED 2026-08-16 — read `docs/trinity/TRINITY-API-RESOURCES.md` alongside this.**
+> A second live pass against the sandbox re-verified everything below and found **four
+> things this document got wrong or did not know**. Where the two disagree, the resources
+> doc is right — it is the one with the measurements.
+>
+> 1. **§3's "rounded to 4 decimals … accurate to well under a cent" is WRONG.** The error
+>    scales with the size of the line (`itemCost × 5e-7`), so a $1,000,000 line drawn to
+>    $333,333.33 was shown to the inspector as **$333,333.00**. Trinity preserves **6**
+>    decimals — measured, not assumed — and the mapper now sends 6, with the whole
+>    round-trip proven to **$0.0000** drift against the live API.
+> 2. **PHONES ARE REQUIRED.** Every phone field on `BorrowerModel` and `ContractorModel`
+>    is documented `nullable: true` and is not: an order with no phone on either party is
+>    refused **400**. §2.1's list of "field limits that bite" did not include it, and the
+>    mapper's `problems` list did not check it, so a file with a missing or malformed
+>    phone produced a payload Trinity always rejects.
+> 3. **§9.2 is ANSWERED — the API does return our cost.**
+>    `GET /orders/{id}/documents/invoice` returns the invoice once the order completes
+>    (a clean 404 "not ready" before then). It is now pulled and filed staff-only.
+> 4. **§7's status ladder and §5's document groups are confirmed complete** (all 19
+>    statuses mapped, all 128 groups archived), and **`PATCH /orders/{id}` /
+>    `PATCH /projects/{id}` are live and now used** — rescheduling, rush, and pushing a
+>    lock box code, which §8 did not cover.
+
 **Date:** 2026-08-14 · **Status:** verified LIVE against the sandbox, then built
 **Scope:** the **general physical program** — a PHYSICAL-inspection draw on a file whose note buyer is **NOT Blue Lake**.
 **Companion:** `docs/TRUSTPOINT-PHYSICAL-DRAW-WORKFLOW-BLUEPRINT.md` (§2 **Path C**, decision **D8** — "build the order record/status machinery now so the API adapter slots in without rework"). This document is that adapter.
