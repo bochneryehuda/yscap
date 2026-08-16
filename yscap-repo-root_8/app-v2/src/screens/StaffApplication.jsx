@@ -6119,6 +6119,7 @@ export default function StaffApplication() {
       <Section hidden={!show('sec-tapes')} id="sec-tapes" title="Send to investor" defaultOpen={false}
         info="Everything that leaves this file for an outside party: the TPR clean-file export, the MISMO 3.4 file, and the capital provider's own data tape.">
       <TprExport appId={id} />
+      <CorrfirstExport appId={id} />
       <MismoExport appId={id} />
       {can('export_data_tapes') && <TapeExport appId={id} />}
       </Section>
@@ -6403,6 +6404,125 @@ function TprExport({ appId }) {
             <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
               <span className="muted small">Would ship empty:</span>
               {prev.missing.slice(0, 12).map((m, i) => <span key={i} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold-ink)' }}>{m}</span>)}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* CORRFIRST EXPORT — the Track Record Investor Export.
+
+   CorrFirst wants the borrower's prior projects on THEIR OWN spreadsheet: they
+   sent us an empty CSV (a header row) and a filled sample showing exactly how
+   they want the values written. This downloads that exact file, filled in, so it
+   can be handed to them with no editing.
+
+   Only VERIFIED track records go out — the same rule the TPR/REO investor
+   package already follows. Anything the file can't state (a property type nobody
+   entered, an ownership share nobody recorded) is NAMED here before the download,
+   never left for CorrFirst's import to reject. */
+function CorrfirstExport({ appId }) {
+  const [prev, setPrev] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.staffCorrfirstTrackRecordPreview(appId).then(setPrev).catch(() => setPrev({ error: true }));
+  }, [appId]);
+  async function download() {
+    setBusy(true);
+    try {
+      const { blob, filename } = await api.staffCorrfirstTrackRecordExport(appId);
+      saveBlob(blob, filename || 'Track Record.csv');
+    } catch (e) { showMessage(e.message || 'Export failed'); }
+    finally { setBusy(false); }
+  }
+  const w = (prev && prev.warnings) || {};
+  const gaps = [
+    { rows: w.missingPropertyType || [], text: 'no property type on the line — CorrFirst’s Property Type column will be blank. Add it on the track record and export again.' },
+    { rows: w.missingOwnership || [], text: 'no ownership share recorded — the "% of Ownership" column will be blank. Record the borrower’s stake in the entity that held it.' },
+    { rows: w.missingPurchase || [], text: 'missing a purchase price or purchase date.' },
+    { rows: w.noTitleName || [], text: 'nobody recorded who held title.' },
+  ].filter((g) => g.rows.length > 0);
+  const unmapped = w.unmappedPropertyType || [];
+  const judged = w.judgedPropertyType || [];
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 6 }}>
+        <h3>Corrfirst Export</h3>
+        <div className="spacer" />
+        <button className="btn primary" onClick={download} disabled={busy || !prev || prev.error || !prev.rowCount}>
+          {busy ? 'Building…' : 'Export track record (CSV)'}
+        </button>
+      </div>
+      {!prev ? <p className="muted small">Checking the track record…</p> : prev.error ? (
+        <p className="muted small" style={{ color: 'var(--gold-ink)' }}>Couldn’t read the track record. Refresh to try again.</p>
+      ) : (
+        <>
+          <p className="muted small">
+            The borrower’s track record on CorrFirst’s own spreadsheet — their exact columns, their exact
+            formatting — so it imports on their side with nothing to fix.{' '}
+            <b style={{ color: '#141B22' }}>{prev.rowCount}</b> verified propert{prev.rowCount === 1 ? 'y' : 'ies'} will be sent
+            {prev.rowCount > 0 ? ` (${prev.soldCount} sold, ${prev.retainedCount} kept as a rental)` : ''}. Only projects the loan
+            team has VERIFIED are included — a project still pending review never goes to an investor.
+          </p>
+          {prev.rowCount === 0 && (
+            <div className="notice" style={{ marginTop: 8, borderLeft: '3px solid var(--gold,#AE8746)', padding: '6px 10px' }}>
+              <b style={{ color: '#141B22' }}>Nothing to send yet.</b>
+              <div className="small" style={{ color: '#4B585C', marginTop: 3 }}>
+                This borrower has no verified projects on their track record. Verify their projects first and the export fills itself in.
+              </div>
+            </div>
+          )}
+          {gaps.length > 0 && (
+            <div className="notice" style={{ marginTop: 8, borderLeft: '3px solid var(--gold,#AE8746)', padding: '6px 10px' }}>
+              <b style={{ color: '#141B22' }}>Some columns will go out blank:</b>
+              <ul style={{ margin: '3px 0 0 18px', padding: 0, color: '#4B585C' }}>
+                {gaps.map((g, i) => (
+                  <li key={i} className="small">
+                    {g.rows.length} propert{g.rows.length === 1 ? 'y has' : 'ies have'} {g.text}
+                    <div style={{ color: '#4B585C', opacity: 0.9 }}>{g.rows.slice(0, 6).join(' · ')}{g.rows.length > 6 ? ` …and ${g.rows.length - 6} more` : ''}</div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {/* CorrFirst's own Property Type list has no value for land, a lot or a
+              plain "commercial" building. Those go out BLANK rather than as a made-up
+              value their form would reject — so the staffer is told by name, with the
+              choices their form actually offers. Never a blocker. */}
+          {unmapped.length > 0 && (
+            <div className="notice" style={{ marginTop: 8, borderLeft: '3px solid var(--gold,#AE8746)', padding: '6px 10px' }}>
+              <b style={{ color: '#141B22' }}>CorrFirst has no property type for {unmapped.length} propert{unmapped.length === 1 ? 'y' : 'ies'} — that column goes out blank:</b>
+              <ul style={{ margin: '3px 0 0 18px', padding: 0, color: '#4B585C' }}>
+                {unmapped.slice(0, 8).map((u, i) => (
+                  <li key={i} className="small">{u.property}{u.ours ? ` — we have it as “${u.ours}”` : ''}</li>
+                ))}
+              </ul>
+              {unmapped.length > 8 && <div className="small" style={{ color: '#4B585C' }}>…and {unmapped.length - 8} more.</div>}
+              <div className="small" style={{ color: '#4B585C', marginTop: 3 }}>
+                CorrFirst’s form only offers: SFR-Detached, SFR-Attached, Condo, 2-4 Units, PUD, Mixed-Use, Modular, Multifamily 5+,
+                Industrial, Manufactured, Self Storage, Office, Retail, Warehouse, Automotive. If one of those fits, set it on the track
+                record and export again; otherwise fill it in on their side.
+              </div>
+            </div>
+          )}
+          {/* A townhouse is the one shape their list has no exact value for, so it goes
+              out as SFR-Attached (a one-dwelling home attached to its neighbour). Worth
+              a glance, never a blocker. */}
+          {judged.length > 0 && (
+            <div className="notice" style={{ marginTop: 8, borderLeft: '3px solid var(--teal,#2F7F86)', padding: '6px 10px' }}>
+              <b style={{ color: '#141B22' }}>{judged.length} propert{judged.length === 1 ? 'y is' : 'ies are'} sent as the closest type on CorrFirst’s list:</b>
+              <ul style={{ margin: '3px 0 0 18px', padding: 0, color: '#4B585C' }}>
+                {judged.slice(0, 8).map((u, i) => (
+                  <li key={i} className="small">{u.property}{u.ours ? ` — we have it as “${u.ours}”` : ''}, sending “{u.value}”</li>
+                ))}
+              </ul>
+              {judged.length > 8 && <div className="small" style={{ color: '#4B585C' }}>…and {judged.length - 8} more.</div>}
+              <div className="small" style={{ color: '#4B585C', marginTop: 3 }}>
+                Their list has no “Townhouse”, so a townhouse goes out as <b style={{ color: '#141B22' }}>SFR-Attached</b> — a one-home
+                property attached to its neighbour. Every other property type we send is a one-for-one match with their own list.
+              </div>
             </div>
           )}
         </>
