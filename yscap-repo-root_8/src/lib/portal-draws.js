@@ -201,6 +201,14 @@ async function createRequest(appId, entries, opts = {}) {
       }),
       ['draws@yscapgroup.com'], { replyTo: fileReplyTo(appId), applicationId: appId, type: 'trustpoint_import', audience: 'staff' });
   } catch (_) {}
+  // Trinity ordering hook (2026-08-14): on the general physical program the inspection is
+  // ORDERED THE MOMENT THE DRAW IS SUBMITTED, from either composer door. Fire-and-forget
+  // and trinity-only — a TrustPoint (Blue Lake) request never reaches it, and a Trinity
+  // outage must never stop a borrower submitting a draw (the coordinator can still place
+  // the order by hand from the draw desk).
+  if (!isTp) {
+    require('../trinity/intake').orderForPortalRequest(appId, row.id).catch(() => {});
+  }
   // Borrower confirmation (their own submission — a receipt, not marketing). The amount is the
   // HEADLINE, not a clause in a sentence (draw rule 15), and the facts box carries the project's
   // own budget picture rather than the file's identity block. The team is NOT notified again here:

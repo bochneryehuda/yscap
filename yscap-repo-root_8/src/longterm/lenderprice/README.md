@@ -9,13 +9,14 @@ favorites.
 > **Long-Term only.** Self-contained — reads `process.env` directly, imports no RTL code,
 > touches no database. Passes the product-separation gate.
 
-## The 401 fix (why the earlier login was rejected)
+## The 401 fix (why the backend login was rejected)
 
-Confirmed from a real login recording (2026-08-16): the token endpoint accepts a login
-**only when it arrives "from" the company page** — i.e. with `Origin`/`Referer` =
-`https://yscapgroup.digitallending.com`. A byte-identical body with no `Origin` header
-returns `401 Unauthorized`. Every request in `client.js` carries that Origin/Referer, the
-same way the browser (and the Sitewire `web-client.js` "browser robot") does.
+Confirmed from two clean live login recordings (2026-08-16): the token request authenticates
+both the borrower and the OAuth client. The borrower email/password are form fields, while
+the OAuth client uses `Authorization: Basic base64(client_id:client_secret)`. The original
+backend omitted that Basic header, so it returned `401 Unauthorized` even with the right
+borrower password. `client.js` now sends the Basic credential plus the same Origin, Referer,
+content type, and form fields as the browser.
 
 ## Configure on Render (environment variables)
 
@@ -23,6 +24,7 @@ same way the browser (and the Sitewire `web-client.js` "browser robot") does.
 |-----|----------|---------|-------|
 | `LP_USERNAME` | ✅ | — | The service login email (lowercase). Never commit it. |
 | `LP_PASSWORD` | ✅ | — | The service login password. Render env only. |
+| `LP_CLIENT_SECRET` | ✅ | — | OAuth client secret used with `LP_CLIENT_ID` in HTTP Basic auth. Render env only. |
 | `LP_ORIGIN` | | `https://yscapgroup.digitallending.com` | The company page the login must come "from". |
 | `LP_CLIENT_ID` | | `acme2` | OAuth client id. |
 | `LP_AUTH_BASE` | | `https://auth.digitallending.com` | Token host. |
