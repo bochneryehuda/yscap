@@ -9,7 +9,10 @@
  * EMCAP's "Valuations — Additional Appraisal Review Items" (the owner's list, also transcribed
  * in docs/SILVER-PROGRAM-EMCAP.md):
  *   1. At least ONE As-Is comp: settled within 12 months of the loan SUBMISSION date, under 15%
- *      net adjustment, and in the SAME ZIP code as the subject (the "anchor" comp).
+ *      net adjustment, and within 1 MILE of the subject (the "anchor" comp). Owner-directed
+ *      2026-08-16 stated the distance rule in their own words ("it needs to be within 1 mile");
+ *      the earlier transcription said "the same ZIP code", which is what this file could
+ *      actually reach at the time. Both are honoured now — see compVerdict (c).
  *   2. The same for at least ONE ARV (after-repair) comp.
  *   3. A rental exit (Fix & Hold / DSCR / Rental) needs a rental analysis on the appraisal —
  *      a 1025 has it built in; a 1004 needs a 1007 rent schedule.
@@ -35,6 +38,16 @@
  */
 
 const registry = require('../conditions/field-registry');
+// THE NUMBERS ARE NOT RESTATED HERE. They are stated once in
+// investor-appraisal-requirements.js, which is also what the message posted to
+// the appraisal order reads — so we can never tell an appraiser one rule and
+// then refuse their report for another (owner-directed 2026-08-16).
+const REQS = require('./investor-appraisal-requirements');
+const { ANCHOR_MONTHS, ANCHOR_MAX_NET_ADJ_PCT, COMP_RADIUS_MILES } = REQS;
+// The appraiser's own stated distance ("0.55 miles SW"), read by the ONE parser
+// this repo already uses for it — which refuses anything it cannot read cleanly
+// (a written fraction, an implausible distance) rather than interpreting it.
+const { proximityMiles } = require('../research/trilaterate');
 
 // The one source-tag for every finding this module writes. Retire/diff by THIS, never by code
 // prefix, so a future buyer's checks can join the same channel.
@@ -63,9 +76,26 @@ function isRentalExit(strategy) { return strategy === 'fix_hold' || strategy ===
 
 // ---------- the anchor-comp evaluation (rules 1 + 2) ----------
 // One comp qualifies as an ANCHOR when all three requirements are PROVABLY true:
-//   settled sale ≤ 12 months before the submission date · |net adj| < 15% · same ZIP as subject.
+//   settled sale ≤ 12 months before the submission date · |net adj| < 15% · close enough
+//   to the subject (see below).
 // Verdict per comp: 'pass' | 'fail' (at least one requirement provably broken) | 'unknown'
 // (a requirement's data is missing and nothing provably failed).
+//
+// HOW CLOSE IS CLOSE ENOUGH — the one rule that moved (owner-directed 2026-08-16).
+// The requirement is "within 1 mile of the subject". Until now this file tested the
+// subject's ZIP CODE, which was the only thing it could reach: a stand-in, and a
+// wrong one at the edges — a comp 0.4 miles away across a ZIP boundary satisfies the
+// real rule and was being failed by ours, on a finding that BLOCKS clear to close.
+// So the appraiser's own stated distance is used WHEN THE REPORT GIVES ONE, and the
+// ZIP stays as the fallback for a report that does not.
+//
+// THE DIRECTION IS THE SAFETY PROPERTY, and it is why this could ship against live
+// files: a stated distance can only ever ADD a qualifying comp, never remove one.
+// A comp inside the mile passes whatever its ZIP says; a comp outside the mile is
+// NOT failed on distance, it simply falls back to the ZIP test it has always faced.
+// So no file that qualifies today can stop qualifying. Making the mile a hard
+// refusal would tighten a CTC-blocking gate, and that is the owner's call to make
+// in their own words, not this file's to infer.
 function compVerdict(c, { submittedDate, subjectZip }) {
   const reasons = [];
   let unknown = false;
@@ -78,7 +108,7 @@ function compVerdict(c, { submittedDate, subjectZip }) {
   // more recent → qualifies. monthsBetween(sale, submitted) = how many months before submission.
   const mo = monthsBetween(c.saleDate, submittedDate);
   if (mo == null) unknown = true;
-  else if (mo > 12) reasons.push(`sold ${mo} months before the loan was submitted (over 12)`);
+  else if (mo > ANCHOR_MONTHS) reasons.push(`sold ${mo} months before the loan was submitted (over ${ANCHOR_MONTHS})`);
 
   // (b) net adjustment under 15%. Prefer the reported %, else derive it from $/sale price.
   let adj = num(c.netAdjPct);
@@ -87,15 +117,26 @@ function compVerdict(c, { submittedDate, subjectZip }) {
     if (dollars != null && sp != null && sp > 0) adj = (Math.abs(dollars) / sp) * 100;
   }
   if (adj == null) unknown = true;
-  else if (Math.abs(adj) >= 15) reasons.push(`${Math.abs(Math.round(adj * 10) / 10)}% net adjustment (needs under 15%)`);
+  else if (Math.abs(adj) >= ANCHOR_MAX_NET_ADJ_PCT) {
+    reasons.push(`${Math.abs(Math.round(adj * 10) / 10)}% net adjustment (needs under ${ANCHOR_MAX_NET_ADJ_PCT}%)`);
+  }
 
-  // (c) same ZIP as the subject.
-  const cz = normZip(c.zip), sz = normZip(subjectZip);
-  if (!cz || !sz) unknown = true;
-  else if (cz !== sz) reasons.push(`ZIP ${cz} ≠ subject ${sz}`);
+  // (c) close enough to the subject: within the mile if the report says so, else the ZIP.
+  const miles = proximityMiles(c.proximity);
+  if (miles != null && miles <= COMP_RADIUS_MILES) {
+    // Inside the mile — the requirement itself is met, so the ZIP is not consulted.
+  } else {
+    const cz = normZip(c.zip), sz = normZip(subjectZip);
+    if (!cz || !sz) unknown = true;
+    else if (cz !== sz) {
+      reasons.push(miles != null
+        ? `${miles} miles away and ZIP ${cz} ≠ subject ${sz} (needs within ${COMP_RADIUS_MILES} mile)`
+        : `ZIP ${cz} ≠ subject ${sz} (the report does not state the distance; needs within ${COMP_RADIUS_MILES} mile)`);
+    }
+  }
 
   if (reasons.length) return { verdict: 'fail', reasons };
-  return unknown ? { verdict: 'unknown', reasons: ['some of its data (sale date / net adjustment / ZIP) could not be read'] } : { verdict: 'pass', reasons: [] };
+  return unknown ? { verdict: 'unknown', reasons: ['some of its data (sale date / net adjustment / distance or ZIP) could not be read'] } : { verdict: 'pass', reasons: [] };
 }
 
 function anchorFinding({ comps, grid, label, code, submittedDate, subjectZip }) {
@@ -105,7 +146,7 @@ function anchorFinding({ comps, grid, label, code, submittedDate, subjectZip }) 
     // Without a submission date the 12-month window is unverifiable for every comp — ask, never guess.
     return finding({ code, severity: 'warning', field: 'comps',
       title: `EMCAP anchor comp (${label}) could not be verified — no loan submission date on the file`,
-      howTo: `EMCAP requires at least one ${label} comp settled within 12 months of the loan submission date, under 15% net adjustment, in the subject's ZIP. The file has no submission date, so PILOT could not verify the 12-month window — check the comps by hand.`,
+      howTo: `EMCAP requires at least one ${label} comp settled within ${ANCHOR_MONTHS} months of the loan submission date, under ${ANCHOR_MAX_NET_ADJ_PCT}% net adjustment, within ${COMP_RADIUS_MILES} mile of the subject. The file has no submission date, so PILOT could not verify the ${ANCHOR_MONTHS}-month window — check the comps by hand.`,
       actions: ['acknowledge', 'dismiss'] });
   }
   if (verdicts.some((v) => v.verdict === 'unknown')) {
@@ -113,15 +154,15 @@ function anchorFinding({ comps, grid, label, code, submittedDate, subjectZip }) 
     return finding({ code, severity: 'warning', field: 'comps',
       title: `EMCAP anchor comp (${label}) could not be fully verified from the appraisal data`,
       appraisalValue: `unverifiable: ${u}`,
-      howTo: `EMCAP requires at least one ${label} comp settled within 12 months of submission, under 15% net adjustment, in the subject's ZIP (${normZip(subjectZip) || '—'}). None provably qualifies, but ${u} ${u.includes(',') ? 'are' : 'is'} missing some of the data — open the report and verify by hand.`,
+      howTo: `EMCAP requires at least one ${label} comp settled within ${ANCHOR_MONTHS} months of submission, under ${ANCHOR_MAX_NET_ADJ_PCT}% net adjustment, within ${COMP_RADIUS_MILES} mile of the subject (ZIP ${normZip(subjectZip) || '—'} where no distance is stated). None provably qualifies, but ${u} ${u.includes(',') ? 'are' : 'is'} missing some of the data — open the report and verify by hand.`,
       actions: ['acknowledge', 'dismiss'] });
   }
   // Every comp in the grid provably fails at least one requirement → the real fatal.
   const detail = verdicts.map((v) => `#${v.c.seq}: ${v.reasons.join('; ')}`).join(' · ');
   return finding({ code, severity: 'fatal', field: 'comps',
     appraisalValue: `${verdicts.length} ${label} comp${verdicts.length === 1 ? '' : 's'}, none qualifies`,
-    title: `EMCAP: no ${label} anchor comp — none is a settled sale within 12 months, under 15% net adjustment, in the subject's ZIP`,
-    howTo: `EMCAP requires at least ONE ${label} comparable that is a settled sale within 12 months of the loan submission date, with under 15% net adjustment, in the same ZIP code as the subject (${normZip(subjectZip) || '—'}). ${detail}. Ask the appraiser for a qualifying comp, or resolve this finding if EMCAP accepts the file as-is.`,
+    title: `EMCAP: no ${label} anchor comp — none is a settled sale within ${ANCHOR_MONTHS} months, under ${ANCHOR_MAX_NET_ADJ_PCT}% net adjustment, within ${COMP_RADIUS_MILES} mile of the subject`,
+    howTo: `EMCAP requires at least ONE ${label} comparable that is a settled sale within ${ANCHOR_MONTHS} months of the loan submission date, with under ${ANCHOR_MAX_NET_ADJ_PCT}% net adjustment, within ${COMP_RADIUS_MILES} mile of the subject (where the report does not state a distance, the subject's ZIP ${normZip(subjectZip) || '—'} is used instead). ${detail}. Ask the appraiser for a qualifying comp, or resolve this finding if EMCAP accepts the file as-is.`,
     actions: ['acknowledge', 'dismiss', 'request_revision'] });
 }
 
@@ -149,6 +190,9 @@ function computeEmcapFindings(input) {
   const comps = (i.comps || []).map((c) => ({
     seq: c.seq, compSet: c.comp_set || 'unknown', zip: c.zip, saleDate: c.sale_date,
     netAdjPct: c.net_adj_pct, netAdjustment: c.net_adjustment, salePrice: c.sale_price, saleStatus: c.sale_status,
+    // The appraiser's own stated distance to the subject ("0.55 miles SW"), which
+    // is the requirement itself — the ZIP was only ever standing in for it.
+    proximity: c.proximity,
   }));
   const fields = a.fields && typeof a.fields === 'object' ? a.fields : {};
   const fieldVal = (k) => (fields[k] && fields[k].value != null ? fields[k].value : null);
@@ -159,7 +203,8 @@ function computeEmcapFindings(input) {
   const shared = { submittedDate: i.submittedDate || null, subjectZip: a.subject_zip };
   const gridComps = (set) => comps.filter((c) => c.compSet === set)
     .map((c) => ({ seq: c.seq, comp_set: c.compSet, zip: c.zip, saleDate: c.saleDate,
-      netAdjPct: c.netAdjPct, netAdjustment: c.netAdjustment, salePrice: c.salePrice, saleStatus: c.saleStatus }));
+      netAdjPct: c.netAdjPct, netAdjustment: c.netAdjustment, salePrice: c.salePrice, saleStatus: c.saleStatus,
+      proximity: c.proximity }));
   const asIsComps = gridComps('as_is');
   const arvComps = gridComps('arv');
   const unknownComps = comps.filter((c) => c.compSet === 'unknown');
@@ -283,7 +328,7 @@ async function syncNoteBuyerFindings(db, appId) {
     let desired = [];
     if (app && apr && registry.isEmcapNoteBuyer(app.lender)) {
       const comps = (await db.query(
-        `SELECT seq, comp_set, zip, sale_date, net_adj_pct, net_adjustment, sale_price, sale_status
+        `SELECT seq, comp_set, zip, sale_date, net_adj_pct, net_adjustment, sale_price, sale_status, proximity
            FROM appraisal_comparables WHERE appraisal_id = $1 AND is_subject = false ORDER BY seq`, [apr.id])).rows;
       const units = (await db.query(
         `SELECT count(*)::int AS n FROM appraisal_units WHERE appraisal_id = $1 AND market_rent IS NOT NULL`, [apr.id])).rows[0];
