@@ -424,6 +424,36 @@ router.post('/files/:appId/orders/:orderId/deliver', fileScope, async (req, res,
         });
       }
 
+      // AND SO DOES A WRITE-BACK THAT SIMPLY DID NOT HAPPEN — which is the failure mode
+      // that does not announce itself. `pushApprovalsToSitewire` reports several outcomes
+      // that are NOT errors and yet mean the figures are not on the draw: nothing tied to
+      // this file's job items, no approved amounts to write, a switch turned off, a dry
+      // run that deliberately sent nothing. Treating "no error" as "go ahead" would then
+      // deliver findings built from a draw still holding NULL approvals — which
+      // `fetchDrawFindings` reads as "the inspector has not answered", so the borrower
+      // would be shown an accept page saying exactly that about an inspection that is
+      // finished. Only two outcomes may proceed: we wrote the figures just now, or a
+      // previous run already did and nothing has changed since.
+      //
+      // NOTE `wb.written > 0` — `ok` ALONE IS NOT ENOUGH, and this is the case the test
+      // caught rather than the one that was designed for. A run whose every line names a
+      // job item that is not on this draw returns a perfectly successful `{ok:true,
+      // written:0}` with each line reported under `skipped`, because refusing outright
+      // would be wrong when SOME lines land. At the delivery gate, though, nothing landing
+      // is indistinguishable from the switch being off, so it must be refused the same way.
+      const landed = (wb.ok && !wb.dryrun && (wb.written || 0) > 0) || wb.skipped === 'already_written';
+      if (!landed) {
+        const unmatched = wb.ok || wb.skipped === 'no_lines_tied_to_this_file' || wb.skipped === 'no_results';
+        const why = wb.dryrun
+          ? 'Sitewire writing is in test mode, so the figures were built but not sent.'
+          : wb.skipped === 'sitewire_off' || wb.skipped === 'sitewire_writes_off'
+            ? 'Sitewire writing is switched off, so the figures could not be put on the draw.'
+            : unmatched
+              ? 'None of Trinity’s lines could be matched to this draw’s own budget lines, so there is nothing to put on it.'
+              : 'The figures could not be put on the Sitewire draw.';
+        return bad(res, 422, `${why} Nothing has been sent to the borrower.`);
+      }
+
       const out = await require('../sitewire/deliver-findings')
         .deliverFindings(req.appId, Number(o.sitewire_draw_id), { source: 'trinity' });
       await db.query(

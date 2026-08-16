@@ -258,6 +258,62 @@ const eq = (a, b, label) => ok(a === b, `${label} (got ${JSON.stringify(a)}, exp
     `SELECT count(*)::int AS c FROM notifications WHERE application_id=$1`, [a.id])).rows[0];
   eq(notes.c, 0, 'G4 and the borrower has not been notified of anything');
 
+  // ---- H2. "NOT AN ERROR" IS NOT THE SAME AS "IT LANDED" ---------------------------
+  //
+  // This is the failure mode that does not announce itself, and the reason the deliver
+  // route tests for a POSITIVE outcome rather than for the absence of `.error`. Several
+  // results are not errors and yet mean the figures are NOT on the draw. Delivering on
+  // one of them would build the borrower's findings from a draw still holding NULL
+  // approvals — which `fetchDrawFindings` reads as "the inspector has not answered this
+  // line", so a finished inspection would be presented to the borrower as an unanswered
+  // one. The route's rule is `(ok && !dryrun && written > 0) || skipped ===
+  // 'already_written'`; these assert every result it must refuse fails that test.
+  const notLanded = (r) => !((r.ok && !r.dryrun && (r.written || 0) > 0) || r.skipped === 'already_written');
+
+  // THE CASE `ok` ALONE WOULD HAVE LET THROUGH. Every line names a job item that is not
+  // on this draw, so the run succeeds, reports each line under `skipped`, and writes
+  // NOTHING — a perfectly successful result with nothing on the draw. `written > 0` is
+  // the only thing that tells the two apart, and this assertion is what found it.
+  const noTies = await writeback.pushApprovalsToSitewire(a.id, await reload(),
+    [{ sitewire_job_item_id: JID_ORPHAN, approved_cents: 500000, name: 'Deck' }]);
+  ok(noTies.ok, 'H2a a run whose lines are all off this draw still SUCCEEDS…');
+  eq(noTies.written, 0, 'H2b …having written nothing');
+  ok(notLanded(noTies), 'H2c so it must NOT read as a landed write-back');
+  // And a run with no crosswalk at all refuses before it starts.
+  const noCrosswalk = await writeback.pushApprovalsToSitewire(a.id, await reload(),
+    [{ sitewire_job_item_id: null, approved_cents: 500000, name: 'Trinity’s own line' }]);
+  eq(noCrosswalk.skipped, 'no_lines_tied_to_this_file', 'H2d nothing tied to OUR budget at all is refused up front');
+  ok(notLanded(noCrosswalk), 'H2e and does not read as landed either');
+
+  sitewireOn = false;
+  ok(notLanded(await writeback.pushApprovalsToSitewire(a.id, await reload(), RESULTS)),
+    'H2f Sitewire switched off does not read as a landed write-back');
+  sitewireOn = true;
+
+  const cfg2 = require('../src/config');
+  const realDry2 = cfg2.sitewireDryrun;
+  outboundOn = false; cfg2.sitewireDryrun = true;
+  const dryRun2 = await writeback.pushApprovalsToSitewire(a.id, await reload(),
+    [{ sitewire_job_item_id: JID_KITCHEN, approved_cents: 1050000, name: 'Kitchen' }]);
+  ok(dryRun2.ok, 'H2g a dry run reports ok…');
+  ok(notLanded(dryRun2), 'H2h …but must NOT read as landed — it deliberately sent nothing');
+  cfg2.sitewireDryrun = realDry2; outboundOn = true;
+
+  ok(notLanded(await writeback.pushApprovalsToSitewire(a2.id, await reload(), RESULTS)),
+    'H2i another file’s draw does not read as landed');
+  // The two that MAY proceed.
+  const landedNow = await writeback.pushApprovalsToSitewire(a.id, await reload(),
+    [{ sitewire_job_item_id: JID_KITCHEN, approved_cents: 1450000, name: 'Kitchen' }]);
+  ok(!notLanded(landedNow), 'H2j a real write reads as landed');
+  const alreadyThere = await writeback.pushApprovalsToSitewire(a.id, await reload(),
+    [{ sitewire_job_item_id: JID_KITCHEN, approved_cents: 1450000, name: 'Kitchen' }]);
+  eq(alreadyThere.skipped, 'already_written', 'H2k an unchanged re-run reports already_written');
+  ok(!notLanded(alreadyThere), 'H2l which DOES read as landed — the figures are on the draw');
+  // The route must actually apply this rule, not just have it available.
+  const routeSrc = require('fs').readFileSync(require.resolve('../src/routes/trinity'), 'utf8');
+  ok(/already_written/.test(routeSrc) && /wb\.ok\s*&&\s*!wb\.dryrun\s*&&\s*\(wb\.written\s*\|\|\s*0\)\s*>\s*0/.test(routeSrc),
+    'H2m and the deliver route gates on that positive test, never on the absence of an error');
+
   // ---- H. the timeline records when the figures landed -----------------------------
   // Trinity has no history endpoint (db/555), so this is the only record of the
   // sequence — and "when did the inspector's figures reach the draw?" is the question a
