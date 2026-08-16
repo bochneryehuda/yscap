@@ -26,6 +26,7 @@
 
 const db = require('../db');
 const client = require('./client');
+const eligibility = require('./eligibility');
 
 // The same reading of "the borrower actually submitted this" the physical program
 // already uses — a drafting/pending-borrower draw is not ready to inspect.
@@ -57,12 +58,24 @@ async function orderForPortalRequest(appId, portalRequestId) {
  * A draw submitted in SITEWIRE on a physical non-Blue-Lake file: mint the order record
  * (once) and place it.
  *
- * `platform` is resolved by the caller once per file, exactly as the TrustPoint intake
- * receives it, so this never re-resolves mid-poll.
+ * The file's routing is resolved by the caller once per file, exactly as the TrustPoint
+ * intake receives it, so this never re-resolves mid-poll. It arrives as
+ * `{platform, method, resolved}` — the shape `routing.resolveFilePlatform` returns —
+ * and `eligibility.isTrinityFile` is the ONE reader of it.
+ *
+ * THIS BRANCH WAS UNREACHABLE UNTIL 2026-08-16. It asked for `platform === 'trinity'`,
+ * a value `routing.platformOf` cannot produce (its only answers are 'sitewire',
+ * 'trustpoint' and 'external'), so a physical draw submitted through Sitewire on a
+ * non-Blue-Lake file silently never ordered an inspection. `platform` is still accepted
+ * for callers that pass the whole context positionally, but the DECISION now belongs to
+ * one shared, tested rule — see src/trinity/eligibility.js.
  */
-async function maybeOrderFromSitewire(appId, { drawId, status, platform } = {}) {
+async function maybeOrderFromSitewire(appId, { drawId, status, platform, method, resolved } = {}) {
   try {
-    if (platform !== 'trinity') return { skipped: 'not_trinity' };
+    const ctx = { platform, method, resolved };
+    if (!eligibility.isTrinityFile(ctx)) {
+      return { skipped: 'not_trinity', reason: eligibility.reasonNotTrinity(ctx) };
+    }
     if (!SUBMITTED_STATUSES.has(String(status || ''))) return { skipped: 'not_submitted' };
     if (!drawId) return { skipped: 'no_draw' };
 
@@ -95,4 +108,4 @@ async function maybeOrderFromSitewire(appId, { drawId, status, platform } = {}) 
   }
 }
 
-module.exports = { SUBMITTED_STATUSES, orderForPortalRequest, maybeOrderFromSitewire };
+module.exports = { SUBMITTED_STATUSES, orderForPortalRequest, maybeOrderFromSitewire, eligibility };
