@@ -365,6 +365,55 @@ async function offline() {
   ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, citizenship: 'Martian' }).error === 'invalid_field_value', '§26.5 invalid registry value → 422 invalid_field_value (moved BEFORE the upstream call)');
   ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5 }).status === 422 || sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5 }).ok === true, '§26.5 validateScenario returns a shaped result');
 
+  // 26) §27 STRICT INPUT VALIDATION — the silent-mispricing class (HTTP 200 with a wrong answer).
+  const G = { purpose: 'Purchase', value: 500000, loan: 375000, fico: 760, dscr: 1.25, propertyType: 'SingleFamily', state: 'NJ', countyFps: '34039' };
+  const vErr = (sc) => sm.validateScenario(sc).error;
+  ok(sm.validateScenario(G).ok === true, '§27 baseline scenario validates');
+  ok(vErr({ ...G, propertyType: 'Castle' }) === 'unknown_property_type', '§27.5 unknown property type → 422 (never priced as single-family)');
+  ok(vErr({ ...G, io: 'false' }) === 'non_boolean_value', '§27.6 string "false" boolean → 422 (never coerced to true)');
+  ok(vErr({ ...G, ltv: 50 }) === 'ltv_conflict', '§27.7 conflicting LTV (50% vs 75% calc) → 422');
+  ok(sm.validateScenario({ ...G, ltv: 75 }).ok === true, '§27.7 agreeing LTV (75) is accepted');
+  ok(vErr({ ...G, loan: 600000 }) === 'loan_exceeds_value', '§27.10 loan > value (LTV > 100%) → 422');
+  ok(vErr({ ...G, fico: 999 }) === 'out_of_range', '§27.10 FICO 999 → 422 out_of_range');
+  ok(vErr({ ...G, dscr: -1 }) === 'out_of_range', '§27.10 DSCR -1 → 422 (sign no longer stripped to +1)');
+  ok(vErr({ ...G, termYears: 17 }) === 'unsupported_term', '§27.8 17-year term → 422 unsupported_term');
+  ok(sm.validateScenario({ ...G, termYears: 15 }).ok === true, '§27.8 15-year term is accepted');
+  ok(vErr({ ...G, lockDays: 22 }) === 'unsupported_lock', '§27.8 22-day lock → 422 unsupported_lock');
+  ok(sm.validateScenario({ ...G, lockDays: 45 }).ok === true, '§27.8 45-day lock is accepted');
+  ok(vErr({ ...G, units: 4 }) === 'units_conflict', '§27.10 single-family + 4 units → 422 units_conflict');
+  ok(sm.validateScenario({ ...G, propertyType: 'Unit2_4', units: 3 }).ok === true, '§27.10 2–4 unit + 3 units is accepted');
+  ok(vErr({ ...G, value: '1e3' }) === 'invalid_number', '§27.10 exponent string "1e3" → 422 (not corrupted to 13)');
+  // strictNum preserves the sign; num (builder) no longer strips it.
+  ok(sm._internals.strictNum('-1') === -1 && sm._internals.strictNum('1e3') === undefined && sm._internals.strictNum('$500,000') === 500000, '§27.10 strictNum preserves sign, rejects exponent, tolerates currency');
+
+  // 27) §28.5 — an OMITTED boolean inherits the base default; an EXPLICIT value overwrites it.
+  const baseJson = require('../src/longterm/lenderprice/search-base.json');
+  const baseIO = baseJson.criteria ? baseJson.criteria.interestOnly : undefined;
+  const omit = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5 });
+  ok(omit.criteria.interestOnly === baseIO, '§28.5 omitted io inherits the base interestOnly default (not forced false)');
+  const expl = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, io: false });
+  ok(expl.criteria.interestOnly === false, '§28.5 explicit io:false is preserved');
+  const explT = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, io: true });
+  ok(explT.criteria.interestOnly === true, '§28.5 explicit io:true is preserved');
+
+  // 28) §27.4 — a second identical kickoff must NOT overwrite the first search's requestId.
+  const dupBody = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 });
+  const dk1 = lp._internals.storeKickoff('https://api.digitallending.com/x', dupBody, 'RID_FIRST');
+  const dk2 = lp._internals.storeKickoff('https://api.digitallending.com/x', dupBody, 'RID_SECOND');
+  ok(dk1 === dk2 && lp._internals.DISQ_STORE.get(dk1).requestId === 'RID_FIRST', '§27.4 identical kickoff keeps the FIRST requestId (no reset)');
+  const nullBody = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.33, prepayMonths: 60 });
+  const nk = lp._internals.storeKickoff('https://api.digitallending.com/x', nullBody, null);
+  lp._internals.storeKickoff('https://api.digitallending.com/x', nullBody, 'RID_LATE');
+  ok(lp._internals.DISQ_STORE.get(nk).requestId === 'RID_LATE', '§27.4 a missing requestId is later upgraded');
+
+  // 29) §28.2 — require-live-foundation gate refuses the static fallback (only when the flag is set).
+  ok(lp._internals.foundationLiveGate({ baseSource: 'fallback', smoSource: 'fallback' }) === null, '§28.2 gate is a no-op when LP_REQUIRE_LIVE_FOUNDATION is unset');
+  process.env.LP_REQUIRE_LIVE_FOUNDATION = '1';
+  ok(lp._internals.foundationLiveGate({ baseSource: 'live', smoSource: 'live' }) === null, '§28.2 gate passes a fully-live foundation');
+  const gated = lp._internals.foundationLiveGate({ baseSource: 'fallback', smoSource: 'live' });
+  ok(gated && gated.error === 'lp_foundation_not_live' && gated.http === 502, '§28.2 gate refuses a fallback foundation with a named 502');
+  delete process.env.LP_REQUIRE_LIVE_FOUNDATION;
+
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }
 

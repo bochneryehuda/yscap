@@ -193,14 +193,41 @@ async function price(req, res) {
   res.json(out);
 }
 
-// Shape a ready disqualified raw response into the compact per-lender/reason summary.
-function shapeDisqualified(raw, debug) {
-  const d = lp.parseDisqualified(raw);
+// §27.2 — shape a PARSED disqualified result into a paginated per-lender/reason summary that NEVER
+// silently drops data: the response carries the true totals, the returned counts, an explicit
+// `truncated` flag, and a `nextOffset` cursor so a caller can page through the whole set. `d` is a
+// lp.parseDisqualified(...) result (all lenders/items, untruncated). Caps are configurable.
+const LENDER_PAGE_MAX = Number(process.env.LP_DISQUALIFY_LENDER_PAGE_MAX || 500);
+const ITEM_PAGE_MAX = Number(process.env.LP_DISQUALIFY_ITEM_PAGE_MAX || 200);
+function clampInt(v, min, max, dflt) { const n = Math.floor(Number(v)); return isFinite(n) ? Math.min(Math.max(n, min), max) : dflt; }
+function shapeDisqualified(d, opts = {}) {
+  const limit = clampInt(opts.limit, 1, LENDER_PAGE_MAX, LENDER_PAGE_MAX);
+  const offset = clampInt(opts.offset, 0, Number.MAX_SAFE_INTEGER, 0);
+  const itemLimit = clampInt(opts.itemLimit, 1, ITEM_PAGE_MAX, ITEM_PAGE_MAX);
+  const all = Array.isArray(d.lenders) ? d.lenders : [];
+  const page = all.slice(offset, offset + limit);
+  let returnedItemCount = 0;
+  const lenders = page.map((g) => {
+    const items = (g.items || []).slice(0, itemLimit);
+    returnedItemCount += items.length;
+    return { lender: g.lender, investor: g.investor || null, lenderId: g.lenderId || null,
+      itemCount: g.itemCount, itemTruncated: (g.items || []).length > items.length, items };
+  });
+  const nextOffset = offset + page.length < all.length ? offset + page.length : null;
   const out = {
-    ready: true, lenderCount: d.lenderCount, itemCount: d.itemCount, reasonCount: d.reasonCount,
-    lenders: d.lenders.slice(0, 80).map((g) => ({ lender: g.lender, investor: g.investor || null, lenderId: g.lenderId || null, itemCount: g.itemCount, items: g.items.slice(0, 40) })),
+    ready: d.ready !== undefined ? d.ready : true,
+    lenderCount: d.lenderCount, itemCount: d.itemCount, reasonCount: d.reasonCount,
+    returnedLenderCount: lenders.length, returnedItemCount,
+    truncated: nextOffset != null || lenders.some((l) => l.itemTruncated),
+    page: { limit, offset, itemLimit, nextOffset },
+    lenders,
   };
-  return debug ? { disqualified: out, rawSummary: lp.summarizeRaw(raw) } : { disqualified: out };
+  return opts.debug ? { disqualified: out, rawSummary: opts.rawSummary || null } : { disqualified: out };
+}
+// Read pagination controls from a request (query on GET, body on POST).
+function pageOptsOf(req) {
+  const q = req.query || {}; const b = req.body || {};
+  return { limit: b.limit != null ? b.limit : q.limit, offset: b.offset != null ? b.offset : q.offset, itemLimit: b.itemLimit != null ? b.itemLimit : q.itemLimit };
 }
 
 // GET /disqualifications/:searchKey  (also POST with { searchKey }) — the POLL-ONLY status route.
@@ -217,7 +244,8 @@ async function disqualifications(req, res) {
     message: 'No kickoff found for this searchKey (it may have expired). Re-run POST /price to start the ineligible calculation, then poll the searchKey it returns.' });
   if (!pr.ok) { const code = (pr.http && pr.http >= 500) ? 502 : 400; return res.status(code).json({ ok: false, error: pr.error, http: pr.http || null, message: pr.message, upstream: pr.upstream || pr.body || null }); }
   if (!pr.ready) { res.set('Retry-After', '2'); return res.status(202).json({ ok: true, ready: false, searchKey, retryAfterMs: 2000, message: 'Ineligible results still computing — poll again shortly.' }); }
-  return res.json({ ok: true, ready: true, searchKey, ...shapeDisqualified(pr.raw, body.debug) });
+  const parsed = pr.parsed || lp.parseDisqualified(pr.raw);
+  return res.json({ ok: true, ready: true, searchKey, cached: !!pr.cached, ...shapeDisqualified(parsed, { debug: body.debug, rawSummary: pr.rawSummary, ...pageOptsOf(req) }) });
 }
 
 // POST /disqualify — body is a scenario (or { scenario }). Returns the QUALIFIED summary plus the
@@ -241,14 +269,8 @@ async function disqualify(req, res) {
     }
     if (rejectInvalidValues(pr.request, res)) return;
     if (!pr.ready) return res.status(202).json({ ok: true, ready: false, retryAfterMs: 2000, message: 'Disqualify reasons still computing — poll again shortly.' });
-    const d = lp.parseDisqualified(pr.raw);
-    const outp = {
-      ok: true, ready: true,
-      disqualified: { ready: true, lenderCount: d.lenderCount, itemCount: d.itemCount, reasonCount: d.reasonCount,
-        lenders: d.lenders.slice(0, 80).map((g) => ({ lender: g.lender, investor: g.investor || null, lenderId: g.lenderId || null, itemCount: g.itemCount, items: g.items.slice(0, 40) })) },
-    };
-    if (body.debug) outp.rawSummary = lp.summarizeRaw(pr.raw);
-    return res.json(outp);
+    const shaped = shapeDisqualified(lp.parseDisqualified(pr.raw), { debug: body.debug, rawSummary: body.debug ? lp.summarizeRaw(pr.raw) : null, ...pageOptsOf(req) });
+    return res.json({ ok: true, ready: true, ...shaped });
   }
   const opts = {};
   if (body.maxWaitMs != null) opts.maxWaitMs = Math.min(Number(body.maxWaitMs) || 0, 100000);
@@ -257,28 +279,8 @@ async function disqualify(req, res) {
   if (!r.ok) return res.status((r.http && r.http >= 500) ? 502 : 400).json(priceErrorBody(r));
   if (rejectInvalidValues(r.request, res)) return;
   const qualified = trimPrograms(lp.parse(r.qualified));
-  const disq = lp.parseDisqualified(r.disqualified);
-  const out = {
-    ok: true,
-    ready: r.ready,
-    polls: r.polls,
-    message: r.message || null,
-    qualified,
-    disqualified: {
-      ready: disq.ready,
-      lenderCount: disq.lenderCount,
-      itemCount: disq.itemCount,
-      reasonCount: disq.reasonCount,
-      lenders: disq.lenders.slice(0, 80).map((g) => ({
-        lender: g.lender,
-        investor: g.investor || null,
-        lenderId: g.lenderId || null,
-        itemCount: g.itemCount,
-        items: g.items.slice(0, 40),
-      })),
-    },
-  };
-  if (body.debug) out.rawSummary = lp.summarizeRaw(r.disqualified);
+  const shaped = shapeDisqualified(lp.parseDisqualified(r.disqualified), { debug: body.debug, rawSummary: body.debug ? lp.summarizeRaw(r.disqualified) : null, ...pageOptsOf(req) });
+  const out = { ok: true, ready: r.ready, polls: r.polls, message: r.message || null, qualified, ...shaped };
   res.json(out);
 }
 
