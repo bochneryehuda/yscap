@@ -14,7 +14,7 @@
 const express = require('express');
 const lp = require('../lenderprice/client');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
-const { REGISTRY_WARNINGS, validateScenario } = require('../lenderprice/search-model');
+const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario } = require('../lenderprice/search-model');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
 const BATTERY = [
@@ -65,7 +65,13 @@ function effectiveOf(payload) {
   const a = p.address || {};
   return {
     loanPurpose: c.loanPurpose, purchasePrice: c.purchasePrice, appraisedValue: c.appraisedValue,
-    cashoutAmount: c.cashoutAmount, // the vendor-fixed numeric criteria field (audit) — shown so a caller can verify it was sent
+    // §32.2 — cash-out amount is FAIL-CLOSED: the live capture carried no legitimate vendor field, so
+    // it is retained internally but NOT transmitted. `criteria.cashoutAmount` is ALWAYS absent (it is
+    // never set — even the operator escape hatch LP_CASHOUT_AMOUNT_FIELD writes a dynamic property, not
+    // this criteria field), so `cashoutAmount` here is always undefined; `cashoutAmountInternal` is the
+    // received value we deliberately did not price, shown for transparency.
+    cashoutAmount: c.cashoutAmount,
+    cashoutAmountInternal: payload[CASHOUT_INTERNAL] != null ? payload[CASHOUT_INTERNAL] : undefined,
     loanAmount: c.loanAmount, ltv: c.ltv, fico: c.fico, dscr: c.dscr,
     // §32.3 — the derived DSCR band token actually transmitted (dynamicPropertiesMap.DSCRRATIO), so a
     // caller can confirm the reviewed threshold table was applied to the entered DSCR.
@@ -129,19 +135,29 @@ function rejectInvalidRequest(sc, res) {
   return false;
 }
 
-// Cash-out amount ("cash in hand") transparency — so it's never SILENTLY handled. THE VENDOR FIXED
-// THE FIELD: the frontend now sends a numeric `criteria.cashoutAmount` (post-repair capture
-// 2026-08-16), so we transmit it there too. Returns null when no cash-out amount was supplied.
+// Cash-out amount ("cash in hand") transparency — so it's never SILENTLY handled. §32.2 FAIL-CLOSED:
+// the clean live cash-out capture (2026-08-16) carried no legitimate vendor field, so the amount is
+// retained INTERNALLY but is NOT transmitted (see search-model.js) — this SUPERSEDES the earlier
+// "vendor fixed the field" note. The ONLY way it is transmitted is the DELIBERATE operator escape
+// hatch LP_CASHOUT_AMOUNT_FIELD (set once a new capture confirms a real field); `criteria.cashoutAmount`
+// is NEVER set either way. Returns null when no cash-out amount was supplied. Must agree with
+// effectiveScenario.cashoutAmountInternal in the same response.
 function cashoutNote(sc) {
   if (!sc || sc.cashoutAmount == null || sc.cashoutAmount === '') return null;
-  const legacyField = process.env.LP_CASHOUT_AMOUNT_FIELD;
+  const confirmedField = process.env.LP_CASHOUT_AMOUNT_FIELD;
+  if (confirmedField) {
+    return {
+      value: sc.cashoutAmount,
+      transmitted: true,
+      field: `dynamicPropertiesMap.${confirmedField}`,
+      note: `Retained internally AND transmitted under the operator-configured dynamic field dynamicPropertiesMap.${confirmedField} (LP_CASHOUT_AMOUNT_FIELD). criteria.cashoutAmount is never set.`,
+    };
+  }
   return {
     value: sc.cashoutAmount,
-    transmitted: true,
-    field: 'criteria.cashoutAmount',
-    note: legacyField
-      ? `Transmitted as the numeric criteria.cashoutAmount AND (legacy override) dynamicPropertiesMap.${legacyField}.`
-      : 'Transmitted to Lender Price as the numeric criteria.cashoutAmount (the vendor fixed the field; the frontend sends it too).',
+    transmitted: false,
+    field: null,
+    note: 'Retained internally but NOT transmitted (§32.2 fail-closed): the live cash-out capture carried no legitimate vendor field, so PILOT does not invent or transmit one. Set LP_CASHOUT_AMOUNT_FIELD only once a new capture confirms a real field.',
   };
 }
 
