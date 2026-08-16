@@ -1,8 +1,8 @@
--- 556_appraisal_payment_company_card.sql
+-- 563_appraisal_payment_company_card.sql
 --
 -- WIDEN THE RECORDED PAYMENT INSTRUCTION TO COVER "PAY WITH OUR OWN CARD".
 --
--- db/555 wrote the CHECK from the owner's three ways (2026-08-16): the payment
+-- db/562 wrote the CHECK from the owner's three ways (2026-08-16): the payment
 -- link, the card on file, and a card typed in. On the same day, and from the same
 -- owner instruction read from the other end, the Richer Values A-to-Z audit
 -- (#1198) added a FOURTH that only exists there -- COMPANY_CARD, the card YS
@@ -23,12 +23,12 @@
 -- a real event into a confident "nothing here".
 --
 -- WIDENED IN PLACE, UNDER THE CONSTRAINT'S OWN NAME -- the db/527 lesson recorded
--- in CLAUDE.md. Re-adding it under a NEW name would leave db/555's name gone, and
+-- in CLAUDE.md. Re-adding it under a NEW name would leave db/562's name gone, and
 -- any later replay that re-asserted the narrow definition would fail against a
 -- COMPANY_CARD row and silently skip whatever followed it in that file. Here the
--- name is Postgres's own for db/555's inline column CHECK.
+-- name is Postgres's own for db/562's inline column CHECK.
 --
--- NO REPLAY HAZARD FROM db/555 ITSELF: its constraint is inline on a
+-- NO REPLAY HAZARD FROM db/562 ITSELF: its constraint is inline on a
 -- CREATE TABLE IF NOT EXISTS, so once the table exists that statement is skipped
 -- whole and the narrow CHECK is never re-added underneath us.
 --

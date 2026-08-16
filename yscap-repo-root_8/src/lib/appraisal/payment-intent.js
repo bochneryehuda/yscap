@@ -4,7 +4,7 @@
  *
  * `payment-options.js` says what the three ways ARE and what each one does at each
  * appraisal company; this reads and writes which one was actually chosen for a
- * given order (`appraisal_payment_intents`, db/555).
+ * given order (`appraisal_payment_intents`, db/562).
  *
  * IT NEVER CHARGES ANYTHING. Not one function here talks to a vendor. On Richer
  * Values — the only company whose payment calls we have — the CHARGE is performed

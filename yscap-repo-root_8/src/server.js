@@ -826,7 +826,7 @@ if (require.main === module) {
         require('./lib/dashboards/seed').seedDefaults()
           .catch((e) => console.error('[boot] dashboard seed failed:', e.message));
         // PREVIOUS AND FUTURE (owner-directed 2026-08-16): the appraisal became a
-        // first-class order on the Orders desk (db/557), so every file that already
+        // first-class order on the Orders desk (db/564), so every file that already
         // has a vendor appraisal order needs its desk row projecting — otherwise the
         // new order type would only ever appear on appraisals ordered from today.
         // Bounded per boot and self-draining (a file gains its row on the first pass

@@ -336,7 +336,7 @@ chosen is written down.
   order was meant to be paid: a saved card was the whole instruction, so "send them a
   link", "put it on the card on file" and "she's paying it herself" were
   indistinguishable and somebody had to go and ask, per order.
-  `appraisal_payment_intents` (db/555) is that instruction — one live row per order,
+  `appraisal_payment_intents` (db/562) is that instruction — one live row per order,
   who chose it, when, and who settled it. It is read ALONGSIDE the Orders-desk
   projection, never into it: the mirror recomputes that row from the vendors, and a
   human's decision must never live in something that is recomputed.

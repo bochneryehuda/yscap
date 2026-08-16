@@ -9,7 +9,7 @@
  * The vocabulary and the per-vendor capability are pinned purely by
  * `test-appraisal-payment-options-pure.js`. This is what a pure test cannot reach:
  *
- *   • db/555's columns and its CHECKs really exist and really accept the three
+ *   • db/562's columns and its CHECKs really exist and really accept the three
  *     methods — `payment-intent.js` reads through a swallowing catch, which is
  *     exactly how a phantom column reports a confident, permanent "nothing here";
  *   • one live instruction per order, so changing your mind REPLACES rather than
@@ -72,7 +72,7 @@ const tag = `${process.pid}${Date.now()}`;
         WHERE table_name='appraisal_payment_intents'`)).rows.map((r) => r.column_name);
     for (const c of ['application_id', 'vendor', 'vendor_order_id', 'method', 'chosen_by',
       'chosen_at', 'note', 'performed_by', 'settled_at', 'settled_by', 'settled_note']) {
-      ok(cols.includes(c), `A: db/555 really has ${c}`);
+      ok(cols.includes(c), `A: db/562 really has ${c}`);
     }
     // The reader JOINs staff_users for the names it prints. That column has been
     // got wrong before in this repo (borrowers has no full_name), and here it

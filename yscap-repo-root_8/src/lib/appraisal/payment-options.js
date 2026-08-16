@@ -44,7 +44,7 @@
  * looked identical from the outside and someone had to go and ask.
  *
  * So every one of the three is a real, recordable INSTRUCTION (see
- * `appraisal_payment_intents`, db/555) whatever the vendor can do about it. On a
+ * `appraisal_payment_intents`, db/562) whatever the vendor can do about it. On a
  * vendor that can carry it out, pressing it carries it out. On a vendor that
  * cannot, pressing it writes down what a person decided so the back office reads
  * an instruction instead of guessing. Both are honest; neither is automatic.
