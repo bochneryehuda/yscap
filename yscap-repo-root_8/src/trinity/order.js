@@ -60,7 +60,20 @@ const DOC_GROUP = {
  * an inspector-approved draw still in flight has already spoken for that money, so
  * showing it as available would overstate what is left on the line.
  */
-async function budgetLines(appId) {
+async function budgetLines(appId, opts = {}) {
+  // THE DRAW BEING INSPECTED IS NOT ITS OWN HISTORY. `excludeDrawId` /
+  // `excludePortalRequestId` name the draw this order is for, and its money is left out
+  // of the historical sum — otherwise a draw that is already approved on our side when
+  // the inspection is ordered would be reported to the inspector BOTH as money already
+  // released AND as the amount being requested, which is the same dollars counted twice.
+  // It reads as "this line is 50% done, now give me the other 50%" on a line where
+  // nothing has been paid at all. Deliberately expressed as an EXCLUSION rather than a
+  // status test: what makes a draw not-history is that it is THIS one, not what state it
+  // happens to be in.
+  const exclDraw = opts.excludeDrawId != null && Number.isFinite(Number(opts.excludeDrawId))
+    ? Number(opts.excludeDrawId) : null;
+  const exclReq = opts.excludePortalRequestId != null && Number.isFinite(Number(opts.excludePortalRequestId))
+    ? Number(opts.excludePortalRequestId) : null;
   const rows = (await db.query(
     `SELECT l.sitewire_job_item_id, l.sow_line_key, l.name, l.budgeted_cents
        FROM sitewire_job_item_links l
@@ -76,7 +89,8 @@ async function budgetLines(appId) {
        FROM sitewire_draw_requests r
        JOIN sitewire_draws d ON d.sitewire_draw_id = r.sitewire_draw_id
       WHERE d.application_id = $1
-      GROUP BY r.sitewire_job_item_id`, [appId])).rows;
+        AND ($2::bigint IS NULL OR d.sitewire_draw_id <> $2::bigint)
+      GROUP BY r.sitewire_job_item_id`, [appId, exclDraw])).rows;
   const drawnBy = new Map(drawn.map((d) => [Number(d.jid), Number(d.c)]));
 
   // …PLUS the money THIS program has already approved that has not reached Sitewire yet.
@@ -105,9 +119,10 @@ async function budgetLines(appId) {
       WHERE p.application_id = $1
         AND p.status = 'approved'
         AND p.sitewire_draw_id IS NULL
+        AND ($2::bigint IS NULL OR p.id <> $2::bigint)
         AND l.value->>'sitewire_job_item_id' IS NOT NULL
         AND COALESCE(l.value->>'approved_cents', '') <> ''
-      GROUP BY l.value->>'sitewire_job_item_id'`, [appId])).rows;
+      GROUP BY l.value->>'sitewire_job_item_id'`, [appId, exclReq])).rows;
   for (const p of pending) {
     const jid = Number(p.jid);
     if (!Number.isFinite(jid)) continue;
@@ -221,7 +236,10 @@ async function placeOrder(appId, orderRowId, { staffId = null } = {}) {
 
   try {
     const ctx = await fileContext(appId);
-    const lines = await budgetLines(appId);
+    const lines = await budgetLines(appId, {
+      excludeDrawId: o.sitewire_draw_id,
+      excludePortalRequestId: o.portal_draw_request_id,
+    });
 
     // Fold this draw's requested amounts onto the budget lines.
     let requestedTotal = 0;

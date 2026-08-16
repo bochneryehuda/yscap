@@ -78,6 +78,28 @@ services:
         sync: false
       - key: LP_DIAG_TOKEN
         sync: false
+      # Trinity — the PHYSICAL inspection company we order draw inspections from on
+      # files whose note buyer is NOT Blue Lake. Dashboard-only (never in source), and
+      # the whole integration is INERT until the username + password are set: with no
+      # credentials nothing is attempted, no order is placed and no poll runs.
+      #
+      # The three ON/OFF switches (TRINITY_ENABLED, TRINITY_OUTBOUND_ENABLED,
+      # TRINITY_DRYRUN) are deliberately NOT listed here — they are flipped live on the
+      # API Health page without a deploy, and an env value listed here would only be
+      # their starting default.
+      - key: TRINITY_USERNAME
+        sync: false
+      - key: TRINITY_PASSWORD
+        sync: false
+      # Production host. Leave unset to use the default (api.trinityonline.com); set it
+      # only if Trinity gives us a different one for the live account.
+      - key: TRINITY_BASE_URL
+        sync: false
+      # Trinity's webhooks carry NO signature, so the receiver authenticates on a secret
+      # PATH token we choose and then re-reads every fact with an authenticated call.
+      # Generated here so it is never typed by hand or pasted into a chat.
+      - key: TRINITY_WEBHOOK_TOKEN
+        generateValue: true
       - key: INTAKE_API_KEY
         generateValue: true
       # 'auto' picks the provider from whatever credentials are present:
