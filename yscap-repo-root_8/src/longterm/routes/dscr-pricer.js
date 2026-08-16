@@ -45,6 +45,11 @@ const SUPPORTED_FIELDS = new Set([
   'propertyType', 'units', 'attachment', 'nonWarrantable', 'zip', 'state', 'county', 'countyFps', 'city', 'countyName',
   'borrowerType', 'prepayMonths', 'io', 'escrowWaive', 'fthb', 'date', 'rentalTerm', 'reservesMonths',
   'term', 'termYears', 'lockDays', 'cashoutAmount',
+  // §33.2/§33.3 — the two menu fields the builder used to hard-code (IncomeDocType always "DSCR",
+  // PrePayment_Plan_Type always "Standard"). Both carry the CONFIRMED live token sets; an
+  // unrecognized value is 422'd (invalid_income_doc_type / invalid_prepay_structure), never
+  // defaulted. prepayStructure is independent of prepayMonths.
+  'incomeDocType', 'prepayStructure',
   // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). Each maps to an
   // exact upstream path/token; an invalid VALUE for one is rejected as invalid_field_value (below).
   ...REGISTRY_FIELDS,

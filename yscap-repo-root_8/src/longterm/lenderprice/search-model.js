@@ -14,6 +14,10 @@
  */
 const BASE = require('./search-base.json');
 const registry = require('./field-registry');
+// §33.2/§33.3 — confirmed-token resolvers for the two menu fields the builder used to hard-code
+// (IncomeDocType was always "DSCR", PrePayment_Plan_Type always "Standard"). Bound locally so the
+// builder reads the same way as the other mapX helpers in this file.
+const { mapIncomeDocType, mapPrepayStructure, PREPAY_STRUCTURE_NULL } = registry;
 
 // Symbol channel for registry validation warnings (invalid enum values). Symbol-keyed properties
 // are skipped by JSON.stringify, so attaching this to the built payload never pollutes the body
@@ -442,12 +446,21 @@ function buildSearch(sc = {}, opts = {}) {
   // Dynamic properties are {fieldId, value} objects — set values in place.
   const dp = m.dynamicPropertiesMap || (m.dynamicPropertiesMap = {});
   const setDyn = (k, v) => { if (dp[k]) dp[k].value = v; else dp[k] = { fieldId: k, value: v }; };
-  setDyn('IncomeDocType', 'DSCR');
+  // §33.2 — INCOME DOCUMENTATION. The DSCR profile default is DSCR (audit §29.1/§35.3), forced when
+  // the caller omits it so a live foundation carrying a different doc type cannot silently override
+  // the profile. A caller MAY select any of the 25 CONFIRMED live menu values (label or exact token);
+  // an unrecognized value 422s rather than being priced as DSCR. §33.6 ordering: this is set BEFORE
+  // the DSCR ratio below, because selecting DSCR in the live UI resets the visible ratio.
+  setDyn('IncomeDocType', mapIncomeDocType(sc.incomeDocType) || 'DSCR');
   // §32.3 — DSCRRATIO band token, from the reviewed threshold table (dscrBand). Written only when a
   // DSCR was supplied; on omission it stays cleared to neutral (deleted above), never leaking a live
   // foundation's stale token. NOT derived by formatting the number — the tokens are captured.
   if (band) setDyn('DSCRRATIO', band.ratio);
   setDyn('AddlOccupancyType', mapRentalTerm(sc.rentalTerm));
+  // §33.4/§34.2 — BORROWER TYPE. Previously ANY string was passed straight through to the vendor as a
+  // vesting type; every other advanced enum 422s an unrecognized value, so this was the one silent
+  // substitution left in the borrower block. Validated against the exact six-value tenant enum
+  // (validateInputs rejects an unknown one before we get here); the profile default stays LLC.
   setDyn('GLOBAL_BorrowerType', sc.borrowerType || 'LLC');
   // Reserves — §32.4. The intentional DSCR profile default is 24 MONTHS (audit §1), forced when the
   // caller omits reserves so a live default carrying blank/different reserves cannot silently override
@@ -459,9 +472,21 @@ function buildSearch(sc = {}, opts = {}) {
   // to CLEAR PrepayTerm/PrePayment_Plan_Type to null on omission, changing the model the user left
   // alone). months===0 is an EXPLICIT "no prepay" (PrepayTerm "None"); a positive months sets the
   // term. Only write these when the caller actually supplied a prepay.
+  // §33.3 — the STRUCTURE is an INDEPENDENT input from the term. "No Prepay" (a null plan value) is
+  // NOT the same operation as PrepayTerm "None" (which produces the No PPP SMO), so an explicit
+  // structure is honored on its own: it may be supplied with or without a term, and it overrides the
+  // Standard default a term alone implies. Unrecognized values 422 (validated in validateInputs).
+  const structure = mapPrepayStructure(sc.prepayStructure);
   if (months != null) {
     setDyn('PrepayTerm', months === 0 ? 'None' : `${months} Months`);
-    setDyn('PrePayment_Plan_Type', months === 0 ? null : 'Standard');
+    // A caller-supplied structure wins; otherwise a positive term implies the Standard default and
+    // an explicit no-prepay term carries the null plan.
+    setDyn('PrePayment_Plan_Type', structure != null
+      ? (structure === PREPAY_STRUCTURE_NULL ? null : structure)
+      : (months === 0 ? null : 'Standard'));
+  } else if (structure != null) {
+    // Structure supplied ALONE — write only the plan, leaving the live default's term untouched.
+    setDyn('PrePayment_Plan_Type', structure === PREPAY_STRUCTURE_NULL ? null : structure);
   }
   // Cash-out amount ("cash in hand") — §32.2 FAIL-CLOSED. A clean live cash-out capture (2026-08-16)
   // sent `criteria.loanPurpose="CashoutRefinance"` but its JSON contained NEITHER the numeric value
@@ -599,6 +624,22 @@ function validateInputs(sc = {}) {
     if (sc[f] != null && typeof sc[f] !== 'boolean') {
       return bad('non_boolean_value', f, `Field "${f}" must be a JSON boolean (true/false); got ${JSON.stringify(sc[f])}. A string is rejected rather than coerced.`);
     }
+  }
+  // §33.2/§33.3/§33.4 — confirmed-token enums. Each is REJECTED (422) when unrecognized rather than
+  // falling back to the profile default: silently pricing a bank-statement scenario as DSCR, an
+  // exotic prepay schedule as Standard, or an unknown vesting type as LLC is the exact
+  // silent-substitution class this connector exists to prevent.
+  if (sc.incomeDocType != null && sc.incomeDocType !== '' && mapIncomeDocType(sc.incomeDocType) == null) {
+    return bad('invalid_income_doc_type', 'incomeDocType',
+      `Unknown income documentation type ${JSON.stringify(String(sc.incomeDocType))}. Supported: ${Object.keys(registry.INCOME_DOC_TYPES).join(', ')}.`);
+  }
+  if (sc.prepayStructure != null && sc.prepayStructure !== '' && mapPrepayStructure(sc.prepayStructure) == null) {
+    return bad('invalid_prepay_structure', 'prepayStructure',
+      `Unknown prepayment structure ${JSON.stringify(String(sc.prepayStructure))}. Supported: ${Object.keys(registry.PREPAY_STRUCTURES).join(', ')}.`);
+  }
+  if (sc.borrowerType != null && sc.borrowerType !== '' && !registry.BORROWER_TYPES.has(String(sc.borrowerType))) {
+    return bad('invalid_borrower_type', 'borrowerType',
+      `Unknown borrower (vesting) type ${JSON.stringify(String(sc.borrowerType))}. Supported: ${Array.from(registry.BORROWER_TYPES).join(', ')}.`);
   }
   // Strict numerics + ranges. Returns { v } (value or null) or { err }.
   const numField = (field, opts = {}) => {
