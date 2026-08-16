@@ -1344,3 +1344,32 @@ model LtPpePriceLimit {
   @@unique([scope, versionId], map: "lt_ppe_price_limit_version_uk")
   @@map("lt_ppe_price_limit")
 }
+
+model LtPpeFinding {
+  id             String    @id @default(uuid()) @db.Uuid
+  scope          String    @default("company")
+  findingKey     String    @map("finding_key")
+  investor       String?
+  program        String?
+  programId      String?   @map("program_id") @db.Uuid
+  scenario       String?
+  scenarioFacts  Json?     @map("scenario_facts") @db.JsonB
+  kind           String
+  diff           Json      @default("{}") @db.JsonB
+  ourPayload     Json?     @map("our_payload") @db.JsonB
+  theirPayload   Json?     @map("their_payload") @db.JsonB
+  status         String    @default("open")
+  regressed      Boolean   @default(false)
+  recurrence     Int       @default(1)
+  firstSeenAt    DateTime? @map("first_seen_at") @db.Timestamptz(6)
+  lastSeenAt     DateTime? @map("last_seen_at") @db.Timestamptz(6)
+  decidedBy      String?   @map("decided_by") @db.Uuid
+  decidedAt      DateTime? @map("decided_at") @db.Timestamptz(6)
+  decisionReason String?   @map("decision_reason")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([scope, findingKey], map: "lt_ppe_finding_scope_key_uk")
+  @@index([scope, status], map: "lt_ppe_finding_status_idx")
+  @@map("lt_ppe_finding")
+}
