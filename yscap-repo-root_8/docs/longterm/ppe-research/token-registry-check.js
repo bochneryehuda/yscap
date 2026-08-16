@@ -224,6 +224,25 @@ async function login() {
   const vendor = publishedEnums(JSON.parse(text));
   L(`vendor registry read: ${(text.length / 1024).toFixed(0)} KB, ${vendor.size} enum fields published\n`);
 
+  // `--snapshot` refreshes the committed copy that the OFFLINE guard
+  // (scripts/test-lt-lp-vendor-tokens-pure.js) checks our tables against on every `npm test`. This
+  // check needs live credentials, so without a snapshot nothing stops an invented token being added
+  // tomorrow by someone who never runs it. Refreshing it is a DELIBERATE act with a diff to read —
+  // never automatic, because a silently-updated snapshot would rubber-stamp a vendor change we have
+  // not looked at.
+  if (process.argv.includes('--snapshot')) {
+    const out = {
+      _comment: 'GENERATED — do not hand-edit. Refresh with: node docs/longterm/ppe-research/token-registry-check.js --snapshot',
+      _source: 'GET /rest/v1/lp-ppe-integration/company/config/{companyId}, Accept: application/json-no-enum',
+      _readAt: new Date().toISOString().slice(0, 10),
+      _fields: vendor.size,
+      values: Object.fromEntries([...vendor.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) => [k, [...v]])),
+    };
+    const file = path.join(__dirname, 'vendor-token-registry.json');
+    require('fs').writeFileSync(file, JSON.stringify(out, null, 2) + '\n');
+    L(`snapshot written: ${path.relative(ROOT, file)} (${vendor.size} fields)\n`);
+  }
+
   let wrong = 0, checked = 0, uncheckable = 0;
   const gaps = [];
   for (const f of FAMILIES) {

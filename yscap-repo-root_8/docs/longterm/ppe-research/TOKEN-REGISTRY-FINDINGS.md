@@ -6,7 +6,28 @@ tells us when they do.
 
 ```
 LP_USERNAME=… LP_PASSWORD=… LP_CLIENT_SECRET=… node docs/longterm/ppe-research/token-registry-check.js
+LP_… node docs/longterm/ppe-research/token-registry-check.js --snapshot   # refresh the committed copy
 ```
+
+### The live check is the authority; the offline guard is what makes it stick
+
+The check above needs credentials and a network, so it runs when somebody remembers to run it —
+which is no protection at all against an invented token added the next day. So the registry is also
+**committed as `vendor-token-registry.json`** (75 fields, with the date it was read), and
+`scripts/test-lt-lp-vendor-tokens-pure.js` checks our tables against it **on every `npm test`**, with
+no credentials.
+
+The two are not redundant. The offline guard can only ever say *"nothing we emit was invented as of
+the day the snapshot was taken"*; it cannot notice the vendor **adding or retiring** a value. Only
+the live check can. Refreshing the snapshot is deliberate (`--snapshot`, with a diff to read) and
+never automatic — a silently-updated snapshot would rubber-stamp a vendor change nobody looked at.
+
+The guard **refuses to judge rather than pass** when the snapshot is missing, truncated, or has lost
+the field a table maps to: reporting "0 unpublished values" out of an empty set is exactly how a
+broken check reads like a clean one. Five sabotages were run against it — an invented reserves
+token, `4+` put back as a late count, a made-up citizenship, an emptied snapshot, and one field
+quietly dropped from the snapshot — and each fails with a named assertion, with a green control on
+either side.
 
 ---
 
