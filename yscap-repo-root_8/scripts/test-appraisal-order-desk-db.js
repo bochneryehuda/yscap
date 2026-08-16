@@ -7,7 +7,7 @@
  * a pure test cannot reach:
  *
  *   • the desk row is really written, and the column's own CHECK accepts it
- *     (db/554 — a projection that writes a value the constraint refuses fails on a
+ *     (db/557 — a projection that writes a value the constraint refuses fails on a
  *     write nobody watches);
  *   • a HUMAN's work on that row — the assignment, the note, an agreed due date —
  *     survives every later projection. This is the property the whole named-column
@@ -69,7 +69,7 @@ const deskRow = async (appId) => (await db.query(
       'A3: an appraisal is given longer than a title search, because it takes longer');
     const def = (await db.query(
       `SELECT pg_get_constraintdef(oid) d FROM pg_constraint WHERE conname='file_orders_order_type_check'`)).rows[0];
-    ok(def && /appraisal/.test(def.d), 'A4: the column\'s own CHECK admits it (db/554)');
+    ok(def && /appraisal/.test(def.d), 'A4: the column\'s own CHECK admits it (db/557)');
   }
 
   // ===================================================================
