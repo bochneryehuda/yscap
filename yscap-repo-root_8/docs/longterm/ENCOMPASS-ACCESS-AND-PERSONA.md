@@ -87,6 +87,26 @@ scope and report what comes back. If the granted scope is wider than `lp`, the f
 to delete one line from `getToken` and nothing else. **This is a hypothesis, not a
 finding — it has not been tested against the live tenant.**
 
+### Candidate 4 is real, and ICE says so in the same document
+
+Worth quoting because it is the one recommendation that costs money, so it should not
+rest on our inference. The same matrix, on Encompass Docs Solution:
+
+> "A user's access to the Encompass Docs Solution document generation application is
+> determined by **the type of license purchased by their company** and their persona
+> settings."
+
+So **a purchased licence is a gate in its own right, alongside the persona** — ICE's
+framing, not ours. That is the precedent for treating the pricing/EPPS, secondary and
+lock-desk families as a contract question rather than a permissions one. It also says
+why no amount of admin rights will open them: the account is not what is missing.
+
+Two of those areas are additionally marked **"All Personas w/ Persona Permission"**
+rather than "Super Administrator Persona" — Secondary Setup ▸ Product and Pricing, and
+the EPPS Loan Program Table. Their stated minimum is **Administrator-Local**, which a
+Super Administrator exceeds, so this does not change the conclusion above; it is noted
+only so nobody re-derives it as a difference that matters.
+
 ### The one thing still missing, and how to get it
 
 Neither the earlier probe nor this review can say *which* gate closed *which*
