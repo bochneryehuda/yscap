@@ -125,6 +125,16 @@ function applyRegistry(m, sc) {
   // NOTE: `false` is sent as the off value; if a future capture shows the vendor's off token is
   // something else, change the representation here (one place).
   if (sc.mixedUse != null) setDyn(m, 'GLOBAL_MixedUse', !!sc.mixedUse);
+  // Confirmed-token dynamic flags. Unlike GLOBAL_MixedUse (a JSON boolean value), these three vendor
+  // flags carry a STRING "true"/"false" value — a confirmed live quirk, so do NOT copy the boolean
+  // shape: cross-collateral (§31.3), first-time investor + living-rent-free (§31.7). Omitted → inherit
+  // the live default; these are strict booleans (search-model BOOLEAN_FIELDS) so the value is a real
+  // boolean here. Cross-collateral's "false" off token is confirmed live (§31.3); the other two follow
+  // the same string pattern for explicit-off (change here in ONE place if a capture shows a different
+  // off token — mirrors the GLOBAL_MixedUse note above).
+  if (sc.crossCollateral != null) setDyn(m, 'GLOBAL_Cross_Collateralization_Product', sc.crossCollateral ? 'true' : 'false');
+  if (sc.firstTimeInvestor != null) setDyn(m, 'FirstTimeInvestor', sc.firstTimeInvestor ? 'true' : 'false');
+  if (sc.livingRentFree != null) setDyn(m, 'Global_Living_Rent_Free', sc.livingRentFree ? 'true' : 'false');
 
   // --- citizenship / tradelines ---
   if (sc.citizenship != null) { if (CITIZENSHIP.has(sc.citizenship)) setDyn(m, 'Citizenship', sc.citizenship); else bad('citizenship', sc.citizenship, CITIZENSHIP); }
@@ -179,7 +189,7 @@ const REGISTRY_FIELDS = [
   'selfEmployed', 'financedProperties', 'numberOfBorrowers', 'monthlyIncome', 'monthlyDebt', 'dti',
   'compensationType', 'waiveLenderFee', 'rural', 'mixedUse', 'citizenship', 'tradelines',
   'noMortgageHistory', 'bankruptcy', 'mortgageLates', 'foreclosure', 'shortSale', 'deedInLieu',
-  'chargeOff', 'forbearance',
+  'chargeOff', 'forbearance', 'crossCollateral', 'firstTimeInvestor', 'livingRentFree',
 ];
 
 module.exports = { applyRegistry, resolvePropertyType, PROPERTY_TYPES, REGISTRY_FIELDS,
