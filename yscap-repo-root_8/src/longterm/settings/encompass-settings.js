@@ -386,6 +386,16 @@ const SETTINGS = [
       'processor', 'lock_status', 'expected_closing',
     ],
     description: 'Which columns the long-term pipeline shows, in order.' },
+  { key: 'pipeline.inactiveFolders', group: 'Pipeline', label: 'Loan folders that mean the deal is over',
+    type: 'list', default: [],
+    description: 'Encompass loan folders whose files are finished — declined, withdrawn, trashed. '
+      + 'The pipeline opens on the live book and puts these one click away, in the same table. '
+      + 'A folder NOT on this list always counts as live, so leaving it empty (the default) '
+      + 'shows every file exactly as before.',
+    evidence: 'Folder names are this tenant\'s own and the endpoint that lists them answers 403, '
+      + 'so we cannot read them and must not guess: treating a folder called "Archive" as finished '
+      + 'on a hunch would silently empty part of an officer\'s pipeline. Until somebody types the '
+      + 'real names here, nothing is hidden from anybody.' },
 
   // ── The product switch (owner-directed 2026-08-14) ────────────────────────
   // "everybody should have a switch on his login to switch to the long-term side".

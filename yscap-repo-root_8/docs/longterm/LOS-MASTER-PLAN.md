@@ -996,11 +996,34 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     live one. Folder names are the TENANT'S OWN — this instance's list is one of the 68 endpoints
     the missing `encompass_admin` scope refuses (item 6), so we cannot read them and **must not
     guess**: treating a folder called "Archive" as dead would silently empty part of somebody's
-    pipeline on a hunch. The mechanism is already built and costs one setting once the names are
-    known — a `pipeline.inactiveFolders` list, an unlisted folder ALWAYS counting as live (fail
-    toward showing, like an unmapped milestone), and the pipeline defaulting to the live book
-    with the closed one one click away. **What is needed is the list of folder names and which of
-    them mean the deal is over.**
+    pipeline on a hunch.
+
+    **The mechanism is now BUILT — only the folder names are outstanding.** (An earlier draft of
+    this item said it was already built; it was not. `pipeline.inactiveFolders` existed nowhere.
+    It does now.) `src/longterm/pipeline-book.js` is the one definition of the split: the setting
+    `pipeline.inactiveFolders` on the Long-Term settings screen, an unlisted folder ALWAYS counting
+    as live (fail toward showing, like an unmapped milestone), a loan carrying NO folder counting
+    as live too, and the pipeline defaulting to the live book with **Live / Finished / Both** one
+    click away. Matching is forgiving about casing and spacing on both sides and nothing else — a
+    prefix match would let "Adverse" swallow "Adverse Action Withdrawn — Reinstated", which we
+    cannot check against a list we are not allowed to read.
+
+    **It ships INERT.** The setting's default is an empty list, and with it empty the query is
+    byte-identical to the one that ran before the split existed, every book selects the same rows,
+    and the control row is not drawn — three chips selecting identical rows is not a control. A
+    tenant that never answers this question cannot tell the feature shipped. Asking for the closed
+    book on a tenant that has named no folders is reported back on screen rather than silently
+    ignored, because a SHARED saved view could otherwise hand a desk an empty pipeline with no
+    control row to clear it with.
+
+    Guarded by `scripts/test-lt-pipeline-book-pure.js` and `-db.js`; six deliberate breakages of
+    the rule (an unlisted folder counted as finished, the folderless loan dropped out of both
+    books, the book filter applied to its own chip counts instead of lifted, the spacing collapse
+    dropped, the split turned on with nothing configured, a guessed folder name shipped as the
+    default) were each confirmed to turn both suites red.
+
+    **What is still needed is the list of folder names and which of them mean the deal is over** —
+    one answer from the owner, typed into one setting, no code change.
 
 ---
 

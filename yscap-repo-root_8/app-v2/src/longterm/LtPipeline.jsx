@@ -175,6 +175,10 @@ export default function LtPipeline() {
   const [stage, setStage] = useState('');
   // The second control row: '' (everyone's) | 'mine' | 'unassigned'.
   const [whose, setWhose] = useState('');
+  // Which book: 'live' (the default a desk works out of) | 'closed' | 'all'. The row
+  // is only DRAWN when the tenant has named folders that mean the deal is over — see
+  // `data.bookControl`.
+  const [book, setBook] = useState('live');
   const [views, setViews] = useState(null);
   const [activeView, setActiveView] = useState('');
   const [naming, setNaming] = useState(false);
@@ -197,10 +201,11 @@ export default function LtPipeline() {
       // queue by editing a URL.
       mine: whose === 'mine' ? 'true' : '',
       unassigned: whose === 'unassigned' ? 'true' : '',
+      book,
     })
       .then(setData)
       .catch((e) => setErr(e.message || 'Could not load the long-term pipeline.'));
-  }, [search, stage, whose, sortReq, dirReq]);
+  }, [search, stage, whose, book, sortReq, dirReq]);
 
   useEffect(() => {
     const t = setTimeout(load, search ? 250 : 0);
@@ -228,6 +233,9 @@ export default function LtPipeline() {
     // A saved "mine" is a flag, so a SHARED view of it means whoever opens it — which
     // is what makes "Mine, at underwriting" one view the whole desk can use.
     setWhose(f.mine ? 'mine' : f.unassigned ? 'unassigned' : '');
+    // A view with no opinion about the book opens on the default, not on whatever the
+    // last view left behind.
+    setBook(f.book || 'live');
   };
 
   const reloadViews = () => ltApi.views().then(setViews).catch(() => {});
@@ -242,6 +250,9 @@ export default function LtPipeline() {
     const filters = { search: search.trim(), stage };
     if (whose === 'mine') filters.mine = true;
     if (whose === 'unassigned') filters.unassigned = true;
+    // Only stored when it is NOT the default — a view saved today must not pin the
+    // desk to the live book if that default ever moves. The server drops it either way.
+    if (book !== 'live') filters.book = book;
     const out = await ltApi.saveView({ name, filters, shared })
       .catch((e) => ({ error: (e && e.message) || 'Could not save that view.' }));
     if (out && out.error) { setErr(out.error); return; }
@@ -364,6 +375,25 @@ export default function LtPipeline() {
           <Chip group="scope" on={whose === 'unassigned'} onClick={() => setWhose('unassigned')}
             label="Nobody yet" count={data.facets.unassigned}
             note="Files with no one on them — a closing or a wire is picked up off the queue, so they have to be findable" />
+        </div>
+      )}
+
+      {/* THE LIVE BOOK AND THE CLOSED ONE — §4.1's "inactive loans stay in it,
+          distinguished by status", so one table and a chip rather than an archive
+          screen. Drawn ONLY when the tenant has named folders that mean the deal is
+          over: with none named every chip selects identical rows, which is not a
+          control — the same reason the scope row above is hidden from somebody who
+          only ever sees their own files. */}
+      {data && data.bookControl && data.bookCounts && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+          <Chip group="book" on={book === 'live'} onClick={() => setBook('live')} label="Live"
+            count={data.bookCounts.live}
+            note="Everything still in play — a folder nobody has marked as finished always counts as live" />
+          <Chip group="book" on={book === 'closed'} onClick={() => setBook('closed')} label="Finished"
+            count={data.bookCounts.closed}
+            note="Declined, withdrawn or otherwise done — kept in the same table, one click away" />
+          <Chip group="book" on={book === 'all'} onClick={() => setBook('all')} label="Both"
+            count={data.bookCounts.all} />
         </div>
       )}
 
