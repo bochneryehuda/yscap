@@ -106,6 +106,16 @@ async function main() {
     ok(threw, 'runShadow requires ours + theirs');
   }
 
+  // ---- a scenario with no _label falls back to describeScenario -------------
+  {
+    const { results } = await S.runShadow([{ fico: 740, ltv: 70 }], {
+      ours: engine((s) => (s.ltv === 70 ? 9 : 0)),
+      theirs: engine(() => 0),
+    }, { priceToleranceMilli: 0 });
+    eq(results[0].scenario, 'fico=740 ltv=70', 'no _label -> describeScenario tag');
+    ok(results[0].findings[0].scenario === 'fico=740 ltv=70', 'finding carries the derived tag');
+  }
+
   // ---- empty batch ----------------------------------------------------------
   {
     const { results, summary } = await S.runShadow([], { ours: engine(() => 0), theirs: engine(() => 0) });

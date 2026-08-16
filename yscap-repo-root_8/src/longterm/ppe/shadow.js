@@ -20,13 +20,14 @@
  */
 
 const parity = require('./parity');
+const { describeScenario } = require('./scenario-matrix');
 
 const ERROR_KIND = 'engine_error';
 
 // Run one scenario through both engines and compare. Never throws — an engine failure becomes a
 // finding on that scenario.
 async function runOne(scenario, ours, theirs, opts) {
-  const tag = scenario && scenario._label ? scenario._label : parity.describeScenario(scenario);
+  const tag = scenario && scenario._label ? scenario._label : describeScenario(scenario);
   let a; let b;
   try {
     a = await ours(scenario);
