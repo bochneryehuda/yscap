@@ -46,28 +46,39 @@ overwrites before sending (`l.mortgageTypes = [lineResults.mortgageType]`).
 Also measured: `mortgageTypes: ["NonQM"]` → 500 (only the EMPTY array has been seen to work), and
 `fico` as a string or an array → 500 (only ABSENCE has been seen to work).
 
-## THE SHARPEST REMAINING LEAD
+## ANSWERED — the lead this file used to end on is closed
 
-**Their frontend does send `criteria.fico` as a plain number** — the bundle binds it to an input
-(`[(ngModel)]="search.criteria.fico"`) and sets it from `ficoScore.effectiveCreditScore`. So a
-numeric `fico` is unquestionably valid in a complete, correctly-shaped request, and it fails for us.
+This file previously ended with *"some OTHER field must accompany `fico`"* and asked for the
+frontend's captured payload. That payload was obtained, and the answer is not a companion field.
 
-That means **some OTHER field must accompany it** — one their frontend sets and we either omit or
-send differently, without which the credit-score path throws. Finding that field is the whole
-remaining task, and the captured payload names it immediately. Do not guess it: the wrong-user-id
-episode is what guessing costs.
+**The cause was that we were posting the wrong DOCUMENT.** `GET /pricing/defaultSearch` returns the
+company's CONFIGURATION model; the browser transforms it into a request before calling `searchRaw`.
+Our builder cloned it and posted it as the request — 8,576 bytes against the frontend's 6,808, 203
+structural differences, HTTP 500 every time. Bisected against the frontend's own body (posted
+verbatim as a control, HTTP 200) by applying our differences one at a time:
+`criteria.mortgageTypes` arrives **null** on the configuration model, and patching only that value
+turned the failing request into a 200.
 
-## What is still open
+**So the bisection recorded above was right about the symptom and wrong about the reading.** It saw
+that `mortgageTypes: []` alone failed, `fico` deleted alone failed, and both together returned a
+well-formed empty 200 — and concluded a companion field was missing. What was actually happening is
+that the whole document was wrong, and those two edits happened to move it toward a shape their
+parser could survive. The `fico`-must-be-absent inference in particular is FALSE of a real request:
+the frontend sends a numeric `fico` and prices, and so do we now.
 
-We can now get a 200, but not yet the 19 programs their frontend gets. Their working request is
-**6,805 bytes**; their `defaultSearch` template is 7,815 and our built body is 8,454 — so the
-frontend REMOVES roughly a thousand bytes of the template before sending, and we ADD to it.
+**`fico` is in fact REQUIRED and may not be null** — probed directly, on a body otherwise proven to
+price: `criteria.fico` set to null → 500, and REMOVED → 500. The full measured contract for every
+leaf is `SEARCHRAW-FIELD-CONTRACT.md`, generated from the raw probe results.
 
-**The one artifact that would close this in minutes** is the captured frontend payload: open Quick
-Pricer, DevTools → Network → the `searchRaw` request → Request Payload. Diff it against
-`buildSearch`'s output field by field, ignoring dates and request ids. Everything above was derived
-without it; this last step should not be guessed at, because a field-by-field diff against a known
--good body is exactly the evidence that ends the question.
+**Current state: pricing works.** 11 programs / 309 priced options / 8 lenders on the captured
+baseline scenario — identical to what the vendor's own website returns for the same deal. The
+remaining known deviation is the special-mortgage-option list (we substitute an id-less DSCR band
+option for the frontend's "Prepay Buyout"), which was MEASURED to make no difference to the result
+and is tracked as its own item rather than assumed harmless.
+
+**What generalises from this file:** every wrong conclusion in it came from reasoning about a
+measurement instead of re-measuring against a control that works. When the vendor answers with a
+bare status code and no message, get a body that prices and change it one field at a time.
 
 ## How to reproduce any of the above
 

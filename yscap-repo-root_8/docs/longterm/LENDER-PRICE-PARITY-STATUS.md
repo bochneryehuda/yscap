@@ -15,68 +15,80 @@ with accepted data types and defaults.
 
 ## 0. What is NOT code (needs a human — ops, vendor, or an owner decision)
 
-- **PRICING NEEDS ONE SETUP STEP AT LENDER PRICE — "Loan Officer Pricing
-  Configuration not setup" (measured live 2026-08-16, with the owner's written
-  authorization). THIS IS THE CURRENT BLOCKER, and it is neither a code bug nor a
-  credential problem.** It was found by fixing a real defect of ours first, so both
-  halves belong together:
+- ~~**PRICING NEEDS ONE SETUP STEP AT LENDER PRICE — "Loan Officer Pricing
+  Configuration not setup". THIS IS THE CURRENT BLOCKER.**~~ ~~**OUR DEFECT: the
+  pricing path needs the PPE user id.**~~ **BOTH RETRACTED, AND PRICING NOW WORKS
+  END TO END (measured 2026-08-16 against the live tenant).** Read this row before
+  re-opening any of it: two confident wrong answers were published here, and the
+  page said "current blocker" for both.
 
-  **OUR DEFECT: the pricing path needs the PPE user id, and we were sending the
-  login's.** There are TWO user identities behind this vendor — the login (the
-  Digital Lending Platform) issues one, and the pricing engine, a separate product
-  the platform SSOs into, has its own. Their platform exposes the mapping at
-  `GET /rest/v1/loanofficer/{dlpUserId}/ppe-user-link`. Sending the wrong id made
-  their service look up a loan officer that does not exist in it, and the call
-  behind that failed, which it relayed as `"message": "500 "` — a status code where
-  a sentence belongs, indistinguishable from an outage. **With the correct id the
-  identical request returns the real message above.** Now resolved and cached per
-  foundation TTL, falling back to the login's id if the lookup ever fails, so this
-  can never be worse than it was.
+  **What the vendor actually returns today, same credentials, same company, same
+  login user id:** HTTP 200 with **11 programs, 309 priced options and 8 lenders**
+  on the captured baseline scenario — leaf for leaf identical to what the vendor's
+  OWN website returns for that same deal. Real lenders and real rates (AD Mortgage
+  5.75, Bluepoint 5.99, Pennymac 6.00, Oaktree, American Heritage, ARC Home,
+  Deephaven, Champions). There is no setup step outstanding and there never was one.
 
-  **THEIR STEP: the loan officer's pricing configuration.** Someone at Lender Price
-  (or a company admin in their portal) has to complete it for this user before any
-  quote can return. Nothing on our side is waiting on us.
+  **The two retractions, and why each was wrong — both matter more than the fix.**
 
-  ~~PRICING IS DOWN AT LENDER PRICE'S END, AND IT IS NOT OUR REQUEST~~ — the
-  reasoning below is kept because it is how the above was found, and every
-  measurement in it still stands. What it could not see was that a *reasonless* 500
-  was itself the symptom of sending the wrong id. This is the current blocker
-  and the only thing on this page that stops a real quote. What was proven, in
-  order, against the live vendor:
+  1. **"Loan Officer Pricing Configuration not setup" was MANUFACTURED BY US.** That
+     sentence only ever appeared after we substituted the PPE user id into the path.
+     It means "no pricing configuration exists under the id you sent" — a statement
+     about the id in the URL, not about the account. Sending the login's id, which
+     is what the vendor's own bundle does, never produces it. An error message
+     quoted back as evidence is only evidence about the request that produced it.
+  2. **The PPE user id was never the fix.** The vendor's bundle calls
+     `searchRaw(userInfo.companyId, userInfo.userId, …)` — the LOGIN's id. The
+     substitution is removed and the login id is hard-pinned in `client.js` with a
+     do-not-change note. `LP_USE_PPE_USER_ID` remains, default OFF.
 
-  | step | result |
-  |---|---|
-  | `POST auth/oauth/token` password grant | **200** — access token, refresh token, companyId, userId |
-  | `grant_type=refresh_token` | **200**, four chained refreshes, each returning a fresh pair |
-  | `GET pricing/defaultSearch` | **200** |
-  | `GET pricing/smo` | **200** |
-  | `POST pricing/searchRaw/{companyId}/{userId}` | **500, every body** |
+  **THE REAL CAUSE, bisected against the live tenant.** `GET /pricing/defaultSearch`
+  returns the company's CONFIGURATION model; the browser TRANSFORMS it into a
+  request before calling `searchRaw`. Our builder cloned it and posted it as the
+  request whenever a live foundation was available — which is every time in
+  production. 8,576 bytes against the frontend's 6,808, 203 structural differences,
+  HTTP 500 on every scenario. Bisected to ONE leaf: `criteria.mortgageTypes` arrives
+  **null** on the configuration model, and patching only that value turned the
+  failing request into a 200.
 
-  **It is not our payload.** Lender Price's OWN `defaultSearch` model, posted back
-  to them completely unchanged, also returns 500. **It is not the wrong address:**
-  every other path tried returns 404 while this one returns 500, `GET` returns 405
-  and a null body returns 400 — the endpoint exists, is routed, and validates.
-  **It is not the token:** `GET pricing/smo` on the same host with the same bearer
-  returns 200 in the same run.
+  **Which is exactly why the table below reads as it does, and why it misled us.**
+  Posting their own `defaultSearch` back unchanged returning 500 was read as "it is
+  not our payload — it must be their outage". The opposite was true: their
+  `defaultSearch` is *not a payload*, and posting it back was the bug itself. Every
+  row in that table is still an accurate measurement; the CONCLUSION drawn from it
+  was wrong.
 
-  **The error text is the tell, and it differs by body.** A malformed body returns a
-  real parser error — `"null cannot be cast to non-null type
-  com.fasterxml.jackson.databind.node.ObjectNode"` — so our request is genuinely
-  parsed and understood. A WELL-FORMED body (theirs or ours) returns
-  `"message": "500 "`: a bare status code where a message belongs, which is what a
-  service does when a call it made DOWNSTREAM returned 500 and it stringified the
-  status. So the request reaches their pricing service and something behind it
-  fails.
+  | step | result then | result now |
+  |---|---|---|
+  | `POST auth/oauth/token` password grant | **200** | 200 |
+  | `grant_type=refresh_token` | **200**, chained ×4 | 200 |
+  | `GET pricing/defaultSearch` | **200** | 200 |
+  | `GET pricing/smo` | **200** | 200 |
+  | `POST pricing/searchRaw/{companyId}/{userId}` | **500, every body** | **200, 11 programs / 309 options** |
 
-  **The question to put to Lender Price**, with nothing to fix on our side until
-  they answer: *"Calls to `POST /rest/v1/lp-ppe-integration/pricing/searchRaw/{companyId}/{userId}`
-  return HTTP 500 with `"message": "500 "`, including when we post your own
-  `defaultSearch` response back unchanged. Login, `defaultSearch` and `smo` all
-  return 200 on the same token. Is PPE pricing enabled for this company/user, and
-  what is the downstream 500?"* Note this is not new — the audit's §25.7 recorded
-  all four of its fixtures returning an upstream 500, which is why the connector
-  already carries the re-login-and-retry recovery. The recovery is working
-  correctly; there is simply nothing on our side left to recover from.
+  **What was actually built (all with tests proven to fail without them):** the
+  request is now always built from the captured working request and a live model
+  contributes VALUES only, through a strict normalizer that refuses nulls, unknown
+  keys and wrong types (`mergeKnownRequestDefaults`); the five fields that define a
+  DSCR investor search are FORCED last, because a saved company preference was
+  measured turning `loanType` into ARM and `mortgageTypes` into FHA with no error;
+  validation and ZIP→county enrichment moved INSIDE `price()`, because the
+  shadow/canary path called it raw and was pricing a county-less location while the
+  real pricer priced a county-carrying one; and `DSCRRATIO` — a field NO captured
+  working request contains — is no longer sent, which was measured to be worth a
+  whole lender program (10 programs / 281 options before, 11 / 309 after).
+
+  **THE STANDING LESSON, which is the only part of this row that should outlive it:**
+  three separate confident conclusions were published from this page — "their
+  outage", "their setup step", "our user id" — and all three were wrong, each
+  drawn from a real measurement that did not support it. The one that finally held
+  came from posting a body PROVEN to work and changing it one field at a time. When
+  a vendor answers with a bare status code and no message, a control you can price
+  against is the only instrument that works.
+
+  **The measured field-by-field contract** — which values this endpoint refuses, and
+  in which way — is `docs/longterm/ppe-research/SEARCHRAW-FIELD-CONTRACT.md`,
+  generated from the raw probe results so it cannot drift from the measurement.
 
 - **Production API health.** The audit could not run live backend↔frontend
   comparisons because the deployed LT `/health` did not respond (the reboot →
