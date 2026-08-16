@@ -317,6 +317,136 @@ established for backups — a credential that cannot address another area cannot
   the ledger authorizes writes to exactly one identity table (`borrower_officers`).
 - **A borrower losing their files** — file visibility resolves through the same records it does today.
 
+## 6b. External validation — what the industry actually does, and where it disagrees with us
+
+Owner asked 2026-08-16 for validation against industry standards and against how Apple / Microsoft /
+Google / the US military would build this. The honest answer has three parts, and the first one is a
+challenge to this plan rather than support for it.
+
+### 6b.1 The pushback: the biggest companies would not split this repo
+
+**Google keeps ~2 billion lines in ONE repository. Meta does the same. Microsoft develops Windows in a
+single Git repo.** The published rationale is atomic cross-cutting change: one commit updates the API,
+its consumers and its tests together, and CI proves the whole thing. A polyrepo replaces that with N
+pull requests and a hope that versions stay aligned.
+
+**And "two deployables sharing one database" is the canonical microservices anti-pattern** — Sam
+Newman's rule is that a service owns its data; a shared schema produces hidden coupling and schema
+lock-in, and the classic failure mode is believing you have independent services when you have a
+*distributed monolith*.
+
+Both criticisms are real and neither should be waved away. Recorded here so nobody later discovers
+them and concludes the plan was made in ignorance.
+
+### 6b.2 Why the plan still holds — the three grounds, stated precisely
+
+**(a) We are not building microservices, and must never start pretending to.** The shape being built is
+two deployables over one governed data core — a *modular monolith with two deployment units*. The
+literature endorses exactly this below Fowler's "microservice premium" threshold (commonly cited around
+50–100 engineers): a single database transaction context, ACID guarantees, no sagas, no eventual
+consistency, no distributed transactions. The anti-pattern bites when independent teams on independent
+release cadences share a schema with no governance. Here the shared surface is **five column names and
+four foreign keys** (§6a.1), has a **single writer**, and is governed by a per-item written-authorization
+ledger that CI enforces. That is the opposite of an ungoverned shared schema.
+
+**(b) The split is on a product boundary the owner has already declared**, not an arbitrary one. The
+standard polyrepo criterion is independent product lines with different release cadences and different
+risk profiles. RTL is live with real borrowers; LT is a not-live side build. The 2026-08-02 law already
+states they are *"two different companies' software that happen to share one repository."*
+
+**(c) The classic monorepo argument assumes human developers, and this codebase is not built that way.**
+The literature's case for a monorepo rests on atomic refactors and shared tooling for people with IDEs.
+The constraint here is different: many AI agents working in parallel, each of which must load a **724 KB
+`CLAUDE.md`** and can physically reach every file in a **297 MB** repository. A repository boundary is
+the strongest available blast-radius containment and the largest available context reduction. That is a
+real 2026 justification the 2016 literature did not anticipate — and it is the owner's stated reason
+("fewer conflicts, less heavy, easier to manage").
+
+### 6b.3 The alternative, stated fairly
+
+**One repo, two deployables, path-filtered deploys** would deliver deploy isolation *and* keep atomic
+cross-cutting change *and* eliminate the schema-contract risk (R1) entirely, because both sides stay in
+one CI. Combined with affected-target test selection it would also fix the 892-step problem. It is what
+Google and Microsoft actually do.
+
+**It does not deliver** the context reduction, the hard agent containment, or the independent history —
+which are the owner's stated reasons. Recorded so the decision is informed, not so it is reopened.
+
+**Either way, do §6b.4(3): affected-target CI is worth doing on its own merits and is not a
+split/no-split question.**
+
+### 6b.4 The hardening to adopt — named practices, each answering a specific risk
+
+**1. Parallel Change (expand → migrate → contract) for every shared-schema change. [R1]**
+Martin Fowler's pattern, and the direct answer to "a rename breaks the other side": *never rename or
+drop in place.* Add the new column alongside the old, migrate both readers, and only then remove — the
+governing rule being **"never remove something until nothing depends on it."** Make this a written rule
+for every column in the identity contract, in the same class as the existing frozen-engine rules. Note
+the discipline it demands: a contract phase that never runs leaves the schema worse than before.
+
+**2. Consumer-driven contract testing with a `can-i-deploy` gate. [R1 — this supersedes my §6a proposal]**
+My original mitigation was a one-directional `information_schema` guard. The industry standard is
+stronger and bidirectional: the consumer (LT) publishes a contract describing exactly what it needs;
+the provider (RTL) *verifies* it on every build; and **neither side deploys unless the broker confirms
+the deployed pair is compatible.** Reported to catch several breaking deployments per month in real
+use. Adopt the shape — LT publishes, RTL verifies, both gate on it — whether or not the Pact tooling
+itself is used for a database contract.
+
+**3. Affected-target CI. [the 892-step problem]**
+Affected-only execution is documented as the single biggest lever on monorepo CI time — running 4
+packages instead of 45 beats any caching optimisation. Do this regardless of the split.
+
+**4. CODEOWNERS on the identity zone + a merge queue. [R1, and the conflicts pain]**
+Put the identity tables, the auth module and the shared editor behind CODEOWNERS so no change to the
+backbone can merge without a named human. This is also the separation-of-duties / two-person rule that
+defence-grade process requires, expressed in a tool the repo already has.
+
+**5. Progressive rollout and "roll back first, diagnose after." [R3, and the login unification]**
+Google SRE's canarying: a partial, time-limited deployment evaluated before full rollout — reported to
+catch the large majority of service-impacting issues before they reach everyone; and on unexpected
+behaviour, **roll back first and diagnose afterwards to minimise time-to-recovery.** Apply to the three
+moments this plan puts the live system at risk: RTL adopting the design package, the unified login, and
+the domain routing cut-over. Each behind a kill switch, in the style the repo already uses everywhere
+(`*_ENABLED` / `*_DISABLED`).
+
+**6. Supply-chain integrity on the design package — the "military-grade" part. [R3]**
+This is where the DoD/NIST answer is concrete rather than rhetorical. Once the live borrower portal
+depends on a package from another repo, that package is a **software supply chain**, and pinning a
+version is not sufficient on its own. NIST SSDF (the framework DoD software factories align to,
+alongside NIST 800-53 / 800-37 / 800-190) covers the lifecycle practices; SLSA covers build integrity
+and **provenance** — verifiable metadata about how an artifact was produced. Practically, in ascending
+order of cost: pin by **exact commit SHA, never a branch or a range**; require **signed commits** on the
+design repo; generate **build provenance** for the published package and verify it at install; keep an
+**SBOM**. The first two are cheap and should be day-one.
+
+**7. `git filter-repo` mechanics — the documented pitfalls. [R5]**
+It replays every commit keeping only the paths you name, so history survives for `git blame` and audit.
+Known traps to plan for: **branches and tags do not come across**; a folder that lived at **more than one
+path across history** needs explicit path-rename rules or those commits are silently dropped (relevant
+here — LT code has moved between layouts); and it requires **Git ≥ 2.22**. Do a dry run and diff the
+extracted tree against the original file-by-file before trusting it, and keep the copy-don't-delete rule
+(R5) as the real safety net.
+
+**8. Do not drift toward microservices. [the standing rule]**
+No event bus, no eventual consistency, no per-service schema, no saga, no sync job between the two
+sides. If someone later proposes one of those, that is the moment this design has changed shape and the
+trade-offs must be re-examined from §6b.1.
+
+### 6b.5 Gate reviews — the defence-grade framing
+
+The genuinely transferable military practice is not a technology, it is **defining the acceptance
+evidence for a phase before the phase starts**. For each phase in §7, write down beforehand what
+must be true to proceed, and do not proceed on judgement alone:
+
+| Phase | Evidence required before proceeding |
+|---|---|
+| 2 — contract + guard | The guard demonstrably FAILS when a depended-on column is removed (mutation-tested, the standard this repo already holds its own tests to) |
+| 3 — extract | Extracted tree diffed file-by-file against the original; LT boots and serves against the shared database; RTL unchanged with the router unmounted |
+| 4 — remove | LT has run standalone for the agreed soak with no identity-related defect; rollback rehearsed at least once |
+| 5 — design | LT on the package for the agreed soak; RTL adoption canaried, kill switch tested |
+| 6 — login | Old and new doors run in parallel (Parallel Change); rollout staged; session revocation and MFA verified on both |
+| 7 — routing | Switch verified in both directions with one session; both health endpoints green |
+
 ## 7. Phases
 
 ### Phase 1 — Consolidate the LT work (do first, urgent)
