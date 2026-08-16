@@ -250,7 +250,7 @@ const SETTINGS = [
     evidence: 'v1 attachment endpoints are being sunset in ICE release 26.3. Conditions only '
       + 'work correctly on v3. A few reads (loan associates) still only answer on v1.' },
 
-  // ── Stages (db/552) ───────────────────────────────────────────────────────
+  // ── Stages (db/553) ───────────────────────────────────────────────────────
   // Owner-directed 2026-08-14: "use the Encompass stages, but map those Encompass
   // stages to our own stages. We're not going to have, on the consumer side, all
   // stages from Encompass." The Encompass milestone is mirrored verbatim; these
@@ -301,7 +301,7 @@ const SETTINGS = [
     evidence: 'All 19 milestone names verified against the live tenant 2026-08-14 — db/547 '
       + 'matched live exactly, zero diffs.' },
 
-  // ── Access (db/552) ───────────────────────────────────────────────────────
+  // ── Access (db/553) ───────────────────────────────────────────────────────
   { key: 'access.roleScopes', group: 'Access', label: 'What each role sees',
     type: 'map',
     default: {
@@ -334,7 +334,7 @@ const SETTINGS = [
       + 'funders the entire book so they can pick work off the queue, which is a different '
       + 'question from who may decide whose book is whose.' },
 
-  // ── Contacts (db/552) ─────────────────────────────────────────────────────
+  // ── Contacts (db/553) ─────────────────────────────────────────────────────
   { key: 'contacts.roles', group: 'Contacts', label: 'Loan team roles we track',
     type: 'list',
     default: ['loan_officer', 'processor', 'underwriter', 'closer', 'funder', 'post_closer'],
@@ -377,7 +377,7 @@ const SETTINGS = [
     evidence: '10 of the 46 users on this tenant share change.me@email.com. Auto-matching on it '
       + 'would hand ten people each other\'s pipelines.' },
 
-  // ── Pipeline (db/552) ─────────────────────────────────────────────────────
+  // ── Pipeline (db/553) ─────────────────────────────────────────────────────
   { key: 'pipeline.columns', group: 'Pipeline', label: 'Pipeline columns',
     type: 'list',
     default: [

@@ -255,7 +255,7 @@ model LtLoan {
   milestoneId String? @map("milestone_id")
   milestone   LtEncompassMilestone? @relation(fields: [milestoneId], references: [milestoneId])
 
-  // ── The three stage layers (db/552, owner-directed 2026-08-14) ─────────────
+  // ── The three stage layers (db/553, owner-directed 2026-08-14) ─────────────
   // "we're going to use the Encompass stages, but we're going to map those
   //  Encompass stages to our own stages. We're not going to have, on the consumer
   //  side, all stages from Encompass."
@@ -870,7 +870,7 @@ enum LtLiabilitySection {
 }
 
 // =============================================================================
-// THE PIPELINE FOUNDATION (db/552)
+// THE PIPELINE FOUNDATION (db/553)
 //
 // Everything the long-term pipeline needs before a screen can exist: the
 // settings persistence, the Encompass roster and its mapping to PILOT people,

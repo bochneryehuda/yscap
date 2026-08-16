@@ -3,7 +3,7 @@
  * LONG-TERM — saved pipeline views.
  *
  * A view is a NAMED SET OF FILTERS, and that is all it is. The table has existed
- * since db/552 with nothing writing to it; this is the code.
+ * since db/553 with nothing writing to it; this is the code.
  *
  * ═══════════════════════════════════════════════════════════════════════════════
  * THE SECURITY PROPERTY, and the whole reason this file is short:

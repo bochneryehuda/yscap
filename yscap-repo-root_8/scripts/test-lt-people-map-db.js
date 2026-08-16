@@ -1,6 +1,6 @@
 'use strict';
 /**
- * LT test — the people map against a REAL database (db/552).
+ * LT test — the people map against a REAL database (db/553).
  *
  * The pure suite proves the POLICY. This proves the parts a pure suite structurally
  * cannot, and each one has already been a live bug on the RTL side:

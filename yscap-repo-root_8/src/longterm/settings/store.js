@@ -1,6 +1,6 @@
 'use strict';
 /**
- * LONG-TERM — the settings STORE (db/552 `lt_settings`).
+ * LONG-TERM — the settings STORE (db/553 `lt_settings`).
  *
  * `encompass-settings.js` has declared 44 settings in 10 groups, with OUR values
  * as their defaults and a `resolve(overrides)` that accepts overrides, since the
