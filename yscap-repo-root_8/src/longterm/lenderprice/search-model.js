@@ -349,18 +349,25 @@ const SCENARIO_OWNED = [
   // caller field (none today), so on every current DSCR scenario they are correctly 0.
   // FOOTGUN: these have NO re-apply path — so if you ever add a caller field for one, you MUST add its
   // re-apply AFTER this clear runs, or the caller's value will be silently zeroed. (Contrast dscr /
-  // ltv / fico, which ARE re-applied to criteria; and cashoutAmount, whose supplied value is retained
-  // on the internal Symbol channel and NEVER transmitted per §32.2 — not re-applied to criteria.)
+  // ltv / fico, which ARE re-applied to criteria; and cashoutAmount, which IS re-applied — see its
+  // entry below.)
   { path: 'criteria.subordinateLoanAmount', neutral: 0, why: 'second-lien amount — audit §31.6 leak example' },
   { path: 'criteria.lineAmount',            neutral: 0, why: 'line-of-credit amount' },
   { path: 'criteria.rehabBudget',           neutral: 0, why: 'rehab budget' },
   { path: 'criteria.drawAmount',            neutral: 0, why: 'construction draw amount' },
   { path: 'criteria.downPaymentAmount',     neutral: 0, why: 'down-payment amount' },
-  // Cash-out "cash in hand" — §32.2 FAIL-CLOSED. Neutral is ABSENT (delete the key): the amount is
-  // NEVER transmitted as a criteria field (the live capture carried no legitimate vendor field), so
-  // criteria.cashoutAmount must always be absent — cleared here and never re-applied. A supplied value
-  // is retained on the internal Symbol channel (buildSearch), and a stale one inherited from the
-  // foundation is removed here.
+  // Cash-out "cash in hand". Neutral is ABSENT (delete the key), so a stale amount inherited from a
+  // live foundation cannot leak onto a scenario that names none — and the CALLER'S amount is
+  // RE-APPLIED after the clear (buildSearch), which is the standing scenario-owned footgun: a field
+  // cleared to neutral and not re-applied is silently lost.
+  //
+  // THIS COMMENT SAID THE OPPOSITE UNTIL 2026-08-16, and the file it contradicted is the one the
+  // parity doc names as the authority on this field. It was written under the §32.2 FAIL-CLOSED
+  // reading — right while the only evidence was the frontend bug `dynamicPropertiesMap.undefined`,
+  // which is not a field name — and was not updated when §30.4's captured `criteria.cashoutAmount`
+  // reversed it. The amount IS transmitted, as a JSON number, on that captured key; the internal
+  // Symbol channel is retained alongside for diagnostics and can never disagree with it (both are
+  // written from the same variable). Full reasoning: scripts/test-lt-lp-cashout-pure.js.
   { path: 'criteria.cashoutAmount', neutral: DELETE, why: 'cash-out amount; cleared so a prior scenario cannot leak one, re-applied from the caller' },
   // §32.3 DSCR band token — a DYNAMIC property derived from the per-deal DSCR (dscrBand). It is
   // scenario-owned exactly like criteria.dscr, so a live foundation's stale DSCRRATIO must not leak

@@ -173,6 +173,90 @@ const grants = () => CALLS.map((c) => c.grant);
     ok(CALLS.length === 1, 'LADDER-6 …in exactly one request');
   }
 
+  // THE CARRY-OVER, EXERCISED END TO END ON A BARE TOKEN RESPONSE.
+  // LADDER-5 above cannot prove it: its refresh body already carries `companyId`, so the merge is
+  // never asked to carry anything. A pre-merge audit mutated the call site to `mergeRefreshed(null,
+  // rr)` — a plausible refactor — and the whole suite stayed green, while against a vendor whose
+  // refresh body is a bare token response the session would end with `companyId: null` and
+  // `priceFoundation` would answer `lp_no_ids`: pricing dead outright, which is WORSE than the
+  // static-fallback outcome the code comment predicts.
+  {
+    reset();
+    // The password login carries the identity a refresh body need not repeat.
+    RESPOND = () => ({ status: 200, body: tokenBody({ email: 'service@example.invalid' }) });
+    await lp.getSession();
+    CALLS.length = 0;
+    // A refresh response with NOTHING but the token pair — RFC 6749's minimum, and what an
+    // unobserved vendor may well send.
+    RESPOND = () => ({ status: 200, body: JSON.stringify({ access_token: 'T-BARE', refresh_token: 'R-BARE', expires_in: 3600 }) });
+    const s = await lp.getSession();
+    ok(s.token === 'T-BARE', 'CARRY-1 a BARE refresh response still renews the access token');
+    ok(s.companyId === 'c1' && s.userId === 'u1',
+      'CARRY-2 …and the company/user are CARRIED OVER — without this every foundation fetch answers lp_no_ids and pricing dies outright');
+    ok(s.profile && s.profile.email != null,
+      'CARRY-3 …as is the profile the password login established');
+  }
+
+  // THE RENEWAL IS ACTUALLY STORED — asserted by READING IT BACK, not from the return value.
+  // Every LADDER assertion above reads the value the call returned, so a mutation that returns the
+  // merged session WITHOUT caching it leaves the suite green — while in production every request
+  // would re-refresh with the SAME refresh token forever, and against a rotating-token server the
+  // second use is rejected, so it silently degrades to a password login on every renewal.
+  {
+    reset();
+    RESPOND = () => ({ status: 200, body: tokenBody({ refresh_token: 'R1' }) });
+    await lp.getSession();
+    CALLS.length = 0;
+    RESPOND = () => ({ status: 200, body: tokenBody({ access_token: 'T-STORED', refresh_token: 'R2', expires_in: 3600 }) });
+    await lp.getSession();
+    const again = await lp.getSession();          // still fresh → must be served from the cache
+    ok(again.token === 'T-STORED' && CALLS.length === 1,
+      'STORED-1 the renewed session is CACHED — a later call is served from it with no second request');
+    ok(I.authDiagnostics().renewedBy === 'refresh',
+      'STORED-2 …and the stored session records that the refresh grant renewed it');
+    // Force one more renewal: it must present the ROTATED token, proving the new one was stored and
+    // the old one is not being replayed.
+    CALLS.length = 0;
+    RESPOND = () => ({ status: 200, body: tokenBody({ access_token: 'T3', refresh_token: 'R3', expires_in: 60 }) });
+    await lp.getSession({ force: true });
+    ok(CALLS[0].refreshToken === 'R2',
+      'STORED-3 the NEXT renewal presents the ROTATED refresh token, never the spent original');
+  }
+
+  // The refresh LIFETIME is carried over too — a vendor that rotates the token without restating
+  // `refresh_expires_in` must not silently inherit "unknown" and lose the expiry it stated once.
+  {
+    reset();
+    RESPOND = () => ({ status: 200, body: tokenBody({ refresh_expires_in: 7 * 24 * 3600 }) });
+    const first = await lp.getSession();
+    const statedAt = first.refreshExpiresAt;
+    ok(typeof statedAt === 'number', 'EXP-1 a stated refresh lifetime is recorded');
+    RESPOND = () => ({ status: 200, body: JSON.stringify({ access_token: 'T9', refresh_token: 'R9', expires_in: 3600 }) });
+    const s = await lp.getSession();
+    ok(s.refreshExpiresAt === statedAt,
+      'EXP-2 …and survives a refresh response that does not restate it');
+  }
+
+  // The 500-recovery path must NOT reset the backoff — the code comment says so, and nothing tested it.
+  {
+    reset();
+    RESPOND = () => ({ status: 200, body: tokenBody() });
+    await lp.getSession();
+    RESPOND = (c) => (c.grant === 'refresh_token'
+      ? { status: 400, body: '{"error":"invalid_grant"}' }
+      : { status: 200, body: tokenBody({ expires_in: 60 }) });
+    await lp.getSession();
+    const blocked = I.authDiagnostics().refreshBackoff;
+    I.invalidateSession();                        // exactly what the upstream-500 recovery does
+    ok(I.authDiagnostics().refreshBackoff === blocked && blocked !== null,
+      'RECOVER-1 invalidateSession() does NOT clear the backoff — clearing it there re-arms a wasted rejected-refresh round trip on every upstream 500');
+    CALLS.length = 0;
+    RESPOND = () => ({ status: 200, body: tokenBody({ expires_in: 3600 }) });
+    const s = await lp.getSession({ force: true });
+    ok(s.ok === true && grants().join(',') === 'password',
+      'RECOVER-2 …and the recovery still performs a real PASSWORD login (there is no session to refresh from)');
+  }
+
   // A REJECTED refresh falls back to ONE password login — the developer's rule, and the property
   // that makes this safe to ship before the vendor confirms the grant.
   {
@@ -304,6 +388,42 @@ const grants = () => CALLS.map((c) => c.grant);
     const scrubbed = I.scrub('refresh_token=SECRET-REFRESH&password=' + process.env.LP_PASSWORD);
     ok(!/SECRET-REFRESH/.test(scrubbed) && !new RegExp(process.env.LP_PASSWORD).test(scrubbed),
       'SECRET-4 an error string carrying a refresh token or password is scrubbed before it can be logged');
+  }
+
+  // ---- THE DIAGNOSTIC MUST STILL TEST THE PASSWORD -------------------------
+  // `/login-check` exists to answer one question: do the credentials Render holds actually work?
+  // It used to read `getSession({ force: true })`, which was exactly right while a renewal could
+  // only ever BE a password login. The refresh grant changed that silently: `force` skips the
+  // freshness check, but the renewal ladder then picks the REFRESH grant, so on a long-running
+  // instance holding a warm session the check would answer 200 while the password was wrong,
+  // expired or locked at the vendor — and the README tells an operator to curl exactly this to
+  // verify credentials, so a green answer would be believed. Found by the pre-merge audit.
+  {
+    const route = require('../src/longterm/routes/dscr-pricer');
+    const call = async () => {
+      let body = null, status = 200;
+      const res = { status(c) { status = c; return this; }, json(b) { body = b; return this; } };
+      await route.handlers.loginCheck({ query: {} }, res);
+      return { status, body };
+    };
+    reset();
+    RESPOND = () => ({ status: 200, body: tokenBody() });
+    await lp.getSession();                       // a warm session, carrying a refresh token
+    CALLS.length = 0;
+    // The vendor now REJECTS the password but would happily honour the refresh token.
+    RESPOND = (c) => (c.grant === 'refresh_token'
+      ? { status: 200, body: tokenBody({ access_token: 'T-REFRESHED', expires_in: 3600 }) }
+      : { status: 401, body: '{"error":"invalid_grant"}' });
+    const bad = await call();
+    ok(bad.status === 502 && bad.body && bad.body.ok === false,
+      'LOGINCHECK-1 a REJECTED PASSWORD fails the check even while the refresh grant would succeed');
+    ok(grants().every((g) => g !== 'refresh_token'),
+      'LOGINCHECK-2 …because the check uses the password grant only — it must never be answered by a renewal');
+    CALLS.length = 0;
+    RESPOND = () => ({ status: 200, body: tokenBody({ expires_in: 3600 }) });
+    const good = await call();
+    ok(good.status === 200 && good.body.ok === true && good.body.grant === 'password',
+      'LOGINCHECK-3 a working password answers ok, saying WHICH grant proved it');
   }
 
   // The wrapper must actually CONSULT the rule — a pure decision nothing calls is decoration.

@@ -46,12 +46,24 @@ const AUTH_BASE = (process.env.LP_AUTH_BASE || 'https://auth.digitallending.com'
 const API_BASE = (process.env.LP_API_BASE || 'https://api.digitallending.com').replace(/\/+$/, '');
 const ORIGIN = (process.env.LP_ORIGIN || 'https://yscapgroup.digitallending.com').replace(/\/+$/, '');
 const CLIENT_ID = process.env.LP_CLIENT_ID || 'acme2';
-const TIMEOUT_MS = Number(process.env.LP_TIMEOUT_MS || 60000);
+// A MISCONFIGURED ENV MUST NEVER SILENTLY DISABLE A BOUND. `Number('15m')` is NaN, and every
+// comparison against NaN is false — so a knob typed with a unit suffix does not fall back to its
+// default, it turns the bound OFF, with nothing anywhere saying so. The pre-merge audit found this
+// on the refresh backoff (a NaN window read as "not blocked", so the grant was retried before every
+// renewal forever while the diagnostics reported no window open); it is the same class on every
+// numeric knob in this file, so it is fixed once, here. Same shape as search-model's `envRatio`.
+function envMs(name, dflt) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return dflt;
+  const n = Number(raw);
+  return (Number.isFinite(n) && n > 0) ? n : dflt;
+}
+const TIMEOUT_MS = envMs('LP_TIMEOUT_MS', 60000);
 // The disqualify poll's READY response is very large (~111 MB — the full failing-lender/rule tree),
 // so downloading + parsing it needs far longer than an ordinary price call. A still-computing poll
 // returns an empty body and comes back fast, so this longer timeout only ever applies to the ready one.
-const DISQUALIFY_TIMEOUT_MS = Number(process.env.LP_DISQUALIFY_TIMEOUT_MS || 240000);
-const REFRESH_EARLY_MS = Number(process.env.LP_REFRESH_EARLY_MS || 5 * 60 * 1000); // refresh 5 min early
+const DISQUALIFY_TIMEOUT_MS = envMs('LP_DISQUALIFY_TIMEOUT_MS', 240000);
+const REFRESH_EARLY_MS = envMs('LP_REFRESH_EARLY_MS', 5 * 60 * 1000); // refresh 5 min early
 const UA = process.env.LP_USER_AGENT ||
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36 Edg/151.0.0.0';
 
@@ -89,6 +101,14 @@ function scrub(s) {
   return out;
 }
 
+// Read a message off ANYTHING that was thrown. `e.message` alone throws its own TypeError on a
+// non-object (`throw undefined` / `throw 'boom'`), which turns a handled upstream failure into an
+// exception escaping the one function whose contract is that it never throws.
+function errText(e) {
+  if (e == null) return 'unknown error';
+  if (typeof e === 'string') return e;
+  return String((e && e.message) || e);
+}
 function basicClientAuthorization(clientId, clientSecret) {
   return `Basic ${Buffer.from(`${clientId}:${clientSecret}`, 'utf8').toString('base64')}`;
 }
@@ -134,7 +154,7 @@ async function login() {
       },
       body: form,
     });
-  } catch (e) { return { ok: false, error: 'lp_login_error', message: scrub(e.message) }; }
+  } catch (e) { return { ok: false, error: 'lp_login_error', message: scrub(errText(e)) }; }
 
   if (r.status === 401) {
     return { ok: false, error: 'lp_login_unauthorized', http: 401,
@@ -197,8 +217,8 @@ function sessionFromTokenBody(b, { now = Date.now() } = {}) {
 // The returned access token is OUTPUT, never configuration: it is held in memory for its hour and
 // replaced. Nothing here reads a token from a browser, a request header, or an env var — the only
 // inputs are the Render-held service credentials and the refresh token the vendor itself issued.
-const REFRESH_GRANT_BACKOFF_MS = Number(process.env.LP_REFRESH_BACKOFF_MS || 15 * 60 * 1000);
-const REFRESH_GRANT_BACKOFF_MAX_MS = Number(process.env.LP_REFRESH_BACKOFF_MAX_MS || 24 * 60 * 60 * 1000);
+const REFRESH_GRANT_BACKOFF_MS = envMs('LP_REFRESH_BACKOFF_MS', 15 * 60 * 1000);
+const REFRESH_GRANT_BACKOFF_MAX_MS = envMs('LP_REFRESH_BACKOFF_MAX_MS', 24 * 60 * 60 * 1000);
 
 // PURE — how long to stop asking for the refresh grant after N CONSECUTIVE rejections.
 //
@@ -235,7 +255,7 @@ async function refreshSession(refreshToken) {
       },
       body: form,
     });
-  } catch (e) { return { ok: false, error: 'lp_refresh_error', message: scrub(e.message) }; }
+  } catch (e) { return { ok: false, error: 'lp_refresh_error', message: scrub(errText(e)) }; }
 
   // 400 invalid_grant is the ORDINARY way an OAuth server says "that refresh token is spent or
   // revoked" — it is not an outage, and it is exactly the case the password fallback exists for.
@@ -379,7 +399,7 @@ const DEFAULTSEARCH_PATH = process.env.LP_DEFAULTSEARCH_PATH || '/rest/v1/lp-ppe
 const SMO_PATH = process.env.LP_SMO_PATH || '/rest/v1/lp-ppe-integration/pricing/smo';
 let _defaultSearch = null;   // { at, model, source, error } — source 'live'|'fallback', error is the live-fetch reason when it fell back
 let _smoRegistry = null;     // { at, map, source, error }
-const FOUNDATION_TTL_MS = Number(process.env.LP_FOUNDATION_TTL_MS || 30 * 60 * 1000);
+const FOUNDATION_TTL_MS = envMs('LP_FOUNDATION_TTL_MS', 30 * 60 * 1000);
 
 // ---- upstream-500 recovery: re-login + refetch + retry ONCE, with a breaker --
 // Lender Price sometimes represents a stale/unusable backend session (or a lost live-config fetch)
@@ -389,8 +409,8 @@ const FOUNDATION_TTL_MS = Number(process.env.LP_FOUNDATION_TTL_MS || 30 * 60 * 1
 // the live base/SMO, rebuild the body ONCE, and retry exactly ONCE. A 4xx is a deterministic
 // request-validation error and is NEVER retried (it would loop and hide the real reason). A breaker
 // caps 500-triggered relogins per window so repeated 500s can't cause a login storm.
-const RECOVERY_WINDOW_MS = Number(process.env.LP_RECOVERY_WINDOW_MS || 60000);
-const RECOVERY_MAX = Number(process.env.LP_RECOVERY_MAX || 3);
+const RECOVERY_WINDOW_MS = envMs('LP_RECOVERY_WINDOW_MS', 60000);
+const RECOVERY_MAX = envMs('LP_RECOVERY_MAX', 3);
 let _recoveryTimes = [];
 function breakerOpen() {
   const now = Date.now();
@@ -579,7 +599,7 @@ async function postSearchRaw(url, session, payload, opts = {}) {
 // on each poll (re-fetching the live base/SMO) risks a different body → a NEW upstream search that
 // is never ready. So we STORE the exact kickoff body under a stable searchKey and poll THAT.
 const DISQ_STORE = new Map(); // searchKey -> { body, url, createdAt, expiresAt }
-const DISQ_STORE_TTL_MS = Number(process.env.LP_DISQUALIFY_STORE_TTL_MS || 15 * 60 * 1000);
+const DISQ_STORE_TTL_MS = envMs('LP_DISQUALIFY_STORE_TTL_MS', 15 * 60 * 1000);
 const DISQ_STORE_MAX = 200;
 // Stable key for a search: sha256 of the canonical body with cachedDisqualified removed (the only
 // field that differs between kickoff and poll). Deterministic → the same scenario reuses one slot.
@@ -685,8 +705,8 @@ function hasDisqualifyData(raw) {
 // window elapses.
 async function priceDisqualified(scenario, opts = {}) {
   const build = (f) => buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo, disqualify: { cached: false } });
-  const maxWaitMs = opts.maxWaitMs != null ? opts.maxWaitMs : Number(process.env.LP_DISQUALIFY_MAX_WAIT_MS || 80000);
-  const pollMs = opts.pollMs != null ? opts.pollMs : Number(process.env.LP_DISQUALIFY_POLL_MS || 5000);
+  const maxWaitMs = opts.maxWaitMs != null ? opts.maxWaitMs : envMs('LP_DISQUALIFY_MAX_WAIT_MS', 80000);
+  const pollMs = opts.pollMs != null ? opts.pollMs : envMs('LP_DISQUALIFY_POLL_MS', 5000);
 
   // Phase 1 — kick off + qualified (through the 500 recovery: re-login + refetch + rebuild + retry once).
   const first = await searchRawWithRecovery(build);
@@ -1294,7 +1314,9 @@ function countArrays(root, keys) {
 async function pricingReadiness({ price: deep = false } = {}) {
   if (!configured()) return { pricingReady: false, reason: 'not_configured' };
   const s = await getSession();
-  if (!s.ok) return { pricingReady: false, auth: { ok: false, error: s.error, http: s.http || null, message: s.message } };
+  // The diagnostics ride the FAILURE branch too: `lastRenewal.fellBack` ("the refresh was rejected
+  // before this login failed") is invisible on the one health read where it explains the outage.
+  if (!s.ok) return { pricingReady: false, auth: { ok: false, error: s.error, http: s.http || null, message: s.message, ...authDiagnostics() } };
   const f = await priceFoundation();
   if (!f.ok) return { pricingReady: false, auth: { ok: true, expiresAt: new Date(s.expiresAt).toISOString() }, foundation: { ok: false, error: f.error, message: f.message } };
   const auth = { ok: true, expiresAt: new Date(s.expiresAt).toISOString(), companyId: f.companyId, ...authDiagnostics() };
