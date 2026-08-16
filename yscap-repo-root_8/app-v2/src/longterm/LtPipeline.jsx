@@ -1,16 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import ProductStamp from './ProductStamp.jsx';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
-
-const money = (v) => (v == null || v === '' ? '—'
-  : Number(v).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }));
-
-const day = (v) => {
-  if (!v) return '—';
-  const d = new Date(v);
-  return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-US') : '—';
-};
+// One definition of how a value is written down, shared with the file screen — two
+// screens drawing the same loans must not each carry their own idea of a date.
+import { money, pct, ratio, day } from './format.js';
 
 /**
  * A loan's lock, in one cell.
@@ -25,6 +20,25 @@ const day = (v) => {
  * itself says so — the file's own lock section is where that distinction is spelled
  * out, because a pipeline cell has no room for a sentence.
  */
+/**
+ * Days at the current milestone — or an honest blank.
+ *
+ * `milestone_days` is NULL whenever the loan was only baselined (the server refuses
+ * to age a first sighting), so this renders the reason rather than a dash a reader
+ * would take for "no time at all".
+ */
+function MilestoneAge({ row }) {
+  const d = row.milestone_days;
+  if (d == null) {
+    return (
+      <span title={row.milestone_since
+        ? 'This is where the loan already was when PILOT started watching it — how long it has been here is not known.'
+        : 'PILOT has not read this loan yet.'} style={{ color: '#4B585C' }}>—</span>
+    );
+  }
+  return <span style={{ color: '#141B22' }}>{d} day{d === 1 ? '' : 's'}</span>;
+}
+
 function LockCell({ row }) {
   if (!row.lock_status && row.lock_expiration_date == null) {
     return <span style={{ color: '#4B585C' }}>—</span>;
@@ -41,6 +55,103 @@ function LockCell({ row }) {
       )}
     </span>
   );
+}
+
+/**
+ * One control chip.
+ *
+ * THE COUNT IS ABSENT, NEVER ZERO, WHEN WE DO NOT HAVE ONE. The counting is a
+ * convenience on top of the list and is allowed to fail without costing anybody their
+ * pipeline — but a chip that then reads "0" would tell them the book is empty, which
+ * is exactly what the rows underneath it disprove. So `null` draws no number at all.
+ *
+ * Colours are explicit darks: every `--ink*` token in this palette is a LIGHT paper
+ * colour and would render white on white.
+ */
+function Chip({ on, onClick, label, count, note, group }) {
+  return (
+    <button type="button" onClick={onClick} title={note || undefined}
+      aria-pressed={on} data-chip={group}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+        padding: '5px 12px', borderRadius: 999, fontSize: 13, fontWeight: on ? 700 : 550,
+        background: on ? '#141B22' : '#FFFFFF',
+        color: on ? '#FFFFFF' : '#141B22',
+        border: `1px solid ${on ? '#141B22' : '#EAE4D7'}`,
+        whiteSpace: 'nowrap',
+      }}>
+      <span>{label}</span>
+      {count != null && (
+        <span style={{ fontSize: 11, fontWeight: 700, opacity: on ? 0.85 : 1,
+          color: on ? '#FFFFFF' : '#4B585C' }}>{count}</span>
+      )}
+    </button>
+  );
+}
+
+/**
+ * What to draw when the server did not say — the nine columns this screen carried
+ * before the setting was wired up. It is a FALLBACK, not a second definition of the
+ * catalog: `src/longterm/pipeline-columns.js` is the one that decides, and this only
+ * ever runs against a server too old to answer.
+ */
+const FALLBACK_COLUMNS = [
+  { key: 'loan_number', label: 'Loan #', field: 'loan_number', kind: 'text', sort: 'loan_number', align: 'left', emphasis: true },
+  { key: 'borrower', label: 'Borrower', field: 'borrower_name', kind: 'text', sort: 'borrower', align: 'left' },
+  { key: 'loan_amount', label: 'Amount', field: 'loan_amount', kind: 'money', sort: 'loan_amount', align: 'right' },
+  { key: 'stage', label: 'Stage', field: 'stage_key', kind: 'text', sort: 'stage', align: 'left' },
+  { key: 'milestone', label: 'Milestone', field: 'milestone_name', kind: 'text', sort: 'milestone', align: 'left' },
+  { key: 'days_in_stage', label: 'At milestone', field: 'milestone_days', kind: 'milestone_days', sort: 'milestone_since', align: 'right' },
+  { key: 'loan_officer', label: 'Loan officer', field: 'loan_officer', kind: 'contact', sort: null, align: 'left' },
+  { key: 'lock_status', label: 'Lock', field: 'lock_status', kind: 'lock', sort: 'lock_expiration', align: 'left' },
+  { key: 'updated', label: 'Updated', field: 'encompass_last_modified', kind: 'day', sort: 'last_modified', align: 'left' },
+];
+
+/**
+ * One cell, drawn from what the COLUMN says it is.
+ *
+ * The screen no longer knows which columns exist — the server sends them, in order,
+ * each carrying its `kind`, and this renders that kind. So a buyer who changes
+ * `pipeline.columns` changes the table, which is the whole point of the setting; and a
+ * column added to the catalog appears here without this file being touched.
+ *
+ * A value the loan does not carry renders as a DASH, never as a zero. "We have not
+ * read this yet" and "it is nothing" are different answers, and on money, a rate or a
+ * ratio the second one is a lie a desk would act on.
+ */
+function Cell({ col, row, stageLabel }) {
+  const muted = { color: '#4B585C' };
+
+  // WHICH FIELD A COLUMN READS IS THE COLUMN'S OWN BUSINESS (`field`, from the
+  // server's catalog) — never a lookup table repeated here, which is how a screen and
+  // a server come to disagree about what "LTV" means.
+  const raw = row[col.field];
+
+  switch (col.kind) {
+    case 'money': return <span>{money(raw)}</span>;
+    case 'pct': return <span>{pct(raw)}</span>;
+    case 'ratio': return <span>{ratio(raw)}</span>;
+    case 'milestone_days': return <MilestoneAge row={row} />;
+    case 'lock': return <LockCell row={row} />;
+    case 'day': return <span>{day(raw)}</span>;
+    case 'contact': {
+      // THE ROLE IS THE COLUMN'S `field`, so a third contact column (an underwriter,
+      // a closer) needs one catalog entry on the server and nothing here.
+      const c = (row.contacts || []).find((x) => x.role === col.field);
+      if (!c || !c.name) return <span style={muted}>—</span>;
+      return (
+        <span>
+          {c.name}
+          {c.overridden && <span style={{ marginLeft: 6, fontSize: 11, color: '#AE8746' }}>reassigned</span>}
+        </span>
+      );
+    }
+    default: {
+      const text = col.key === 'stage' ? stageLabel(raw) : raw;
+      if (text == null || text === '') return <span style={muted}>—</span>;
+      return <span>{String(text)}</span>;
+    }
+  }
 }
 
 /**
@@ -62,19 +173,34 @@ export default function LtPipeline() {
   const [err, setErr] = useState(null);
   const [search, setSearch] = useState('');
   const [stage, setStage] = useState('');
+  // The second control row: '' (everyone's) | 'mine' | 'unassigned'.
+  const [whose, setWhose] = useState('');
   const [views, setViews] = useState(null);
   const [activeView, setActiveView] = useState('');
   const [naming, setNaming] = useState(false);
   const [viewName, setViewName] = useState('');
   const [confirmRemove, setConfirmRemove] = useState(false);
+  // What the SCREEN asked for. What it DRAWS as sorted is what the server says it
+  // actually did (`data.sort`/`data.dir`) — the server refuses a sort key it does not
+  // accept and falls back, and an arrow pointing at a column the rows are not ordered
+  // by is a lie the reader has no way to catch.
+  const [sortReq, setSortReq] = useState('');
+  const [dirReq, setDirReq] = useState('');
   const nav = useNavigate();
 
   const load = useCallback(() => {
     setErr(null);
-    ltApi.pipeline({ search: search.trim(), stage })
+    ltApi.pipeline({
+      search: search.trim(), stage, sort: sortReq, dir: dirReq,
+      // "Mine" is asked for as a FLAG. The server resolves whose from the session,
+      // so a viewer who sees the whole book cannot ask for somebody else's personal
+      // queue by editing a URL.
+      mine: whose === 'mine' ? 'true' : '',
+      unassigned: whose === 'unassigned' ? 'true' : '',
+    })
       .then(setData)
       .catch((e) => setErr(e.message || 'Could not load the long-term pipeline.'));
-  }, [search, stage]);
+  }, [search, stage, whose, sortReq, dirReq]);
 
   useEffect(() => {
     const t = setTimeout(load, search ? 250 : 0);
@@ -99,6 +225,9 @@ export default function LtPipeline() {
     const f = (v && v.filters) || {};
     setSearch(f.search || '');
     setStage(f.stage || '');
+    // A saved "mine" is a flag, so a SHARED view of it means whoever opens it — which
+    // is what makes "Mine, at underwriting" one view the whole desk can use.
+    setWhose(f.mine ? 'mine' : f.unassigned ? 'unassigned' : '');
   };
 
   const reloadViews = () => ltApi.views().then(setViews).catch(() => {});
@@ -110,7 +239,10 @@ export default function LtPipeline() {
   const saveCurrent = async (shared) => {
     const name = (viewName || '').trim();
     if (!name) return;
-    const out = await ltApi.saveView({ name, filters: { search: search.trim(), stage }, shared })
+    const filters = { search: search.trim(), stage };
+    if (whose === 'mine') filters.mine = true;
+    if (whose === 'unassigned') filters.unassigned = true;
+    const out = await ltApi.saveView({ name, filters, shared })
       .catch((e) => ({ error: (e && e.message) || 'Could not save that view.' }));
     if (out && out.error) { setErr(out.error); return; }
     setViewName('');
@@ -122,6 +254,20 @@ export default function LtPipeline() {
   const th = { textAlign: 'left', fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase',
     color: '#4B585C', fontWeight: 700, padding: '8px 10px', whiteSpace: 'nowrap' };
   const td = { padding: '10px', fontSize: 14, color: '#141B22', borderTop: '1px solid #EAE4D7' };
+
+  // The columns the SERVER resolved from `pipeline.columns`. An older server that does
+  // not send them is not a blank table: fall back to the set this screen has always
+  // drawn, so a mid-deploy page load still shows somebody their book.
+  const columns = (data && data.columns && data.columns.length) ? data.columns : FALLBACK_COLUMNS;
+  const sort = (data && data.sort) || '';
+  const dir = (data && data.dir) || 'desc';
+
+  // A stage is stored as a key and READ as a label. The list of stages is the
+  // tenant's own (Settings), and it rides on the same response.
+  const stageLabel = (key) => {
+    const s = (data && data.stages ? data.stages : []).find((x) => x.key === key);
+    return (s && s.label) || key || '';
+  };
 
   return (
     <LtLayout title="Long-term pipeline">
@@ -179,15 +325,51 @@ export default function LtPipeline() {
         </div>
       )}
 
+      {/* TWO INDEPENDENT CONTROL ROWS, plus free-text search (§4.1) — which is the
+          arrangement the owner's reference portal uses and the reason it stays simple
+          while being exhaustive. They narrow TOGETHER: a stage and a scope are
+          different questions about the same book, so neither clears the other.
+
+          Each chip carries its own count, and each count is computed with that chip's
+          OWN filter lifted, so it always says what CLICKING it would show. A row of
+          chips reading zero because one of them is selected is a row nobody can
+          navigate out of. */}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+        {/* NOT `data.total` — that is counted WITH the stage filter, so with a stage
+            selected this chip would read the selected stage's number and nobody could
+            see how big the book is. `allStages` is counted stage-lifted, like every
+            other chip in this row. */}
+        <Chip group="stage" on={!stage} onClick={() => setStage('')} label="Every stage"
+          count={data && data.facets ? data.facets.allStages : null} />
+        {(data && data.stages ? data.stages : []).map((s) => (
+          <Chip key={s.key} group="stage" on={stage === s.key} onClick={() => setStage(s.key)}
+            label={s.label} count={s.count}
+            // A stage no settings map names still gets a chip — §4.1.1: a milestone
+            // with no mapping is shown, not hidden, and a file you cannot filter to
+            // is a file people stop seeing.
+            note={s.undeclared ? 'Encompass is using this stage and the settings do not name it yet' : null} />
+        ))}
+      </div>
+
+      {/* The scope row means nothing to somebody who only ever sees their own files —
+          every chip would select the same book — so it is not drawn for them. */}
+      {data && data.scope === 'all' && data.facets && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+          <Chip group="scope" on={!whose} onClick={() => setWhose('')} label="Everyone’s files"
+            count={data.facets.all} />
+          {data.facets.mine != null && (
+            <Chip group="scope" on={whose === 'mine'} onClick={() => setWhose('mine')} label="Mine"
+              count={data.facets.mine} />
+          )}
+          <Chip group="scope" on={whose === 'unassigned'} onClick={() => setWhose('unassigned')}
+            label="Nobody yet" count={data.facets.unassigned}
+            note="Files with no one on them — a closing or a wire is picked up off the queue, so they have to be findable" />
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
         <input className="input" placeholder="Search a loan number or borrower" value={search}
           onChange={(e) => setSearch(e.target.value)} style={{ maxWidth: 300 }} />
-        <select className="input" value={stage} onChange={(e) => setStage(e.target.value)} style={{ maxWidth: 220 }}>
-          <option value="">Every stage</option>
-          {(data && data.stages ? data.stages : []).map((s) => (
-            <option key={s.key} value={s.key}>{s.label}</option>
-          ))}
-        </select>
         {data && <span style={{ alignSelf: 'center', fontSize: 13, color: '#4B585C' }}>
           {data.total} file{data.total === 1 ? '' : 's'}
         </span>}
@@ -202,36 +384,81 @@ export default function LtPipeline() {
         </div>
       )}
 
-      {data && data.loans.length > 0 && (
+      {/* A CONFIGURED COLUMN WE CANNOT DRAW IS EXPLAINED, NEVER SILENTLY MISSING.
+          Somebody put it in the setting on purpose; a column that just fails to
+          appear reads as "the setting did not save", and the next thing that happens
+          is somebody saving it again. */}
+      {data && (data.unavailable || []).length > 0 && (
+        <div className="card" style={{ color: '#4B585C', fontSize: 13, marginBottom: 12 }}>
+          {data.unavailable.map((u) => (
+            <div key={u.key} style={{ marginTop: 2 }}>
+              <strong style={{ color: '#141B22' }}>{u.label}</strong> is not shown — {u.why}
+            </div>
+          ))}
+        </div>
+      )}
+      {/* A scope filter this viewer's own scope makes meaningless — most likely a
+          SHARED saved view written by somebody who sees the whole book. Saying so
+          beats a pipeline that quietly shows something other than what was asked. */}
+      {data && (data.filtersIgnored || []).length > 0 && (
+        <div className="card" style={{ color: '#4B585C', fontSize: 13, marginBottom: 12 }}>
+          {data.filtersIgnored.map((f) => <div key={f.key} style={{ marginTop: 2 }}>{f.why}</div>)}
+        </div>
+      )}
+
+      {data && (data.unknown || []).length > 0 && (
+        <div className="card" style={{ color: '#4B585C', fontSize: 13, marginBottom: 12 }}>
+          The pipeline columns setting names {data.unknown.length === 1 ? 'a column' : 'columns'} nobody
+          recognises: <strong style={{ color: '#141B22' }}>{data.unknown.join(', ')}</strong>. Check the
+          spelling in Settings — {data.unknown.length === 1 ? 'it has' : 'they have'} been skipped.
+        </div>
+      )}
+
+      {data && data.loans.length > 0 && columns.length > 0 && (
         <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
             <thead><tr>
-              <th style={th}>Loan #</th><th style={th}>Borrower</th><th style={th}>Amount</th>
-              <th style={th}>Stage</th><th style={th}>Milestone</th>
-              <th style={th}>Loan officer</th><th style={th}>Lock</th><th style={th}>Updated</th>
-            </tr></thead>
-            <tbody>
-              {data.loans.map((l) => {
-                const officer = (l.contacts || []).find((c) => c.role === 'loan_officer');
+              {columns.map((c) => {
+                const active = c.sort && c.sort === sort;
                 return (
-                  <tr key={l.id} style={{ cursor: 'pointer' }}
-                    onClick={() => nav(`/internal/lt/loan/${l.id}`)}>
-                    <td style={{ ...td, fontWeight: 600 }}>{l.loan_number || '—'}</td>
-                    <td style={td}>{l.borrower_name || '—'}</td>
-                    <td style={td}>{money(l.loan_amount)}</td>
-                    <td style={td}>{l.stage_key || '—'}</td>
-                    <td style={td}>{l.milestone_name || '—'}</td>
-                    <td style={td}>
-                      {officer ? (officer.name || '—') : '—'}
-                      {officer && officer.overridden && (
-                        <span style={{ marginLeft: 6, fontSize: 11, color: '#AE8746' }}>reassigned</span>
-                      )}
-                    </td>
-                    <td style={td}><LockCell row={l} /></td>
-                    <td style={td}>{day(l.encompass_last_modified)}</td>
-                  </tr>
+                  <th key={c.key}
+                    style={{ ...th, textAlign: c.align === 'right' ? 'right' : 'left',
+                      cursor: c.sort ? 'pointer' : 'default', color: active ? '#141B22' : '#4B585C' }}
+                    onClick={() => {
+                      if (!c.sort) return;
+                      setDirReq(active && dir === 'asc' ? 'desc' : 'asc');
+                      setSortReq(c.sort);
+                    }}
+                    title={c.sort ? 'Sort by this column' : undefined}>
+                    {c.label}{active && (dir === 'asc' ? ' ▲' : ' ▼')}
+                  </th>
                 );
               })}
+            </tr></thead>
+            <tbody>
+              {data.loans.map((l) => (
+                <tr key={l.id} style={{ cursor: 'pointer' }}
+                  onClick={() => nav(`/internal/lt/loan/${l.id}`)}>
+                  {columns.map((c, i) => (
+                    <td key={c.key}
+                      style={{ ...td, textAlign: c.align === 'right' ? 'right' : 'left',
+                        fontWeight: c.emphasis ? 600 : 400 }}>
+                      {/* THE PRODUCT STAMP, on every row (CLAUDE.md §7) — on the FIRST
+                          column, whichever column that is. Hanging it off the loan
+                          number would let a configuration that drops that column drop
+                          the stamp with it, and the stamp is not configurable. It is
+                          rendered from what the ROW carries, so it stays correct on a
+                          combined pipeline instead of labelling everything the same. */}
+                      {i === 0 ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <ProductStamp product={l.product} label={l.productLabel} />
+                          <Cell col={c} row={l} stageLabel={stageLabel} />
+                        </span>
+                      ) : <Cell col={c} row={l} stageLabel={stageLabel} />}
+                    </td>
+                  ))}
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>

@@ -130,15 +130,28 @@ function accessFor(staff, settings = {}) {
  */
 function pipelineScopeSql(access, staffId, firstParamIndex = 1) {
   if (!access || access.seesAll) return { where: '', params: [] };
-  const p = `$${firstParamIndex}`;
-  return {
-    where: `EXISTS (
+  return { where: onFileSql(`$${firstParamIndex}`), params: [staffId] };
+}
+
+/**
+ * "Is this person ON this file?" — ANY contact role, both sides of the assignment.
+ *
+ * Exported because "my files" has to mean ONE thing. `pipelineScopeSql` uses it to
+ * decide what a scoped viewer may see at all, and the pipeline's "Mine" chip uses it
+ * to count what an unscoped viewer is personally on. Written twice, the two would
+ * drift, and the drift would show up as a processor whose own book is empty because
+ * somebody defined "mine" as "the loan officer is me".
+ *
+ * Takes the placeholder rather than an index, so the caller owns its own parameter
+ * arithmetic — a hard-coded `$1` becomes an unreferenced parameter the moment a
+ * sees-all caller drops the clause, and Postgres answers 42P18.
+ */
+function onFileSql(ph) {
+  return `EXISTS (
       SELECT 1 FROM lt_loan_contacts c
        WHERE c.loan_id = l.id
-         AND (c.staff_id = ${p}::uuid OR c.override_staff_id = ${p}::uuid)
-    )`,
-    params: [staffId],
-  };
+         AND (c.staff_id = ${ph}::uuid OR c.override_staff_id = ${ph}::uuid)
+    )`;
 }
 
 /**
@@ -225,6 +238,7 @@ module.exports = {
   scopeForRole,
   accessFor,
   pipelineScopeSql,
+  onFileSql,
   mayOpenLoan,
   emptyPipelineReason,
 };

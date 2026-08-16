@@ -1,6 +1,9 @@
+import { money, pct, ratio, plain, day } from './format.js';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import LtLayout from './LtLayout.jsx';
+import LtFileSection, { hasFileSection } from './LtFileSections.jsx';
+import ProductStamp from './ProductStamp.jsx';
 import { ltApi } from './api.js';
 
 /**
@@ -26,17 +29,6 @@ import { ltApi } from './api.js';
 const INK = '#141B22';
 const MUTED = '#4B585C';
 const GOLD = '#AE8746';
-
-const money = (v) => (v == null || v === '' ? '—'
-  : Number(v).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }));
-const pct = (v) => (v == null || v === '' ? '—' : `${Number(v)}%`);
-const ratio = (v) => (v == null || v === '' ? '—' : Number(v).toFixed(3).replace(/0+$/, '').replace(/\.$/, ''));
-const plain = (v) => (v == null || v === '' ? '—' : String(v));
-const day = (v) => {
-  if (!v) return '—';
-  const d = new Date(v);
-  return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-US') : '—';
-};
 
 function Rail({ rail }) {
   if (!rail) return null;
@@ -91,21 +83,42 @@ function Rail({ rail }) {
   );
 }
 
-function Stepper({ stepper }) {
+function Stepper({ stepper, clock }) {
   if (!stepper || !stepper.steps || !stepper.steps.length) return null;
   return (
     <div className="card" style={{ color: INK, marginBottom: 12 }}>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
         {stepper.steps.map((s) => (
           <span key={s.name} style={{
+            display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 1,
             fontSize: 12, padding: '3px 9px', borderRadius: 999, whiteSpace: 'nowrap',
             border: `1px solid ${s.current ? GOLD : 'rgba(20,27,34,.14)'}`,
             background: s.current ? 'rgba(174,135,70,.14)' : s.reached ? '#F4F1EA' : 'transparent',
             color: s.reached || s.current ? INK : MUTED,
             fontWeight: s.current ? 700 : 500,
-          }}>{s.name}</span>
+          }}>
+            <span>{s.name}</span>
+            {/* A date ONLY where PILOT actually watched the loan arrive. Encompass's own
+                milestone log is unreadable on this tenant, so a step we did not witness
+                shows nothing — never the day we first noticed the loan sitting there. */}
+            {s.reachedAt ? (
+              <span style={{ fontSize: 10, fontWeight: 500, color: MUTED }}>{day(s.reachedAt)}</span>
+            ) : null}
+          </span>
         ))}
       </div>
+
+      {/* How long it has been here. The server sends the sentence, because the whole
+          point is the difference between "6 days, longer than expected" and "we do not
+          know, we only started watching" — and that distinction must not be re-derived
+          on a screen where it could be got wrong. */}
+      {clock && clock.note ? (
+        <div style={{
+          marginTop: 8, fontSize: 12,
+          color: clock.stalled ? '#8A2D2D' : MUTED,
+          fontWeight: clock.stalled ? 600 : 400,
+        }}>{clock.note}</div>
+      ) : null}
       {/* Nothing is marked reached from a milestone the catalog does not carry, so the
           screen has to SAY that rather than draw an empty ladder. */}
       {stepper.unrecognised && (
@@ -221,16 +234,37 @@ export default function LtLoan() {
   }
   if (!data) return <LtLayout title="Long-term file"><div className="card" style={{ color: INK }}>Loading…</div></LtLayout>;
 
-  const { rail, stepper, sections = [], contacts = [], lock } = data;
+  const { rail, stepper, sections = [], contacts = [], lock, file, milestoneClock } = data;
+  const { product: productKey, productLabel, milestoneHistory } = data;
   const current = sections.find((s) => s.key === active) || sections[0];
+  // A section is drawn from the file ONLY when the server said it applies. A section
+  // the workspace greyed out has a reason attached, and that reason is the answer —
+  // drawing it anyway would contradict the sentence right above it.
+  const showFile = !!(current && current.available && hasFileSection(current.key));
 
   return (
     <LtLayout title={rail && rail.loanNumber ? `Loan ${rail.loanNumber}` : 'Long-term file'}>
-      <Stepper stepper={stepper} />
+      {/* THE FILE HEADER'S PRODUCT STAMP (CLAUDE.md §7) — which book this loan is
+          in, stated on the file itself rather than inferred from the screen, and
+          NOT dependent on any other request having succeeded. */}
+      {productLabel ? (
+        <div style={{ margin: '-6px 0 12px' }}>
+          <ProductStamp product={productKey} label={productLabel} size="md" />
+        </div>
+      ) : null}
+
+      <Stepper stepper={stepper} clock={milestoneClock} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 300px', gap: 14, alignItems: 'start' }}
         className="lt-workspace">
-        <div style={{ display: 'grid', gap: 12, minWidth: 0 }}>
+        {/* `gridTemplateColumns:'minmax(0,1fr)'` is load-bearing, not decoration. A grid
+            with no declared column gets an IMPLICIT `auto` one, which sizes to its
+            content — so a section carrying a 620px-wide table stretched this column to
+            759px inside a 390px phone, and `html{overflow-x:clip}` then hid the damage:
+            the page reported no sideways scroll while half of every row was cut off and
+            unreachable. `minmax(0,…)` pins the column to the container, which is what
+            lets each table scroll inside its OWN box the way it was meant to. */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr)', gap: 12, minWidth: 0 }}>
           {/* The section menu. A section that does not apply is GREYED WITH ITS
               REASON — the reason comes from the server, and clicking it says so
               rather than doing nothing, which is what makes a greyed control
@@ -272,13 +306,24 @@ export default function LtLoan() {
           ) : (
             <div className="card" style={{ color: INK }}>
               <h2 style={{ margin: '0 0 6px', fontSize: 16 }}>{current ? current.label : 'Loan summary'}</h2>
-              <p style={{ margin: 0, color: MUTED, lineHeight: 1.55 }}>
-                {current && !current.available
-                  ? current.why
-                  : 'The figures for this section are on the Summary panel while the URLA-sectioned '
-                    + 'read-only file is built. Nothing here is editable yet: the long-term side reads '
-                    + 'Encompass and never writes to it.'}
-              </p>
+              {showFile ? (
+                <>
+                  <p style={{ margin: '0 0 10px', color: MUTED, fontSize: 13 }}>
+                    Read from Encompass. Nothing on this screen is editable — the
+                    long-term side reads Encompass and never writes to it.
+                  </p>
+                  <LtFileSection sectionKey={current.key} file={file}
+                    sections={sections} lock={lock} contacts={contacts}
+                    history={milestoneHistory} />
+                </>
+              ) : (
+                <p style={{ margin: 0, color: MUTED, lineHeight: 1.55 }}>
+                  {current && !current.available
+                    ? current.why
+                    : 'This loan’s headline figures are on the Summary panel. Nothing here is '
+                      + 'editable: the long-term side reads Encompass and never writes to it.'}
+                </p>
+              )}
             </div>
           )}
         </div>

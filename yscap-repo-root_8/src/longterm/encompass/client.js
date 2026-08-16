@@ -140,6 +140,60 @@ async function getToken() {
   } finally { g.done(); }
 }
 
+/**
+ * DIAGNOSTIC ONLY — ask for a token with a given scope and report what came back.
+ *
+ * Why this exists. `getToken` above asks for `scope=lp` on the password grant. Two
+ * independent, widely-used Encompass clients — EncompassRest (.NET) and
+ * EncompassConnect (TypeScript) — send **no `scope` parameter at all** on that grant;
+ * only the client-credentials grant carries `lp`. That difference matters, because
+ * OAuth (RFC 6749 §3.3) says a server receiving no scope applies its own default,
+ * which is normally everything the caller is entitled to. So it is possible we have
+ * been NARROWING our own token by naming `lp` — and the token introspection that
+ * reported `"scope": "lp"` cannot tell us otherwise, because that is precisely what we
+ * asked for. Asking for nothing and seeing what we are given is the only way to know,
+ * and it costs one read-only call.
+ *
+ * Pass `null` to omit the scope entirely, or a string to name one.
+ *
+ * READ-ONLY and side-effect free: it uses the SAME already-allowed token path through
+ * the SAME guard, adds no endpoint to the allowlist, and deliberately does NOT touch
+ * `tokenCache` — a probe must never leave the app running on a token it minted.
+ */
+async function tokenProbe(scope) {
+  ensure();
+  const params = { client_id: cfg.clientId, client_secret: cfg.clientSecret };
+  if (cfg.username && cfg.password) {
+    params.grant_type = 'password';
+    params.username = `${cfg.username}@encompass:${cfg.instanceId}`;
+    params.password = cfg.password;
+  } else {
+    params.grant_type = 'client_credentials';
+    params.instance_id = cfg.instanceId;
+  }
+  if (scope != null) params.scope = String(scope);
+
+  const g = withTimeout(12000);
+  try {
+    const r = await _fetchGuarded(`${cfg.baseUrl}${TOKEN_PATH}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(params), signal: g.signal,
+    });
+    const text = await r.text();
+    let body = null;
+    try { body = JSON.parse(text); } catch { /* the refusal is sometimes plain text */ }
+    return {
+      requested: scope == null ? '(omitted)' : scope,
+      ok: r.ok,
+      status: r.status,
+      // What we were actually GRANTED, which is the whole question.
+      granted: body && body.scope ? String(body.scope) : (r.ok ? '(not stated)' : null),
+      token: r.ok && body && body.access_token ? body.access_token : null,
+      error: r.ok ? null : text.slice(0, 200),
+    };
+  } finally { g.done(); }
+}
+
 // Cheap reachability check: authenticate only.
 async function ping() {
   if (!configured()) return { ok: false, reason: 'LT_ENCOMPASS_CLIENT_ID / _SECRET / _INSTANCE_ID not set' };
@@ -269,6 +323,8 @@ module.exports = {
   name: 'lt-encompass',
   READ_ONLY,
   configured, ensure, ping,
+  // diagnostic-only, read-only: see scripts/test-lt-encompass-access-probe.js
+  tokenProbe,
   apiGet, pipelineSearch, fieldReader,
   getMilestoneSettings, getStandardFieldSchema, getCustomFieldSettings,
   getLoan, getLoanMilestones, getLoanMilestoneLogs,

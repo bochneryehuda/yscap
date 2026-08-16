@@ -33,6 +33,7 @@ const stages = require('../stages');
 const discover = require('./discover');
 const contacts = require('../people/contacts');
 const locks = require('../locks');
+const milestones = require('../milestones');
 
 const lazy = {
   get db() { return require('../db'); },
@@ -126,6 +127,12 @@ async function readLoan(loanId, guid, settings) {
     || (loan.loanProductData && loan.loanProductData.currentMilestone));
   const { milestoneName, stageKey } = stageFor(milestone, settings);
 
+  // What we held BEFORE the write, because the write is what destroys the evidence.
+  // Encompass's own milestone log is 403 on this tenant, so noticing that the
+  // milestone is not what it was is the only history available — and it can only be
+  // noticed from here, one statement earlier than the UPDATE.
+  const priorMilestone = await milestones.loadPrior(loanId);
+
   await lazy.db.query(
     `UPDATE lt_loans
         SET milestone_name = COALESCE($2, milestone_name),
@@ -135,6 +142,14 @@ async function readLoan(loanId, guid, settings) {
             updated_at = now()
       WHERE id = $1::uuid`,
     [loanId, milestoneName, stageKey],
+  );
+
+  // A first sighting is recorded as a BASELINE, never as an arrival — we cannot know
+  // how long the loan had already been sitting there, and dating it from today would
+  // make the whole back book look freshly moved. Best-effort: never undoes the
+  // mirror above.
+  const milestoneWrite = await milestones.writeMilestone(
+    loanId, priorMilestone, { milestoneName, stageKey },
   );
 
   // ONE fieldReader for everything read by number — the team's ids and the lock's
@@ -155,7 +170,8 @@ async function readLoan(loanId, guid, settings) {
   const lock = locks.lockFromLoan(loan, values, settings);
   const lockWrite = await locks.writeLock(loanId, lock);
 
-  return { ok: true, milestoneName, stageKey, team, lock: { ...lockWrite, posture: lock.posture } };
+  return { ok: true, milestoneName, stageKey, team, milestone: milestoneWrite,
+    lock: { ...lockWrite, posture: lock.posture } };
 }
 
 /**
