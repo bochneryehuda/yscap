@@ -9,17 +9,16 @@
  *   It is a pricing VIEWER: it reads pricing and never books, locks, registers, or touches
  *   favorites (the three hard "never"s in the blueprint).
  *
- * WHY THE LOGIN WAS BEING REJECTED (root cause, confirmed 2026-08-16 from a real HAR)
- *   The token endpoint accepts a login ONLY when it arrives "from" the company page — i.e.
- *   with Origin/Referer = https://yscapgroup.digitallending.com. A byte-identical body with
- *   no Origin header returns 401 Unauthorized. Every request here therefore carries the
- *   company Origin/Referer, exactly as the browser does. This mirrors the Sitewire
- *   web-client "browser robot" pattern (src/sitewire/web-client.js).
+ * WHY THE LOGIN WAS BEING REJECTED (root cause, confirmed 2026-08-16 from two live logins)
+ *   The browser authenticates TWO parties at /oauth/token: the borrower in the form body,
+ *   and the OAuth client with HTTP Basic auth (LP_CLIENT_ID:LP_CLIENT_SECRET). The original
+ *   backend omitted the Basic header, so correct borrower credentials still returned 401.
+ *   Origin/Referer and the form body also mirror the company page exactly.
  *
  * SAFETY, by construction:
  *   - LONG-TERM ONLY. Self-contained: reads process.env directly, imports NO RTL code,
  *     touches no database. (Product-separation gate: nothing crosses.)
- *   - Credentials come from Render env ONLY (LP_USERNAME / LP_PASSWORD). Never hardcoded,
+ *   - Credentials come from Render env ONLY (LP_USERNAME / LP_PASSWORD / LP_CLIENT_SECRET). Never hardcoded,
  *     never logged, never returned to a caller. scrub() strips tokens/passwords from errors.
  *   - Every outbound URL is https + host-allowlisted (auth./api.digitallending.com). No SSRF.
  *   - Read-only: only GET enrichment + POST pricing/searchRaw. No write/lock/register path
@@ -60,20 +59,26 @@ function assertAllowed(url) {
 function credentials() {
   const username = process.env.LP_USERNAME || '';
   const password = process.env.LP_PASSWORD || '';
-  return { username, password, ok: !!(username && password) };
+  const clientSecret = process.env.LP_CLIENT_SECRET || '';
+  return { username, password, clientSecret, ok: !!(username && password && clientSecret) };
 }
 function configured() { return credentials().ok; }
 
 // Strip any secret that might slip into an error string.
 function scrub(s) {
   let out = String(s == null ? '' : s);
-  const { password } = credentials();
+  const { password, clientSecret } = credentials();
   if (password) out = out.split(password).join('<redacted>');
+  if (clientSecret) out = out.split(clientSecret).join('<redacted>');
   out = out.replace(/(access_token"?\s*[:=]\s*"?)[A-Za-z0-9._\-]+/gi, '$1<redacted>');
   out = out.replace(/(refresh_token"?\s*[:=]\s*"?)[A-Za-z0-9._\-]+/gi, '$1<redacted>');
   out = out.replace(/(Bearer )[A-Za-z0-9._\-]+/g, '$1<redacted>');
   out = out.replace(/(password=)[^&\s"]+/gi, '$1<redacted>');
   return out;
+}
+
+function basicClientAuthorization(clientId, clientSecret) {
+  return `Basic ${Buffer.from(`${clientId}:${clientSecret}`, 'utf8').toString('base64')}`;
 }
 
 // ---- fetch with timeout, browser-shaped headers ---------------------------
@@ -99,11 +104,11 @@ async function req(url, { method = 'GET', headers = {}, body = null, bearer = nu
 
 // ---- OAuth2 password-grant login ------------------------------------------
 // POST auth/oauth/token  (application/x-www-form-urlencoded)
-//   username, password, grant_type=password, client_id  + Origin/Referer of the company page.
+//   username, password, grant_type=password, client_id + Basic client auth + company Origin/Referer.
 // Returns { ok, token, refreshToken, expiresAt, companyId, userId, profile } or { ok:false, error, message }.
 async function login() {
   const c = credentials();
-  if (!c.ok) return { ok: false, error: 'lp_creds_missing', message: 'Set LP_USERNAME and LP_PASSWORD in Render to enable Lender Price pricing.' };
+  if (!c.ok) return { ok: false, error: 'lp_creds_missing', message: 'Set LP_USERNAME, LP_PASSWORD, and LP_CLIENT_SECRET in Render to enable Lender Price pricing.' };
   const form = new URLSearchParams({
     username: c.username, password: c.password, grant_type: 'password', client_id: CLIENT_ID,
   }).toString();
@@ -111,14 +116,17 @@ async function login() {
   try {
     r = await req(`${AUTH_BASE}/oauth/token`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        Authorization: basicClientAuthorization(CLIENT_ID, c.clientSecret),
+      },
       body: form,
     });
   } catch (e) { return { ok: false, error: 'lp_login_error', message: scrub(e.message) }; }
 
   if (r.status === 401) {
     return { ok: false, error: 'lp_login_unauthorized', http: 401,
-      message: 'Lender Price rejected the login. Check LP_USERNAME/LP_PASSWORD, and that LP_ORIGIN is the company page (the login is accepted only when it comes from there).' };
+      message: 'Lender Price rejected the login. Check LP_USERNAME, LP_PASSWORD, LP_CLIENT_SECRET, LP_CLIENT_ID, and LP_ORIGIN.' };
   }
   if (r.status !== 200 || !r.json || !r.json.access_token) {
     return { ok: false, error: 'lp_login_failed', http: r.status,
@@ -323,5 +331,5 @@ function firstNum(o, keys) { for (const k of keys) { if (o[k] != null && isFinit
 module.exports = {
   configured, login, getSession, apiGet, enrichZip, price, parse,
   buildSearchPayload,
-  _internals: { assertAllowed, scrub, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID },
+  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID },
 };

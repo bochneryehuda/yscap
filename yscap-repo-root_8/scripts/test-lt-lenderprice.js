@@ -5,12 +5,12 @@
  *
  * TWO MODES:
  *   (default) OFFLINE  — no network. Proves the request builder produces the exact
- *                        login + searchRaw shapes the browser uses (Origin header set,
+ *                        login + searchRaw shapes the browser uses (Basic client auth,
+ *                        Origin header set,
  *                        field tokens correct). Runs in CI / anywhere.
  *   LP_LIVE=1          — LIVE. Logs into Lender Price with LP_USERNAME/LP_PASSWORD and
  *                        runs a scenario battery, printing real results. Intended to run
- *                        on Render (where the request originates from a trusted server and
- *                        is not blocked). Needs LP_USERNAME + LP_PASSWORD in the env.
+ *                        on Render. Needs LP_USERNAME + LP_PASSWORD + LP_CLIENT_SECRET.
  *
  *   node scripts/test-lt-lenderprice.js
  *   LP_LIVE=1 node scripts/test-lt-lenderprice.js
@@ -24,11 +24,13 @@ function ok(cond, label) { console.log(`${cond ? '  ok  ' : ' FAIL '} ${label}`)
 function offline() {
   console.log('OFFLINE verification (no network)\n');
 
-  // 1) Login shape: the fix for the 401 is the Origin/Referer header. Prove req() sets it.
-  //    We can't call the private req(), so assert the config the client will use.
+  // 1) Login shape: the OAuth client must authenticate separately from the borrower.
   const I = lp._internals;
   ok(I.ORIGIN === (process.env.LP_ORIGIN || 'https://yscapgroup.digitallending.com'), `login Origin = company page (${I.ORIGIN})`);
   ok(I.CLIENT_ID === (process.env.LP_CLIENT_ID || 'acme2'), `client_id = ${I.CLIENT_ID}`);
+  const basic = I.basicClientAuthorization('acme2', 'fixture-secret');
+  ok(/^Basic /.test(basic), 'login has an HTTP Basic client credential');
+  ok(Buffer.from(basic.slice(6), 'base64').toString('utf8') === 'acme2:fixture-secret', 'Basic credential is client_id:client_secret');
   ok(I.AUTH_BASE.startsWith('https://'), 'auth base is https');
 
   // 2) SSRF guard: only the two Lender Price hosts are reachable.
@@ -96,7 +98,7 @@ function offline() {
 
 async function live() {
   console.log('LIVE Lender Price run\n');
-  if (!lp.configured()) { console.log('LP_USERNAME / LP_PASSWORD not set — cannot run live. (Set them in Render.)'); process.exit(2); }
+  if (!lp.configured()) { console.log('LP_USERNAME / LP_PASSWORD / LP_CLIENT_SECRET not set — cannot run live. (Set them in Render.)'); process.exit(2); }
 
   const t0 = Date.now();
   const s = await lp.getSession({ force: true });
