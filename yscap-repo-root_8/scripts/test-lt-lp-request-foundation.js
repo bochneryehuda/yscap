@@ -234,5 +234,63 @@ console.log('\nH. fico is required — measured: null AND absent both return HTT
   ok(noDscr.ok === true, 'dscr is NOT required — measured harmless, so requiring it would refuse deals the vendor prices');
 }
 
+// ---- I. rate-sheet provenance and staleness ---------------------------------------------------
+console.log('\nI. §37.12 a rate carries WHICH sheet it came from, and whether that sheet is still good');
+{
+  const lp = require(path.join(__dirname, '..', 'src', 'longterm', 'lenderprice', 'client.js'));
+  // The vendor's real response shape, transcribed from a captured search: a four-level grouped tree
+  // whose leaves carry `expired` and a `ratePeriod` stamping the sheet they were priced from.
+  const mk = (over) => Object.assign({
+    companyName: 'A Lender', companyId: 'L1', programName: 'DSCR 30 Yr Fixed',
+    rate: 6.5, adjustedPoints: 1.0, basePoints: 1.0, adjustmentPoints: 0, apr: 6.6,
+    dayLock: 30, term: 30, loanAmount: 400000,
+  }, over);
+  const board = { search: { date: '2026-08-16T05:25:15Z' }, results: { qualifiedNonQMData: {
+    key: [], keyLabel: 'ROOT', type: null, leafs: [], childs: [{
+      key: [], keyLabel: '30 Years Fixed', type: 'CriteriaFromLineResultKey', leafs: [], childs: [{
+        key: ['6.5'], keyLabel: '6.5', type: 'RateKey', leafs: [], childs: [{
+          key: ['A Lender', 'true'], keyLabel: 'A Lender', type: 'LenderKey', childs: [], leafs: [
+            mk({ rate: 5.5, expired: false, ratePeriod: { id: 'rp-live', name: 'Live Sheet', validAsOf: '2026-08-15T04:00:00.000Z', expired: false } }),
+            mk({ rate: 5.25, expired: true, companyName: 'Stale Lender', ratePeriod: { id: 'rp-old', name: 'Old Sheet', validAsOf: '2026-08-14T11:30:00.000Z', expired: true } }),
+            mk({ rate: 6.0, expired: false, ratePeriod: { id: 'rp-live', name: 'Live Sheet', validAsOf: '2026-08-15T04:00:00.000Z', expired: false } }),
+          ],
+        }],
+      }],
+    }],
+  } } };
+
+  const p = lp.parse(board);
+  ok(p.rateSheets && p.rateSheets.optionCount === 3, 'the board reports how many options it priced');
+  ok(p.rateSheets.expiredCount === 1 && p.rateSheets.liveCount === 2,
+    'and how many of them came off an EXPIRED sheet — measured at 37% and 61% on two real captures');
+  ok(p.rateSheets.expiredPct === 33.3, 'as a percentage, so the scale of the staleness is legible');
+  ok(JSON.stringify(p.rateSheets.expiredLenders) === JSON.stringify(['Stale Lender']),
+    'and WHICH lenders are stale — on the real captures whole lenders expire at once');
+  ok(p.pricedAt === '2026-08-16T05:25:15Z',
+    'the quote carries the time it was priced — a parsed result used to carry no timestamp at all');
+  ok(p.rateSheets.oldestSheet === '2026-08-14T11:30:00.000Z' && p.rateSheets.newestSheet === '2026-08-15T04:00:00.000Z',
+    'and the age spread of the sheets behind it');
+
+  // The display path is the one that matters: it is what an officer reads.
+  const allRungs = p.programs.flatMap((pr) => pr.rungs);
+  ok(allRungs.every((r) => 'expired' in r), 'EVERY rung says whether its sheet is expired');
+  ok(allRungs.every((r) => 'rateSheetValidAsOf' in r), 'and when that sheet was published');
+  const cheapest = allRungs.slice().sort((a, b) => a.rate - b.rate)[0];
+  ok(cheapest.rate === 5.25 && cheapest.expired === true,
+    'the CHEAPEST rate being the expired one is exactly the real case — and it is now visible');
+
+  // Nothing is filtered: an expired sheet is not proof of a wrong price, and silently dropping a
+  // third of the board would be its own silent-substitution bug.
+  ok(p.rungCount === 3, 'expired options are still RETURNED — flagged, never silently dropped');
+
+  const f = lp.parseFull(board);
+  ok(f.rateSheets.expiredCount === 1, 'parseFull reports the same board summary');
+  const opts = f.programs.flatMap((pr) => pr.options);
+  ok(opts.every((o) => o.rateSheet && typeof o.rateSheet.expired === 'boolean'),
+    'and every option carries its own sheet provenance');
+  ok(opts.some((o) => o.rateSheet.name === 'Old Sheet' && o.rateSheet.validAsOf),
+    'including the sheet NAME and date, which were dropped entirely before');
+}
+
 console.log('\n' + (failed === 0 ? 'OFFLINE: all passed' : 'FAILURES') + ' (' + passed + ' passed, ' + failed + ' failed)');
 process.exit(failed === 0 ? 0 : 1);

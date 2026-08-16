@@ -117,7 +117,52 @@ async function offline() {
     { noteRate: 6.125, finalPrice: 100.5, ratePeriod: 30 }] } }], disqualifiedData: [{}, {}, {}] };
   const ps = lp.parse(structured);
   ok(ps.programCount === 1 && ps.programs[0].minRate === 6.125, 'parser reads qualifiedNonQMData.resultRates.rateSet');
-  ok(ps.disqualifiedCount === 3, 'parser counts disqualified programs');
+
+  // §37.13 — THE INELIGIBLE COUNT, AGAINST THE SHAPE THE VENDOR ACTUALLY RETURNS.
+  //
+  // This assertion used to read `parse({... disqualifiedData: [{}, {}, {}]}).disqualifiedCount === 3`
+  // — an ARRAY, at the top level, with no `results` wrapper. The vendor returns NONE of that: the
+  // real `results.disqualifiedData` is an OBJECT, the root of the same four-level grouped tree the
+  // qualified side uses (ROOT → CriteriaFromLineResultKey → RateKey → LenderKey → leafs[]), and
+  // `leaf.disqualified` is a boolean. The old implementation summed array LENGTHS at those keys, so
+  // against the real response it was structurally incapable of returning anything but 0 — and it
+  // reached the API as `meta.disqualifiedCount`, reporting "0 products were ineligible" on top of a
+  // tree of ineligible products.
+  //
+  // It survived precisely BECAUSE of the fixture: a shape invented to satisfy the implementation
+  // proves only that the implementation matches the invention. So the fixture is now the vendor's
+  // real one, transcribed from a captured response, and the count comes from the walk that already
+  // reads that tree correctly.
+  ok(ps.disqualifiedCount === 0,
+    'a shape the vendor never returns counts ZERO ineligible — the old fixture claimed 3');
+  const realDisq = { results: { disqualifiedData: {
+    key: [], keyLabel: 'ROOT', type: null, childs: [{
+      key: ['Fixed', '30 Years', 'Purchase', 'Conventional', '400000.0', ''],
+      keyLabel: '30 Years Fixed Conventional Purchase', type: 'CriteriaFromLineResultKey', leafs: [], childs: [{
+        key: ['6.5'], keyLabel: '6.5', type: 'RateKey', leafs: [], childs: [{
+          key: ['Some Lender', 'true'], keyLabel: 'Some Lender', type: 'LenderKey',
+          plenderId: '"554ceedbd4c609e45581342e"', childs: [],
+          leafs: [
+            { companyName: 'Some Lender', programName: 'DSCR 30 Yr Fixed', rate: 6.5, disqualified: true,
+              groupAdjustmentProperties: [{ disqualifyAdjustments: [
+                { key: 'FICO - below 660', adjType: 'FicoRateAdjustment', type: 'LLPA', valueType: 'Points' },
+                { key: 'Max LTV exceeded / CLTV > 80.0 %', adjType: 'CapAdjustment', type: 'LLPA', valueType: 'Points' },
+              ] }] },
+            { companyName: 'Some Lender', programName: 'DSCR 30 Yr Fixed IO', rate: 6.75, disqualified: true,
+              groupAdjustmentProperties: [{ disqualifyAdjustments: [
+                { key: 'Interest Only not available in NY', adjType: 'StatesRateAdjustment', type: 'LLPA', valueType: 'Points' },
+              ] }] },
+          ],
+        }],
+      }],
+    }], leafs: [],
+  } } };
+  const dqParsed = lp.parse(realDisq);
+  ok(dqParsed.disqualifiedCount === 2,
+    'the REAL vendor tree shape counts its ineligible leaves (this was permanently 0 before)');
+  const dqWalk = lp.parseDisqualified(realDisq);
+  ok(dqWalk.itemCount === 2 && dqWalk.reasonCount === 3 && dqWalk.lenderCount === 1,
+    'and parse() agrees with parseDisqualified, which walks the same tree');
 
   // 12) Disqualify workflow flags: off by default (qualified path), on when requested.
   const kick = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25 }, { disqualify: { cached: false } });

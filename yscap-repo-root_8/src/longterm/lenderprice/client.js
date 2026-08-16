@@ -1198,6 +1198,10 @@ function optionOf(leaf, ctx, dtoMap, keepRaw) {
     },
     monthlyPayment: (mp && typeof mp === 'object') ? mp : null,
     flags: { disqualified: !!leaf.disqualified, interpolated: !!leaf.interpolated, expired: !!leaf.expired, highBalance: !!leaf.highBalanceIndicator },
+    // §37.12 — WHICH RATE SHEET THIS PRICE CAME FROM, AND WHETHER IT IS STILL GOOD.
+    // A rate with no provenance cannot be checked. `validAsOf` is the sheet's effective stamp and
+    // `expired` is the vendor's own verdict on it; both were being dropped. See rateSheetSummary().
+    rateSheet: rateSheetOf(leaf),
   };
   if (keepRaw) o.raw = leaf; // EVERY field, untouched — nothing left behind
   return o;
@@ -1224,6 +1228,59 @@ function collectOptions(raw, opts = {}) {
 // parse() — the DISPLAY summary: programs grouped by lender+program, each with a rate/point ladder
 // and the lender/investor identity. Captures the pricing build at a glance (base/adjustment/final
 // points + adjustment count) without the full raw dump.
+// §37.12 — RATE-SHEET PROVENANCE AND STALENESS.
+//
+// THE FINDING, measured on the owner's own captured searches: **115 of 309 priced options (37%) in
+// one, and 285 of 470 (61%) in the other, come from EXPIRED rate sheets.** Whole lenders at a time —
+// in the Brooklyn capture, Oaktree (61 options), AD Mortgage (30) and Bluepoint (24) were entirely
+// expired, and AD Mortgage was showing the BEST RATE on the board. In the Linden capture the
+// second-cheapest rate was expired.
+//
+// The vendor tells us plainly: every leaf carries `expired`, and `ratePeriod.validAsOf` stamps the
+// sheet it was priced from. We were dropping both. `parseFull` surfaced `flags.expired` and nothing
+// else; `parse()` — the DISPLAY summary, the one an officer actually reads — surfaced neither, and
+// no parsed result carried a quote time at all. So a stale rate was presented exactly like a live
+// one, with nothing on the object a caller could have checked even if they had thought to.
+//
+// This is worse than a 500, and the reason is worth stating: a 500 fails loudly and nobody quotes
+// anybody. A quietly stale rate is handed to a borrower as a real number.
+//
+// Nothing here FILTERS. An expired sheet is not automatically a wrong price — a lender may not have
+// re-published because nothing changed — and silently dropping a third of the board would be its own
+// silent-substitution bug. The rule is the repo's own: fail closed and SAY SO. Every rung now carries
+// its provenance, and the summary states how much of the board is stale, so a human decides.
+function rateSheetOf(leaf) {
+  const rp = leaf && leaf.ratePeriod;
+  if (!rp || typeof rp !== 'object') return { expired: !!(leaf && leaf.expired), validAsOf: null, name: null, id: null };
+  return {
+    expired: !!(leaf.expired || rp.expired),
+    validAsOf: rp.validAsOf || null,          // when the lender published this sheet
+    rateValidDate: rp.rateValidDate || null,
+    name: rp.name || null,                    // e.g. "The Loan Store - NDC Orange 2"
+    id: rp.id || null,
+    parentInvalid: !!rp.parentRateOrCompanyInvalid,
+  };
+}
+// The board-level staleness picture, plus WHEN this quote was priced. A parsed result used to carry
+// no timestamp of any kind, so "is this quote fresh?" was unanswerable from the object itself.
+function rateSheetSummary(raw, options) {
+  const total = options.length;
+  const expired = options.filter((o) => o && o.rateSheet && o.rateSheet.expired).length;
+  const stamps = options.map((o) => o && o.rateSheet && o.rateSheet.validAsOf).filter(Boolean).sort();
+  const lenders = new Set(options.filter((o) => o && o.rateSheet && o.rateSheet.expired).map((o) => o.lender));
+  const search = raw && typeof raw === 'object' ? raw.search : null;
+  return {
+    pricedAt: (search && search.date) || null,     // the vendor's own stamp for this search
+    optionCount: total,
+    expiredCount: expired,
+    liveCount: total - expired,
+    expiredPct: total ? Math.round((expired / total) * 1000) / 10 : 0,
+    expiredLenders: Array.from(lenders).sort(),
+    oldestSheet: stamps.length ? stamps[0] : null,
+    newestSheet: stamps.length ? stamps[stamps.length - 1] : null,
+  };
+}
+
 function parse(raw) {
   const { options } = collectOptions(raw);
   if (!options.length) return parseFallback(raw); // synthetic / non-grouped shapes
@@ -1239,14 +1296,22 @@ function parse(raw) {
       basePoints: pb.basePoints, adjustmentPoints: pb.adjustmentPoints, apr: pb.apr,
       monthly: o.monthlyPayment ? num(o.monthlyPayment.monthlyPI != null ? o.monthlyPayment.monthlyPI : o.monthlyPayment.total) : null,
       lockDays: o.terms.dayLock, term: o.terms.term, adjustmentCount: o.adjustments.length,
+      // §37.12 — a rung an officer reads must say whether its rate sheet is still good. Measured:
+      // 37-61% of a real board is priced off an expired sheet, sometimes the best rate on it.
+      expired: !!(o.rateSheet && o.rateSheet.expired),
+      rateSheetValidAsOf: (o.rateSheet && o.rateSheet.validAsOf) || null,
     });
   }
   finishPrograms(programs);
+  const rateSheets = rateSheetSummary(raw, options);
   return {
     programCount: programs.length,
     lenderCount: new Set(programs.map((p) => p.lender)).size,
     rungCount: programs.reduce((n, p) => n + p.rungCount, 0),
-    disqualifiedCount: countArrays(raw, ['disqualifiedData', 'disqualified']),
+    disqualifiedCount: disqualifiedCountOf(raw),
+    // §37.12 — the board's staleness, stated rather than left to be discovered.
+    pricedAt: rateSheets.pricedAt,
+    rateSheets,
     programs,
   };
 }
@@ -1279,11 +1344,15 @@ function parseFull(raw, opts = {}) {
     p.optionCount = p.options.length;
     p.minRate = p.options.length ? p.options[0].priceBuild.noteRate : null;
   }
+  const rateSheets = rateSheetSummary(raw, options);
   return {
     programCount: programs.length,
     lenderCount: new Set(programs.map((p) => p.lender)).size,
     optionCount: options.length,
-    disqualifiedCount: countArrays(raw, ['disqualifiedData', 'disqualified']),
+    disqualifiedCount: disqualifiedCountOf(raw),
+    // §37.12 — provenance rides on every option (o.rateSheet); this is the board-level picture.
+    pricedAt: rateSheets.pricedAt,
+    rateSheets,
     lenders: Object.values(dtoMap),
     programs,
   };
@@ -1320,7 +1389,7 @@ function parseFallback(raw) {
     for (const k of Object.keys(node)) { if (k === 'key') continue; const v = node[k]; if (v && typeof v === 'object') walk(v, nextCtx); }
   }
   finishPrograms(programs);
-  return { programCount: programs.length, lenderCount: new Set(programs.map((p) => p.lender)).size, rungCount: programs.reduce((n, p) => n + p.rungCount, 0), disqualifiedCount: countArrays(raw, ['disqualifiedData', 'disqualified']), programs };
+  return { programCount: programs.length, lenderCount: new Set(programs.map((p) => p.lender)).size, rungCount: programs.reduce((n, p) => n + p.rungCount, 0), disqualifiedCount: disqualifiedCountOf(raw), programs };
 }
 function firstNum(o, keys) { for (const k of keys) { if (o[k] != null && isFinite(Number(o[k]))) return Number(o[k]); } return null; }
 function firstStr(o, keys) { if (!o || typeof o !== 'object') return null; for (const k of keys) { const v = o[k]; if (typeof v === 'string' && v.trim()) return v.trim(); } return null; }
@@ -1471,21 +1540,28 @@ function summarizeRaw(raw) {
   };
 }
 // Sum the lengths of any arrays reachable under the named keys anywhere in the tree.
-function countArrays(root, keys) {
-  let n = 0; const stack = [root]; const seen = new Set();
-  while (stack.length) {
-    const node = stack.pop();
-    if (node == null || typeof node !== 'object' || seen.has(node)) continue;
-    seen.add(node);
-    for (const k of Object.keys(node)) {
-      const v = node[k];
-      if (keys.includes(k) && Array.isArray(v)) n += v.length;
-      if (v && typeof v === 'object') stack.push(v);
-    }
-  }
-  return n;
+// §37.13 — THE INELIGIBLE COUNT COULD NEVER BE ANYTHING BUT ZERO.
+//
+// `countArrays(raw, ['disqualifiedData','disqualified'])` only adds `v.length` where the value AT
+// that key IS AN ARRAY. In the real vendor response `results.disqualifiedData` is an OBJECT (the
+// root of the same 4-level grouped tree the qualified side uses) and `leaf.disqualified` is a
+// BOOLEAN. Neither is ever an array, so the sum was structurally incapable of being non-zero — and
+// it reaches the API as `meta.disqualifiedCount`, telling a caller "0 products were ineligible" on
+// top of a tree of ineligible products.
+//
+// It survived because the test that guards it feeds `disqualifiedData: [{}, {}, {}]` — an ARRAY, at
+// the top level, with no `results` wrapper: a shape the vendor never returns. A fixture invented to
+// satisfy an implementation proves only that the implementation matches the fixture.
+//
+// `parseDisqualified` already walks the real tree correctly. This just asks it, instead of counting
+// arrays that do not exist. It stays cheap on the common path: the poll response is the only one
+// that carries a populated tree, and on a kickoff the root is empty so the walk ends immediately.
+function disqualifiedCountOf(raw) {
+  try { const d = parseDisqualified(raw); return (d && typeof d.itemCount === 'number') ? d.itemCount : 0; }
+  catch (_) { return 0; }
 }
-
+// (countArrays was removed with its last caller — it counted arrays at keys the vendor never
+// returns as arrays, which is precisely how the ineligible count came to be permanently zero.)
 // Authenticated pricing readiness for /health — proves more than "configured": that a login
 // SUCCEEDS and the live pricing-config endpoints (defaultSearch + SMO) answer, with live-vs-fallback
 // provenance. With { price:true } it also runs a real minimal searchRaw so callers can confirm
