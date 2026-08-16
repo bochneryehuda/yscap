@@ -91,16 +91,25 @@ const withPpp = sm.buildSearch({ ...S, dscr: 1.25, prepayMonths: 60 });
 const names = withPpp.criteria.specialMortgageOptions.map((o) => o.name);
 ok(JSON.stringify(names) === JSON.stringify(['5 Yr PPP', 'Debt Service Coverage Ratio', 'DSCR', 'DSCR >=1.25 - J']),
   'SMO-1 order is [PPP, DSCVR, DSCR, band] — band appended last');
-// Without a prepay the band still sits after the DSCR pair.
+// An OMITTED prepay is not "no prepay": it takes the DSCR profile's five-year Standard default, so
+// the PPP option is still first and the band still sits after the DSCR pair. (This assertion used to
+// read [DSCVR, DSCR, band] — it was written when omission inherited the foundation's prepay, which
+// the 2026-08-16 audit reversed: omitting prepay is the ORDINARY quote, and inheriting left it at
+// 36 months with no PPP option on a book the owner quotes at five years.)
 const noPpp = sm.buildSearch({ ...S, dscr: 0.90 });
-ok(JSON.stringify(noPpp.criteria.specialMortgageOptions.map((o) => o.name)) === JSON.stringify(['Debt Service Coverage Ratio', 'DSCR', 'DSCR <1.15']),
-  'SMO-2 no prepay: [DSCVR, DSCR, band]');
+ok(JSON.stringify(noPpp.criteria.specialMortgageOptions.map((o) => o.name)) === JSON.stringify(['5 Yr PPP', 'Debt Service Coverage Ratio', 'DSCR', 'DSCR <1.15']),
+  'SMO-2 omitted prepay: [5 Yr PPP (profile default), DSCVR, DSCR, band]');
 
 // ---- bands with no band SMO add nothing beyond the DSCR pair ---------------
+// Asserted by NAME rather than by list length. A length check conflates "no band was added" with
+// "nothing else was added", so it broke the moment the profile started contributing its own PPP
+// option — and would equally have passed if a band went missing while some unrelated option appeared.
+const BANDS = ['DSCR <1.15', 'DSCR >=1.00', 'DSCR >=1.25 - J'];
 for (const d of [0, 0.5, 0.7]) {
   const m = sm.buildSearch({ ...S, dscr: d });
-  ok(m.criteria.specialMortgageOptions.length === 2,
-    `SMO-NONE dscr=${d} adds no band SMO (DSCR pair only)`);
+  const names = m.criteria.specialMortgageOptions.map((o) => o.name);
+  ok(!names.some((n) => BANDS.includes(n)),
+    `SMO-NONE dscr=${d} adds no pricing-band SMO (${JSON.stringify(names)})`);
 }
 
 // ---- FAIL-CLOSED: an omitted DSCR clears a stale foundation DSCRRATIO ------

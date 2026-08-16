@@ -1,5 +1,5 @@
 -- ============================================================================
--- 566_appraisal_payment_charge.sql — THE RECEIPT, AND THE CLAIM THAT STOPS A
+-- 568_appraisal_payment_charge.sql — THE RECEIPT, AND THE CLAIM THAT STOPS A
 -- SECOND CHARGE.
 --
 -- db/562 recorded WHICH of the ways an appraisal was to be paid; db/563 widened
