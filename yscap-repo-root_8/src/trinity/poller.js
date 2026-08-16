@@ -49,6 +49,64 @@ async function pollOnce() {
 }
 
 /**
+ * PLACE the orders that were minted but never reached Trinity.
+ *
+ * The owner's rule is that a physical inspection is ordered the moment the draw comes in.
+ * Both automatic doors mint the order record and then call `placeOrder` ONCE, fire and
+ * forget — so anything that made that one call fail leaves a record with no Trinity order
+ * behind it and nothing that ever tries again: writes switched off during setup,
+ * credentials not in yet, Trinity unreachable for ten minutes, a lease lost to another
+ * driver mid-deploy. The inspection then simply never happens, quietly, and the first
+ * anybody knows is a draw that has been sitting for a week.
+ *
+ * So a small sweep re-drives them, and every guard below exists because placing an order
+ * spends real money and dispatches a real person:
+ *
+ *   · only when WRITES ARE ON — with them off `placeOrder` refuses anyway, and sweeping
+ *     would just burn the lease on every tick;
+ *   · never a record carrying a `blocked_reason` — that is Trinity or our own validation
+ *     saying something is missing on the FILE (no contractor email, no loan number), and
+ *     re-asking every ten minutes cannot fix it. A human clears it by fixing the file and
+ *     pressing the desk's own button, which clears the reason;
+ *   · never a CANCELLED one, and never one somebody is mid-flight on (the 10-minute lease
+ *     inside `placeOrder` is what actually enforces that — this only avoids the noise);
+ *   · a small batch, oldest first, so a backlog drains steadily rather than in a burst of
+ *     order placements nobody expected.
+ *
+ * `placeOrder` is idempotent by construction (the `customerKey` is an exactly-once key and
+ * a 409 is RESOLVED, never retried), so re-driving is safe even if a previous attempt got
+ * further than we could see.
+ */
+async function placePendingOnce(limit = 5) {
+  if (!client.available() || !client.enabled()) return { skipped: 'off' };
+  if (!client.outboundEnabled() && !client.dryrun()) return { skipped: 'writes_off' };
+  let rows;
+  try {
+    rows = (await db.query(
+      `SELECT id, application_id FROM trinity_inspection_orders
+        WHERE trinity_order_id IS NULL
+          AND status = 'requested'
+          AND blocked_reason IS NULL
+          AND (order_claimed_at IS NULL OR order_claimed_at < now() - interval '10 minutes')
+        ORDER BY created_at
+        LIMIT $1`, [limit])).rows;
+  } catch (e) {
+    console.warn('[trinity] pending-order query failed:', e && e.message);
+    return { error: e.message };
+  }
+  let placed = 0, blocked = 0, failed = 0;
+  for (const r of rows) {
+    try {
+      const out = await require('./order').placeOrder(r.application_id, r.id);
+      if (out && out.ok) placed++;
+      else if (out && out.blocked) blocked++;
+      else if (out && out.error) failed++;
+    } catch (e) { failed++; console.warn('[trinity] placement retry failed for order', r.id, e && e.message); }
+  }
+  return { placed, blocked, failed, considered: rows.length };
+}
+
+/**
  * Drain the webhook inbox. A delivery is only ever a NUDGE — nothing in the body is
  * believed. We resolve the order it names and then re-read everything from the
  * authenticated API, which is why a spoofed delivery can do nothing worse than make us
@@ -99,6 +157,10 @@ function start() {
   const sec = Math.max(60, (cfg.trinity && cfg.trinity.pollSec) || 600);
   const tick = async () => {
     try { await pollOnce(); } catch (e) { console.warn('[trinity] poll tick:', e && e.message); }
+    // …and re-drive anything that was minted but never actually reached Trinity, so a
+    // ten-minute outage during a draw submission does not mean the inspection is never
+    // ordered at all. Its own guards make it a no-op when writes are off.
+    try { await placePendingOnce(); } catch (e) { console.warn('[trinity] placement tick:', e && e.message); }
   };
   const drainTick = async () => {
     try { await drainWebhooksOnce(); } catch (e) { console.warn('[trinity] webhook drain:', e && e.message); }
@@ -114,4 +176,4 @@ function stop() {
   if (_drain) { clearInterval(_drain); _drain = null; }
 }
 
-module.exports = { start, stop, pollOnce, drainWebhooksOnce };
+module.exports = { start, stop, pollOnce, placePendingOnce, drainWebhooksOnce };
