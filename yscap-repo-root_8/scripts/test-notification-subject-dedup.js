@@ -82,6 +82,11 @@ const notify = require('../src/lib/notify');
 
     console.log(`\nAll ${n} subject-dedup checks passed.`);
   } finally {
+    // Wait for the fire-and-forget email fan-out before tearing down: its
+    // sent_emails INSERT is still in flight when the fan-out resolves, and it
+    // deadlocks with the DELETEs below (notify.js documents this and exports
+    // drainEmails for exactly this).
+    await require('../src/lib/notify').drainEmails().catch(() => {});
     if (app) { await db.query(`DELETE FROM notifications WHERE application_id=$1`, [app]).catch(() => {});
       await db.query(`DELETE FROM application_assignees WHERE application_id=$1`, [app]).catch(() => {});
       await db.query(`DELETE FROM applications WHERE id=$1`, [app]).catch(() => {}); }

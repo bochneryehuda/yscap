@@ -54,6 +54,11 @@ email.sendMail = async (m) => { sent.push(m); return { ok: true }; };
   ok('borrower email scrubs partner names in title, body, lines, callout, hero, and badge');
 
   await db.query(`DELETE FROM notifications WHERE application_id=$1`, [app.id]).catch(() => {});
+  // Wait for the fire-and-forget email fan-out before tearing down: its
+  // sent_emails INSERT is still in flight when the fan-out resolves, and it
+  // deadlocks with the DELETEs below (notify.js documents this and exports
+  // drainEmails for exactly this).
+  await require('../src/lib/notify').drainEmails().catch(() => {});
   await db.query(`DELETE FROM applications WHERE id=$1`, [app.id]).catch(() => {});
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [br.id]).catch(() => {});
 

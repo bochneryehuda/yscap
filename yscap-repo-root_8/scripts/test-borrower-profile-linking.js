@@ -311,6 +311,11 @@ function call(server, method, path, token, body) {
     // Order matters: the file references the borrower, the borrower references
     // the officer. Leaving rows behind would make a LATER run of this test fail
     // for the wrong reason (a stale profile holding a name or an SSN).
+    // Wait for the fire-and-forget email fan-out before tearing down: its
+    // sent_emails INSERT is still in flight when the fan-out resolves, and it
+    // deadlocks with the DELETEs below (notify.js documents this and exports
+    // drainEmails for exactly this).
+    await require('../src/lib/notify').drainEmails().catch(() => {});
     await db.query(`DELETE FROM clickup_task_index WHERE task_id LIKE $1`, [`bpl-task-${sfx}%`]).catch(() => {});
     await db.query(`DELETE FROM applications WHERE borrower_id IN (SELECT id FROM borrowers WHERE email LIKE $1)`,
       [`bpl-%${sfx}@test.local`]).catch(() => {});

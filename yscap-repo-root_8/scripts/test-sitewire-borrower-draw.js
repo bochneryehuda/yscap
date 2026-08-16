@@ -97,6 +97,14 @@ function png() { const W = 6, H = 6; const ih = Buffer.alloc(13); ih.writeUInt32
   ok('draw_dispute_resolved notification row created for the borrower', after === before + 1);
 
   console.log(`\n${fail === 0 ? 'ALL' : fail + ' FAILED,'} ${pass} borrower-draw assertions ${fail === 0 ? 'passed' : ''}`);
+  // The email fan-out is FIRE-AND-FORGET (notify.js `_track`), so `notifyAppBorrowers`
+  // above resolves while its `sent_emails` INSERT is still running — measured, not
+  // assumed: the row is absent the instant the fan-out resolves and present after the
+  // drain. That INSERT and the cleanup DELETE below then take each other's locks on
+  // `notifications` and Postgres kills one of them (40P01) — which is exactly how this
+  // job went red on main at 17:01 UTC, after all 14 assertions had already passed.
+  // notify.js documents this and exports the drain for it; the fix is to call it.
+  await notify.drainEmails().catch(() => {});
   await db.query(`DELETE FROM applications WHERE id=$1`, [app]); await db.query(`DELETE FROM borrowers WHERE id=$1`, [bor]);
   process.exit(fail === 0 ? 0 : 1);
 })().catch((e) => { console.error('THREW', e); process.exit(1); });

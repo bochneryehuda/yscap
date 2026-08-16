@@ -284,6 +284,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await db.query(`DELETE FROM sitewire_job_item_links WHERE application_id=$1`, [app]);
   await db.query(`DELETE FROM sitewire_draws WHERE application_id=$1`, [app]);
   await db.query(`DELETE FROM sitewire_property_links WHERE application_id=$1`, [app]);
+  // Wait for the fire-and-forget email fan-out before tearing down: its
+  // sent_emails INSERT is still in flight when the fan-out resolves, and it
+  // deadlocks with the DELETEs below (notify.js documents this and exports
+  // drainEmails for exactly this).
+  await require('../src/lib/notify').drainEmails().catch(() => {});
   await db.query(`DELETE FROM applications WHERE id = ANY($1)`, [[app, app2, app3]]);
   await db.query(`DELETE FROM borrowers WHERE id = ANY($1)`, [[bor, bor2, bor3]]);
   await db.query(`DELETE FROM staff_users WHERE id = ANY($1)`, [[coord, lo]]);
