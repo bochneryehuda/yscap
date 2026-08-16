@@ -136,16 +136,33 @@ ordering screen.
 
 ---
 
-## Step 7 — The webhook (optional, recommended)
+## Step 7 — The webhook
 
 Without it PILOT still learns everything, by re-checking each open order every five
 minutes. With it, PILOT is told the moment something changes.
 
-**Give Richer Values this URL:**
+**The receiver is already live in production and already refuses everything.** Verified
+2026-08-16: a POST with no credentials answers `401 {"error":"unauthorized"}`, which is
+the whole of our half working — it fails closed until a secret is configured, because an
+unauthenticated public URL that writes rows is worse than one that is switched off.
+
+**The URL to give Richer Values:**
 
 ```
-https://<our production domain>/api/richer-value/webhook
+https://pilot.yscapgroup.com/api/richer-value/webhook
 ```
+
+> **A NOTE ON WHAT WAS FIXED HERE, because it would have been invisible.** Until
+> 2026-08-16 the receiver stored their tokens JSON-QUOTED — `"intake-tok"` rather than
+> `intake-tok` — because the five TEXT columns were run through `F.jsonbText`, which is
+> `JSON.stringify` and belongs only to the jsonb column. `sync.js` resolves a delivery
+> with `WHERE intake_token = $1` against `rv_orders`, which holds the token clean, so
+> **not one delivery could ever have been matched to an order.** Every event would have
+> authenticated, stored and answered 200, and the five-minute poll would have kept the
+> desk up to date — so the push half would simply never have done anything, and nothing
+> would have looked wrong. It is now guarded by `scripts/test-richer-value-webhook-db.js`,
+> which asserts the JOIN rather than the row, because testing the receiver alone cannot
+> see this class at all.
 
 Ask them to send a header with it, and set the matching keys here:
 

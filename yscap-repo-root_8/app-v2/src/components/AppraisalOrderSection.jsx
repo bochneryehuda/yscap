@@ -1042,6 +1042,30 @@ function RicherValueBuilder({ appId, cfg, onPlaced }) {
             </div>
           ) : null}
 
+          {/*
+            AFTER THE WORK — the answer Richer Values need in order to price an ARV.
+            Their own screen offers a "same-unchanged" option; their API has no such
+            value (their proposed_* fields take numbers and nothing else, measured),
+            so ticking this sends the property's figures as they stand today. Only
+            offered on a report that asks for after-work figures AND knows the
+            figures today — on a ground-up there is no "now" to be the same as.
+          */}
+          {preview.choices && preview.choices.asksProposedStats !== false
+            && preview.choices.asksCurrentStats !== false ? (
+              <div style={{ marginTop: 10, fontSize: 13, color: INK }}>
+                <label style={{ display: 'inline-flex', gap: 7, alignItems: 'center', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={!!choices.proposedSameAsCurrent}
+                    onChange={(e) => setOverride('proposedSameAsCurrent', e.target.checked ? '1' : '0')} />
+                  After the work it is the same — no change to the size, bedrooms or bathrooms
+                </label>
+                <div style={{ fontSize: 12, color: MUTED, marginTop: 4, lineHeight: 1.45 }}>
+                  {choices.proposedSameAsCurrent
+                    ? 'The property’s figures as they stand today will be sent as the figures after the work.'
+                    : 'Otherwise fill in what the property will be after the work below. Richer Values cannot produce an after-repair value without it — an order left blank, or sent as zero, sits with them and never starts.'}
+                </div>
+              </div>
+            ) : null}
+
           {/* ── what it costs, for this property ────────────────────────── */}
           {price ? (
             <div className="aord-figs" style={{ gridTemplateColumns: '1fr' }}>

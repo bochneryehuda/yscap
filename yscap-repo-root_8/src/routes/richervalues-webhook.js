@@ -16,8 +16,21 @@
  * ClickUp / DocuSign / TrustPoint / Class webhooks: their payloads are tiny and
  * the global 32MB parser is not the right thing to point at a public URL. That
  * also means this router sits ABOVE the request-boundary NUL stripper, so
- * anything reaching a text or jsonb column goes through `F.jsonbText` here — the
- * same rule those webhooks follow, for the same reason.
+ * everything written from here strips U+0000 itself — Postgres refuses one in a
+ * text column (22021) and in a jsonb string (22P05), by two different paths.
+ *
+ * TEXT COLUMNS TAKE `F.textColumn`; ONLY THE JSONB COLUMN TAKES `F.jsonbText`.
+ * That distinction is the whole of a bug this receiver shipped with, found by the
+ * A-to-Z audit on 2026-08-16 before their team had pointed anything at us:
+ * `jsonbText` is `JSON.stringify`, so running the five TEXT columns through it
+ * stored `"intake-tok"` — WITH the quotes. `sync.js` resolves an event by
+ * `SELECT … WHERE intake_token = $1` against `rv_orders`, which holds the token
+ * clean, so **not one delivery could ever have been matched to an order**. The
+ * failure is invisible from the outside: every event authenticates, stores and
+ * answers 200, and the five-minute poll keeps the desk up to date, so the push
+ * half would simply never have done anything. The same call also double-encoded
+ * the payload (`JSON.stringify(jsonbText(body))`), leaving a jsonb STRING where
+ * the object should be, which would defeat any later replay.
  *
  * AUTH FAILS CLOSED. With no webhook credentials configured, every delivery is
  * refused: an unauthenticated public endpoint that writes rows is worse than a
@@ -118,9 +131,17 @@ router.post('/', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
        ON CONFLICT (payload_hash) DO NOTHING
        RETURNING id`,
-      [F.jsonbText(body.order_type), F.jsonbText(data.action_type), F.jsonbText(data.action),
-        F.jsonbText(body.intake_token), F.jsonbText(body.order_token),
-        parseTime(body.datetime), JSON.stringify(F.jsonbText(body) || {}), hash]);
+      // The five TEXT columns are trimmed strings — a token stored as `"tok"`
+      // matches no order for ever (see the header). The jsonb column takes the
+      // object with NULs stripped from keys and values, encoded exactly once.
+      // A TOKEN IS AN IDENTITY, SO IT IS NEVER TRUNCATED. `textColumn` defaults to
+      // 200 characters, which is right for prose and wrong for a key we match on:
+      // a token clipped at 200 matches no order, silently, exactly like the quoting
+      // bug this replaced. Theirs are ~33 today; the ceiling is generous so a
+      // longer one they issue later still matches.
+      [F.textColumn(body.order_type), F.textColumn(data.action_type), F.textColumn(data.action),
+        F.textColumn(body.intake_token, null, 2000), F.textColumn(body.order_token, null, 2000),
+        parseTime(body.datetime), JSON.stringify(F.stripNulDeep(body || {})), hash]);
     rowId = ins.rows[0] ? ins.rows[0].id : null;
   } catch (e) {
     // A body we could not store is still worth acknowledging — refusing it makes

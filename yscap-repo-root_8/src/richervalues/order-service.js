@@ -305,6 +305,9 @@ function resolveChoices(ctx, catalogue, overrides = {}, tokens = {}) {
     isBasement: o.isBasement,
     isBasementFinished: o.isBasementFinished,
 
+    // "Same as now" — the only way to say their screen's "same-unchanged" over an
+    // API whose proposed_* fields take numbers and nothing else. See order-build.
+    proposedSameAsCurrent: bool(o.proposedSameAsCurrent, false),
     proposedAboveGradeSqft: o.proposedAboveGradeSqft,
     proposedBelowGradeSqft: o.proposedBelowGradeSqft,
     proposedBedrooms: o.proposedBedrooms,

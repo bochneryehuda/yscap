@@ -473,12 +473,15 @@ function buildOrder(ctx = {}, choices = {}) {
   const currentStatsAsked = choices.asksCurrentStats !== false;
   const curOpt = currentStatsAsked ? {} : { optional: true };
 
-  specField('above_grade_sqft', 'Living area (above grade)', choices.aboveGradeSqft, spec('aboveGradeSqft'), { positive: true, ...curOpt });
+  // The values are CAPTURED because "same as now" (§ the proposed block below) can
+  // only be expressed over their API by echoing these exact figures — their
+  // proposed_* fields accept numbers and nothing else.
+  const curAbove = specField('above_grade_sqft', 'Living area (above grade)', choices.aboveGradeSqft, spec('aboveGradeSqft'), { positive: true, ...curOpt });
   // Below-grade square footage is legitimately zero on most properties, so a
   // known-zero is a real answer and only an UNKNOWN is missing.
-  specField('below_grade_sqft', 'Below-grade area', choices.belowGradeSqft, spec('belowGradeSqft'), { ...curOpt });
-  specField('bedrooms', 'Bedrooms', choices.bedrooms, spec('bedrooms'), { positive: true, ...curOpt });
-  specField('bathrooms', 'Bathrooms', choices.bathrooms, spec('bathrooms'), { positive: true, asInt: false, ...curOpt });
+  const curBelow = specField('below_grade_sqft', 'Below-grade area', choices.belowGradeSqft, spec('belowGradeSqft'), { ...curOpt });
+  const curBeds = specField('bedrooms', 'Bedrooms', choices.bedrooms, spec('bedrooms'), { positive: true, ...curOpt });
+  const curBaths = specField('bathrooms', 'Bathrooms', choices.bathrooms, spec('bathrooms'), { positive: true, asInt: false, ...curOpt });
   specField('year_built', 'Year built', choices.yearBuilt, spec('yearBuilt'), { positive: true, ...curOpt });
 
   if (resType && NO_LOT_TYPES.has(resType)) {
@@ -503,18 +506,75 @@ function buildOrder(ctx = {}, choices = {}) {
   // them to a report that does not is refused, so the caller passes
   // `asksProposedStats` straight off the vendor's own report-type catalogue
   // rather than a list retyped here.
+  // ZERO IS NOT AN ANSWER, AND "SAME AS NOW" HAS TO BE SPELLED OUT IN NUMBERS.
+  // Their CEO, on a real order of ours that stalled (2026-08-16): *"your property
+  // stats are not completed and the 'proposed stats' are entered as 0. Instead,
+  // you'll either want to enter same-unchanged or enter property specs."*
+  //
+  // Two separate faults, and the first one is the dangerous kind — it passed
+  // validation. Their validator accepts `proposed_bedrooms=0` without a word
+  // (measured), so the order was ACCEPTED and then sat unworkable at their end,
+  // because nobody can price the after-repair value of a house with no bedrooms.
+  // A build that only asks "did they refuse it?" cannot see that class at all.
+  //
+  // "SAME-UNCHANGED" IS THEIR SCREEN'S WORD, NOT AN API VALUE — also measured:
+  // `proposed_bedrooms='same-unchanged'` comes back `"Proposed Bedrooms" must be a
+  // number`, and every plausible flag spelling (`proposed_stats_same`,
+  // `same_unchanged`, …) comes back `is not allowed`. So over the API the ONLY way
+  // to say "the work does not change the layout" is to send today's figures again,
+  // which is why the current values are captured above.
+  //
+  // AND AN ANSWER IS NOW REQUIRED rather than quietly omitted. This report exists
+  // to produce an after-repair value; leaving the after figures blank is how the
+  // stalled order happened. `need()` surfaces them on the screen for a human,
+  // which is this desk's whole discipline — never guess a figure the report is
+  // priced off.
+  const sameAsNow = choices.proposedSameAsCurrent === true && currentStatsAsked;
   const proposed = [
-    ['proposed_above_grade_sqft', 'Living area after the work', choices.proposedAboveGradeSqft, ctx.proposed && ctx.proposed.aboveGradeSqft],
-    ['proposed_below_grade_sqft', 'Below-grade area after the work', choices.proposedBelowGradeSqft, null],
-    ['proposed_bedrooms', 'Bedrooms after the work', choices.proposedBedrooms, null],
-    ['proposed_bathrooms', 'Bathrooms after the work', choices.proposedBathrooms, null],
+    ['proposed_above_grade_sqft', 'Living area after the work', choices.proposedAboveGradeSqft, ctx.proposed && ctx.proposed.aboveGradeSqft, curAbove, true],
+    // A finished basement of zero after the work is a real answer, exactly as it is
+    // today — so this one is never demanded and never dropped for being zero.
+    ['proposed_below_grade_sqft', 'Below-grade area after the work', choices.proposedBelowGradeSqft, null, curBelow, false],
+    ['proposed_bedrooms', 'Bedrooms after the work', choices.proposedBedrooms, null, curBeds, true],
+    ['proposed_bathrooms', 'Bathrooms after the work', choices.proposedBathrooms, null, curBaths, true],
   ];
-  for (const [field, label, chosen, fromFile] of proposed) {
-    const v = num(chosen != null && chosen !== '' ? chosen : fromFile);
-    if (v == null) continue;
-    if (choices.asksProposedStats === false) { drop(field, 'This report does not ask for after-renovation figures.'); continue; }
+  for (const [field, label, chosen, fromFile, currentValue, positiveOnly] of proposed) {
+    if (choices.asksProposedStats === false) {
+      if (num(chosen) != null || num(fromFile) != null) drop(field, 'This report does not ask for after-renovation figures.');
+      continue;
+    }
+    let v = num(chosen != null && chosen !== '' ? chosen : fromFile);
+    let why = null;
+    if (v == null && sameAsNow && currentValue != null) {
+      v = currentValue;
+      why = 'The work does not change this, so the property’s figure today is sent as the figure after the work.';
+    }
+    // A zero where a real number belongs states nothing — it is an empty box, not
+    // an answer, and sending it is what made their analyst stop.
+    if (v != null && positiveOnly && !(v > 0)) {
+      drop(field, 'Zero is not an answer here — Richer Values cannot value a property with none of these, so it is left for a human rather than sent.');
+      v = null;
+    }
+    if (v == null) {
+      // DEMANDED ONLY WHERE WE KNOW THE REPORT ASKS. `asksProposedStats` comes off
+      // their catalogue, which is cached and falls back to a stale copy, so
+      // `undefined` means "we could not read their catalogue at all" — and
+      // demanding after-work figures for a report that may not even want them
+      // would be its own error, blocking an order on a question nobody asked.
+      // The ZERO rule above is deliberately NOT gated this way: sending a figure
+      // that states nothing is wrong on every report, catalogue or no catalogue.
+      if (positiveOnly && choices.asksProposedStats === true) {
+        need(field, label, sameAsNow
+          ? 'The property’s figure today is not known, so “same as now” has nothing to copy — type what it will be after the work.'
+          : 'Say what the property will be after the work, or tick “same as now” if the work does not change it.');
+      }
+      continue;
+    }
     set(field, String(v));
-    if ((chosen == null || chosen === '') && fromFile != null) derived(field, label, v, 'Taken from the loan file’s after-renovation square footage.');
+    if (why) derived(field, label, v, why);
+    else if ((chosen == null || chosen === '') && fromFile != null) {
+      derived(field, label, v, 'Taken from the loan file’s after-renovation square footage.');
+    }
   }
 
   // ---- the renovation budget ---------------------------------------------
