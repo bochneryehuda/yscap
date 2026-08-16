@@ -187,6 +187,10 @@ check(access.mayManagePeople({ id: 's1', role: 'processor' },
   'the admin-role list is settings-driven, so a buyer\'s org chart is not ours');
 check(access.mayManagePeople({ id: 's1', role: 'admin' }, { 'access.adminRoles': 'nonsense' }) === true,
   'an unreadable setting falls back to OUR default rather than to nobody or everybody');
+check(access.mayManagePeople({ id: 's1', role: 'super_admin' }, { 'access.adminRoles': ['loan_officer'] }) === true,
+  'a super admin keeps the keys whatever the list says — this setting decides who may EDIT the settings, so it can edit itself out of reach, and somebody has to be able to undo that without a hand-written database row');
+check(access.adminRoles({ 'access.adminRoles': ['processor'] }).includes('super_admin'),
+  '…so the top authority is added back to the list, rather than the check quietly special-casing it somewhere else');
 
 // ── Settings declarations ───────────────────────────────────────────────────
 console.log('\nsettings — the new key is declared');

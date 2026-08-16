@@ -165,12 +165,23 @@ function mayOpenLoan(access, staffId, contacts = []) {
  * Settings-driven (`access.adminRoles`) like every other org-chart assumption here.
  * Fails CLOSED: an unreadable or non-list setting falls back to OUR default rather
  * than to "everybody".
+ *
+ * `super_admin` IS A FLOOR AND IS ADDED BACK WHATEVER THE SETTING SAYS. This one is
+ * load-bearing, not tidiness: `access.adminRoles` decides who may edit the settings,
+ * so it can edit itself out of reach. An administrator who saved `['loan_officer']`
+ * — a typo, or a buyer configuring their own org chart — would lock EVERY person in
+ * the company out of the settings screen, including the person who has to undo it,
+ * and the only remedy left would be a hand-written row in the database. A gate whose
+ * own remedy nobody at the company can perform is a dead end, so the top authority
+ * always keeps the key.
  */
 const DEFAULT_ADMIN_ROLES = ['super_admin', 'admin'];
+const ADMIN_FLOOR_ROLE = 'super_admin';
 
 function adminRoles(settings = {}) {
   const v = settings['access.adminRoles'];
-  return Array.isArray(v) && v.length ? v.map(String) : DEFAULT_ADMIN_ROLES;
+  const configured = Array.isArray(v) && v.length ? v.map(String) : DEFAULT_ADMIN_ROLES;
+  return configured.includes(ADMIN_FLOOR_ROLE) ? configured : [ADMIN_FLOOR_ROLE, ...configured];
 }
 
 /**
@@ -207,6 +218,7 @@ module.exports = {
   LT_ROLES,
   DEFAULT_ROLE_SCOPES,
   DEFAULT_ADMIN_ROLES,
+  ADMIN_FLOOR_ROLE,
   adminRoles,
   mayManagePeople,
   longTermRoleFor,

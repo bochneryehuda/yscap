@@ -51,4 +51,9 @@ router.use('/pipeline', require('./routes/pipeline'));
 // they open on (the owner's switch), remembered per user. /api/lt/me
 router.use('/me', require('./routes/me'));
 
+// The settings — the sellable-LOS rule made usable. Two screens, one endpoint:
+// COMPANY scope (admin) and the person's own (anyone, their own only).
+// /api/lt/settings
+router.use('/settings', require('./routes/settings'));
+
 module.exports = { router };
