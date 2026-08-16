@@ -13,6 +13,12 @@
  * Pure + offline — safe to unit-test with no network. LT-only; no RTL imports.
  */
 const BASE = require('./search-base.json');
+const registry = require('./field-registry');
+
+// Symbol channel for registry validation warnings (invalid enum values). Symbol-keyed properties
+// are skipped by JSON.stringify, so attaching this to the built payload never pollutes the body
+// posted upstream; the route reads it to 422 an invalid value rather than silently ignoring it.
+const REGISTRY_WARNINGS = Symbol.for('lp.registryWarnings');
 
 // SMO ids observed in real captures. The DSCR pair selects the DSCR product; it is always sent.
 // These are FALLBACKS: when a live /pricing/smo registry is passed via opts.smo, the current
@@ -65,10 +71,12 @@ function mapPurpose(p) {
     : 'Refinance';
 }
 function mapProp(t) {
+  // Prefer the full registry enum (audit §17.1 — every upstream property.propertyType token).
+  const r = registry.resolvePropertyType(t);
+  if (r) return { propertyType: r.propertyType, nonWarrantableProject: !!r.nonWarrantableProject, attachmentType: r.attachmentType, units: r.units };
+  // Fallback for legacy scenario spellings the registry map does not carry; default SingleFamily.
   switch (t) {
-    case 'Unit2_4': case 'UnitDwelling_2_4': return { propertyType: 'UnitDwelling_2_4', nonWarrantableProject: false, attachmentType: 'Attached', units: 2 };
-    case 'CondoWarr': case 'Condos': case 'Condominium': return { propertyType: 'Condos', nonWarrantableProject: false, attachmentType: 'Attached', units: 1 };
-    case 'CondoNonWarr': return { propertyType: 'Condos', nonWarrantableProject: true, attachmentType: 'Attached', units: 1 };
+    case 'Condominium': return { propertyType: 'Condos', nonWarrantableProject: false, attachmentType: 'Attached', units: 1 };
     default: return { propertyType: 'SingleFamily', nonWarrantableProject: false, attachmentType: 'Detached', units: 1 };
   }
 }
@@ -143,7 +151,8 @@ function buildSearch(sc = {}, opts = {}) {
   if (sc.state != null) a.state = sc.state;
   if (sc.city != null) a.city = sc.city;
   if (sc.countyFps != null) { a.county = sc.countyFps; a.censustract = sc.countyFps; }
-  if (sc.county != null) a.countyName = sc.county;
+  if (sc.countyName != null) a.countyName = sc.countyName;
+  else if (sc.county != null) a.countyName = sc.county;
 
   // Dynamic properties are {fieldId, value} objects — set values in place.
   const dp = m.dynamicPropertiesMap || (m.dynamicPropertiesMap = {});
@@ -177,14 +186,25 @@ function buildSearch(sc = {}, opts = {}) {
   // comes back quickly (the frontend does exactly this — kick off on search, poll on the
   // "ineligible" click). We set these flags EXPLICITLY (not inherited from the base) so the
   // kickoff and poll bodies can differ ONLY in cachedDisqualified.
+  const polling = !!(opts.disqualify && opts.disqualify.cached);
   m.showDisqualify = true;
   m.showDisqualifyRules = true;     // include the actual failing RULE text, not just a flag
   m.disqualifyAsync = true;
-  m.disqualifyFullResult = false;
+  // Kickoff (cached=false) returns an EMPTY disqualify tree (the captured HAR confirms this) — it
+  // only STARTS the async computation. The POLL (cached=true) must ask for the FULL result, or the
+  // ready tree comes back empty. These are result-SHAPING flags, not search criteria, so flipping
+  // them does not change the cache slot (which is keyed on the scenario), only what is returned.
+  m.disqualifyFullResult = polling;
   m.fillLenderMap = true;
-  m.cachedDisqualified = !!(opts.disqualify && opts.disqualify.cached); // false = kick off; true = poll
+  m.cachedDisqualified = polling; // false = kick off; true = poll
+
+  // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). This runs AFTER
+  // the core overlay so it only ADDS the extensions; invalid enum values are collected as warnings
+  // (surfaced by the route as a 422 invalid_field_value — never applied, never silently ignored).
+  const reg = registry.applyRegistry(m, sc);
+  if (reg && reg.warnings && reg.warnings.length) m[REGISTRY_WARNINGS] = reg.warnings;
 
   return m;
 }
 
-module.exports = { BASE, buildSearch, smoRegistryFromList, _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp } };
+module.exports = { BASE, buildSearch, smoRegistryFromList, REGISTRY_WARNINGS, _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp } };
