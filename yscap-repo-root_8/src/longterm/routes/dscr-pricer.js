@@ -67,6 +67,9 @@ function effectiveOf(payload) {
     loanPurpose: c.loanPurpose, purchasePrice: c.purchasePrice, appraisedValue: c.appraisedValue,
     cashoutAmount: c.cashoutAmount, // the vendor-fixed numeric criteria field (audit) — shown so a caller can verify it was sent
     loanAmount: c.loanAmount, ltv: c.ltv, fico: c.fico, dscr: c.dscr,
+    // §32.3 — the derived DSCR band token actually transmitted (dynamicPropertiesMap.DSCRRATIO), so a
+    // caller can confirm the reviewed threshold table was applied to the entered DSCR.
+    dscrRatio: dyn('DSCRRATIO'),
     loanYear: c.loanYear, termsCriteria: payload.termsCriteria, termsInMonths: payload.termsInMonths,
     dayLocks: payload.brokerCriteria && payload.brokerCriteria.dayLocks, dayLocksCriteria: payload.dayLocksCriteria,
     loanType: c.loanType, loanTypeCriteria: payload.loanTypeCriteria,

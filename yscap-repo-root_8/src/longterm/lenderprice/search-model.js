@@ -166,6 +166,30 @@ function mapRentalTerm(v) {
   return t;
 }
 
+// ---- §32.3 DSCR THRESHOLD TABLE -------------------------------------------
+// The entered DSCR ratio (criteria.dscr, always the verbatim numeric value) ALSO drives a coarse
+// `DSCRRATIO` dynamic token AND — above 0.75 — one additional pricing-band special mortgage option,
+// on top of the always-present "Debt Service Coverage Ratio" + "DSCR" pair. The buckets are
+// NON-OBVIOUS and CANNOT be derived by formatting the number (0.50 → "0.75", 0.80 → "DSCR<1"), so
+// this is a REVIEWED RANGE TABLE from the confirmed §32.3 live capture, never a string built from the
+// input. Every token below is captured, not guessed. Discontinuities at 0, 0.75, 1.00, 1.25:
+//   dscr = 0            → DSCRRATIO "NoDSCR",  no band SMO
+//   0   < dscr < 0.75   → DSCRRATIO "0.75",    no band SMO
+//   0.75 ≤ dscr < 1.00  → DSCRRATIO "DSCR<1",  band SMO "DSCR <1.15"
+//   1.00 ≤ dscr < 1.25  → DSCRRATIO "DSCR>=1", band SMO "DSCR >=1.00"
+//   dscr ≥ 1.25         → DSCRRATIO "1.25",    band SMO "DSCR >=1.25 - J"
+// Returns { ratio, smo } — ratio = the DSCRRATIO dynamic value; smo = the derived band SMO name (null
+// when the band adds none). Caller passes a num()-parsed dscr (validated to [0, 2] upstream); null in
+// → null out (no DSCRRATIO written, matching an omitted DSCR).
+function dscrBand(dscr) {
+  if (dscr == null) return null;
+  if (dscr <= 0)   return { ratio: 'NoDSCR',  smo: null };
+  if (dscr < 0.75) return { ratio: '0.75',    smo: null };
+  if (dscr < 1.00) return { ratio: 'DSCR<1',  smo: 'DSCR <1.15' };
+  if (dscr < 1.25) return { ratio: 'DSCR>=1', smo: 'DSCR >=1.00' };
+  return             { ratio: '1.25',    smo: 'DSCR >=1.25 - J' };
+}
+
 // ---- §31.6/§31.8 SCENARIO-OWNERSHIP CLEARING LAYER --------------------------
 // A live /pricing/defaultSearch foundation is a SNAPSHOT of the pricing model as some earlier
 // session last left it. Cloning it (buildSearch, below) inherits every default — which is CORRECT
@@ -219,6 +243,13 @@ const SCENARIO_OWNED = [
   // is ABSENT (delete the key), never a null — a non-cash-out scenario must carry no cashoutAmount at
   // all, and a stale one inherited from the foundation is removed.
   { path: 'criteria.cashoutAmount', neutral: DELETE, why: 'cash-out amount; absent unless the caller supplies it' },
+  // §32.3 DSCR band token — a DYNAMIC property derived from the per-deal DSCR (dscrBand). It is
+  // scenario-owned exactly like criteria.dscr, so a live foundation's stale DSCRRATIO must not leak
+  // when this scenario omits dscr. Neutral is ABSENT (delete the whole {fieldId,value} object): on
+  // omission no DSCRRATIO is sent (matching an omitted DSCR); when dscr IS supplied, buildSearch's
+  // setDyn('DSCRRATIO', …) re-creates it AFTER this clear. Re-apply path is guaranteed (setDyn runs
+  // after clearScenarioOwnedFields), so the DELETE-neutral footgun above does not apply.
+  { path: 'dynamicPropertiesMap.DSCRRATIO', neutral: DELETE, why: 'DSCR band token derived from criteria.dscr — §32.3' },
   // Broker COMP-PLAN override — the audit's compPlan leak. Neutral is the base default false ("do not
   // override; the standard comp plan governs"), which neutralizes any per-session comp override
   // (rangeComplan only applies while this flag is true, so clearing the flag is sufficient and no
@@ -293,7 +324,12 @@ function buildSearch(sc = {}, opts = {}) {
   if (loan != null) c.loanAmount = loan;
   if (ltv != null) c.ltv = ltv;
   if (num(sc.fico) != null) c.fico = num(sc.fico);
-  if (num(sc.dscr) != null) c.dscr = num(sc.dscr);
+  const dscrVal = num(sc.dscr);
+  if (dscrVal != null) c.dscr = dscrVal;
+  // §32.3 — DSCR threshold band, derived ONCE from the entered DSCR. Drives both the DSCRRATIO
+  // dynamic token (set below) and the derived pricing-band SMO (pushed into specialMortgageOptions
+  // below). Null when dscr is omitted → no DSCRRATIO, no band SMO (DSCRRATIO was cleared to neutral).
+  const band = dscrBand(dscrVal);
   // Loan TERM (years). The intentional DSCR profile default is 30-year FIXED (audit §1): when the
   // scenario omits the term we FORCE 30 rather than inherit whatever a live default model carried
   // (the "some DSCR defaults are not enforced" finding). loanYear + termsCriteria must agree;
@@ -324,6 +360,11 @@ function buildSearch(sc = {}, opts = {}) {
   // Special mortgage options: DSCR pair (+ PPP), resolved to the company's CURRENT {id,name}
   // via the live registry when present, else the captured built-in ids. months===0 → "No PPP".
   const smo = SMO_DSCR.map((d) => resolveSmo(d.name, smoReg, d));
+  // §32.3 — the derived DSCR pricing-band SMO (name-only fallback; the live /pricing/smo registry
+  // supplies the id when present, else dynaToSmo lets Lender Price map the confirmed name). Pushed
+  // AFTER the DSCR pair and BEFORE the PPP unshift, so the final order matches the captured
+  // [PPP, DSCVR, DSCR, band]. Only bands ≥ 0.75 add one (band.smo null below 0.75).
+  if (band && band.smo) smo.push(resolveSmo(band.smo, smoReg, null));
   if (months != null) {
     const fb = SMO_PPP[months] || null;
     const pppName = months === 0 ? 'No PPP'
@@ -356,6 +397,10 @@ function buildSearch(sc = {}, opts = {}) {
   const dp = m.dynamicPropertiesMap || (m.dynamicPropertiesMap = {});
   const setDyn = (k, v) => { if (dp[k]) dp[k].value = v; else dp[k] = { fieldId: k, value: v }; };
   setDyn('IncomeDocType', 'DSCR');
+  // §32.3 — DSCRRATIO band token, from the reviewed threshold table (dscrBand). Written only when a
+  // DSCR was supplied; on omission it stays cleared to neutral (deleted above), never leaking a live
+  // foundation's stale token. NOT derived by formatting the number — the tokens are captured.
+  if (band) setDyn('DSCRRATIO', band.ratio);
   setDyn('AddlOccupancyType', mapRentalTerm(sc.rentalTerm));
   setDyn('GLOBAL_BorrowerType', sc.borrowerType || 'LLC');
   // Reserves — the intentional DSCR profile default is 24 MONTHS (audit §1). Forced (the
@@ -596,4 +641,4 @@ function validateScenario(sc = {}) {
 }
 
 module.exports = { BASE, buildSearch, clearScenarioOwnedFields, smoRegistryFromList, REGISTRY_WARNINGS, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE } };
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE } };
