@@ -20,7 +20,7 @@
  */
 const sm = require('../src/longterm/lenderprice/search-model');
 const route = require('../src/longterm/routes/dscr-pricer');
-const { effectiveOf, unsupportedFields } = route._internals;
+const { effectiveOf, unsupportedFields, cashoutNote } = route._internals;
 
 let pass = 0, fail = 0;
 function ok(cond, label) { if (cond) { pass++; console.log('  ok   ' + label); } else { fail++; console.log('  FAIL ' + label); } }
@@ -84,6 +84,25 @@ const neg = sm.validateScenario({ ...S, cashoutAmount: -5 });
 ok(neg.ok === false && neg.status === 422, 'ROUTE-2 a negative cash-out amount is still rejected 422 (validation unchanged)');
 const good = sm.validateScenario({ ...S, cashoutAmount: CASH });
 ok(good.ok === true, 'ROUTE-3 a valid cash-out amount passes validation (accepted, retained, not transmitted)');
+
+// ---- the route's cashoutNote transparency annotation tells the FAIL-CLOSED truth --------
+// (It is a money-field response annotation — it must never claim the amount was transmitted when it
+// was not, and must agree with effectiveScenario.cashoutAmountInternal.)
+ok(cashoutNote({ purpose: 'Cash out' }) === null, 'NOTE-0 no cash-out supplied → cashoutNote is null');
+{
+  const prev2 = process.env.LP_CASHOUT_AMOUNT_FIELD;
+  delete process.env.LP_CASHOUT_AMOUNT_FIELD;
+  const n = cashoutNote({ cashoutAmount: CASH });
+  ok(n && n.transmitted === false && n.field === null && n.value === CASH,
+    'NOTE-1 default → cashoutNote reports transmitted:false, field:null (retained, not transmitted)');
+  ok(/not transmitted/i.test(n.note) && /fail-closed|internally/i.test(n.note),
+    'NOTE-2 the note text says the amount is retained internally / NOT transmitted (never "the vendor fixed the field")');
+  process.env.LP_CASHOUT_AMOUNT_FIELD = 'CashInHand';
+  const n2 = cashoutNote({ cashoutAmount: CASH });
+  ok(n2 && n2.transmitted === true && n2.field === 'dynamicPropertiesMap.CashInHand',
+    'NOTE-3 with the escape hatch set → transmitted:true under the configured dynamic field (never criteria.cashoutAmount)');
+  if (prev2 === undefined) delete process.env.LP_CASHOUT_AMOUNT_FIELD; else process.env.LP_CASHOUT_AMOUNT_FIELD = prev2;
+}
 
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);
