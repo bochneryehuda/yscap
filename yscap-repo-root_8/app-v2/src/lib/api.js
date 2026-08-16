@@ -1318,6 +1318,16 @@ export const api = {
   // Permanently deletes the card off the file — there is no undo (the UI double-confirms).
   staffClearAppraisalCard:(appId) => req('DELETE', `/api/staff/applications/${appId}/appraisal-card`),
 
+  // ---- How an appraisal is being paid for (owner-directed 2026-08-16) ----------
+  // Payment is MANUAL. These record which of the three ways a person chose, on the
+  // two companies PILOT cannot charge (AppraisalScope, Class Valuation). Richer
+  // Values genuinely takes the payment and keeps its own `rvPay` above — the
+  // choose route refuses it on purpose, so an instruction can never say "somebody
+  // will do this by hand" about an order the vendor already charged.
+  staffAppraisalPayment:       (appId) => req('GET', `/api/staff/applications/${appId}/appraisal-payment`),
+  staffChooseAppraisalPayment: (appId, b) => req('POST', `/api/staff/applications/${appId}/appraisal-payment`, b),
+  staffSettleAppraisalPayment: (appId, b) => req('POST', `/api/staff/applications/${appId}/appraisal-payment/settle`, b),
+
   // ---- Appraisal desk: import the appraisal XML, read the property profile, resolve findings ----
   appraisalGet:            (appId) => req('GET', `/api/appraisal/${appId}`),
   appraisalImport:         (appId, b) => req('POST', `/api/appraisal/${appId}/import`, b),

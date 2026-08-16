@@ -311,21 +311,11 @@ async function loadContext(db, appId) {
 }
 
 // The appraisal payment card + its condition status for the order preview.
-async function cardStatus(db, appId) {
-  try {
-    const c = await db.query(
-      `SELECT last4, brand FROM application_payment_cards WHERE application_id = $1`, [appId]);
-    const cond = await db.query(
-      `SELECT status FROM checklist_items WHERE application_id = $1 AND tool_key = 'appraisal_card' LIMIT 1`, [appId]);
-    const row = c.rows[0];
-    return {
-      onFile: !!row,
-      last4: row ? row.last4 : null,
-      brand: row ? row.brand : null,
-      conditionStatus: cond.rows[0] ? cond.rows[0].status : null,
-    };
-  } catch (_) { return { onFile: false, last4: null, brand: null, conditionStatus: null }; }
-}
+// DELEGATES to `lib/appraisal-card.js` — the one answer to "what does this file's
+// card look like". This module and `richervalues/payment.js` each carried their own
+// and had drifted (onFile vs present, expiry vs condition status), so a caller
+// written against one shape read a real card as absent when handed the other.
+const cardStatus = (dbh, appId) => require('../lib/appraisal-card').cardStatus(dbh, appId);
 
 // ---------------------------------------------------------------------------
 // Form-selection rules (admin-editable amc_form_map rows).

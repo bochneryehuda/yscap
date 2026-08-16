@@ -1037,6 +1037,12 @@ function AppraisalOrderCard({ appId, order, onChanged, compact = false }) {
   const docs = order.returnedDocs || [];
   const hasXml = docs.some((d) => d.doc_kind === 'appraisal_xml');
   const hasPdf = docs.some((d) => d.doc_kind === 'appraisal_pdf');
+  // HOW IT IS BEING PAID FOR. Payment on an appraisal is manual by standing rule,
+  // so the desk's job is to say which of the three ways somebody chose — and, when
+  // it is one a person still has to carry out, that it is still waiting on them.
+  // Absent until somebody has chosen: an order with no instruction must read as
+  // "nobody has said yet", never as unpaid or as paid.
+  const pay = (order.payment && order.payment.describe) || null;
 
   if (compact) {
     return (
@@ -1047,6 +1053,7 @@ function AppraisalOrderCard({ appId, order, onChanged, compact = false }) {
           {v.name ? <span>· {v.name}</span> : null}
           {v.orderNumber ? <span>· their #{v.orderNumber}</span> : null}
           {v.feeCents != null ? <span>· {money(v.feeCents)}</span> : null}
+          {pay ? <span>· {pay.head}</span> : null}
         </div>
       </div>
     );
@@ -1069,6 +1076,24 @@ function AppraisalOrderCard({ appId, order, onChanged, compact = false }) {
           {v.product ? <span>Form&nbsp;<span style={{ color: '#141B22' }}>{v.product}</span></span> : null}
           {v.feeCents != null ? <span>Fee&nbsp;<span style={{ color: '#141B22' }}>{money(v.feeCents)}</span></span> : null}
           {order.orderedAt ? <span>Ordered&nbsp;<span style={{ color: '#141B22' }}>{fmtDay(order.orderedAt)}</span></span> : null}
+        </div>
+
+        {/* PAYMENT. Three readings, and they must not look alike: paid, chosen but
+            still on somebody's list, and nobody has said yet. */}
+        <div style={{ fontSize: 13.5, color: '#4B585C' }}>
+          {pay ? (
+            <>
+              <span style={{ color: pay.settled ? '#1E7B4F' : '#9A3412', fontWeight: 600 }}>
+                {pay.head}
+              </span>
+              {pay.awaitingBackOffice ? <span> — waiting on the back office</span> : null}
+              {order.payment.chosen_by_name ? (
+                <span className="muted small"> · chosen by {order.payment.chosen_by_name}</span>
+              ) : null}
+            </>
+          ) : (
+            <span className="muted">Nobody has said how this one is being paid yet.</span>
+          )}
         </div>
 
         {/* WHAT IS BACK. The two documents file themselves into the appraisal

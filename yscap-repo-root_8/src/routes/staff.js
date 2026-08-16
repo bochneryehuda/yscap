@@ -6345,6 +6345,16 @@ router.get('/applications/:id/orders', async (req, res) => {
         section: apprMeta.section || 'sec-order-appraisal',
       } : { key: null, name: apprRow.vendor_name || null, section: 'sec-order-appraisal' },
       returnedDocs: apprDocs,
+      // HOW IT IS BEING PAID FOR — read ALONGSIDE the projection, never into it.
+      // Payment is manual by standing rule, so this is a human's decision, and a
+      // human's decision must not live in a row the mirror recomputes from the
+      // vendors. Keyed `<vendor>:<orderId>` so the card can find its own without a
+      // query per order. Best-effort: a payment note that cannot be read must
+      // never take the Orders desk down with it.
+      payment: apprMeta && apprMeta.vendor && apprMeta.orderId != null
+        ? (await require('../lib/appraisal/payment-intent')
+          .forApplication(req.params.id))[`${apprMeta.vendor}:${apprMeta.orderId}`] || null
+        : null,
       tracking: {
         ...orderSla.orderState(apprRow, new Date()),
         assignedTo: apprRow.assigned_to || null,
@@ -9555,6 +9565,140 @@ router.delete('/applications/:id/appraisal-card', async (req, res) => {
     res.json({ ok: true, last4, brand, reopened: reopened.rows.length > 0, savedCopyRemains });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
+// ---------------------------------------------------------------------------
+// HOW IS THIS APPRAISAL BEING PAID FOR?
+//
+// Owner-directed 2026-08-16: *"We're gonna keep it manual. We're gonna have all
+// the options over there … send the payment link … use the card on file … use the
+// card manually. We should keep all the options open."*
+//
+// NOTHING HERE CHARGES ANYTHING, and it never will. Richer Values is the only
+// appraisal company whose payment calls we have, and it keeps its own proven route
+// (`POST /api/richervalues/orders/:id/pay`) — these routes are for AppraisalScope
+// and Class Valuation, where a person does the paying and what was missing was
+// anywhere to write down WHICH of the three ways they chose. See
+// `src/lib/appraisal/payment-options.js` for why that is the real gap.
+//
+// Gated on file access, like every other appraisal action on this desk, and
+// audited: which way an appraisal was paid for is a money decision.
+// ---------------------------------------------------------------------------
+
+// What the options ARE for a vendor, and what has been chosen on this file so far.
+router.get('/applications/:id/appraisal-payment', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const payOptions = require('../lib/appraisal/payment-options');
+  const payIntent = require('../lib/appraisal/payment-intent');
+  try {
+    // The card is described, never revealed — this endpoint decides what BUTTONS
+    // to show and has no business decrypting a number to do it. Asked of the
+    // SHARED card module, not a vendor's: a generic route reaching into Richer
+    // Values for a fact about the file's own card is the wrong direction, and the
+    // two vendor copies of this had already drifted apart.
+    const card = await require('../lib/appraisal-card').cardStatus(db, req.params.id);
+    const byVendor = {};
+    for (const v of payOptions.VENDORS) {
+      byVendor[v] = { name: payOptions.VENDOR_NAME[v], options: payOptions.optionsFor(v, { cardOnFile: card }) };
+    }
+    res.json({ card, vendors: byVendor, intents: await payIntent.forApplication(req.params.id) });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// CHOOSE one of the three. On NEW_CARD the card is saved onto the file FIRST,
+// through the same shared chokepoint the condition uses, so entering it here fills
+// the appraisal-payment condition exactly as entering it there would.
+router.post('/applications/:id/appraisal-payment', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const payOptions = require('../lib/appraisal/payment-options');
+  const payIntent = require('../lib/appraisal/payment-intent');
+  const b = req.body || {};
+  const vendor = String(b.vendor || '').toLowerCase();
+  const method = String(b.method || '').toUpperCase();
+
+  if (!payOptions.isVendor(vendor)) return res.status(400).json({ error: 'unknown_vendor' });
+  if (!payOptions.isMethod(method)) {
+    return res.status(400).json({
+      error: 'unknown_method',
+      detail: `An appraisal is paid one of three ways: ${payOptions.METHODS.map((m) => payOptions.METHOD_LABEL[m]).join(', ')}.`,
+    });
+  }
+  // RICHER VALUES IS REFUSED HERE ON PURPOSE. It can genuinely carry the payment
+  // out, and its own route does — accepting it here would record an instruction
+  // saying a person will do it by hand while nobody ever charges anything.
+  if (payOptions.capability(vendor, method).does === payOptions.DOES.VENDOR) {
+    return res.status(400).json({
+      error: 'vendor_performs',
+      detail: `${payOptions.VENDOR_NAME[vendor]} takes the payment itself — use the Pay button on that order.`,
+    });
+  }
+
+  const app = (await db.query(
+    `SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id])).rows[0];
+  if (!app) return res.status(404).json({ error: 'not found' });
+
+  try {
+    let cardSaved = null;
+    if (method === 'NEW_CARD') {
+      const apprCard = require('../lib/appraisal-card');
+      const v = apprCard.validateCardInput(b.card || {});
+      if (!v.ok) return res.status(400).json({ error: v.error });
+      const { last4, brand } = await apprCard.saveApplicationCard({
+        appId: req.params.id, borrowerId: app.borrower_id,
+        number: v.number, cvc: v.cvc, expMonth: v.expMonth, expYear: v.expYear, zip: v.zip });
+      cardSaved = { last4, brand };
+      await audit(req, 'save_appraisal_card', 'application', req.params.id, { last4, enteredByStaff: true, viaPayment: true });
+    }
+    if (method === 'CARD_ON_FILE') {
+      const card = await require('../lib/appraisal-card').cardStatus(db, req.params.id);
+      if (!card.present) {
+        return res.status(409).json({
+          error: 'no_card',
+          detail: 'There is no card on this file yet — choose “Enter a card now”, or send the borrower a payment link.',
+        });
+      }
+    }
+
+    // The instruction IS the deliverable on these two vendors, so unlike the
+    // Richer Values path this checks that it landed. A silent no-op would leave
+    // the back office with nothing, which is the hole this closes.
+    const noted = await payIntent.record({
+      appId: req.params.id, vendor, orderId: b.orderId, method,
+      staffId: req.actor.id, note: b.note || null,
+    });
+    if (!noted.ok) {
+      return res.status(noted.error === 'no_order' ? 400 : 500)
+        .json({ error: noted.error, detail: 'The payment instruction could not be saved, so nothing was recorded.' });
+    }
+
+    await audit(req, 'appraisal_payment_choice', 'application', req.params.id, {
+      vendor, orderId: b.orderId, method, last4: cardSaved ? cardSaved.last4 : undefined,
+    });
+    res.status(201).json({ ok: true, intent: noted.intent, cardSaved });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// PAID. A separate action from choosing, because "this is how it will be paid" and
+// "this has been paid" are different claims and the desk prints them differently.
+router.post('/applications/:id/appraisal-payment/settle', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const payIntent = require('../lib/appraisal/payment-intent');
+  const b = req.body || {};
+  try {
+    const out = b.undo === true
+      ? await payIntent.unsettle({ vendor: b.vendor, orderId: b.orderId })
+      : await payIntent.settle({ vendor: b.vendor, orderId: b.orderId, staffId: req.actor.id, note: b.note || null });
+    if (!out.ok) {
+      return res.status(out.error === 'no_intent' ? 409 : 400).json({
+        error: out.error,
+        detail: out.error === 'no_intent'
+          ? 'Nobody has said how this one is being paid yet — choose a way first.' : undefined,
+      });
+    }
+    await audit(req, b.undo === true ? 'appraisal_payment_unsettled' : 'appraisal_payment_settled',
+      'application', req.params.id, { vendor: b.vendor, orderId: b.orderId });
+    res.json({ ok: true, intent: out.intent });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
 // Borrower name typeahead for staff origination (StaffNewFile): match prior
 // borrowers by name so a new file can LINK to the existing borrower instead of
 // creating a duplicate, and known contact info can be pre-filled. Registered

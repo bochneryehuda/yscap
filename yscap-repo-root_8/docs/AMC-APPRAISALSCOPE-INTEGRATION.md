@@ -315,6 +315,49 @@ if the gate changed. Four mutations of the production code were each proven to f
   condition**, and entering it **at the condition fills the order** — one card, entered
   once, both places. No auto-charge through the AMC for now (the Payment* actions stay
   unused).
+
+## 8b. All three ways to pay, on every appraisal company (owner-directed 2026-08-16)
+
+The owner, restating and widening the rule above: *"We're gonna keep it manual. We're
+gonna have all the options over there, like: if we want to, we should be able to send
+the payment link. If we want to, share to use the card on file. We should be able to
+use the card manually. We should keep all the options open."*
+
+**Manual is unchanged — PILOT still charges nothing on its own.** What changed is that
+the three ways are now offered on all three appraisal companies, and that WHICH one was
+chosen is written down.
+
+- **`src/lib/appraisal/payment-options.js` is the one definition** of the three
+  (`PAYMENT_LINK` / `CARD_ON_FILE` / `NEW_CARD`) and of what each one does at each
+  company. `src/richervalues/payment.js` re-exports that very array — not a copy —
+  so the company that performs a charge and the desk that records it cannot drift
+  about what "the card on file" means.
+- **The real gap was never a charge button.** It was that nothing recorded how a given
+  order was meant to be paid: a saved card was the whole instruction, so "send them a
+  link", "put it on the card on file" and "she's paying it herself" were
+  indistinguishable and somebody had to go and ask, per order.
+  `appraisal_payment_intents` (db/555) is that instruction — one live row per order,
+  who chose it, when, and who settled it. It is read ALONGSIDE the Orders-desk
+  projection, never into it: the mirror recomputes that row from the vendors, and a
+  human's decision must never live in something that is recomputed.
+- **Who performs it differs, and is never blurred.** Richer Values is the only company
+  whose payment calls this repo has (`addCard` / `payForOrder` / `sendPaymentLink`), so
+  its own proven route does the work and the recording rides along afterwards,
+  best-effort — a failed note must never be reported as a failed payment. On
+  AppraisalScope and Class the choice is recorded for the back office, and the shared
+  route **refuses** a vendor-performed method so an instruction can never claim a person
+  will do by hand something the vendor already charged.
+- **Nothing here guesses a vendor payment API.** Class Valuation's client has no payment
+  call of any kind (its whole surface is products, orders, attachments, notes,
+  callbacks — their `PaymentLinkSentToBorrower` is them telling US, not a lever we can
+  pull). AppraisalScope's `PaymentAuthCapture` / `BillInvoice` / `SendInvoice` /
+  `eCheckPayment` have **no verified request shape** and `src/amc/cdg.js` builds none of
+  them; the only payment call we have built there is the pure read `GetPaymentOptions`.
+  When one is verified against the live account, move it from `back_office` to `vendor`
+  in that ONE table and the desk, the wording and the record all follow.
+
+Tests: `scripts/test-appraisal-payment-options-pure.js` (35) and
+`scripts/test-appraisal-payment-intent-db.js` (40), both in `npm test`.
 - **Ordering lives in the Orders desk.** Add "Order an appraisal" as a **new order type
   in the existing Orders section** (`file_orders` — alongside Title, Insurance, Attorney
   closing prep; `src/lib/closing-prep.js` / the Orders desk routes). That's where a

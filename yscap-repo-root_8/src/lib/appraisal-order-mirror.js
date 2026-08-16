@@ -247,6 +247,11 @@ async function syncOne(appId, dbc) {
     const meta = {
       vendor: primary.vendor,
       vendorName: primary.vendorName,
+      // THE VENDOR ORDER ROW'S OWN ID — not the vendor's order NUMBER below, which
+      // is their reference and is not unique across the three companies. This is
+      // what `appraisal_payment_intents` is keyed on, so without it the desk can
+      // carry a payment instruction it can never find again.
+      orderId: primary.rowId,
       orderNumber: primary.orderNumber,
       product: primary.product,
       feeCents: primary.feeCents,

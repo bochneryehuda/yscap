@@ -3215,22 +3215,53 @@ function DrawerFailedDetail({ order }) {
   );
 }
 
-/* ============================================================= pay modal === */
-// Reuses the existing appraisal card-entry fields in the .cv-modal shell.
-// staffAppraisalCard prefill → staffSaveAppraisalCard save (which clears the
-// appraisal_card condition). The actual vendor CHARGE is a later phase.
+/* ============================================================= pay panel === */
+/* THE THREE WAYS TO PAY FOR AN APPRAISAL.
+ *
+ * Owner-directed 2026-08-16: *"We're gonna keep it manual. We're gonna have all
+ * the options over there … send the payment link … use the card on file … use the
+ * card manually. We should keep all the options open."*
+ *
+ * NOTHING IS RESTATED HERE. Which options exist, what each one does at this
+ * particular appraisal company, and which of them are pressable right now all come
+ * from the server (`GET …/appraisal-payment` → `lib/appraisal/payment-options.js`).
+ * A capability table copied into a screen is how a button ends up promising to
+ * charge something the back end cannot charge.
+ *
+ * TWO DESTINATIONS, ON PURPOSE. Richer Values genuinely takes the payment, so its
+ * own proven route does it (`api.rvPay` — reveal, add, charge, remove). The other
+ * two companies have no payment API we have verified, so the choice is RECORDED
+ * for the back office. The screen tells you plainly which of those two just
+ * happened rather than showing one confident "Paid" for both.
+ */
 function PayModal({ appId, order, card, onClose, onPaid }) {
   const ad = ADAPTERS[order._vendor];
   const fee = ad.orderFee(order);
   const paid = ad.orderPaid(order);
+  const prop = (order.summary || []).find((s) => s.label === 'Property');
+
+  const [state, setState] = useState(null);       // null = still loading
+  const [pick, setPick] = useState(null);
   const [f, setF] = useState({ number: '', expMonth: '', expYear: '', cvc: '', zip: '' });
-  const [prefilled, setPrefilled] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [linkTo, setLinkTo] = useState('');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
   const [done, setDone] = useState('');
   const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
-  const prop = (order.summary || []).find((s) => s.label === 'Property');
 
+  const load = useCallback(async () => {
+    try {
+      const s = await api.staffAppraisalPayment(appId);
+      setState(s);
+      return s;
+    } catch (e) { setErr((e && e.message) || 'Could not read the payment options.'); return null; }
+  }, [appId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Prefill the card fields from the file so "Enter a card now" starts from
+  // whatever is already there — the same prefill this modal has always done.
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -3238,68 +3269,185 @@ function PayModal({ appId, order, card, onClose, onPaid }) {
         const c = await api.staffAppraisalCard(appId);
         if (alive && c && c.number) {
           setF({
-            number: c.number || '', expMonth: c.expMonth != null ? String(c.expMonth) : '',
+            number: c.number, expMonth: c.expMonth != null ? String(c.expMonth) : '',
             expYear: c.expYear != null ? String(c.expYear) : '', cvc: c.cvc || '', zip: c.zip || '',
           });
-          setPrefilled(true);
         }
-      } catch (_) { /* no card on file */ }
+      } catch (_) { /* no card on file — the option says so on its own */ }
     })();
     return () => { alive = false; };
   }, [appId]);
 
-  const pay = async () => {
-    setBusy(true); setErr(''); setDone('');
+  const vendorBlock = state && state.vendors ? state.vendors[order._vendor] : null;
+  const opts = (vendorBlock && vendorBlock.options) || [];
+  const intent = state && state.intents ? state.intents[`${order._vendor}:${order.id}`] : null;
+  const chosen = opts.find((o) => o.method === pick) || null;
+
+  const submit = async () => {
+    if (!chosen || !chosen.available) return;
+    setBusy('pay'); setErr(''); setDone('');
     try {
-      await api.staffSaveAppraisalCard(appId, f);
-      // NOTHING IS CHARGED HERE, ON PURPOSE. Payment is manual (owner-directed
-      // 2026-08-05) — the back office reveals this card and charges it out of
-      // band, and neither vendor's Payment* actions are wired. Say so plainly:
-      // the previous wording ("the payment condition is cleared") was true and
-      // read as "the appraisal is paid for", which it is not.
-      setDone('Card saved on the file. The back office charges it by hand — nothing has been charged yet.');
+      if (chosen.does === 'vendor') {
+        // Richer Values takes the money. Its route reports THREE outcomes — did
+        // what you pressed happen, and did the money actually move — so this
+        // never announces a sent payment link as a completed charge.
+        const r = await api.rvPay(order.id, {
+          method: chosen.method,
+          card: chosen.method === 'NEW_CARD' ? f : null,
+          paymentLinkTo: chosen.method === 'PAYMENT_LINK' ? (linkTo.trim() || null) : null,
+        });
+        if (!r || r.ok === false) {
+          setErr((r && r.note) || 'Richer Values did not take the payment.');
+        } else {
+          setDone(r.settled
+            ? 'Paid. Richer Values has the money.'
+            : 'Done — Richer Values has emailed the borrower their payment page. It is not paid until they pay it.');
+        }
+      } else {
+        const r = await api.staffChooseAppraisalPayment(appId, {
+          vendor: order._vendor, orderId: order.id, method: chosen.method,
+          card: chosen.method === 'NEW_CARD' ? f : undefined,
+          note: note.trim() || undefined,
+        });
+        setDone(chosen.method === 'NEW_CARD'
+          ? 'Card saved on the file, and recorded as the one to charge. Nothing has been charged yet.'
+          : 'Recorded. Nothing has been charged yet — the back office settles it from here.');
+        if (r && r.intent) setState((s) => (s ? { ...s, intents: { ...s.intents, [`${order._vendor}:${order.id}`]: r.intent } } : s));
+      }
+      await load();
       await onPaid();
-      setTimeout(onClose, 1000);
-    } catch (e) { setErr((e && e.message) || 'Could not save the card.'); }
-    setBusy(false);
+    } catch (e) { setErr((e && e.message) || 'Could not record how this is being paid.'); }
+    setBusy('');
+  };
+
+  const markPaid = async (undo) => {
+    setBusy(undo ? 'undo' : 'settle'); setErr(''); setDone('');
+    try {
+      await api.staffSettleAppraisalPayment(appId, { vendor: order._vendor, orderId: order.id, undo: undo || undefined });
+      setDone(undo ? 'Put back — it reads as still to be paid.' : 'Marked as paid.');
+      await load();
+      await onPaid();
+    } catch (e) { setErr((e && e.message) || 'Could not update it.'); }
+    setBusy('');
   };
 
   return (
     <div className="cv-modal-back" onClick={onClose}>
-      <div className="cv-modal" style={{ padding: 20, color: INK }} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontWeight: 700, fontSize: 17, color: INK }}>{paid ? 'Update the payment card' : 'Appraisal payment card'}</div>
+      <div className="cv-modal" style={{ padding: 20, color: INK, maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ fontWeight: 700, fontSize: 17, color: INK }}>How is this appraisal being paid for?</div>
         <div style={{ fontSize: 13, color: MUTED, marginTop: 4 }}>
           {ad.name}{ad.orderTitle(order) ? ` · ${ad.orderTitle(order)}` : ''}{prop ? ` · ${prop.value}` : ''}
         </div>
         <div style={{ fontSize: 14, color: INK, marginTop: 6, fontVariantNumeric: 'tabular-nums' }}>
           {paid
-            ? <span style={{ color: GOOD, fontWeight: 600 }}>Paid ✓{card && card.last4 ? ` · ••${card.last4}` : ''} — update the card on file below if you need to.</span>
-            : fee != null ? <>Fee: <strong>{money(fee)}</strong></> : 'The fee is confirmed by the vendor.'}
+            ? <span style={{ color: GOOD, fontWeight: 600 }}>Paid ✓{card && card.last4 ? ` · ••${card.last4}` : ''}</span>
+            : fee != null ? <>Fee: <strong>{money(fee)}</strong></> : 'The fee is confirmed by the appraisal company.'}
         </div>
-        {!paid ? (
-          <div style={{ fontSize: 12.5, color: MUTED, marginTop: 6, lineHeight: 1.45 }}>
-            This stores the card on the loan file and fills the appraisal-payment condition.
-            It does not charge anything — the back office charges the card by hand.
+
+        {/* WHAT WAS ALREADY DECIDED. Shown before the options, because the first
+            question on reopening this is "did somebody already deal with it?" */}
+        {intent && intent.describe ? (
+          <div style={{ marginTop: 12, border: `1px solid ${intent.describe.settled ? '#CFE6D8' : WARN_LINE}`,
+            background: intent.describe.settled ? '#EEF7F1' : WARN_BG, borderRadius: 10, padding: '10px 12px' }}>
+            <div style={{ fontWeight: 650, color: intent.describe.settled ? '#1E5E3C' : WARN }}>
+              {intent.describe.head}
+            </div>
+            <div style={{ fontSize: 12.5, color: MUTED, marginTop: 3 }}>
+              {intent.chosen_by_name ? `Chosen by ${intent.chosen_by_name}` : 'Chosen'}
+              {intent.chosen_at ? ` · ${new Date(intent.chosen_at).toLocaleDateString()}` : ''}
+              {intent.settled_by_name ? ` · marked paid by ${intent.settled_by_name}` : ''}
+            </div>
+            {intent.describe.awaitingBackOffice ? (
+              <button className="btn soft" style={{ marginTop: 8 }} disabled={!!busy}
+                onClick={() => markPaid(false)}>
+                {busy === 'settle' ? 'Saving…' : 'Mark it paid'}
+              </button>
+            ) : null}
+            {intent.describe.settled ? (
+              <button className="aord-more" style={{ marginTop: 8 }} disabled={!!busy}
+                onClick={() => markPaid(true)}>
+                {busy === 'undo' ? 'Saving…' : 'Not actually paid — put it back'}
+              </button>
+            ) : null}
           </div>
         ) : null}
 
-        {err ? <div style={{ marginTop: 10 }}><OrderFailure info={err} vendor={ad.name} action="save the card" /></div> : null}
+        {err ? <div style={{ marginTop: 10 }}><OrderFailure info={err} vendor={ad.name} action="record the payment" /></div> : null}
         {done ? <div style={{ marginTop: 10 }}><Banner tone="good">{done}</Banner></div> : null}
-        {prefilled && !done ? <div style={{ marginTop: 10, fontSize: 12.5, color: MUTED }}>A card is already on file — update it below if you need to.</div> : null}
 
-        <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
-          <input className="input" inputMode="numeric" placeholder="Card number" value={f.number} onChange={set('number')} />
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <input className="input" style={{ maxWidth: 70 }} inputMode="numeric" placeholder="MM" value={f.expMonth} onChange={set('expMonth')} />
-            <input className="input" style={{ maxWidth: 90 }} inputMode="numeric" placeholder="YYYY" value={f.expYear} onChange={set('expYear')} />
-            <input className="input" style={{ maxWidth: 80 }} inputMode="numeric" placeholder="CVC" value={f.cvc} onChange={set('cvc')} />
-            <input className="input" style={{ maxWidth: 110 }} inputMode="numeric" placeholder="ZIP" value={f.zip} onChange={set('zip')} />
+        {state === null ? (
+          <div style={{ marginTop: 14, color: MUTED, fontSize: 13 }}>Reading the options…</div>
+        ) : (
+          <div style={{ display: 'grid', gap: 8, marginTop: 14 }}>
+            {opts.map((o) => {
+              const on = pick === o.method;
+              return (
+                <div key={o.method}>
+                  <button
+                    onClick={() => o.available && setPick(on ? null : o.method)}
+                    aria-pressed={on}
+                    disabled={!o.available}
+                    style={{
+                      width: '100%', textAlign: 'left', cursor: o.available ? 'pointer' : 'not-allowed',
+                      border: `1px solid ${on ? TEAL : LINE}`, borderRadius: 10, padding: '10px 12px',
+                      background: on ? '#F2F8F8' : '#fff', opacity: o.available ? 1 : 0.62,
+                    }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ fontWeight: 650, color: INK }}>{o.label}</span>
+                      {/* WHO PERFORMS IT, never blurred: pressing a Richer Values
+                          option does it; the others are written down for a person. */}
+                      <span style={{
+                        fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '.04em',
+                        border: `1px solid ${LINE}`, borderRadius: 999, padding: '1px 7px', color: MUTED,
+                      }}>{o.does === 'vendor' ? 'Done here' : 'By hand'}</span>
+                    </div>
+                    <div style={{ fontSize: 12.5, color: MUTED, marginTop: 3, lineHeight: 1.45 }}>{o.says}</div>
+                    {o.disabled ? (
+                      <div style={{ fontSize: 12.5, color: WARN, marginTop: 4 }}>{o.disabled}</div>
+                    ) : null}
+                  </button>
+
+                  {on && o.caveat ? (
+                    <div style={{ fontSize: 12.5, color: WARN, background: WARN_BG, border: `1px solid ${WARN_LINE}`,
+                      borderRadius: 8, padding: '8px 10px', marginTop: 6, lineHeight: 1.45 }}>{o.caveat}</div>
+                  ) : null}
+
+                  {on && o.method === 'NEW_CARD' ? (
+                    <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+                      <input className="input" inputMode="numeric" placeholder="Card number" value={f.number} onChange={set('number')} />
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <input className="input" style={{ maxWidth: 70 }} inputMode="numeric" placeholder="MM" value={f.expMonth} onChange={set('expMonth')} />
+                        <input className="input" style={{ maxWidth: 90 }} inputMode="numeric" placeholder="YYYY" value={f.expYear} onChange={set('expYear')} />
+                        <input className="input" style={{ maxWidth: 80 }} inputMode="numeric" placeholder="CVC" value={f.cvc} onChange={set('cvc')} />
+                        <input className="input" style={{ maxWidth: 110 }} inputMode="numeric" placeholder="ZIP" value={f.zip} onChange={set('zip')} />
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {on && o.method === 'PAYMENT_LINK' && o.does === 'vendor' ? (
+                    <input className="input" style={{ marginTop: 8 }} type="email"
+                      placeholder="Send it to (leave blank for the borrower on file)"
+                      value={linkTo} onChange={(e) => setLinkTo(e.target.value)} />
+                  ) : null}
+
+                  {on && o.does !== 'vendor' ? (
+                    <input className="input" style={{ marginTop: 8 }}
+                      placeholder="Anything the back office should know (optional)"
+                      value={note} onChange={(e) => setNote(e.target.value)} />
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
-        </div>
+        )}
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16, flexWrap: 'wrap' }}>
-          <button className="btn ghost" disabled={busy} onClick={onClose}>Cancel</button>
-          <button className="btn primary" disabled={busy} onClick={pay}>{busy ? 'Saving…' : 'Save card'}</button>
+          <button className="btn ghost" disabled={!!busy} onClick={onClose}>Close</button>
+          <button className="btn primary" disabled={!!busy || !chosen || !chosen.available} onClick={submit}>
+            {busy === 'pay' ? 'Saving…'
+              : chosen && chosen.does === 'vendor' ? 'Do it now'
+                : 'Record it'}
+          </button>
         </div>
       </div>
     </div>
