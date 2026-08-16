@@ -42,7 +42,7 @@ function trimPrograms(parsed, limit = 60) {
 // fields are implemented; a not-yet-implemented field is rejected with 422 unsupported_field.
 const SUPPORTED_FIELDS = new Set([
   'purpose', 'value', 'appraisedValue', 'asIsValue', 'loan', 'ltv', 'fico', 'dscr',
-  'propertyType', 'units', 'zip', 'state', 'county', 'countyFps', 'city', 'countyName',
+  'propertyType', 'units', 'attachment', 'nonWarrantable', 'zip', 'state', 'county', 'countyFps', 'city', 'countyName',
   'borrowerType', 'prepayMonths', 'io', 'escrowWaive', 'fthb', 'date',
   'term', 'termYears', 'lockDays', 'cashoutAmount',
   // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). Each maps to an
@@ -62,16 +62,26 @@ function effectiveOf(payload) {
   const p = payload.property || {};
   const dp = payload.dynamicPropertiesMap || {};
   const dyn = (k) => (dp[k] && typeof dp[k] === 'object' ? dp[k].value : dp[k]);
+  const a = p.address || {};
   return {
     loanPurpose: c.loanPurpose, purchasePrice: c.purchasePrice, appraisedValue: c.appraisedValue,
+    cashoutAmount: c.cashoutAmount, // the vendor-fixed numeric criteria field (audit) — shown so a caller can verify it was sent
     loanAmount: c.loanAmount, ltv: c.ltv, fico: c.fico, dscr: c.dscr,
     loanYear: c.loanYear, termsCriteria: payload.termsCriteria, termsInMonths: payload.termsInMonths,
     dayLocks: payload.brokerCriteria && payload.brokerCriteria.dayLocks, dayLocksCriteria: payload.dayLocksCriteria,
     loanType: c.loanType, loanTypeCriteria: payload.loanTypeCriteria,
     propertyUse: c.propertyUse, propertyType: p.propertyType, numberOfUnit: p.numberOfUnit, attachmentType: p.attachmentType,
+    // Complete location actually transmitted (audit — effectiveScenario was incomplete).
+    location: { zip: a.zip, state: a.state, city: a.city, county: a.county, censustract: a.censustract, countyName: a.countyName },
     interestOnly: c.interestOnly, escrowWaiver: c.escrowWaiver, firstTimeHomeBuyer: c.firstTimeHomeBuyer,
+    // Reserves / rental-term / prepay-structure selectors (audit — must appear in effectiveScenario).
+    reserves: dyn('GLOBAL_RESERVES'), addlOccupancyType: dyn('AddlOccupancyType'),
+    prepayPlanType: dyn('PrePayment_Plan_Type'),
     compensationType: c.compensationType, incomeDocType: dyn('IncomeDocType'), borrowerType: dyn('GLOBAL_BorrowerType'),
-    prepayTerm: dyn('PrepayTerm'), specialMortgageOptions: Array.isArray(c.specialMortgageOptions) ? c.specialMortgageOptions.map((s) => s && s.name).filter(Boolean) : undefined,
+    // Every special-mortgage-option IDENTITY (id + name), not just the names, so a caller can verify
+    // the exact program-selecting options that were transmitted (audit).
+    prepayTerm: dyn('PrepayTerm'),
+    specialMortgageOptions: Array.isArray(c.specialMortgageOptions) ? c.specialMortgageOptions.map((s) => (s && (s.name || s.id)) ? { id: s.id || null, name: s.name || null } : null).filter(Boolean) : undefined,
     // Registry-backed advanced fields ACTUALLY sent upstream — so a caller can confirm a supported
     // advanced field was applied (not silently dropped). Only present when non-default.
     nonWarrantableProject: c.nonWarrantableProject,
@@ -115,19 +125,19 @@ function rejectInvalidRequest(sc, res) {
   return false;
 }
 
-// Cash-out amount ("cash in hand") transparency — so it's never SILENTLY handled. The vendor UI field
-// has no valid dynamic-property code today (the frontend drops the value), so by default we store it
-// and do NOT transmit it (matching the frontend). Once LP_CASHOUT_AMOUNT_FIELD is set to the confirmed
-// vendor code, it is transmitted. Returns null when no cash-out amount was supplied.
+// Cash-out amount ("cash in hand") transparency — so it's never SILENTLY handled. THE VENDOR FIXED
+// THE FIELD: the frontend now sends a numeric `criteria.cashoutAmount` (post-repair capture
+// 2026-08-16), so we transmit it there too. Returns null when no cash-out amount was supplied.
 function cashoutNote(sc) {
   if (!sc || sc.cashoutAmount == null || sc.cashoutAmount === '') return null;
-  const field = process.env.LP_CASHOUT_AMOUNT_FIELD;
+  const legacyField = process.env.LP_CASHOUT_AMOUNT_FIELD;
   return {
     value: sc.cashoutAmount,
-    transmitted: !!field,
-    note: field
-      ? `Transmitted to Lender Price as dynamicPropertiesMap.${field}.`
-      : 'Accepted and stored, but NOT transmitted to Lender Price — the vendor has not assigned this UI field a dynamic-property code yet (the frontend does not send it either, so pricing is unaffected). Set LP_CASHOUT_AMOUNT_FIELD once the vendor confirms the code.',
+    transmitted: true,
+    field: 'criteria.cashoutAmount',
+    note: legacyField
+      ? `Transmitted as the numeric criteria.cashoutAmount AND (legacy override) dynamicPropertiesMap.${legacyField}.`
+      : 'Transmitted to Lender Price as the numeric criteria.cashoutAmount (the vendor fixed the field; the frontend sends it too).',
   };
 }
 
