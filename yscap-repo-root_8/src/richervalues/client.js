@@ -110,7 +110,7 @@ function configured() {
     // tell us the order progressed except the poller.
     webhookReady: !!(c.webhookUrl && ((c.webhookUser && c.webhookPassword) || c.webhookToken)),
     autoApplyValues: c.autoApplyValues !== false,
-    paymentMethod: c.paymentMethod || 'CARD_ON_FILE',
+    paymentMethod: c.paymentMethod || 'COMPANY_CARD',
     defaults: {
       reportType: c.defaultReportType || 'reno-arv',
       inspectionType: c.defaultInspectionType || 'interior-w-exterior',

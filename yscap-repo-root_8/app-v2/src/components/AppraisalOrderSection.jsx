@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { api } from '../lib/api';
 import { moneyNum } from '../lib/money';
+import { rvOrderTotal, moneyExact } from '../lib/rvPrice.js';
 import { askConfirm, askPrompt } from '../lib/dialog.js';
 import OrderFailure, { parseOrderFailure } from './OrderFailure.jsx';
 
@@ -1042,23 +1043,66 @@ function RicherValueBuilder({ appId, cfg, onPlaced }) {
             </div>
           ) : null}
 
+          {/*
+            AFTER THE WORK — the answer Richer Values need in order to price an ARV.
+            Their own screen offers a "same-unchanged" option; their API has no such
+            value (their proposed_* fields take numbers and nothing else, measured),
+            so ticking this sends the property's figures as they stand today. Only
+            offered on a report that asks for after-work figures AND knows the
+            figures today — on a ground-up there is no "now" to be the same as.
+          */}
+          {preview.choices && preview.choices.asksProposedStats !== false
+            && preview.choices.asksCurrentStats !== false ? (
+              <div style={{ marginTop: 10, fontSize: 13, color: INK }}>
+                <label style={{ display: 'inline-flex', gap: 7, alignItems: 'center', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={!!choices.proposedSameAsCurrent}
+                    onChange={(e) => setOverride('proposedSameAsCurrent', e.target.checked ? '1' : '0')} />
+                  After the work it is the same — no change to the size, bedrooms or bathrooms
+                </label>
+                <div style={{ fontSize: 12, color: MUTED, marginTop: 4, lineHeight: 1.45 }}>
+                  {choices.proposedSameAsCurrent
+                    ? 'The property’s figures as they stand today will be sent as the figures after the work.'
+                    : 'Otherwise fill in what the property will be after the work below. Richer Values cannot produce an after-repair value without it — an order left blank, or sent as zero, sits with them and never starts.'}
+                </div>
+              </div>
+            ) : null}
+
           {/* ── what it costs, for this property ────────────────────────── */}
           {price ? (
             <div className="aord-figs" style={{ gridTemplateColumns: '1fr' }}>
               <div className="aord-fig">
+                {/*
+                  THE HEADLINE IS THE ALL-IN FIGURE — what is actually charged, and
+                  what the desk quotes the borrower (owner-directed 2026-08-16).
+                  Their `cc_surcharge` sits OUTSIDE `total_price`, so before this the
+                  number on this screen was the one figure nobody ever pays.
+                */}
                 <div className="k">Price for this property</div>
-                <div className="v">{money(price.total_price)}</div>
+                <div className="v">{moneyExact(rvOrderTotal(price))}</div>
                 <div className="n">
                   {[
-                    price.report_type_fee ? `report ${money(price.report_type_fee)}` : null,
-                    price.inspection_fee ? `inspection ${money(price.inspection_fee)}` : null,
-                    price.rush_fee ? `rush ${money(price.rush_fee)}` : null,
-                    price.gla_surcharge ? `floor plan ${money(price.gla_surcharge)}` : null,
-                    price.licensing_surcharge ? `licensed ${money(price.licensing_surcharge)}` : null,
-                    price.flood_charge ? `flood ${money(price.flood_charge)}` : null,
+                    price.report_type_fee ? `report ${moneyExact(price.report_type_fee)}` : null,
+                    price.inspection_fee ? `inspection ${moneyExact(price.inspection_fee)}` : null,
+                    price.rush_fee ? `rush ${moneyExact(price.rush_fee)}` : null,
+                    price.gla_surcharge ? `floor plan ${moneyExact(price.gla_surcharge)}` : null,
+                    price.licensing_surcharge ? `licensed ${moneyExact(price.licensing_surcharge)}` : null,
+                    price.flood_charge ? `flood ${moneyExact(price.flood_charge)}` : null,
+                    Number(price.cc_surcharge) > 0 ? `card fee ${moneyExact(price.cc_surcharge)}` : null,
                   ].filter(Boolean).join(' · ')}
                   {price.due_date ? ` · report due ${fmtDate(price.due_date)}` : ''}
                 </div>
+                {/*
+                  THE CARD FEE IS NAMED, not merely folded in. The breakdown above
+                  already lists it, and this line says plainly that the headline
+                  INCLUDES it — a total that silently differs from the vendor's own
+                  invoice line is how somebody comes to think we were overcharged.
+                */}
+                {Number(price.cc_surcharge) > 0 ? (
+                  <div className="n" style={{ marginTop: 4 }}>
+                    Includes the {moneyExact(price.cc_surcharge)} card fee Richer Values adds
+                    (their own report price is {moneyExact(price.total_price)}). Quote the borrower the total above.
+                  </div>
+                ) : null}
               </div>
             </div>
           ) : preview.priceError ? (
@@ -1229,11 +1273,17 @@ function RvScopeOfWork({ sow }) {
 
 /* ── how it gets paid ────────────────────────────────────────────────────── */
 /*
- * Exactly the three ways the owner allows. Add to Invoice and ACH are not shown
+ * Exactly the four ways the owner allows. Add to Invoice and ACH are not shown
  * because they are not offered at all — a control for something the server refuses
  * is worse than no control.
+ *
+ * OUR OWN CARD IS FIRST AND IS THE DEFAULT, because the owner's answer was "we pay
+ * in-house, payment link as the backup". It is also the one card route that works:
+ * Richer Values' Stripe account refuses a raw card number, so both of the card
+ * routes underneath it can only end in a refusal today.
  */
 const RV_PAY_LABEL = {
+  COMPANY_CARD: 'Charge our card with Richer Values',
   CARD_ON_FILE: 'Charge the card on this file',
   NEW_CARD: 'Enter a card now',
   PAYMENT_LINK: 'Send the borrower a payment link',
@@ -1241,8 +1291,9 @@ const RV_PAY_LABEL = {
 
 function RvPayment({ payment, method, onMethod, card, onCard, linkTo, onLinkTo }) {
   if (!payment) return null;
-  const methods = payment.methods || ['CARD_ON_FILE', 'NEW_CARD', 'PAYMENT_LINK'];
-  const chosen = method || payment.method || 'CARD_ON_FILE';
+  const methods = payment.methods || ['COMPANY_CARD', 'CARD_ON_FILE', 'NEW_CARD', 'PAYMENT_LINK'];
+  const chosen = method || payment.method || 'COMPANY_CARD';
+  const cc = payment.companyCard || null;
   const set = (k, v) => onCard({ ...card, [k]: v });
 
   return (
@@ -1256,6 +1307,20 @@ function RvPayment({ payment, method, onMethod, card, onCard, linkTo, onLinkTo }
           </label>
         ))}
       </div>
+
+      {/* OUR CARD — what it will charge, or exactly what a human has to go and do
+          about it, said here rather than at the moment of payment. */}
+      {chosen === 'COMPANY_CARD' ? (
+        <div style={{ fontSize: 12, color: cc && cc.known && !cc.ready ? WARN : MUTED, marginTop: 6, lineHeight: 1.45 }}>
+          {!cc || !cc.known
+            ? 'PILOT will charge the card YS Capital keeps with Richer Values. It could not check which card that is right now — if the charge does not go through, the payment link below still works.'
+            : cc.ready
+              ? (cc.card && cc.card.last4
+                ? <>The card YS Capital keeps with Richer Values (<b>{cc.card.brand || 'card'} ending {cc.card.last4}</b>) will be charged. The borrower is not asked to pay.</>
+                : 'The card YS Capital keeps with Richer Values will be charged. The borrower is not asked to pay.')
+              : cc.why}
+        </div>
+      ) : null}
 
       {chosen === 'CARD_ON_FILE' ? (
         <div style={{ fontSize: 12, color: payment.card && payment.card.expired ? WARN : MUTED, marginTop: 6, lineHeight: 1.45 }}>
@@ -1360,13 +1425,13 @@ function RvPlaceOrder({ cfg, preview, busy, onPlace, enabled, price }) {
       <button className="btn primary" disabled={busy || !canPlace || (!outbound && !dry)}
         aria-disabled={busy || !canPlace} onClick={onPlace}>
         {busy ? 'Ordering…' : dry ? 'Build the order (test mode)'
-          : price ? `Order the Hybrid Appraisal — ${money(price.total_price)}` : 'Order the Hybrid Appraisal'}
+          : price ? `Order the Hybrid Appraisal — ${moneyExact(rvOrderTotal(price))}` : 'Order the Hybrid Appraisal'}
       </button>
       {block ? <WhyBox title={block.title}>{block.help}</WhyBox>
         : dry ? <WhyBox title="Test mode is on — this button will NOT send anything.">To place the order for real, turn OFF “Richer Values orders — TEST MODE” on the API Health page.</WhyBox>
           : (
             <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>
-              This costs money{price ? ` (${money(price.total_price)})` : ''} and sends an inspector to the property.
+              This costs money{price ? ` (${moneyExact(rvOrderTotal(price))})` : ''} and sends an inspector to the property.
               It also waives the appraisal data file on this file — this report does not produce one.
             </div>
           )}
@@ -1494,10 +1559,12 @@ function RvOrderCard({ order, onChanged }) {
         ) : null}
         {!order.paid_at && order.intake_token ? (
           <>
+            {/* OUR CARD FIRST. It falls through to the payment link on the server if
+                the charge cannot be made, so this button can never be a dead end. */}
             <button className="aord-btn" disabled={!!busy}
-              onClick={() => run('pay', () => api.rvPay(order.id, { method: 'CARD_ON_FILE' }),
-                'Charged the card on this file — it is a real order now.')}>
-              {busy === 'pay' ? 'Charging…' : 'Charge the card on file'}
+              onClick={() => run('pay', () => api.rvPay(order.id, { method: 'COMPANY_CARD' }),
+                'Paid with our card at Richer Values — it is a real order now.')}>
+              {busy === 'pay' ? 'Charging…' : 'Pay with our card'}
             </button>
             <button className="aord-btn" disabled={!!busy}
               onClick={() => run('link', () => api.rvPay(order.id, { method: 'PAYMENT_LINK' }),
