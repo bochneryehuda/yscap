@@ -906,6 +906,10 @@ export const api = {
   staffExportMismo:  (appId) => download(`/api/staff/applications/${appId}/export/mismo`),
   staffMismoPreview: (xml) => req('POST', '/api/staff/mismo/preview', { xml }),
   staffMismoCreate:  (xml) => req('POST', '/api/staff/mismo/create', { xml }),
+  // Corrfirst Export — the borrower's VERIFIED track record on CorrFirst's own
+  // CSV, ready to import on their side with no editing.
+  staffCorrfirstTrackRecordPreview: (appId) => req('GET', `/api/staff/applications/${appId}/export/corrfirst-track-record/preview`),
+  staffCorrfirstTrackRecordExport:  (appId) => download(`/api/staff/applications/${appId}/export/corrfirst-track-record`),
   // Capital-provider data tapes. A loan can only export the tape of the provider
   // it is currently assigned to (staffTapesForApp says which, and why not).
   staffTapesList:    () => req('GET', '/api/staff/tapes'),
