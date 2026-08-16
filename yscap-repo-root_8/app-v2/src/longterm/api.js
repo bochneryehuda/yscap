@@ -41,6 +41,13 @@ export const ltApi = {
   syncState: () => ltGet(lt('/sync')),
   runSync: (body = {}) => ltPost(lt('/sync'), body),
 
+  // Saved pipeline views. A view carries FILTERS and never a scope — the server
+  // appends them to whatever the signed-in person is allowed to see — so opening
+  // somebody else's shared view can never show a row this person could not open.
+  views: () => ltGet(lt('/views')),
+  saveView: (body) => ltPost(lt('/views'), body),
+  deleteView: (id) => ltDel(lt(`/views/${encodeURIComponent(id)}`)),
+
   // The settings. The COMPANY screen is drawn from `settings()` — the server's own
   // description of every group and every declaration — so this client never carries
   // a list of setting keys and cannot drift from the server's.

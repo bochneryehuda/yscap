@@ -62,6 +62,11 @@ export default function LtPipeline() {
   const [err, setErr] = useState(null);
   const [search, setSearch] = useState('');
   const [stage, setStage] = useState('');
+  const [views, setViews] = useState(null);
+  const [activeView, setActiveView] = useState('');
+  const [naming, setNaming] = useState(false);
+  const [viewName, setViewName] = useState('');
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const nav = useNavigate();
 
   const load = useCallback(() => {
@@ -76,12 +81,104 @@ export default function LtPipeline() {
     return () => clearTimeout(t);
   }, [load, search]);
 
+  // The saved views, and the one this person opens on. A view only ever sets the
+  // filters below — the server decides what those filters may reach.
+  useEffect(() => {
+    let alive = true;
+    ltApi.views().then((v) => {
+      if (!alive) return;
+      setViews(v);
+      const first = (v.views || []).find((x) => x.isDefault);
+      if (first) { applyView(first); setActiveView(first.id); }
+    }).catch(() => { if (alive) setViews({ views: [], canShare: false }); });
+    return () => { alive = false; };
+    // Runs once: re-applying a default while somebody is typing would fight them.
+  }, []);
+
+  const applyView = (v) => {
+    const f = (v && v.filters) || {};
+    setSearch(f.search || '');
+    setStage(f.stage || '');
+  };
+
+  const reloadViews = () => ltApi.views().then(setViews).catch(() => {});
+
+  // The name is typed INLINE rather than in a dialog. Long-Term may not import RTL's
+  // dialog helper (the separation gate refuses it, and rightly — this side starts at
+  // zero), and a browser prompt() is banned across this app because it stamps the
+  // hosting hostname on the box. An input on the row is better than either.
+  const saveCurrent = async (shared) => {
+    const name = (viewName || '').trim();
+    if (!name) return;
+    const out = await ltApi.saveView({ name, filters: { search: search.trim(), stage }, shared })
+      .catch((e) => ({ error: (e && e.message) || 'Could not save that view.' }));
+    if (out && out.error) { setErr(out.error); return; }
+    setViewName('');
+    setNaming(false);
+    await reloadViews();
+    if (out && out.id) setActiveView(out.id);
+  };
+
   const th = { textAlign: 'left', fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase',
     color: '#4B585C', fontWeight: 700, padding: '8px 10px', whiteSpace: 'nowrap' };
   const td = { padding: '10px', fontSize: 14, color: '#141B22', borderTop: '1px solid #EAE4D7' };
 
   return (
     <LtLayout title="Long-term pipeline">
+      {/* Saved views. A shared one is marked as somebody else's, and the control to
+          make one is only offered to the people the server says may. */}
+      {views && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+          {(views.views || []).length > 0 && (
+            <select className="input" style={{ maxWidth: 260 }} value={activeView}
+              onChange={(e) => {
+                const v = (views.views || []).find((x) => x.id === e.target.value);
+                setActiveView(e.target.value);
+                setConfirmRemove(false);
+                if (v) applyView(v);
+              }}>
+              <option value="">No saved view</option>
+              {(views.views || []).map((v) => (
+                <option key={v.id} value={v.id}>{v.name}{v.shared ? ' (shared)' : ''}</option>
+              ))}
+            </select>
+          )}
+
+          {naming ? (
+            <>
+              <input className="input" style={{ maxWidth: 220 }} autoFocus placeholder="Name this view"
+                value={viewName} onChange={(e) => setViewName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveCurrent(false); if (e.key === 'Escape') setNaming(false); }} />
+              <button type="button" className="btn primary" style={{ padding: '4px 12px', fontSize: 13 }}
+                disabled={!viewName.trim()} onClick={() => saveCurrent(false)}>Save for me</button>
+              {views.canShare && (
+                <button type="button" className="btn ghost" style={{ padding: '4px 12px', fontSize: 13 }}
+                  disabled={!viewName.trim()} onClick={() => saveCurrent(true)}>Save for everybody</button>
+              )}
+              <button type="button" className="btn ghost" style={{ padding: '4px 10px', fontSize: 13 }}
+                onClick={() => { setNaming(false); setViewName(''); }}>Cancel</button>
+            </>
+          ) : (
+            <button type="button" className="btn ghost" style={{ padding: '4px 12px', fontSize: 13 }}
+              onClick={() => setNaming(true)}>Save this view</button>
+          )}
+
+          {/* Removing asks once, on the button itself. Two clicks beats a dialog this
+              side is not allowed to import — and beats none at all. */}
+          {activeView && (views.views || []).some((v) => v.id === activeView && v.mine) && (
+            <button type="button" className="btn ghost"
+              style={{ padding: '4px 10px', fontSize: 13, color: confirmRemove ? '#8A2D2D' : undefined }}
+              onClick={async () => {
+                if (!confirmRemove) { setConfirmRemove(true); return; }
+                await ltApi.deleteView(activeView).catch(() => {});
+                setActiveView('');
+                setConfirmRemove(false);
+                reloadViews();
+              }}>{confirmRemove ? 'Really remove it?' : 'Remove'}</button>
+          )}
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
         <input className="input" placeholder="Search a loan number or borrower" value={search}
           onChange={(e) => setSearch(e.target.value)} style={{ maxWidth: 300 }} />
