@@ -244,6 +244,30 @@ function offline() {
   ok(JSON.stringify(badv).indexOf('registryWarnings') === -1 && !('warnings' in JSON.parse(JSON.stringify(badv))), 'registry: warnings channel is Symbol (not serialized into the upstream body)');
   // the route exposes REGISTRY_FIELDS in its supported set
   ok(Array.isArray(fr.REGISTRY_FIELDS) && fr.REGISTRY_FIELDS.includes('citizenship') && fr.REGISTRY_FIELDS.includes('bankruptcy'), 'registry: REGISTRY_FIELDS lists the implemented advanced fields');
+  // a present-but-unparseable NUMERIC is a warning (not silently dropped)
+  const badnum = lp.buildSearch({ value: 5e5, loan: 4e5, dti: 'high' });
+  const baseDti = require('../src/longterm/lenderprice/search-base.json').criteria.clientDti;
+  const wn = badnum[sm.REGISTRY_WARNINGS];
+  ok(Array.isArray(wn) && wn.some((x) => x.field === 'dti') && badnum.criteria.clientDti === baseDti, 'registry: unparseable numeric → warning, not applied (base default unchanged)');
+  // an unknown NESTED sub-key is a warning (bankruptcy.dischargeDate is not implemented)
+  const badnest = lp.buildSearch({ value: 5e5, loan: 4e5, bankruptcy: { chapter: 'Chapter 7', dischargeDate: '2020-01-01' } });
+  const wk = badnest[sm.REGISTRY_WARNINGS];
+  ok(Array.isArray(wk) && wk.some((x) => x.field === 'bankruptcy.dischargeDate'), 'registry: unknown nested sub-key → warning');
+  ok(dyn(badnest, 'BankruptcyChapter') === 'Chapter 7', 'registry: valid sibling still applied alongside an unknown-key warning');
+  // an out-of-range mortgage-late severity warns
+  const badsev = lp.buildSearch({ value: 5e5, loan: 4e5, mortgageLates: { last12: { 180: '1' } } });
+  ok((badsev[sm.REGISTRY_WARNINGS] || []).some((x) => x.field === 'mortgageLates.last12.180'), 'registry: unknown mortgage-late severity → warning');
+
+  // 19) DISQUALIFY fetch: the POLL asks for the FULL result; the kickoff does not (and only
+  // cachedDisqualified + disqualifyFullResult differ between the two bodies — both result-shaping,
+  // never search criteria, so the cache slot is unchanged).
+  const dqKick = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 });
+  const dqPoll = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 }, { disqualify: { cached: true } });
+  ok(dqKick.cachedDisqualified === false && dqKick.disqualifyFullResult === false, 'disqualify kickoff: cached=false, fullResult=false');
+  ok(dqPoll.cachedDisqualified === true && dqPoll.disqualifyFullResult === true, 'disqualify poll: cached=true, fullResult=true (fetch the full tree)');
+  // countyName is honored as a real input (was accepted but ignored before)
+  const cn = lp.buildSearch({ value: 5e5, loan: 4e5, countyName: 'Union' });
+  ok(cn.property.address.countyName === 'Union', 'countyName input is honored');
 
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }

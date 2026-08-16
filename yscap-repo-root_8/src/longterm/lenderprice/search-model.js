@@ -151,7 +151,8 @@ function buildSearch(sc = {}, opts = {}) {
   if (sc.state != null) a.state = sc.state;
   if (sc.city != null) a.city = sc.city;
   if (sc.countyFps != null) { a.county = sc.countyFps; a.censustract = sc.countyFps; }
-  if (sc.county != null) a.countyName = sc.county;
+  if (sc.countyName != null) a.countyName = sc.countyName;
+  else if (sc.county != null) a.countyName = sc.county;
 
   // Dynamic properties are {fieldId, value} objects — set values in place.
   const dp = m.dynamicPropertiesMap || (m.dynamicPropertiesMap = {});
@@ -185,12 +186,17 @@ function buildSearch(sc = {}, opts = {}) {
   // comes back quickly (the frontend does exactly this — kick off on search, poll on the
   // "ineligible" click). We set these flags EXPLICITLY (not inherited from the base) so the
   // kickoff and poll bodies can differ ONLY in cachedDisqualified.
+  const polling = !!(opts.disqualify && opts.disqualify.cached);
   m.showDisqualify = true;
   m.showDisqualifyRules = true;     // include the actual failing RULE text, not just a flag
   m.disqualifyAsync = true;
-  m.disqualifyFullResult = false;
+  // Kickoff (cached=false) returns an EMPTY disqualify tree (the captured HAR confirms this) — it
+  // only STARTS the async computation. The POLL (cached=true) must ask for the FULL result, or the
+  // ready tree comes back empty. These are result-SHAPING flags, not search criteria, so flipping
+  // them does not change the cache slot (which is keyed on the scenario), only what is returned.
+  m.disqualifyFullResult = polling;
   m.fillLenderMap = true;
-  m.cachedDisqualified = !!(opts.disqualify && opts.disqualify.cached); // false = kick off; true = poll
+  m.cachedDisqualified = polling; // false = kick off; true = poll
 
   // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). This runs AFTER
   // the core overlay so it only ADDS the extensions; invalid enum values are collected as warnings

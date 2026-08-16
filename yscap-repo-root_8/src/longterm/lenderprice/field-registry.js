@@ -76,14 +76,27 @@ function applyRegistry(m, sc) {
   const warnings = [];
   const c = m.criteria || (m.criteria = {});
   const bad = (field, value, allowed) => warnings.push({ field, value, message: `invalid ${field} — expected one of: ${Array.from(allowed).join(', ')}` });
+  // A present-but-unparseable numeric must NOT be silently dropped (that is the silent-substitution
+  // class): warn so the route 422s it. A missing/blank value is simply not applied (no warning).
+  const numField = (field, raw, apply) => {
+    if (raw == null || raw === '') return;
+    const v = num(raw);
+    if (v == null) { warnings.push({ field, value: raw, message: `invalid ${field} — expected a number` }); return; }
+    apply(v);
+  };
+  // Reject unknown sub-keys of a nested object rather than silently ignore them.
+  const checkKeys = (field, obj, allowed) => {
+    if (!obj || typeof obj !== 'object') return;
+    for (const k of Object.keys(obj)) if (!allowed.has(k)) warnings.push({ field: `${field}.${k}`, value: obj[k], message: `unknown ${field} field "${k}" — allowed: ${Array.from(allowed).join(', ')}` });
+  };
 
   // --- borrower (criteria paths) ---
   if (sc.selfEmployed != null) c.selfEmployed = !!sc.selfEmployed;
-  if (num(sc.financedProperties) != null) c.ownProperties = String(num(sc.financedProperties));
-  if (num(sc.numberOfBorrowers) != null) c.numberOfBorrower = num(sc.numberOfBorrowers);
-  if (num(sc.monthlyIncome) != null) c.monthlyIncome = num(sc.monthlyIncome);
-  if (num(sc.monthlyDebt) != null) c.monthlyDebt = num(sc.monthlyDebt);
-  if (num(sc.dti) != null) c.clientDti = num(sc.dti) > 1 ? num(sc.dti) / 100 : num(sc.dti);
+  numField('financedProperties', sc.financedProperties, (v) => { c.ownProperties = String(v); });
+  numField('numberOfBorrowers', sc.numberOfBorrowers, (v) => { c.numberOfBorrower = v; });
+  numField('monthlyIncome', sc.monthlyIncome, (v) => { c.monthlyIncome = v; });
+  numField('monthlyDebt', sc.monthlyDebt, (v) => { c.monthlyDebt = v; });
+  numField('dti', sc.dti, (v) => { c.clientDti = v > 1 ? v / 100 : v; });
   if (sc.compensationType != null) { const t = COMP_TYPE[sc.compensationType]; if (t) c.compensationType = t; else bad('compensationType', sc.compensationType, Object.keys(COMP_TYPE)); }
   if (sc.waiveLenderFee != null) c.lenderFeeWaiver = !!sc.waiveLenderFee;
 
@@ -99,6 +112,7 @@ function applyRegistry(m, sc) {
   // --- bankruptcy (chapter/status/seasoning) ---
   if (sc.bankruptcy && typeof sc.bankruptcy === 'object') {
     const b = sc.bankruptcy;
+    checkKeys('bankruptcy', b, new Set(['chapter', 'status', 'seasoning']));
     if (b.chapter != null) { if (BK_CHAPTER.has(b.chapter)) setDyn(m, 'BankruptcyChapter', b.chapter); else bad('bankruptcy.chapter', b.chapter, BK_CHAPTER); }
     if (b.status != null) { if (BK_STATUS.has(b.status)) setDyn(m, 'BankruptcyStatus', b.status); else bad('bankruptcy.status', b.status, BK_STATUS); }
     if (b.seasoning != null) { if (BK_SEASONING.has(b.seasoning)) setDyn(m, 'BankruptcySeasoning', b.seasoning); else bad('bankruptcy.seasoning', b.seasoning, BK_SEASONING); }
@@ -106,17 +120,19 @@ function applyRegistry(m, sc) {
 
   // --- mortgage lates (8 buckets: 30/60/90/120 × last-12 / months-13–24) ---
   if (sc.mortgageLates && typeof sc.mortgageLates === 'object') {
-    const applyBucket = (obj, suffix) => {
+    checkKeys('mortgageLates', sc.mortgageLates, new Set(['last12', 'months13To24']));
+    const applyBucket = (obj, window, suffix) => {
       if (!obj || typeof obj !== 'object') return;
+      checkKeys(`mortgageLates.${window}`, obj, new Set(['30', '60', '90', '120']));
       for (const sev of ['30', '60', '90', '120']) {
         if (obj[sev] == null) continue;
         const v = String(obj[sev]);
         if (LATE_COUNT.has(v)) setDyn(m, `MORT${sev}LATESLAST${suffix}`, v);
-        else bad(`mortgageLates.${suffix}.${sev}`, v, LATE_COUNT);
+        else bad(`mortgageLates.${window}.${sev}`, v, LATE_COUNT);
       }
     };
-    applyBucket(sc.mortgageLates.last12, '12M');
-    applyBucket(sc.mortgageLates.months13To24, '24M');
+    applyBucket(sc.mortgageLates.last12, 'last12', '12M');
+    applyBucket(sc.mortgageLates.months13To24, 'months13To24', '24M');
   }
 
   // --- derogatory-event seasoning (foreclosure / short sale / deed-in-lieu / charge-off / forbearance) ---
