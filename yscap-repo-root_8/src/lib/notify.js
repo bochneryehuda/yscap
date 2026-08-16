@@ -343,7 +343,10 @@ async function _emailRow(id, to, opts, audience) {
     // Draw Management email view).
     const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: sentHtml, attachments, replyTo, from: opts.from || null,
       bcc: splitOfficer ? null : (opts.bcc || null), cc: cc,
-      _ctx: { applicationId: opts.applicationId, notificationId: id, type: opts.type, audience, subjectTag: opts.subjectTag, kicker: opts.kicker, bodyHtml: msg.html } });
+      // WHAT THIS EMAIL COULD NOT CARRY rides through to the audit (db/550). Any notify caller that
+      // attaches documents can pass `omitted` / `attachSummary` and the one send chokepoint records
+      // it — so a surface added later gets the audit by naming the option, not by wiring a table.
+      _ctx: { applicationId: opts.applicationId, notificationId: id, type: opts.type, audience, subjectTag: opts.subjectTag, kicker: opts.kicker, bodyHtml: msg.html, omitted: opts.omitted, attachSummary: opts.attachSummary } });
     const status = res && res.ok ? 'sent' : 'skipped';
     await _mark(id, status);
     // Deliver the loan officer their pixel-free copy as a separate send. `_skipCapture`

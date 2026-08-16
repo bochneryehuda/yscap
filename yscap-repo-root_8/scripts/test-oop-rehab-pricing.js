@@ -62,6 +62,13 @@ assert.strictEqual(ex.sizing.initialAdvance, 180000, 'initial rises to the cap')
 assert.strictEqual(ex.sizing.rehabHoldback, 45000, 'holdback drops by X');
 assert.strictEqual(ex.sizing.oopRehab, 55000, 'OOP = X');
 assert.strictEqual(ex.sizing.downPayment, 20000, 'down = 200k - 180k');
+// The DISPLAYED initial-advance % must reflect the OOP-BOOSTED initial (owner-reported
+// 2026-08-12: it stayed stale — "30% initial" while the dollar rose). acqDenom = 200k.
+// base initial 125k → 0.625; with the exception the initial is 180k so the TRUE LTV is
+// 0.90 — persisted on the quote, so the borrower email, the INITIAL PDF and the FINAL
+// DocuSign sheet all show it. Was showing the stale 0.625 before the fix.
+assert.strictEqual(base.sizing.acqLtvPct, 0.625, 'base initial LTV = 125k/200k');
+assert.strictEqual(ex.sizing.acqLtvPct, 0.9, 'OOP-boosted initial LTV = 180k/200k (not the stale 0.625)');
 assert.strictEqual(ex.cashToClose, base.cashToClose - 55000, 'cash-to-close (money at the table) drops by X');
 // Liquidity to SHOW is the borrower's total skin (down + OOP + closing + reserve) —
 // unchanged, because cash-to-close fell by X while the OOP requirement rose by X.
@@ -89,5 +96,6 @@ assert.strictEqual(half.sizing.oopRehab, 20000);
 assert.strictEqual(half.sizing.initialAdvance, 145000, 'initial = 125k + 20k');
 assert.strictEqual(half.sizing.rehabHoldback, 80000, 'holdback = 100k - 20k');
 assert.strictEqual(half.sizing.totalLoan, base.sizing.totalLoan, 'partial: total unchanged');
+assert.strictEqual(half.sizing.acqLtvPct, 145000 / 200000, 'partial OOP: LTV = 145k/200k (recomputed from the boosted initial)');
 
 console.log('OK test-oop-rehab-pricing — 30+ assertions passed');

@@ -1026,9 +1026,16 @@ module.exports = {
   // Credentials come from Render env ONLY (never source, never chat). CoreLogic/the
   // vendor provide: the OAuth client id/secret (GetToken), the DoLogin account
   // id/password, the ServiceProviderSubDomain and the DigitalGatewayLenderIdentifier
-  // (a CoreLogic reporting id / GGID). The sourceClientIdentifier is OPTIONAL — the
-  // vendor confirmed this tenant has none, and the order builder omits it when unset.
-  // Nothing talks to the AMC until AMC_ENABLED=1 and these are set.
+  // (a CoreLogic reporting id / GGID). AppraisalScope's REQUIRED `client_displayed_id` (the
+  // "Client Displayed on Report" printed ON the appraisal) is carried on the wire TWO ways with
+  // the SAME value — message.clientSystem.sourceInformation.sourceClientIdentifier AND a
+  // partyRoleType="Lender" party's partyRoleIdentifier — so the gateway is satisfied whichever
+  // it reads; the id is one of the tenant's GetClientDisplayOnReport profiles (e.g. 199384 =
+  // "YS Capital Group" for this tenant). AMC_CLIENT_DISPLAYED_ID pins that id directly;
+  // otherwise the order builder resolves it from the account's GetClientDisplayOnReport list
+  // (the sole profile, or the one matching the default name "YS Capital Group"). A numeric id
+  // is required — a name alone cannot satisfy the gateway. AMC_SOURCE_CLIENT_ID is a legacy
+  // fallback for the SAME id. Nothing talks to the AMC until AMC_ENABLED=1 and these are set.
   amc: {
     enabled:        process.env.AMC_ENABLED === '1',            // master (default OFF)
     outboundEnabled: process.env.AMC_OUTBOUND_ENABLED === '1',  // write gate (default OFF)
@@ -1069,7 +1076,20 @@ module.exports = {
     // ---- required message identifiers (provided by CoreLogic / the vendor) ----
     subdomain:       process.env.AMC_SUBDOMAIN || null,        // ServiceProviderSubDomain (e.g. integrations.uat)
     lenderIdentifier: process.env.AMC_LENDER_IDENTIFIER || null, // DigitalGatewayLenderIdentifier (CoreLogic reporting id)
-    sourceClientId:  process.env.AMC_SOURCE_CLIENT_ID || null, // clientSystem.sourceInformation.sourceClientIdentifier
+    sourceClientId:  process.env.AMC_SOURCE_CLIENT_ID || null, // legacy fallback for sourceClientIdentifier (= client_displayed_id)
+    // The "Client Displayed on Report" (AppraisalScope's REQUIRED client_displayed_id, sent as
+    // sourceClientIdentifier — see the note above). Two knobs:
+    //   AMC_CLIENT_DISPLAYED_ID   — pin the exact id (skips all lookup/name resolution). Set
+    //                               this to the tenant's real GetClientDisplayOnReport id when
+    //                               the account has several profiles or the list can't be read.
+    //   AMC_CLIENT_DISPLAYED_NAME — the DEFAULT client-on-report name (owner-directed:
+    //                               "by default it should always be YS Capital Group").
+    // The order builder resolves the id from the account's GetClientDisplayOnReport list (the
+    // sole profile, or the one matching this name). The gateway REQUIRES a numeric id — a name
+    // alone cannot satisfy it — so if no id resolves and none is pinned, the order is refused
+    // with a clear message rather than sent to fail at the vendor.
+    clientDisplayedId: process.env.AMC_CLIENT_DISPLAYED_ID || null,
+    clientDisplayedName: process.env.AMC_CLIENT_DISPLAYED_NAME || 'YS Capital Group',
 
     // Which tenant environment the form defaults + note-buyer/processor party map are
     // read from (amc_form_map.environment / amc_party_map.environment). Ids are
@@ -1175,6 +1195,86 @@ module.exports = {
     callbackTokenHeader: (process.env.CLASS_CALLBACK_TOKEN_HEADER || 'x-api-key').trim(),
 
     timeoutMs: Math.max(1000, parseInt(process.env.CLASS_TIMEOUT_MS || '60000', 10) || 60000),
+  },
+
+  // ---- Richer Values — the THIRD appraisal vendor, the "Hybrid Appraisal". RTL ONLY. ----
+  //
+  // A DIFFERENT KIND OF PRODUCT, which is why it is a separate integration rather
+  // than a form on one of the other two: this is an EVALUATION (their "Reno ARV"
+  // report — an As-Is value together with an After Repair Value), not a URAR
+  // appraisal. It is cheaper, it is ordered as a form of its own, and — the fact
+  // everything downstream turns on — it does NOT produce a MISMO XML data file.
+  //
+  // ONE TOKEN, TWO WAYS TO GET IT. The vendor issues a long-lived API token AND a
+  // create-token endpoint that mints one from a username + password. Either is
+  // enough: with a token set we use it; with only a login we mint one and cache it.
+  // The create-token reply also returns the COMPANY token, which most other calls
+  // need — so a deployment that sets only the login still resolves everything.
+  //
+  // TRAINING AND PRODUCTION ARE DIFFERENT HOSTS (unlike DocLab, where only the
+  // credential decides). `environment` picks the host, and every URL stays
+  // overridable so a vendor change is a config edit rather than a deploy.
+  richerValue: {
+    enabled:         process.env.RV_ENABLED === '1',           // master (default OFF)
+    outboundEnabled: process.env.RV_OUTBOUND_ENABLED === '1',  // write gate (default OFF)
+    dryrun:          process.env.RV_DRYRUN === '1',            // build + log, send nothing
+
+    // 'training' (default) | 'production'. Deliberately defaults to training so an
+    // unlabelled deployment can never place a real order by accident.
+    environment: (process.env.RV_ENVIRONMENT || 'training').trim().toLowerCase(),
+    baseUrl: (process.env.RV_BASE_URL || '').trim().replace(/\/+$/, '') || null,
+
+    // ---- credentials (Render env ONLY, never committed) ----
+    // Either a ready-made bearer token, or a login the client exchanges for one.
+    apiToken: process.env.RV_API_TOKEN || null,
+    username: process.env.RV_USERNAME || null,
+    password: process.env.RV_PASSWORD || null,
+    // Which of THEIR companies we order for. Resolved from the create-token reply
+    // when a login is configured; set this when only a raw token is available.
+    companyToken: process.env.RV_COMPANY_TOKEN || null,
+    // The vendor user an order is placed "by" — their `loan_officer_token`, which
+    // is REQUIRED on every EVAL order. Resolved from the create-token reply (the
+    // API user is a loan officer) or from their loan-officers list; overridable.
+    loanOfficerToken: process.env.RV_LOAN_OFFICER_TOKEN || null,
+
+    // ---- what a new Hybrid order starts as (owner-directed 2026-08-14) ----
+    // Every one of these is a STARTING POINT the staffer can change on the screen
+    // before ordering — never a value forced onto an order.
+    defaultReportType:     (process.env.RV_DEFAULT_REPORT_TYPE || 'reno-arv').trim(),
+    defaultInspectionType: (process.env.RV_DEFAULT_INSPECTION_TYPE || 'interior-w-exterior').trim(),
+    defaultTurnaround:     (process.env.RV_DEFAULT_TURNAROUND || 'standard').trim(),
+    // GLA measurement + floor plan ON by default; flood certification and the
+    // licensed-agent requirement OFF. Flood is off because PILOT orders its own
+    // flood determination on every file (db/374) and buying it again here would
+    // double-order.
+    defaultGlaInclude:     process.env.RV_DEFAULT_GLA_INCLUDE !== '0',
+    defaultLicensing:      process.env.RV_DEFAULT_LICENSING === '1',
+    defaultFloodCert:      process.env.RV_DEFAULT_FLOOD_CERT === '1',
+
+    // How the intake is paid so it becomes a real order. The owner allows exactly
+    // THREE ways (2026-08-14): the card already on the file's appraisal-card
+    // condition, a card typed at the moment of ordering, or a payment link emailed
+    // to the borrower. ADD_TO_INVOICE and ACH are deliberately NOT offered — see
+    // `src/richervalues/payment.js`. 'NONE' leaves the intake unpaid so a human
+    // settles it, which is a real choice for a desk that wants a second look
+    // before the money moves.
+    paymentMethod: (process.env.RV_PAYMENT_METHOD || 'CARD_ON_FILE').trim().toUpperCase(),
+
+    // Apply the vendor's returned As-Is + ARV to the loan file automatically
+    // (owner-directed 2026-08-14). Off = the figures are still read and shown on
+    // the order card with an "Apply to the file" button; nothing is written.
+    autoApplyValues: process.env.RV_AUTO_APPLY_VALUES !== '0',
+
+    // ---- the webhook half: credentials WE issue to them ----
+    webhookUrl:      (process.env.RV_WEBHOOK_URL || '').trim() || null,
+    webhookUser:     process.env.RV_WEBHOOK_USER || null,
+    webhookPassword: process.env.RV_WEBHOOK_PASSWORD || null,
+    webhookToken:       process.env.RV_WEBHOOK_TOKEN || null,
+    webhookTokenHeader: (process.env.RV_WEBHOOK_TOKEN_HEADER || 'x-api-key').trim(),
+
+    pollSec:   Math.max(60, parseInt(process.env.RV_POLL_SEC || '300', 10) || 300),
+    pollBatch: Math.max(1, parseInt(process.env.RV_POLL_BATCH || '25', 10) || 25),
+    timeoutMs: Math.max(1000, parseInt(process.env.RV_TIMEOUT_MS || '60000', 10) || 60000),
   },
 
   // ---- DocLab (Private Lender Law) — loan-document drafting. RTL ONLY. ----

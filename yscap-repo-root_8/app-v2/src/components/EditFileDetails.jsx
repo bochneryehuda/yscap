@@ -9,6 +9,8 @@ import AddressAutocomplete from './AddressAutocomplete.jsx';
 import { goToSection } from './FileSections.jsx';
 import { refiKind } from '../lib/payoff.js';
 import { seasoningText } from '../lib/dealBasis.js';
+import { askConfirm, askPrompt } from '../lib/dialog.js';
+import { canOverride } from '../lib/condition-override.js';
 
 /* Staff edit of the loan-file data after creation — EVERY field the
    application collects is correctable here (typo'd price, wrong property
@@ -84,7 +86,7 @@ function formFrom(app) {
   };
 }
 
-export default function EditFileDetails({ app, onSaved, openByDefault = false }) {
+export default function EditFileDetails({ app, onSaved, openByDefault = false, role = null }) {
   // Seeds the collapse only — the header toggle still works either way.
   const [open, setOpen] = useState(!!openByDefault);
   const [busy, setBusy] = useState(false);
@@ -129,6 +131,10 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
 
   async function save() {
     setBusy(true); setErr(''); setMsg(''); setWarn('');
+    /* The body is built inside the try, but the super-admin override in the catch
+       has to RE-SEND THE SAME ONE — re-deriving it there would be a second copy of
+       forty field rules, and the two would drift. Hoisted so there is exactly one. */
+    let sentBody = null;
     try {
       const addrChanged = f.addrLine1 !== (a.line1 || a.street || '') || f.addrUnit !== (a.unit || '')
         || f.addrCity !== (a.city || '') || f.addrState !== ((a.state || '').toUpperCase()) || f.addrZip !== (a.zip || '');
@@ -191,6 +197,7 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
           oneLine: [[line1, f.addrUnit.trim()].filter(Boolean).join(' '), f.addrCity.trim(), [f.addrState.trim().toUpperCase(), f.addrZip.trim()].filter(Boolean).join(' ')].filter(Boolean).join(', '),
         } : null;
       }
+      sentBody = body;
       const r = await api.staffEditApplication(app.id, body);
       /* VESTING goes through the file's one vesting door (owner-directed
          2026-07-20) — its own guarded chokepoint, which wires the LLC condition
@@ -255,6 +262,87 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
       }
       if (onSaved) { resyncPending.current = true; onSaved(); }
     } catch (e) {
+      // AS-IS / ARV super-admin OVERRIDE of a sent term sheet (owner-directed 2026-08,
+      // "Save ARV, keep the loan"). When Save is refused because the term sheet is frozen and
+      // the super_admin changed ONLY the as-is value / ARV, offer a DOUBLE-WARNING override
+      // that updates just those two. The server RECORDS the new figures whether or not
+      // re-pricing at them would move the loan, and keeps the loan amount, the registration
+      // and the sent term sheet EXACTLY as they are — only the recorded ARV/as-is changes.
+      const tsFrozen = e && e.status === 409 && /term sheet/i.test((e.data && e.data.error) || e.message || '');
+      const asIsChanged = String(f.asIsValue ?? '') !== String(app.as_is_value ?? '');
+      const arvChanged = String(f.arv ?? '') !== String(app.arv ?? '');
+      /* WHICH override is on offer. The as-is/ARV one is kept for exactly the case
+         it was built for — a change to NOTHING BUT those two — because it carries
+         its own "Save ARV, keep the loan" semantics and its own recorded neutrality
+         verdict. Every OTHER refused change now gets the general super-admin
+         override (owner-directed 2026-08-13: "superadmin with double warning should
+         be able to overwrite and change anything in the file without clearing the
+         term sheet … Only superadmin, not regular admins"), which re-sends the WHOLE
+         form rather than two fields, so nothing on screen is silently dropped.
+
+         The comparison is against `formFrom(app)` — the form's OWN rendering of the
+         saved row — never the raw columns, so a date the row stores as a timestamp
+         and the form shows as YYYY-MM-DD cannot read as a change nobody made. */
+      const saved = formFrom(app);
+      const otherChanged = Object.keys(saved).some((k) => k !== 'asIsValue' && k !== 'arv'
+        && String(f[k] ?? '') !== String(saved[k] ?? ''));
+      const asIsArvOnly = (asIsChanged || arvChanged) && !otherChanged;
+      if (tsFrozen && canOverride(role) && asIsArvOnly) {
+        const ok1 = await askConfirm(
+          'The Term Sheet package has already been sent, so this file is frozen. As a super admin you can override to update ONLY the recorded as-is value and ARV. The loan amount and the sent term sheet stay EXACTLY as they are — nothing about the loan changes, you are only updating the recorded value. Any other changes on this form will NOT be saved.',
+          { title: 'Override the frozen term sheet?', confirmLabel: 'Continue' });
+        const ok2 = ok1 && await askConfirm(
+          'Second check: this changes the recorded as-is value and ARV on a file whose term sheet has gone out. The loan and the sent term sheet are kept as-is — only the recorded value changes. Your name, the time and your reason are saved on the file permanently.',
+          { title: 'Are you sure?', confirmLabel: 'Override now' });
+        if (ok2) {
+          const reason = await askPrompt('Why are you overriding to update the as-is value / ARV? (required — saved on the file and visible to the team)');
+          if (reason != null && reason.trim()) {
+            try {
+              await api.staffEditApplication(app.id, { asIsValue: f.asIsValue, arv: f.arv, adminOverride: true, overrideReason: reason.trim() });
+              setMsg('Recorded as-is value and ARV updated (admin override). The loan and the sent term sheet were kept exactly as they are.');
+              if (onSaved) { resyncPending.current = true; onSaved(); }
+              return;
+            } catch (e2) {
+              setErr(e2.message || 'The override did not save.');
+              return;
+            }
+          }
+        }
+      } else if (tsFrozen && canOverride(role) && sentBody) {
+        /* THE GENERAL SUPER-ADMIN OVERRIDE (owner-directed 2026-08-13). Any refused
+           change on this form — the experience counts the owner was blocked on, and
+           every other field they chose to include — may be forced through a SENT
+           term sheet by a super_admin behind a DOUBLE WARNING and a typed reason.
+           "Only superadmin, not regular admins": `canOverride` is super_admin-only
+           and the server re-checks the role, so a plain admin never reaches here and
+           could not use it if they did.
+
+           It re-sends the SAME body, so what the officer sees on the form is exactly
+           what saves — unlike the as-is/ARV path above, which deliberately narrows
+           to two fields and says so. The server keeps the loan, the registration and
+           the sent term sheet exactly as they are (details-freeze capture/restore),
+           which is the "without clearing the term sheet" half of the ask. */
+        const ok1 = await askConfirm(
+          'The Term Sheet package has already been sent, so this file is frozen. As a super admin you can override that and save these changes anyway — the sent term sheet is NOT cleared and is NOT re-issued, so the signed sheet will keep showing the numbers it went out with. Anything you changed that the term sheet prices will no longer match it.',
+          { title: 'Override the frozen term sheet?', confirmLabel: 'Continue' });
+        const ok2 = ok1 && await askConfirm(
+          'Second check: this writes your changes to a file whose term sheet has already gone out to the borrower, without re-pricing or re-issuing it. Only a super admin can do this. Your name, the time and your reason are saved on the file permanently.',
+          { title: 'Are you sure?', confirmLabel: 'Override now' });
+        if (ok2) {
+          const reason = await askPrompt('Why are you overriding the sent term sheet to save these changes? (required — saved on the file and visible to the team)');
+          if (reason != null && reason.trim()) {
+            try {
+              await api.staffEditApplication(app.id, { ...sentBody, adminOverride: true, overrideReason: reason.trim() });
+              setMsg('Saved with a super-admin override. The loan, the registration and the sent term sheet were kept exactly as they are — nothing was re-priced or re-issued.');
+              if (onSaved) { resyncPending.current = true; onSaved(); }
+              return;
+            } catch (e2) {
+              setErr(e2.message || 'The override did not save.');
+              return;
+            }
+          }
+        }
+      }
       setErr(e.message || 'Could not save — nothing was changed.');
     } finally { setBusy(false); }
   }
@@ -429,6 +517,20 @@ export default function EditFileDetails({ app, onSaved, openByDefault = false })
             </div>
           </>}
           <p className="small" style={{ margin: '14px 0 8px', ...EYEBROW }}>Experience entered on this file</p>
+          {/* THE RULE, SAID ON THE SCREEN (owner-directed 2026-08-13). The whole
+              point of the carve-out is that an officer whose verification came back
+              "2 flips + 1 hold" instead of "3 flips" can correct the file and sign
+              the condition off. They will only try it if they know it is allowed —
+              otherwise they read "the term sheet is frozen" and go and clear the
+              package, which is the exact round trip this removes. Explicit dark text
+              on the white canvas per the hard rule; never an --ink* token. */}
+          <p className="small" style={{ margin: '0 0 8px', color: '#4B585C', maxWidth: 640 }}>
+            Once the term sheet has gone out you can still move deals <strong>between fix-and-flip and
+            fix-and-hold</strong> — the total counts the same either way, so the sent term sheet stays exactly
+            as it is and nothing is re-priced or re-issued. Lowering the total, moving deals to REO, or
+            changing ground-up does change what the loan was priced on, so those still need the Term Sheet
+            package cleared.
+          </p>
           <div className="edit-grid">
             <label><span>Exp: flips</span><input className="input" type="number" min="0" value={f.requestedExpFlips} onChange={(e) => set('requestedExpFlips', e.target.value)} /></label>
             <label><span>Exp: holds</span><input className="input" type="number" min="0" value={f.requestedExpHolds} onChange={(e) => set('requestedExpHolds', e.target.value)} /></label>

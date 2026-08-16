@@ -38,6 +38,7 @@ const stageEvents = require('../sitewire/stage-events');   // when each draw rea
 const drawAttachments = require('../sitewire/draw-attachments'); // invoices/receipts/photos ON a draw
 const drawSettings = require('../sitewire/draw-settings');       // every knob, its three levels, and which one won
 const drawChecklist = require('../sitewire/draw-checklist');     // what's left on a draw, stated forward
+const deliverFindingsMod = require('../sitewire/deliver-findings'); // the ONE borrower-findings deliver chokepoint (+ the autopilot)
 
 /**
  * EVERY OVERRIDE CAN CARRY ITS PROOF (owner-directed 2026-08-09: "when we override something, we
@@ -66,7 +67,8 @@ const M = require('../sitewire/mapper');
 const T = require('../sitewire/transforms');
 const routing = require('../sitewire/routing');
 const rehab = require('../lib/rehab-budget');
-const { sanitizeDateOnly } = require('../lib/fields'); // strict YYYY-MM-DD validation for date inputs
+const { sanitizeDateOnly, jsonbText } = require('../lib/fields'); // strict YYYY-MM-DD validation for date inputs; jsonbText = NUL-safe jsonb text
+const { normalizeDisputeMedia } = require('../sitewire/dispute-media'); // sniff/strip/cap dispute evidence — shared with the borrower + TPO surfaces
 const notify = require('../lib/notify');
 const { drawSetupNotifyOpts } = require('../lib/email/draw-setup-email');
 const { enqueueSitewirePush } = require('../sitewire/enqueue');
@@ -77,6 +79,10 @@ const storage = require('../lib/storage');
 const { setMediaHeaders } = require('../lib/media-headers');
 const { serveDocument } = require('../lib/serve-document');
 const { computeRelease, waiverGate } = require('../sitewire/money');
+// THE INVESTOR'S CUT OF OUR DRAW FEE — pure, and the ONE place the CorrFirst/Blue Lake rates live.
+// It splits our fee into what the note buyer keeps and what reaches our bank; it can never move
+// the borrower's money or the fee any other surface prints.
+const investorFee = require('../sitewire/investor-fee');
 const { keyedRateLimit } = require('../lib/rate-limit');
 // Coordinator-message spam throttle (audit finding B-7, 2026-07-21). Per-(file, actor) so a whole team
 // isn't rate-limited by one coordinator on a different file. 5/min is generous for a real conversation
@@ -98,6 +104,15 @@ const drawWire = require('../lib/esign/draw-wire');
 const { retainagePctFor, lienGateEnabled } = drawSettings;
 
 router.use(requireAuth, requireStaff);
+
+// VIEW-ONLY draw access (owner-directed 2026-08-12). A loan officer holds `view_draws`
+// (never `manage_draws`), so the READ routes and the two borrower-behalf actions
+// (approve / dispute a finding) accept EITHER capability; every draw-desk WRITE stays
+// on `requirePermission('manage_draws')` and refuses a loan officer with a 403. File
+// scope is still enforced per-route by canSeeFile / fileScope, so the LO only ever
+// sees their own files. Grep for `requireDrawView` to see exactly which routes a
+// loan officer can reach — a route on plain `manage_draws` is management-only.
+const requireDrawView = requirePermission(['manage_draws', 'view_draws']);
 
 // a funded file is past clear-to-close; a SOW change after CTC must net to zero
 const phaseFor = (status) => (String(status) === 'funded' ? 'after_ctc' : 'before_ctc');
@@ -145,7 +160,7 @@ async function canSeeFile(req, appId) {
 }
 
 // ---- GET /api/sitewire/draws — desk dashboard (mirrored draws, scoped) ----
-router.get('/draws', requirePermission('manage_draws'), async (req, res) => {
+router.get('/draws', requireDrawView, async (req, res) => {
   try {
     const sc = fileScope(req, 'a', 1);
     const rows = (await db.query(
@@ -173,7 +188,7 @@ router.get('/draws', requirePermission('manage_draws'), async (req, res) => {
 });
 
 // ---- GET /api/sitewire/files/:id — one file's Sitewire state (link, draws, requests, ledger) ----
-router.get('/files/:id', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -187,7 +202,7 @@ router.get('/files/:id', requirePermission('manage_draws'), async (req, res) => 
 });
 
 // ---- GET /api/sitewire/files/:id/findings/:drawId — pull full findings (photos + notes) ----
-router.get('/files/:id/findings/:drawId', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/findings/:drawId', requireDrawView, async (req, res) => {
   if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   if (!switches.on('SITEWIRE_ENABLED')) return res.status(503).json({ error: 'Sitewire is turned off' });
@@ -215,7 +230,7 @@ router.post('/files/:id/draws/:drawId/archive-media', requirePermission('manage_
 });
 
 // how many media are already archived for a draw (for the gallery's "✓ archived" indicator).
-router.get('/files/:id/draws/:drawId/archived-media', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/draws/:drawId/archived-media', requireDrawView, async (req, res) => {
   if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -227,7 +242,7 @@ router.get('/files/:id/draws/:drawId/archived-media', requirePermission('manage_
 // ---- GET /files/:id/draws/:drawId/media/:mediaId — stream a DURABLE inspection photo/video (staff) ----
 // PILOT's own stored copy, so the staff gallery never breaks when Sitewire's pre-signed link expires.
 // manage_draws + canSeeFile + the media must belong to this file's draw (IDOR).
-router.get('/files/:id/draws/:drawId/media/:mediaId', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/draws/:drawId/media/:mediaId', requireDrawView, async (req, res) => {
   if (!/^\d+$/.test(req.params.drawId) || !/^\d{1,18}$/.test(String(req.params.mediaId))) return res.status(404).end();
   if (!(await canSeeFile(req, req.params.id))) return res.status(404).end();
   const m = (await db.query(
@@ -262,7 +277,7 @@ async function generateAndServeReport(req, res, { sitewireDrawId, scope }) {
   } catch (e) { res.status(500).json({ error: 'Could not build the report — please try again.' }); }
 }
 // per-draw report
-router.get('/files/:id/draws/:drawId/report', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/draws/:drawId/report', requireDrawView, async (req, res) => {
   if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [req.params.drawId, req.params.id]);
@@ -270,7 +285,7 @@ router.get('/files/:id/draws/:drawId/report', requirePermission('manage_draws'),
   return generateAndServeReport(req, res, { sitewireDrawId: req.params.drawId, scope: 'draw' });
 });
 // whole-project report (cumulative across all draws)
-router.get('/files/:id/report', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/report', requireDrawView, async (req, res) => {
   return generateAndServeReport(req, res, { sitewireDrawId: null, scope: 'project' });
 });
 
@@ -330,7 +345,7 @@ router.post('/files/:id/reset-draw', requirePermission('manage_draws'), async (r
 // and offers the toggles. It also returns the raw property object — the honest way to reveal the exact field
 // names Sitewire uses for the two toggles we haven't confirmed yet (Block Draws / review type). manage_draws
 // + canSeeFile. Degrades gracefully: available:false when the file isn't PILOT-managed or the connection is off.
-router.get('/files/:id/sitewire-property', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/sitewire-property', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -438,7 +453,7 @@ const isSuperAdmin = (req) => !!(req.actor && req.actor.role === 'super_admin');
 
 // GET the SOW lines for the editor: each line's wording/description/amount + whether it's drawn-locked in
 // Sitewire, plus the unlock state + whether the viewer is a super-admin. manage_draws + canSeeFile.
-router.get('/files/:id/sow-lines', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/sow-lines', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -488,7 +503,7 @@ router.post('/files/:id/sow-line-edit', requirePermission('manage_draws'), async
 // Scoped to draw items ONLY (type draw%/sow_%) so it stays the coordinator's draw inbox, not the whole file's
 // notification history. Sitewire does not expose the emails IT sends, so this is PILOT's own trail.
 // manage_draws + canSeeFile.
-router.get('/files/:id/notifications', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/notifications', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -520,7 +535,7 @@ router.get('/files/:id/notifications', requirePermission('manage_draws'), async 
 // Opens a draw notification in full: the exact branded HTML we sent, every recipient, the reply-to, and the
 // attachment list. Go-forward: only messages sent after the capture shipped have a stored copy (has_full_email).
 // manage_draws + canSeeFile + the notification must belong to THIS file (IDOR).
-router.get('/files/:id/messages/:notificationId', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/messages/:notificationId', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   if (!/^[0-9a-f-]{36}$/i.test(String(req.params.notificationId))) return res.status(404).json({ error: 'not found' });
@@ -537,7 +552,7 @@ router.get('/files/:id/messages/:notificationId', requirePermission('manage_draw
 });
 
 // ---- GET /files/:id/messages/:notificationId/attachments/:idx — stream a captured attachment ----
-router.get('/files/:id/messages/:notificationId/attachments/:idx', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/messages/:notificationId/attachments/:idx', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   if (!/^[0-9a-f-]{36}$/i.test(String(req.params.notificationId)) || !/^\d{1,3}$/.test(String(req.params.idx))) return res.status(404).json({ error: 'not found' });
@@ -587,14 +602,14 @@ router.post('/files/:id/messages/reply', requirePermission('manage_draws'), draw
 });
 
 // ---- GET /files/:id/borrower-status — Sitewire's borrower-invite state (live read) ----
-router.get('/files/:id/borrower-status', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/borrower-status', requireDrawView, async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try { res.json(await orchestrator.getBorrowerInviteStatus(req.params.id)); }
   catch (e) { res.status(500).json({ error: 'Could not read the borrower status from Sitewire right now.' }); }
 });
 
 // ---- GET /files/:id/quick-notify-statuses — Sitewire's pipeline status labels ----
-router.get('/files/:id/quick-notify-statuses', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/quick-notify-statuses', requireDrawView, async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try { res.json({ statuses: await orchestrator.listQuickNotifyStatuses() }); }
   catch (e) { res.status(500).json({ error: 'Could not load the pipeline statuses.' }); }
@@ -618,7 +633,7 @@ router.post('/files/:id/draws/:drawId/quick-notify', requirePermission('manage_d
 });
 
 // ---- GET /files/:id/sitewire-documents — the Sitewire property's own documents (live read) ----
-router.get('/files/:id/sitewire-documents', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/sitewire-documents', requireDrawView, async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try { res.json(await orchestrator.getSitewireDocuments(req.params.id)); }
   catch (e) { res.status(500).json({ error: 'Could not load the Sitewire documents.' }); }
@@ -898,7 +913,7 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
 // history + Trinity orders; POST = create (staff may deliberately pass allow_over /
 // allow_parallel); then cancel / close-out retry / Trinity actions are the desk's levers.
 const intId = (v) => { const n = Number(v); return Number.isInteger(n) && n > 0 ? n : null; };
-router.get('/files/:id/portal-draws', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/portal-draws', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -996,7 +1011,7 @@ router.post('/files/:id/trinity-orders/:orderId/advance', requirePermission('man
 // whether it can be sent, the latest envelope's status, the borrower-typed wire details
 // (account number MASKED — only its last-4), the fatal operating-agreement condition when
 // the wire goes to a new entity, and the signed PDF link once it's filed back. Read-only.
-router.get('/files/:id/draw-request', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/draw-request', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -1056,11 +1071,16 @@ router.get('/files/:id/draw-request', requirePermission('manage_draws'), async (
         };
       }
     }
-    // The signed PDF, once filed back to the condition.
+    // The signed PDF, once filed back to the condition — with its review state so the desk can
+    // show + do the "accept the wire instructions" step right here (owner-directed 2026-08-12).
     const signed = (await db.query(
-      `SELECT id, filename, created_at FROM documents
+      `SELECT id, filename, created_at, COALESCE(review_status,'pending') AS review_status, rejection_reason, source_type FROM documents
         WHERE application_id=$1 AND doc_kind='draw_request_signed' AND is_current=true
         ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0] || null;
+    // The wire-form GATE, the SAME one the delivery step reads, so the card and the money gate can
+    // never disagree about whether the wire instructions are accepted.
+    const wireForm = await require('../sitewire/investor-delivery-send').wireFormStatus(appId)
+      .catch(() => ({ present: false, accepted: true, rejectedOnly: false }));
     res.json({
       docusign_enabled: switches.on('DOCUSIGN_SEND_ENABLED'),
       docusign_test_mode: !!cfg.docusign.testMode,
@@ -1071,6 +1091,9 @@ router.get('/files/:id/draw-request', requirePermission('manage_draws'), async (
         terminal: ['completed', 'declined', 'voided'].includes(String(env.status || '')),
         // Live = out for signature, so its recipient's email can still be corrected + re-sent.
         live: envLive,
+        // Clearable = a sent/delivered/completed package that can be voided/cleared PILOT-side so
+        // the wire form can be uploaded MANUALLY instead (owner-directed 2026-08).
+        clearable: ['sent', 'delivered', 'completed'].includes(String(env.status || '')),
       } : null,
       // `id` + `can_change_email` let the panel offer "change email & re-send" per signer
       // (a signed/declined signer can't be re-addressed). `has_file_email_mismatch` drives
@@ -1084,9 +1107,47 @@ router.get('/files/:id/draw-request', requirePermission('manage_draws'), async (
       recipient_options: await require('../lib/draw-recipients').drawRecipients(appId).catch(() => ({ borrower: null, coBorrower: null })),
       wire,
       operating_agreement: oaCondition,
-      signed_document: signed ? { id: signed.id, filename: signed.filename, created_at: signed.created_at } : null,
+      signed_document: signed ? { id: signed.id, filename: signed.filename, created_at: signed.created_at, review_status: signed.review_status, rejection_reason: signed.rejection_reason || null, manual: signed.source_type !== 'system' } : null,
+      wire_form: wireForm,
     });
   } catch (e) { console.warn('[sitewire] draw-request status error:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// ---- POST /files/:id/wire-form/review — accept / reject the signed wire instructions ----
+// The borrower's signed DocuSign wire form files onto the draw-request condition; the money can
+// only move once ONE correct version is ACCEPTED. This lets the DRAW COORDINATOR do that step
+// right on the draw desk (owner-directed 2026-08-12: "accept the wire instructions, part of the
+// process of approving a draw … I don't see any option"). It writes the ONE shared 'accepted'
+// definition (document-acceptance / review_status='accepted'), so this desk, the delivery gate
+// and the sign-off gate can never disagree about what "accepted" means.
+router.post('/files/:id/wire-form/review', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const action = String((req.body || {}).action || '');
+  if (!['accept', 'reject'].includes(action)) return res.status(400).json({ error: 'action must be accept or reject' });
+  const reason = String((req.body || {}).reason || '').trim();
+  if (action === 'reject' && !reason) return res.status(400).json({ error: 'a rejection reason is required' });
+  try {
+    const doc = (await db.query(
+      `SELECT id FROM documents
+        WHERE application_id=$1 AND is_current=true AND doc_kind='draw_request_signed'
+        ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0];
+    if (!doc) return res.status(404).json({ error: 'No signed wire form is on file to review.' });
+    const status = action === 'accept' ? 'accepted' : 'rejected';
+    await db.query(
+      `UPDATE documents SET review_status=$2, rejection_reason=$3, reviewed_by=$4, reviewed_at=now() WHERE id=$1`,
+      [doc.id, status, action === 'reject' ? reason.slice(0, 1000) : null, req.actor.id]);
+    // Best-effort audit — accepting / rejecting the wire instructions gates the money, so record who
+    // did it and why; the logging write can never fail the action.
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+         VALUES ('staff',$1,$2,'application',$3,$4,$5,$6)`,
+        [req.actor && req.actor.id, `wire_form_${status}`, appId, req.ip, req.get('user-agent') || null,
+         { document_id: doc.id, reason: action === 'reject' ? reason.slice(0, 500) : null }]);
+    } catch (_) { /* logging is best-effort */ }
+    res.json({ ok: true, status });
+  } catch (e) { console.warn('[sitewire] wire-form review error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // ---- POST /files/:id/draw-request/send — send the Draw Request & Wire Instructions form via DocuSign ----
@@ -1185,6 +1246,110 @@ router.post('/files/:id/draw-request/recipient-email', requirePermission('manage
     if (e && e.status && e.expose) return res.status(e.status).json({ error: e.message });
     if (e && e.retryable === false && e.message) return res.status(400).json({ error: e.message });
     console.warn('[sitewire] draw-request recipient-email error:', e && e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// ---- POST /files/:id/draw-request/clear — clear the sent/signed DocuSign wire form ----
+// Some files make MANUAL changes to the wire form (owner-directed 2026-08: "after sending
+// DocuSign, allow clearing it and uploading the form manually instead"). This voids the live
+// DocuSign draw-request package (or clears a completed one PILOT-side), supersedes its signed
+// document and REOPENS the draw condition — so a coordinator can then upload the wire form
+// manually. Reuses the shared clearPackage (void + supersede + reopen), scoped to the DRAW
+// permission so a Draw Coordinator who isn't a file assignee can still do it.
+router.post('/files/:id/draw-request/clear', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const { clearPackage, CLEARABLE_STATUSES } = require('../lib/esign/clear');
+    const env = (await db.query(
+      `SELECT id FROM esign_envelopes
+        WHERE application_id=$1 AND purpose='draw_request' AND status = ANY($2)
+        ORDER BY created_at DESC LIMIT 1`, [appId, CLEARABLE_STATUSES])).rows[0] || null;
+    if (!env) return res.status(409).json({ error: 'There is no sent draw request form to clear.' });
+    const reason = String((req.body && req.body.reason) || '').trim()
+      || 'Cleared to upload the wire form manually instead.';
+    // Void a still-out envelope at DocuSign so the old signing link stops working; a completed
+    // one is cleared PILOT-side only (clearPackage handles both).
+    const out = await clearPackage({ rowId: env.id, actorId: req.actor && req.actor.id, reason, db, docusign: require('../lib/integrations/docusign') });
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+         VALUES ('staff',$1,'draw_request_cleared','application',$2,$3,$4,$5)`,
+        [req.actor && req.actor.id, appId, req.ip, req.get('user-agent') || null,
+         { voided: out.voided, docsCleared: out.docsCleared, conditionsReopened: (out.conditionsReopened || []).length }]);
+    } catch (_) { /* logging is best-effort */ }
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    if (e && e.status && e.expose) return res.status(e.status).json({ error: e.message });
+    console.warn('[sitewire] draw-request clear error:', e && e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// ---- POST /files/:id/draw-request/upload-manual — file a wire form uploaded by hand ----
+// Some files make MANUAL changes to the wire form, so the coordinator uploads it here instead
+// of — or after clearing — the DocuSign flow (owner-directed 2026-08). The manual form files
+// onto the SAME draw condition and gets doc_kind='draw_request_signed' (told apart from a
+// DocuSign copy only by source_type='staff_upload'), so the money gate (wireFormStatus), the
+// accept/reject step and the INVESTOR-DELIVERY attachment all treat it identically — no query
+// anywhere had to change. It supersedes any current wire form so exactly one is live; the
+// coordinator still ACCEPTS it before the money can move.
+router.post('/files/:id/draw-request/upload-manual', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  if (!b.dataBase64) return res.status(400).json({ error: 'Attach the wire form file to upload.' });
+  try {
+    const a = (await db.query(
+      `SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+    if (!a) return res.status(404).json({ error: 'file not found' });
+    let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
+    try { ({ buf } = require('../lib/upload-bytes').decodeUploadBase64(b.dataBase64)); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+    const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+    if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+    // Ensure the draw condition exists so the manual form has somewhere to file back to.
+    const itemId = await drawWire.ensureDrawRequestCondition(db, appId, req.actor && req.actor.id);
+    const filename = String(b.filename || 'wire-instructions.pdf').slice(0, 200);
+    // Idempotency — a double-click files one copy, not two.
+    const dup = await require('../lib/doc-dedup').recentDuplicateDocId({
+      filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+      applicationId: appId, checklistItemId: itemId || null, docKind: 'draw_request_signed' });
+    if (dup) return res.status(201).json({ ok: true, documentId: dup, deduped: true });
+    const { ref, provider } = await storage.save(buf, { filename });
+    const ins = await db.query(
+      `INSERT INTO documents (application_id, checklist_item_id, borrower_id, filename, content_type, size_bytes,
+                              storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, source_type,
+                              slot_label, visibility, is_current, review_status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'draw_request_signed','staff_upload','Wire form (manual)','borrower',true,'pending')
+       RETURNING id`,
+      [appId, itemId || null, a.borrower_id, filename, b.contentType || 'application/pdf', buf.length, provider, ref, req.actor.id]);
+    const newId = ins.rows[0].id;
+    // Exactly one live wire form: supersede any OTHER current draw_request_signed (a completed
+    // DocuSign copy or a prior manual one). A superseded ACCEPTED copy simply drops off the gate
+    // (is_current=false), so the new manual form must be accepted before money can move.
+    await db.query(
+      `UPDATE documents SET is_current=false,
+          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+        WHERE application_id=$1 AND doc_kind='draw_request_signed' AND id<>$2 AND is_current=true`,
+      [appId, newId]);
+    // Mark the draw condition received (never downgrading a human's satisfied/waived).
+    if (itemId) {
+      await db.query(
+        `UPDATE checklist_items SET status='received', updated_at=now()
+          WHERE id=$1 AND status NOT IN ('satisfied','waived')`, [itemId]);
+      try { require('../clickup/enqueue').enqueueChecklistStatusPush(itemId).catch(() => {}); } catch (_) { /* best-effort */ }
+    }
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+         VALUES ('staff',$1,'draw_wire_manual_upload','application',$2,$3,$4,$5)`,
+        [req.actor && req.actor.id, appId, req.ip, req.get('user-agent') || null, { document_id: newId, filename }]);
+    } catch (_) { /* logging is best-effort */ }
+    res.status(201).json({ ok: true, documentId: newId });
+  } catch (e) {
+    console.warn('[sitewire] draw-request upload-manual error:', e && e.message);
     res.status(500).json({ error: 'server error' });
   }
 });
@@ -1420,6 +1585,19 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   }
   const approved = Math.round(approvedRaw);
   const fee = Math.round(feeRaw);
+  // THE INVESTOR'S CUT of our fee (owner-directed 2026-08-13). OPTIONAL and EDITABLE: absent/blank
+  // means "use the rule for this file's note buyer", which is what the box on the screen shows and
+  // what the automatic writer books. A typed figure wins — the coordinator at the ledger is the one
+  // who knows — but it is validated exactly like the other two money fields: a NaN/garbage value
+  // must 400, never be coerced to $0 and recorded as income we never received.
+  let investorCut = null;
+  if (req.body.investor_fee_cents != null && req.body.investor_fee_cents !== '') {
+    const cutRaw = Number(req.body.investor_fee_cents);
+    if (!Number.isFinite(cutRaw) || cutRaw < 0) {
+      return res.status(400).json({ error: 'investor_fee_cents must be a non-negative whole number of cents' });
+    }
+    investorCut = Math.round(cutRaw);
+  }
   const feeKind = ['virtual', 'physical'].includes(req.body.fee_kind) ? req.body.fee_kind : null;
   // Validate a supplied date up front — a malformed value hitting the `date` column throws Postgres 22007;
   // reject it as a clean 400 instead. Blank/absent = no date (allowed).
@@ -1502,10 +1680,53 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
       const gate = waiverGate(waivers, { enabled: true });
       if (!gate.ok) { await client.query('ROLLBACK'); return res.status(409).json({ error: `Lien waivers still outstanding: ${gate.missing.join('; ')}. Mark them received or waived before releasing.`, missing: gate.missing }); }
     }
+    // WHO released, per the file's "Who releases the money" setting (owner-directed 2026-08-12: the
+    // money ledger should record who released "according to the settings"). reimbursement → us,
+    // investor_direct → investor, manual/unset → us (the column's own default). Resolved under the
+    // txn's client; never fatal — a lookup miss keeps the safe default.
+    let releaseParty = 'us';
+    let releaseState = null;
+    try {
+      releaseState = await require('../sitewire/release-party').releaseStateFor(client, application_id, { sitewireDrawId: drawId });
+      releaseParty = (releaseState && releaseState.party) || 'us';
+    } catch (_) {}
+    // THE INVESTOR'S CUT OF OUR FEE (owner-directed 2026-08-13). It splits OUR fee only: the
+    // borrower's money — approved, retainage, the net wired — is already settled above and is not
+    // touched here. The default comes from the shared rule (the buyer's rate, and only once the
+    // loan is actually sold to them), read off the SAME release state that just decided who wired,
+    // so the ledger can never book a cut for an investor the desk says does not own the loan yet.
+    const feeRule = investorFee.describe({
+      noteBuyer: releaseState ? releaseState.noteBuyer : null,
+      // The EFFECTIVE sold answer — the fact, or the draw desk's "process this file as sold" — so
+      // the ledger and the badge on the desk can never disagree about whether a cut applies.
+      sold: releaseState ? releaseState.soldEffective : null,
+      feeCents: fee,
+      // The rates the owner set in the admin settings (db/545), falling back to the built-in ones.
+      rates: await investorFee.loadConfiguredRates(db),
+    });
+    // AN UNSOLD LOAN CANNOT CARRY AN INVESTOR FEE (owner-directed 2026-08-13). They are neither
+    // releasing this draw nor reimbursing it, so there is nothing for them to deduct from — a cut
+    // typed against one is a mistake worth naming rather than a figure worth recording.
+    if (investorCut > 0 && !feeRule.applies) {
+      await client.query('ROLLBACK');
+      return res.status(422).json({
+        error: feeRule.buyer_label
+          ? `${feeRule.buyer_label} isn’t charging a fee on this draw — this loan hasn’t been sold to them yet, so we release the net ourselves and keep the whole fee. If it is already sold, use “Process this file as sold” on the “Who releases the money” card first.`
+          : 'There is no investor fee on this draw — this file’s note buyer has no draw-fee deal with us.',
+      });
+    }
+    const feeSplit = investorFee.splitFee({
+      feeCents: fee,
+      investorFeeCents: investorCut == null ? feeRule.suggested_cents : investorCut,
+    });
+    if (!feeSplit.ok) { await client.query('ROLLBACK'); return res.status(422).json({ error: feeSplit.violation }); }
+    // WHO kept it — the note-buyer token, so "what did each investor take off us" is one query.
+    // Null when nothing was kept, or when the buyer's spelling is one the shared table cannot name.
+    const investorFeeKey = feeSplit.investor_fee_cents > 0 ? (feeRule.buyer_key || null) : null;
     const row = (await client.query(
-      `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents, fee_kind, retainage_held_cents, net_release_cents, release_date, funded_status, kind, note, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draw',$10,$11) RETURNING *`,
-      [application_id, drawId, approved, fee, feeKind, split.retainage_held_cents, split.net_release_cents, releaseDate, fundedStatus, req.body.note ? String(req.body.note).slice(0, 2000) : null, req.actor.id])).rows[0];
+      `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents, fee_kind, retainage_held_cents, net_release_cents, release_date, funded_status, kind, note, created_by, release_party, investor_fee_cents, investor_fee_key)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draw',$10,$11,$12,$13,$14) RETURNING *`,
+      [application_id, drawId, approved, fee, feeKind, split.retainage_held_cents, split.net_release_cents, releaseDate, fundedStatus, req.body.note ? String(req.body.note).slice(0, 2000) : null, req.actor.id, releaseParty, feeSplit.investor_fee_cents, investorFeeKey])).rows[0];
     await client.query('COMMIT');
     // Milestone → borrower (owner-directed 2026-07-20): a construction draw was released. Tell them the NET
     // amount actually on its way (reimbursable − fee − retainage), only on an actual release. type 'draw'
@@ -1604,7 +1825,7 @@ router.post('/files/:id/retainage-release', requirePermission('manage_draws'), a
 });
 
 // ---- lien waivers (per draw) ----
-router.get('/files/:id/waivers', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/waivers', requireDrawView, async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   const rows = (await db.query(`SELECT * FROM draw_lien_waivers WHERE application_id=$1 ORDER BY created_at DESC`, [req.params.id])).rows;
   res.json({ waivers: rows });
@@ -1674,6 +1895,7 @@ router.get('/files/:id/gl-export', requirePermission('manage_draws'), async (req
     const rows = (await db.query(
       `SELECT d.created_at, d.release_date, d.sitewire_draw_id, d.kind, d.approved_cents, d.fee_cents, d.retainage_held_cents, d.net_release_cents, d.funded_status,
               d.release_party, d.fee_receivable_cents, d.fee_status, d.fee_received_date, d.note_buyer_label,
+              d.investor_fee_cents, d.net_fee_cents, d.investor_fee_key,
               a.ys_loan_number, a.property_address->>'oneLine' AS address
          FROM draw_disbursements d JOIN applications a ON a.id=d.application_id
         WHERE d.application_id=$1 ORDER BY d.created_at`, [req.params.id])).rows;
@@ -1691,8 +1913,13 @@ router.get('/files/:id/gl-export', requirePermission('manage_draws'), async (req
     // it. Every existing column keeps its position and meaning; these are appended.
     const RELEASED_BY = { us: 'Us', investor: 'Investor' };
     const FEE_STATUS = { n_a: '', owed: 'Owed by investor', received: 'Received' };
-    const out = [['Loan', 'Property', 'Recorded', 'Release date', 'Draw', 'Type', 'Approved', 'Fee', 'Retainage held', 'Net release', 'Out-of-pocket held', 'Status', 'Released by', 'Investor', 'Fee owed to us', 'Fee status', 'Fee received']];
-    for (const r of rows) out.push([r.ys_loan_number || '', r.address || '', new Date(r.created_at).toISOString().slice(0, 10), r.release_date || '', r.sitewire_draw_id ? '#' + r.sitewire_draw_id : '', r.kind, c(r.approved_cents), c(r.fee_cents), c(r.retainage_held_cents), c(r.net_release_cents), c(oopHeldCents(r)), r.funded_status,
+    // WHAT ACTUALLY REACHED OUR BANK (owner-directed 2026-08-13). 'Fee' stays exactly what it was —
+    // the fee charged out of the borrower's approved draw, which is what every other surface prints
+    // and what the row's own arithmetic balances against. The two new columns say how that one fee
+    // was split: what the note buyer kept for handling the release, and the deposit left for us.
+    // Both are 0 / the whole fee on every file with no such deal, so those workbooks read the same.
+    const out = [['Loan', 'Property', 'Recorded', 'Release date', 'Draw', 'Type', 'Approved', 'Fee', 'Investor fee', 'Net fee to us', 'Retainage held', 'Net release', 'Out-of-pocket held', 'Status', 'Released by', 'Investor', 'Fee owed to us', 'Fee status', 'Fee received']];
+    for (const r of rows) out.push([r.ys_loan_number || '', r.address || '', new Date(r.created_at).toISOString().slice(0, 10), r.release_date || '', r.sitewire_draw_id ? '#' + r.sitewire_draw_id : '', r.kind, c(r.approved_cents), c(r.fee_cents), c(r.investor_fee_cents), c(r.net_fee_cents), c(r.retainage_held_cents), c(r.net_release_cents), c(oopHeldCents(r)), r.funded_status,
       RELEASED_BY[r.release_party] || r.release_party || '', r.note_buyer_label || '',
       // Only a fee actually OWED is a receivable — a received one is history and a we-release draw
       // never had one, so printing 0.00 in those rows would read as a debt of nothing.
@@ -1722,7 +1949,7 @@ async function ownedDraw(req, appId, drawId) {
   return own.rowCount ? { sitewireDrawId: String(drawId) } : null;
 }
 
-router.get('/files/:id/draws/:drawId/attachments', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/draws/:drawId/attachments', requireDrawView, async (req, res) => {
   const ref = await ownedDraw(req, req.params.id, req.params.drawId);
   if (ref === 'forbidden') return res.status(403).json({ error: 'forbidden' });
   if (!ref) return res.status(404).json({ error: 'draw not found on this file' });
@@ -1809,7 +2036,7 @@ router.post('/files/:id/draws/:drawId/attachments/:attId/review', requirePermiss
 
 // Stream one attachment back. Scoped through the same draw ownership check, so an attachment id
 // from another file can never be fetched by guessing.
-router.get('/files/:id/draws/:drawId/attachments/:attId/file', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/draws/:drawId/attachments/:attId/file', requireDrawView, async (req, res) => {
   const ref = await ownedDraw(req, req.params.id, req.params.drawId);
   if (ref === 'forbidden') return res.status(403).json({ error: 'forbidden' });
   if (!ref) return res.status(404).json({ error: 'draw not found on this file' });
@@ -2086,10 +2313,73 @@ router.get('/settings', requirePermission(['manage_draws', 'platform_setup']), a
   });
 });
 
+// =====================================================================================
+//  INVESTOR DRAW FEES — what each investor keeps out of OUR fee, per released draw
+//  (owner-directed 2026-08-13: "we need to add these investor fee settings in the admin
+//   settings … every investor that we add to our system should automatically come up with
+//   their option to set how much their fee is. It should already preset the rules that we
+//   set together.")
+//
+//  The LIST is every note buyer the system knows about — the same directory the completeness
+//  picker uses — so an investor added to PILOT appears here on their own with a box ready to
+//  fill in. The RATE is the admin-settings table (db/545), seeded with the agreed CorrFirst
+//  $95 / Blue Lake $250, with the built-in figures as the fallback underneath.
+// =====================================================================================
+
+router.get('/investor-fees', requirePermission(['manage_draws', 'platform_setup']), async (req, res) => {
+  try {
+    // Best-effort on the buyer directory: a ClickUp outage must not empty the settings screen —
+    // the configured rows and the ones we ship with are still listed.
+    let buyers = [];
+    try { buyers = (await require('../lib/note-buyers').listNoteBuyers()).map((b) => b.label || b.value); } catch (_) { buyers = []; }
+    const rates = await investorFee.loadConfiguredRates(db);
+    res.json({
+      rows: investorFee.settingsRows({ buyers, rates }),
+      built_in: investorFee.INVESTOR_DRAW_FEE_CENTS,
+      // Every rate on this screen changes ONE thing: how much of our own draw fee reaches our bank.
+      // Nothing here can move a borrower's money, and it never applies until a loan is sold.
+      help: 'What this investor keeps out of our draw fee on every released draw, once the loan has been sold to them. It comes out of OUR fee only — the borrower is charged the same either way — and it is what the money ledger deducts to show the deposit we actually receive.',
+    });
+  } catch (e) { console.warn('[sitewire] investor fees:', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// Set (or clear) one investor's rate. platform_setup only — it is a money rule for every future
+// release on that buyer, so it sits with the other setup knobs rather than with the draw desk.
+router.patch('/investor-fees', requirePermission('platform_setup'), async (req, res) => {
+  const raw = req.body && req.body.buyer;
+  const key = raw ? require('../lib/funding-channel').toBuyerKey(raw) : null;
+  if (!key) return res.status(400).json({ error: 'Pick which investor this rate is for.' });
+  // Clearing (null/blank) puts the buyer back on the built-in rate — a real choice, and the way
+  // back from a typo, so it is not the same as setting 0 ("they keep nothing").
+  if (req.body.per_draw_cents === null || req.body.per_draw_cents === '') {
+    await db.query(`DELETE FROM investor_draw_fees WHERE buyer_key=$1`, [key]);
+  } else {
+    const cents = Number(req.body.per_draw_cents);
+    if (!Number.isFinite(cents) || cents < 0) return res.status(400).json({ error: 'The fee must be a non-negative whole number of cents.' });
+    // A rate bigger than any draw fee we charge is almost certainly a typo (a dollars/cents slip),
+    // and it would silently zero our income on every release for that buyer. Refuse it here rather
+    // than let the release route clamp it draw by draw.
+    if (cents > 500000) return res.status(400).json({ error: 'That is more than $5,000 per draw — check the amount.' });
+    await db.query(
+      `INSERT INTO investor_draw_fees (buyer_key, per_draw_cents, label, updated_at, updated_by)
+       VALUES ($1,$2,$3,now(),$4)
+       ON CONFLICT (buyer_key) DO UPDATE SET per_draw_cents=EXCLUDED.per_draw_cents, label=COALESCE(EXCLUDED.label, investor_draw_fees.label), updated_at=now(), updated_by=EXCLUDED.updated_by`,
+      [key, Math.round(cents), require('../lib/funding-channel').label(key) || String(raw).trim(), req.actor.id]);
+  }
+  try {
+    await orchestrator.journal({ appId: null, entity: 'settings', entityId: null, field: 'investor_draw_fee',
+      oldValue: null, newValue: { buyer: key, per_draw_cents: req.body.per_draw_cents ?? null, actor: req.actor.id }, source: 'money_override' });
+  } catch (_) { /* best-effort audit */ }
+  const rates = await investorFee.loadConfiguredRates(db);
+  let buyers = [];
+  try { buyers = (await require('../lib/note-buyers').listNoteBuyers()).map((b) => b.label || b.value); } catch (_) { buyers = []; }
+  res.json({ ok: true, rows: investorFee.settingsRows({ buyers, rates }) });
+});
+
 // ---- GET /files/:id/draw-settings — every knob for ONE file, and WHICH LEVEL decided it ----
 // The owner's "where did this come from?": a coordinator looking at a $250 fee should never have
 // to guess whether it came from the project, the capital provider or the company default.
-router.get('/files/:id/draw-settings', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/draw-settings', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   const out = await drawSettings.resolvedFor(appId);
@@ -2253,7 +2543,7 @@ router.get('/status', requirePermission(['manage_draws', 'platform_setup']), asy
 // ===================================================================================
 
 // ---- GET /files/:id/rollup — the unified per-line/per-unit picture for a file ----
-router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/rollup', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -2367,6 +2657,33 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     // card needs no second call. Best-effort: the card simply does not render if it cannot be read.
     let release = null;
     try { release = await releaseParty.releaseStateFor(db, appId); } catch (_) {}
+    // THE SOLD SIGNAL KEEPS ITSELF FRESH (owner-reported 2026-08-13: "it was sold more than two
+    // weeks ago — why did we need to click the Refresh button?"). A file that still reads as not
+    // sold re-reads the purchase advice date from Encompass right here — ONE field by number, not
+    // the whole loan — throttled per file and with its own timeout, so the coordinator gets the
+    // right answer on the FIRST look instead of waiting for the round-robin poll to reach this
+    // file. Best-effort in every direction: it never throws, and a slow Encompass simply leaves the
+    // answer where it was rather than holding up the desk.
+    if (release && release.sold !== 'sold') {
+      try {
+        const r = await releaseParty.refreshSoldSignal(db, appId, { sold: release.sold });
+        if (r && r.changed) release = await releaseParty.releaseStateFor(db, appId);
+      } catch (_) { /* the desk renders with what it already had */ }
+    }
+    // THE INVESTOR'S CUT OF OUR DRAW FEE (owner-directed 2026-08-13) — the rule for THIS file's note
+    // buyer, whether it applies yet (only once the loan is sold to them), and therefore what the
+    // ledger's investor-fee box fills itself in with. Read off the SAME release state above, so the
+    // ledger and the "who releases the money" card can never disagree about whether it is sold.
+    // A DESCRIPTION, never a gate: it defaults one editable box and changes nothing else on the file.
+    let investorFeeRule = null;
+    try {
+      investorFeeRule = investorFee.describe({
+        noteBuyer: release ? release.noteBuyer : null,
+        sold: release ? release.soldEffective : null,
+        feeCents: (rollup.fees && rollup.fees.per_draw_cents) || 0,
+        rates: await investorFee.loadConfiguredRates(db),
+      });
+    } catch (_) { /* the ledger simply offers no default */ }
     // WHAT THE INVESTOR SAID — the latest send per draw and the answer that came back, so the desk
     // shows "with the investor since Tuesday" or "they asked for one more photo" instead of just
     // "delivered". DISTINCT ON keeps the newest send per draw; a re-send is a separate row and the
@@ -2384,6 +2701,7 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
           ORDER BY sitewire_draw_id, sent_at DESC`, [appId])).rows;
     } catch (_) { /* an older database has no answer columns — the desk simply shows less */ }
     res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, oop, waivers, release,
+      investor_fee: investorFeeRule,
       investor_deliveries: investorDeliveries,
       investor_answers: investorDelivery.ANSWERS.map((a) => ({ answer: a, label: investorDelivery.ANSWER_LABEL[a], next: investorDelivery.ANSWER_NEXT[a] })),
       lien_waivers_enabled: lienWaiversEnabled, lien_waivers_file_override: link ? link.require_lien_waivers : null,
@@ -2572,7 +2890,7 @@ router.get('/files/:id/draws/:drawId/packet', requirePermission('manage_draws'),
 });
 
 // ---- GET /files/:id/activity — the draw audit trail (examiner-ready) ----
-router.get('/files/:id/activity', requirePermission('manage_draws'), async (req, res) => {
+router.get('/files/:id/activity', requireDrawView, async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try { res.json({ activity: await buildDrawActivity(req.params.id) }); }
   catch (e) { console.warn('[sitewire] route error:', e && e.message); res.status(500).json({ error: 'server error' }); }
@@ -2696,146 +3014,10 @@ router.post('/files/:id/coordinator', requirePermission('platform_setup'), async
 // ===================================================================================
 
 // ---- POST /files/:id/findings/:drawId/deliver — persist + send findings to the borrower ----
-/** Await `p`, but never longer than `ms` — past the budget the work keeps running to
- *  completion in the background (every step is idempotent + independently caught) and we
- *  carry on. `.unref()` so the timer can't hold the event loop open on the fast path. */
-function withBudget(p, ms) {
-  return Promise.race([p, new Promise((r) => {
-    const t = setTimeout(() => r({ archived: 0, reports: [], pending: true }), ms);
-    if (t.unref) t.unref();
-  })]);
-}
-
-/**
- * The PDFs that ride along with the borrower's findings email (owner-directed 2026-07-27:
- * "he should receive two PDF attachments in the findings email"):
- *   1. OUR branded borrower report — photos + totals, partner-scrubbed by construction;
- *   2. the ADMINISTRATOR's own inspection paperwork for the same draw.
- *
- * Both are checked against the frozen rule that a note-buyer name must never reach a
- * borrower. The administrator's PDFs were decoded and scanned during the build: they name
- * the lender as "YS Capital Group" and the inspector as "Trinity" — the note buyer does not
- * appear in them. Only the BORROWER-visibility copy of our own report is ever eligible, so a
- * staff-only report can never be attached by mistake.
- *
- * Best-effort: any failure returns fewer attachments, never an exception — the findings email
- * must go out even when a PDF is missing (it still links to the full results page).
- */
-const FINDING_ATTACH_MAX_BYTES = 18 * 1024 * 1024;   // keep the whole email deliverable
-
-/**
- * A borrower-facing attachment NAME. Never leaks the administrator's name (the filename is
- * rendered in the email body and shown in the recipient's mail client), and never invents a
- * fact — it says only which draw it is and what kind of document it is.
- */
-function borrowerSafeAttachmentName(filename, drawNo) {
-  const f = String(filename || '');
-  const n = drawNo != null ? `-draw-${drawNo}` : '';
-  if (f.startsWith('pilot-')) return `inspection-report${n}.pdf`;          // our own branded report
-  if (/-inspection-result-document-/.test(f)) return `inspection-findings${n}.pdf`;
-  if (/-draw-report-/.test(f)) return `draw-summary${n}.pdf`;
-  return `draw-document${n}.pdf`;
-}
-
-async function borrowerFindingAttachments(appId, sitewireDrawId) {
-  const storage = require('../lib/storage');
-  const out = [];
-  // Report filenames are keyed on the draw NUMBER (`pilot-draw-2-report-borrower-…`,
-  // `trustpoint-draw-2-…`), which is NOT the internal sitewire_draw_id. Resolve it first —
-  // preferring the administrator's number when the draws are tied, since both filename
-  // families are built from the same number.
-  const num = (await db.query(
-    `SELECT number AS n FROM sitewire_draws WHERE sitewire_draw_id = $1::bigint AND application_id = $2`,
-    [String(sitewireDrawId), appId])).rows[0];
-  const drawNo = num && num.n != null ? String(num.n) : null;
-
-  // The two filename families are keyed on DIFFERENT numbers and must be matched separately.
-  // OUR report is named from the SITEWIRE draw number; the administrator's paperwork from the
-  // TRUSTPOINT one, and the two systems number draws independently (they are tied by AMOUNT in
-  // mirror.linkToSitewireIntake, never by number). Resolving one number for both meant that the
-  // moment they disagreed our borrower-safe report silently dropped out and ONLY the
-  // administrator's staff-sourced PDFs were sent — the exact inverse of what this is for.
-  const tpNo = (await db.query(
-    `SELECT number FROM trustpoint_draws WHERE sitewire_draw_id = $1::bigint AND application_id = $2`,
-    [String(sitewireDrawId), appId])).rows[0];
-
-  // ONLY these two administrator documents may reach a borrower. The allow-list is by DOCUMENT
-  // TYPE, not by draw prefix: `/draw_requests/{id}/documents/` also returns a "Service Invoice"
-  // (the inspection vendor's bill) and anything else TrustPoint chooses to file there, all named
-  // with the same prefix and all stored `visibility='staff_only'`. Only the inspection report and
-  // the draw report were decoded and keyword-scanned for a note-buyer name before #876 shipped;
-  // sending an unreviewed vendor invoice puts the frozen never-name-a-note-buyer rule on an
-  // assumption about a document set TrustPoint controls. Widening this list requires checking the
-  // new type the same way.
-  const TP_BORROWER_SAFE = ['inspection-result-document', 'draw-report'];
-
-  const rows = (await db.query(
-    `SELECT d.id, d.filename, d.storage_ref, d.size_bytes
-       FROM documents d
-      WHERE d.application_id = $1 AND d.is_current AND d.doc_kind = 'draw_inspection_report'
-        AND (
-          -- our own BORROWER-safe report for this draw (a staff copy can never match)
-          (d.visibility = 'borrower' AND $2::text IS NOT NULL
-             AND d.filename LIKE 'pilot-draw-' || $2 || '-report-borrower-%')
-          -- the administrator's reviewed paperwork, by draw number AND document type
-          OR ($3::text IS NOT NULL AND EXISTS (
-                SELECT 1 FROM unnest($4::text[]) t
-                 -- ANCHORED on the date+id tail storeDocument always appends, so a document
-                 -- type that merely STARTS WITH an allowed one ("Inspection Result Document
-                 -- and Service Invoice") can never satisfy a prefix match and ride along.
-                 WHERE d.filename LIKE 'trustpoint-draw-' || $3 || '-' || t || '-____-__-__-%'))
-        )
-      ORDER BY d.created_at DESC`,
-    [appId, drawNo, tpNo && tpNo.number != null ? String(tpNo.number) : null, TP_BORROWER_SAFE])).rows;
-
-  const seen = new Set();
-  let budget = FINDING_ATTACH_MAX_BYTES;
-  for (const r of rows) {
-    // one per KIND — the newest wins, so a re-inspection's latest report is the one sent
-    const kind = r.filename.startsWith('pilot-') ? 'pilot' : r.filename.replace(/-\d{4}-\d{2}-\d{2}-[^.]*\.pdf$/, '');
-    if (seen.has(kind)) continue;
-    if (Number(r.size_bytes) > budget) continue;
-    try {
-      const content = await storage.read(r.storage_ref);
-      if (!content || !content.length || content.length > budget) continue;
-      // S1 — THE FILENAME IS BORROWER-FACING. notify.js derives `files` from
-      // attachments[].filename and template.js renders them as visible chips AND a plaintext
-      // "Attachments:" line; the borrower scrub covers title/body/meta/… but never attachments.
-      // So `trustpoint-draw-2-…pdf` printed the draw administrator's name to the borrower twice
-      // in the body plus on the file in their mail client — the frozen never-name-the-note-buyer
-      // rule (borrower-safe.js lists "trust point" explicitly). Renamed to a neutral, factual
-      // name; the stored document keeps its own filename for staff.
-      // BASE64, NEVER A RAW BUFFER (owner-reported 2026-08-10: the attached PDF was corrupted
-      // and unopenable). Both mail providers do `String(a.content)` expecting base64 — a Buffer
-      // stringifies as a lossy UTF-8 decode of PDF binary, which can never open. This was the
-      // repo's ONE producer passing a Buffer; the providers now also normalize (belt), but the
-      // convention is base64 strings at the producer (the shape every other call site uses).
-      out.push({ filename: borrowerSafeAttachmentName(r.filename, drawNo), content: content.toString('base64'), contentType: 'application/pdf' });
-      seen.add(kind);
-      budget -= content.length;
-    } catch (e) { /* a missing file never blocks the findings email */ }
-  }
-  // THE SITEWIRE INSPECTOR'S OWN PER-DRAW PDF IS NEVER A `documents` ROW — it lives only in the
-  // durable draw_media archive (kind='draw_pdf'), which is where the investor delivery already
-  // reads it. Without this arm, a virtual-inspection file could attach at most OUR report while
-  // the owner's requirement is BOTH ("we always need our PDF, the Sitewire PDF, and/or the
-  // Trinity PDF"). Distinctly named so it never collides with our branded report's name.
-  try {
-    const m = (await db.query(
-      `SELECT storage_ref FROM draw_media
-        WHERE application_id=$1 AND sitewire_draw_id=$2 AND kind='draw_pdf' AND storage_ref IS NOT NULL
-        ORDER BY archived_at DESC LIMIT 1`, [appId, sitewireDrawId])).rows[0];
-    if (m) {
-      const buf = await storage.read(m.storage_ref);
-      if (buf && buf.length && buf.length <= budget) {
-        out.push({ filename: `inspector-report${drawNo != null ? `-draw-${drawNo}` : ''}.pdf`,
-          content: buf.toString('base64'), contentType: 'application/pdf' });
-        budget -= buf.length;
-      }
-    }
-  } catch (_) { /* best-effort — the findings email still goes with whatever attached */ }
-  return out;
-}
+// The deliver core (persist + archive + branded PDFs + the borrower email + the desk marker) and its
+// attachment builder moved to src/sitewire/deliver-findings.js so the AUTOPILOT (owner-directed
+// 2026-08-14) and this manual button share ONE chokepoint and can never build two different borrower
+// emails. This route keeps only its own force-redeliver guards and calls deliverFindings().
 
 router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_draws'), async (req, res) => {
   const appId = req.params.id, drawId = req.params.drawId;
@@ -2871,182 +3053,18 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
     try { await orchestrator.journal({ appId, entity: 'draw', entityId: Number(drawId), field: 'force_redeliver', oldValue: { status: existing.status }, newValue: { note: forceNote.slice(0, 500), actor: req.actor && req.actor.id }, source: 'money_override' }); } catch (_) {}
   }
   try {
-    const f = (await db.query(`SELECT a.property_address->>'oneLine' AS address, b.id AS borrower_id, b.email AS borrower_email FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId])).rows[0] || {};
-    const deliveredTo = { borrower: f.borrower_email || null };
-    const result = await reconcile.persistDrawFindings(appId, drawId, deliveredTo);
-    // notify borrower (portal + email) + the loan team + coordinator. The email links to the
-    // token accept page (`/draw-accept/:token`) so the borrower can review + one-click accept
-    // straight from the email, or sign in there to dispute a line (research doc §14).
-    const addr = f.address || 'your property';
-    const acceptLink = result.reply_token ? `/draw-accept/${result.reply_token}` : `/app/${appId}`;
-    // ---- BUILD THE ARTIFACTS BEFORE THE BORROWER EMAIL (owner-directed 2026-07-27) ----
-    // The borrower must receive TWO PDFs with the findings: the administrator's own
-    // inspection report and OUR branded report (photos + totals). Both used to be produced
-    // AFTER this email was sent, so there was nothing to attach. The archive+build now runs
-    // first, under the same bounded budget that already protected this route — if it does not
-    // finish in time the email still goes out on schedule, just with links instead of files.
-    // Nothing here can fail the delivery: every step is independently caught.
-    const artifacts = await withBudget(
-      drawReport.autoDeliverArtifacts(appId, drawId).catch(() => ({ archived: 0, reports: [] })),
-      Number(process.env.DRAW_AUTODELIVER_BUDGET_MS) || 20000);
-    const findingAttachments = await borrowerFindingAttachments(appId, drawId).catch(() => []);
-    // The one-email-thread result — read after the send so the response (and the desk marker
-    // below) can say whether the BORROWER actually received their copy, instead of reporting
-    // "delivered" when only the team was reached (owner-reported 2026-08-10).
-    let sentThread = null;
-    // notifyAppBorrowers (not notifyBorrower) so a co-borrower who can see the file
-    // ALSO gets the "results ready" email — the primary-only send made the
-    // co-borrower first hear of it via the later reminder (owner-reported audit).
-    if (f.borrower_id) {
-      // Build the FULL findings email: the one-key-fact hero (approved of requested), a per-line
-      // grid (what the inspector approved on each line), the photo/video count, and TWO actions —
-      // Accept (releases the draw) + Push back (opens the review page in dispute mode). All
-      // borrower-safe: line names scrubbed here (defense-in-depth) and again in notifyBorrower.
-      const scrub = require('../lib/borrower-safe').scrubText;
-      const usd = (c) => '$' + (Math.round(Number(c) || 0) / 100).toLocaleString('en-US');
-      // retired_at IS NULL — a soft-retired line (db/242, Sitewire removed the request) must not
-      // join the borrower's email grid or its sums; the public + borrower routes already filter.
-      const flines = (await db.query(
-        `SELECT name, requested_cents, approved_cents, not_approved_cents, photo_count, video_count FROM draw_finding_lines WHERE finding_id=$1 AND retired_at IS NULL ORDER BY id`, [result.id])).rows;
-      const totReq = flines.reduce((s, l) => s + (Number(l.requested_cents) || 0), 0);
-      const totAppr = flines.reduce((s, l) => s + (Number(l.approved_cents) || 0), 0);
-      const photos = flines.reduce((s, l) => s + (Number(l.photo_count) || 0), 0);
-      const videos = flines.reduce((s, l) => s + (Number(l.video_count) || 0), 0);
-      const CAP = 14; // keep the email readable — a huge draw links out to the full page for the rest
-      // WHAT ACTUALLY LANDS IN THEIR ACCOUNT (owner-directed 2026-08-03). This email is the first
-      // thing the borrower reads and it used to lead with the GROSS approval labelled "Approved for
-      // release" — while the report attached to the same email says $24,701 after the draw fee. Both
-      // numbers now come from the SAME rollup the report is built from, so the email and its own
-      // attachment can never quote different figures. Best-effort: an unreadable rollup simply
-      // omits the release line rather than delaying the borrower's results.
-      // A RELEASE FIGURE EXISTS ONLY WHEN THE INSPECTOR HAS ANSWERED (owner-reported 2026-08-10,
-      // YSCAP258134746: the inspector approved NOTHING and this callout still promised "$0 is
-      // wired to you" under a "Requested $24,750" headline). `net_release_cents` is ALWAYS a
-      // number (drawMoney computes max(0, approved − fee) even off an unknown approval), so
-      // gating on `!= null` promised a wire on every draw. The gate is the SAME predicate the
-      // figures band uses — has_inspector_amounts — so the hero and the callout can never again
-      // tell two different stories about one draw. An explicit $0 gets its own honest wording.
-      let releaseLine = null;
-      let inspectorZero = false;
-      try {
-        const rl = await rollupMod.loadRollup(db, appId);
-        const d = (rl.draws || []).find((x) => Number(x.sitewire_draw_id) === Number(drawId));
-        if (d && d.has_inspector_amounts && Number(d.approved_cents) <= 0) inspectorZero = true;
-        if (d && d.has_inspector_amounts && d.net_release_cents != null && Number(d.net_release_cents) > 0) {
-          const deductions = [];
-          if (Number(d.fee_cents) > 0) deductions.push(`${usd(d.fee_cents)} draw fee`);
-          if (Number(d.retainage_held_cents) > 0) deductions.push(`${usd(d.retainage_held_cents)} retainage held`);
-          releaseLine = { label: d.released ? 'Released to you' : 'To be released to you',
-            value: `${usd(d.net_release_cents)}${deductions.length ? ` (after the ${deductions.join(' and ')})` : ''}` };
-        }
-      } catch (_) { /* best-effort — the results email never waits on the money rollup */ }
-      // THE RANKED MONEY BLOCK — the release big, the approval / request / held-back beneath it
-      // (owner-directed 2026-08-03). Built from the same rollup the release line above and the
-      // attached PDF are built from, so all three agree by construction. The per-line breakdown
-      // stays in `meta` underneath: it is the DETAIL, and it reads as detail once the headline
-      // figures are no longer competing with it at the same size.
-      const blocks = await drawEmailBlocks(db, appId, { sitewireDrawId: drawId, borrower: true });
-      const meta = [{ label: 'Property', value: addr }];
-      // The release is now stated by the figure band; repeating it as a meta row said the same
-      // number twice in two shapes.
-      if (releaseLine && !(blocks && blocks.figures)) meta.push(releaseLine);
-      for (const l of flines.slice(0, CAP)) {
-        // TRI-STATE (db/518): a NULL approved amount is "the inspector has not answered this
-        // line" — the email says so, never "$0 approved", which reads as denied.
-        meta.push({ label: scrub(l.name) || 'Line item',
-          value: l.approved_cents == null ? `${usd(l.requested_cents)} requested — not yet reviewed`
-            : Number(l.not_approved_cents) > 0 ? `${usd(l.approved_cents)} approved of ${usd(l.requested_cents)}` : `${usd(l.approved_cents)} approved` });
-      }
-      if (flines.length > CAP) meta.push({ label: `+ ${flines.length - CAP} more line item(s)`, value: 'open the results to see them all' });
-      const pv = [];
-      if (photos) pv.push(`${photos} photo${photos === 1 ? '' : 's'}`);
-      if (videos) pv.push(`${videos} video${videos === 1 ? '' : 's'}`);
-      const disputeLink = result.reply_token ? `/draw-accept/${result.reply_token}?tab=dispute` : `/app/${appId}`;
-      // ONE email with the whole team visibly on it (owner-directed 2026-08-03) — the separate
-      // in-app-only staff marker below stays, so nobody on the file loses the event.
-      // DELIVERING FINDINGS IS AN EXPLICIT HUMAN ACTION, NOT AN AUTOMATED NOTIFICATION
-      // (owner-reported 2026-08-10: the borrower never received the findings email; the fallback
-      // emailed the borrower-voiced copy to a staff assignee instead). The coordinator pressed
-      // "Deliver findings to the borrower", and the wire SLA starts running the moment the finding
-      // persists — so this send takes the same two escape hatches the notify layer documents for
-      // exactly this shape: `_bypassLoGate` (the Notification Center's Send-now hatch — a human
-      // already decided this goes out, the LO curation gate must not silently park it in Drafts)
-      // and `evenIfOnHold` ("the rare message that must go out anyway" — a parked file's draw is
-      // still being worked by the desk). Borrower notification PREFERENCES still apply.
-      sentThread = await notify.notifyAppThread(appId, {
-        type: 'draw_findings', title: 'Your inspection is complete — please confirm the amount',
-        _bypassLoGate: true, evenIfOnHold: true,
-        // The staff copy is STAFF-voiced with a STAFF destination — never the borrower's no-login
-        // accept/dispute magic link (audit L1; enforced by notifyAppThread's staffLink handling).
-        // NEUTRAL wording on purpose: this same copy is the FALLBACK email when the borrower could
-        // not be reached, so it must not claim the results "went to the borrower" (the note the
-        // fallback appends says what actually happened).
-        staffTitle: 'Inspection results ready for the borrower — awaiting their confirmation',
-        staffBody: `The inspection results for ${addr} are ready for the borrower to accept or dispute. The draw releases once they confirm.`,
-        staffLink: `/internal/app/${appId}`, staffCtaLabel: 'Open the file',
-        // "Draw 2 · Your inspection is complete …" — the borrower and the coordinator are both
-        // on this thread and a property with three draws otherwise sends three identical subjects.
-        drawTag: await drawLabel.drawTagForRef(db, appId, { sitewireDrawId: drawId }),
-        badge: { text: 'Please confirm', tone: 'action' },
-        figures: (blocks && blocks.figures) || null,
-        facts: (blocks && blocks.facts) || null,
-        // The old hero survives only when the rollup could not be read, so the email never loses
-        // its headline number.
-        hero: (blocks && blocks.figures) ? null
-          : { label: 'Approved by the inspector', value: usd(totAppr), sub: `of ${usd(totReq)} requested`, tone: 'positive' },
-        body: `Your inspection is complete${pv.length ? ` — ${pv.join(' and ')} on file` : ''}. Here is what the inspector approved on each line. When you’re ready, confirm to release your draw — or push back on any line you disagree with.`,
-        meta,
-        // The callout tells the SAME story as the headline: a real release when one is known, an
-        // honest "nothing releases this time" on an inspector's $0, and NO wire promise when the
-        // inspector has not answered yet.
-        callout: {
-          title: 'What happens when you confirm',
-          body: inspectorZero
-            ? 'The inspector approved $0 this time, so confirming accepts the results — nothing is wired, and the amounts stay on your budget to draw once the work is done. Disagree? Push back on any line below. Want to look first? Open the results to see every photo and download your inspection report (PDF).'
-            : `Confirming ${releaseLine ? `releases your draw — ${releaseLine.value.split(' (')[0]} is wired to you — funds are typically sent within a day or two` : 'accepts the inspection results'}. Want to look first? Open the results to see every photo and download your inspection report (PDF).`,
-          tone: 'action',
-        },
-        applicationId: appId, link: acceptLink, ctaLabel: 'Review & confirm',
-        cta2Label: 'Push back on a line', cta2Link: disputeLink,
-        attachments: findingAttachments,
-        // The team now rides a VISIBLE Cc, applied for every 'draws' notification at the notify
-        // chokepoint — so the reply-all thread includes them. No Bcc needed here any more.
-      }).catch(() => null);
-    }
-    // Did the borrower actually receive their copy? `emailedTogether` is the thread's own answer
-    // (mailable AND at least one borrower row written). The reason class tells the coordinator
-    // what to fix: no address on file vs. a held/muted copy.
-    const borrowerEmailed = !!(sentThread && sentThread.emailedTogether);
-    const borrowerEmailReason = borrowerEmailed ? null
-      : (!f.borrower_id ? 'no_borrower'
-        : (sentThread && sentThread.borrowerMailable === false ? 'no_borrower_email'
-          : (sentThread ? 'suppressed' : 'send_failed')));
-    // In-app only (owner-directed 2026-07-20): a confirmation that the coordinator
-    // just delivered findings is not a whole-team EMAIL — the borrower's own
-    // "results ready" email (above) is the real send; this is a desk marker.
-    // The marker TELLS THE TRUTH about the borrower's copy — "delivered to the borrower" on an
-    // event whose borrower email never went out is how this bug stayed invisible.
-    await notify.notifyAppStaff(appId, { type: 'draw_findings', title: 'Draw findings delivered to borrower', inAppOnly: true,
-      body: borrowerEmailed
-        ? `Inspection findings for ${addr} were delivered to the borrower to accept or dispute.`
-        : `Inspection findings for ${addr} were recorded, but the borrower could NOT be emailed (${borrowerEmailReason === 'no_borrower_email' ? 'no email address on file' : 'their copy was blocked or failed'}). Reach them another way — the draw is waiting on their confirmation.`,
-      applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
-    // Auto-deliver artifacts: durably archive the inspector's (expiring) media NOW and pre-build the PILOT +
-    // borrower-safe reports, so the durable photos + both branded PDFs are ready the instant findings land —
-    // never dependent on a later manual "archive" click (a report built pre-archive had zero photos). Fully
-    // best-effort: it never throws or reverses the delivery just completed. (drawReport.autoDeliverArtifacts.)
-    // Bounded on the response path: we await up to a short budget so the common (fast) case confirms
-    // "reports ready", but a slow/unreachable media CDN can NEVER hang this delivery request (the archive is
-    // a sequential per-item fetch with only a per-item timeout). Past the budget the work keeps running in the
-    // background to completion (every step is idempotent + independently caught) — we just answer promptly.
-    res.json({ ok: true, ...result, media_archived: artifacts.archived, reports_ready: artifacts.reports,
-      reports_pending: !!artifacts.pending, attachments_sent: findingAttachments.map((a) => a.filename),
-      borrower_emailed: borrowerEmailed, borrower_email_reason: borrowerEmailReason });
+    // The whole deliver sequence (persist → archive media → build both branded PDFs → email the
+    // borrower + loop in the team → desk marker) is the ONE shared chokepoint the autopilot fires,
+    // so this manual button and the automatic delivery can never build two different borrower
+    // emails. `persistDrawFindings` inside it is allowed to throw (a Sitewire outage) so the catch
+    // below still answers 502 exactly as before; every step after the persist is best-effort.
+    const out = await deliverFindingsMod.deliverFindings(appId, drawId, { source: 'manual', actor: req.actor && req.actor.id });
+    res.json({ ok: true, ...out });
   } catch (e) { console.warn('[sitewire] upstream error:', e && e.message); res.status(502).json({ error: 'the draw service is temporarily unavailable — nothing was changed; try again shortly' }); }
 });
 
 // ---- GET /findings/:findingId — full finding detail (staff) ----
-router.get('/findings/:findingId', requirePermission('manage_draws'), async (req, res) => {
+router.get('/findings/:findingId', requireDrawView, async (req, res) => {
   if (!/^\d+$/.test(req.params.findingId)) return res.status(404).json({ error: 'not found' });
   const f = (await db.query(`SELECT * FROM draw_findings WHERE id=$1`, [req.params.findingId])).rows[0];
   if (!f || !(await canSeeFile(req, f.application_id))) return res.status(403).json({ error: 'forbidden' });
@@ -3076,7 +3094,7 @@ router.get('/findings/:findingId', requirePermission('manage_draws'), async (req
 // ---- GET /findings/lines/:lineId/dispute-media/:idx — serve one borrower dispute-evidence file (staff) ----
 // The borrower attached these when they pushed back on a line. Streamed from PILOT's durable storage
 // after the manage_draws + file-visibility + line-belongs-to-file checks. GPS was stripped on upload.
-router.get('/findings/lines/:lineId/dispute-media/:idx', requirePermission('manage_draws'), async (req, res) => {
+router.get('/findings/lines/:lineId/dispute-media/:idx', requireDrawView, async (req, res) => {
   if (!/^\d{1,18}$/.test(String(req.params.lineId)) || !/^\d{1,4}$/.test(String(req.params.idx))) return res.status(404).end();
   const row = (await db.query(
     `SELECT dfl.dispute_media, df.application_id
@@ -3250,7 +3268,7 @@ router.post('/files/:id/findings/:findingId/review', requirePermission('manage_d
 // goes through the SAME transition their own Accept button uses; only `accepted_via='staff'` and
 // the recorded note distinguish it. A note is REQUIRED: "who said the borrower agreed, and how?"
 // must be answerable from the file years later.
-router.post('/files/:id/findings/:findingId/mark-accepted', requirePermission('manage_draws'), async (req, res) => {
+router.post('/files/:id/findings/:findingId/mark-accepted', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!/^\d+$/.test(req.params.findingId)) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
@@ -3278,6 +3296,62 @@ router.post('/files/:id/findings/:findingId/mark-accepted', requirePermission('m
     body: `A coordinator recorded that the borrower approved this draw (${note.slice(0, 160)}). The release is due by ${new Date(upd.wire_due_at).toLocaleString('en-US')}.`,
     applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
   res.json({ ok: true, wire_due_at: upd.wire_due_at, accepted_via: 'staff' });
+});
+
+// ---- POST /files/:id/findings/:findingId/dispute — a loan officer files a DISPUTE
+// FOR THE BORROWER (owner-directed 2026-08-12): the view-only draw partner of the
+// accept-on-behalf above. It mirrors the borrower's own dispute (borrower-draws.js)
+// EXACTLY — same per-line IDOR (the line must belong to the finding), the same
+// [0, requested] clamp on the desired amount, the same shared normalizeDisputeMedia
+// (byte-sniffed, GPS-stripped, capped), the same guarded delivered→disputed flip —
+// so a borrower's and a loan officer's dispute are stored identically. It is stamped
+// disputed_via='staff' + disputed_by_staff_id (db/538 allows 'staff'), and a note
+// recording HOW the borrower asked to dispute is required, so "who filed this?" is
+// answerable. view_draws + canSeeFile: a loan officer only ever acts on their own
+// files, and this is the one WRITE (besides accept) they are allowed. ----
+router.post('/files/:id/findings/:findingId/dispute', requireDrawView, async (req, res) => {
+  const appId = req.params.id;
+  if (!/^\d+$/.test(req.params.findingId)) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const f = (await db.query(`SELECT * FROM draw_findings WHERE id=$1 AND application_id=$2`, [req.params.findingId, appId])).rows[0];
+  if (!f) return res.status(404).json({ error: 'those findings were not found on this file' });
+  const note = String((req.body && req.body.note) || '').trim();
+  if (note.length < 8) {
+    return res.status(400).json({ error: 'Record how the borrower asked to dispute this draw (at least 8 characters) — for example "borrower called 8/12, disputes the roof line".' });
+  }
+  if (f.status === 'accepted') return res.status(409).json({ error: 'This draw was already accepted — it can no longer be disputed.' });
+  if (f.status === 'resolved') return res.status(409).json({ error: 'These results have already been reviewed and resolved.' });
+  if (f.status !== 'delivered') return res.status(409).json({ error: 'These findings are not awaiting the borrower’s answer.' });
+  // Cap the fan-out exactly like the borrower route (a real draw never has ~200 lines).
+  const lines = (Array.isArray(req.body && req.body.lines) ? req.body.lines : []).slice(0, 200);
+  if (!lines.length) return res.status(400).json({ error: 'a dispute must name at least one line' });
+  const updates = [];
+  for (const ln of lines) {
+    if (!/^\d{1,18}$/.test(String(ln && ln.line_id))) continue;
+    const owned = (await db.query(`SELECT id, requested_cents FROM draw_finding_lines WHERE id=$1 AND finding_id=$2 AND retired_at IS NULL`, [ln.line_id, f.id])).rows[0];
+    if (!owned) continue;
+    let desired = ln.desired_cents == null ? null : Math.round(Number(ln.desired_cents));
+    if (desired != null && (!Number.isFinite(desired) || desired < 0 || desired > Number(owned.requested_cents))) desired = null;
+    const evidence = await normalizeDisputeMedia(ln.media);
+    updates.push({ line_id: ln.line_id, desired, note: ln.note ? String(ln.note).slice(0, 2000) : null, evidence });
+  }
+  if (!updates.length) return res.status(400).json({ error: 'no valid dispute lines' });
+  const flipped = (await db.query(
+    `UPDATE draw_findings SET status='disputed', disputed_at=now(), disputed_via='staff', disputed_by_staff_id=$2, updated_at=now()
+      WHERE id=$1 AND status='delivered' RETURNING id`, [f.id, req.actor.id])).rows[0];
+  if (!flipped) return res.status(409).json({ error: 'someone else just handled these findings' });
+  for (const u of updates) {
+    await db.query(
+      `UPDATE draw_finding_lines SET dispute_status='open', dispute_desired_cents=$2, dispute_note=$3, dispute_media=$4, updated_at=now() WHERE id=$1`,
+      [u.line_id, u.desired, u.note, u.evidence.length ? jsonbText(u.evidence) : null]);
+  }
+  const count = updates.length;
+  try { await orchestrator.journal({ appId, entity: 'draw', entityId: Number(f.sitewire_draw_id), field: 'borrower_disputed_offline', oldValue: { status: f.status }, newValue: { via: 'staff', lines: count, note: note.slice(0, 500), actor: req.actor.id }, source: 'money_override' }); } catch (_) {}
+  await notify.notifyAppStaff(appId, { type: 'draw_disputed', title: 'Dispute recorded for the borrower', badge: { text: 'Disputed', tone: 'action' },
+    drawTag: await drawLabel.drawTagForRef(db, appId, { sitewireDrawId: f.sitewire_draw_id }),
+    body: `A loan officer recorded that the borrower disputes ${count} item(s) on this draw (${note.slice(0, 160)}). A draw coordinator needs to review.`,
+    applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
+  res.json({ ok: true, disputed_lines: count, disputed_via: 'staff' });
 });
 
 // ---- POST /files/:id/draws/:drawId/funding-mode — how this draw is funded ----
@@ -3326,10 +3400,72 @@ router.post('/files/:id/release-party', requirePermission('manage_draws'), async
     [appId, clear ? null : mode]);
   if (!upd.rowCount) return res.status(409).json({ error: 'This file has no draw project yet — start the draw process first.' });
   try {
-    await orchestrator.journal({ appId, entity: 'file', entityId: appId, field: 'investor_funding_mode',
+    await orchestrator.journal({ appId, entity: 'file', entityId: null, field: 'investor_funding_mode',
       oldValue: null, newValue: { mode: clear ? null : mode, actor: req.actor.id }, source: 'money_override' });
   } catch (_) {}
   res.json({ ok: true, release: await releaseParty.releaseStateFor(db, appId).catch(() => null) });
+});
+
+// ---- POST /files/:id/treat-as-sold — "process this file as sold" (owner-directed 2026-08-13) ----
+// The draw coordinator's way past an unsold file: *"even if Encompass doesn't have a PA date yet —
+// technically the loan is not sold yet — the draw coordinator should be able to switch a file …
+// imagine if it was sold already. In case anything goes wrong, she should have this ability, which
+// should give her a double warning when she's changing it."*
+//
+// It changes NOTHING about the loan: `applications.purchase_advice_date` is Encompass's, read-only,
+// and untouched. What it changes is what the DRAW DESK processes this file as — who releases the
+// money (the file's own setting comes back into force) and whether the investor's draw fee is
+// deducted from ours. `confirm:true` is the second half of the double warning: the screen asks, and
+// the route refuses to act on anything that did not explicitly confirm. Every flip is journaled.
+router.post('/files/:id/treat-as-sold', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const on = req.body && (req.body.on === undefined ? true : !!req.body.on);
+  // Turning it ON is the consequential direction — it lets the ledger book an investor's cut and
+  // lets the investor release. Turning it OFF only returns the file to what Encompass says, which
+  // is always the safe direction, so it needs no confirmation.
+  if (on && !(req.body && req.body.confirm === true)) {
+    return res.status(400).json({ error: 'Confirm that you know this loan has already been sold before processing this file as sold.' });
+  }
+  const r = await releaseParty.setTreatAsSold(db, appId, {
+    on, by: req.actor.id, note: req.body && req.body.note ? String(req.body.note) : null,
+  }).catch(() => ({ ok: false, reason: 'error' }));
+  if (!r.ok) {
+    return res.status(r.reason === 'no_draw_project' ? 409 : 500).json({
+      error: r.reason === 'no_draw_project'
+        ? 'This file has no draw project yet — start the draw process first.'
+        : 'Could not change that setting — please try again.',
+    });
+  }
+  try {
+    await orchestrator.journal({ appId, entity: 'file', entityId: null, field: 'treat_as_sold',
+      oldValue: null, newValue: { on, note: (req.body && req.body.note) ? String(req.body.note).slice(0, 500) : null, actor: req.actor.id }, source: 'money_override' });
+  } catch (_) { /* best-effort audit */ }
+  res.json({ ok: true, treat_as_sold: r.treatAsSold, release: await releaseParty.releaseStateFor(db, appId).catch(() => null) });
+});
+
+// ---- POST /files/:id/refresh-pa-date — re-read the Encompass Purchase Advice date (READ-ONLY) ----
+// The owner's PA-date field (2370) rides the ordinary read-only Encompass pull: the reader reads it
+// by number and `release-party.syncPurchaseAdviceDate` lands it in our `purchase_advice_date` column,
+// from which "has this loan been sold?" is computed. So this simply pulls the loan again and hands
+// back the recomputed release state, so the "Who releases the money" card can recognize a file that
+// has now been sold. NOTHING is ever written to Encompass — Encompass is frozen/read-only; this is
+// the SAME read-only pull the closing "Refresh from Encompass" button uses.
+router.post('/files/:id/refresh-pa-date', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  // A friendly reason on failure so the coordinator knows why nothing moved (no loan number, no
+  // Encompass match, Encompass unreachable, PA field not configured on this deployment…).
+  const pull = await require('../encompass/reader').pullLoanForApplication(appId)
+    .catch((e) => ({ ok: false, reason: (e && e.message) ? e.message.slice(0, 200) : 'pull failed' }));
+  try {
+    // The file id rides `application_id`; entity_id is a bigint for numeric Sitewire ids, so a
+    // file-level entry leaves it null (else the audit row silently fails to write).
+    await orchestrator.journal({ appId, entity: 'file', entityId: null, field: 'pa_date_refresh',
+      oldValue: null, newValue: { pulled: !!(pull && pull.ok), reason: (pull && pull.reason) || null, actor: req.actor.id }, source: 'money_override' });
+  } catch (_) { /* best-effort audit */ }
+  const release = await releaseParty.releaseStateFor(db, appId).catch(() => null);
+  res.json({ ok: true, pulled: !!(pull && pull.ok), reason: (pull && pull.reason) || null, release });
 });
 
 // ---- GET /files/:id/draws/:drawId/investor-delivery — the preview behind the button ----
@@ -3365,11 +3501,22 @@ router.post('/files/:id/draws/:drawId/investor-delivery', requirePermission('man
       return res.status(400).json({ error: `Confirm the investor before sending — this file's note buyer is ${app.lender || '(not set)'}.` });
     }
     const who = (await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    const b = req.body || {};
     const out = await investorSend.sendInvestorDelivery(appId, drawId, {
       staffId: req.actor.id, staffName: who.full_name || null,
-      mode: (req.body && req.body.mode) || null,
-      note: (req.body && req.body.note) || null,
+      mode: b.mode || null,
+      note: b.note || null,
+      // THE CONSENT GATE (owner-directed 2026-08-14). Without these the send REFUSES with a 409 and
+      // the full plan whenever a document cannot be carried — the desk then shows exactly what and
+      // why, and offers to compress harder, turn it into a PILOT link, or send it short on the
+      // record. `preflight` shows that same picture without committing to anything.
+      preflight: b.preflight === true,
+      acknowledgeOmissions: b.acknowledge_omissions === true,
+      shareLinkKeys: Array.isArray(b.share_link_keys) ? b.share_link_keys : [],
+      compressLevel: Number(b.compress_level) || null,
     });
+    // A preflight is a read: nothing was sent, nothing was journaled, nobody was notified.
+    if (out && out.preflight) return res.json({ ok: true, ...out });
     try { await orchestrator.journal({ appId, entity: 'draw', entityId: Number(drawId), field: 'investor_delivery', oldValue: null, newValue: { to: out.to, mode: out.funding_mode, total: out.money.investor_total_cents, actor: req.actor.id }, source: 'money_override' }); } catch (_) {}
     await notify.notifyAppStaff(appId, { type: 'draw', title: out.manual ? 'Draw delivery recorded (handled manually)' : 'Draw delivered to the investor', inAppOnly: true,
       body: out.manual
@@ -3378,7 +3525,17 @@ router.post('/files/:id/draws/:drawId/investor-delivery', requirePermission('man
       applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     res.json({ ok: true, ...out });
   } catch (e) {
-    if (e && e.status) return res.status(e.status).json({ error: e.message, blockers: e.blockers || undefined });
+    if (e && e.status) {
+      return res.status(e.status).json({
+        error: e.message,
+        blockers: e.blockers || undefined,
+        // The attachment refusal is a QUESTION, not a failure — it carries everything the desk
+        // needs to name each missing document, say why, and offer the remedy for each one.
+        code: e.code || undefined,
+        plan: e.plan || undefined,
+        linkWarnings: e.linkWarnings || undefined,
+      });
+    }
     console.warn('[sitewire] investor delivery:', e && e.message);
     res.status(500).json({ error: 'server error' });
   }

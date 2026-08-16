@@ -1503,6 +1503,14 @@ router.get('/applications/:id/checklist', async (req, res) => {
     `SELECT ci.id, COALESCE(ci.borrower_label,'An item your loan team needs') AS label, ci.status, ci.item_kind, ci.phase,
             ci.borrower_hint AS hint, ci.is_required, ci.due_date,
             ci.field_key, ci.esign_doc,
+            -- Borrower-safe WORKFLOW-STAGE booleans (owner-directed 2026-08-12) so the borrower can
+            -- filter their conditions by where each one stands: their loan officer has reviewed it
+            -- ("clicked Done"), the back office has signed it off, or it was waived. These are the
+            -- STAGE only (a plain yes/no) — never who did it or when, which stay staff-only. Once the
+            -- loan officer marks a condition done it leaves the borrower's default view.
+            (ci.reviewed_at IS NOT NULL) AS lo_reviewed,
+            (ci.signed_off_at IS NOT NULL) AS signed_off,
+            (ci.waived_at IS NOT NULL) AS waived,
             -- ci.notes is the INTERNAL staff note (underwriting / capital-partner
             -- context) — never send it to a borrower. Only the borrower_* wording
             -- above is safe.

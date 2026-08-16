@@ -30,6 +30,10 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
 const SRC = path.join(__dirname, '..', 'app-v2', 'src');
 const read = (p) => { try { return fs.readFileSync(path.join(SRC, p), 'utf8'); } catch (_) { return ''; } };
 const readRepo = (p) => { try { return fs.readFileSync(path.join(__dirname, '..', p), 'utf8'); } catch (_) { return ''; } };
+// The details door's key→column map — moved out of routes/staff.js on 2026-08-13 so
+// the experience re-allocation carve-out can read it before the write. Pure (no
+// requires of its own), so it is safe in this DB-free suite.
+const detailsFields = require('../src/lib/details-fields');
 
 /* ===================================================================== *
  * 1. THE HAND-OFF — the original bug: the number simply did not travel.
@@ -253,7 +257,13 @@ console.log('\n--- the loan file has a Payoff section that owns the subject ---'
   // The server door and the derived read.
   const staff = readRepo('src/routes/staff.js');
   assert(/router\.get\('\/applications\/:id\/payoff'/.test(staff), 'the server exposes the payoff picture');
-  assert(/estimatedCashOut: 'estimated_cash_out'/.test(staff),
+  /* THE FIELD MAP MOVED OUT OF THE ROUTE (2026-08-13, src/lib/details-fields.js) so
+     the experience re-allocation carve-out could read the SAME key→column map before
+     the write. This used to grep staff.js for the literal map entry; asking the module
+     is both correct after the move and a STRONGER check — a regex only proves the
+     characters appear somewhere in a 15,000-line file, while this proves the door's
+     map really resolves that key to that column. */
+  assert(detailsFields.ALL.estimatedCashOut === 'estimated_cash_out',
     'and accepts the cash-out figure (db/267’s column, which had no writer at all until now)');
   assert(/payoffState\(a\.rows\[0\], quote\)/.test(staff), 'the route answers from the ONE shared model');
 }
@@ -268,8 +278,10 @@ console.log('\n--- the loan file stores it, and every entry surface offers it --
   assert(/ADD COLUMN IF NOT EXISTS payoff_loan_number/.test(mig), 'db/386 adds payoff_loan_number');
   assert(/IF NOT EXISTS/.test(mig), 'the migration is idempotent (safe on every boot)');
 
-  const staff = readRepo('src/routes/staff.js');
-  assert(/payoffLender: 'payoff_lender'/.test(staff) && /payoffLoanNumber: 'payoff_loan_number'/.test(staff),
+  // Same as above — the door's key→column map is now the shared module, and asking it
+  // proves the mapping rather than that the characters appear in the route's source.
+  assert(detailsFields.ALL.payoffLender === 'payoff_lender'
+    && detailsFields.ALL.payoffLoanNumber === 'payoff_loan_number',
     'the staff details door accepts both fields');
 
   const borrower = readRepo('src/routes/borrower.js');

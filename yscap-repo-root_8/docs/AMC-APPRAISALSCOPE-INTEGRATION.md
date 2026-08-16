@@ -213,11 +213,13 @@ not a credential — the read-only catalog lookups (`GetLoanType` / `GetJobType`
 HTTP 500 at the order/lookup endpoint; Cotality must confirm/fix that endpoint (and
 that this account is entitled to it). See section 7's preflight for the live check.
 
-### Optional / not issued for this tenant
+### The client-shown id, and the legacy fallback
 
 | Variable | What it is | Blocks |
 |---|---|---|
-| `AMC_SOURCE_CLIENT_ID` | *optional* — a client/user id inside AppraisalScope; the vendor (Tony Pham, 2026-08-11) confirmed this tenant has none, and the order builder omits `sourceInformation` when it is unset | — |
+| `AMC_CLIENT_DISPLAYED_ID` | AppraisalScope's **REQUIRED** `client_displayed_id` — the id of the tenant's *GetClientDisplayOnReport* profile (e.g. `199384` = "YS Capital Group"), printed as the client on the appraisal. CreateAppraisal sends it **two ways with the same value**: `clientSystem.sourceInformation.sourceClientIdentifier` **and** a `partyRoleType="Lender"` party (`partyRoleIdentifier`). A numeric id is required — a name alone cannot satisfy the gateway. **Pin it here** when the account has several profiles or the list can't be read; otherwise the order builder resolves it from *GetClientDisplayOnReport*. An order with no resolvable id is refused up-front (`order-build.missingRequired`), never sent to fail at the vendor. | ordering, if no id can be resolved |
+| `AMC_CLIENT_DISPLAYED_NAME` | the DEFAULT client-on-report **name** (owner-directed: always "YS Capital Group" unless overridden) | — |
+| `AMC_SOURCE_CLIENT_ID` | **legacy fallback** for the SAME value as `AMC_CLIENT_DISPLAYED_ID` (an older knob for `sourceClientIdentifier`); `AMC_CLIENT_DISPLAYED_ID` wins when both are set. Leave blank on a new deploy. | — |
 
 The OAuth pair and the login pair are **two different credentials for two different
 systems** — the first authenticates *the software* to CoreLogic's gateway, the second
@@ -259,12 +261,14 @@ cannot be finalized until a lookup call actually returns this tenant's form cata
 
 ## 8. Owner decisions (2026-08-05)
 
-- **Credentials:** *(updated 2026-08-11)* the UAT OAuth pair, the GGID, the AppraisalScope
+- **Credentials:** *(updated 2026-08-13)* the UAT OAuth pair, the GGID, the AppraisalScope
   login (`AMC_LOGIN_ACCOUNT`/`PASSWORD`) and `AMC_SUBDOMAIN` have arrived and
-  authenticate. `AMC_SOURCE_CLIENT_ID` is **optional and not issued for this tenant** —
-  the vendor (Tony Pham, 2026-08-11) confirmed there is no such credential; DoLogin and
-  every read work without it and the order builder omits it, so PILOT no longer treats it
-  as required. Full status and the check command are in section 7.
+  authenticate. AppraisalScope's **REQUIRED** `client_displayed_id` — the "Client Displayed
+  on Report" id (`199384` = "YS Capital Group") — is pinned via **`AMC_CLIENT_DISPLAYED_ID`**
+  (or resolved from the account's *GetClientDisplayOnReport* list) and sent two ways with the
+  same value (`sourceClientIdentifier` + a Lender party). `AMC_SOURCE_CLIENT_ID` is now a
+  **legacy fallback** for that same value (superseded by `AMC_CLIENT_DISPLAYED_ID`). Full
+  status and the check command are in section 7.
 - **Payment stays MANUAL**, but the appraisal-fee card must be **linked** to the
   existing payment-card condition (`application_payment_cards` / the `appraisal_card`
   condition, `src/lib/appraisal-card.js`): entering the card **at the order fills the

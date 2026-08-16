@@ -43,8 +43,9 @@ function get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? o
     productCode: '76', subproductCodes: ['5', '6'], amcIdentifier: '426',
     clientOrderNumber: '1234AB', clientReferenceNumber: 'ABD-1', rush: true, needByDate: '2026-09-01',
     jobFee: 25, managementFee: 50, requestComment: 'hello', notifyEmails: ['a@b.com'],
+    clientDisplayedId: '297',
     loan: { loanNumber: '2020092901', mortgageType: 'Conventional', loanPurpose: 'Purchase', baseLoanAmount: 180000, estimatedClosingDate: '2026-09-15', lienPriority: '1st Lien Position' },
-    property: { titleCategory: 'Single Family', addressLine: '501 NE 122nd St', addressLine2: 'Suite D', city: 'Oklahoma City', state: 'OK', postalCode: '73114', county: 'Oklahoma', occupancy: 'Investment', salesContractAmount: 200000 },
+    property: { titleCategory: 'Single Family', addressLine: '501 NE 122nd St', addressLine2: 'Suite D', city: 'Oklahoma City', state: 'OK', postalCode: '73114', county: 'Oklahoma', occupancy: 'Investment', purchasePriceAmount: 150000, salesContractAmount: 200000 },
     borrowers: [{ classification: 'Primary', firstName: 'Peter', lastName: 'Parker', fullName: 'Peter Parker', contacts: [{ type: 'Home', email: 'p@x.com', phone: '123' }], residence: { addressLine: '1 A St', city: 'DC', state: 'DC', postalCode: '20013' } }],
     parties: { loanOfficerId: '429', loanProcessorId: '484', investorId: '447', bestContact: 'Borrower' },
     embeddedFiles: [{ objectURL: 'https://g/getdocument/1', objectName: 'c.pdf', documentType: 'Sales Contract', documentEffectiveDate: '2026-03-14' }],
@@ -54,7 +55,10 @@ function get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? o
   ok(m.requestActionType === 'CreateAppraisal', 'create action');
   ok(cdg.refValue(m.clientSystem.referenceIdentifiers, 'ApiKey') === 'K', 'create api key');
   ok(cdg.refValue(m.clientSystem.referenceIdentifiers, 'ClientOrderNumber') === '1234AB', 'create client order number');
-  ok(m.clientSystem.sourceInformation.sourceClientIdentifier === '267', 'create sourceClientIdentifier');
+  // AppraisalScope's REQUIRED client_displayed_id ← sourceClientIdentifier. The resolved
+  // "Client Displayed on Report" id (spec.clientDisplayedId='297') WINS over the legacy config
+  // sourceClientId ('267') passed in the ctx — the resolved id is the authoritative source.
+  ok(m.clientSystem.sourceInformation.sourceClientIdentifier === '297', 'create client_displayed_id via sourceClientIdentifier (resolved id wins over config)');
   ok(cdg.refValue(m.digitalGatewaySystem.referenceIdentifiers, 'DigitalGatewayLenderIdentifier') === 'GG000146', 'create lender identifier');
   ok(cdg.refValue(m.serviceProviderSystem.referenceIdentifiers, 'ServiceProviderSubDomain') === 'integrations.uat', 'create subdomain');
   ok(m.products[0].productCode === '76', 'create product code (form)');
@@ -70,12 +74,90 @@ function get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? o
   ok(deal.properties[0].titleCategoryType === 'Single Family', 'create property title category');
   ok(deal.properties[0].address.addressLine === '501 NE 122nd St' && deal.properties[0].address.stateCode === 'OK' && deal.properties[0].address.postalCode === '73114', 'create property address');
   ok(deal.properties[0].salesContractAmount === '200000.00', 'create sales contract amount');
+  // AppraisalScope's REQUIRED `purchase_amount` maps from purchasePriceAmount (distinct
+  // from salesContractAmount, exactly as the vendor's own createappraisal sample carries
+  // both). Emitting only salesContractAmount was why the order was rejected for a missing
+  // purchase_amount.
+  ok(deal.properties[0].purchasePriceAmount === '150000.00', 'create purchase price amount (purchase_amount)');
   ok(deal.borrowers[0].firstName === 'Peter' && deal.borrowers[0].lastName === 'Parker', 'create borrower name');
   ok(deal.borrowers[0].contacts[0].contactEmail === 'p@x.com', 'create borrower contact');
   ok(deal.borrowers[0].residences[0].address.cityName === 'DC', 'create borrower residence');
   const bestContact = deal.parties.find((x) => x.partyRoleType === 'BestContact');
-  ok(bestContact && bestContact.partyRoleTypeIdentifier === 'Borrower', 'create best contact (required)');
+  // The vendor's REQUIRED `primary_contact` is derived from the BestContact party's
+  // **partyRoleTypeOtherDescription** (an enum), NOT partyRoleTypeIdentifier — matching the
+  // vendor's own createappraisal sample. Emitting the wrong leaf left it empty, so the
+  // gateway couldn't tell WHO the best contact was and reported primary_contact missing.
+  ok(bestContact && bestContact.partyRoleTypeOtherDescription === 'Borrower', 'create best contact (primary_contact) via partyRoleTypeOtherDescription');
+  ok(bestContact && bestContact.partyRoleTypeIdentifier === undefined, 'best contact does not use the wrong leaf');
+  // client_displayed_id is ALSO carried on a partyRoleType="Lender" party (belt-and-suspenders
+  // alongside sourceInformation), with the SAME resolved id (297). The gateway maps its
+  // partyRoleIdentifier to client_displayed_id; fullNameAddress carries the client name.
+  {
+    const lender = deal.parties.find((x) => x.partyRoleType === 'Lender');
+    ok(lender && lender.partyRoleIdentifier === '297', 'Lender party carries client_displayed_id (resolved id wins over config)');
+  }
   ok(deal.parties.find((x) => x.partyRoleType === 'LoanOfficer').partyRoleTypeIdentifier === '429', 'create loan officer');
+})();
+
+// ---- No client-displayed id/name and no config source-client id → sourceInformation omitted, no Lender party ----
+(() => {
+  const m = cdg.buildCreateAppraisal(
+    { productCode: '76', loan: { loanNumber: '1' }, borrowers: [], property: {} },
+    { apiKey: 'K', subdomain: 's' }).message;
+  ok(m.clientSystem.sourceInformation === undefined, 'omits sourceInformation when nothing is resolved');
+  ok(!(m.deals[0].parties || []).some((x) => x.partyRoleType === 'Lender'), 'never emits a Lender party for client_displayed_id');
+})();
+
+// ---- Client-displayed by NAME only (no id) → sourceClientName sent, no invented id ----
+// The gateway REQUIRES the numeric id (order-build.missingRequired blocks a name-only order);
+// but if a name-only spec is ever built, the name rides as sourceClientName and no bogus id
+// is invented — client_displayed_id is only ever the real resolved id.
+(() => {
+  const m = cdg.buildCreateAppraisal(
+    { productCode: '76', clientDisplayedName: 'YS Capital Group', loan: { loanNumber: '1' }, borrowers: [], property: {} },
+    { apiKey: 'K', subdomain: 's' }).message;
+  const cs = m.clientSystem;
+  ok(cs.sourceInformation && cs.sourceInformation.sourceClientName === 'YS Capital Group', 'sourceClientName carries the client-displayed NAME when only a name is known');
+  ok(cs.sourceInformation.sourceClientIdentifier === undefined, 'no sourceClientIdentifier is invented when only a name is known');
+  // A numeric id is REQUIRED for the Lender party — a name alone never invents one.
+  ok(!(m.deals[0].parties || []).some((x) => x.partyRoleType === 'Lender'), 'no Lender party when only a name is known (no id to send)');
+})();
+
+// ---- Client-displayed with BOTH id and name → sent BOTH ways with the same values ----
+(() => {
+  const m = cdg.buildCreateAppraisal(
+    { productCode: '76', clientDisplayedId: '297', clientDisplayedName: 'YS Capital Group', loan: { loanNumber: '1' }, borrowers: [], property: {} },
+    { apiKey: 'K', subdomain: 's' }).message;
+  const cs = m.clientSystem;
+  ok(cs.sourceInformation.sourceClientIdentifier === '297' && cs.sourceInformation.sourceClientName === 'YS Capital Group',
+    'sourceInformation carries both the client-displayed id and name');
+  const lender = (m.deals[0].parties || []).find((x) => x.partyRoleType === 'Lender');
+  ok(lender && lender.partyRoleIdentifier === '297' && lender.fullNameAddress === 'YS Capital Group',
+    'Lender party carries the same client-displayed id and name');
+})();
+
+// ---- BestContact names the borrower it resolves to; the reachable contact lives on the
+// referenced borrower (AppraisalScope's primary_contact), matching the vendor sample ----
+(() => {
+  const spec = {
+    productCode: '76', loan: { loanNumber: '1' }, property: { salesContractAmount: 200000 },
+    // The BestContact is the Co-Borrower here, so it must name 'Co-Borrower' and the
+    // gateway reads THAT borrower's contacts for primary_contact.
+    borrowers: [
+      { classification: 'Primary', firstName: 'Peter', lastName: 'Parker' },
+      { classification: 'Secondary', firstName: 'Mary', lastName: 'Jane', contacts: [{ type: 'Home', phone: '555-1', email: 'm@x.com' }] },
+    ],
+    parties: { bestContact: 'Co-Borrower' },
+    primaryContact: { role: 'Co-Borrower', classification: 'Secondary', firstName: 'Mary', lastName: 'Jane', phone: '555-1', email: 'm@x.com' },
+  };
+  const deal = cdg.buildCreateAppraisal(spec, { apiKey: 'K', subdomain: 's' }).message.deals[0];
+  const best = deal.parties.find((x) => x.partyRoleType === 'BestContact');
+  ok(best && best.partyRoleTypeOtherDescription === 'Co-Borrower', 'best contact names the co-borrower it resolved to');
+  // The phone/email is carried on the referenced borrower's own contacts, not on the
+  // BestContact party — exactly the vendor's createappraisal shape.
+  const secondary = deal.borrowers.find((b) => b.borrowerClassificationType === 'Secondary');
+  ok(secondary && secondary.contacts[0].contactPhone === '555-1' && secondary.contacts[0].contactEmail === 'm@x.com',
+    'the referenced borrower carries the phone + email for primary_contact');
 })();
 
 // ---- AddForm carries the parent SP order number ----
@@ -87,9 +169,11 @@ function get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? o
   ok(cdg.refValue(req.message.serviceProviderSystem.referenceIdentifiers, 'ServiceProviderOrderNumber') === 'SP345', 'addform parent order number');
 })();
 
-// ---- CreateAppraisal OMITS sourceInformation when no source-client id is configured ----
-// The vendor confirmed this tenant has none; the order must be valid without it, so the
-// builder must not emit an empty/undefined sourceClientIdentifier.
+// ---- CreateAppraisal OMITS sourceInformation when NO client-displayed id or name resolves ----
+// A numeric client_displayed_id is REQUIRED for a real order (order-build.missingRequired blocks
+// up-front when it can't resolve one), but the low-level builder must still never emit an empty/
+// undefined sourceClientIdentifier when the spec carries neither an id (clientDisplayedId /
+// sourceClientId) nor a name — it omits sourceInformation entirely.
 (() => {
   const req = cdg.buildCreateAppraisal(
     { productCode: '76', loan: { loanNumber: '1' }, borrowers: [], property: {} },

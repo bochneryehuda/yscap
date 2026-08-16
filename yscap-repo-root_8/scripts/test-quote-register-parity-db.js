@@ -190,13 +190,16 @@ async function req(server, method, path, token, body) {
       }
     }
 
-    // ---- 5. The FINAL term sheet renders the registration, not a re-quote --------
-    // It is built server-side from product_registrations.quote, so it cannot
-    // disagree with the registration — assert that sourcing explicitly, because a
-    // future refactor that re-quotes here would silently reopen the whole class.
-    const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src/lib/esign/term-sheet-pdf.js'), 'utf8');
+    // ---- 5. The sent package never re-prices ------------------------------------
+    // The term sheet in the DocuSign package is the studio's stored six-pager,
+    // drawn from the scenario that was registered — so the sender must never run
+    // the engine while assembling a package. (It briefly rendered its own sheet
+    // from product_registrations.quote between 2026-08-06 and 2026-08-14; either
+    // way the invariant is the same, and a future refactor that re-quotes here
+    // would silently reopen the whole class.)
+    const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src/lib/esign/orchestrate.js'), 'utf8');
     ok(!/quoteAll\(|quoteProgram\(|buildInputs\(/.test(src),
-      'F1 the FINAL term sheet never re-prices — it renders the stored registration');
+      'F1 the send path never re-prices — the package carries the registered scenario');
 
     // ---- 6. Every pricing surface goes through the ONE chokepoint ----------------
     const brw = require('fs').readFileSync(require('path').join(__dirname, '..', 'src/routes/borrower.js'), 'utf8');

@@ -348,13 +348,16 @@ const { buildDrawRequest } = require('./draw-request-pdf');
 // borrower(s) e-sign (no notary), built from the file (noo-affidavit-pdf.js). Same
 // generate() contract.
 const { buildNooAffidavit } = require('./noo-affidavit-pdf');
-// The FINAL term sheet — BUILT on our server from the last registration at send
-// time (term-sheet-pdf.js), so pressing Send always produces the final version
-// (owner-directed 2026-08-02/06). Products & Pricing keeps making the stored
-// INITIAL for preview; the FINAL is only ever generated here.
-const { buildTermSheet } = require('./term-sheet-pdf');
 
-const BUILDERS = { bp_disclosure: buildDisclosurePdf, heter_iska: buildIskaPdf, application_export: buildApplication, draw_request: buildDrawRequest, noo_affidavit: buildNooAffidavit, term_sheet: buildTermSheet };
+/* THE TERM SHEET IS DELIBERATELY NOT A BUILDER HERE (owner-directed 2026-08-14).
+   It is the ONE document in the package our server does not draw: the Term Sheet
+   Studio (web/v2/tools/termsheet.js) draws it — all six pages of it — and the
+   sender attaches the stored copy. A server-side renderer was added here on
+   2026-08-06 and produced a DIFFERENT, three-page document; it went out on real
+   files for eight days. Do not re-add one. If the sender must produce a FINAL
+   sheet, the studio makes it (ProductStudioPanel.finalizeTermSheet) — same
+   generator, same six pages, only the stamp differs. */
+const BUILDERS = { bp_disclosure: buildDisclosurePdf, heter_iska: buildIskaPdf, application_export: buildApplication, draw_request: buildDrawRequest, noo_affidavit: buildNooAffidavit };
 
 /** Build a generated document by doc_kind. Returns a PDF Buffer for every live
  *  doc_kind (bp_disclosure, heter_iska, application_export — all PDFs our server

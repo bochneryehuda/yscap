@@ -108,7 +108,10 @@ const DIG = require('../src/lib/notification-digests');
     const s2 = await RP.releaseStateFor(db, direct);
     ok('B4 a direct file with no purchase advice does NOT read as sold', s2.sold !== 'sold');
     ok('B5 …and does raise the warning', !!s2.warning);
-    ok('B6 …which offers carrying on, per the owner\'s revised default', /go ahead/i.test(s2.warning.body));
+    // Owner-directed 2026-08-13 (superseding the 2026-08-09 "carry on" default): an unsold loan is
+    // released by US, and the badge says so instead of asking permission to proceed.
+    ok('B6 …which states that WE release it, per the owner\'s current rule', /WE release/i.test(s2.warning.body));
+    ok('B6b …and the file is actually put on "we release"', s2.mode === 'reimbursement' && s2.party === 'us');
 
     // Encompass's own answer is enough on its own, even with no closing_workflow row.
     const enc = await mkFile({ channel: 'Table Funding', fundedDaysAgo: 90 });
@@ -284,7 +287,8 @@ const DIG = require('../src/lib/notification-digests');
     const d1 = await mkDraw(direct);
     const p1 = await SEND.deliveryPreview(direct, d1);
     ok('G1 a direct file with no purchase advice warns on the delivery preview', !!p1.sold_warning);
-    ok('G2 …with the wording that offers going ahead', /go ahead/i.test(p1.sold_warning.body));
+    ok('G2 …with the wording that says WE release it until it is sold', /WE release/i.test(p1.sold_warning.body));
+    ok('G2b …and the delivery is priced that way too, so the email cannot contradict the desk', p1.funding_mode === 'reimbursement');
     ok('G3 the warning is not among the blockers', !p1.blockers.some((b) => /purchase advice|sold/i.test(String(b))));
     // THE REAL PROOF that the warning costs nothing: give the SAME file a purchase advice date —
     // which is the only thing that changes — and the blockers must be byte-identical. Comparing

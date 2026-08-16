@@ -164,14 +164,15 @@ sp.uploadNew = async (driveId, parentId, name, bytes) => {
   const stuck = await backup.stuckDocuments(50);
   ok('a never-mirror kind does NOT appear as a stuck "(not yet attempted)" document', !stuck.some((s) => String(s.id) === String(iskaDoc)));
 
-  // === owner-directed 2026-08-09: appraisal photos ARE mirrored now, into their
-  // own folder. The inverse of the guard above, so the suite proves the policy
-  // change rather than losing the coverage that used to sit here.
+  // === owner-directed 2026-08-12 (REVERSES 2026-08-09): appraisal photos are a
+  // never-mirror kind AGAIN — kept in PILOT + the off-site backup only, never in
+  // SharePoint or the TPR export. So a photo is settled-skipped like the Heter Iska.
   const photoDoc = await mkStoredDoc('appraisal-photo-1.png', 'PNGBYTES', { doc_kind: 'appraisal_photo', content_type: 'image/png', created_at: "now() - interval '7 hours'" });
   await backup.runOnce({ limit: 50 });
-  const ps = (await db.query(`SELECT sharepoint_backup_ref AS ref, sharepoint_skipped_reason AS why FROM documents WHERE id=$1`, [photoDoc])).rows[0];
-  ok('an appraisal photo is mirrored, not skipped', !!ps.ref && ps.why == null);
-  ok('and it files into its own "Appraisal photos" folder', backup.categoryFor({ doc_kind: 'appraisal_photo' }) === 'Appraisal/Appraisal photos');
+  const ps = (await db.query(`SELECT sharepoint_backed_up_at AS done, sharepoint_backup_ref AS ref, sharepoint_skipped_reason AS why FROM documents WHERE id=$1`, [photoDoc])).rows[0];
+  ok('an appraisal photo is NOT mirrored (never-mirror again), settled-skipped', !!ps.done && !ps.ref && /thumbnail|not mirrored/i.test(String(ps.why)));
+  const stuckP = await backup.stuckDocuments(50);
+  ok('an appraisal photo does NOT appear as a stuck "(not yet attempted)" document', !stuckP.some((s) => String(s.id) === String(photoDoc)));
 
   // === A-Z audit #3: a "needs a human" verdict makes the mirror NOT healthy ===
   await db.query(

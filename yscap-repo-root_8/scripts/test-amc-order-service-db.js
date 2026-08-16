@@ -87,6 +87,16 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
       `INSERT INTO checklist_items (application_id, scope, tool_key, label, status, audience, item_kind)
        VALUES ($1,'application','appraisal_card','Appraisal payment card','outstanding','borrower','document')`, [appId]);
 
+    // The account's client-on-report profiles (AppraisalScope's required client_displayed_id).
+    // Exactly ONE profile cached → order-service auto-selects it (the common case), so the
+    // order is placeable without any config. Keyed under '' to match the test config's
+    // (unset) subdomain. ON CONFLICT so a real cached row doesn't collide inside the txn.
+    await c.query(
+      `INSERT INTO amc_lookup_cache (lookup_type, subdomain, payload, fetched_at)
+       VALUES ('GetClientDisplayOnReport', '', '[{"id":"297","name":"YS Capital Group"}]'::jsonb, now())
+       ON CONFLICT (lookup_type, subdomain)
+         DO UPDATE SET payload = EXCLUDED.payload, fetched_at = now()`);
+
     // ---- loadContext: exercises the real column names ----
     const ctx = await orderService.loadContext(c, appId);
     ok(ctx, 'loadContext returns a context');
@@ -99,6 +109,10 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     ok(ctx.borrowers.length === 1 && ctx.borrowers[0].firstName === 'Peter' && ctx.borrowers[0].middleName === 'Ben', 'borrower loaded incl. middle name');
     ok(ctx.borrowers[0].residence && ctx.borrowers[0].residence.city === 'NYC', 'borrower residence parsed');
     ok(ctx.card && ctx.card.conditionStatus === 'outstanding' && ctx.card.onFile === false, 'card status: condition present, no card yet');
+    // The client-on-report profile (client_displayed_id) auto-selected from the account's
+    // single cached profile.
+    ok(ctx.clientDisplayedId === '297' && ctx.clientDisplayedSource === 'catalog', 'client-displayed-on-report auto-selected from the single cached profile');
+    ok(ctx.clientDisplayedName === 'YS Capital Group', 'client-displayed-on-report name loaded');
 
     // ---- contacts: the LO + processor + borrower emails ride the update-notify list ----
     ok(Array.isArray(ctx.notifyEmails), 'loadContext returns notifyEmails');
@@ -119,7 +133,29 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     ok(Array.isArray(preview.notifyEmails) && preview.notifyEmails.length >= 3, 'preview exposes the update-email recipients');
     ok(preview.spec.notifyEmails && preview.spec.notifyEmails.length >= 3, 'the spec carries the notify emails → products[].notifications');
     ok(preview.spec.loan.loanNumber === 'YSCAP-AMC-1' && preview.spec.property.titleCategory === 'Single Family', 'spec filled from the file');
+    ok(preview.spec.clientDisplayedId === '297', 'spec carries the client-displayed-on-report id → sourceClientIdentifier');
     ok(preview.canPlace === true && preview.missing.length === 0, 'preview is complete → placeable');
+
+    // ---- estimated closing date through the REAL pg `date` parser (loadContext → buildPreview
+    //      → spec). Guards the omit-not-fabricate path against a change to db.js's
+    //      setTypeParser(1082): if the column stopped coming back as 'YYYY-MM-DD', every closing
+    //      date would silently fail the ISO regex and be dropped. Uses computed dates so it is
+    //      never time-fragile. ----
+    {
+      const isoDay = (ms) => new Date(ms).toISOString().slice(0, 10);
+      const DAY = 86400000;
+      const fut = isoDay(Date.now() + 45 * DAY);   // a real future date
+      const past = isoDay(Date.now() - 10 * DAY);  // a real past date
+      await c.query('UPDATE applications SET est_closing_date = $2 WHERE id = $1', [appId, fut]);
+      const pFut = await orderService.buildPreview(c, appId);
+      ok(pFut.spec.loan.estimatedClosingDate === fut, 'a valid future closing date reaches the spec through the real pg date parser');
+      ok(!pFut.assumptions.some((a) => a.field === 'estimatedClosingDate'), 'a valid future closing date raises no stale warning');
+      await c.query('UPDATE applications SET est_closing_date = $2 WHERE id = $1', [appId, past]);
+      const pPast = await orderService.buildPreview(c, appId);
+      ok(pPast.spec.loan.estimatedClosingDate == null, 'a PAST closing date is omitted from the spec (not fabricated)');
+      ok(pPast.assumptions.some((a) => a.field === 'estimatedClosingDate' && a.warn === true), 'a PAST closing date raises the stale warning on the preview');
+      await c.query('UPDATE applications SET est_closing_date = $2 WHERE id = $1', [appId, fut]); // restore forward-dated
+    }
 
     // ---- createOrder (draft, no network) ----
     const draft = await orderService.createOrder(c, appId, { place: false, staffId: null });
@@ -127,18 +163,84 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  FAIL:'
     ok(draft.order && draft.order.status === 'draft' && draft.order.product_code === '5', 'draft persisted with the chosen form');
     ok(draft.order.request_payload && JSON.stringify(draft.order.request_payload).includes('YSCAP-AMC-1'), 'draft stores the (masked) request payload');
     ok(!JSON.stringify(draft.order.request_payload).includes('DoLogin'), 'draft payload carries no login credentials');
+    // The stored (masked) payload carries the client-displayed id BOTH ways — on the
+    // clientSystem sourceInformation AND on a Lender party's partyRoleIdentifier, with the
+    // SAME value — proof the whole chain resolves the CDOR through to the wire message a
+    // draft records (belt-and-suspenders so the gateway is satisfied whichever it reads).
+    {
+      const cs = (draft.order.request_payload.message || {}).clientSystem || {};
+      ok(cs.sourceInformation && cs.sourceInformation.sourceClientIdentifier === '297',
+        'draft payload carries client_displayed_id via clientSystem.sourceInformation.sourceClientIdentifier');
+      const parties = ((((draft.order.request_payload.message || {}).deals || [])[0] || {}).parties || []);
+      ok(parties.some((p) => p.partyRoleType === 'Lender' && p.partyRoleIdentifier === '297'),
+        'draft payload ALSO carries client_displayed_id on a Lender party (same value)');
+    }
 
     // ---- listOrders ----
     const list = await orderService.listOrders(c, appId);
     ok(list.length === 1 && list[0].id === draft.order.id, 'listOrders returns the draft');
 
-    // ---- a refinance file must NOT carry a sales-contract amount ----
+    // ---- resolveClientDisplayed: 1 profile → auto; several → don't guess; none → blocked.
+    //      Proves the order is blocked (not sent to fail at NAN) when the account has
+    //      several client-on-report profiles and none is pinned. ----
+    const setCdor = async (rows) => c.query(
+      `INSERT INTO amc_lookup_cache (lookup_type, subdomain, payload, fetched_at)
+       VALUES ('GetClientDisplayOnReport','',$1::jsonb, now())
+       ON CONFLICT (lookup_type, subdomain) DO UPDATE SET payload = EXCLUDED.payload, fetched_at = now()`,
+      [JSON.stringify(rows)]);
+
+    await setCdor([{ id: '297', name: 'YS Capital Group' }]);
+    const one = await orderService.resolveClientDisplayed(c, '');
+    ok(one.id === '297' && one.source === 'catalog', 'one cached profile matching the default name → auto-selected');
+
+    // NAME MATCH wins even when the account has several profiles: "YS Capital Group" is
+    // matched to its id, so the order is not blocked (owner-directed default).
+    await setCdor([{ id: '297', name: 'YS Capital Group' }, { id: '512', name: 'Other Client' }]);
+    const matched = await orderService.resolveClientDisplayed(c, '');
+    ok(matched.id === '297' && matched.source === 'catalog', 'default name matched to its id even among several profiles');
+
+    // Several profiles, NONE matching the default name → not guessed; the picker chooses.
+    await setCdor([{ id: '297', name: 'A' }, { id: '512', name: 'B' }]);
+    const many = await orderService.resolveClientDisplayed(c, '');
+    ok(many.id === null && many.source === 'multiple' && many.options.length === 2, 'several profiles, none matching the default → picker (blocked until chosen)');
+
+    // No cached profile at all → fall back to the configured NAME. A numeric id is REQUIRED, so
+    // this carries id=null and missingRequired blocks the order up-front (belt-and-suspenders);
+    // the name rides along only as the default label.
+    await setCdor([]);
+    const nameOnly = await orderService.resolveClientDisplayed(c, '');
+    ok(nameOnly.id === null && nameOnly.source === 'name_default' && nameOnly.name === 'YS Capital Group',
+      'empty cache → default NAME only (id null → missingRequired blocks up-front)');
+
+    // The LEGACY AMC_SOURCE_CLIENT_ID pins the SAME id when AMC_CLIENT_DISPLAYED_ID is unset,
+    // resolved as source 'config' exactly like the primary var (back-compat: an older deploy
+    // that set only the legacy var must still resolve an id, not silently block). This returns
+    // early from config, so the empty cache above does not matter.
+    const _cfg = require('../src/config');
+    const _savedCd = _cfg.amc.clientDisplayedId, _savedSrc = _cfg.amc.sourceClientId;
+    _cfg.amc.clientDisplayedId = null; _cfg.amc.sourceClientId = '267';
+    const viaLegacy = await orderService.resolveClientDisplayed(c, '');
+    ok(viaLegacy.id === '267' && viaLegacy.source === 'config',
+      'legacy AMC_SOURCE_CLIENT_ID pins the id when AMC_CLIENT_DISPLAYED_ID is unset');
+    // The primary AMC_CLIENT_DISPLAYED_ID wins over the legacy fallback when both are set.
+    _cfg.amc.clientDisplayedId = '999';
+    const bothSet = await orderService.resolveClientDisplayed(c, '');
+    ok(bothSet.id === '999', 'AMC_CLIENT_DISPLAYED_ID wins over the legacy AMC_SOURCE_CLIENT_ID');
+    _cfg.amc.clientDisplayedId = _savedCd; _cfg.amc.sourceClientId = _savedSrc; // restore
+
+    // Restore the single-profile cache for any later reads in this transaction.
+    await setCdor([{ id: '297', name: 'YS Capital Group' }]);
+
+    // ---- a refinance file carries a PROPERTY VALUE (AppraisalScope requires an amount).
+    //      There is no purchase, so it uses the AS-IS VALUE (deal-basis rule) — never the
+    //      purchase price. as_is_value (320k) differs from purchase_price (250k) so the
+    //      assertion proves the as-is value wins. ----
     const refi = await c.query(
-      `INSERT INTO applications (borrower_id, ys_loan_number, program, loan_type, property_address, property_type, purchase_price, loan_amount)
-       VALUES ($1,'YSCAP-AMC-2','bridge','Refi Cash-Out','{"street":"9 Elm St","city":"Queens","state":"NY","zip":"11375"}','SFR',250000,200000)
+      `INSERT INTO applications (borrower_id, ys_loan_number, program, loan_type, property_address, property_type, purchase_price, as_is_value, loan_amount)
+       VALUES ($1,'YSCAP-AMC-2','bridge','Refi Cash-Out','{"street":"9 Elm St","city":"Queens","state":"NY","zip":"11375"}','SFR',250000,320000,200000)
        RETURNING id`, [borrowerId]);
     const rctx = await orderService.loadContext(c, refi.rows[0].id);
-    ok(rctx.property.salesContractAmount == null, 'refinance carries no sales-contract amount');
+    ok(rctx.property.salesContractAmount === 320000, 'refinance carries the AS-IS value as the property amount (never the purchase price)');
     ok(rctx.loanPurpose === 'Refi Cash-Out', 'refinance loan purpose carried through');
 
     // ---- environment fallback (the shipped seed is production-only; a service whose

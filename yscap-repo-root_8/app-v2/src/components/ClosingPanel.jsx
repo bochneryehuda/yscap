@@ -5,6 +5,7 @@ import { sizesOnAsIsValue } from '../lib/dealBasis.js';
 import { onFilesDropped } from '../lib/drop-files.js';
 import { fmtDate } from '../lib/dates.js';
 import { ChainAddress, ChainDocuments, ChainHistory } from './ClosingEmailChain.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /* THE CLOSING WORKSPACE (owner-directed 2026-07-26). The closer's desk inside a
    loan file: deal details, the actual cash-to-close money gate against verified
@@ -162,7 +163,7 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
       <ChecklistsSection appId={appId} checklists={ws.checklists || []} isCloser={isCloser} onChanged={refresh} setErr={setErr} />
 
       {/* Sign-offs + reconciliation */}
-      <SignoffSection appId={appId} cw={cw} rec={rec} isCloser={isCloser} busy={busy} run={run} setWarn={setWarn} say={say} hasLoan={!!ws.ys_loan_number} />
+      <SignoffSection appId={appId} cw={cw} rec={rec} isCloser={isCloser} busy={busy} run={run} setWarn={setWarn} say={say} hasLoan={!!ws.ys_loan_number} hasClickup={!!ws.clickup_linked} tfWarehouse={ws.tableFundingWarehouse || ''} />
 
       {/* Notes */}
       <NotesSection appId={appId} notes={ws.notes || []} onChanged={refresh} setErr={setErr} />
@@ -461,7 +462,10 @@ function FundingSection({ appId, cw, ws, isCloser, busy, run }) {
   const [funded, setFunded] = useState(ws.funded_date || '');
   useEffect(() => { setWh(cw.warehouse || ''); setTrack(cw.collateral_tracking_number || ''); setCarrier(cw.collateral_tracking_carrier || ''); setFunded(ws.funded_date || ''); }, [cw.warehouse, cw.collateral_tracking_number, cw.collateral_tracking_carrier, ws.funded_date]);
   return (
-    <div className="panel" style={{ marginBottom: 14 }}>
+    /* id: the Sign-offs panel's "Change warehouse" scrolls here — undoing table
+       funding means CHOOSING which line the loan really funded on, and this picker
+       is the only control that can ask that. */
+    <div className="panel" id="cl-funding" style={{ marginBottom: 14 }}>
       <div className="panel-h"><h3 style={{ margin: 0 }}>Funding &amp; collateral</h3></div>
       <div className="panel-b">
         <div className="cl-grid">
@@ -573,7 +577,7 @@ function AddItem({ onAdd }) {
   );
 }
 
-function SignoffSection({ appId, cw, rec, isCloser, busy, run, setWarn, say, hasLoan }) {
+function SignoffSection({ appId, cw, rec, isCloser, busy, run, setWarn, say, hasLoan, hasClickup, tfWarehouse }) {
   const recOk = rec && rec.ok;
   return (
     <div className="panel" style={{ marginBottom: 14 }}>
@@ -590,20 +594,62 @@ function SignoffSection({ appId, cw, rec, isCloser, busy, run, setWarn, say, has
               onSign={(on) => run('tpr', () => api.closingSignOff(appId, 'tpr', on))} />
           </>}
           {/* TABLE FUNDING sits directly ABOVE the investor-delivery sign-off,
-              because it is the question you answer BEFORE you sign it off. It is
-              READ-ONLY here: the WAREHOUSE decides it (owner-directed) — funding
-              on the Table Funding line means the loan was sold at closing, so it
-              skips the purchasing desk. One control, in Funding, so the two can
-              never disagree. */}
+              because it is the question you answer BEFORE you sign it off.
+
+              IT IS NOW SETTABLE FROM HERE (owner-directed 2026-08-13: "There is no
+              option here to select that Pilot should also be table funded … On that
+              same screen where we need to finish everything, we should have the
+              button to change Pilot to Table Funding to be able to finish
+              requalification"). It used to be read-only with the copy pointing at
+              the Funding card above — which is a correct instruction and a bad
+              answer: the closer is standing on the screen they are trying to
+              finish, and the one thing blocking them is a control in a different
+              card.
+
+              THERE IS STILL ONLY ONE SOURCE OF TRUTH. The button does not set a
+              second flag — it writes the SAME `warehouse` field the Funding card
+              writes, through the same endpoint, and `table_funded` stays derived
+              from it (closing.tableFundedFor). Two buttons, one field, so the two
+              surfaces can never disagree. The warehouse NAME comes from the server
+              (`ws.tableFundingWarehouse`), never spelled here. */}
           <div className="cl-signrow cl-tf">
             <span className="cl-tf-main">
               <b>{cw.table_funded ? '✓ Table funded — sold at closing' : 'Not table funded'}</b>
               <span className="cl-tf-hint">
                 {cw.table_funded
                   ? 'Funded on the Table Funding warehouse, so this loan was sold at closing and does not go to purchasing.'
-                  : 'Signing off investor delivery sends this file to the purchasing desk to be sold. If it was sold at closing, set the warehouse to “Table Funding” in Funding above first.'}
+                  : 'Signing off investor delivery sends this file to the purchasing desk to be sold. If it was sold at closing, mark it table funded here — that sets the warehouse to “Table Funding”, the same as picking it in Funding above.'}
               </span>
             </span>
+            {isCloser && !cw.table_funded && tfWarehouse && (
+              <button className="btn ghost small" disabled={busy === 'tfwh'}
+                title={`Sets the warehouse to “${tfWarehouse}” — the one field that decides this`}
+                onClick={async () => {
+                  /* A CONFIRM, because this is not a display toggle: it decides
+                     whether the file goes to the purchasing desk to be sold at
+                     all. It names the warehouse it is about to write so nobody is
+                     surprised to find Funding changed. */
+                  const ok = await askConfirm(
+                    `Mark this file table funded? That means it was SOLD AT THE CLOSING TABLE, so it will NOT go to the purchasing desk to be sold. `
+                    + `It sets the warehouse to “${tfWarehouse}” in Funding — the one field that decides this.`,
+                    { title: 'Mark table funded?', confirmLabel: 'Mark table funded' });
+                  if (!ok) return;
+                  run('tfwh', () => api.closingUpdate(appId, { warehouse: tfWarehouse }),
+                    'Marked table funded — the warehouse is now “' + tfWarehouse + '” and this file will not go to purchasing.');
+                }}>
+                {busy === 'tfwh' ? 'Saving…' : 'Mark table funded'}
+              </button>
+            )}
+            {/* Undoing it means CHOOSING which line it really funded on, which only
+                the Funding picker can ask — so this points there rather than
+                offering a "not table funded" button that would have to blank the
+                warehouse and lose that answer. */}
+            {isCloser && cw.table_funded && (
+              <button className="btn ghost small" title="Change the warehouse line in Funding"
+                onClick={() => { const el = document.getElementById('cl-funding'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}>
+                Change warehouse
+              </button>
+            )}
           </div>
           <SignRow label="Investor delivery signed off" done={!!cw.investor_delivery_signed_off_at} isCloser={isCloser} busy={busy === 'inv'}
             onSign={(on) => run('inv', () => api.closingSignOff(appId, 'investor_delivery', on))} />
@@ -619,21 +665,35 @@ function SignoffSection({ appId, cw, rec, isCloser, busy, run, setWarn, say, has
         <div className="cl-recon" style={{ marginTop: 12 }}>
           <div className="cl-recon-head" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
             <b>Funded date reconciliation</b>
-            {/* If the closer just filled the funded date in Encompass, re-pull it here
-                — the reconciliation reads a stored snapshot, so a fresh value is
-                invisible until we pull again. Read-only pull; nothing is written to
-                Encompass. Shown only when there's a loan number to pull by. */}
-            {hasLoan && (
-              <button className="btn ghost small" disabled={busy === 'reconrefresh'}
-                title="Re-pull the funded date from Encompass (read-only — nothing is written to Encompass)"
-                onClick={() => run('reconrefresh', async () => {
-                  const r = await api.closingReconcileRefresh(appId);
-                  if (r && r.pulled) { if (say) say('Pulled the latest funded date from Encompass.'); }
-                  else setWarn(r && r.reason ? `Couldn’t refresh from Encompass: ${r.reason}` : 'Couldn’t reach Encompass to refresh — try again in a moment.');
-                })}>
-                {busy === 'reconrefresh' ? 'Refreshing…' : '↻ Refresh from Encompass'}
-              </button>
-            )}
+            {/* If the closer just filled the funded date in Encompass or ClickUp, re-pull it here
+                — the reconciliation reads a stored snapshot, so a fresh value is invisible until
+                we pull again. Both pulls are read-only (Encompass is never written to; the ClickUp
+                re-ingest only fills through COALESCE + the sync-review queue). Each button shows
+                only when there is something to pull by (a loan number / a linked ClickUp card). */}
+            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+              {hasLoan && (
+                <button className="btn ghost small" disabled={busy === 'reconrefresh'}
+                  title="Re-pull the funded date from Encompass (read-only — nothing is written to Encompass)"
+                  onClick={() => run('reconrefresh', async () => {
+                    const r = await api.closingReconcileRefresh(appId);
+                    if (r && r.pulled) { if (say) say('Pulled the latest funded date from Encompass.'); }
+                    else setWarn(r && r.reason ? `Couldn’t refresh from Encompass: ${r.reason}` : 'Couldn’t reach Encompass to refresh — try again in a moment.');
+                  })}>
+                  {busy === 'reconrefresh' ? 'Refreshing…' : '↻ Refresh from Encompass'}
+                </button>
+              )}
+              {hasClickup && (
+                <button className="btn ghost small" disabled={busy === 'reclickuprefresh'}
+                  title="Re-pull the funded date from ClickUp (re-ingests this file's ClickUp card)"
+                  onClick={() => run('reclickuprefresh', async () => {
+                    const r = await api.closingReclickupRefresh(appId);
+                    if (r && r.pulled) { if (say) say('Pulled the latest funded date from ClickUp.'); }
+                    else setWarn(r && r.reason ? `Couldn’t refresh from ClickUp: ${r.reason}` : 'Couldn’t reach ClickUp to refresh — try again in a moment.');
+                  })}>
+                  {busy === 'reclickuprefresh' ? 'Refreshing…' : '↻ Refresh from ClickUp'}
+                </button>
+              )}
+            </div>
           </div>
           <div className="cl-recon-grid">
             <ReconCell k="PILOT" v={day(rec.ours)} />

@@ -57,6 +57,10 @@ app.use('/api/trustpoint/webhook', require('./routes/trustpoint-webhook'));
 // discipline as the three above: its own small JSON parser + rate limit, mounted
 // before the global one, HTTP Basic (their contract) and failing closed.
 app.use('/api/class/callbacks', require('./routes/class-webhook'));
+// Richer Values webhooks — the THIRD appraisal vendor also PUSHES order events.
+// Same discipline as the four above: its own small JSON parser + rate limit,
+// mounted before the global one, HTTP Basic (or a token header) and failing closed.
+app.use('/api/richer-value/webhook', require('./routes/richervalues-webhook'));
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 /* THE NUL BYTE IS REMOVED ONCE, AT THE DOOR (third audit, 2026-08-02).
@@ -404,6 +408,12 @@ app.use('/api/admin/elementix/callback',
 // Public token-authenticated draw-findings accept (the one-click "Accept" link we email the
 // borrower — the reply_token is the capability; no login needed to release their own money).
 app.use('/api/public/draw-findings', rateLimit({ bucket: 'draw-public', windowMs: 60000, max: 60 }), require('./routes/draw-findings-public'));
+// A PILOT LINK to a document too large to attach (db/551, owner-directed 2026-08-14). Public by
+// design — the recipient is a capital partner or a borrower clicking straight out of an email and
+// has no login — with the 128-bit token as the whole capability, exactly like the draw reply_token
+// above. Mounted at the short `/d/:token` because it is printed in an email body and gets retyped.
+// MUST stay ahead of the static/site mounts so `/d/...` is never swallowed by the catch-all.
+app.use('/d', rateLimit({ bucket: 'share-link', windowMs: 60000, max: 60 }), require('./routes/share-public'));
 // An emailed term sheet's own two doors (owner-directed 2026-08-07). Mounted OUTSIDE
 // /api/borrower because the read is public — the borrower clicking the officer's link
 // has no account yet, which is the whole point — and the token is the authorization.
@@ -426,6 +436,16 @@ app.use('/api/staff', require('./routes/staff'));
 // structurally refused by /api/staff and /api/borrower (requireStaff /
 // requireBorrower), and an internal/borrower session is refused here.
 app.use('/api/tpo', require('./routes/tpo'));
+// LONG-TERM (LT) — the brand-new SECOND product, mounted at its own /api/lt/*
+// namespace. This block is the ONE permitted back-end seam between RTL and LT
+// (docs/LONG-TERM-LOANS-SEPARATION-CHARTER.md §4): server.js mounts the LT router,
+// and nothing else in RTL may reach into src/longterm/. Staff-authenticated here
+// at the mount (like the /api/admin routers), so the LT module imports no RTL
+// code. LT is a side build for visibility — it is not live and never touches RTL.
+{
+  const { requireAuth, requireStaff } = require('./auth');
+  app.use('/api/lt', requireAuth, requireStaff, require('./longterm').router);
+}
 // Sitewire construction-draw desk + admin. The router applies requireAuth +
 // requireStaff + per-route capability gates (manage_draws / platform_setup) itself.
 app.use('/api/sitewire', require('./routes/sitewire'));
@@ -444,6 +464,13 @@ app.use('/api/amc', require('./routes/amc'));
 // The SECOND appraisal vendor, mounted alongside — never inside — the AMC desk.
 // Each answers only for itself; nothing here picks between them.
 app.use('/api/class', require('./routes/class'));
+// The THIRD appraisal vendor — Richer Values's Hybrid Appraisal, a cheaper
+// EVALUATION that returns an As-Is value and an ARV together and produces no
+// MISMO XML (which is why ordering one waives the appraisal data file on the
+// file). Mounted alongside the other two, never inside one: each answers only for
+// itself, and the vendor selector on the order screen is the only thing that
+// chooses — its default stays AppraisalScope / NAN (owner-directed 2026-08-14).
+app.use('/api/richer-value', require('./routes/richervalues'));
 // The research desk: the cross-file property / comparable / appraiser database built
 // out of every appraisal XML we have ever imported (db/415), its search engine, and
 // the build-your-own valuation grid (db/410). Staff-wide by design — it holds
@@ -840,6 +867,15 @@ if (require.main === module) {
         require('./lib/esign/draw-wire').backfillWireReclassifyOnce()
           .then((r) => r && (r.fixed || r.linked) && console.log('[boot] draw-wire reclassify backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] draw-wire reclassify backfill failed:', e.message));
+        // PREVIOUS FILES for the Heter Iska auto-feed fix (owner-reported 2026-08: a
+        // completed Heter Iska DocuSign package "wasn't fed directly into the iska
+        // condition"). The send-time ensure + webhook re-resolve heal in-flight
+        // completions; this ONE-SHOT pass reaches ALREADY-completed back-book envelopes
+        // whose executed doc was stored but never bound to rtl_cond_iska. Bounded,
+        // self-draining, idempotent. Off with ISKA_FEED_HEAL_DISABLED=1.
+        require('./lib/esign/iska-feed-heal').backfillIskaFeedOnce(Number(process.env.ISKA_FEED_HEAL_BOOT || 200))
+          .then((r) => r && r.fed && console.log('[boot] iska feed heal:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] iska feed heal failed:', e.message));
         // PREVIOUS FILES for iPhone photos (owner-reported 2026-08-10: the draw inspection
         // photos are HEIC, "we need to add our site to be able to read this format"). New
         // archives convert at the door; this ONE forward-only sweep converts what is already
@@ -848,6 +884,31 @@ if (require.main === module) {
         require('./sitewire/media-archive').backfillHeicMediaOnce(Number(process.env.DRAW_MEDIA_HEIC_BOOT || 40))
           .then((r) => r && r.converted && console.log('[boot] draw-media HEIC backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] draw-media HEIC backfill failed:', e.message));
+        // ALL THE PHOTOS REACH THE REPORT (owner-directed 2026-08-13). jsPDF embeds JPEG bytes
+        // verbatim, so a ~3.5 MB phone photo costs 3.5 MB of report and the 60 MB embed budget
+        // ran out after about FIFTEEN of them — on inspections that carry ~100. This worker
+        // builds a report-sized copy of each photo BESIDE the untouched original, so every photo
+        // fits. It is PACED (a pure-JS JPEG decode blocks the event loop ~3s per photo) and
+        // self-rescheduling: it comes back quickly while a backlog drains and then idles.
+        // Off with DRAW_MEDIA_DISPLAY_DISABLED=1.
+        if (process.env.DRAW_MEDIA_DISPLAY_DISABLED !== '1') {
+          const displayBatch = Number(process.env.DRAW_MEDIA_DISPLAY_BATCH || 20);
+          const idleMs = Number(process.env.DRAW_MEDIA_DISPLAY_IDLE_MS || 30 * 60 * 1000);
+          const busyMs = Number(process.env.DRAW_MEDIA_DISPLAY_BUSY_MS || 60 * 1000);
+          const runDisplayPass = () => {
+            require('./sitewire/media-archive').buildDisplayMediaOnce(displayBatch)
+              .then((r) => {
+                if (r && (r.built || r.skipped)) console.log('[boot] draw-media display copies:', JSON.stringify(r));
+                // A timer must never hold the process open on a shutdown.
+                setTimeout(runDisplayPass, r && r.more ? busyMs : idleMs).unref();
+              })
+              .catch((e) => {
+                console.error('[boot] draw-media display pass failed:', e.message);
+                setTimeout(runDisplayPass, idleMs).unref();
+              });
+          };
+          runDisplayPass();
+        }
         // PREVIOUS FILES for the email-signature filter (owner-reported 2026-08-03:
         // the tiny pictures out of a title / insurance agent's signature "still
         // coming in as documents … we still need to manually reject it on every
@@ -1170,6 +1231,15 @@ if (require.main === module) {
     // starts polling with no redeploy. On product-available it files the report back into
     // the Document Center and runs the appraisal import automatically.
     try { require('./amc/sync').start(); } catch (e) { console.warn('amc sync not started:', e.message); }
+    // Richer Values poll worker. They PUSH order events to the webhook above, so
+    // this is the BACKSTOP as well as the drain: it re-processes any delivery whose
+    // handling failed, and re-reads every order still moving — which is also the
+    // ONLY way status reaches a file while the webhook half is not registered.
+    // Self-gates on RV_ENABLED per tick, so an idle tick is a cheap no-op and
+    // flipping the switch on starts polling with no redeploy. On completion it
+    // files the PDF report onto the appraisal condition and puts the As-Is + ARV
+    // on the file through the shared As-Is desk.
+    try { require('./richervalues/sync').start(); } catch (e) { console.warn('richer values sync not started:', e.message); }
     // Scheduled notification digests (owner-directed 2026-07-20): weekly borrower
     // "what's still needed", daily per-officer pipeline snapshot, stale-file
     // alerts, and the Monday admin summary. Each self-gates via audit_log so it

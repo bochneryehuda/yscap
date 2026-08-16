@@ -58,8 +58,7 @@ import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import GuarantyWaiverCard from '../components/GuarantyWaiverCard.jsx';
 import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
-import AmcAppraisalPanel from '../components/AmcAppraisalPanel.jsx';
-import ClassAppraisalPanel from '../components/ClassAppraisalPanel.jsx';
+import AppraisalOrderSection from '../components/AppraisalOrderSection.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import EncompassSyncPanel from '../components/EncompassSyncPanel.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
@@ -3443,6 +3442,31 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
     catch (e) { showMessage(e.message || 'No card on file yet.'); }
     finally { setCardBusy(false); }
   }
+  // Wipe the credit card off the file for good. Deleting it is one-way — the number is
+  // encrypted at rest and there is no second copy to put back — so it asks TWICE, and
+  // the second question is only about that: it cannot be undone.
+  async function clearCard() {
+    const ok1 = await askConfirm(
+      'Clear the credit card from this file?\n\nThis deletes the card number, the expiry date, the security code and the billing ZIP from this loan file.',
+      { title: 'Clear the credit card', confirmLabel: 'Yes, clear it', danger: true });
+    if (!ok1) return;
+    const ok2 = await askConfirm(
+      'Last warning — this cannot be undone.\n\nOnce it is cleared the card CANNOT be retrieved. Nobody can look it up again, and if the card is needed for the appraisal it will have to be entered from scratch.\n\nClear it now?',
+      { title: 'This cannot be undone', confirmLabel: 'Clear the card permanently', danger: true });
+    if (!ok2) return;
+    setCardBusy(true);
+    try {
+      const out = await api.staffClearAppraisalCard(appId);
+      setCard(null);                       // hide anything currently revealed
+      showMessage(
+        `Card${out.last4 ? ` ending ${out.last4}` : ''} cleared from this file. It cannot be retrieved.`
+        + (out.reopened ? '\n\nThe credit-card condition is open again, so the file asks for a card.' : '')
+        + (out.savedCopyRemains ? '\n\nNote: the borrower kept a saved card on their own profile for future files — that copy is separate and is still there.' : ''),
+        { tone: 'info' });
+      if (onChanged) await onChanged();
+    } catch (e) { showMessage(e.message || 'Could not clear the card.'); }
+    finally { setCardBusy(false); }
+  }
   const docsFor = (itemId) => docs.filter(d => d.checklist_item_id === itemId && d.is_current && d.source_type !== 'chat_attachment');
   const signedCount = ordered.filter(it => it.signed_off_at).length;
   const isLO = role === 'loan_officer';
@@ -3459,6 +3483,12 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
       case 'review':    return it.status === 'received' && !it.signed_off_at;                              // uploaded/accepted, not signed off
       case 'attention': return it.status === 'issue';                                                       // needs a fix
       case 'signed':    return !!it.signed_off_at || it.status === 'satisfied';                             // done
+      // Everything the processor has NOT signed off yet (owner-directed 2026-08-12:
+      // a loan officer wants to see only what is still pending the processor's
+      // sign-off). The complement of "Signed off" — across every sub-status
+      // (outstanding, requested, received, issue) — excluding waived/satisfied,
+      // which are already cleared.
+      case 'unsigned':  return !(it.status === 'satisfied' || !!it.signed_off_at || !!it.waived_at);
       case 'all':       return true;
       case 'mine':
       default:          return !offMyPlate(it);                                                             // role default
@@ -3580,6 +3610,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
           <option value="awaiting">{conditionStatusLabel('outstanding')}</option>
           <option value="review">{conditionStatusLabel('received')}</option>
           <option value="attention">{conditionStatusLabel('issue')}</option>
+          <option value="unsigned">Not signed off yet</option>
           <option value="signed">Signed off</option>
           <option value="all">Everything</option>
         </select>
@@ -3873,6 +3904,13 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                     {cardBusy ? '…' : card ? 'Hide card' : 'Reveal card'}
                   </button>
                   <StaffCardEntry appId={appId} onSaved={onChanged} />
+                  {/* Shred the card once the appraisal is paid for, so a live card
+                      number isn't left sitting on the file. One-way — clearCard()
+                      warns twice before it calls the server. */}
+                  <button className="btn ghost small" disabled={cardBusy} onClick={clearCard}
+                    title="Permanently delete the credit card from this file — it cannot be retrieved afterwards">
+                    Clear card
+                  </button>
                   {/* The credit-card-for-appraisal condition can be waived directly
                       by the loan officer AND the back office / super admin
                       (owner-directed) — e.g. the appraisal is paid another way. It's
@@ -4232,20 +4270,6 @@ const IconBell = () => (
 // mistake, then re-lock it. Shows the lock state to everyone; the Unlock / Re-lock
 // buttons are super-admin-only (the server enforces this too).
 const STRUCTURAL_LOCK_STATUSES = ['clear_to_close', 'funded', 'declined', 'withdrawn'];
-// Names the vendor a desk belongs to. The Appraisal section carries TWO of them and
-// neither is the default, so each one has to say whose it is on its face — a person
-// must never be able to place an order without knowing which company gets it.
-function VendorHeading({ children }) {
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 8, margin: '18px 0 8px',
-      color: '#141B22', fontWeight: 700, fontSize: 15,
-    }}>
-      <span style={{ width: 4, height: 16, borderRadius: 2, background: '#AE8746', display: 'inline-block' }} />
-      {children}
-    </div>
-  );
-}
 
 function StructuralLockBanner({ app, role, onChanged }) {
   const [busy, setBusy] = useState(false);
@@ -4973,7 +4997,7 @@ export default function StaffApplication() {
     // MISMO exports as well as the data tape, and only the TAPE needs the
     // export_data_tapes permission (gated inside the section, 2026-08-02).
     if (stId === 'st-delivery') return true;
-    if (stId === 'st-draws') return can('manage_draws');
+    if (stId === 'st-draws') return can('manage_draws') || can('view_draws');
     return STATIONS.some((s) => s.id === stId);
   }, [can]);
   // The ONE executor for a queued jump — runs after the target's room has
@@ -5352,7 +5376,7 @@ export default function StaffApplication() {
     // Construction draws is the LAST phase (post-funding), so it's the LAST section.
     // Shown for anyone who manages draws — funded or not — so the Draw Center is
     // always findable here (it just says "opens after funding" before funding).
-    ...(can('manage_draws') ? [{ id: 'sec-draws', label: 'Construction draws', group: 'Construction draws', badge: app.status === 'funded' ? '' : 'soon' }] : []),
+    ...((can('manage_draws') || can('view_draws')) ? [{ id: 'sec-draws', label: 'Construction draws', group: 'Construction draws', badge: app.status === 'funded' ? '' : 'soon' }] : []),
   ];
 
   // Seven Rooms render wiring. `show` decides whether a section renders (its
@@ -5722,7 +5746,7 @@ export default function StaffApplication() {
            openByDefault: the form IS this tab, so it renders expanded instead
            of hiding behind a second collapse. */
         <>
-          <EditFileDetails app={app} onSaved={load} openByDefault />
+          <EditFileDetails app={app} onSaved={load} openByDefault role={role} />
           {/* Read-only, under the editable deal fields: what the appraisal put on
               the file (db/403). Renders nothing until an appraisal is imported. */}
           <AppraisalFileFacts app={app} />
@@ -6053,16 +6077,14 @@ export default function StaffApplication() {
       </Section>
 
       <Section hidden={!show('sec-order-appraisal')} id="sec-order-appraisal" summary={summaries['sec-order-appraisal']} title="Appraisal"
-        info="Order the appraisal with every field filled in and shown to you first. Two places can do it — AppraisalScope / NAN and Class Valuation — and you pick which one per file; neither is the default. Track the status, message them back and forth, request revisions or dispute the value, and send documents up. Each turns on once its login is set up.">
-      {/* TWO VENDORS, SIDE BY SIDE, NEITHER THE DEFAULT. The owner has not picked one
-          ("we don't need to set a default … none of them are ready right now"), so the
-          two desks sit next to each other under their own names and a person chooses.
-          Do NOT quietly grow a default here, and do NOT merge the two panels — each
-          answers only for its own vendor. */}
-      <VendorHeading>AppraisalScope / NAN</VendorHeading>
-      <AmcAppraisalPanel appId={id} />
-      <VendorHeading>Class Valuation</VendorHeading>
-      <ClassAppraisalPanel appId={id} />
+        info="Order the appraisal with every field filled in and shown to you first. Two places can do it — AppraisalScope / NAN and Class Valuation — and you pick which one per file; neither is the default. Track the status, message them back and forth, request revisions or dispute the value, send documents up, and pay the appraisal card. Each turns on once its login is set up.">
+      {/* ONE unified "Appraisal order" section. A vendor selector chooses which backend
+          the BUILDER targets; the active-order cards and the one drafts+failed drawer
+          show orders from BOTH vendors together, each carrying its own vendor stamp.
+          The two vendors stay TECHNICALLY SEPARATE — no mixing of backends. The owner
+          has not picked a default ("none of them are ready right now"), so the selector
+          only chooses the display/builder target; it never registers a file preference. */}
+      <AppraisalOrderSection appId={id} onChanged={load} />
       </Section>
 
       <Section hidden={!show('sec-order-closing')} id="sec-order-closing" summary={summaries['sec-order-closing']} title="Attorney closing prep"
@@ -6125,7 +6147,7 @@ export default function StaffApplication() {
           window too (everything about the draw process lives there). */}
       {/* Construction draws is the post-funding PHASE — it lives in its own Draw Management workspace,
           not inside the file. The file just hands off to it. */}
-      {can('manage_draws') && (
+      {(can('manage_draws') || can('view_draws')) && (
         <Section hidden={!show('sec-draws')} id="sec-draws" title="Construction draws" collapsible={false}>
           {app.status === 'funded' ? (
             <div className="panel" style={{ background: 'var(--paper,#f6f3ec)' }}>

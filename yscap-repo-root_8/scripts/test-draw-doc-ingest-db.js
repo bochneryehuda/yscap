@@ -235,18 +235,33 @@ const FAKE_HEIC = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftyphe
     ok('I2 the money ladder reads it as no-inspector-answer, never $0', m.has_inspector_amounts === false);
 
     // ---- G. the amount doctrine's last gap: numbers change AFTER findings delivery ---------
-    // The inspector's approved amount moves in Sitewire after the results email went out — the
-    // coordinator is told to re-deliver so the borrower stops looking at a stale figure. An
-    // accepted finding (being worked at the number the borrower saw) raises nothing.
+    // The inspector's approved amount moves in Sitewire after the results email went out. With the
+    // borrower-delivery AUTOPILOT ON (owner-directed 2026-08-14, default) a still-'delivered' finding
+    // is AUTO re-sent to the borrower by deliver-findings.maybeAutoDeliver (which loops the team in on
+    // its own email), so this reconcile "deliver it again" TEAM nudge (owner-directed 2026-08-10) would
+    // be redundant — or a false alarm when only the DRAW-level total moved to match an amount the
+    // borrower already has — and is suppressed. With the autopilot switched OFF the old nudge returns:
+    // the coordinator is told to re-deliver so the borrower stops looking at a stale figure. An accepted
+    // finding (being worked at the number the borrower saw) raises nothing either way. Prove all three.
     const reconcile = require('../src/sitewire/reconcile');
+    const staleQ = `SELECT title, body FROM notifications WHERE application_id=$1 AND type='draw_inbound' AND title LIKE '%changed after the findings%'`;
     await db.query(`INSERT INTO draw_findings (application_id, sitewire_draw_id, status, reply_token, delivered_at) VALUES ($1,$2,'delivered',$3,now())`, [appId, D1, crypto.randomBytes(10).toString('hex')]);
     const drawObj = { sitewire_draw_id: D1, number: 1, status: 'pending', total_approved_cents: 1200000, historical: false };
     const prevRow = { status: 'pending', status_synced: 'pending', total_approved_cents: 2475000, first_seen_at: new Date() };
+    // (a) autopilot ON (default) → the manual re-deliver nudge is suppressed; the auto re-send owns it.
     await reconcile._reactToInboundDraw(appId, drawObj, prevRow, false, '392 Columbia Ave', { platform: 'sitewire', method: 'mobile' });
-    const stale = (await db.query(`SELECT title, body FROM notifications WHERE application_id=$1 AND type='draw_inbound' AND title LIKE '%changed after the findings%'`, [appId])).rows;
-    ok('G1 a delivered finding whose amount moved raises the re-deliver cue', stale.length >= 1 && /old number/.test(stale[0].body) && /\$12,000/.test(stale[0].body));
+    ok('G1a autopilot ON → the manual re-deliver nudge is suppressed (auto re-send owns it)',
+      (await db.query(staleQ, [appId])).rows.length === 0);
+    // (b) autopilot OFF → the old re-deliver nudge fires, quoting the current amount.
+    process.env.DRAW_BORROWER_AUTODELIVER_ENABLED = '0';
+    await reconcile._reactToInboundDraw(appId, drawObj, prevRow, false, '392 Columbia Ave', { platform: 'sitewire', method: 'mobile' });
+    const stale = (await db.query(staleQ, [appId])).rows;
+    ok('G1b autopilot OFF → a delivered finding whose amount moved raises the re-deliver cue',
+      stale.length >= 1 && /old number/.test(stale[0].body) && /\$12,000/.test(stale[0].body));
+    // (c) an accepted finding raises nothing even with the nudge enabled (worked at the seen number).
     await db.query(`UPDATE draw_findings SET status='accepted' WHERE application_id=$1 AND sitewire_draw_id=$2`, [appId, D1]);
     await reconcile._reactToInboundDraw(appId, { ...drawObj, total_approved_cents: 1100000 }, { ...prevRow, total_approved_cents: 1200000 }, false, '392 Columbia Ave', { platform: 'sitewire', method: 'mobile' });
+    delete process.env.DRAW_BORROWER_AUTODELIVER_ENABLED;
     const stale2 = (await db.query(`SELECT count(*)::int AS n FROM notifications WHERE application_id=$1 AND type='draw_inbound' AND title LIKE '%changed after the findings%'`, [appId])).rows[0].n;
     ok('G2 an accepted finding raises nothing (it is being worked at the seen number)', stale2 === stale.length);
   } catch (e) {

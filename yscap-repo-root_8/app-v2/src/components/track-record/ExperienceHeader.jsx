@@ -20,7 +20,6 @@ import React from 'react';
    decision ("Keep as is") — nothing here reads pillars. */
 
 const INK = '#141B22';
-const MUTED = '#4B585C';
 
 function tierOf(qn) {
   if (qn >= 10) return { tier: 'Expert', next: '10+ qualifying exits — top tier.' };
@@ -54,66 +53,56 @@ export default function ExperienceHeader({ app, experience, findingsOpen, multiB
   const claimedAny = n0(claimed.flips) + n0(claimed.holds) + n0(claimed.ground) > 0;
   const ladder = verifiedTotal == null ? null : tierOf(verifiedTotal);
 
-  const box = { flex: '1 1 180px', minWidth: 160, padding: '8px 12px', borderRadius: 10, border: '1px solid rgba(127,169,176,.25)', background: '#fff' };
-  const eyebrow = { display: 'block', fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase', color: MUTED };
-  const big = { fontSize: 15, fontWeight: 650, color: INK };
+  const ladderSub = ladder ? <><strong style={{ color: INK }}>{ladder.tier}</strong> · {ladder.next}</> : null;
 
   if (lens === 'borrower') {
     // The person, not a file: verified counts + the ladder, nothing that
     // presumes a claim or a sign-off gate.
     return (
-      <div style={{ margin: '4px 0 12px' }}>
-        <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'stretch' }}>
-          <div style={box}>
-            <span style={eyebrow}>Verified (last 3 years)</span>
-            <span style={big}>{verified ? trio(verified) : '—'}</span>
-            <div className="small" style={{ color: MUTED }}>
-              {ladder ? <><strong style={{ color: INK }}>{ladder.tier}</strong> · {ladder.next}</> : 'Only verified deals count toward experience.'}
-            </div>
-          </div>
+      <div className="tr-stats">
+        <div className="tr-stat">
+          <span className="tr-eyebrow">Verified · last 3 years</span>
+          <span className="tr-stat-v">{verified ? trio(verified) : '—'}</span>
+          <span className="tr-stat-sub">{ladderSub || 'Only verified deals count toward experience.'}</span>
         </div>
       </div>
     );
   }
 
   return (
-    <div style={{ margin: '4px 0 12px' }}>
-      <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'stretch' }}>
-        <div style={box}>
-          <span style={eyebrow}>Claimed on this file</span>
-          <span style={big}>{claimedAny ? trio(claimed) : 'No experience claimed'}</span>
-          <div className="small" style={{ color: MUTED }}>What the loan is sized on{multiBorrower ? ' — both borrowers, summed' : ''}.</div>
-        </div>
-        <div style={box}>
-          <span style={eyebrow}>Verified (last 3 years)</span>
-          <span style={big}>{verified ? trio(verified) : '—'}</span>
-          <div className="small" style={{ color: MUTED }}>
-            {ladder ? <><strong style={{ color: INK }}>{ladder.tier}</strong> · {ladder.next}</> : 'Only verified deals count.'}
-          </div>
-        </div>
-        <div style={{ ...box, borderColor: (findingsOpen || shortfall.length) ? 'var(--gold)' : 'rgba(47,127,134,.4)' }}>
-          <span style={eyebrow}>Still needed to sign off</span>
-          {findingsOpen ? (
-            <span style={big}>Settle the {findingsOpen === 1 ? 'finding' : `${findingsOpen} findings`} above first</span>
-          ) : !experience && claimedAny ? (
-            /* A claim is on file but the server's math hasn't answered (still
-               loading, or unreachable) — never assert "met" on silence. The
-               server returns experience:null BY DESIGN only when nothing is
-               claimed; with a claim, null means "don't know yet". */
-            <span style={big}>—</span>
-          ) : shortfall.length ? (
-            <span style={big}>{shortfall.map((x) => (x && x.text) || String(x)).join(', ')}</span>
-          ) : experience ? (
-            /* Shortfall EMPTY decides "met" whether or not a product is
-               registered — the gate signs off a fully-verified claim without
-               one (2026-08-06); the registration is Products & Pricing's own
-               condition, noted in the what's-left list below, never here. */
-            <span style={{ ...big, color: 'var(--teal, #2F7F86)' }}>Requirement met ✓</span>
-          ) : (
-            <span style={big}>Nothing — no experience required</span>
-          )}
-          <div className="small" style={{ color: MUTED }}>The same rule the experience condition&rsquo;s sign-off uses.</div>
-        </div>
+    <div className="tr-stats">
+      <div className="tr-stat">
+        <span className="tr-eyebrow">Claimed on this file</span>
+        <span className="tr-stat-v">{claimedAny ? trio(claimed) : 'No experience claimed'}</span>
+        <span className="tr-stat-sub">What the loan is sized on{multiBorrower ? ' — both borrowers, summed' : ''}.</span>
+      </div>
+      <div className="tr-stat">
+        <span className="tr-eyebrow">Verified · last 3 years</span>
+        <span className="tr-stat-v">{verified ? trio(verified) : '—'}</span>
+        <span className="tr-stat-sub">{ladderSub || 'Only verified deals count.'}</span>
+      </div>
+      <div className={`tr-stat ${(findingsOpen || shortfall.length) ? 'flag' : (experience && !claimedAny ? '' : (experience ? 'met' : ''))}`}>
+        <span className="tr-eyebrow">Still needed to sign off</span>
+        {findingsOpen ? (
+          <span className="tr-stat-v">Settle the {findingsOpen === 1 ? 'finding' : `${findingsOpen} findings`} above first</span>
+        ) : !experience && claimedAny ? (
+          /* A claim is on file but the server's math hasn't answered (still
+             loading, or unreachable) — never assert "met" on silence. The
+             server returns experience:null BY DESIGN only when nothing is
+             claimed; with a claim, null means "don't know yet". */
+          <span className="tr-stat-v">—</span>
+        ) : shortfall.length ? (
+          <span className="tr-stat-v">{shortfall.map((x) => (x && x.text) || String(x)).join(', ')}</span>
+        ) : experience ? (
+          /* Shortfall EMPTY decides "met" whether or not a product is
+             registered — the gate signs off a fully-verified claim without
+             one (2026-08-06); the registration is Products & Pricing's own
+             condition, noted in the what's-left list below, never here. */
+          <span className="tr-stat-v met">Requirement met ✓</span>
+        ) : (
+          <span className="tr-stat-v">Nothing — no experience required</span>
+        )}
+        <span className="tr-stat-sub">The same rule the experience condition&rsquo;s sign-off uses.</span>
       </div>
     </div>
   );

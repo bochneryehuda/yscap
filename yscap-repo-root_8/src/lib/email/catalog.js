@@ -194,21 +194,27 @@ function newSignIn({ firstName, when, ip } = {}) {
 
 /** Confirmation to a website visitor who submitted a tool (application, rehab
  *  budget, term-sheet request, …). Sent from the server, not the browser. */
-function leadReceived({ firstName, toolLabel, officerName } = {}) {
+function leadReceived({ firstName, toolLabel, officerName, hasTermSheet } = {}) {
   const tool = toolLabel || 'request';
+  // When the term-sheet generator emailed the sheet, the PDF is attached to THIS
+  // email (owner-directed 2026-08-12) — say so plainly and lead with it.
+  const lines = [
+    officerName
+      ? officerName + ' will review it and follow up with you shortly to walk through next steps.'
+      : 'A member of our loan team will review it and follow up with you shortly to walk through next steps.',
+    'If you need anything in the meantime, just reply to this email or call us.',
+  ];
+  if (hasTermSheet) lines.unshift('Your term sheet is attached to this email as a PDF. It is an initial term sheet — the terms are subject to underwriting and final approval.');
   return render({
     audience: 'borrower',
-    title: 'We received your ' + tool.toLowerCase(),
-    preheader: 'Your submission reached the YS Capital Group team.',
+    title: hasTermSheet ? 'Your term sheet from YS Capital Group' : ('We received your ' + tool.toLowerCase()),
+    preheader: hasTermSheet ? 'Your term sheet is attached.' : 'Your submission reached the YS Capital Group team.',
     greeting: greet(firstName),
-    intro: 'Thank you — your ' + tool.toLowerCase() + ' has been received by YS Capital Group.',
-    lines: [
-      officerName
-        ? officerName + ' will review it and follow up with you shortly to walk through next steps.'
-        : 'A member of our loan team will review it and follow up with you shortly to walk through next steps.',
-      'If you need anything in the meantime, just reply to this email or call us.',
-    ],
-    badge: { text: 'Received', tone: 'positive' },
+    intro: hasTermSheet
+      ? 'Thank you — your term sheet is attached to this email, and your ' + tool.toLowerCase() + ' has been received by YS Capital Group.'
+      : 'Thank you — your ' + tool.toLowerCase() + ' has been received by YS Capital Group.',
+    lines,
+    badge: { text: hasTermSheet ? 'Term sheet attached' : 'Received', tone: 'positive' },
     replyable: true,
     note: 'You are receiving this because you submitted a request on yscapgroup.com.',
   });
@@ -553,6 +559,10 @@ async function deliver(built, to, opts = {}) {
     // invite emails are repliable (never a dead-end no-reply).
     const r = await provider.sendMail({ to, subject: built.subject, html: built.html, text: built.text,
       replyTo: opts.replyTo || cfg.replyToDefault || null, from: opts.from || null,
+      // Optional attachments ride along (owner-directed 2026-08-12): a lead's
+      // confirmation email carries the generated term-sheet PDF. Undefined when
+      // none are passed, so every other caller is byte-identical.
+      attachments: (Array.isArray(opts.attachments) && opts.attachments.length) ? opts.attachments : undefined,
       // Email Center capture context (stripped by the provider wrapper). The file
       // is derived from a file+<id>@ Reply-To when opts.applicationId is absent.
       _ctx: { applicationId: opts.applicationId || null, type: opts.type || 'transactional', audience: opts.audience || 'borrower' } });

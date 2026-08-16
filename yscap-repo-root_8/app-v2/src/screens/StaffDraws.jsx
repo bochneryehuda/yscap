@@ -23,6 +23,11 @@ const fmtDay = (v) => (v ? String(v).slice(0, 10) : '—');
 
 export default function StaffDraws() {
   const { can } = useAuth();
+  // A loan officer holds view_draws (not manage_draws): this is their OWN read-only draw section
+  // (owner-directed 2026-08-12). The desk-management calls (/status, /portfolio, /fees-owed) stay
+  // manage_draws and 403 for them — the page already null-guards those — so they see their own
+  // active-draw properties (grouped from the file-scoped /draws list they CAN read) and nothing else.
+  const viewOnly = !can('manage_draws');
   const [status, setStatus] = useState(null);
   const [portfolio, setPortfolio] = useState(null);
   const [draws, setDraws] = useState([]);
@@ -66,7 +71,7 @@ export default function StaffDraws() {
     .filter((d) => (d.lifecycle_state || 'active') === 'active' && (d.status === 'pending' || d.status === 'pending_capital_partner'))
     .sort((a, b) => new Date(a.submitted_at || 0) - new Date(b.submitted_at || 0)), [draws]);
 
-  if (!can('manage_draws')) return <div className="wrap"><div className="panel">You don't have access to the draw desk.</div></div>;
+  if (!can('manage_draws') && !can('view_draws')) return <div className="wrap"><div className="panel">You don't have access to the draw desk.</div></div>;
 
   const T = portfolio && portfolio.totals ? portfolio.totals : null;
   const pct = T ? Math.max(0, Math.min(100, Number(T.pct_complete) || 0)) : 0;
@@ -77,10 +82,12 @@ export default function StaffDraws() {
       <div className="dd-wrap">
         <div className="dd-head">
           <div>
-            <h1 className="dd-title">Draw Management</h1>
-            <div className="dd-sub">The post-funding phase — every construction draw PILOT is managing in Sitewire: requested, approved, released, and inspected.</div>
+            <h1 className="dd-title">{viewOnly ? 'My draws' : 'Draw Management'}</h1>
+            <div className="dd-sub">{viewOnly
+              ? 'Your active-draw properties, view-only. Open any file to see its draws, the inspector’s results, photos and reports — and to accept or dispute a result on the borrower’s behalf.'
+              : 'The post-funding phase — every construction draw PILOT is managing in Sitewire: requested, approved, released, and inspected.'}</div>
           </div>
-          {status && (
+          {!viewOnly && status && (
             <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
               <span className={'dd-chip ' + (status.enabled ? 'on' : 'off')}><span className="dot" />{status.enabled ? 'Connected' : 'Turned off'}</span>
               {status.enabled && <span className={'dd-chip ' + (status.outbound ? 'on' : 'warn')}><span className="dot" />{status.outbound ? 'Writing on' : 'Read-only'}</span>}
@@ -126,11 +133,16 @@ export default function StaffDraws() {
             so the coordinator jumps straight into any property's draw screen from here. */}
         {portfolio && <ActiveProperties portfolio={portfolio} />}
 
+        {/* A LOAN OFFICER'S OWN active-draw properties — grouped from their file-scoped draws list (they
+            can't read /portfolio). One card per property, straight into its read-only draw view. */}
+        {viewOnly && <MyDrawProperties draws={draws} />}
+
         {/* Portfolio health — one-glance read of the active portfolio's condition */}
         {portfolio && portfolio.health && <HealthPanel health={portfolio.health} />}
 
-        {/* Needs my approval — the coordinator's work queue (draws waiting on a decision) */}
-        {approvalQueue.length > 0 && <NeedsApprovalQueue draws={approvalQueue} />}
+        {/* Needs my approval — the coordinator's work queue (draws waiting on a decision). A view-only
+            loan officer can't approve draws, so this queue is hidden for them. */}
+        {!viewOnly && approvalQueue.length > 0 && <NeedsApprovalQueue draws={approvalQueue} />}
 
         {/* Portfolio insights — exposure + pacing by project, from real portfolio data */}
         {portfolio && <PortfolioInsights portfolio={portfolio} />}
@@ -278,6 +290,55 @@ function ActiveProperties({ portfolio }) {
                   {nAlerts > 0 && <span className="pill sw-draft" style={{ borderColor: 'var(--danger)', color: 'var(--danger)' }}>{nAlerts} alert{nAlerts === 1 ? '' : 's'}</span>}
                 </div>
               )}
+            </Link>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* A LOAN OFFICER'S OWN active-draw properties (owner-directed 2026-08-12). Built from the file-scoped
+   /draws list a view_draws officer CAN read (no /portfolio access), grouped one card per property, each
+   linking into that file's read-only draw view. Active projects only (not finished/paid off) and only
+   properties that actually have a draw. */
+function MyDrawProperties({ draws }) {
+  const byFile = new Map();
+  for (const d of (Array.isArray(draws) ? draws : [])) {
+    if ((d.lifecycle_state || 'active') !== 'active') continue;
+    const k = String(d.application_id);
+    if (!byFile.has(k)) byFile.set(k, { application_id: d.application_id, address: d.address, ys_loan_number: d.ys_loan_number, draws: [] });
+    byFile.get(k).draws.push(d);
+  }
+  const files = [...byFile.values()];
+  if (files.length === 0) return null;
+  return (
+    <div className="dd-card">
+      <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span className="dd-card-ic"><Icon name="folder" /></span>
+          <div><h3>Your active-draw properties</h3><div className="dd-sub" style={{ marginTop: 1 }}>Every one of your files in the draw process — click any to open its read-only draw view.</div></div>
+        </div>
+        <span className="dd-sub">{files.length} propert{files.length === 1 ? 'y' : 'ies'}</span>
+      </div>
+      <div style={{ marginTop: 12, display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
+        {files.map((f) => {
+          const nAwaiting = f.draws.filter((d) => d.status === 'pending' || d.status === 'pending_capital_partner').length;
+          const latest = f.draws.slice().sort((a, b) => (Number(b.number) || 0) - (Number(a.number) || 0))[0];
+          const s = latest ? (STATUS[latest.status] || { label: 'In progress', cls: 'sw-draft' }) : null;
+          return (
+            <Link key={f.application_id} to={`/internal/app/${f.application_id}/draws`}
+              style={{ display: 'block', textDecoration: 'none', color: 'inherit', border: '1px solid var(--line)', borderRadius: 12, padding: 14, background: 'var(--card,#fff)' }}>
+              <div style={{ fontWeight: 700, color: 'var(--teal-br)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.address || ''}>
+                {f.address || f.ys_loan_number || 'Property'}
+              </div>
+              <div className="dd-sub" style={{ marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {[f.ys_loan_number, `${f.draws.length} draw${f.draws.length === 1 ? '' : 's'}`].filter(Boolean).join(' · ')}
+              </div>
+              <div className="row" style={{ gap: 6, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                {s && <span className={'pill ' + s.cls}>{s.label}</span>}
+                {nAwaiting > 0 && <span className="pill sw-pending">{nAwaiting} awaiting a decision</span>}
+              </div>
             </Link>
           );
         })}

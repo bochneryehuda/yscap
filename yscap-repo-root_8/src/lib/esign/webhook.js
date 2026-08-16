@@ -161,12 +161,42 @@ async function handleCompletion(db, docusign, storage, envelopeRow) {
 
   for (const d of docs) {
     if (d.completed_document_id) continue;   // idempotent — already stored
+
+    // Resolve the condition this signed doc feeds. Normally it was bound at send time
+    // (esign_envelope_docs.checklist_item_id, set by createOrClaimEnvelope). If that is
+    // NULL — the condition was absent/stale when the envelope was SENT, so the send-time
+    // binding captured null — re-resolve by TEMPLATE CODE now so a completed package still
+    // feeds its condition (owner-reported 2026-08: a completed Heter Iska never fed
+    // rtl_cond_iska). This ALSO heals PAST envelopes on a webhook/poller re-drive. Only
+    // rtl_cond_iska is created on demand here (a standard RTL condition a backfill gap can
+    // leave off); the other packages own their send-time ensure/refuse and are never
+    // conjured at completion — a genuinely missing one simply stays unbound. A TEST
+    // envelope (no appId) has no condition, so this is skipped for it.
+    let itemId = appId ? d.checklist_item_id : null;
+    if (appId && !itemId) {
+      const orch = require('./orchestrate');
+      const code = orch.conditionCodeForSignedKind(d.doc_kind);
+      if (code) {
+        itemId = await orch.resolveConditionItem(db, appId, code);
+        if (!itemId && d.doc_kind === 'heter_iska_signed') {
+          try { itemId = await orch.ensureIskaCondition(db, appId, null); }
+          catch (e) { console.warn(`[esign-webhook] ensure iska condition failed for ${envelopeId}: ${e.message}`); }
+        }
+      }
+      // Persist the resolved binding so a re-drive and the download/tracking path see it.
+      if (itemId) {
+        await db.query(
+          `UPDATE esign_envelope_docs SET checklist_item_id=$2 WHERE id=$1 AND checklist_item_id IS NULL`,
+          [d.id, itemId]);
+      }
+    }
+
     const bytes = await docusign.getDocument(envelopeId, d.document_id);
     const filename = `${d.doc_kind}_${envelopeId}.pdf`;
     const storedId = await storeSignedDocument(db, storage, {
       applicationId: appId,
       borrowerId: bId,
-      checklistItemId: appId ? d.checklist_item_id : null,   // no condition on a test
+      checklistItemId: itemId || null,   // no condition on a test / genuinely-unbound doc
       docKind: d.doc_kind,
       filename, bytes, visibility: docVisibility,
     });
@@ -175,11 +205,11 @@ async function handleCompletion(db, docusign, storage, envelopeRow) {
       [d.id, storedId]);
     // Conservative clear: signed + provided → 'received' (a processor signs off).
     // Never downgrade a condition already satisfied/waived by a human. Real files only.
-    if (appId && d.checklist_item_id) {
+    if (appId && itemId) {
       await db.query(
         `UPDATE checklist_items SET status='received', updated_at=now()
-          WHERE id=$1 AND status NOT IN ('satisfied','waived')`, [d.checklist_item_id]);
-      enqueueChecklistStatusPush(d.checklist_item_id).catch(() => {});
+          WHERE id=$1 AND status NOT IN ('satisfied','waived')`, [itemId]);
+      enqueueChecklistStatusPush(itemId).catch(() => {});
     }
   }
 

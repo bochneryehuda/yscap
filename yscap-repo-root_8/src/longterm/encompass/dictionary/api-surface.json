@@ -1,0 +1,678 @@
+{
+ "meta": {
+  "generated": "2026-08-14",
+  "method": "live read-only GET probe against the tenant",
+  "tokenScope": "lp",
+  "note": "encompass_admin scope is REFUSED for this client id at the token endpoint."
+ },
+ "working": [
+  {
+   "path": "/encompass/v3/loans/{id}/documents",
+   "ok": true,
+   "status": null,
+   "shape": "array[0]"
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/attachments",
+   "ok": true,
+   "status": null,
+   "shape": "array[0]"
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/milestones",
+   "ok": true,
+   "status": null,
+   "shape": "array[18]"
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/milestoneFreeRoles",
+   "ok": true,
+   "status": null,
+   "shape": "array[7]"
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/applications",
+   "ok": true,
+   "status": null,
+   "shape": "array[1]"
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/conditions/underwriting",
+   "ok": true,
+   "status": null,
+   "shape": "array[0]"
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/conditions/preliminary",
+   "ok": true,
+   "status": null,
+   "shape": "array[0]"
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/conditions/postclosing",
+   "ok": true,
+   "status": null,
+   "shape": "array[0]"
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/documents",
+   "ok": true,
+   "status": null,
+   "shape": "array[0]"
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/attachments",
+   "ok": true,
+   "status": null,
+   "shape": "array[0]"
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/milestones",
+   "ok": true,
+   "status": null,
+   "shape": "array[18]"
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/milestoneFreeRoles",
+   "ok": true,
+   "status": null,
+   "shape": "array[7]"
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/associates",
+   "ok": true,
+   "status": null,
+   "shape": "array[3]"
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/disclosureTracking2015",
+   "ok": true,
+   "status": null,
+   "shape": "array[0]"
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/underwritingConditions",
+   "ok": true,
+   "status": null,
+   "shape": "array[0]"
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/applications",
+   "ok": true,
+   "status": null,
+   "shape": "array[1]"
+  },
+  {
+   "path": "/encompass/v3/settings/milestones",
+   "ok": true,
+   "status": null,
+   "shape": "array[10]"
+  },
+  {
+   "path": "/encompass/v3/settings/loan/customFields",
+   "ok": true,
+   "status": null,
+   "shape": "array[856]"
+  },
+  {
+   "path": "/encompass/v3/settings/efolder/documents",
+   "ok": true,
+   "status": null,
+   "shape": "array[230]"
+  },
+  {
+   "path": "/encompass/v3/settings/personas",
+   "ok": true,
+   "status": null,
+   "shape": "array[17]"
+  },
+  {
+   "path": "/encompass/v3/settings/roles",
+   "ok": true,
+   "status": null,
+   "shape": "array[12]"
+  },
+  {
+   "path": "/encompass/v3/schemas/loan",
+   "ok": true,
+   "status": null,
+   "shape": "object{title,definitions,type,additionalProperties,properties}"
+  },
+  {
+   "path": "/encompass/v1/settings/loan/customFields",
+   "ok": true,
+   "status": null,
+   "shape": "array[856]"
+  },
+  {
+   "path": "/encompass/v1/settings/efolder/documents",
+   "ok": true,
+   "status": null,
+   "shape": "object{documentDays,createDocumentEntry,saveCopyInfoDocs,applyTimestampToInfoDocs,useBackgroundConversion,ignoreIntendedFor}"
+  },
+  {
+   "path": "/encompass/v1/settings/efolder/documentTemplates",
+   "ok": true,
+   "status": null,
+   "shape": "array[230]"
+  },
+  {
+   "path": "/encompass/v1/settings/personas",
+   "ok": true,
+   "status": null,
+   "shape": "array[17]"
+  },
+  {
+   "path": "/encompass/v1/settings/roles",
+   "ok": true,
+   "status": null,
+   "shape": "array[12]"
+  },
+  {
+   "path": "/encompass/v1/loanPipeline/fieldDefinitions",
+   "ok": true,
+   "status": null,
+   "shape": "object{pipelineLoanReportFieldDefs}"
+  },
+  {
+   "path": "/encompass/v3/settings/loan/conditions/types",
+   "ok": true,
+   "status": null,
+   "shape": "array[5]"
+  },
+  {
+   "path": "/encompass/v3/settings/loan/conditions/templates",
+   "ok": true,
+   "status": null,
+   "shape": "array[197]"
+  },
+  {
+   "path": "/encompass/v3/settings/loan/conditions/sets",
+   "ok": true,
+   "status": null,
+   "shape": "array[19]"
+  },
+  {
+   "path": "/encompass/v3/loans/{loanId}/conditions/{conditionId}",
+   "ok": true,
+   "status": null,
+   "shape": "object"
+  },
+  {
+   "path": "/encompass/v3/loans/{loanId}/conditions/{conditionId}/comments",
+   "ok": true,
+   "status": null,
+   "shape": "array[0]"
+  },
+  {
+   "path": "/encompass/v3/loans/{loanId}/conditions/{conditionId}/tracking",
+   "ok": true,
+   "status": null,
+   "shape": "array[0]"
+  },
+  {
+   "path": "/encompass/v3/loans/{loanId}/attachments",
+   "ok": true,
+   "status": null,
+   "shape": "array[231]"
+  },
+  {
+   "path": "/encompass/v3/loans/{loanId}/documents",
+   "ok": true,
+   "status": null,
+   "shape": "array[137]"
+  }
+ ],
+ "blocked": [
+  {
+   "path": "/encompass/v3/loans/{id}/conditions/underwriting",
+   "ok": false,
+   "status": "404",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/conditions/preliminary",
+   "ok": false,
+   "status": "404",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/conditions/postclosing",
+   "ok": false,
+   "status": "404",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/conditions/document",
+   "ok": false,
+   "status": "404",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/documents/audit",
+   "ok": false,
+   "status": "404",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/efolder/documents",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/milestoneLogs",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/associates",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/roles",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/customFields",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/fieldLockSettings",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/logs",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/disclosureTracking2015",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/postclosingConditions",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/underwritingConditions",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/loans/{id}/trackedDocuments",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/conditions/document",
+   "ok": false,
+   "status": "404",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/documents/audit",
+   "ok": false,
+   "status": "400",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/efolder/documents",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/milestoneLogs",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/roles",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/customFields",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/fieldLockSettings",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/logs",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/postclosingConditions",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/loans/{id}/trackedDocuments",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/loan/folders",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/loan/programs",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/loan/templates",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/loan/templates/loanPrograms",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/loan/loanPrograms",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/templates/loanPrograms",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/templates/documentSets",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/templates/closingCosts",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/underwritingConditions",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/postClosingConditions",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/preliminaryConditions",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/conditions/underwriting",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/efolder/documentTemplates",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/efolder/customConditionSets",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/users",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/businessRules/fieldTriggers",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/businessRules/milestoneCompletion",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/loanTeamTemplates",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/organizations",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/company/organizations",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/schemas/loan/contractDefinitions",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/schemas/borrowerContact",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/loanPipeline/fieldDefinitions",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/milestones",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/loan/folders",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/loan/programs",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/loan/templates",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/loan/templates/loanPrograms",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/loan/loanPrograms",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/templates/loanPrograms",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/templates/documentSets",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/templates/closingCosts",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/underwritingConditions",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/postClosingConditions",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/preliminaryConditions",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/conditions/underwriting",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/efolder/customConditionSets",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/users",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/businessRules/fieldTriggers",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/businessRules/milestoneCompletion",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/loanTeamTemplates",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/organizations",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/settings/company/organizations",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/schemas/loan",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/schemas/loan/contractDefinitions",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v1/schemas/borrowerContact",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/loan/conditions",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/loan/conditions/categories",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  },
+  {
+   "path": "/encompass/v3/settings/loan/conditions/priorTo",
+   "ok": false,
+   "status": "403",
+   "shape": null
+  }
+ ]
+}

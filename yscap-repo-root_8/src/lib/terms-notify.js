@@ -87,12 +87,58 @@ async function sendBorrowerTerms(appId, { quote, total, termMonths, encompassOve
   let ctx = null;
   try { ctx = await notify.fileContext(appId); } catch (_) {}
 
+  /* Attach the term sheet to the borrower "terms are ready" email (owner-directed
+     2026-08-12: "the borrower is only receiving an email, not the actual term sheet
+     — attach the initial term sheet as a PDF").
+
+     IT IS THE STUDIO'S SIX-PAGER, READ OFF THE FILE — never rendered here
+     (owner-directed 2026-08-14: "any term sheet that it's using right now should be
+     only this six-pager version"). Between 2026-08-12 and 2026-08-14 this built its
+     own copy with the short server-side renderer, so the borrower was emailed a
+     three-page document that matched nothing else on the file. That renderer is
+     gone; this reads the stored sheet the Term Sheet Studio drew.
+
+     AND ONLY THIS REGISTRATION'S SHEET. The studio attaches the PDF from the
+     browser just AFTER the register call returns, so at this moment the newest
+     stored sheet may still be the PREVIOUS registration's — and this email exists
+     precisely because a headline number moved, so mailing that one would hand the
+     borrower the figures we just changed. Anything older than the registration is
+     therefore ignored and the email goes out without an attachment (exactly as it
+     did before 2026-08-12) rather than with the wrong numbers. In practice a
+     re-register from the studio lands the fresh sheet first on every path that has
+     one; a path with no studio (an accepted counter, an auto-register from an
+     offer) simply has nothing to attach, which is honest.
+
+     Best-effort throughout: a hiccup never blocks the (already best-effort) email.
+     `files` lists it in the body even if a provider drops the bytes. */
+  let attachments = null;
+  try {
+    const r = await db.query(
+      `SELECT d.storage_ref, d.filename
+         FROM documents d
+         JOIN product_registrations pr
+           ON pr.application_id = d.application_id AND pr.is_current
+        WHERE d.application_id = $1
+          AND d.doc_kind = 'term_sheet'
+          AND COALESCE(d.review_status,'') <> 'rejected'
+          AND d.created_at >= pr.created_at
+        ORDER BY d.is_current DESC NULLS LAST, d.created_at DESC
+        LIMIT 1`, [appId]);
+    if (r.rows[0] && r.rows[0].storage_ref) {
+      const buf = await require('./storage').read(r.rows[0].storage_ref);
+      if (buf && buf.length > 0 && buf.length <= 3 * 1024 * 1024) {
+        attachments = [{ filename: 'Term Sheet.pdf', contentType: 'application/pdf', content: Buffer.from(buf).toString('base64') }];
+      }
+    }
+  } catch (_) { /* the PDF attachment is best-effort — never break the email */ }
+
   await notify.notifyAppBorrowers(appId, {
     ...borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOptions, cashOut }),
     applicationId: appId,
     link: `/app/${appId}`,
     from: officer ? email.fromWithName(officer.name) : null,
     replyTo: officer ? officer.email : null,
+    ...(attachments ? { attachments, files: ['Term Sheet.pdf'] } : {}),
   });
 }
 

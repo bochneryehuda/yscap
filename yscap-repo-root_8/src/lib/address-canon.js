@@ -363,6 +363,125 @@ async function osmGeocode(text) {
   return parsed;
 }
 
+// ---------------------------------------------------------------------------
+// resolveCounty(input) — the COUNTY of a property, however we can get it.
+//
+// Class Valuation REQUIRES a county on every order ("The County field is
+// required"), and a mailing address never carries one — county is not part of a
+// mailing one-line. So the order desk works it out from the address: geocode the
+// property and read the county the provider states (Google's
+// administrative_area_level_2 is the US county; OSM's address.county), then cache
+// it so a second order of the same property is a single DB read.
+//
+// The county is stored under a `county:`-PREFIXED input_key, deliberately: a
+// county-only row carries no place_id, and a NULL-place_id row under a PLAIN key
+// would be read by cacheGet() as "we asked, there is no such place" and would
+// silently blank that address for canonicalize()/samePlace forever. The prefix
+// keeps county rows in their own keyspace that the place_id resolver never reads.
+//
+// Best-effort throughout: no key / network error / unresolvable → null, and the
+// caller (order-build) then blocks the order with a plain reason rather than let
+// Class 400 the whole thing.
+// ---------------------------------------------------------------------------
+
+// A bare county string from a raw provider value, or null. We send whatever the
+// vendor names ("Kings County" / "Los Angeles County") — Class only requires a
+// non-empty county, and the full "<Name> County" form is the safe, unambiguous one.
+function countyText(v) { const s = String(v == null ? '' : v).trim(); return s || null; }
+
+// Pure (unit-tested): county from a Google Geocoding response. In the US the
+// county is administrative_area_level_2; a match with none (a few independent
+// cities) yields null rather than a guess.
+function googleCounty(json) {
+  const r = json && Array.isArray(json.results) ? json.results[0] : null;
+  if (!r) return null;
+  const c = (r.address_components || []).find((x) => (x.types || []).includes('administrative_area_level_2'));
+  return c ? countyText(c.long_name) : null;
+}
+// Pure (unit-tested): county from a Nominatim match. Most states file it under
+// `county`; a few (Louisiana parishes, Alaska boroughs, and states where the
+// county sits a level up) surface it as `state_district`.
+function osmCounty(match) {
+  const a = match && match.address;
+  return a ? countyText(a.county || a.state_district) : null;
+}
+
+// A geocodable one-line from either a plain string or a property-parts object
+// ({ addressLine|line1|street, city, state, postalCode|zip }). Line 2 / unit is
+// deliberately left off — a unit suffix makes some providers return no match, and
+// the county is the same for the whole building.
+function countyQueryFrom(input) {
+  if (typeof input === 'string') return input;
+  const a = (input && typeof input === 'object') ? input : {};
+  const line1 = a.addressLine || a.line1 || a.street || '';
+  return [line1, a.city, a.state, a.postalCode || a.zip]
+    .map((x) => String(x == null ? '' : x).trim()).filter(Boolean).join(', ');
+}
+
+async function resolveCounty(input) {
+  const t = String(countyQueryFrom(input) || '').trim();
+  if (t.length < 8) return null;
+  const key = 'county:' + inputKey(t);
+  try {
+    const hit = (await db.query(`SELECT county FROM address_canon_cache WHERE input_key=$1`, [key])).rows[0];
+    if (hit && hit.county) return hit.county;
+  } catch (_) { /* cache is an optimization */ }
+
+  let county = null;
+  // Google first (precise, and already paced by the shared google_geocode bucket).
+  // A NON-definitive answer (quota / denied / unknown, all arriving as an HTTP 200
+  // body) is treated exactly as canonicalize does — as being about US, not the
+  // address — so we fall through to the keyless provider rather than cache nothing.
+  if (cfg.googlePlacesKey) {
+    try {
+      const url = 'https://maps.googleapis.com/maps/api/geocode/json?components=country:US'
+        + '&address=' + encodeURIComponent(t) + '&key=' + encodeURIComponent(cfg.googlePlacesKey);
+      await require('./api-rate-limit').acquire('google_geocode');
+      const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      const j = r.ok ? await r.json() : null;
+      // Only read the county off a PRECISE match. Google answers a house number it
+      // cannot place with the ROAD it sits on, and that road can lie in a DIFFERENT
+      // county (the geocodeRewriteIsSafe incident — "1727 S 2nd St, Piscataway"
+      // resolved across the Middlesex→Union county line). parseGeocodeResult returns
+      // null for a route / locality / ZIP-level match, so an imprecise answer yields
+      // no county and the order BLOCKS (the owner's stated preference) rather than
+      // adopting a neighbouring county nobody would notice on the preview.
+      if (googleDefinitive(r.ok, j) && parseGeocodeResult(j)) county = googleCounty(j);
+    } catch (_) { /* fall through to the keyless provider */ }
+  }
+  if (!county) {
+    try {
+      const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=us&addressdetails=1&q='
+        + encodeURIComponent(ADDR.withoutUnit(t));
+      const r = await osmPolite(() => fetch(url, {
+        signal: AbortSignal.timeout(6000),
+        headers: { 'User-Agent': `YSCapitalPortal/1.0 (${cfg.osmContact || 'admin@yscapgroup.com'})`, accept: 'application/json' },
+      }));
+      const j = (r && r.ok) ? await r.json() : null;
+      // Same precision rule as the Google branch: parseOsmResult reports 'rooftop'
+      // only when the match carries a house_number; a road-level match (no house
+      // number, the road's own data) is refused so a county is never taken from the
+      // wrong side of a boundary.
+      const m = (osmDefinitive(r && r.ok, j) && Array.isArray(j)) ? j[0] : null;
+      const parsed = m ? parseOsmResult(m) : null;
+      if (parsed && parsed.precision === 'rooftop') county = osmCounty(m);
+    } catch (_) { /* best-effort */ }
+  }
+  if (county) {
+    try {
+      // county-only row (place_id stays NULL); the `county:` key keeps it out of the
+      // place_id resolver's keyspace. Immutable once set (a county does not change).
+      await db.query(
+        `INSERT INTO address_canon_cache (input_key, county, resolved_at)
+         VALUES ($1,$2, now())
+         ON CONFLICT (input_key) DO UPDATE SET county = EXCLUDED.county, resolved_at = now()
+          WHERE address_canon_cache.county IS NULL`,
+        [key, county]);
+    } catch (_) { /* best-effort */ }
+  }
+  return county || null;
+}
+
 /** Free text → { lat, lng, formatted, place_id } | null. Never throws. */
 async function geocode(text) {
   const t = String(text || '').trim();
@@ -387,6 +506,9 @@ async function geocode(text) {
 
 module.exports = {
   canonicalize, samePlace, geocode, parseGeocodeResult, parseOsmResult, inputKey,
+  // County resolution for the Class order desk (db/539). resolveCounty geocodes +
+  // caches; googleCounty/osmCounty are pure and unit-tested.
+  resolveCounty, googleCounty, osmCounty, countyQueryFrom,
   // Pure — exported for the never-cache-a-transient-failure test.
   googleDefinitive, osmDefinitive, negativeExpired, NEGATIVE_TTL_DAYS,
   // Google's 30-day coordinate window (db/413).

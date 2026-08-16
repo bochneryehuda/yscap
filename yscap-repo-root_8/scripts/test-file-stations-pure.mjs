@@ -261,18 +261,21 @@ for (const [sec, only, title] of [
    order — so it renders the vendor panels rather than an `only=` OrdersPanel. It
    sits in the Orders room beside the other three.
 
-   TWO vendors live in this one section (AppraisalScope / NAN and Class Valuation)
-   and NEITHER is the default — the owner has not picked one. Both are asserted, so
-   a vendor cannot quietly disappear from the screen: an ordering desk that is not
-   rendered is indistinguishable from one that is switched off. */
+   The section mounts ONE unified <AppraisalOrderSection>: a vendor selector chooses
+   which backend the builder targets, and the active-order cards + the one drafts/
+   failed drawer show orders from BOTH vendors together, each carrying its vendor
+   stamp. NEITHER vendor is the default. The "both vendors present" guarantee moved
+   INTO the component itself (asserted below against AppraisalOrderSection.jsx), so
+   an ordering desk can never quietly disappear. */
 ok(/id="sec-order-appraisal"[^>]*title="Appraisal"/.test(staff), 'sec-order-appraisal is rendered, titled "Appraisal"');
-ok(/id="sec-order-appraisal"[\s\S]{0,1600}?<AmcAppraisalPanel/.test(staff), 'sec-order-appraisal renders the AppraisalScope / NAN desk');
-ok(/id="sec-order-appraisal"[\s\S]{0,1600}?<ClassAppraisalPanel/.test(staff), 'sec-order-appraisal renders the Class Valuation desk too');
-/* Each desk has to say whose it is on its face. Ordering from the wrong company is
-   not a mistake a person can spot afterwards. */
+ok(/id="sec-order-appraisal"[\s\S]{0,1600}?<AppraisalOrderSection\b/.test(staff), 'sec-order-appraisal mounts the unified <AppraisalOrderSection>');
+ok(/<AppraisalOrderSection\b[^>]*\bappId=/.test(staff) && /<AppraisalOrderSection\b[^>]*\bonChanged=/.test(staff),
+  'the unified section is passed appId + onChanged (so a Pay / condition change refreshes the file)');
+/* The two vendors — and neither-is-default — now live INSIDE the component, so a
+   vendor cannot quietly vanish: assert both are carried in AppraisalOrderSection. */
+const aord = read('app-v2/src/components/AppraisalOrderSection.jsx');
 for (const vendor of ['AppraisalScope / NAN', 'Class Valuation']) {
-  ok(new RegExp(`<VendorHeading>${vendor.replace(/[/]/g, '[/]')}</VendorHeading>`).test(staff),
-    `the ${vendor} desk is labelled with its vendor's name`);
+  ok(aord.includes(vendor), `AppraisalOrderSection carries the ${vendor} vendor`);
 }
 ok(/\{ id: 'sec-order-appraisal',/.test(staff), 'sec-order-appraisal is in the SECTIONS array the rail reads');
 /* The three open by DEFAULT. Landing in the Orders room and finding three

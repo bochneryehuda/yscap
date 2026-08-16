@@ -31,8 +31,12 @@ const ID = require('../src/sitewire/investor-delivery');
     `INSERT INTO borrowers(first_name,last_name,email) VALUES('Investor','Delivery',$1) RETURNING id`, [email])).rows[0].id;
   const loan = 'INV' + crypto.randomBytes(3).toString('hex');
   const app = (await db.query(
-    `INSERT INTO applications(borrower_id,status,ys_loan_number,lender,property_address)
-     VALUES($1,'funded',$2,'Fidelis Investors LLC','{"oneLine":"195-197 Parrish St","city":"Wilkes-Barre","state":"PA","zip":"18702"}') RETURNING id`,
+    // SOLD (a purchase advice date) from the start: since 2026-08-13 an UNSOLD loan is always
+    // released by US, whatever the settings say, so a fixture with no PA date would have section E
+    // testing that override instead of the three sources it is about. Section E proves the rule
+    // itself at the end, on this same file.
+    `INSERT INTO applications(borrower_id,status,ys_loan_number,lender,purchase_advice_date,encompass_last_pulled_at,property_address)
+     VALUES($1,'funded',$2,'Fidelis Investors LLC','2026-03-04',now(),'{"oneLine":"195-197 Parrish St","city":"Wilkes-Barre","state":"PA","zip":"18702"}') RETURNING id`,
     [bor, loan])).rows[0].id;
 
   const BASE = 870000 + crypto.randomBytes(2).readUInt16BE(0) * 10;
@@ -135,6 +139,20 @@ const ID = require('../src/sitewire/investor-delivery');
   eq('E3 the file default takes effect', p.funding_mode, 'investor_direct');
   eq('E4 and is reported as the file default', p.funding_mode_source, 'file');
 
+  // …AND THE SOLD SIGNAL OVERRULES ALL THREE (owner-directed 2026-08-13): an unsold loan is
+  // released by US, so the investor email's own money split follows the desk rather than the
+  // stored setting — the two can never tell the coordinator different things. Proven on the SAME
+  // file, by taking its purchase advice date away and putting it back.
+  await db.query(`UPDATE applications SET purchase_advice_date=NULL WHERE id=$1`, [app]);
+  const unsold = await send.deliveryPreview(app, DRAW);
+  eq('E4a with no purchase advice date the delivery is priced as WE release', unsold.funding_mode, 'reimbursement');
+  eq('E4b …even though the file is set to "the investor releases"', unsold.funding_mode_source, 'file');
+  ok('E4c …and the badge on the preview says so', !!unsold.sold_warning && /WE release/i.test(unsold.sold_warning.body));
+  ok('E4d …while the send itself is still never refused over it', unsold.can_send === (unsold.blockers.length === 0));
+  await db.query(`UPDATE applications SET purchase_advice_date='2026-03-04' WHERE id=$1`, [app]);
+  p = await send.deliveryPreview(app, DRAW);
+  eq('E4e putting the sale back restores the file\'s own setting', p.funding_mode, 'investor_direct');
+
   await db.query(`UPDATE draw_findings SET funding_mode='reimbursement' WHERE id=$1`, [fid]);
   p = await send.deliveryPreview(app, DRAW);
   eq('E5 the per-draw choice beats the file default', p.funding_mode, 'reimbursement');
@@ -213,7 +231,29 @@ const ID = require('../src/sitewire/investor-delivery');
   const outbox = [];
   mailer.sendMail = async (m) => { outbox.push(m); return { ok: true, id: 'test' }; };
 
-  const sent = await send.sendInvestorDelivery(app, DRAW, { staffId: null, staffName: 'Lisa Katz', mode: 'reimbursement' });
+  // ---- THE CONSENT GATE FIRES FIRST (owner-directed 2026-08-14) ----
+  // This fixture deliberately has no archived inspector report, which is exactly the state the
+  // reported email went out in. The send must now REFUSE rather than quietly go short.
+  let gated = null;
+  try { await send.sendInvestorDelivery(app, DRAW, { staffId: null, staffName: 'Lisa Katz', mode: 'reimbursement' }); }
+  catch (e) { gated = e; }
+  ok('I0a a delivery that cannot carry a document REFUSES instead of sending short', !!gated && gated.status === 409);
+  eq('I0b with a code the desk can branch on', gated && gated.code, 'attachments_incomplete');
+  ok('I0c naming the document in plain words', /Inspection report/.test(String(gated && gated.message)));
+  ok('I0d and handing over the whole plan', !!(gated && gated.plan && gated.plan.omitted.length));
+  ok('I0e every omission carries a code and a remedy',
+    gated.plan.omitted.every((m) => m.code && (m.remedy || m.code === 'unspecified')));
+  ok('I0f plus the double warning for the link option', Array.isArray(gated.linkWarnings) && gated.linkWarnings.length === 2);
+  eq('I0g NOTHING was sent', outbox.length, 0);
+
+  // A preflight shows the same picture and still sends nothing.
+  const pre0 = await send.sendInvestorDelivery(app, DRAW, { mode: 'reimbursement', preflight: true });
+  ok('I0h preflight returns the plan', pre0.preflight === true && !!pre0.plan);
+  eq('I0i and still sends nothing', outbox.length, 0);
+
+  // With the coordinator's explicit acknowledgement, it goes — and the fact that they knowingly
+  // sent it short is what the audit records.
+  const sent = await send.sendInvestorDelivery(app, DRAW, { staffId: null, staffName: 'Lisa Katz', mode: 'reimbursement', acknowledgeOmissions: true });
   ok('I1 the send completes and returns a record id', !!sent.id);
   eq('I2 it went out under the mode asked for', sent.funding_mode, 'reimbursement');
   eq('I3 the three investor contacts received it', sent.to.length, 3);
@@ -258,7 +298,7 @@ const ID = require('../src/sitewire/investor-delivery');
     && !(msg.attachments || []).some((a) => /wire/i.test(String(a.filename || ''))));
 
   // A second send is a second row — the investor genuinely received two emails.
-  const again = await send.sendInvestorDelivery(app, DRAW, { staffId: null, staffName: 'Lisa Katz' });
+  const again = await send.sendInvestorDelivery(app, DRAW, { staffId: null, staffName: 'Lisa Katz', acknowledgeOmissions: true });
   ok('I14 a re-send is recorded separately, never overwritten', again.id !== sent.id);
   const p3 = await send.deliveryPreview(app, DRAW);
   ok('I15 both deliveries show in the history', p3.history.length >= 2);

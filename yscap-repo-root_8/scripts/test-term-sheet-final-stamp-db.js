@@ -132,11 +132,14 @@ const TAG = 'tsf-' + Date.now().toString(36);
         'the borrower door does the same — a borrower-generated sheet is recorded honestly, not assumed');
     }
 
-    // ---- C. the send BUILDS the final term sheet fresh (no reuse, no refusal) ----
-    console.log('\nC. the DocuSign send BUILDS the FINAL term sheet at send time');
-    // Generated docs (term sheet / application / disclosure) are built from the
-    // file's data, not read from storage; fakeStorage covers any stored-doc kind.
-    const fakeStorage = { async read() { return Buffer.from('%PDF-1.4 stored'); } };
+    // ---- C. the send ATTACHES the stored sheet, and refuses an INITIAL one ----
+    console.log('\nC. the DocuSign send carries the STORED studio sheet, and refuses an initial one');
+    // The term sheet is the ONE package document our server does not draw — the
+    // Term Sheet Studio draws all six pages of it in the browser and the sender
+    // attaches that copy. The application/disclosure ARE generated; fakeStorage
+    // stands in for the stored bytes.
+    const STORED_BYTES = '%PDF-1.4 stored';
+    const fakeStorage = { async read() { return Buffer.from(STORED_BYTES); } };
     const envRow = (await db.query(
       `INSERT INTO esign_envelopes (application_id, purpose, status, countersign_required)
        VALUES ($1,'term_sheet_package','not_sent',true) RETURNING *`, [appId])).rows[0];
@@ -147,41 +150,79 @@ const TAG = 'tsf-' + Date.now().toString(36);
       [envRow.id, bId, `b+${TAG}@example.com`, `${envRow.id}:borrower`,
        `admin+${TAG}@ys.com`, `${envRow.id}:admin`]);
 
-    const build = async () => {
-      try { return { def: await orchestrate.buildDefinition(envRow, { db, storage: fakeStorage }), err: null }; }
+    const build = async (row) => {
+      try { return { def: await orchestrate.buildDefinition(row || envRow, { db, storage: fakeStorage }), err: null }; }
       catch (e) { return { def: null, err: e }; }
     };
     const onlyCurrent = async (keepId) =>
       db.query(`UPDATE documents SET is_current=false WHERE application_id=$1 AND doc_kind='term_sheet' AND id<>$2`, [appId, keepId]);
     const tsDocOf = (def) => ((def && def.documents) || []).find((d) => d.name === 'Term Sheet');
 
-    // A stored INITIAL copy on the file must NOT block the send — the sender builds
-    // its own FINAL from the last registration.
+    /* A stored INITIAL copy REFUSES the send. This is the guard that stops the
+       wrong DOCUMENT going out once the gate has allowed the send — and its
+       remedy is the "Finalize & send" button, which re-draws the SAME six-pager
+       stamped FINAL. It is NOT a dead end (that was the 2026-08-02 wording, which
+       pointed at re-registering: registering stamps FINAL only when the file is
+       already ready, so on an unready file it just made another INITIAL). */
     const initialDoc = await upload(false, 'ts-initial.pdf');
     await onlyCurrent(initialDoc.id);
     {
-      const { def, err } = await build();
-      ok(err === null, 'the send builds even though the stored P&P copy is stamped INITIAL — no "only initial" refusal, no re-register loop');
-      const ts = tsDocOf(def);
-      ok(!!ts && ts.fileExtension === 'pdf', 'the package carries a server-built term-sheet PDF');
-      const pdf = ts ? Buffer.from(ts.base64, 'base64').toString('latin1') : '';
-      ok(/%PDF-/.test(pdf) && /FINAL TERM SHEET/.test(pdf) && !/INITIAL TERM SHEET/.test(pdf),
-        'the BUILT sheet is stamped FINAL — never the initial wording');
-      ok(pdf.includes('/ts_b1_sig/') && pdf.includes('/ts_admin_sig/'),
-        'and carries the DocuSign anchors the seeded roster needs (borrower + countersign)');
+      const { err } = await build();
+      ok(err !== null && err.code === 'TERM_SHEET_NOT_FINAL',
+        'a stored sheet stamped INITIAL is refused — the wrong document never goes out');
+      ok(err && !/re-register the product/i.test(err.message || ''),
+        'and the refusal does NOT send anyone back to re-register (the loop)');
+      ok(err && /Finalize & send/.test(err.message || ''),
+        'it names the button that CAN produce a FINAL sheet');
     }
-    // A legacy sheet (stamp never recorded) — equally irrelevant now, still builds.
+    // A legacy sheet (stamp never recorded) predates the stamp rule and is
+    // likewise refused — it was drawn under the rule that printed "NOT FINAL".
     const legacyDoc = await upload(null, 'ts-legacy.pdf');
     await onlyCurrent(legacyDoc.id);
     ok(legacyDoc.term_sheet_final === null, 'sanity: a legacy sheet records NULL, not false');
-    ok((await build()).err === null, 'a legacy stored sheet no longer blocks the send either');
+    ok((await build()).err !== null, 'a legacy stored sheet is refused too');
 
-    // ---- D. the panel no longer hard-holds on the stored stamp -------------
-    console.log('\nD. the e-sign panel no longer blocks on a stored "initial" stamp');
+    // A super-admin may FORCE the send past the refusal (db/469). The authorization
+    // is stamped on the ENVELOPE row, so it survives every send retry.
     {
+      const forced = (await db.query(
+        `UPDATE esign_envelopes SET ts_final_override_by=$2, ts_final_override_reason='owner asked'
+          WHERE id=$1 RETURNING *`, [envRow.id, adminId])).rows[0];
+      const { def, err } = await build(forced);
+      ok(err === null, 'a super-admin override sends past the refusal (never a dead end)');
+      ok(!!tsDocOf(def), 'and the package still carries the term sheet');
+      await db.query(`UPDATE esign_envelopes SET ts_final_override_by=NULL, ts_final_override_reason=NULL WHERE id=$1`, [envRow.id]);
+    }
+
+    // A stored FINAL sheet sends, and the bytes in the envelope are the STORED
+    // ones — the sender never draws its own.
+    const finalDoc = await upload(true, 'ts-final.pdf');
+    await onlyCurrent(finalDoc.id);
+    {
+      const { def, err } = await build();
+      ok(err === null, 'a stored sheet recorded FINAL sends');
+      const ts = tsDocOf(def);
+      ok(!!ts && ts.fileExtension === 'pdf', 'the package carries the term sheet as a PDF');
+      ok(ts && Buffer.from(ts.base64, 'base64').toString('latin1') === STORED_BYTES,
+        'and it is the STORED studio sheet byte-for-byte — the sender never renders one');
+    }
+
+    // ---- D. the panel reports the real stamp again --------------------------
+    console.log('\nD. the e-sign panel reports the stored stamp (so it can offer to finalize)');
+    {
+      await onlyCurrent(initialDoc.id);
+      await db.query(`UPDATE documents SET is_current=true WHERE id=$1`, [initialDoc.id]);
       const v = await tracking.fileEsign(db, appId);
-      ok(v.termSheet && v.termSheet.block === false,
-        'the term sheet never reports block — the send builds the final (the real esignSendGate still governs whether the package may send)');
+      ok(v.termSheet && v.termSheet.block === true,
+        'an INITIAL sheet on file reports block — hard-coding block:false is what left the finalize buttons unreachable');
+      ok(v.termSheet && v.termSheet.final === false, 'and reports the sheet as not final');
+      ok(v.termSheet && /Finalize & send/.test(v.termSheet.message || ''),
+        'with the message that names the way out');
+      await db.query(`UPDATE documents SET is_current=false WHERE id=$1`, [initialDoc.id]);
+      await db.query(`UPDATE documents SET is_current=true WHERE id=$1`, [finalDoc.id]);
+      const v2 = await tracking.fileEsign(db, appId);
+      ok(v2.termSheet && v2.termSheet.block === false && v2.termSheet.final === true,
+        'a FINAL sheet on file reports no block');
     }
 
     // ---- E. dedupe never collapses two differently-stamped sheets ----------

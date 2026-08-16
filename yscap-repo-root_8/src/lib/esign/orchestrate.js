@@ -141,11 +141,16 @@ const PACKAGES = {
     // `generate:true` docs are BUILT on our server from a stored Word template
     // (docgen.js) at send time — no paid DocuSign DocGen add-on, no pre-stored PDF.
     docs: [
-      // The term sheet is BUILT on our server at send time from the last
-      // registration (term-sheet-pdf.js → docgen), so pressing Send always
-      // produces the FINAL — never the stored "initial" (owner-directed
-      // 2026-08-02/06). Generated fresh, it can't be stale, so no freshnessCheck.
-      { kind: 'term_sheet',         prefix: 'ts',  signedKind: 'term_sheet_signed',    condition: 'rtl_cond_signedts',  name: 'Term Sheet', generate: true, genExt: 'pdf' },
+      /* THE TERM SHEET IS THE STUDIO'S SIX-PAGER — the ONE term sheet this company
+         issues, whatever the surface (owner-directed 2026-08-14: "any term sheet
+         that it's using right now should be only this six-pager version … the
+         difference should just be the stamp"). It is DRAWN by the Term Sheet
+         Studio (web/v2/tools/termsheet.js) and stored on the file, so it is
+         attached here rather than generated — deliberately NOT `generate:true`.
+         A short server-side renderer briefly took its place in 2026-08-06 and is
+         gone; see the file header for why that must never come back. Because it
+         is a stored document it CAN be stale, so it keeps its freshnessCheck. */
+      { kind: 'term_sheet',         prefix: 'ts',  signedKind: 'term_sheet_signed',    condition: 'rtl_cond_signedts',  name: 'Term Sheet', freshnessCheck: true },
       // The loan application is BUILT on our server (jsPDF) from the current loan
       // file at send time (application-pdf.js), uploaded as a real PDF (genExt) —
       // DocuSign accepts PDF natively, so unlike the docx docs it is NOT converted.
@@ -301,6 +306,88 @@ async function resolveConditionItem(db, applicationId, code) {
       WHERE ci.application_id = $1 AND t.code = $2
       ORDER BY ci.created_at DESC LIMIT 1`, [applicationId, code]);
   return r.rows.length ? r.rows[0].id : null;
+}
+
+// Reverse map: a completed signed doc_kind (esign_envelope_docs.doc_kind) -> the
+// condition TEMPLATE CODE that doc clears. Built ONCE from PACKAGES so it can never
+// drift from the send-time binding at createOrClaimEnvelope. Used by the webhook to
+// re-resolve a condition by code when the send-time binding captured NULL (the
+// condition was absent/stale when the envelope was sent).
+const CONDITION_CODE_BY_SIGNED_KIND = (() => {
+  const m = {};
+  for (const spec of Object.values(PACKAGES)) {
+    for (const d of (spec.docs || [])) {
+      if (d.signedKind && d.condition) m[d.signedKind] = d.condition;
+    }
+  }
+  return m;
+})();
+function conditionCodeForSignedKind(signedKind) {
+  return CONDITION_CODE_BY_SIGNED_KIND[signedKind] || null;
+}
+
+/**
+ * Ensure the Heter Iska condition (rtl_cond_iska) exists on this file, returning its
+ * checklist_item id. rtl_cond_iska is a STANDARD RTL condition instantiated on every
+ * RTL file at creation (generateChecklist), but a backfill gap (a file created before
+ * db/051 in a status outside its one-shot backfill list) or condition-dedup churn can
+ * leave it absent — which would bind the executed Iska -> NULL so the completed DocuSign
+ * package never feeds the condition (owner-reported 2026-08). Find the existing item;
+ * if genuinely absent, create it FAITHFULLY from the template (the same column set
+ * insertFromTemplate copies: label/hint/audience/item_kind/role_scope/phase/tpr_exclude/…),
+ * born 'outstanding'. Idempotent per file (a NOT EXISTS guard + a re-resolve fallback
+ * make a concurrent completion safe). Returns the item id, or null if the template is
+ * missing/inactive.
+ */
+async function ensureIskaCondition(db, applicationId, actorId) {
+  const existing = await resolveConditionItem(db, applicationId, 'rtl_cond_iska');
+  if (existing) return existing;
+  // Serialize the CREATE against a concurrent completion / boot heal / send on the SAME
+  // file. There is deliberately no unique index on checklist_items(application_id,
+  // template_id) (CLAUDE.md rule 4d), so under READ COMMITTED two callers that both see
+  // the condition absent could both insert. Take the SAME per-file advisory lock the
+  // conditions engine uses, on a dedicated connection. Fail OPEN — a missed lock costs at
+  // most one duplicate row (db/401 cleans an untouched duplicate up), and blocking a
+  // completion is worse. Works whether `db` is the app db wrapper (getClient), a raw pg
+  // Pool (connect), or a transaction client (neither → no lock, fail open).
+  const lockKey = `cond-eval:${applicationId}`;
+  let lockConn = null;
+  try {
+    lockConn = db.getClient ? await db.getClient() : (db.connect ? await db.connect() : null);
+    if (lockConn) await lockConn.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [lockKey]);
+    else lockConn = null;
+  } catch (_) {
+    if (lockConn) { try { lockConn.release(); } catch (_e) {} }
+    lockConn = null;
+  }
+  try {
+    // Re-check under the lock — another creator may have won the race.
+    const again = await resolveConditionItem(db, applicationId, 'rtl_cond_iska');
+    if (again) return again;
+    const ins = await db.query(
+      `INSERT INTO checklist_items
+         (template_id, scope, application_id, label, borrower_label, audience, item_kind,
+          role_scope, phase, hint, borrower_hint, is_gate, is_milestone, sort_order,
+          tool_key, clickup_field_id, tpr_exclude, created_by_kind, created_by_id, is_required, status)
+       SELECT t.id, 'application', $1, t.label, t.borrower_label, t.audience, t.item_kind,
+              COALESCE(t.role_scope,'any'), t.phase, t.hint, t.borrower_hint,
+              COALESCE(t.is_gate,false), COALESCE(t.is_milestone,false), COALESCE(t.sort_order,100),
+              t.tool_key, t.clickup_field_id, COALESCE(t.tpr_exclude,false), 'system', $2,
+              (t.is_required IS DISTINCT FROM false), 'outstanding'
+         FROM checklist_templates t
+        WHERE t.code='rtl_cond_iska' AND t.is_active=true
+          AND NOT EXISTS (SELECT 1 FROM checklist_items ci
+                           WHERE ci.application_id=$1 AND ci.template_id=t.id)
+       RETURNING id`, [applicationId, actorId || null]);
+    if (ins.rows[0]) return ins.rows[0].id;
+    // The NOT EXISTS suppressed the insert — re-resolve (a concurrent creator won).
+    return resolveConditionItem(db, applicationId, 'rtl_cond_iska');
+  } finally {
+    if (lockConn) {
+      try { await lockConn.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockKey]); } catch (_) {}
+      try { lockConn.release(); } catch (_) {}
+    }
+  }
 }
 
 // ---- application-document formatting helpers --------------------------------
@@ -544,124 +631,9 @@ async function loadDocGenData(db, applicationId) {
     cbFirst: a.cb_first || '', cbLast: a.cb_last || '', cbEmail: a.cb_email || '',
     // The nested view the auto-generated loan application renders from.
     application,
-    // The nested view the FINAL term sheet renders from (term-sheet-pdf.js). Every
-    // figure is sourced from the REGISTERED quote (reg.quote) + the file's own
-    // columns, so the sheet the sender builds can never disagree with the
-    // registration — the frozen-number rule. term-sheet-pdf.js only DRAWS it.
-    termsheet: buildTermSheetView(a, q, sizing, { street, city, state, zip }),
   };
 }
 
-/**
- * Assemble the FINAL term sheet's rendered view from the file row `a`, the
- * registered quote `q` and its `sizing` block. Numbers come ONLY from the
- * registration (reg.quote) — never recomputed — so the sent sheet always matches
- * what was registered. term-sheet-pdf.js consumes this and merely draws it.
- */
-function buildTermSheetView(a, q, sizing, addr) {
-  const TO = require('../term-options');
-  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
-  const isRefi = /refi|refinance/i.test(String(a.loan_type || ''));
-  const rate = a.reg_note_rate != null ? a.reg_note_rate : (q ? q.noteRate : null);
-  const origPct = q && q.origPct != null ? q.origPct : null;
-  const bName = `${a.b_first || ''} ${a.b_last || ''}`.trim();
-  const cbName = `${a.cb_first || ''} ${a.cb_last || ''}`.trim();
-  const programName = programLabel(a.reg_program, a.reg_label, a.program);
-  const LENDER_NAME = 'YS Capital Group';
-
-  // ---- Loan structure (registered quote — parity) ----
-  const structureRows = [];
-  structureRows.push({ k: isRefi ? 'As-is value' : 'Purchase price', v: fmtUSD(isRefi ? a.as_is_value : a.purchase_price) });
-  if (a.is_assignment && num(a.underlying_contract_price) > 0) {
-    structureRows.push({ k: 'Seller price / assignment fee', v: fmtUSD(a.underlying_contract_price) + ' / ' + fmtUSD(a.assignment_fee) });
-  }
-  if (num(a.rehab_budget) > 0) structureRows.push({ k: 'Construction / rehab budget', v: fmtUSD(a.rehab_budget) });
-  if (num(a.arv) > 0) structureRows.push({ k: 'After-repair value (ARV)', v: fmtUSD(a.arv) });
-  if (sizing) {
-    if (num(sizing.financedReserve) > 0) structureRows.push({ k: 'Financed interest reserve', v: fmtUSD(sizing.financedReserve) });
-    if (num(sizing.costBasis) > 0) structureRows.push({ k: 'Total project cost', v: fmtUSD(sizing.costBasis), opts: { bold: true } });
-    if (num(sizing.initialAdvance) > 0) {
-      const ltv = num(sizing.acqLtvPct) > 0 ? '   (' + fmtPct(sizing.acqLtvPct) + ' LTV)' : '';
-      structureRows.push({ k: 'Initial advance (at closing)', v: fmtUSD(sizing.initialAdvance) + ltv });
-    }
-    if (num(sizing.rehabHoldback) > 0) structureRows.push({ k: 'Construction holdback', v: fmtUSD(sizing.rehabHoldback) });
-    if (num(sizing.oopRehab) > 0) structureRows.push({ k: 'Out-of-pocket rehab (funded over construction)', v: fmtUSD(sizing.oopRehab) });
-    structureRows.push({ k: 'Total loan amount', v: fmtUSD(num(sizing.totalLoan) > 0 ? sizing.totalLoan : a.loan_amount), opts: { bold: true, accent: true } });
-    if (num(sizing.ltcPct) > 0) structureRows.push({ k: 'Loan-to-cost (LTC)', v: fmtPct(sizing.ltcPct) });
-    if (num(sizing.arvPct) > 0) structureRows.push({ k: 'Loan-to-ARV', v: fmtPct(sizing.arvPct) });
-  } else {
-    structureRows.push({ k: 'Total loan amount', v: fmtUSD(a.loan_amount), opts: { bold: true, accent: true } });
-  }
-
-  // ---- Terms ----
-  const kd = TO.keyDates(a.est_closing_date, a.term);
-  const dayUS = (s) => { const p = TO.parseYMD(s); return p ? `${String(p.mo).padStart(2, '0')}/${String(p.d).padStart(2, '0')}/${p.y}` : ''; };
-  const deferredOrig = TO.resolveDeferredOrigPct(a.deferred_orig_pct);
-  const termRows = [];
-  if (a.term) termRows.push({ k: 'Loan term', v: `${a.term} months` });
-  termRows.push({ k: 'Note rate (interest-only)', v: fmtRate(rate) });
-  if (origPct != null) termRows.push({ k: 'Origination', v: fmtPct(origPct) });
-  termRows.push({ k: 'Program', v: programName });
-  termRows.push({ k: 'Loan purpose', v: isRefi ? 'Refinance' : 'Purchase' });
-  termRows.push({ k: 'Interest accrual', v: TO.accrualLabel(TO.resolveAccrual(a.accrual_type)) });
-  if (a.est_closing_date) {
-    termRows.push({ k: 'Estimated closing date', v: dayUS(kd.estClosing) });
-    if (kd.firstPayment) termRows.push({ k: 'First payment date', v: dayUS(kd.firstPayment) });
-    if (kd.maturity) termRows.push({ k: 'Maturity date', v: dayUS(kd.maturity) });
-  }
-  if (deferredOrig > 0) termRows.push({ k: 'Deferred origination fee (at payoff)', v: fmtPct(deferredOrig / 100) });
-
-  // ---- Disclosures ----
-  const gs = TO.guarantySummary({ borrowerName: bName, coBorrowerName: cbName, pgWaived: a.co_borrower_pg_waived });
-  const minIntOn = TO.resolveMinInterest(a.reg_program || a.program, a.min_interest_enabled);
-  const disclosures = [
-    { h: 'Business purpose only', body: 'This loan is made solely for business, commercial or investment purposes and is NOT for personal, family, or household (consumer) use. It is secured by non-owner-occupied real property, is not subject to consumer-mortgage (TILA / RESPA) disclosures, and requires a personal guaranty and a first-lien position.' },
-    { h: 'Personal guaranty / recourse', body: gs.disclosureDetail },
-    { h: 'Interest accrual', body: TO.accrualDetail(TO.resolveAccrual(a.accrual_type)) },
-    { h: 'Due diligence', body: 'Borrower will provide all necessary due diligence to Lender.' },
-    { h: 'Title', body: "Borrower shall provide a Title Report and Title Insurance to the satisfaction of the Lender. Lender's title coverage must be approved." },
-    { h: 'Legal fees and expenses', body: 'The Borrower shall pay for all legal fees and services related to the loan transaction, plus the Lender underwriting / processing fee and all other applicable Lender fees.' },
-    { h: 'Insurance', body: 'Borrower shall provide insurance certificates satisfactory to Lender.' },
-    { h: 'Draw fees', body: TO.drawFeeLines(a.reg_program || a.program).join('   |   ') },
-  ];
-  if (minIntOn) disclosures.push({ h: 'Minimum interest', body: TO.MIN_INTEREST_DETAIL });
-  if (deferredOrig > 0) disclosures.push({ h: 'Deferred origination fee', body: 'A deferred origination fee of ' + fmtPct(deferredOrig / 100) + ' of the loan amount is payable at payoff as an exit fee. It is not collected at closing and is not part of the cash to close or the liquidity to show.' });
-  disclosures.push({ h: 'Disclaimer', body: "This term sheet does not set forth all of the terms of the loan contemplated hereunder. Additional terms and conditions may be set by the Lender prior to closing. This term sheet is not a commitment to lend money and is subject to, among other things, the Lender's sole discretion regarding Borrower's status, the Property, the Loan, title, and due diligence." });
-  disclosures.push({ h: 'Acknowledgement & indemnification', body: 'By accepting these terms you confirm that you will not hold YS Capital Group and/or the Lender liable for any damages related to their decision not to make the loan for any reason. You also confirm that you will indemnify and hold harmless YS Capital Group and the Lender from any claims or liabilities related to this transaction.' });
-
-  // ---- Signers (EXACTLY buildRoster's roster: borrower always; co if present;
-  // loan officer if assigned + has an email; the admin/lender countersign). Any
-  // mismatch here vs. the seeded roster would leave a recipient's anchor missing. ----
-  const signers = [{ name: bName, role: 'Borrower / guarantor', prefix: 'ts_b1' }];
-  if (a.co_borrower_id) signers.push({ name: cbName, role: gs.coSignerRole, prefix: 'ts_b2' });
-  if (a.loan_officer_id && a.officer_email) signers.push({ name: a.officer_name || a.officer_email, role: 'Loan officer, ' + LENDER_NAME, prefix: 'ts_lo' });
-  signers.push({ name: (cfg.docusign && cfg.docusign.countersignName) || LENDER_NAME, role: LENDER_NAME + ' - authorized signer', prefix: 'ts_admin' });
-
-  // ---- Parties block ----
-  const entity = (a.llc_name || '').trim();
-  let partiesSub;
-  if (entity) partiesSub = 'Vesting entity' + (gs.guarantorList ? '  -  Guarantor(s): ' + gs.guarantorList : '') + (gs.waived ? '  -  Member (non-guarantor): ' + gs.nonGuarantorList : '');
-  else if (cbName) partiesSub = gs.waived ? ('Borrower: ' + bName + '  -  Co-borrower (non-guarantor): ' + cbName) : ('Borrower & co-borrower: ' + gs.guarantorList);
-  else partiesSub = 'Individual borrower';
-  const propertyLine = addr && (addr.street || addr.city)
-    ? ('Property: ' + [addr.street, addr.state].filter(Boolean).join(', '))
-    : '';
-  const validExp = new Date(Date.now() + 14 * 864e5);
-
-  return {
-    final: true,
-    programName,
-    primaryName: entity || bName || 'Prospective Borrower',
-    partiesSub,
-    purposeLine: isRefi ? 'Refinance' : 'Purchase',
-    propertyLine,
-    validThrough: 'Valid through ' + validExp.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
-    loanAmount: fmtUSD(sizing && num(sizing.totalLoan) > 0 ? sizing.totalLoan : a.loan_amount),
-    noteRate: fmtRate(rate),
-    termLine: (a.term ? a.term + '-month term' : '') + (origPct != null ? '  -  ' + fmtPct(origPct) + ' origination' : ''),
-    structureRows, termRows, disclosures, signers,
-  };
-}
 
 /**
  * Guard the generated-document data BEFORE a legal document is assembled: a real
@@ -978,12 +950,42 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
       err.retryable = false;
       throw err;
     }
-    // NOTE (owner-directed 2026-08-06): the term sheet is now BUILT on our server
-    // at send time (generate:true above → the branch at the top of this loop), so
-    // pressing Send always produces the FINAL — the old "the stored sheet still
-    // says INITIAL, refuse the send / re-register" trap (and its super-admin
-    // override) is gone. This non-generate branch no longer handles the term
-    // sheet at all; it stays for the other stored-doc kinds.
+    /* THE SHEET THAT GOES OUT FOR SIGNATURE IS THE FINAL ONE (owner-directed
+       2026-08-02): "that term sheet should not be 'not final' — it is going to
+       everybody through DocuSign after you finished all the required steps."
+       The INITIAL/FINAL wording is PRINTED INTO the PDF at generation time, so by
+       the time the bytes are here nothing can read it back — db/404 records what
+       the generator printed. A sheet whose own face says "INITIAL TERM SHEET —
+       NOT FINAL" (or a legacy sheet whose stamp was never recorded) is REFUSED,
+       permanently. Nothing here decides whether the package MAY send — gate.js
+       still owns that; this only stops the wrong DOCUMENT going out once it may.
+
+       THIS REFUSAL IS NOT A DEAD END, and that distinction is the whole reason
+       the 2026-08-06 rewrite happened. Its remedy is a BUTTON: the panel's Send
+       runs `finalizeAndSend` (ProductStudioPanel.finalizeTermSheet), which
+       re-opens the Term Sheet Studio on the SAME registered scenario, stamps it
+       `file_final` and re-attaches the six-pager — no re-pricing, no re-register.
+       When the file genuinely is not ready the finalize refuses and NAMES what is
+       outstanding, and a super-admin can still force the send below. Three ways
+       forward, so "you only have the initial one" can never strand a file again.
+       If you ever change this message, keep it pointing at that button — the old
+       "re-register in Products & Pricing" wording is what produced the loop, because
+       re-registering an unready file just makes another INITIAL. */
+    if (d.kind === 'term_sheet' && doc.term_sheet_final !== true) {
+      // A super-admin may FORCE the send past this refusal (owner-directed
+      // 2026-08-04, db/469). The authorization is stamped on the envelope row —
+      // NOT passed through the closure — so it survives every send retry (the send
+      // engine re-reads the row via the atomic claim's RETURNING *). It changes
+      // NOTHING the PDF prints: the sheet may still read "NOT FINAL", and the
+      // officer was warned of exactly that. Without the stamp the refusal stands,
+      // permanently — the bytes cannot be re-stamped from here.
+      if (!row.ts_final_override_by) {
+        const err = new Error(`Cannot send ${spec.label}: ${termSheetStamp.REGENERATE_MESSAGE}`);
+        err.retryable = false; err.code = 'TERM_SHEET_NOT_FINAL';
+        throw err;
+      }
+      console.warn(`[esign] term-sheet package ${row.id} sent past the "not final" refusal by super-admin override (documents.term_sheet_final=${doc.term_sheet_final === false ? 'false' : 'null'})`);
+    }
     let buf;
     try { buf = await storage.read(doc.storage_ref); }
     catch (e) { const err = new Error(`Could not read ${d.kind} bytes: ${e.message}`); err.retryable = true; throw err; }
@@ -1193,6 +1195,15 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
       e.code = 'NOO_NOT_APPLICABLE'; e.retryable = false; throw e;
     }
   }
+  // The Heter Iska condition (rtl_cond_iska) is a STANDARD RTL condition, but a backfill
+  // gap or condition-dedup churn can leave it absent/stale at send time — which would bind
+  // the signed Iska -> NULL so the executed doc never feeds the condition on completion
+  // (owner-reported 2026-08). Ensure it EXISTS before createOrClaimEnvelope binds the doc
+  // to it. Idempotent per file. (The webhook re-resolves by code as a completion-time
+  // belt-and-suspenders that also heals PAST envelopes; this is the going-forward belt.)
+  if (purpose === 'heter_iska') {
+    await ensureIskaCondition(db, applicationId, actor && actor.id);
+  }
   // Forward the draw-send recipient choice ('borrower'|'co_borrower') so the SOLO package (the wire form) is
   // SEEDED to the chosen signer — createOrClaimEnvelope reads opts.recipient to drive buildRoster.
   // A term-sheet-final override also mints a FRESH envelope (reissue) so it can be
@@ -1232,6 +1243,7 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
 
 module.exports = {
   PACKAGES, packageSpec, buildDefinition, sendPackage,
-  createOrClaimEnvelope, buildRoster, resolveRecipientIdentity, tabsFor, resolveConditionItem, latestDocument, loadApplication, loadCcViewers,
+  createOrClaimEnvelope, buildRoster, resolveRecipientIdentity, tabsFor, resolveConditionItem,
+  conditionCodeForSignedKind, ensureIskaCondition, latestDocument, loadApplication, loadCcViewers,
   loadDocGenData, validateGenerated, subjectAddress, subjectSuffix, composeSubject, fitAddress,
 };

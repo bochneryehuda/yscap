@@ -85,6 +85,21 @@ sql-write borrower_officers
 | 2026-08-03 | `sql-ref staff_users` + `sql-read staff_users` — a Long-Term file knows its officer | RTL → LT | *"officers should be able to see all of their files even if it's long term or short term"* (an officer can only see their Long-Term files if a Long-Term file records its officer, and officers are the same accounts as the shared login) | #975 |
 | 2026-08-03 | `import app-v2/src/components/BorrowerProfilePanel.jsx` — the ONE shared borrower editor, mounted on a long-term file | RTL → LT | *"officers should be able to change the borrower profile on long term files"* — confirmed in the same breath as *"keep borrower read only"*, so the edit goes through the existing shared editor and the existing borrower endpoint; Long-Term code still never writes `borrowers` | #975 |
 | 2026-08-03 | `sql-ref borrower_officers` + `sql-write borrower_officers` — Long-Term records the officer↔person link | RTL → LT | Required to make the line above actually work: a non-privileged officer may only open a borrower profile they have a recorded relationship to, and today that means an **RTL** file. `borrower_officers` (db/327) is the identity-zone link built for precisely this — *"the client who has only ever done non-RTL business with them, so there is no file to match on"* | #975 |
+| 2026-08-14 | **The Encompass integration — brought into Long-Term as a self-contained BY-VALUE copy** (logic, authorization, requests, credentials mechanism, field map). Lives entirely in `src/longterm/encompass/**`. | RTL → LT | *"Pull in and copy: the logic of Encompass integration, the credentials of Encompass integration, the requests, the authorization. We need to start long-term loans with a full Encompass understanding … take also all the fields from this mapping and bring it in."* This is a specific, owner-directed exception to the 2026-08-03 "no shared integrations" line below (Encompass only; everything else still stays separate). | this PR |
+
+### Note on the Encompass copy (2026-08-14)
+
+This is a **by-value copy**, not an import — so it needs **no machine-readable `authorized`
+entry above**: the Long-Term Encompass code (`src/longterm/encompass/**`) imports **zero** RTL
+modules and reaches **no** RTL table. It is fully self-contained (its own config, its own pacing,
+its own read-only client), which keeps the two products separate exactly as the charter requires.
+What was brought in: the read-only OAuth client + request logic (`client.js`), the request /
+authorization catalog (`requests.js`), the Milestone Completion rules + field requirements
+(`completion-rules.js`), and the RTL reconciliation field map, kept as **reference and clearly
+labeled as RTL usage** (`reconciliation-map.js`). No secret credential VALUES are in code — only
+env-var names (`LT_ENCOMPASS_*`, falling back to the shared `ENCOMPASS_*`). Long-Term's Encompass
+connection is **READ-ONLY** and has **no** flood/write path (that one owner-authorized Encompass
+write stays RTL-only). None of this knowledge is enforced — it is memory for the build.
 
 **That is the whole list.** The owner's same sentence closed everything else: *"keep it separate everything else …
 the back end of the entire thing will be different, the workflow will be different, the sets will be different,
@@ -98,8 +113,8 @@ stops a "no" quietly turning into a "yes" months later.
 
 | Date | What was asked | Answer |
 |---|---|---|
-| 2026-08-02 | Conditions, document underwriting, and orders for Long-Term | **Not for now** — "we're not going to build conditions we're not going to bring in document underwriting we're not going to bring in orders for now" |
+| 2026-08-02 | Conditions, document underwriting, and orders for Long-Term | **Not for now** — "we're not going to build conditions we're not going to bring in document underwriting we're not going to bring in orders for now". ⟶ **CONDITIONS were REVERSED by the owner on 2026-08-14** — *"you should set up your DSCR condition center — it should pull the conditions directly from Encompass"* and *"We should build a condition center … with all the documents in there linked"*. See CLAUDE.md rule 6 and the charter §4. **This is a SCOPE change, not a separation change**: the LT condition center is a brand-new build, so re-using ANY of RTL's `checklist_templates` / `checklist_items` / `conditions` / `src/lib/conditions/**` / document + eFolder code still needs its own row in the approvals log above. **Document underwriting and orders remain NO.** |
 | 2026-08-02 | New columns / new field mappings anywhere for Long-Term | **No** — "don't add any columns don't add any mapping unless we specifically ask you to" |
 | 2026-08-02 | Sharing the database connection pool (`src/db.js`) with Long-Term | **Not asked yet** — until it is, Long-Term opens its own pool in `src/longterm/db.js`, which needs no authorization (open question 11 in the charter) |
 | 2026-08-03 | **Long-Term WRITING the borrower record** (`sql-write borrowers`) | **No — confirmed by the owner: "keep borrower read only".** An officer CAN change a borrower profile from a long-term file, but through the ONE shared editor and the existing borrower endpoint — not through Long-Term write code. The person record keeps a single owner, which matters because a dozen RTL modules already heal, enrich and de-duplicate it (Encompass enrich, ClickUp sync, credit store, name-heal, merge). |
-| 2026-08-03 | Long-Term re-using RTL's **workflow, statuses, document sets, conditions or integrations** | **No — explicitly.** *"the workflow will be different, the sets will be different, integrations will be different, it will be a brand new build."* |
+| 2026-08-03 | Long-Term re-using RTL's **workflow, statuses, document sets, conditions or integrations** | **No — explicitly.** *"the workflow will be different, the sets will be different, integrations will be different, it will be a brand new build."* **EXCEPTION (2026-08-14): the Encompass integration was later authorized to be brought into Long-Term** (see the log row above). That exception is Encompass-only; every other integration (ClickUp, SharePoint, DocuSign, Sitewire, Trustpoint) still stays separate unless the owner authorizes it by name. |

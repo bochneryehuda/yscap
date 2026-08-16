@@ -145,6 +145,9 @@ const AUDIT_RENDER = {
   },
   link_llc: { borrowerSafe: true, kind: 'llc', render: (d) => ({ verb: (d && d.previous) ? 'switched the vesting entity' : 'linked the vesting entity', label: null }) },
   save_appraisal_card: { borrowerSafe: true, kind: 'card', render: (d) => ({ verb: 'saved the appraisal payment card', label: d && d.last4 ? `Card ending ${d.last4}` : null }) },
+  // Clearing is borrower-safe on purpose: the card was THEIR payment detail, so them
+  // seeing that it was removed from the file is transparency, not a leak.
+  clear_appraisal_card: { borrowerSafe: true, kind: 'card', render: (d) => ({ verb: 'cleared the appraisal payment card from the file', label: d && d.last4 ? `Card ending ${d.last4} — permanently removed` : 'Permanently removed' }) },
   save_rehab_budget: { borrowerSafe: true, kind: 'edit', render: (d) => ({ verb: 'updated the rehab budget / scope of work', label: d && d.total != null ? `New total ${money(d.total)}` : null }) },
   set_closing_date: {
     borrowerSafe: true, kind: 'status',

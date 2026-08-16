@@ -279,7 +279,7 @@ function vendorGreetName(vendor) {
  * Build the branded order email (or its follow-up). Returns { subject, html,
  * text }. `subjectTag` (loan# · borrower · street) rides in the subject.
  */
-function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
+function buildOrderEmail(kind, data, { followup = false, note = '', fullOrder = false } = {}) {
   const label = ORDER_LABEL[kind];
   const vendor = data.vendors[kind];
   const subjectTag = [data.loanNumber || null, data.borrowerName, data.propertyLine.split(',')[0]].filter(Boolean).join(' · ');
@@ -292,6 +292,38 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
         email: data.officer.email || null, phone: data.officer.phone || null, nmls: data.officer.nmls || null }
     : null;
   const signOff = data.officer ? `Thank you,\n${data.officer.name}${data.officer.title ? `, ${data.officer.title}` : ''}\nYS Capital Group` : 'Thank you,\nYS Capital Group';
+
+  // The FULL detail block the order carries, hoisted so BOTH the initial order and
+  // the follow-up restate the exact same facts (owner-directed 2026-08-12: the
+  // follow-up "should include all the details that the original email includes" —
+  // the agent should never have to dig up the first email to bind). Same helpers, so
+  // the two can never state different facts. `filter(Boolean)` still runs last so a
+  // detail we genuinely do not hold is simply absent rather than printed blank.
+  const orderMeta = [
+    data.transactionType ? { label: 'Transaction Type', value: data.transactionType } : null,
+    { label: 'Property Address', value: data.propertyLine || '—' },
+    { label: 'Borrower Name', value: data.borrowerName },
+    kind === 'insurance' && data.dob ? { label: 'Borrower DOB', value: data.dob } : null,
+    // The entity is printed by insuranceDetailMeta as the NAMED INSURED on an
+    // insurance order, so it is not repeated here.
+    kind !== 'insurance' && data.entityName ? { label: 'Borrowing Entity Name', value: data.entityName } : null,
+  ].filter(Boolean)
+    .concat(kind === 'insurance' ? insuranceDetailMeta(data) : [])
+    .concat([
+      { label: 'Loan Amount', value: `Approximately ${data.loanAmount || '—'}` },
+      { label: 'Loan Number', value: data.loanNumber || '(pending)' },
+    ]);
+
+  // WHAT WE ARE ASKING TO BE COVERED — Builders Risk AND vacant property, each named
+  // in the industry's own terms so a binder cannot come back with a vacancy clause
+  // still in it. Insurance only; a title order has no coverage to request.
+  const coverageSections = kind === 'insurance'
+    ? [{ title: 'Coverage required', body: INSURANCE_COVERAGE_LINES },
+       { title: 'Policy term & effective date',
+         body: [dayText(data.expectedClosing)
+           ? `Please make the policy effective on or before the estimated closing date, ${dayText(data.expectedClosing)}. We will confirm the final closing date as soon as it is set.`
+           : 'Please advise the earliest effective date available — we will confirm the closing date as soon as it is set.'] }]
+    : undefined;
 
   if (followup) {
     // The follow-up is a SEPARATE, lighter message on the same thread — it is
@@ -311,14 +343,19 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
         ? String(note).trim()
         : `Following up to confirm when we can expect the ${kind === 'title' ? 'title search' : 'insurance quote'} to be completed. Please provide the following as soon as they become available:`,
       lines: wantLines.concat(['', signOff]),
-      // A follow-up on an INSURANCE order is precisely the moment an agent is waiting
-      // on borrower/deal details, so it restates them rather than making them ask
-      // again. Same helper as the order, so the two can never state different facts.
-      meta: [
+      // The "Follow up" button (fullOrder) carries every detail the ORIGINAL order carried
+      // (owner-directed 2026-08-12) — the full deal/borrower block, the coverage ask (insurance)
+      // and the mortgagee clause — so the vendor has everything to bind without hunting for the
+      // first email. Same hoisted values as the order, so the two can never state different facts.
+      // A plain Email Center REPLY (fullOrder falsey) keeps the lighter restatement it always had,
+      // so a one-line "closing is Tuesday" reply doesn't re-dump the whole order block.
+      meta: fullOrder ? orderMeta : [
         { label: 'Property', value: data.propertyLine || '—' },
         { label: 'Borrower', value: data.borrowerName },
         data.loanNumber ? { label: 'Loan Number', value: data.loanNumber } : null,
       ].filter(Boolean).concat(kind === 'insurance' ? insuranceDetailMeta(data) : []),
+      sections: fullOrder ? coverageSections : undefined,
+      callout: fullOrder ? { title: 'Mortgagee Clause', body: clause } : undefined,
       officer: officerCard,
       note: 'Reply to this email and it reaches the whole loan team.',
       replyable: true,
@@ -333,25 +370,9 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
     return built;
   }
 
-  // The initial order.
-  // On an INSURANCE order the meta block carries everything the agency used to write
-  // back for (mailing address, phone, email, closing date, purchase price, rehab
-  // cost) — see insuranceDetailMeta. `filter(Boolean)` still runs last so a detail we
-  // genuinely do not hold is simply absent rather than printed as a blank.
-  const meta = [
-    data.transactionType ? { label: 'Transaction Type', value: data.transactionType } : null,
-    { label: 'Property Address', value: data.propertyLine || '—' },
-    { label: 'Borrower Name', value: data.borrowerName },
-    kind === 'insurance' && data.dob ? { label: 'Borrower DOB', value: data.dob } : null,
-    // The entity is printed by insuranceDetailMeta as the NAMED INSURED on an
-    // insurance order, so it is not repeated here.
-    kind !== 'insurance' && data.entityName ? { label: 'Borrowing Entity Name', value: data.entityName } : null,
-  ].filter(Boolean)
-    .concat(kind === 'insurance' ? insuranceDetailMeta(data) : [])
-    .concat([
-      { label: 'Loan Amount', value: `Approximately ${data.loanAmount || '—'}` },
-      { label: 'Loan Number', value: data.loanNumber || '(pending)' },
-    ]);
+  // The initial order. The meta / coverage blocks are the hoisted ones above, so a
+  // change to what the order states reaches the follow-up in the same edit.
+  const meta = orderMeta;
 
   const intro = kind === 'title'
     ? `Hi ${vendorGreetName(vendor)}, please proceed with ordering title for the following transaction:`
@@ -371,16 +392,8 @@ function buildOrderEmail(kind, data, { followup = false, note = '' } = {}) {
     intro,
     lines,
     meta,
-    // WHAT WE ARE ASKING TO BE COVERED — Builders Risk AND vacant property, each
-    // named in the industry's own terms so a binder cannot come back with a vacancy
-    // clause still in it. Insurance only; a title order has no coverage to request.
-    sections: kind === 'insurance'
-      ? [{ title: 'Coverage required', body: INSURANCE_COVERAGE_LINES },
-         { title: 'Policy term & effective date',
-           body: [dayText(data.expectedClosing)
-             ? `Please make the policy effective on or before the estimated closing date, ${dayText(data.expectedClosing)}. We will confirm the final closing date as soon as it is set.`
-             : 'Please advise the earliest effective date available — we will confirm the closing date as soon as it is set.'] }]
-      : undefined,
+    // The coverage ask (insurance only) — the hoisted `coverageSections`.
+    sections: coverageSections,
     // The mortgagee clause as a highlighted callout — it's the load-bearing part
     // of the order (the vendor lists us as mortgagee with this exact loan number).
     callout: { title: 'Mortgagee Clause', body: clause },

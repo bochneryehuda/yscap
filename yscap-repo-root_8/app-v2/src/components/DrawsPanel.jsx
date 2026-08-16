@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import EmailCenter from './EmailCenter.jsx';
-import FileSections, { Section } from './FileSections.jsx';
+import FileSections, { Section, goToSection } from './FileSections.jsx';
+import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 
 /* Per-file construction-draw desk (staff). One place tying draws ↔ Scope of Work ↔
    construction budget: the unified per-line/per-unit rollup, each draw's per-line
@@ -22,6 +23,22 @@ const centsOrNull = (v) => {
   const n = Math.round(Number(s.replace(/[^0-9.]/g, '')) * 100);
   return Number.isFinite(n) && n >= 0 ? n : null;
 };
+// cents → the dollars string an input box shows, so a value seeded from a draw round-trips
+// back through centsOrNull to the exact same cents (no float drift): 625000 → "6250.00" →
+// centsOrNull → 625000. Blank when the cents are missing.
+const centsToInput = (c) => { const n = Number(c); return Number.isFinite(n) ? (n / 100).toFixed(2) : ''; };
+// One line of a money breakdown: a label, a figure, and the bottom line in bold. Used by the
+// release card's two columns so the arithmetic reads as arithmetic rather than as a sentence.
+function MoneyLine({ label, value, strong, color }) {
+  return (
+    <div className="row" style={{ justifyContent: 'space-between', gap: 12, alignItems: 'baseline',
+      marginTop: strong ? 6 : 2, paddingTop: strong ? 6 : 0, borderTop: strong ? '1px solid var(--hairline,#E4E0D6)' : 'none' }}>
+      <span className={strong ? 'small' : 'small muted'} style={strong ? { fontWeight: 700, color: '#141B22' } : undefined}>{label}</span>
+      <span className="num" style={{ fontVariantNumeric: 'tabular-nums', fontWeight: strong ? 700 : 500, fontSize: strong ? 16 : undefined, color: strong ? (color || '#141B22') : '#3A4550' }}>{value}</span>
+    </div>
+  );
+}
+
 const fmtDay = (v) => {   // MM/DD/YYYY (industry standard), shift-free for date-only values
   if (!v) return '—';
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v));
@@ -45,6 +62,18 @@ const STATUS = {
   pending: 'Awaiting your approval', pending_capital_partner: 'With capital partner', approved: 'Approved',
 };
 const RISK = { high: { label: 'High risk', cls: 'sw-pending' }, medium: { label: 'Review', cls: 'sw-insp' }, low: { label: 'Minor', cls: 'sw-draft' }, clear: { label: 'Clear', cls: 'sw-approved' } };
+// A "what's left" checklist step whose action lives in ANOTHER draw-desk section gets a Quick Link
+// straight there (owner-directed 2026-08-12: "every option you need to do should be a quick link …
+// Release Wire → the Money ledger, Approve Wire Instructions → the Wire Instructions page"). Steps
+// whose action is right here on the draw card carry no link — you're already looking at it. Keys
+// match src/sitewire/draw-checklist.js STEPS.
+const STEP_GOTO = {
+  wire_form_signed: 'dsec-request',       // send the DocuSign wire form
+  wire_form_accepted: 'dsec-request',     // accept the signed wire instructions
+  operating_agreement: 'dsec-request',    // collect the wire entity's operating agreement
+  lien_waivers: 'dsec-waivers',           // collect / waive outstanding lien waivers
+  money_recorded: 'dsec-ledger',          // record the release in the Money ledger
+};
 
 // Friendly one-liner for a birth-phase setup problem stored on the file (link.raw.setup_status). Shown
 // inline in this file's draw section — never as a global error row (go-forward only).
@@ -76,11 +105,29 @@ export default function DrawsPanel({ appId }) {
   const [busy, setBusy] = useState('');
   const [msg, setMsg] = useState('');
   const [quickStatuses, setQuickStatuses] = useState([]); // Sitewire pipeline status labels
+  // Mirrors `data` so load() can tell a first load from a background refresh without
+  // taking `data` as a dependency (which would re-create load and re-run every child's
+  // effect). Reset when the file changes so a new file gets its first-load spinner.
+  const dataRef = useRef(null);
+  // On a file switch (if this panel is reused rather than remounted), drop the prior file's data so
+  // the new file shows the spinner instead of the previous file's draws (pre-merge audit B).
+  useEffect(() => { dataRef.current = null; setData(null); }, [appId]);
 
   const load = useCallback(() => {
-    setLoading(true);
-    api.get(`/api/sitewire/files/${appId}/rollup`)
-      .then((d) => { setData(d); setErr(''); })
+    // ONLY the first load blanks the panel to a spinner. Every refresh AFTER an action
+    // (approve, record a release, change a setting) keeps the current desk on screen and
+    // holds the reader's place — so clicking anything no longer collapses the page to a
+    // "Loading draws…" div and bounces to the top (owner-reported: "any setting I click,
+    // I dive back up to the top of the page — we need to stay by Draw 1").
+    const first = dataRef.current == null;
+    if (first) setLoading(true);
+    return api.get(`/api/sitewire/files/${appId}/rollup`)
+      .then((d) => {
+        const snap = first ? null : captureScrollAnchor();   // measured just before the re-render
+        dataRef.current = d;
+        setData(d); setErr('');
+        restoreScrollAnchor(snap);                            // put the reader back after paint
+      })
       .catch((e) => setErr(e?.data?.error || e.message || 'Could not load draws'))
       .finally(() => setLoading(false));
   }, [appId]);
@@ -89,8 +136,11 @@ export default function DrawsPanel({ appId }) {
 
   const canManage = can('manage_draws');
   if (!canManage) return null;
-  if (loading) return <div className="panel" style={{ marginTop: 12 }}>Loading draws…</div>;
-  if (err) return <div className="panel" style={{ marginTop: 12, color: 'var(--bad,#b04a3f)' }}>{err}</div>;
+  // Blank to a spinner / error ONLY before the first successful load. Once we have data,
+  // a refresh keeps it on screen (a transient refresh error shows inline below, not a
+  // full-panel wipe) so the reader never gets thrown to the top.
+  if (loading && !data) return <div className="panel" style={{ marginTop: 12 }}>Loading draws…</div>;
+  if (err && !data) return <div className="panel" style={{ marginTop: 12, color: 'var(--bad,#b04a3f)' }}>{err}</div>;
   if (!data) return null;
 
   const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [], retainage = null, oop = null, waivers = [], lien_waivers_enabled = false,
@@ -139,6 +189,9 @@ export default function DrawsPanel({ appId }) {
 
   return (
     <div>
+      {/* A refresh that failed while the desk is already up — shown inline instead of
+          replacing the whole panel, so the reader stays where they are. */}
+      {err && <div className="dd-card" style={{ marginTop: 12, borderLeft: '3px solid var(--bad,#b04a3f)', color: 'var(--bad,#b04a3f)' }}>{err}</div>}
       {notLinked ? (
         <>
           {/* GO-FORWARD ONLY: a pre-existing Sitewire property (loan already there, not pushed by us) is
@@ -231,11 +284,11 @@ export default function DrawsPanel({ appId }) {
             <Section id="dsec-draws" title="Draws" defaultOpen badge={draws.length || null}
               action={draws.length > 0 ? (
                 <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                  <button className="btn btn-sm ghost" title="A PILOT-branded PDF of the whole construction project — schedule of values + every draw's inspection photos + notes."
+                  <button className="btn btn-sm soft" title="A PILOT-branded PDF of the whole construction project — schedule of values + every draw's inspection photos + notes."
                     onClick={() => { const w = window.open('', '_blank'); act('projreport', async () => { await api.sitewireProjectReport(appId, 'staff', w); return { msg: 'Opened the whole-project report in a new tab.' }; }); }}>
                     Whole-project report
                   </button>
-                  <button className="btn btn-sm ghost" title="The same whole-project report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower."
+                  <button className="btn btn-sm soft" title="The same whole-project report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower."
                     onClick={async () => { if (!(await askConfirm('Share the borrower-safe whole-project report with the borrower? They’ll be able to see it in their portal.'))) return; const w = window.open('', '_blank'); act('projreportb', async () => { await api.sitewireProjectReport(appId, 'borrower', w); return { msg: 'Shared the borrower-safe whole-project report with the borrower.' }; }); }}>
                     Borrower copy
                   </button>
@@ -262,7 +315,8 @@ export default function DrawsPanel({ appId }) {
 
             {/* MONEY — the ledger + retainage/waivers. */}
             <Section id="dsec-ledger" title="Money ledger" defaultOpen={false}>
-              <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} oop={oop} fees={rollup.fees || null} onSaved={load} act={act} busy={busy} />
+              <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} oop={oop} fees={rollup.fees || null}
+                investorFee={data.investor_fee || null} release={data.release || null} onSaved={load} act={act} busy={busy} />
             </Section>
             <Section id="dsec-waivers" title="Retainage & lien waivers" defaultOpen={false}>
               <LienWaivers appId={appId} enabled={lien_waivers_enabled} fileOverride={data.lien_waivers_file_override}
@@ -323,6 +377,19 @@ const WIRE_KIND = {
   new_entity: { label: 'New entity', tone: 'off' },
   unknown: { label: 'Not provided', tone: 'warn' },
 };
+/* The DocuSign signature status of ONE signer on the draw wire form — mirrors the term-sheet
+   section's per-recipient pill (Signed / Viewing / Sent / Declined). */
+function drawSignerStatus(r) {
+  const s = String(r.status || '').toLowerCase();
+  if (s === 'declined') return { label: 'Declined', tone: 'off' };
+  if (r.signed_at || s === 'signed' || s === 'completed') return { label: 'Signed', tone: 'on' };
+  if (r.viewed_at || s === 'delivered') return { label: 'Viewing', tone: 'warn' };
+  return { label: 'Sent — not opened', tone: 'warn' };
+}
+function DrawStepTime({ label, at }) {
+  return <span className="dd-sub">{label}: {at ? <b style={{ color: 'var(--text)' }}>{fmtDay(at)}</b> : '—'}</span>;
+}
+
 function DrawRequestCard({ appId }) {
   const [d, setD] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -336,6 +403,11 @@ function DrawRequestCard({ appId }) {
       .then((r) => setD(r)).catch(() => setD(null)).finally(() => setLoading(false));
   }, [appId]);
   useEffect(() => { reload(); }, [reload]);
+  // Hidden file input for the manual wire-form upload. Declared HERE, with the other hooks and
+  // BEFORE the first early return, so hook order is stable across renders (a useRef after the
+  // `return null` below would crash the card with "Rendered more hooks than during the previous
+  // render" once `d` loads). The manual-upload handlers that use it live further down.
+  const manualRef = useRef(null);
   if (loading || !d) return null;
   const opts = d.recipient_options || {};
   const coBorrower = opts.coBorrower && opts.coBorrower.email ? opts.coBorrower : null;
@@ -362,6 +434,40 @@ function DrawRequestCard({ appId }) {
     try { const { blob } = await api.staffDownloadDoc(id); const url = URL.createObjectURL(blob); window.open(url, '_blank'); }
     catch (_) { setMsg('Could not open the signed form.'); }
   }
+  // ACCEPT / REJECT the wire instructions right here (owner-directed 2026-08-12: "accept the wire
+  // instructions … I don't see any option"). Writes the shared 'accepted' definition, so the money
+  // gate clears the moment the coordinator accepts.
+  async function reviewWire(action) {
+    let reason = null;
+    if (action === 'reject') {
+      reason = await askPrompt('Why are you rejecting these wire instructions? The borrower will need to re-sign the form.',
+        { title: 'Reject wire instructions', confirmLabel: 'Reject', multiline: true });
+      if (reason == null) return;                                  // cancelled
+      if (!String(reason).trim()) { setMsg('A reason is required to reject.'); return; }
+    }
+    setBusy(true); setMsg('');
+    try {
+      await api.post(`/api/sitewire/files/${appId}/wire-form/review`, { action, ...(reason ? { reason: String(reason).trim() } : {}) });
+      setMsg(action === 'accept' ? 'Wire instructions accepted — this draw can now be delivered.' : 'Wire instructions rejected — ask the borrower to re-sign the form.');
+      reload();
+    } catch (e) { setMsg((e && e.data && e.data.error) || e.message || 'Could not update the wire instructions.'); }
+    finally { setBusy(false); }
+  }
+  // GENERAL RESEND (owner-directed 2026-08-12) — nudge the current signer with a fresh DocuSign
+  // reminder to the SAME address, exactly like the term-sheet section's "Resend reminder". Distinct
+  // from "Change email & re-send" (which re-addresses). Reuses the shared esign resend endpoint by
+  // the draw envelope's row id; the server refuses if the borrower's file email drifted (steer to
+  // change-email) or if sending is paused.
+  async function resendReminder() {
+    if (!env || !env.row_id) return;
+    setBusy(true); setMsg('');
+    try {
+      await api.post(`/api/staff/esign/${env.row_id}/resend`, {});
+      setMsg('Reminder resent to the current signer.');
+      reload();
+    } catch (e) { setMsg((e && e.data && e.data.error) || e.message || 'Could not resend the reminder.'); }
+    finally { setBusy(false); }
+  }
   // Change the wire form's email on the in-flight envelope and re-send to the new
   // address (owner-directed) — the fix for a wrong email, without void + re-issue.
   async function changeEmail(rid) {
@@ -387,6 +493,39 @@ function DrawRequestCard({ appId }) {
       setEmailWarn(null);
       setMsg('The borrower’s email on the file was updated too — future emails will use it.');
     } catch (e) { setMsg((e && e.data && e.data.error) || e.message || 'Could not update the file email automatically — update it in the borrower section.'); }
+    finally { setBusy(false); }
+  }
+  // UPLOAD THE WIRE FORM MANUALLY (owner-directed 2026-08) — some files make manual changes to
+  // the form, so the coordinator uploads it here instead of (or after clearing) the DocuSign flow.
+  // It files onto the same draw condition as a draw_request_signed, so the money gate, the accept
+  // step and investor delivery treat it exactly like a DocuSign copy; the coordinator still
+  // ACCEPTS it below before any wire moves. (manualRef is declared up top with the other hooks.)
+  async function uploadManual(e) {
+    const f = (e.target.files || [])[0];
+    e.target.value = '';
+    if (!f) return;
+    setBusy(true); setMsg('');
+    try {
+      const up = await readAsUpload(f);
+      await api.post(`/api/sitewire/files/${appId}/draw-request/upload-manual`, up);
+      setMsg('Manual wire form uploaded. Review it below and accept it — once accepted it goes to the investor with the draw.');
+      reload();
+    } catch (ex) { setMsg((ex && ex.data && ex.data.error) || ex.message || 'Could not upload the wire form.'); }
+    finally { setBusy(false); }
+  }
+  // CLEAR THE DOCUSIGN FORM so a manual one can replace it (owner-directed 2026-08) — voids the
+  // sent envelope (the borrower's signing link stops working) or clears a completed one PILOT-side,
+  // and reopens the draw condition. Afterward the "Upload the wire form manually" button appears.
+  async function clearDocuSign() {
+    if (!(await askConfirm(
+      'Clear the DocuSign wire form?\n\nThis voids the form (the borrower’s signing link stops working) and removes the signed copy from the file, so you can upload the wire form manually instead. You can always send a fresh DocuSign form later.',
+      { title: 'Clear the DocuSign form', confirmLabel: 'Clear it' }))) return;
+    setBusy(true); setMsg('');
+    try {
+      await api.post(`/api/sitewire/files/${appId}/draw-request/clear`, {});
+      setMsg('DocuSign form cleared. You can now upload the wire form manually below.');
+      reload();
+    } catch (ex) { setMsg((ex && ex.data && ex.data.error) || ex.message || 'Could not clear the DocuSign form.'); }
     finally { setBusy(false); }
   }
 
@@ -418,12 +557,33 @@ function DrawRequestCard({ appId }) {
 
       {msg && <div className="dd-sub" style={{ marginTop: 8 }}>{msg}</div>}
 
-      {/* recipient progress */}
-      {env && d.recipients && d.recipients.length > 0 && (
-        <div className="dd-sub" style={{ marginTop: 8 }}>
-          {d.recipients.map((r, i) => (
-            <div key={i}>{r.name}: {r.signed_at ? `signed ${fmtDay(r.signed_at)}` : r.viewed_at ? 'opened, not yet signed' : 'sent, not yet opened'}</div>
-          ))}
+      {/* SIGNATURE STATUS BLOCK (owner-directed 2026-08-12) — the same DocuSign slot the term-sheet
+          section has: sent / viewed / signed for each person who has to sign, so the coordinator can
+          follow and monitor the status right here. */}
+      {env && Array.isArray(d.recipients) && d.recipients.length > 0 && (
+        <div className="act-card" style={{ marginTop: 10 }}>
+          <div className="act-card-title">Signature status</div>
+          <div className="act-card-sub" style={{ marginBottom: 4 }}>Follow each signer through DocuSign — sent, viewed and signed.</div>
+          {d.recipients.map((r, i) => {
+            const st = drawSignerStatus(r);
+            return (
+              <div key={i} style={{ padding: '9px 0 4px', borderTop: i ? '1px solid var(--line)' : 'none' }}>
+                <div className="row" style={{ justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <span style={{ fontWeight: 700, color: 'var(--text)' }}>{r.name || '(no name)'}</span>
+                    {r.role === 'co_borrower' && <span className="dd-sub"> · co-borrower</span>}
+                    {r.email && <div className="dd-sub" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.email}</div>}
+                  </div>
+                  <span className={'dd-chip ' + st.tone}><span className="dot" />{st.label}</span>
+                </div>
+                <div className="row" style={{ gap: 16, marginTop: 6, flexWrap: 'wrap' }}>
+                  <DrawStepTime label="Sent" at={env.sent_at} />
+                  <DrawStepTime label="Viewed" at={r.viewed_at} />
+                  <DrawStepTime label="Signed" at={r.signed_at} />
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -521,12 +681,47 @@ function DrawRequestCard({ appId }) {
         </div>
       )}
 
-      {/* signed PDF */}
-      {d.signed_document && (
-        <div style={{ marginTop: 10 }}>
-          <button className="btn btn-sm ghost" onClick={() => openSigned(d.signed_document.id)}>View the signed form (PDF)</button>
-        </div>
-      )}
+      {/* ACCEPT THE WIRE INSTRUCTIONS — the signed form + the one action that clears the money gate.
+          Visible right here so it's not a hidden step (owner-directed 2026-08-12). */}
+      {d.signed_document && (() => {
+        const rev = d.signed_document.review_status || 'pending';
+        // "Accepted" reflects the actual money GATE (wire_form) — so a wire accepted through any
+        // copy reads as accepted and the buttons drop away — falling back to this document's own
+        // status when the gate summary is absent.
+        const accepted = rev === 'accepted' || !!(d.wire_form && d.wire_form.accepted);
+        const rejected = !accepted && rev === 'rejected';
+        return (
+          <div className="act-card" id="wire-form-review" data-keep-scroll="wire-form-review"
+            style={{ marginTop: 12, borderLeft: '3px solid ' + (accepted ? 'var(--success,#2E7A5E)' : rejected ? 'var(--danger,#A32A2A)' : 'var(--gold,#ae8746)') }}>
+            <div className="act-card-head">
+              <div style={{ minWidth: 200, flex: 1 }}>
+                <div className="act-card-title">
+                  {accepted ? 'Wire instructions accepted' : rejected ? 'Wire instructions rejected' : 'Accept the wire instructions'}
+                  {d.signed_document.manual && <span className="dd-sub" style={{ fontWeight: 500 }}> · uploaded manually</span>}
+                </div>
+                <div className="act-card-sub">
+                  {accepted
+                    ? 'These wire instructions are approved — the draw can be delivered and the money can move.'
+                    : rejected
+                      ? 'These were rejected — the borrower needs to re-sign the form before any money can move.'
+                      : d.signed_document.manual
+                        ? 'This wire form was uploaded manually. Open it, check the bank wire details, and accept — the money can’t be released until you do. It goes to the investor with the draw once accepted.'
+                        : 'The borrower signed and their wire details are captured above. Review them and accept — the money can’t be released until you do.'}
+                </div>
+              </div>
+              <span className={'dd-chip ' + (accepted ? 'on' : rejected ? 'off' : 'warn')}><span className="dot" />{accepted ? 'Accepted' : rejected ? 'Rejected' : 'Needs review'}</span>
+            </div>
+            {rejected && d.signed_document.rejection_reason && (
+              <div className="act-card-sub" style={{ marginTop: 6, color: 'var(--danger,#A32A2A)' }}>Reason: {d.signed_document.rejection_reason}</div>
+            )}
+            <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+              {!accepted && <button className="btn btn-sm primary" disabled={busy} onClick={() => reviewWire('accept')}>Accept wire instructions</button>}
+              {!accepted && <button className="btn btn-sm ghost" disabled={busy} onClick={() => reviewWire('reject')}>Reject</button>}
+              <button className="btn btn-sm soft" onClick={() => openSigned(d.signed_document.id)}>View signed form (PDF)</button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* recipient chooser — only when there's a co-borrower to choose (owner-directed 2026-07-21) */}
       {coBorrower && (!env || terminal) && (
@@ -543,7 +738,8 @@ function DrawRequestCard({ appId }) {
         </div>
       )}
 
-      {/* the action button */}
+      {/* the action row — send / re-send DocuSign, remind the signer, upload the form manually,
+          or clear a sent/signed form to switch to a manual one (owner-directed 2026-08). */}
       <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
         {(!env || terminal) && (
           <button className="btn" disabled={busy || !d.can_send} onClick={() => send(terminal)}
@@ -551,7 +747,36 @@ function DrawRequestCard({ appId }) {
             {busy ? 'Sending…' : terminal ? 'Re-send draw request form' : 'Send draw request form (DocuSign)'}
           </button>
         )}
-        {env && !terminal && <span className="dd-sub">The form is out for signature. You can re-send once it’s completed, declined, or voided.</span>}
+        {/* GENERAL RESEND (owner-directed 2026-08-12) — the draw form previously had only "change
+            email & re-send"; this is the plain "remind the current signer" button the term-sheet
+            section has. It re-notifies the SAME address; the server refuses (with guidance) if the
+            file email drifted or sending is paused. */}
+        {env && !terminal && (
+          <button className="btn btn-sm" disabled={busy || !d.docusign_enabled} onClick={resendReminder}
+            title={!d.docusign_enabled ? 'DocuSign sending is turned off' : 'Send the current signer a fresh DocuSign reminder to the same address.'}>
+            {busy ? 'Sending…' : 'Resend reminder'}
+          </button>
+        )}
+        {/* UPLOAD THE WIRE FORM MANUALLY — offered whenever no form is out for signature (no
+            envelope, declined/voided, or already signed). Some files make manual changes to the
+            wire form; a manual copy supersedes the current one and still needs accepting. */}
+        {(!env || terminal) && (
+          <>
+            <button className="btn soft" disabled={busy} onClick={() => manualRef.current && manualRef.current.click()}
+              title="Upload a wire form you filled in by hand instead of sending it through DocuSign. It goes to the investor with the draw once you accept it.">
+              {busy ? 'Uploading…' : (d.signed_document ? 'Replace with a manual wire form' : 'Upload the wire form manually')}
+            </button>
+            <input ref={manualRef} type="file" accept="application/pdf,image/*" disabled={busy} onChange={uploadManual} style={{ display: 'none' }} />
+          </>
+        )}
+        {/* CLEAR the DocuSign form while it is OUT for signature, so a manual one can replace it. */}
+        {env && !terminal && env.clearable && (
+          <button className="btn btn-sm ghost" disabled={busy} onClick={clearDocuSign}
+            title="Void the DocuSign form (its signing link stops working) and remove the signed copy, so you can upload the wire form manually instead.">
+            Clear &amp; upload manually
+          </button>
+        )}
+        {env && !terminal && <span className="dd-sub" style={{ alignSelf: 'center' }}>The form is out for signature — send a reminder, change the email, or clear it to upload one manually.</span>}
       </div>
     </div>
   );
@@ -2013,7 +2238,7 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
         <div className="muted small">
           Requested {usd2(draw.requested_cents)} · {draw.final_approved_cents > 0 ? 'Final approved' : 'Inspector approved'} {usd2(draw.approved_cents)}
           {draw.fee_cents > 0 ? <> · Less fee {usd2(draw.fee_cents)}{draw.fee_projected ? '*' : ''}</> : null}
-          {' '}· Net {usd2(draw.net_release_cents)}
+          {' '}· Net <b style={{ color: 'var(--teal-br)' }}>{usd2(draw.net_release_cents)}</b>
         </div>
       </div>
 
@@ -2102,6 +2327,10 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
             route has always accepted them (client.DRAW_TRANSITIONS). Both also REQUIRE a note of at
             least 8 characters (audit B-10) which the old button never asked for, so every click
             answered 400 — the button was broken on open draws too. */}
+        {/* The DECISIONS on this draw, grouped + eyebrow-labelled the same way "Documents" is, so
+            the two clusters read as a pair and the primary "Final approve" anchors this one. */}
+        <span className="act-group">
+        <span className="act-label">Decisions</span>
         {DRAW_ACTIONS(isOpen).map((a) => (
           <button key={a.key} className={'btn btn-sm ' + (a.key === 'approve' ? 'primary' : 'ghost')}
             title={offTip || a.hint} disabled={writesOff || busy === a.key + draw.sitewire_draw_id}
@@ -2162,6 +2391,7 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
           })}>
           {finding ? 'Re-send findings' : 'Deliver findings to borrower'}
         </button>
+        </span>
 
         <span className="act-sep" aria-hidden="true" />
 
@@ -2204,10 +2434,21 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
   const [note, setNote] = useState('');   // optional note for a MANUAL delivery
+  // THE ATTACHMENT GATE (owner-directed 2026-08-14). When a document cannot be carried, the send
+  // REFUSES and the server hands back the whole plan; this holds it while the coordinator decides.
+  // `linkKeys` are the documents they chose to send as a PILOT link, `ack` is the deliberate
+  // "send it short anyway" tick, and `plan` is the last preflight so they can look before they act.
+  const [gate, setGate] = useState(null);
+  const [linkKeys, setLinkKeys] = useState([]);
+  const [ack, setAck] = useState(false);
+  const [plan, setPlan] = useState(null);
   const load = useCallback(() => {
     api.get(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`).then(setP).catch(() => {});
   }, [appId, drawId]);
   useEffect(() => { if (open) load(); }, [open, load]);
+  // A change of funding mode changes which documents ride along (the borrower's wire form is only
+  // sent on an investor-direct delivery), so a plan worked out under the old mode is stale.
+  useEffect(() => { setGate(null); setPlan(null); setLinkKeys([]); setAck(false); }, [p && p.funding_mode]);
 
   async function setMode(mode, scope) {
     setBusy(true); setErr(''); setMsg('');
@@ -2218,11 +2459,30 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
     finally { setBusy(false); }
   }
 
-  async function send() {
+  /** Look at what would travel, without sending anything or minting a link. */
+  async function checkDocuments() {
+    setBusy(true); setErr(''); setMsg(''); setGate(null);
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`, {
+        confirm_note_buyer: p.note_buyer, mode: p.funding_mode, preflight: true,
+      });
+      setPlan(r.plan);
+      if (r.plan.needs_consent) setGate({ plan: r.plan, warnings: r.linkWarnings || [] });
+    } catch (e) { setErr(e?.data?.error || 'Could not check the documents.'); }
+    finally { setBusy(false); }
+  }
+
+  /**
+   * `extra` carries the coordinator's decision from the gate — an acknowledgement, a set of
+   * documents to send as links, or a harder compression ceiling. Its presence also means they have
+   * already been shown and accepted the picture, so the plain confirm is not asked a second time.
+   */
+  async function send(extra) {
     if (!p) return;
     const manual = p.funding_mode === 'manual';
     let ok;
-    if (manual) {
+    if (extra) ok = true;
+    else if (manual) {
       ok = await askConfirm(`Record that this draw was delivered to ${p.note_buyer} outside PILOT?\n\nPILOT sends no email — this only records the delivery so the reminders stop.`);
     } else {
       const who = p.to.join(', ');
@@ -2236,16 +2496,31 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
     try {
       const r = await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`, {
         confirm_note_buyer: p.note_buyer, mode: p.funding_mode, note: manual ? note : undefined,
+        ...(extra || {}),
       });
       if (r.manual) {
         setMsg(`Recorded as delivered to ${p.note_buyer} manually — the "deliver to the investor" reminders will stop.`);
       } else {
         const missing = (r.skipped || []).length;
-        setMsg(`Delivered to ${p.note_buyer} (${r.to.length} contact${r.to.length === 1 ? '' : 's'}) with ${r.attachments.length} attachment${r.attachments.length === 1 ? '' : 's'}.${missing ? ` ${missing} item(s) could not be attached — see below.` : ''}`);
+        const links = (r.links || []).length;
+        const squeezed = (r.plan && r.plan.compressed_n) || 0;
+        setMsg(`Delivered to ${p.note_buyer} (${r.to.length} contact${r.to.length === 1 ? '' : 's'}) with ${r.attachments.length} attachment${r.attachments.length === 1 ? '' : 's'}`
+          + `${links ? `, ${links} sent as a PILOT link` : ''}`
+          + `${squeezed ? ` (${squeezed} compressed to fit)` : ''}.`
+          + `${missing ? ` ${missing} document${missing === 1 ? '' : 's'} could NOT be sent — recorded on the delivery record below.` : ''}`);
       }
-      setNote('');
+      setNote(''); setGate(null); setPlan(null); setLinkKeys([]); setAck(false);
       load(); reload();
-    } catch (e) { setErr(e?.data?.error || 'Could not deliver this draw to the investor.'); }
+    } catch (e) {
+      // NOT AN ERROR — a question. The server refused because a document cannot travel, and handed
+      // back everything needed to say what and why and offer the way through.
+      if (e?.data?.code === 'attachments_incomplete') {
+        setGate({ plan: e.data.plan, warnings: e.data.linkWarnings || [] });
+        setPlan(e.data.plan);
+        setAck(false);
+        setErr('');
+      } else setErr(e?.data?.error || 'Could not deliver this draw to the investor.');
+    }
     finally { setBusy(false); }
   }
 
@@ -2351,11 +2626,11 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
             </ul>
           )}
 
-          {/* HAS THIS LOAN BEEN SOLD? A CHECK, NOT A STOP — the Deliver button stays enabled
-              (owner-directed 2026-08-09: "default should be like it was sold already, but it
-              should give you a warning that it doesn't have a PA date if you're sure you want to
-              do investor delivery"). Gold, not red: red is for the blockers above, which do refuse.
-              A table-funded loan produces no warning at all — it was sold at the closing table. */}
+          {/* HAS THIS LOAN BEEN SOLD? STILL A CHECK, NEVER A STOP — the Deliver button stays
+              enabled. Since 2026-08-13 the answer also decides the split above: an unsold loan is
+              released by us, so this says what is happening rather than only asking. Gold, not red:
+              red is for the blockers above, which do refuse. A table-funded loan shows nothing at
+              all — it was sold at the closing table. */}
           {p.sold_warning && (
             <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 8, background: 'var(--gold-soft,#F7F1E4)', border: '1px solid var(--gold,#AE8746)' }}>
               <div style={{ fontWeight: 700, color: '#141B22' }}>{p.sold_warning.title}</div>
@@ -2363,8 +2638,94 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
             </div>
           )}
 
+          {/* ── WHAT WILL ACTUALLY BE ATTACHED (owner-directed 2026-08-14) ────────────────────
+              "When you click send an email, if there's an attachment that cannot be attached, you
+              need to say clearly what cannot be attached and why. If the person still wants to send
+              it, they can send it, but it should not be ignored blindly."
+
+              The plan is only ever computed on demand — building it means generating the report and
+              the packet, which is far too expensive to do every time this card renders. So this is
+              blank until the coordinator presses Check, or until a send comes back refused. */}
+          {p.funding_mode !== 'manual' && plan && !gate && (
+            <div className="act-card-sub" style={{ marginTop: 12 }}>
+              <b style={{ color: 'var(--good,#2F7F53)' }}>All {plan.attach.length} document{plan.attach.length === 1 ? '' : 's'} will be attached.</b>{' '}
+              {plan.compressed_n > 0 && `${plan.compressed_n} compressed to fit (${Math.round(plan.saved_bytes / 1024)} KB saved). `}
+              {plan.attach.map((a) => a.what).join(', ')}.
+            </div>
+          )}
+
+          {gate && (
+            <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 8, background: '#FBF3F2', border: '1px solid var(--danger,#B4453C)' }}>
+              <div style={{ fontWeight: 700, color: '#141B22' }}>
+                {gate.plan.omitted.length} document{gate.plan.omitted.length === 1 ? '' : 's'} cannot be attached to this email
+              </div>
+              <div className="small" style={{ marginTop: 4, color: '#3A4550' }}>
+                Nothing has been sent. Choose what to do with each one below — or send without them, which is recorded against your name.
+              </div>
+
+              <ul style={{ margin: '10px 0 0', paddingLeft: 0, listStyle: 'none' }}>
+                {gate.plan.omitted.map((m) => (
+                  <li key={m.key || m.what} style={{ padding: '8px 0', borderTop: '1px solid #EFE3E1' }}>
+                    <div style={{ fontWeight: 600, color: '#141B22' }}>{m.what}</div>
+                    <div className="small" style={{ color: '#4B585C' }}>{m.reason}</div>
+                    {m.remedy === 'share_link' && (
+                      <label className="small" style={{ display: 'flex', gap: 7, alignItems: 'flex-start', marginTop: 6, color: '#141B22', cursor: 'pointer' }}>
+                        <input type="checkbox" disabled={busy} checked={linkKeys.includes(m.key)}
+                          onChange={(e) => setLinkKeys((k) => (e.target.checked ? [...k, m.key] : k.filter((x) => x !== m.key)))} />
+                        <span>Send this one as a PILOT link instead</span>
+                      </label>
+                    )}
+                    {m.remedy === 'accept_the_document' && <div className="small" style={{ color: '#AE8746', marginTop: 4 }}>Review and accept it on the draw, then send again.</div>}
+                    {m.remedy === 'upload_it' && <div className="small" style={{ color: '#AE8746', marginTop: 4 }}>It needs to be on the file before it can be sent.</div>}
+                  </li>
+                ))}
+              </ul>
+
+              {/* THE DOUBLE WARNING (owner-directed): two distinct warnings, shown only once a link
+                  is actually chosen — and the second one says plainly that compressing is better. */}
+              {linkKeys.length > 0 && (
+                <div style={{ marginTop: 10, padding: '9px 11px', borderRadius: 7, background: 'var(--gold-soft,#F7F1E4)', border: '1px solid var(--gold,#AE8746)' }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: '#141B22' }}>Before you send a link — two things</div>
+                  <ol className="small" style={{ margin: '5px 0 0', paddingLeft: 17, color: '#3A4550' }}>
+                    {gate.warnings.map((w, i) => <li key={i} style={{ marginTop: 3 }}>{w}</li>)}
+                  </ol>
+                </div>
+              )}
+
+              <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button className="btn btn-sm soft" disabled={busy}
+                  title="Compress the documents as hard as the engine can and try again"
+                  onClick={() => send({ compress_level: 5 })}>
+                  {busy ? 'Compressing…' : 'Compress harder and retry'}
+                </button>
+                {linkKeys.length > 0 && (
+                  <button className="btn btn-sm primary" disabled={busy}
+                    onClick={() => send({ share_link_keys: linkKeys })}>
+                    Send with {linkKeys.length} PILOT link{linkKeys.length === 1 ? '' : 's'}
+                  </button>
+                )}
+                <button className="btn btn-sm ghost" disabled={busy} onClick={() => { setGate(null); setLinkKeys([]); setAck(false); }}>Cancel</button>
+              </div>
+
+              <label className="small" style={{ display: 'flex', gap: 7, alignItems: 'flex-start', marginTop: 12, color: '#141B22', cursor: 'pointer' }}>
+                <input type="checkbox" checked={ack} disabled={busy} onChange={(e) => setAck(e.target.checked)} />
+                <span>I understand {gate.plan.omitted.length === 1 ? 'this document' : 'these documents'} will not reach {p.note_buyer || 'the investor'}, and I want to send anyway.</span>
+              </label>
+              <button className="btn btn-sm" style={{ marginTop: 8 }} disabled={busy || !ack}
+                onClick={() => send({ acknowledge_omissions: true, share_link_keys: linkKeys })}>
+                Send without {gate.plan.omitted.length === 1 ? 'it' : 'them'}
+              </button>
+            </div>
+          )}
+
           <div className="row" style={{ gap: 10, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button className="btn btn-sm primary" disabled={busy || !p.can_send} onClick={send}
+            {p.funding_mode !== 'manual' && (
+              <button className="btn btn-sm soft" disabled={busy || !p.can_send} onClick={checkDocuments}
+                title="See exactly which documents will be attached before you send">
+                {busy ? 'Checking…' : 'Check documents'}
+              </button>
+            )}
+            <button className="btn btn-sm primary" disabled={busy || !p.can_send} onClick={() => send()}
               title={p.can_send ? (p.funding_mode === 'manual' ? 'Record this draw as delivered manually' : `Deliver this draw to ${p.note_buyer}`) : 'Clear the items above first'}>
               {busy ? (p.funding_mode === 'manual' ? 'Recording…' : 'Sending…')
                 : p.funding_mode === 'manual' ? 'Record manual delivery' : `Deliver to ${p.note_buyer || 'the investor'}`}
@@ -2469,6 +2830,8 @@ function FileDrawSettings({ appId }) {
 function ReleasePartyCard({ appId, release, reload }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [paBusy, setPaBusy] = useState(false);
+  const [paMsg, setPaMsg] = useState('');
   if (!release) return null;
 
   async function setProjectMode(mode) {
@@ -2476,6 +2839,44 @@ function ReleasePartyCard({ appId, release, reload }) {
     try { await api.post(`/api/sitewire/files/${appId}/release-party`, { mode }); reload(); }
     catch (e) { setErr(e?.data?.error || 'Could not save that choice.'); }
     finally { setBusy(false); }
+  }
+
+  // Re-pull the owner's PA-date field from Encompass so PILOT recognizes a file that has since
+  // been sold (owner-directed 2026-08-12: "a refresh button over there to pull the PA date again
+  // to see if the file was sold … it should verify for itself that it was sold already"). This is
+  // a READ-ONLY Encompass pull — nothing is written to Encompass. On success the card reloads with
+  // the recomputed sold state.
+  // PROCESS THIS FILE AS SOLD — the draw coordinator's way past an unsold file (owner-directed
+  // 2026-08-13: "in case anything goes wrong, she should have this ability, which should give her a
+  // double warning when she's changing it"). TWO warnings, deliberately: the first says what it
+  // changes about the money, the second asks her to confirm the fact itself. Turning it back OFF
+  // only returns the file to what Encompass says, so it asks once.
+  async function setTreatAsSold(on) {
+    if (on) {
+      if (!(await askConfirm(
+        'Process this file as if the loan is already sold?\n\n'
+        + 'Encompass has no purchase advice date on this file, so PILOT reads it as NOT sold.\n\n'
+        + 'If you continue, draws on this file follow the file’s own release setting (the investor can '
+        + 'release directly), and the investor’s draw fee is deducted from our fee on the money ledger.'))) return;
+      if (!(await askConfirm(
+        'Second check — this changes real money.\n\n'
+        + 'Only do this if you know the loan HAS already been sold to the investor. If it has not, we '
+        + 'release the draw ourselves and the investor charges us nothing.\n\nAre you sure the loan is sold?'))) return;
+    } else if (!(await askConfirm('Go back to reading this file as not sold yet? Draws will be released by us again, with no investor fee.'))) return;
+    setBusy(true); setErr('');
+    try { await api.post(`/api/sitewire/files/${appId}/treat-as-sold`, on ? { on: true, confirm: true } : { on: false }); reload(); }
+    catch (e) { setErr(e?.data?.error || 'Could not change that setting.'); }
+    finally { setBusy(false); }
+  }
+
+  async function refreshPaDate() {
+    setPaBusy(true); setPaMsg(''); setErr('');
+    try {
+      const r = await api.post(`/api/sitewire/files/${appId}/refresh-pa-date`, {});
+      if (r && r.pulled) { setPaMsg('Re-read the purchase advice date from Encompass.'); reload(); }
+      else setErr(r && r.reason ? `Couldn’t read the PA date from Encompass: ${r.reason}` : 'Couldn’t reach Encompass to re-read the PA date — try again in a moment.');
+    } catch (e) { setErr(e?.data?.error || 'Could not refresh the PA date.'); }
+    finally { setPaBusy(false); }
   }
 
   const w = release.warning;
@@ -2492,23 +2893,46 @@ function ReleasePartyCard({ appId, release, reload }) {
         {/* TWO ways a loan is sold, and the label says WHICH — a table-funded loan was sold at the
             closing table and is never getting a purchase advice date, so "no PA date" on one of
             those is completely normal and must not read as a problem (owner-directed 2026-08-09). */}
-        <span className={`chip ${release.sold === 'sold' ? 'good' : ''}`}
-          title={release.soldVia === 'table_funding'
-            ? 'Funded on the Table Funding warehouse line — sold at the closing table, so no purchase advice date is expected'
-            : 'Read from the purchase advice date in Encompass'}>
-          {release.soldLabel}
-        </span>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+          <span className={`chip ${release.soldEffective === 'sold' || release.sold === 'sold' ? 'good' : ''}`}
+            title={release.soldVia === 'table_funding'
+              ? 'Funded on the Table Funding warehouse line — sold at the closing table, so no purchase advice date is expected'
+              : 'Read from the purchase advice date in Encompass'}>
+            {release.soldLabel}
+          </span>
+          {/* Re-read the PA date from Encompass to check whether the loan has since been sold.
+              Read-only; nothing is written to Encompass. Shown only where the PA-date field id is
+              configured — otherwise a re-pull can read nothing. */}
+          {release.paConfigured !== false && (
+            <button type="button" className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 13 }}
+              disabled={paBusy}
+              title="Re-read the purchase advice date from Encompass to check whether this loan has been sold (read-only — nothing is written to Encompass)."
+              onClick={refreshPaDate}>
+              {paBusy ? 'Checking Encompass…' : '↻ Refresh PA date'}
+            </button>
+          )}
+        </div>
       </div>
+      {paMsg ? <div className="act-card-sub" style={{ color: 'var(--primary,#2F7F86)' }}>{paMsg}</div> : null}
 
       <div className="act-card-sub" style={{ marginTop: 8, color: '#4B585C' }}>{release.modeHelp}</div>
 
-      {/* THE QUESTION — never a refusal. The coordinator can carry on, or take the one-click switch. */}
+      {/* WHY it is on "we release" when the file says otherwise: an unsold loan is always released
+          by us (owner-directed 2026-08-13), and the file's own choice comes back the day it sells. */}
+      {release.forcedByNotSold && release.configuredModeLabel && (
+        <div className="act-card-sub" style={{ marginTop: 4, color: '#4B585C' }}>
+          This file is set to “{release.configuredModeLabel}”, which resumes as soon as the loan is sold.
+        </div>
+      )}
+
+      {/* THE BADGE every not-sold file carries — it states what is happening, and offers the draw
+          coordinator the way past it (behind a double warning). Never a refusal. */}
       {w && (
         <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 8, background: 'var(--gold-soft,#F7F1E4)', border: '1px solid var(--gold,#AE8746)' }}>
           <div style={{ fontWeight: 700, color: '#141B22' }}>{w.title}</div>
           <div className="small" style={{ marginTop: 4, color: '#3A4550' }}>{w.body}</div>
           <button className="btn btn-sm ghost" style={{ marginTop: 8 }} disabled={busy}
-            onClick={() => setProjectMode(w.suggestMode)}>{w.suggestLabel}</button>
+            onClick={() => setTreatAsSold(w.action !== 'clear')}>{w.actionLabel}</button>
         </div>
       )}
 
@@ -2583,7 +3007,11 @@ function DrawChecklist({ checklist, statusWords, dates, daysInStage }) {
               <b style={{ color: '#141B22' }}>{s.label}</b>
               {s.state !== 'done' && s.who ? <span style={{ color: '#4B585C' }}> — waiting on {s.who}</span> : null}
               {s.detail ? <span style={{ display: 'block', color: '#4B585C' }}>{s.detail}</span> : null}
-              {s.state !== 'done' && s.action ? <span style={{ display: 'block', color: '#4B585C' }}>→ {s.action}</span> : null}
+              {s.state !== 'done' && s.action ? (
+                STEP_GOTO[s.key]
+                  ? <button type="button" className="dd-quicklink" title="Go straight to where you do this" onClick={() => goToSection(STEP_GOTO[s.key])}>{s.action} →</button>
+                  : <span style={{ display: 'block', color: '#4B585C' }}>→ {s.action}</span>
+              ) : null}
             </span>
           </li>
         ))}
@@ -3037,11 +3465,11 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
   );
 }
 
-function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null, onSaved, act, busy: parentBusy }) {
+function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null, investorFee = null, release = null, onSaved, act, busy: parentBusy }) {
   // map the Sitewire draw id -> the friendly draw number so the ledger reads "Draw #1", not "#8001"
   const numByDraw = {};
   for (const d of draws) if (d.number != null) numByDraw[String(d.sitewire_draw_id)] = d.number;
-  const [f, setF] = useState({ sitewire_draw_id: '', approved: '', fee: '', fee_kind: 'virtual', release_date: '', funded_status: 'released' });
+  const [f, setF] = useState({ sitewire_draw_id: '', approved: '', fee: '', investor_fee: '', fee_kind: 'virtual', release_date: '', funded_status: 'released' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const pct = retainage ? Number(retainage.pct) || 0 : 0;
@@ -3063,18 +3491,91 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
   const oopHeldC = (approvedC || 0) - reimbursableC; // the part of this draw that stays out of pocket
   const retC = Math.round(reimbursableC * pct / 100);
   const net = reimbursableC - feeC - retC;
+
+  // THE INVESTOR'S CUT OF OUR FEE (owner-directed 2026-08-13). THIS SPLITS OUR FEE, IT NEVER MOVES
+  // THE BORROWER'S MONEY: `net` above — what the borrower is wired — is computed from the same
+  // `feeC` it always was, and nothing on the borrower's screen, the emails or the draw itself
+  // changes. The only question here is where our own fee ends up: some note buyers keep a fixed
+  // amount for handling the release and send us the rest, so a $299 CorrFirst fee deposits $204.
+  // The server fills the box in from the hard rule (and only once the loan is sold to that buyer);
+  // it stays editable, because the coordinator at the ledger is the one who knows.
+  const invRuleCents = investorFee ? Number(investorFee.rule_cents) || 0 : 0;
+  const invApplies = !!(investorFee && investorFee.applies);
+  const invBuyer = (investorFee && investorFee.buyer_label) || 'the investor';
+  const investorCutFor = (drawFeeCents) => (invApplies ? Math.min(invRuleCents, Math.max(0, Number(drawFeeCents) || 0)) : 0);
+  const invCutC = centsOrNull(f.investor_fee) || 0;   // a $0 cut is legitimate — most files have one
+  const invOverFee = invCutC > feeC;                  // they can never keep more than we charge
+  const netFeeC = Math.max(0, feeC - Math.min(invCutC, feeC));
+  // AN UNSOLD LOAN CARRIES NO INVESTOR FEE AT ALL, so the box is not offered — not a $0 somebody
+  // might type over (owner-directed 2026-08-13: "if it's not sold yet it should not fill out the
+  // investor fee, because the investor is not charging it yet"). The server decides that, in
+  // `investor_fee.offer`, from the same sold answer the badge on the draw desk shows.
+  const invOffer = !!(investorFee && investorFee.offer);
+  // The columns stay visible for a file that already has a recorded cut, so history never vanishes.
+  const showInvestorFee = invOffer || ledger.some((d) => Number(d.investor_fee_cents) > 0);
+  // WHO WIRES decides how our own fee reaches us, and the ledger must not claim a deposit that
+  // never happens: when WE release, the fee simply stays out of the wire — the borrower's release
+  // is smaller and there is nothing to collect. When the INVESTOR releases, they collect our fee
+  // out of the draw and send it on, less whatever they keep.
+  const weRelease = !release || release.party !== 'investor';
+
+  // AUTO-POPULATE + MATCH GUARD (owner-directed 2026-08-12). The approved amount and our fee are
+  // already known per draw (the system computed them — see rollup.draws), so selecting a draw fills
+  // them in and the coordinator only enters the release DATE. The boxes stay editable, but the
+  // release is BLOCKED until they line up with the draw again: this is the last step, so the recorded
+  // figures must equal the draw's — "if it's changing any figures, it should not let you proceed
+  // before it's matching to the actual draw."
+  const selDraw = draws.find((d) => String(d.sitewire_draw_id) === String(f.sitewire_draw_id)) || null;
+  // A release records the FINAL-approved amount — the figure the server validates the release against
+  // (sitewire_draws.total_approved_cents) and the amount that actually wires. drawMoney exposes it as
+  // final_approved_cents (0 until the draw is finally approved). Seeding/matching the INSPECTOR
+  // proposal instead could seed a number the server then rejects with a 422 when the lender cut the
+  // amount at final approval (pre-merge audit C-1); the final figure also gates recording on final
+  // approval, which IS the order of the workflow (the checklist puts "final approve" before "record").
+  const expApprovedC = selDraw ? (Number(selDraw.final_approved_cents) || 0) : null;
+  const expFeeC = selDraw ? (Number(selDraw.fee_cents) || 0) : null;
+  const drawNotApproved = !!selDraw && expApprovedC <= 0;   // not finally approved yet — nothing to release
+  const figuresMatch = selDraw ? (approvedC === expApprovedC && feeC === expFeeC) : true;
+  // Seed the money boxes from a draw's FINAL-approved figures. A not-yet-final draw seeds a blank
+  // approved (the "not finally approved" note shows instead). release_date/funded_status are left
+  // alone — the date is the one thing a human still fills in.
+  function seedFromDraw(d, extra = {}) {
+    setF((s) => ({
+      ...s,
+      ...extra,
+      approved: d && Number(d.final_approved_cents) > 0 ? centsToInput(d.final_approved_cents) : '',
+      fee: d ? centsToInput(d.fee_cents) : '',
+      // The investor's cut fills itself in from the hard rule for this file's note buyer — but only
+      // on a loan they have actually bought. Not sold (or we cannot tell) seeds $0: we keep the
+      // whole fee, and the note under the box names their rate so it is one press to apply.
+      investor_fee: d ? centsToInput(investorCutFor(d.fee_cents)) : '',
+      fee_kind: d && d.fee_kind ? d.fee_kind : s.fee_kind,
+    }));
+    setErr('');
+  }
   async function save() {
     // A release must name its draw (audit F-2) — so the ledger, retainage pool and overdue monitor all bind
     // the release to exactly one draw. The server enforces this too; guarding here gives a clean message.
     if (!f.sitewire_draw_id) { setErr('Pick which draw this release is for.'); return; }
     if (approvedC == null || approvedC <= 0) { setErr('Enter the approved amount.'); return; }
+    if (!figuresMatch) {
+      setErr(`The approved amount and our fee must match Draw #${selDraw ? selDraw.number : ''} before you can record the release — approved ${usd2(expApprovedC)}, our fee ${usd2(expFeeC)}. Use the draw’s figures, or correct the numbers.`);
+      return;
+    }
+    // The investor's cut comes OUT of our fee, so it can never be bigger than it — that would
+    // report a deposit that never arrives. (The server refuses it too; this is the clean message.)
+    if (invOverFee) {
+      setErr(`${invBuyer} can’t keep ${usd2(invCutC)} — that is more than our ${usd2(feeC)} fee on this draw.`);
+      return;
+    }
     setBusy(true); setErr('');
     try {
       await api.post('/api/sitewire/disbursements', {
         application_id: appId, sitewire_draw_id: f.sitewire_draw_id,
-        approved_cents: approvedC, fee_cents: feeC, fee_kind: f.fee_kind, release_date: f.release_date || null, funded_status: f.funded_status,
+        approved_cents: approvedC, fee_cents: feeC, investor_fee_cents: invCutC,
+        fee_kind: f.fee_kind, release_date: f.release_date || null, funded_status: f.funded_status,
       });
-      setF({ sitewire_draw_id: '', approved: '', fee: '', fee_kind: 'virtual', release_date: '', funded_status: 'released' });
+      setF({ sitewire_draw_id: '', approved: '', fee: '', investor_fee: '', fee_kind: 'virtual', release_date: '', funded_status: 'released' });
       onSaved();
     } catch (e) { setErr(e?.data?.error || e.message || 'Could not save.'); } finally { setBusy(false); }
   }
@@ -3082,8 +3583,11 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
   const sum = (k, only) => ledger.reduce((s, d) => s + ((!only || d.funded_status === only) ? (Number(d[k]) || 0) : 0), 0);
   const totApproved = sum('approved_cents');
   const totFee = sum('fee_cents');
+  const totInvestorFee = sum('investor_fee_cents');   // 0 on every file with no such deal
   const totNet = sum('net_release_cents', 'released');
   const LEDGER_STATUS = { released: { label: 'Released', cls: 'sw-approved' }, held: { label: 'Held', cls: 'sw-pending' }, pending: { label: 'Pending', cls: 'sw-draft' } };
+  // Who actually wired the money, per the file's "Who releases the money" setting (release-party).
+  const RELEASED_BY = { us: 'Us', investor: 'Investor' };
   return (
     <div className="dd-card">
       <div className="dd-card-h" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
@@ -3094,7 +3598,7 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
             <div className="dd-sub" style={{ marginTop: 1 }}>Our fee comes off the approved amount{pct > 0 ? `, ${pct}% is held as retainage,` : ''} and the borrower nets the rest.</div>
           </div>
         </div>
-        <button className="btn btn-sm ghost" onClick={() => api.sitewireExportGl(appId).catch(() => {})}>GL export</button>
+        <button className="btn btn-sm soft" onClick={() => api.sitewireExportGl(appId).catch(() => {})}>GL export</button>
       </div>
 
       {/* summary tiles */}
@@ -3103,10 +3607,21 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
         {/* OUR fee income on this project, kept separate from the borrower's money (owner-directed
             2026-08-03). `charged` is what recorded releases actually took; `projected` is the file's
             standard fee on draws that have not been released yet. */}
+        {/* The tile keeps showing the fee we CHARGED — that is the figure every other surface
+            prints. When a note buyer keeps part of it, the line beneath says how much of it
+            actually reached our bank (owner-directed 2026-08-13). */}
         <KpiTile label="Our fees" value={usd(totFee)} tone="gold"
-          sub={fees && Number(fees.projected_cents) > 0
-            ? `+ ${usd(fees.projected_cents)} expected on draws not yet released`
-            : (fees && fees.per_draw_cents != null ? `${usd(fees.per_draw_cents)} per draw` : undefined)} />
+          sub={totInvestorFee > 0
+            ? `${usd(totInvestorFee)} kept by the investor · ${usd(Math.max(0, totFee - totInvestorFee))} ours`
+            : (fees && Number(fees.projected_cents) > 0
+              ? `+ ${usd(fees.projected_cents)} expected on draws not yet released`
+              : (fees && fees.per_draw_cents != null ? `${usd(fees.per_draw_cents)} per draw` : undefined))} />
+        {/* WHAT ACTUALLY REACHES OUR BANK across this project — our fee less whatever the investor
+            keeps. Only on a file that has such a deal, so every other file's tiles are unchanged. */}
+        {totInvestorFee > 0 && (
+          <KpiTile label="Reaching our bank" value={usd(Math.max(0, totFee - totInvestorFee))} tone="gold"
+            sub={`after ${usd(totInvestorFee)} kept by the investor`} />
+        )}
         <KpiTile label="Net wired to borrower" value={usd(totNet)} tone="teal" sub="released" />
         {showRetainage && <KpiTile label="Retainage held" value={usd(retainage.holding_cents)} sub={retainage.released_cents > 0 ? `released ${usd2(retainage.released_cents)}` : 'held back'} />}
         {floorC > 0 && <KpiTile label="Out-of-pocket rehab" value={usd(floorC)} tone="gold" sub={oop && oop.remaining_cents > 0 ? `${usd2(oop.remaining_cents)} left before draws reimburse` : 'met — draws now reimburse'} />}
@@ -3121,8 +3636,8 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
 
       {ledger.length > 0 && (
         <div className="dd-tablecard" style={{ overflowX: 'auto', marginTop: 12 }}>
-          <table className="dd-table" style={{ minWidth: 640 }}>
-            <thead><tr><th>Draw</th><th className="num">Approved</th><th className="num">Fee</th>{showRetainage && <th className="num">Retainage</th>}<th className="num">Net release</th><th>Date</th><th>Status</th></tr></thead>
+          <table className="dd-table" style={{ minWidth: 720 }}>
+            <thead><tr><th>Draw</th><th className="num">Approved</th><th className="num">Fee</th>{showInvestorFee && <th className="num">Investor fee</th>}{showInvestorFee && <th className="num">Our net fee</th>}{showRetainage && <th className="num">Retainage</th>}<th className="num">Net release</th><th>Date</th><th>Released by</th><th>Status</th></tr></thead>
             <tbody>
               {ledger.map((d) => {
                 const st = LEDGER_STATUS[d.funded_status] || { label: d.funded_status, cls: 'sw-draft' };
@@ -3131,9 +3646,14 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
                     <td style={{ fontWeight: 600 }}>{d.kind === 'retainage_release' ? 'Retainage' : (d.sitewire_draw_id ? 'Draw #' + (numByDraw[String(d.sitewire_draw_id)] ?? d.sitewire_draw_id) : '—')}</td>
                     <td className="num" style={{ fontVariantNumeric: 'tabular-nums' }}>{usd2(d.approved_cents)}</td>
                     <td className="num" style={{ fontVariantNumeric: 'tabular-nums' }}>{usd2(d.fee_cents)}</td>
+                    {/* The SAME fee, split: what the note buyer kept, and the deposit left for us.
+                        `net_fee_cents` is computed by the database itself, so it can never drift. */}
+                    {showInvestorFee && <td className="num" style={{ fontVariantNumeric: 'tabular-nums' }}>{Number(d.investor_fee_cents) > 0 ? usd2(d.investor_fee_cents) : '—'}</td>}
+                    {showInvestorFee && <td className="num" style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{d.kind === 'retainage_release' ? '—' : usd2(d.net_fee_cents != null ? d.net_fee_cents : Math.max(0, Number(d.fee_cents || 0) - Number(d.investor_fee_cents || 0)))}</td>}
                     {showRetainage && <td className="num" style={{ fontVariantNumeric: 'tabular-nums' }}>{usd2(d.retainage_held_cents)}</td>}
                     <td className="num" style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: 'var(--teal-br)' }}>{usd2(d.net_release_cents)}</td>
                     <td className="muted" style={{ whiteSpace: 'nowrap' }}>{fmtDay(d.release_date)}</td>
+                    <td className="muted">{d.kind === 'retainage_release' ? '—' : (RELEASED_BY[d.release_party] || '—')}</td>
                     <td><span className={'pill ' + st.cls}>{st.label}</span></td>
                   </tr>
                 );
@@ -3143,31 +3663,92 @@ function LedgerPanel({ appId, ledger, draws, retainage, oop = null, fees = null,
         </div>
       )}
 
-      {/* record a release — a clean inline form with a prominent net preview */}
+      {/* record a release — the draw's figures fill in on their own; the coordinator adds the date */}
       <div className="dd-card" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>
-        <div className="dd-field-l" style={{ fontWeight: 700, marginBottom: 8 }}>Record a release</div>
+        <div className="dd-field-l" style={{ fontWeight: 700, marginBottom: 2 }}>Record a release</div>
+        <div className="dd-sub" style={{ marginBottom: 8 }}>Pick a draw — its approved amount and our fee fill in automatically. You only need the release date. If you change a figure it must still match the draw before you can record the release.</div>
         <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <label className="small">Draw <span style={{ color: 'var(--bad,#b04a3f)' }}>*</span>
-            <select className="input" value={f.sitewire_draw_id} onChange={(e) => setF({ ...f, sitewire_draw_id: e.target.value })}>
+            <select className="input" value={f.sitewire_draw_id}
+              onChange={(e) => { const v = e.target.value; seedFromDraw(draws.find((x) => String(x.sitewire_draw_id) === String(v)) || null, { sitewire_draw_id: v }); }}>
               <option value="">Select a draw…</option>
               {draws.map((d) => <option key={d.sitewire_draw_id} value={d.sitewire_draw_id}>#{d.number}</option>)}
             </select>
           </label>
           <label className="small">Approved $<input className="input" style={{ width: 110 }} value={f.approved} onChange={(e) => setF({ ...f, approved: e.target.value })} /></label>
           <label className="small">Our fee $<input className="input" style={{ width: 90 }} value={f.fee} onChange={(e) => setF({ ...f, fee: e.target.value })} /></label>
+          {/* THE INVESTOR'S CUT — ledger only. It comes out of OUR fee, never out of the borrower's
+              money, so the "Borrower nets" figure beneath is untouched by it. It appears only once
+              the loan is sold to a buyer who charges one: before that, nobody is charging anything. */}
+          {invOffer && (
+            <label className="small" title={`What ${invBuyer} keeps out of our fee for handling this release. It comes out of our fee only — the borrower nets the same either way.`}>
+              Investor fee $<input className="input" style={{ width: 90 }} value={f.investor_fee} onChange={(e) => setF({ ...f, investor_fee: e.target.value })} />
+            </label>
+          )}
           <label className="small">Kind
             <select className="input" value={f.fee_kind} onChange={(e) => setF({ ...f, fee_kind: e.target.value })}><option value="virtual">Virtual</option><option value="physical">Physical</option></select>
           </label>
           <label className="small">Release date<input type="date" className="input" value={f.release_date} onChange={(e) => setF({ ...f, release_date: e.target.value })} /></label>
         </div>
+        {selDraw && !figuresMatch && !drawNotApproved && (
+          <div className="small" style={{ color: 'var(--warning)', marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span>These don’t match Draw #{selDraw.number}: approved should be <b>{usd2(expApprovedC)}</b> and our fee <b>{usd2(expFeeC)}</b>. They must match the draw before you can record the release.</span>
+            <button type="button" className="btn btn-sm soft" onClick={() => seedFromDraw(selDraw)}>Use the draw’s figures</button>
+          </div>
+        )}
+        {drawNotApproved && (
+          <div className="small" style={{ color: 'var(--warning)', marginTop: 8 }}>
+            Draw #{selDraw.number} isn’t finally approved yet — final-approve it on the draw desk first, then record the release here.
+          </div>
+        )}
         {floorC > 0 && oopHeldC > 0 && (
           <div className="small" style={{ color: 'var(--warning)', marginTop: 8 }}>
             {usd2(oopHeldC)} of this draw is within the borrower’s out-of-pocket rehab ({usd2(floorC)}) and won’t be reimbursed — only {usd2(reimbursableC)} is reimbursable.
           </div>
         )}
-        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginTop: 12, flexWrap: 'wrap', gap: 10 }}>
-          <div className="small">{floorC > 0 ? <>Reimbursable: <b>{usd2(reimbursableC)}</b> · </> : null}{pct > 0 ? <>Retainage held: <b>{usd2(retC)}</b> · </> : null}Borrower nets: <b style={{ fontSize: 16, color: 'var(--teal-br)' }}>{usd2(net)}</b></div>
-          <button className="btn btn-sm primary" disabled={busy || !f.sitewire_draw_id || approvedC == null || approvedC <= 0 || net < 0} onClick={save}>Record release</button>
+        {invOffer && invOverFee && (
+          <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 8 }}>
+            {invBuyer} can’t keep {usd2(invCutC)} — that is more than our {usd2(feeC)} fee on this draw.
+          </div>
+        )}
+        {/* Not sold to them yet (or PILOT can’t tell): there is no investor fee to record at all,
+            and the note says what IS happening — we release the net and keep the whole fee — and
+            where to go if the loan is in fact already sold. */}
+        {!invOffer && investorFee && investorFee.hint && (
+          <div className="small" style={{ color: 'var(--warning)', marginTop: 8 }}>{investorFee.hint}</div>
+        )}
+        {/* WHERE EVERY DOLLAR OF THIS DRAW GOES, side by side (owner-directed 2026-08-13: "it should
+            be nicer and more visible to understand everything"). TWO separate sums that never touch
+            each other: the borrower is wired the approved amount less our fee (and retainage), and
+            OUR fee is separately split with the investor. Showing the subtraction rather than a
+            sentence is the whole point — the bottom line of each column is the number that moves. */}
+        <div style={{ marginTop: 12, display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))' }}>
+          <div className="dd-tablecard" style={{ padding: '10px 12px' }}>
+            <div className="dd-field-l" style={{ marginBottom: 4 }}>The borrower</div>
+            <MoneyLine label="Approved on this draw" value={usd2(approvedC || 0)} />
+            {floorC > 0 && oopHeldC > 0 && <MoneyLine label="Out of pocket (not reimbursed)" value={'\u2212 ' + usd2(oopHeldC)} />}
+            <MoneyLine label="Our draw fee" value={'\u2212 ' + usd2(feeC)} />
+            {pct > 0 && <MoneyLine label={`Retainage held (${pct}%)`} value={'\u2212 ' + usd2(retC)} />}
+            <MoneyLine label="Wired to the borrower" value={usd2(net)} strong color="var(--teal-br)" />
+          </div>
+          <div className="dd-tablecard" style={{ padding: '10px 12px' }}>
+            <div className="dd-field-l" style={{ marginBottom: 4 }}>Our fee</div>
+            <MoneyLine label="Charged on this draw" value={usd2(feeC)} />
+            {invCutC > 0 && <MoneyLine label={`${invBuyer} keeps`} value={'\u2212 ' + usd2(Math.min(invCutC, feeC))} />}
+            <MoneyLine label={weRelease ? 'Stays with us out of the wire' : 'Reaching our bank'}
+              value={usd2(netFeeC)} strong color="var(--gold,#AE8746)" />
+            <div className="small muted" style={{ marginTop: 4 }}>
+              {weRelease
+                ? 'We release the net, so this never arrives separately \u2014 the wire is simply smaller by our fee.'
+                : (invCutC > 0
+                  ? `${invBuyer} takes their cut out of our fee and sends us the rest.`
+                  : 'The investor collects our fee out of the draw and sends it to us.')}
+            </div>
+          </div>
+        </div>
+        <div className="row" style={{ justifyContent: 'flex-end', alignItems: 'center', marginTop: 12, flexWrap: 'wrap', gap: 10 }}>
+          <button className="btn btn-sm primary" disabled={busy || !f.sitewire_draw_id || approvedC == null || approvedC <= 0 || net < 0 || !figuresMatch || invOverFee}
+            title={!figuresMatch && f.sitewire_draw_id ? 'The approved amount and our fee must match the draw first' : (invOverFee ? 'The investor\u2019s cut can\u2019t be more than our fee' : undefined)} onClick={save}>Record release</button>
         </div>
         {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}
       </div>

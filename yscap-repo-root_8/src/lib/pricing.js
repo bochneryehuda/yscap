@@ -800,7 +800,15 @@ function normalize(program, input, ev, ladder, opts) {
       initialPayment,
       monthlyPayment: num(s.fullPayment),
       ltcPct: num(s.ltcPct),
-      acqLtvPct: num(s.acqLtvPct),
+      // The initial-advance (as-is) leverage. When an out-of-pocket rehab RAISES
+      // the initial advance (line 622), the engine's own s.acqLtvPct still reflects
+      // the pre-OOP initial, so it must be recomputed from the OOP-boosted initial
+      // over the engine's own acqDenom (mirrors web/v2/tools/termsheet.js and the
+      // owner-reported 2026-08-12 stale-"30%" fix). Because this value is persisted
+      // on the registration quote, every server surface — the borrower terms email,
+      // the INITIAL PDF, and the FINAL DocuSign term sheet the borrower signs — then
+      // shows the true percent. DISPLAY-ONLY; byte-identical when oopRehab is 0.
+      acqLtvPct: (oopRehab > 0 && num(s.acqDenom) > 0) ? (initialAdvance / num(s.acqDenom)) : num(s.acqLtvPct),
       arvPct: num(s.arvPct),
       maxReserve: num(s.maxReserve),
       costBasis: num(s.costBasis),

@@ -36,8 +36,30 @@
 const db = require('../db');
 const client = require('./client');
 const reasons = require('./revision-reasons');
+const orderBuild = require('./order-build');
 
 const text = (v) => { const s = v == null ? '' : String(v).trim(); return s || null; };
+
+// A send failure is a DELIVERY problem, not a lost row — the message/request is
+// already written. This shapes the failure the SAME way the order-PLACE path does
+// (routes/class.js): our own reason on `detail`, the vendor's own raw body on
+// `vendor`. The screen renders both through the very same OrderFailure component it
+// uses for a failed order, so a staffer sees the EXACT reason Class gave (e.g. "The
+// County field is required.") instead of a bare `request_failed` — the whole point
+// of the owner's ask, "not in the dark". `describeOrderError` is what we STORE on the
+// row (our message + the meaningful vendor text, capped 500), so the file screen's
+// own "why it didn't go through" line carries the reason too.
+function sendFailure(e, code, rowId) {
+  return {
+    ok: false,
+    error: (e && e.code) || code,
+    id: rowId,
+    detail: (e && e.message) || String(e),
+    vendor: (e && e.body) || null,
+    // kept so an older screen build that reads out.message still shows the reason.
+    message: (e && e.message) || String(e),
+  };
+}
 
 /** Load an order row and say plainly why it cannot be talked to, if it cannot. */
 async function loadOrder(dbc, orderRowId) {
@@ -81,8 +103,8 @@ async function note(orderRowId, content, { staffId } = {}) {
     return { ok: true, id: rowId, noteId: out && out.noteId };
   } catch (e) {
     await db.query('UPDATE class_notes SET send_error = $2 WHERE id = $1',
-      [rowId, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
-    return { ok: false, error: e.code || 'send_failed', id: rowId, message: (e && e.message) || String(e) };
+      [rowId, orderBuild.describeOrderError(e)]).catch(() => {});
+    return sendFailure(e, 'send_failed', rowId);
   }
 }
 
@@ -141,6 +163,16 @@ async function requestRevision(orderRowId, { kind = 'revision', reasons: raw, no
   const { order, error, message } = await loadOrder(null, orderRowId);
   if (error) return { ok: false, error, message };
 
+  // Class only accepts a fix or a value dispute once the report is IN. An order that is
+  // not Completed is rejected by them ("The order … must be in Completed status"), so
+  // refuse it HERE, plainly, before the vendor does — the screen greys the button and
+  // this is the server backstop. (A CANCEL is different: an unfinished order can be
+  // cancelled, so requestCancel deliberately does NOT gate on this.)
+  if (order.status !== 'completed') {
+    return { ok: false, error: 'not_ready', notReady: true,
+      message: 'The appraisal isn’t back yet, so Class can’t take a fix request. You can ask for a fix once the report is in.' };
+  }
+
   // Recorded as an ROV whenever the reasons say so, even if the screen called it an
   // ordinary revision — "did we dispute the value on this file?" must not depend on
   // which button somebody happened to press.
@@ -167,8 +199,8 @@ async function requestRevision(orderRowId, { kind = 'revision', reasons: raw, no
     return { ok: true, id: rowId, kind: recordedKind, reasons: clean, transactionId: out && out.transactionId };
   } catch (e) {
     await db.query(`UPDATE class_revisions SET status = 'error', last_error = $2 WHERE id = $1`,
-      [rowId, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
-    return { ok: false, error: e.code || 'request_failed', id: rowId, message: (e && e.message) || String(e) };
+      [rowId, orderBuild.describeOrderError(e)]).catch(() => {});
+    return sendFailure(e, 'request_failed', rowId);
   }
 }
 
@@ -201,8 +233,8 @@ async function requestCancel(orderRowId, { reasons: raw, note: noteText, staffId
     return { ok: true, id: rowId };
   } catch (e) {
     await db.query(`UPDATE class_revisions SET status='error', last_error=$2 WHERE id=$1`,
-      [rowId, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
-    return { ok: false, error: e.code || 'request_failed', id: rowId, message: (e && e.message) || String(e) };
+      [rowId, orderBuild.describeOrderError(e)]).catch(() => {});
+    return sendFailure(e, 'request_failed', rowId);
   }
 }
 

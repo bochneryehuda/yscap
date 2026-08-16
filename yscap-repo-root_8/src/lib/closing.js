@@ -463,7 +463,7 @@ async function getClosingWorkspace(appId, client) {
   const c = client || db;
   const app = (await c.query(
     `SELECT a.id, a.ys_loan_number, a.llc_id, a.status, a.funded_date, a.actual_closing,
-            a.expected_closing, a.closer_id, a.lender, s.full_name AS closer_name
+            a.expected_closing, a.closer_id, a.lender, a.clickup_pipeline_task_id, s.full_name AS closer_name
        FROM applications a LEFT JOIN staff_users s ON s.id = a.closer_id
       WHERE a.id=$1 AND a.deleted_at IS NULL`, [appId])).rows[0];
   if (!app) return null;
@@ -483,6 +483,9 @@ async function getClosingWorkspace(appId, client) {
     structure,
     application_id: appId,
     ys_loan_number: app.ys_loan_number,
+    // Whether this file is linked to a ClickUp card — so the reconciliation panel can offer a
+    // "Refresh from ClickUp" button only when there is a card to re-pull.
+    clickup_linked: !!app.clickup_pipeline_task_id,
     status: app.status,
     funded_date: dayStr(app.funded_date),
     actual_closing: dayStr(app.actual_closing),
@@ -497,6 +500,14 @@ async function getClosingWorkspace(appId, client) {
     notes,
     reconciliation,
     warehouses: WAREHOUSES,
+    /* THE NAME OF THE TABLE-FUNDING LINE, sent rather than spelled in the client
+       (owner-directed 2026-08-13). The Sign-offs panel now offers "Mark table
+       funded" directly, and that button has to write the warehouse — the ONE thing
+       that decides `table_funded`. A hard-coded 'Table Funding' in the client would
+       be a second copy of this constant that silently stops matching the day the
+       line is renamed, leaving a button that writes an unrecognised warehouse and a
+       file that never reads as table funded. */
+    tableFundingWarehouse: TABLE_FUNDING,
     // THE USUAL ANSWER FOR THIS NOTE BUYER — a SUGGESTION for the closer, never a decision
     // (owner-directed 2026-08-09: "most of the properties that have Fidelis as a note buyer should
     // be defaulted to table funding … but there are a few Fidelis deals that are not being table

@@ -71,6 +71,132 @@ function borrowerCtx(row, i) {
   };
 }
 
+// Normalize a client-on-report name for matching (case/spacing/punctuation-insensitive),
+// e.g. "YS Capital Group" / "ys capital group, llc" → "yscapitalgroup(llc)".
+function normName(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+// Does a catalog entry's name mean the configured client-on-report name? Exact-normalized,
+// else one contains the other — but ONLY when the shorter string is substantial (>= 5 chars)
+// so a stray short token ("A", "LLC") can't spuriously match a long company name. So
+// "YS Capital Group" matches "YS Capital Group, LLC" and "YS Capital", but never "A".
+function nameMeans(entryName, wantName) {
+  const a = normName(entryName), b = normName(wantName);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (Math.min(a.length, b.length) < 5) return false;
+  return a.includes(b) || b.includes(a);
+}
+
+// The freshest cached GetClientDisplayOnReport rows for a subdomain, then (if empty) under
+// ANY subdomain (the seed/cache may live under a different one than the live tenant, exactly
+// like formsCatalog). Never throws.
+async function cachedClientDisplayed(db, subdomain) {
+  let rows = [];
+  try { rows = await lookups.list(db, 'GetClientDisplayOnReport', subdomain || ''); } catch (_) { rows = []; }
+  if (!rows.length) {
+    try {
+      const r = await db.query(
+        `SELECT payload FROM amc_lookup_cache WHERE lookup_type = 'GetClientDisplayOnReport'
+          ORDER BY fetched_at DESC LIMIT 1`);
+      if (r.rows[0] && Array.isArray(r.rows[0].payload)) rows = r.rows[0].payload;
+    } catch (_) { /* none cached yet */ }
+  }
+  return (Array.isArray(rows) ? rows : [])
+    .map((x) => ({ id: x && x.id != null ? String(x.id) : null, name: (x && x.name) || null }))
+    .filter((x) => x.id);
+}
+
+// Self-heal an EMPTY client-on-report cache: refresh the GetClientDisplayOnReport lookup ONCE
+// live so the account's profiles (incl. "YS Capital Group" + its id) become available. Only
+// when the AMC is actually configured to authenticate; single-flight + throttled so an empty
+// cache can't hammer the vendor on every preview; best-effort — a failure leaves the cache
+// empty and resolution falls back to the configured name.
+//
+// The wait is BOUNDED (CDOR_REFRESH_WAIT_MS): a preview is a GET, and the live refresh is a
+// login+lookup that normally answers sub-second — but a hung AMC endpoint has a long transport
+// budget (90s × retries), so we wait only a few seconds for the id and otherwise return,
+// letting the refresh finish in the BACKGROUND (this preview uses the name default; the next
+// one picks up the populated id). So a preview never blocks for minutes on a hung vendor.
+const CDOR_REFRESH_WAIT_MS = 8000;
+let _cdorRefreshAt = 0;
+let _cdorRefreshInflight = null;
+async function ensureClientDisplayedCache(db) {
+  let cfgd;
+  try { cfgd = client.configured(); } catch (_) { cfgd = null; }
+  if (!cfgd || !cfgd.enabled || !cfgd.ready) return;   // never trigger a DoLogin off a draft/no-AMC env
+  if (!_cdorRefreshInflight) {
+    if (Date.now() - _cdorRefreshAt < 5 * 60 * 1000) return;   // at most once / 5 min per instance
+    _cdorRefreshAt = Date.now();
+    _cdorRefreshInflight = (async () => {
+      try { await lookups.refreshOne(db, 'GetClientDisplayOnReport'); }
+      catch (_) { /* best-effort — leave the cache empty, fall back to the name default */ }
+    })().finally(() => { _cdorRefreshInflight = null; });
+  }
+  // Bounded wait — never block a preview for minutes on a hung AMC (both the initiator and a
+  // concurrent caller wait at most CDOR_REFRESH_WAIT_MS; the refresh keeps running after).
+  const inflight = _cdorRefreshInflight;
+  let to = null;
+  try {
+    await Promise.race([
+      inflight ? inflight.catch(() => {}) : Promise.resolve(),
+      new Promise((resolve) => { to = setTimeout(resolve, CDOR_REFRESH_WAIT_MS); }),
+    ]);
+  } catch (_) { /* ignore */ }
+  finally { if (to) clearTimeout(to); }
+}
+
+// The "Client Displayed on Report" (CDOR) — AppraisalScope's REQUIRED client_displayed_id.
+// It is the client/lender alias AppraisalScope prints ON the appraisal report, chosen from
+// the tenant's own GetClientDisplayOnReport list. The gateway maps its snake_case
+// client_displayed_id from the numeric id in that list; cdg.js sends the resolved id TWO
+// ways (clientSystem.sourceInformation.sourceClientIdentifier AND a Lender party's
+// partyRoleIdentifier) so the gateway is satisfied whichever it reads. Here we resolve
+// WHICH id (or name) to send:
+//   1. AMC_CLIENT_DISPLAYED_ID (config) — an explicit id always wins; the LEGACY
+//      AMC_SOURCE_CLIENT_ID pins the SAME id when AMC_CLIENT_DISPLAYED_ID is unset
+//      (back-compat, so an older deploy that set only the legacy var still resolves an id
+//      rather than silently blocking). Both surface as source 'config'.
+//   2. else the cached GetClientDisplayOnReport list (refreshed live once if empty):
+//      a. an entry whose name means the configured default ("YS Capital Group") → its id.
+//      b. exactly ONE entry → auto-use it.
+//      c. several entries, none matching the default → don't guess; a picker chooses. It's
+//         'multiple' → missingRequired blocks (with the picker) rather than print the wrong
+//         company on the report.
+//   3. the list can't be read at all → fall back to the configured NAME (source 'name_default').
+//      A numeric id is REQUIRED (cdg.js sends the id, not a name), so a name-only result carries
+//      id=null and missingRequired blocks the order up-front (belt-and-suspenders) rather than
+//      sending a name the gateway rejects. The name still rides along as the default label
+//      ("YS Capital Group", owner-directed) for the missingRequired message / picker.
+// Best-effort + never throws.
+async function resolveClientDisplayed(db, subdomain) {
+  const wantName = (cfg.amc && cfg.amc.clientDisplayedName) || null;
+  // AMC_CLIENT_DISPLAYED_ID wins; AMC_SOURCE_CLIENT_ID is the legacy fallback for the SAME id.
+  const configured = (cfg.amc && cfg.amc.clientDisplayedId)
+    || (cfg.amc && cfg.amc.sourceClientId) || null;
+  if (configured) return { id: String(configured), name: wantName, source: 'config', options: [] };
+
+  let opts = await cachedClientDisplayed(db, subdomain);
+  if (!opts.length) {                       // empty cache → try to populate it live, once
+    try { await ensureClientDisplayedCache(db); } catch (_) { /* best-effort */ }
+    opts = await cachedClientDisplayed(db, subdomain);
+  }
+
+  if (wantName) {
+    const matches = opts.filter((o) => nameMeans(o.name, wantName));
+    if (matches.length === 1) return { id: matches[0].id, name: matches[0].name, source: 'catalog', options: opts };
+    // Several profiles match the default name (e.g. "YS Capital Group" + "YS Capital Group LLC")
+    // → genuinely ambiguous; name left null so missingRequired blocks and the picker chooses.
+    if (matches.length > 1) return { id: null, name: null, source: 'multiple', options: matches };
+  }
+  if (opts.length === 1) return { id: opts[0].id, name: opts[0].name, source: 'catalog', options: opts };
+  // Several distinct profiles and none matches the default name → can't default; the picker
+  // chooses (name null so the order blocks until one is picked rather than sending a guess).
+  if (opts.length > 1) return { id: null, name: null, source: 'multiple', options: opts };
+  // Nothing in the catalog at all — fall back to the configured NAME as the default label
+  // (owner-directed: default to "YS Capital Group"). A numeric id is REQUIRED, so id stays null
+  // and missingRequired blocks the order up-front rather than sending a name the gateway rejects.
+  return { id: null, name: wantName || null, source: wantName ? 'name_default' : 'none', options: [] };
+}
+
 async function loadContext(db, appId) {
   const r = await db.query(
     `SELECT a.id, a.ys_loan_number, a.program, a.loan_type, a.property_address,
@@ -118,6 +244,9 @@ async function loadContext(db, appId) {
   addEmail(a.pr_email);
   for (const b of borrowers) addEmail(b.email);
 
+  // The client shown on the appraisal report (AppraisalScope's REQUIRED client_displayed_id).
+  const cdor = await resolveClientDisplayed(db, cfg.amc && cfg.amc.subdomain);
+
   return {
     appId: a.id,
     loanNumber: a.ys_loan_number || null,
@@ -135,6 +264,13 @@ async function loadContext(db, appId) {
     // The note buyer is STAFF-ONLY and never reaches the AMC message; carried only so
     // a form-selection rule could key on it in the future.
     noteBuyer: a.lender || null,
+    // AppraisalScope's REQUIRED client_displayed_id — the client-on-report profile. See
+    // resolveClientDisplayed: config override, else the account's single profile, else null
+    // (blocked). buildOrderSpec reads clientDisplayedId; orderAssumptions shows the name.
+    clientDisplayedId: cdor.id,
+    clientDisplayedName: cdor.name,
+    clientDisplayedSource: cdor.source,
+    clientDisplayedOptions: cdor.options,
     property: {
       category: a.property_type || null,
       addressLine: pa.addressLine,
@@ -144,7 +280,23 @@ async function loadContext(db, appId) {
       postalCode: pa.postalCode,
       county: pa.county,
       occupancy: a.occupancy || null,
-      salesContractAmount: isPurchase && a.purchase_price != null ? Number(a.purchase_price) : null,
+      // AppraisalScope REQUIRES a property amount (its `purchase_amount`). On a PURCHASE
+      // it is the contract price; on a REFINANCE there is no purchase, so send the value
+      // the loan is sized on (as-is value → ARV → loan amount) so the appraiser still has
+      // a figure and the order is not rejected for a blank one. missingRequired refuses a
+      // blank on both, so a file with no value at all is caught on the preview, not by NAN.
+      salesContractAmount: isPurchase
+        ? (a.purchase_price != null ? Number(a.purchase_price) : null)
+        : (a.as_is_value != null ? Number(a.as_is_value)
+          : a.arv != null ? Number(a.arv)
+          : a.loan_amount != null ? Number(a.loan_amount) : null),
+      // AppraisalScope's REQUIRED `purchase_amount` maps SPECIFICALLY from the CDG
+      // `purchasePriceAmount` (mapping row 39: "Required when Intended Use is Purchase"),
+      // NOT from salesContractAmount — sending only salesContractAmount is exactly why
+      // the gateway kept rejecting the order for a missing purchase_amount. So carry the
+      // real purchase price here (purchase deals only; a refinance has no purchase, and
+      // Intended Use=Refinance makes purchase_amount not required).
+      purchasePriceAmount: isPurchase && a.purchase_price != null ? Number(a.purchase_price) : null,
     },
     borrowers,
     // Leave bestContact UNSET here: buildOrderSpec defaults it to 'Borrower' (so the sent
@@ -504,15 +656,74 @@ async function createOrder(db, appId, opts = {}) {
 // ---------------------------------------------------------------------------
 // Reads.
 // ---------------------------------------------------------------------------
+// A plain, human summary of exactly what was sent to AppraisalScope for an order —
+// so the desk can see "what was in the order" (property, loan number, form, value,
+// borrower, contacts) after it is placed, not just the vendor's status. Built from the
+// STORED sent envelope (a snapshot), so it reflects the order as it went out even if the
+// file has changed since. Returns [{label, value}] rows, blanks omitted.
+function orderMoney(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? '$' + Math.round(n).toLocaleString('en-US') : String(v);
+}
+function orderSummary(order) {
+  const rows = [];
+  const add = (label, value) => { if (value != null && value !== '') rows.push({ label, value: String(value) }); };
+  add('Form ordered', order.form_description || (order.product_code ? 'Form ' + order.product_code : null));
+  const msg = order.request_payload && order.request_payload.message;
+  if (msg) {
+    const deal = (msg.deals && msg.deals[0]) || {};
+    const loan = (deal.loans && deal.loans[0]) || {};
+    const prop = (deal.properties && deal.properties[0]) || {};
+    const addr = prop.address || {};
+    add('Loan number', (loan.loanIdentifiers && loan.loanIdentifiers.lenderLoanIdentifier) || order.client_order_number);
+    add('Property', [addr.addressLine, addr.addressLine2, addr.cityName, addr.stateCode, addr.postalCode].filter(Boolean).join(', '));
+    add('County', addr.countyName);
+    add('Property type', prop.titleCategoryType);
+    add('Occupancy', prop.propertyCurrentOccupancyType);
+    add('Loan purpose', loan.loanPurposeType);
+    add('Purchase / property value', orderMoney(prop.salesContractAmount));
+    add('Loan amount', orderMoney(loan.baseLoanAmount));
+    const bs = (deal.borrowers || [])
+      .map((b) => b.legalEntityName || [b.firstName, b.middleName, b.lastName].filter(Boolean).join(' '))
+      .filter(Boolean);
+    if (bs.length) add(bs.length > 1 ? 'Borrowers' : 'Borrower', bs.join(', '));
+    const best = (deal.parties || []).find((p) => p.partyRoleType === 'BestContact');
+    if (best) {
+      const c = (best.contacts && best.contacts[0]) || {};
+      add('Main contact', [best.fullName, c.contactPhone, c.contactEmail].filter(Boolean).join(' · '));
+    }
+    const si = (msg.clientSystem && msg.clientSystem.sourceInformation) || {};
+    if (si.sourceClientName || si.sourceClientIdentifier) {
+      add('Client shown on report', si.sourceClientName
+        ? (si.sourceClientIdentifier ? `${si.sourceClientName} (#${si.sourceClientIdentifier})` : si.sourceClientName)
+        : ('#' + si.sourceClientIdentifier));
+    }
+    const emails = (((msg.products && msg.products[0]) || {}).notifications || [])
+      .map((n) => n && n.contactEmail).filter(Boolean);
+    if (emails.length) add('Update emails to', emails.join(', '));
+  } else if (order.client_order_number) {
+    add('Loan number', order.client_order_number);
+  }
+  return rows;
+}
+
 async function listOrders(db, appId) {
   const r = await db.query(
     `SELECT id, request_action, parent_order_id, client_order_number, cdg_order_number,
             sp_order_number, appraisal_file_number, product_code, form_description,
             status, status_code, status_name, status_description, rush, need_by_date,
             dryrun, last_error, last_status_response, cancel_reason, cancel_requested_at,
-            cancel_requested_by, created_at, ordered_at, completed_at, last_polled_at, updated_at
+            cancel_requested_by, request_payload, created_at, ordered_at, completed_at,
+            last_polled_at, updated_at
        FROM amc_orders WHERE application_id = $1 ORDER BY created_at DESC`, [appId]);
-  return r.rows;
+  // Attach the plain "what was sent" summary; drop the raw envelope so the response
+  // stays lean and never carries the internals of the masked message to the screen.
+  return r.rows.map((o) => {
+    const summary = orderSummary(o);
+    const { request_payload, ...rest } = o;   // eslint-disable-line no-unused-vars
+    return { ...rest, summary };
+  });
 }
 
 async function getOrder(db, orderId) {
@@ -522,7 +733,8 @@ async function getOrder(db, orderId) {
 
 module.exports = {
   loadContext, cardStatus, formRules, buildPreview,
-  createOrder, listOrders, getOrder, journal,
+  createOrder, listOrders, getOrder, journal, orderSummary,
   // exported for tests
   addrParts, borrowerCtx, describeSendFailure, readGatewayBody, formsCatalog, formNameFor,
+  resolveClientDisplayed,
 };

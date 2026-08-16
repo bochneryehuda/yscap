@@ -1079,9 +1079,14 @@ export default function Application() {
           <h3>Your conditions</h3>
           <div className="spacer" />
           <span className="muted small">{nDone}/{items.length} complete</span>
-          <select className="input" style={{ maxWidth: 200 }} value={docFilter} onChange={e => setDocFilter(e.target.value)}>
-            <option value="open">Open — still needs you</option>
-            <option value="review">Submitted — in review</option>
+          {/* Borrower filters by workflow stage (owner-directed 2026-08-12). Default hides anything
+              already handed off — once you upload, or your loan officer marks a condition done, it
+              leaves this view unless you switch the filter. */}
+          <select className="input" style={{ maxWidth: 240 }} value={docFilter} onChange={e => setDocFilter(e.target.value)}>
+            <option value="open">Still needs you</option>
+            <option value="not_uploaded">Not uploaded yet</option>
+            <option value="review">Uploaded — in review</option>
+            <option value="signoff">In final review &amp; sign-off</option>
             <option value="attention">Needs attention</option>
             <option value="done">Completed</option>
             <option value="all">All conditions</option>
@@ -1093,15 +1098,40 @@ export default function Application() {
         </p>
         <input ref={fileRef} type="file" multiple style={{ display: 'none' }} onChange={onFile} />
         {(() => {
-          const bucket = (s) => s === 'issue' ? 'attention' : s === 'received' ? 'review' : (s === 'satisfied' || s === 'done') ? 'done' : 'todo';
-          // Default view: submitted conditions disappear as you complete them —
-          // only what still needs you (to do / needs attention) stays visible.
-          // EXCEPT what you just worked on this visit (justTouched): it stays put
-          // so "+ Add another" is still there right after an upload submits it.
-          const show = (it) => docFilter === 'all'
-            || (docFilter === 'open'
-              ? (['todo', 'attention'].includes(bucket(it.status)) || justTouched.has(it.id))
-              : bucket(it.status) === docFilter);
+          // Workflow STAGE of one condition, from its status plus the borrower-safe stage booleans
+          // (owner-directed 2026-08-12). This is what powers the borrower's filters and the default
+          // "hide once handed off" behavior:
+          //   todo     — you haven't uploaded yet (outstanding/requested)
+          //   attention— pushed back to you, needs a fix (issue)
+          //   review   — uploaded, your loan team is reviewing (received, LO hasn't marked it done)
+          //   signoff  — your loan officer marked it done; in final review & sign-off (received + reviewed,
+          //              not yet signed off) — this is where the underwriting/processor sign-off happens
+          //   done     — signed off, satisfied, or waived
+          // ("Not reviewed yet" and "the LO didn't click Done yet" are the same state here — a received
+          //  item the LO hasn't reviewed; "not cleared by underwriting" and "processor didn't sign off"
+          //  are both the signoff stage, since neither is tracked separately per condition.)
+          const stage = (it) => {
+            if (it.signed_off || it.waived || it.status === 'satisfied' || it.status === 'done') return 'done';
+            if (it.status === 'issue') return 'attention';
+            if (it.status === 'received') return it.lo_reviewed ? 'signoff' : 'review';
+            return 'todo';
+          };
+          // Default view: anything you've handed off disappears as it moves along — only what still
+          // needs YOU (to upload, or fix) stays. EXCEPT what you just worked on this visit
+          // (justTouched): it stays put so "+ Add another" is still there right after an upload.
+          const show = (it) => {
+            const st = stage(it);
+            switch (docFilter) {
+              case 'all': return true;
+              case 'open': return st === 'todo' || st === 'attention' || justTouched.has(it.id);
+              case 'not_uploaded': return st === 'todo';
+              case 'review': return st === 'review';
+              case 'signoff': return st === 'signoff';
+              case 'attention': return st === 'attention';
+              case 'done': return st === 'done';
+              default: return true;
+            }
+          };
           return (
             <>
               {/* 0 — Products & pricing: open until a product is registered */}

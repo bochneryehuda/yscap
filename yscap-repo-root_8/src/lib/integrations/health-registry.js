@@ -612,8 +612,12 @@ const INTEGRATIONS = [
     env: [{ name: 'AMC_CLIENT_ID', required: true }, { name: 'AMC_CLIENT_SECRET', required: true },
       { name: 'AMC_LOGIN_ACCOUNT', required: true }, { name: 'AMC_LOGIN_PASSWORD', required: true },
       { name: 'AMC_SUBDOMAIN', required: true }, { name: 'AMC_LENDER_IDENTIFIER', required: true },
-      // OPTIONAL — the vendor confirmed there is no source-client id for this tenant; DoLogin
-      // and every read work without it, and the order builder omits it when unset.
+      // AppraisalScope's REQUIRED client_displayed_id (the "Client Displayed on Report" id, e.g.
+      // 199384 = "YS Capital Group"), sent on both sourceInformation.sourceClientIdentifier AND a
+      // Lender party. Not flagged required here because it can also resolve from the account's
+      // GetClientDisplayOnReport list (a static check would false-alarm) — pin it to be explicit.
+      { name: 'AMC_CLIENT_DISPLAYED_ID', required: false },
+      // LEGACY FALLBACK for the SAME value as AMC_CLIENT_DISPLAYED_ID above.
       { name: 'AMC_SOURCE_CLIENT_ID', required: false }],
     switches: [{ name: 'AMC_ENABLED', label: 'Reading + polling' }, { name: 'AMC_OUTBOUND_ENABLED', label: 'Ordering + writing' }],
     liveProbe: true,
@@ -713,6 +717,47 @@ const INTEGRATIONS = [
         ? ' Their status updates can reach us.'
         : ' NOTE: the callback address and login are not set, so orders will go out but nothing will come back on its own.';
       return { configured: true, enabled: true, live: null, detail: `Credentials set and enabled. ${env} Ordering is ${c.outbound ? 'ON' : 'still off'}; use TEST MODE (CLASS_DRYRUN) to check the request before going live.${push}${hosts}` };
+    },
+  },
+  {
+    key: 'richer_value', name: 'Richer Values (Hybrid Appraisal ordering)', group: 'framework',
+    purpose: 'The THIRD appraisal vendor, and a different KIND of report: an evaluation that gives an As-Is value AND an After Repair Value on one order, for well under half the price of a full appraisal. Because it is an evaluation there is no appraisal data file (XML) — only a PDF report — so ordering one waives the data-file requirement on the file automatically and fills the As-Is and the ARV from the finished report. It needs either their API token or a username and password; with a login it also works out which company to order for on its own. Nothing decides between the three vendors — that stays a deliberate choice on the order screen.',
+    direction: 'Two-way — we place the order, they push status back by webhook (with a poll behind it in case one is lost)',
+    auth: 'Bearer token — either issued by them, or created from a username + password',
+    env: [{ name: 'RV_API_TOKEN', required: false }, { name: 'RV_USERNAME', required: false },
+      { name: 'RV_PASSWORD', required: false },
+      // Needed only when a raw token is used — a token cannot tell us which of
+      // their companies to order for, while a login's reply names it.
+      { name: 'RV_COMPANY_TOKEN', required: false },
+      { name: 'RV_ENVIRONMENT', required: false },
+      { name: 'RV_LOAN_OFFICER_TOKEN', required: false },
+      { name: 'RV_PAYMENT_METHOD', required: false },
+      // The PUSH half: the address they call, and the login THEY use calling us.
+      // Optional for ordering, required before status can reach the file on its own.
+      { name: 'RV_WEBHOOK_URL', required: false },
+      { name: 'RV_WEBHOOK_USER', required: false },
+      { name: 'RV_WEBHOOK_PASSWORD', required: false }],
+    switches: [{ name: 'RV_ENABLED', label: 'Reading + polling' }, { name: 'RV_OUTBOUND_ENABLED', label: 'Ordering + writing' }],
+    liveProbe: false,
+    async probe() {
+      const c = require('../../richervalues/client').configured();
+      if (!c.ready) {
+        return { configured: false, live: null, detail: 'Not connected — the Richer Values connector is built and off by default. It needs either their API token (RV_API_TOKEN) or a username and password (RV_USERNAME / RV_PASSWORD). A username and password is the easier one: their sign-in reply also tells us which company to order for.' };
+      }
+      if (!c.orderReady) {
+        return { configured: false, live: null, detail: 'Almost there — the token is set, but a token on its own cannot tell us which of their companies to order for. Add RV_COMPANY_TOKEN, or switch to a username and password, which answers that by itself.' };
+      }
+      if (!c.enabled) return { configured: true, enabled: false, live: null, detail: 'Credentials are set, but the master switch (RV_ENABLED) is off, so nothing talks to Richer Values yet.' };
+      const env = c.environment === 'production'
+        ? 'Pointed at their LIVE environment — orders placed here are real.'
+        : 'Pointed at their TRAINING environment, so nothing placed here is a real order.';
+      // The push half is what makes an order tell us it progressed. Called out
+      // separately because ordering works fine without it — and then goes quiet,
+      // which is the confusing failure this line exists to pre-empt.
+      const push = c.webhookReady
+        ? ' Their status updates can reach us.'
+        : ' NOTE: the address and login they call us back on are not set, so orders will go out and we will only learn how they are doing from our own regular check.';
+      return { configured: true, enabled: true, live: null, detail: `Credentials set and enabled. ${env} Ordering is ${c.outbound ? 'ON' : 'still off'}; use TEST MODE (RV_DRYRUN) to check the order before going live.${push}` };
     },
   },
 ];

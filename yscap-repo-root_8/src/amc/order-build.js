@@ -34,13 +34,18 @@ function titleCategoryFor(propertyCategory) {
   return TITLE_CATEGORY[k] || (propertyCategory ? String(propertyCategory) : null);
 }
 
-// Our occupancy → AppraisalScope propertyCurrentOccupancyType (out-of-the-box values
-// are Owner Occupied / Tenant Occupied / Vacant). RTL is overwhelmingly investment.
+// Our occupancy → AppraisalScope propertyCurrentOccupancyType. NAN's out-of-the-box
+// values (per the Enum Mapping sheet) are Owner Occupied / Tenant Occupied / Vacant.
+// RTL is overwhelmingly investment, and the owner directs those go out as VACANT — the
+// properties are being renovated/flipped/built, not tenant-occupied — while a file that
+// EXPLICITLY says tenant-occupied still sends Tenant Occupied (a genuine, distinct fact).
+// The value stays overridable per order (buildOrderSpec reads pr.occupancy || ctx.occupancy).
 function occupancyFor(occupancy) {
   const k = norm(occupancy);
   if (!k) return null;
   if (k === 'primary' || k === 'owneroccupied' || k === 'primaryresidence') return 'Owner Occupied';
-  if (k === 'investment' || k === 'investor' || k === 'tenantoccupied' || k === 'nonowneroccupied') return 'Tenant Occupied';
+  if (k === 'tenant' || k === 'tenantoccupied') return 'Tenant Occupied';
+  if (k === 'investment' || k === 'investor' || k === 'nonowneroccupied') return 'Vacant';
   if (k === 'vacant') return 'Vacant';
   if (k === 'secondary' || k === 'secondhome') return 'Owner Occupied';
   return null;
@@ -52,6 +57,43 @@ function loanPurposeFor(loanPurpose) {
   const k = norm(loanPurpose);
   if (!k) return null;
   return /refi|refinance/.test(k) ? 'Refinance' : 'Purchase';
+}
+
+// AppraisalScope's loan.estimatedClosingDate is OPTIONAL, but when SUPPLIED it must be TODAY
+// OR LATER — the gateway rejects a past value with "-1008 Service Provider Processing Error:
+// Invalid request data. missing_field_array: estimated_closing_date: Date must be greater than
+// or equal to current date." A file's est_closing_date is frequently blank, or has drifted
+// into the past by the time an appraisal is ordered. So we send the file's date ONLY when it
+// is a valid calendar day on or after today; a blank, malformed, or PAST date is OMITTED
+// (returns null → cdg.js drops the field) rather than fabricated forward. We deliberately do
+// NOT substitute a made-up future date just to pass validation — that would feed the appraiser
+// a closing date that isn't real; staff enter the real revised date on the file, and the order
+// preview flags a stale/missing one (see closingDateStatus / orderAssumptions). This never
+// writes back onto applications.est_closing_date (that field feeds first-payment/maturity
+// derivation and the closing chain, and stays the staff's own value).
+const ISO_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+function utcTodayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+function isoDayOrNull(v) {
+  return (typeof v === 'string' && ISO_DAY_RE.test(v)) ? v : null;
+}
+// The estimated closing date to send to the gateway: the file's date when it is a valid
+// calendar day that is today-or-later, else null (OMIT — the field is optional). Never
+// fabricates a date. opts.today is for tests.
+function orderClosingDate(fileDate, opts = {}) {
+  const today = isoDayOrNull(opts.today) || utcTodayISO();
+  const d = isoDayOrNull(fileDate);
+  return (d && d >= today) ? d : null;           // valid future date → send it; else omit
+}
+// Classify the file's closing date for the preview: 'ok' (a valid future date we'll send),
+// 'stale' (a real date that has already passed — omitted, and worth flagging so staff enter
+// the real revised date), or 'none' (blank/unparseable — nothing to send).
+function closingDateStatus(fileDate, opts = {}) {
+  const today = isoDayOrNull(opts.today) || utcTodayISO();
+  const d = isoDayOrNull(fileDate);
+  if (d && d >= today) return 'ok';
+  return d ? 'stale' : 'none';
 }
 
 // THE RTL STRATEGY the form defaults key on — one of the exact tokens db/481 seeds:
@@ -125,9 +167,38 @@ function dealShapeFor(ctx) {
 // form: { productCode, subproductCodes, amcIdentifier } (from form-select) — productCode
 //   may be overridden by opts.productCode when staff pick a different form.
 // opts: { mortgageType, requestComment, rush, needByDate, notifyEmails, jobFee,
-//         managementFee, bestContact, embeddedFiles, requestAction, parentSpOrderNumber }
+//         managementFee, bestContact, embeddedFiles, requestAction, parentSpOrderNumber,
+//         estimatedClosingDate }
 function buildOrderSpec(ctx, form, opts = {}) {
   const pr = ctx.property || {};
+
+  // Client Displayed on Report (AppraisalScope's client_displayed_id). A pinned id (opts)
+  // wins; its display name is taken from the matching resolved option so a pinned id NEVER
+  // rides a stale default name for a different profile. With no pin, carry the ctx-resolved
+  // id + name (the owner-directed default "YS Capital Group").
+  const pinnedCdId = opts.clientDisplayedId != null && opts.clientDisplayedId !== ''
+    ? String(opts.clientDisplayedId) : null;
+  const pinnedCdName = opts.clientDisplayedName != null && opts.clientDisplayedName !== ''
+    ? String(opts.clientDisplayedName) : null;
+  let clientDisplayedId;
+  let clientDisplayedName;
+  if (pinnedCdId != null) {
+    clientDisplayedId = pinnedCdId;
+    if (pinnedCdName != null) {
+      clientDisplayedName = pinnedCdName;
+    } else {
+      const match = (Array.isArray(ctx.clientDisplayedOptions) ? ctx.clientDisplayedOptions : [])
+        .find((o) => o && String(o.id) === pinnedCdId);
+      clientDisplayedName = match && match.name != null ? String(match.name) : null;
+    }
+  } else {
+    clientDisplayedId = ctx.clientDisplayedId != null && ctx.clientDisplayedId !== ''
+      ? String(ctx.clientDisplayedId) : null;
+    clientDisplayedName = pinnedCdName != null ? pinnedCdName
+      : (ctx.clientDisplayedName != null && ctx.clientDisplayedName !== ''
+        ? String(ctx.clientDisplayedName) : null);
+  }
+
   const spec = {
     requestAction: opts.requestAction || 'CreateAppraisal',
     parentSpOrderNumber: opts.parentSpOrderNumber || null,
@@ -139,6 +210,15 @@ function buildOrderSpec(ctx, form, opts = {}) {
 
     clientOrderNumber: ctx.clientOrderNumber || ctx.loanNumber || null,
     clientReferenceNumber: ctx.clientReferenceNumber || null,
+
+    // The "Client Displayed on Report" (AppraisalScope's REQUIRED client_displayed_id) —
+    // resolved in order-service (config id, else the account's profile matched to the default
+    // name "YS Capital Group"). cdg.js sends the resolved id TWO ways with the same value —
+    // on message.clientSystem.sourceInformation.sourceClientIdentifier AND on a
+    // partyRoleType="Lender" party's partyRoleIdentifier — so the gateway is satisfied
+    // whichever it reads. A staffer can pin a specific id via opts (its name comes from the matching option).
+    clientDisplayedId,
+    clientDisplayedName,
 
     rush: opts.rush != null ? !!opts.rush : false,
     needByDate: opts.needByDate || null,
@@ -157,7 +237,11 @@ function buildOrderSpec(ctx, form, opts = {}) {
       mortgageType: opts.mortgageType || ctx.mortgageType || 'Conventional',
       loanPurpose: loanPurposeFor(ctx.loanPurpose),
       baseLoanAmount: ctx.loanAmount != null ? ctx.loanAmount : null,
-      estimatedClosingDate: ctx.estimatedClosingDate || null,
+      // Optional field, but the gateway rejects a PAST value — so send the file's closing date
+      // only when it is today-or-later, else OMIT it (orderClosingDate returns null → cdg.js
+      // drops it). We never fabricate a date to pass validation; a stale/missing one is flagged
+      // on the preview. A staffer may pin one (opts.estimatedClosingDate); it is checked too.
+      estimatedClosingDate: orderClosingDate(opts.estimatedClosingDate || ctx.estimatedClosingDate, { today: opts.today }),
       lienPriority: ctx.lienPriority || null,
     },
 
@@ -171,6 +255,10 @@ function buildOrderSpec(ctx, form, opts = {}) {
       county: pr.county || null,
       legalDescription: pr.legalDescription || null,
       occupancy: occupancyFor(pr.occupancy || ctx.occupancy),
+      // The vendor's REQUIRED `purchase_amount` maps from purchasePriceAmount — carry it
+      // (purchase deals only; loadContext leaves it null on a refinance). Kept distinct
+      // from salesContractAmount, which the vendor treats as a separate optional field.
+      purchasePriceAmount: pr.purchasePriceAmount != null ? pr.purchasePriceAmount : null,
       salesContractAmount: pr.salesContractAmount != null ? pr.salesContractAmount : null,
       salesConcessionAmount: pr.salesConcessionAmount != null ? pr.salesConcessionAmount : null,
       salesConcessionType: pr.salesConcessionType || null,
@@ -198,7 +286,45 @@ function buildOrderSpec(ctx, form, opts = {}) {
 
     embeddedFiles: Array.isArray(opts.embeddedFiles) ? opts.embeddedFiles : [],
   };
+  // The MAIN CONTACT the appraiser reaches (AppraisalScope's REQUIRED `primary_contact`).
+  // The vendor needs a real person AND a way to reach them — the best-contact role token
+  // alone is not a contact — so resolve the choice to an actual borrower and carry their
+  // name + phone + email. cdg.js emits this on the BestContact party.
+  spec.primaryContact = resolvePrimaryContact(spec.borrowers, spec.parties.bestContact);
   return spec;
+}
+
+// Resolve the best-contact role to the actual person + a phone/email for them.
+function resolvePrimaryContact(borrowers, bestContact) {
+  const list = Array.isArray(borrowers) ? borrowers : [];
+  const primary = list.find((b) => (b.classification || 'Primary') === 'Primary') || list[0] || null;
+  const secondary = list.find((b) => b.classification === 'Secondary') || null;
+  const reachable = (b) => (Array.isArray(b && b.contacts) ? b.contacts : []).some((c) => c && (c.phone || c.email));
+  let who = bestContact === 'Co-Borrower' ? (secondary || primary) : primary;
+  // The vendor needs a REACHABLE primary_contact. If the default person has no phone or
+  // email on file but another borrower does, use that borrower — an order with one
+  // reachable person should not be blocked because the default contact has no reach.
+  if (who && !reachable(who)) who = list.find(reachable) || who;
+  if (!who) return null;
+  const contacts = Array.isArray(who.contacts) ? who.contacts : [];
+  const firstWith = (k) => { for (const c of contacts) if (c && c[k]) return c[k]; return null; };
+  const fullName = who.fullName
+    || [who.firstName, who.lastName].filter(Boolean).join(' ')
+    || who.legalEntityName || null;
+  return {
+    role: bestContact || 'Borrower',
+    // The classification of the borrower this resolved TO — so cdg.js can name the
+    // BestContact party as 'Borrower' vs 'Co-Borrower' and the gateway reads the right
+    // borrower's contact. This matters when the reachable-fallback above switched `who`
+    // from the primary to a co-borrower: the vendor's primary_contact comes from whichever
+    // borrower the BestContact party points at, so it must point at the reachable one.
+    classification: who.classification || 'Primary',
+    firstName: who.firstName || null,
+    lastName: who.lastName || null,
+    fullName: fullName || null,
+    phone: firstWith('phone'),
+    email: firstWith('email'),
+  };
 }
 
 function buildContacts(b) {
@@ -227,6 +353,26 @@ function missingRequired(spec) {
   if (!primary || (!primary.firstName && !primary.legalEntityName)) missing.push('borrower first name');
   if (!primary || (!primary.lastName && !primary.legalEntityName)) missing.push('borrower last name');
   if (!spec.parties || !spec.parties.bestContact) missing.push('best person to contact');
+  // AppraisalScope REQUIRES a numeric `client_displayed_id` — the client/lender profile shown
+  // on the report, sent on the wire as sourceClientIdentifier (see cdg.js). It resolves to an
+  // id from AMC_CLIENT_DISPLAYED_ID, or the account's GetClientDisplayOnReport profile matched
+  // to the default name "YS Capital Group" (or the sole profile). A NAME alone cannot satisfy
+  // the gateway, so we refuse HERE with a plain message when no id resolves — rather than send
+  // an order that fails at the vendor with a cryptic "client_displayed_id: Required". For a
+  // normal single-profile account this auto-resolves and never blocks.
+  if (!spec.clientDisplayedId) missing.push('the client shown on the appraisal report');
+  // AppraisalScope REQUIRES purchasePriceAmount (its `purchase_amount`) on a purchase (its
+  // mapping: "Required when Intended Use is Purchase") — NOT salesContractAmount, which the
+  // vendor treats as a separate optional field. Validate the field NAN actually reads. A
+  // "purchase" here is anything that is NOT an explicit refinance — mirroring loadContext's
+  // `isPurchase = !/refi/` (a blank/unknown loan_type is treated as a purchase, which is also
+  // how the file's purchasePriceAmount gets populated), so a blank-loan-type purchase with no
+  // price is still flagged rather than slipping through to a cryptic vendor 400. Only an
+  // explicit refinance is exempt (NAN does not require purchase_amount on a refi).
+  const isRefinanceOrder = !!(spec.loan && spec.loan.loanPurpose === 'Refinance');
+  if (!isRefinanceOrder && (!p || p.purchasePriceAmount == null)) missing.push('purchase price');
+  const pc = spec.primaryContact;
+  if (!pc || (!pc.phone && !pc.email)) missing.push('a phone or email for the main contact');
   return missing;
 }
 
@@ -274,10 +420,48 @@ function orderAssumptions(ctx, form, opts = {}, spec = null) {
     add('titleCategory', 'Property type', property.titleCategory,
       'Worked out from the property type on the file.', 'derived');
   }
+  // The client shown on the appraisal report — surfaced so the desk sees what will print on
+  // the report (defaults to "YS Capital Group"). Shown only when an id actually resolved (the
+  // gateway requires the id); not shown when the staffer picked one explicitly, or when the
+  // account has several to choose from / none resolvable (missingRequired flags those).
+  if (opts.clientDisplayedId == null && opts.clientDisplayedName == null && s.clientDisplayedId
+      && ctx.clientDisplayedSource && ctx.clientDisplayedSource !== 'multiple' && ctx.clientDisplayedSource !== 'none') {
+    const shown = ctx.clientDisplayedName
+      ? (s.clientDisplayedId ? `${ctx.clientDisplayedName} (#${s.clientDisplayedId})` : ctx.clientDisplayedName)
+      : (s.clientDisplayedId ? ('#' + s.clientDisplayedId) : null);
+    const why = ctx.clientDisplayedSource === 'catalog'
+      ? 'Matched to a profile in your AppraisalScope account.'
+      : ctx.clientDisplayedSource === 'config'
+        ? 'Set for your AppraisalScope account.'
+        : 'Filled in with your default — change it if the report should show a different client.';
+    add('clientDisplayedId', 'Client shown on the report', shown, why, ctx.clientDisplayedSource);
+  }
+  // Property value on a refinance: there is no purchase price, so the value the loan is
+  // sized on was used. The appraisal gateway requires an amount, so this is worth a look.
+  const isRefi = /refi|refinance/.test(norm(ctx.loanPurpose));
+  if (isRefi && property.salesContractAmount != null) {
+    add('salesContractAmount', 'Property value', property.salesContractAmount,
+      'This is a refinance, so there’s no purchase price — the estimated value on file was used.', 'derived');
+  }
+  // Closing date: the appraiser's system rejects a date in the past, so a stale file date is
+  // NOT sent (the field is optional). Flag it as a warning so staff can enter the real revised
+  // closing date on the file. A missing date is simply omitted (no warning — that's allowed).
+  const closingRaw = opts.estimatedClosingDate || ctx.estimatedClosingDate;
+  if (closingDateStatus(closingRaw, { today: opts.today }) === 'stale') {
+    out.push({
+      field: 'estimatedClosingDate',
+      label: 'Closing date on file',
+      value: String(isoDayOrNull(closingRaw) || ''),
+      why: 'This has already passed, so it won’t be sent to the appraiser (their system needs a future date). Enter the file’s real revised closing date if you have one.',
+      source: 'warning',
+      warn: true,
+    });
+  }
   return out;
 }
 
 module.exports = {
   buildOrderSpec, orderAssumptions, dealShapeFor, dealStrategyKey, missingRequired,
-  titleCategoryFor, occupancyFor, loanPurposeFor,
+  titleCategoryFor, occupancyFor, loanPurposeFor, resolvePrimaryContact,
+  orderClosingDate, closingDateStatus,
 };

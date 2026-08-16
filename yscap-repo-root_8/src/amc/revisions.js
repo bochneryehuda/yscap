@@ -36,6 +36,15 @@ async function insertRevision(dbh, orderId, { kind, body, amcRevisionId, status,
 async function postRevision(dbh, order, { staffId, kind, body, rovDetail }, deps = {}) {
   const text = String(body || '').trim();
   if (!text) return { ok: false, error: 'empty' };
+  // A fix/revision or a value dispute (ROV) only makes sense once the report is IN — the
+  // vendor rejects one otherwise ("must be in Completed status"). A scope-of-work change
+  // is about the order still in progress, so it is deliberately NOT gated. The panel greys
+  // the buttons before the report is ready; this is the server backstop.
+  const reportIn = order && (order.status === 'completed' || order.status === 'product_available');
+  if ((normKind(kind) === 'revision' || normKind(kind) === 'rov') && !reportIn) {
+    return { ok: false, error: 'not_ready', notReady: true,
+      message: 'The appraisal isn’t back yet, so a fix can’t be requested. You can ask once the report is in.' };
+  }
   const transport = deps.transport || client;
   const authCtx = deps.authContext || (await session.authContext());
   const built = cdg.buildAddRevision({

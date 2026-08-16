@@ -76,7 +76,10 @@ async function main() {
   ok(/Bridge/.test(byPath['loanInfo.loanType'].why || ''),
      'and the reason says where the deal\'s real nature went');
   ok(byPath['property.city'].state === 'read', 'a value read straight off the file is marked read');
-  ok(byPath.occupancy.value === 'Investment', 'occupancy resolves for an RTL investment file');
+  ok(byPath.occupancy.value === 'Investor', 'occupancy leads with Investor for an RTL investment file (the rejected "Investment" is no longer the head)');
+  ok(Array.isArray(pv.occupancyCandidates) && pv.occupancyCandidates[0] === 'Investor'
+     && pv.occupancyCandidates.includes('Other') && pv.occupancyKey === 'investment',
+     'the preview exposes the full occupancy cascade + the classification it is remembered under');
   ok(byPath.occupancy.label === 'Occupancy', 'and carries a human label');
 
   // Missing: no product chosen yet.
@@ -124,6 +127,37 @@ async function main() {
   ok(pv2.overridden.includes('productId'), 'and the choice is recorded as an override');
   const byPath2 = Object.fromEntries(pv2.fields.map((f) => [f.path, f]));
   ok(byPath2.productId.state === 'overridden', 'the screen shows it as chosen by a person');
+
+  // --- county is DERIVED from the address when the file lacks one ---------
+  // Class REQUIRES a county ("The County field is required" — the owner's live
+  // 400), and a mailing address rarely carries one. buildPreview geocodes it
+  // (stubbed here so the test never touches the network) and records it as a
+  // STATED assumption; without a resolvable county the order is blocked with a
+  // plain reason rather than sending null for Class to reject.
+  {
+    const addressCanon = require('../src/lib/address-canon');
+    const origResolve = addressCanon.resolveCounty;
+    await db.query(`UPDATE applications SET property_address = property_address - 'county' WHERE id=$1`, [appId]);
+
+    addressCanon.resolveCounty = async () => null;               // the geocode cannot place it
+    const noC = await orderService.buildPreview(db, appId, { overrides: { productId: 42 } });
+    const byNoC = Object.fromEntries(noC.fields.map((f) => [f.path, f]));
+    ok(noC.canPlace === false && byNoC['property.county'] && byNoC['property.county'].state === 'missing',
+       'a county-less file with no geocode result blocks the order and flags county missing');
+
+    addressCanon.resolveCounty = async () => 'Kings County';     // the geocode resolves it
+    const gotC = await orderService.buildPreview(db, appId, { overrides: { productId: 42 } });
+    const byGotC = Object.fromEntries(gotC.fields.map((f) => [f.path, f]));
+    ok(gotC.body.property.county === 'Kings County' && gotC.canPlace === true,
+       'a derived county fills the field Class requires and unblocks the order');
+    ok(byGotC['property.county'].state === 'derived',
+       'and is shown DERIVED — a value the reviewer confirms, never a silent default');
+    ok(gotC.assumptions.some((a) => a.field === 'property.county' && /property address/i.test(a.why || '')),
+       'the assumption says it was read from the property address');
+
+    addressCanon.resolveCounty = origResolve;
+    await db.query(`UPDATE applications SET property_address = jsonb_set(property_address, '{county}', '"Luzerne"') WHERE id=$1`, [appId]);
+  }
 
   // --- a walked body cannot fall behind the builder ----------------------
   const bodyLeaves = [];
@@ -181,16 +215,20 @@ async function main() {
      'notifyEmails carries the loan officer, the processor AND both borrowers');
   ok(ctxN.notifyEmails.length === 4, 'and nobody appears twice');
 
-  // The preview surfaces the list, and the built body turns each into a BorrowerInfo
-  // notification — an array, which fieldRows() skips, so surfacing it is the ONLY
-  // way the screen sees who will be emailed before the order goes out.
+  // Class's notification list accepts EXACTLY ONE item, of type BorrowerInfo — its
+  // enum has no other type, and more than one is rejected ("should have exactly one
+  // item of type BorrowerInfo"). So the built body carries a SINGLE notification: the
+  // borrower's own email. The preview surfaces exactly what goes out (that one
+  // recipient), not the whole notify pool the loan officer / processor sit in.
   const pvN = await orderService.buildPreview(db, appId, { overrides: { productId: 42 } });
-  ok(Array.isArray(pvN.notifyEmails) && pvN.notifyEmails.length === 4,
-     'the preview surfaces the notify list so the screen shows who gets emailed');
-  ok((pvN.body.notificationList || []).length === 4 &&
+  ok(Array.isArray(pvN.notifyEmails) && pvN.notifyEmails.length === 1 &&
+     pvN.notifyEmails[0] === `ada.${tag}@example.com`,
+     'the preview surfaces the ONE recipient that actually goes out (the borrower)');
+  ok((pvN.body.notificationList || []).length === 1 &&
      // The key is `Type` on UAD 2.6 and `type` on 3.6 — read whichever this version emitted.
-     pvN.body.notificationList.every((n) => (n.Type != null ? n.Type : n.type) === 'BorrowerInfo'),
-     'and each recipient becomes a BorrowerInfo entry on the order body');
+     (pvN.body.notificationList[0].Type != null ? pvN.body.notificationList[0].Type : pvN.body.notificationList[0].type) === 'BorrowerInfo' &&
+     (pvN.body.notificationList[0].Email != null ? pvN.body.notificationList[0].Email : pvN.body.notificationList[0].email) === `ada.${tag}@example.com`,
+     'the order body carries exactly one BorrowerInfo entry — the borrower\'s email');
 
   // A DEACTIVATED processor drops out — an appraiser notice must never chase a
   // staffer who has left, exactly as the AMC desk does.
@@ -287,6 +325,82 @@ async function main() {
   const smuggle = await call('GET', `/api/class/files/${appId}/preview?productId=42&amcName=Someone%20Else`);
   ok(smuggle.status === 200 && smuggle.body.body.amcName === undefined,
      'a field outside the allowlist cannot be smuggled into the order body');
+
+  // ==========================================================================
+  // THE OCCUPANCY CASCADE, END TO END. v1 `occupancy` binds to an undocumented live
+  // enum, so the sender tries the candidate list IN ORDER on the specific occupancy
+  // binding 400 and stops at the first Class accepts. We stub the vendor call — the
+  // whole point is to prove the ROUTE cascades, remembers, and records the winner
+  // without ever placing more than one real order.
+  // ==========================================================================
+  const client = require('../src/class/client');
+  const origCreate = client.createOrder;
+  const origConfigured = client.configured;
+  // Enabled + ready so the four gates pass; dryrun off so the real send path runs.
+  client.configured = () => ({
+    enabled: true, ready: true, dryrun: false, outbound: true, apiVersion: 'v1',
+    environment: 'uat', hasClient: true, hasUser: true, hostsConfirmed: true, callbackReady: true,
+  });
+  const occErr = () => Object.assign(new Error('Class createOrder failed: HTTP 400'), {
+    status: 400,
+    body: { success: false, code: '400', error: 'The JSON value could not be converted to CV.OrdersExternal.Common.Orders.OccupancyTypeEnum. Path: $.occupancy | LineNumber: 0 | BytePositionInLine: 987.' },
+  });
+
+  // --- the first order of this classification cascades to the value Class takes ---
+  orderService._internals.LEARNED_OCCUPANCY.clear();
+  let calls = [];
+  let failSet = new Set(['Investor', 'NonOwnerOccupied']);   // first two refused, third accepted
+  client.createOrder = async (b) => {
+    calls.push(b.occupancy);
+    if (failSet.has(b.occupancy)) throw occErr();
+    return { orderId: 7788, transactionId: 'tx-' + b.occupancy };
+  };
+  const placed = await call('POST', `/api/class/files/${appId}/order`, { confirm: true, overrides: { productId: 42 } });
+  ok(placed.status === 200 && placed.body.ok === true && String(placed.body.orderId) === '7788',
+     'the order succeeds once Class accepts a candidate — one real order, not one per try');
+  ok(JSON.stringify(calls) === JSON.stringify(['Investor', 'NonOwnerOccupied', 'InvestmentProperty']),
+     'the sender walked the cascade IN ORDER, stopping at the first value Class took');
+  ok(placed.body.body.occupancy === 'InvestmentProperty',
+     'and the response reports the occupancy that was actually accepted, not the first guess');
+  const row1 = (await db.query(
+    `SELECT status, class_order_id, request_body FROM class_orders
+      WHERE application_id=$1 ORDER BY id DESC LIMIT 1`, [appId])).rows[0];
+  ok(row1 && row1.status === 'ordered' && String(row1.class_order_id) === '7788',
+     'the ONE order row records the success (never a row per rejected candidate)');
+  ok(row1 && row1.request_body && row1.request_body.occupancy === 'InvestmentProperty',
+     'and its stored request body carries the accepted occupancy, not the first-guess one');
+  ok(orderService.learnedOccupancy('v1', 'investment') === 'InvestmentProperty',
+     'the winner is remembered for this environment + version + classification');
+
+  // --- the next order of the same shape starts on the learned value, no cascade ---
+  calls = [];
+  const placed2 = await call('POST', `/api/class/files/${appId}/order`, { confirm: true, overrides: { productId: 42 } });
+  ok(placed2.status === 200 && placed2.body.ok === true,
+     'a second order of the same classification also succeeds');
+  ok(JSON.stringify(calls) === JSON.stringify(['InvestmentProperty']),
+     'and it goes out on the learned value in ONE call — the cascade is not re-walked');
+
+  // --- a DIFFERENT field's error stops the cascade at once and surfaces as itself ---
+  orderService._internals.LEARNED_OCCUPANCY.clear();
+  calls = [];
+  client.createOrder = async (b) => {
+    calls.push(b.occupancy);
+    throw Object.assign(new Error('Class createOrder failed: HTTP 400'), {
+      status: 400, body: { error: 'could not be converted to PropertyTypeEnum. Path: $.propertyTypeEnum' } });
+  };
+  const stopped = await call('POST', `/api/class/files/${appId}/order`, { confirm: true, overrides: { productId: 42 } });
+  ok(stopped.status === 502 && (stopped.body.error === 'order_failed'),
+     'a non-occupancy failure is surfaced, not swallowed by the cascade');
+  ok(calls.length === 1, 'and the cascade stopped on the first try — it never retries past a real error');
+  const rowErr = (await db.query(
+    `SELECT status, last_error FROM class_orders WHERE application_id=$1 ORDER BY id DESC LIMIT 1`, [appId])).rows[0];
+  ok(rowErr && rowErr.status === 'error', 'the order row records the error');
+
+  client.createOrder = origCreate;
+  client.configured = origConfigured;
+
+  // Remove the three test order rows so the cleanup below can drop the app.
+  await db.query('DELETE FROM class_orders WHERE application_id=$1', [appId]);
 
   // --- cleanup ------------------------------------------------------------
   server.close();

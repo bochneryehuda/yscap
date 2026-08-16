@@ -104,6 +104,25 @@ function addressCore(s) {
   return street.length ? { num, street, unit } : null;
 }
 
+// The SHORT name a NEW address folder is created with (owner-directed 2026-08: "don't repeat
+// the full property address at every folder level — use just street number + street name").
+// The canonical one-line is "num Street St, City, ST zip", so the PRE-COMMA segment is exactly
+// the street number + street name (in its nice original casing) — ~40 chars shorter than the
+// full one-line, which is what keeps the whole Windows/OneDrive path under 259 chars.
+//
+// SAFE going forward: the address MATCHER (addressMatches / addressCore) compares only the
+// house number + pre-comma street tokens, so an EXISTING full-named folder still matches a new
+// file's full addressOneLine (it is never duplicated), and a NEW short-named folder is matched
+// the same way on the next file. A comma-less one-line (rare — canonical addresses always carry
+// commas) is returned UNCHANGED: without the comma we can't tell where the street ends, and
+// keeping the whole string is safe (it still matches the full one-line) even if not shortened.
+function shortAddressName(oneLine) {
+  const s = String(oneLine || '').trim();
+  if (!s) return '';
+  const pre = s.split(',')[0].trim();
+  return pre || s;
+}
+
 // Does candidate address folder match the target address? House number must be
 // identical and the (suffix/directional-normalized) pre-comma street tokens
 // must be EXACTLY equal — "654 Hamilton st" ≡ "654 Hamilton Street, Newark NJ",
@@ -306,7 +325,7 @@ async function resolveSyncFolder(ctx) {
     // Keep the address level for application scopes here too — without it, a
     // lead-capture borrower's multiple loans would commingle in one folder.
     if (ctx.hasApplication) {
-      const addressName = ctx.addressOneLine || (ctx.ysLoanNumber ? `Loan ${ctx.ysLoanNumber}` : 'Property');
+      const addressName = ctx.addressOneLine ? shortAddressName(ctx.addressOneLine) : (ctx.ysLoanNumber ? `Loan ${ctx.ysLoanNumber}` : 'Property');
       const uas = await sp.listChildren(driveId, parentId);
       const uam = ctx.addressOneLine
         ? pickMatch(uas, (n) => addressMatches(n, ctx.addressOneLine), ctx.addressOneLine)
@@ -358,7 +377,7 @@ async function resolveSyncFolder(ctx) {
     // 3) Address folder — application scopes only (borrower-profile documents
     //    live directly under the borrower folder).
     if (ctx.hasApplication) {
-      const addressName = ctx.addressOneLine || (ctx.ysLoanNumber ? `Loan ${ctx.ysLoanNumber}` : 'Property');
+      const addressName = ctx.addressOneLine ? shortAddressName(ctx.addressOneLine) : (ctx.ysLoanNumber ? `Loan ${ctx.ysLoanNumber}` : 'Property');
       const kids = await sp.listChildren(driveId, parentId);
       const am = ctx.addressOneLine
         ? pickMatch(kids, (n) => addressMatches(n, ctx.addressOneLine), ctx.addressOneLine)
@@ -476,5 +495,6 @@ module.exports = {
   // exported for unit tests
   addressCore, addressMatches, borrowerMatches, officerMatches, norm,
   addressMatchesTypo, borrowerMatchesTypo, dlDistance, tokenClose,
+  shortAddressName,
   _resetMemory,
 };

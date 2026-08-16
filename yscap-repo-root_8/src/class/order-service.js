@@ -25,6 +25,11 @@ const orderBuild = require('./order-build');
 const client = require('./client');
 const cfg = require('../config');
 const formSelect = require('./form-select');
+// Class REQUIRES a county on every order, and a mailing address never carries one.
+// resolveCounty geocodes the property (cached) so PILOT fills it automatically — a
+// stated assumption, never a silent default — and the builder blocks cleanly if it
+// still could not be resolved.
+const addressCanon = require('../lib/address-canon');
 // The RTL strategy token (fix_and_flip / bridge / dscr / ground_up) is derived by the
 // SAME mapper the AMC desk uses, so a class_form_map rule keyed on a strategy means
 // exactly what the equivalent amc_form_map rule means. Both desks are RTL and this is a
@@ -69,12 +74,13 @@ async function loadContext(db, appId) {
   const a = r.rows[0];
   if (!a) return null;
 
-  // Everyone Class should email as the appraisal moves: the loan officer, the
-  // processor, and the borrower(s). Each becomes a `BorrowerInfo` entry on the
-  // order's notificationList (see order-build), so Class copies all of them when the
-  // report comes back — the SAME set NAN carries as products[].notifications. A
-  // deactivated LO/processor drops out (their is_active LEFT JOIN yields NULL), and
-  // a malformed or duplicate address is dropped rather than sent.
+  // The fallback pool for Class's single notification recipient. Class's
+  // notificationList accepts EXACTLY ONE item, of type BorrowerInfo (see
+  // order-build) — the builder sends the borrower's own email, and only falls
+  // back to the first of THESE when the borrower has no email on file. The loan
+  // officer and processor follow the order in PILOT, not through Class. A
+  // deactivated LO/processor drops out (their is_active LEFT JOIN yields NULL),
+  // and a malformed or duplicate address is dropped rather than kept.
   const notifyEmails = [];
   const addEmail = (e) => {
     const v = String(e == null ? '' : e).trim().toLowerCase();
@@ -274,9 +280,46 @@ function dealShapeFor(ctx) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Learned v1 occupancy — the value Class actually accepted for a classification.
+//
+// v1 `occupancy` binds to an undocumented enum (see order-build), so the first order
+// of a classification cascades through the candidate list until Class takes one. That
+// winner is remembered HERE, in process, keyed by environment + version + classification,
+// so every later order of the same shape starts on the accepted value and cascades no
+// further. It is deliberately in-process only: a restart simply re-learns on the next
+// order (a few free model-binding 400s), so there is no table to migrate or go stale,
+// and nothing durable to be wrong.
+// ---------------------------------------------------------------------------
+const LEARNED_OCCUPANCY = new Map();
+const occKey = (apiVersion, oKey) =>
+  `${(cfg.class && cfg.class.environment) || 'production'}:${apiVersion}:${oKey}`;
+function rememberOccupancy(apiVersion, oKey, value) {
+  if (!apiVersion || !oKey || !value) return;
+  LEARNED_OCCUPANCY.set(occKey(apiVersion, oKey), String(value));
+}
+function learnedOccupancy(apiVersion, oKey) {
+  if (!apiVersion || !oKey) return null;
+  return LEARNED_OCCUPANCY.get(occKey(apiVersion, oKey)) || null;
+}
+
 async function buildPreview(db, appId, opts = {}) {
   const ctx = await loadContext(db, appId);
   if (!ctx) return null;
+
+  // Class REQUIRES a county and the file's mailing address rarely carries one, so
+  // work it out from the property address (a geocode lookup, cached forever). It is
+  // recorded as a DERIVED assumption below so the reviewer sees it — never a silent
+  // default — and if it cannot be resolved the builder blocks the order with a plain
+  // reason (order-build) instead of letting Class 400. Best-effort: a staff override
+  // still wins in buildOrder, exactly like the product/version defaults.
+  let countyDerived = false;
+  if (ctx.property && !ctx.property.county) {
+    try {
+      const c = await addressCanon.resolveCounty(ctx.property);
+      if (c) { ctx.property.county = c; countyDerived = true; }
+    } catch (_) { /* the builder blocks cleanly if county stays blank */ }
+  }
   // Auto-pick the Class product from the admin rules. A staff override (opts.overrides
   // .productId) still WINS inside buildOrder, which reads ctx.productId as the DERIVED
   // value — so we set it here and let the override take precedence, exactly the way the
@@ -289,17 +332,48 @@ async function buildPreview(db, appId, opts = {}) {
   // BUILDER resolves it (an override wins), and the answer it reports is what the
   // screen shows and what the send posts to — never re-derived here, or the screen
   // could describe one version while the order goes out on the other.
-  const cfg = client.configured();
-  const built = orderBuild.buildOrder(ctx, opts.overrides || {}, { version: opts.version || cfg.apiVersion });
+  const cfgd = client.configured();
+  const built = orderBuild.buildOrder(ctx, opts.overrides || {}, { version: opts.version || cfgd.apiVersion });
+
+  // Record the county we worked out as a stated assumption so the reviewer sees it
+  // on the preview (the desk's "show what was filled automatically" rule). Skip it
+  // when a staffer typed one — the builder already marks that row overridden.
+  if (countyDerived && ctx.property.county && !(built.overridden || []).includes('county')) {
+    built.assumptions.push({
+      field: 'property.county',
+      value: ctx.property.county,
+      why: 'read from the property address (Class requires a county and the file did not carry one) — confirm it is correct',
+    });
+  }
+
+  // If this environment already learned which occupancy value Class accepts for this
+  // classification, start the order on it (and put it at the head of the cascade) so a
+  // proven file goes out clean on the first try. A learned value the builder did not
+  // already offer is added; the builder's order is otherwise preserved.
+  const learned = learnedOccupancy(built.apiVersion, built.occupancyKey);
+  let occupancyCandidates = Array.isArray(built.occupancyCandidates) ? built.occupancyCandidates.slice() : [];
+  if (learned) {
+    occupancyCandidates = [learned, ...occupancyCandidates.filter((v) => v !== learned)];
+    if (occupancyCandidates[0] != null) built.body.occupancy = occupancyCandidates[0];
+  }
+
   return {
     context: ctx,
     body: built.body,
     fields: fieldRows(built),
+    // The full occupancy cascade + the classification the accepted value is remembered
+    // under. The order route walks these on the specific occupancy binding error and,
+    // on success, remembers the winner via `rememberOccupancy`.
+    occupancyCandidates,
+    occupancyKey: built.occupancyKey,
     contacts: built.body.contacts || [],
-    // Who Class will email as the appraisal moves (LO + processor + borrowers). The
-    // notificationList is an array, so fieldRows() skips it — surface it here so the
-    // screen shows every recipient before the order goes out (the desk's standing rule).
-    notifyEmails: ctx.notifyEmails,
+    // Who Class will email as the appraisal moves. Class's notification list carries
+    // exactly ONE item, of type BorrowerInfo — the borrower's own address (Class
+    // notifies the borrower; the LO/processor follow the order in PILOT). The
+    // notificationList is an array, so fieldRows() skips it — surface the actual
+    // recipient(s) that go out here, per the desk's "show what goes out" rule.
+    notifyEmails: (built.body.notificationList || [])
+      .map((n) => n.Email || n.email).filter(Boolean),
     // The product PILOT auto-picked from class_form_map (null until the map is seeded).
     // Staff can still change it on the screen; the override wins in buildOrder.
     chosenProduct: chosen,
@@ -315,13 +389,14 @@ async function buildPreview(db, appId, opts = {}) {
     path: built.path,
     options: orderBuild.screenOptions(built.apiVersion),
     versions: orderBuild.VERSIONS,
-    defaultVersion: cfg.apiVersion,
-    config: cfg,
+    defaultVersion: cfgd.apiVersion,
+    config: cfgd,
     hosts: client.hosts(),
   };
 }
 
 module.exports = {
   loadContext, buildPreview, fieldRows, loadProductRules, dealShapeFor,
-  _internals: { LABELS, addrParts },
+  rememberOccupancy, learnedOccupancy,
+  _internals: { LABELS, addrParts, LEARNED_OCCUPANCY, occKey },
 };

@@ -34,7 +34,18 @@ ok(Object.prototype.hasOwnProperty.call(r.body, 'occupancy'),
    'the body carries `occupancy` — the V1 guide\'s spelling (rev 0.17, p.30)');
 ok(!Object.prototype.hasOwnProperty.call(r.body, 'ocupancy'),
    'and does NOT carry the V2 document\'s `ocupancy` typo, which V1 would drop unrecognised');
-ok(r.body.occupancy === 'Investment', 'an RTL investment property maps to their Investment value');
+// v1 `occupancy` binds to an undocumented live enum, so the body starts on the
+// most-likely value and the sender cascades through the rest ONLY on the specific
+// occupancy binding error. "Investment" was proven REJECTED by the live API, so it is
+// no longer the head — an investment property leads with `Investor`, and the full
+// ordered cascade is exposed for the sender to walk.
+ok(r.body.occupancy === 'Investor', 'an RTL investment property leads with their Investor value (not the rejected "Investment")');
+ok(Array.isArray(r.occupancyCandidates) && r.occupancyCandidates[0] === 'Investor'
+   && r.occupancyCandidates.includes('Other'),
+   'the full occupancy cascade is exposed, Investor-first, Other as the last-resort fallback');
+ok(r.occupancyKey === 'investment', 'the classification the accepted value is remembered under is reported');
+ok(!r.occupancyCandidates.slice(1).includes('Investor'),
+   'the cascade never repeats a value');
 
 // ---------------------------------------------------------------------------
 console.log('\n--- the happy path is complete and placeable ---');
@@ -81,6 +92,7 @@ for (const [key, patch] of [
   ['property.city', { property: { ...BASE.property, city: '' } }],
   ['property.state', { property: { ...BASE.property, state: '' } }],
   ['property.zip', { property: { ...BASE.property, postalCode: '' } }],
+  ['property.county', { property: { ...BASE.property, county: '' } }],
   ['referenceNumber', { referenceNumber: '' }],
   ['productId', { productId: null }],
   ['contacts.Borrower', { borrower: null }],
@@ -99,10 +111,85 @@ const fixed = ob.buildOrder({ ...BASE, property: { ...BASE.property, category: '
 ok(fixed.canPlace === true, 'an override rescues an otherwise unplaceable order');
 
 // ---------------------------------------------------------------------------
-console.log('\n--- notification emails are cleaned ---');
-const notif = ob.buildOrder({ ...BASE, notifyEmails: ['a@b.com', 'a@b.com', '', null, 'c@d.com'] });
-ok(notif.body.notificationList.length === 2, 'blanks dropped and duplicates collapsed');
+// Class REQUIRES a county ("The County field is required" — the owner's live 400).
+// The county is not part of a mailing address, so the file often lacks one; the body
+// carries whatever is on the file, and a staffer can type/correct it on the screen.
+console.log('\n--- the county Class requires rides in the body, and is overridable ---');
+ok(r.body.property.county === 'Luzerne', 'the county on file rides in the body Class needs');
+const noCounty = ob.buildOrder({ ...BASE, property: { ...BASE.property, county: '' } });
+ok(noCounty.canPlace === false && noCounty.body.property.county === null,
+   'a blank county blocks the order rather than sending null for Class to 400');
+ok(noCounty.missing.some((m) => m.field === 'property.county' && /county/i.test(m.why)),
+   'and the refusal names the county so it is actionable on the screen');
+const cOvr = ob.buildOrder({ ...BASE, property: { ...BASE.property, county: '' } }, { county: 'Kings County' });
+ok(cOvr.body.property.county === 'Kings County' && cOvr.canPlace === true,
+   'a county typed on the screen fills the field and unblocks the order');
+ok(cOvr.overridden.includes('county'), 'and is recorded as overridden so the preview shows it');
+
+// ---------------------------------------------------------------------------
+// Class's notification list accepts EXACTLY ONE item, of type BorrowerInfo —
+// their enum has no other type, and a list with more than one is rejected
+// ("The Notification list should have exactly one item of type BorrowerInfo").
+// One item per notify-email was the live rejection; the borrower's own email is
+// that single item.
+console.log('\n--- the notification list carries exactly ONE BorrowerInfo item (the borrower) ---');
+const notif = ob.buildOrder({ ...BASE, notifyEmails: ['a@b.com', 'c@d.com'] });
+ok(notif.body.notificationList.length === 1, 'exactly one notification item goes out, never one per recipient');
 ok(notif.body.notificationList[0].Type === 'BorrowerInfo', 'their only documented notification type is used');
+ok(notif.body.notificationList[0].Email === 'ada@example.com',
+   'and it is the borrower\'s own email, not the LO/processor cc list');
+// With no borrower email on file, the first valid notify-email fills the single
+// slot (blanks/dupes dropped), so a borrower who never gave an email still
+// leaves the list with exactly one valid recipient.
+const notifNoB = ob.buildOrder({
+  ...BASE, borrower: { firstName: 'Ada', lastName: 'Reyes' },
+  notifyEmails: ['a@b.com', 'a@b.com', '', null, 'c@d.com'],
+});
+ok(notifNoB.body.notificationList.length === 1 && notifNoB.body.notificationList[0].Email === 'a@b.com',
+   'no borrower email -> the first valid notify-email is the single BorrowerInfo item');
+// Nothing to notify -> an empty list, never a fabricated recipient.
+const notifNone = ob.buildOrder({ ...BASE, borrower: { firstName: 'Ada', lastName: 'Reyes' }, notifyEmails: [] });
+ok(Array.isArray(notifNone.body.notificationList) && notifNone.body.notificationList.length === 0,
+   'no email anywhere -> an empty notification list, never a made-up one');
+// A MALFORMED borrower email is never sent as the sole notification (Class
+// validates it) -> fall through to the first valid notify-email.
+const notifBadB = ob.buildOrder({
+  ...BASE, borrower: { firstName: 'Ada', lastName: 'Reyes', email: 'not-an-email' },
+  notifyEmails: ['also bad', 'lo@ys.com'],
+});
+ok(notifBadB.body.notificationList.length === 1 && notifBadB.body.notificationList[0].Email === 'lo@ys.com',
+   'a malformed borrower email falls through to the first VALID notify-email, never bouncing the order');
+// Only invalid candidates -> empty, never a malformed address on the wire.
+const notifAllBad = ob.buildOrder({ ...BASE, borrower: { firstName: 'Ada', lastName: 'Reyes', email: 'nope' }, notifyEmails: ['bad', ''] });
+ok(notifAllBad.body.notificationList.length === 0,
+   'no valid email anywhere -> empty list, never a malformed BorrowerInfo item');
+
+// ---------------------------------------------------------------------------
+// Class rejects a phone that is not a plain US 10-digit number ("Please enter
+// valid work phone number"). A stored "+1 (570) 555-1234" / "570-555-9999" must
+// go out as bare 10 digits, and an unparseable one is dropped, never sent.
+console.log('\n--- phones are normalised to the 10 bare digits Class accepts ---');
+const ph = ob.buildOrder({
+  ...BASE,
+  borrower: { firstName: 'Ada', lastName: 'Reyes', email: 'ada@example.com', mobile: '+1 (570) 555-1234' },
+  loanOfficer: { firstName: 'Lee', lastName: 'Ng', email: 'lee@ys.com', workPhone: '570-555-9999' },
+});
+const roleOf = (c) => (c && (c.Type != null ? c.Type : c.type)) || null;
+const bMethods = ph.body.contacts.find((c) => roleOf(c) === 'Borrower').contactMethods;
+ok(bMethods.some((m) => m.type === 'MobilePhone' && m.value === '5705551234'),
+   'a "+1 (570) 555-1234" mobile is sent as bare 10 digits — no +1 / parens / dashes');
+const loContact = ph.body.contacts.find((c) => roleOf(c) === 'LoanOfficer');
+ok(loContact && loContact.contactMethods.some((m) => m.type === 'WorkPhone' && m.value === '5705559999'),
+   'a "570-555-9999" work phone is sent as bare 10 digits (the live rejection)');
+const phBad = ob.buildOrder({
+  ...BASE,
+  borrower: { firstName: 'Ada', lastName: 'Reyes', email: 'ada@example.com', mobile: '555-12' },
+});
+const bMethods2 = phBad.body.contacts.find((c) => roleOf(c) === 'Borrower').contactMethods;
+ok(!bMethods2.some((m) => m.type === 'MobilePhone'),
+   'a too-short phone is dropped rather than sent for Class to reject');
+ok(bMethods2.some((m) => m.type === 'Email' && m.value === 'ada@example.com'),
+   'but the email method still rides');
 
 // ---------------------------------------------------------------------------
 // EVERY VALUE WE EMIT MUST BE ON THEIR LIST. This is the guard that makes the
@@ -129,9 +216,9 @@ for (const [list, values] of Object.entries(emitted)) {
 for (const v of ['ConstructionLoan', 'K203', 'HELOC']) {
   ok(ENUMS.loanType.includes(v), `loanType carries the V1-only value "${v}"`);
 }
-ok(!ENUMS.occupancy, 'there is NO occupancy list — on V1 it is a free-form string, so we must not pretend otherwise');
-ok(ob.OCCUPANCY_SUGGESTIONS.includes('Investment'),
-   'Investment is offered — the one occupancy word their own vocabulary confirms');
+ok(!ENUMS.occupancy, 'there is NO published occupancy list on V1 — their enum members are undocumented, so we must not pretend a closed list');
+ok(ob.OCCUPANCY_SUGGESTIONS.includes('Investor') && !ob.OCCUPANCY_SUGGESTIONS.includes('Investment'),
+   'the screen suggests Investor (the head of the investment cascade), not the rejected "Investment"');
 
 // ---------------------------------------------------------------------------
 // The order SCREEN decides which rows get an input box; the ROUTE decides what it
@@ -222,28 +309,32 @@ ok(noBorrower36.missing.some((m) => m.field === 'contacts.Borrower'),
 console.log('\n--- the notification list re-cases BOTH of its keys ---');
 const n26 = ob.buildOrder({ ...BASE, notifyEmails: ['a@b.com'] });
 const n36 = ob.buildOrder({ ...BASE, notifyEmails: ['a@b.com'] }, {}, { version: 'v2' });
-ok(n26.body.notificationList[0].Type === 'BorrowerInfo' && n26.body.notificationList[0].Email === 'a@b.com',
-   '2.6 uses Type/Email');
-ok(n36.body.notificationList[0].type === 'BorrowerInfo' && n36.body.notificationList[0].email === 'a@b.com',
+ok(n26.body.notificationList[0].Type === 'BorrowerInfo' && n26.body.notificationList[0].Email === 'ada@example.com',
+   '2.6 uses Type/Email, carrying the borrower\'s own email');
+ok(n36.body.notificationList[0].type === 'BorrowerInfo' && n36.body.notificationList[0].email === 'ada@example.com',
    '3.6 uses type/email');
 ok(n36.body.notificationList[0].Type === undefined && n36.body.notificationList[0].Email === undefined,
    'and 3.6 carries neither of the 2.6 spellings');
 
-console.log('\n--- occupancy: free text on 2.6, a closed list on 3.6 ---');
-ok(v26.body.occupancy === 'Investment' && v36.body.occupancy === 'Investment',
-   'an investment property says Investment on both — the one word their vocabulary confirms');
+console.log('\n--- occupancy: a live-enum cascade on 2.6, a closed list on 3.6 ---');
+ok(v26.body.occupancy === 'Investor' && v36.body.occupancy === 'Investment',
+   'an investment property leads with Investor on 2.6 (undocumented enum) and says Investment on 3.6 (their published list)');
 const prim36 = ob.buildOrder({ ...BASE, property: { ...BASE.property, occupancy: 'primary' } }, {}, { version: 'v2' });
 ok(prim36.body.occupancy === 'PrimaryResidence', '3.6 uses their enum name, not our word');
+const prim26 = ob.buildOrder({ ...BASE, property: { ...BASE.property, occupancy: 'primary' } });
+ok(prim26.body.occupancy === 'PrimaryResidence' && prim26.occupancyCandidates.includes('Owner'),
+   '2.6 leads a primary residence with PrimaryResidence and keeps Owner as a fallback (both spellings tried)');
 const vac26 = ob.buildOrder({ ...BASE, property: { ...BASE.property, occupancy: 'vacant' } });
 const vac36 = ob.buildOrder({ ...BASE, property: { ...BASE.property, occupancy: 'vacant' } }, {}, { version: 'v2' });
-ok(vac26.body.occupancy === 'Vacant', '2.6 can just say Vacant — the field is free text there');
+ok(vac26.body.occupancy === 'Vacant', '2.6 leads a vacant property with Vacant');
 ok(vac36.body.occupancy === 'Other' && vac36.assumptions.some((a) => a.field === 'occupancy'),
    '3.6 has no vacant value, so it says Other and DECLARES it rather than inventing a word');
 const odd36 = ob.buildOrder({ ...BASE, property: { ...BASE.property, occupancy: 'squatters' } }, {}, { version: 'v2' });
 ok(odd36.body.occupancy === null && odd36.canPlace === false,
    'an occupancy 3.6 cannot express BLOCKS rather than being guessed');
 const odd26 = ob.buildOrder({ ...BASE, property: { ...BASE.property, occupancy: 'squatters' } });
-ok(odd26.canPlace === true, 'the same file is fine on 2.6, where the field is free text');
+ok(odd26.canPlace === true && odd26.body.occupancy === 'Other',
+   'an unrecognised 2.6 occupancy still places, on their near-certain "Other" fallback — the appraiser determines the real one');
 
 console.log('\n--- the GSE reference numbers are renamed on 3.6 ---');
 const gse26 = ob.buildOrder({ ...BASE, caseFileId: 'DU-1', lpaKey: 'LPA-1' });
@@ -381,10 +472,85 @@ for (const [v, ovr, key] of [
   ok(good.overridden.includes('propertyTypeEnum'), `and is still reported as overridden on ${v}`);
 }
 
-// Free-text occupancy on 2.6 must NOT be validated — it is not a closed list there.
-const freeText = ob.buildOrder(encCtx, { occupancy: 'Tenant occupied, rent roll attached' }, { version: 'v1' });
-ok(freeText.body.occupancy === 'Tenant occupied, rent roll attached',
-   'UAD 2.6 occupancy is free text, so a typed sentence is still sent verbatim');
+// A 2.6 occupancy a staffer TYPES is not validated (their enum is undocumented) — it is
+// tried FIRST, then the classification's auto candidates fall in behind it, so a typo can
+// never block the order: the cascade recovers on a value Class actually accepts.
+const typed = ob.buildOrder(encCtx, { occupancy: 'Tenant occupied, rent roll attached' }, { version: 'v1' });
+ok(typed.body.occupancy === 'Tenant occupied, rent roll attached',
+   'UAD 2.6 tries the typed occupancy first — sent verbatim as the head of the cascade');
+ok(typed.occupancyCandidates.length > 1 && typed.occupancyCandidates[0] === 'Tenant occupied, rent roll attached',
+   'and keeps auto fallbacks behind it, so a typed value the live enum refuses still recovers');
+
+// ---------------------------------------------------------------------------
+console.log('\n--- isOccupancyEnumError: the ONE error the sender may cascade past ---');
+// Shape A — Class's OWN error envelope, verbatim from the owner's failure (the shape
+// actually observed on the wire).
+const enumErr = Object.assign(new Error('Class createOrder failed: HTTP 400'), {
+  status: 400,
+  body: { success: false, code: '400', error: 'The JSON value could not be converted to CV.OrdersExternal.Common.Orders.OccupancyTypeEnum. Path: $.occupancy | LineNumber: 0 | BytePositionInLine: 987.' },
+});
+ok(ob.isOccupancyEnumError(enumErr) === true, 'the live vendor occupancy binding 400 is recognised (verbatim from the owner\'s failure)');
+// Shape B — ASP.NET Core's DEFAULT ValidationProblemDetails, where the failing field
+// is a KEY under `errors`, not a substring of `error`. The detector must find it here
+// too, or the cascade silently never fires against a framework that returns this shape.
+const problemDetails = Object.assign(new Error('Class createOrder failed: HTTP 400'), {
+  status: 400,
+  body: { type: 'https://tools.ietf.org/html/rfc9110', title: 'One or more validation errors occurred.', status: 400,
+    errors: { '$.occupancy': ['The JSON value could not be converted to CV.OrdersExternal.Common.Orders.OccupancyTypeEnum.'] } },
+});
+ok(ob.isOccupancyEnumError(problemDetails) === true, 'the ASP.NET Core ValidationProblemDetails errors{} shape is recognised too (the field is a KEY there)');
+// Multi-field ValidationProblemDetails naming occupancy AND another field: occupancy is
+// among the bad ones, so we still cascade it (once it binds, the path/type is gone).
+const multi = Object.assign(new Error('x'), { status: 400, body: { errors: {
+  '$.occupancy': ['could not be converted to OccupancyTypeEnum'],
+  '$.propertyTypeEnum': ['could not be converted to PropertyType'] } } });
+ok(ob.isOccupancyEnumError(multi) === true, 'a multi-field error that INCLUDES occupancy still cascades occupancy');
+// A DIFFERENT field alone — even in the errors{} shape — must NOT cascade.
+const otherEnum = Object.assign(new Error('x'), { status: 400, body: { errors: { '$.propertyTypeEnum': ['could not be converted to PropertyTypeEnum'] } } });
+ok(ob.isOccupancyEnumError(otherEnum) === false, 'a DIFFERENT field\'s binding error is NOT cascaded — it stops and surfaces as itself');
+const otherEnvelope = Object.assign(new Error('x'), { status: 400, body: { success: false, error: 'could not be converted to PropertyTypeEnum. Path: $.propertyTypeEnum' } });
+ok(ob.isOccupancyEnumError(otherEnvelope) === false, 'nor does the envelope shape false-match a different field');
+ok(ob.isOccupancyEnumError(Object.assign(new Error('boom'), { status: 500 })) === false, 'a 500 is never treated as an occupancy cascade');
+ok(ob.isOccupancyEnumError(null) === false && ob.isOccupancyEnumError(undefined) === false, 'a missing error never cascades');
+ok(ob.isOccupancyEnumError(Object.assign(new Error('gate off'), { code: 'CLASS_OUTBOUND_DISABLED' })) === false,
+   'the write-gate refusal is not a 400 and never cascades');
+
+console.log('\n--- describeOrderError: the reason we STORE and LOG is never just "HTTP 400" ---');
+// The real occupancy failure (envelope shape A): our message + the vendor's own text,
+// so last_error carries the actual cause a person can read.
+const dA = ob.describeOrderError(enumErr);
+ok(/HTTP 400/.test(dA) && /OccupancyTypeEnum/.test(dA),
+   'the stored reason combines our message with the vendor body text (not just "HTTP 400")');
+// ASP.NET ValidationProblemDetails: the field is a KEY, and it is surfaced by name.
+const dB = ob.describeOrderError(problemDetails);
+ok(/\$\.occupancy/.test(dB) && /OccupancyTypeEnum/.test(dB),
+   'the ASP.NET errors{} shape is flattened into the reason, naming the field');
+// A raw (non-JSON) body kept verbatim by readBody under `raw`.
+const rawErr = Object.assign(new Error('Class createOrder failed: HTTP 502'), { status: 502, body: { raw: 'Bad Gateway (nginx)' } });
+ok(/HTTP 502/.test(ob.describeOrderError(rawErr)) && /Bad Gateway/.test(ob.describeOrderError(rawErr)),
+   'a raw non-JSON body is surfaced too');
+// A plain string body.
+ok(/upstream timeout/.test(ob.describeOrderError(Object.assign(new Error('x'), { body: 'upstream timeout' }))),
+   'a plain string vendor body is surfaced');
+// No body — just our message.
+ok(ob.describeOrderError(Object.assign(new Error('the connection dropped'), {})) === 'the connection dropped',
+   'with no vendor body the reason is simply our message');
+// The vendor text is not repeated when our message already carries it (the {success:false} path).
+const refused = Object.assign(new Error('Class createOrder refused: occupancy invalid'), { body: { success: false, message: 'occupancy invalid' } });
+ok(ob.describeOrderError(refused) === 'Class createOrder refused: occupancy invalid',
+   'the vendor text is not appended twice when our message already contains it');
+// Never blank, never throws on junk.
+ok(ob.describeOrderError(null) === 'unknown error', 'a missing error yields a readable fallback');
+ok(typeof ob.describeOrderError(Object.assign(new Error(''), { body: {} })) === 'string'
+   && ob.describeOrderError(Object.assign(new Error(''), { body: {} })).length > 0,
+   'an empty error still yields a non-empty reason');
+// Bounded so it can never overflow the last_error column.
+const huge = Object.assign(new Error('x'.repeat(400)), { body: { error: 'y'.repeat(400) } });
+ok(ob.describeOrderError(huge).length <= 500, 'the stored reason is capped at 500 characters');
+// vendorErrorText directly on the three shapes.
+ok(ob._internals.vendorErrorText({ error: 'boom' }) === 'boom', 'envelope error text');
+ok(ob._internals.vendorErrorText({ errors: { '$.x': ['a', 'b'] } }) === '$.x: a; b', 'errors{} flattened with the key');
+ok(ob._internals.vendorErrorText(null) === '' && ob._internals.vendorErrorText(undefined) === '', 'no body -> empty');
 
 console.log(`\ntest-class-order-build-pure: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

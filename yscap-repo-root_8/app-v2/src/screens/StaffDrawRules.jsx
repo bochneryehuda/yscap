@@ -25,6 +25,91 @@ function Icon({ name }) {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
 }
 
+/* WHAT EACH INVESTOR KEEPS OUT OF OUR DRAW FEE (owner-directed 2026-08-13).
+   Every note buyer the system knows about is listed here on its own — add an investor to PILOT and
+   a box appears for them, pre-set with the rates we agreed (CorrFirst $95, Blue Lake $250).
+   THIS ONLY EVER CHANGES OUR OWN INCOME: the borrower is charged the same draw fee either way, and
+   an investor's cut applies only once the loan has actually been sold to them. */
+function InvestorFees() {
+  const [rows, setRows] = useState([]);
+  const [help, setHelp] = useState('');
+  const [draft, setDraft] = useState({});
+  const [busy, setBusy] = useState('');
+  const [note, setNote] = useState('');
+  const [err, setErr] = useState('');
+
+  const load = useCallback(() => {
+    api.get('/api/sitewire/investor-fees')
+      .then((d) => { setRows(d.rows || []); setHelp(d.help || ''); setDraft({}); })
+      .catch((e) => setErr(e?.data?.error || e.message));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function save(key, value) {
+    setBusy(key); setErr(''); setNote('');
+    try {
+      const r = await api.patch('/api/sitewire/investor-fees', { buyer: key, per_draw_cents: value });
+      setRows(r.rows || []); setDraft((d) => ({ ...d, [key]: undefined }));
+      setNote(value === null ? 'Back to the built-in rate.' : 'Saved.');
+    } catch (e) { setErr(e?.data?.error || 'Could not save that rate.'); }
+    finally { setBusy(''); }
+  }
+
+  return (
+    <div className="dd-card">
+      <CardHead icon="sliders" title="What each investor keeps from our draw fee" />
+      <div className="small" style={{ color: '#4B585C', marginBottom: 10 }}>
+        {help || 'What this investor keeps out of our draw fee on every released draw, once the loan has been sold to them.'}
+        {' '}<b>It comes out of our fee only</b> — the borrower is charged the same either way — and until a loan is
+        sold to them they charge nothing at all.
+      </div>
+      <div className="dd-tablecard" style={{ overflowX: 'auto' }}>
+        <table className="dd-table" style={{ minWidth: 520 }}>
+          <thead><tr><th>Investor</th><th className="num">Keeps per draw</th><th>Where it comes from</th><th /></tr></thead>
+          <tbody>
+            {rows.map((r) => {
+              const shown = draft[r.key] !== undefined ? draft[r.key] : dollars(r.per_draw_cents);
+              const dirty = draft[r.key] !== undefined && toCents(draft[r.key] || 0) !== Number(r.per_draw_cents || 0);
+              return (
+                <tr key={r.key}>
+                  <td style={{ fontWeight: 600 }}>{r.label}
+                    {r.as_named && r.as_named.toLowerCase() !== String(r.label).toLowerCase()
+                      ? <span className="muted" style={{ fontWeight: 400 }}> · on files as “{r.as_named}”</span> : null}
+                  </td>
+                  <td className="num">
+                    <div className="row" style={{ gap: 4, justifyContent: 'flex-end', alignItems: 'center' }}>
+                      <span className="muted">$</span>
+                      <input className="input" style={{ width: 90, textAlign: 'right' }} value={shown}
+                        onChange={(e) => setDraft((d) => ({ ...d, [r.key]: e.target.value }))} />
+                    </div>
+                  </td>
+                  <td className="muted">
+                    {r.source === 'configured' ? 'Set here' : r.source === 'built_in' ? 'The rate we agreed' : 'Keeps nothing'}
+                  </td>
+                  <td>
+                    <div className="row" style={{ gap: 6 }}>
+                      <button className="btn btn-sm ghost" disabled={busy === r.key || !dirty}
+                        onClick={() => save(r.key, toCents(draft[r.key] || 0))}>{busy === r.key ? 'Saving…' : 'Save'}</button>
+                      {r.source === 'configured' && (
+                        <button className="btn btn-sm soft" disabled={busy === r.key}
+                          title="Go back to the rate this system ships with"
+                          onClick={() => save(r.key, null)}>Reset</button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {!rows.length && <tr><td colSpan={4} className="muted">No note buyers on file yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {note ? <div className="small" style={{ color: 'var(--primary,#2F7F86)', marginTop: 8 }}>{note}</div> : null}
+      {err ? <div className="small" style={{ color: 'var(--danger,#B4453C)', marginTop: 8 }}>{err}</div> : null}
+    </div>
+  );
+}
+
 function CardHead({ icon, tone, title, right }) {
   return (
     <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
@@ -170,6 +255,9 @@ export default function StaffDrawRules() {
 
         {/* Who each note buyer's draw deliveries go to */}
         <InvestorContacts />
+
+        {/* What each investor keeps out of OUR draw fee */}
+        <InvestorFees />
 
         {/* Add / update a rule */}
         <div className="dd-card">

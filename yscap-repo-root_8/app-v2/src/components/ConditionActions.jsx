@@ -60,7 +60,7 @@ export function ConditionAudit({ it }) {
    here beside the markup it manages. `pointerdown` (not `click`) so the menu is
    already gone by the time a click lands on whatever is underneath. */
 let menuCloserInstalled = false;
-function useMenuAutoClose() {
+export function useMenuAutoClose() {
   useEffect(() => {
     if (menuCloserInstalled || typeof document === 'undefined') return undefined;
     menuCloserInstalled = true;
@@ -79,7 +79,7 @@ function useMenuAutoClose() {
 
 /* Acting from inside the menu closes it — the action is done, and leaving it
    hanging open over the row you just changed reads as "did that work?". */
-const closeMenu = (e) => {
+export const closeMenu = (e) => {
   if (!e.target.closest('button')) return;      // a select or a label: stay open
   const d = e.currentTarget.closest('details.cond-more');
   if (d) d.open = false;

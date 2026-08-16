@@ -14,9 +14,15 @@
  *   3. the draw packet (Excel)         — the whole schedule of values with this draw on every line
  *   4. the signed wire instructions     — the borrower's own DocuSign form, so the investor can pay
  *
- * NOTHING IS EVER SILENTLY DROPPED: anything that cannot be attached comes back in `skipped` WITH
- * A REASON, is shown on the desk before the send, is printed in the email itself, and is stored on
- * the delivery record. An investor quietly one document short is the failure this exists to avoid.
+ * NOTHING IS EVER SILENTLY DROPPED — INTERNALLY. Anything that cannot be attached comes back in
+ * `skipped` WITH A REASON on the send response, is stored on the delivery record, and is read back
+ * into the desk's delivery history. It is deliberately NOT said in the email itself (owner-directed 2026-08-13: "even if
+ * it's not attached, it shouldn't say 'Hey, this was not attached' — it makes it unprofessional"),
+ * because that read as an apology to a capital partner for our own plumbing. An investor quietly
+ * one document short is still the failure this exists to avoid — the team is the one told.
+ *
+ * OUR report is built FRESH at send time at email size (~5 MB for a 100-photo draw instead of
+ * ~25 MB) and is never filed as a document; the full-quality copy on the file is untouched.
  */
 
 const db = require('../db');
@@ -35,6 +41,29 @@ const fieldRegistry = require('../lib/conditions/field-registry');
 const ACCEPT = require('../lib/document-acceptance');
 const ID = require('./investor-delivery');
 const drawAttachments = require('./draw-attachments');   // invoices/receipts/photos filed on a draw
+const attachPlan = require('../lib/attachments/plan');   // what can travel, and why anything cannot
+const shareLink = require('../lib/attachments/share-link');
+
+/**
+ * The plan, without the bytes — safe to put on an HTTP response.
+ *
+ * Everything a coordinator needs to decide with: what is going, what was compressed and by how
+ * much, what is not going and WHY, and the one remedy that would fix each omission.
+ */
+function publicPlan(plan) {
+  return {
+    attach: plan.attach.map((a) => ({
+      key: a.key, what: a.what, filename: a.filename, bytes: a.bytes,
+      compression: a.compression || null,
+    })),
+    links: plan.links.map((l) => ({ key: l.key, what: l.what, filename: l.filename, bytes: l.bytes })),
+    omitted: plan.omitted,
+    total_bytes: plan.totalBytes, budget_bytes: plan.budget,
+    compressed_n: plan.compressedCount, saved_bytes: plan.savedBytes,
+    needs_consent: plan.needsConsent,
+    summary: attachPlan.omissionSummary(plan),
+  };
+}
 
 const N = (x) => Number(x || 0) || 0;
 
@@ -107,16 +136,41 @@ async function readDoc(row) {
 }
 
 /**
- * Gather the four attachments IN PRIORITY ORDER. Each entry is
- * `{ what, filename, contentType, buf }`; anything missing lands in `skipped` with a plain reason.
+ * Gather the delivery's documents IN PRIORITY ORDER — most important first.
+ *
+ * WHAT CHANGED HERE ON 2026-08-14, and why it matters more than it looks. This function used to do
+ * two jobs: find the documents, AND decide which of them fit in one email. The second job was a
+ * plain first-fit over this priority-ordered list, which means an oversized document was skipped
+ * and the loop moved on — so on the draw that prompted this work the 30 MB inspection report and
+ * our 25 MB report were both dropped while the 12 KB spreadsheet and the 127 KB wire form went out.
+ * A priority order used only to decide who gets dropped FIRST is pointing backwards.
+ *
+ * So the fitting is gone from here entirely. This function now only FINDS things, and every
+ * document it cannot produce carries a machine-readable `code` instead of a discarded exception:
+ *
+ *   { key, what, filename, contentType, buf }            — found it, and
+ *   { key, what, filename, error: { code, reason } }     — why there is nothing.
+ *
+ * `lib/attachments/plan.js` then compresses what does not fit, drops only what genuinely cannot be
+ * carried, and reports every omission with a remedy. See that file for the four rules.
  *
  * The inspector's report is looked up two ways because a draw is inspected EITHER through Sitewire
  * (a virtual inspection — its per-draw PDF is archived into `draw_media`) OR by a physical
  * inspector whose paperwork arrives as TrustPoint documents. A file can carry both; both are sent.
+ *
+ * `items` / `skipped` are kept on the return for the surfaces (and tests) that already read them;
+ * `candidates` is the ordered list the planner consumes.
  */
 async function gatherAttachments(appId, drawId, mode) {
   const items = [];
   const skipped = [];
+  // Every omission, with the code that makes the audit log queryable. `push` keeps the legacy
+  // `skipped` array in step so nothing that already reads it changes behaviour.
+  const missing = [];
+  const miss = (key, what, code, reason, filename) => {
+    missing.push({ key, what, filename: filename || null, error: { code, reason } });
+    skipped.push({ what, reason: reason || code });
+  };
 
   // --- 1. the inspector's own report -------------------------------------------------
   let inspectorFound = false;
@@ -132,9 +186,9 @@ async function gatherAttachments(appId, drawId, mode) {
         ORDER BY archived_at DESC LIMIT 1`, [appId, drawId])).rows;
     for (const m of pdfs) {
       const buf = await readDoc(m);
-      if (!buf) { skipped.push({ what: 'Inspection report', reason: 'the stored copy could not be read' }); continue; }
+      if (!buf) { miss('inspection', 'Inspection report', 'unreadable', 'the stored copy could not be read', `inspection-report-draw-${drawId}.pdf`); continue; }
       inspectorFound = true;
-      items.push({ what: 'Inspection report', filename: `inspection-report-draw-${drawId}.pdf`, contentType: 'application/pdf', buf });
+      items.push({ key: 'inspection', what: 'Inspection report', filename: `inspection-report-draw-${drawId}.pdf`, contentType: 'application/pdf', buf });
     }
   } catch (_) { /* fall through to the physical-inspection lookup */ }
 
@@ -153,29 +207,60 @@ async function gatherAttachments(appId, drawId, mode) {
           ORDER BY created_at DESC LIMIT 4`, [appId, String(tp.number)])).rows;
       for (const d of rows) {
         const buf = await readDoc(d);
-        if (!buf) { skipped.push({ what: `Inspection paperwork (${d.filename})`, reason: 'the stored copy could not be read' }); continue; }
+        if (!buf) { miss(`inspection_tp_${d.id}`, `Inspection paperwork (${d.filename})`, 'unreadable', 'the stored copy could not be read', d.filename); continue; }
         inspectorFound = true;
-        items.push({ what: 'Inspection paperwork', filename: d.filename, contentType: 'application/pdf', buf });
+        items.push({ key: `inspection_tp_${d.id}`, what: 'Inspection paperwork', filename: d.filename, contentType: 'application/pdf', buf });
       }
     }
   } catch (_) { /* trustpoint_draws may not exist on an older database — not fatal */ }
 
-  if (!inspectorFound) skipped.push({ what: 'Inspection report', reason: "the inspector's report has not been archived for this draw yet" });
+  if (!inspectorFound) miss('inspection', 'Inspection report', 'not_on_file', "the inspector's report has not been archived for this draw yet");
 
   // --- 2. our own branded report ------------------------------------------------------
+  // BUILT FRESH, AT EMAIL SIZE, AND NEVER FILED (owner-directed 2026-08-13: "while you click
+  // Deliver to Investor it should take all the photos and redraw a new report on a much more
+  // compressed version that should definitely fit in all the email versions").
+  //
+  // The report we KEEP embeds page-sized photos and runs ~25 MB on a 100-photo draw — right for
+  // the copy on the file, too big for any mailbox (Gmail refuses over 25 MB RECEIVED, and email
+  // encoding inflates a file by about a third on the way out). This copy embeds the ~700px
+  // rendition instead: same report, every photo, ~5 MB.
+  //
+  // It is NEVER stored — see buildReportBytes for the three traps that made a second stored
+  // report the wrong answer. The full-quality report on the file is untouched by this.
+  //
+  // FALLING BACK IS DELIBERATE, NOT A LEFTOVER: a draw whose photos have no compact rendition yet
+  // (the background worker is paced, so a freshly archived draw can be ahead of it) still gets a
+  // report — just a larger one, which the budget below then judges on its merits. Sending a
+  // bigger report is a far better failure than sending none.
+  let reportRendition = null;
   try {
-    const r = await drawReport.buildOrGetReportDoc(appId, { sitewireDrawId: drawId, scope: 'draw', mode: 'staff' });
-    const buf = r && r.doc ? await readDoc(r.doc) : null;
-    if (buf) items.push({ what: 'PILOT draw report', filename: r.doc.filename, contentType: 'application/pdf', buf });
-    else skipped.push({ what: 'PILOT draw report', reason: 'the report could not be built for this draw' });
-  } catch (_) { skipped.push({ what: 'PILOT draw report', reason: 'the report could not be built for this draw' }); }
+    const built = await drawReport.buildReportBytes(appId, {
+      sitewireDrawId: drawId, scope: 'draw', mode: 'staff', rendition: 'compact',
+    });
+    if (built && built.bytes && built.bytes.length) {
+      reportRendition = { rendition: built.rendition, bytes: built.bytes.length, photos: built.photoCount, omitted: built.photosOmitted };
+      items.push({ key: 'report', what: 'PILOT draw report', filename: built.filename, contentType: 'application/pdf', buf: built.bytes, rendition: built.rendition });
+    } else miss('report', 'PILOT draw report', 'build_failed', 'there is no draw data to build a report from yet');
+  } catch (e) {
+    // THE MESSAGE IS KEPT. This was a bare `catch (_)` that reported "the report could not be built"
+    // and threw the actual error away — so when the report genuinely failed, nothing anywhere could
+    // say why, on the screen or in the log. The reason a coordinator reads is still plain English;
+    // the developer detail rides beside it.
+    miss('report', 'PILOT draw report', 'build_failed',
+      `the report could not be built for this draw${e && e.message ? ` (${String(e.message).slice(0, 120)})` : ''}`);
+  }
 
   // --- 3. the draw packet (Excel) -----------------------------------------------------
   try {
     const buf = buildXlsx(await buildDrawPacket(appId, drawId), `Draw ${drawId}`);
-    if (buf && buf.length) items.push({ what: 'Draw packet', filename: `draw-packet-${drawId}.xlsx`, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buf });
-    else skipped.push({ what: 'Draw packet', reason: 'the packet came back empty' });
-  } catch (_) { skipped.push({ what: 'Draw packet', reason: 'the packet could not be built' }); }
+    // `compressible: false` — a .xlsx is already a deflate ZIP and has nothing to win.
+    if (buf && buf.length) items.push({ key: 'packet', what: 'Draw packet', filename: `draw-packet-${drawId}.xlsx`, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buf, compressible: false });
+    else miss('packet', 'Draw packet', 'build_failed', 'the packet came back empty');
+  } catch (e) {
+    miss('packet', 'Draw packet', 'build_failed',
+      `the packet could not be built${e && e.message ? ` (${String(e.message).slice(0, 120)})` : ''}`);
+  }
 
   // --- 4. the borrower's signed wire instructions --------------------------------------
   // The signed wire form tells the investor WHERE to send the borrower's money, so it
@@ -188,14 +273,20 @@ async function gatherAttachments(appId, drawId, mode) {
   // form's signed, executed version should be sent to the investor").
   if (mode === 'investor_direct') {
     try {
+      // Deliver the ACCEPTED wire form — a DocuSign copy OR a manually-uploaded one (both are
+      // draw_request_signed; the manual one is told apart only by source_type). Selecting the
+      // newest ACCEPTED current copy (not just the newest current) keeps what is DELIVERED in
+      // lock-step with what the money gate (wireFormStatus) approved: if two current copies ever
+      // coexist, the investor never receives an unaccepted one.
       const w = (await db.query(
         `SELECT id, filename, storage_ref, storage_provider FROM documents
-          WHERE application_id=$1 AND is_current AND doc_kind='draw_request_signed'
+          WHERE application_id=$1 AND is_current AND doc_kind='draw_request_signed' AND ${ACCEPT.ACCEPTED_SQL('')}
           ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0];
       const buf = w ? await readDoc(w) : null;
-      if (buf) items.push({ what: 'Signed wire instructions', filename: w.filename || 'wire-instructions-signed.pdf', contentType: 'application/pdf', buf });
-      else skipped.push({ what: 'Signed wire instructions', reason: w ? 'the stored copy could not be read' : 'the borrower has not signed the wire instructions form yet' });
-    } catch (_) { skipped.push({ what: 'Signed wire instructions', reason: 'the stored copy could not be read' }); }
+      if (buf) items.push({ key: 'wire', what: 'Signed wire instructions', filename: w.filename || 'wire-instructions-signed.pdf', contentType: 'application/pdf', buf });
+      else if (w) miss('wire', 'Signed wire instructions', 'unreadable', 'the stored copy could not be read', w.filename);
+      else miss('wire', 'Signed wire instructions', 'not_on_file', 'the accepted wire instructions form is not on file yet');
+    } catch (_) { miss('wire', 'Signed wire instructions', 'unreadable', 'the stored copy could not be read'); }
 
     // --- 5. the wire-recipient entity's operating agreement, when the wire goes to a NEW entity
     // (Task 5, owner-directed 2026-08-05: "attach the OA to the investor email when the investor
@@ -207,8 +298,8 @@ async function gatherAttachments(appId, drawId, mode) {
       const oa = await drawOa.acceptedOaForInvestor(db, appId);
       if (oa) {
         const buf = await readDoc(oa);
-        if (buf) items.push({ what: 'Operating agreement (wire recipient)', filename: oa.filename || 'operating-agreement.pdf', contentType: 'application/pdf', buf });
-        else skipped.push({ what: 'Operating agreement (wire recipient)', reason: 'the stored copy could not be read' });
+        if (buf) items.push({ key: 'oa', what: 'Operating agreement (wire recipient)', filename: oa.filename || 'operating-agreement.pdf', contentType: 'application/pdf', buf });
+        else miss('oa', 'Operating agreement (wire recipient)', 'unreadable', 'the stored copy could not be read', oa.filename);
       }
       // No OA condition / no accepted agreement → the wire is to the borrower or the subject LLC;
       // nothing to attach, and nothing to report as missing.
@@ -231,29 +322,30 @@ async function gatherAttachments(appId, drawId, mode) {
         ORDER BY da.created_at ASC, da.id ASC`, [appId, drawId])).rows;
     for (const a of rows) {
       const label = `${drawAttachments.CATEGORY_LABEL[a.category] || 'Supporting document'} — ${a.filename}`;
+      const key = `support_${a.id}`;
       if (a.review_status !== 'accepted') {
-        skipped.push({ what: label, reason: 'it has not been accepted yet — review it first and re-send' });
+        miss(key, label, 'not_accepted', 'it has not been accepted yet — review it first and re-send', a.filename);
         continue;
       }
       const buf = await readDoc(a);
-      if (!buf) { skipped.push({ what: label, reason: 'the stored copy could not be read' }); continue; }
-      items.push({ what: label, filename: a.filename, contentType: a.content_type || 'application/octet-stream', buf });
+      if (!buf) { miss(key, label, 'unreadable', 'the stored copy could not be read', a.filename); continue; }
+      items.push({ key, what: label, filename: a.filename, contentType: a.content_type || 'application/octet-stream', buf });
     }
   } catch (_) { /* an older database has no draw_attachments — never block the delivery */ }
 
-  // Fit the budget IN PRIORITY ORDER — the inspector's report and ours matter most.
-  const budget = budgetBytes();
-  const fit = [];
-  let total = 0;
-  for (const it of items) {
-    if (total + it.buf.length > budget) {
-      skipped.push({ what: it.what, reason: 'too large to attach to one email — send it separately' });
-      continue;
-    }
-    total += it.buf.length;
-    fit.push(it);
-  }
-  return { items: fit, skipped };
+  // THE FITTING USED TO HAPPEN HERE AND NO LONGER DOES — see the header. What is returned is the
+  // ordered candidate list; lib/attachments/plan.js decides what can be carried, compressing before
+  // it drops anything and never letting a small file displace an important one.
+  //
+  // `reportRendition` is carried so the delivery ROW can record which rendering of the report
+  // actually went out — the compact copy is never filed as a document, so this is the only place
+  // that answers "what did that investor receive?" later.
+  return {
+    candidates: [...items, ...missing],
+    items, skipped, reportRendition,
+    totalBytes: items.reduce((n, i) => n + i.buf.length, 0),
+    budgetBytes: budgetBytes(),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -324,10 +416,27 @@ async function deliveryPreview(appId, drawId) {
     `SELECT investor_funding_mode FROM sitewire_property_links
       WHERE application_id=$1 AND matched_by='created' LIMIT 1`, [appId])).rows[0] || {};
 
-  const mode = ID.resolveFundingMode({
+  // HAS THIS LOAN ACTUALLY BEEN SOLD? Read BEFORE the mode, because since 2026-08-13 it decides
+  // the mode rather than merely commenting on it (see below). Best-effort: an unreadable state
+  // leaves the file's own setting exactly as it was.
+  let soldState = null;
+  try { soldState = await require('./release-party').releaseStateFor(db, appId, { sitewireDrawId: drawId }); }
+  catch (_) { soldState = null; }
+
+  // AN UNSOLD LOAN IS RELEASED BY US (owner-directed 2026-08-13): *"if it's not yet sold, then it
+  // should always be set up that we release the net amount"*. Applied through the SAME pure rule
+  // the draw desk and the money ledger use, so the figures in this email can never contradict the
+  // card the coordinator was just looking at — an investor who has not bought the loan is not
+  // wiring this borrower. A sold loan (or one the desk is processing as sold) keeps the file's own
+  // setting, whichever way it points.
+  const configuredMode = ID.resolveFundingMode({
     drawMode: finding && finding.funding_mode,
     fileMode: link.investor_funding_mode,
   });
+  const enforced = soldState
+    ? require('./release-party').enforcedMode({ mode: configuredMode, sold: soldState.soldEffective })
+    : { mode: configuredMode, forced: false };
+  const mode = enforced.mode;
 
   // The SAME money the report and the packet were built from — never re-derived here.
   let money = ID.investorMoney({}, mode);
@@ -360,23 +469,18 @@ async function deliveryPreview(appId, drawId) {
 
   const blockers = ID.deliveryBlockers({ finding, investorContacts: contacts, noteBuyer: app.note_buyer, mode, wireForm });
 
-  // HAS THIS LOAN ACTUALLY BEEN SOLD? A WARNING, NEVER A BLOCKER — this is the exact moment the
-  // owner named (2026-08-09: "default should be like it was sold already, but it should give you a
-  // warning that it doesn't have a PA date if you're sure you want to do investor delivery"). It is
-  // deliberately kept OUT of `blockers`, so `can_send` is untouched and the send is never refused
-  // over it; the screen shows it beside the button and the coordinator decides.
-  //
-  // A table-funded loan was sold at the closing table and produces NO warning at all, which is the
-  // whole point — otherwise every Fidelis delivery would carry a nag about a date that is never
-  // coming. Best-effort: an unreadable state simply shows nothing rather than blocking a send or
-  // inventing a doubt.
-  let soldState = null;
-  try { soldState = await require('./release-party').releaseStateFor(db, appId, { sitewireDrawId: drawId }); }
-  catch (_) { soldState = null; }
+  // THE BADGE IS STILL NEVER A BLOCKER. It is deliberately kept OUT of `blockers`, so `can_send`
+  // is untouched and the send is never refused over it; the screen shows it beside the button and
+  // the coordinator decides — and now it also explains the figures, since an unsold loan has
+  // already moved the mode to "we release" above. A table-funded loan carries no badge at all,
+  // which is the whole point: otherwise every Fidelis delivery would nag about a date that is
+  // never coming. (`soldState` is read further up, because the mode depends on it.)
 
   const history = (await db.query(
+    // `attachments` + `skipped` ride along deliberately: the email no longer names what it could
+    // not carry (owner-directed 2026-08-13), so the desk's own history is where our team reads it.
     `SELECT id, funding_mode, investor_total_cents, to_borrower_cents, to_us_cents, to_emails,
-            status, error, sent_at, sent_by
+            status, error, sent_at, sent_by, attachments, skipped
        FROM draw_investor_deliveries WHERE application_id=$1 AND sitewire_draw_id=$2
       ORDER BY sent_at DESC LIMIT 10`, [appId, drawId])).rows;
 
@@ -415,7 +519,22 @@ async function deliveryPreview(appId, drawId) {
  * The blockers are re-checked HERE, not trusted from the preview the screen fetched earlier: the
  * borrower could have been un-accepted, or the contacts edited, between the two calls.
  */
-async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName = null, mode = null, note = null } = {}) {
+async function sendInvestorDelivery(appId, drawId, {
+  staffId = null, staffName = null, mode = null, note = null,
+  // THE CONSENT GATE (owner-directed 2026-08-14). Absent, a delivery that cannot carry all of its
+  // documents REFUSES with a 409 naming each one and why. Set, the coordinator has been shown that
+  // list and chosen to send anyway — which is recorded on the delivery row, in the email audit and
+  // in the log line, so "it should not be ignored blindly" holds in the record and not just on the
+  // screen.
+  acknowledgeOmissions = false,
+  // Documents the coordinator chose to send as a PILOT link instead of an attachment.
+  shareLinkKeys = [],
+  // "Compress harder and retry" — a ceiling on how far the compressor may go.
+  compressLevel = null,
+  // Build the plan and return it WITHOUT sending. What the desk calls to show the picture before
+  // anybody commits to anything.
+  preflight = false,
+} = {}) {
   // REFRESH FROM SITEWIRE FIRST (owner-directed 2026-08-11: "when we click Deliver
   // to Investor, that button — before actually delivering — should run a refresh
   // from Sitewire: refresh our figures, pull the new Sitewire PDF, and THAT PDF is
@@ -447,6 +566,20 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
   // MANUAL — the coordinator delivered to the investor outside PILOT. Record it (so the "deliver to
   // the investor" reminders stop and the history shows it) and stop here: no email is composed or
   // sent, and no documents are gathered. The money figures are still stored for the record.
+  // A PREFLIGHT MAY NEVER WRITE, and on a MANUAL delivery that has to be checked HERE rather than
+  // alongside the attachment plan further down. A manual delivery returns early — it composes no
+  // email and gathers no documents — so a preflight on one would have fallen straight into the
+  // INSERT below and RECORDED A DELIVERY NOBODY SENT. There is nothing to plan in that mode, so an
+  // empty plan is the honest answer. (The non-manual preflight returns after the plan is built.)
+  if (preflight && useMode === 'manual') {
+    return {
+      preflight: true, funding_mode: 'manual', money,
+      plan: { attach: [], links: [], omitted: [], total_bytes: 0, budget_bytes: budgetBytes(),
+        compressed_n: 0, saved_bytes: 0, needs_consent: false, summary: null, manual: true },
+      linkWarnings: shareLink.LINK_WARNINGS,
+    };
+  }
+
   if (useMode === 'manual') {
     const rec = (await db.query(
       `INSERT INTO draw_investor_deliveries
@@ -466,7 +599,64 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
     };
   }
 
-  const { items, skipped } = await gatherAttachments(appId, drawId, useMode);
+  // ── THE ATTACHMENTS, AND THE CONSENT GATE ─────────────────────────────────────────────────
+  // (owner-directed 2026-08-14: "when you click send an email if there's an attachment that cannot
+  // be attached, you need to say clearly what cannot be attached and why. If the person still wants
+  // to send it, they can send it, but it should not be ignored blindly.")
+  //
+  // The plan is built HERE rather than in deliveryPreview on purpose: building it means generating
+  // the report and the packet, which is far too expensive to do on every page load. So the flow is
+  // — press Send, we work out exactly what can travel, and if anything cannot we REFUSE and hand
+  // the desk the whole picture. The coordinator then compresses harder, turns something into a
+  // PILOT link, or knowingly sends it short. Every one of those is recorded.
+  const { candidates, skipped: gatherSkipped, reportRendition } = await gatherAttachments(appId, drawId, useMode);
+
+  const wantLinks = new Set((Array.isArray(shareLinkKeys) ? shareLinkKeys : []).map(String));
+  const plan = await attachPlan.buildAttachmentPlan(candidates, {
+    budgetBytes: budgetBytes(),
+    // "Compress and retry" simply asks for a harder ceiling; unset, the planner still compresses as
+    // far as it needs to and stops at the first level that fits.
+    maxLevel: compressLevel || undefined,
+    shareLinkKeys: wantLinks,
+  });
+
+  // PREFLIGHT — show the picture, send nothing. Returned before any link is minted, so looking is
+  // free of side effects.
+  if (preflight) {
+    return { preflight: true, funding_mode: useMode, money, plan: publicPlan(plan), linkWarnings: shareLink.LINK_WARNINGS };
+  }
+
+  if (plan.needsConsent && !acknowledgeOmissions) {
+    // NOT AN ERROR — a question. The desk gets the full plan so it can name every document, say why
+    // in plain words, and offer the remedy that fits each one.
+    const e = new Error(attachPlan.omissionSummary(plan));
+    e.status = 409;
+    e.code = 'attachments_incomplete';
+    e.plan = publicPlan(plan);
+    e.linkWarnings = shareLink.LINK_WARNINGS;
+    throw e;
+  }
+
+  // Mint the PILOT links the coordinator asked for. A link that cannot be created falls back to
+  // being reported as an omission rather than vanishing — never a silent nothing.
+  const links = [];
+  for (const l of plan.links) {
+    const made = await shareLink.createShareLink({
+      applicationId: appId, buf: l.buf, filename: l.filename, contentType: l.contentType,
+      purpose: 'investor_delivery', label: l.what, createdBy: staffId,
+    });
+    if (made) links.push({ ...made, what: l.what, key: l.key });
+    else plan.omitted.push({ key: l.key, what: l.what, filename: l.filename, code: 'build_failed',
+      reason: 'a PILOT link could not be created for it', remedy: 'retry', bytes: l.bytes });
+  }
+
+  const items = plan.attach;
+  // `plan.omitted` is already the COMPLETE list — the planner turns every candidate that arrived
+  // with an `error` into an omission and adds the ones that could not be made to fit — so this is
+  // the one source, not a merge of two that could disagree. Shape kept for the delivery row and the
+  // desk's history, now carrying the code and the remedy as well as the sentence.
+  const skipped = plan.omitted.map((m) => ({ what: m.what, reason: m.reason, code: m.code, remedy: m.remedy, bytes: m.bytes }));
+  void gatherSkipped;   // retained above only for the legacy shape gatherAttachments still returns
 
   let inspectionBy = null;
   try {
@@ -481,8 +671,29 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
 
   const meta = [...wording.rows, ...wording.detail];
   const lines = [wording.intro];
-  if (skipped.length) {
-    lines.push('Not attached: ' + skipped.map((s) => `${s.what} (${s.reason})`).join('; ') + '. Let us know and we will send it over.');
+  // WHAT WE SENT, NOT WHAT WE COULDN'T (owner-directed 2026-08-13: "even if it's not attached, it
+  // shouldn't say 'Hey, this was not attached' — it makes it unprofessional").
+  //
+  // This used to append "Not attached: PILOT draw report (too large to attach to one email — send
+  // it separately). Let us know and we will send it over." — an apology for our own plumbing, in a
+  // letter to a capital partner, ending by asking THEM to chase US. It now names what IS enclosed
+  // and stops there.
+  //
+  // NOTHING IS LOST INTERNALLY, which is what makes this safe rather than a cover-up: every skipped
+  // item and its reason is returned to the caller on the send, written to
+  // `draw_investor_deliveries.skipped`, and read back into the desk's delivery history — so our
+  // team can always answer "what did that email actually carry?". It is simply no longer said out
+  // loud to the investor. And since 2026-08-14 it is known BEFORE the send too, not discovered
+  // after it: the consent gate above refuses rather than quietly sending short, so a coordinator
+  // has seen this exact list and either fixed it or accepted it on the record.
+  if (items.length) {
+    lines.push('Enclosed: ' + items.map((it) => it.what).join(', ') + '.');
+  }
+  // A document too large to attach travels as a PILOT link instead. It is named the same way an
+  // attachment is, so the reader sees one list of what came with the email rather than having to
+  // work out that something is missing.
+  if (links.length) {
+    lines.push(`${links.length === 1 ? 'One document is' : `${links.length} documents are`} too large to attach, so ${links.length === 1 ? 'it is' : 'they are'} linked below — the link opens the document directly, no sign-in needed.`);
   }
 
   // template.render returns { subject, html, text } — take BOTH bodies from it so the HTML and the
@@ -494,7 +705,10 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
     intro: lines.join(' '),
     meta,
     callout: { title: 'What we are asking for', body: wording.ask, tone: 'action' },
-    note: `Attached: ${items.map((i) => i.what).join(', ') || 'no documents could be attached'}.`
+    // The links go in the NOTE beside the attachment list, so the reader sees one inventory of what
+    // came with this email rather than an attachment list that quietly omits two documents.
+    note: `Attached: ${items.map((i) => i.what).join(', ') || (links.length ? 'see the links below' : 'no documents could be attached')}.`
+      + (links.length ? `\n\n${links.map((l) => `${l.what}: ${l.url}`).join('\n')}` : '')
       + `\n\n${wording.signOff}`,
     replyable: true,
   });
@@ -513,7 +727,21 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
       text,
       html,
       attachments: items.map((i) => ({ filename: i.filename, content: i.buf.toString('base64'), contentType: i.contentType })),
-      _ctx: { applicationId: appId, type: 'draw_investor_delivery', audience: 'staff' },
+      // THE AUDIT RIDES WITH THE SEND (db/550). The chokepoint writes `omitted` + `attach_summary`
+      // onto the email_messages row and prints the [email-attach] log line, so "which documents did
+      // that investor actually get, and why not the others?" is answerable from the audit log and
+      // from a log search — not only from this one table that one card reads.
+      _ctx: {
+        applicationId: appId, type: 'draw_investor_delivery', audience: 'staff',
+        ...attachPlan.auditFrom(plan, {
+          links_n: links.length,
+          // WHO knowingly sent it short, and when. This is the record behind "if the person still
+          // wants to send it, they can — but it should not be ignored blindly".
+          consent: plan.omitted.length
+            ? { by: staffId || null, name: staffName || null, at: new Date().toISOString(), note: noteText || null }
+            : null,
+        }),
+      },
     });
   } catch (e) {
     status = 'error';
@@ -531,7 +759,15 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
       money.requested_cents, money.approved_cents, money.fee_cents, money.retainage_held_cents,
       money.to_borrower_cents, money.to_us_cents, money.investor_total_cents,
       F.jsonbText(pre.to), F.jsonbText(pre.cc),
-      F.jsonbText(items.map((i) => ({ filename: i.filename, what: i.what, bytes: i.buf.length }))),
+      // WHICH RENDERING WENT OUT is recorded per item. The compact report is built into the email
+      // and never filed as a document, so this row is the only lasting answer to "what did the
+      // investor actually receive?".
+      // `compression` and `link` ride along so the history can say WHY a 25 MB report arrived as a
+      // 4 MB one, and which documents travelled as a link rather than an attachment.
+      F.jsonbText([
+        ...items.map((i) => ({ filename: i.filename, what: i.what, bytes: i.bytes || (i.buf ? i.buf.length : null), rendition: i.rendition || null, compression: i.compression || null })),
+        ...links.map((l) => ({ filename: l.filename, what: l.what, bytes: l.bytes, link: l.url, expires_at: l.expiresAt })),
+      ]),
       F.jsonbText(skipped), status, errText, noteText, staffId])).rows[0];
 
   if (status === 'error') { const e = new Error(errText || 'the delivery email could not be sent'); e.status = 502; throw e; }
@@ -539,13 +775,18 @@ async function sendInvestorDelivery(appId, drawId, { staffId = null, staffName =
   return {
     id: rec.id, sent_at: rec.sent_at, funding_mode: useMode, money,
     to: pre.to, cc: pre.cc,
-    attachments: items.map((i) => ({ filename: i.filename, what: i.what, bytes: i.buf.length })),
+    attachments: items.map((i) => ({ filename: i.filename, what: i.what, bytes: i.bytes || (i.buf ? i.buf.length : null), rendition: i.rendition || null, compression: i.compression || null })),
+    links: links.map((l) => ({ what: l.what, filename: l.filename, url: l.url, expiresAt: l.expiresAt, bytes: l.bytes })),
     skipped,
+    plan: publicPlan(plan),
+    // Which rendering of OUR report went out, and how many photos it carried — the compact copy is
+    // never filed, so this is the only place that answers it.
+    reportRendition,
   };
 }
 
 module.exports = {
   investorKeyFor, contactsForNoteBuyer, allContacts,
   gatherAttachments, deliveryPreview, sendInvestorDelivery, wireFormStatus,
-  DESK, deskFrom, budgetBytes,
+  DESK, deskFrom, budgetBytes, publicPlan,
 };

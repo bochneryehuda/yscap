@@ -1,0 +1,23 @@
+-- ============================================================================
+-- 544_draw_sold_recheck.sql — the throttle behind the self-refreshing sold
+-- signal (owner-reported 2026-08-13: "it was sold more than two weeks ago. Why
+-- did we need to click the Refresh button? This should automatically realize").
+--
+-- WHY A FILE COULD SIT UNSOLD FOR WEEKS. The Encompass purchase advice date is
+-- re-read by the read-only poll worker, which pulls ONE file every 15 minutes,
+-- round-robin by staleness across every non-declined file with a loan number —
+-- so a given file's turn comes around once every (files ÷ ~96) days. Nothing
+-- re-read a SPECIFIC file on demand except the manual Refresh button.
+--
+-- `release-party.refreshSoldSignal` now re-reads the purchase advice date ALONE
+-- (one field by number, not the whole loan) when the draw desk opens a file that
+-- still reads as not sold. This column is its throttle: the moment of the last
+-- attempt, per draw project, so a desk left open cannot hammer the Encompass API
+-- and a failing read cannot retry on every page load. DRAW_SOLD_RECHECK_MINUTES
+-- tunes the interval (default 30).
+--
+-- Additive and idempotent. NULL = never checked, which is every existing file
+-- and simply means the next look does the first check.
+-- ============================================================================
+
+ALTER TABLE sitewire_property_links ADD COLUMN IF NOT EXISTS sold_check_at timestamptz;
