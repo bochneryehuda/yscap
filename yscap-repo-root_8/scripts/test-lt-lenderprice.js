@@ -21,7 +21,7 @@ const lp = require('../src/longterm/lenderprice/client');
 let failures = 0;
 function ok(cond, label) { console.log(`${cond ? '  ok  ' : ' FAIL '} ${label}`); if (!cond) failures++; }
 
-function offline() {
+async function offline() {
   console.log('OFFLINE verification (no network)\n');
 
   // 1) Login shape: the OAuth client must authenticate separately from the borrower.
@@ -258,19 +258,34 @@ function offline() {
   const badsev = lp.buildSearch({ value: 5e5, loan: 4e5, mortgageLates: { last12: { 180: '1' } } });
   ok((badsev[sm.REGISTRY_WARNINGS] || []).some((x) => x.field === 'mortgageLates.last12.180'), 'registry: unknown mortgage-late severity → warning');
 
-  // 19) DISQUALIFY fetch: the POLL asks for the FULL result; the kickoff does not (and only
-  // cachedDisqualified + disqualifyFullResult differ between the two bodies — both result-shaping,
-  // never search criteria, so the cache slot is unchanged).
-  // Per the captured disqualify HAR: the kickoff and the poll differ ONLY in cachedDisqualified.
-  // disqualifyAsync stays true and disqualifyFullResult stays FALSE on both (the frontend never
-  // flips them); the ready poll returns a ~111 MB populated tree.
+  // 19) DISQUALIFY fetch: the kickoff kicks off the async computation; the POLL replays the SAME
+  // body with the documented frontend-normalization delta. disqualifyAsync stays true and
+  // disqualifyFullResult stays FALSE on both (the frontend never flips them); the ready poll
+  // returns a ~111 MB populated tree.
   const dqKick = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 });
-  const dqPoll = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 }, { disqualify: { cached: true } });
   ok(dqKick.cachedDisqualified === false && dqKick.disqualifyFullResult === false && dqKick.disqualifyAsync === true, 'disqualify kickoff: cached=false, async=true, fullResult=false');
-  ok(dqPoll.cachedDisqualified === true && dqPoll.disqualifyFullResult === false && dqPoll.disqualifyAsync === true, 'disqualify poll: only cachedDisqualified flips (matches the captured HAR handshake)');
-  // kickoff and poll bodies are byte-identical except cachedDisqualified (so the cache slot matches)
-  const kj = JSON.stringify(dqKick), pj = JSON.stringify({ ...dqPoll, cachedDisqualified: false });
-  ok(kj === pj, 'disqualify kickoff vs poll differ ONLY in cachedDisqualified');
+  // The REAL poll body is the kickoff body + applyPollDelta (cachedDisqualified + requestId + the
+  // four nullable compensation/rate defaults) — NOT "only cachedDisqualified flips" (the old, wrong
+  // assumption the audit flagged). Assert the poll body equals the kickoff body EXCEPT that delta.
+  const RID = '6a8149b3de295a00071c3632';
+  const dqPoll = lp._internals.applyPollDelta(dqKick, RID);
+  ok(dqPoll.cachedDisqualified === true && dqPoll.disqualifyFullResult === false && dqPoll.disqualifyAsync === true, 'disqualify poll: cachedDisqualified=true, async=true, fullResult=false');
+  ok(dqPoll.requestId === RID, 'disqualify poll echoes the upstream requestId at the top level');
+  ok(dqPoll.brokerCriteria.minimunCompensation === null && dqPoll.brokerCriteria.maxCompensation === null, 'poll normalizes brokerCriteria compensation bounds to null when absent');
+  ok(dqPoll.rateRange.from === null && dqPoll.rateRange.to === null, 'poll normalizes rateRange from/to to null when absent');
+  // Strip the documented delta off the poll body → it must equal the kickoff body byte-for-byte.
+  const stripDelta = (b) => {
+    const c = JSON.parse(JSON.stringify(b));
+    delete c.cachedDisqualified; delete c.requestId;
+    if (c.brokerCriteria) { delete c.brokerCriteria.minimunCompensation; delete c.brokerCriteria.maxCompensation; }
+    if (c.rateRange) { delete c.rateRange.from; delete c.rateRange.to; }
+    return c;
+  };
+  ok(JSON.stringify(stripDelta(dqPoll)) === JSON.stringify(stripDelta(dqKick)), 'poll body equals the kickoff body except the documented normalization delta');
+  // applyPollDelta with NO requestId omits it (rather than writing undefined) — the poll still carries
+  // the nullable defaults so a caller can tell "no requestId yet" apart from "requestId echoed".
+  const dqPollNoRid = lp._internals.applyPollDelta(dqKick, null);
+  ok(!('requestId' in dqPollNoRid) && dqPollNoRid.cachedDisqualified === true, 'applyPollDelta without a requestId flips cachedDisqualified but adds no requestId key');
   // countyName is honored as a real input (was accepted but ignored before)
   const cn = lp.buildSearch({ value: 5e5, loan: 4e5, countyName: 'Union' });
   ok(cn.property.address.countyName === 'Union', 'countyName input is honored');
@@ -281,20 +296,38 @@ function offline() {
   ok(lp.searchKeyFor(kb) === lp.searchKeyFor(pb), 'searchKey ignores cachedDisqualified — kickoff & poll share ONE key');
   const kbOther = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.30, prepayMonths: 60 });
   ok(lp.searchKeyFor(kb) !== lp.searchKeyFor(kbOther), 'searchKey changes when the scenario changes');
-  // the stored kickoff body, with ONLY cachedDisqualified flipped to true, is byte-identical to a
-  // freshly-built poll body — so polling the STORED body hits the same computation (never restarts).
-  ok(JSON.stringify({ ...kb, cachedDisqualified: true }) === JSON.stringify(pb), 'stored kickoff + cached flip == poll body (byte-identical)');
-  const skey = lp._internals.storeKickoff('https://api.digitallending.com/rest/v1/x', kb);
+  const skey = lp._internals.storeKickoff('https://api.digitallending.com/rest/v1/x', kb, '6a8149b3de295a00071c3632');
   ok(lp.hasStoredSearch(skey), 'storeKickoff registers the searchKey');
   ok(lp._internals.DISQ_STORE.get(skey).body.cachedDisqualified === false, 'stored kickoff body carries cachedDisqualified=false');
   ok(!lp.hasStoredSearch('deadbeefdeadbeefdeadbeefdeadbeef'), 'an unknown searchKey is not stored (poll returns unknown → tells caller to re-run /price)');
-  // the kickoff response carries results.baseSearch.requestId — the poll MUST echo it (the missing
-  // link that made the poll never find the async result).
-  ok(lp._internals.requestIdOf({ results: { baseSearch: { requestId: '6a8149b3de295a00071c3632' } } }) === '6a8149b3de295a00071c3632', 'requestIdOf reads results.baseSearch.requestId');
+  // the kickoff response carries the requestId at EITHER baseSearch.requestId OR
+  // results.baseSearch.requestId (both shapes occur) — the poll MUST echo it (the missing link that
+  // made the poll never find the async result). requestIdOf reads both paths.
+  ok(lp._internals.requestIdOf({ baseSearch: { requestId: '6a8149b3de295a00071c3632' } }) === '6a8149b3de295a00071c3632', 'requestIdOf reads baseSearch.requestId (top-level shape)');
+  ok(lp._internals.requestIdOf({ results: { baseSearch: { requestId: '6a8149b3de295a00071c3632' } } }) === '6a8149b3de295a00071c3632', 'requestIdOf reads results.baseSearch.requestId (wrapped shape)');
   ok(lp._internals.requestIdOf({ results: {} }) === null && lp._internals.requestIdOf(null) === null, 'requestIdOf is null-safe when absent');
   const kb2 = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60, io: true });
   const skey2 = lp._internals.storeKickoff('https://api.digitallending.com/x', kb2, '6a8149b3de295a00071c3632');
   ok(lp._internals.DISQ_STORE.get(skey2).requestId === '6a8149b3de295a00071c3632', 'storeKickoff persists the requestId for the poll to echo');
+  // A stored kickoff with NO requestId can never correlate to the async computation → the poll-by-key
+  // must surface a named, controlled error instead of 202-ing forever.
+  const skeyNoRid = lp._internals.storeKickoff('https://api.digitallending.com/x', lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.4 }), null);
+  const noRidRes = await lp.pollDisqualifiedByKey(skeyNoRid);
+  ok(noRidRes.ok === false && noRidRes.error === 'lp_missing_request_id', 'poll-by-key with a stored kickoff lacking a requestId returns lp_missing_request_id (not a perpetual 202)');
+
+  // 21) UPSTREAM-500 RECOVERY internals (§25.7) — provenance, circuit breaker, invalidation.
+  const prov = lp._internals.foundationProvenance({ baseSource: 'live', smoSource: 'fallback', baseError: null, smoError: 'lp_get_status 500' });
+  ok(prov.base === 'live' && prov.smo === 'fallback' && prov.smoError === 'lp_get_status 500', 'foundationProvenance reports live-vs-fallback source + the preserved live-fetch error');
+  ok(lp._internals.foundationProvenance(null).base === 'fallback' && lp._internals.foundationProvenance({}).smo === 'fallback', 'foundationProvenance defaults to fallback when the source is unknown');
+  // circuit breaker: the first RECOVERY_MAX 500-triggered relogins are allowed; the next is skipped.
+  const MAX = lp._internals.RECOVERY_MAX;
+  ok(lp._internals.breakerOpen() === false, 'breaker starts closed (no relogins yet)');
+  for (let i = 0; i < MAX - 1; i++) { lp._internals.recordRecovery(); ok(lp._internals.breakerOpen() === false, `breaker still closed after ${i + 1} relogin(s) (< max ${MAX})`); }
+  lp._internals.recordRecovery();
+  ok(lp._internals.breakerOpen() === true, `breaker opens at ${MAX} relogins in the window (no login storm)`);
+  // invalidation helpers never throw.
+  lp._internals.invalidateSession(); lp._internals.invalidateFoundation();
+  ok(true, 'invalidateSession/invalidateFoundation run without throwing');
 
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }
@@ -329,5 +362,5 @@ async function live() {
 
 (async () => {
   if (process.env.LP_LIVE === '1') { await live(); }
-  else { offline(); process.exit(failures ? 1 : 0); }
+  else { await offline(); process.exit(failures ? 1 : 0); }
 })();
