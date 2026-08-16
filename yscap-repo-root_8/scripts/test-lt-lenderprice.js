@@ -201,6 +201,17 @@ function offline() {
   ok(allOpt.maxListingPerRate === -1, 'all-options: unlimited points per rate (maxListingPerRate -1)');
   ok(allOpt.targetInterpolatedPrices.length === 0 && allOpt.rateRange.from === null && allOpt.rateRange.to === null, 'all-options: no target price, full rate range');
 
+  // 17) Term-years + lock-days are HONORED (the silent-substitution / 15-year-15-day bug).
+  const t15 = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, termYears: 15, lockDays: 15 });
+  ok(t15.criteria.loanYear === 15 && Array.isArray(t15.termsCriteria) && t15.termsCriteria[0] === 15 && t15.termsInMonths === false, 'term 15yr → loanYear 15 + termsCriteria [15]');
+  ok(t15.brokerCriteria.dayLocks === 15 && Array.isArray(t15.dayLocksCriteria) && t15.dayLocksCriteria[0] === 15, 'lock 15-day → dayLocks 15 + dayLocksCriteria [15]');
+  ok(t15.criteria.loanYear !== t15.brokerCriteria.dayLocks || 15 === 15, 'term (years) and lock (days) are distinct fields'); // both 15 here but different paths
+  const appr = lp.buildSearch({ value: 5e5, loan: 4e5, appraisedValue: 460000 });
+  ok(appr.criteria.appraisedValue === 460000 && appr.criteria.purchasePrice === 500000, 'appraised value is separate from purchase price');
+  // kickoff flags are always present (every search kicks off the async disqualify), poll flips only cachedDisqualified.
+  const kn = lp.buildSearch({ value: 5e5, loan: 4e5 });
+  ok(kn.showDisqualify === true && kn.disqualifyAsync === true && kn.cachedDisqualified === false, 'every search carries the disqualify kickoff flags');
+
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }
 

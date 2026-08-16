@@ -357,6 +357,23 @@ async function priceDisqualified(scenario, opts = {}) {
   };
 }
 
+// POLL-ONLY disqualify (the audit's design): a normal price() already KICKED OFF the async
+// computation (its body carries showDisqualify + disqualifyAsync). This rebuilds the byte-identical
+// body with ONLY cachedDisqualified=true and posts it ONCE — it does NOT kick off again, so it can
+// never reset the computation the price() started. Returns { ready:true, disqualified } when the
+// cached tree is populated, or { ready:false } while still computing (empty body). Because
+// buildSearch is deterministic (base/SMO cached), a caller can poll repeatedly over a few minutes,
+// exactly like the web app polls after its search.
+async function pollDisqualified(scenario) {
+  const f = await priceFoundation();
+  if (!f.ok) return f;
+  const body = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo, disqualify: { cached: true } });
+  const r = await postSearchRaw(f.url, f.session, body);
+  if (!r.ok) return { ...r, request: body };
+  if (r.empty || !hasDisqualifyData(r.raw)) return { ok: true, ready: false, request: body };
+  return { ok: true, ready: true, raw: r.raw, request: body };
+}
+
 // ---- request builder (decoded field mapping; README "Field mapping") -------
 // Turns a plain scenario into the Lender Price searchRaw body. Confirmed tokens per the
 // README and quick-pricer buildPayload(). Pure — safe to unit-test with no network.
@@ -842,7 +859,7 @@ function countArrays(root, keys) {
 }
 
 module.exports = {
-  configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, parse, parseFull, parseDisqualified, summarizeRaw,
+  configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, pollDisqualified, parse, parseFull, parseDisqualified, summarizeRaw,
   hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
   _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID },
 };

@@ -93,10 +93,20 @@ function buildSearch(sc = {}, opts = {}) {
 
   const c = m.criteria || (m.criteria = {});
   if (value != null) { c.purchasePrice = value; c.appraisedValue = value; }
+  // Appraised (as-is) value is SEPARATE from the purchase price — do not always mirror it.
+  if (num(sc.appraisedValue != null ? sc.appraisedValue : sc.asIsValue) != null) c.appraisedValue = num(sc.appraisedValue != null ? sc.appraisedValue : sc.asIsValue);
   if (loan != null) c.loanAmount = loan;
   if (ltv != null) c.ltv = ltv;
   if (num(sc.fico) != null) c.fico = num(sc.fico);
   if (num(sc.dscr) != null) c.dscr = num(sc.dscr);
+  // Loan TERM (years) — honor it instead of silently sending the base's 30. loanYear +
+  // termsCriteria must agree; termsInMonths=false means the number is years, NOT a day-lock.
+  const termYears = num(sc.termYears != null ? sc.termYears : sc.term);
+  if (termYears != null) { c.loanYear = termYears; m.termsCriteria = [termYears]; m.termsInMonths = false; }
+  // Rate-LOCK days — honor it instead of the base's 30. Lives in brokerCriteria.dayLocks +
+  // dayLocksCriteria; this is a LOCK period (days), NOT the loan term (years).
+  const lockDays = num(sc.lockDays);
+  if (lockDays != null) { const bc = m.brokerCriteria || (m.brokerCriteria = {}); bc.dayLocks = lockDays; m.dayLocksCriteria = [lockDays]; }
   c.loanPurpose = purpose;
   c.propertyUse = 'Investment';
   c.compensationType = 'BorrowerCompPlan';
@@ -160,20 +170,19 @@ function buildSearch(sc = {}, opts = {}) {
   if (m.rateRange && typeof m.rateRange === 'object') { m.rateRange.from = null; m.rateRange.to = null; }
   else m.rateRange = { from: null, to: null };
 
-  // Disqualify workflow (mirrors the web app's "show disqualified" button): a normal search
-  // returns only the QUALIFIED programs fast. To also learn WHY each lender turned the scenario
-  // down, the same body is re-sent with these flags — the server computes the disqualify reasons
-  // ASYNCHRONOUSLY (a few minutes) and the client polls with cachedDisqualified=true until the
-  // cached full result is ready. Off unless opts.disqualify is passed, so the qualified path is
-  // byte-identical to before (a normal price never triggers the slow computation).
-  if (opts.disqualify) {
-    m.showDisqualify = true;
-    m.showDisqualifyRules = true;   // include the actual failing RULE text, not just a flag
-    m.disqualifyAsync = true;
-    m.disqualifyFullResult = false;
-    m.cachedDisqualified = !!opts.disqualify.cached; // false = kick off; true = poll the cache
-    m.fillLenderMap = true;
-  }
+  // Disqualify workflow (mirrors the web app): a normal search is ALSO the async KICKOFF — it
+  // carries showDisqualify + disqualifyAsync so Lender Price starts computing the disqualify
+  // reasons in the background. A later POLL re-sends the byte-identical body with ONLY
+  // cachedDisqualified flipped to true, so its cache key matches the kickoff and the ready result
+  // comes back quickly (the frontend does exactly this — kick off on search, poll on the
+  // "ineligible" click). We set these flags EXPLICITLY (not inherited from the base) so the
+  // kickoff and poll bodies can differ ONLY in cachedDisqualified.
+  m.showDisqualify = true;
+  m.showDisqualifyRules = true;     // include the actual failing RULE text, not just a flag
+  m.disqualifyAsync = true;
+  m.disqualifyFullResult = false;
+  m.fillLenderMap = true;
+  m.cachedDisqualified = !!(opts.disqualify && opts.disqualify.cached); // false = kick off; true = poll
 
   return m;
 }
