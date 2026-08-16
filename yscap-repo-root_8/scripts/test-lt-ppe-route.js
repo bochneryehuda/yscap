@@ -298,10 +298,28 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
       regressed: false, recurrence: 1, first_seen_at: new Date(), last_seen_at: new Date(),
     });
   }
-  dbStub.next = () => ({ rows });
+  // The stub HONOURS the SQL predicate, because the narrowing now happens in the
+  // database. A stub that ignored it would let a route that forgot to pass
+  // `investor` pass this test while fetching the whole ledger on every read.
+  const ledgerStub = (text, params) => {
+    if (!/lt_ppe_finding/.test(text)) return { rows: [] };
+    const inv = /AND investor = \$(\d+)/.exec(text);
+    if (!inv) return { rows };
+    const want = params[Number(inv[1]) - 1];
+    return { rows: rows.filter((x) => x.investor === want) };
+  };
+  dbStub.next = ledgerStub;
+  dbStub.queries = [];
   r = await call(H.listFindingsRoute, { query: { investor: 'ACME' } });
   ok(r.code === 200 && r.body.total === 4, 'findings: narrows to one investor (4 of 7)');
   ok(r.body.truncated === false, 'findings: says when nothing was held back');
+  {
+    const q = dbStub.queries.find((x) => /lt_ppe_finding/.test(x.text));
+    ok(q && /AND investor = \$\d/.test(q.text) && q.params.includes('ACME'),
+      'findings: the investor narrowing is a SQL PREDICATE, not a JS filter over the whole scope');
+    ok(!/LIMIT/.test(q.text),
+      'findings: …and NO SQL limit — buildQueue ranks by severity, which only exists in JS, so truncating in SQL would present the most RECENT as the most IMPORTANT');
+  }
 
   r = await call(H.listFindingsRoute, { query: { limit: 2 } });
   ok(r.body.returned === 2 && r.body.total === 7 && r.body.truncated === true,
@@ -353,9 +371,15 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
   r = await call(H.scoreboardRoute, { query: {} });
   ok(r.code === 400, 'scoreboard: refuses without an investor');
 
-  dbStub.next = () => ({ rows });
+  dbStub.next = ledgerStub; // section 9 left it returning nothing
+  dbStub.queries = [];
   r = await call(H.scoreboardRoute, { query: { investor: 'ACME' } });
   ok(r.code === 200 && r.body.scoreboard.openFindings === 4, 'scoreboard: counts that investor\'s open findings');
+  {
+    const q = dbStub.queries.find((x) => /lt_ppe_finding/.test(x.text));
+    ok(q && /AND investor = \$\d/.test(q.text) && q.params.includes('ACME'),
+      'scoreboard: …narrowed in SQL too, so it does not read the whole ledger to score one investor');
+  }
   ok(r.body.scoreboard.canaryAgreementRate === null,
     'scoreboard: no canary history reads as NOT PROVEN (never a fabricated 1.0)');
   ok(r.body.gate && r.body.gate.eligible === false,

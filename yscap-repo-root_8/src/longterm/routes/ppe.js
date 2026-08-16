@@ -281,19 +281,14 @@ async function listFindingsRoute(req, res) {
     return res.status(400).json({ error: `Unknown status. Use one of: ${DECIDABLE.join(', ')}.`, allowed: DECIDABLE });
   }
 
-  // NOTE (re-audit): `listFindings` has no SQL LIMIT and no investor predicate — it
-  // returns the whole scope. The investor filter and the page slice below therefore
-  // run in JS over every row, so both this route and /scoreboard degrade linearly
-  // with total ledger history. Paging belongs in the store, not here: adding a LIMIT
-  // at this layer would silently drop the tail BEFORE the queue ranks it, which is
-  // exactly the "reports a cleaner picture than the truth" failure this surface is
-  // built to avoid. Recorded rather than half-fixed.
-  const rows = await findingStore.listFindings(scope, status ? { status } : {}, db);
+  // The INVESTOR narrowing is a SQL predicate now, not a JS filter over the whole
+  // scope. The page slice below is still JS and deliberately so: `buildQueue` ranks
+  // by severity, which only exists in JS, so a SQL LIMIT would drop rows BEFORE
+  // anything knew how important they were and the "top 100" would silently be the
+  // 100 most RECENT wearing the label of the 100 most important.
+  const rows = await findingStore.listFindings(scope, { ...(status ? { status } : {}), ...(investor ? { investor } : {}) }, db);
   // The store returns raw table rows; every pure consumer speaks RECORDS.
-  let records = rows.map(findingStore.rowToRecord);
-  // listFindings has no investor filter, so narrow here — on the record's own
-  // field, never a second SQL predicate that could disagree with the store's.
-  if (investor) records = records.filter((r) => r.investor === investor);
+  const records = rows.map(findingStore.rowToRecord);
 
   const queue = reviewQueue.buildQueue(records, { nowMs: Date.now() });
   const all = queue.items || [];
@@ -496,8 +491,8 @@ async function scoreboardRoute(req, res) {
   const investor = req.query.investor ? String(req.query.investor) : null;
   if (!investor) return res.status(400).json({ error: 'Which investor? Pass ?investor=<code>.' });
 
-  const rows = await findingStore.listFindings(scope, {}, db);
-  const records = rows.map(findingStore.rowToRecord).filter((r) => r.investor === investor);
+  const rows = await findingStore.listFindings(scope, { investor }, db);
+  const records = rows.map(findingStore.rowToRecord);
 
   // `canaryAgreementRate` and `dailyNewFindings` are DELIBERATELY not supplied:
   // canary runs are not persisted yet (`lt_ppe_shadow_run` exists but this route
