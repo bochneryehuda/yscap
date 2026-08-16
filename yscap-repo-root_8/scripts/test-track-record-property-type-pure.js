@@ -269,6 +269,15 @@ console.log('\nE. the field survives the round trip on every side');
     'the track-record save door no longer runs the property-type sanitizer');
   ok('the save door runs the governed sanitizer');
 
+  // EVERY writer, not only the two doors. This one copies
+  // applications.property_type verbatim onto a new line, and that column is
+  // exactly where an appraisal FORM CODE has turned up before (db/322).
+  const fromFile = read('src', 'lib', 'track-record-from-file.js');
+  assert.ok(/sanitizeTrackRecordPropertyType\(app\.property_type\)/.test(fromFile),
+    'the funded-file copy writes applications.property_type straight onto a track-record line '
+    + 'without the form-code refusal — "FNM1025" would land as a property type');
+  ok('the funded-file copy runs the same refusal as the doors');
+
   // The tool is cached hard — an edit that does not bump the query string ships
   // the OLD file to every borrower who has already opened the page.
   const html = read('web', 'v2', 'tools', 'track-record.html');
