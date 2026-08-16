@@ -13,6 +13,12 @@
  * Pure + offline — safe to unit-test with no network. LT-only; no RTL imports.
  */
 const BASE = require('./search-base.json');
+const registry = require('./field-registry');
+
+// Symbol channel for registry validation warnings (invalid enum values). Symbol-keyed properties
+// are skipped by JSON.stringify, so attaching this to the built payload never pollutes the body
+// posted upstream; the route reads it to 422 an invalid value rather than silently ignoring it.
+const REGISTRY_WARNINGS = Symbol.for('lp.registryWarnings');
 
 // SMO ids observed in real captures. The DSCR pair selects the DSCR product; it is always sent.
 // These are FALLBACKS: when a live /pricing/smo registry is passed via opts.smo, the current
@@ -65,10 +71,12 @@ function mapPurpose(p) {
     : 'Refinance';
 }
 function mapProp(t) {
+  // Prefer the full registry enum (audit §17.1 — every upstream property.propertyType token).
+  const r = registry.resolvePropertyType(t);
+  if (r) return { propertyType: r.propertyType, nonWarrantableProject: !!r.nonWarrantableProject, attachmentType: r.attachmentType, units: r.units };
+  // Fallback for legacy scenario spellings the registry map does not carry; default SingleFamily.
   switch (t) {
-    case 'Unit2_4': case 'UnitDwelling_2_4': return { propertyType: 'UnitDwelling_2_4', nonWarrantableProject: false, attachmentType: 'Attached', units: 2 };
-    case 'CondoWarr': case 'Condos': case 'Condominium': return { propertyType: 'Condos', nonWarrantableProject: false, attachmentType: 'Attached', units: 1 };
-    case 'CondoNonWarr': return { propertyType: 'Condos', nonWarrantableProject: true, attachmentType: 'Attached', units: 1 };
+    case 'Condominium': return { propertyType: 'Condos', nonWarrantableProject: false, attachmentType: 'Attached', units: 1 };
     default: return { propertyType: 'SingleFamily', nonWarrantableProject: false, attachmentType: 'Detached', units: 1 };
   }
 }
@@ -184,7 +192,13 @@ function buildSearch(sc = {}, opts = {}) {
   m.fillLenderMap = true;
   m.cachedDisqualified = !!(opts.disqualify && opts.disqualify.cached); // false = kick off; true = poll
 
+  // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). This runs AFTER
+  // the core overlay so it only ADDS the extensions; invalid enum values are collected as warnings
+  // (surfaced by the route as a 422 invalid_field_value — never applied, never silently ignored).
+  const reg = registry.applyRegistry(m, sc);
+  if (reg && reg.warnings && reg.warnings.length) m[REGISTRY_WARNINGS] = reg.warnings;
+
   return m;
 }
 
-module.exports = { BASE, buildSearch, smoRegistryFromList, _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp } };
+module.exports = { BASE, buildSearch, smoRegistryFromList, REGISTRY_WARNINGS, _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp } };

@@ -212,6 +212,39 @@ function offline() {
   const kn = lp.buildSearch({ value: 5e5, loan: 4e5 });
   ok(kn.showDisqualify === true && kn.disqualifyAsync === true && kn.cachedDisqualified === false, 'every search carries the disqualify kickoff flags');
 
+  // 18) FIELD REGISTRY — advanced fields map to their exact upstream path/token, and an invalid
+  // enum value is recorded as a warning (surfaced by the route as a 422) rather than applied.
+  const sm = require('../src/longterm/lenderprice/search-model');
+  const fr = require('../src/longterm/lenderprice/field-registry');
+  const dyn = (m, k) => (m.dynamicPropertiesMap && m.dynamicPropertiesMap[k] && typeof m.dynamicPropertiesMap[k] === 'object' ? m.dynamicPropertiesMap[k].value : (m.dynamicPropertiesMap ? m.dynamicPropertiesMap[k] : undefined));
+  // full property-type enum
+  const cond = lp.buildSearch({ value: 5e5, loan: 4e5, propertyType: 'HighRiseCondo' });
+  ok(cond.property.propertyType === 'HighRiseCondo' && cond.property.attachmentType === 'Attached', 'registry: HighRiseCondo property type mapped');
+  const nonwarr = lp.buildSearch({ value: 5e5, loan: 4e5, propertyType: 'CondoNonWarr' });
+  ok(nonwarr.criteria.nonWarrantableProject === true, 'registry: CondoNonWarr sets nonWarrantableProject');
+  // borrower criteria paths
+  const borr = lp.buildSearch({ value: 5e5, loan: 4e5, selfEmployed: true, monthlyIncome: 12000, dti: 43, numberOfBorrowers: 2, waiveLenderFee: true });
+  ok(borr.criteria.selfEmployed === true && borr.criteria.monthlyIncome === 12000 && borr.criteria.numberOfBorrower === 2 && borr.criteria.lenderFeeWaiver === true, 'registry: borrower criteria applied');
+  ok(borr.criteria.clientDti === 0.43, 'registry: dti 43 → clientDti 0.43 (percent normalized)');
+  // adverse-credit dynamics with valid tokens
+  const adv = lp.buildSearch({ value: 5e5, loan: 4e5, citizenship: 'Foreign National', tradelines: 'Limited', foreclosure: 'FC_3yr', bankruptcy: { chapter: 'Chapter 7', seasoning: '4-7 Years' } });
+  ok(dyn(adv, 'Citizenship') === 'Foreign National' && dyn(adv, 'Tradelines') === 'Limited', 'registry: citizenship + tradelines dynamics set');
+  ok(dyn(adv, 'Global_FORECLOSURES') === 'FC_3yr' && dyn(adv, 'BankruptcyChapter') === 'Chapter 7' && dyn(adv, 'BankruptcySeasoning') === '4-7 Years', 'registry: foreclosure + bankruptcy dynamics set');
+  ok(adv[sm.REGISTRY_WARNINGS] === undefined, 'registry: valid values produce no warnings');
+  // mortgage lates bucket
+  const lates = lp.buildSearch({ value: 5e5, loan: 4e5, mortgageLates: { last12: { 30: '1', 60: '0' }, months13To24: { 30: '2' } } });
+  ok(dyn(lates, 'MORT30LATESLAST12M') === '1' && dyn(lates, 'MORT30LATESLAST24M') === '2', 'registry: mortgage-lates buckets map to MORT{sev}LATESLAST{window}');
+  // invalid enum value → warning, NOT applied
+  const badv = lp.buildSearch({ value: 5e5, loan: 4e5, citizenship: 'Martian' });
+  const w = badv[sm.REGISTRY_WARNINGS];
+  ok(Array.isArray(w) && w.length === 1 && w[0].field === 'citizenship', 'registry: invalid enum value recorded as a warning');
+  // base carries Citizenship: "US Citizen"; an invalid value must NOT overwrite it (stays the base default, never the bad value).
+  ok(dyn(badv, 'Citizenship') === 'US Citizen', 'registry: invalid value is NOT applied (base default unchanged)');
+  // warnings symbol is JSON-invisible (never sent upstream)
+  ok(JSON.stringify(badv).indexOf('registryWarnings') === -1 && !('warnings' in JSON.parse(JSON.stringify(badv))), 'registry: warnings channel is Symbol (not serialized into the upstream body)');
+  // the route exposes REGISTRY_FIELDS in its supported set
+  ok(Array.isArray(fr.REGISTRY_FIELDS) && fr.REGISTRY_FIELDS.includes('citizenship') && fr.REGISTRY_FIELDS.includes('bankruptcy'), 'registry: REGISTRY_FIELDS lists the implemented advanced fields');
+
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }
 

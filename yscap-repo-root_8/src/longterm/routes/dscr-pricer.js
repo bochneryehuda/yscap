@@ -13,6 +13,8 @@
  */
 const express = require('express');
 const lp = require('../lenderprice/client');
+const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
+const { REGISTRY_WARNINGS } = require('../lenderprice/search-model');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
 const BATTERY = [
@@ -43,6 +45,9 @@ const SUPPORTED_FIELDS = new Set([
   'propertyType', 'units', 'zip', 'state', 'county', 'countyFps', 'city', 'countyName',
   'borrowerType', 'prepayMonths', 'io', 'escrowWaive', 'fthb', 'date',
   'term', 'termYears', 'lockDays',
+  // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). Each maps to an
+  // exact upstream path/token; an invalid VALUE for one is rejected as invalid_field_value (below).
+  ...REGISTRY_FIELDS,
 ]);
 // Request-envelope keys the ROUTE consumes (not pricing inputs) — always allowed.
 const META_FIELDS = new Set(['scenario', 'debug', 'full', 'raw', 'poll', 'disqualify', 'maxWaitMs', 'pollMs', 'companyId']);
@@ -67,8 +72,34 @@ function effectiveOf(payload) {
     interestOnly: c.interestOnly, escrowWaiver: c.escrowWaiver, firstTimeHomeBuyer: c.firstTimeHomeBuyer,
     compensationType: c.compensationType, incomeDocType: dyn('IncomeDocType'), borrowerType: dyn('GLOBAL_BorrowerType'),
     prepayTerm: dyn('PrepayTerm'), specialMortgageOptions: Array.isArray(c.specialMortgageOptions) ? c.specialMortgageOptions.map((s) => s && s.name).filter(Boolean) : undefined,
+    // Registry-backed advanced fields ACTUALLY sent upstream — so a caller can confirm a supported
+    // advanced field was applied (not silently dropped). Only present when non-default.
+    nonWarrantableProject: c.nonWarrantableProject,
+    selfEmployed: c.selfEmployed, monthlyIncome: c.monthlyIncome, monthlyDebt: c.monthlyDebt,
+    clientDti: c.clientDti, numberOfBorrower: c.numberOfBorrower, ownProperties: c.ownProperties,
+    lenderFeeWaiver: c.lenderFeeWaiver, rural: c.rural,
+    citizenship: dyn('Citizenship'), tradelines: dyn('Tradelines'),
+    mixedUse: dyn('GLOBAL_MixedUse'), noMortgageHistory: dyn('GLOBAL_NoMortgageHistory'),
+    bankruptcyChapter: dyn('BankruptcyChapter'), bankruptcyStatus: dyn('BankruptcyStatus'), bankruptcySeasoning: dyn('BankruptcySeasoning'),
+    foreclosure: dyn('Global_FORECLOSURES'), shortSale: dyn('Global_SHORTSALES'), deedInLieu: dyn('Global_DEEDINLIEU'),
+    chargeOff: dyn('GLOBAL_MortgageLoanChargeOffs'), forbearance: dyn('GLOBAL_Forbearances'),
   };
 }
+// 422 the caller if a SUPPORTED registry field carried an invalid enum value — the builder collects
+// these as warnings and does NOT apply the bad value, so returning pricing would again be a silent
+// substitution (accepted field, ignored value). Reads the JSON-invisible Symbol channel off the
+// built payload. Returns true if it responded. (Belongs AFTER the upstream call: warnings live on
+// the built request.)
+function rejectInvalidValues(request, res) {
+  const w = request && request[REGISTRY_WARNINGS];
+  if (Array.isArray(w) && w.length) {
+    res.status(422).json({ ok: false, error: 'invalid_field_value', warnings: w,
+      message: `One or more fields carried a value the pricing engine does not recognize; the value would be silently dropped, so the request is rejected rather than mis-priced: ${w.map((x) => x.field).join(', ')}.` });
+    return true;
+  }
+  return false;
+}
+
 // 422 the caller if they sent a field the builder does not implement (never silently ignore it).
 function rejectUnsupported(sc, res) {
   const bad = unsupportedFields(sc);
@@ -102,6 +133,7 @@ async function price(req, res) {
     const code = (r.http && r.http >= 500) ? 502 : 400;
     return res.status(code).json({ ok: false, error: r.error, http: r.http || null, message: r.message, upstream: r.upstream || r.body || null });
   }
+  if (rejectInvalidValues(r.request, res)) return; // a supported field carried an unrecognized value
   const effective = effectiveOf(r.request); // requested-vs-effective transparency
   // full:true → the COMPLETE capture (every option's price build, itemized LLPAs, margin/holdback,
   // comp, fees, ratios, monthly payment). Add raw:true to also attach each option's untouched leaf.
@@ -138,6 +170,7 @@ async function disqualify(req, res) {
       const code = (pr.http && pr.http >= 500) ? 502 : 400;
       return res.status(code).json({ ok: false, error: pr.error, http: pr.http || null, message: pr.message, upstream: pr.upstream || pr.body || null });
     }
+    if (rejectInvalidValues(pr.request, res)) return;
     if (!pr.ready) return res.status(202).json({ ok: true, ready: false, retryAfterMs: 2000, message: 'Disqualify reasons still computing — poll again shortly.' });
     const d = lp.parseDisqualified(pr.raw);
     const outp = {
@@ -156,6 +189,7 @@ async function disqualify(req, res) {
     const code = (r.http && r.http >= 500) ? 502 : 400;
     return res.status(code).json({ ok: false, error: r.error, http: r.http || null, message: r.message, upstream: r.upstream || r.body || null });
   }
+  if (rejectInvalidValues(r.request, res)) return;
   const qualified = trimPrograms(lp.parse(r.qualified));
   const disq = lp.parseDisqualified(r.disqualified);
   const out = {
