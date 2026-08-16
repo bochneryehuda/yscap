@@ -62,12 +62,37 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   ok(/within 1 mile/.test(msg), 'it states the 1-mile rule the owner gave');
   ok(/12 months/.test(msg) && /15% net adjustment/.test(msg) && /SETTLED sale/.test(msg),
     'it states the anchor rule: settled, 12 months, under 15%');
+  // THE ANCHOR'S THREE CRITERIA ARE PRINTED AS THREE, not run together in a
+  // sentence (owner-directed 2026-08-16: "EMCAP needs three things for the
+  // anchor comp"). An appraiser skimming a paragraph misses the third.
+  ok(/all THREE of/.test(msg), 'the anchor requirement says plainly that there are three things');
+  const anchorItem = msg.split('\n').filter((l) => /^ *[abc]\. /.test(l));
+  ok(anchorItem.length === 3, `the three criteria are three separate lines (found ${anchorItem.length})`);
+  ok(/a\..*within 1 mile/.test(anchorItem[0] || ''), 'criterion a is the mile');
+  ok(/b\..*last 12 months/.test(anchorItem[1] || ''), 'criterion b is the year');
+  ok(/c\..*under 15% net adjustment/.test(anchorItem[2] || ''), 'criterion c is the net adjustment');
   ok(/[Ii]nterior photograph/.test(msg), 'it states the interior-photo requirement');
   ok(/YS Capital as the lender/.test(msg), 'it states that the report must be in our name');
-  ok(!/1007/.test(msg), 'a non-rental file is NOT told to include a rent schedule');
 
+  // THE RENT SCHEDULE ONLY ON A RENTAL EXIT (owner-directed 2026-08-16). Tested
+  // on the WHOLE sentence, not just "1007" — asking a flip's appraiser for a
+  // rent schedule costs money and time for nothing.
+  const RENTAL_RE = /rent(al)? (analysis|schedule)|1007|1025/i;
+  ok(!RENTAL_RE.test(msg), 'a non-rental file is told nothing at all about rent');
   const rental = reqs.orderMessage({ investorKey: 'emcap', rentalExit: true });
   ok(/1007/.test(rental) && /1025/.test(rental), 'a rental exit IS told a rental analysis is required');
+  // ...and the rental line is the ONLY difference between the two messages, so
+  // switching a file's exit can never quietly change any other requirement.
+  // Same context on both sides — otherwise this would be comparing the loan
+  // number, not the requirements. The renumbering the extra item causes is
+  // stripped too, or every later line would read as "changed".
+  const flat = (t) => t.split('\n').filter((l) => !RENTAL_RE.test(l)).join('\n').replace(/^\d+\. /gm, '');
+  const plainNoCtx = reqs.orderMessage({ investorKey: 'emcap' });
+  ok(flat(plainNoCtx) === flat(rental), 'the rental line is the only thing a rental exit adds');
+  ok(reqs.orderMessage({ investorKey: 'emcap', rentalExit: false }) === plainNoCtx
+    && reqs.orderMessage({ investorKey: 'emcap', rentalExit: null }) === plainNoCtx
+    && reqs.orderMessage({ investorKey: 'emcap', rentalExit: undefined }) === plainNoCtx,
+    'an unknown exit is treated as NOT rental — the rent line is never guessed on');
 
   // THE NAME NEVER LEAVES THE BUILDING. Checked against the shared partner list
   // rather than a hand-typed one, so a partner added later is covered.

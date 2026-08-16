@@ -72,11 +72,21 @@ const REQUIREMENTS = {
     // there is no value in holding one back and rejecting the report for it.
     lines: (ctx) => [
       `Comparable sales must be within ${COMP_RADIUS_MILES} mile of the subject.`,
-      `At least one As-Is comparable and — where the report gives an after-repair (ARV) value — `
-      + `at least one ARV comparable must be an "anchor" comp: a SETTLED sale, within `
-      + `${COMP_RADIUS_MILES} mile of the subject, sold within the last ${ANCHOR_MONTHS} months, `
-      + `with under ${ANCHOR_MAX_NET_ADJ_PCT}% net adjustment. An active or pending listing does not count.`,
+      // THE ANCHOR COMP'S THREE CRITERIA ARE PRINTED AS THREE (owner-directed
+      // 2026-08-16: "EMCAP needs three things for the anchor comp — within a
+      // year, within the mile, and less than a 15% net adjustment"). They were
+      // one running sentence; an appraiser reading a paragraph misses the third,
+      // which is exactly the one they most often miss.
+      `At least one As-Is comparable — and, where the report gives an after-repair (ARV) value, `
+      + `at least one ARV comparable — must be an "anchor" comp. An anchor comp is a SETTLED sale `
+      + `(an active or pending listing does not count) that meets all THREE of:\n`
+      + `      a. within ${COMP_RADIUS_MILES} mile of the subject;\n`
+      + `      b. sold within the last ${ANCHOR_MONTHS} months;\n`
+      + `      c. under ${ANCHOR_MAX_NET_ADJ_PCT}% net adjustment.`,
       'Interior photographs of the subject are required.',
+      // ONLY on a rental exit (owner-directed 2026-08-16: "only include the text
+      // about the rent schedule if it's a rental exit"). Asking a flip's
+      // appraiser for a rent schedule is a cost and a delay for nothing.
       ctx && ctx.rentalExit
         ? 'This loan\'s exit is a rental, so a rental analysis is required: a 1025 includes one; '
           + 'on a 1004 please include a 1007 Comparable Rent Schedule.'

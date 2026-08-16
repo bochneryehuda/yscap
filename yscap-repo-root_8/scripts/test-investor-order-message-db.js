@@ -81,6 +81,14 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
     ok(/YSCAP-/.test(nanBody) && /27 Beacon St/.test(nanBody), 'it names the loan and the property');
     ok(!borrowerSafe.hasPartnerName(nanBody) && !/emcap/i.test(nanBody),
       'the message to an OUTSIDE company names no capital partner');
+    // THE ANCHOR'S THREE CRITERIA, ON THE REAL POSTED ROW (owner-directed
+    // 2026-08-16: "EMCAP needs three things for the anchor comp").
+    ok(/all THREE of/.test(nanBody) && nanBody.split('\n').filter((l) => /^ *[abc]\. /.test(l)).length === 3,
+      'the posted message spells the anchor comp out as three criteria');
+    // AND NOTHING ABOUT RENT ON A NON-RENTAL FILE — read through the file's real
+    // program / loan type, not a hand-passed flag.
+    ok(!/rent(al)? (analysis|schedule)|1007|1025/i.test(nanBody),
+      'a Purchase file is told nothing at all about a rent schedule');
     ok(sent.length === 1, 'exactly one AddComment was built for the vendor');
 
     // ── 2. IT POSTS ONCE ───────────────────────────────────────────────────
