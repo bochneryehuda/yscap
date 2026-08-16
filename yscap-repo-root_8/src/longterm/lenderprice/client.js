@@ -626,14 +626,21 @@ async function priceFoundation({ force = false } = {}) {
   const [liveBase, smoReg, ppeUserId] = await Promise.all([
     fetchDefaultSearch(companyId, userId), fetchSmoRegistry(companyId), fetchPpeUserId(userId),
   ]);
-  // OPT-IN, AND DEFAULT OFF — because the evidence turned against it. The vendor's OWN frontend
-  // bundle calls searchRaw(userInfo.companyId, userInfo.userId, ...), i.e. the LOGIN's id, which is
-  // what this connector has always sent; and the owner reports pricing working yesterday on these
-  // same credentials. So the PPE id is NOT the fix, and shipping it as the default would have been a
-  // silent behaviour change made on a wrong inference. It is kept, switched off, because it did
-  // produce a genuinely different and NAMED response from the vendor, which is worth being able to
-  // reproduce in one env var while the real cause is still open.
-  const pricingUserId = (process.env.LP_USE_PPE_USER_ID === '1' && ppeUserId) ? ppeUserId : userId;
+  // THE PRICING PATH USES THE LOGIN'S USER ID. PROVEN, AND DO NOT CHANGE IT AGAIN.
+  //
+  // A controlled live A/B test (2026-08-16, same token, same company, same payload, same minute):
+  //   searchRaw/{companyId}/68e9a60f… (the LOGIN's id)     -> HTTP 200, 19 eligible programs
+  //   searchRaw/{companyId}/68e9a4e5… (ppe-user-link's id) -> HTTP 500 'Loan Officer Pricing
+  //                                                            Configuration not setup'
+  // and the vendor's own frontend bundle calls searchRaw(userInfo.companyId, userInfo.userId, …)
+  // and never calls ppe-user-link before pricing.
+  //
+  // I briefly substituted the ppe-user-link id here on the inference that a separate PPE identity
+  // must own the pricing path. That inference MANUFACTURED the 'not setup' error: it is not a
+  // statement about the account, it means 'no pricing configuration exists under the id you sent'.
+  // The account is fully configured. `fetchPpeUserId` is kept because the mapping is real and
+  // documented (findPpeLoanOfficerIdAndLinkId), but it must never choose the id for THIS endpoint.
+  const pricingUserId = userId;
   const url = `${API_BASE}/rest/v1/lp-ppe-integration/pricing/searchRaw/${encodeURIComponent(companyId)}/${encodeURIComponent(pricingUserId)}`;
   return {
     ok: true, session: s, companyId, userId, url,
