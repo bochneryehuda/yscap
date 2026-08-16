@@ -29,6 +29,7 @@
  */
 
 const access = require('./access');
+const product = require('./product');
 const stages = require('./stages');
 
 const lazy = {
@@ -201,7 +202,11 @@ async function loadPipeline(staff, filters = {}) {
   }
 
   return {
-    loans: rows,
+    // EVERY ROW CARRIES ITS OWN PRODUCT STAMP (CLAUDE.md §7). Tagged here, at the
+    // edge, because a combined pipeline tags and concatenates what each product
+    // answers for — so the stamp must be a property of the row and never of the
+    // screen it happens to be drawn on.
+    loans: product.tagRows(rows),
     total: counted[0] ? counted[0].n : 0,
     limit: q.limit,
     offset: q.offset,

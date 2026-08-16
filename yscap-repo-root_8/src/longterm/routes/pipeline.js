@@ -18,6 +18,7 @@ const contacts = require('../people/contacts');
 const workspace = require('../workspace');
 const locks = require('../locks');
 const milestones = require('../milestones');
+const product = require('../product');
 const ltFile = require('../file');
 const stages = require('../stages');
 const settingsStore = require('../settings/store');
@@ -122,7 +123,10 @@ router.get('/:loanId', async (req, res) => {
 
     const labels = settings['contacts.roleLabels'] || {};
     res.json({
-      loan: rows[0],
+      // The FILE HEADER's stamp (CLAUDE.md §7), carried on the loan itself so the
+      // screen renders what the row says rather than what screen it is.
+      ...product.stamp(),
+      loan: product.tagRow(rows[0]),
       lock,
       file,
       sections: workspace.sectionMenu(rows[0], {

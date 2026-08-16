@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import ProductStamp from './ProductStamp.jsx';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
 
@@ -216,7 +217,15 @@ export default function LtPipeline() {
                 return (
                   <tr key={l.id} style={{ cursor: 'pointer' }}
                     onClick={() => nav(`/internal/lt/loan/${l.id}`)}>
-                    <td style={{ ...td, fontWeight: 600 }}>{l.loan_number || '—'}</td>
+                    {/* THE PRODUCT STAMP, on every row (CLAUDE.md §7). Rendered from
+                        what the ROW carries, so it stays correct on a combined
+                        pipeline instead of labelling everything the same. */}
+                    <td style={{ ...td, fontWeight: 600 }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <ProductStamp product={l.product} label={l.productLabel} />
+                        <span>{l.loan_number || '—'}</span>
+                      </span>
+                    </td>
                     <td style={td}>{l.borrower_name || '—'}</td>
                     <td style={td}>{money(l.loan_amount)}</td>
                     <td style={td}>{l.stage_key || '—'}</td>

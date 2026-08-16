@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import LtLayout from './LtLayout.jsx';
 import LtFileSection, { hasFileSection } from './LtFileSections.jsx';
+import ProductStamp from './ProductStamp.jsx';
 import { ltApi } from './api.js';
 
 /**
@@ -244,6 +245,7 @@ export default function LtLoan() {
   if (!data) return <LtLayout title="Long-term file"><div className="card" style={{ color: INK }}>Loading…</div></LtLayout>;
 
   const { rail, stepper, sections = [], contacts = [], lock, file, milestoneClock } = data;
+  const { product: productKey, productLabel } = data;
   const current = sections.find((s) => s.key === active) || sections[0];
   // A section is drawn from the file ONLY when the server said it applies. A section
   // the workspace greyed out has a reason attached, and that reason is the answer —
@@ -252,6 +254,15 @@ export default function LtLoan() {
 
   return (
     <LtLayout title={rail && rail.loanNumber ? `Loan ${rail.loanNumber}` : 'Long-term file'}>
+      {/* THE FILE HEADER'S PRODUCT STAMP (CLAUDE.md §7) — which book this loan is
+          in, stated on the file itself rather than inferred from the screen, and
+          NOT dependent on any other request having succeeded. */}
+      {productLabel ? (
+        <div style={{ margin: '-6px 0 12px' }}>
+          <ProductStamp product={productKey} label={productLabel} size="md" />
+        </div>
+      ) : null}
+
       <Stepper stepper={stepper} clock={milestoneClock} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 300px', gap: 14, alignItems: 'start' }}
