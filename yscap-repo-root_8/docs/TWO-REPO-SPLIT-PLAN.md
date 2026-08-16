@@ -201,6 +201,122 @@ branch. Confirm before Phase 1 completes.
 | Repo weight | 297 MB `.git`, 78 MB tree, 724 KB `CLAUDE.md` | LT starts near-empty with its own short rulebook |
 | Parallelism | One working tree, one CI queue | Two of each |
 
+## 6a. Risk register — measured, not assumed
+
+Owner asked 2026-08-16: *"our entire short-term system now relies on the backbone, which is the
+borrower's profile … how do we make sure this is not going to break … you add a new co-borrower, you
+add a new borrower, you add new details, you add a new LLC, and it's added to the backbone. How will
+that work?"*
+
+### 6a.0 The premise to correct first: the profile does not move
+
+The identity zone is not being extracted, copied, mirrored or synchronised. It stays in the short-term
+repo, in the same database, with the same writers. Measured: **78 write statements across 19 modules**
+touch `borrowers`, and every one of them stays exactly where it is.
+
+**There is therefore no synchronisation problem, because there is no second copy.** Both products read
+the same row of the same table:
+
+| Action | Today | After the split |
+|---|---|---|
+| New borrower | `INSERT INTO borrowers` | identical |
+| New co-borrower | `applications.co_borrower_id` → `borrowers(id)` | identical |
+| New details | `UPDATE borrowers` through the one shared editor + `PATCH /api/staff/borrowers/:id` | identical |
+| New LLC | `llcs` (FK `borrower_id`) + `llc_borrowers` join, via the one `findOrCreateLlc` chokepoint | identical |
+| LT sees it | reads the same row | identical |
+
+**And the database enforces the join, physically.** `db/549_lt_loan_application.sql` creates real
+foreign keys — `lt_loans.borrower_id → borrowers(id)`, `lt_parties.borrower_id → borrowers(id)`,
+`lt_loans.loan_officer_id → staff_users(id)` — each authorized by a `sql-ref` line in the ledger.
+Postgres will refuse to let a long-term loan reference a borrower that does not exist. That is not a
+convention someone has to remember; it is a constraint.
+
+**The corollary is the reason §2.3 says one database, and it is structural rather than cautious:
+foreign keys cannot cross databases.** Two databases is not a configuration change while those FKs
+exist — they would have to be dropped and replaced with an application-level reference plus a
+reconciliation job. Keep one database until there is a reason strong enough to pay that.
+
+### 6a.1 The crossing surface today is five column names
+
+The ledger authorizes eight crossings, but what LT's code *actually* touches right now is far smaller:
+
+| Crossing | Authorized | In code today |
+|---|---|---|
+| `sql-read staff_users` | yes | **one query**, `people/roster.js` — `id, email, role, is_active, full_name` |
+| `sql-read borrowers` | yes | **none yet** |
+| `sql-write borrower_officers` | yes | **none yet** |
+| `sql-ref borrowers` / `staff_users` | yes | 4 foreign keys (db/549) |
+| `import src/auth/index.js` | yes | mount-time only, in `src/server.js` |
+| `import BorrowerProfilePanel.jsx` | yes | **none yet** |
+
+So the contract that has to hold across the repo boundary on day one is **five column names and four
+foreign keys**. It will grow — but only deliberately, because the ledger requires per-item written
+authorization before anything is added.
+
+### 6a.2 The risks, ranked
+
+**R1 — A silent schema break. (Highest.)** Today a rename of `borrowers.cell_phone` is caught because
+LT's tests run in the same tree on the same PR. After the split there are two CIs, and RTL can rename a
+column that LT depends on with nothing failing until somebody opens a long-term file.
+*Mitigation:* put the guard on the side that can break it. An **identity contract** file naming every
+column LT depends on, with a test in the **short-term** repo that reads `information_schema` and fails
+the build if one disappears — plus a mirror test in the LT repo against a freshly-migrated schema. The
+repo already has this pattern (`test-column-bounds-doors-db.js` reads `information_schema`;
+`test-corrfirst-conditions-db.js` asserts a template is still active). **Build this before anything
+moves** — see the revised Phase 2.
+
+**R2 — Two migration runners on one database.** `ensureSchema()` has **no advisory lock**. It is safe
+today only because exactly one process runs it: `src/worker.js` carries the explicit warning *"IT MUST
+NOT RUN MIGRATIONS … concurrent migration on boot is a corruption hazard"*. A second service is
+precisely that hazard. The `schema_migrations` ledger is keyed by `filename`, shared by both.
+*Mitigation:* LT gets its **own** ledger table (`lt_schema_migrations`), its **own** runner that reads
+only its own folder and refuses any file not named `*_lt_*`, and a **Postgres advisory lock** so the two
+can never run concurrently. Plus a boot-order guard: an LT migration that adds an FK to `borrowers`
+must wait for `borrowers` to exist (matters on a fresh test/staging database, never in production).
+
+**R3 — Making the live site depend on a brand-new repo.** Extracting the design means the live
+borrower portal's appearance is served from a package that did not exist last week.
+*Mitigation:* **do not have RTL adopt it in the same step that creates it.** Create the design repo,
+have **LT adopt it first** — LT is not live, so a mistake costs nothing — prove it, then RTL adopts.
+Pin by exact commit, never a floating branch, so a design change can never reach production without a
+deliberate bump PR.
+
+**R4 — The separation gate goes half-blind.** It currently scans 2,081 files across both products in
+one tree. Each repo will only see itself.
+*Mitigation:* two mirrored gates. RTL's asserts *"no `src/longterm/` here, and nothing reaches into
+LT"*. LT's asserts *"no RTL import, and no RTL table in SQL outside the ledger's `sql-read`/`sql-ref`
+list"*. The ledger travels with LT — it is LT's permission slip — and RTL's gate does not need it.
+
+**R5 — The extraction losing files.** `git filter-repo` with an incomplete path list drops files in
+silence.
+*Mitigation:* derive the path list from the gate's own definition of what LT owns (it already counts
+them: 22 LT code files, 2 LT migrations), diff the extracted tree against the original file by file,
+and **copy rather than move** — leave the LT folders in RTL with the router unmounted until LT has run
+standalone for a soak period. That is also the rollback: re-mounting one line in `src/server.js`.
+
+**R6 — Sign-in secret drift.** Both services must carry the same `JWT_SECRET`. Rotate one and not the
+other and every user is bounced off one side, reported as "it logged me out".
+*Mitigation:* treat it as a paired value in the runbook, and add a check to LT's health endpoint that
+reports whether it can validate a token minted by short term. (`/api/health` already warns
+`jwtStable:false` when the secret is unset entirely.)
+
+**R7 — The shared profile panel.** The ledger authorizes LT's front end to import
+`app-v2/src/components/BorrowerProfilePanel.jsx`. After the split that import is physically impossible
+across repos. Nothing breaks today because it is not yet used — but it means the design repo is **not
+optional**: it is where that panel must live for an already-granted authorization to remain usable.
+
+**R8 — Document storage.** LT will eventually store documents in the same R2 account.
+*Mitigation:* its own bucket prefix and its own scoped credential, following the rule already
+established for backups — a credential that cannot address another area cannot damage it.
+
+### 6a.3 What is explicitly NOT a risk here
+
+- **Data drift between the two systems** — there is one row, not two.
+- **A sync job falling behind** — there is no sync job.
+- **LT corrupting a borrower record** — LT has no write path to `borrowers`, the gate refuses one, and
+  the ledger authorizes writes to exactly one identity table (`borrower_officers`).
+- **A borrower losing their files** — file visibility resolves through the same records it does today.
+
 ## 7. Phases
 
 ### Phase 1 — Consolidate the LT work (do first, urgent)
@@ -208,7 +324,17 @@ Rebase/merge `loan-pipeline-architecture-5nql6q` onto current `main`, cherry-pic
 verify the separation + Encompass read-only gates stay green, land it. **While still one repo** —
 merging here is far cheaper and the existing gates protect it.
 
-### Phase 2 — Extract `yscap-longterm`
+### Phase 2 — Build the identity contract and its guard, BEFORE anything moves
+Write the contract file naming every identity column and foreign key LT depends on, plus the
+`information_schema` test that fails the short-term build when one disappears (R1), and the mirrored
+test in what will become the LT repo. **Land this while both sides are still one tree**, so the guard is
+proven against the real schema before it has to work across a boundary. Also add the LT migration runner
+changes (own ledger, own lock, own file filter — R2) while they can still be tested in one place.
+
+This phase is the whole safety answer to "will this break the live system". Everything after it is a
+move; this is the thing that makes the move detectable if it goes wrong.
+
+### Phase 3 — Extract `yscap-longterm` — copy, do not delete
 `git filter-repo` over the LT path set, history preserved:
 
 ```
@@ -222,23 +348,33 @@ yscap-repo-root_8/scripts/test-lt-*.js
 New repo gets a **clean git root** (no `yscap-repo-root_8/` nesting), which also means its
 `render.yaml` actually auto-applies — the live RTL service was created by hand precisely because the
 nesting blocks blueprints. Copy the Encompass read-only gate across; LT is the largest Encompass
-consumer and that rule is the hardest in the repo.
+consumer and that rule is the hardest in the repo, and add the mirrored separation gate (R4).
 
-### Phase 3 — `yscap-design`
-Extract tokens, primitives, brand and `ProductSwitch`. Both repos consume it as a pinned git
-dependency.
+**The LT folders stay in RTL, with the router unmounted** (R5). Nothing is deleted in this phase.
 
-### Phase 4 — Unified login + unified profiles
+### Phase 4 — Soak, then remove
+Run the LT service standalone against the same database until it is plainly working. Only then delete
+`src/longterm/**` and the LT front-end folders from the short-term repo. Until that deletion, rollback
+is re-mounting one line in `src/server.js`.
+
+### Phase 5 — `yscap-design` — LT adopts first, RTL later
+Extract tokens, primitives, brand, `ProductSwitch`, the profile-screen layouts (incl.
+`BorrowerProfilePanel` — R7) and the shared display rules. **LT adopts it first**, because LT is not
+live and a mistake there costs nothing (R3). RTL adopts only after that has held. Both consume it
+**pinned to an exact commit**, never a branch.
+
+### Phase 6 — Unified login + unified profiles
 One `/auth/login`, one `/auth/me`, one profile surface per persona. Built as a facade; no identity
 migration.
 
-### Phase 5 — Domain routing + the switch
+### Phase 7 — Domain routing + the switch
 Path routing in front of both services (`/` and `/portal/*` → short term, `/lt/*` → long term), shared
-`JWT_SECRET`, switch becomes a hard navigation.
+`JWT_SECRET` (R6), switch becomes a hard navigation.
 
-### Phase 6 — Cleanups (later)
-Flatten `yscap-repo-root_8/` in the short-term repo once the open drafts drain; optionally move LT to
-its own database (a config change by design).
+### Phase 8 — Cleanups (later)
+Flatten `yscap-repo-root_8/` in the short-term repo once the open drafts drain. A second database is
+**not** a config change while the four cross-product foreign keys exist (§6a.0) — reopen only with a
+reason strong enough to pay for replacing them.
 
 ## 8. What not to do
 
