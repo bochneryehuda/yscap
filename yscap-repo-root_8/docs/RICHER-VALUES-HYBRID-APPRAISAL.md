@@ -272,15 +272,42 @@ Two things worth knowing from that run:
 > credit card entered yet under conditions, you can pay it manually right over here,
 > put in the credit card information in our system, or we can send payment links."*
 
-Exactly three ways, in `src/richervalues/payment.js`. **Add to Invoice and ACH are
+Their founder, asked how a production order should be paid (2026-08-16):
+
+> *"If your team usually sends payment links to your borrower, then you will use our
+> payment link API. Alternatively if you usually pay for the reports in house, then
+> you'll need to set up a payment method on our training server, and then use the
+> payment API to initiate payment for the report."*
+
+The owner picked **both**: *"our card, link as backup"* — we pay in-house on every
+order, and a staffer can switch a single order to a payment link.
+
+Exactly four ways, in `src/richervalues/payment.js`. **Add to Invoice and ACH are
 not offered anywhere** — not as a config value, not as a control, not as an accepted
 request field.
 
 | | What it does |
 |---|---|
+| **`COMPANY_CARD`** | **THE DEFAULT.** Charges the card YS Capital already keeps at Richer Values, by referencing the source id they hold (`USE_EXISTING_SOURCE`). **No card number is ever sent**, which is exactly why it is the one card route their Stripe cannot refuse. Nothing is added and nothing has to be deleted afterwards. |
 | `CARD_ON_FILE` | charges the card on the file's **appraisal-card condition**, revealed through the one audited chokepoint (`view_appraisal_card` is written) |
 | `NEW_CARD` | a card typed at the moment of ordering: **saved onto the file first** through the shared `lib/appraisal-card.js` chokepoint — so paying also answers that condition — then charged |
 | `PAYMENT_LINK` | Richer Values emails the borrower their own hosted payment page; the order exists and starts once they pay |
+
+### Which company card — it never guesses
+
+`resolveCompanySource` reads **only** the `creditCards` side of their reply, so an
+ACH source on the account is unreachable rather than merely unlisted (the owner
+forbade ACH outright). Then:
+
+- a **configured** `RV_PAYMENT_SOURCE_ID` wins outright — an operator naming a card is deliberate;
+- **exactly one** card is unambiguous and is used;
+- **two or more is a REFUSAL, not a pick.** Choosing between company cards is a money decision belonging to a person, and the wrong one is charged silently. The refusal names both cards and both ways forward;
+- **no cards** is the ordinary not-set-up-yet state, worded so the reader knows to save one in the Richer Values portal;
+- an **unreadable list** refuses too — never a guess.
+
+Every one of those refusals falls through to the payment link, so none of them is a
+dead end. The order screen asks the same question **before** anyone presses pay, so
+"there is no card on the account" is said while there is still time to fix it.
 
 **The card is taken back off their account.** Their `add-card` is COMPANY-level, so
 a borrower's card added there is chargeable for anybody's order. The charge runs
@@ -297,10 +324,15 @@ Their `add-card` forwards the number straight to Stripe and **Stripe refuses it 
 their account**: *"Sending credit card numbers directly to the Stripe API is
 generally unsafe… To enable testing raw card data APIs, see …"*. A Stripe **token**
 cannot be used instead, because their own validator rejects it first: `"card_number"
-must be a number`. That is a setting on **their** Stripe account. The code is
-written the documented way and will work the day they enable it; until then that
-specific refusal is recognised, said in plain words with **tech@richervalues.com**
-named, and the order falls through to the payment link, which works today.
+must be a number`. That is a setting on **their** Stripe account.
+
+So `CARD_ON_FILE` and `NEW_CARD` — the two routes that send a NUMBER — can only end
+in a refusal today. The code is written the documented way and will work the day
+they enable it; until then that specific refusal is recognised, said in plain words
+with **tech@richervalues.com** named, and the order falls through to the payment
+link. **`COMPANY_CARD` is the way round it** and is why it is the default: a human
+saves the card once in their portal, and every order after that charges a source
+they already hold, with no number crossing the wire.
 
 ---
 
@@ -430,14 +462,36 @@ Three of these line up with loan types PILOT already runs:
 - **`prop-value` is $70 cheaper** and is the right product for a bridge or a no-rehab
   purchase, where there is no renovation budget to analyse.
 
-**What it would take:** the plumbing is already per-product — `catalogueFor()` fetches
-the report types, inspection types and turnaround times for whichever product is asked
-for, and `RV_DEFAULT_REPORT_TYPE` already selects one. What is missing is (a) letting
-the ordering screen choose between all four, and (b) the order builder's branches for
-vacant land and for "no current statistics", which their validator enforces per product
-(`ask_current_stats` / `ask_proposed_stats` / `land_eligible` are on the catalogue and
-are already read). Note the two construction products offer **no inspection at all** —
-their only inspection type is `none`.
+**ALL FOUR ARE ORDERABLE NOW (2026-08-16).** The screen has always fed its report-type
+picker from their live catalogue, so all four were selectable — but the two construction
+ones could not actually be PLACED, and that is worth recording because the failure was
+silent in the worst way: the builder demanded a living area, a bedroom count, a bathroom
+count and a year built on **every** order, a vacant lot has none of them, so `canPlace`
+stayed false for ever on figures nobody could truthfully supply and `placeOrder` refused
+with `incomplete`. Two of their four products were dead.
+
+The fix is one flag they already publish and we already read: `ask_current_stats` is 1 on
+the two reports about a standing building and 0 on the two construction ones.
+`reference.js` had normalized it since day one and **nothing had ever consumed it** —
+`resolveChoices` now threads it and `order-build.js` makes the current statistics
+optional (sent when known, never blocking) on a report that never asked for them.
+
+**MEASURED, NOT ASSUMED.** Their validator was probed live on all four branches, using a
+submit that deliberately omitted a required field so it could only ever be refused and
+could create nothing. Not one current statistic came back `is not allowed` on either
+construction product — so a figure we DO hold still rides along on every product, and
+this relaxes only what BLOCKS. Their real required list is `include_flood_certification`,
+`closing_date`, `property_address`, `property_condition`, `report_contact_phone`; the
+builder already demands each of those. The only per-branch refusal found was
+`is_property_partially_completed` on vacant land, which the builder already drops.
+
+Pinned by section I of `scripts/test-richer-value-order-build.js` (both directions:
+a construction report must be placeable, a Renovation Analysis must still refuse, and an
+UNREACHABLE catalogue must keep the strict behaviour — `asksCurrentStats` is tested
+`=== false` so a vendor outage can never quietly loosen an order). The live sweep now
+also prices every product in their catalogue, so a product that can be picked and not
+ordered fails the audit. Note the two construction products offer **no inspection at
+all** — their only inspection type is `none` — and only a `standard` turnaround.
 
 ### 15.2 They sell DRAW INSPECTIONS — and PILOT runs a whole draw system
 
@@ -470,13 +524,64 @@ is a servicing decision, not a technical one.
 The **post-disaster** pair is a real servicing tool — after a named storm, order an
 exterior sweep of the affected properties in the book to see what was damaged.
 
-### 15.4 A card payment costs $3.50 more, and we do not say so
+Confirmed still 7 standalone types on 2026-08-16 (the five above plus `draw-inspection`
+and `draw-inspection-direct`). Their STANDALONE prices are not re-measured here — that
+endpoint returns the list without a price block — so the figures above are as first
+recorded and should be re-confirmed before anyone quotes one.
 
-Their company settings carry `cc_surcharge: {cc_surcharge: "3.50", cc_surcharge_type: "flat"}`,
+**AN INSPECTION COSTS LESS AS AN ADD-ON THAN STANDALONE, and the add-on figures are the
+ones that matter to this desk** (measured live 2026-08-16, and these ARE what the order
+screen quotes because they come off the same catalogue it reads):
+
+| Inspection (as an add-on to a report) | Add-on price |
+|---|---|
+| Interior (w Exterior) — the default | $70.00 |
+| Exterior | $50.00 |
+| Interior — Homeowner Direct | $40.00 |
+| Draw | $150.00 |
+| None | $0.00 |
+
+So the four evaluation reports price, today, at: Property Valuation $349.99 + inspection,
+Renovation Analysis $419.99 + inspection, New Construction $449.99 and
+Partial/Incomplete Construction $454.99 (both inspection-less), rush +$100 where offered,
+plus $3.50 if it is paid by card. **All five inspection types above are available on
+Property Valuation as well as on Renovation Analysis** — including the draw inspection,
+which means a draw visit is already orderable from this desk as part of a valuation
+without any of the separate work §15.2 describes.
+
+### 15.4 A card payment costs $3.50 more — and the screen says so now (2026-08-16)
+
+Their company settings carry `cc_surcharge: {cc_surcharge: "3.5", cc_surcharge_type: "flat"}`,
 and every price quote returns `cc_surcharge: 3.5` **outside** `total_price`. So a $489.99
 Hybrid appraisal paid by card is **$493.49**. Since the owner's payment design is
-card-first, this applies to essentially every order. The quote already carries the
-figure; the ordering screen does not yet show it.
+card-first, this applies to essentially every order, and the desk was quoting a total
+lower than what would actually be charged.
+
+**THE HEADLINE IS THE ALL-IN FIGURE** — owner-directed 2026-08-16, asked directly and
+answered: *"the borrower should be quoted the total with the $3.50."* Every route we pay
+by is a card, so the fee applies on essentially every order, and a headline that excluded
+it was the one number nobody ever pays. The fee is still **named** — it appears in the
+breakdown line and the screen says plainly that the total includes it, with their own
+report price shown beside it so our figure reconciles to their invoice.
+
+**One definition, three places.** `app-v2/src/lib/rvPrice.js` `rvOrderTotal` is read by
+the price panel, the order button and the confirmation line under it. A number retyped
+in three places is exactly how a button comes to promise one total while the panel above
+shows another — and this one is read out to a borrower.
+
+**Prices are printed to the CENT here, not to the dollar.** The portal's ordinary
+`money()` rounds to whole dollars, which is right for a loan amount and wrong for a
+$489.99 invoice: rounded, the fee all but disappears and $493.49 prints as $493 — quoting
+a borrower *less* than they will be charged, which is the smaller version of this same
+bug. The two halves are summed **in whole cents**, because plain addition is exact for
+some prices and not others: `489.99 + 3.5` happens to be exact, `508.57 + 3.5` is
+512.0699999999999, and 168 prices between $300 and $1,200 behave that way. Their pricing
+moves with the state and the ZIP, so which prices a desk sees is not something we choose.
+
+The live audit pins the SHAPE as well as the figure — that `total_price` is the sum of
+its own lines and the surcharge sits outside it — so if they ever fold it in, the audit
+fails rather than the screen silently double-counting it. Test
+`scripts/test-richer-value-price-total.mjs`.
 
 ### 15.5 The price quote cannot see three of the add-ons
 
@@ -489,7 +594,19 @@ real invoice will exceed the quote. Worth confirming with them what those three 
 
 ### 15.6 Confirmed absent — do not go looking for these
 
-All 404 on the live tenant: any order **list / search** endpoint, **messages / notes /
+**CORRECTION (2026-08-16): `/api/v2/report-types` is NOT 404 — it answers 200.** The
+original sweep called it without a `company_token` and read the resulting 422 as absence.
+With the token it returns their whole second product line: `aivm` (A.I. Valuation Model,
+**$34.99**), `epo` (Electronic Price Opinion, **$39.99**) and `rental-aivm` (AIVM with
+Rental Analysis, **$39.99**), each carrying `type: "epo"`. Their v2 ORDERING paths
+(`/api/v2/order/pricing`, `/api/v2/order/submit`, `/api/v2/aivm`, `/api/v2/epo`) do still
+404, so the shape of a v2 order is unknown and would have to come from their team. PILOT
+orders none of these — that was owner-directed at the time (*"we're going to build up now
+only evaluation"*) and is a live decision, not a technical limit. **Do not repeat the
+mistake that produced the original claim: probe an endpoint WITH the company token before
+recording it as absent.**
+
+Still 404 on the live tenant: any order **list / search** endpoint, **messages / notes /
 comments**, **revisions**, **invoices**, **webhook management**, **add-ons**, an
 **appointment or scheduling** endpoint, an **activity or timeline** endpoint, and any
 **OpenAPI / Swagger** document. In particular:

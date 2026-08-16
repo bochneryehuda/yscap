@@ -148,17 +148,26 @@ const payment = require(R + '/src/richervalues/payment');
   ok(choose([]) === null && choose(null) === null, 'D and nothing is nothing');
 }
 
-/* ═══ E. the three ways to pay, and the two that are NOT offered ════════ */
+/* ═══ E. the four ways to pay, and the two that are NOT offered ═════════ */
 // Owner: *"We don't want to allow Add to Invoice. We don't want to allow ACH."*
 {
   assert(Array.isArray(payment.METHODS));
-  ok(payment.METHODS.length === 3, 'E there are exactly three ways to pay');
-  for (const m of ['CARD_ON_FILE', 'NEW_CARD', 'PAYMENT_LINK']) {
+  ok(payment.METHODS.length === 4, 'E there are exactly four ways to pay');
+  for (const m of ['COMPANY_CARD', 'CARD_ON_FILE', 'NEW_CARD', 'PAYMENT_LINK']) {
     ok(payment.METHODS.includes(m), `E ${m} is one of them`);
   }
-  for (const m of ['ADD_TO_INVOICE', 'ACH', 'USE_EXISTING_SOURCE']) {
+  // OUR OWN CARD IS FIRST, and that ordering is the default the whole desk falls
+  // back to — the owner's "we pay in-house, payment link as the backup".
+  ok(payment.METHODS[0] === 'COMPANY_CARD',
+    'E our own card is first, so it is what an unconfigured deployment reaches for');
+  for (const m of ['ADD_TO_INVOICE', 'ACH']) {
     ok(!payment.METHODS.includes(m), `E ${m} is NOT offered`);
   }
+  // USE_EXISTING_SOURCE is the VENDOR's wire word for charging a saved card. It is
+  // what COMPANY_CARD sends, and it must never be offerable as a method itself —
+  // asking for it directly would skip the "which card?" rule below.
+  ok(!payment.METHODS.includes('USE_EXISTING_SOURCE'),
+    'E USE_EXISTING_SOURCE is their wire word, never a method a screen can ask for');
 
   // The default a deployment starts with must be one of the three, or the very
   // first order would try a method the owner ruled out.
@@ -206,7 +215,47 @@ const payment = require(R + '/src/richervalues/payment');
   ok(/ok: !!p\.ok, settled: !!p\.settled/.test(route),
     'E2 and the pay route answers both, never one standing in for the other');
   ok(/payment\.METHODS\.includes\(method\)/.test(route),
-    'E2 the pay route refuses any method outside the three — invoice and ACH cannot be asked for');
+    'E2 the pay route refuses any method outside the four — invoice and ACH cannot be asked for');
+}
+
+/* ═══ E3. OUR OWN CARD — the route the owner chose, wired end to end ═════ */
+// Owner (2026-08-16), answering "in production, who pays Richer Values?":
+// *"Both: our card, link as backup"* — we pay in-house by default, and a staffer can
+// switch a single order to a payment link. Their CEO named the same two routes.
+//
+// This is the SOURCE check. The rules it stands on are exercised for real below in
+// section G; what is asserted here is that every layer actually reaches for it, in
+// the order the owner asked for — a server that defaults to our card while the
+// button still says "charge the card on file" is exactly the drift this catches.
+{
+  const fs = require('fs');
+  const R2 = R;
+
+  const svc = fs.readFileSync(R2 + '/src/richervalues/order-service.js', 'utf8');
+  ok(/method === 'COMPANY_CARD'/.test(svc), 'E3 the server has a COMPANY_CARD route');
+  ok(/payment\.payWithCompanyCard\(/.test(svc),
+    'E3 and it charges through the shared helper, never a private call of its own');
+  // "LINK AS BACKUP" IS THE OTHER HALF OF THE OWNER'S ANSWER. An intake already
+  // exists at the vendor by this point, so a payment problem must never throw the
+  // order away — it falls through to the link exactly as the other card routes do.
+  const ccBranch = svc.slice(svc.indexOf("if (method === 'COMPANY_CARD')"));
+  ok(/return sendLink\(/.test(ccBranch.slice(0, 800)),
+    'E3 a failed company-card charge falls through to the payment link — the owner’s “link as backup”');
+
+  const cfgSrc = fs.readFileSync(R2 + '/src/config.js', 'utf8');
+  ok(/RV_PAYMENT_METHOD \|\| 'COMPANY_CARD'/.test(cfgSrc),
+    'E3 an unconfigured deployment pays with OUR card, not the Stripe-blocked file card');
+  ok(/RV_PAYMENT_SOURCE_ID/.test(cfgSrc),
+    'E3 and the card can be named explicitly when the account holds more than one');
+
+  const card = fs.readFileSync(R2 + '/app-v2/src/components/AppraisalOrderSection.jsx', 'utf8');
+  ok(/COMPANY_CARD: '/.test(card), 'E3 the order screen has a label for it — an unlabelled method renders as a raw token');
+  ok(/\['COMPANY_CARD', 'CARD_ON_FILE', 'NEW_CARD', 'PAYMENT_LINK'\]/.test(card),
+    'E3 it is in the screen’s own fallback list, in the same order the server offers');
+  ok(/payment\.method \|\| 'COMPANY_CARD'/.test(card),
+    'E3 and it is what the picker starts on');
+  ok(!/method: 'CARD_ON_FILE'/.test(card),
+    'E3 no button still hard-codes the Stripe-blocked file card — that one can only end in a refusal today');
 }
 
 /* ═══ F. an expired card is not a usable card ═══════════════════════════ */
@@ -223,5 +272,81 @@ const payment = require(R + '/src/richervalues/payment');
   ok(isExpired('x', 'y') === false, 'F nor is junk');
 }
 
-console.log(failures ? `\n${failures} FAILURE(S)` : '\ntest-richer-value-payment-guard: all checks passed');
-process.exit(failures ? 1 : 0);
+/* ═══ G. WHICH company card to charge — it never guesses, never sees ACH ═ */
+// Two cards on the account is a money decision belonging to a person: the wrong one
+// is charged silently and nothing on any screen would say so. So more than one is a
+// REFUSAL, not a pick. These run the REAL function against a stubbed vendor — the
+// rules are the whole safety of the route the owner made the default, so asserting
+// them by reading the source would prove nothing.
+//
+// LAST, and async, so the summary below runs after it. The vendor call is stubbed
+// by swapping ONE property on the client and putting it back afterwards, so nothing
+// else in this file sees a different module.
+(async () => {
+  const client = require(R + '/src/richervalues/client');
+  const realPaymentSources = client.paymentSources;
+  const sources = (creditCards, ach) => async () => ({ data: { paymentSources: { stripe: { creditCards, ach } } } });
+  const CARD = { payment_source_id: 'src_1', last_4: '4242', brand: 'Visa', exp_month: 12, exp_year: 2030 };
+
+  try {
+    // ONE card — unambiguous, so it is used. And the ACH source sitting beside it is
+    // never even seen: the owner forbade ACH outright, and reading only `creditCards`
+    // makes it unreachable rather than merely unlisted.
+    client.paymentSources = sources([CARD], [{ payment_source_id: 'ach_1', last_4: '9999' }]);
+    const one = await payment.resolveCompanySource('co_tok', null);
+    ok(one.ok === true && one.paymentSourceId === 'src_1',
+      'G exactly one card on the account is unambiguous, so it is used');
+    ok(one.card && one.card.last4 === '4242',
+      'G and it reports WHICH card, so the screen can name it before anyone presses pay');
+
+    const listed = await payment.listCompanyCards('co_tok');
+    ok(listed.ok && listed.cards.length === 1 && listed.cards[0].id === 'src_1',
+      'G the list reads the CARD side only — an ACH source on the account is unreachable, not merely unlisted');
+
+    // TWO cards — a refusal, and this is the assertion the whole route rests on.
+    client.paymentSources = sources([CARD, { payment_source_id: 'src_2', last_4: '1111', brand: 'Amex' }]);
+    const both = await payment.resolveCompanySource('co_tok', null);
+    ok(both.ok === false && both.code === 'several_company_cards',
+      'G TWO cards is a REFUSAL, not a pick — charging the wrong company card is silent');
+    ok(/4242/.test(both.error) && /1111/.test(both.error),
+      'G and the refusal names the cards, so a human can choose one');
+    ok(/RV_PAYMENT_SOURCE_ID/.test(both.error) && /payment link/i.test(both.error),
+      'G it also says both ways forward — name the card, or send the link');
+
+    // A configured id is an operator naming a card deliberately, so it wins outright
+    // and does not even ask — which is what makes the two-card state fixable.
+    const named = await payment.resolveCompanySource('co_tok', 'src_2');
+    ok(named.ok === true && named.paymentSourceId === 'src_2',
+      'G a configured card id wins, so a two-card account is not a dead end');
+
+    client.paymentSources = sources([]);
+    const none = await payment.resolveCompanySource('co_tok', null);
+    ok(none.ok === false && none.code === 'no_company_card',
+      'G no card on the account is the ordinary not-set-up-yet state');
+    ok(/Richer Values portal/i.test(none.error) && /payment link/i.test(none.error),
+      'G and it says exactly what a human has to go and do about it');
+
+    // AN OUTAGE IS NOT A CARD LIST. It refuses rather than guessing, and refusing
+    // ends at the payment link — which is the safe direction on a money action.
+    client.paymentSources = async () => { throw new Error('502 Bad Gateway'); };
+    const broken = await payment.resolveCompanySource('co_tok', null);
+    ok(broken.ok === false && broken.code === 'sources_unreadable',
+      'G an unreadable list is a refusal, never a guess');
+    const brokenList = await payment.listCompanyCards('co_tok');
+    ok(brokenList.ok === false && brokenList.cards.length === 0,
+      'G the list NEVER throws; an outage reads as “no cards”');
+
+    const noTok = await payment.listCompanyCards(null);
+    ok(noTok.ok === false, 'G and with no company token there is nothing to ask about');
+
+    // Paying with no intake is refused BEFORE the vendor is asked anything.
+    const noIntake = await payment.payWithCompanyCard('', { companyToken: 'co_tok' });
+    ok(noIntake.ok === false && noIntake.code === 'no_intake',
+      'G paying for an intake that does not exist yet is refused before any call');
+  } finally {
+    client.paymentSources = realPaymentSources;
+  }
+
+  console.log(failures ? `\n${failures} FAILURE(S)` : '\ntest-richer-value-payment-guard: all checks passed');
+  process.exit(failures ? 1 : 0);
+})();
