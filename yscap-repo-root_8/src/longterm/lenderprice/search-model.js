@@ -14,6 +14,7 @@
  */
 const BASE = require('./search-base.json');
 const registry = require('./field-registry');
+const zipCounty = require('./zip-county');
 // §33.2/§33.3 — confirmed-token resolvers for the two menu fields the builder used to hard-code
 // (IncomeDocType was always "DSCR", PrePayment_Plan_Type always "Standard"). Bound locally so the
 // builder reads the same way as the other mapX helpers in this file.
@@ -162,6 +163,18 @@ function deriveAmounts(sc) {
     value = money(loan / ltv); derived.push('value');
   } else if (value != null && ltv != null && value > 0) {
     loan = money(value * ltv); derived.push('loan');
+  }
+  // A DERIVED figure that lands at or below zero is not an answer — it is the arithmetic telling us
+  // the inputs cannot describe a loan (a $4 property at a 0.1% LTV rounds to a $0 loan). Drop it so
+  // `known` cannot count it, which turns the scenario into the honest "not enough to price" refusal
+  // instead of putting a $0 loan on the wire. Same reasoning as `usable` below, applied to the
+  // OUTCOME rather than the input.
+  for (const k of derived.slice()) {
+    const v = k === 'value' ? value : k === 'loan' ? loan : ltv;
+    if (!(v > 0)) {
+      if (k === 'value') value = null; else if (k === 'loan') loan = null; else ltv = null;
+      derived.splice(derived.indexOf(k), 1);
+    }
   }
   // `known` counts only figures that can actually PARTICIPATE in the triangle — a zero or negative
   // value/loan/ltv is not a usable amount. Counting a bare `!= null` let `ltv: 0` masquerade as one
@@ -694,7 +707,14 @@ const ALLOWED_LOCKS = (process.env.LP_ALLOWED_LOCKS
 // The smallest LTV that is a real scenario rather than a typo. Arithmetic sanity, NOT a business
 // cap: the triangle divides by the LTV, so a vanishing one derives an absurd property value
 // (0.000001 on a $400k loan → $400bn). 0.1% sits far below any real deal.
-const MIN_LTV = Number(process.env.LP_MIN_LTV || 0.001);
+// A misconfigured env must never SILENTLY disable a bound: Number('abc') is NaN and every
+// comparison against NaN is false, so a typo would turn the floor off with no warning. Fall back to
+// the default unless the override is a real positive number.
+function envRatio(name, dflt) {
+  const n = Number(process.env[name]);
+  return (Number.isFinite(n) && n > 0) ? n : dflt;
+}
+const MIN_LTV = envRatio('LP_MIN_LTV', 0.001);
 const LIVE_TERMS = [5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 40];
 const ALLOWED_TERMS = (process.env.LP_ALLOWED_TERMS
   ? process.env.LP_ALLOWED_TERMS.split(',').map((x) => Number(x.trim())).filter((n) => isFinite(n))
@@ -764,7 +784,7 @@ function validateInputs(sc = {}) {
   // value/loan were absent. Accept 75 or 0.75; ceiling env-overridable (LP_MAX_LTV, default 100%).
   if (ltvRaw.v != null) {
     const normLtv = ltvRaw.v > 1 ? ltvRaw.v / 100 : ltvRaw.v;
-    const maxLtv = Number(process.env.LP_MAX_LTV || 1);
+    const maxLtv = envRatio('LP_MAX_LTV', 1); // same NaN/zero guard as the floor
     if (normLtv > maxLtv) {
       return bad('ltv_out_of_range', 'ltv', `LTV ${(normLtv * 100).toFixed(2)}% exceeds the maximum ${(maxLtv * 100).toFixed(0)}%.`);
     }
@@ -825,6 +845,14 @@ function validateInputs(sc = {}) {
         'A quote needs any TWO of property value, loan amount and LTV — the third is derived. '
         + `Supplied: ${Object.keys(tri.supplied).filter((k) => tri.supplied[k]).join(', ') || 'none'}.`);
     }
+    // Two figures being PRESENT is not the same as the pair being PRICEABLE. The vendor needs a
+    // property value AND a loan amount, so if the derivation could not produce both as positive
+    // numbers the scenario is not a loan — a $4 property at the 0.1% LTV floor rounds to a $0 loan,
+    // which would otherwise have gone on the wire as `loanAmount: 0`.
+    if (!(tri.value > 0) || !(tri.loan > 0)) {
+      return bad('insufficient_amounts', 'loan',
+        `These amounts do not describe a loan: they work out to a property value of ${tri.value == null ? 'none' : tri.value} and a loan amount of ${tri.loan == null ? 'none' : tri.loan}. Check the value, loan and LTV.`);
+    }
   }
   // §36.3/§36.4 — a cash-out amount belongs ONLY to a cash-out refinance. On a Purchase or a
   // rate-and-term Refinance it is REJECTED rather than ignored: a caller who sends one is describing
@@ -856,6 +884,22 @@ function validateInputs(sc = {}) {
 // foundation cannot change any of these verdicts). Returns { ok:true, request } or
 // { ok:false, status:422, error, field?, warnings?, message }.
 function validateScenario(sc = {}) {
+  // §26.3/§35.2 — ZIP ENRICHMENT FIRST. Pricing is ZIP-driven: the vendor's own screen turns a
+  // 5-digit ZIP into state + county + county FIPS before it searches, while we used to demand all
+  // of them and refuse an incomplete location. The lookup is a committed Census table (pure,
+  // offline), so this adds no network call and no database read to the pricing path. Anything the
+  // CALLER supplied is an ASSERTION, never overwritten — a supplied value that contradicts the ZIP
+  // is a 422, because silently preferring one side is how a loan gets priced in the wrong county.
+  const enr = zipCounty.enrichLocation(sc);
+  if (!enr.ok) return { ok: false, status: 422, error: enr.code, field: enr.field, message: enr.message };
+  // Merge the filled fields UNDER the caller's own values, then validate/build from the completed
+  // scenario. `countyEnrichment` is reported so the response can say the county was inferred (and,
+  // for a ZIP spanning counties, that it was the dominant one).
+  const enriched = enr.filled.length ? { ...sc, ...enr.location } : sc;
+  const countyEnrichment = enr.filled.length
+    ? { filled: enr.filled, split: enr.split, countyFps: enr.resolved.countyFps, countyName: enr.resolved.countyName, source: `census-zcta-${zipCounty._internals.meta.vintage}` }
+    : null;
+  sc = enriched;
   const loc = validateLocation(sc);
   if (!loc.ok) return { ok: false, status: 422, error: loc.code, field: loc.field, message: loc.message };
   const inp = validateInputs(sc); // §27 — strict booleans/numerics/ranges/ltv/term/lock/units
@@ -872,7 +916,7 @@ function validateScenario(sc = {}) {
     return { ok: false, status: 422, error: 'invalid_field_value', warnings: w,
       message: `One or more fields carried a value the pricing engine does not recognize; the value would be silently dropped, so the request is rejected rather than mis-priced: ${w.map((x) => x.field).join(', ')}.` };
   }
-  return { ok: true, request };
+  return { ok: true, request, scenario: sc, countyEnrichment };
 }
 
 module.exports = { BASE, buildSearch, clearScenarioOwnedFields, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,

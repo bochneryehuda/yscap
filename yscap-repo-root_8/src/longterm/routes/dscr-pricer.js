@@ -141,6 +141,10 @@ function rejectInvalidValues(request, res) {
 // §26.5 — build + validate the scenario LOCALLY and 422 a bad request BEFORE any upstream call, so a
 // deterministic validation error (§26.3 incomplete/conflicting location, §26.4 unknown loan purpose,
 // invalid registry enum value) makes ZERO searchRaw requests. Returns true if it responded.
+// Returns `null` when the request is fine — and, crucially, the ENRICHED scenario to price from.
+// validateScenario fills a caller's location from its ZIP (state / county / county FIPS), so the
+// caller MUST go on to price the returned scenario: pricing the original would validate one request
+// and send a different, county-less one upstream.
 function rejectInvalidRequest(sc, res) {
   const v = validateScenario(sc);
   if (!v.ok) {
@@ -148,9 +152,9 @@ function rejectInvalidRequest(sc, res) {
     if (v.field) body.field = v.field;
     if (v.warnings) body.warnings = v.warnings;
     res.status(v.status || 422).json(body);
-    return true;
+    return { rejected: true };
   }
-  return false;
+  return { rejected: false, scenario: v.scenario || sc, countyEnrichment: v.countyEnrichment || null };
 }
 
 // Cash-out amount ("cash in hand") transparency — so it's never SILENTLY handled. §32.2 FAIL-CLOSED:
@@ -250,9 +254,11 @@ function derivedOf(sc) {
 
 // POST /price — body is a scenario (or { scenario }). Returns the parsed program summary.
 async function price(req, res) {
-  const sc = (req.body && req.body.scenario) ? req.body.scenario : (req.body || {});
+  let sc = (req.body && req.body.scenario) ? req.body.scenario : (req.body || {});
   if (rejectUnsupported(sc, res)) return; // never silently ignore an unimplemented field
-  if (rejectInvalidRequest(sc, res)) return; // §26.5 — 422 a bad request BEFORE any upstream call
+  const chk = rejectInvalidRequest(sc, res); // §26.5 — 422 a bad request BEFORE any upstream call
+  if (chk.rejected) return;
+  sc = chk.scenario; // price the ZIP-ENRICHED scenario, never the original
   const r = await lp.price(sc);
   if (!r.ok) return res.status((r.http && r.http >= 500) ? 502 : 400).json(priceErrorBody(r));
   if (rejectInvalidValues(r.request, res)) return; // a supported field carried an unrecognized value
@@ -263,12 +269,12 @@ async function price(req, res) {
   // separate status route (GET /disqualifications/:searchKey) instead of ever restarting the search.
   if (req.body && req.body.full) {
     const full = lp.parseFull(r.raw, { raw: !!req.body.raw });
-    const out = { ok: true, ...full, requestedScenario: requestedOf(sc), derivedScenario: derivedOf(sc), effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+    const out = { ok: true, ...full, requestedScenario: requestedOf(sc), derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
     if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
     return res.json(out);
   }
   const parsed = lp.parse(r.raw);
-  const out = { ok: true, ...trimPrograms(parsed), requestedScenario: requestedOf(sc), derivedScenario: derivedOf(sc), effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+  const out = { ok: true, ...trimPrograms(parsed), requestedScenario: requestedOf(sc), derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
   // Secret-gated diagnostics (the whole router is behind the diag token / staff login): when the
   // caller asks, include a structural summary of the raw response so we can see whether Lender
   // Price returned programs the parser missed, or truly zero — and any disqualify reasons.
@@ -349,9 +355,11 @@ async function disqualifications(req, res) {
 // (built from the identical body) comes back quickly. Optional body: { maxWaitMs, pollMs, debug }.
 async function disqualify(req, res) {
   const body = req.body || {};
-  const sc = body.scenario ? body.scenario : body;
+  let sc = body.scenario ? body.scenario : body;
   if (rejectUnsupported(sc, res)) return;
-  if (rejectInvalidRequest(sc, res)) return; // §26.5 — 422 a bad request BEFORE any upstream call
+  const chk = rejectInvalidRequest(sc, res); // §26.5 — 422 a bad request BEFORE any upstream call
+  if (chk.rejected) return;
+  sc = chk.scenario; // price the ZIP-ENRICHED scenario, never the original
   // POLL-ONLY mode ({poll:true}): a prior /price already kicked off the async computation. This
   // just polls the cached result (no re-kickoff, no blocking loop) → 200 when ready, 202 while
   // still computing. This is the recommended flow (kick off on /price, then poll here every ~2s).
@@ -409,4 +417,4 @@ function makeRouter() {
 }
 
 module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest }, BATTERY,
-  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields } };
+  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf } };

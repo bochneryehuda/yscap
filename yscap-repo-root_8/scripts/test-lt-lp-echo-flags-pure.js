@@ -74,7 +74,27 @@ for (const field of ['dscrAssetDepletion', 'lateInLast12Months']) {
   ok(e2.dscrAssetDepletion === undefined || e2.dscrAssetDepletion === null, 'ECHO-OMIT an omitted flag echoes empty, never invented');
 }
 
-// ---- §36.11 the requested / derived echo actually carries content ------------
+// ---- §36.11 the ROUTE's echo helpers themselves (H3) ------------------------
+// The re-audit proved the earlier version of this file did NOT guard these: it exercised the MODEL's
+// deriveAmounts, so gutting the route WRAPPERS that call it left every suite green. These assertions
+// reach requestedOf/derivedOf directly.
+{
+  const { requestedOf, derivedOf } = require('../src/longterm/routes/dscr-pricer')._internals;
+  ok(typeof requestedOf === 'function' && typeof derivedOf === 'function',
+    'ECHOFN-0 requestedOf/derivedOf are reachable (they were unexported, so nothing could test them)');
+  const d = derivedOf({ loan: 400000, ltv: 75 });
+  ok(d && d.value === 533333.33, 'ECHOFN-1 derivedOf returns the derived property value');
+  ok(d && Array.isArray(d.derived) && d.derived.includes('value'), 'ECHOFN-2 …and names which figure was derived');
+  ok(d && d.supplied && d.supplied.loan === true && d.supplied.value === false,
+    'ECHOFN-3 …and distinguishes supplied from derived');
+  const q = requestedOf({ purpose: 'Purchase', fico: 760, debug: true, full: true, scenario: 'x' });
+  ok(q.purpose === 'Purchase' && q.fico === 760, 'ECHOFN-4 requestedOf echoes the caller\'s own pricing fields');
+  ok(q.debug === undefined && q.full === undefined && q.scenario === undefined,
+    'ECHOFN-5 …and drops the request-envelope keys (they are not pricing inputs)');
+  ok(Object.keys(requestedOf({})).length === 0, 'ECHOFN-6 an empty scenario echoes empty');
+}
+
+// ---- §36.11 the derived echo actually carries content ------------------------
 {
   const t = sm._internals.deriveAmounts({ loan: 400000, ltv: 75 });
   ok(t && t.value === 533333.33, 'DERIVED-1 the derived echo carries the worked-out property value');
@@ -102,6 +122,31 @@ for (const field of ['dscrAssetDepletion', 'lateInLast12Months']) {
   ok(sm.validateScenario({ purpose: 'Purchase', fico: 760, loan: 400000, ltv: 75, ...loc }).ok === true,
     'LTV0-6 a real LTV still prices normally');
 }
+// ---- a DERIVED figure that lands at zero is not an answer (re-audit residual) --
+{
+  // a $4 property at the 0.1% floor rounds to a $0 loan — that must refuse, not price a $0 loan
+  const r = sm.validateScenario({ purpose: 'Purchase', fico: 760, value: 4, ltv: 0.001, ...loc });
+  ok(r.ok === false, `ZERODERIVE-1 a derived $0 loan refuses rather than pricing (got ${r.ok ? 'ACCEPTED' : r.error})`);
+  const t = sm._internals.deriveAmounts({ value: 4, ltv: 0.001 });
+  ok(t.loan === null && !t.derived.includes('loan'), 'ZERODERIVE-2 deriveAmounts drops a derived figure that lands at zero');
+  ok(!(t.loan > 0), 'ZERODERIVE-3 …so the pair does not describe a loan and is refused above');
+}
+// ---- a misconfigured env must not silently disable a bound -------------------
+{
+  const old = process.env.LP_MIN_LTV;
+  try {
+    process.env.LP_MIN_LTV = 'abc'; // NaN — every comparison against it is false
+    delete require.cache[require.resolve('../src/longterm/lenderprice/search-model')];
+    const fresh = require('../src/longterm/lenderprice/search-model');
+    const r = fresh.validateScenario({ purpose: 'Purchase', fico: 760, loan: 4e5, ltv: 0.000001, ...loc });
+    ok(r.ok === false, 'ENV-1 a non-numeric LP_MIN_LTV falls back to the default instead of disabling the floor');
+  } finally {
+    if (old === undefined) delete process.env.LP_MIN_LTV; else process.env.LP_MIN_LTV = old;
+    delete require.cache[require.resolve('../src/longterm/lenderprice/search-model')];
+    require('../src/longterm/lenderprice/search-model');
+  }
+}
+
 // ---- deriveAmounts never throws (the module header promises it) --------------
 for (const junk of [null, undefined, {}, { value: 'abc' }, { ltv: NaN }, { loan: Infinity }]) {
   let threw = false;

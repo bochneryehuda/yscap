@@ -361,7 +361,14 @@ async function offline() {
   const okScn = sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 375000, dscr: 1.25, zip: '07036', state: 'NJ', county: 'Union', countyFps: '34039' });
   ok(okScn.ok === true && okScn.request && okScn.request.criteria.loanPurpose === 'Purchase', '§26.5 a complete scenario validates and returns the built request');
   ok(sm.validateScenario({ purpose: 'banana', state: 'NJ', countyFps: '34039' }).error === 'unknown_loan_purpose', '§26.5 unknown purpose → 422 unknown_loan_purpose');
-  ok(sm.validateScenario({ purpose: 'Purchase', zip: '07036', state: 'NJ' }).error === 'missing_county_fips', '§26.5 incomplete location → 422 missing_county_fips');
+  // §26.3 CONTRACT CHANGE — a ZIP now FILLS the county, so ZIP+state is no longer an incomplete
+  // location end-to-end (that is the whole ZIP-enrichment feature). The underlying validateLocation
+  // rule is UNCHANGED and still proven directly above (line ~354). What must still 422 is a location
+  // the enrichment genuinely cannot complete, asserted on the next line.
+  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, zip: '07036', state: 'NJ' }).ok === true,
+    '§26.3 ZIP + state is completed by the county lookup (no longer missing_county_fips)');
+  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, zip: '30301', state: 'GA' }).error === 'zip_not_found',
+    '§26.5 a location the ZIP lookup cannot complete still 422s (fails closed)');
   ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, citizenship: 'Martian' }).error === 'invalid_field_value', '§26.5 invalid registry value → 422 invalid_field_value (moved BEFORE the upstream call)');
   ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5 }).status === 422 || sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5 }).ok === true, '§26.5 validateScenario returns a shaped result');
 
