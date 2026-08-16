@@ -4,9 +4,20 @@
 // SCHEMA MAP — regenerate docs/schema/schema.prisma from a database
 // =============================================================================
 //
-// Produces the readable map of every table, column and relation: the thing 549
-// migration files do not give you. It is DOCUMENTATION. Nothing in PILOT reads
-// it at runtime, and nothing ever should.
+// Produces the readable map of every table, column and relation: the thing the
+// numbered migration files do not give you. It is DOCUMENTATION. Nothing in
+// PILOT reads it at runtime, and nothing ever should.
+//
+// It has a SECOND mode that needs no database and no Prisma:
+//
+//   node scripts/schema-prisma.js --restamp
+//
+// which rewrites ONLY the generated header from the committed inventory,
+// leaving every model byte-for-byte alone. That exists because the header
+// quotes four numbers that live in `beyond-prisma.json`, and that file can be
+// regenerated on its own (`npm run schema:snapshot`, no Prisma needed) — so
+// without it the two documents in this folder drift apart, and the one nobody
+// can cheaply regenerate is the one that goes stale.
 //
 // PRISMA IS NEVER ADDED TO package.json — a deliberate decision, not an
 // oversight. Render's build runs `npm install`, which installs devDependencies
@@ -78,18 +89,109 @@ const SEED = `datasource db {
  * comment is not part of Prisma's model and disappears on the next regeneration.
  */
 function seedFrom(existing) {
-  if (typeof existing !== 'string' || !existing.trim()) return SEED;
-  const i = existing.indexOf('datasource ');
+  const body = bodyOf(existing);
   // No datasource block means the file cannot be introspected over — start clean
   // rather than hand Prisma something it will refuse.
-  if (i < 0) return SEED;
-  return existing.slice(i);
+  return body == null ? SEED : body;
+}
+
+/**
+ * The schema itself, with our generated header removed — or NULL when there is
+ * no schema here to speak of.
+ *
+ * ONE definition of "where does the generated header stop and the file begin",
+ * shared by the seed and the restamp. Two copies of that boundary would drift,
+ * and the drifted one would either leave a stale header stacked on top of a
+ * fresh one or eat the first model.
+ *
+ * It returns NULL rather than a fallback because the two callers need OPPOSITE
+ * things from a file it cannot read: the seed starts clean (Prisma is about to
+ * rewrite it anyway), while the restamp must REFUSE — restamping is supposed to
+ * touch nothing but the header, so writing a bare seed over somebody's schema
+ * would be the single most destructive thing this script could do.
+ */
+function bodyOf(existing) {
+  if (typeof existing !== 'string' || !existing.trim()) return null;
+  // ANCHORED ON A DECLARATION AT COLUMN 0 — Prisma's own formatting, and the
+  // same anchoring `stripLedgerModel` and `injectGlossary` use. A plain
+  // `indexOf('datasource ')` matches the WORD, including inside our own header
+  // ("… the datasource block …") or any comment that mentions it, and would
+  // then treat that comment as the start of the schema: the restamp would write
+  // a header on top of prose and call the result a schema file. Caught by the
+  // test's own negative fixture on its first run.
+  const m = /^datasource\s+\w+\s*\{/m.exec(existing);
+  if (!m) return null;
+  return existing.slice(m.index);
+}
+
+/**
+ * The header's four numbers, taken from the committed inventory. PURE.
+ *
+ * The whole point of this function existing is that the numbers have ONE
+ * derivation, used by the generator, by `--restamp`, and by the test that
+ * asserts the committed header still agrees with the committed inventory. If
+ * the test recomputed them its own way it would be proving that two hand-typed
+ * expressions match, which is not the property anyone cares about.
+ */
+function countsFromInventory(inv) {
+  const c = (inv || {}).counts || {};
+  const n = (v) => (Number.isFinite(v) ? v : 0);
+  return {
+    beyond: n(c.generatedColumns) + n(c.checkConstraints) + n(c.triggers)
+      + n(c.functions) + n(c.partialIndexes),
+    tables: c.tables,
+    columns: c.columns,
+    migrations: ((inv || {}).generatedFrom || {}).migrations || null,
+  };
+}
+
+/**
+ * Rewrite ONLY the generated header, leaving every model byte-for-byte alone.
+ * PURE. Returns null when there is no schema to restamp — see `bodyOf`.
+ *
+ * Idempotent by construction: the old header is removed before the new one is
+ * written, so restamping twice produces the same bytes as restamping once.
+ */
+function restamp(existing, counts) {
+  const body = bodyOf(existing);
+  if (body == null) return null;
+  return header(counts) + body;
+}
+
+/**
+ * How many numbered migrations build this database — DERIVED, NEVER TYPED.
+ *
+ * This header carried a hand-typed "549" in TWO places while `db/` was already
+ * on 550. Its sibling `schema-snapshot.js` had the identical defect, found and
+ * fixed on 2026-08-16; this copy was missed, which is the whole argument for
+ * deriving it: a number written into prose goes stale on the very next
+ * migration, and nobody notices because nothing checks prose.
+ *
+ * It matters more here than anywhere else in the folder. This is the sentence
+ * that tells a reader NEVER to rebuild the database from this file, and names
+ * the migrations as the only thing that may. A reader who checks that number,
+ * finds it wrong, and concludes the warning is stale is the exact failure this
+ * document exists to prevent.
+ *
+ * An unreadable or absent watermark says so plainly rather than guessing a
+ * figure — the sentence is still true without a count.
+ */
+function migrationClause(migrations) {
+  const m = migrations || null;
+  if (!m || !Number.isFinite(m.count)) return 'The numbered migrations in db/';
+  const highest = m.highest == null ? '' : ` (highest db/${m.highest})`;
+  return `The ${m.count} numbered migrations in db/${highest}`;
 }
 
 /**
  * The header is prepended AFTER introspection, on every run, because
  * `prisma db pull` rewrites the file and a hand-added comment would be lost the
  * first time somebody regenerated. Generated, never hand-maintained.
+ *
+ * PURE — every number comes in through `counts`, so the same header can be
+ * rebuilt from the committed inventory with no database in reach, which is what
+ * lets a test assert the committed file agrees with the committed inventory
+ * instead of merely trusting that somebody regenerated both together.
  */
 function header(counts) {
   return [
@@ -111,8 +213,8 @@ function header(counts) {
     '// *** runs without a single error and silently leaves out every one of those',
     `// *** ${counts.beyond} objects — including the guard that keeps a budget`,
     '// *** condition from being signed off unless the totals match to the cent.',
-    '// *** The 549 numbered migrations in db/ are the only thing that builds this',
-    '// *** database.',
+    `// *** ${migrationClause(counts.migrations)} are the only`,
+    '// *** thing that builds this database.',
     '//',
     `// Snapshot: ${counts.tables} tables, ${counts.columns} columns.`,
     '// ===========================================================================',
@@ -179,7 +281,43 @@ function injectGlossary(text, glossary) {
   return out;
 }
 
+/** The committed inventory — the one source of every number in the header. */
+function readInventory() {
+  return JSON.parse(fs.readFileSync(
+    path.join(__dirname, '..', 'docs', 'schema', 'beyond-prisma.json'), 'utf8'));
+}
+
+/**
+ * `--restamp`: refresh the header from the committed inventory. No database, no
+ * Prisma, no network. Refuses rather than guessing if the file is not a schema.
+ */
+function restampOnly() {
+  let existing;
+  try {
+    existing = fs.readFileSync(SCHEMA, 'utf8');
+  } catch (_) {
+    console.error('schema-prisma: no committed schema to restamp — generate it first.');
+    process.exit(1);
+  }
+  const out = restamp(existing, countsFromInventory(readInventory()));
+  if (out == null) {
+    console.error('schema-prisma: the committed schema has no datasource block, so its '
+      + 'header cannot be told from its contents. Refusing to touch it — regenerate '
+      + 'it against a database instead.');
+    process.exit(1);
+  }
+  if (out === existing) {
+    console.log('schema-prisma: header already matches the inventory — nothing to do.');
+    return;
+  }
+  fs.writeFileSync(SCHEMA, out);
+  console.log(`schema-prisma: restamped the header of ${path.relative(process.cwd(), SCHEMA)} `
+    + 'from the committed inventory (no model touched).');
+}
+
 function main() {
+  if (process.argv.includes('--restamp')) return restampOnly();
+
   if (!process.env.DATABASE_URL) {
     console.error('schema-prisma: DATABASE_URL is not set.');
     console.error('  Point it at a RESTORED COPY or a scratch database — never production.');
@@ -212,10 +350,7 @@ function main() {
 
   // Counts come from the SAME inventory the drift check uses, so the header can
   // never quote a number the rest of the documentation disagrees with.
-  const inv = JSON.parse(fs.readFileSync(
-    path.join(__dirname, '..', 'docs', 'schema', 'beyond-prisma.json'), 'utf8'));
-  const c = inv.counts;
-  const beyond = c.generatedColumns + c.checkConstraints + c.triggers + c.functions + c.partialIndexes;
+  const counts = countsFromInventory(readInventory());
 
   // DROP PILOT'S OWN MIGRATION LEDGER, for exactly the reason the inventory
   // does (see the note above `LEDGER_TABLE` in schema-inventory.js): it is
@@ -226,7 +361,7 @@ function main() {
   // header (which takes its counts from that inventory) contradicts its own
   // contents.
   let body = injectGlossary(stripLedgerModel(fs.readFileSync(SCHEMA, 'utf8')), GLOSSARY);
-  fs.writeFileSync(SCHEMA, header({ beyond, tables: c.tables, columns: c.columns }) + body);
+  fs.writeFileSync(SCHEMA, header(counts) + body);
 
   console.log(`schema-prisma: wrote ${path.relative(process.cwd(), SCHEMA)} `
     + `(${(body.match(/^model /gm) || []).length} models)`);
@@ -234,4 +369,7 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { PRISMA_VERSION, SCHEMA, header, seedFrom, SEED, stripLedgerModel, injectGlossary };
+module.exports = {
+  PRISMA_VERSION, SCHEMA, header, seedFrom, SEED, stripLedgerModel, injectGlossary,
+  bodyOf, restamp, countsFromInventory, migrationClause,
+};

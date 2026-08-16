@@ -359,6 +359,54 @@ either bring them under Atlas or record them in a companion document. **Until th
 schema must carry a header saying it is incomplete** — a picture that looks whole and is not is the
 single biggest hazard this plan introduces.
 
+#### Phase 2 — the header exists, and it is now GENERATED AND GUARDED (2026-08-16)
+
+The header Phase 2 requires is on the file, and it says more than "incomplete": it names the 749
+objects Prisma cannot see, points at `BEYOND-PRISMA.md`, and states plainly that rebuilding a database
+from it produces SQL that runs without a single error while silently omitting every one of them.
+
+**But it was PARTLY HAND-TYPED, and the hand-typed part was already wrong.** It said *"The 549 numbered
+migrations in db/ are the only thing that builds this database"* while `db/` held **550** (highest
+`db/553`). The identical defect had been found and fixed in the sibling generator on this same day —
+`schema-snapshot.js`'s `migrationSentence` carries the note *"this sentence carried a hand-typed 549
+and the database was already on 550"* — and this second copy was missed. Which is the argument for the
+rule rather than against it: **a number written into prose goes stale on the very next migration, and
+nothing checks prose.**
+
+Of every number in this folder that is the worst one to have wrong. It is the sentence that tells a
+reader never to rebuild from this file and names the migrations as the only thing that may. A reader
+who checks it, finds it stale, and concludes the warning is stale too is precisely the reader the
+document exists to stop.
+
+**Three things now hold it true, and none of them needs a person to remember anything:**
+
+1. **The count is derived** (`migrationClause`), from the same watermark the freshness check reads. An
+   unreadable or absent watermark states **no figure at all** rather than guessing one — the sentence
+   is still true without a count.
+2. **`node scripts/schema-prisma.js --restamp`** (`npm run schema:restamp`) rewrites **only** the
+   header, from the committed inventory, with **no database, no Prisma and no network**. That mode
+   exists because the two documents in this folder are not equally cheap to regenerate: the inventory
+   is plain SQL, the Prisma map needs Prisma *and* a database — so the cheap file moves, the expensive
+   one does not, and they drift. It refuses rather than guesses on a file it cannot read, because
+   writing a bare seed over somebody's schema is the most destructive thing this script could do.
+3. **`test-schema-prisma-header-pure.js` (no database) REBUILDS the header from the committed
+   inventory and asserts the committed file starts with those exact bytes.** Not a regex over the
+   header — a regex still matches while the figure underneath it is wrong. It catches all four numbers
+   at once, and separately asserts the "incomplete" and "never rebuild" warnings are still present, so
+   a regenerated header cannot silently drop the thing Phase 2 calls the single biggest hazard.
+
+Eight mutations proven red with a green control, including re-typing the original 549. **The test found
+a real weakness in the new code on its first run**: `bodyOf` located the schema with
+`indexOf('datasource ')`, which matches the *word* — including inside the header's own prose — so a
+file merely mentioning it would have had a header written on top of a comment and been called a schema.
+It is now anchored on a declaration at column 0, the same anchoring the glossary and ledger-strip rules
+already use.
+
+The remaining half of Phase 2 — bringing the 749 objects under Atlas rather than a companion document —
+is untouched and deliberately so. `BEYOND-PRISMA.md` is the companion document the phase allows for, it
+is generated from the catalogue on every refresh, and adopting a second schema tool is a change to how
+this database is built. That is not documentation work.
+
 ### Phase 3 — Make it the source of truth, going forward only.
 From here, a schema change is: edit `schema.prisma` → `prisma migrate diff` to generate the SQL → make
 it idempotent by hand → new numbered `db/NNN_*.sql` → applied by the existing runner. Exactly LT's
