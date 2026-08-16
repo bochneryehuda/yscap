@@ -134,6 +134,61 @@ router.post('/files/:appId/orders/:orderId/refresh', fileScope, async (req, res,
   } catch (e) { next(e); }
 });
 
+/**
+ * SCHEDULE the inspection — move the date and/or set rush.
+ * Trinity requires 24 hours' notice; `order.reschedule` says so in our own words rather
+ * than passing their validation error through.
+ */
+router.post('/files/:appId/orders/:orderId/schedule', fileScope, async (req, res, next) => {
+  try {
+    if (!can(req, 'manage_draws')) return bad(res, 403, 'You do not have permission to manage draws.');
+    const o = await loadOrder(req.appId, req.params.orderId);
+    if (!o) return bad(res, 404, 'That inspection order was not found on this file.');
+    const b = req.body || {};
+    const r = await order.reschedule(req.appId, o.id, {
+      dateIso: b.date || b.dateIso || null,
+      rush: b.rush === undefined ? null : !!b.rush,
+      staffId: req.actor.id,
+    });
+    if (r.blocked) return res.status(422).json(r);
+    if (r.error) return res.status(502).json(r);
+    res.json(r);
+  } catch (e) { next(e); }
+});
+
+/**
+ * Push the current property picture (lock box code, appraisal, address) onto the Trinity
+ * project without placing an order.
+ */
+router.post('/files/:appId/orders/:orderId/sync-project', fileScope, async (req, res, next) => {
+  try {
+    if (!can(req, 'manage_draws')) return bad(res, 403, 'You do not have permission to manage draws.');
+    const o = await loadOrder(req.appId, req.params.orderId);
+    if (!o) return bad(res, 404, 'That inspection order was not found on this file.');
+    const r = await order.syncProject(req.appId, o.id, { staffId: req.actor.id });
+    if (r.error) return res.status(502).json(r);
+    res.json(r);
+  } catch (e) { next(e); }
+});
+
+/** Trinity's invoice for this order — what the inspection cost us. Staff-only. */
+router.get('/files/:appId/orders/:orderId/invoice', fileScope, async (req, res, next) => {
+  try {
+    const o = await loadOrder(req.appId, req.params.orderId);
+    if (!o) return bad(res, 404, 'That inspection order was not found on this file.');
+    const m = (await db.query(
+      `SELECT storage_ref, storage_provider, content_type, file_name FROM trinity_order_media
+        WHERE trinity_inspection_order_id=$1 AND kind='invoice' AND storage_ref IS NOT NULL
+        ORDER BY archived_at DESC NULLS LAST LIMIT 1`, [o.id])).rows[0];
+    if (!m) return bad(res, 404, 'Trinity has not issued the invoice for this inspection yet.');
+    const storage = require('../lib/storage');
+    const buf = await storage.forRow(m).read(m.storage_ref);
+    res.setHeader('Content-Type', m.content_type || 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${(m.file_name || 'trinity-invoice.pdf').replace(/[^\w.\-]/g, '_')}"`);
+    res.send(buf);
+  } catch (e) { next(e); }
+});
+
 /** Ask Trinity to cancel. Their cancel is a REQUEST — we record that we asked. */
 router.post('/files/:appId/orders/:orderId/cancel', fileScope, async (req, res, next) => {
   try {

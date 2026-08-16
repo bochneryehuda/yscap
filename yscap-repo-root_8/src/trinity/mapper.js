@@ -111,6 +111,23 @@ function cleanPhone(v, max = 20) {
   return formatted.length <= max ? formatted : undefined;
 }
 
+/**
+ * The first of several candidate numbers that Trinity will actually accept.
+ *
+ * Trinity requires at least ONE phone per party but does not care which field it
+ * arrives in, so a file that holds only a mobile number is perfectly orderable — we
+ * just have to look past the empty `phone` column to find it. Returns undefined when
+ * none of them can be cleaned, which is what makes the order refuse rather than send a
+ * payload we already know will be rejected.
+ */
+function firstUsablePhone(candidates, max = 20) {
+  for (const c of candidates || []) {
+    const p = cleanPhone(c, max);
+    if (p) return p;
+  }
+  return undefined;
+}
+
 const ZIP_RE = /^\d{5}(?:[-\s]\d{4})?$/;
 function cleanZip(v) {
   const raw = String(v || '').trim();
@@ -139,20 +156,48 @@ function splitName(full, fallbackFirst = 'Borrower', fallbackLast = 'Borrower') 
 // OUT: our budget + historical draws -> Trinity form-19 line items
 // ---------------------------------------------------------------------------
 /**
+ * The number of decimal places Trinity actually PRESERVES on a percentage.
+ *
+ * MEASURED, not assumed (sandbox, 2026-08-16, order 735315). The same true value —
+ * 33.333333% of a $1,000,000 line, i.e. exactly $333,333.33 drawn — was sent at 2, 4, 6,
+ * 8, 10 and 12 decimal places and read straight back:
+ *
+ *     dp | returned      | what the inspector is shown as drawn | drift
+ *     ---+---------------+--------------------------------------+---------
+ *      2 | 33.33         | $333,300.00                          | -$33.33
+ *      4 | 33.3333       | $333,333.00                          |  -$0.33
+ *      6 | 33.333333     | $333,333.33                          |   $0.00
+ *      8 | 33.333333     | $333,333.33                          |   $0.00
+ *     10 | 33.333333     | $333,333.33                          |   $0.00
+ *     12 | 33.333333     | $333,333.33                          |   $0.00
+ *
+ * Six is where it stops: anything finer is silently rounded to six, and anything
+ * coarser loses real money off the historical-draw figure. The first build used FOUR,
+ * on the stated belief that it "keeps even a $1,000,000 line accurate to well under a
+ * cent". That belief was wrong — the error scales with the size of the line
+ * (itemCost × 5e-7, so ±$0.50 on a $1,000,000 line), and it was showing the inspector
+ * $333,333.00 drawn where the borrower had actually been paid $333,333.33.
+ *
+ * At six the residual is itemCost × 5e-9 — half a cent on a $1,000,000 line, and under
+ * a cent on anything up to $2,000,000. A line item larger than that is not a line item.
+ */
+const PCT_DECIMALS = 6;
+
+/**
  * The percentage that carries the historical draws.
  *
- * Rounded to 4 decimals — their doubles hold it comfortably and it keeps even a
- * $1,000,000 line accurate to well under a cent — and CLAMPED to 0..100, because an
- * over-drawn line (possible after an approved over-limit request) would otherwise send
- * more than 100 and be refused outright. A zero/absent budget yields 0 rather than a
- * division by zero.
+ * Rounded to PCT_DECIMALS (see above — measured against the live API) and CLAMPED to
+ * 0..100, because an over-drawn line (possible after an approved over-limit request)
+ * would otherwise send more than 100 and be refused outright. A zero/absent budget
+ * yields 0 rather than a division by zero.
  */
 function previousPct(previousDrawnCents, budgetedCents) {
   const b = Math.round(Number(budgetedCents || 0));
   const d = Math.round(Number(previousDrawnCents || 0));
   if (b <= 0 || d <= 0) return 0;
   const pct = (d / b) * 100;
-  return Math.min(100, Math.max(0, Math.round(pct * 10000) / 10000));
+  const f = 10 ** PCT_DECIMALS;
+  return Math.min(100, Math.max(0, Math.round(pct * f) / f));
 }
 
 /**
@@ -231,6 +276,42 @@ function buildOrderPayload({
   if (!cCompany) problems.push("the contractor's company name is missing");
   if (!cEmail) problems.push("the contractor's email address is missing");
 
+  // ---- PHONES: required, and the swagger says the opposite ----------------
+  // Every phone field on BorrowerModel and ContractorModel is documented `nullable:
+  // true`. It is not true. Verified live (sandbox, 2026-08-16) — an order with no phone
+  // on either party is refused 400 with:
+  //
+  //   "Borrower.['Phone','OtherPhone','HomePhone,'MobilePhone']":
+  //       ["At least one is required ['Phone','OtherPhone','HomePhone,'MobilePhone']."]
+  //   "Contractor.['Phone','MobilePhone']":
+  //       ["At least one is required ['Phone','MobilePhone']."]
+  //
+  // (their message contains a typo — a missing quote before 'MobilePhone' — which is
+  // quoted here verbatim so a future reader can grep for what Trinity actually sends.)
+  //
+  // This matters because `cleanPhone` deliberately OMITS a phone it cannot parse rather
+  // than sending junk — the right call on its own, but it meant a file holding a
+  // malformed or missing phone produced a payload Trinity rejects, and the desk saw a
+  // raw validation error instead of "add the borrower's phone number first". An
+  // inspector has to be able to telephone somebody to get onto the property, so this is
+  // a genuine requirement rather than a schema quirk, and it is checked HERE, before
+  // anything is sent.
+  const bPhone = firstUsablePhone([
+    borrower && borrower.phone, borrower && borrower.mobilePhone,
+    borrower && borrower.homePhone, borrower && borrower.otherPhone,
+  ], 20);
+  if (!bPhone) {
+    problems.push(String(borrower && (borrower.phone || borrower.mobilePhone || borrower.homePhone || borrower.otherPhone) || '').trim()
+      ? "the borrower's phone number is not a number Trinity can accept"
+      : "the borrower's phone number is missing (Trinity requires one so the inspector can reach them)");
+  }
+  const cPhone = firstUsablePhone([contractor && contractor.phone, contractor && contractor.mobilePhone], 40);
+  if (!cPhone) {
+    problems.push(String(contractor && (contractor.phone || contractor.mobilePhone) || '').trim()
+      ? "the contractor's phone number is not a number Trinity can accept"
+      : "the contractor's phone number is missing (Trinity requires one so the inspector can arrange access)");
+  }
+
   const lineItems = toLineItems(lines);
   if (!lineItems.length) problems.push('the construction budget has no line items');
   if (!lineItems.some((l) => l.isRequested)) problems.push('no line on this draw has an amount requested');
@@ -259,11 +340,14 @@ function buildOrderPayload({
       firstName: bName.firstName || 'Borrower',
       lastName: bName.lastName || 'Borrower',
       emailAddress: cleanEmail(borrower && borrower.email, 150),
-      phone: cleanPhone(borrower && borrower.phone, 20),
+      // Whichever number we could actually use, sent in the field Trinity checks first.
+      phone: bPhone,
+      mobilePhone: cleanPhone(borrower && borrower.mobilePhone, 20),
     },
     contractor: {
       name: cName, companyName: cCompany, emailAddress: cEmail,
-      phone: cleanPhone(contractor && contractor.phone, 40),
+      phone: cPhone,
+      mobilePhone: cleanPhone(contractor && contractor.mobilePhone, 30),
     },
     order: {
       companyId,
@@ -391,9 +475,9 @@ function toApprovalEntries(resultLines, requestLines) {
 }
 
 module.exports = {
-  STATUS, COMPLETED_IDS, ATTENTION_IDS, ORDER_OF_STATE,
+  STATUS, COMPLETED_IDS, ATTENTION_IDS, ORDER_OF_STATE, PCT_DECIMALS,
   readStatus, nextState,
   previousPct, toLineItems, customerKeyForLine, buildOrderPayload,
   readResults, toApprovalEntries,
-  _internals: { cleanPhone, cleanZip, cleanEmail, splitName, trim, centsToDollars },
+  _internals: { cleanPhone, firstUsablePhone, cleanZip, cleanEmail, splitName, trim, centsToDollars },
 };

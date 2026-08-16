@@ -128,17 +128,29 @@ async function readResults(orderRow) {
        l.inspector_remarks ? String(l.inspector_remarks).slice(0, 2000) : null, l.trinity_line_id]);
     // A line Trinity added on their side (no customerKey of ours) is still recorded, so
     // the desk shows the WHOLE of what the inspector reported, not only our own lines.
+    //
+    // It must UPSERT, not "do nothing". Trinity re-completes an order for a revision
+    // (statuses 72 "Revised" / 83 "Budget Changed" / 223 "Revision Requested"), and the
+    // whole point of re-reading is to pick up what changed — a DO NOTHING here meant a
+    // revised amount or a corrected remark on one of THEIR lines was silently discarded
+    // on every poll after the first.
     if (l.customer_key) continue;
+    const synthKey = l.trinity_line_id != null ? `trinity-${l.trinity_line_id}` : null;
+    if (!synthKey) continue;   // no stable identity — never guess which row to overwrite
     await db.query(
       `INSERT INTO trinity_order_lines
          (trinity_inspection_order_id, application_id, name, trinity_line_id, budgeted_cents,
           requested_cents, completed_pct, approved_cents, inspector_remarks, customer_key)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       ON CONFLICT DO NOTHING`,
+       ON CONFLICT (trinity_inspection_order_id, customer_key) WHERE customer_key IS NOT NULL DO UPDATE
+         SET name=EXCLUDED.name, budgeted_cents=EXCLUDED.budgeted_cents,
+             requested_cents=EXCLUDED.requested_cents, completed_pct=EXCLUDED.completed_pct,
+             approved_cents=EXCLUDED.approved_cents, inspector_remarks=EXCLUDED.inspector_remarks,
+             updated_at=now()`,
       [orderRow.id, orderRow.application_id, l.name, l.trinity_line_id, l.budgeted_cents,
        l.requested_cents, l.completed_pct, l.approved_cents,
        l.inspector_remarks ? String(l.inspector_remarks).slice(0, 2000) : null,
-       l.trinity_line_id != null ? `trinity-${l.trinity_line_id}` : null]).catch(() => {});
+       synthKey]).catch(() => {});
   }
 
   await db.query(
@@ -239,6 +251,57 @@ async function pullReport(orderRow) {
   return { ok: true, documentId };
 }
 
+/**
+ * The INVOICE for a completed order — what this inspection cost us.
+ *
+ * docs/TRINITY-INSPECTION-API-RESEARCH.md §9.2 recorded as an open question that
+ * "nothing in the API returns our cost, so the draw fee stays PILOT's own figure". That
+ * is answered: `GET /orders/{id}/documents/invoice` returns it once the order completes,
+ * and answers a clean 404 ("The invoice for this order is not ready.") before then —
+ * the same unambiguous not-yet as the report, so it is never treated as a failure.
+ *
+ * Filed STAFF-ONLY, always. What we pay an inspector is our own cost of doing business:
+ * it is not part of the borrower's draw and must never ride along to them.
+ */
+async function pullInvoice(orderRow) {
+  let doc;
+  try { doc = await client.getInvoice(orderRow.trinity_order_id); }
+  catch (e) {
+    if (e && e.status === 404) return { skipped: 'not_ready' };
+    throw e;
+  }
+  if (!doc || !doc.url) return { skipped: 'not_ready' };
+
+  const archived = await archiveOne(orderRow, 'invoice', doc, { filenameHint: 'trinity-invoice' });
+  if (!archived.ok && !archived.skipped) return archived;
+
+  const media = (await db.query(
+    `SELECT * FROM trinity_order_media WHERE trinity_inspection_order_id=$1 AND kind='invoice' AND storage_ref IS NOT NULL
+      ORDER BY archived_at DESC NULLS LAST LIMIT 1`, [orderRow.id])).rows[0];
+  if (!media) return { skipped: 'not_stored' };
+
+  const existing = (await db.query(
+    `SELECT id FROM documents WHERE application_id=$1 AND doc_kind='trinity_inspection_invoice' AND sha256=$2 LIMIT 1`,
+    [orderRow.application_id, media.sha256])).rows[0];
+  let documentId = existing ? existing.id : null;
+  if (!documentId) {
+    const ins = await db.query(
+      `INSERT INTO documents (application_id, filename, content_type, storage_ref, storage_provider,
+          doc_kind, source_type, visibility, review_status, sha256, size_bytes, is_current)
+       VALUES ($1,$2,$3,$4,$5,'trinity_inspection_invoice','system','staff_only','accepted',$6,$7,true)
+       RETURNING id`,
+      [orderRow.application_id, media.file_name || 'trinity-inspection-invoice.pdf',
+       media.content_type || 'application/pdf', media.storage_ref, media.storage_provider,
+       media.sha256, media.bytes]);
+    documentId = ins.rows[0].id;
+  }
+  await db.query(
+    `UPDATE trinity_inspection_orders
+        SET invoice_document_id=COALESCE(invoice_document_id,$2::uuid), invoice_read_at=now(), updated_at=now()
+      WHERE id=$1`, [orderRow.id, documentId]).catch(() => {});
+  return { ok: true, documentId };
+}
+
 /** Every inspection photo, archived. */
 async function pullPhotos(orderRow) {
   const photos = await client.getPhotos(orderRow.trinity_order_id);
@@ -315,6 +378,12 @@ async function syncOrder(appId, orderRowId) {
     catch (e) { out.results = { error: String(e && e.message).slice(0, 200) }; }
     try { out.photos = await pullPhotos(fresh); }
     catch (e) { out.photos = { error: String(e && e.message).slice(0, 200) }; }
+    // What the inspection cost us. Staff-only, and never a reason to fail the sync —
+    // a missing invoice must not hold up the numbers the desk is waiting for.
+    if (!fresh.invoice_read_at) {
+      try { out.invoice = await pullInvoice(fresh); }
+      catch (e) { out.invoice = { error: String(e && e.message).slice(0, 200) }; }
+    }
 
     // Tell the DESK, not the borrower. This is the hand-off the owner described: the
     // figures are in, and a human decides what goes out.
@@ -348,6 +417,6 @@ async function notifyDeskReady(orderRow, results) {
 }
 
 module.exports = {
-  syncOrder, syncStatus, readResults, pullReport, pullPhotos, pullComments,
+  syncOrder, syncStatus, readResults, pullReport, pullInvoice, pullPhotos, pullComments,
   archiveOne, notifyDeskReady, _internals: { sourceKeyFor, extFor },
 };

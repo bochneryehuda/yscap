@@ -463,8 +463,16 @@ async function reconcileOne(appId) {
   // Phase-1 routing context (2026-07-24): the file's draw platform + effective inspection
   // method, resolved ONCE per reconcile — drives method-aware inbound copy and the
   // TrustPoint import-task hook. Best-effort: an unresolvable file behaves exactly as before.
-  let fileCtx = { platform: 'sitewire', method: null };
-  try { const rp = await routing.resolveFilePlatform(appId); fileCtx = { platform: rp.platform, method: rp.method }; } catch (_) {}
+  // `resolved` rides along because the Trinity ordering hook SPENDS MONEY and dispatches
+  // a real person: it must be able to tell a genuine 'sitewire' answer from the safe
+  // default returned when the routing could not be looked up at all. The default below
+  // is therefore resolved:false, and the two existing readers (inbound copy, the
+  // TrustPoint hook) ignore the field entirely — their behaviour is unchanged.
+  let fileCtx = { platform: 'sitewire', method: null, resolved: false };
+  try {
+    const rp = await routing.resolveFilePlatform(appId);
+    fileCtx = { platform: rp.platform, method: rp.method, resolved: rp.resolved !== false };
+  } catch (_) { /* keep the safe default — resolved:false refuses the Trinity order */ }
   let n = 0;
   for (const d of draws) {
    // A poison draw (null id, bad cents, a constraint violation) must skip to the NEXT draw — not throw

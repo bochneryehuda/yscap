@@ -268,20 +268,46 @@ const eq = (a, b, label) => ok(a === b, `${label} (got ${JSON.stringify(a)}, exp
   ok(badRow.blocked_reason, 'H2 the refusal is recorded in plain words for the desk');
   eq(badRow.approved_cents, null, 'H3 and NO number is written');
 
-  // ---- I. the Sitewire-submitted door is trinity-only + claims once --------------
-  eq((await intake.maybeOrderFromSitewire(a.id, { drawId: base + 99, status: 'pending', platform: 'trustpoint' })).skipped,
-    'not_trinity', 'I1 a TrustPoint file is never touched by the Trinity door');
-  eq((await intake.maybeOrderFromSitewire(a.id, { drawId: base + 99, status: 'pending', platform: 'sitewire' })).skipped,
-    'not_trinity', 'I2 a Sitewire virtual file is never touched either');
-  eq((await intake.maybeOrderFromSitewire(a.id, { drawId: base + 99, status: 'drafting', platform: 'trinity' })).skipped,
+  // ---- I. the Sitewire-submitted door -------------------------------------------
+  //
+  // THIS DOOR WAS DEAD UNTIL 2026-08-16, and this block used to encode the very bug it
+  // was meant to guard. It asserted that `platform: 'trinity'` places an order — but
+  // 'trinity' is not a value `routing.platformOf` can ever produce (`routing.PLATFORMS`
+  // is exactly ['sitewire','trustpoint','external']). The caller in
+  // src/sitewire/reconcile.js passes what routing actually returns, so the real
+  // production call always fell through 'not_trinity' and a physical non-Blue-Lake draw
+  // submitted in Sitewire ordered NOTHING. The test passed because it invented an input
+  // production could not produce.
+  //
+  // So the contract is now the REAL routing shape — {platform, method, resolved}, as
+  // `routing.resolveFilePlatform` returns it — and the decision belongs to one shared
+  // rule, src/trinity/eligibility.js.
+  const PHYS = { platform: 'sitewire', method: 'traditional', resolved: true };
+
+  eq((await intake.maybeOrderFromSitewire(a.id, { drawId: base + 99, status: 'pending', ...PHYS, platform: 'trustpoint' })).skipped,
+    'not_trinity', 'I1 a Blue Lake / TrustPoint file is never touched by the Trinity door');
+  eq((await intake.maybeOrderFromSitewire(a.id, { drawId: base + 99, status: 'pending', platform: 'sitewire', method: 'mobile', resolved: true })).skipped,
+    'not_trinity', 'I2 a Sitewire VIRTUAL file is never touched either — the autopilot stays Sitewire’s');
+  eq((await intake.maybeOrderFromSitewire(a.id, { drawId: base + 99, status: 'pending', ...PHYS, platform: 'external' })).skipped,
+    'not_trinity', 'I2b a partner-run (external) file is never touched');
+  // Ordering dispatches a real person and spends real money: an unresolved file must
+  // answer NO rather than fall through to the safe-default 'sitewire'.
+  eq((await intake.maybeOrderFromSitewire(a.id, { drawId: base + 99, status: 'pending', ...PHYS, resolved: false })).skipped,
+    'not_trinity', 'I2c a file whose routing could not be resolved is never ordered');
+
+  eq((await intake.maybeOrderFromSitewire(a.id, { drawId: base + 99, status: 'drafting', ...PHYS })).skipped,
     'not_submitted', 'I3 an unsubmitted draw is not ordered');
-  const first = await intake.maybeOrderFromSitewire(a.id, { drawId: base + 99, status: 'pending', platform: 'trinity' });
-  ok(first.created, 'I4 a submitted draw on a trinity file mints the order record');
-  const second = await intake.maybeOrderFromSitewire(a.id, { drawId: base + 99, status: 'pending', platform: 'trinity' });
+  const first = await intake.maybeOrderFromSitewire(a.id, { drawId: base + 99, status: 'pending', ...PHYS });
+  ok(first.created, 'I4 a submitted PHYSICAL non-Blue-Lake draw mints the order record');
+  const second = await intake.maybeOrderFromSitewire(a.id, { drawId: base + 99, status: 'pending', ...PHYS });
   ok(!second.created, 'I5 a second pass never mints a second record (the unique key IS the claim)');
   const swRows = (await db.query(
     `SELECT count(*)::int AS c FROM trinity_inspection_orders WHERE customer_key=$1`, [`swd-${base + 99}`])).rows[0];
   eq(swRows.c, 1, 'I6 exactly one order record for that draw');
+  // A refusal always says WHY, so a coordinator asking "where is my inspection order?"
+  // gets an answer instead of a silent skip.
+  ok((await intake.maybeOrderFromSitewire(a.id, { drawId: base + 99, status: 'pending', platform: 'trustpoint', method: 'traditional', resolved: true })).reason,
+    'I7 a refusal carries a plain-language reason');
 
   // ---- J. the PILOT report renders from Trinity's own numbers --------------------
   // A Trinity draw must produce the SAME branded document a virtual draw does — that is

@@ -66,7 +66,10 @@ const goodArgs = {
   companyId: 39400, projectNumber: 'YSCAP-1', orderCustomerKey: 'pdr-1',
   address: { street: '128 Maple Ave', city: 'Lakewood', state: 'NJ', zip: '08701' },
   borrower: { name: 'Test Borrower', email: 'b@example.com', phone: '7325550134' },
-  contractor: { name: 'Sam Builder', companyName: 'Builder Co', email: 'sam@example.com' },
+  // A contractor PHONE is required by Trinity, whatever the swagger says it is — see
+  // section C2 below. This fixture used to omit it and still expected zero problems,
+  // which is precisely the payload the live API refuses with a 400.
+  contractor: { name: 'Sam Builder', companyName: 'Builder Co', email: 'sam@example.com', phone: '7325550199' },
   analyst: { name: 'Draw Coordinator', email: 'draws@yscapgroup.com' },
   lines,
 };
@@ -97,6 +100,69 @@ ok(noRequest.problems.some((p) => /requested/i.test(p)), 'an order with nothing 
 // A junk phone is dropped, never sent malformed (a bad phone fails the whole order).
 eq(m._internals.cleanPhone('call me'), undefined, 'an unparseable phone is omitted');
 eq(m._internals.cleanEmail('not-an-email'), undefined, 'an unparseable email is omitted');
+
+// ---------------------------------------------------------------------------
+// C2. PHONES ARE REQUIRED — the swagger says otherwise and the swagger is wrong
+// ---------------------------------------------------------------------------
+// Verified live against the sandbox on 2026-08-16: an order with no phone on either
+// party is refused 400 with
+//   Borrower.['Phone','OtherPhone','HomePhone,'MobilePhone']  : At least one is required
+//   Contractor.['Phone','MobilePhone']                        : At least one is required
+// even though EVERY phone field on both models is documented `nullable: true`.
+//
+// `cleanPhone` deliberately omits a number it cannot parse rather than sending junk, so
+// before this check a file with a missing or malformed phone produced a payload that was
+// guaranteed to be rejected — and the desk saw a raw validation error rather than
+// something it could fix. These assertions are what keep that from coming back.
+const noBorrowerPhone = m.buildOrderPayload({ ...goodArgs, borrower: { name: 'Test Borrower', email: 'b@example.com' } });
+ok(noBorrowerPhone.problems.some((p) => /borrower's phone/i.test(p)), "a missing borrower phone is refused before sending");
+
+const noContractorPhone = m.buildOrderPayload({
+  ...goodArgs, contractor: { name: 'Sam Builder', companyName: 'Builder Co', email: 'sam@example.com' },
+});
+ok(noContractorPhone.problems.some((p) => /contractor's phone/i.test(p)), "a missing contractor phone is refused before sending");
+
+// An UNPARSEABLE phone must not read as a missing one — the desk needs to know the
+// number on file is unusable, not absent.
+const junkPhone = m.buildOrderPayload({ ...goodArgs, borrower: { name: 'Test Borrower', email: 'b@example.com', phone: 'call me' } });
+ok(junkPhone.problems.some((p) => /not a number Trinity can accept/i.test(p)), 'an unusable phone says so, rather than reading as missing');
+
+// Trinity does not care WHICH phone field carries the number, so a party whose only
+// good number is the mobile one is still perfectly orderable.
+const mobileOnly = m.buildOrderPayload({
+  ...goodArgs,
+  borrower: { name: 'Test Borrower', email: 'b@example.com', mobilePhone: '732-555-0134' },
+  contractor: { name: 'Sam Builder', companyName: 'Builder Co', email: 'sam@example.com', mobilePhone: '732-555-0199' },
+});
+eq(mobileOnly.problems.length, 0, 'a mobile-only contact still builds cleanly');
+eq(mobileOnly.payload.borrower.phone, '732-555-0134', 'the usable number is promoted into the field Trinity checks');
+// '(732) 555-0134' already satisfies Trinity's pattern, so it is passed through exactly
+// as it stands — we never rewrite a contact detail that is already fine.
+eq(m._internals.firstUsablePhone(['call me', '', '(732) 555-0134']), '(732) 555-0134', 'the first USABLE number wins, junk is skipped');
+eq(m._internals.firstUsablePhone(['call me', '1 (732) 555-0134']), '732-555-0134', 'a usable-but-unformatted number is normalized');
+eq(m._internals.firstUsablePhone(['nope', 'also nope']), undefined, 'all-junk yields nothing rather than a fake');
+
+// ---------------------------------------------------------------------------
+// C3. PERCENTAGE PRECISION — the historical draws must survive the round trip
+// ---------------------------------------------------------------------------
+// MEASURED against the live API (sandbox order 735315): Trinity preserves exactly SIX
+// decimal places on previousPercentCompleted. The first build sent FOUR, believing that
+// kept "even a $1,000,000 line accurate to well under a cent". It does not — the error
+// scales with the line, and a $1,000,000 line drawn to $333,333.33 was being shown to
+// the inspector as $333,333.00.
+eq(m.PCT_DECIMALS, 6, 'six decimals — the precision Trinity actually preserves');
+
+const bigCost = 100000000;      // $1,000,000.00 in cents
+const bigDrawn = 33333333;      // $333,333.33 in cents
+const p6 = m.previousPct(bigDrawn, bigCost);
+// What Trinity will show the inspector as already drawn on that line, in cents.
+const shown = Math.round(bigCost * (p6 / 100));
+eq(shown, bigDrawn, 'a $1,000,000 line round-trips to the exact cent');
+ok(Math.abs(shown - bigDrawn) < 1, 'no drift is introduced by the percentage conversion');
+
+// Still clamped and still safe at the edges.
+eq(m.previousPct(50000, 0), 0, 'a zero budget never divides by zero');
+eq(m.previousPct(200000, 100000), 100, 'an over-drawn line is clamped to 100, never refused by Trinity');
 
 // ---------------------------------------------------------------------------
 // D. reading the result — the money path

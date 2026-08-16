@@ -1214,6 +1214,10 @@ function TrinityInspectionCard({ appId }) {
   const [msg, setMsg] = useState('');
   const [note, setNote] = useState({});          // per-order message box
   const [openId, setOpenId] = useState(null);    // which order's detail is expanded
+  const [when, setWhen] = useState({});          // per-order requested inspection date
+  // Trinity refuses a date inside 24 hours, so the picker cannot offer one. Two days
+  // out is the first date that is certainly acceptable in every timezone.
+  const earliestInspect = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
   const usd = (c) => (c == null ? '—' : '$' + (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 }));
   const load = useCallback(() => {
     api.get(`/api/trinity/files/${appId}`).then(setData).catch(() => setData(null));
@@ -1293,6 +1297,17 @@ function TrinityInspectionCard({ appId }) {
                 <button className="btn ghost small" onClick={() => setOpenId(open ? null : o.id)}>
                   {open ? 'Hide' : 'Details'}
                 </button>
+                {/* Rush is a real cost, so it asks before it fires. */}
+                {o.trinity_order_id && !['report_received', 'entered', 'cancelled'].includes(o.status) && !o.rush && (
+                  <button className="btn ghost small" disabled={busy}
+                    onClick={() => act(async () => {
+                      if (!(await askConfirm('Mark this inspection RUSH? Trinity prioritises it and may charge more.',
+                        { confirmLabel: 'Mark it rush' }))) return null;
+                      return api.post(`/api/trinity/files/${appId}/orders/${o.id}/schedule`, { rush: true });
+                    }, 'Trinity has been asked to rush this inspection.')}>
+                    Rush it
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1334,12 +1349,47 @@ function TrinityInspectionCard({ appId }) {
                     <a className="btn soft small" target="_blank" rel="noreferrer"
                       href={`/api/trinity/files/${appId}/orders/${o.id}/report`}>Our PILOT report</a>
                   )}
+                  {o.invoice_document_id && (
+                    <a className="btn soft small" target="_blank" rel="noreferrer"
+                      href={`/api/trinity/files/${appId}/orders/${o.id}/invoice`}>Trinity’s invoice</a>
+                  )}
                   {o.trinity_order_id && !['entered', 'cancelled'].includes(o.status) && (
                     <button className="btn ghost small" disabled={busy}
                       onClick={() => act(() => api.post(`/api/trinity/files/${appId}/orders/${o.id}/cancel`),
                         (r) => r.message)}>Ask Trinity to cancel</button>
                   )}
                 </div>
+
+                {/* Scheduling — the owner's "schedule the inspection". Trinity needs at
+                    least 24 hours, so the picker's floor is two days out and the server
+                    refuses anything sooner in its own words. */}
+                {o.trinity_order_id && !['report_received', 'entered', 'cancelled'].includes(o.status) && (
+                  <div style={{ marginTop: 10 }}>
+                    <div className="small" style={{ fontWeight: 600, color: '#141B22' }}>Schedule the inspection</div>
+                    <div className="small" style={{ color: '#4B585C', marginTop: 2 }}>
+                      {o.inspect_on
+                        ? `We asked Trinity for ${new Date(o.inspect_on).toLocaleDateString()}.`
+                        : 'Trinity performs it as soon as an inspector is free. Pick a date to ask for a later one.'}
+                      {o.scheduled_at ? ' An inspector has accepted the job.' : ''}
+                      {o.rush ? ' This order is marked RUSH.' : ''}
+                    </div>
+                    <div className="row" style={{ gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                      <input className="input" type="date" style={{ maxWidth: 190 }}
+                        min={earliestInspect}
+                        value={when[o.id] || ''}
+                        onChange={(e) => setWhen({ ...when, [o.id]: e.target.value })} />
+                      <button className="btn soft small" disabled={busy || !when[o.id]}
+                        onClick={() => act(async () => {
+                          const r = await api.post(`/api/trinity/files/${appId}/orders/${o.id}/schedule`,
+                            { date: new Date(`${when[o.id]}T15:00:00Z`).toISOString() });
+                          setWhen({ ...when, [o.id]: '' });
+                          return r;
+                        }, 'Trinity has been asked for that date.')}>
+                        Ask Trinity for this date
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {!!(o.photos || []).length && (
                   <div style={{ marginTop: 10 }}>
