@@ -35,8 +35,16 @@ on:
   # a day of private-repo Actions time and would exhaust a 2,000-minute monthly
   # allowance in about ten days. Nightly plus every-merge gives the same safety
   # for a fraction of that. Change the cron here to go more often.
+  #
+  # THE HOUR IS CHOSEN FROM THIS REPO'S OWN RUN HISTORY, not from "night". The
+  # observed push window is 05:00-07:30 UTC — the busiest stretch there is, when
+  # several agents are working at once — so a nightly at 07:00 would take two
+  # runners for ~20 minutes in direct competition with live pull requests, which
+  # is the queue problem the concurrency block above exists to relieve. 09:30 UTC
+  # is outside it. Minute :30 also avoids :00, GitHub's most contended slot
+  # (scheduled runs are best-effort and are dropped under load).
   schedule:
-    - cron: '0 7 * * *'     # 07:00 UTC — about 3am New York
+    - cron: '30 9 * * *'    # 09:30 UTC — outside this repo's observed busy window
   workflow_dispatch:
 
 # ---------------------------------------------------------------------------
@@ -77,7 +85,15 @@ jobs:
       # this only ever costs speed, never coverage.
       - uses: actions/checkout@v4
         with:
+          # Full history so the changed-file diff below has a real merge base;
+          # `blob:none` fetches the COMMIT GRAPH without historical file
+          # contents, which is all a `--name-only` diff needs. Measured on this
+          # repo: plain `fetch-depth: 0` cost +27s per job (3s -> 31s) against a
+          # 292 MiB pack; the filter recovers nearly all of it. A diff that
+          # cannot be computed still falls back to running EVERYTHING, so this
+          # only ever costs speed, never coverage.
           fetch-depth: 0
+          filter: blob:none
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -92,10 +108,16 @@ jobs:
       - name: Work out what changed
         if: github.event_name == 'pull_request'
         continue-on-error: true
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           cd "$GITHUB_WORKSPACE"
-          base="origin/${{ github.base_ref }}"
-          git fetch --no-tags origin "${{ github.base_ref }}" || exit 0
+          # BASE_REF ARRIVES THROUGH env, NEVER INTERPOLATED INTO THE SCRIPT.
+          # Git ref names permit `$`, a backtick and `"`, so pasting one into a
+          # shell line is a template-injection seam. It needs push access to
+          # this repo to exploit, which makes it low-risk and free to close.
+          base="origin/$BASE_REF"
+          git fetch --no-tags origin "$BASE_REF" || exit 0
           git diff --name-only "$base"...HEAD > /tmp/changed-files.txt || rm -f /tmp/changed-files.txt
           echo "changed files:"; cat /tmp/changed-files.txt 2>/dev/null || echo "  (could not be determined — the full suite will run)"
 
@@ -111,10 +133,19 @@ jobs:
         run: node scripts/check-guarded-paths.js --changed-from /tmp/changed-files.txt
 
       # ---- the suite --------------------------------------------------------
-      # A PULL REQUEST may run a reduced plan when the change is provably
-      # Long-Term-only (~11 steps instead of 893). A PUSH TO MAIN always runs
-      # the whole thing, unchanged, because that is what gates the deploy.
-      # Nothing is ever left unrun: a step skipped on a PR still runs here.
+      # A PULL REQUEST MAY RUN A REDUCED PLAN — and it is not only Long-Term
+      # changes. `ci-test-plan.js` has TWO selectors: the Long-Term rule (~29
+      # steps), and a MEASURED IMPACT MAP that narrows ANY pull request to the
+      # tests recorded as able to reach the changed files (a pricing change runs
+      # ~210 of 925). Saying "Long-Term-only" here was simply wrong, and this
+      # file is where somebody looks to answer "is my PR fully tested?".
+      #
+      # THE GUARANTEE IS UNCHANGED AND IS THE ONLY ONE THAT MATTERS: a PUSH TO
+      # MAIN always runs the whole thing, because that is what gates the deploy.
+      # Nothing is ever left unrun — a step skipped on a PR still runs there
+      # before anything is published. A change to the selector, to the step list
+      # or to this workflow always runs everything, and any file the map has
+      # never seen does too.
       - name: Run the tests
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ] && [ -s /tmp/changed-files.txt ]; then
@@ -166,7 +197,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # Full history so the changed-file diff below has a real merge base;
+          # `blob:none` fetches the COMMIT GRAPH without historical file
+          # contents, which is all a `--name-only` diff needs. Measured on this
+          # repo: plain `fetch-depth: 0` cost +27s per job (3s -> 31s) against a
+          # 292 MiB pack; the filter recovers nearly all of it. A diff that
+          # cannot be computed still falls back to running EVERYTHING, so this
+          # only ever costs speed, never coverage.
           fetch-depth: 0
+          filter: blob:none
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -221,7 +260,11 @@ jobs:
         timeout-minutes: 5
         run: |
           rm -rf /tmp/schema-refresh && mkdir -p /tmp/schema-refresh
-          SCHEMA_OUT_DIR=/tmp/schema-refresh node scripts/schema-snapshot.js || exit 0
+          # SAY SO WHEN IT FAILS. `|| exit 0` keeps this advisory, but on its own
+          # it makes a permanently-broken refresh indistinguishable from a clean
+          # one: green step, `stale` never set, artifact skipped, nobody told.
+          SCHEMA_OUT_DIR=/tmp/schema-refresh node scripts/schema-snapshot.js \
+            || { echo "::warning::the advisory schema refresh could not run — the map was not checked this run"; exit 0; }
           if diff -q /tmp/schema-refresh/beyond-prisma.json docs/schema/beyond-prisma.json >/dev/null 2>&1; then
             echo "The committed schema map matches the database these migrations build."
             echo "stale=false" >> "$GITHUB_OUTPUT"
@@ -247,10 +290,16 @@ jobs:
       - name: Work out what changed
         if: github.event_name == 'pull_request'
         continue-on-error: true
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           cd "$GITHUB_WORKSPACE"
-          base="origin/${{ github.base_ref }}"
-          git fetch --no-tags origin "${{ github.base_ref }}" || exit 0
+          # BASE_REF ARRIVES THROUGH env, NEVER INTERPOLATED INTO THE SCRIPT.
+          # Git ref names permit `$`, a backtick and `"`, so pasting one into a
+          # shell line is a template-injection seam. It needs push access to
+          # this repo to exploit, which makes it low-risk and free to close.
+          base="origin/$BASE_REF"
+          git fetch --no-tags origin "$BASE_REF" || exit 0
           git diff --name-only "$base"...HEAD > /tmp/changed-files.txt || rm -f /tmp/changed-files.txt
           echo "changed files:"; cat /tmp/changed-files.txt 2>/dev/null || echo "  (could not be determined — the full suite will run)"
 

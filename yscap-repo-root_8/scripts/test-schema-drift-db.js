@@ -39,6 +39,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { buildInventory } = require('./schema-inventory');
 const { diffInventories } = require('./check-schema-snapshot');
+const { assertDisposable } = require('./db-test-guard');
 
 let passed = 0;
 const failures = [];
@@ -63,6 +64,9 @@ async function main() {
     console.log('test-schema-drift-db: no DATABASE_URL — skipped');
     return;
   }
+  // This suite BREAKS THE SCHEMA ON PURPOSE (rolled back, always). It must
+  // never do that to a database somebody is using — see db-test-guard.js.
+  if (!assertDisposable('test-schema-drift-db')) return;
 
   const { Client } = require('pg');
   const client = new Client({ connectionString: process.env.DATABASE_URL });

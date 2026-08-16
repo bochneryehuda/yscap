@@ -17,11 +17,15 @@
 const assert = require('assert');
 const { buildInventory, beyondPrismaCount, serialize } = require('./schema-inventory');
 const { diffInventories } = require('./check-schema-snapshot');
+const { assertDisposable } = require('./db-test-guard');
 
 if (!process.env.DATABASE_URL) {
   console.log('test-schema-snapshot-db: no DATABASE_URL — skipped');
   process.exit(0);
 }
+// This suite CREATES AND ALTERS REAL OBJECTS (rolled back, always). It must
+// never do that to a database somebody is using — see db-test-guard.js.
+if (!assertDisposable('test-schema-snapshot-db')) process.exit(0);
 
 let n = 0;
 const ok = (c, m) => { assert.ok(c, m); n++; };

@@ -113,6 +113,30 @@ const pkgChain = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.
   .scripts.test.split('&&').map((s) => s.trim()).filter(Boolean);
 eq(steps.length, pkgChain.length, 'the plan reads every step of npm test — no step is invisible to it');
 
+// EACH GATE IS NAMED HERE AS A LITERAL, and that is the whole point of this
+// block. Iterating `ALWAYS_RUN_STEPS` and asserting things about its members is
+// a TAUTOLOGY: delete an entry and the loop simply runs one fewer time, green.
+// Mutation-proven — with `check-encompass-readonly.js` removed from the list the
+// entire suite stayed green while the hardest rule in this repository silently
+// left every reduced plan. So the list is pinned by VALUE. Adding a gate is a
+// deliberate edit in two places; that is the intended cost.
+const REQUIRED_GATES = [
+  'check-product-separation.js',      // the premise the LT narrowing rests on
+  'test-product-separation-gate.js',  // …and the proof it still bites
+  'check-migrations.js',              // the shared boot chain
+  'check-encompass-readonly.js',      // "the HARDEST rule, on top of all rules"
+  'test-encompass-readonly-gate.js',
+  'test-source-parses-pure.js',
+  'check-schema-behind.js',
+  'check-lt-schema-drift.js',
+];
+for (const name of REQUIRED_GATES) {
+  ok(_internals.ALWAYS_RUN_STEPS.includes(name),
+    `"${name}" is STILL in the always-run set — removing it drops a gate from every reduced plan`);
+}
+eq(_internals.ALWAYS_RUN_STEPS.length, REQUIRED_GATES.length,
+  'the always-run set holds exactly the gates listed here — a silent addition is a decision, not a detail');
+
 for (const name of _internals.ALWAYS_RUN_STEPS) {
   ok(steps.some((s) => s.includes(name)),
     `always-run step "${name}" is really a step of npm test (a typo here silently drops a gate)`);
@@ -190,6 +214,26 @@ ok(!impactedTests([P('src/lib/pricing.js')], { builtAtUtcDay: '2026-07-01', test
   `a map older than ${MAX_MAP_AGE_DAYS} days runs everything`);
 ok(impactedTests([P('src/lib/pricing.js')], { builtAtUtcDay: '2026-08-02', tests: MAP.tests }, TODAY).ok,
   'a map exactly inside the age limit is still trusted');
+
+// THE LIMIT ITSELF IS PINNED, not merely bracketed. The two dates above are 14
+// and 46 days from TODAY, so ANY limit between 14 and 45 satisfies both — and a
+// mutation setting it to 45 left the suite green. A trust window three times
+// longer than intended is exactly the kind of change that should require
+// somebody to edit a test on purpose.
+eq(MAX_MAP_AGE_DAYS, 14, 'the map is trusted for 14 days — widening that is a deliberate decision');
+{
+  const dayBefore = (n) => {
+    const d = new Date(`${TODAY}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - n);
+    return d.toISOString().slice(0, 10);
+  };
+  ok(impactedTests([P('src/lib/pricing.js')],
+    { builtAtUtcDay: dayBefore(MAX_MAP_AGE_DAYS), tests: MAP.tests }, TODAY).ok,
+  'a map exactly AT the limit is trusted');
+  ok(!impactedTests([P('src/lib/pricing.js')],
+    { builtAtUtcDay: dayBefore(MAX_MAP_AGE_DAYS + 1), tests: MAP.tests }, TODAY).ok,
+  'and one day past it is not — the boundary is asserted, not straddled');
+}
 ok(!impactedTests(['some/other/repo/file.js'], MAP, TODAY).ok,
   'a path outside the project folder runs everything');
 
@@ -291,5 +335,93 @@ eq(loadDepMap({ readFileSync: () => INDEXED({ tests: { 'test-a.js': [-1] } }) },
 const PLAIN = JSON.stringify({ builtAtUtcDay: TODAY, tests: { 'test-a.js': ['src/lib/pricing.js'] } });
 ok(loadDepMap({ readFileSync: () => PLAIN }, path, __dirname).tests['test-a.js'][0] === 'src/lib/pricing.js',
   'a plain-path map still loads');
+
+// ---------------------------------------------------------------------------
+// THE SEAM — the planner must ACT on what the scope decides
+// ---------------------------------------------------------------------------
+//
+// Everything above tests the two halves separately, and an audit proved that is
+// exactly where all three real defects lived: each half behaved correctly and
+// the JOIN between them threw the answer away. So this section runs the REAL
+// `ci-test-plan.js` end to end, as CI does, and asserts on the plan it prints.
+//
+//   1. ALWAYS_FULL was honoured by `scopeFor` and IGNORED by the planner, so a
+//      pull request whose only change was the 925-step chain itself ran TEN
+//      steps — the selector excusing a change to the selector.
+//   2. An unknown NON-test file under `scripts/` was silently dropped instead
+//      of forcing everything: 9 steps, reported as success.
+//   3. A test absent from the dependency map could never be selected, so all 19
+//      `.mjs` guards — including the one that fails the build when a portal
+//      screen calls `alert()` — were unreachable by any change but their own.
+//
+// A unit test cannot see any of these; only running the planner can.
+{
+  const { spawnSync } = require('child_process');
+  const os = require('os');
+  const PLAN = path.join(__dirname, 'ci-test-plan.js');
+
+  /** Run the real planner over one changed file and return its printed plan. */
+  const planFor = (p) => {
+    const f = path.join(os.tmpdir(), `ci-seam-${process.pid}-${Math.abs(hashish(p))}.txt`);
+    fs.writeFileSync(f, `${p}\n`);
+    try {
+      const r = spawnSync(process.execPath, [PLAN, '--changed-from', f, '--list'], { encoding: 'utf8' });
+      const out = `${r.stdout || ''}${r.stderr || ''}`;
+      const m = out.match(/running (\d+) of (\d+) step\(s\)/);
+      return {
+        ran: m ? Number(m[1]) : -1,
+        total: m ? Number(m[2]) : -1,
+        lines: out.split('\n').map((s) => s.trim()),
+        status: r.status,
+      };
+    } finally { try { fs.unlinkSync(f); } catch (_) { /* best effort */ } }
+  };
+  // A stable filename per input, without needing crypto.
+  function hashish(s) { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) | 0; return h; }
+
+  // 1. THE SELECTOR MAY NOT EXCUSE A CHANGE TO THE SELECTOR.
+  for (const p of [
+    'yscap-repo-root_8/package.json',
+    'yscap-repo-root_8/package-lock.json',
+    'yscap-repo-root_8/scripts/ci-scope.js',
+    'yscap-repo-root_8/scripts/ci-test-plan.js',
+    'yscap-repo-root_8/scripts/test-ci-scope-pure.js',
+    '.github/workflows/test.yml',
+  ]) {
+    const r = planFor(p);
+    eq(r.ran, r.total, `${p} runs the WHOLE suite — the selector never excuses a change to itself`);
+  }
+
+  // 2. A FILE NOTHING WAS RECORDED TOUCHING RUNS EVERYTHING — including one
+  //    under scripts/, which is where the hole was.
+  for (const p of [
+    'yscap-repo-root_8/scripts/a-brand-new-helper-nobody-has-seen.js',
+    'yscap-repo-root_8/src/a-brand-new-module.js',
+  ]) {
+    const r = planFor(p);
+    eq(r.ran, r.total, `${p} is unknown to the map, so everything runs`);
+  }
+
+  // 3. A GUARD THE MAP NEVER MEASURED IS STILL REACHED.
+  {
+    const r = planFor('yscap-repo-root_8/app-v2/src/lib/dialog.js');
+    ok(r.ran > 0 && r.ran < r.total, `a mapped portal file still narrows (${r.ran} of ${r.total})`);
+    ok(r.lines.some((l) => l.includes('test-app-dialog-pure.mjs')),
+      'the dialog guard is IN the plan for the module it polices — it is absent from the '
+      + 'dependency map, so this only passes because an unmeasured test always runs');
+    ok(r.lines.filter((l) => l.endsWith('.mjs')).length >= 10,
+      'and so is every other unmeasured .mjs guard');
+  }
+
+  // 4. NARROWING STILL HAPPENS. Without this the three fixes above could be
+  //    "satisfied" by running everything always, which would be no selector.
+  {
+    const r = planFor('yscap-repo-root_8/src/longterm/dscr/pricer.js');
+    ok(r.ran < r.total / 4, `a Long-Term-only change still narrows sharply (${r.ran} of ${r.total})`);
+    for (const g of REQUIRED_GATES) {
+      ok(r.lines.some((l) => l.includes(g)), `and the ${g} gate is still in that plan`);
+    }
+  }
+}
 
 console.log(`ci-scope impact: ${n} assertions passed in total`);

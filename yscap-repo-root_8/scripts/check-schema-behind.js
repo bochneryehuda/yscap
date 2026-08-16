@@ -144,7 +144,21 @@ function main() {
     console.log('   Fix, from yscap-repo-root_8/ with DATABASE_URL pointing at a database');
     console.log('   built from these migrations (CI\'s test-db job builds one on every run,');
     console.log('   and publishes the refreshed files as a downloadable artifact):');
-    console.log('     npm run schema:snapshot     # then commit docs/schema/');
+    // BOTH COMMANDS, AND THE SECOND ONE IS NOT OPTIONAL.
+    //
+    // `schema:snapshot` stamps the migration watermark it finds in `db/` into
+    // `beyond-prisma.json` — so after ANY new migration it necessarily moves a
+    // number that `docs/schema/schema.prisma`'s generated header also quotes.
+    // `test-schema-prisma-header-pure.js` compares those two committed files
+    // and FAILS the build when they disagree.
+    //
+    // So a person who followed the old one-line advice — regenerate, commit —
+    // was walked straight into a red suite at step 12 of 925, by our own
+    // instructions. `schema:restamp` needs no database and rewrites nothing but
+    // the header. Printing one without the other is the whole defect.
+    console.log('     npm run schema:snapshot     # refresh the inventory from the database');
+    console.log('     npm run schema:restamp      # re-stamp the map header (no database needed)');
+    console.log('                                 # then commit docs/schema/');
     console.log('');
   }
   console.log('check-schema-behind: advisory only — not failing the build');

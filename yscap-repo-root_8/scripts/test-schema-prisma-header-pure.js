@@ -160,7 +160,16 @@ const COUNTS = { beyond: 749, tables: 321, columns: 5257, migrations: { count: 5
   const invPath = path.join(__dirname, '..', 'docs', 'schema', 'beyond-prisma.json');
   if (fs.existsSync(SCHEMA) && fs.existsSync(invPath)) {
     const file = fs.readFileSync(SCHEMA, 'utf8');
-    const inv = JSON.parse(fs.readFileSync(invPath, 'utf8'));
+    // A CORRUPT INVENTORY MUST PRODUCE THE GUIDANCE BELOW, not a raw SyntaxError
+    // from deep inside a test — the reader needs to be told what to do, and
+    // `JSON.parse` on its own tells them nothing.
+    let inv;
+    try {
+      inv = JSON.parse(fs.readFileSync(invPath, 'utf8'));
+    } catch (e) {
+      assert.fail(`docs/schema/beyond-prisma.json is not readable JSON (${e.message}).\n`
+        + '      Regenerate it with:  npm run schema:snapshot  (needs a database)');
+    }
     const want = header(countsFromInventory(inv));
 
     ok(file.startsWith(want),
@@ -180,6 +189,21 @@ const COUNTS = { beyond: 749, tables: 321, columns: 5257, migrations: { count: 5
     // The body is intact — a truncated file would still "start with" the header.
     const models = (file.match(/^model /gm) || []).length;
     ok(models > 300, `the map still holds every table (${models} models), not just a header`);
+
+    // AND THE ADVICE THAT LEADS HERE MUST NAME BOTH COMMANDS.
+    //
+    // `check-schema-behind` is what a person sees after adding a migration. Its
+    // suggested fix regenerates the inventory — which necessarily moves the
+    // watermark this header quotes — so following it and stopping there lands
+    // on the assertion above, at step 12 of a 925-step chain. Advice that
+    // reliably breaks the build is worse than no advice, and nothing else would
+    // ever notice it had gone stale.
+    const behind = fs.readFileSync(path.join(__dirname, 'check-schema-behind.js'), 'utf8');
+    const guidance = behind.slice(behind.indexOf('Fix, from yscap-repo-root_8/'));
+    ok(/schema:snapshot/.test(guidance), 'the fix advice tells you to refresh the inventory');
+    ok(/schema:restamp/.test(guidance),
+      'AND to re-stamp the header — regenerating the inventory alone leaves the two committed '
+      + 'files disagreeing, which fails the assertion above');
   } else {
     console.log('test-schema-prisma-header-pure: docs/schema is absent — the live section was skipped');
   }

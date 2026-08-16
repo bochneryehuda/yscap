@@ -30,7 +30,9 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { scopeFor, stepRuns, loadDepMap, impactedTests, stepRunsImpacted } = require('./ci-scope');
+const {
+  scopeFor, stepRuns, loadDepMap, impactedTests, stepRunsImpacted, isAlwaysFull,
+} = require('./ci-scope');
 
 /** Every step of `npm test`, in order, exactly as package.json declares them. */
 function allSteps() {
@@ -69,7 +71,26 @@ function main() {
   const decision = scopeFor(changed);
   let plan, how;
 
-  if (decision.scope === 'long_term_only') {
+  // THE SELECTOR MAY NEVER BE USED TO SKIP TESTING A CHANGE TO THE SELECTOR.
+  // `ci-scope.js` says exactly that in its header and `scopeFor` honours it —
+  // it returns `everything` with the reason "…always runs the whole suite" for
+  // its own files, the workflow and `package.json`. THIS FUNCTION USED TO THROW
+  // THAT VERDICT AWAY: the `everything` answer was acted on only in the final
+  // `else`, which is reached solely when the changed list is empty, so an
+  // ALWAYS_FULL path fell straight through into the impact map. Measured: a
+  // pull request whose only change was this 925-step `test` chain ran TEN
+  // steps. The two paths that appeared to be safe (`package-lock.json`, the
+  // workflow) escaped by accident — the map simply had no record of them — and
+  // that escape would close the day it did.
+  //
+  // A hand-audited exemption is worth nothing if the code below it does not
+  // read the answer, so the verdict is now honoured before anything else.
+  const alwaysFull = Array.isArray(changed) ? changed.find(isAlwaysFull) : null;
+
+  if (alwaysFull) {
+    plan = steps;
+    how = `everything — ${alwaysFull} always runs the whole suite`;
+  } else if (decision.scope === 'long_term_only') {
     plan = steps.filter((s) => stepRuns(s, decision.scope));
     how = `long-term only — ${decision.reason}`;
   } else if (Array.isArray(changed) && changed.length) {
@@ -78,7 +99,7 @@ function main() {
     const today = new Date().toISOString().slice(0, 10);
     const impact = impactedTests(files, map, today);
     if (impact.ok) {
-      plan = steps.filter((s) => stepRunsImpacted(s, impact.tests));
+      plan = steps.filter((s) => stepRunsImpacted(s, impact.tests, impact.measured));
       how = `impacted only — ${impact.reason}`;
     } else {
       plan = steps;

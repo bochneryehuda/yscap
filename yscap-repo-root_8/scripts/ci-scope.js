@@ -273,11 +273,28 @@ function impactedTestsInner(files, map, todayUtcDay) {
     if (!inner) return { ok: false, reason: `${f} is outside the project folder` };
 
     // A changed TEST always runs itself, whatever the map says.
+    //
+    // `handledAsTest` IS THE WHOLE GUARD, and the earlier version got it wrong
+    // in a way that defeated the fail-safe this function exists for. It read:
+    //
+    //   const asTest = inner.startsWith('scripts/') ? inner.slice(…) : null;
+    //   if (asTest && (map.tests[asTest] || /^(test|check)-/.test(asTest))) wanted.add(asTest);
+    //   if (!known.has(inner)) { if (asTest) continue; return { ok:false, … }; }
+    //
+    // `asTest` is truthy for ANY path under `scripts/`, not only for a test —
+    // so an unrecognised NON-test script (`scripts/schema-glossary.js`,
+    // `scripts/migrate.js`, anything added tomorrow, or any file RENAMED into
+    // `scripts/`, since git reports only the destination) was added to nothing
+    // and then SILENTLY DISCARDED by the `continue`, instead of forcing the
+    // whole suite. Measured: one such file selected 9 of 925 steps and reported
+    // it as success. The claim in this file's own header — "anything the map
+    // does not know about runs everything" — was false for an entire directory.
     const asTest = inner.startsWith('scripts/') ? inner.slice('scripts/'.length) : null;
-    if (asTest && (map.tests[asTest] || /^(test|check)-/.test(asTest))) wanted.add(asTest);
+    const handledAsTest = !!asTest && (!!map.tests[asTest] || /^(test|check)-/.test(asTest));
+    if (handledAsTest) wanted.add(asTest);
 
     if (!known.has(inner)) {
-      if (asTest) continue;                       // a test file we just handled
+      if (handledAsTest) continue;                // a test file we just handled
       return { ok: false, reason: `no test was ever recorded touching ${inner}` };
     }
     for (const [test, deps] of Object.entries(map.tests)) {
@@ -285,21 +302,53 @@ function impactedTestsInner(files, map, todayUtcDay) {
     }
   }
 
-  return { ok: true, reason: `${wanted.size} test(s) can reach these ${files.length} file(s)`, tests: wanted };
+  return {
+    ok: true,
+    reason: `${wanted.size} test(s) can reach these ${files.length} file(s)`,
+    tests: wanted,
+    // WHICH TESTS WERE EVER MEASURED. `stepRunsImpacted` needs this to tell
+    // "measured, and this change cannot reach it" from "never measured at all",
+    // which are opposite answers. Without it the second silently became the
+    // first — see the note there.
+    measured: new Set(Object.keys(map.tests)),
+  };
 }
 
-/** Should this step run, given an impacted-test set? Always-run steps always do. */
-function stepRunsImpacted(step, tests) {
+/**
+ * Should this step run, given an impacted-test set? Always-run steps always do.
+ *
+ * A STEP THAT WAS NEVER MEASURED ALWAYS RUNS, and that rule is the reason a
+ * lagging map is merely slow rather than blind. `ci-deps-build.js` says so in
+ * its own header — a `.mjs` guard "gets NO entry, which ci-scope reads as
+ * always run" — and this function did the exact opposite: absence from the map
+ * meant absence from `wanted`, so the step could only ever be selected by
+ * changing its own file.
+ *
+ * Measured on the committed map: 47 of 925 steps were unreachable that way —
+ * all 19 `.mjs` guards (structurally unmappable, because `node -r` cannot
+ * preload into an ES module) plus 28 tests added since the map was built. Among
+ * them `test-app-dialog-pure.mjs`, which is the guard that fails the build when
+ * a portal screen calls `alert()`/`window.confirm()` — so editing
+ * `app-v2/src/lib/dialog.js`, the very module it polices, ran 14 steps and not
+ * one of its own guards.
+ *
+ * It also makes map STALENESS safe by construction rather than by the date
+ * check alone: a test the map has never heard of is run, so a map that lags
+ * `package.json` costs time, never coverage.
+ */
+function stepRunsImpacted(step, tests, measured) {
   if (typeof step !== 'string') return true;
   if (ALWAYS_RUN_STEPS.some((name) => step.includes(name))) return true;
   const m = step.match(/scripts\/([\w.-]+\.(?:js|mjs))/);
   if (!m) return true;                      // a step we cannot read is a step we run
   if (!tests) return true;
+  if (measured && !measured.has(m[1])) return true;   // never measured → always run
   return tests.has(m[1]);
 }
 
 module.exports = {
   scopeFor,
+  isAlwaysFull,
   stepRuns,
   loadDepMap,
   impactedTests,
