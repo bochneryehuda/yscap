@@ -33,6 +33,11 @@ const lazy = {
   get db() { return require('./db'); },
 };
 
+// PURE — no database, no settings. Required at the top because it is the ONE definition
+// of the book names, and a view that stored a name this module does not know would be a
+// filter the pipeline silently ignores.
+const book = require('./pipeline-book');
+
 /**
  * Every filter a view may carry, and how each is cleaned.
  *
@@ -52,6 +57,17 @@ const FILTER_KEYS = {
   // one person's queue. It is also why nobody can save a view of somebody else's
   // personal book — `officerStaffId` is the deliberate, named way to look at that.
   mine: (v) => (v === true || v === 'true' ? true : null),
+  // Which book the view opens. Stored only when it is NOT the default, so an ordinary
+  // view carries no opinion about it and keeps following the pipeline's own default —
+  // a view saved today must not pin somebody to the live book if that default ever
+  // changes. `pipeline-book` is the one definition of the names; a value it does not
+  // recognise is dropped rather than stored, and `buildWhere` would ignore it anyway.
+  book: (v) => {
+    const s = str(v);
+    if (!s) return null;
+    const norm = book.normalizeBook(s);
+    return norm === book.DEFAULT_BOOK ? null : norm;
+  },
   sort: (v) => str(v),
   dir: (v) => (String(v).toLowerCase() === 'asc' ? 'asc' : String(v).toLowerCase() === 'desc' ? 'desc' : null),
 };
