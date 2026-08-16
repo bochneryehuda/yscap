@@ -87,6 +87,23 @@ const FROM = `
       LEFT JOIN lt_locks k ON k.loan_id = l.id
       LEFT JOIN lt_properties p ON p.loan_id = l.id`;
 
+/**
+ * The chip for "we have no stage for this loan yet", and the value that filters to it.
+ *
+ * NOT a hypothetical. `discoverLoans` finds a loan from the pipeline search, whose
+ * `Loan.CurrentMilestone` column is blank on every loan in this tenant (§4.1.1), so a
+ * newly discovered loan carries NO stage until its detail sync runs — which makes an
+ * unstaged loan the NORMAL state of the newest files, exactly the ones somebody is
+ * looking for. Without a chip it sits in the list, is counted in the header, and can
+ * be filtered to by nothing: §4.1.1's "shown, not hidden" half-kept, which is the
+ * version that looks fine until you go looking for a file.
+ *
+ * The sentinel is parenthesised because a stage key is a settings word or an Encompass
+ * milestone name, and neither carries brackets — so it can never collide with a real
+ * one. It is EXPORTED so the screen and the saved-view validator use the one constant.
+ */
+const NO_STAGE = '(none)';
+
 /** "This loan officer's files" — one predicate, so the list and its count agree. */
 const officerIsSql = (ph) => `EXISTS (
       SELECT 1 FROM lt_loan_contacts c2
@@ -135,7 +152,11 @@ function buildWhere(viewerAccess, staffId, filters = {}, omit = new Set()) {
     params.push(...scope.params);
   }
 
-  if (!skip('stage') && filters.stage) where.push(`l.stage_key = ${p(String(filters.stage))}`);
+  if (!skip('stage') && filters.stage === NO_STAGE) {
+    where.push("(l.stage_key IS NULL OR l.stage_key = '')");
+  } else if (!skip('stage') && filters.stage) {
+    where.push(`l.stage_key = ${p(String(filters.stage))}`);
+  }
   if (!skip('folder') && filters.folder) where.push(`l.loan_folder = ${p(String(filters.folder))}`);
 
   // "Somebody else's files" — only meaningful to a viewer who sees everything; a
@@ -429,11 +450,22 @@ function stageChips(declared, facets) {
     if (!key || known.has(key)) continue;
     list.push({ key, label: key, count: n, undeclared: true });
   }
+  // The loans with NO stage at all. They come back under the empty key (the count
+  // COALESCEs), and without this they would be in the list and in the header total
+  // and reachable from no chip — so the row's numbers would not add up to the number
+  // above it, which is the sort of thing nobody reports and everybody stops trusting.
+  const unstaged = counts[''] || 0;
+  if (unstaged > 0) {
+    list.push({
+      key: NO_STAGE, label: 'No stage yet', count: unstaged, unstaged: true,
+    });
+  }
   return list;
 }
 
 module.exports = {
   SORTABLE,
+  NO_STAGE,
   DEFAULT_SORT,
   MAX_LIMIT,
   DEFAULT_LIMIT,

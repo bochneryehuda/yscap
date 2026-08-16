@@ -218,6 +218,33 @@ async function facets(access, staffId, filters) {
     check(mineStranded.length === 3,
       '"mine" is simply their scope restated, so it changes nothing for them');
 
+    // ── D4. A loan with NO stage at all ─────────────────────────────────────
+    console.log('\na loan with no stage yet is reachable, not just visible');
+
+    // Not a hypothetical: the pipeline search's own milestone column is blank on every
+    // loan in this tenant, so a freshly DISCOVERED loan has no stage until its detail
+    // sync runs — which makes this the normal state of the newest files.
+    const unstagedId = await makeLoan(null, { officer: ME });
+    const fU = await facets(ALL, ME, {});
+    check((fU.byStage[''] || 0) >= 1, 'the counts see it, under the empty key');
+
+    const chipsU = pipeline.stageChips([{ key: SETUP, label: 'Setup' }], { byStage: fU.byStage });
+    const noStageChip = chipsU.find((c) => c.key === pipeline.NO_STAGE);
+    check(!!noStageChip && noStageChip.unstaged === true && noStageChip.count >= 1,
+      'THE ONE THAT MATTERS: it gets its own chip — without one it sits in the list, is counted in the header, and can be filtered to by nothing, so the row’s numbers do not add up to the number above it');
+    check(chipsU.reduce((n, c) => n + (c.count || 0), 0) === fU.allStages,
+      '…which is exactly what makes the chips sum to the all-stages total');
+
+    const unstagedRows = await listIds(ALL, ME, { stage: pipeline.NO_STAGE });
+    check(unstagedRows.length === 1 && unstagedRows[0] === unstagedId,
+      'and clicking it returns the unstaged loan — the filter is a real one, not a label');
+    const stagedRows = await listIds(ALL, ME, { stage: SETUP });
+    check(!stagedRows.includes(unstagedId),
+      '…while an ordinary stage chip still excludes it');
+    check(pipeline.stageChips([{ key: SETUP, label: 'Setup' }], { byStage: { [SETUP]: 2 } })
+      .every((c) => c.key !== pipeline.NO_STAGE),
+    'a book with nothing unstaged grows no such chip — it appears because there is something in it');
+
     // ── E. The whole thing, through loadPipeline ────────────────────────────
     console.log('\nthe route’s own answer carries both rows');
 
