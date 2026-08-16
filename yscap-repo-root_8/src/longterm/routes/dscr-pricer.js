@@ -25,7 +25,7 @@ const BATTERY = [
 
 function trimPrograms(parsed, limit = 60) {
   return {
-    meta: { programCount: parsed.programCount, lenderCount: parsed.lenderCount, rungCount: parsed.rungCount },
+    meta: { programCount: parsed.programCount, lenderCount: parsed.lenderCount, rungCount: parsed.rungCount, disqualifiedCount: parsed.disqualifiedCount },
     programs: parsed.programs.slice(0, limit).map((p) => ({
       lender: p.lender, program: p.program, minRate: p.minRate, maxPrice: p.maxPrice, rungCount: p.rungCount,
     })),
@@ -51,10 +51,15 @@ async function price(req, res) {
   const r = await lp.price(sc);
   if (!r.ok) {
     const code = (r.http && r.http >= 500) ? 502 : 400;
-    return res.status(code).json({ ok: false, error: r.error, http: r.http || null, message: r.message });
+    return res.status(code).json({ ok: false, error: r.error, http: r.http || null, message: r.message, upstream: r.upstream || r.body || null });
   }
   const parsed = lp.parse(r.raw);
-  res.json({ ok: true, ...trimPrograms(parsed), request: r.request });
+  const out = { ok: true, ...trimPrograms(parsed), request: r.request };
+  // Secret-gated diagnostics (the whole router is behind the diag token / staff login): when the
+  // caller asks, include a structural summary of the raw response so we can see whether Lender
+  // Price returned programs the parser missed, or truly zero — and any disqualify reasons.
+  if (req.body && req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
+  res.json(out);
 }
 
 // POST /selftest — run the fixed battery; returns one row per scenario. Paced, gentle on the login.
@@ -62,7 +67,7 @@ async function selftest(req, res) {
   const results = [];
   for (const sc of BATTERY) {
     const r = await lp.price(sc);
-    if (!r.ok) { results.push({ name: sc.name, ok: false, error: r.error, http: r.http || null, message: r.message }); continue; }
+    if (!r.ok) { results.push({ name: sc.name, ok: false, error: r.error, http: r.http || null, message: r.message, upstream: r.upstream || r.body || null }); continue; }
     const p = lp.parse(r.raw);
     const best = p.programs.reduce((m, x) => (x.minRate != null && (m == null || x.minRate < m) ? x.minRate : m), null);
     results.push({ name: sc.name, ok: true, programCount: p.programCount, lenderCount: p.lenderCount, rungCount: p.rungCount, bestRate: best });
