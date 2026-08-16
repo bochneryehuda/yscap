@@ -1,0 +1,42 @@
+{
+   "responseData": {
+      "responseType": "Loan Officers",
+      "count": 2,
+      "responseFields": [
+         {
+            "num": 1,
+            "fieldlist": [
+               {
+                  "fieldName": "id",
+                  "fieldValue": "429"
+               },
+               {
+                  "fieldName": "name",
+                  "fieldValue": "abc def"
+               },
+               {
+                  "fieldName": "internal_id",
+                  "fieldValue": ""
+               }
+            ]
+         },
+         {
+            "num": 2,
+            "fieldlist": [
+               {
+                  "fieldName": "id",
+                  "fieldValue": "430"
+               },
+               {
+                  "fieldName": "name",
+                  "fieldValue": "pep test"
+               },
+               {
+                  "fieldName": "internal_id",
+                  "fieldValue": ""
+               }
+            ]
+         }
+      ]
+   }
+}

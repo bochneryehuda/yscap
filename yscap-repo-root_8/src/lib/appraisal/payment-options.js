@@ -171,23 +171,31 @@ const CAPABILITY = {
     },
   },
 
+  // APPRAISALSCOPE PERFORMS ALL THREE, as of 2026-08-16 (owner-directed: *"I want
+  // to be a real vendor charge, yes. I want them to charge the credit card that I'm
+  // importing."*). These were `back_office` for one reason and one only — no
+  // payment request had ever been verified against the vendor's own contract, and
+  // this file's header says a wrong guess at a money endpoint is the most expensive
+  // kind of wrong here. That reason is gone: the vendor's client package is in the
+  // repository at `docs/vendor/appraisalscope/`, and `src/amc/cdg.js` now builds
+  // PaymentAuthCapture / PaymentCapture / SendInvoice from their own samples, field
+  // for field. `src/amc/payment.js` carries them out.
+  //
+  // STILL MANUAL. A person picks a way and presses a button, every time — moving
+  // these rows changes WHO performs the payment, never whether somebody chose it.
   nan: {
     PAYMENT_LINK: {
-      does: DOES.BACK_OFFICE,
-      // DELIBERATELY DOES NOT SAY *HOW* the back office sends it. AppraisalScope's
-      // GetPaymentOptions reports a `paymentFormAvailable` flag, but nothing in this
-      // repo has verified a way to send a borrower a link — so naming one would put
-      // an instruction on screen that may not be followable. What is true is that
-      // the decision is recorded and a person arranges it.
-      says: 'Recorded as the way this one is being paid. The back office arranges it with AppraisalScope.',
+      does: DOES.VENDOR,
+      says: 'AppraisalScope emails their own invoice and payment page. The borrower and the loan officer both get it.',
     },
     CARD_ON_FILE: {
-      does: DOES.BACK_OFFICE,
-      says: 'Recorded as the way this one is being paid. The back office charges the card on this file by hand.',
+      does: DOES.VENDOR,
+      says: 'AppraisalScope charges the card saved on this file, in full, when you press it.',
+      caveat: 'nan_needs_cvv',
     },
     NEW_CARD: {
-      does: DOES.BACK_OFFICE,
-      says: 'The card is saved onto the file, and recorded as the one to charge. The back office charges it by hand.',
+      does: DOES.VENDOR,
+      says: 'The card is saved onto the file first, then charged at AppraisalScope in full.',
     },
   },
 
@@ -210,8 +218,17 @@ const CAPABILITY = {
   },
 };
 
-/** The one caveat text there is, kept here so the desk and the server agree. */
+/** The caveat texts, kept here so the desk and the server agree. */
 const CAVEAT = {
+  // Their PaymentAuthCapture requires the security code, so a card saved before we
+  // started keeping it — or one saved by a route that did not ask — cannot be
+  // charged. Surfaced as a caveat rather than a disabled button because whether
+  // THIS file's card has one is a per-file fact the server checks at the moment of
+  // pressing (`amc/payment.paymentState`), and greying every card button on a
+  // note-to-self would be wrong on the many files that are perfectly fine.
+  nan_needs_cvv:
+    'AppraisalScope needs the card’s security code to charge it. A card saved without one has to be entered again '
+    + '— the order screen says so before you press.',
   rv_raw_card:
     'Richer Values cannot take a card number through their system yet — their payment provider refuses it '
     + 'on their account, and only they can switch it on. If it fails, use the payment link, which works today.',

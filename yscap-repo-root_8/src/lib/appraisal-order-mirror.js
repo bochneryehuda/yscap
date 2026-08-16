@@ -134,9 +134,17 @@ function describe(vendor, row) {
 
   const fee = vendor === 'nan'
     // NAN's fees are plain dollars on the order row; the other two are integer cents.
-    ? (row.job_fee != null || row.management_fee != null
-      ? cents((Number(row.job_fee) || 0) * 100 + (Number(row.management_fee) || 0) * 100)
-      : null)
+    // `client_fee` is the one figure that means "what this order costs US" — the
+    // vendor's own total on their record of it — so it wins when they have stated
+    // it. Adding the job and management fees is a FALLBACK for an order placed
+    // before the detail lookup ran, and it is not the same number: on the vendor's
+    // own sample a $450 client fee sits beside a $25 job fee and a $50 management
+    // fee, so summing those two would have told a coordinator the appraisal costs
+    // $75.
+    ? (row.client_fee != null ? cents(Number(row.client_fee) * 100)
+      : (row.job_fee != null || row.management_fee != null
+        ? cents((Number(row.job_fee) || 0) * 100 + (Number(row.management_fee) || 0) * 100)
+        : null))
     : vendor === 'class' ? cents(row.client_fee_cents)
       : cents(row.total_price_cents);
 
@@ -144,7 +152,30 @@ function describe(vendor, row) {
     : vendor === 'class' ? txt(row.product_title)
       : txt(row.report_type);
 
+  // WHO IS DOING IT AND WHEN — read from AppraisalScope's own record of the order
+  // by the detail poll (src/amc/detail.js). It is the APPRAISER, never the AMC:
+  // both ride in the vendor's one `appraisers[]` array, and telling a coordinator
+  // that the management company is inspecting the property would be worse than
+  // telling them nothing. Absent until the first detail poll lands, and absent for
+  // the other two vendors, whose own equivalents are not wired yet — an absent
+  // block reads as "the vendor has not said", never as "nobody is assigned".
+  const detail = vendor === 'nan' ? {
+    appraiserName: txt(row.appraiser_name),
+    appraiserCompany: txt(row.appraiser_company),
+    appraiserPhone: txt(row.appraiser_phone),
+    appraiserEmail: txt(row.appraiser_email),
+    inspectionDate: row.inspection_date || null,
+    // The vendor's OWN due date, which is the ETA somebody is really asking for.
+    // `need_by_date` is the date WE asked for and can differ from it.
+    vendorDueDate: row.vendor_due_date || null,
+    requestedDueDate: row.need_by_date || null,
+    dueAmountCents: row.due_amount != null ? cents(Number(row.due_amount) * 100) : null,
+    paidAmountCents: row.paid_amount != null ? cents(Number(row.paid_amount) * 100) : null,
+  } : null;
+  const hasDetail = detail && Object.values(detail).some((v) => v != null);
+
   return {
+    detail: hasDetail ? detail : null,
     vendor,
     vendorName: VENDOR_NAME[vendor],
     status,
@@ -191,7 +222,9 @@ async function readVendorOrders(dbh, appId) {
   try {
     const r = await dbh.query(
       `SELECT id, status, status_name, sp_order_number, cdg_order_number, appraisal_file_number,
-              product_code, form_description, job_fee, management_fee, last_error,
+              product_code, form_description, job_fee, management_fee, client_fee, last_error,
+              appraiser_name, appraiser_company, appraiser_phone, appraiser_email,
+              inspection_date, vendor_due_date, need_by_date, due_amount, paid_amount,
               ordered_at, completed_at, created_at, updated_at, ordered_by
          FROM amc_orders WHERE application_id=$1`, [appId]);
     for (const row of r.rows) out.push(describe('nan', row));
@@ -258,6 +291,10 @@ async function syncOne(appId, dbc) {
       vendorStatus: primary.vendorStatus,
       nativeStatus: primary.nativeStatus,
       lastError: primary.lastError,
+      // Who is doing it, when they are going out, and what is still owed. NULL until
+      // the vendor has said — the desk shows the block only when it carries something,
+      // so an empty one can never read as "nobody assigned".
+      detail: primary.detail || null,
       // The section the desk's "open it" action jumps to. Named here so the desk
       // never has to know how the appraisal section is built.
       section: 'sec-order-appraisal',

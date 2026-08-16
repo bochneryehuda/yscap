@@ -1,0 +1,64 @@
+{
+	"message": {
+		"clientSystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "ApiKey",
+				"referenceIdentifierValue": "{{api_key}}"
+			    },
+				{
+					"referenceIdentifierType": "ClientOrderNumber",
+					"referenceIdentifierValue": "1234AB"
+				}]
+		},
+		"products": [{
+			"payments": [{
+				"paymentAccountCardHolderFirstName": "API",
+				"paymentAccountCardHolderLastName": "Testing",
+				"paymentAccountCardHolderAddress1": "501 NE 122nd St",
+				"paymentAccountCardHolderAddress2": "Apt B",
+				"paymentAccountCardHolderCity": "OKLAHOMA CITY",
+				"paymentAccountCardHolderState": "OK",
+				"paymentAccountCardHolderPostalCode": "73114",
+				"paymentAccountCardHolderPhone": "555-222-5555",
+				"paymentAccountCardHolderEmail": "brittthompson@corelogic.com",
+				"paymentAccountIdentifier": "4012888888881881",
+				"paymentAccountCardSecurityCode": "111",
+				"paymentAccountCardExpirationMonth": "01",
+				"paymentAccountCardExpirationYear": "2022",
+				"paymentTotalAmount": "1.00",
+				"paymentProfileUpdate": "1",
+				"billingProfileUpdate": "1"
+			},
+			{
+				"paymentAccountCardHolderFirstName": "API",
+				"paymentAccountCardHolderLastName": "Testing",
+				"paymentAccountCardHolderAddress1": "501 NE 122nd St",
+				"paymentAccountCardHolderAddress2": "Apt B",
+				"paymentAccountCardHolderCity": "OKLAHOMA CITY",
+				"paymentAccountCardHolderState": "OK",
+				"paymentAccountCardHolderPostalCode": "73114",
+				"paymentAccountCardHolderPhone": "555-222-5555",
+				"paymentAccountCardHolderEmail": "brittthompson@corelogic.com",
+				"paymentAccountIdentifier": "5424000000000015",
+				"paymentAccountCardSecurityCode": "111",
+				"paymentAccountCardExpirationMonth": "01",
+				"paymentAccountCardExpirationYear": "2022",
+				"paymentTotalAmount": "98.00",
+				"paymentProfileUpdate": "0",
+				"billingProfileUpdate": "0"
+			}]
+		}],
+		"serviceProviderSystem": {
+			"referenceIdentifiers": [{
+					"referenceIdentifierType": "ServiceProviderSubDomain",
+					"referenceIdentifierValue": "integrations.uat"
+				},
+				{
+					"referenceIdentifierType": "ServiceProviderOrderNumber",
+					"referenceIdentifierValue": "1417"
+				}
+			]
+		},
+		"requestActionType": "SplitPayment"
+	}
+}

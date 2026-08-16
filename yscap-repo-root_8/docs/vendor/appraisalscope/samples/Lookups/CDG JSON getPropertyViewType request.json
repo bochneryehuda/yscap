@@ -1,0 +1,30 @@
+{
+    "message": {
+        "clientSystem": {
+            "referenceIdentifiers": [{
+                "referenceIdentifierType": "ApiKey",
+                "referenceIdentifierValue": "{{api_key}}"
+            }]
+        },
+        "serviceProviderSystem": {
+            "referenceIdentifiers": [{
+                "referenceIdentifierType": "ServiceProviderSubDomain",
+                "referenceIdentifierValue": "integrations.uat"
+            }]
+        },
+        "deals": [{
+            "properties": {
+                "siteAnalysis": {
+                    "propertyView": [{
+                            "propertyViewDescription": "Park"
+                        },
+                        {
+                            "propertyViewDescription": "Industrial"
+                        }
+                    ]
+                }
+            }
+        }],
+        "requestActionType": "GetPropertyViewType"
+    }
+}

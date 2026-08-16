@@ -1,0 +1,26 @@
+{
+    "message": {
+        "clientSystem": {
+            "referenceIdentifiers": [
+                {
+                    "referenceIdentifierType": "ApiKey",
+                    "referenceIdentifierValue": "{{api_key}}"
+                }
+            ]
+        },
+    "products": [
+            {
+                "productcode": "131"
+            }
+        ],
+    "serviceProviderSystem": {
+        "referenceIdentifiers": [
+            {
+                "referenceIdentifierType": "ServiceProviderSubDomain",
+                "referenceIdentifierValue": "integrations.uat"
+            }
+        ]
+    },
+    "requestActionType": "GetJobTypeAddOns"
+    }
+}

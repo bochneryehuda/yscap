@@ -1,0 +1,24 @@
+{
+	"message": {
+		"digitalGatewaySystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "DigitalGatewayOrderNumber",
+				"referenceIdentifierValue": "CLGGL100417"
+			}],
+			"statusResponses": [{
+				"statusCode": "0",
+				"statusCondition": "Success",
+				"statusDescription": "Acknowledgement",
+				"statusName": "ACK"
+			}]
+		},
+		"products": [{
+			"statusResponses": [{
+				"statusCode": 1001,
+				"statusCondition": "Status",
+				"statusDescription": "Vendor has placed the order on hold. [On Hold]",
+				"statusName": "Vendor-SetHold"
+			}]
+		}]
+	}
+}
