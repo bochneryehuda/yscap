@@ -397,13 +397,18 @@ function firstStr(o, keys) { for (const k of keys) { const v = o[k]; if (typeof 
 // zero (so the request is the gap), plus the exact container/field names + any disqualify reasons.
 function summarizeRaw(raw) {
   if (raw == null || typeof raw !== 'object') return { type: typeof raw, note: 'non-object response', preview: scrub(String(raw).slice(0, 400)) };
-  const arrays = {};        // dotted path → length, for every array found (depth ≤ 5)
+  const arrays = {};        // dotted path → length, for every array found (depth ≤ 8)
   const reasons = new Set();
   let sampleRateRow = null;
+  let sampleLeaf = null;    // first object found inside a `leafs` array — the actual priced rung
+  let sampleKeyNode = null; // first object found inside a `key` array — the grouping key
   const seen = new Set();
-  (function walk(node, path, depth) {
-    if (node == null || typeof node !== 'object' || depth > 5 || seen.has(node)) return;
+  const shallow = (o) => { const out = {}; for (const k of Object.keys(o).slice(0, 50)) { const v = o[k]; out[k] = (v && typeof v === 'object') ? (Array.isArray(v) ? `[${v.length}]` : '{…}') : v; } return out; };
+  (function walk(node, path, depth, inKey, inLeafs) {
+    if (node == null || typeof node !== 'object' || depth > 8 || seen.has(node)) return;
     seen.add(node);
+    if (!sampleLeaf && inLeafs) sampleLeaf = { path, node: shallow(node) };
+    if (!sampleKeyNode && inKey) sampleKeyNode = { path, node: shallow(node) };
     if (!sampleRateRow && (RATE_KEYS.some((k) => k in node) || PROGRAM_KEYS.some((k) => k in node))) {
       sampleRateRow = { path, keys: Object.keys(node).slice(0, 40) };
     }
@@ -411,14 +416,16 @@ function summarizeRaw(raw) {
       const v = node[k];
       const p = path ? `${path}.${k}` : k;
       if (/reason/i.test(k) && (typeof v === 'string' || typeof v === 'number')) reasons.add(String(v).slice(0, 120));
-      if (Array.isArray(v)) { arrays[p] = v.length; v.slice(0, 1).forEach((el) => walk(el, `${p}[0]`, depth + 1)); }
-      else if (v && typeof v === 'object') walk(v, p, depth + 1);
+      if (Array.isArray(v)) { arrays[p] = v.length; v.slice(0, 1).forEach((el) => walk(el, `${p}[0]`, depth + 1, k === 'key', k === 'leafs')); }
+      else if (v && typeof v === 'object') walk(v, p, depth + 1, false, false);
     }
-  })(raw, '', 0);
+  })(raw, '', 0, false, false);
   return {
     topKeys: Object.keys(raw).slice(0, 60),
-    nonEmptyArrays: Object.fromEntries(Object.entries(arrays).filter(([, n]) => n > 0).slice(0, 40)),
+    nonEmptyArrays: Object.fromEntries(Object.entries(arrays).filter(([, n]) => n > 0).slice(0, 60)),
     sampleRateRow,
+    sampleLeaf,
+    sampleKeyNode,
     disqualifyReasons: Array.from(reasons).slice(0, 12),
   };
 }
