@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**765 objects**, and a database rebuilt from the Prisma
+**766 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 562 numbered migrations in `db/` (highest `db/565`) remain the only thing that builds this database.
+rebuild a database from them.** The 565 numbered migrations in `db/` (highest `db/568`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 335 |
-| Columns | 5446 |
+| Tables | 336 |
+| Columns | 5488 |
 | Triggers | 34 |
 | Functions | 137 |
 | CHECK constraints | 260 |
 | Generated columns | 12 |
-| Partial indexes | 322 |
-| Primary keys | 335 |
+| Partial indexes | 323 |
+| Primary keys | 336 |
 | Foreign keys | 695 |
-| Unique constraints | 45 |
-| Indexes (all kinds) | 1156 |
+| Unique constraints | 46 |
+| Indexes (all kinds) | 1160 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -225,7 +225,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (322)
+## Partial indexes (323)
 
 - **borrower_assistants_borrower_idx** on `borrower_assistants`
 - **borrower_assistants_email_uk** on `borrower_assistants`
@@ -443,6 +443,7 @@ the live database.
 - **idx_uw_runs_current** on `underwriting_runs`
 - **idx_wf_due** on `workflow_items`
 - **ix_appr_pay_intent_open** on `appraisal_payment_intents`
+- **ix_appr_pay_intent_txn** on `appraisal_payment_intents`
 - **ix_appraisals_comp_parse_version** on `appraisals`
 - **ix_clickup_task_index_ys_loan_number** on `clickup_task_index`
 - **ix_documents_research_xml_todo** on `documents`
@@ -1513,7 +1514,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **workflow_items** → `staff_users` — `FOREIGN KEY (from_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **workflow_items** → `staff_users` — `FOREIGN KEY (to_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
 
-## Unique constraints (45)
+## Unique constraints (46)
 
 - **application_service_contacts** — `UNIQUE (application_id, service_contact_id)`
 - **appraisers** — `UNIQUE (identity_key)`
@@ -1535,6 +1536,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **inbound_file_emails** — `UNIQUE (resend_email_id)`
 - **investors** — `UNIQUE (label_norm)`
 - **lt_ppe_base_price** — `UNIQUE (version_id, note_rate_milli_pct, lock_days, product)`
+- **lt_ppe_cutover_ledger** — `UNIQUE (scope, investor, seq)`
 - **lt_ppe_finding** — `UNIQUE (scope, finding_key)`
 - **lt_ppe_investor_alias** — `UNIQUE (scope, alias_norm)`
 - **lt_ppe_investor** — `UNIQUE (scope, code)`
@@ -1582,7 +1584,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 335 primary keys and 1156 indexes is
+Every one of the 336 primary keys and 1160 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person
