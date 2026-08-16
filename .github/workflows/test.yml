@@ -17,6 +17,60 @@ on:
   pull_request:
   push:
     branches: [main]
+  # THE FULL SUITE, ON A CLOCK (owner-directed 2026-08-16: "another full test
+  # all the time again and again").
+  #
+  # A pull request may run a reduced plan. There are now THREE counterweights,
+  # and the first one already existed:
+  #   1. EVERY MERGE TO MAIN runs the whole suite — that is the `push` trigger
+  #      above, and it is what actually gates the deploy. Nothing reaches a
+  #      borrower without all 897 steps passing.
+  #   2. THIS nightly run catches what a per-change run structurally cannot: a
+  #      flaky test, a vendor or dependency that changed underneath us, and
+  #      anything time-dependent.
+  #   3. `workflow_dispatch` — one button, full suite, any time.
+  #
+  # WHY NIGHTLY AND NOT HOURLY, stated plainly because it is a cost decision:
+  # the database job takes ~20 minutes, so every 3 hours would be ~200 minutes
+  # a day of private-repo Actions time and would exhaust a 2,000-minute monthly
+  # allowance in about ten days. Nightly plus every-merge gives the same safety
+  # for a fraction of that. Change the cron here to go more often.
+  #
+  # THE HOUR IS CHOSEN FROM THIS REPO'S OWN RUN HISTORY, not from "night". The
+  # observed push window is 05:00-07:30 UTC — the busiest stretch there is, when
+  # several agents are working at once — so a nightly at 07:00 would take two
+  # runners for ~20 minutes in direct competition with live pull requests, which
+  # is the queue problem the concurrency block above exists to relieve. 09:30 UTC
+  # is outside it. Minute :30 also avoids :00, GitHub's most contended slot
+  # (scheduled runs are best-effort and are dropped under load).
+  schedule:
+    - cron: '30 9 * * *'    # 09:30 UTC — outside this repo's observed busy window
+  workflow_dispatch:
+
+# ---------------------------------------------------------------------------
+# STOP SUPERSEDED PULL-REQUEST RUNS FROM HOLDING THE QUEUE (owner-reported
+# 2026-08-16: runs queue one after another and slow everything down when
+# several changes are in flight at once).
+#
+# There was no concurrency group at all, so pushing four times to one branch
+# started four full runs and the first three KEPT RUNNING to the end — burning
+# runner capacity to test commits nobody will ever merge. With several agents
+# working at once that is what fills the queue. Now only the newest commit on a
+# branch runs; the older ones are cancelled the moment they are superseded.
+#
+# MAIN IS NEVER CANCELLED, AND THAT IS THE WHOLE CARE HERE. Keying the group on
+# `run_id` for anything that is not a pull request gives every push to main its
+# own group, so one main run can never cancel another — and cancel-in-progress
+# is switched off there outright. A cancelled main run would mean a cancelled
+# DEPLOY, which is the "merged but never published" failure this workflow was
+# written to close.
+#
+# A cancelled PR run belongs to a commit that has already been replaced, so no
+# required check is left waiting: the new commit reports its own fresh result.
+# ---------------------------------------------------------------------------
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -25,14 +79,80 @@ jobs:
       run:
         working-directory: yscap-repo-root_8
     steps:
+      # fetch-depth: 0 so the changed-file diff below has a real base to compare
+      # against. A shallow clone cannot see the merge base, and a diff that
+      # cannot be computed falls back to running EVERYTHING (see below) — so
+      # this only ever costs speed, never coverage.
       - uses: actions/checkout@v4
+        with:
+          # Full history so the changed-file diff below has a real merge base;
+          # `blob:none` fetches the COMMIT GRAPH without historical file
+          # contents, which is all a `--name-only` diff needs. Measured on this
+          # repo: plain `fetch-depth: 0` cost +27s per job (3s -> 31s) against a
+          # 292 MiB pack; the filter recovers nearly all of it. A diff that
+          # cannot be computed still falls back to running EVERYTHING, so this
+          # only ever costs speed, never coverage.
+          fetch-depth: 0
+          filter: blob:none
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: yscap-repo-root_8/package-lock.json
       - run: npm ci
-      - run: npm test
+
+      # ---- what changed? (pull requests only) --------------------------------
+      # Writes one path per line, relative to the git root. EVERY failure path
+      # here leaves the file absent or empty, and `ci-scope.js` answers
+      # "everything" for both — so a broken diff makes CI slower, never weaker.
+      - name: Work out what changed
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          # BASE_REF ARRIVES THROUGH env, NEVER INTERPOLATED INTO THE SCRIPT.
+          # Git ref names permit `$`, a backtick and `"`, so pasting one into a
+          # shell line is a template-injection seam. It needs push access to
+          # this repo to exploit, which makes it low-risk and free to close.
+          base="origin/$BASE_REF"
+          git fetch --no-tags origin "$BASE_REF" || exit 0
+          git diff --name-only "$base"...HEAD > /tmp/changed-files.txt || rm -f /tmp/changed-files.txt
+          echo "changed files:"; cat /tmp/changed-files.txt 2>/dev/null || echo "  (could not be determined — the full suite will run)"
+
+      # ---- a quiet change to something load-bearing is made loud -------------
+      # Plan §8.2 asked for CODEOWNERS here. It cannot work in this repository:
+      # every pull request is authored by the owner's own account and GitHub
+      # never requests a review from a pull request's author, so the rule would
+      # be a control incapable of acting. This does the job the plan wanted
+      # through a mechanism that functions with one account. Advisory always.
+      - name: Name anything load-bearing this change touches
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: node scripts/check-guarded-paths.js --changed-from /tmp/changed-files.txt
+
+      # ---- the suite --------------------------------------------------------
+      # A PULL REQUEST MAY RUN A REDUCED PLAN — and it is not only Long-Term
+      # changes. `ci-test-plan.js` has TWO selectors: the Long-Term rule (~29
+      # steps), and a MEASURED IMPACT MAP that narrows ANY pull request to the
+      # tests recorded as able to reach the changed files (a pricing change runs
+      # ~210 of 925). Saying "Long-Term-only" here was simply wrong, and this
+      # file is where somebody looks to answer "is my PR fully tested?".
+      #
+      # THE GUARANTEE IS UNCHANGED AND IS THE ONLY ONE THAT MATTERS: a PUSH TO
+      # MAIN always runs the whole thing, because that is what gates the deploy.
+      # Nothing is ever left unrun — a step skipped on a PR still runs there
+      # before anything is published. A change to the selector, to the step list
+      # or to this workflow always runs everything, and any file the map has
+      # never seen does too.
+      - name: Run the tests
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ -s /tmp/changed-files.txt ]; then
+            npm run test:changed -- --changed-from /tmp/changed-files.txt
+          else
+            npm test
+          fi
 
   # ---------------------------------------------------------------------------
   # Same suite against a REAL Postgres (task #195). Every *-db.js suite that
@@ -76,17 +196,124 @@ jobs:
       DATABASE_URL: postgres://yscap:yscap@localhost:5432/yscap_test
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the changed-file diff below has a real merge base;
+          # `blob:none` fetches the COMMIT GRAPH without historical file
+          # contents, which is all a `--name-only` diff needs. Measured on this
+          # repo: plain `fetch-depth: 0` cost +27s per job (3s -> 31s) against a
+          # 292 MiB pack; the filter recovers nearly all of it. A diff that
+          # cannot be computed still falls back to running EVERYTHING, so this
+          # only ever costs speed, never coverage.
+          fetch-depth: 0
+          filter: blob:none
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: yscap-repo-root_8/package-lock.json
       - run: npm ci
+
+      # THE FULL MIGRATION CHAIN ALWAYS RUNS, in every mode, on every event.
+      # A Long-Term migration is the one genuine coupling between the two
+      # products — every db/*.sql runs on boot for BOTH — so a broken
+      # `db/NNN_lt_*.sql` could stop the short-term system booting. Selecting
+      # tests must never mean selecting migrations.
       - name: Apply every migration to the fresh database
         run: npm run migrate
         timeout-minutes: 15
-      - run: npm test
+
+      # ---- refresh the schema map, from the database these migrations built ---
+      #
+      # This job is the ONE place a database built from THIS checkout's
+      # migrations always exists, for free — so it is the one place the map can
+      # be brought up to date with no setup at all. Refreshing it by hand means
+      # finding a Postgres, applying 550 migrations and pointing DATABASE_URL at
+      # the result; here that has already happened, one step above.
+      #
+      # IT RUNS BEFORE THE SUITE, AND THAT ORDER IS THE WHOLE CORRECTNESS OF IT.
+      # The first version of this step ran LAST and was wrong: ~900 tests write
+      # to this database, several of them leaving schema objects behind, so the
+      # map it produced described a database nobody has — and it duly reported
+      # "stale" on a map that was in fact exact (observed, run 31931128520).
+      # Right here the database is precisely what the migrations build, which is
+      # the only thing the committed map is ever supposed to describe.
+      #
+      # IT WRITES TO A SCRATCH DIRECTORY, NEVER docs/schema/. Overwriting the
+      # committed map would leave `check-schema-snapshot.js` — which runs inside
+      # the suite below — comparing files that had just been written from the
+      # very database it is about to check them against: a guard that passes
+      # always and guards nothing.
+      #
+      # IT WRITES NOTHING BACK TO THE REPOSITORY, deliberately. Committing from
+      # CI would race the branch an agent is actively pushing to, and a
+      # force-push would silently drop the refresh while everyone believed it
+      # was automatic — a stale map nobody is watching any more is worse than
+      # one nobody is watching yet. The corrected files are attached to the run
+      # instead, so the fix is a download.
+      #
+      # ADVISORY on every path: `continue-on-error` and a `|| exit 0` so an
+      # unreachable database or a broken snapshot script can never turn a green
+      # run red.
+      - name: Refresh the schema map (advisory)
+        id: schema_map
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          rm -rf /tmp/schema-refresh && mkdir -p /tmp/schema-refresh
+          # SAY SO WHEN IT FAILS. `|| exit 0` keeps this advisory, but on its own
+          # it makes a permanently-broken refresh indistinguishable from a clean
+          # one: green step, `stale` never set, artifact skipped, nobody told.
+          SCHEMA_OUT_DIR=/tmp/schema-refresh node scripts/schema-snapshot.js \
+            || { echo "::warning::the advisory schema refresh could not run — the map was not checked this run"; exit 0; }
+          if diff -q /tmp/schema-refresh/beyond-prisma.json docs/schema/beyond-prisma.json >/dev/null 2>&1; then
+            echo "The committed schema map matches the database these migrations build."
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::The committed schema map does not match the database these migrations build. A refreshed copy is attached to this run as the 'schema-map' artifact — download it and commit docs/schema/."
+            node scripts/check-schema-behind.js || true
+          fi
+
+      # Only when it is actually out of date. Uploading 1 MB on every run to
+      # hand back a byte-identical copy of what is already committed is storage
+      # spent to say nothing.
+      - name: Attach the refreshed schema map
+        if: always() && steps.schema_map.outputs.stale == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema-map
+          path: /tmp/schema-refresh/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Work out what changed
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          # BASE_REF ARRIVES THROUGH env, NEVER INTERPOLATED INTO THE SCRIPT.
+          # Git ref names permit `$`, a backtick and `"`, so pasting one into a
+          # shell line is a template-injection seam. It needs push access to
+          # this repo to exploit, which makes it low-risk and free to close.
+          base="origin/$BASE_REF"
+          git fetch --no-tags origin "$BASE_REF" || exit 0
+          git diff --name-only "$base"...HEAD > /tmp/changed-files.txt || rm -f /tmp/changed-files.txt
+          echo "changed files:"; cat /tmp/changed-files.txt 2>/dev/null || echo "  (could not be determined — the full suite will run)"
+
+      # Same rule as the pure job: a pull request may run a reduced plan when
+      # the change is provably Long-Term-only; a push to main always runs the
+      # whole suite, because that is what gates the deploy.
+      - name: Run the tests
         timeout-minutes: 30
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ -s /tmp/changed-files.txt ]; then
+            npm run test:changed -- --changed-from /tmp/changed-files.txt
+          else
+            npm test
+          fi
 
   # ---------------------------------------------------------------------------
   # Auto-publish to Render. Runs ONLY:

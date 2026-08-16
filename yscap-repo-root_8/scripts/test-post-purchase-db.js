@@ -75,6 +75,18 @@ function call(server, method, p, token, body) {
   const server = app.listen(0);
   await new Promise((r) => server.once('listening', r));
   const sfx = `${process.pid}-${Math.floor(Math.random() * 1e6)}`;
+  // EVERY FILE THIS RUN CREATES NEEDS ITS OWN LOAN NUMBER, AND A COUNTER IS THE
+  // ONLY THING THAT GUARANTEES IT. `sfx` is fixed for the whole run, so the
+  // per-file part was carrying all the uniqueness on its own — and it was
+  // `Math.floor(Math.random() * 1000)`, i.e. 1,000 possible values shared by the
+  // 6 files made here. That is a ~1.5% chance per run that two of them draw the
+  // same number and the second INSERT dies on uq_applications_ys_loan_number:
+  // measured, and observed failing CI on 2026-08-16 with PP-59079440. A counter
+  // cannot collide within a run at all, and `sfx` still separates one run from
+  // the next — the sibling test-purchase-advice-chase-db.js solves the same
+  // problem the same way with crypto.randomBytes. The cleanup below still
+  // matches, because the `PP<sfx>` prefix is unchanged.
+  let fileSeq = 0;
   let bad = 0;
   const mail = (t) => `pp-${t}-${sfx}@test.local`;
   try {
@@ -96,7 +108,7 @@ function call(server, method, p, token, body) {
       const id = (await db.query(
         `INSERT INTO applications(borrower_id,status,ys_loan_number,lender,property_address)
          VALUES($1,'funded',$2,'CorrFirst','{"oneLine":"14 Held St","city":"Lakewood","state":"NJ","zip":"08701"}') RETURNING id`,
-        [bor, `PP${sfx.slice(-6)}${Math.floor(Math.random() * 1000)}`])).rows[0].id;
+        [bor, `PP${sfx.slice(-6)}${String(++fileSeq).padStart(3, '0')}`])).rows[0].id;
       await db.query(`INSERT INTO purchasing_workflow (application_id) VALUES ($1) ON CONFLICT DO NOTHING`, [id]);
       return id;
     };
