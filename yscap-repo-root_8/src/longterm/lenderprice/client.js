@@ -34,6 +34,7 @@
  *   single token holder for a small pool behind the same manager — no caller changes.
  */
 
+const crypto = require('crypto');
 const { buildSearch, smoRegistryFromList } = require('./search-model');
 
 const AUTH_BASE = (process.env.LP_AUTH_BASE || 'https://auth.digitallending.com').replace(/\/+$/, '');
@@ -41,6 +42,10 @@ const API_BASE = (process.env.LP_API_BASE || 'https://api.digitallending.com').r
 const ORIGIN = (process.env.LP_ORIGIN || 'https://yscapgroup.digitallending.com').replace(/\/+$/, '');
 const CLIENT_ID = process.env.LP_CLIENT_ID || 'acme2';
 const TIMEOUT_MS = Number(process.env.LP_TIMEOUT_MS || 60000);
+// The disqualify poll's READY response is very large (~111 MB — the full failing-lender/rule tree),
+// so downloading + parsing it needs far longer than an ordinary price call. A still-computing poll
+// returns an empty body and comes back fast, so this longer timeout only ever applies to the ready one.
+const DISQUALIFY_TIMEOUT_MS = Number(process.env.LP_DISQUALIFY_TIMEOUT_MS || 240000);
 const REFRESH_EARLY_MS = Number(process.env.LP_REFRESH_EARLY_MS || 5 * 60 * 1000); // refresh 5 min early
 const UA = process.env.LP_USER_AGENT ||
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36 Edg/151.0.0.0';
@@ -84,10 +89,10 @@ function basicClientAuthorization(clientId, clientSecret) {
 }
 
 // ---- fetch with timeout, browser-shaped headers ---------------------------
-async function req(url, { method = 'GET', headers = {}, body = null, bearer = null } = {}) {
+async function req(url, { method = 'GET', headers = {}, body = null, bearer = null, timeoutMs = TIMEOUT_MS } = {}) {
   const u = assertAllowed(url);
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
   const h = {
     Accept: 'application/json, text/plain, */*',
     Origin: ORIGIN,
@@ -267,22 +272,63 @@ async function priceFoundation() {
 // POST one searchRaw body (with a single 401 re-login retry). Returns { ok, http, raw, empty }.
 // `empty` marks an ACCEPTED-but-empty body — how Lender Price answers "the async result isn't
 // cached yet" during the disqualify poll.
-async function postSearchRaw(url, session, payload) {
+async function postSearchRaw(url, session, payload, opts = {}) {
   let s = session;
   let r;
-  try { r = await req(url, { method: 'POST', bearer: s.token, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
+  const reqOpts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) };
+  if (opts.timeoutMs) reqOpts.timeoutMs = opts.timeoutMs; // the disqualify poll returns a ~111 MB body — allow more time to download + parse it
+  try { r = await req(url, { ...reqOpts, bearer: s.token }); }
   catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
   if (r.status === 401) {
     const s2 = await getSession({ force: true });
     if (!s2.ok) return { ok: false, ...s2 };
     s = s2;
-    try { r = await req(url, { method: 'POST', bearer: s.token, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
+    try { r = await req(url, { ...reqOpts, bearer: s.token }); }
     catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
   }
   if (r.status !== 200) return { ok: false, error: 'lp_price_status', http: r.status, message: `searchRaw → ${r.status}`, upstream: scrub((r.text || '').slice(0, 600)) };
   const raw = r.json != null ? r.json : r.text;
   const empty = raw == null || (typeof raw === 'string' && raw.trim() === '') || (typeof raw === 'object' && Object.keys(raw).length === 0);
   return { ok: true, session: s, raw, empty };
+}
+
+// ---- disqualify search store (kickoff once, poll by stable searchKey) ------
+// The disqualify computation is async: a normal /price is ALREADY the kickoff (its body carries
+// showDisqualify + disqualifyAsync + cachedDisqualified=false). To READ the result, the poll must
+// re-post a BYTE-IDENTICAL body with only cachedDisqualified flipped to true — that is how the
+// frontend hits the SAME server-side computation (~16s later, a ~111 MB tree). Rebuilding the body
+// on each poll (re-fetching the live base/SMO) risks a different body → a NEW upstream search that
+// is never ready. So we STORE the exact kickoff body under a stable searchKey and poll THAT.
+const DISQ_STORE = new Map(); // searchKey -> { body, url, createdAt, expiresAt }
+const DISQ_STORE_TTL_MS = Number(process.env.LP_DISQUALIFY_STORE_TTL_MS || 15 * 60 * 1000);
+const DISQ_STORE_MAX = 200;
+// Stable key for a search: sha256 of the canonical body with cachedDisqualified removed (the only
+// field that differs between kickoff and poll). Deterministic → the same scenario reuses one slot.
+function searchKeyFor(body) {
+  const clone = { ...body }; delete clone.cachedDisqualified;
+  return crypto.createHash('sha256').update(JSON.stringify(clone)).digest('hex').slice(0, 32);
+}
+function pruneDisqStore() {
+  const now = Date.now();
+  for (const [k, v] of DISQ_STORE) if (v.expiresAt <= now) DISQ_STORE.delete(k);
+  while (DISQ_STORE.size > DISQ_STORE_MAX) { const first = DISQ_STORE.keys().next().value; DISQ_STORE.delete(first); }
+}
+// The kickoff RESPONSE assigns this search a requestId (at results.baseSearch.requestId). The poll
+// MUST echo it at the top level of the poll body, or Lender Price treats the poll as a brand-new
+// search (a fresh root id every time — the "different search id on every call" the audit measured)
+// and the async result is never found. This is the single missing link that made the poll fail.
+function requestIdOf(raw) {
+  const r = raw && raw.results && raw.results.baseSearch;
+  return (r && typeof r.requestId === 'string' && r.requestId) || null;
+}
+function storeKickoff(url, body, requestId) {
+  pruneDisqStore();
+  const key = searchKeyFor(body);
+  const now = Date.now();
+  // Store the kickoff body verbatim (cachedDisqualified is already false on it) + the upstream
+  // requestId. Refresh the TTL on a repeat so an active scenario stays pollable.
+  DISQ_STORE.set(key, { body, url, requestId: requestId || null, createdAt: now, expiresAt: now + DISQ_STORE_TTL_MS });
+  return key;
 }
 
 async function price(scenario) {
@@ -295,7 +341,11 @@ async function price(scenario) {
   const payload = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo });
   const r = await postSearchRaw(f.url, f.session, payload);
   if (!r.ok) return { ...r, request: payload };
-  return { ok: true, raw: r.raw, request: payload };
+  // A normal price IS the disqualify kickoff — store the exact body AND the upstream requestId the
+  // response assigned, so a later status poll re-posts it with only cachedDisqualified flipped +
+  // that requestId, hitting the SAME computation.
+  const searchKey = storeKickoff(f.url, payload, requestIdOf(r.raw));
+  return { ok: true, raw: r.raw, request: payload, searchKey };
 }
 
 // Whether a searchRaw response carries a POPULATED disqualify tree (the async result is ready).
@@ -328,6 +378,10 @@ async function priceDisqualified(scenario, opts = {}) {
   const first = await postSearchRaw(f.url, session, kickBody);
   if (!first.ok) return { ...first, request: kickBody };
   if (first.session) session = first.session;
+  // Echo the kickoff's requestId on the poll so it reads the SAME async computation (not a new one).
+  const rid = requestIdOf(first.raw);
+  if (rid) pollBody.requestId = rid;
+  storeKickoff(f.url, kickBody, rid); // also make it pollable by searchKey afterwards
   if (hasDisqualifyData(first.raw)) {
     return { ok: true, ready: true, polls: 0, qualified: first.raw, disqualified: first.raw, request: kickBody };
   }
@@ -339,7 +393,7 @@ async function priceDisqualified(scenario, opts = {}) {
   while (Date.now() - t0 < maxWaitMs) {
     await sleep(pollMs);
     polls += 1;
-    const p = await postSearchRaw(f.url, session, pollBody);
+    const p = await postSearchRaw(f.url, session, pollBody, { timeoutMs: DISQUALIFY_TIMEOUT_MS });
     if (p.session) session = p.session;
     if (!p.ok) continue;      // transient upstream error — keep polling within the window
     if (p.empty) continue;    // still computing (empty body) — keep polling
@@ -368,11 +422,38 @@ async function pollDisqualified(scenario) {
   const f = await priceFoundation();
   if (!f.ok) return f;
   const body = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo, disqualify: { cached: true } });
-  const r = await postSearchRaw(f.url, f.session, body);
+  // If a prior /price for this scenario stored the kickoff's requestId, echo it so we poll the SAME
+  // computation. (searchKeyFor ignores cachedDisqualified, so this key matches the kickoff's.)
+  pruneDisqStore();
+  const entry = DISQ_STORE.get(searchKeyFor(body));
+  if (entry && entry.requestId) body.requestId = entry.requestId;
+  const r = await postSearchRaw(f.url, f.session, body, { timeoutMs: DISQUALIFY_TIMEOUT_MS });
   if (!r.ok) return { ...r, request: body };
   if (r.empty || !hasDisqualifyData(r.raw)) return { ok: true, ready: false, request: body };
   return { ok: true, ready: true, raw: r.raw, request: body };
 }
+
+// POLL-ONLY by searchKey — the correct, idempotent status check (the audit's required design).
+// Loads the STORED kickoff body (never rebuilds via buildSearch, never re-fetches base/SMO), flips
+// ONLY cachedDisqualified to true, and posts it ONCE. So every poll hits the SAME upstream
+// computation the price() kickoff started — it can never restart/replace it, and the cache key is
+// byte-stable across polls. Returns { unknown:true } when the searchKey is absent/expired so the
+// route can tell the caller to re-run the price. Never holds a long loop: one post, then answer.
+async function pollDisqualifiedByKey(searchKey) {
+  pruneDisqStore();
+  const entry = DISQ_STORE.get(searchKey);
+  if (!entry) return { ok: true, unknown: true, ready: false };
+  const f = await priceFoundation(); // session/auth only — the scenario body comes from the store
+  if (!f.ok) return f;
+  const body = { ...entry.body, cachedDisqualified: true }; // flip to poll
+  if (entry.requestId) body.requestId = entry.requestId;   // echo the kickoff's requestId → same computation
+  const r = await postSearchRaw(entry.url || f.url, f.session, body, { timeoutMs: DISQUALIFY_TIMEOUT_MS });
+  if (!r.ok) return { ...r, searchKey };
+  if (r.empty || !hasDisqualifyData(r.raw)) return { ok: true, ready: false, searchKey };
+  return { ok: true, ready: true, raw: r.raw, searchKey };
+}
+// Test/introspection helper — is a searchKey currently stored (kicked off, not expired)?
+function hasStoredSearch(searchKey) { pruneDisqStore(); return DISQ_STORE.has(searchKey); }
 
 // ---- request builder (decoded field mapping; README "Field mapping") -------
 // Turns a plain scenario into the Lender Price searchRaw body. Confirmed tokens per the
@@ -859,7 +940,8 @@ function countArrays(root, keys) {
 }
 
 module.exports = {
-  configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, pollDisqualified, parse, parseFull, parseDisqualified, summarizeRaw,
+  configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, pollDisqualified, pollDisqualifiedByKey,
+  hasStoredSearch, searchKeyFor, parse, parseFull, parseDisqualified, summarizeRaw,
   hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
-  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID },
+  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, requestIdOf },
 };
