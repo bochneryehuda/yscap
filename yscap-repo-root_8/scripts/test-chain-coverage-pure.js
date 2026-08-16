@@ -64,10 +64,12 @@ const SCRIPTS = path.join(ROOT, 'scripts');
  * improvement and needs no permission.
  */
 const QUARANTINE = {
-  'scripts/test-cure-pure.js':
-    'Fails on its own: expects a cure verdict of "creates_new_finding" and gets '
-    + '"unable_to_determine". Pure, no database — so the test and the cure rule '
-    + 'genuinely disagree and somebody has to say which is right.',
+  // test-cure-pure.js was here and is now REGISTERED. Settled 2026-08-16: the
+  // TEST was wrong, not the rule. cure.js and that suite were added in the SAME
+  // commit (cc78975, #1127), so it had never passed — its "entity not screened"
+  // fixture supplied no screened-parties data at all, which exercises the rule's
+  // deliberate "we could not tell" branch while asserting the "not screened"
+  // outcome. The fixtures moved to the branches they are actually asking about.
   'scripts/test-esign-cc-viewers.js':
     '16 of 17 pass; "the loan officer is copied on the term-sheet envelope" '
     + 'fails. Touches who is carbon-copied on a package that goes out for '
