@@ -709,6 +709,21 @@ Writes `lt_loans` and its sections, `lt_loan_contacts`, milestones. Records
 table, filters, saved views, scope. **Ends with:** an officer signs in, flips to Long-Term,
 and sees their own long-term book.
 
+**The two control rows this section names shipped in the same pass as the columns.** Status
+chips and scope chips, each carrying its own count, because a chip without a number is a guess
+about where the work is. **A facet count has to describe what CLICKING it would show**, which is
+the whole subtlety: counting the stages under the same WHERE the list uses means that with a
+stage selected every other stage answers zero, and a row of zeroes is a row nobody can navigate
+out of — the way back is the chip that says there is nothing there. So each facet is counted with
+its OWN filter lifted and every other one kept, both halves built by the same function the list
+uses. **The scope is never lifted**: it is the authorization rather than a filter, and a chip
+counting files the viewer may not open would tell them a book exists that they cannot reach.
+"Mine" is `access.onFileSql` — the SAME predicate that decides what a scoped viewer may see at
+all, because defining it as "the loan officer is me" hands every processor an empty book of their
+own — and it is asked for as a flag resolved from the session, so nobody can read somebody else's
+personal queue by editing a URL. The scope row is not drawn for a viewer who only sees their own
+files: three chips that all select the same book is not a control.
+
 **The columns took a second pass, and the reason is worth keeping.** `pipeline.columns` was
 declared in phase 6 with the fifteen-key default §4.1 names, and **nothing read it** — the screen
 hard-coded nine. So a buyer could change the pipeline, save it, reload, and see exactly what they
@@ -937,6 +952,18 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     Long-Term would need its own subscription — which is a **write** to Encompass configuration
     and would need its own pad entry. Worth knowing who owns the existing one before anything
     is added beside it.
+13. **Which loan folders mean the deal is over?** §4.1 says inactive loans stay in the one table,
+    "distinguished by status — no separate archive screen", and today nothing distinguishes them:
+    the sweep discovers every folder Encompass returns for a loan amount over zero, so a file
+    somebody moved to Adverse or Trash sits in an officer's live book looking exactly like a
+    live one. Folder names are the TENANT'S OWN — this instance's list is one of the 68 endpoints
+    the missing `encompass_admin` scope refuses (item 6), so we cannot read them and **must not
+    guess**: treating a folder called "Archive" as dead would silently empty part of somebody's
+    pipeline on a hunch. The mechanism is already built and costs one setting once the names are
+    known — a `pipeline.inactiveFolders` list, an unlisted folder ALWAYS counting as live (fail
+    toward showing, like an unmapped milestone), and the pipeline defaulting to the live book
+    with the closed one one click away. **What is needed is the list of folder names and which of
+    them mean the deal is over.**
 
 ---
 
