@@ -10,6 +10,24 @@
  *
  * Run (PG on the demo socket):
  *   PGHOST=/tmp PGPORT=5433 PGUSER=postgres node scripts/test-esign-orchestrate.js
+ *
+ * …or anywhere DATABASE_URL already points at a Postgres, which is how CI and
+ * every other DB suite in this repo find one:
+ *   DATABASE_URL=postgres://user:pw@host:5432/db node scripts/test-esign-orchestrate.js
+ *
+ * WHY THE DATABASE_URL BRANCH EXISTS. This suite reads PGHOST/PGPORT directly
+ * and defaults to the LOCAL DEMO SOCKET (/tmp:5433), while the workflow sets
+ * DATABASE_URL and nothing else — so on CI it dialled a socket that does not
+ * exist and died before its first assertion. That is why it sat outside the
+ * `npm test` chain: it could not run there, not because it was failing. It
+ * needs its own ADMIN connection (it creates and drops a throwaway fixture
+ * database), which is why it cannot simply reuse the pool the other suites do.
+ *
+ * PRECEDENCE, and it matters in both directions: an explicit PG* variable still
+ * wins, so the documented demo-socket invocation above is byte-for-byte
+ * unchanged; DATABASE_URL fills in only what was not stated; and the old
+ * defaults remain the last resort, so running it bare on a demo box behaves
+ * exactly as it always did. Nothing this suite asserts is touched.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -17,10 +35,27 @@ const path = require('path');
 const { Client, Pool } = require('pg');
 
 const R = path.resolve(__dirname, '..');
-const HOST = process.env.PGHOST || '/tmp';
-const PORT = parseInt(process.env.PGPORT || '5433', 10);
-const USER = process.env.PGUSER || 'postgres';
-const PW = process.env.PGPASSWORD || 'postgres';
+
+// Parsed defensively: an unparseable DATABASE_URL must leave the historic
+// defaults in place rather than throw, because a bad connection string is a
+// reason to fail on the CONNECT with a clear error, never on the require.
+const DB_URL = (() => {
+  try { return process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL) : null; }
+  catch { return null; }
+})();
+const urlPart = (k) => {
+  if (!DB_URL) return '';
+  if (k === 'host') return DB_URL.hostname || '';
+  if (k === 'port') return DB_URL.port || '';
+  if (k === 'user') return decodeURIComponent(DB_URL.username || '');
+  if (k === 'pw') return decodeURIComponent(DB_URL.password || '');
+  return '';
+};
+
+const HOST = process.env.PGHOST || urlPart('host') || '/tmp';
+const PORT = parseInt(process.env.PGPORT || urlPart('port') || '5433', 10);
+const USER = process.env.PGUSER || urlPart('user') || 'postgres';
+const PW = process.env.PGPASSWORD || urlPart('pw') || 'postgres';
 const DBNAME = 'esign_it_test';
 
 // Force sends ON + a permissive allow-list so the gate doesn't block the test
