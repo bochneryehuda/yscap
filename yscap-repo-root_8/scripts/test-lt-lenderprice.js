@@ -361,7 +361,14 @@ async function offline() {
   const okScn = sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 375000, dscr: 1.25, zip: '07036', state: 'NJ', county: 'Union', countyFps: '34039' });
   ok(okScn.ok === true && okScn.request && okScn.request.criteria.loanPurpose === 'Purchase', '§26.5 a complete scenario validates and returns the built request');
   ok(sm.validateScenario({ purpose: 'banana', state: 'NJ', countyFps: '34039' }).error === 'unknown_loan_purpose', '§26.5 unknown purpose → 422 unknown_loan_purpose');
-  ok(sm.validateScenario({ purpose: 'Purchase', zip: '07036', state: 'NJ' }).error === 'missing_county_fips', '§26.5 incomplete location → 422 missing_county_fips');
+  // §26.3 CONTRACT CHANGE — a ZIP now FILLS the county, so ZIP+state is no longer an incomplete
+  // location end-to-end (that is the whole ZIP-enrichment feature). The underlying validateLocation
+  // rule is UNCHANGED and still proven directly above (line ~354). What must still 422 is a location
+  // the enrichment genuinely cannot complete, asserted on the next line.
+  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, zip: '07036', state: 'NJ' }).ok === true,
+    '§26.3 ZIP + state is completed by the county lookup (no longer missing_county_fips)');
+  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, zip: '30301', state: 'GA' }).error === 'zip_not_found',
+    '§26.5 a location the ZIP lookup cannot complete still 422s (fails closed)');
   ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, citizenship: 'Martian' }).error === 'invalid_field_value', '§26.5 invalid registry value → 422 invalid_field_value (moved BEFORE the upstream call)');
   ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5 }).status === 422 || sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5 }).ok === true, '§26.5 validateScenario returns a shaped result');
 
@@ -474,8 +481,14 @@ async function offline() {
 
   // 34) AUDIT — isolated LTV range is checked whether or not value+loan were supplied.
   ok(sm.validateScenario({ purpose: 'Purchase', ltv: 105, state: 'NJ', countyFps: '34039' }).error === 'ltv_out_of_range', 'a bare LTV of 105% → 422 ltv_out_of_range');
-  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 95, state: 'NJ', countyFps: '34039' }).ok === true, 'a bare LTV of 95% is accepted');
-  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 0.7, state: 'NJ', countyFps: '34039' }).ok === true, 'a fractional LTV of 0.70 is accepted');
+  // §35.2/§36.2 CONTRACT CHANGE — a LONE ltv is no longer a priceable scenario. The amount triangle
+  // needs any TWO of value / loan / ltv (the third is derived), so one amount alone is refused as
+  // insufficient_amounts rather than sent upstream with a null purchase price. The RANGE checking
+  // these two rows were written for is unchanged and still proven by the 105% case above (it fires
+  // before the triangle rule), and by the in-range rows below which now supply a second amount.
+  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 95, state: 'NJ', countyFps: '34039' }).error === 'insufficient_amounts', 'a bare LTV of 95% alone → 422 insufficient_amounts (needs two of value/loan/ltv)');
+  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 95, loan: 4e5, state: 'NJ', countyFps: '34039' }).ok === true, 'an in-range LTV of 95% WITH a loan is accepted (value derived)');
+  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 0.7, loan: 4e5, state: 'NJ', countyFps: '34039' }).ok === true, 'a fractional LTV of 0.70 with a loan is accepted');
 
   // 35) GOLDEN FIXTURE A — the audit's canonical DSCR purchase (permanent request-structure fixture).
   const goldA = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 375000, fico: 760, dscr: 1.25,

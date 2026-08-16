@@ -47,6 +47,12 @@ const PROPERTY_TYPES = {
   PlannedUnitDevelopment: { propertyType: 'PlannedUnitDevelopment', attachmentType: 'Attached', units: 1 },
   Unit2_4: { propertyType: 'UnitDwelling_2_4', attachmentType: 'Attached', units: 2 },
   UnitDwelling_2_4: { propertyType: 'UnitDwelling_2_4', attachmentType: 'Attached', units: 2 },
+  // §33.1/§34.2 — the exact ON-SCREEN dropdown LABEL "2 - 4 Unit" (and its de-spaced form) must
+  // normalize to UnitDwelling_2_4; the label was previously not an accepted alias, so a caller
+  // echoing the UI label was 422'd. Adding it here also makes the units-conflict check (which routes
+  // through resolvePropertyType) enforce the 2–4 range for the label.
+  '2 - 4 Unit': { propertyType: 'UnitDwelling_2_4', attachmentType: 'Attached', units: 2 },
+  '2-4 Unit': { propertyType: 'UnitDwelling_2_4', attachmentType: 'Attached', units: 2 },
   Modular: { propertyType: 'Modular', attachmentType: 'Detached', units: 1 },
   Townhouse: { propertyType: 'Townhouse', attachmentType: 'Attached', units: 1 },
   Condo: { propertyType: 'Condos', attachmentType: 'Attached', units: 1 },
@@ -56,19 +62,126 @@ const PROPERTY_TYPES = {
   DetachedCondominium: { propertyType: 'DetachedCondominium', attachmentType: 'Detached', units: 1 },
   HighRiseCondo: { propertyType: 'HighRiseCondo', attachmentType: 'Attached', units: 1 },
   SiteCondo: { propertyType: 'SiteCondo', attachmentType: 'Detached', units: 1 },
+  // §33.1 — the current-tenant condo sub-types confirmed by live one-field capture. The exact
+  // upstream property.propertyType token IS the label, and each auto-minimums to 1 unit. Attachment
+  // is NOT captured per condo sub-type (it is an independent field — §34.2 P1); the confirmed live
+  // behavior is that a property-only selection RETAINS the profile default Detached (§33.1/§34.4),
+  // so these inherit Detached and stay overridable via sc.attachment. Do NOT copy the older condo
+  // rows' guessed 'Attached' (flagged as a defect the live capture contradicts).
+  CondoGarden: { propertyType: 'CondoGarden', attachmentType: 'Detached', units: 1 },
+  MidRiseCondo: { propertyType: 'MidRiseCondo', attachmentType: 'Detached', units: 1 },
+  // §33.1/§17.2 — selecting CondoTel in the live UI AUTOMATICALLY checks Non-Warrantable Condo and
+  // adds its SMO, so the confirmed request carries nonWarrantableProject:true alongside the distinct
+  // CondoTel property token (NOT a collapse to generic Condos+nonWarrantable). dynaToSmo resolves the
+  // Non-Warrantable Condo SMO from that flag against the live registry.
+  CondoTel: { propertyType: 'CondoTel', attachmentType: 'Detached', units: 1, nonWarrantableProject: true },
   Cooperative: { propertyType: 'Cooperative', attachmentType: 'Attached', units: 1 },
   MultiFamily: { propertyType: 'MultiFamily', attachmentType: 'Attached', units: 5 },
   ManufacturedHousing: { propertyType: 'ManufacturedHousing', attachmentType: 'Detached', units: 1 },
   ManufacturedHousingDoubleWide: { propertyType: 'ManufacturedHousingDoubleWide', attachmentType: 'Detached', units: 1 },
   ManufacturedHousingSingleWide: { propertyType: 'ManufacturedHousingSingleWide', attachmentType: 'Detached', units: 1 },
   ManufacturedHousingMultiWide: { propertyType: 'ManufacturedHousingMultiWide', attachmentType: 'Detached', units: 1 },
+  // §33.1 — the plain ManufacturedHomeCondominium token (distinct from the longer …OrPUDOrCooperative
+  // combined token), confirmed by live capture; auto-minimums to 1 unit.
+  ManufacturedHomeCondominium: { propertyType: 'ManufacturedHomeCondominium', attachmentType: 'Detached', units: 1 },
   ManufacturedHomeCondominiumOrPUDOrCooperative: { propertyType: 'ManufacturedHomeCondominiumOrPUDOrCooperative', attachmentType: 'Attached', units: 1 },
 };
 function resolvePropertyType(t) { return PROPERTY_TYPES[t] || null; }
 
+// §33.2 — INCOME DOCUMENTATION. The complete current-tenant IncomeDocType menu from the confirmed
+// one-field capture: the on-screen LABEL on the left, the EXACT upstream token on the right. They
+// disagree often enough that neither can be derived from the other ("WVOE" transmits as "VOEOnly";
+// "12 Mo Alt Doc" as "AltDoc12Months"; "24Mo Tax Prepared PL" as "24MonthTaxPreparedPL" — Mo vs
+// Month — while "24Mo CPA Prepared PL" stays "24MoCPAPreparedPL"). So this is a reviewed lookup, NOT
+// a formatter: never generate one of these tokens from the label. A caller may pass either the label
+// or the token; anything else is rejected (the route 422s) rather than priced as the DSCR default.
+const INCOME_DOC_TYPES = {
+  'Full Doc - 24M': 'Full Doc - 24M',
+  'Full Doc - 12M': 'Full Doc - 12M',
+  DSCR: 'DSCR',
+  '24Mo Personal Bank Statements': '24MoPersonalBankStatements',
+  '24Mo Business Bank Statements': '24MoBusinessBankStatements',
+  '12MoPersonalBankStatements': '12MoPersonalBankStatements',
+  '12Mo Business Bank Statements': '12MoBusinessBankStatements',
+  'Community - No income/No employment/No DTI': 'Community - No income/No employment/No DTI',
+  '24Mo CPA Prepared PL': '24MoCPAPreparedPL',
+  '24Mo Tax Prepared PL': '24MonthTaxPreparedPL',
+  '24MoCPAPreparedPLwBKStmt': '24MoCPAPreparedPLwBKStmt',
+  '24Mo Tax Prepared PLwBkStmt': '24MonthTaxPreparedPLwBkStmt',
+  '12Mo CPA Prepared PL': '12MoCPAPreparedPL',
+  '12Mo Tax Prepared PL': '12MonthTaxPreparedPL',
+  '12Mo CPA Prepared PLwBKStmt': '12MoCPAPreparedPLwBKStmt',
+  '12Mo Tax Prepared PLwBKStmt': '12MonthTaxPreparedPLwBKStmt',
+  '1YrTaxReturn': '1YrTaxReturn',
+  '12 Mo Alt Doc': 'AltDoc12Months',
+  '24 Mo Alt Doc': 'AltDoc24Months',
+  'Asset Utilization': 'Asset Utilization',
+  AssetQualifier: 'AssetQualifier',
+  AssetDepletion: 'AssetDepletion',
+  '1099 - 24M': '1099 - 24M',
+  '1099 - 12M': '1099 - 12M',
+  WVOE: 'VOEOnly',
+};
+// Accept the exact upstream TOKEN as well as the label (a caller replaying a captured request sends
+// the token). Returns the token, or null when unrecognized — never a guess.
+const INCOME_DOC_TOKENS = new Set(Object.values(INCOME_DOC_TYPES));
+function mapIncomeDocType(v) {
+  if (v == null || v === '') return null;
+  const s = String(v);
+  if (Object.prototype.hasOwnProperty.call(INCOME_DOC_TYPES, s)) return INCOME_DOC_TYPES[s];
+  return INCOME_DOC_TOKENS.has(s) ? s : null;
+}
+
+// §33.3 — PREPAYMENT STRUCTURE (dynamicPropertiesMap.PrePayment_Plan_Type). Confirmed one-field
+// capture. NOTE "No Prepay" transmits a NULL plan value — which is NOT the same operation as
+// selecting PrepayTerm "None" (that produces the No PPP SMO), so term and structure stay independent
+// inputs. The DECLARED_NULL sentinel distinguishes "this structure is a real choice whose token is
+// null" from "unrecognized" so a caller can select No Prepay explicitly.
+const PREPAY_STRUCTURE_NULL = Symbol('prepay.noPrepay');
+const PREPAY_STRUCTURES = {
+  Standard: 'Standard',
+  'No Prepay': PREPAY_STRUCTURE_NULL,
+  'Fixed 5%': 'Fixed5',
+  'Fixed 4%': 'Fixed4',
+  'Fixed 3%': 'Fixed3',
+  'Fixed 2%': 'Fixed2',
+  'Fixed 1%': 'Fixed1',
+  '5,4,3,3,3': '54333',
+  '5,4,3,2,1': '54321',
+  '5,4,3,3': '5433',
+  '5,4,3,2': '5432',
+  '4,3,2,1': '4321',
+  '5,4,3': '543',
+  '3,2,1': '321',
+  '5,4': '54',
+  '2,1': '21',
+  '6 Months Interest': '6MosInt',
+  'Step Down': 'StepDown',
+  Other: 'Other',
+};
+const PREPAY_STRUCTURE_TOKENS = new Set(Object.values(PREPAY_STRUCTURES).filter((v) => typeof v === 'string'));
+// Returns the token string, PREPAY_STRUCTURE_NULL for the explicit No-Prepay choice, or null when
+// unrecognized. The caller must test against PREPAY_STRUCTURE_NULL before truthiness.
+function mapPrepayStructure(v) {
+  if (v == null || v === '') return null;
+  const s = String(v);
+  if (Object.prototype.hasOwnProperty.call(PREPAY_STRUCTURES, s)) return PREPAY_STRUCTURES[s];
+  return PREPAY_STRUCTURE_TOKENS.has(s) ? s : null;
+}
+
+// §33.4 — BORROWER TYPE (dynamicPropertiesMap.GLOBAL_BorrowerType). The exact six-value tenant enum.
+// This was previously passed through UNVALIDATED, so an arbitrary string travelled upstream as a
+// vesting type (audit §34.2 P1). The DSCR profile default is LLC.
+const BORROWER_TYPES = new Set(['Individual', 'Corporation', 'Partnership', 'Trust', 'Non-Profit', 'LLC']);
+
 // Adverse-credit / borrower dynamic fields — exact upstream keys + tokens from the audit
 // (§13–§16). Values are validated against the audit's token sets; dynaToSmo resolves the SMOs.
-const CITIZENSHIP = new Set(['US Citizen', 'Perm Resident', 'Non-Perm Resident', 'Foreign National', 'ITIN']);
+// §33.4 — CITIZENSHIP. The complete seven-value tenant menu from the confirmed capture. The two
+// combined foreign-national values carry a TRAILING ")" with no opening bracket — a real, current
+// vendor spelling, NOT a typo of ours. Do NOT "clean" them: a lender rule matches the stored token,
+// so a tidier spelling would silently fail to match. They are transmitted verbatim.
+const CITIZENSHIP = new Set(['US Citizen', 'Perm Resident', 'Non-Perm Resident', 'Foreign National',
+  'ForeignNationalwithITIN)', 'ForeignNationalnoITIN)', 'ITIN']);
 const TRADELINES = new Set(['Limited', '2 for 24+ Months', '3 for 12+ Months']);
 const BK_CHAPTER = new Set(['Chapter 7', 'Chapter 11', 'Chapter 13']);
 const BK_STATUS = new Set(['Open', 'Discharged', 'Dismissed']);
@@ -139,6 +252,17 @@ function applyRegistry(m, sc) {
   if (sc.crossCollateral != null) setDyn(m, 'GLOBAL_Cross_Collateralization_Product', sc.crossCollateral ? 'true' : 'false');
   if (sc.firstTimeInvestor === true) setDyn(m, 'FirstTimeInvestor', 'true');
   if (sc.livingRentFree === true) setDyn(m, 'Global_Living_Rent_Free', 'true');
+  // §31.3 — DSCR WITH ASSET DEPLETION. The ON value is the confirmed live token "Yes" (NOT the string
+  // "true" the sibling flags use — copying their shape here would be a guess). The OFF token was
+  // never captured ("blank later serialized null/absence depending on UI state"), so an explicit
+  // false INHERITS the live default exactly like omission, same as firstTimeInvestor above. When a
+  // capture confirms the off value, add the else-branch in this ONE place.
+  if (sc.dscrAssetDepletion === true) setDyn(m, 'Global_DSCR_Asset_Depletion', 'Yes');
+  // §31.7 — the PARENT "late in the last 12 months" toggle, which the live UI sends ALONGSIDE the
+  // per-bucket MORT*LATESLAST12M counts. Confirmed ON token "true"; the off token was not captured,
+  // so an explicit false inherits. NOTE the 13-24 month parent toggle's field name was never
+  // captured, so it is deliberately NOT wired — only its per-bucket counts are.
+  if (sc.lateInLast12Months === true) setDyn(m, 'Lateinlast12months', 'true');
 
   // --- citizenship / tradelines ---
   if (sc.citizenship != null) { if (CITIZENSHIP.has(sc.citizenship)) setDyn(m, 'Citizenship', sc.citizenship); else bad('citizenship', sc.citizenship, CITIZENSHIP); }
@@ -194,7 +318,11 @@ const REGISTRY_FIELDS = [
   'compensationType', 'waiveLenderFee', 'rural', 'mixedUse', 'citizenship', 'tradelines',
   'noMortgageHistory', 'bankruptcy', 'mortgageLates', 'foreclosure', 'shortSale', 'deedInLieu',
   'chargeOff', 'forbearance', 'crossCollateral', 'firstTimeInvestor', 'livingRentFree',
+  'dscrAssetDepletion', 'lateInLast12Months',
 ];
 
 module.exports = { applyRegistry, resolvePropertyType, PROPERTY_TYPES, REGISTRY_FIELDS,
+  mapIncomeDocType, INCOME_DOC_TYPES,
+  mapPrepayStructure, PREPAY_STRUCTURES, PREPAY_STRUCTURE_NULL,
+  BORROWER_TYPES,
   _tokens: { CITIZENSHIP, TRADELINES, BK_CHAPTER, BK_STATUS, BK_SEASONING, FORECLOSURE, SHORTSALE, DEEDINLIEU, CHARGEOFF, FORBEARANCE, LATE_COUNT, COMP_TYPE } };
