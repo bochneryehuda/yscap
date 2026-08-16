@@ -136,6 +136,14 @@ const yn = (b) => (b ? 'Y' : 'N');
  * form cannot hold. Every mapping below must land on one of these (or on blank),
  * which `verifyPropertyTypes` asserts at build time.
  *
+ * The list is COMPLETE — the owner confirmed it ends at `Automotive` (2026-08-16),
+ * so it has no land, no lot and no "Other". A shape none of these covers therefore
+ * ships blank BY DESIGN and is reported; that is not a gap waiting on more of their
+ * list. (`Automotive` is theirs, not ours — the owner confirmed we will never lend
+ * on one. It stays here because this array is a transcript of THEIR form, not a
+ * list of what we use; the pass-through only ever emits it if a track-record line
+ * literally says so.)
+ *
  * It also settles four things our own earlier reading got wrong, and each one is
  * the reason a value is never trusted until CorrFirst themselves show it:
  *   · a CONDO is `Condo`, not `SFR-Attached` — they carry it as its own type.
