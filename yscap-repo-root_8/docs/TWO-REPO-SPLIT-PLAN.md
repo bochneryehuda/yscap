@@ -1,6 +1,16 @@
 # Splitting PILOT into two repos — the plan
 
-**Status: RESEARCH COMPLETE, NOTHING BUILT. This is the plan for owner approval.**
+> **NOT ADOPTED — owner-directed 2026-08-16.** Shown the industry validation in §6b (Google, Meta and
+> Microsoft each keep one repository; a shared database across two deployables is the canonical
+> microservices anti-pattern), the owner decided against the split: *"If Microsoft wouldn't do it, then
+> I would also not do it."* The current plan is **`SCHEMA-AS-SOURCE-OF-TRUTH-PLAN.md`**.
+>
+> This file is retained as the record — the measurements, the risk register (§6a) and the external
+> validation (§6b) are still accurate and would be the starting point if the decision is ever revisited.
+> Two items from it were carried into the current plan on their own merits: affected-target CI, and
+> CODEOWNERS on the identity zone.
+
+**Status: RESEARCH COMPLETE, NOTHING BUILT. Superseded — see the banner above.**
 Owner-directed 2026-08-16: *"split up my entire system into two separate repos — short term and long
 term … totally separate if it's possible … everybody should just have a slider, and then the entire
 system should be totally different … same logins, same profiles."*
