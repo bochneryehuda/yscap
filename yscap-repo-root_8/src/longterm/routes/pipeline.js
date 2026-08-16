@@ -1,0 +1,127 @@
+'use strict';
+
+// HTTP for the long-term pipeline — an officer's own long-term book, the closer's
+// and funder's whole book, the admin's everything. Mounted at /api/lt/pipeline by
+// src/longterm/index.js; staff authentication is applied at the mount seam in
+// src/server.js, so this router imports no RTL auth code.
+//
+// Every row a viewer may not see is excluded by the SCOPE inside the query
+// (access.pipelineScopeSql), not by anything here — so the list, the count and the
+// single-file check can never disagree about who may see what.
+
+const express = require('express');
+const router = express.Router();
+
+const pipeline = require('../pipeline');
+const access = require('../access');
+const contacts = require('../people/contacts');
+const workspace = require('../workspace');
+const locks = require('../locks');
+const stages = require('../stages');
+const settingsStore = require('../settings/store');
+const db = require('../db');
+
+// GET /api/lt/pipeline — the viewer's long-term book.
+router.get('/', async (req, res) => {
+  try {
+    const out = await pipeline.loadPipeline(req.actor, {
+      stage: req.query.stage,
+      folder: req.query.folder,
+      search: req.query.search,
+      officerStaffId: req.query.officer,
+      unassigned: String(req.query.unassigned || '') === 'true',
+      sort: req.query.sort,
+      dir: req.query.dir,
+      limit: req.query.limit,
+      offset: req.query.offset,
+    });
+    res.json(out);
+  } catch (e) {
+    console.error('[lt] pipeline failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not load the long-term pipeline.' });
+  }
+});
+
+// GET /api/lt/pipeline/:loanId — one file's header and its team.
+//
+// The access check is `mayOpenLoan` against this loan's OWN contacts — the same
+// rule the list applies, expressed for a single file, so a direct link can never
+// reach further than the list does.
+router.get('/:loanId', async (req, res) => {
+  try {
+    const { settings } = await settingsStore.load();
+    const viewer = access.accessFor(req.actor, settings);
+
+    // The lock joins here because the workspace's rail and its "Rate lock" section
+    // both read `lock_status` / `lock_expiration_date` off the loan row. Without the
+    // join those read as empty on every loan — a section permanently greyed with a
+    // reason that is not true, which is worse than no section at all.
+    const { rows } = await db.query(
+      `SELECT l.*, b.full_name AS borrower_name,
+              k.lock_status, k.expiration_date AS lock_expiration_date
+         FROM lt_loans l
+         LEFT JOIN borrowers b ON b.id = l.borrower_id
+         LEFT JOIN lt_locks k ON k.loan_id = l.id
+        WHERE l.id = $1::uuid`,
+      [String(req.params.loanId)],
+    );
+    if (!rows.length) return res.status(404).json({ error: 'No such long-term loan.' });
+
+    const { rows: team } = await db.query(
+      'SELECT * FROM lt_loan_contacts WHERE loan_id = $1::uuid', [rows[0].id],
+    );
+    if (!access.mayOpenLoan(viewer, req.actor && req.actor.id, team)) {
+      // Deliberately the same answer as a missing loan: telling somebody a file
+      // exists but is not theirs is itself a disclosure about the book.
+      return res.status(404).json({ error: 'No such long-term loan.' });
+    }
+
+    const staffIds = [...new Set(team.flatMap((t) => [t.staff_id, t.override_staff_id]).filter(Boolean).map(String))];
+    const names = new Map();
+    if (staffIds.length) {
+      const { rows: people } = await db.query(
+        'SELECT id, full_name FROM staff_users WHERE id = ANY($1::uuid[])', [staffIds],
+      );
+      for (const p of people) names.set(String(p.id), p.full_name);
+    }
+
+    // The workspace's three regions, built from what we already read — the section
+    // menu, the stepper, and the rail. The rail is assembled ONCE here so the screen
+    // can mount it and not re-render it while somebody moves between sections.
+    // db/547's columns are `milestone_name` and `sequence` — NOT name/sort_order.
+    // Aliased to what the workspace expects rather than renamed there, so the
+    // stepper stays a pure function of a plain shape. `is_archived` milestones are
+    // excluded: a retired step must not sit in the middle of a live file's progress.
+    const { rows: catalog } = await db.query(
+      `SELECT milestone_name AS name, sequence AS sort_order
+         FROM lt_encompass_milestones
+        WHERE COALESCE(is_archived, false) = false
+        ORDER BY sequence`,
+    ).catch(() => ({ rows: [] }));
+
+    // The lock's own detail — the posture, the countdown, and what PILOT watched
+    // change. Best-effort: a loan still opens when its lock cannot be read.
+    const lock = await locks.loadLock(rows[0].id).catch(() => null);
+
+    const labels = settings['contacts.roleLabels'] || {};
+    res.json({
+      loan: rows[0],
+      lock,
+      sections: workspace.sectionMenu(rows[0], {
+        conditionsEnabled: settings['conditions.enabled'] === true,
+      }),
+      stepper: workspace.milestoneStepper(rows[0], catalog),
+      rail: workspace.summaryRail(rows[0], { stageConfig: stages.configFrom(settings) }),
+      contacts: team.map((t) => contacts.describeContact(t, {
+        staffName: t.staff_id ? names.get(String(t.staff_id)) : null,
+        overrideName: t.override_staff_id ? names.get(String(t.override_staff_id)) : null,
+        labels,
+      })),
+    });
+  } catch (e) {
+    console.error('[lt] loan header failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not load the loan.' });
+  }
+});
+
+module.exports = router;

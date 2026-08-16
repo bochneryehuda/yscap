@@ -406,6 +406,35 @@ scenario('SELECT FROM ONLY an RTL table is a read', (app) => {
     "async function f(db){ return db.query('SELECT id FROM ONLY applications'); }\n");
 }, 'fail', 'reads the RTL table');
 
+// `IS DISTINCT FROM` is a comparison operator whose last word is FROM, and the
+// upsert pseudo-relation EXCLUDED is not a table. Both were reported as
+// cross-product reads until 2026-08-14 — the report even named "EXCLUDED.col" as
+// the RTL table. These four scenarios pin the exemption AND its edges: it must
+// silence the operator and the pseudo-relation, and nothing else.
+scenario('an upsert guarded by IS DISTINCT FROM EXCLUDED is NOT a crossing', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query(`INSERT INTO lt_loans (id, s) VALUES ($1,$2) "
+    + "ON CONFLICT (id) DO UPDATE SET s = EXCLUDED.s WHERE lt_loans.s IS DISTINCT FROM EXCLUDED.s`); }\n");
+}, 'pass');
+
+scenario('IS NOT DISTINCT FROM is exempt too', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('SELECT 1 FROM lt_loans WHERE a IS NOT DISTINCT FROM b'); }\n");
+}, 'pass');
+
+// THE EDGE THAT MATTERS: the exemption is per-occurrence, so a real cross-product
+// read sitting in the same statement is still caught.
+scenario('a real RTL read is STILL caught in a statement that also uses IS DISTINCT FROM', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('SELECT 1 FROM applications WHERE a IS DISTINCT FROM b'); }\n");
+}, 'fail', 'reads the RTL table');
+
+scenario('an RTL table named right after the operator is still caught by its own clause', (app) => {
+  write(app, 'src/longterm/lib/loan.js',
+    "async function f(db){ return db.query('SELECT 1 FROM lt_loans l WHERE l.x IS DISTINCT FROM y "
+    + "AND l.id IN (SELECT id FROM applications)'); }\n");
+}, 'fail', 'reads the RTL table');
+
 scenario('TRUNCATE with a comma list reaches every table named', (app) => {
   write(app, 'src/longterm/lib/loan.js',
     "async function f(db){ return db.query('TRUNCATE lt_loans, applications;'); }\n");
