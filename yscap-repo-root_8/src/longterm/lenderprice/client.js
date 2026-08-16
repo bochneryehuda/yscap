@@ -318,8 +318,27 @@ function pruneDisqStore() {
 // search (a fresh root id every time — the "different search id on every call" the audit measured)
 // and the async result is never found. This is the single missing link that made the poll fail.
 function requestIdOf(raw) {
-  const r = raw && raw.results && raw.results.baseSearch;
-  return (r && typeof r.requestId === 'string' && r.requestId) || null;
+  if (!raw || typeof raw !== 'object') return null;
+  // The kickoff assigns the requestId at baseSearch.requestId OR results.baseSearch.requestId
+  // (both shapes occur). Check both.
+  const a = raw.baseSearch && raw.baseSearch.requestId;
+  const b = raw.results && raw.results.baseSearch && raw.results.baseSearch.requestId;
+  const rid = (typeof a === 'string' && a) || (typeof b === 'string' && b) || null;
+  return rid || null;
+}
+// Build the poll body from the stored kickoff body applying the EXACT frontend normalization the
+// captured HAR uses: cachedDisqualified=true, the upstream requestId, and four nullable defaults the
+// frontend fills in (compensation bounds + rate range) so the poll body matches byte-for-byte.
+function applyPollDelta(kickBody, requestId) {
+  const body = { ...kickBody, cachedDisqualified: true };
+  if (requestId) body.requestId = requestId;
+  const bc = body.brokerCriteria = { ...(body.brokerCriteria || {}) };
+  if (bc.minimunCompensation === undefined) bc.minimunCompensation = null;
+  if (bc.maxCompensation === undefined) bc.maxCompensation = null;
+  const rr = body.rateRange = { ...(body.rateRange || {}) };
+  if (rr.from === undefined) rr.from = null;
+  if (rr.to === undefined) rr.to = null;
+  return body;
 }
 function storeKickoff(url, body, requestId) {
   pruneDisqStore();
@@ -369,7 +388,6 @@ async function priceDisqualified(scenario, opts = {}) {
   const f = await priceFoundation();
   if (!f.ok) return f;
   const kickBody = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo, disqualify: { cached: false } });
-  const pollBody = { ...kickBody, cachedDisqualified: true };
   const maxWaitMs = opts.maxWaitMs != null ? opts.maxWaitMs : Number(process.env.LP_DISQUALIFY_MAX_WAIT_MS || 80000);
   const pollMs = opts.pollMs != null ? opts.pollMs : Number(process.env.LP_DISQUALIFY_POLL_MS || 5000);
 
@@ -378,9 +396,10 @@ async function priceDisqualified(scenario, opts = {}) {
   const first = await postSearchRaw(f.url, session, kickBody);
   if (!first.ok) return { ...first, request: kickBody };
   if (first.session) session = first.session;
-  // Echo the kickoff's requestId on the poll so it reads the SAME async computation (not a new one).
+  // Echo the kickoff's requestId on the poll so it reads the SAME async computation (not a new one),
+  // applying the exact frontend normalization delta (cachedDisqualified + requestId + nullable defaults).
   const rid = requestIdOf(first.raw);
-  if (rid) pollBody.requestId = rid;
+  const pollBody = applyPollDelta(kickBody, rid);
   storeKickoff(f.url, kickBody, rid); // also make it pollable by searchKey afterwards
   if (hasDisqualifyData(first.raw)) {
     return { ok: true, ready: true, polls: 0, qualified: first.raw, disqualified: first.raw, request: kickBody };
@@ -421,12 +440,13 @@ async function priceDisqualified(scenario, opts = {}) {
 async function pollDisqualified(scenario) {
   const f = await priceFoundation();
   if (!f.ok) return f;
-  const body = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo, disqualify: { cached: true } });
-  // If a prior /price for this scenario stored the kickoff's requestId, echo it so we poll the SAME
-  // computation. (searchKeyFor ignores cachedDisqualified, so this key matches the kickoff's.)
+  // If a prior /price for this scenario stored the kickoff's requestId, echo it (+ the nullable
+  // defaults) so we poll the SAME computation. (searchKeyFor ignores cachedDisqualified, so the key
+  // matches the kickoff's.) Build the kickoff-shaped body first to compute the key.
+  const kickBody = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo, disqualify: { cached: false } });
   pruneDisqStore();
-  const entry = DISQ_STORE.get(searchKeyFor(body));
-  if (entry && entry.requestId) body.requestId = entry.requestId;
+  const entry = DISQ_STORE.get(searchKeyFor(kickBody));
+  const body = applyPollDelta(kickBody, entry && entry.requestId);
   const r = await postSearchRaw(f.url, f.session, body, { timeoutMs: DISQUALIFY_TIMEOUT_MS });
   if (!r.ok) return { ...r, request: body };
   if (r.empty || !hasDisqualifyData(r.raw)) return { ok: true, ready: false, request: body };
@@ -443,10 +463,13 @@ async function pollDisqualifiedByKey(searchKey) {
   pruneDisqStore();
   const entry = DISQ_STORE.get(searchKey);
   if (!entry) return { ok: true, unknown: true, ready: false };
+  // Without the upstream requestId the poll can never correlate to the kickoff's computation — it
+  // would 202 forever. Surface a named, controlled error instead (the caller re-runs /price).
+  if (!entry.requestId) return { ok: false, error: 'lp_missing_request_id', searchKey,
+    message: 'The kickoff response did not include an upstream requestId, so the ineligible result cannot be polled. Re-run the price search.' };
   const f = await priceFoundation(); // session/auth only — the scenario body comes from the store
   if (!f.ok) return f;
-  const body = { ...entry.body, cachedDisqualified: true }; // flip to poll
-  if (entry.requestId) body.requestId = entry.requestId;   // echo the kickoff's requestId → same computation
+  const body = applyPollDelta(entry.body, entry.requestId); // cachedDisqualified + requestId + nullable defaults
   const r = await postSearchRaw(entry.url || f.url, f.session, body, { timeoutMs: DISQUALIFY_TIMEOUT_MS });
   if (!r.ok) return { ...r, searchKey };
   if (r.empty || !hasDisqualifyData(r.raw)) return { ok: true, ready: false, searchKey };
@@ -943,5 +966,5 @@ module.exports = {
   configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, pollDisqualified, pollDisqualifiedByKey,
   hasStoredSearch, searchKeyFor, parse, parseFull, parseDisqualified, summarizeRaw,
   hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
-  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, requestIdOf },
+  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, requestIdOf, applyPollDelta },
 };
