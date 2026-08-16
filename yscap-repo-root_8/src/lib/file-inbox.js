@@ -59,7 +59,7 @@ const cfg = require('../config');
 const db = require('../db');
 const email = require('./email');
 const notify = require('./notify');
-const { fileReplyTo, applicationIdFromRecipient, orderRefFromRecipient, closingTokenFromRecipient } = require('./file-address');
+const { fileReplyTo, applicationIdFromRecipient, orderRefFromRecipient, rvRefFromRecipient, closingTokenFromRecipient } = require('./file-address');
 // The ONE definition of where a person's own reply ends and the quoted history
 // begins — shared with the chat family, the Email Center and the outbound marker.
 const emailQuote = require('./email/quote');
@@ -682,6 +682,20 @@ async function processReceivedEvent(event) {
       if (!applicationIds.includes(ref.applicationId)) applicationIds.push(ref.applicationId);
     }
   }
+  // The APPRAISAL VENDOR's reply (rv+<id>@). Richer Values has no messaging API at
+  // all — 31 messaging-shaped paths answered 404 on both methods — so this address
+  // is the only way their desk's answer reaches the file. Treated exactly like an
+  // order address: the file joins the forward + Email Center capture, and the reply
+  // is tagged so the order-scoped inbox shows it.
+  const rvRefs = [];
+  for (const r of recips) {
+    const id = rvRefFromRecipient(r);
+    if (id && !rvRefs.includes(id)) {
+      rvRefs.push(id);
+      if (!applicationIds.includes(id)) applicationIds.push(id);
+    }
+  }
+
   const chatKey = chatKeyFromRecipients(recips);
 
   // THE CLOSING CHAIN (closing+<token>@). Unlike every other family here, the token
@@ -828,7 +842,7 @@ async function processReceivedEvent(event) {
   // side is the CLOSING CHAIN below.
   const orderMsgType = orderRefs.length
     ? (orderRefs[0].orderType === 'title' ? 'title_message' : 'insurance_message')
-    : undefined;
+    : (rvRefs.length ? 'rv_message' : undefined);
   // A closing-chain message is tagged and — crucially — PINNED to the chain's STORED
   // thread key. The attorney chose their own subject and may change it mid-chain, so
   // the usual subject-derived key would scatter one closing across many threads.
