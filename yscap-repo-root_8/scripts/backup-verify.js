@@ -23,7 +23,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { Client } = require('pg');
+const { connectWhenReady } = require('../src/lib/backup/pg-ready');
 const { spawn, execFileSync } = require('child_process');
 const { pipeline } = require('stream/promises');
 
@@ -49,8 +49,14 @@ function sslFor(url) {
 /** Empty the scratch database completely — every non-system schema, not just `public`, or a
  *  leftover schema from a previous drill would be counted as if the backup had produced it. */
 async function wipeScratch(url) {
-  const client = new Client({ connectionString: url, ssl: sslFor(url) });
-  await client.connect();
+  // WAIT OUT A SERVER THAT IS STILL COMING UP. This is the first thing the
+  // drill asks of the scratch database, so it is where a restart lands — and on
+  // 2026-08-16 it did: "the database system is in recovery mode" (57P03) failed
+  // the whole weekly check while every backup was fine. The two safety guards
+  // (never the live database, never a target that does not look disposable) have
+  // ALREADY run in main() before this point, and must stay there — waiting must
+  // never become the first thing that happens to an unchecked target.
+  const client = await connectWhenReady(url, { ssl: sslFor(url), log });
   try {
     const schemas = (await client.query(
       `SELECT nspname FROM pg_namespace
@@ -60,6 +66,29 @@ async function wipeScratch(url) {
     await client.query('CREATE SCHEMA IF NOT EXISTS public');
     return schemas.length;
   } finally { await client.end().catch(() => {}); }
+}
+
+/**
+ * Did the SERVER go away during the restore, rather than the restore merely
+ * hitting errors?
+ *
+ * PURE, and the distinction is the whole point. Ordinary restore errors (a
+ * missing extension, an owner that does not exist here) are per-object and the
+ * restore carries on. "Server closed the connection unexpectedly" followed by
+ * "no connection to the server" is categorically different: the database
+ * PROCESS died, everything after it failed for one reason, and the error COUNT
+ * is meaningless — 317 errors is one crash, not 317 problems.
+ */
+function lostServerDuringRestore(res) {
+  if (!res || typeof res.tail !== 'string') return false;
+  const t = res.tail.toLowerCase();
+  return /server closed the connection unexpectedly|no connection to the server|connection to server was lost|terminating connection due to/.test(t);
+}
+
+/** The first table whose COPY failed — the useful half of a wall of errors. */
+function firstFailedTable(res) {
+  const m = /copy failed for table "([^"]+)"/i.exec(String((res && res.tail) || ''));
+  return m ? m[1] : null;
 }
 
 function runPgRestore(targetUrl, dumpPath, jobs) {
@@ -164,12 +193,35 @@ async function main() {
 
         const dropped = await wipeScratch(target);
         log(`scratch database emptied (${dropped} schemas dropped)`);
-        const res = await runPgRestore(target, tmpPath, parseInt(val('--jobs') || '2', 10) || 2);
+        const res = await runPgRestore(target, tmpPath, parseInt(val('--jobs') || process.env.BACKUP_VERIFY_JOBS || '2', 10) || 2);
         restoreReport = res;
         log(`test restore finished (exit ${res.code}, ${res.errors} errors)`);
 
-        const client = new Client({ connectionString: target, ssl: sslFor(target) });
-        await client.connect();
+        // THE CAUSE MUST NOT BE MASKED BY ITS OWN CONSEQUENCE. When the scratch
+        // server DIES mid-restore, pg_restore reports "server closed the
+        // connection unexpectedly" and then hundreds of "no connection to the
+        // server"; the server restarts into crash recovery; and the very next
+        // thing this script does is connect — which answers 57P03, "the
+        // database system is in recovery mode". That is the message that
+        // reached the alert on 2026-08-16, twice, and it describes the
+        // AFTERMATH. It cost a whole wrong diagnosis: a server that crashed
+        // under the restore reads exactly like a server that happened to be
+        // restarting. So the crash is named HERE, before anything reconnects.
+        if (lostServerDuringRestore(res)) {
+          throw new Error(
+            'the test database CRASHED while the backup was being loaded into it — it closed the '
+            + `connection part-way through and restarted (${res.errors} errors from pg_restore, first `
+            + `failure on "${firstFailedTable(res) || 'an unknown table'}"). This is NOT a bad backup: `
+            + 'the file was present, decrypted and matched its checksum before this point. It means the '
+            + 'test database cannot hold a full copy of production — it is almost always too small. '
+            + 'Give it at least as much memory as the live database, or lower BACKUP_VERIFY_JOBS to 1 '
+            + 'to reduce the peak, then run the drill again.');
+        }
+
+        // Same wait here: a restore can take many minutes, and a server that
+        // restarts during it would otherwise lose the whole drill at the last
+        // step, after all the expensive work was already done.
+        const client = await connectWhenReady(target, { ssl: sslFor(target), log });
         try {
           const restored = await inventoryLib.takeInventory({ query: (t, p) => client.query(t, p) });
           // The full per-table inventory lives encrypted beside the dump — that is what makes an
@@ -302,4 +354,4 @@ if (require.main === module) {
     .finally(async () => { try { await db.pool.end(); } catch (_) {} });
 }
 
-module.exports = { _internals: {} };
+module.exports = { _internals: { lostServerDuringRestore, firstFailedTable } };

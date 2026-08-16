@@ -42,6 +42,7 @@ const retention = require('../src/lib/backup/retention');
 const documentsLib = require('../src/lib/backup/documents');
 const report = require('../src/lib/backup/report');
 const { pgEnvFromUrl } = require('../src/lib/backup/targets');
+const { waitForDatabaseReady } = require('../src/lib/backup/pg-ready');
 
 const args = process.argv.slice(2);
 const has = (f) => args.includes(f);
@@ -117,6 +118,20 @@ async function preflight() {
   let server = null;
   if (cfg.backup.databaseUrl) {
     try {
+      // WAIT OUT A SERVER THAT IS STILL COMING UP before calling it unreachable.
+      // This is the first thing the nightly asks the database, so it is where a
+      // restart lands — and "the database system is in recovery mode" (57P03)
+      // is a server replaying its log, not a database that is gone. Without
+      // this, a backup is skipped for a condition that clears itself in
+      // seconds. Permanent errors (a wrong password, a missing database) still
+      // fall straight through to the `cannot reach the database` problem below,
+      // unchanged and immediate — the waiting is only ever for what resolves
+      // itself. The nightly is given a shorter deadline than the weekly drill:
+      // it runs again tomorrow, so it should not sit for ten minutes.
+      await waitForDatabaseReady((t) => db.query(t), {
+        timeoutMs: 4 * 60 * 1000,
+        log: (m) => log(m),
+      });
       const r = await db.query(`SELECT current_setting('server_version_num') AS n, version() AS v`);
       server = { num: parseInt(r.rows[0].n, 10), text: r.rows[0].v };
       facts.server = server.text;
