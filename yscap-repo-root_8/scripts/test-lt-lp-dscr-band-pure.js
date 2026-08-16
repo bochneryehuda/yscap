@@ -80,9 +80,24 @@ ok(dscrBand(null) === null && dscrBand(undefined) === null,
 ok(dscrBand(NaN) === null && dscrBand(Infinity) === null,
   'NANSAFE a NaN/Infinity DSCR produces no band (null), never a mis-priced top band');
 
-// ---- the token is transmitted in the built payload ------------------------
+// ---- the token is NOT transmitted by default, and that was MEASURED --------
+// §37.9. Apples to apples against the live tenant: the captured frontend request for one scenario
+// returns 11 programs / 309 priced options / 8 lenders. Our body for the SAME scenario — read back
+// out of that capture, so the deal is identical — returned 10 / 281 / 8. Removing DSCRRATIO and
+// changing nothing else returned exactly 11 / 309 / 8. The key appears in NO captured working
+// request; it was derived from a threshold table in the vendor's JS bundle, which proves the tokens
+// exist and never proved the frontend SENDS them. Asserting a pricing band nobody asked for narrows
+// the lender set that matches — a silently worse quote, which is the expensive direction.
 const a = sm.buildSearch({ ...S, dscr: 1.25 });
-ok(dyn(a, 'DSCRRATIO') === '1.25', 'PAYLOAD-1 dscr 1.25 → dynamicPropertiesMap.DSCRRATIO "1.25"');
+ok(dyn(a, 'DSCRRATIO') === undefined,
+  'PAYLOAD-1 dscr 1.25 sends NO DSCRRATIO — measured: sending it costs a whole lender program');
+// The tokens themselves are real, so the behaviour stays reachable for a future capture that shows
+// the frontend genuinely sending one. The band table below is still fully covered either way.
+process.env.LP_SEND_DSCRRATIO = '1';
+const aOn = sm.buildSearch({ ...S, dscr: 1.25 });
+delete process.env.LP_SEND_DSCRRATIO;
+ok(dyn(aOn, 'DSCRRATIO') === '1.25',
+  'PAYLOAD-1b …and LP_SEND_DSCRRATIO=1 still sends the captured token, so the table stays testable');
 ok(a.criteria.dscr === 1.25, 'PAYLOAD-2 criteria.dscr carries the verbatim numeric value');
 
 // ---- the derived band SMO is added AFTER the DSCR pair, in captured order --
@@ -123,17 +138,29 @@ ok(cleared.criteria.dscr == null,
   'FAILCLOSED-2 an omitted DSCR clears criteria.dscr to null (scenario-owned)');
 ok(cleared.criteria.specialMortgageOptions.every((o) => o.name !== 'DSCR <1.15' && o.name !== 'DSCR >=1.00' && o.name !== 'DSCR >=1.25 - J'),
   'FAILCLOSED-3 an omitted DSCR adds no band SMO');
-// An explicit DSCR overrides the stale foundation value.
+// An explicit DSCR still overrides a stale foundation token — the anti-leak property is unchanged,
+// and it now holds in the stronger direction: the key is absent rather than merely correct.
 const over = sm.buildSearch({ ...S, dscr: 0.80 }, { base });
-ok(dyn(over, 'DSCRRATIO') === 'DSCR<1', 'FAILCLOSED-4 an explicit DSCR overrides the stale foundation token');
+ok(dyn(over, 'DSCRRATIO') === undefined,
+  'FAILCLOSED-4 a stale foundation DSCRRATIO is cleared and NOT re-sent, whatever the DSCR');
+process.env.LP_SEND_DSCRRATIO = '1';
+const overOn = sm.buildSearch({ ...S, dscr: 0.80 }, { base });
+delete process.env.LP_SEND_DSCRRATIO;
+ok(dyn(overOn, 'DSCRRATIO') === 'DSCR<1',
+  'FAILCLOSED-4b …and with the token enabled, an explicit DSCR still overrides the stale one');
 
 // ---- reachable over HTTP + round-trips in effectiveScenario ----------------
 const route = require('../src/longterm/routes/dscr-pricer');
 const { effectiveOf, unsupportedFields } = route._internals;
 ok(unsupportedFields({ dscr: 1.25, purpose: 'Purchase' }).length === 0, 'ROUTE-1 dscr is a supported route field');
 const eff = effectiveOf(sm.buildSearch({ ...S, dscr: 1.10 }));
-ok(eff.dscr === 1.10 && eff.dscrRatio === 'DSCR>=1',
-  'ROUTE-2 effectiveScenario surfaces the entered dscr AND the derived DSCRRATIO band token');
+ok(eff.dscr === 1.10 && eff.dscrRatio === undefined,
+  'ROUTE-2 effectiveScenario surfaces the entered dscr, and reports NO band token because none is sent');
+process.env.LP_SEND_DSCRRATIO = '1';
+const effOn = effectiveOf(sm.buildSearch({ ...S, dscr: 1.10 }));
+delete process.env.LP_SEND_DSCRRATIO;
+ok(effOn.dscrRatio === 'DSCR>=1',
+  'ROUTE-2b …and when the token IS sent, effectiveScenario still shows exactly what went upstream');
 
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

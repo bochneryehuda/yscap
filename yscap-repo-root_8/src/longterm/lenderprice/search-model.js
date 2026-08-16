@@ -697,10 +697,28 @@ function buildSearch(sc = {}, opts = {}) {
   // an unrecognized value 422s rather than being priced as DSCR. §33.6 ordering: this is set BEFORE
   // the DSCR ratio below, because selecting DSCR in the live UI resets the visible ratio.
   setDyn('IncomeDocType', mapIncomeDocType(sc.incomeDocType) || 'DSCR');
-  // §32.3 — DSCRRATIO band token, from the reviewed threshold table (dscrBand). Written only when a
-  // DSCR was supplied; on omission it stays cleared to neutral (deleted above), never leaking a live
-  // foundation's stale token. NOT derived by formatting the number — the tokens are captured.
-  if (band) setDyn('DSCRRATIO', band.ratio);
+  // §37.9 — DSCRRATIO IS OFF, AND IT WAS COSTING US A WHOLE LENDER PROGRAM.
+  //
+  // MEASURED, apples to apples, against the live tenant: the captured frontend request for one
+  // scenario returns 11 programs / 309 priced options / 8 lenders. OUR body for the SAME scenario —
+  // read back out of that capture so the deal is identical — returned 10 / 281 / 8. Removing this
+  // one dynamic property, and changing nothing else, returned EXACTLY 11 / 309 / 8. Full parity.
+  //
+  // The same test cleared the other suspect: substituting the frontend's own specialMortgageOptions
+  // (its "Prepay Buyout" for our id-less "DSCR >=1.25 - J" band) changed the result NOT AT ALL, so
+  // the band SMO is not what was costing the program — this was, on its own.
+  //
+  // WHY IT WAS WRONG TO SEND IT. The key does not appear in ANY captured working request: not the
+  // frontend's, and not our own successful run. It was derived from a threshold table read out of the
+  // vendor's JS bundle, which tells us the tokens EXIST — it never told us the frontend SENDS them,
+  // and a pricing-band token we assert without being asked narrows the lender set that matches.
+  // Losing a program is a silently WORSE quote for the borrower, which is the expensive direction.
+  //
+  // It stays reachable behind `LP_SEND_DSCRRATIO=1` rather than being deleted, because the tokens
+  // themselves are real and a future capture may show when the frontend genuinely sends one. Do not
+  // turn it on by default again without a capture showing the frontend doing it, and re-measure the
+  // program count on the same scenario when you do.
+  if (band && String(process.env.LP_SEND_DSCRRATIO || '') === '1') setDyn('DSCRRATIO', band.ratio);
   setDyn('AddlOccupancyType', mapRentalTerm(sc.rentalTerm));
   // §33.4/§34.2 — BORROWER TYPE. Previously ANY string was passed straight through to the vendor as a
   // vesting type; every other advanced enum 422s an unrecognized value, so this was the one silent
