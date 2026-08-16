@@ -1,0 +1,220 @@
+'use strict';
+
+// =============================================================================
+// SCHEMA SNAPSHOT — write the database's own description to docs/schema/
+// =============================================================================
+//
+// Owner-directed 2026-08-16. Produces the readable map of the database that
+// 549 migration files do not give you, WITHOUT touching the running system.
+//
+// WHAT IT WRITES (all under docs/schema/, all documentation, none of it wired
+// into the application at runtime):
+//   beyond-prisma.json   the machine-checkable inventory — every trigger,
+//                        function, CHECK, generated column and partial index,
+//                        plus a fingerprint of every table and column
+//   BEYOND-PRISMA.md     the same, readable
+//
+// The third file, `schema.prisma`, is produced separately by Prisma itself —
+// see docs/schema/README.md for the one command. It is deliberately NOT
+// generated here, because that would make Prisma a dependency of this script.
+//
+// PRISMA IS NEVER ADDED TO package.json, AND THAT IS A DELIBERATE SAFETY
+// DECISION, NOT AN OVERSIGHT. Render's build runs `npm install`, which installs
+// devDependencies too, and Prisma pulls native query engines. Adding it — even
+// as a dev dependency — would put a large native download into the production
+// build of a live lending system to serve a documentation tool. It is run with
+// `npx prisma@<pinned>` on demand instead, so the application's dependency list
+// is byte-for-byte unchanged.
+//
+// SAFETY:
+//   • Every statement it runs is a SELECT. It cannot write.
+//   • It refuses to run without an explicit DATABASE_URL — no accidental default.
+//   • Point it at a RESTORED COPY or a scratch database, never production. A
+//     read-only role makes that a property of the credential rather than of
+//     remembering; see docs/schema/README.md.
+//
+// Usage:
+//   DATABASE_URL=postgres://…  node scripts/schema-snapshot.js
+//   DATABASE_URL=postgres://…  node scripts/schema-snapshot.js --print   (write nothing)
+
+const fs = require('fs');
+const path = require('path');
+const { Client } = require('pg');
+const { buildInventory, beyondPrismaCount, serialize, migrationState } = require('./schema-inventory');
+
+// WHERE THE FILES GO. Almost always `docs/schema/`; the override exists so CI
+// can regenerate the map into a scratch directory and COMPARE it, without
+// overwriting the committed copy. That matters more than it sounds: the drift
+// check judges the COMMITTED map, and a CI step that rewrote it first would
+// leave that check comparing files it had just written from the very database
+// it was about to check them against.
+const OUT_DIR = process.env.SCHEMA_OUT_DIR
+  ? path.resolve(process.env.SCHEMA_OUT_DIR)
+  : path.join(__dirname, '..', 'docs', 'schema');
+const JSON_FILE = path.join(OUT_DIR, 'beyond-prisma.json');
+const MD_FILE = path.join(OUT_DIR, 'BEYOND-PRISMA.md');
+
+/**
+ * How many migrations built this map, in words.
+ *
+ * DERIVED, NEVER TYPED. This sentence carried a hand-typed "549" and the
+ * database was already on 550 — a number written into prose goes stale on the
+ * very next migration, and a document that is confidently wrong about one
+ * number teaches the reader to trust none of them. An unreadable `db/`
+ * directory says so plainly rather than guessing a figure.
+ */
+function migrationSentence(inv) {
+  const m = (inv.generatedFrom || {}).migrations || null;
+  if (!m || !Number.isFinite(m.count)) {
+    return 'The numbered migrations in `db/` remain the only thing that builds '
+      + 'this database.';
+  }
+  const highest = m.highest == null ? '' : ` (highest \`db/${m.highest}\`)`;
+  return `The ${m.count} numbered migrations in \`db/\`${highest} remain the only `
+    + 'thing that builds this database.';
+}
+
+/**
+ * The watermark that gets STORED in the snapshot: the two numbers, and nothing
+ * else.
+ *
+ * `migrationState()` also returns every migration FILENAME, which
+ * `check-schema-behind.js` uses to say which ones landed since — but 550
+ * filenames baked into a file that is read on every drift check is a directory
+ * listing pretending to be a fingerprint. Stamping the whole object would also
+ * make the snapshot churn on any migration RENAME, which changes nothing about
+ * the database it describes.
+ */
+function stampFrom(mig) {
+  if (!mig || !Number.isFinite(mig.count)) return null;
+  return { count: mig.count, highest: mig.highest ?? null };
+}
+
+/** The readable companion. Same data, same order, for a human rather than a diff. */
+function toMarkdown(inv) {
+  const c = inv.counts;
+  const schema = inv.schema || {};
+  const section = (title, rows, render, note) => {
+    const list = rows || [];
+    const out = [`## ${title} (${list.length})`, ''];
+    if (note) out.push(note, '');
+    if (!list.length) { out.push('_None._', ''); return out.join('\n'); }
+    out.push(...list.map(render), '');
+    return out.join('\n');
+  };
+
+  return [
+    '# What the Prisma schema cannot express',
+    '',
+    '**Generated by `scripts/schema-snapshot.js` — do not edit by hand.**',
+    '',
+    'The Prisma schema file describes tables, columns and relations. Its schema',
+    'language cannot represent triggers, functions, CHECK constraints, generated',
+    'columns or partial indexes. On this database that is',
+    `**${beyondPrismaCount(inv)} objects**, and a database rebuilt from the Prisma`,
+    'file alone would be missing every one of them — silently, with no error.',
+    '',
+    'That is why the rule is absolute: **the schema files are for reading. Never',
+    `rebuild a database from them.** ${migrationSentence(inv)}`,
+    '',
+    'Everything below is also recorded, object by object, in',
+    '`beyond-prisma.json`, which is what `npm run schema:check` compares against',
+    'the live database.',
+    '',
+    '## The database in numbers',
+    '',
+    '| | |',
+    '|---|---|',
+    `| Tables | ${c.tables} |`,
+    `| Columns | ${c.columns} |`,
+    `| Triggers | ${c.triggers} |`,
+    `| Functions | ${c.functions} |`,
+    `| CHECK constraints | ${c.checkConstraints} |`,
+    `| Generated columns | ${c.generatedColumns} |`,
+    `| Partial indexes | ${c.partialIndexes} |`,
+    `| Primary keys | ${c.primaryKeys} |`,
+    `| Foreign keys | ${c.foreignKeys} |`,
+    `| Unique constraints | ${c.uniqueConstraints} |`,
+    `| Indexes (all kinds) | ${c.indexes} |`,
+    `| Enum types | ${c.enums} |`,
+    `| Views | ${c.views} |`,
+    '',
+    section('Triggers', inv.beyondPrisma.triggers, (t) => `- **${t.name}** on \`${t.table}\``),
+    section('Generated columns', inv.beyondPrisma.generatedColumns,
+      (g) => `- **${g.name}** — \`${g.expression}\``),
+    section('Functions', inv.beyondPrisma.functions, (f) => `- **${f.name}** → ${f.returns}`),
+    section('Partial indexes', inv.beyondPrisma.partialIndexes,
+      (i) => `- **${i.name}** on \`${i.table}\``),
+    section('CHECK constraints', inv.beyondPrisma.checkConstraints,
+      (k) => `- **${k.name}** on \`${k.table}\``),
+
+    // THE RELATIONSHIP LAYER. Prisma CAN express most of this, which is exactly
+    // why it was never written down here — and why a dropped foreign key was
+    // invisible to the drift check for as long as this file existed.
+    section('Foreign keys', schema.foreignKeys,
+      (f) => `- **${f.table}** → \`${f.references}\` — \`${f.definition}\``,
+      'What happens to the child rows on delete is part of each line, because '
+      + 'the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is '
+      + 'the difference between losing a document and keeping it.'),
+    section('Unique constraints', schema.uniqueConstraints,
+      (u) => `- **${u.table}** — \`${u.definition}\``),
+    section('Enum types', schema.enums, (e) => `- **${e.name}** — ${e.values}`),
+    section('Views', schema.views, (v) => `- **${v.name}**`),
+
+    // NAMED, NOT SILENTLY DROPPED. Listing 321 primary keys and 1,116 indexes
+    // here would bury everything above them, and a reader who is not told they
+    // were left out reasonably concludes the database has none.
+    '## Primary keys and indexes',
+    '',
+    `Every one of the ${c.primaryKeys} primary keys and ${c.indexes} indexes is`,
+    'recorded in `beyond-prisma.json` and compared on every drift check. They are',
+    'deliberately not listed here — one line each would be longer than everything',
+    'above put together, and the partial indexes, which are the ones a person',
+    'actually needs to read, already have their own section.',
+    '',
+  ].join('\n');
+}
+
+async function main() {
+  const url = process.env.DATABASE_URL;
+  if (!url) {
+    console.error('schema-snapshot: DATABASE_URL is not set.');
+    console.error('  Point it at a RESTORED COPY or a scratch database — never production.');
+    process.exit(1);
+  }
+
+  const client = new Client({ connectionString: url });
+  await client.connect();
+  let inv;
+  try {
+    inv = await buildInventory(client);
+  } finally {
+    await client.end();
+  }
+
+  // STAMP WHICH MIGRATIONS THIS MAP WAS BUILT FROM. Without it a stale map and
+  // a database carrying something no migration explains look identical in the
+  // drift report — and only one of those two is an emergency.
+  inv.generatedFrom = { migrations: stampFrom(migrationState()) };
+
+  const c = inv.counts;
+  console.log(`schema-snapshot: ${c.tables} tables, ${c.columns} columns, `
+    + `${beyondPrismaCount(inv)} objects Prisma cannot express`);
+
+  if (process.argv.includes('--print')) {
+    console.log(JSON.stringify(inv.counts, null, 2));
+    return;
+  }
+
+  fs.mkdirSync(OUT_DIR, { recursive: true });
+  fs.writeFileSync(JSON_FILE, serialize(inv));
+  fs.writeFileSync(MD_FILE, toMarkdown(inv) + '\n');
+  console.log(`schema-snapshot: wrote ${path.relative(process.cwd(), JSON_FILE)}`);
+  console.log(`schema-snapshot: wrote ${path.relative(process.cwd(), MD_FILE)}`);
+}
+
+if (require.main === module) {
+  main().catch((e) => { console.error('schema-snapshot failed:', e.message); process.exit(1); });
+}
+
+module.exports = { toMarkdown, stampFrom, JSON_FILE, MD_FILE, OUT_DIR };
