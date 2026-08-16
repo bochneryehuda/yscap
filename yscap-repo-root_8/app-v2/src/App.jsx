@@ -27,6 +27,15 @@ import EntitiesScreen from './screens/EntitiesScreen.jsx';
 import TrackRecordScreen from './screens/TrackRecordScreen.jsx';
 import PricingStudio from './screens/PricingStudio.jsx';
 import NotificationSettings from './screens/NotificationSettings.jsx';
+// LONG-TERM (the second product). Its screens live in their own folder and import
+// nothing from RTL; this is the mount seam the owner authorized on 2026-08-14
+// ("rtl-import app-v2/src/App.jsx" in docs/LONG-TERM-AUTHORIZED-COPIES.md).
+import LtPipeline from './longterm/LtPipeline.jsx';
+import LtPeople from './longterm/LtPeople.jsx';
+import LtConditions from './longterm/LtConditions.jsx';
+import LtSync from './longterm/LtSync.jsx';
+import LtSettings from './longterm/LtSettings.jsx';
+import LtLoan from './longterm/LtLoan.jsx';
 import StaffLogin from './screens/StaffLogin.jsx';
 import StaffQueue from './screens/StaffQueue.jsx';
 import StaffTrackRecordWorkspace from './screens/StaffTrackRecordWorkspace.jsx';
@@ -226,6 +235,15 @@ export default function App() {
 
           {/* internal console */}
           <Route path="/internal" element={<StaffPrivate><StaffQueue /></StaffPrivate>} />
+          {/* LONG-TERM — the second product's own screens, under their own prefix.
+              Nothing here is merged into an RTL screen; the top-bar switch moves
+              between the two sides. */}
+          <Route path="/internal/lt" element={<StaffPrivate><LtPipeline /></StaffPrivate>} />
+          <Route path="/internal/lt/people" element={<StaffPrivate><LtPeople /></StaffPrivate>} />
+          <Route path="/internal/lt/conditions" element={<StaffPrivate><LtConditions /></StaffPrivate>} />
+          <Route path="/internal/lt/sync" element={<StaffPrivate><LtSync /></StaffPrivate>} />
+          <Route path="/internal/lt/settings" element={<StaffPrivate><LtSettings /></StaffPrivate>} />
+          <Route path="/internal/lt/loan/:loanId" element={<StaffPrivate><LtLoan /></StaffPrivate>} />
           <Route path="/internal/new" element={<StaffPrivate><StaffNewFile /></StaffPrivate>} />
           <Route path="/internal/tasks" element={<StaffPrivate><StaffTasks /></StaffPrivate>} />
           <Route path="/internal/workflow" element={<StaffPrivate><StaffWorkflow /></StaffPrivate>} />

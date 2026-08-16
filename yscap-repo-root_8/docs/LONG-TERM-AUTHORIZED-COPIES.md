@@ -74,6 +74,26 @@ import   app-v2/src/components/BorrowerProfilePanel.jsx
 # there when a long-term file gets an officer.
 sql-ref   borrower_officers
 sql-write borrower_officers
+
+# ---------------------------------------------------------------------------
+# THE FRONT-END MOUNT SEAM — authorized in writing by the owner, 2026-08-14:
+#   "You were authorized to touch that switch of the short-term shell."
+#
+# The back end already has one sanctioned seam: src/server.js mounts the LT
+# router. The front end had no equivalent, so nothing could route to
+# app-v2/src/longterm/** and no switch could be rendered.
+#
+# This is the front-end analogue, and it is deliberately just as narrow: two
+# RTL files may reference Long-Term code, and ONLY to mount it and to render
+# the product switch. No RTL screen may import an LT component for its own
+# use, and no LT logic may be lifted into a shared file.
+# ---------------------------------------------------------------------------
+
+# The router mounts the Long-Term screens.
+rtl-import app-v2/src/App.jsx
+
+# The staff shell renders the Short-Term / Long-Term switch.
+rtl-import app-v2/src/components/StaffLayout.jsx
 ```
 
 ## Log of authorizations
@@ -85,6 +105,7 @@ sql-write borrower_officers
 | 2026-08-03 | `sql-ref staff_users` + `sql-read staff_users` — a Long-Term file knows its officer | RTL → LT | *"officers should be able to see all of their files even if it's long term or short term"* (an officer can only see their Long-Term files if a Long-Term file records its officer, and officers are the same accounts as the shared login) | #975 |
 | 2026-08-03 | `import app-v2/src/components/BorrowerProfilePanel.jsx` — the ONE shared borrower editor, mounted on a long-term file | RTL → LT | *"officers should be able to change the borrower profile on long term files"* — confirmed in the same breath as *"keep borrower read only"*, so the edit goes through the existing shared editor and the existing borrower endpoint; Long-Term code still never writes `borrowers` | #975 |
 | 2026-08-03 | `sql-ref borrower_officers` + `sql-write borrower_officers` — Long-Term records the officer↔person link | RTL → LT | Required to make the line above actually work: a non-privileged officer may only open a borrower profile they have a recorded relationship to, and today that means an **RTL** file. `borrower_officers` (db/327) is the identity-zone link built for precisely this — *"the client who has only ever done non-RTL business with them, so there is no file to match on"* | #975 |
+| 2026-08-14 | `rtl-import app-v2/src/App.jsx` + `rtl-import app-v2/src/components/StaffLayout.jsx` — the FRONT-END mount seam: the router mounts the Long-Term screens, and the staff shell renders the Short-Term / Long-Term switch | LT → RTL | *"You were authorized to touch that switch of the short-term shell."* Asked directly, because rule 5 forbids touching RTL to make LT work and the switch cannot exist without it. Deliberately as narrow as the back-end seam (`src/server.js`): these two files may reference LT code ONLY to mount it and to render the switch — no RTL screen may import an LT component for its own use, and no LT logic may move into a shared file | this PR |
 | 2026-08-14 | **The Encompass integration — brought into Long-Term as a self-contained BY-VALUE copy** (logic, authorization, requests, credentials mechanism, field map). Lives entirely in `src/longterm/encompass/**`. | RTL → LT | *"Pull in and copy: the logic of Encompass integration, the credentials of Encompass integration, the requests, the authorization. We need to start long-term loans with a full Encompass understanding … take also all the fields from this mapping and bring it in."* This is a specific, owner-directed exception to the 2026-08-03 "no shared integrations" line below (Encompass only; everything else still stays separate). | this PR |
 
 ### Note on the Encompass copy (2026-08-14)

@@ -4,6 +4,12 @@ import { useAuth } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
 import { subscribeChat } from '../lib/chatEvents.js';
 import { Brand } from './Layout.jsx';
+// LONG-TERM — the product switch. This is the mount seam the owner authorized on
+// 2026-08-14 ("rtl-import app-v2/src/components/StaffLayout.jsx" in the ledger);
+// the component itself lives in Long-Term's own folder and imports nothing from
+// RTL. It renders nothing at all when the long-term side is unreachable, so an
+// officer who has never heard of it is never shown a broken control.
+import ProductSwitch from '../longterm/ProductSwitch.jsx';
 import ChatBubble from './ChatBubble.jsx';
 import { useStaleBuild } from '../lib/useStaleBuild.jsx';
 import { RESEARCH_PAGES, inResearch as isResearchPath } from './ResearchNav.jsx';
@@ -39,6 +45,9 @@ const NAV_ICON = {
   esign: <><path d="M4 17.5c1.8-.4 2.6-2.2 3.4-4.3.7-2 1.3-4.2 2.3-4.2.8 0 .9 1.2.7 2.8-.3 2-.8 3.9 0 4.4.9.6 2-.7 2.8-1.6" /><path d="M14 20h6" /></>,
   emails: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m4 7 8 6 8-6" /></>,
   health: <><path d="M3 12h3.5l2-5.5 3.5 11 2.5-6 1.5 3H21" /></>,
+  // A gear. An unknown icon name renders an EMPTY svg rather than failing, so a
+  // missing entry is invisible until somebody notices a blank square in the nav.
+  settings: <><circle cx="12" cy="12" r="3.2" /><path d="M12 3.5v2.2M12 18.3v2.2M20.5 12h-2.2M5.7 12H3.5M18 6l-1.6 1.6M7.6 16.4 6 18M18 18l-1.6-1.6M7.6 7.6 6 6" /></>,
 };
 function NavIcon({ name }) {
   return (
@@ -276,6 +285,10 @@ export default function StaffLayout({ children }) {
   // The research desk's pages only appear in the sidebar while you are inside it,
   // so seven entries collapse to one without hiding where you can go from here.
   const inResearch = isResearchPath(useLocation().pathname);
+  // LONG-TERM: which side is on screen. The owner's switch "swaps the whole nav" —
+  // the two products are two systems, so showing RTL's nav beside a long-term
+  // pipeline would say the opposite of what the separation means.
+  const onLongTerm = useLocation().pathname.startsWith('/internal/lt');
   const [unread, setUnread] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   // Open sync-review count (scoped server-side: an LO sees THEIR rows' count).
@@ -424,6 +437,21 @@ export default function StaffLayout({ children }) {
         <div className="app-brandrow">
           <Brand to="/internal" ariaLabel="PILOT by YS Capital — Internal" console={consoleLabel} />
         </div>
+        <div style={{ padding: '6px 12px 10px' }} onClick={(e) => e.stopPropagation()}>
+          <ProductSwitch />
+        </div>
+        {onLongTerm ? (
+          /* LONG-TERM's own nav. Deliberately short: this side is a pipeline, the
+             people map behind it, and the sync that feeds it. */
+          <>
+            <div className="sb-sec">Long-term</div>
+            <NavLink className="sb-link" to="/internal/lt" end><NavIcon name="pipeline" />Pipeline</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/people"><NavIcon name="team" />People</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/conditions"><NavIcon name="conditions" />Condition Center</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/sync"><NavIcon name="health" />Sync</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/settings"><NavIcon name="settings" />Settings</NavLink>
+          </>
+        ) : (<>
         <div className="sb-sec">Main</div>
         <NavLink className="sb-link" to="/internal" end><NavIcon name="pipeline" />Pipeline</NavLink>
         <NavLink className="sb-link" to="/internal/tasks"><NavIcon name="tasks" />My tasks</NavLink>
@@ -510,6 +538,7 @@ export default function StaffLayout({ children }) {
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/clickup" title="ClickUp Control Center — sync health, dry-run, backfill"><NavIcon name="clickup" />ClickUp</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/draw-rules" title="Inspection & fee rules — virtual vs on-site and the per-partner fee schedule for draws"><NavIcon name="pipeline" />Draw rules</NavLink>}
         {canViewAudit && <NavLink className="sb-link" to="/internal/audit" title="System audit log — every action across every file & borrower"><NavIcon name="audit" />Audit log</NavLink>}
+        </>)}
 
         <div className="sb-spacer" />
         <div className="sb-foot">
