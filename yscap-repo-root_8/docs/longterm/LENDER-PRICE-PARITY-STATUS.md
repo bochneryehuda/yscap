@@ -69,8 +69,6 @@ mis-price, which is worse than the current explicit-reject behavior.
   SingleFamily). Deferred until production health is restored so the change can be
   validated against the LIVE foundation (the static base is a 2–4-unit capture and
   cannot stand in for it).
-- **Explicit reserves as a user input** (the token `GLOBAL_RESERVES` is known;
-  the value set — `Reserves_0/12/24/...` — needs a capture to enumerate).
 - **Search generation identity (§C2).** The current byte-identical-search de-dup
   is idempotent by design (§27.4); giving each intentional new search its own
   generation while keeping polls idempotent needs an owner decision on the desired
