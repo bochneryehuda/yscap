@@ -147,6 +147,19 @@ function buildSearch(sc = {}, opts = {}) {
   setDyn('PrePayment_Plan_Type', months ? 'Standard' : null);
   m.dynaToSmo = true;
 
+  // ALL OPTIONS — the default the web app always searches with (confirmed byte-for-byte from the
+  // HAR): return EVERY rate and ALL of its points, never a targeted rate or price. We assert these
+  // knobs explicitly (rather than trusting the base) so a live /pricing/defaultSearch that happens
+  // to carry a saved target rate/price/favorite can never narrow a scenario's results.
+  m.rate = null;                          // no single target rate
+  m.rates = [];                           // no specific rate list
+  m.maxListingPerRate = -1;               // unlimited listings (all points) per rate
+  m.targetInterpolatedPrices = [];        // no target price
+  m.skipAdjustments = false;              // include all pricing adjustments
+  // Full rate range (no floor/ceiling), preserving the base's typed range shape when present.
+  if (m.rateRange && typeof m.rateRange === 'object') { m.rateRange.from = null; m.rateRange.to = null; }
+  else m.rateRange = { from: null, to: null };
+
   // Disqualify workflow (mirrors the web app's "show disqualified" button): a normal search
   // returns only the QUALIFIED programs fast. To also learn WHY each lender turned the scenario
   // down, the same body is re-sent with these flags — the server computes the disqualify reasons
