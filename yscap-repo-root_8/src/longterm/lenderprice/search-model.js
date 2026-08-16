@@ -455,15 +455,74 @@ function clearScenarioOwnedFields(search) {
   return search;
 }
 
+// §37.6 — A DEFAULT SEARCH IS NOT A PRICING REQUEST, AND CLONING IT AS ONE IS WHY NOTHING PRICED.
+//
+// `GET /pricing/defaultSearch` returns the company's CONFIGURATION/STORAGE model. The browser does
+// not send it: it TRANSFORMS it into a smaller, differently-shaped request before calling searchRaw.
+// `buildSearch` used to start from `clone(opts.base || BASE)` — i.e. it posted the configuration
+// model itself whenever a live foundation was available, which is every time in production. Measured
+// on the live tenant, same DSCR scenario: the frontend's request is 6,808 bytes and returns HTTP 200
+// with 17 programs; the configuration-model request is 8,576 bytes, differs in 203 structures, and
+// returns HTTP 500 — every time, for every scenario, before any deal detail can even be compared.
+// That is the whole reason a login that provably works still produced no pricing.
+//
+// The 500 ITSELF was bisected to a single leaf, against the frontend's own working body on the live
+// tenant: `criteria.mortgageTypes` comes back NULL on the configuration model, and patching that one
+// value — nothing else — turns the failing request into HTTP 200. `companyId: null` and a missing
+// county FIPS were each tested in isolation and are innocent of the 500. But fixing only that leaf
+// would be the worse outcome: the request would start SUCCEEDING while still carrying 200-odd wrong
+// structures, and a body built that way returns 411 priced leaves against the frontend's 439, and 16
+// programs against 17. A silently smaller product set is more dangerous than a loud 500, because
+// nobody goes looking for the missing lender.
+//
+// So the foundation is the CANONICAL FRONTEND REQUEST (`BASE`, captured from a real successful
+// search), always — and the live model is admitted only through this normalizer:
+//
+//   · a key the canonical request does not have is NEVER copied (that is what drops every
+//     configuration-only property the frontend strips before pricing);
+//   · a value whose TYPE disagrees with the canonical one is refused (an object where the request
+//     wants a number cannot be "merged" into a valid request);
+//   · NULL is refused. This is the rule that fixes the measured 500, and it is deliberately stated
+//     as a rule rather than a special case for mortgageTypes: on the configuration model a null
+//     means "not configured here", never "send null", and it must never overwrite a proven value;
+//   · arrays are taken WHOLE or not at all — merging a live array element-wise would produce a list
+//     that exists in neither system.
+//
+// The result: live company defaults still reach the wire (that was the point of fetching them), but
+// only ever as values inside a request shape proven to price. Anything unrecognized is dropped, and
+// dropping is safe here precisely because the canonical request already carries a working value for
+// every key it defines.
+function mergeKnownRequestDefaults(canonical, live) {
+  if (!live || typeof live !== 'object' || Array.isArray(live)) return canonical;
+  for (const key of Object.keys(canonical)) {
+    if (!Object.prototype.hasOwnProperty.call(live, key)) continue; // not offered by the live model
+    const want = canonical[key];
+    const got = live[key];
+    if (got === null || got === undefined) continue;               // "not configured" — keep the proven value
+    if (Array.isArray(want)) { if (Array.isArray(got)) canonical[key] = clone(got); continue; }
+    if (Array.isArray(got)) continue;                              // live array where the request wants a scalar/object
+    if (want !== null && typeof want === 'object') {
+      if (typeof got === 'object') mergeKnownRequestDefaults(want, got);
+      continue;
+    }
+    // Scalars: the canonical value may legitimately be null (a field the request carries but leaves
+    // empty), in which case there is no type to check against and any scalar the live model offers
+    // is accepted. Otherwise the types must agree.
+    if (want === null || typeof want === typeof got) canonical[key] = got;
+  }
+  return canonical;
+}
+
 /**
  * Build a complete searchRaw body for a scenario by overlaying it onto the canonical base model.
  * @param sc scenario { purpose,value,loan,ltv,fico,dscr,propertyType,units,zip,state,county,countyFps,city,borrowerType,prepayMonths,io,escrowWaive,date }
- * @param opts { base, smo } — base = a live /pricing/defaultSearch to overlay (falls back to the
- *   captured BASE); smo = a live /pricing/smo registry (Map or raw array) so option ids are the
- *   company's current ones. Both are optional; without them the proven captured defaults are used.
+ * @param opts { base, smo } — base = a live /pricing/defaultSearch whose VALUES are overlaid onto the
+ *   canonical frontend request skeleton (never used as the request itself — see the note above);
+ *   smo = a live /pricing/smo registry (Map or raw array) so option ids are the company's current
+ *   ones. Both are optional; without them the proven captured defaults are used.
  */
 function buildSearch(sc = {}, opts = {}) {
-  const m = clone(opts.base || BASE);
+  const m = mergeKnownRequestDefaults(clone(BASE), opts.base);
   // §31.6 — clear scenario-owned fields to neutral BEFORE the DSCR profile + caller overlay, so a
   // stale value inherited from a live foundation can never leak into this scenario. Runs on the
   // clone, immediately after it, so every read below (e.g. the criteria.ltv fallback) sees neutral.
@@ -1108,5 +1167,5 @@ function validateScenario(sc = {}) {
   return { ok: true, request, scenario: sc, countyEnrichment };
 }
 
-module.exports = { BASE, buildSearch, clearScenarioOwnedFields, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, mortgageHistoryConflict, NONZERO_LATE_COUNTS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue } };
+module.exports = { BASE, buildSearch, clearScenarioOwnedFields, mergeKnownRequestDefaults, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, mortgageHistoryConflict, NONZERO_LATE_COUNTS, SCENARIO_OWNED, clearScenarioOwnedFields, mergeKnownRequestDefaults, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue } };
