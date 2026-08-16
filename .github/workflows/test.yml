@@ -175,6 +175,14 @@ jobs:
     #
     # The hang protection it was there for now lives on the STEPS below, whose
     # clocks only count actual execution. Same safety, minus the queue time.
+    #
+    # NO `permissions:` BLOCK, DELIBERATELY. This job runs the whole test suite,
+    # which is the most repository-controlled code in this build — it is the job
+    # that should hold the least authority, not the most. The write grant needed
+    # to commit a refreshed map lives in `schema-push` below, whose only inputs
+    # are a checkout and an artifact.
+    outputs:
+      schema_stale: ${{ steps.schema_map.outputs.stale }}
     defaults:
       run:
         working-directory: yscap-repo-root_8
@@ -260,17 +268,32 @@ jobs:
         timeout-minutes: 5
         run: |
           rm -rf /tmp/schema-refresh && mkdir -p /tmp/schema-refresh
+          # THE WHOLE MAP, NOT ONE FILE OF IT. The picture is derived from the
+          # inventory and the schema header QUOTES it, so regenerating only the
+          # inventory produces a set that disagrees with itself — and the
+          # `schema:restamp` half is exactly what `check-schema-behind` had to
+          # start advising people to run after following its own advice broke
+          # their build. `schema.prisma` is copied in FIRST because a restamp
+          # rewrites only the header and REFUSES a file it cannot find a body
+          # in; that refusal is what stops it writing a bare seed over the
+          # models. `prisma db pull` is deliberately NOT run here — it needs
+          # Prisma's native engines, which this build does not install.
+          cp docs/schema/schema.prisma /tmp/schema-refresh/ 2>/dev/null || true
           # SAY SO WHEN IT FAILS. `|| exit 0` keeps this advisory, but on its own
           # it makes a permanently-broken refresh indistinguishable from a clean
           # one: green step, `stale` never set, artifact skipped, nobody told.
           SCHEMA_OUT_DIR=/tmp/schema-refresh node scripts/schema-snapshot.js \
             || { echo "::warning::the advisory schema refresh could not run — the map was not checked this run"; exit 0; }
+          SCHEMA_OUT_DIR=/tmp/schema-refresh node scripts/schema-picture.js \
+            || { echo "::warning::the schema picture could not be regenerated — the map was not refreshed this run"; exit 0; }
+          SCHEMA_OUT_DIR=/tmp/schema-refresh node scripts/schema-prisma.js --restamp \
+            || { echo "::warning::the schema map header could not be restamped — the map was not refreshed this run"; exit 0; }
           if diff -q /tmp/schema-refresh/beyond-prisma.json docs/schema/beyond-prisma.json >/dev/null 2>&1; then
             echo "The committed schema map matches the database these migrations build."
             echo "stale=false" >> "$GITHUB_OUTPUT"
           else
             echo "stale=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::The committed schema map does not match the database these migrations build. A refreshed copy is attached to this run as the 'schema-map' artifact — download it and commit docs/schema/."
+            echo "::warning::The committed schema map does not match the database these migrations build. A refreshed copy is attached to this run as the 'schema-map' artifact. On a pull request from this repository the next job commits it back automatically; otherwise download it and commit docs/schema/."
             node scripts/check-schema-behind.js || true
           fi
 
@@ -314,6 +337,60 @@ jobs:
           else
             npm test
           fi
+
+  # ---------------------------------------------------------------------------
+  # Put the refreshed schema map back on the pull request that made it stale.
+  #
+  # WHY A SEPARATE JOB. This is the only job in the workflow that holds a write
+  # grant, and it is deliberately tiny: a checkout, an artifact, and one script.
+  # `test-db` regenerates the map but runs the whole test suite, so giving IT
+  # `contents: write` would hand the repository-write permission to the job
+  # executing the most repository-controlled code in the build.
+  #
+  # WHY THE PR BRANCH AND NOT MAIN. The map is a pure function of `db/*.sql` and
+  # every migration arrives through a pull request, so fixing it here means main
+  # is never stale and no bot ever writes to the trunk — which is what
+  # Kubernetes, the Azure SDK and SLSA's source track each arrange in their own
+  # way. Reasoning in `docs/SCHEMA-MAP-AUTO-REFRESH-RESEARCH.md`.
+  #
+  # It NEVER runs on a push to main, so it can never produce a commit on the
+  # branch `deploy` watches. On main the refresh stays advisory: `test-db` warns
+  # and attaches the artifact, and must not fail — `deploy` needs `test-db`, so
+  # a stale map failing that job would block publishing over a docs file.
+  # ---------------------------------------------------------------------------
+  schema-push:
+    # A FORK'S BRANCH IS NOT OURS TO WRITE TO, and the token cannot anyway — so
+    # say so by not running, rather than failing every fork PR with a push error.
+    if: >-
+      github.event_name == 'pull_request'
+      && needs.test-db.outputs.schema_stale == 'true'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    needs: test-db
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: yscap-repo-root_8
+    steps:
+      # The PR's OWN branch, not the merge commit `pull_request` checks out by
+      # default — committing onto a detached merge commit would push nothing
+      # anybody can see. `persist-credentials` (the default) is what lets the
+      # push below authenticate as GITHUB_TOKEN.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          fetch-depth: 1
+      - uses: actions/download-artifact@v4
+        with:
+          name: schema-map
+          path: /tmp/schema-refresh
+      - name: Commit the refreshed schema map
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: node scripts/ci-schema-commit.js --from /tmp/schema-refresh --branch "$HEAD_REF"
 
   # ---------------------------------------------------------------------------
   # Auto-publish to Render. Runs ONLY:
