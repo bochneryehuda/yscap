@@ -54,6 +54,12 @@ email.sendMail = async (m) => { sent.push(m); return { ok: true }; };
   ok('borrower email scrubs partner names in title, body, lines, callout, hero, and badge');
 
   await db.query(`DELETE FROM notifications WHERE application_id=$1`, [app.id]).catch(() => {});
+  // DRAIN BEFORE TEARING DOWN. The email fan-out is fire-and-forget (a web request must
+  // never wait on an email), so a sent_emails INSERT can still be in flight here — and it
+  // points at a notifications row this teardown deletes. The two lock each other and
+  // Postgres kills one: deadlock detected (40P01), which fails a suite whose assertions
+  // all passed. A no-op when nothing is in flight.
+  await notify.drainEmails();
   await db.query(`DELETE FROM applications WHERE id=$1`, [app.id]).catch(() => {});
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [br.id]).catch(() => {});
 

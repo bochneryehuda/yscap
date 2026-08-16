@@ -189,6 +189,11 @@ function call(server, method, p, token, body) {
     email.sendMail = realSendMail;
     console.log(`\ntest-tpo-orders-db: ${pass} passed, ${fail} failed`);
     await new Promise((r) => server.close(r));
+    // DRAIN BEFORE ENDING THE POOL. The email fan-out is fire-and-forget (a web request
+    // must never wait on an email), so its sent_emails INSERT can still be in flight —
+    // and it would find the pool gone ("Cannot use a pool after calling end"). A no-op
+    // when nothing is in flight.
+    try { await require('../src/lib/notify').drainEmails(); } catch (_) { /* never blocks teardown */ }
     try { await db.pool.end(); } catch (_) {}
     process.exit(fail ? 1 : 0);
   }

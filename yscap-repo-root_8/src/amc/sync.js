@@ -274,6 +274,12 @@ async function syncOne(dbh, order) {
   }), { label: 'GetAppraisalStatus' });
   const out = await applyStatusResponse(dbh, order, resp);
   if (out.error) return out;
+  // The status lookup answers only "what stage is it at". WHO is doing it, WHEN they
+  // are going out and WHAT it costs come from GetAppraisalDetail, so it runs beside
+  // the status on every live order. Best-effort: a detail we could not read means we
+  // learned nothing this tick, never a reason to stop syncing the order.
+  try { await require('./detail').syncDetail(dbh, order); }
+  catch (e) { console.error('[amc] detail sync failed for order', order.id, (e && e.message) || e); }
   // Pull the AMC's side of the two-way thread + revision statuses on every live order
   // (lazy-required to avoid a load-order cycle). Best-effort — neither poll ever breaks
   // the status sync.

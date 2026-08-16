@@ -569,6 +569,12 @@ const rulesRow = async (staffId) => (await db.query(
     try { await db.query(`DELETE FROM lo_starred_files         WHERE staff_id IN ($1,$2,$3)`, [loId, loId2, procId]); } catch (_) {}
     try { await db.query(`DELETE FROM lo_batched_emails        WHERE staff_id IN ($1,$2,$3)`, [loId, loId2, procId]); } catch (_) {}
     try { await db.query(`DELETE FROM notifications WHERE application_id IN ($1,$2)`, [appId, appId2]); } catch (_) {}
+    // DRAIN BEFORE TEARING DOWN. The email fan-out is fire-and-forget (a web request must
+    // never wait on an email), so a sent_emails INSERT can still be in flight here — and it
+    // points at a notifications row this teardown deletes. The two lock each other and
+    // Postgres kills one: deadlock detected (40P01), which fails a suite whose assertions
+    // all passed. A no-op when nothing is in flight.
+    await notify.drainEmails();
     try { await db.query(`DELETE FROM applications WHERE id IN ($1,$2)`, [appId, appId2]); } catch (_) {}
     try { await db.query(`DELETE FROM borrowers WHERE id IN ($1,$2,$3)`, [borrowerId, coBorrowerId, otherBorrowerId]); } catch (_) {}
     try { await db.query(`DELETE FROM staff_users WHERE email LIKE $1`, [`%-${sfx}@test.local`]); } catch (_) {}

@@ -284,6 +284,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await db.query(`DELETE FROM sitewire_job_item_links WHERE application_id=$1`, [app]);
   await db.query(`DELETE FROM sitewire_draws WHERE application_id=$1`, [app]);
   await db.query(`DELETE FROM sitewire_property_links WHERE application_id=$1`, [app]);
+  // DRAIN BEFORE TEARING DOWN. The email fan-out is fire-and-forget (a web request must
+  // never wait on an email), so a sent_emails INSERT can still be in flight here — and it
+  // points at a notifications row this teardown deletes. The two lock each other and
+  // Postgres kills one: deadlock detected (40P01), which fails a suite whose assertions
+  // all passed. A no-op when nothing is in flight.
+  await notify.drainEmails();
   await db.query(`DELETE FROM applications WHERE id = ANY($1)`, [[app, app2, app3]]);
   await db.query(`DELETE FROM borrowers WHERE id = ANY($1)`, [[bor, bor2, bor3]]);
   await db.query(`DELETE FROM staff_users WHERE id = ANY($1)`, [[coord, lo]]);

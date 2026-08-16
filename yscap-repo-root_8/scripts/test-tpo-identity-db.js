@@ -201,6 +201,12 @@ function call(server, method, p, token, body) {
     try {
       const like = `%${sfx}%`;
       await db.query(`DELETE FROM applications WHERE borrower_id IN (SELECT id FROM borrowers WHERE email LIKE $1)`, [like]);
+      // DRAIN BEFORE TEARING DOWN. The email fan-out is fire-and-forget (a web request must
+      // never wait on an email), so a sent_emails INSERT can still be in flight here — and it
+      // points at a notifications row this teardown deletes. The two lock each other and
+      // Postgres kills one: deadlock detected (40P01), which fails a suite whose assertions
+      // all passed. A no-op when nothing is in flight.
+      await notify.drainEmails();
       await db.query(`DELETE FROM applications WHERE tpo_firm_id IN (SELECT id FROM tpo_firms WHERE name LIKE $1)`, [like]);
       await db.query(`DELETE FROM invite_tokens WHERE email LIKE $1`, [like]);
       await db.query(`DELETE FROM borrowers WHERE email LIKE $1`, [like]);

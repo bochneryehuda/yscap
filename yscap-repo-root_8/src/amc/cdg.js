@@ -322,6 +322,123 @@ function parsePaymentTransactionId(resp) {
   return null;
 }
 
+// ---- GetAppraisalDetail ----------------------------------------------------
+/**
+ * WHO IS DOING IT, WHEN THEY ARE GOING OUT, AND WHAT IT COSTS.
+ *
+ * `GetAppraisalStatus` answers only "what stage is it at" — a code and a name.
+ * Everything a person actually asks while an appraisal is pending lives in
+ * `GetAppraisalDetail` and was being thrown away: `buildGetDetail` has been
+ * exported since this integration shipped with ZERO callers, so the appraiser's
+ * name, the inspection date and the vendor's own due date were never once read.
+ *
+ * THE SENTINELS ARE THE WHOLE DIFFICULTY, and they are visible in the vendor's own
+ * sample (docs/vendor/appraisalscope/samples/Orders/): an unset value comes back as
+ * the STRING `"N/A"`, or the STRING `"null"` (not JSON null), or `""`. A naive read
+ * stores the literal text "N/A" as an inspection date and the screen then tells
+ * somebody the inspection is booked. So every field goes through `detailText`,
+ * which answers null for all of them.
+ *
+ * MONEY IS THE EXCEPTION AND MUST NOT BE SWEPT UP WITH THEM: `"0.00"` is a real
+ * figure. `paidAmount: "0.00"` beside `dueAmount: "450.00"` means nothing has been
+ * paid yet, which is a fact worth showing, not an absence.
+ *
+ * THE DATETIMES ARE KEPT VERBATIM, ON PURPOSE. The vendor sends
+ * `"2021-05-07 16:58:19"` with no timezone anywhere in the payload or the guide,
+ * and their `lastUpdateDatetime` is a third format again
+ * (`"05/07/2021 04:58:19 pm"`). Reading a zone into them would be a guess printed
+ * as a fact — the class of bug this repository has been bitten by more than once —
+ * so they are stored as text and shown as the vendor stated them. Only the
+ * DATE-ONLY fields (`YYYY-MM-DD`, unambiguous in any zone) become real dates.
+ */
+const DETAIL_SENTINELS = new Set(['', 'n/a', 'na', 'null', 'undefined', 'none', '-']);
+function detailText(v) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (!s || DETAIL_SENTINELS.has(s.toLowerCase())) return null;
+  return s;
+}
+/** A date-only value we can trust in any timezone, or null. */
+function detailDate(v) {
+  const s = detailText(v);
+  if (!s) return null;
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+}
+/** A money figure. `"0.00"` is REAL and must survive; a sentinel is null. */
+function detailMoney(v) {
+  const s = detailText(v);
+  if (s == null) return null;
+  const n = Number(String(s).replace(/[^0-9.\-]/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Everything the detail call tells us about ONE order, flattened.
+ *
+ * Returns null when the response carries no product block at all — the caller
+ * treats that as "the vendor said nothing", never as "there is no appraiser".
+ * NEVER throws: this runs inside a poll, and a malformed answer must cost one
+ * order's detail, not the whole sweep.
+ */
+function parseDetail(resp) {
+  try {
+    const m = (resp && resp.message) || {};
+    const p = Array.isArray(m.products) && m.products[0] ? m.products[0] : null;
+    const deal = Array.isArray(m.deals) && m.deals[0] ? m.deals[0] : null;
+    if (!p && !deal) return null;
+
+    // THE APPRAISER, not the AMC. Both ride in the same array under different
+    // `partyRoleType`s, and the AMC is the management company — telling a loan
+    // officer that "Appraisal Management Company Name" is inspecting their
+    // property would be worse than telling them nothing.
+    const parties = (deal && Array.isArray(deal.appraisers)) ? deal.appraisers : [];
+    const role = (t) => parties.find((a) => a && String(a.partyRoleType || '').toLowerCase() === t) || null;
+    const appraiser = role('appraiser');
+    const amc = role('amc');
+
+    const out = {
+      appraiser: {
+        name: appraiser ? detailText(appraiser.fullName) : null,
+        company: appraiser ? detailText(appraiser.companyName) : null,
+        email: appraiser ? detailText(appraiser.contactEmail) : null,
+        phone: appraiser ? detailText(appraiser.contactPhone) : null,
+        city: appraiser ? detailText(appraiser.companyAddressCity) : null,
+        state: appraiser ? detailText(appraiser.companyAddressState) : null,
+        license: appraiser ? detailText(appraiser.appraiserlicenseIdentifier) : null,
+      },
+      amc: {
+        company: amc ? detailText(amc.companyName) : null,
+        license: amc ? detailText(amc.appraiserlicenseIdentifier) : null,
+        fileNumber: amc ? detailText(amc.assignedAMCFileNumber) : null,
+      },
+      // WHEN. `serviceNeedByDate` is the vendor's own due date — the ETA a person
+      // is really asking for — and the inspection trio is the rest of the answer.
+      dueDate: p ? detailDate(p.serviceNeedByDate) : null,
+      completedDate: p ? detailDate(p.completedDate) : null,
+      inspectionDate: p ? detailDate(p.inspectionDate) : null,
+      assignedAt: p ? detailText(p.assignedDatetime) : null,
+      acceptedAt: p ? detailText(p.acceptedDatetime) : null,
+      inspectionScheduledAt: p ? detailText(p.inspectionScheduledDatetime) : null,
+      inspectionCompletedAt: p ? detailText(p.inspectionCompleteDatetime) : null,
+      reportUploadedAt: p ? detailText(p.appraisalUploadDatetime) : null,
+      lastUpdateAt: p ? detailText(p.lastUpdateDatetime) : null,
+      // WHAT IT COSTS, and what is still owed. The order row has carried no fee
+      // since this integration shipped, so the desk answered "no per-order fee"
+      // for AppraisalScope while the vendor was stating four of them.
+      clientFee: p ? detailMoney(p.clientFee) : null,
+      formFee: p ? detailMoney(p.formFee) : null,
+      jobFee: p ? detailMoney(p.jobFee) : null,
+      managementFee: p ? detailMoney(p.managementFee) : null,
+      dueAmount: p ? detailMoney(p.dueAmount) : null,
+      paidAmount: p ? detailMoney(p.paidAmount) : null,
+      invoicedAmount: p ? detailMoney(p.invoicedAmount) : null,
+      productDescription: p ? detailText(p.productDescription) : null,
+    };
+    return out;
+  } catch (_) { return null; }
+}
+
 /** Search the account's OWN orders, so an appraisal somebody placed on the
  *  vendor's website can be found and reconciled. `criteria` is their
  *  `searchCriteria[]` of `{fieldName, fieldValue}` (create_date_start,
@@ -801,8 +918,8 @@ module.exports = {
   buildAddComment, buildCancelOrder, buildGetComments, parseComments,
   buildAddRevision, parseRevisionAck, buildGetRevisions, parseRevisions,
   buildUploadDocuments, buildRetrieveDocuments, parseDocuments,
-  buildGetStatus, buildGetDetail, parseStatus,
+  buildGetStatus, buildGetDetail, parseStatus, parseDetail,
   parseError, mapStatusToLifecycle, maskRequest,
   // exported for tests
-  _internals: { clientSystem, serviceProviderSystem, digitalGatewaySystem, borrower, property, address, orderLookup, paymentAccount },
+  _internals: { clientSystem, serviceProviderSystem, digitalGatewaySystem, borrower, property, address, orderLookup, paymentAccount, detailText, detailDate, detailMoney },
 };

@@ -85,8 +85,32 @@ const ADAPTERS = {
     orderTitle: (o) => o.form_description || ('Form ' + (o.product_code || '—')),
     orderNumber: (o) => (o.cdg_order_number ? 'AMC #' + o.cdg_order_number : null),
     orderedAt: (o) => o.ordered_at || o.created_at,
-    orderFee: () => null,                          // NAN exposes no per-order fee today
-    orderPaid: () => false,                        // NAN exposes no per-order paid flag today
+    // THE FEE AND THE PAID FLAG COME FROM THE VENDOR'S OWN RECORD, read by the
+    // detail poll (db/567). `client_fee` is what this order costs US — it is NOT
+    // the job fee plus the management fee, which on AppraisalScope's own sample
+    // sum to $75 beside a $450 client fee.
+    orderFee: (o) => (o.client_fee != null ? Number(o.client_fee) : null),
+    // PAID means the vendor says nothing is still owed. A PARTIAL payment is
+    // deliberately not "Paid ✓" — telling a coordinator an appraisal is paid for
+    // when $200 of $450 has been taken is worse than telling them nothing. Until
+    // the first detail poll lands both figures are absent, which reads as
+    // not-paid: the honest answer, since we have not been told otherwise.
+    orderPaid: (o) => {
+      const paid = o.paid_amount == null ? null : Number(o.paid_amount);
+      const due = o.due_amount == null ? null : Number(o.due_amount);
+      if (!Number.isFinite(paid) || paid <= 0) return false;
+      return due == null || !Number.isFinite(due) || due <= 0;
+    },
+    // The vendor's OWN due date, which is the ETA somebody is really asking for.
+    // `need_by_date` is the date WE asked for and can differ from it.
+    dueDate: (o) => o.vendor_due_date || o.need_by_date || null,
+    inspectionDate: (o) => o.inspection_date || null,
+    appraiser: (o) => (o.appraiser_name || o.appraiser_company ? {
+      name: o.appraiser_name || null,
+      company: o.appraiser_company || null,
+      phone: o.appraiser_phone || null,
+      email: o.appraiser_email || null,
+    } : null),
     canCancel: (o) => !!(o.sp_order_number && o.status !== 'cancelled' && o.status !== 'completed'
       && o.status !== 'cancel_requested' && o.status !== 'rejected'),
     // PAYING IT, for real, as of 2026-08-16 (owner-directed: *"I want them to charge
@@ -178,6 +202,11 @@ const ADAPTERS = {
     orderedAt: (o) => o.placed_at || o.created_at,
     orderFee: (o) => (o.client_fee_cents != null ? o.client_fee_cents / 100 : null),
     orderPaid: (o) => !!o.paid_at,
+    // Class's own words for the same three facts, so the card asks the adapter
+    // rather than reaching for one vendor's column names on every vendor's row.
+    dueDate: (o) => o.due_date || null,
+    inspectionDate: (o) => o.appointment_date || null,
+    appraiser: (o) => (o.assigned_vendor ? { name: null, company: o.assigned_vendor, phone: null, email: null } : null),
     // A live Class order can be called off. The reason must come from Class's own
     // closed list, which is what ClassCancelButton's picker is for; an order they
     // have already finished or cancelled has nothing left to stop.
@@ -2624,8 +2653,15 @@ function ActiveOrderCard({ order, appId, card, onChanged, onPay }) {
   if (prop) numberBits.push(prop.value);
   if (num) numberBits.push(num);
   numberBits.push('ordered ' + fmtDate(ad.orderedAt(order)));
-  if (order.due_date) numberBits.push('due ' + fmtDate(order.due_date));
-  if (order.appointment_date) numberBits.push('inspection ' + fmtDate(order.appointment_date));
+  // Each vendor names these two facts in its own columns, so the adapter answers
+  // for its own rows rather than the card reaching for one vendor's column names
+  // on every vendor's order (which is why the AppraisalScope due date and
+  // inspection date never once appeared here — those two reads are Class's).
+  const dueOn = ad.dueDate ? ad.dueDate(order) : null;
+  const inspectOn = ad.inspectionDate ? ad.inspectionDate(order) : null;
+  const appraiser = ad.appraiser ? ad.appraiser(order) : null;
+  if (dueOn) numberBits.push('due ' + fmtDate(dueOn));
+  if (inspectOn) numberBits.push('inspection ' + fmtDate(inspectOn));
   if (order.dryrun) numberBits.push('test');
 
   const statusLabel = STATUS_LABEL[order.status] || order.status;
@@ -2645,7 +2681,12 @@ function ActiveOrderCard({ order, appId, card, onChanged, onPay }) {
         <span className="aord-pill" style={{ background: sc + '18', color: sc }}>{statusLabel}</span>
       </div>
 
-      <StatusTimeline ms={ms} order={order} asks={order._asks} />
+      <StatusTimeline ms={ms} order={order} inspectOn={inspectOn} asks={order._asks} />
+
+      {/* WHO IS ACTUALLY DOING IT. Renders only once the vendor has told us —
+          an absent block reads as "they have not said yet", never as "nobody is
+          assigned", which is why there is no placeholder row here. */}
+      {appraiser ? <AppraiserLine who={appraiser} /> : null}
 
       {/* Quiet action row: communicate · pay · cancel */}
       <div className="aord-acts">
@@ -2691,7 +2732,28 @@ function ActiveOrderCard({ order, appId, card, onChanged, onPay }) {
   );
 }
 
-function StatusTimeline({ ms, order, asks }) {
+/* The appraiser, in one quiet line: who, where they are from, and how to reach
+   them. It is the APPRAISER and never the AMC — both ride in AppraisalScope's one
+   `appraisers[]` array under different roles, and telling a loan officer that the
+   management company is inspecting their property would be worse than telling
+   them nothing (src/amc/detail.js keeps the two apart). Dark text on the white
+   card per the standing rule — never an `--ink*` token, which is a LIGHT paper
+   colour in this palette. */
+function AppraiserLine({ who }) {
+  const bits = [];
+  if (who.name && who.company) bits.push(`${who.name} · ${who.company}`);
+  else if (who.name || who.company) bits.push(who.name || who.company);
+  if (who.phone) bits.push(who.phone);
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', marginTop: 6, fontSize: 13 }}>
+      <span style={{ color: '#4B585C', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.04em', fontSize: 11 }}>Appraiser</span>
+      <span style={{ color: '#141B22' }}>{bits.join(' · ')}</span>
+      {who.email ? <a href={`mailto:${who.email}`} style={{ color: '#256168' }}>{who.email}</a> : null}
+    </div>
+  );
+}
+
+function StatusTimeline({ ms, order, inspectOn, asks }) {
   const cur = ms.index;
   return (
     <div>
@@ -2703,7 +2765,7 @@ function StatusTimeline({ ms, order, asks }) {
               <i />
               <span>
                 {label}
-                {i === 1 && order.appointment_date ? <><br />{fmtDate(order.appointment_date)}</> : null}
+                {i === 1 && inspectOn ? <><br />{fmtDate(inspectOn)}</> : null}
               </span>
             </div>
           );
