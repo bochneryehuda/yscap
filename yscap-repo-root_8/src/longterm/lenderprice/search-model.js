@@ -186,17 +186,19 @@ function buildSearch(sc = {}, opts = {}) {
   // comes back quickly (the frontend does exactly this — kick off on search, poll on the
   // "ineligible" click). We set these flags EXPLICITLY (not inherited from the base) so the
   // kickoff and poll bodies can differ ONLY in cachedDisqualified.
-  const polling = !!(opts.disqualify && opts.disqualify.cached);
+  // The captured disqualify HAR (the real Quick Pricer flow) shows the EXACT handshake: the kickoff
+  // (cachedDisqualified=false) returns an empty disqualify tree at ~0s and only STARTS the async
+  // computation; ~16s later a POLL with ONLY cachedDisqualified flipped to true returns the fully
+  // populated tree (a ~111 MB response). disqualifyAsync stays true and disqualifyFullResult stays
+  // FALSE on BOTH the kickoff and the poll — the frontend never flips them — so the poll body
+  // differs from the kickoff ONLY in cachedDisqualified and the cache slot (keyed on the scenario)
+  // is unchanged. The large response is handled by a longer fetch timeout on the disqualify poll.
   m.showDisqualify = true;
   m.showDisqualifyRules = true;     // include the actual failing RULE text, not just a flag
   m.disqualifyAsync = true;
-  // Kickoff (cached=false) returns an EMPTY disqualify tree (the captured HAR confirms this) — it
-  // only STARTS the async computation. The POLL (cached=true) must ask for the FULL result, or the
-  // ready tree comes back empty. These are result-SHAPING flags, not search criteria, so flipping
-  // them does not change the cache slot (which is keyed on the scenario), only what is returned.
-  m.disqualifyFullResult = polling;
+  m.disqualifyFullResult = false;
   m.fillLenderMap = true;
-  m.cachedDisqualified = polling; // false = kick off; true = poll
+  m.cachedDisqualified = !!(opts.disqualify && opts.disqualify.cached); // false = kick off; true = poll
 
   // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). This runs AFTER
   // the core overlay so it only ADDS the extensions; invalid enum values are collected as warnings
