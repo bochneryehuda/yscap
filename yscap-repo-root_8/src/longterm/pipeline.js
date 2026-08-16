@@ -147,11 +147,22 @@ function buildPipelineQuery(viewerAccess, staffId, filters = {}) {
   const FROM = `
       FROM lt_loans l
       LEFT JOIN borrowers b ON b.id = l.borrower_id
-      LEFT JOIN lt_locks k ON k.loan_id = l.id`;
+      LEFT JOIN lt_locks k ON k.loan_id = l.id
+      -- The property carries the address and the LTV, both of which the plan names as
+      -- pipeline columns (§4.1). LEFT, always: a loan whose property has not been read
+      -- must stay in somebody's book, not vanish from it.
+      LEFT JOIN lt_properties p ON p.loan_id = l.id`;
 
   const sql = `
     SELECT l.id, l.loan_number, l.loan_amount, l.note_rate_pct, l.dscr_ratio,
-           l.milestone_name, l.stage_key, l.loan_folder,
+           l.milestone_name, l.stage_key, l.loan_folder, l.program_name,
+           -- The property columns. Selected ALWAYS, whatever pipeline.columns says:
+           -- the setting decides what the SCREEN draws, and building a SELECT list out
+           -- of a stored setting would put an administrator's typed value into the
+           -- query text and hand the planner a different statement per configuration.
+           NULLIF(CONCAT_WS(', ', NULLIF(p.street,''), NULLIF(p.city,''),
+                            NULLIF(p.state,''), NULLIF(p.zip,'')), '') AS property_address,
+           p.ltv_pct,
            l.encompass_last_modified, l.encompass_synced_at, l.encompass_sync_error,
            b.full_name AS borrower_name,
            k.lock_status, k.expiration_date AS lock_expiration_date,

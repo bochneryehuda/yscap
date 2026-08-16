@@ -13,6 +13,11 @@ const day = (v) => {
   return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-US') : '—';
 };
 
+// A percentage the server stated. MISSING IS NOT ZERO: a loan whose rate has not been
+// mirrored yet reads as a dash, never as 0.000%.
+const pct = (v) => (v == null || v === '' ? '—' : `${Number(v).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}%`);
+const ratio = (v) => (v == null || v === '' ? '—' : Number(v).toFixed(2));
+
 /**
  * A loan's lock, in one cell.
  *
@@ -64,6 +69,71 @@ function LockCell({ row }) {
 }
 
 /**
+ * What to draw when the server did not say — the nine columns this screen carried
+ * before the setting was wired up. It is a FALLBACK, not a second definition of the
+ * catalog: `src/longterm/pipeline-columns.js` is the one that decides, and this only
+ * ever runs against a server too old to answer.
+ */
+const FALLBACK_COLUMNS = [
+  { key: 'loan_number', label: 'Loan #', field: 'loan_number', kind: 'text', sort: 'loan_number', align: 'left', emphasis: true },
+  { key: 'borrower', label: 'Borrower', field: 'borrower_name', kind: 'text', sort: 'borrower', align: 'left' },
+  { key: 'loan_amount', label: 'Amount', field: 'loan_amount', kind: 'money', sort: 'loan_amount', align: 'right' },
+  { key: 'stage', label: 'Stage', field: 'stage_key', kind: 'text', sort: 'stage', align: 'left' },
+  { key: 'milestone', label: 'Milestone', field: 'milestone_name', kind: 'text', sort: 'milestone', align: 'left' },
+  { key: 'days_in_stage', label: 'At milestone', field: 'milestone_days', kind: 'milestone_days', sort: 'milestone_since', align: 'right' },
+  { key: 'loan_officer', label: 'Loan officer', field: 'loan_officer', kind: 'contact', sort: null, align: 'left' },
+  { key: 'lock_status', label: 'Lock', field: 'lock_status', kind: 'lock', sort: 'lock_expiration', align: 'left' },
+  { key: 'updated', label: 'Updated', field: 'encompass_last_modified', kind: 'day', sort: 'last_modified', align: 'left' },
+];
+
+/**
+ * One cell, drawn from what the COLUMN says it is.
+ *
+ * The screen no longer knows which columns exist — the server sends them, in order,
+ * each carrying its `kind`, and this renders that kind. So a buyer who changes
+ * `pipeline.columns` changes the table, which is the whole point of the setting; and a
+ * column added to the catalog appears here without this file being touched.
+ *
+ * A value the loan does not carry renders as a DASH, never as a zero. "We have not
+ * read this yet" and "it is nothing" are different answers, and on money, a rate or a
+ * ratio the second one is a lie a desk would act on.
+ */
+function Cell({ col, row, stageLabel }) {
+  const muted = { color: '#4B585C' };
+
+  // WHICH FIELD A COLUMN READS IS THE COLUMN'S OWN BUSINESS (`field`, from the
+  // server's catalog) — never a lookup table repeated here, which is how a screen and
+  // a server come to disagree about what "LTV" means.
+  const raw = row[col.field];
+
+  switch (col.kind) {
+    case 'money': return <span>{money(raw)}</span>;
+    case 'pct': return <span>{pct(raw)}</span>;
+    case 'ratio': return <span>{ratio(raw)}</span>;
+    case 'milestone_days': return <MilestoneAge row={row} />;
+    case 'lock': return <LockCell row={row} />;
+    case 'day': return <span>{day(raw)}</span>;
+    case 'contact': {
+      // THE ROLE IS THE COLUMN'S `field`, so a third contact column (an underwriter,
+      // a closer) needs one catalog entry on the server and nothing here.
+      const c = (row.contacts || []).find((x) => x.role === col.field);
+      if (!c || !c.name) return <span style={muted}>—</span>;
+      return (
+        <span>
+          {c.name}
+          {c.overridden && <span style={{ marginLeft: 6, fontSize: 11, color: '#AE8746' }}>reassigned</span>}
+        </span>
+      );
+    }
+    default: {
+      const text = col.key === 'stage' ? stageLabel(raw) : raw;
+      if (text == null || text === '') return <span style={muted}>—</span>;
+      return <span>{String(text)}</span>;
+    }
+  }
+}
+
+/**
  * The long-term pipeline.
  *
  * Every row here is one the server's SCOPE already allowed — this screen does no
@@ -87,14 +157,20 @@ export default function LtPipeline() {
   const [naming, setNaming] = useState(false);
   const [viewName, setViewName] = useState('');
   const [confirmRemove, setConfirmRemove] = useState(false);
+  // What the SCREEN asked for. What it DRAWS as sorted is what the server says it
+  // actually did (`data.sort`/`data.dir`) — the server refuses a sort key it does not
+  // accept and falls back, and an arrow pointing at a column the rows are not ordered
+  // by is a lie the reader has no way to catch.
+  const [sortReq, setSortReq] = useState('');
+  const [dirReq, setDirReq] = useState('');
   const nav = useNavigate();
 
   const load = useCallback(() => {
     setErr(null);
-    ltApi.pipeline({ search: search.trim(), stage })
+    ltApi.pipeline({ search: search.trim(), stage, sort: sortReq, dir: dirReq })
       .then(setData)
       .catch((e) => setErr(e.message || 'Could not load the long-term pipeline.'));
-  }, [search, stage]);
+  }, [search, stage, sortReq, dirReq]);
 
   useEffect(() => {
     const t = setTimeout(load, search ? 250 : 0);
@@ -142,6 +218,20 @@ export default function LtPipeline() {
   const th = { textAlign: 'left', fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase',
     color: '#4B585C', fontWeight: 700, padding: '8px 10px', whiteSpace: 'nowrap' };
   const td = { padding: '10px', fontSize: 14, color: '#141B22', borderTop: '1px solid #EAE4D7' };
+
+  // The columns the SERVER resolved from `pipeline.columns`. An older server that does
+  // not send them is not a blank table: fall back to the set this screen has always
+  // drawn, so a mid-deploy page load still shows somebody their book.
+  const columns = (data && data.columns && data.columns.length) ? data.columns : FALLBACK_COLUMNS;
+  const sort = (data && data.sort) || '';
+  const dir = (data && data.dir) || 'desc';
+
+  // A stage is stored as a key and READ as a label. The list of stages is the
+  // tenant's own (Settings), and it rides on the same response.
+  const stageLabel = (key) => {
+    const s = (data && data.stages ? data.stages : []).find((x) => x.key === key);
+    return (s && s.label) || key || '';
+  };
 
   return (
     <LtLayout title="Long-term pipeline">
@@ -222,50 +312,72 @@ export default function LtPipeline() {
         </div>
       )}
 
-      {data && data.loans.length > 0 && (
+      {/* A CONFIGURED COLUMN WE CANNOT DRAW IS EXPLAINED, NEVER SILENTLY MISSING.
+          Somebody put it in the setting on purpose; a column that just fails to
+          appear reads as "the setting did not save", and the next thing that happens
+          is somebody saving it again. */}
+      {data && (data.unavailable || []).length > 0 && (
+        <div className="card" style={{ color: '#4B585C', fontSize: 13, marginBottom: 12 }}>
+          {data.unavailable.map((u) => (
+            <div key={u.key} style={{ marginTop: 2 }}>
+              <strong style={{ color: '#141B22' }}>{u.label}</strong> is not shown — {u.why}
+            </div>
+          ))}
+        </div>
+      )}
+      {data && (data.unknown || []).length > 0 && (
+        <div className="card" style={{ color: '#4B585C', fontSize: 13, marginBottom: 12 }}>
+          The pipeline columns setting names {data.unknown.length === 1 ? 'a column' : 'columns'} nobody
+          recognises: <strong style={{ color: '#141B22' }}>{data.unknown.join(', ')}</strong>. Check the
+          spelling in Settings — {data.unknown.length === 1 ? 'it has' : 'they have'} been skipped.
+        </div>
+      )}
+
+      {data && data.loans.length > 0 && columns.length > 0 && (
         <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
             <thead><tr>
-              <th style={th}>Loan #</th><th style={th}>Borrower</th><th style={th}>Amount</th>
-              <th style={th}>Stage</th><th style={th}>Milestone</th>
-              <th style={th}>At milestone</th>
-              <th style={th}>Loan officer</th><th style={th}>Lock</th><th style={th}>Updated</th>
-            </tr></thead>
-            <tbody>
-              {data.loans.map((l) => {
-                const officer = (l.contacts || []).find((c) => c.role === 'loan_officer');
+              {columns.map((c) => {
+                const active = c.sort && c.sort === sort;
                 return (
-                  <tr key={l.id} style={{ cursor: 'pointer' }}
-                    onClick={() => nav(`/internal/lt/loan/${l.id}`)}>
-                    {/* THE PRODUCT STAMP, on every row (CLAUDE.md §7). Rendered from
-                        what the ROW carries, so it stays correct on a combined
-                        pipeline instead of labelling everything the same. */}
-                    <td style={{ ...td, fontWeight: 600 }}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                        <ProductStamp product={l.product} label={l.productLabel} />
-                        <span>{l.loan_number || '—'}</span>
-                      </span>
-                    </td>
-                    <td style={td}>{l.borrower_name || '—'}</td>
-                    <td style={td}>{money(l.loan_amount)}</td>
-                    <td style={td}>{l.stage_key || '—'}</td>
-                    <td style={td}>{l.milestone_name || '—'}</td>
-                    {/* HOW LONG IT HAS SAT THERE. Blank on a loan PILOT only ever
-                        baselined — we know when we started watching, not when it
-                        arrived, and a number there would be a confident guess on
-                        exactly the back-book files this column exists to surface. */}
-                    <td style={td}><MilestoneAge row={l} /></td>
-                    <td style={td}>
-                      {officer ? (officer.name || '—') : '—'}
-                      {officer && officer.overridden && (
-                        <span style={{ marginLeft: 6, fontSize: 11, color: '#AE8746' }}>reassigned</span>
-                      )}
-                    </td>
-                    <td style={td}><LockCell row={l} /></td>
-                    <td style={td}>{day(l.encompass_last_modified)}</td>
-                  </tr>
+                  <th key={c.key}
+                    style={{ ...th, textAlign: c.align === 'right' ? 'right' : 'left',
+                      cursor: c.sort ? 'pointer' : 'default', color: active ? '#141B22' : '#4B585C' }}
+                    onClick={() => {
+                      if (!c.sort) return;
+                      setDirReq(active && dir === 'asc' ? 'desc' : 'asc');
+                      setSortReq(c.sort);
+                    }}
+                    title={c.sort ? 'Sort by this column' : undefined}>
+                    {c.label}{active && (dir === 'asc' ? ' ▲' : ' ▼')}
+                  </th>
                 );
               })}
+            </tr></thead>
+            <tbody>
+              {data.loans.map((l) => (
+                <tr key={l.id} style={{ cursor: 'pointer' }}
+                  onClick={() => nav(`/internal/lt/loan/${l.id}`)}>
+                  {columns.map((c, i) => (
+                    <td key={c.key}
+                      style={{ ...td, textAlign: c.align === 'right' ? 'right' : 'left',
+                        fontWeight: c.emphasis ? 600 : 400 }}>
+                      {/* THE PRODUCT STAMP, on every row (CLAUDE.md §7) — on the FIRST
+                          column, whichever column that is. Hanging it off the loan
+                          number would let a configuration that drops that column drop
+                          the stamp with it, and the stamp is not configurable. It is
+                          rendered from what the ROW carries, so it stays correct on a
+                          combined pipeline instead of labelling everything the same. */}
+                      {i === 0 ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <ProductStamp product={l.product} label={l.productLabel} />
+                          <Cell col={c} row={l} stageLabel={stageLabel} />
+                        </span>
+                      ) : <Cell col={c} row={l} stageLabel={stageLabel} />}
+                    </td>
+                  ))}
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>

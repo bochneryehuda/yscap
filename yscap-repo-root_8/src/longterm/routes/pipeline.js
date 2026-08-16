@@ -19,6 +19,7 @@ const workspace = require('../workspace');
 const locks = require('../locks');
 const milestones = require('../milestones');
 const product = require('../product');
+const pipelineColumns = require('../pipeline-columns');
 const ltFile = require('../file');
 const stages = require('../stages');
 const settingsStore = require('../settings/store');
@@ -27,6 +28,13 @@ const db = require('../db');
 // GET /api/lt/pipeline — the viewer's long-term book.
 router.get('/', async (req, res) => {
   try {
+    // Which columns to draw comes from `pipeline.columns` (db/553) — a setting that
+    // has existed since the pipeline shipped and that nothing read, so a buyer could
+    // change it and nothing happened. The SCREEN renders what this resolves; the
+    // QUERY is unchanged by it, deliberately (see pipeline-columns.js).
+    const { settings } = await settingsStore.load().catch(() => ({ settings: {} }));
+    const cols = pipelineColumns.resolveColumns(settings['pipeline.columns']);
+
     const out = await pipeline.loadPipeline(req.actor, {
       stage: req.query.stage,
       folder: req.query.folder,
@@ -38,7 +46,7 @@ router.get('/', async (req, res) => {
       limit: req.query.limit,
       offset: req.query.offset,
     });
-    res.json(out);
+    res.json({ ...out, ...cols });
   } catch (e) {
     console.error('[lt] pipeline failed:', (e && e.message) || e);
     res.status(500).json({ error: 'Could not load the long-term pipeline.' });
