@@ -25,14 +25,46 @@ jobs:
       run:
         working-directory: yscap-repo-root_8
     steps:
+      # fetch-depth: 0 so the changed-file diff below has a real base to compare
+      # against. A shallow clone cannot see the merge base, and a diff that
+      # cannot be computed falls back to running EVERYTHING (see below) — so
+      # this only ever costs speed, never coverage.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: yscap-repo-root_8/package-lock.json
       - run: npm ci
-      - run: npm test
+
+      # ---- what changed? (pull requests only) --------------------------------
+      # Writes one path per line, relative to the git root. EVERY failure path
+      # here leaves the file absent or empty, and `ci-scope.js` answers
+      # "everything" for both — so a broken diff makes CI slower, never weaker.
+      - name: Work out what changed
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          base="origin/${{ github.base_ref }}"
+          git fetch --no-tags origin "${{ github.base_ref }}" || exit 0
+          git diff --name-only "$base"...HEAD > /tmp/changed-files.txt || rm -f /tmp/changed-files.txt
+          echo "changed files:"; cat /tmp/changed-files.txt 2>/dev/null || echo "  (could not be determined — the full suite will run)"
+
+      # ---- the suite --------------------------------------------------------
+      # A PULL REQUEST may run a reduced plan when the change is provably
+      # Long-Term-only (~11 steps instead of 893). A PUSH TO MAIN always runs
+      # the whole thing, unchanged, because that is what gates the deploy.
+      # Nothing is ever left unrun: a step skipped on a PR still runs here.
+      - name: Run the tests
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ -s /tmp/changed-files.txt ]; then
+            npm run test:changed -- --changed-from /tmp/changed-files.txt
+          else
+            npm test
+          fi
 
   # ---------------------------------------------------------------------------
   # Same suite against a REAL Postgres (task #195). Every *-db.js suite that
@@ -76,17 +108,45 @@ jobs:
       DATABASE_URL: postgres://yscap:yscap@localhost:5432/yscap_test
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: yscap-repo-root_8/package-lock.json
       - run: npm ci
+
+      # THE FULL MIGRATION CHAIN ALWAYS RUNS, in every mode, on every event.
+      # A Long-Term migration is the one genuine coupling between the two
+      # products — every db/*.sql runs on boot for BOTH — so a broken
+      # `db/NNN_lt_*.sql` could stop the short-term system booting. Selecting
+      # tests must never mean selecting migrations.
       - name: Apply every migration to the fresh database
         run: npm run migrate
         timeout-minutes: 15
-      - run: npm test
+
+      - name: Work out what changed
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          base="origin/${{ github.base_ref }}"
+          git fetch --no-tags origin "${{ github.base_ref }}" || exit 0
+          git diff --name-only "$base"...HEAD > /tmp/changed-files.txt || rm -f /tmp/changed-files.txt
+          echo "changed files:"; cat /tmp/changed-files.txt 2>/dev/null || echo "  (could not be determined — the full suite will run)"
+
+      # Same rule as the pure job: a pull request may run a reduced plan when
+      # the change is provably Long-Term-only; a push to main always runs the
+      # whole suite, because that is what gates the deploy.
+      - name: Run the tests
         timeout-minutes: 30
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ -s /tmp/changed-files.txt ]; then
+            npm run test:changed -- --changed-from /tmp/changed-files.txt
+          else
+            npm test
+          fi
 
   # ---------------------------------------------------------------------------
   # Auto-publish to Render. Runs ONLY:
