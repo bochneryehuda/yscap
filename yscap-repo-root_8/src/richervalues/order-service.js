@@ -722,6 +722,8 @@ async function placeOrder(db, appId, {
     order.xml_waiver_applied = true;
   }
 
+  // The Orders desk mirrors this order (lib/appraisal-order-mirror.js).
+  require('../lib/appraisal-order-mirror').fire(appId);
   return {
     order,
     dryrun: false,

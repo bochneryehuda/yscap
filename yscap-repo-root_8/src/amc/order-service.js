@@ -424,6 +424,17 @@ async function buildPreview(db, appId, opts = {}) {
   const spec = orderBuild.buildOrderSpec(ctx, chosen, opts.overrides || {});
   const missing = orderBuild.missingRequired(spec);
   const forms = await formsCatalog(db, ctx, rules);
+  // The fee quote for THIS form at THIS property. Cache-first, refreshed in the
+  // background; a failure answers a null quote and never touches the preview.
+  let feeQuote = null;
+  try {
+    const prop = (spec && spec.property) || {};
+    feeQuote = await require('./fees').quoteFor(db, {
+      productCode: spec && spec.productCode,
+      state: prop.state, zip: prop.postalCode,
+      subdomain: (cfg.amc && cfg.amc.subdomain) || '',
+    });
+  } catch (_) { feeQuote = null; }
   return {
     context: ctx,
     deal,
@@ -438,6 +449,13 @@ async function buildPreview(db, appId, opts = {}) {
     forms,            // the form catalog [{id,name}], for the staff override dropdown
     notifyEmails: ctx.notifyEmails,   // who NAN will email order updates to
     card: ctx.card,
+    // WHAT IT WILL COST, before it goes out (2026-08-16). Two answers, because
+    // they are two questions: the account's list price for this FORM, and what
+    // appraisers charge WHERE the property is. Read from cache and refreshed in
+    // the background, so a preview never waits on the vendor and a cold cache
+    // simply answers null (the next preview carries the numbers). Best-effort —
+    // a fee we cannot quote must never stop an order being built.
+    feeQuote,
     config: client.configured(),
   };
 }
@@ -658,6 +676,9 @@ async function createOrder(db, appId, opts = {}) {
   const ack = cdg.parseAck(resp);
   const updated = await applyAck(db, order.id, ack, resp);
   await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, response: resp, ok: true, staffId: opts.staffId });
+  // The Orders desk mirrors this order (lib/appraisal-order-mirror.js). Fired,
+  // never awaited: the desk is a projection and must never delay or fail a placement.
+  require('../lib/appraisal-order-mirror').fire(appId);
   return { ok: true, order: updated };
 }
 

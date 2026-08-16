@@ -6102,7 +6102,20 @@ const orderSlots = require('../lib/order-slots');
 const { orderReplyTo } = require('../lib/file-address');
 const ORDER_RETURN_KIND = orderSlots.RETURN_DOC_KIND;
 
+/** An order this desk SENDS itself — an email to a vendor contact. Title and
+ *  insurance, and only those two. The attorney order is sent by the closing card
+ *  and the appraisal by the appraisal section, so neither belongs here: `place`,
+ *  `followup`, `classify` and `cancel` are all gated on this. */
 function isOrderKind(k) { return k === 'title' || k === 'insurance'; }
+
+/** An order this desk TRACKS — anything with a `file_orders` row, so all four.
+ *
+ *  The two questions are genuinely different and were previously conflated by a
+ *  hand-repeated `!isOrderKind(kind) && kind !== 'attorney'` in five routes; a
+ *  fourth type meant editing five places and missing one. Derived from
+ *  `order-sla.ORDER_TYPES` so the desk's tracking surface and its clock can never
+ *  disagree about which orders exist. */
+function isTrackedKind(k) { return orderSla.ORDER_TYPES.includes(k); }
 
 /**
  * A DEAL THAT IS OVER MUST NOT SEND A VENDOR A NEW ORDER.
@@ -6286,6 +6299,62 @@ router.get('/applications/:id/orders', async (req, res) => {
        like the other two. Only the tracking block — the closing card owns its own
        recipients, package and chain, and duplicating those here would be a second
        source for them. Null when closing prep has never been sent. */
+    /* THE APPRAISAL ORDER, projected. The desk row is kept in step with whichever
+       vendor the appraisal was actually placed with by
+       `lib/appraisal-order-mirror.js`; refreshed here so opening the desk shows the
+       live state rather than whatever the last poll left. Best-effort — a refresh
+       that fails leaves the previous projection standing, which is stale rather
+       than wrong, and the desk still renders. */
+    try { await require('../lib/appraisal-order-mirror').syncOne(req.params.id, db); }
+    catch (_) { /* the stored projection still renders */ }
+    const apprRow = (await db.query(
+      `SELECT o.*, su.full_name AS assigned_name, su.email AS assigned_email, a.status AS file_status
+         FROM file_orders o
+         JOIN applications a ON a.id = o.application_id
+         LEFT JOIN staff_users su ON su.id = o.assigned_to AND su.is_active = true
+        WHERE o.application_id=$1 AND o.order_type='appraisal'`, [req.params.id])).rows[0] || null;
+    const apprMeta = (apprRow && apprRow.meta && typeof apprRow.meta === 'object' && apprRow.meta.appraisal) || null;
+    // How much of the report is back. The two source documents file themselves into
+    // the appraisal condition's own slots, so this counts what is IN those slots
+    // rather than a doc_kind nobody classified.
+    let apprDocs = [];
+    if (apprRow) {
+      try {
+        apprDocs = (await db.query(
+          `SELECT d.id, d.filename, d.doc_kind, d.slot_label, d.review_status, d.created_at
+             FROM documents d
+            WHERE d.application_id=$1 AND d.is_current
+              AND d.doc_kind IN ('appraisal_xml','appraisal_pdf')
+            ORDER BY d.created_at DESC`, [req.params.id])).rows;
+      } catch (_) { apprDocs = []; }
+    }
+    const appraisalOrder = apprRow && apprRow.status !== 'not_ordered' ? {
+      orderType: 'appraisal',
+      status: apprRow.status,
+      orderedAt: apprRow.ordered_at,
+      // Everything the vendor side knows, named plainly so the card needs no
+      // vendor-specific branches of its own.
+      vendor: apprMeta ? {
+        key: apprMeta.vendor || null,
+        name: apprMeta.vendorName || apprRow.vendor_name || null,
+        orderNumber: apprMeta.orderNumber || null,
+        product: apprMeta.product || null,
+        feeCents: apprMeta.feeCents != null ? Number(apprMeta.feeCents) : null,
+        vendorStatus: apprMeta.vendorStatus || null,
+        lastError: apprMeta.lastError || null,
+        section: apprMeta.section || 'sec-order-appraisal',
+      } : { key: null, name: apprRow.vendor_name || null, section: 'sec-order-appraisal' },
+      returnedDocs: apprDocs,
+      tracking: {
+        ...orderSla.orderState(apprRow, new Date()),
+        assignedTo: apprRow.assigned_to || null,
+        assignedName: apprRow.assigned_name || apprRow.assigned_email || null,
+        firstResponseAt: apprRow.first_response_at || null,
+        completedAt: apprRow.completed_at || null,
+        notes: apprRow.notes || null,
+      },
+    } : null;
+
     const attorneyRow = orderOf('attorney');
     const attorneyTracking = attorneyRow ? {
       ...orderSla.orderState(attorneyRow, new Date()),
@@ -6315,6 +6384,13 @@ router.get('/applications/:id/orders', async (req, res) => {
         // own closing-prep payload, which owns the recipients, the package and the
         // chain. `null` until closing prep has actually been sent.
         attorney: attorneyTracking ? { orderType: 'attorney', tracking: attorneyTracking } : null,
+        // THE APPRAISAL, on the same footing as the attorney order and for the same
+        // reason: the desk carries its clock, owner, notes and history, while the
+        // appraisal section owns the vendor conversation. Everything under `vendor`
+        // is a PROJECTION written by lib/appraisal-order-mirror.js — the desk never
+        // places, chases or cancels an appraisal itself, because exactly one place
+        // may talk to those three APIs. `null` until an appraisal has been ordered.
+        appraisal: appraisalOrder,
       },
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -6531,7 +6607,7 @@ router.post('/applications/:id/orders/:kind/documents/:docId/classify', async (r
 router.post('/applications/:id/orders/:kind/assign', async (req, res) => {
   const appId = req.params.id;
   const kind = req.params.kind;
-  if (!isOrderKind(kind) && kind !== 'attorney') return res.status(400).json({ error: 'unknown order type' });
+  if (!isTrackedKind(kind)) return res.status(400).json({ error: 'unknown order type' });
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
     const raw = req.body && req.body.staffId;
@@ -6575,7 +6651,7 @@ router.post('/applications/:id/orders/:kind/assign', async (req, res) => {
 router.post('/applications/:id/orders/:kind/due', async (req, res) => {
   const appId = req.params.id;
   const kind = req.params.kind;
-  if (!isOrderKind(kind) && kind !== 'attorney') return res.status(400).json({ error: 'unknown order type' });
+  if (!isTrackedKind(kind)) return res.status(400).json({ error: 'unknown order type' });
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
     const b = req.body || {};
@@ -6633,7 +6709,7 @@ router.post('/applications/:id/orders/:kind/due', async (req, res) => {
 router.post('/applications/:id/orders/:kind/note', async (req, res) => {
   const appId = req.params.id;
   const kind = req.params.kind;
-  if (!isOrderKind(kind) && kind !== 'attorney') return res.status(400).json({ error: 'unknown order type' });
+  if (!isTrackedKind(kind)) return res.status(400).json({ error: 'unknown order type' });
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
     // `textColumn` trims, strips a NUL byte (Postgres refuses one in ANY text
@@ -6671,7 +6747,17 @@ router.post('/applications/:id/orders/:kind/note', async (req, res) => {
 router.post('/applications/:id/orders/:kind/complete', async (req, res) => {
   const appId = req.params.id;
   const kind = req.params.kind;
-  if (!isOrderKind(kind) && kind !== 'attorney') return res.status(400).json({ error: 'unknown order type' });
+  if (!isTrackedKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  /* AN APPRAISAL FINISHES WHEN THE APPRAISAL COMPANY SAYS IT HAS. Its desk status
+     is a projection of the vendor's own lifecycle, so marking it finished here
+     would be overwritten by the next poll minutes later — a button that appears to
+     work and then silently undoes itself is worse than one that explains. */
+  if (kind === 'appraisal') {
+    return res.status(409).json({
+      code: 'vendor_owned',
+      error: 'An appraisal finishes on its own when the report comes back from the appraisal company — it is not marked finished by hand. Open the Appraisal section to see where the order is up to.',
+    });
+  }
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
     const reason = require('../lib/fields').textColumn(req.body && req.body.reason, 'file_orders_notes', 500)
@@ -6720,7 +6806,7 @@ router.get('/vendor-scorecards', async (req, res) => {
 /** The order's own timeline — placed, chased, replied, assigned, finished. */
 router.get('/applications/:id/orders/:kind/events', async (req, res) => {
   const kind = req.params.kind;
-  if (!isOrderKind(kind) && kind !== 'attorney') return res.status(400).json({ error: 'unknown order type' });
+  if (!isTrackedKind(kind)) return res.status(400).json({ error: 'unknown order type' });
   if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   res.json(await orderTracking.listEvents(req.params.id, kind));
 });
@@ -7497,14 +7583,20 @@ router.get('/orders', async (req, res) => {
            -- (binder / invoice / commitment). A closing-chain document needs no
            -- classification, so the attorney order never reports any — without that
            -- guard every chain document would show up as work waiting to be done.
-           SELECT count(*) FILTER (WHERE slot_label IS NULL AND o.order_type <> 'attorney') AS unassigned,
+           -- An APPRAISAL return needs no classification either: the data file and
+           -- the report file THEMSELVES into the condition's two named slots
+           -- (lib/appraisal/condition-slots.js), so an appraisal order can never
+           -- report a document waiting to be classified — it reports how many came
+           -- back, which is the useful half.
+           SELECT count(*) FILTER (WHERE slot_label IS NULL AND o.order_type NOT IN ('attorney','appraisal')) AS unassigned,
                   count(*) AS total
              FROM documents d
             WHERE d.application_id = o.application_id AND d.is_current = true
-              AND d.doc_kind = CASE o.order_type
-                                 WHEN 'title' THEN 'title_order_return'
-                                 WHEN 'insurance' THEN 'insurance_order_return'
-                                 ELSE 'closing_correspondence' END
+              AND d.doc_kind = ANY (CASE o.order_type
+                                 WHEN 'title' THEN ARRAY['title_order_return']
+                                 WHEN 'insurance' THEN ARRAY['insurance_order_return']
+                                 WHEN 'appraisal' THEN ARRAY['appraisal_xml','appraisal_pdf']
+                                 ELSE ARRAY['closing_correspondence'] END)
          ) dc ON true
         -- WHAT BELONGS ON THIS DESK IS WORK THAT IS STILL OUTSTANDING.
         --
@@ -7596,7 +7688,7 @@ router.get('/orders', async (req, res) => {
     }
     const files = [...byFile.values()];
     for (const f of files) {
-      const orders_ = ['title', 'insurance', 'attorney'].map((k) => f[k]).filter(Boolean);
+      const orders_ = orderSla.ORDER_TYPES.map((k) => f[k]).filter(Boolean);
       // The file's headline: how late its WORST order is, and whether anything on
       // it is waiting to be classified. Both are what somebody scanning this queue
       // is actually looking for.

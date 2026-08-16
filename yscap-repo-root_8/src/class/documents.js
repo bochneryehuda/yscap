@@ -349,6 +349,7 @@ async function ingestForOrderLocked(dbc, order, deps = {}) {
     // pending for a human.
     if (imported) await conditionSlots.acceptImportedSources(q, [xmlDocId, pdfDocId]);
   }
+  require('../lib/appraisal-order-mirror').fire(order.application_id);
   return { ok: true, filed, imported };
 }
 

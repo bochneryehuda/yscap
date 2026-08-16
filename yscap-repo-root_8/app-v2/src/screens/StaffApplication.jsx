@@ -6061,6 +6061,13 @@ export default function StaffApplication() {
           The two vendors stay TECHNICALLY SEPARATE — no mixing of backends. The owner
           has not picked a default ("none of them are ready right now"), so the selector
           only chooses the display/builder target; it never registers a file preference. */}
+      {/* THE ORDERS-DESK STRIP for the appraisal (owner-directed 2026-08-05,
+          re-confirmed 2026-08-16). The appraisal is now a real order on the Orders
+          desk — its own due date, owner, note and history, and a row in the
+          cross-file Orders queue — and this is that half of it, sitting above the
+          builder exactly as the attorney strip sits above the closing card. It
+          RENDERS NOTHING until an appraisal has actually been ordered. */}
+      <OrdersPanel appId={id} canAccept={canComplete(role)} only="appraisal" />
       <AppraisalOrderSection appId={id} onChanged={load} />
       </Section>
 

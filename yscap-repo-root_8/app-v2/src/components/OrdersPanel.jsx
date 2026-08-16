@@ -13,6 +13,10 @@ import { fmtDay } from '../lib/dates.js';
 // cross-file Orders desk — the decision itself is the server's.
 import { dormantMarker } from '../lib/orderDormant.js';
 import { askConfirm, askPrompt } from '../lib/dialog.js';
+// The file's own section jump — opens a collapsed section and scrolls to it, which
+// a bare hash cannot do. Used by the appraisal card to hand off to the one screen
+// that is allowed to talk to the appraisal companies.
+import { goToSection } from './FileSections.jsx';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ORDERS DESK (#orders) — order TITLE and INSURANCE for a file, and track each
@@ -954,6 +958,19 @@ export default function OrdersPanel({ appId, canAccept = false, only = null }) {
 
   if (only === 'title') return vendorOrder('title');
   if (only === 'insurance') return vendorOrder('insurance');
+  // Inside the Appraisal section itself, this is the DESK STRIP only — the clock,
+  // the owner, the due date and the note — sitting above the order builder exactly
+  // as the attorney strip sits above the closing card. The full card (with the
+  // vendor summary and the jump) is for the stacked view below, where the reader
+  // is not already looking at the order.
+  if (only === 'appraisal') {
+    return (
+      <>
+        {staleWarning}
+        <AppraisalOrderCard appId={appId} order={data.orders.appraisal} onChanged={reload} compact />
+      </>
+    );
+  }
 
   return (
     <div style={{ display: 'grid', gap: 18 }}>
@@ -963,8 +980,125 @@ export default function OrdersPanel({ appId, canAccept = false, only = null }) {
         <OrderCard appId={appId} kind="title" order={data.orders.title} file={data.file} canAccept={canAccept} onChanged={reload} /></div>
       <div><h3 style={{ margin: '0 0 8px', color: '#141B22' }}>Insurance</h3>
         <OrderCard appId={appId} kind="insurance" order={data.orders.insurance} file={data.file} canAccept={canAccept} onChanged={reload} /></div>
+      <div><h3 style={{ margin: '0 0 8px', color: '#141B22' }}>Appraisal</h3>
+        <AppraisalOrderCard appId={appId} order={data.orders.appraisal} onChanged={reload} /></div>
       <div><h3 style={{ margin: '0 0 8px', color: '#141B22' }}>Attorney closing prep</h3>
         <ClosingPrepCard appId={appId} onChanged={reload} /></div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   THE APPRAISAL ON THE ORDERS DESK (owner-directed 2026-08-05, re-confirmed
+   2026-08-16).
+
+   IT SHOWS AND TRACKS; IT DOES NOT ORDER. An appraisal is placed through one of
+   three vendor APIs, each with its own credentials and its own hard-won placement
+   path, and exactly ONE screen may talk to them — the Appraisal section. So this
+   card carries the desk's half (the clock, the owner, the note, the history) and
+   its main action OPENS that section rather than growing a second order builder
+   that could drift out of step with the first.
+
+   Everything under `order.vendor` is projected by the server
+   (lib/appraisal-order-mirror.js), so this card needs no per-vendor branches: it
+   renders the same way whether the appraisal was ordered from AppraisalScope /
+   NAN, Class Valuation or Richer Values.
+   ════════════════════════════════════════════════════════════════════════════ */
+function AppraisalOrderCard({ appId, order, onChanged, compact = false }) {
+  // The appraisal section is a <Section> on the same screen, so this is the file's
+  // OWN jump — the one the conditions list and the closing card already use, which
+  // opens a collapsed section and scrolls to it. Never a raw hash: a hash does not
+  // open a section that is closed, so the button would appear to do nothing.
+  const goToAppraisal = () => {
+    try { goToSection((order && order.vendor && order.vendor.section) || 'sec-order-appraisal'); }
+    catch (_) { /* a host without the section resolver simply stays put */ }
+  };
+
+  // Nothing ordered yet. In the appraisal section the builder is right below, so
+  // saying "go to the appraisal section" there would point at itself.
+  if (!order) {
+    if (compact) return null;
+    return (
+      <div className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ color: '#4B585C', fontSize: 14 }}>
+          No appraisal has been ordered on this file yet. Appraisals are ordered in the
+          Appraisal section, where the form, the fee and the appraisal company are chosen —
+          once one is placed it is tracked here with the other orders.
+        </div>
+        <div>
+          <button className="btn ghost small" onClick={goToAppraisal}>Order an appraisal</button>
+        </div>
+      </div>
+    );
+  }
+
+  const v = order.vendor || {};
+  const money = (c) => (c == null ? null : `$${(Number(c) / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })}`);
+  const docs = order.returnedDocs || [];
+  const hasXml = docs.some((d) => d.doc_kind === 'appraisal_xml');
+  const hasPdf = docs.some((d) => d.doc_kind === 'appraisal_pdf');
+
+  if (compact) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+        <OrderTracking appId={appId} kind="appraisal" tracking={order.tracking} onChanged={onChanged} />
+        <div className="muted small" style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 16px' }}>
+          <span>Tracked on the Orders desk as an appraisal order</span>
+          {v.name ? <span>· {v.name}</span> : null}
+          {v.orderNumber ? <span>· their #{v.orderNumber}</span> : null}
+          {v.feeCents != null ? <span>· {money(v.feeCents)}</span> : null}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <OrderTracking appId={appId} kind="appraisal" tracking={order.tracking} onChanged={onChanged} />
+      <div className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: 8 }}>
+          <strong style={{ color: '#141B22' }}>{v.name || 'Appraisal company'}</strong>
+          <span className="pill" style={{ ...(STATUS_TONE[order.status] || {}) }}>
+            {STATUS_LABEL[order.status] || order.status}
+          </span>
+          {v.vendorStatus ? <span className="muted small">their status: {v.vendorStatus}</span> : null}
+        </div>
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 22px', fontSize: 14, color: '#4B585C' }}>
+          {v.orderNumber ? <span>Their order&nbsp;#<span style={{ color: '#141B22' }}>{v.orderNumber}</span></span> : null}
+          {v.product ? <span>Form&nbsp;<span style={{ color: '#141B22' }}>{v.product}</span></span> : null}
+          {v.feeCents != null ? <span>Fee&nbsp;<span style={{ color: '#141B22' }}>{money(v.feeCents)}</span></span> : null}
+          {order.orderedAt ? <span>Ordered&nbsp;<span style={{ color: '#141B22' }}>{fmtDay(order.orderedAt)}</span></span> : null}
+        </div>
+
+        {/* WHAT IS BACK. The two documents file themselves into the appraisal
+            condition's own slots, so this says whether each has arrived rather than
+            offering a classification step there is no need for. */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 13.5 }}>
+          <span style={{ color: hasPdf ? 'var(--ok, #1E5E3C)' : '#6E7A7E' }}>
+            {hasPdf ? '✓' : '○'} Report (PDF)
+          </span>
+          <span style={{ color: hasXml ? 'var(--ok, #1E5E3C)' : '#6E7A7E' }}>
+            {hasXml ? '✓' : '○'} Data file (XML)
+          </span>
+          {docs.length ? <span className="muted small">— filed on the appraisal condition</span> : null}
+        </div>
+
+        {v.lastError ? (
+          <div className="notice warn" style={{ margin: 0 }}>
+            The appraisal company last reported: {v.lastError}
+          </div>
+        ) : null}
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <button className="btn ghost small" onClick={goToAppraisal}>Open the appraisal order</button>
+        </div>
+        <div className="muted small">
+          Messages, revisions, documents and cancelling this order all live in the Appraisal
+          section — there is one place that talks to the appraisal company, so nothing here
+          can disagree with it.
+        </div>
+      </div>
     </div>
   );
 }

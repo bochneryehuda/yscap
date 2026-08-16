@@ -258,6 +258,8 @@ async function syncOne(dbh, order) {
   // documents.id, gated by AMC_OUTBOUND_ENABLED). Best-effort — never breaks the poll.
   try { await require('./documents').autoUploadForOrder(dbh, order); }
   catch (e) { console.error('[amc] auto document upload failed for order', order.id, (e && e.message) || e); }
+  // Keep the Orders desk's copy of this appraisal in step with the vendor.
+  require('../lib/appraisal-order-mirror').fire(order.application_id);
   if (out.status === 'product_available') {
     try { await ingestDocuments(dbh, { ...order, status: out.status }); }
     catch (e) { console.error('[amc] document ingest failed for order', order.id, (e && e.message) || e); }

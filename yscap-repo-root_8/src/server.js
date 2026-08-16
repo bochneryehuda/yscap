@@ -825,6 +825,15 @@ if (require.main === module) {
         // a dashboard an admin has since edited is left exactly as they left it.
         require('./lib/dashboards/seed').seedDefaults()
           .catch((e) => console.error('[boot] dashboard seed failed:', e.message));
+        // PREVIOUS AND FUTURE (owner-directed 2026-08-16): the appraisal became a
+        // first-class order on the Orders desk (db/554), so every file that already
+        // has a vendor appraisal order needs its desk row projecting — otherwise the
+        // new order type would only ever appear on appraisals ordered from today.
+        // Bounded per boot and self-draining (a file gains its row on the first pass
+        // and is excluded from the next), fire-and-forget, never throws.
+        require('./lib/appraisal-order-mirror').backfillOnce()
+          .then((r) => r && r.synced && console.log('[boot] appraisal Orders-desk backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] appraisal Orders-desk backfill failed:', e.message));
         // Previous-files fix (owner-reported 2026-08-02): galleries extracted before photographs
         // were told apart from the form's own artwork are stored in raw page order, so the
         // appraiser's signature outranks the subject front photo and shows as the property's main

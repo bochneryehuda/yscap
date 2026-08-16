@@ -183,10 +183,18 @@ console.log('\n8. a roll-up over a list of orders — ONE calculator, never a se
   ok(!states.find((x) => x.id === 'd').st.overdue, 'nor is a completed one');
 }
 
-console.log('\n9. the vocabulary is exactly three order types');
+console.log('\n9. the vocabulary is a CLOSED, hand-written list of order types');
 {
-  eq(sla.ORDER_TYPES.join(','), 'title,insurance,attorney',
-    'exactly three, done properly (owner-directed: "just the three, done excellently") — never generalised');
+  // THE GUARD IS THE CLOSED LIST, NOT THE NUMBER THREE. The 2026-08-03 note read
+  // "just the three, done excellently" — the point of which was that this must
+  // never become a generic order registry that anything can register itself into.
+  // The owner then asked, in their own words (2026-08-16), for the appraisal to
+  // join the Orders desk, so the list is four. It is still a hand-written list
+  // that a human has to edit deliberately, and every entry still has to carry the
+  // full vocabulary below — a type added by tidying, with no label / no vendor /
+  // no SLA, still fails here.
+  eq(sla.ORDER_TYPES.join(','), 'title,insurance,attorney,appraisal',
+    'exactly the four the owner asked for, in order — never generalised into a registry');
   for (const t of sla.ORDER_TYPES) {
     ok(!!sla.ORDER_LABEL[t], `${t} has a human label`);
     ok(!!sla.VENDOR_LABEL[t], `${t} has a name for who we are waiting on`);

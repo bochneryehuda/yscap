@@ -87,6 +87,94 @@ function buildLookup({ actionType, apiKey, subdomain, searchCriteria }) {
   if (Array.isArray(searchCriteria) && searchCriteria.length) message.searchCriteria = searchCriteria;
   return { message };
 }
+/* ---- WHAT WILL THIS APPRAISAL COST? ---------------------------------------
+ *
+ * Two lookups answer it, and they answer DIFFERENT questions — which is why both
+ * are built here rather than one being treated as the fee:
+ *
+ *   GetFee                      what the FORM costs on this account
+ *   GetAppraiserFeesByLocation  what appraisers charge WHERE the property is
+ *
+ * A 1004 is not one price nationally, so the account's list price and the local
+ * market rate are both worth showing to somebody about to place the order — and
+ * neither was being asked for, so the price was a surprise on the invoice.
+ *
+ * BOTH ARE READS. They are catalog lookups (the `/direct/` endpoint, `client.lookup`),
+ * never the write gate, so quoting a fee can never place or change an order.
+ *
+ * THE PRODUCT-CODE FIELD NAME IS SENT TWO WAYS, DELIBERATELY. The vendor's own
+ * guide writes `products[].productcode` (lower-case 'c') for the two sibling
+ * actions that take a job type — GetJobTypeAddOns and CheckFHA — while every
+ * other product field in this file is `productCode`. Which one GetFee wants is
+ * NOT confirmed against a live tenant, and an unknown field is ignored by this
+ * gateway while a MISSING one produces an empty answer nobody can interpret. So
+ * both spellings carry the same value: whichever they read, they get the right
+ * one. Drop the other once a live call proves which it is.
+ */
+function buildGetFee({ apiKey, subdomain, productCode }) {
+  const p = {};
+  if (productCode != null && productCode !== '') { p.productCode = String(productCode); p.productcode = String(productCode); }
+  return {
+    message: {
+      clientSystem: clientSystem({ apiKey }),
+      serviceProviderSystem: serviceProviderSystem({ subdomain }),
+      products: [p],
+      requestActionType: 'GetFee',
+    },
+  };
+}
+
+/** Appraiser fees where the property is. The vendor's shape, verbatim:
+ *  `deals[].properties[].address.{stateCode, zip}`. Rows come back as
+ *  `{job_type, user_type, fee, user}`. */
+function buildAppraiserFeesByLocation({ apiKey, subdomain, stateCode, zip }) {
+  const address = {};
+  if (stateCode) address.stateCode = String(stateCode).toUpperCase().slice(0, 2);
+  if (zip) address.zip = String(zip).replace(/[^0-9-]/g, '').slice(0, 10);
+  return {
+    message: {
+      clientSystem: clientSystem({ apiKey }),
+      serviceProviderSystem: serviceProviderSystem({ subdomain }),
+      deals: [{ properties: [{ address }] }],
+      requestActionType: 'GetAppraiserFeesByLocation',
+    },
+  };
+}
+
+/** What payment methods this account is allowed to use. A pure READ — it charges
+ *  nothing and authorises nothing; it is how the desk can say which of the
+ *  vendor's payment routes are even open to us before anybody decides to use one.
+ *  Response carries `paymentFormAvailable` plus a list of `{id,name}`. */
+function buildGetPaymentOptions({ apiKey, subdomain }) {
+  return {
+    message: {
+      clientSystem: clientSystem({ apiKey }),
+      serviceProviderSystem: serviceProviderSystem({ subdomain }),
+      requestActionType: 'GetPaymentOptions',
+    },
+  };
+}
+
+/** Search the account's OWN orders, so an appraisal somebody placed on the
+ *  vendor's website can be found and reconciled. `criteria` is their
+ *  `searchCriteria[]` of `{fieldName, fieldValue}` (create_date_start,
+ *  create_date_end, status); `loanNumber` narrows to one loan. READ ONLY. */
+function buildGetAppraisals({ apiKey, subdomain, loanNumber, criteria }) {
+  const message = {
+    clientSystem: clientSystem({ apiKey }),
+    serviceProviderSystem: serviceProviderSystem({ subdomain }),
+    requestActionType: 'GetAppraisals',
+  };
+  if (loanNumber) {
+    message.deals = [{ loans: [{ loanIdentifiers: { lenderLoanIdentifier: String(loanNumber) } }] }];
+  }
+  const list = (Array.isArray(criteria) ? criteria : [])
+    .filter((c) => c && c.fieldName && c.fieldValue != null)
+    .map((c) => ({ fieldName: String(c.fieldName), fieldValue: String(c.fieldValue) }));
+  if (list.length) message.searchCriteria = list;
+  return { message };
+}
+
 // Lookups come back as responseData.responseFields[].fieldlist[]{fieldName,fieldValue}.
 // Flatten each row to a plain object, e.g. {id:'5', name:'Single-family Appraisal (1004)'}.
 function parseLookup(resp) {
@@ -505,6 +593,7 @@ module.exports = {
   ref, refValue,
   buildDoLogin, parseDoLogin,
   buildLookup, parseLookup,
+  buildGetFee, buildAppraiserFeesByLocation, buildGetPaymentOptions, buildGetAppraisals,
   buildCreateAppraisal, parseAck,
   buildAddComment, buildCancelOrder, buildGetComments, parseComments,
   buildAddRevision, parseRevisionAck, buildGetRevisions, parseRevisions,
