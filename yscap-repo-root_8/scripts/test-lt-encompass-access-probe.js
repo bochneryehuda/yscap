@@ -146,6 +146,36 @@ async function anyLoanId() {
     process.exit(0);
   }
 
+  // ── STEP 0: ARE WE ASKING FOR TOO LITTLE? ──────────────────────────────────
+  // Our client names `scope=lp` on the password grant. Two independent, mature
+  // Encompass clients — EncompassRest (.NET) and EncompassConnect (TypeScript) —
+  // send NO scope at all on that grant. OAuth says a server given no scope applies
+  // its own default, which is normally everything the caller is entitled to. So we
+  // may have been narrowing our own token by naming `lp`, and the earlier
+  // introspection could never have revealed it: it reported `lp` because `lp` is
+  // what we asked for. This asks for nothing and reports what we are handed.
+  console.log('STEP 0 — what are we actually granted?\n');
+  const scopeTries = [null, 'lp'];
+  const grants = [];
+  for (const s of scopeTries) {
+    try {
+      const r = await client.tokenProbe(s);
+      grants.push(r);
+      console.log(`${r.ok ? OK('') : NO('')}asked for ${String(r.requested).padEnd(11)} → ${r.ok ? `granted: ${r.granted}` : `${r.status} ${String(r.error).slice(0, 120)}`}`);
+    } catch (e) {
+      console.log(NO(`asked for ${s == null ? '(omitted)' : s} → ${(e && e.message) || e}`));
+    }
+  }
+  const omitted = grants.find((g) => g.requested === '(omitted)' && g.ok);
+  const named = grants.find((g) => g.requested === 'lp' && g.ok);
+  if (omitted && named && omitted.granted !== named.granted && omitted.granted !== '(not stated)') {
+    console.log(`\n  >>> WORTH ACTING ON: omitting the scope grants "${omitted.granted}" while naming lp grants "${named.granted}".`);
+    console.log('      We have been asking for less than we are entitled to. Drop `params.scope`');
+    console.log('      from the password grant in src/longterm/encompass/client.js and re-run this.\n');
+  } else if (omitted) {
+    console.log('\n  (Omitting the scope grants the same thing, so `lp` is not what is holding us back.)\n');
+  }
+
   const loanId = await anyLoanId();
   console.log(loanId ? OK(`reading against loan ${loanId}`) : NO('no loan id — the loan sub-resource checks will be skipped'));
 

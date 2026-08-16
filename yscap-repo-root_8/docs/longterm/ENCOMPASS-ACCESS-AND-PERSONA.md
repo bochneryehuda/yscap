@@ -52,6 +52,25 @@ So there are three independent gates, and a bare 403 does not say which one clos
 **Do gates 1 and 2 before contacting ICE.** They are free, they are reversible, and if
 they open the endpoints then there was never anything to ask for.
 
+### A fourth possibility, found by reading what everyone else sends
+
+Our client asks for **`scope=lp`** on the password grant. Two independent, mature
+Encompass clients — [EncompassRest](https://github.com/EncompassRest/EncompassRest)
+(.NET) and [EncompassConnect](https://github.com/heythisispaul/EncompassConnect)
+(TypeScript) — send **no `scope` parameter at all** on that grant; only the
+client-credentials grant carries `lp`. Neither mentions `encompass_admin` anywhere.
+
+That difference may matter. OAuth (RFC 6749 §3.3) says a server given no scope applies
+its own default, which is normally *everything the caller is entitled to*. **So it is
+possible we have been narrowing our own token by naming `lp`** — and the token
+introspection that reported `"scope": "lp"` could never have told us, because `lp` is
+exactly what we asked for. The measurement was circular.
+
+This is free to test and it is the FIRST thing the probe does: ask for a token with no
+scope and report what comes back. If the granted scope is wider than `lp`, the fix is
+to delete one line from `getToken` and nothing else. **This is a hypothesis, not a
+finding — it has not been tested against the live tenant.**
+
 ### The one thing still missing, and how to get it
 
 Neither the earlier probe nor this review can say *which* gate closed *which*
