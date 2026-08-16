@@ -104,5 +104,37 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
     'C while still showing their own price, so our total can be reconciled to their invoice');
 }
 
+/* ═══ D. every Richer Values suite is actually WIRED INTO `npm test` ═════ */
+/*
+ * A test file that exists but sits in no CI list runs nowhere and proves nothing,
+ * while still LOOKING like coverage to everyone who greps for it — which is worse
+ * than having no test at all.
+ *
+ * THIS GUARD EXISTS BECAUSE IT ALREADY HAPPENED, on 2026-08-16. `main` rewrote the
+ * whole `scripts.test` block in the same hours this branch was adding to it. The
+ * conflict was resolved by taking main's block verbatim and re-applying "our
+ * addition" — and that re-application carried the ONE suite added in the commit
+ * being merged, silently dropping the TWO added earlier in the same branch. The
+ * check run afterwards asked "did I drop any of MAIN's suites?" (no) and never
+ * asked the mirror question about our own. Both halves of a conflict have to be
+ * checked, and the side you are least likely to check is your own.
+ *
+ * Scoped to this vendor's family deliberately: ~55 suites repo-wide are not in
+ * `npm test`, which is a real and much larger question, but not one to decide
+ * inside a Richer Values test.
+ */
+{
+  const pkgTest = JSON.parse(readFileSync(R + '/package.json', 'utf8')).scripts.test;
+  const { readdirSync } = await import('node:fs');
+  const family = readdirSync(R + '/scripts')
+    .filter((f) => /^test-richer-value-.*\.(js|mjs)$/.test(f))
+    .sort();
+
+  ok(family.length >= 6, `D there are ${family.length} Richer Values suites to account for`);
+  for (const f of family) {
+    ok(pkgTest.includes('scripts/' + f), `D ${f} is wired into npm test — it would run nowhere otherwise`);
+  }
+}
+
 console.log(failures ? `\n${failures} FAILURE(S)` : '\ntest-richer-value-price-total: all checks passed');
 process.exit(failures ? 1 : 0);
