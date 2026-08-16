@@ -152,7 +152,12 @@ async function anyLoanId() {
     console.log(NO('Encompass is not configured in this environment.'));
     console.log('    Set LT_ENCOMPASS_CLIENT_ID / _SECRET / _INSTANCE_ID (or the shared ENCOMPASS_* vars),');
     console.log('    plus LT_ENCOMPASS_USERNAME and _PASSWORD, then run this again.');
-    console.log('    Nothing is written anywhere — this only reads.\n');
+    console.log('    Nothing is written anywhere — this only reads.');
+    // Ends with a verdict line like every suite in scripts/, because this file is
+    // NAMED like one (the separation gate requires the test-lt- prefix for long-term
+    // code) and anything sweeping the suites — a person or a shell loop — reads the
+    // last line. Ending on a blank line reads as a failure. It is not one.
+    console.log('\nSKIP test-lt-encompass-access-probe (not configured) — diagnostic, not a test.');
     process.exit(0);
   }
 
@@ -266,7 +271,8 @@ async function anyLoanId() {
   console.log('     out-of-the-box. That tab extends areas to OTHER personas.');
   console.log('  4. Anything still refusing after 1 and 2 is a real ICE question. Send them the');
   console.log('     endpoint, the exact wording above, the instance id and the client id, and ask');
-  console.log('     which entitlement opens it. Quote their words back at them, not ours.\n');
+  console.log('     which entitlement opens it. Quote their words back at them, not ours.');
+  console.log('\ndone — test-lt-encompass-access-probe is a DIAGNOSTIC, not a pass/fail test.');
 
   process.exit(0);
 })().catch((e) => {
