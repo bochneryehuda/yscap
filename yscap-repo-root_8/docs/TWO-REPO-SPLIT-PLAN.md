@@ -67,6 +67,37 @@ version bump.
 The **ProductSwitch is part of this repo**, not the LT repo, because after the split it must render on
 both sides.
 
+#### What belongs in `yscap-design`, and what must never
+
+Owner asked 2026-08-16 whether authentication, logins, credentials, profiles, track records, LLCs and
+ID documents should also live in the design repo "as a shared backbone of the entire system". **No** —
+and the boundary is worth stating explicitly, because the two are shared for opposite reasons.
+
+`yscap-design` is a **build-time library**: it is copied into both bundles, runs in the browser, holds
+no data, opens no database, and needs no secret. Identity is a **runtime service over regulated PII**:
+it needs `DATABASE_URL`, `JWT_SECRET`, `SSN_ENCRYPTION_KEY`, the GLBA audit trail, and — the governing
+property — exactly ONE writer for the person record (CLAUDE.md rule 2, and the reason a dozen RTL
+modules are allowed to heal and de-duplicate `borrowers` safely).
+
+Putting identity in the design repo would hand the SSN encryption key to a package whose job is fonts,
+and would put a button-colour change in the same blast radius as the borrower PII store.
+
+| Concern | Home | Why |
+|---|---|---|
+| Palette, type tokens, buttons, inputs, page shell, `ProductSwitch` | `yscap-design` | No data, no secrets; must be identical on both sides |
+| **Layout** of the borrower / officer / TPO profile screens | `yscap-design` | The empty form, not the record — so a profile looks the same on both sides |
+| Pure display rules both sides must agree on — `person-name.js` (first/middle/last/suffix), address canonicalisation, SSN display format | `yscap-design` | Pure functions, no DB. This also retires the existing mirror-and-drift-test pattern (`app-v2/src/lib/personName.js` mirroring `src/lib/person-name.js`, likewise `dealBasis.js`, `payoff.js`) |
+| Login, password hashing, MFA, sessions, `sid` revocation | **`yscap` (short term)** | Live production sign-in; one implementation of `authenticate()` |
+| `borrowers`, `staff_users`, `tpo_firms`, `borrower_auth`, `borrower_officers` | **`yscap`** | The identity zone; single writer |
+| Track records, LLCs / entities, ID documents, LLC documents | **`yscap`** | Regulated PII with an audit trail and a document store |
+| All of the above, read-only | `yscap-longterm` | Already the rule — LT reads the person record, writes only `borrower_officers` |
+
+**Do not move identity into `yscap-design`, and do not extract it into a fourth service during this
+split.** A standalone identity service is a legitimate future step — it is the same change §2.1 already
+describes as Phase 2 (`/api/identity/*`) — but it means re-plumbing the sign-in of a live,
+borrower-facing system in order to serve a side build that is not live. Revisit when LT goes live, not
+before.
+
 ### 2.3 The database — one, for now
 
 Splitting the database on day one buys none of the stated goals (conflicts, CI weight, parallelism) and
