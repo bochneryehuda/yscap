@@ -1186,3 +1186,22 @@ model LtPpeSettingValue {
   @@id([scope, key])
   @@map("lt_ppe_setting_value")
 }
+
+// Lender Price ineligible (disqualify) durable store (db/555). Best-effort L2 behind the client's
+// in-memory Map; survives a reboot / deploy / instance-move so a mid-poll client never loses the
+// kickoff or the cached result. LT-only.
+model LtLpDisqualifySearch {
+  searchKey  String    @id @map("search_key")
+  url        String
+  body       Json      @db.JsonB
+  requestId  String?   @map("request_id")
+  result     Json?     @db.JsonB
+  rawSummary Json?     @map("raw_summary") @db.JsonB
+  readyAt    DateTime? @map("ready_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+
+  @@index([expiresAt])
+  @@map("lt_lp_disqualify_search")
+}
