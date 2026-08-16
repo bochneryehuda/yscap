@@ -951,25 +951,29 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
 
 5. **§5.0 — do conditions exist in this tenant or not?** Two of our own measurements disagree.
    This is the largest open question in the plan and it blocks phase 5.
-6. **ICE entitlement — REVISED 2026-08-16, and the first two steps cost nothing.** 68
-   endpoints answer 403, including the loan-folder list, milestone logs, the v3 associates
-   roster and **69 of the 91 Milestone Completion rules**. The 2026-08-14 reading — "the
-   client registration lacks the `encompass_admin` scope, ask ICE" — was too narrow.
-   `encompass_admin` is **not a scope ICE documents** for Developer Connect (`lp`) or
-   Partner Connect (`pc pcapi`), so the token endpoint's refusal most likely means *no such
-   scope exists to grant*, and that ask would go nowhere. ICE's own persona matrix (rev.
-   June 2025) names two gates we can open ourselves: a settings area opens "only if the
-   persona has been granted access on the **Personas > Settings tab**; **if no persona
-   permissions have been granted**, the minimum access needed is Super Administrator" — so
-   super-admin is the fallback for an UNCONFIGURED persona, and a partially configured one
-   can be *more* restricted, which fits what we see; and loan programs additionally need the
-   Public and Company-wide template folders selected in the user's **user group**, which no
-   persona can substitute for. A third set (pricing/EPPS, secondary and the lock desk, tasks)
-   are licensed add-ons and are a genuine ICE question. **Which gate closed which endpoint is
-   still unknown**, because the earlier sweep kept only status codes and not the response
-   bodies — ICE's wording differs by gate. `scripts/test-lt-encompass-access-probe.js`
-   captures them; run it before raising anything with ICE. Full write-up:
-   `docs/longterm/ENCOMPASS-ACCESS-AND-PERSONA.md`.
+6. **ICE entitlement — REVISED 2026-08-16. The owner's objection was right, and the
+   likeliest cause is ours, not theirs.** 68 endpoints answer 403, including the loan-folder
+   list, milestone logs, the v3 associates roster and **69 of the 91 Milestone Completion
+   rules**. Two earlier readings were wrong and are corrected in
+   `docs/longterm/ENCOMPASS-ACCESS-AND-PERSONA.md`: **(a)** `encompass_admin` is **not a
+   scope ICE documents** (Developer Connect names `lp`; Partner Connect names `pc pcapi`;
+   two mature open-source clients name neither), so the recorded ask — "entitle client
+   `z1xx73r` to `encompass_admin`" — names something that appears not to exist and should
+   not be sent; **(b)** the persona is **not** the gate. ICE's matrix lists these areas under
+   "Default Persona Access", footnoted *"minimum persona access level required to interact
+   with the functionality out-of-the-box"*, and lists them as **Super Administrator** — which
+   the API user already is. Ticking boxes on Personas > Settings tab extends an area to
+   OTHER personas and opens nothing for a super admin.
+   **The best untested lead is that we ask for too little.** Our token request names
+   `scope=lp`; both reference clients send **no scope at all** on this grant, and OAuth
+   grants a default — normally everything the caller is entitled to — when none is named.
+   The earlier introspection could never have caught it: it reported `lp` because `lp` is
+   what we asked for, which made the measurement circular. Free to test.
+   Genuinely still ICE's: the licensed add-ons (pricing/EPPS, secondary and the lock desk,
+   tasks). **Which cause closed which endpoint remains unknown** — the earlier sweep kept
+   status codes and discarded the response bodies, and the wording differs by cause.
+   `scripts/test-lt-encompass-access-probe.js` tests the scope question first and then
+   captures those bodies. Run it before raising anything with ICE.
 7. **Is there a sandbox instance?** Today every read runs against production, which carries
    real borrower PII. This matters before anything writes.
 8. **The ten files** carrying a 12- or 24-month interest-only period on the plain 30-year

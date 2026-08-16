@@ -11,31 +11,38 @@
  *
  * 68 endpoints answer 403 on this tenant while the API user holds the Super
  * Administrator persona. "The admin has full access" and "the API answers 403" are
- * both true, and the reason is that Encompass has THREE independent gates. A 403 on
- * its own does not say which one closed:
+ * both true, and the reason is that several independent things gate this API. A 403 on
+ * its own does not say which one closed, so these are candidates in the order worth
+ * testing — cheapest and most likely first:
  *
- *   1. THE PERSONA'S SETTINGS TAB. ICE's own matrix ("Out-of-the-Box Persona Access
- *      to Encompass Settings", rev. June 2025) says, for area after area: the setting
- *      "can be added/edited/deleted only if the persona has been granted access to
- *      <area> on the Personas > Settings tab; IF NO PERSONA PERMISSIONS HAVE BEEN
- *      GRANTED, the minimum access needed is Super Administrator."
- *      Read that carefully — super-admin is the FALLBACK FOR AN UNCONFIGURED
- *      persona. Once somebody ticks *some* boxes, the ticked list is what governs,
- *      so a PARTIALLY configured Super Administrator persona can be more restricted
- *      than an untouched one. That is the shape that matches what we see.
+ *   1. WHAT WE ASK FOR AT LOGIN. Our client names `scope=lp`. Two mature Encompass
+ *      clients name NO scope at all on this grant, and OAuth (RFC 6749 §3.3) says a
+ *      server given no scope applies its own default — normally everything the caller
+ *      is entitled to. We may have been narrowing our own token. The earlier
+ *      introspection could not have caught this: it reported `lp` because `lp` is what
+ *      we asked for. STEP 0 below tests it, and it is free.
  *
- *   2. THE USER'S USER GROUP. Template-backed settings are gated separately: "In
+ *   2. WHETHER THE API USER REALLY HOLDS THE PERSONA WE BELIEVE. Assumed, never
+ *      checked. The roster and persona endpoints both answer today, so it is cheap.
+ *      NOTE: a Super Administrator ALREADY holds the settings areas we want — ICE's
+ *      matrix lists them under "Default Persona Access", footnoted "minimum persona
+ *      access level required to interact with the functionality out-of-the-box". So
+ *      ticking boxes on Personas > Settings tab EXTENDS an area to OTHER personas and
+ *      will not open anything for an account that is already a super admin. An earlier
+ *      draft of this file advised exactly that; it was wrong.
+ *
+ *   3. THE USER'S USER GROUP. Template-backed settings are gated separately: "In
  *      order for [a] user to access Public and Company-wide Loan Programs, BOTH of
- *      these folders must be selected in the user's user group." A persona cannot
- *      grant this and no amount of admin rights substitutes for it.
+ *      these folders must be selected in the user's user group." No persona grants
+ *      this. Narrow — it applies to loan programs.
  *
- *   3. THE PRODUCT / CLIENT ENTITLEMENT. Some families are separately licensed
+ *   4. THE PRODUCT / CLIENT ENTITLEMENT. Some families are separately licensed
  *      add-ons (product & pricing / EPPS, secondary and the lock desk, tasks). No
  *      persona opens a product the tenant does not have.
  *
  * WHAT THIS SCRIPT ADDS that the earlier probe did not: it keeps the RESPONSE BODY
  * of every refusal. ICE puts a summary in it, and the wording differs by gate — that
- * is the evidence that says which of the three to go and fix, instead of guessing.
+ * is the evidence that says which candidate to go and work, instead of guessing.
  * The earlier sweep recorded only the status code, which is why the question is
  * still open.
  *
@@ -57,35 +64,38 @@ const OK = (s) => `  ✓ ${s}`;
 const NO = (s) => `  ✗ ${s}`;
 
 /**
- * The refusals worth diagnosing, tagged with the gate we SUSPECT — never with a
- * conclusion. The tag is a hypothesis the body either supports or refutes.
+ * The refusals worth diagnosing, tagged with what we SUSPECT — never with a
+ * conclusion. `unknown` is used honestly and often: for most of these a super admin
+ * should already have access, so we genuinely do not know, and the response body is
+ * the point of running this.
  *
  * `{loan}` is replaced with a real loan id found from the pipeline.
  */
 const PROBES = [
-  // Gate 1 candidates — a Personas > Settings tab area, per ICE's matrix.
-  { path: '/encompass/v3/settings/businessRules/milestoneCompletion', gate: 'persona',
-    tick: 'Business Rules > Milestone Completion',
+  // Cause unknown — a super admin should already hold these, which is exactly why
+  // the refusal wording is what we need.
+  { path: '/encompass/v3/settings/businessRules/milestoneCompletion', gate: 'unknown',
+    tick: null,
     worth: 'The 91 Milestone Completion rules. We know 22, from screen recordings — the single biggest gap in what PILOT knows about how this lender works.' },
-  { path: '/encompass/v3/settings/loan/folders', gate: 'persona',
-    tick: 'Loan Setup > Loan Folders',
+  { path: '/encompass/v3/settings/loan/folders', gate: 'unknown',
+    tick: null,
     worth: 'The folder list — which folders mean a live deal and which mean it is over. Without it the long-term pipeline cannot tell a withdrawn file from a live one.' },
-  { path: '/encompass/v1/settings/milestoneTemplates', gate: 'persona',
-    tick: 'Company/User Setup > Milestones',
+  { path: '/encompass/v1/settings/milestoneTemplates', gate: 'unknown',
+    tick: null,
     worth: 'The milestone templates behind the stage ladder.' },
-  { path: '/encompass/v3/settings/loan/conditionTemplates', gate: 'persona',
-    tick: 'eFolder Setup > Condition Sets',
+  { path: '/encompass/v3/settings/loan/conditionTemplates', gate: 'unknown',
+    tick: null,
     worth: 'The condition vocabulary, instead of inferring it from whatever values happen to appear.' },
-  { path: '/encompass/v3/settings/customFields', gate: 'persona',
-    tick: 'Company/User Setup > Custom Fields',
+  { path: '/encompass/v3/settings/customFields', gate: 'unknown',
+    tick: null,
     worth: 'What every CX. field on this tenant actually means.' },
 
-  // Gate 2 candidate — user-group gated template folders.
+  // Candidate 3 — user-group gated template folders.
   { path: '/encompass/v3/settings/loan/programs', gate: 'usergroup',
     tick: "the user's USER GROUP must include the Public and Company-wide template folders",
     worth: 'The real program definitions behind field 1401. Today our program taxonomy is reverse-engineered from loan data.' },
 
-  // Gate 3 candidates — separately licensed add-ons.
+  // Candidate 4 — separately licensed add-ons.
   { path: '/encompass/v1/settings/lockPolicy', gate: 'product',
     tick: 'Secondary / lock desk is a licensed add-on',
     worth: 'The lock desk rules. We already read each loan’s lock posture, so this is an improvement rather than a blocker.' },
@@ -93,7 +103,7 @@ const PROBES = [
     tick: 'Product & Pricing (EPPS) is a licensed add-on',
     worth: 'The investor list. INTERNAL ONLY — the investor name never reaches a client.' },
 
-  // Loan sub-resources — gate unknown, which is exactly why the body matters.
+  // Loan sub-resources — cause unknown, which is exactly why the body matters.
   { path: '/encompass/v3/loans/{loan}/milestoneLogs', gate: 'unknown',
     tick: null,
     worth: 'Who moved a file to each milestone and when. PILOT currently records only what it watched change itself, and says so on every screen.' },
@@ -225,6 +235,9 @@ async function anyLoanId() {
   console.log('     group > include the Public and Company-wide template folders.');
   console.log('  3. For "product": that family is a licensed add-on. Paste the exact refusal above');
   console.log('     into a case with ICE and ask whether the instance is entitled to it.');
+  console.log('  NOTE: ticking boxes on Personas > Settings tab will NOT help an account that is');
+  console.log('     already a Super Administrator — ICE lists these areas as super-admin');
+  console.log('     out-of-the-box. That tab extends areas to OTHER personas.');
   console.log('  4. Anything still refusing after 1 and 2 is a real ICE question. Send them the');
   console.log('     endpoint, the exact wording above, the instance id and the client id, and ask');
   console.log('     which entitlement opens it. Quote their words back at them, not ours.\n');

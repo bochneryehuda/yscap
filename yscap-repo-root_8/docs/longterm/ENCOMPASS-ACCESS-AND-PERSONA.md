@@ -5,7 +5,7 @@
 
 ---
 
-## CORRECTION (2026-08-16): it is not one gate, it is three — and the first one is free
+## CORRECTION (2026-08-16): read this before acting on anything below
 
 The 2026-08-14 finding said: *"this is not a persona problem on the user. It is a scope
 limit on the API client, fixed with ICE, not in the Encompass admin screens."* The
@@ -22,37 +22,53 @@ yet."* **Asking ICE to "entitle client `z1xx73r` to `encompass_admin`" is theref
 likely to go nowhere** — it asks for something their own documentation does not
 describe. That ask, as originally written below, should not be sent as-is.
 
-**Second — ICE's own persona matrix describes a gate we had ruled out.** *Out-of-the-Box
-Persona Access to Encompass Settings and Add-On Products — Encompass Banker Edition*
-(rev. June 2025) says, area after area:
+**Second — the persona matrix does NOT explain it, and an earlier draft of this section
+said it did. That was a misreading, corrected here rather than quietly deleted.**
+
+*Out-of-the-Box Persona Access to Encompass Settings and Add-On Products — Encompass
+Banker Edition* (rev. June 2025) says, area after area:
 
 > "…can be added/edited/deleted **only if the persona has been granted access** to
 > `<area>` on the **Personas > Settings tab**; **if no persona permissions have been
 > granted, the minimum access needed is Super Administrator.**"
 
-Read the second clause carefully. **Super Administrator is the fallback for a persona
-nobody has configured.** Once somebody ticks *some* boxes on that tab, the ticked list
-is what governs — so a **partially configured** Super Administrator persona can be
-*more* restricted than an untouched one. That shape fits what we see exactly: the user
-is a super admin, the Encompass UI lets them everywhere, and the API refuses.
+That sentence can be read two ways, and the wrong reading is the tempting one. It looked
+as though Super Administrator were merely a *fallback* for an unconfigured persona — so
+that ticking a few boxes would somehow *narrow* a super admin. **The document settles
+it against that reading.** Its second column is headed **"Default Persona Access \*"**
+and the footnote defines the asterisk as:
 
-And a **third** gate the matrix names, which no persona can substitute for:
+> "\* **Minimum persona access level required to interact with the functionality
+> out-of-the-box**"
+
+So "Super Administrator Persona" in that column means a super admin **has this
+already**. The Settings tab EXTENDS the area to *other* personas; it does not gate the
+super admin. **Ticking those boxes will not open anything for an account that already
+holds Super Administrator.**
+
+Which leaves the owner's original objection standing and correct: *they did give full
+admin, and it should have been enough.* The persona is not what is refusing us.
+
+The matrix does name one gate that is genuinely separate, and that no persona can
+substitute for:
 
 > "In order for [a] user to access Public and Company-wide **Loan Programs**, **both of
 > these folders must be selected in the user's user group**."
 
-So there are three independent gates, and a bare 403 does not say which one closed:
+So the live candidates are, in the order worth testing:
 
-| # | Gate | Who can open it | Cost |
-|---|---|---|---|
-| 1 | **Persona > Settings tab**, per settings area | Our own Encompass admin | Free, minutes |
-| 2 | **User group** template folders (loan programs) | Our own Encompass admin | Free, minutes |
-| 3 | **Licensed add-on product** (pricing/EPPS, secondary & lock desk, tasks) | ICE — contract | Depends |
+| # | Candidate | Who can settle it | Cost | Standing |
+|---|---|---|---|---|
+| 1 | **We ask for too little.** Our login names `scope=lp`; two mature clients name nothing at all, and OAuth grants a default — normally everything you are entitled to — when no scope is named | Us, in one line | Free, minutes | **Best lead. Untested.** |
+| 2 | **The API user is not really the persona we think.** Cheap to confirm — the roster and persona endpoints both answer today | Us | Free | Unverified assumption |
+| 3 | **User group** template folders (loan programs only) | Our Encompass admin | Free, minutes | Real, narrow |
+| 4 | **Licensed add-on product** (pricing/EPPS, secondary & lock desk, tasks) | ICE — contract | Depends | Real |
+| ~~5~~ | ~~Persona > Settings tab~~ | — | — | **Ruled out above** — a Super Administrator already holds these |
 
-**Do gates 1 and 2 before contacting ICE.** They are free, they are reversible, and if
-they open the endpoints then there was never anything to ask for.
+**Work 1 and 2 before contacting ICE.** They are free, they are reversible, and either
+could end the question.
 
-### A fourth possibility, found by reading what everyone else sends
+### Candidate 1 in full — the one worth testing first
 
 Our client asks for **`scope=lp`** on the password grant. Two independent, mature
 Encompass clients — [EncompassRest](https://github.com/EncompassRest/EncompassRest)
@@ -80,9 +96,9 @@ the evidence that decides it.
 
 `scripts/test-lt-encompass-access-probe.js` collects exactly that. Run it where the
 credentials live; it is read-only, it groups the refusals by what ICE actually said,
-and it prints which of the three gates to go and open for each. **Run it before
-raising anything with ICE** — it turns "68 endpoints are blocked" into a short list of
-distinct problems, each with an owner.
+and it prints which candidate to work for each. **Run it before raising anything with
+ICE** — it turns "68 endpoints are blocked" into a short list of distinct problems,
+each with an owner.
 
 ---
 
