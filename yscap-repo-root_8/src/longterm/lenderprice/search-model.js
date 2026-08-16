@@ -655,11 +655,41 @@ function buildSearch(sc = {}, opts = {}) {
   // Special mortgage options: DSCR pair (+ PPP), resolved to the company's CURRENT {id,name}
   // via the live registry when present, else the captured built-in ids. months===0 → "No PPP".
   const smo = SMO_DSCR.map((d) => resolveSmo(d.name, smoReg, d));
-  // §32.3 — the derived DSCR pricing-band SMO (name-only fallback; the live /pricing/smo registry
-  // supplies the id when present, else dynaToSmo lets Lender Price map the confirmed name). Pushed
-  // AFTER the DSCR pair and BEFORE the PPP unshift, so the final order matches the captured
-  // [PPP, DSCVR, DSCR, band]. Only bands ≥ 0.75 add one (band.smo null below 0.75).
-  if (band && band.smo) smo.push(resolveSmo(band.smo, smoReg, null));
+  // §37.10 — THE FOURTH OPTION IS THE CAPTURED ONE, NOT ONE WE DERIVED.
+  //
+  // Both real captured requests — different deals, different states, both HTTP 200 with real
+  // pricing — send exactly [3 Yr PPP, Debt Service Coverage Ratio, DSCR, **Prepay Buyout**], and
+  // every option carries a real id. We were sending an invented fourth option instead:
+  // "DSCR >=1.25 - J", with **NO id at all**, derived by reading a threshold table out of the
+  // vendor's JS bundle. That table proves such names EXIST; it never showed the frontend SENDING
+  // one, and an id-less element is structurally unlike every option in every capture.
+  //
+  // This is the same class as DSCRRATIO, which was measured to cost a whole lender program. Both
+  // came from reading their code rather than watching their traffic. Swapping THIS one was measured
+  // to change nothing on the scenarios tested — but "made no difference on two deals" is not
+  // "harmless", and an unconfirmed value we can simply stop inventing is not worth defending.
+  //
+  // So: carry the fourth option through from the FOUNDATION (the captured base, and a live
+  // defaultSearch, both real vendor documents) rather than fabricating one. `preserved` is every
+  // option the foundation carried that is not one we are setting ourselves — on the captured base
+  // that is exactly Prepay Buyout. If a company's live configuration carries others, they ride too,
+  // which is the point: the vendor's own list beats anything we could infer.
+  //
+  // `LP_SEND_DSCR_BAND_SMO=1` restores the derived band for a future capture that shows the frontend
+  // sending one. Do not turn it on by default without that capture.
+  const ownNames = new Set(smo.map((o) => String(o && o.name || '').toLowerCase()));
+  const baseSmo = (m.criteria && Array.isArray(m.criteria.specialMortgageOptions)) ? m.criteria.specialMortgageOptions : [];
+  const preserved = baseSmo.filter((o) => {
+    const n = String(o && o.name || '').toLowerCase();
+    if (!n || ownNames.has(n)) return false;
+    if (/\bppp\b|prepay(ment)? penalt/.test(n)) return false;   // the prepay TERM is ours to set
+    if (/^dscr\s*[<>=]/.test(n)) return false;                  // a stale derived band from a live model
+    return true;
+  });
+  if (band && band.smo && String(process.env.LP_SEND_DSCR_BAND_SMO || '') === '1') {
+    smo.push(resolveSmo(band.smo, smoReg, null));
+  }
+  for (const o of preserved) smo.push(clone(o));
   {
     const fb = SMO_PPP[effMonths] || null;
     const pppName = effMonths === 0 ? 'No PPP'

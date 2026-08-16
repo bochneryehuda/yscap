@@ -100,20 +100,35 @@ ok(dyn(aOn, 'DSCRRATIO') === '1.25',
   'PAYLOAD-1b …and LP_SEND_DSCRRATIO=1 still sends the captured token, so the table stays testable');
 ok(a.criteria.dscr === 1.25, 'PAYLOAD-2 criteria.dscr carries the verbatim numeric value');
 
-// ---- the derived band SMO is added AFTER the DSCR pair, in captured order --
-// Captured order with a prepay is [PPP, "Debt Service Coverage Ratio", "DSCR", <band>].
+// ---- the FOURTH option is the CAPTURED one, not a derived band ------------
+// §37.10. BOTH real captured requests — different deals, different states, both HTTP 200 with real
+// pricing — send [PPP, "Debt Service Coverage Ratio", "DSCR", **"Prepay Buyout"**], every option
+// carrying a real id. We used to append an invented "DSCR >=1.25 - J" with NO id, read out of the
+// vendor's JS bundle: that table proves such names exist, it never showed the frontend sending one.
+// The fourth option is now carried through from the foundation (a real vendor document) instead.
 const withPpp = sm.buildSearch({ ...S, dscr: 1.25, prepayMonths: 60 });
 const names = withPpp.criteria.specialMortgageOptions.map((o) => o.name);
-ok(JSON.stringify(names) === JSON.stringify(['5 Yr PPP', 'Debt Service Coverage Ratio', 'DSCR', 'DSCR >=1.25 - J']),
-  'SMO-1 order is [PPP, DSCVR, DSCR, band] — band appended last');
+ok(JSON.stringify(names) === JSON.stringify(['5 Yr PPP', 'Debt Service Coverage Ratio', 'DSCR', 'Prepay Buyout']),
+  'SMO-1 the fourth option is the captured "Prepay Buyout", not a derived band');
+ok(withPpp.criteria.specialMortgageOptions.every((o) => o && typeof o.id === 'string' && o.id),
+  'SMO-1b every option carries a real id — an id-less element is unlike anything in any capture');
+process.env.LP_SEND_DSCR_BAND_SMO = '1';
+const bandOn = sm.buildSearch({ ...S, dscr: 1.25, prepayMonths: 60 });
+delete process.env.LP_SEND_DSCR_BAND_SMO;
+ok(bandOn.criteria.specialMortgageOptions.map((o) => o.name).includes('DSCR >=1.25 - J'),
+  'SMO-1c …and LP_SEND_DSCR_BAND_SMO=1 still emits the derived band, so the table stays testable');
 // An OMITTED prepay is not "no prepay": it takes the DSCR profile's five-year Standard default, so
 // the PPP option is still first and the band still sits after the DSCR pair. (This assertion used to
 // read [DSCVR, DSCR, band] — it was written when omission inherited the foundation's prepay, which
 // the 2026-08-16 audit reversed: omitting prepay is the ORDINARY quote, and inheriting left it at
 // 36 months with no PPP option on a book the owner quotes at five years.)
 const noPpp = sm.buildSearch({ ...S, dscr: 0.90 });
-ok(JSON.stringify(noPpp.criteria.specialMortgageOptions.map((o) => o.name)) === JSON.stringify(['5 Yr PPP', 'Debt Service Coverage Ratio', 'DSCR', 'DSCR <1.15']),
-  'SMO-2 omitted prepay: [5 Yr PPP (profile default), DSCVR, DSCR, band]');
+ok(JSON.stringify(noPpp.criteria.specialMortgageOptions.map((o) => o.name)) === JSON.stringify(['5 Yr PPP', 'Debt Service Coverage Ratio', 'DSCR', 'Prepay Buyout']),
+  'SMO-2 omitted prepay: [5 Yr PPP (profile default), DSCVR, DSCR, Prepay Buyout]');
+// A DIFFERENT DSCR band must not change the option list at all now — the band is not in it.
+const otherBand = sm.buildSearch({ ...S, dscr: 1.40 });
+ok(JSON.stringify(otherBand.criteria.specialMortgageOptions) === JSON.stringify(noPpp.criteria.specialMortgageOptions),
+  'SMO-2b the option list no longer varies with the DSCR band');
 
 // ---- bands with no band SMO add nothing beyond the DSCR pair ---------------
 // Asserted by NAME rather than by list length. A length check conflates "no band was added" with
