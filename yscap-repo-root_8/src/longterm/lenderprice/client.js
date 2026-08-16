@@ -337,42 +337,85 @@ function num(v) { if (v == null || v === '') return null; const n = parseFloat(S
 // per-program list of rate rungs. It is deliberately DEFENSIVE about the exact shape
 // (the tree varies) — it walks for objects that carry a rate + a price and groups them.
 // Refine field names against the first real Render capture.
-const RATE_KEYS = ['rate', 'noteRate', 'interestRate', 'adjustedRate', 'finalRate'];
+// Rate: Lender Price puts the note rate on the priced LEAF as `rate`, and also mirrors it as
+// adjustedRates/baseRates/rawRates. Cost is expressed as POINTS (adjustedPoints), NOT a "price"
+// field — so we derive a 100-basis price from points when no explicit price is present.
+const RATE_KEYS = ['rate', 'noteRate', 'interestRate', 'adjustedRate', 'adjustedRates', 'finalRate', 'baseRates', 'rawRates'];
+const POINT_KEYS = ['adjustedPointsBorrowerPaid', 'adjustedPoints', 'points', 'discountPoints', 'basePoints', 'adjustmentPoints'];
 const PRICE_KEYS = ['price', 'finalPrice', 'basePrice', 'adjustedPrice', 'netPrice'];
-const LENDER_KEYS = ['lenderName', 'investor', 'investorName', 'lender', 'lenderKey'];
+const LENDER_KEYS = ['lenderName', 'investorName', 'investor', 'lender', 'lenderKey'];
 const PROGRAM_KEYS = ['programName', 'productName', 'program', 'productCode'];
+
+// Pull grouping context (lender / program) off a group node: its own string fields AND anything
+// inside its `key[]` grouping array (Lender Price nests the grouping value there — e.g. a
+// LenderKey group's key carries the lender, a program group's key carries the program name).
+function ctxFrom(node, ctx) {
+  let lender = firstStr(node, LENDER_KEYS) || ctx.lender;
+  let program = firstStr(node, PROGRAM_KEYS) || ctx.program;
+  if (Array.isArray(node.key)) {
+    for (const el of node.key) {
+      if (!el || typeof el !== 'object') continue;
+      lender = firstStr(el, LENDER_KEYS) || lender;
+      program = firstStr(el, PROGRAM_KEYS) || program;
+      const gt = String(el.groupType || el.type || el.keyType || '');
+      const val = (el.value != null ? el.value : (el.name != null ? el.name : el.displayName));
+      if (typeof val === 'string' && val.trim()) {
+        if (/lender|investor/i.test(gt)) lender = val.trim();
+        else if (/(program|product|criteria)/i.test(gt) && !/rate/i.test(gt)) program = val.trim();
+      }
+    }
+  }
+  return { lender, program };
+}
+function monthlyOf(node) {
+  const mp = node.monthlyPayment;
+  if (typeof mp === 'number') return mp;
+  if (mp && typeof mp === 'object') return firstNum(mp, ['total', 'totalPayment', 'principalAndInterest', 'amount', 'payment']);
+  return firstNum(node, ['payment', 'principalAndInterest']);
+}
 
 function parse(raw) {
   const programs = [];
   const seen = new Map();
-  walk(raw, {});
+  // Only parse the results tree (qualifiedNonQMData / qualifiedQMData / …) — never the `search`
+  // echo, whose criteria carry FICO/DSCR/LTV but no rates.
+  const root = (raw && typeof raw === 'object' && raw.results) ? raw.results : raw;
+  walk(root, {});
   function pushRung(ctx, node) {
     const rate = firstNum(node, RATE_KEYS);
-    const price = firstNum(node, PRICE_KEYS);
-    if (rate == null || price == null) return;
-    const lender = ctx.lender || firstStr(node, LENDER_KEYS) || 'Unknown';
-    const program = ctx.program || firstStr(node, PROGRAM_KEYS) || 'Program';
+    if (rate == null) return;
+    const points = firstNum(node, POINT_KEYS);
+    let price = firstNum(node, PRICE_KEYS);
+    if (price == null && points != null) price = Math.round((100 - points) * 1000) / 1000;
+    if (price == null && points == null) return; // a rate with no cost info at all → not a priced rung
+    const lender = ctx.lender || firstStr(node, LENDER_KEYS) || 'Lender';
+    const program = ctx.program || firstStr(node, PROGRAM_KEYS) || firstStr(node, ['mortgageType']) || 'DSCR';
     const key = lender + '||' + program;
     let p = seen.get(key);
     if (!p) { p = { lender, program, rungs: [] }; seen.set(key, p); programs.push(p); }
     p.rungs.push({
-      rate, price,
-      points: firstNum(node, ['points', 'discountPoints', 'adjustmentPoints']),
-      apr: firstNum(node, ['apr', 'annualPercentageRate']),
-      monthly: firstNum(node, ['monthlyPayment', 'payment', 'principalAndInterest']),
-      lockDays: firstNum(node, ['ratePeriod', 'lockPeriod', 'dayLocks']),
+      rate, price, points,
+      apr: firstNum(node, ['apr', 'annualPercentageRate', 'notRoundedAPR']),
+      monthly: monthlyOf(node),
+      loanAmount: firstNum(node, ['loanAmount']),
+      term: firstNum(node, ['term']),
+      lockDays: firstNum(node, ['dayLock', 'ratePeriod', 'lockPeriod', 'dayLocks']),
     });
   }
-  function hasRate(node) { return RATE_KEYS.some((k) => k in node); }
-  function hasPrice(node) { return PRICE_KEYS.some((k) => k in node); }
+  // A priced rung is a terminal node: it carries a rate and does NOT itself branch into childs/leafs.
+  function isLeafRow(node) {
+    return RATE_KEYS.some((k) => k in node) && !Array.isArray(node.childs) && !Array.isArray(node.leafs);
+  }
   function walk(node, ctx) {
     if (node == null || typeof node !== 'object') return;
-    const nextCtx = {
-      lender: firstStr(node, LENDER_KEYS) || ctx.lender,
-      program: firstStr(node, PROGRAM_KEYS) || ctx.program,
-    };
-    if (hasRate(node) && hasPrice(node)) pushRung(nextCtx, node);
-    for (const k of Object.keys(node)) { const v = node[k]; if (v && typeof v === 'object') walk(v, nextCtx); }
+    if (Array.isArray(node)) { for (const el of node) walk(el, ctx); return; }
+    if (isLeafRow(node)) { pushRung(ctx, node); return; }
+    const nextCtx = ctxFrom(node, ctx);
+    for (const k of Object.keys(node)) {
+      if (k === 'key') continue; // already consumed into nextCtx; its elements are grouping keys, not rungs
+      const v = node[k];
+      if (v && typeof v === 'object') walk(v, nextCtx);
+    }
   }
   for (const p of programs) {
     p.rungs.sort((a, b) => a.rate - b.rate);
@@ -402,6 +445,7 @@ function summarizeRaw(raw) {
   let sampleRateRow = null;
   let sampleLeaf = null;    // first object found inside a `leafs` array — the actual priced rung
   let sampleKeyNode = null; // first object found inside a `key` array — the grouping key
+  let sampleGroupNode = null; // first object that BRANCHES (has a `childs` array) — a grouping node
   const seen = new Set();
   const shallow = (o) => { const out = {}; for (const k of Object.keys(o).slice(0, 50)) { const v = o[k]; out[k] = (v && typeof v === 'object') ? (Array.isArray(v) ? `[${v.length}]` : '{…}') : v; } return out; };
   (function walk(node, path, depth, inKey, inLeafs) {
@@ -409,6 +453,7 @@ function summarizeRaw(raw) {
     seen.add(node);
     if (!sampleLeaf && inLeafs) sampleLeaf = { path, node: shallow(node) };
     if (!sampleKeyNode && inKey) sampleKeyNode = { path, node: shallow(node) };
+    if (!sampleGroupNode && Array.isArray(node.childs)) sampleGroupNode = { path, node: shallow(node) };
     if (!sampleRateRow && (RATE_KEYS.some((k) => k in node) || PROGRAM_KEYS.some((k) => k in node))) {
       sampleRateRow = { path, keys: Object.keys(node).slice(0, 40) };
     }
@@ -426,6 +471,7 @@ function summarizeRaw(raw) {
     sampleRateRow,
     sampleLeaf,
     sampleKeyNode,
+    sampleGroupNode,
     disqualifyReasons: Array.from(reasons).slice(0, 12),
   };
 }
