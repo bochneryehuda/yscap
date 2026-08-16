@@ -1,0 +1,26 @@
+{
+    "responseData": {
+        "responseType": "Property View Types",
+        "count": 2,
+        "responseFields": [
+            {
+                "num": 1,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_view_type_id",
+                        "fieldValue": "21"
+                    }
+                ]
+            },
+            {
+                "num": 2,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_view_type_id",
+                        "fieldValue": "23"
+                    }
+                ]
+            }
+        ]
+    }
+}

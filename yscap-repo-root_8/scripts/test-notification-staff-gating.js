@@ -78,6 +78,11 @@ const emailsTo = (addr) => sent.filter((m) => (Array.isArray(m.to) ? m.to : [m.t
   ok('a deactivated staffer gets no email (but keeps the in-app row)');
   await db.query(`UPDATE staff_users SET is_active=true WHERE id=$1`, [st.id]);
 
+  // Drain AGAIN before tearing down. The drain on line 60 is mid-test — it exists so
+  // `sent[]` can be read deterministically — and two further fan-outs happen after it,
+  // whose sent_emails INSERTs would still be in flight when the DELETEs below cascade
+  // into `notifications`. One drain does not cover a fan-out that comes after it.
+  await require('../src/lib/notify').drainEmails().catch(() => {});
   await db.query(`DELETE FROM notifications WHERE application_id=$1`, [app.id]).catch(() => {});
   await db.query(`DELETE FROM application_assignees WHERE application_id=$1`, [app.id]).catch(() => {});
   await db.query(`DELETE FROM applications WHERE id=$1`, [app.id]).catch(() => {});

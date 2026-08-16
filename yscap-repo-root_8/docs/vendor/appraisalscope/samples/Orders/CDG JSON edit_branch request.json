@@ -1,0 +1,42 @@
+{
+	"message": {
+		"clientSystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "ApiKey",
+				"referenceIdentifierValue": "{{api_key}}"
+			    }]
+		},
+		"deals": [{
+			"parties": [{
+				"partyRoleType": "LenderBranch",
+				"companyName": "Test Branch",
+				"partyRoleIdentifier": "AB12302",
+				"serviceProviderInternalIdentifier": "49",
+				"estimatedMonthlyVolume": "500",
+				"address": {
+					"addressLine": "1234 Happy Street",
+					"addressLine2": "Suite B-211",
+					"cityName": "Oklahoma City",
+					"postalCode": "73132",
+					"stateCode": "OK"
+				},
+				"partyContacts": [{
+					"contactFullName": "Smithy Smitherton",
+					"contacts": [{
+						"contactPhone": "405-555-2222",
+						"contactPhoneExtension": "2222",
+						"contactFax": "405-555-3333",
+						"contactEmail": "branch@fake.com"
+					}]
+				}]
+			}]
+		}],
+		"serviceProviderSystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "ServiceProviderSubDomain",
+				"referenceIdentifierValue": "integrations.uat"
+			}]
+		},
+		"requestActionType": "Edit_Branch"
+	}
+}

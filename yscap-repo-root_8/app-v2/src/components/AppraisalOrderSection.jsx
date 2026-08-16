@@ -85,10 +85,68 @@ const ADAPTERS = {
     orderTitle: (o) => o.form_description || ('Form ' + (o.product_code || '—')),
     orderNumber: (o) => (o.cdg_order_number ? 'AMC #' + o.cdg_order_number : null),
     orderedAt: (o) => o.ordered_at || o.created_at,
-    orderFee: () => null,                          // NAN exposes no per-order fee today
-    orderPaid: () => false,                        // NAN exposes no per-order paid flag today
+    // THE FEE AND THE PAID FLAG COME FROM THE VENDOR'S OWN RECORD, read by the
+    // detail poll (db/567). `client_fee` is what this order costs US — it is NOT
+    // the job fee plus the management fee, which on AppraisalScope's own sample
+    // sum to $75 beside a $450 client fee.
+    orderFee: (o) => (o.client_fee != null ? Number(o.client_fee) : null),
+    // PAID means the vendor says nothing is still owed. A PARTIAL payment is
+    // deliberately not "Paid ✓" — telling a coordinator an appraisal is paid for
+    // when $200 of $450 has been taken is worse than telling them nothing. Until
+    // the first detail poll lands both figures are absent, which reads as
+    // not-paid: the honest answer, since we have not been told otherwise.
+    orderPaid: (o) => {
+      const paid = o.paid_amount == null ? null : Number(o.paid_amount);
+      const due = o.due_amount == null ? null : Number(o.due_amount);
+      if (!Number.isFinite(paid) || paid <= 0) return false;
+      return due == null || !Number.isFinite(due) || due <= 0;
+    },
+    // The vendor's OWN due date, which is the ETA somebody is really asking for.
+    // `need_by_date` is the date WE asked for and can differ from it.
+    dueDate: (o) => o.vendor_due_date || o.need_by_date || null,
+    inspectionDate: (o) => o.inspection_date || null,
+    appraiser: (o) => (o.appraiser_name || o.appraiser_company ? {
+      name: o.appraiser_name || null,
+      company: o.appraiser_company || null,
+      phone: o.appraiser_phone || null,
+      email: o.appraiser_email || null,
+    } : null),
     canCancel: (o) => !!(o.sp_order_number && o.status !== 'cancelled' && o.status !== 'completed'
       && o.status !== 'cancel_requested' && o.status !== 'rejected'),
+    // PAYING IT, for real, as of 2026-08-16 (owner-directed: *"I want them to charge
+    // the credit card that I'm importing"*). The server owns every money rule —
+    // claim before send, never charge a paid order, never release a claim on an
+    // answer we could not read — so this is a thin call plus the honest sentence
+    // for each of the three outcomes.
+    pay: async (order, { method, card, linkTo }) => {
+      const r = await api.amcPay(order.id, {
+        method,
+        card: method === 'NEW_CARD' ? card : undefined,
+        // A person may name one address; otherwise the server sends the invoice to
+        // the borrower AND the loan officer, which is the pairing the owner asked
+        // for and which this screen must not silently narrow.
+        emails: method === 'PAYMENT_LINK' && linkTo ? [linkTo] : undefined,
+      });
+      if (method === 'PAYMENT_LINK') {
+        const sent = (r && r.sent) || [];
+        const failed = (r && r.failed) || [];
+        return {
+          ok: sent.length > 0,
+          settled: false,   // an invoice is not a payment, and never reads as one
+          note: sent.length
+            ? `Invoice emailed by AppraisalScope to ${sent.join(' and ')}. It is not paid until they pay it.`
+              + (failed.length ? ` It could NOT be sent to ${failed.map((x) => x.email).join(', ')}.` : '')
+            : 'AppraisalScope could not send the invoice — nobody was emailed.',
+        };
+      }
+      return {
+        ok: !!(r && r.ok),
+        settled: !!(r && r.transactionId),
+        note: r && r.transactionId
+          ? `Paid. AppraisalScope charged the card${r.last4 ? ` ••${r.last4}` : ''} — their receipt is ${r.transactionId}.`
+          : ((r && r.detail) || 'AppraisalScope did not take the payment.'),
+      };
+    },
   },
   // THE THIRD VENDOR, AND A DIFFERENT PRODUCT. Richer Values's Hybrid Appraisal is
   // an EVALUATION: it comes back with an As-Is value AND an After Repair Value on
@@ -114,6 +172,23 @@ const ADAPTERS = {
     orderFee: (o) => (o.total_price_cents != null ? o.total_price_cents / 100 : null),
     orderPaid: (o) => !!o.paid_at,
     canCancel: (o) => !!(o.intake_token && !['cancelled', 'completed', 'cancel_requested', 'rejected'].includes(o.status)),
+    // Its own route, unchanged — it already reported the three outcomes separately,
+    // which is where the shape below came from.
+    pay: async (order, { method, card, linkTo }) => {
+      const r = await api.rvPay(order.id, {
+        method,
+        card: method === 'NEW_CARD' ? card : null,
+        paymentLinkTo: method === 'PAYMENT_LINK' ? linkTo : null,
+      });
+      if (!r || r.ok === false) return { ok: false, settled: false, note: (r && r.note) || 'Richer Values did not take the payment.' };
+      return {
+        ok: true,
+        settled: !!r.settled,
+        note: r.settled
+          ? 'Paid. Richer Values has the money.'
+          : 'Done — Richer Values has emailed the borrower their payment page. It is not paid until they pay it.',
+      };
+    },
   },
   class: {
     key: 'class',
@@ -127,6 +202,11 @@ const ADAPTERS = {
     orderedAt: (o) => o.placed_at || o.created_at,
     orderFee: (o) => (o.client_fee_cents != null ? o.client_fee_cents / 100 : null),
     orderPaid: (o) => !!o.paid_at,
+    // Class's own words for the same three facts, so the card asks the adapter
+    // rather than reaching for one vendor's column names on every vendor's row.
+    dueDate: (o) => o.due_date || null,
+    inspectionDate: (o) => o.appointment_date || null,
+    appraiser: (o) => (o.assigned_vendor ? { name: null, company: o.assigned_vendor, phone: null, email: null } : null),
     // A live Class order can be called off. The reason must come from Class's own
     // closed list, which is what ClassCancelButton's picker is for; an order they
     // have already finished or cancelled has nothing left to stop.
@@ -433,8 +513,57 @@ function NanBuilder({ appId, cfg, onPlaced }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [notice, setNotice] = useState('');
+  // A payment failure on an order that WAS placed — kept apart from `err`, which
+  // is the order-failure box, because "placed but not paid" and "not placed" are
+  // different facts and must never render as the same one.
+  const [payErr, setPayErr] = useState('');
   const [formOverride, setFormOverride] = useState('');
   const [cdorOverride, setCdorOverride] = useState('');
+
+  // HOW THIS ORDER GETS PAID, chosen at the moment it goes out (owner-directed
+  // 2026-08-16). `null` means "not now" and is the default, so an order can still
+  // be placed exactly as before and paid later from its own card — nobody is ever
+  // stuck because a card is wrong on the day.
+  const [payMethod, setPayMethod] = useState(null);
+  const [payCard, setPayCard] = useState({ number: '', expMonth: '', expYear: '', cvc: '', zip: '' });
+  const [payOpts, setPayOpts] = useState(null);
+
+  // The ways this company can be paid come from the SHARED table, never a list
+  // typed into this screen — that table is what keeps the desk, the server and the
+  // recorded instruction agreeing about what the ways are called.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const s = await api.staffAppraisalPayment(appId);
+        if (alive && s && s.vendors && s.vendors.nan) setPayOpts(s.vendors.nan.options || []);
+      } catch (_) { if (alive) setPayOpts(null); }
+    })();
+    return () => { alive = false; };
+  }, [appId]);
+
+  // PRE-FILLED FROM THE CARD ON FILE, and editable — the owner's own words for
+  // option 1: *"pre-filled with the credit card on file. You can manually change
+  // it if you want."* So "enter a card now" starts as the card we already hold
+  // rather than as five empty boxes, and typing over it is the change.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const c = await api.staffAppraisalCard(appId);
+        if (alive && c && c.number) {
+          setPayCard({
+            number: c.number,
+            expMonth: c.expMonth != null ? String(c.expMonth) : '',
+            expYear: c.expYear != null ? String(c.expYear) : '',
+            cvc: c.cvc || '',
+            zip: c.zip || '',
+          });
+        }
+      } catch (_) { /* no card yet — the boxes stay empty, which is the truth */ }
+    })();
+    return () => { alive = false; };
+  }, [appId]);
 
   const overrideParams = useCallback(() => {
     const o = {};
@@ -453,17 +582,43 @@ function NanBuilder({ appId, cfg, onPlaced }) {
   useEffect(() => { load(); }, [load]);
 
   const place = useCallback(async (doPlace) => {
-    setBusy(true); setNotice(''); setErr('');
+    setBusy(true); setNotice(''); setErr(''); setPayErr('');
     try {
-      const out = await api.amcPlaceOrder(appId, { place: doPlace, ...overrideParams() });
+      const out = await api.amcPlaceOrder(appId, {
+        place: doPlace,
+        ...overrideParams(),
+        // Only when a way was actually chosen. No `payment` block is the old
+        // behaviour, byte for byte.
+        payment: (doPlace && payMethod)
+          ? { method: payMethod, card: payMethod === 'NEW_CARD' ? payCard : undefined }
+          : undefined,
+      });
       if (!out.ok) setErr(parseOrderFailure(null, out));
       else {
-        setNotice(doPlace ? (out.dryrun ? 'Order built in test mode (nothing sent).' : 'Order placed with AppraisalScope / NAN.') : 'Draft saved.');
+        const placed = doPlace
+          ? (out.dryrun ? 'Order built in test mode (nothing sent).' : 'Order placed with AppraisalScope / NAN.')
+          : 'Draft saved.';
+        // TWO OUTCOMES, REPORTED SEPARATELY. The order has been placed and cannot
+        // be unsent, so a payment that failed is said out loud beside a successful
+        // placement — never folded into it, and never reported as a failed order,
+        // which is how somebody ends up placing a second one for the same
+        // appraisal.
+        const p = out.payment;
+        if (!p) setNotice(placed);
+        else if (p.ok && p.transactionId) setNotice(`${placed} Paid — AppraisalScope's receipt is ${p.transactionId}.`);
+        else if (p.ok && Array.isArray(p.sent)) setNotice(`${placed} Invoice emailed to ${p.sent.join(' and ')} — it is not paid until they pay it.`);
+        else {
+          setNotice(placed);
+          // A WARNING, NOT the order-failure box — that box's headline reads
+          // "AppraisalScope could not place this order", which would be a lie
+          // about the one fact that matters most here.
+          setPayErr(p.detail || p.error || 'The payment did not go through.');
+        }
         await onPlaced();
       }
     } catch (e) { setErr(parseOrderFailure(e, null)); }
     setBusy(false);
-  }, [appId, overrideParams, onPlaced]);
+  }, [appId, overrideParams, onPlaced, payMethod, payCard]);
 
   const notConfigured = !cfg || !cfg.enabled;
 
@@ -471,11 +626,18 @@ function NanBuilder({ appId, cfg, onPlaced }) {
     <div style={{ marginTop: 12 }}>
       <OrderFailure info={err} vendor="AppraisalScope / NAN" />
       {notice ? <Banner tone="good">{notice}</Banner> : null}
+      {payErr ? (
+        <Banner tone="warn">
+          <strong>The order is placed — the payment is not.</strong> {payErr} Pay it from the order card below.
+        </Banner>
+      ) : null}
       {preview ? (
         <PreviewCard preview={preview} busy={busy} onDraft={() => place(false)} onPlace={() => place(true)}
           outbound={!!(cfg && cfg.outbound)} appId={appId} onCardSaved={load}
           formValue={formOverride || (preview.spec && preview.spec.productCode) || ''} onPickForm={setFormOverride}
-          cdorValue={cdorOverride || (preview.spec && preview.spec.clientDisplayedId) || ''} onPickCdor={setCdorOverride} />
+          cdorValue={cdorOverride || (preview.spec && preview.spec.clientDisplayedId) || ''} onPickCdor={setCdorOverride}
+          payOptions={payOpts} payMethod={payMethod} onPayMethod={setPayMethod}
+          payCard={payCard} onPayCard={setPayCard} />
       ) : (
         <div style={{ color: MUTED, fontSize: 13 }}>
           {notConfigured
@@ -534,7 +696,8 @@ function FeeQuote({ quote }) {
   );
 }
 
-function PreviewCard({ preview, busy, onDraft, onPlace, outbound, appId, onCardSaved, formValue, onPickForm, cdorValue, onPickCdor }) {
+function PreviewCard({ preview, busy, onDraft, onPlace, outbound, appId, onCardSaved, formValue, onPickForm, cdorValue, onPickCdor,
+  payOptions, payMethod, onPayMethod, payCard, onPayCard }) {
   const spec = preview.spec || {};
   const missing = preview.missing || [];
   const cardOnFile = preview.card || {};
@@ -604,6 +767,10 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound, appId, onCardS
       </div>
 
       <FeeQuote quote={preview.feeQuote} />
+
+      <AmcPayment options={payOptions} method={payMethod} onMethod={onPayMethod}
+        card={payCard} onCard={onPayCard} cardOnFile={cardOnFile}
+        notifyEmails={notifyEmails} outbound={outbound} />
 
       {missing.length ? (
         <div style={{ marginTop: 10, color: '#9A3B33', fontSize: 13 }}>
@@ -1543,6 +1710,132 @@ const RV_PAY_LABEL = {
   PAYMENT_LINK: 'Send the borrower a payment link',
 };
 
+/**
+ * HOW THIS APPRAISALSCOPE ORDER GETS PAID — chosen as it goes out.
+ *
+ * The owner's three (2026-08-16), in the owner's own words:
+ *   1. charge a card, PRE-FILLED with the card on file, editable
+ *   2. if there is no card on file, type one in
+ *   3. send a payment link to the borrower and the loan officer
+ *
+ * Note that 1 and 2 are the SAME control here, which is deliberate rather than a
+ * shortcut: "the card on file, which you may change" and "a card typed in" differ
+ * only by whether the boxes started full, and splitting them into two radio
+ * buttons would ask a person to classify their own intent before they have looked
+ * at the number. "Use the card on file" charges what we hold; "enter a card now"
+ * opens those same boxes pre-filled with it, and typing over them is the change.
+ *
+ * THE WAYS COME FROM THE SHARED TABLE, never a list typed here — a hard-coded set
+ * is how a screen ends up offering a way the server refuses, or hiding one it
+ * added. `options` being null (the read failed, or the desk has not answered yet)
+ * renders NOTHING rather than a guessed set: an order placed with no payment is a
+ * recoverable state, and one placed against an invented option is not.
+ *
+ * NOT NOW IS ALWAYS AVAILABLE and is the default. A card can be wrong on the day,
+ * a fee can be in dispute, and an order that cannot be placed because payment is
+ * insisted upon is a dead end — the Pay button on the order card is still there.
+ */
+function AmcPayment({ options, method, onMethod, card, onCard, cardOnFile, notifyEmails, outbound }) {
+  if (!Array.isArray(options) || !options.length) return null;
+  const set = (k, v) => onCard({ ...card, [k]: v });
+  const chosen = options.find((o) => o.method === method) || null;
+  const officerLine = (notifyEmails || []).filter(Boolean);
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <SectionTitle>How this order gets paid</SectionTitle>
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 6, fontSize: 13, color: INK }}>
+        <label style={{ display: 'inline-flex', gap: 7, alignItems: 'center', cursor: 'pointer' }}>
+          <input type="radio" name="amc-pay" checked={!method} onChange={() => onMethod(null)} />
+          Not now
+        </label>
+        {options.map((o) => (
+          <label key={o.method} title={o.disabled || o.says}
+            style={{ display: 'inline-flex', gap: 7, alignItems: 'center', cursor: o.available ? 'pointer' : 'not-allowed',
+              color: o.available ? INK : MUTED }}>
+            <input type="radio" name="amc-pay" disabled={!o.available}
+              checked={method === o.method} onChange={() => onMethod(o.method)} />
+            {o.label}
+          </label>
+        ))}
+      </div>
+
+      {/* WHY a way cannot be used, kept on screen rather than hiding the option —
+          a greyed row with a reason teaches what to do next; a vanished one just
+          looks like the feature is missing. */}
+      {options.filter((o) => !o.available && o.disabled).map((o) => (
+        <div key={o.method} style={{ fontSize: 12, color: WARN, marginTop: 6, lineHeight: 1.45 }}>
+          <b>{o.label}:</b> {o.disabled}
+        </div>
+      ))}
+
+      {chosen ? (
+        <div style={{ fontSize: 12, color: MUTED, marginTop: 6, lineHeight: 1.45 }}>
+          {chosen.says}
+          {chosen.caveat ? <div style={{ color: WARN, marginTop: 3 }}>{chosen.caveat}</div> : null}
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, color: MUTED, marginTop: 6, lineHeight: 1.45 }}>
+          Nothing is charged when the order goes out. You can pay it from the order card afterwards.
+        </div>
+      )}
+
+      {method === 'CARD_ON_FILE' && cardOnFile && cardOnFile.onFile ? (
+        <div style={{ fontSize: 12.5, color: INK, marginTop: 6 }}>
+          AppraisalScope will charge <b>{cardOnFile.brand || 'the card'} ••{cardOnFile.last4 || '????'}</b>.
+        </div>
+      ) : null}
+
+      {method === 'PAYMENT_LINK' ? (
+        <div style={{ fontSize: 12.5, color: INK, marginTop: 6, lineHeight: 1.5 }}>
+          AppraisalScope emails their invoice to the borrower and the loan officer.
+          {officerLine.length ? <> Order updates already go to <span style={{ color: MUTED }}>{officerLine.join(', ')}</span>.</> : null}
+        </div>
+      ) : null}
+
+      {method === 'NEW_CARD' ? (
+        <>
+          <div style={{ fontSize: 12, color: MUTED, margin: '6px 0 8px', lineHeight: 1.45 }}>
+            Pre-filled with the card already on this file — change anything you need to. It is saved onto the
+            appraisal-card condition first, encrypted the same way every card here is, and then charged. The security
+            code is required: AppraisalScope will not charge a card without it.
+          </div>
+          <div className="aord-row3">
+            <Field label="Card number">
+              <input className="input" inputMode="numeric" autoComplete="off" value={card.number}
+                onChange={(e) => set('number', e.target.value)} />
+            </Field>
+            <Field label="Expiry month">
+              <input className="input" inputMode="numeric" placeholder="MM" value={card.expMonth}
+                onChange={(e) => set('expMonth', e.target.value)} />
+            </Field>
+            <Field label="Expiry year">
+              <input className="input" inputMode="numeric" placeholder="YYYY" value={card.expYear}
+                onChange={(e) => set('expYear', e.target.value)} />
+            </Field>
+          </div>
+          <div className="aord-row3">
+            <Field label="Security code">
+              <input className="input" inputMode="numeric" autoComplete="off" value={card.cvc}
+                onChange={(e) => set('cvc', e.target.value)} />
+            </Field>
+            <Field label="Billing ZIP">
+              <input className="input" inputMode="numeric" value={card.zip}
+                onChange={(e) => set('zip', e.target.value)} />
+            </Field>
+          </div>
+        </>
+      ) : null}
+
+      {method && !outbound ? (
+        <div style={{ fontSize: 12, color: WARN, marginTop: 8, lineHeight: 1.45 }}>
+          Sending to AppraisalScope is switched off, so this will be saved as a draft and nothing will be charged.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function RvPayment({ payment, method, onMethod, card, onCard, linkTo, onLinkTo }) {
   if (!payment) return null;
   const methods = payment.methods || ['COMPANY_CARD', 'CARD_ON_FILE', 'NEW_CARD', 'PAYMENT_LINK'];
@@ -2360,8 +2653,15 @@ function ActiveOrderCard({ order, appId, card, onChanged, onPay }) {
   if (prop) numberBits.push(prop.value);
   if (num) numberBits.push(num);
   numberBits.push('ordered ' + fmtDate(ad.orderedAt(order)));
-  if (order.due_date) numberBits.push('due ' + fmtDate(order.due_date));
-  if (order.appointment_date) numberBits.push('inspection ' + fmtDate(order.appointment_date));
+  // Each vendor names these two facts in its own columns, so the adapter answers
+  // for its own rows rather than the card reaching for one vendor's column names
+  // on every vendor's order (which is why the AppraisalScope due date and
+  // inspection date never once appeared here — those two reads are Class's).
+  const dueOn = ad.dueDate ? ad.dueDate(order) : null;
+  const inspectOn = ad.inspectionDate ? ad.inspectionDate(order) : null;
+  const appraiser = ad.appraiser ? ad.appraiser(order) : null;
+  if (dueOn) numberBits.push('due ' + fmtDate(dueOn));
+  if (inspectOn) numberBits.push('inspection ' + fmtDate(inspectOn));
   if (order.dryrun) numberBits.push('test');
 
   const statusLabel = STATUS_LABEL[order.status] || order.status;
@@ -2381,7 +2681,12 @@ function ActiveOrderCard({ order, appId, card, onChanged, onPay }) {
         <span className="aord-pill" style={{ background: sc + '18', color: sc }}>{statusLabel}</span>
       </div>
 
-      <StatusTimeline ms={ms} order={order} asks={order._asks} />
+      <StatusTimeline ms={ms} order={order} inspectOn={inspectOn} asks={order._asks} />
+
+      {/* WHO IS ACTUALLY DOING IT. Renders only once the vendor has told us —
+          an absent block reads as "they have not said yet", never as "nobody is
+          assigned", which is why there is no placeholder row here. */}
+      {appraiser ? <AppraiserLine who={appraiser} /> : null}
 
       {/* Quiet action row: communicate · pay · cancel */}
       <div className="aord-acts">
@@ -2427,7 +2732,28 @@ function ActiveOrderCard({ order, appId, card, onChanged, onPay }) {
   );
 }
 
-function StatusTimeline({ ms, order, asks }) {
+/* The appraiser, in one quiet line: who, where they are from, and how to reach
+   them. It is the APPRAISER and never the AMC — both ride in AppraisalScope's one
+   `appraisers[]` array under different roles, and telling a loan officer that the
+   management company is inspecting their property would be worse than telling
+   them nothing (src/amc/detail.js keeps the two apart). Dark text on the white
+   card per the standing rule — never an `--ink*` token, which is a LIGHT paper
+   colour in this palette. */
+function AppraiserLine({ who }) {
+  const bits = [];
+  if (who.name && who.company) bits.push(`${who.name} · ${who.company}`);
+  else if (who.name || who.company) bits.push(who.name || who.company);
+  if (who.phone) bits.push(who.phone);
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', marginTop: 6, fontSize: 13 }}>
+      <span style={{ color: '#4B585C', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.04em', fontSize: 11 }}>Appraiser</span>
+      <span style={{ color: '#141B22' }}>{bits.join(' · ')}</span>
+      {who.email ? <a href={`mailto:${who.email}`} style={{ color: '#256168' }}>{who.email}</a> : null}
+    </div>
+  );
+}
+
+function StatusTimeline({ ms, order, inspectOn, asks }) {
   const cur = ms.index;
   return (
     <div>
@@ -2439,7 +2765,7 @@ function StatusTimeline({ ms, order, asks }) {
               <i />
               <span>
                 {label}
-                {i === 1 && order.appointment_date ? <><br />{fmtDate(order.appointment_date)}</> : null}
+                {i === 1 && inspectOn ? <><br />{fmtDate(inspectOn)}</> : null}
               </span>
             </div>
           );
@@ -3278,8 +3604,32 @@ function PayModal({ appId, order, card, onClose, onPaid }) {
     return () => { alive = false; };
   }, [appId]);
 
+  // WHAT THE VENDOR ITSELF SAYS ABOUT THIS ORDER'S PAYMENT — asked only of the
+  // company that can answer. AppraisalScope's own charge needs the card's security
+  // code, so a card saved without one cannot be charged, and that is a fact about
+  // THIS file that the shared options list has no way to know. Read here so the
+  // button is refused on the screen with a reason, rather than pressed and declined
+  // at the vendor for something nobody in this building can see.
+  const [vendorPay, setVendorPay] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    if (order._vendor !== 'nan') { setVendorPay(null); return undefined; }
+    (async () => {
+      try { const s = await api.amcPayment(order.id); if (alive) setVendorPay(s); }
+      catch (_) { /* the shared options still render — this only ever ADDS a reason */ }
+    })();
+    return () => { alive = false; };
+  }, [order._vendor, order.id]);
+
   const vendorBlock = state && state.vendors ? state.vendors[order._vendor] : null;
-  const opts = (vendorBlock && vendorBlock.options) || [];
+  const rawOpts = (vendorBlock && vendorBlock.options) || [];
+  // The overlay can only ever DISABLE, never enable — a screen must not open a
+  // button the shared table says is shut.
+  const opts = rawOpts.map((o) => {
+    if (o.method !== 'CARD_ON_FILE' || !vendorPay || !vendorPay.ok) return o;
+    if (vendorPay.cardChargeable !== false || !vendorPay.cardReason) return o;
+    return { ...o, disabled: o.disabled || vendorPay.cardReason, available: false };
+  });
   const intent = state && state.intents ? state.intents[`${order._vendor}:${order.id}`] : null;
   const chosen = opts.find((o) => o.method === pick) || null;
 
@@ -3288,20 +3638,27 @@ function PayModal({ appId, order, card, onClose, onPaid }) {
     setBusy('pay'); setErr(''); setDone('');
     try {
       if (chosen.does === 'vendor') {
-        // Richer Values takes the money. Its route reports THREE outcomes — did
-        // what you pressed happen, and did the money actually move — so this
-        // never announces a sent payment link as a completed charge.
-        const r = await api.rvPay(order.id, {
-          method: chosen.method,
-          card: chosen.method === 'NEW_CARD' ? f : null,
-          paymentLinkTo: chosen.method === 'PAYMENT_LINK' ? (linkTo.trim() || null) : null,
-        });
-        if (!r || r.ok === false) {
-          setErr((r && r.note) || 'Richer Values did not take the payment.');
+        // THE COMPANY TAKES THE MONEY, and WHICH company decides which route is
+        // called — so it is asked of the adapter rather than hard-coded here. This
+        // branch called Richer Values by name until 2026-08-16, when AppraisalScope
+        // gained real payment requests; a second `if` on the vendor key would have
+        // been the start of a per-vendor ladder in a component, which is exactly
+        // where "who charges what" goes to drift.
+        //
+        // Every adapter answers the same three things, because a payment has three
+        // distinct outcomes and collapsing them lies to somebody: did the press
+        // work, did the MONEY actually move, and what to tell the person. A sent
+        // payment link is a success that is NOT a payment.
+        if (typeof ad.pay !== 'function') {
+          setErr(`${ad.name} takes its own payments, but this screen has no way to ask it to.`);
         } else {
-          setDone(r.settled
-            ? 'Paid. Richer Values has the money.'
-            : 'Done — Richer Values has emailed the borrower their payment page. It is not paid until they pay it.');
+          const r = await ad.pay(order, {
+            method: chosen.method,
+            card: chosen.method === 'NEW_CARD' ? f : null,
+            linkTo: linkTo.trim() || null,
+          });
+          if (!r || r.ok === false) setErr((r && r.note) || `${ad.name} did not take the payment.`);
+          else setDone(r.note);
         }
       } else {
         const r = await api.staffChooseAppraisalPayment(appId, {
@@ -3343,6 +3700,29 @@ function PayModal({ appId, order, card, onClose, onPaid }) {
             ? <span style={{ color: GOOD, fontWeight: 600 }}>Paid ✓{card && card.last4 ? ` · ••${card.last4}` : ''}</span>
             : fee != null ? <>Fee: <strong>{money(fee)}</strong></> : 'The fee is confirmed by the appraisal company.'}
         </div>
+
+        {/* THE VENDOR'S OWN ANSWER, FIRST, on a company that really charges.
+            Three states worth interrupting for, and the middle one is the reason
+            this block exists: a charge whose outcome we could not read leaves the
+            order deliberately locked, and somebody has to be TOLD that rather than
+            finding a button that quietly does nothing. */}
+        {vendorPay && vendorPay.ok && (vendorPay.paid || vendorPay.charging) ? (
+          <div style={{ marginTop: 12, borderRadius: 10, padding: '10px 12px',
+            border: `1px solid ${vendorPay.paid ? '#CFE6D8' : WARN_LINE}`,
+            background: vendorPay.paid ? '#EEF7F1' : WARN_BG }}>
+            <div style={{ fontWeight: 650, color: vendorPay.paid ? '#1E5E3C' : WARN }}>
+              {vendorPay.paid
+                ? `Paid — ${ad.name}'s receipt is ${vendorPay.transactionId}`
+                : 'A payment on this order is going through'}
+            </div>
+            {!vendorPay.paid ? (
+              <div style={{ fontSize: 12.5, color: MUTED, marginTop: 3, lineHeight: 1.45 }}>
+                {vendorPay.lastError
+                  || 'Give it a moment and reload. Nothing else can be charged on this order until it settles.'}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* WHAT WAS ALREADY DECIDED. Shown before the options, because the first
             question on reopening this is "did somebody already deal with it?" */}

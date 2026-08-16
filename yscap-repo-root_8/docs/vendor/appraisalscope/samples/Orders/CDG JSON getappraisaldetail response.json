@@ -1,0 +1,362 @@
+{
+	"message": {
+		"clientSystem": {
+			"sourceInformation": {
+				"sourceClientNameAddress": "API Client Test<br />123 Anywhere St<br />Oklahoma City, Oklahoma, 73114"
+			}
+		},
+		"digitalGatewaySystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "DigitalGatewayOrderNumber",
+				"referenceIdentifierValue": "CLGGL100417"
+			}],
+			"statusResponses": [{
+				"statusCode": "0",
+				"statusCondition": "Success",
+				"statusDescription": "Acknowledgement",
+				"statusName": "ACK"
+			}]
+		},
+		"serviceProviderSystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "ServiceProviderOrderdentifier",
+				"referenceIdentifierValue": "1561",
+				"referenceParentIdentifierValue": "N/A"
+			}]
+		},
+		"products": [{
+			"appraisalUploadDatetime": "2021-05-14 10:40:24",
+			"appraisalViewedByBorrowerDatetime": "2021-05-24 15:42:18",
+			"appraiserRushFee": "0.00",
+			"acceptedDatetime": "2021-05-07 16:58:19",
+			"assignedDatetime": "2021-05-07 16:58:12",
+			"clientFee": "450.00",
+			"completedDate": "2021-05-14",
+			"dueAmount": "450.00",
+			"embeddedFiles": [{
+				"objectName": "2017-4506T-Transcript.pdf",
+				"documentEffectiveDate": "2021-03-14",
+				"objectURL": "https://uat1.globalgateway.corelogic.com/getappraisalscopedocument/clgx-vsg-ascope-glb-uat-ascope-docs/6112d2f37cd941628623603.pdf"
+			}],
+			"formFee": "400.00",
+			"inspectionDate": "N/A",
+			"inspectionCompleteDatetime": "null",
+			"inspectionScheduledDatetime": "N/A",
+			"invoicedAmount": "0.00",
+			"jobFee": "25.00",
+			"lastUpdateDatetime": "05/07/2021 04:58:19 pm",
+			"managementFee": "50.00",
+			"orderDatetime": "2021-05-07 16:58:05",
+			"orderDates": {
+				"documentSentToBorrowerDate": "2021-05-26 17:13:36"
+			},
+			"paidAmount": "0.00",
+			"productDescription": "FHA Disaster Inspection Report",
+			"requestCommentText": "these are the comments in the comments field",
+			"serviceNeedByDate": "2021-05-15",
+			"notifications": [{
+				"contactEmail": "cyburton@corelogic.com"
+			}],
+			"productData": [{
+				"collateralUnderwriterScore": "",
+				"collateralUnderwriterScoreComments": "",
+				"eadDocFileIdentifier": "",
+				"fanniemaeInspectionIdentifier": "",
+				"ucdpOrderIdentifier": "",
+				"ucdpDocFileIdentifier": ""
+
+			}],
+			"subproducts": [{
+					"identifier": "5"
+				},
+				{
+					"identifier": "6"
+				}
+			]
+		}],
+
+		"deals": [{
+			"appraisers": [{
+					"partyRoleType": "AMC",
+					"companyName": "Appraisal Management Company Name",
+					"appraiserlicenseIdentifier": "123456ABC",
+					"assignedAMCFileNumber": ""
+				},
+				{
+					"partyRoleType": "Appraiser",
+					"companyName": "Appraisal Company Name",
+					"companyAddressCity": "Edmond",
+					"companyAddressState": "OK",
+					"fullName": "appraiserFName appraiserLName",
+					"contactEmail": "appraiser@fake.com",
+					"contactPhone": "777-888-9999"
+				}
+			],
+
+			"borrowers": [{
+					"borrowerClassificationType": "Primary",
+					"fullName": "Peter Parker Posey",
+					"intentToProceedReceivedDate": "2019-01-26",
+					"contacts": [{
+							"contactType": "Home",
+							"contactEmail": "fake@fake.com",
+							"contactPhone": "123-456-7890"
+						},
+						{
+							"contactType": "Work",
+							"contactPhone": "456-456-7890"
+						},
+						{
+							"contactType": "Mobile",
+							"contactPhone": "789-456-7890"
+						}
+					],
+					"residences": [{
+						"address": {
+							"addressLine": "123 Anywhere Place",
+							"addressLine2": "Apt B14",
+							"cityName": "Edmond",
+							"postalCode": "73034-1234",
+							"stateCode": "OK",
+							"countyName": "Orange"
+						},
+						"borrowerResidencyType": "Current"
+					}]
+				},
+				{
+					"borrowerClassificationType": "Secondary",
+					"fullName": "Mary Lee Posey",
+					"intentToProceedReceivedDate": "2019-01-26",
+					"contacts": [{
+							"contactType": "Home",
+							"contactEmail": "mlp@fake.com",
+							"contactPhone": "222-456-7890"
+						},
+						{
+							"contactType": "Work",
+							"contactPhone": "333-456-7890"
+						},
+						{
+							"contactType": "Mobile",
+							"contactPhone": "444-456-7890"
+						}
+					],
+					"residences": [{
+						"address": {
+							"addressLine": "3215 Silly Street",
+							"addressLine2": "D-1422",
+							"cityName": "Orlando",
+							"postalCode": "32839-1234",
+							"stateCode": "FL",
+							"countyName": "Orange"
+						},
+						"borrowerResidencyType": "Current"
+					}]
+				}
+			],
+			"parties": [{
+					"partyRoleType": "LoanOfficer",
+					"contactFullName": "abc def"
+				},
+				{
+					"partyRoleType": "LoanProcessor",
+					"contactFullName": "Zachary Tester"
+				},
+				{
+					"partyRoleType": "Investor",
+					"partyRoleIdentifier": "323",
+					"contactfullName": "N/A",
+					"companyName": "N/A"
+				},
+				{
+					"partyRoleType": "BestContact",
+					"partyRoleTypeOtherDescription": "Assistant"
+				},
+				{
+					"partyRoleType": "Lender",
+					"fullNameAddress": "API Client Test<br>123 Anywhere St<br />Oklahoma City, Oklahoma, 73114",
+					"fdicInformation": {
+						"certificateIdentifier": "123BC",
+						"taskOrder": "A1B2",
+						"assetNumber": "ABCDEF123456",
+						"line": "1",
+						"contractor": "Billy Joe Bob"
+					}
+				},
+				{
+					"partyRoleType": "PropertyOwner",
+					"partyContacts": [{
+						"fullName": "Tikka Tokka Tacca",
+						"contacts": [{
+								"contactType": "Work",
+								"contactPhone": "333-444-9999"
+							},
+							{
+								"contactType": "Home",
+								"contactPhone": "333-222-9999",
+								"contactEmail": "owner@fake.com"
+							},
+							{
+								"contactType": "Mobile",
+								"contactPhone": "333-555-9999"
+							}
+						]
+					}]
+				},
+				{
+					"partyRoleType": "Other",
+					"partyContacts": [{
+						"fullName": "Jilly Jamie Johnson",
+						"contacts": [{
+								"contactType": "Work",
+								"contactPhone": "111-333-4444"
+							},
+							{
+								"contactType": "Home",
+								"contactPhone": "111-222-3333",
+								"contactEmail": "other@fake.com"
+							},
+							{
+								"contactType": "Mobile",
+								"contactPhone": "111-444-5555"
+							}
+						]
+					}]
+				},
+				{
+					"partyRoleType": "Other",
+					"partyRoleTypeOtherDescription": "Assistant",
+					"partyContacts": [{
+						"fullName": "Amy Alley Aspen",
+						"contacts": [{
+								"contactType": "Work",
+								"contactPhone": "407-111-3333"
+							},
+							{
+								"contactType": "Home",
+								"contactPhone": "407-111-2222",
+								"contactEmail": "assistance@fake.com"
+							},
+							{
+								"contactType": "Mobile",
+								"contactPhone": "407-111-4444"
+							}
+						]
+					}]
+				},
+				{
+					"partyRoleType": "Other",
+					"partyRoleTypeOtherDescription": "Listing Agent",
+					"partyContacts": [{
+						"fullName": "Tammy Brown Lee",
+						"contacts": [{
+								"contactType": "Work",
+								"contactPhone": "405-222-5555"
+							},
+							{
+								"contactType": "Home",
+								"contactPhone": "405-999-6666",
+								"contactEmail": "listingagent@fake.com"
+							},
+							{
+								"contactType": "Mobile",
+								"contactPhone": "405-222-4444"
+							}
+						]
+					}]
+				},
+				{
+					"partyRoleType": "SellersAgent",
+					"partyContacts": [{
+						"fullName": "Lily Allen Peppercorn",
+						"contacts": [{
+								"contactType": "Work",
+								"contactPhone": "777-333-4444"
+							},
+							{
+								"contactType": "Home",
+								"contactPhone": "777-222-3333",
+								"contactEmail": "sellingagent@fake.com"
+							},
+							{
+								"contactType": "Mobile",
+								"contactPhone": "777-444-4444"
+							}
+						]
+					}]
+				},
+				{
+					"partyRoleType": "RealEstateAgent",
+					"partyContacts": [{
+						"fullName": "Joey Baggo Donuts",
+						"contacts": [{
+								"contactType": "Work",
+								"contactPhone": "888-222-2222"
+							},
+							{
+								"contactType": "Home",
+								"contactPhone": "888-111-2222",
+								"contactEmail": "realtor@fake.com"
+							},
+							{
+								"contactType": "Mobile",
+								"contactPhone": "888-333-2222"
+							}
+						]
+					}]
+				},
+				{
+					"partyRoleType": "User",
+					"partyContacts": [{
+						"fullName": "API Testing (Manager)"
+					}]
+				},
+				{
+					"partyRoleType": "Other",
+					"partyRoleTypeOtherDescription": "Reviewer",
+					"partyContacts": [{
+						"contacts": [{
+							"contactType": "Work",
+							"contactEmail": "reviewer@fake.com"
+						}]
+					}]
+				}
+			],
+			"loans": [{
+				"automatedUnderwritingCaseIdentifier": "9876543210",
+				"automatedUnderwritingRecommendationDescription": "Approved",
+				"baseLoanAmount": "180000",
+				"estimatedClosingDate": "2021-05-23",
+				"lienPriorityType": "FirstLien",
+				"loanIdentifiers": {
+					"fhaCaseIdentifier": "123-4567890-123",
+					"lenderLoanIdentifier": "2020092910"
+				},
+				"loanPurposeType": "Refinance",
+				"mortgageType": "Conventional"
+			}],
+
+			"properties": [{
+				"address": {
+					"addressFormatType": "Individual",
+					"addressLine": "501 NE 122nd St",
+					"addressLine2": "suite D",
+					"cityName": "OKLAHOMA CITY",
+					"countyName": "OKLAHOMA",
+					"postalCode": "73114-1234",
+					"stateCode": "OK"
+				},
+				"appraisalIdentifier": "UAT2021",
+				"appraisalFileSequenceIdentifier": "1",
+				"appraisedValueofSubjectProperty": "",
+				"parcelIdentifier": "APN123",
+				"propertyCurrentOccupancyType": "Owner",
+				"purchasePriceAmount": 200000,
+				"salesConcessionAmount": 20000.00,
+				"salesConcessionType": "ClosingCosts",
+				"salesContractAmount": 180000.00,
+				"titleCategoryType": "SingleFamily"
+			}]
+		}]
+	}
+}

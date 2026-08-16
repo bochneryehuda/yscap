@@ -106,18 +106,32 @@ const CARD = { number: '4111111111111111', expMonth: 12, expYear: new Date().get
       '1: and it never returns a card number');
 
     // ---- 2. "use the card on file" with no card refuses, and says what to do --
+    // ON CLASS VALUATION, which is now the only company this route records for —
+    // see case 3. The refusal being tested is about the FILE having no card, and it
+    // is identical whichever company is named.
     const noCard = await call(server, 'POST', `/api/staff/applications/${appA}/appraisal-payment`, token,
-      { vendor: 'nan', orderId: 11, method: 'CARD_ON_FILE' });
+      { vendor: 'class', orderId: 11, method: 'CARD_ON_FILE' });
     assert(noCard.status === 409 && /Enter a card now|payment link/i.test(json(noCard).detail || ''),
       '2: no card on file refuses AND names both ways out — never a dead end');
 
-    // ---- 3. Richer Values is refused here — its own route charges it ---------
-    const rvHere = await call(server, 'POST', `/api/staff/applications/${appA}/appraisal-payment`, token,
-      { vendor: 'rv', orderId: 12, method: 'PAYMENT_LINK' });
-    assert(rvHere.status === 400 && json(rvHere).error === 'vendor_performs',
-      '3: Richer Values cannot be RECORDED as done-by-hand — it really takes the payment');
-    assert(/Pay button/i.test(json(rvHere).detail || ''),
-      '3: and the refusal points at where it is actually done');
+    // ---- 3. a company that takes its OWN payment is refused here -------------
+    // This route records an instruction for a person to carry out by hand.
+    // Accepting it for a company that genuinely charges would write down "somebody
+    // will do this" while nobody ever charges anything — the exact silence this
+    // table exists to remove.
+    //
+    // AppraisalScope JOINED Richer Values here on 2026-08-16, when its payment
+    // requests were built from the vendor's own package (owner-directed: *"I want
+    // to be a real vendor charge"*). Looping rather than naming one company is the
+    // point: the next vendor to be wired up is covered without editing this.
+    for (const v of ['rv', 'nan']) {
+      const here = await call(server, 'POST', `/api/staff/applications/${appA}/appraisal-payment`, token,
+        { vendor: v, orderId: 12, method: 'PAYMENT_LINK' });
+      assert(here.status === 400 && json(here).error === 'vendor_performs',
+        `3: ${v} cannot be RECORDED as done-by-hand — it really takes the payment`);
+      assert(/Pay button/i.test(json(here).detail || ''),
+        `3: and the ${v} refusal points at where it is actually done`);
+    }
 
     // ---- 4. a way to pay we do not offer is refused --------------------------
     const ach = await call(server, 'POST', `/api/staff/applications/${appA}/appraisal-payment`, token,
@@ -129,8 +143,9 @@ const CARD = { number: '4111111111111111', expMonth: 12, expYear: new Date().get
     assert(acme.status === 400 && json(acme).error === 'unknown_vendor', '4: so is an unknown company');
 
     // ---- 5. the payment link: recorded, nothing charged ----------------------
+    // On Class Valuation, the one company where this route is still the answer.
     const link = await call(server, 'POST', `/api/staff/applications/${appA}/appraisal-payment`, token,
-      { vendor: 'nan', orderId: 21, method: 'PAYMENT_LINK', note: 'borrower asked to pay it himself' });
+      { vendor: 'class', orderId: 21, method: 'PAYMENT_LINK', note: 'borrower asked to pay it himself' });
     const linkOut = json(link);
     assert(link.status === 201 && linkOut.intent && linkOut.intent.method === 'PAYMENT_LINK',
       '5: the choice is recorded');
@@ -185,6 +200,47 @@ const CARD = { number: '4111111111111111', expMonth: 12, expYear: new Date().get
       { vendor: 'class', orderId: 999 });
     assert(orphan.status === 409 && /how this one is being paid/i.test(json(orphan).detail || ''),
       '8: an order nobody chose a way for cannot be marked paid');
+
+    // ---- 10. PAYING AS PART OF PLACING — and the two cases that must NOT pay --
+    // Owner-directed 2026-08-16: the three ways are offered at the moment the
+    // order goes out. The dangerous half of that is everything it must NOT do.
+    {
+      const appC = await mkApp();
+
+      // A DRAFT IS NEVER CHARGED. There is no order at the vendor to pay for, and
+      // charging a card against one would be the worst possible surprise. It is
+      // said out loud rather than silently ignored, so nobody believes it was paid.
+      const draft = await call(server, 'POST', `/api/amc/files/${appC}/order`, token,
+        { place: false, payment: { method: 'CARD_ON_FILE' } });
+      const dOut = json(draft);
+      assert(draft.status === 200 && dOut.ok && dOut.order,
+        '10: a draft with a payment choice still saves the draft');
+      assert(dOut.payment && dOut.payment.ok === false && dOut.payment.error === 'not_placed',
+        '10: …and says plainly that nothing was charged');
+      assert(/draft/i.test((dOut.payment && dOut.payment.detail) || ''),
+        '10: naming the reason, so it is not read as a failure');
+      const noneYet = await db.query(
+        `SELECT 1 FROM appraisal_payment_intents WHERE vendor='nan' AND vendor_order_id=$1::bigint`, [dOut.order.id]);
+      assert(noneYet.rows.length === 0, '10: and NOTHING was recorded against the draft');
+
+      // AN ORDER THAT NEVER WENT OUT IS NEVER PAID FOR. This file is deliberately
+      // incomplete, so the placement is refused before the vendor is called —
+      // which is exactly when a payment must not happen either.
+      const bad = await call(server, 'POST', `/api/amc/files/${appC}/order`, token,
+        { place: true, payment: { method: 'CARD_ON_FILE' } });
+      assert(bad.status === 400 && json(bad).ok === false,
+        '10: an incomplete file is refused, as it always was');
+      assert(json(bad).payment === undefined,
+        '10: …with no payment attempted or reported — a failed order is never a paid one');
+      const stillNone = await db.query(
+        `SELECT 1 FROM appraisal_payment_intents WHERE application_id=$1`, [appC]);
+      assert(stillNone.rows.length === 0, '10: and no payment instruction exists for that file at all');
+
+      // No `payment` block at all is the old behaviour, byte for byte.
+      const plain = await call(server, 'POST', `/api/amc/files/${appC}/order`, token, { place: false });
+      assert(plain.status === 200 && json(plain).ok && json(plain).payment === undefined,
+        '10: an order placed without choosing a way behaves exactly as it did before');
+    }
 
     // ---- 9. only somebody on the file --------------------------------------
     for (const [m, p, b] of [

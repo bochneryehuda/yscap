@@ -1,0 +1,38 @@
+{
+	"message": {
+		"createdDatetime": "2017-01-25T03:02:24.045Z",
+		"digitalGatewaySystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "DigitalGatewayOrderNumber",
+				"referenceIdentifierValue": "CLGGL100417"
+			}],
+			"statusResponses": [{
+				"statusCode": "-1008",
+				"statusCondition": "ERROR",
+				"statusDescription": "Service Provider Processing Error",
+				"statusName": "NACK",
+				"statusCreatedDatetime": "2017-01-25T03:02:24.045Z"
+			}]
+		},
+		"products": [{
+			"statusResponses": [{
+					"objectName": "happy.abc",
+					"statusCondition": "fail",
+					"statusDescription": "Invalid file extension",
+					"comments": "content: Required"
+				},
+				{
+					"objectName": "test-file-for-upload.bbb",
+					"statusCondition": "fail",
+					"statusDescription": "Invalid file extension",
+					"comments": "content: Required"
+				}
+			]
+		}],
+		"serviceProviderSystem": {
+			"statusResponses": [{
+				"statusCode": "E003"
+			}]
+		}
+	}
+}

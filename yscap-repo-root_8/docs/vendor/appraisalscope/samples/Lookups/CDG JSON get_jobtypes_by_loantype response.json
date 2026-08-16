@@ -1,0 +1,1659 @@
+{
+    "responseData": {
+        "responseType": "Job Types by Loan Type",
+        "count": 127,
+        "responseFields": [
+            {
+                "num": 1,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Test Form - 1004 Conventional"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "1"
+                    }
+                ]
+            },
+            {
+                "num": 2,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Test Form - 1004 FHA"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "2"
+                    }
+                ]
+            },
+            {
+                "num": 3,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Test Form - 1004D Conventional"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "3"
+                    }
+                ]
+            },
+            {
+                "num": 4,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Test Form - 1004D FHA"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "4"
+                    }
+                ]
+            },
+            {
+                "num": 5,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Single-family Appraisal (1004)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "5"
+                    }
+                ]
+            },
+            {
+                "num": 6,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Single-family Investment (1004 and 1007)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "6"
+                    }
+                ]
+            },
+            {
+                "num": 7,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Single-family Investment (1004 and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "7"
+                    }
+                ]
+            },
+            {
+                "num": 8,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Single-family Investment (1004, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "8"
+                    }
+                ]
+            },
+            {
+                "num": 9,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Single-family REO (1004 w/REO Addendum)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "9"
+                    }
+                ]
+            },
+            {
+                "num": 10,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Single-family REO Exterior (2055 w/REO Addendum)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "10"
+                    }
+                ]
+            },
+            {
+                "num": 11,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Exterior-only Single-family Appraisal (2055)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "11"
+                    }
+                ]
+            },
+            {
+                "num": 12,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Exterior-only Single-family Investment (2055 and 1007)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "12"
+                    }
+                ]
+            },
+            {
+                "num": 13,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Exterior-only Single-family Investment (2055, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "13"
+                    }
+                ]
+            },
+            {
+                "num": 14,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Exterior-only Single-family w/Comparable Photos (2055)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "14"
+                    }
+                ]
+            },
+            {
+                "num": 15,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Condo Appraisal (1073)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "15"
+                    }
+                ]
+            },
+            {
+                "num": 16,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Condo Exterior-only Appraisal (1075)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "16"
+                    }
+                ]
+            },
+            {
+                "num": 17,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Condo Exterior-only Investment (1075 and 1007)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "17"
+                    }
+                ]
+            },
+            {
+                "num": 18,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Condo Exterior-only Investment (1075, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "18"
+                    }
+                ]
+            },
+            {
+                "num": 19,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Condo Investment (1073 and 1007)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "19"
+                    }
+                ]
+            },
+            {
+                "num": 20,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Condo Investment (1073 and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "20"
+                    }
+                ]
+            },
+            {
+                "num": 21,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Condo Investment (1073, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "21"
+                    }
+                ]
+            },
+            {
+                "num": 22,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Condo REO Appraisal (1073)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "22"
+                    }
+                ]
+            },
+            {
+                "num": 23,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Appraisal Update/Inspection of Repairs (1004D)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "23"
+                    }
+                ]
+            },
+            {
+                "num": 24,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Appraisal Update/Recertification (1004D)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "24"
+                    }
+                ]
+            },
+            {
+                "num": 25,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Manufactured Home (1004C)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "25"
+                    }
+                ]
+            },
+            {
+                "num": 26,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Manufactured Home Investment (1004C and 1007)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "26"
+                    }
+                ]
+            },
+            {
+                "num": 27,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Manufactured Home Investment (1004C, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "27"
+                    }
+                ]
+            },
+            {
+                "num": 28,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Multi-family Appraisal (1025)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "28"
+                    }
+                ]
+            },
+            {
+                "num": 29,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Multi-family Investment (1025 and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "29"
+                    }
+                ]
+            },
+            {
+                "num": 30,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Multi-family REO Appraisal (1025)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "30"
+                    }
+                ]
+            },
+            {
+                "num": 31,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Exterior-only Co-op Appraisal (2095)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "31"
+                    }
+                ]
+            },
+            {
+                "num": 32,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Conversion - Conventional to FHA"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "32"
+                    }
+                ]
+            },
+            {
+                "num": 33,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Conversion - FHA to Conventional"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "33"
+                    }
+                ]
+            },
+            {
+                "num": 34,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Conversion - USDA to Conventional"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "34"
+                    }
+                ]
+            },
+            {
+                "num": 35,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Conversion - USDA to FHA"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "35"
+                    }
+                ]
+            },
+            {
+                "num": 36,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "JUMBO Single-family (1004)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "36"
+                    }
+                ]
+            },
+            {
+                "num": 37,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "JUMBO Single-family Investment (1004 and 1007)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "37"
+                    }
+                ]
+            },
+            {
+                "num": 38,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "JUMBO Single-family Investment (1004 and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "38"
+                    }
+                ]
+            },
+            {
+                "num": 39,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "JUMBO Single-family Investment (1004, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "39"
+                    }
+                ]
+            },
+            {
+                "num": 40,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "JUMBO Condo (1073)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "40"
+                    }
+                ]
+            },
+            {
+                "num": 41,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "JUMBO Multi-family (1025)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "41"
+                    }
+                ]
+            },
+            {
+                "num": 42,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "JUMBO Multi-family Investment (1025 and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "42"
+                    }
+                ]
+            },
+            {
+                "num": 43,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "JUMBO Investment Form (1007)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "43"
+                    }
+                ]
+            },
+            {
+                "num": 44,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "JUMBO Investment Form (216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "44"
+                    }
+                ]
+            },
+            {
+                "num": 45,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "JUMBO Investment Forms Only (1007 and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "45"
+                    }
+                ]
+            },
+            {
+                "num": 46,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "JUMBO Field Review"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "46"
+                    }
+                ]
+            },
+            {
+                "num": 47,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "JUMBO Desk Review"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "47"
+                    }
+                ]
+            },
+            {
+                "num": 48,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "JUMBO Enhanced Desk Review"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "48"
+                    }
+                ]
+            },
+            {
+                "num": 49,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "JUMBO Disaster Inspection Report"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "49"
+                    }
+                ]
+            },
+            {
+                "num": 50,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "JUMBO Appraisal Update/Final Inspection (1004D)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "50"
+                    }
+                ]
+            },
+            {
+                "num": 51,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "JUMBO Appraisal Update/Recertification of Value (1004D)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "51"
+                    }
+                ]
+            },
+            {
+                "num": 52,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Field Review (2000)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "52"
+                    }
+                ]
+            },
+            {
+                "num": 53,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Multi-family Field Review (FNMA 2000A)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "53"
+                    }
+                ]
+            },
+            {
+                "num": 54,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Reverse mortgage appraisal (1004)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "54"
+                    }
+                ]
+            },
+            {
+                "num": 55,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Single-family appraisal (FNMA 1004)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "55"
+                    }
+                ]
+            },
+            {
+                "num": 56,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Single-family Investment (1004 and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "56"
+                    }
+                ]
+            },
+            {
+                "num": 57,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Single-family investment (1004 and 1007)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "57"
+                    }
+                ]
+            },
+            {
+                "num": 58,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Single-family investment (1004, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "58"
+                    }
+                ]
+            },
+            {
+                "num": 59,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Single-family REO (1004 w/REO addendum)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "59"
+                    }
+                ]
+            },
+            {
+                "num": 60,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Appraisal Update/Inspection of Repairs (1004D)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "60"
+                    }
+                ]
+            },
+            {
+                "num": 61,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Appraisal Update/Recertification of Value (1004D)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "61"
+                    }
+                ]
+            },
+            {
+                "num": 62,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Condo (1073)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "62"
+                    }
+                ]
+            },
+            {
+                "num": 63,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Condo investment (1073 and 1007)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "63"
+                    }
+                ]
+            },
+            {
+                "num": 64,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Condo investment (1073, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "64"
+                    }
+                ]
+            },
+            {
+                "num": 65,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Exterior-only residential report (2055)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "65"
+                    }
+                ]
+            },
+            {
+                "num": 66,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Exterior-only Condo (1075)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "66"
+                    }
+                ]
+            },
+            {
+                "num": 67,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Multi-family (1025)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "67"
+                    }
+                ]
+            },
+            {
+                "num": 68,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Multi-family Investment (1025 and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "68"
+                    }
+                ]
+            },
+            {
+                "num": 69,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Manufactured Home (1004C)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "69"
+                    }
+                ]
+            },
+            {
+                "num": 70,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Manufactured Home Final Inspection (1004D)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "70"
+                    }
+                ]
+            },
+            {
+                "num": 71,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Manufactured Home Recertification of Value (1004D)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "71"
+                    }
+                ]
+            },
+            {
+                "num": 72,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Field Review (HUD 1038)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "72"
+                    }
+                ]
+            },
+            {
+                "num": 73,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Field Review (FNMA 2000)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "73"
+                    }
+                ]
+            },
+            {
+                "num": 74,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Desktop Review"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "74"
+                    }
+                ]
+            },
+            {
+                "num": 75,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Desktop Review (Enhanced)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "75"
+                    }
+                ]
+            },
+            {
+                "num": 76,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Disaster Inspection Report"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "76"
+                    }
+                ]
+            },
+            {
+                "num": 77,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Compliance Inspection (CIR)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "77"
+                    }
+                ]
+            },
+            {
+                "num": 78,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Comparable Rent Schedule (1007)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "78"
+                    }
+                ]
+            },
+            {
+                "num": 79,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Operating Income Statement (216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "79"
+                    }
+                ]
+            },
+            {
+                "num": 80,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA Investment Forms Only (1007 and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "80"
+                    }
+                ]
+            },
+            {
+                "num": 81,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA 203K Single-family (1004)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "81"
+                    }
+                ]
+            },
+            {
+                "num": 82,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA 203K Multi-family (1025)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "82"
+                    }
+                ]
+            },
+            {
+                "num": 83,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA 203K Multi-family Investment (1025 and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "83"
+                    }
+                ]
+            },
+            {
+                "num": 84,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA 203K Field Review"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "84"
+                    }
+                ]
+            },
+            {
+                "num": 85,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA 203K Desk Review"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "85"
+                    }
+                ]
+            },
+            {
+                "num": 86,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA 203K Enhanced Desk Review"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "86"
+                    }
+                ]
+            },
+            {
+                "num": 87,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA 203K Disaster Inspection Report"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "87"
+                    }
+                ]
+            },
+            {
+                "num": 88,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA 203K Appraisal Update/Final Inspection (1004D)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "88"
+                    }
+                ]
+            },
+            {
+                "num": 89,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA 203K Appraisal Update/Recertification of Value (1004D)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "89"
+                    }
+                ]
+            },
+            {
+                "num": 90,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "USDA Single-family (1004)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "90"
+                    }
+                ]
+            },
+            {
+                "num": 91,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "USDA Single-family Investment (1004 and 1007)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "91"
+                    }
+                ]
+            },
+            {
+                "num": 92,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "USDA Single-family Investment (1004 and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "92"
+                    }
+                ]
+            },
+            {
+                "num": 93,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "USDA Single-family Investment (1004, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "93"
+                    }
+                ]
+            },
+            {
+                "num": 94,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "USDA Manufactured Home (1004C)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "94"
+                    }
+                ]
+            },
+            {
+                "num": 95,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "USDA Multi-family Investment (1025 and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "95"
+                    }
+                ]
+            },
+            {
+                "num": 96,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "USDA Appraisal Update/Inspection of Repairs (1004D)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "96"
+                    }
+                ]
+            },
+            {
+                "num": 97,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "USDA Appraisal Update/Recertification of Value (1004D)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "97"
+                    }
+                ]
+            },
+            {
+                "num": 98,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "USDA Condo (FNMA 1073)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "98"
+                    }
+                ]
+            },
+            {
+                "num": 99,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "USDA Disaster Inspection Report"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "99"
+                    }
+                ]
+            },
+            {
+                "num": 100,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "USDA Existing Dwelling Certification"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "100"
+                    }
+                ]
+            },
+            {
+                "num": 101,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "USDA Enhanced Desk Review"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "101"
+                    }
+                ]
+            },
+            {
+                "num": 102,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "USDA Field Review (2000)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "102"
+                    }
+                ]
+            },
+            {
+                "num": 103,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Collateral Desktop Analysis"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "103"
+                    }
+                ]
+            },
+            {
+                "num": 104,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Comparable Rent Schedule (1007)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "104"
+                    }
+                ]
+            },
+            {
+                "num": 105,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Standalone Investment Forms (1007 and 216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "105"
+                    }
+                ]
+            },
+            {
+                "num": 106,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Condition and Marketability Report (FHLMC 2070)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "106"
+                    }
+                ]
+            },
+            {
+                "num": 107,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Co-op Appraisal (FNMA 2090)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "107"
+                    }
+                ]
+            },
+            {
+                "num": 108,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Desktop Appraisal (No Inspection)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "108"
+                    }
+                ]
+            },
+            {
+                "num": 109,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Desktop Appraisal (Exterior)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "109"
+                    }
+                ]
+            },
+            {
+                "num": 110,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Desktop Appraisal (Interior)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "110"
+                    }
+                ]
+            },
+            {
+                "num": 111,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Desktop Review"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "111"
+                    }
+                ]
+            },
+            {
+                "num": 112,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Desktop Review (Enhanced)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "112"
+                    }
+                ]
+            },
+            {
+                "num": 113,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Disaster Inspection"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "113"
+                    }
+                ]
+            },
+            {
+                "num": 114,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Drive by Appraisal (Legacy 2055)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "114"
+                    }
+                ]
+            },
+            {
+                "num": 115,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "General Purpose Appraisal Report (GPAR)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "115"
+                    }
+                ]
+            },
+            {
+                "num": 116,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Land Appraisal"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "116"
+                    }
+                ]
+            },
+            {
+                "num": 117,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Land Appraisal - REO"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "117"
+                    }
+                ]
+            },
+            {
+                "num": 118,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Operating Income Statement (216)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "118"
+                    }
+                ]
+            },
+            {
+                "num": 119,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Property Inspection (FNMA 2075)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "119"
+                    }
+                ]
+            },
+            {
+                "num": 120,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Real Estate Value Estimate (RVE)"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "120"
+                    }
+                ]
+            },
+            {
+                "num": 121,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Residential Appraisal Form - 71B"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "121"
+                    }
+                ]
+            },
+            {
+                "num": 122,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Retrospective Field Review"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "122"
+                    }
+                ]
+            },
+            {
+                "num": 123,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Supplemental REO Addendum"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "123"
+                    }
+                ]
+            },
+            {
+                "num": 124,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "AQA N/A"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "124"
+                    }
+                ]
+            },
+            {
+                "num": 125,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "AQA 1004P"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "125"
+                    }
+                ]
+            },
+            {
+                "num": 126,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "AQA PDC"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "126"
+                    }
+                ]
+            },
+            {
+                "num": 127,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Rush - 1004 Conventional"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "127"
+                    }
+                ]
+            }
+        ]
+    }
+}

@@ -1,0 +1,36 @@
+
+{
+   "responseData": {
+      "responseType": "Client Displayed on Report",
+      "count": 2,
+      "responseFields": [
+         {
+            "num": 1,
+            "fieldlist": [
+               {
+                  "fieldName": "id",
+                  "fieldValue": "267"
+               },
+               {
+                  "fieldName": "name",
+                  "fieldValue": "API Client Test"
+               }
+            ]
+         },
+         {
+            "num": 2,
+            "fieldlist": [
+               {
+                  "fieldName": "id",
+                  "fieldValue": "297"
+               },
+               {
+                  "fieldName": "name",
+                  "fieldValue": "Test Client 1"
+               }
+            ]
+         }
+      ]
+   }
+}
+

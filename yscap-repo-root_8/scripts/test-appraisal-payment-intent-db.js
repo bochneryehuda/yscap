@@ -143,19 +143,29 @@ const tag = `${process.pid}${Date.now()}`;
     ok(!orphan.ok && orphan.error === 'no_intent',
       'E: an order nobody chose a method for cannot be marked paid — that would stamp a method never picked');
 
-    await intent.record({ appId, vendor: 'nan', orderId: 701, method: 'CARD_ON_FILE', staffId: staff.id });
-    const before = await intent.forOrder('nan', 701);
-    ok(before.describe.awaitingBackOffice, 'E: on AppraisalScope it starts out waiting on the back office');
+    // ON CLASS VALUATION, which since 2026-08-16 is the one company with no payment
+    // call of its own — so it is the one whose instructions genuinely wait on a
+    // person here. AppraisalScope moved to performing its own payments that day
+    // (owner-directed), and an instruction on a company that charges is waiting on
+    // the VENDOR, never on our back office.
+    await intent.record({ appId, vendor: 'class', orderId: 701, method: 'CARD_ON_FILE', staffId: staff.id });
+    const before = await intent.forOrder('class', 701);
+    ok(before.describe.awaitingBackOffice, 'E: on Class Valuation it starts out waiting on the back office');
+    // The counterpart, so the distinction is pinned from both sides.
+    await intent.record({ appId, vendor: 'nan', orderId: 702, method: 'CARD_ON_FILE', staffId: staff.id });
+    const nanSide = await intent.forOrder('nan', 702);
+    ok(!nanSide.describe.awaitingBackOffice,
+      'E: …while an AppraisalScope one is not — that company takes the payment itself');
 
-    const s = await intent.settle({ vendor: 'nan', orderId: 701, staffId: staff.id, note: 'charged 08/16' });
+    const s = await intent.settle({ vendor: 'class', orderId: 701, staffId: staff.id, note: 'charged 08/16' });
     ok(s.ok && !!s.intent.settled_at && s.intent.settled_by === staff.id,
       'E: marking it paid records who did it');
-    const done = await intent.forOrder('nan', 701);
+    const done = await intent.forOrder('class', 701);
     ok(!done.describe.awaitingBackOffice, 'E: and it stops asking anybody to do anything');
 
-    const u = await intent.unsettle({ vendor: 'nan', orderId: 701 });
+    const u = await intent.unsettle({ vendor: 'class', orderId: 701 });
     ok(u.ok && !u.intent.settled_at, 'E: a wrongly-marked order can be put back');
-    ok((await intent.forOrder('nan', 701)).method === 'CARD_ON_FILE',
+    ok((await intent.forOrder('class', 701)).method === 'CARD_ON_FILE',
       'E: and putting it back keeps the chosen method');
   }
 

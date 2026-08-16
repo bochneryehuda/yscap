@@ -231,7 +231,7 @@ function mkDb() {
       'SOURCE-1 validity is DELEGATED to the decision module — never re-implemented here or in SQL');
     ok(!/last_run/.test(src),
       'SOURCE-2 there is NO last-run stamp: the run series is the one answer to "when did we last measure", and a second would drift');
-    const sql = require('fs').readFileSync(require.resolve('../db/567_lt_ppe_canary_schedule.sql'), 'utf8');
+    const sql = require('fs').readFileSync(require.resolve('../db/569_lt_ppe_canary_schedule.sql'), 'utf8');
     // COMMENTS ARE STRIPPED FIRST. The migration's header EXPLAINS that there is deliberately no
     // last-run column, so a guard that read comments would fail on the very sentence documenting the
     // decision — and would then get "fixed" by deleting the explanation. Assert on the DDL only.

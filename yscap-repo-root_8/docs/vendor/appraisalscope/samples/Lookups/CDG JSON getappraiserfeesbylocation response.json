@@ -1,0 +1,2675 @@
+{
+    "responseData": {
+        "responseType": "Appraiser Fees by Location",
+        "count": 127,
+        "responseFields": [
+            {
+                "num": 1,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Appraisal Update/Inspection of Repairs (1004D)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 2,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Appraisal Update/Recertification (1004D)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 3,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "AQA 1004P"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 4,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "AQA N/A"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 5,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "AQA PDC"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 6,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Co-op Appraisal (FNMA 2090)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 7,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Collateral Desktop Analysis"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 8,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Comparable Rent Schedule (1007)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 9,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Condition and Marketability Report (FHLMC 2070)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 10,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Condo Appraisal (1073)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 11,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Condo Exterior-only Appraisal (1075)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 12,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Condo Exterior-only Investment (1075 and 1007)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 13,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Condo Exterior-only Investment (1075, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 14,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Condo Investment (1073 and 1007)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 15,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Condo Investment (1073 and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 16,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Condo Investment (1073, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 17,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Condo REO Appraisal (1073)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 18,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Conversion - Conventional to FHA"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 19,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Conversion - FHA to Conventional"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 20,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Conversion - USDA to Conventional"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 21,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Conversion - USDA to FHA"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 22,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Desktop Appraisal (Exterior)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 23,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Desktop Appraisal (Interior)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 24,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Desktop Appraisal (No Inspection)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 25,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Desktop Review"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 26,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Desktop Review (Enhanced)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 27,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Disaster Inspection"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 28,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Drive by Appraisal (Legacy 2055)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 29,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Exterior-only Co-op Appraisal (2095)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 30,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Exterior-only Single-family Appraisal (2055)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 31,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Exterior-only Single-family Investment (2055 and 1007)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 32,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Exterior-only Single-family Investment (2055, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 33,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Exterior-only Single-family w/Comparable Photos (2055)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 34,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA 203K Appraisal Update/Final Inspection (1004D)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 35,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA 203K Appraisal Update/Recertification of Value (1004D)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 36,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA 203K Desk Review"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 37,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA 203K Disaster Inspection Report"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 38,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA 203K Enhanced Desk Review"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 39,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA 203K Field Review"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 40,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA 203K Multi-family (1025)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 41,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA 203K Multi-family Investment (1025 and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 42,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA 203K Single-family (1004)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 43,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Appraisal Update/Inspection of Repairs (1004D)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 44,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Appraisal Update/Recertification of Value (1004D)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 45,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Comparable Rent Schedule (1007)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 46,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Compliance Inspection (CIR)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 47,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Condo (1073)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 48,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Condo investment (1073 and 1007)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 49,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Condo investment (1073, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 50,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Desktop Review"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 51,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Desktop Review (Enhanced)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 52,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Disaster Inspection Report"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 53,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Exterior-only Condo (1075)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 54,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Exterior-only residential report (2055)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 55,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Field Review (FNMA 2000)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 56,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Field Review (HUD 1038)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 57,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Investment Forms Only (1007 and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 58,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Manufactured Home (1004C)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 59,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Manufactured Home Final Inspection (1004D)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 60,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Manufactured Home Recertification of Value (1004D)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 61,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Multi-family (1025)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 62,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Multi-family Investment (1025 and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 63,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Operating Income Statement (216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 64,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Reverse mortgage appraisal (1004)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 65,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Single-family appraisal (FNMA 1004)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 66,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Single-family investment (1004 and 1007)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 67,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Single-family Investment (1004 and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 68,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Single-family investment (1004, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 69,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "FHA Single-family REO (1004 w/REO addendum)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 70,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Field Review (2000)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 71,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "General Purpose Appraisal Report (GPAR)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 72,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "JUMBO Appraisal Update/Final Inspection (1004D)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 73,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "JUMBO Appraisal Update/Recertification of Value (1004D)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 74,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "JUMBO Condo (1073)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 75,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "JUMBO Desk Review"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 76,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "JUMBO Disaster Inspection Report"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 77,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "JUMBO Enhanced Desk Review"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 78,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "JUMBO Field Review"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 79,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "JUMBO Investment Form (1007)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 80,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "JUMBO Investment Form (216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 81,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "JUMBO Investment Forms Only (1007 and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 82,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "JUMBO Multi-family (1025)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 83,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "JUMBO Multi-family Investment (1025 and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 84,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "JUMBO Single-family (1004)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 85,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "JUMBO Single-family Investment (1004 and 1007)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 86,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "JUMBO Single-family Investment (1004 and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 87,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "JUMBO Single-family Investment (1004, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 88,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Land Appraisal"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 89,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Land Appraisal - REO"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 90,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Manufactured Home (1004C)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 91,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Manufactured Home Investment (1004C and 1007)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 92,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Manufactured Home Investment (1004C, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 93,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Multi-family Appraisal (1025)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 94,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Multi-family Field Review (FNMA 2000A)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 95,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Multi-family Investment (1025 and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 96,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Multi-family REO Appraisal (1025)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 97,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Operating Income Statement (216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 98,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Property Inspection (FNMA 2075)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 99,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Real Estate Value Estimate (RVE)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 100,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Residential Appraisal Form - 71B"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 101,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Retrospective Field Review"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 102,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Rush - 1004 Conventional"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 103,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Single-family Appraisal (1004)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 104,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Single-family Investment (1004 and 1007)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 105,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Single-family Investment (1004 and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 106,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Single-family Investment (1004, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 107,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Single-family REO (1004 w/REO Addendum)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 108,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Single-family REO Exterior (2055 w/REO Addendum)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 109,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Standalone Investment Forms (1007 and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 110,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Supplemental REO Addendum"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 111,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Test Form - 1004 Conventional"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 112,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Test Form - 1004 FHA"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 113,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Test Form - 1004D Conventional"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 114,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "Test Form - 1004D FHA"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 115,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "USDA Appraisal Update/Inspection of Repairs (1004D)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 116,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "USDA Appraisal Update/Recertification of Value (1004D)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 117,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "USDA Condo (FNMA 1073)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 118,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "USDA Disaster Inspection Report"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 119,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "USDA Enhanced Desk Review"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 120,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "USDA Existing Dwelling Certification"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 121,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "USDA Field Review (2000)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 122,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "USDA Manufactured Home (1004C)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 123,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "USDA Multi-family Investment (1025 and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 124,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "USDA Single-family (1004)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 125,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "USDA Single-family Investment (1004 and 1007)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 126,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "USDA Single-family Investment (1004 and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            },
+            {
+                "num": 127,
+                "fieldlist": [
+                    {
+                        "fieldName": "job_type",
+                        "fieldValue": "USDA Single-family Investment (1004, 1007, and 216)"
+                    },
+                    {
+                        "fieldName": "user_type",
+                        "fieldValue": "VPAMC"
+                    },
+                    {
+                        "fieldName": "fee",
+                        "fieldValue": "0.00"
+                    },
+                    {
+                        "fieldName": "user",
+                        "fieldValue": "Integrations VP UAT AMC"
+                    }
+                ]
+            }
+        ]
+    }
+}
