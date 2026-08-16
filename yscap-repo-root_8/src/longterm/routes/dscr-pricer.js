@@ -50,6 +50,10 @@ const SUPPORTED_FIELDS = new Set([
   // unrecognized value is 422'd (invalid_income_doc_type / invalid_prepay_structure), never
   // defaulted. prepayStructure is independent of prepayMonths.
   'incomeDocType', 'prepayStructure',
+  // §31.5 — subordinate (closed-end second) amount + broker comp percent. The comp percent is
+  // entered as the POSITIVE number a human sees; the vendor's negative wire form is produced by one
+  // named conversion in the builder. HELOC/HELOAN subtype selectors stay unsupported (uncaptured).
+  'subordinateLoanAmount', 'compPercent',
   // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). Each maps to an
   // exact upstream path/token; an invalid VALUE for one is rejected as invalid_field_value (below).
   ...REGISTRY_FIELDS,
@@ -78,6 +82,11 @@ function effectiveOf(payload) {
     cashoutAmount: c.cashoutAmount,
     cashoutAmountInternal: payload[CASHOUT_INTERNAL] != null ? payload[CASHOUT_INTERNAL] : undefined,
     loanAmount: c.loanAmount, ltv: c.ltv, fico: c.fico, dscr: c.dscr,
+    // §31.5 — the subordinate lien actually transmitted, and the broker comp plan in the vendor's own
+    // NEGATIVE wire form (a visible 2.5% reads here as -2.5), so a caller can confirm the sign
+    // conversion was applied rather than guessing at it.
+    subordinateLoanAmount: c.subordinateLoanAmount,
+    compPlan: payload.brokerCriteria && payload.brokerCriteria.compPlan,
     // §32.3 — the derived DSCR band token actually transmitted (dynamicPropertiesMap.DSCRRATIO), so a
     // caller can confirm the reviewed threshold table was applied to the entered DSCR.
     dscrRatio: dyn('DSCRRATIO'),

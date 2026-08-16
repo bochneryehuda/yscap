@@ -164,6 +164,14 @@ function deriveAmounts(sc = {}) {
   return { value, loan, ltv, supplied, derived, known };
 }
 
+// §31.5 — the broker comp-percent SIGN INVERSION, isolated in one named conversion. The live capture
+// is unambiguous: a visible Comp Percent of 2.5 leaves the frontend as `brokerCriteria.compPlan:
+// -2.5` (a JSON number). Our public input is the number a human reads off the screen (positive), so
+// this is the ONLY place the sign flips. Kept as a function rather than an inline negation so the
+// rule is greppable and testable, and so a future capture that changes the convention has one edit
+// site. -0 is normalized to 0 (JSON.stringify would otherwise emit "-0" for a 0% comp).
+function compPlanValue(pct) { return pct === 0 ? 0 : -pct; }
+
 const SFR_PROP = { propertyType: 'SingleFamily', nonWarrantableProject: false, attachmentType: 'Detached', units: 1 };
 function mapProp(t) {
   // No property type on the scenario → default single-family (a DEFAULT, not a silent SUBSTITUTION
@@ -337,6 +345,13 @@ const SCENARIO_OWNED = [
   // (rangeComplan only applies while this flag is true, so clearing the flag is sufficient and no
   // comp value we cannot document is touched).
   { path: 'brokerCriteria.overrideExistingComplan', neutral: false, why: 'per-session comp override — audit §31.6 compPlan example' },
+  // §31.5/§31.6 — BROKER COMP PERCENT. The captured base carries NO compPlan key at all, so the
+  // neutral is ABSENT (delete), not a number: an omitted compPercent must leave the request exactly
+  // as the base has it. This is the audit's own leak case — clearing the visible Comp Percent input
+  // did NOT clear the model, so later searches kept sending a prior session's compPlan. Re-applied by
+  // buildSearch AFTER this clear when the caller supplies compPercent, so the DELETE footgun above
+  // does not apply.
+  { path: 'brokerCriteria.compPlan', neutral: DELETE, why: 'broker comp percent — audit §31.6 stale compPlan leak' },
 ];
 // Clear every registered scenario-owned field to its neutral state, IN PLACE. Operates on the
 // already-cloned model (buildSearch clones first), so it never mutates the shared BASE or a caller's
@@ -409,6 +424,14 @@ function buildSearch(sc = {}, opts = {}) {
   else c.appraisedValue = null; // refi/cash-out with no appraisal → blank, matching the frontend
   if (loan != null) c.loanAmount = loan;
   if (ltv != null) c.ltv = ltv;
+  // §31.5 — SUBORDINATE FINANCING. Confirmed live: selecting Closed End Second and entering 50,000
+  // sent `criteria.subordinateLoanAmount: 50000` and NO separate CLTV field — the engine derives the
+  // combined ratio from first lien + subordinate + value, so we deliberately do NOT invent a CLTV
+  // input. This is one of the SCENARIO_OWNED amounts cleared to 0 above, so this re-apply MUST stay
+  // after that clear (the documented footgun) or a caller's value would be silently zeroed. The
+  // HELOC/HELOAN subtype selectors are NOT wired: only the closed-end second amount was captured.
+  const subordinate = num(sc.subordinateLoanAmount);
+  if (subordinate != null) c.subordinateLoanAmount = subordinate;
   if (num(sc.fico) != null) c.fico = num(sc.fico);
   const dscrVal = num(sc.dscr);
   if (dscrVal != null) c.dscr = dscrVal;
@@ -429,6 +452,16 @@ function buildSearch(sc = {}, opts = {}) {
   const lockDays = num(sc.lockDays);
   const effLockDays = lockDays != null ? lockDays : 30;
   { const bc = m.brokerCriteria || (m.brokerCriteria = {}); bc.dayLocks = effLockDays; m.dayLocksCriteria = [effLockDays]; }
+  // §31.5 — BROKER COMP PERCENT, with the vendor's confirmed SIGN INVERSION: a visible 2.5 is
+  // transmitted as brokerCriteria.compPlan = -2.5 (captured live). The caller sends what a human
+  // SEES (a positive percent) and this one named conversion owns the negation — so the inversion
+  // lives in exactly one place instead of every call site. A negative input is refused by
+  // validateInputs rather than double-negated into a positive. Omitted → the key stays absent
+  // (its cleared neutral), matching the captured base which carries no compPlan at all.
+  {
+    const pct = num(sc.compPercent);
+    if (pct != null) { const bc = m.brokerCriteria || (m.brokerCriteria = {}); bc.compPlan = compPlanValue(pct); }
+  }
   c.loanPurpose = purpose;
   // DSCR product profile — INTENTIONAL (investment occupancy, DSCR income doc, borrower-comp) and
   // asserted explicitly so a live base carrying a different saved default never changes the product.
@@ -732,6 +765,25 @@ function validateInputs(sc = {}) {
       }
     }
   }
+  // §31.5 — subordinate financing + broker comp percent.
+  const sub = numField('subordinateLoanAmount', { min: 0, max: 1e9 }); if (sub.err) return sub.err;
+  // A comp percent is entered as the number a human SEES (positive); the vendor's negative wire form
+  // is produced by the one named conversion in the builder. A negative input is refused rather than
+  // double-negated into a positive comp. 100 is an arithmetic ceiling for a percentage, not a
+  // business cap — no company/lender cap was captured, so none is invented here.
+  const comp = numField('compPercent', { min: 0, max: 100 }); if (comp.err) return comp.err;
+  // Combined LTV: the first lien plus a subordinate lien cannot exceed the property value. The engine
+  // derives CLTV itself (the live capture sent NO CLTV field), so we validate rather than transmit.
+  if (sub.v != null && sub.v > 0) {
+    const tri = deriveAmounts(sc);
+    if (tri.value != null && tri.value > 0 && tri.loan != null) {
+      const cltv = (tri.loan + sub.v) / tri.value;
+      if (cltv > 1) {
+        return bad('cltv_out_of_range', 'subordinateLoanAmount',
+          `First lien (${tri.loan}) plus subordinate lien (${sub.v}) is ${(cltv * 100).toFixed(2)}% of the property value (${tri.value}) — a combined LTV over 100%.`);
+      }
+    }
+  }
   // §35.2/§36.2 — THE AMOUNT TRIANGLE. A quote is priced off the property value, the first-lien
   // amount and the LTV; any TWO determine the third. Fewer than two is not a scenario we can price,
   // and deriving from ONE would be a guess, so it is refused here — BEFORE any upstream call —
@@ -801,4 +853,4 @@ function validateScenario(sc = {}) {
 }
 
 module.exports = { BASE, buildSearch, clearScenarioOwnedFields, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts } };
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue } };
