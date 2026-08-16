@@ -103,6 +103,22 @@ check(entityWins.expirationDate === '2026-10-01',
 check(entityWins.fieldOrderAssumed === false,
   '…and nothing is marked as assumed when nothing was assumed');
 
+const crossed = locks.lockFromLoan(
+  { rateLock: { lockStatus: 'Locked', lockDate: '2026-09-20' } }, { 762: '2026-08-01' }, S, TODAY,
+);
+check(crossed.expirationDate === null && crossed.lockDate === '2026-09-20' && crossed.expired === false,
+  'THE CROSS-SOURCE HOLE: an expiration from a numbered field that falls BEFORE the loan\'s own stated lock date is dropped, not reported — one of the two is wrong, and the INFERRED one is the one we do not trust');
+const crossed2 = locks.lockFromLoan(
+  { rateLock: { lockStatus: 'Locked', lockExpirationDate: '2026-09-20' } }, { 761: '2026-10-05' }, S, TODAY,
+);
+check(crossed2.expirationDate === '2026-09-20' && crossed2.lockDate === null,
+  '…and the same the other way round: the named key survives, the field number goes');
+const bothWrong = locks.lockFromLoan(
+  { rateLock: { lockDate: '2026-09-20', lockExpirationDate: '2026-08-01' } }, null, S, TODAY,
+);
+check(bothWrong.incoherentDates === true && bothWrong.expirationDate === '2026-08-01',
+  'when ENCOMPASS ITSELF states the two out of order, it is recorded and flagged — never quietly corrected, because that would be a guess about the tenant\'s own data');
+
 check(locks.lockFromLoan({}, { 2148: '2026-08-01' }, S, TODAY).lockDate === null,
   'field 2148 is not reached for: it is quoted as the lock date everywhere and is EMPTY on this tenant');
 

@@ -38,11 +38,11 @@ const lazy = {
 function dayOf(v) {
   if (v === null || v === undefined || v === '') return null;
   const s = String(v);
-  // An ISO instant, an ISO date, and a US date are all things Encompass has been
-  // seen to return for a date field. Anything else states nothing.
-  // A real calendar day, checked in both spellings. `0000-00-00` is a shape, not a
-  // date, and Postgres refuses it — a value that reaches a date column and raises
-  // there would take the whole loan's mirror down with it.
+  // An ISO instant, an ISO date and a US date are all things Encompass has been seen
+  // to return for a date field; anything else states nothing. Each is checked as a
+  // real calendar day, not merely a shape: `0000-00-00` looks like a date and
+  // Postgres refuses it, and a value that raises on the way into a date column would
+  // take the whole loan's mirror down with it.
   const ok = (y, mo, d) => y >= 1900 && y <= 2200 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31;
   const iso = (y, mo, d) => `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 
@@ -195,8 +195,26 @@ function lockFromLoan(loan, fieldValues, settings = {}, today = null) {
   // The ENTITY wins wherever it answers: its keys are named, so there is nothing to
   // infer. The numbered fields are the fallback for a tenant that fills one and not
   // the other — which is exactly what the probe found here.
-  const lockDate = entityLock || fromFields.lockDate;
-  const expiration = entityExp || fromFields.expiration;
+  let lockDate = entityLock || fromFields.lockDate;
+  let expiration = entityExp || fromFields.expiration;
+
+  // THE CROSS-SOURCE HOLE, closed. `datesFromFields` puts the two NUMBERED fields in
+  // order, but the pair can also arrive one from each source — a named entity key and
+  // an inferred field number — and then nothing had ordered them. An expiration
+  // earlier than its own lock is impossible, so one of the two is wrong, and the
+  // INFERRED one is the one we drop: a named key says what it is, a field number is
+  // only a mapping somebody configured. Dropping it costs a date; keeping it would
+  // report a loan as EXPIRED on the day it locked, which sends somebody to the lock
+  // desk for nothing.
+  let incoherentDates = false;
+  if (lockDate && expiration && dayDiff(lockDate, expiration) < 0) {
+    if (entityExp && !entityLock) lockDate = null;
+    else if (entityLock && !entityExp) expiration = null;
+    // Both from the SAME source is Encompass contradicting itself, and inventing a
+    // correction there would be a guess about the tenant's own data. It is recorded
+    // and shown, never quietly fixed.
+    else incoherentDates = true;
+  }
 
   const days = num(pick(root, PATHS.days));
   const now = dayOf(today) || new Date().toISOString().slice(0, 10);
@@ -232,6 +250,8 @@ function lockFromLoan(loan, fieldValues, settings = {}, today = null) {
     expired,
     expiringSoon,
     expirationDerived,
+    // Encompass's own two dates contradict each other. Recorded rather than corrected.
+    incoherentDates,
     // Why a screen is showing nothing, in the screen's own words. A blank lock panel
     // with no explanation reads as a broken screen.
     why: expiration ? null : (
