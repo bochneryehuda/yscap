@@ -42,7 +42,15 @@ const path = require('path');
 const { Client } = require('pg');
 const { buildInventory, beyondPrismaCount, serialize, migrationState } = require('./schema-inventory');
 
-const OUT_DIR = path.join(__dirname, '..', 'docs', 'schema');
+// WHERE THE FILES GO. Almost always `docs/schema/`; the override exists so CI
+// can regenerate the map into a scratch directory and COMPARE it, without
+// overwriting the committed copy. That matters more than it sounds: the drift
+// check judges the COMMITTED map, and a CI step that rewrote it first would
+// leave that check comparing files it had just written from the very database
+// it was about to check them against.
+const OUT_DIR = process.env.SCHEMA_OUT_DIR
+  ? path.resolve(process.env.SCHEMA_OUT_DIR)
+  : path.join(__dirname, '..', 'docs', 'schema');
 const JSON_FILE = path.join(OUT_DIR, 'beyond-prisma.json');
 const MD_FILE = path.join(OUT_DIR, 'BEYOND-PRISMA.md');
 

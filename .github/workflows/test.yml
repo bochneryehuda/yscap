@@ -183,6 +183,67 @@ jobs:
         run: npm run migrate
         timeout-minutes: 15
 
+      # ---- refresh the schema map, from the database these migrations built ---
+      #
+      # This job is the ONE place a database built from THIS checkout's
+      # migrations always exists, for free — so it is the one place the map can
+      # be brought up to date with no setup at all. Refreshing it by hand means
+      # finding a Postgres, applying 550 migrations and pointing DATABASE_URL at
+      # the result; here that has already happened, one step above.
+      #
+      # IT RUNS BEFORE THE SUITE, AND THAT ORDER IS THE WHOLE CORRECTNESS OF IT.
+      # The first version of this step ran LAST and was wrong: ~900 tests write
+      # to this database, several of them leaving schema objects behind, so the
+      # map it produced described a database nobody has — and it duly reported
+      # "stale" on a map that was in fact exact (observed, run 31931128520).
+      # Right here the database is precisely what the migrations build, which is
+      # the only thing the committed map is ever supposed to describe.
+      #
+      # IT WRITES TO A SCRATCH DIRECTORY, NEVER docs/schema/. Overwriting the
+      # committed map would leave `check-schema-snapshot.js` — which runs inside
+      # the suite below — comparing files that had just been written from the
+      # very database it is about to check them against: a guard that passes
+      # always and guards nothing.
+      #
+      # IT WRITES NOTHING BACK TO THE REPOSITORY, deliberately. Committing from
+      # CI would race the branch an agent is actively pushing to, and a
+      # force-push would silently drop the refresh while everyone believed it
+      # was automatic — a stale map nobody is watching any more is worse than
+      # one nobody is watching yet. The corrected files are attached to the run
+      # instead, so the fix is a download.
+      #
+      # ADVISORY on every path: `continue-on-error` and a `|| exit 0` so an
+      # unreachable database or a broken snapshot script can never turn a green
+      # run red.
+      - name: Refresh the schema map (advisory)
+        id: schema_map
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          rm -rf /tmp/schema-refresh && mkdir -p /tmp/schema-refresh
+          SCHEMA_OUT_DIR=/tmp/schema-refresh node scripts/schema-snapshot.js || exit 0
+          if diff -q /tmp/schema-refresh/beyond-prisma.json docs/schema/beyond-prisma.json >/dev/null 2>&1; then
+            echo "The committed schema map matches the database these migrations build."
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::The committed schema map does not match the database these migrations build. A refreshed copy is attached to this run as the 'schema-map' artifact — download it and commit docs/schema/."
+            node scripts/check-schema-behind.js || true
+          fi
+
+      # Only when it is actually out of date. Uploading 1 MB on every run to
+      # hand back a byte-identical copy of what is already committed is storage
+      # spent to say nothing.
+      - name: Attach the refreshed schema map
+        if: always() && steps.schema_map.outputs.stale == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema-map
+          path: /tmp/schema-refresh/
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Work out what changed
         if: github.event_name == 'pull_request'
         continue-on-error: true
@@ -204,63 +265,6 @@ jobs:
           else
             npm test
           fi
-
-      # ---- refresh the schema map, from the database these migrations built ---
-      #
-      # This job is the ONE place a database built from THIS checkout's
-      # migrations always exists, for free — so it is the one place the map can
-      # be brought up to date with no setup at all. `docs/schema/` is
-      # documentation, and the reason it goes stale is friction: refreshing it by
-      # hand means finding a Postgres, applying 550 migrations to it and pointing
-      # DATABASE_URL at the result. Here that has already happened.
-      #
-      # IT RUNS LAST, AND THAT ORDER IS LOAD-BEARING. It OVERWRITES
-      # docs/schema/, and doing that BEFORE the suite would leave
-      # `check-schema-snapshot.js` comparing files that were just written from
-      # the very database it is checking them against — a guard that passes
-      # always and guards nothing. Running it after the suite means the drift
-      # check still judges the COMMITTED map, exactly as it does everywhere else.
-      #
-      # IT WRITES NOTHING BACK TO THE REPOSITORY, deliberately. Committing from
-      # CI would race the branch an agent is actively pushing to, and a
-      # force-push would silently drop the refresh while everyone believed it
-      # was automatic — a stale map that nobody is watching any more is worse
-      # than one nobody is watching yet. The refreshed files are attached to the
-      # run instead, so the fix is a download.
-      #
-      # ADVISORY on every path: `if: always()` so a failing suite still leaves
-      # the refreshed map available, `continue-on-error` and a `|| exit 0` so a
-      # failed migration, an unreachable database or a broken snapshot script
-      # can never turn a green run red.
-      - name: Refresh the schema map (advisory)
-        id: schema_map
-        if: always()
-        continue-on-error: true
-        timeout-minutes: 5
-        run: |
-          node scripts/schema-snapshot.js || exit 0
-          cd "$GITHUB_WORKSPACE"
-          if git diff --quiet -- yscap-repo-root_8/docs/schema/; then
-            echo "The committed schema map already matches the database these migrations build."
-            echo "stale=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "stale=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::The committed schema map does not match the database these migrations build. A refreshed copy is attached to this run as the 'schema-map' artifact — download it and commit docs/schema/."
-            git --no-pager diff --stat -- yscap-repo-root_8/docs/schema/
-          fi
-
-      # Only when it is actually out of date. Uploading 1.6 MB on every run to
-      # hand back a byte-identical copy of what is already committed is storage
-      # spent to say nothing.
-      - name: Attach the refreshed schema map
-        if: always() && steps.schema_map.outputs.stale == 'true'
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: schema-map
-          path: yscap-repo-root_8/docs/schema/
-          if-no-files-found: ignore
-          retention-days: 14
 
   # ---------------------------------------------------------------------------
   # Auto-publish to Render. Runs ONLY:
