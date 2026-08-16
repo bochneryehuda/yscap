@@ -26,7 +26,7 @@ const fs = require('fs');
 const path = require('path');
 
 const {
-  isTransientPgStartup, describeWait, connectWhenReady, TRANSIENT_CODES,
+  isTransientPgStartup, describeWait, connectWhenReady, waitForDatabaseReady, TRANSIENT_CODES,
 } = require('../src/lib/backup/pg-ready.js');
 
 let checks = 0;
@@ -133,7 +133,7 @@ async function main() {
   ok(h.slept.every((ms) => ms > 0 && ms <= 15000), 'each wait is bounded — never zero, never unbounded');
   ok(h.slept[1] > h.slept[0], 'and backs off rather than hammering a server replaying its log');
   ok(h.logs.some((m) => /still starting up/.test(m)), 'it says what it is waiting for');
-  ok(h.logs.some((m) => /accepted a connection after/.test(m)), 'and says when it got in');
+  ok(h.logs.some((m) => /answered after/.test(m)), 'and says when it got in');
 
   // NO LEAKED SOCKETS: every failed attempt's client is ended, the successful one is not.
   eq(h.ended.length, 3, 'each failed attempt is closed');
@@ -190,6 +190,55 @@ async function main() {
   ok(waited <= 60 * 1000, `it honours the deadline rather than overshooting (waited ${waited}ms)`);
   ok(h.slept.length >= 3, 'and genuinely retried before giving up');
   eq(h.ended.length, h.made.length, 'every client it made was closed — none leaked');
+}
+
+// ── 4b. the NIGHTLY backup's shape — the same rule through a pool ───────────
+//
+// The drill owns its connections; the nightly reaches the database through the
+// application's shared pool, so there is nothing to reconnect — only the query
+// to retry. Both go through ONE loop, and these assertions exist so that stays
+// true: a second copy of "which errors are worth waiting for" would be the
+// first thing to drift, and the drifted one would be the one that waits on a
+// wrong password.
+{
+  let calls = 0;
+  const slept = [];
+  const runQuery = async () => {
+    calls += 1;
+    if (calls <= 2) throw pgErr('57P03', 'the database system is in recovery mode');
+    return { rows: [{ '?column?': 1 }] };
+  };
+  let t = 0;
+  await waitForDatabaseReady(runQuery, {
+    timeoutMs: 4 * 60 * 1000,
+    now: () => t,
+    sleep: async (ms) => { slept.push(ms); t += ms; },
+  });
+  eq(calls, 3, 'the pool shape retries the QUERY and eventually succeeds');
+  eq(slept.length, 2, 'waiting between attempts, like the connection shape');
+
+  // And it refuses the same things, because it is the same rule.
+  let threw = null;
+  try {
+    await waitForDatabaseReady(async () => { throw pgErr('28P01', 'password authentication failed'); },
+      { timeoutMs: 60000, now: () => 0, sleep: async () => {} });
+  } catch (e) { threw = e; }
+  eq(threw && threw.code, '28P01', 'a wrong password is NOT waited on through the pool either');
+
+  // The nightly's deadline is deliberately shorter than the drill's — it runs
+  // again tomorrow, so it must not sit for ten minutes.
+  const src = fs.readFileSync(path.join(__dirname, 'backup-run.js'), 'utf8');
+  ok(/waitForDatabaseReady\(/.test(src), 'the nightly waits for the database before calling it unreachable');
+  ok(/timeoutMs: 4 \* 60 \* 1000/.test(src), 'with its own shorter deadline');
+  // Match the CODE, not the prose: the comment explaining this fix necessarily
+  // quotes "cannot reach the database" above the call, so a bare indexOf finds
+  // the explanation and reports the order backwards. Same trap the workflow
+  // guard hit — assert on what runs, never on what describes it.
+  const iWait = src.indexOf('await waitForDatabaseReady(');
+  const iUnreachable = src.indexOf('problems.push(`cannot reach the database');
+  ok(iWait > 0, 'the nightly actually calls the wait');
+  ok(iUnreachable > iWait,
+    'and the wait happens BEFORE the "cannot reach the database" verdict, not after it');
 }
 
 // ── 5. the drill still checks WHERE it is pointing before it connects ───────

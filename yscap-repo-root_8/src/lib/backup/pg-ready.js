@@ -83,53 +83,86 @@ function describeWait(err) {
  * database never became ready, which is a different sentence from "the backup
  * is broken" and must stay that way.
  */
-async function connectWhenReady(url, opts = {}) {
+/**
+ * THE RETRY LOOP — one definition, two shapes on top of it.
+ *
+ * The drill owns its own connections (a `Client`); the nightly backup reaches
+ * the database through the application's shared POOL. Both meet the same
+ * recovering server, and a second copy of "which errors are worth waiting for"
+ * would be the first thing to drift — so both go through here, and `attempt`
+ * is whatever the caller needs to retry.
+ */
+async function retryWhileStartingUp(attempt, opts = {}) {
   const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 10 * 60 * 1000;
-  const ssl = opts.ssl;
   const log = opts.log || (() => {});
   const now = opts.now || (() => Date.now());
   const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
-  const makeClient = opts.makeClient || ((u, s) => new Client({ connectionString: u, ssl: s }));
+  const what = opts.what || 'connections';
 
   const started = now();
-  let attempt = 0;
+  let n = 0;
   let lastErr = null;
 
   for (;;) {
-    attempt += 1;
-    const client = makeClient(url, ssl);
+    n += 1;
     try {
-      await client.connect();
-      if (attempt > 1) {
-        log(`the database accepted a connection after ${Math.round((now() - started) / 1000)}s (attempt ${attempt})`);
-      }
-      return client;
+      const out = await attempt(n);
+      if (n > 1) log(`the database answered after ${Math.round((now() - started) / 1000)}s (attempt ${n})`);
+      return out;
     } catch (e) {
-      // Never leak the half-open socket of a failed attempt.
-      try { await client.end(); } catch (_) { /* it never connected */ }
-      if (!isTransientPgStartup(e)) throw e;
+      if (!isTransientPgStartup(e)) throw e;   // permanent: hand back the REAL error, now
       lastErr = e;
 
       const elapsed = now() - started;
       // Back off gently: a recovering server usually returns in seconds, and
       // hammering it while it replays its log helps nobody.
-      const waitMs = Math.min(15000, 1000 * Math.pow(2, Math.min(attempt - 1, 4)));
+      const waitMs = Math.min(15000, 1000 * Math.pow(2, Math.min(n - 1, 4)));
       if (elapsed + waitMs >= timeoutMs) {
         const mins = Math.round(timeoutMs / 60000);
         const err = new Error(
           `the database never became ready — ${describeWait(lastErr)}, and it was still not accepting `
-          + `connections after ${mins} minute${mins === 1 ? '' : 's'}. This says nothing about whether the `
+          + `${what} after ${mins} minute${mins === 1 ? '' : 's'}. This says nothing about whether the `
           + `backups are good; it means the check could not run. (${lastErr.message})`);
         err.code = 'BACKUP_DB_NOT_READY';
         err.cause = lastErr;
         throw err;
       }
-      log(`${describeWait(e)} — waiting ${Math.round(waitMs / 1000)}s and trying again (attempt ${attempt})`);
+      log(`${describeWait(e)} — waiting ${Math.round(waitMs / 1000)}s and trying again (attempt ${n})`);
       await sleep(waitMs);
     }
   }
 }
 
+async function connectWhenReady(url, opts = {}) {
+  const ssl = opts.ssl;
+  const makeClient = opts.makeClient || ((u, s) => new Client({ connectionString: u, ssl: s }));
+  return retryWhileStartingUp(async () => {
+    const client = makeClient(url, ssl);
+    try {
+      await client.connect();
+      return client;
+    } catch (e) {
+      // Never leak the half-open socket of a failed attempt — on EVERY failure,
+      // transient or not, because a permanent error rethrows straight past here.
+      try { await client.end(); } catch (_) { /* it never connected */ }
+      throw e;
+    }
+  }, { ...opts, what: 'connections' });
+}
+
+/**
+ * Wait until an EXISTING handle (the app's pool) can answer.
+ *
+ * This is the nightly backup's shape: it does not open its own connection, so
+ * there is nothing to retry except the query itself. A trivial `SELECT 1` is
+ * the probe — it touches no table and cannot be affected by anything the backup
+ * is about to read.
+ */
+async function waitForDatabaseReady(runQuery, opts = {}) {
+  return retryWhileStartingUp(() => runQuery('SELECT 1'), { ...opts, what: 'queries' });
+}
+
 module.exports = {
-  isTransientPgStartup, describeWait, connectWhenReady, TRANSIENT_CODES, TRANSIENT_SYSCALLS,
+  isTransientPgStartup, describeWait, retryWhileStartingUp, connectWhenReady, waitForDatabaseReady,
+  TRANSIENT_CODES, TRANSIENT_SYSCALLS,
 };
