@@ -249,34 +249,112 @@ async function fetchSmoRegistry(companyId) {
 // Body is built by buildSearchPayload() from the decoded field mapping. Returns the full
 // investor rate stack (a large nested tree). VERIFY the exact body against a live searchRaw
 // on the first Render run — this module builds from the recordings' decoded mapping.
-async function price(scenario) {
+function sleep(ms) { return new Promise((rs) => setTimeout(rs, ms)); }
+
+// Resolve the session + company/user ids + the live base/SMO foundation once. Shared by the
+// qualified price() and the disqualify workflow so both build from the identical model.
+async function priceFoundation() {
   const s = await getSession();
   if (!s.ok) return { ok: false, ...s };
   const companyId = s.companyId || process.env.LP_COMPANY_ID;
   const userId = s.userId || process.env.LP_USER_ID;
   if (!companyId || !userId) return { ok: false, error: 'lp_no_ids', message: 'Missing companyId/userId from the Lender Price session.' };
+  const [liveBase, smoReg] = await Promise.all([fetchDefaultSearch(companyId, userId), fetchSmoRegistry(companyId)]);
+  const url = `${API_BASE}/rest/v1/lp-ppe-integration/pricing/searchRaw/${encodeURIComponent(companyId)}/${encodeURIComponent(userId)}`;
+  return { ok: true, session: s, companyId, userId, url, liveBase: liveBase || undefined, smo: smoReg || undefined };
+}
+
+// POST one searchRaw body (with a single 401 re-login retry). Returns { ok, http, raw, empty }.
+// `empty` marks an ACCEPTED-but-empty body — how Lender Price answers "the async result isn't
+// cached yet" during the disqualify poll.
+async function postSearchRaw(url, session, payload) {
+  let s = session;
+  let r;
+  try { r = await req(url, { method: 'POST', bearer: s.token, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
+  catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
+  if (r.status === 401) {
+    const s2 = await getSession({ force: true });
+    if (!s2.ok) return { ok: false, ...s2 };
+    s = s2;
+    try { r = await req(url, { method: 'POST', bearer: s.token, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
+    catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
+  }
+  if (r.status !== 200) return { ok: false, error: 'lp_price_status', http: r.status, message: `searchRaw → ${r.status}`, upstream: scrub((r.text || '').slice(0, 600)) };
+  const raw = r.json != null ? r.json : r.text;
+  const empty = raw == null || (typeof raw === 'string' && raw.trim() === '') || (typeof raw === 'object' && Object.keys(raw).length === 0);
+  return { ok: true, session: s, raw, empty };
+}
+
+async function price(scenario) {
+  const f = await priceFoundation();
+  if (!f.ok) return f;
   // Build the FULL canonical search model. Prefer the company's LIVE default search (so every
   // current default/config is preserved) and its LIVE special-mortgage-option ids; both fall
   // back to the captured static base / built-in ids when the endpoints are unavailable, so a
   // hand-built minimal payload (which Lender Price rejects with 500) is never sent.
-  const [liveBase, smoReg] = await Promise.all([
-    fetchDefaultSearch(companyId, userId),
-    fetchSmoRegistry(companyId),
-  ]);
-  const payload = buildSearch({ ...scenario, companyId }, { base: liveBase || undefined, smo: smoReg || undefined });
-  const url = `${API_BASE}/rest/v1/lp-ppe-integration/pricing/searchRaw/${encodeURIComponent(companyId)}/${encodeURIComponent(userId)}`;
-  let r;
-  try {
-    r = await req(url, { method: 'POST', bearer: s.token, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-  } catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
-  if (r.status === 401) {
-    const s2 = await getSession({ force: true });
-    if (!s2.ok) return { ok: false, ...s2 };
-    try { r = await req(url, { method: 'POST', bearer: s2.token, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
-    catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
+  const payload = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo });
+  const r = await postSearchRaw(f.url, f.session, payload);
+  if (!r.ok) return { ...r, request: payload };
+  return { ok: true, raw: r.raw, request: payload };
+}
+
+// Whether a searchRaw response carries a POPULATED disqualify tree (the async result is ready).
+function hasDisqualifyData(raw) {
+  const d = raw && typeof raw === 'object' && raw.results && raw.results.disqualifiedData;
+  if (!d || typeof d !== 'object') return false;
+  return (Array.isArray(d.childs) && d.childs.length > 0) || (Array.isArray(d.leafs) && d.leafs.length > 0);
+}
+
+// The disqualify workflow (mirrors the web app's "show disqualified" button):
+//  1. POST the search with the disqualify flags (cachedDisqualified=false) → returns the QUALIFIED
+//     programs fast AND kicks off the async disqualify computation server-side.
+//  2. Re-POST the SAME body with cachedDisqualified=true, polling until the cached disqualify tree
+//     is ready (Lender Price answers with an empty body while it is still computing — a few minutes).
+// The poll body differs from the kickoff only in cachedDisqualified, so Lender Price's cache key
+// matches — which means a later call rebuilds the identical body and picks up the ready result
+// instantly (so an external caller can also poll by calling this again). Bounded by maxWaitMs so it
+// never blocks an HTTP request indefinitely; returns ready:false with the qualified data when the
+// window elapses.
+async function priceDisqualified(scenario, opts = {}) {
+  const f = await priceFoundation();
+  if (!f.ok) return f;
+  const kickBody = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo, disqualify: { cached: false } });
+  const pollBody = { ...kickBody, cachedDisqualified: true };
+  const maxWaitMs = opts.maxWaitMs != null ? opts.maxWaitMs : Number(process.env.LP_DISQUALIFY_MAX_WAIT_MS || 80000);
+  const pollMs = opts.pollMs != null ? opts.pollMs : Number(process.env.LP_DISQUALIFY_POLL_MS || 5000);
+
+  // Phase 1 — kick off + qualified.
+  let session = f.session;
+  const first = await postSearchRaw(f.url, session, kickBody);
+  if (!first.ok) return { ...first, request: kickBody };
+  if (first.session) session = first.session;
+  if (hasDisqualifyData(first.raw)) {
+    return { ok: true, ready: true, polls: 0, qualified: first.raw, disqualified: first.raw, request: kickBody };
   }
-  if (r.status !== 200) return { ok: false, error: 'lp_price_status', http: r.status, message: `searchRaw → ${r.status}`, upstream: scrub((r.text || '').slice(0, 600)), request: payload };
-  return { ok: true, raw: r.json != null ? r.json : r.text, request: payload };
+
+  // Phase 2 — poll the cached async result.
+  const t0 = Date.now();
+  let polls = 0;
+  let last = null;
+  while (Date.now() - t0 < maxWaitMs) {
+    await sleep(pollMs);
+    polls += 1;
+    const p = await postSearchRaw(f.url, session, pollBody);
+    if (p.session) session = p.session;
+    if (!p.ok) continue;      // transient upstream error — keep polling within the window
+    if (p.empty) continue;    // still computing (empty body) — keep polling
+    last = p.raw;
+    if (hasDisqualifyData(p.raw)) {
+      return { ok: true, ready: true, polls, qualified: first.raw, disqualified: p.raw, request: pollBody };
+    }
+  }
+  return {
+    ok: true, ready: false, polls,
+    qualified: first.raw,
+    disqualified: last || first.raw,
+    request: pollBody,
+    message: 'Disqualify reasons are still being computed by Lender Price — call again shortly (the result is cached server-side, so the next call returns it quickly).',
+  };
 }
 
 // ---- request builder (decoded field mapping; README "Field mapping") -------
@@ -385,21 +463,29 @@ function parse(raw) {
     const rate = firstNum(node, RATE_KEYS);
     if (rate == null) return;
     const points = firstNum(node, POINT_KEYS);
-    let price = firstNum(node, PRICE_KEYS);
+    const quoted = firstNum(node, PRICE_KEYS);
+    let price = quoted;
+    // Live grouped results quote cost as adjusted POINTS, not a secondary-market price field.
+    // A rate + points is a complete rung; its price equivalent is 100 − points.
     if (price == null && points != null) price = Math.round((100 - points) * 1000) / 1000;
     if (price == null && points == null) return; // a rate with no cost info at all → not a priced rung
-    const lender = ctx.lender || firstStr(node, LENDER_KEYS) || 'Lender';
-    const program = ctx.program || firstStr(node, PROGRAM_KEYS) || firstStr(node, ['mortgageType']) || 'DSCR';
+    const lender = ctx.lender || firstStr(node, LENDER_KEYS)
+      || firstStr(node.ratePeriod, ['company', 'companyName', ...LENDER_KEYS])
+      || firstStr(node.rateGrid, ['company', 'companyName', ...LENDER_KEYS]) || 'Lender';
+    const program = ctx.program || firstStr(node, PROGRAM_KEYS)
+      || firstStr(node.rateGrid, ['name', 'description', ...PROGRAM_KEYS])
+      || firstStr(node.dynamicDataResult, PROGRAM_KEYS) || firstStr(node, ['mortgageType']) || 'DSCR';
     const key = lender + '||' + program;
     let p = seen.get(key);
     if (!p) { p = { lender, program, rungs: [] }; seen.set(key, p); programs.push(p); }
     p.rungs.push({
       rate, price, points,
+      priceDerivedFromPoints: quoted == null,
       apr: firstNum(node, ['apr', 'annualPercentageRate', 'notRoundedAPR']),
       monthly: monthlyOf(node),
       loanAmount: firstNum(node, ['loanAmount']),
       term: firstNum(node, ['term']),
-      lockDays: firstNum(node, ['dayLock', 'ratePeriod', 'lockPeriod', 'dayLocks']),
+      lockDays: firstNum(node, ['dayLock', 'lockDays', 'lockPeriod']),
     });
   }
   // A priced rung is a terminal node: it carries a rate and does NOT itself branch into childs/leafs.
@@ -421,6 +507,7 @@ function parse(raw) {
     p.rungs.sort((a, b) => a.rate - b.rate);
     p.rungCount = p.rungs.length;
     p.minRate = p.rungs.length ? p.rungs[0].rate : null;
+    p.minPoints = p.rungs.reduce((m, r) => (r.points != null && (m == null || r.points < m) ? r.points : m), null);
     p.maxPrice = p.rungs.reduce((m, r) => (r.price != null && r.price > m ? r.price : m), -Infinity);
     if (!isFinite(p.maxPrice)) p.maxPrice = null;
   }
@@ -433,7 +520,66 @@ function parse(raw) {
   };
 }
 function firstNum(o, keys) { for (const k of keys) { if (o[k] != null && isFinite(Number(o[k]))) return Number(o[k]); } return null; }
-function firstStr(o, keys) { for (const k of keys) { const v = o[k]; if (typeof v === 'string' && v.trim()) return v.trim(); } return null; }
+function firstStr(o, keys) { if (!o || typeof o !== 'object') return null; for (const k of keys) { const v = o[k]; if (typeof v === 'string' && v.trim()) return v.trim(); } return null; }
+
+// ---- disqualify parser -----------------------------------------------------
+// results.disqualifiedData is a grouped tree (ROOT → childs …, keyLabel naming each group's
+// value: lender, program, rate) whose deepest nodes hold the DISQUALIFIED programs and, because
+// the request set showDisqualifyRules=true, the RULE that failed + a human reason. It is defensive
+// about the exact leaf field names (they mirror the qualified leaves + a reasons/rules array):
+// it groups by the top group label (lender), names each item by its program group label, and
+// collects every reason/rule string it can find on the item and its descendants.
+const REASON_KEYS = ['disqualifyReason', 'disqualifyReasons', 'reason', 'reasons', 'message', 'messages', 'ruleMessage', 'ruleText', 'ruleName', 'rule', 'rules', 'guideline', 'description', 'failReason', 'ineligibleReason'];
+function collectReasons(node, out, depth) {
+  if (node == null || depth > 6) return;
+  if (typeof node === 'string') { const t = node.trim(); if (t) out.add(t.slice(0, 400)); return; }
+  if (Array.isArray(node)) { for (const el of node) collectReasons(el, out, depth + 1); return; }
+  if (typeof node !== 'object') return;
+  for (const k of Object.keys(node)) {
+    const v = node[k];
+    if (REASON_KEYS.includes(k)) collectReasons(v, out, depth + 1);
+    else if (v && typeof v === 'object' && !/^(childs|leafs|key)$/.test(k)) collectReasons(v, out, depth + 1);
+  }
+}
+function parseDisqualified(raw) {
+  const root = raw && typeof raw === 'object' && raw.results ? raw.results.disqualifiedData : null;
+  if (!root || typeof root !== 'object') return { ready: false, lenderCount: 0, itemCount: 0, reasonCount: 0, lenders: [] };
+  const lenders = new Map();
+  let itemCount = 0;
+  let reasonCount = 0;
+  // Walk the tree carrying the group labels seen so far. The FIRST non-ROOT label is the lender;
+  // a later label is the program. A node with no childs (or with leafs) is a disqualified item.
+  (function walk(node, lenderLabel, programLabel) {
+    if (node == null || typeof node !== 'object') return;
+    const label = firstStr(node, ['keyLabel', 'label', 'name']);
+    const isRoot = label === 'ROOT' || (node.keyLabel === 'ROOT');
+    let lender = lenderLabel;
+    let program = programLabel;
+    if (label && !isRoot) { if (lender == null) lender = label; else if (program == null) program = label; }
+    const childs = Array.isArray(node.childs) ? node.childs : [];
+    const leafs = Array.isArray(node.leafs) ? node.leafs : [];
+    const emit = (item, itemLabel) => {
+      const reasons = new Set();
+      collectReasons(item, reasons, 0);
+      const ln = lender || 'Lender';
+      let g = lenders.get(ln);
+      if (!g) { g = { lender: ln, items: [] }; lenders.set(ln, g); }
+      const rs = Array.from(reasons).slice(0, 40);
+      g.items.push({ program: (itemLabel || program || firstStr(item, PROGRAM_KEYS) || 'Program'), reasons: rs });
+      itemCount += 1; reasonCount += rs.length;
+    };
+    if (leafs.length) { for (const lf of leafs) emit(lf, firstStr(lf, PROGRAM_KEYS)); }
+    if (childs.length) { for (const c of childs) walk(c, lender, program); }
+    // A node that is itself a terminal disqualified item (no childs, no leafs, but carries a rule/reason)
+    if (!childs.length && !leafs.length && !isRoot) {
+      const test = new Set(); collectReasons(node, test, 0);
+      if (test.size) emit(node, program);
+    }
+  })(root, null, null);
+  const list = Array.from(lenders.values());
+  for (const g of list) g.itemCount = g.items.length;
+  return { ready: hasDisqualifyData(raw), lenderCount: list.length, itemCount, reasonCount, lenders: list };
+}
 
 // Structural summary of the raw searchRaw response — for diagnostics ONLY (secret-gated).
 // Tells us whether Lender Price actually returned programs (so the parser is the gap) or truly
@@ -465,6 +611,32 @@ function summarizeRaw(raw) {
       else if (v && typeof v === 'object') walk(v, p, depth + 1, false, false);
     }
   })(raw, '', 0, false, false);
+  // Drill specifically into the disqualify tree so we learn its real leaf/reason field names live.
+  let disqualify = null;
+  const dd = raw.results && raw.results.disqualifiedData;
+  if (dd && typeof dd === 'object') {
+    let sampleDisqLeaf = null;
+    let sampleDisqNode = null;
+    const dseen = new Set();
+    (function dwalk(node, path, depth, inLeafs) {
+      if (node == null || typeof node !== 'object' || depth > 8 || dseen.has(node)) return;
+      dseen.add(node);
+      if (!sampleDisqLeaf && inLeafs) sampleDisqLeaf = { path, node: shallow(node) };
+      if (!sampleDisqNode && (Array.isArray(node.childs) || Array.isArray(node.leafs))) sampleDisqNode = { path, keyLabel: node.keyLabel, node: shallow(node) };
+      for (const k of Object.keys(node)) {
+        const v = node[k];
+        if (Array.isArray(v)) v.slice(0, 1).forEach((el) => dwalk(el, `${path}.${k}[0]`, depth + 1, k === 'leafs'));
+        else if (v && typeof v === 'object') dwalk(v, `${path}.${k}`, depth + 1, false);
+      }
+    })(dd, 'disqualifiedData', 0, false);
+    disqualify = {
+      populated: hasDisqualifyData(raw),
+      topChilds: Array.isArray(dd.childs) ? dd.childs.length : 0,
+      topLeafs: Array.isArray(dd.leafs) ? dd.leafs.length : 0,
+      sampleDisqNode,
+      sampleDisqLeaf,
+    };
+  }
   return {
     topKeys: Object.keys(raw).slice(0, 60),
     nonEmptyArrays: Object.fromEntries(Object.entries(arrays).filter(([, n]) => n > 0).slice(0, 60)),
@@ -472,6 +644,7 @@ function summarizeRaw(raw) {
     sampleLeaf,
     sampleKeyNode,
     sampleGroupNode,
+    disqualify,
     disqualifyReasons: Array.from(reasons).slice(0, 12),
   };
 }
@@ -492,7 +665,7 @@ function countArrays(root, keys) {
 }
 
 module.exports = {
-  configured, login, getSession, apiGet, enrichZip, price, parse, summarizeRaw,
-  buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
+  configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, parse, parseDisqualified, summarizeRaw,
+  hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
   _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID },
 };

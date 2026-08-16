@@ -117,6 +117,41 @@ function offline() {
   ok(ps.programCount === 1 && ps.programs[0].minRate === 6.125, 'parser reads qualifiedNonQMData.resultRates.rateSet');
   ok(ps.disqualifiedCount === 3, 'parser counts disqualified programs');
 
+  // 12) Disqualify workflow flags: off by default (qualified path), on when requested.
+  const kick = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25 }, { disqualify: { cached: false } });
+  ok(kick.showDisqualify === true && kick.showDisqualifyRules === true && kick.disqualifyAsync === true, 'disqualify kickoff sets show/rules/async flags');
+  ok(kick.cachedDisqualified === false && kick.fillLenderMap === true, 'disqualify kickoff not cached, fillLenderMap on');
+  const poll = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25 }, { disqualify: { cached: true } });
+  ok(poll.cachedDisqualified === true, 'disqualify poll flips cachedDisqualified true');
+
+  // 13) parseDisqualified groups reasons per lender + reads the ready flag.
+  const dqRaw = { results: { disqualifiedData: { keyLabel: 'ROOT', childs: [
+    { keyLabel: 'Acme Capital', childs: [ { keyLabel: 'DSCR 30yr', leafs: [ { programName: 'DSCR 30yr', disqualifyReasons: ['FICO 760 < 780 for 80% LTV', 'DSCR below 1.30'] } ] } ] },
+    { keyLabel: 'Blue Note', leafs: [ { programName: 'DSCR IO', rule: 'Max LTV 75% cash-out', reason: 'LTV 80% exceeds max' } ] },
+  ] } } };
+  const dq = lp.parseDisqualified(dqRaw);
+  ok(dq.ready === true && dq.lenderCount === 2 && dq.itemCount === 2, 'parseDisqualified groups 2 lenders / 2 items');
+  ok(dq.reasonCount === 4 && dq.lenders[0].items[0].reasons.length === 2, 'parseDisqualified collects reason text');
+  ok(lp.hasDisqualifyData(dqRaw) === true && lp.hasDisqualifyData({ results: { disqualifiedData: { childs: [] } } }) === false, 'hasDisqualifyData detects populated vs empty tree');
+
+  // 14) No-prepay (months=0) must send "No PPP" / PrepayTerm "None" — never "0 Yr PPP" (live HTTP 400).
+  const noPpp = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 0 });
+  ok(noPpp.criteria.specialMortgageOptions.some((o) => o.name === 'No PPP'), 'no-prepay → No PPP special option');
+  ok(noPpp.dynamicPropertiesMap.PrepayTerm.value === 'None', 'no-prepay → PrepayTerm "None"');
+  const p12 = lp.buildSearch({ prepayMonths: 12 });
+  ok(p12.criteria.specialMortgageOptions.some((o) => o.name === '1 Yr PPP'), '12-month prepay → 1 Yr PPP');
+  const fthb = lp.buildSearch({ fthb: true });
+  ok(fthb.criteria.firstTimeHomeBuyer === true, 'first-time buyer reaches criteria');
+
+  // 15) Parser reports minPoints + priceDerivedFromPoints per program (points-quoted leaves).
+  const ptsRaw = { results: { qualifiedNonQMData: { childs: [ { childs: [ { leafs: [
+    { rate: 5.75, adjustedPoints: 3, notRoundedAPR: 6.03, programName: 'DSCR 30yr' },
+    { rate: 5.99, adjustedPoints: 1.5, programName: 'DSCR 30yr' },
+  ] } ] } ] } } };
+  const pp = lp.parse(ptsRaw);
+  ok(pp.programCount === 1 && pp.programs[0].minPoints === 1.5, 'parser reports minPoints across rungs');
+  ok(pp.programs[0].rungs[0].priceDerivedFromPoints === true && pp.programs[0].rungs[0].price === 97, 'parser derives price = 100 − points');
+
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }
 
