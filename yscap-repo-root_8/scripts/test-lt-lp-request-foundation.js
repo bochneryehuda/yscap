@@ -204,5 +204,35 @@ console.log('\nG. wireDiscipline — the DSCR profile constants are FORCED, not 
     'a prior session\'s street/ZIP+4 still cannot ride along');
 }
 
+// ---- H. a credit score is REQUIRED, and refused LOCALLY ---------------------------------------
+console.log('\nH. fico is required — measured: null AND absent both return HTTP 500');
+{
+  const base = { purpose: 'Purchase', value: 500000, loan: 400000, dscr: 1.5,
+    state: 'NY', zip: '11211', countyFps: '36047', propertyType: 'SingleFamily', units: 1 };
+
+  const noFico = sm.validateScenario({ ...base });
+  ok(noFico.ok === false, 'a scenario with no credit score is REFUSED, not sent');
+  ok(noFico.error === 'fico_required' && noFico.field === 'fico',
+    'the refusal names the field, which the vendor\'s bare 500 never does');
+  ok(/500/.test(String(noFico.message || '')),
+    'and says WHY, so nobody re-discovers this by watching a request fail');
+
+  const withFico = sm.validateScenario({ ...base, fico: 760 });
+  ok(withFico.ok === true, 'the same scenario WITH a score validates');
+  ok(withFico.request.criteria.fico === 760, 'and the score reaches the wire as a number');
+
+  // The value must never be invented — this is the fix that was tried, measured wrong, and removed.
+  ok(noFico.request === undefined, 'a refused scenario builds NO request — nothing is substituted');
+
+  // It must run LAST: a more specific complaint must not be masked by the missing score.
+  const alsoBadPurpose = sm.validateScenario({ ...base, purpose: 'Not A Real Purpose' });
+  ok(alsoBadPurpose.ok === false && alsoBadPurpose.error !== 'fico_required',
+    'a scenario with a worse problem hears about THAT problem, not the missing score');
+
+  // dscr is deliberately NOT required — the sweep measured null/absent/blank all returning 200.
+  const noDscr = sm.validateScenario({ ...base, fico: 760 });
+  ok(noDscr.ok === true, 'dscr is NOT required — measured harmless, so requiring it would refuse deals the vendor prices');
+}
+
 console.log('\n' + (failed === 0 ? 'OFFLINE: all passed' : 'FAILURES') + ' (' + passed + ' passed, ' + failed + ' failed)');
 process.exit(failed === 0 ? 0 : 1);

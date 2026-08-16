@@ -26,7 +26,10 @@ const registry = require('../src/longterm/lenderprice/field-registry');
 
 let pass = 0, fail = 0;
 function ok(cond, label) { if (cond) { pass++; console.log('  ok   ' + label); } else { fail++; console.log('  FAIL ' + label); } }
-const loc = { state: 'NJ', countyFps: '34039' };
+// fico rides on the shared fixture because it is REQUIRED (§37.11): Lender Price answers HTTP 500
+// with no explanation when the field is null OR absent, measured live both ways. Keeping it here
+// lets these suites test their own subject instead of re-testing that refusal.
+const loc = { state: 'NJ', countyFps: '34039', fico: 760 };
 const scOf = (extra) => ({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, ...extra });
 
 console.log('§33.1 property-type enum coverage');

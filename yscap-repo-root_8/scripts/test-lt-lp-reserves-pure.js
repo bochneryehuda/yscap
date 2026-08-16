@@ -32,7 +32,10 @@ let pass = 0, fail = 0;
 function ok(cond, label) { if (cond) { pass++; console.log('  ok   ' + label); } else { fail++; console.log('  FAIL ' + label); } }
 const dyn = (m, k) => (m.dynamicPropertiesMap && m.dynamicPropertiesMap[k] && typeof m.dynamicPropertiesMap[k] === 'object'
   ? m.dynamicPropertiesMap[k].value : (m.dynamicPropertiesMap ? m.dynamicPropertiesMap[k] : undefined));
-const S = { purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, state: 'NJ', countyFps: '34039' };
+// fico is REQUIRED (§37.11): Lender Price answers HTTP 500 with no explanation when the field is
+// null OR absent, measured live both ways. It is on the fixture so these suites test their own
+// subject rather than re-testing that refusal.
+const S = { purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, state: 'NJ', countyFps: '34039', fico: 760 };
 
 console.log('§32.4 reserves selector table');
 

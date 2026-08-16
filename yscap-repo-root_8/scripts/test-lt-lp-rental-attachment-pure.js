@@ -21,7 +21,10 @@ const sm = require('../src/longterm/lenderprice/search-model');
 let pass = 0, fail = 0;
 function ok(cond, label) { if (cond) { pass++; console.log('  ok   ' + label); } else { fail++; console.log('  FAIL ' + label); } }
 const rental = (m) => (m.dynamicPropertiesMap && m.dynamicPropertiesMap.AddlOccupancyType && m.dynamicPropertiesMap.AddlOccupancyType.value);
-const loc = { state: 'NJ', countyFps: '34039' };
+// fico rides on the shared fixture because it is REQUIRED (§37.11): Lender Price answers HTTP 500
+// with no explanation when the field is null OR absent, measured live both ways. Keeping it here
+// lets these suites test their own subject instead of re-testing that refusal.
+const loc = { state: 'NJ', countyFps: '34039', fico: 760 };
 
 console.log('§29.10/§31.3 rental-term override + SemiDetached attachment');
 

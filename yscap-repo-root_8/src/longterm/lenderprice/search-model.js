@@ -1247,6 +1247,34 @@ function validateInputs(sc = {}) {
     if (canon === 'UnitDwelling_2_4' && (units.v < 2 || units.v > 4)) return bad('units_conflict', 'units', `A 2–4 unit property has 2–4 units; got ${units.v}.`);
     if (canon === 'MultiFamily' && units.v < 5) return bad('units_conflict', 'units', `A multifamily property has 5 or more units; got ${units.v}.`);
   }
+  // §37.11 — A CREDIT SCORE IS REQUIRED, AND THIS IS WHERE IT IS ENFORCED — LAST.
+  //
+  // Probed directly against the live tenant, on a body otherwise proven to price:
+  // `criteria.fico` set to NULL → HTTP 500, and REMOVED → HTTP 500. All seven captured real
+  // requests carry a score. But `fico` is scenario-owned with the neutral `null`, so a caller who
+  // simply did not supply one built `criteria.fico: null` and sent a request GUARANTEED to fail —
+  // with the vendor's bare, field-less "Internal Server Error" as the only explanation.
+  //
+  // A comment added earlier in this file claimed this requirement "belongs in validateScenario" and
+  // described it as though it were already there. IT WAS NOT. The claim was written while removing a
+  // worse fix (silently substituting a stored score, which four suites correctly rejected) and it
+  // stood as an overstatement until an audit re-derived the gap from the captures. Both halves are
+  // corrected together: the refusal is real now, and the comment there no longer promises it.
+  //
+  // IT RUNS LAST, DELIBERATELY. Placed earlier it MASKED more specific complaints: a scenario with
+  // an unknown loan purpose AND no score was told only about the score, so the caller fixed the
+  // wrong thing. A validator should name the most specific problem it can see, and 'you also need a
+  // credit score' is the least specific thing here. The amount-triangle suite caught this.
+  //
+  // Refusing here is the honest answer, not merely the safe one — a local 422 naming the field is
+  // something a caller can act on, while the vendor's 500 is not. Deliberately NOT the same rule for
+  // `dscr`: the sweep measured `criteria.dscr` null, removed AND blank all returning 200, so
+  // requiring it would refuse scenarios the vendor prices perfectly well.
+  if (fico.v == null) {
+    return bad('fico_required', 'fico',
+      'A credit score is required to price. Lender Price refuses a search with no FICO — it answers HTTP 500 with no explanation, both when the field is null and when it is absent.');
+  }
+
   return { ok: true };
 }
 
