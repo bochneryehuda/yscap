@@ -157,8 +157,13 @@ const clone = () => JSON.parse(JSON.stringify(SAMPLE));
       transport: { read: async (msg) => { sent = msg; return clone(); } },
     });
     ok(sent && sent.message.requestActionType === 'GetAppraisalDetail', 'F1 it asks for the detail');
+    // The key is `referenceIdentifierValue` — the CDG shape every builder emits
+    // (`cdg.ref()`), and the only spelling in the vendor's package. Reading a bare
+    // `referenceIdentifier` gives [undefined, undefined], so this check could never
+    // pass however correct the request was: a test that cannot go green is not a
+    // test. (It failed exactly that way on its first CI run.)
     const spRef = (sent.message.serviceProviderSystem.referenceIdentifiers || [])
-      .map((r) => r.referenceIdentifier);
+      .map((r) => r.referenceIdentifierValue);
     ok(spRef.includes('SP-DETAIL-1'), 'F2 for THIS order’s AppraisalScope number');
     row = await reread();
     ok(row.appraiser_name === 'appraiserFName appraiserLName',
