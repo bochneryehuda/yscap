@@ -1,0 +1,33 @@
+{
+	"message": {
+		"clientSystem": {
+			"referenceIdentifiers": [{
+					"referenceIdentifierType": "ApiKey",
+					"referenceIdentifierValue": "{{api_key}}"
+				},
+				{
+					"referenceIdentifierType": "ClientOrderNumber",
+					"referenceIdentifierValue": "1234AB"
+				}
+			]
+		},
+		"products": [{
+			"embeddedFiles": [{
+				"objectName": "test-file-for-upload.pdf",
+				"objectURL": "https://nspdocstorage.com/getdocument/12345"
+			}]
+		}],
+		"serviceProviderSystem": {
+			"referenceIdentifiers": [{
+					"referenceIdentifierType": "ServiceProviderSubDomain",
+					"referenceIdentifierValue": "integrations.uat"
+				},
+				{
+					"referenceIdentifierType": "ServiceProviderOrderNumber",
+					"referenceIdentifierValue": "869"
+				}
+			]
+		},
+		"requestActionType": "UploadContract"
+	}
+}

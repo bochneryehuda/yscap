@@ -1,0 +1,29 @@
+{
+	"message": {
+		"digitalGatewaySystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "DigitalGatewayOrderNumber",
+				"referenceIdentifierValue": "CLGGL100417"
+			}],
+			"statusResponses": [{
+				"statusCode": "0",
+				"statusCondition": "Success",
+				"statusDescription": "Acknowledgement",
+				"statusName": "ACK"
+			}]
+		},
+		"products": [{
+				"revisionId": "33",
+				"revisedRequestCommentText": "test",
+				"revisedCommentContactFullName": "API Testing(Manager)",
+				"revisedCommentTextDatetime": "2021-06-01 16:03:56"
+			},
+			{
+				"revisionId": "32",
+				"revisedRequestCommentText": "test",
+				"revisedCommentContactFullName": "API Testing(Manager)",
+				"revisedCommentTextDatetime": "2021-05-27 17:08:23"
+			}
+		]
+	}
+}

@@ -1,0 +1,44 @@
+{
+	"message": {
+		"clientSystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "ApiKey",
+				"referenceIdentifierValue": "{{api_key}}"
+		    	}]
+		},
+		"deals": [{
+			"parties": [{
+					"partyRoleType": "LenderBranch",
+					"companyName": "Test Branch",
+					"partyRoleIdentifier": "101",
+					"identifier": "4",
+					"estimatedMonthlyVolume": "500",
+					"address": {
+						"addressLine": "9991 Warford Street Unit 1200",
+						"addressLine2": "",
+						"cityName": "Dawson",
+						"postalCode": "50066",
+						"stateCode": "IA"
+					},
+					"partyContacts": [{
+						"contactFullName": "Smithy Smitherton",
+						"contacts": [{
+							"contactPhone": "405-555-2222",
+							"contactPhoneExtension": "2222",
+							"contactFax": "405-555-3333",
+							"contactEmail": "branch@fake.com"
+						}]
+					}]
+				}
+
+			]
+		}],
+		"serviceProviderSystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "ServiceProviderSubDomain",
+				"referenceIdentifierValue": "integrations.uat"
+			}]
+		},
+		"requestActionType": "Create_Branch"
+	}
+}

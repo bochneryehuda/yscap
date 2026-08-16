@@ -1,0 +1,27 @@
+{
+	"message": {
+		"clientSystem": {
+			"referenceIdentifiers": [{
+					"referenceIdentifierType": "ApiKey",
+					"referenceIdentifierValue": "{{api_key}}"
+				},
+				{
+					"referenceIdentifierType": "ClientOrderNumber",
+					"referenceIdentifierValue": "1234AB"
+				}
+			]
+		},
+		"serviceProviderSystem": {
+			"referenceIdentifiers": [{
+					"referenceIdentifierType": "ServiceProviderOrderNumber",
+					"referenceIdentifierValue": "SP123"
+				},
+				{
+					"referenceIdentifierType": "ServiceProviderSubDomain",
+					"referenceIdentifierValue": "integrations.uat"
+				}
+			]
+		},
+		"requestActionType": "GetAddFormDetail"
+	}
+}

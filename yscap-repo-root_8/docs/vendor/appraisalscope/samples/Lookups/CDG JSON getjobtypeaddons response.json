@@ -1,0 +1,47 @@
+{
+    "responseData": {
+        "responseType": "Job Type Addons",
+        "count": 3,
+        "responseFields": [
+            {
+                "num": 1,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Test Form - 1004 Conventional"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "1"
+                    }
+                ]
+            },
+            {
+                "num": 2,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Test Form - 1004 FHA"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "2"
+                    }
+                ]
+            },
+            {
+                "num": 3,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Test Form - 1004D Conventional"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "3"
+                    }
+                ]
+            }
+        ]
+    }
+}

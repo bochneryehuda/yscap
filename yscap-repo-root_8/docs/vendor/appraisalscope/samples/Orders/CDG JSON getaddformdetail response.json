@@ -1,0 +1,257 @@
+{
+	"message": {
+		"digitalGatewaySystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "DigitalGatewayOrderNumber",
+				"referenceIdentifierValue": "CLGGL100417"
+			}],
+			"statusResponses": [{
+				"statusCode": "0",
+				"statusCondition": "Success",
+				"statusDescription": "Acknowledgement",
+				"statusName": "ACK"
+			}]
+		},
+		"clientSystem": {
+			"sourceInformation": [{
+				"sourceClientIdentifier": "429"
+			}]
+		},
+
+		"products": [{
+			"productCode": "76",
+			"serviceNeedByDate": "2021-01-31",
+			"jobFee": "25.00",
+			"notifications": [{
+				"contactEmail": "test@test.com"
+			}]
+		}],
+
+		"deals": [{
+			"appraisers": [{
+				"partyRoleType": "Appraiser",
+				"identifier": "272"
+			}],
+			"borrowers": [{
+					"borrowerClassificationType": "Primary",
+					"firstname": "Peter",
+					"middleName": "Posey",
+					"lastname": "Parker",
+					"contacts": [{
+							"contactType": "Home",
+							"contactEmail": "fake@fake.com",
+							"contactPhone": "123-456-7890"
+						},
+						{
+							"contactType": "Work",
+							"contactPhone": "456-456-7890"
+						},
+						{
+							"contactType": "Mobile",
+							"contactPhone": "789-456-7890"
+						}
+					]
+				},
+				{
+					"borrowerClassificationType": "Secondary",
+					"firstname": "Mary",
+					"middleName": "Lee",
+					"lastname": "Parker",
+					"contacts": [{
+							"contactType": "Home",
+							"contactEmail": "mlp@fake.com",
+							"contactPhone": "222-456-7890"
+						},
+						{
+							"contactType": "Work",
+							"contactPhone": "333-456-7890"
+						},
+						{
+							"contactType": "Mobile",
+							"contactPhone": "444-456-7890"
+						}
+					]
+				}
+			],
+			"parties": [{
+					"partyRoleType": "LoanOfficer",
+					"partyRoleIdentifier": "429"
+				},
+				{
+					"partyRoleType": "LoanProcessor",
+					"partyRoleIdentifier": "469"
+				},
+				{
+					"partyRoleType": "Lender",
+					"partyRoleIdentifier": "267"
+				},
+				{
+					"partyRoleType": "BestContact",
+					"partyRoleTypeOtherDescription": "Assistant"
+				},
+				{
+					"partyRoleType": "PropertyOwner",
+					"partyContacts": [{
+						"contactFirstName": "Tikka",
+						"contactLastName": "Tacca",
+						"contactMiddleName": "Tokka",
+						"contacts": [{
+								"contactType": "Work",
+								"contactPhone": "333-444-9999"
+							},
+							{
+								"contactType": "Home",
+								"contactPhone": "333-222-9999",
+								"contactEmail": "owner@fake.com"
+							},
+							{
+								"contactType": "Mobile",
+								"contactPhone": "333-555-9999"
+							}
+						]
+					}]
+				},
+				{
+					"partyRoleType": "Other",
+					"partyContacts": [{
+						"contactFirstName": "Jilly",
+						"contactLastName": "Johnson",
+						"contactMiddleName": "Jamie",
+						"contacts": [{
+								"contactType": "Work",
+								"contactPhone": "111-333-4444"
+							},
+							{
+								"contactType": "Home",
+								"contactPhone": "111-222-3333",
+								"contactEmail": "other@fake.com"
+							},
+							{
+								"contactType": "Mobile",
+								"contactPhone": "111-444-5555"
+							}
+						]
+					}]
+				},
+				{
+					"partyRoleType": "Other",
+					"partyRoleTypeOtherDescription": "Assistant",
+					"partyContacts": [{
+						"contactFirstName": "Amy",
+						"contactLastName": "Aspen",
+						"contactMiddleName": "Alley",
+						"contacts": [{
+								"contactType": "Work",
+								"contactPhone": "407-111-3333"
+							},
+							{
+								"contactType": "Home",
+								"contactPhone": "407-111-2222",
+								"contactEmail": "assistance@fake.com"
+							},
+							{
+								"contactType": "Mobile",
+								"contactPhone": "407-111-4444"
+							}
+						]
+					}]
+				},
+				{
+					"partyRoleType": "Other",
+					"partyRoleTypeOtherDescription": "Listing Agent",
+					"partyContacts": [{
+						"contactFirstName": "Tammy",
+						"contactLastName": "Brown",
+						"contactMiddleName": "Lee",
+						"contacts": [{
+								"contactType": "Work",
+								"contactPhone": "405-222-5555"
+							},
+							{
+								"contactType": "Home",
+								"contactPhone": "405-999-6666",
+								"contactEmail": "listingagent@fake.com"
+							},
+							{
+								"contactType": "Mobile",
+								"contactPhone": "405-222-4444"
+							}
+						]
+					}]
+				},
+				{
+					"partyRoleType": "SellersAgent",
+					"partyContacts": [{
+						"contactFirstName": "Lily",
+						"contactLastName": "Peppercorn",
+						"contactMiddleName": "Allen",
+						"contacts": [{
+								"contactType": "Work",
+								"contactPhone": "777-333-4444"
+							},
+							{
+								"contactType": "Home",
+								"contactPhone": "777-222-3333",
+								"contactEmail": "sellingagent@fake.com"
+							},
+							{
+								"contactType": "Mobile",
+								"contactPhone": "777-444-4444"
+							}
+						]
+					}]
+				},
+				{
+					"partyRoleType": "RealEstateAgent",
+					"partyContacts": [{
+						"contactFirstName": "Joey",
+						"contactLastName": "Baggo",
+						"contactMiddleName": "Donuts",
+						"contacts": [{
+								"contactType": "Work",
+								"contactPhone": "888-222-2222"
+							},
+							{
+								"contactType": "Home",
+								"contactPhone": "888-111-2222",
+								"contactEmail": "realtor@fake.com"
+							},
+							{
+								"contactType": "Mobile",
+								"contactPhone": "888-333-2222"
+							}
+						]
+					}]
+
+				}
+
+			],
+
+			"loans": [{
+				"loanIdentifiers": {
+					"lenderLoanIdentifier": "AB-1234567890",
+					"fhaCaseIdentifier": "123-4567890-123"
+				},
+				"baseLoanAmount": "180000",
+				"mortgageType": "Conventional"
+			}],
+
+
+
+			"properties": [{
+				"address": {
+					"addressLine": "2422 Knapps Way",
+					"addressLine2": "Address Line2",
+					"cityName": "Dane",
+					"countyName": "someCounty",
+					"postalCode": "21113",
+					"stateCode": "MD"
+				},
+				"propertyCurrentOccupancyType": "Owner",
+				"purchasePriceAmount": 150000,
+				"titleCategoryType": "SingleFamily"
+			}]
+
+		}]
+	}
+}

@@ -1,0 +1,31 @@
+{
+    "message": {
+        "clientSystem": {
+            "referenceIdentifiers": [
+                {
+                    "referenceIdentifierType": "ApiKey",
+                    "referenceIdentifierValue": "{{api_key}}"
+                },
+				{
+					"referenceIdentifierType": "ClientOrderNumber",
+					"referenceIdentifierValue": "1234AB"
+				}
+            ]
+        },
+		"products": [
+		    {
+		        "documentId": "1705"
+		    }
+		],
+        "serviceProviderSystem": {
+        	"referenceIdentifiers": [
+        		{
+        			"referenceIdentifierType": "ServiceProviderSubDomain",
+        			"referenceIdentifierValue": "integrations.uat"
+        		}
+        	]
+        },
+        "requestActionType": "RetriveDocumentContent"
+    }   
+}
+

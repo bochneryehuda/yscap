@@ -198,16 +198,12 @@ async function settleAsIs(appId, opts = {}) {
     // number off it would put a stranger's valuation on the loan, so no automatic write happens while
     // one is open. (The As-Is findings themselves — asis_mismatch / asis_below_price — are
     // deliberately NOT in this list: resolving those is the entire point.) Fails CLOSED: if we cannot
-    // read the findings we do not write.
-    let identityIssue = null;
-    try {
-      const bad = (await db.query(
-        `SELECT code FROM appraisal_findings
-          WHERE application_id=$1 AND status='open' AND severity='fatal'
-            AND code = ANY($2::text[]) LIMIT 1`,
-        [appId, ['address_mismatch', 'units_mismatch', 'property_type_mismatch']])).rows[0];
-      if (bad) identityIssue = bad.code;
-    } catch (_) { identityIssue = 'unknown'; }
+    // read the findings we do not write — `identityIssue` answers 'unknown' in that case.
+    //
+    // The code list lives in ONE place (property-identity.js) because the AMC poll asks the SAME
+    // question before it vouches for a returned report's documents; a second hand-written copy is
+    // how a fourth identity finding would reach only one of the two callers.
+    const identityIssue = await require('./property-identity').identityIssue(appId, db);
 
     // A HUMAN'S DECISION ABOUT THE As-Is IS FINAL, and PILOT never re-litigates it. Two ways a person
     // can have already settled this number, and both must win:

@@ -1,0 +1,36 @@
+{
+	"message": {
+		"digitalGatewaySystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "DigitalGatewayOrderNumber",
+				"referenceIdentifierValue": "CLGGL100417"
+			}],
+			"statusResponses": [{
+				"statusCode": "0",
+				"statusCondition": "Success",
+				"statusDescription": "Acknowledgement",
+				"statusName": "ACK"
+			}]
+		},
+		"deals": [{
+			"loans": [{
+				"loanIdentifiers": {
+					"lenderLoanIdentifier": "2020092901"
+				}
+			}],
+			"properties": [{
+				"appraisalIdentifier": "UAT2021",
+				"appraisalFileSequenceIdentifier": "1"
+			}]
+		}],
+		"products": [{
+			"productDescription": "Single-family Appraisal (1004)"
+		}],
+		"serviceProviderSystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "ServiceProviderOrderNumber",
+				"referenceIdentifierValue": "SP345"
+			}]
+		}
+	}
+}

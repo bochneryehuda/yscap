@@ -225,10 +225,37 @@ async function ingestDocuments(dbh, order, deps = {}) {
     }
   }
   if (imported) {
-    // The import is the proof: these two documents ARE the appraisal we ordered,
-    // so they are accepted rather than left waiting for somebody to vouch for a
-    // report we commissioned. A delivery that did NOT import stays pending.
-    await conditionSlots.acceptImportedSources(dbh, [xmlDocId, pdfDocId]);
+    // A SUCCESSFUL IMPORT PROVES THE FILE IS AN APPRAISAL — IT DOES NOT PROVE IT IS *THIS*
+    // PROPERTY'S APPRAISAL, and those are two different questions.
+    //
+    // `imported` is `out.ok` from the MISMO importer, which means only that the XML parsed as a
+    // valid appraisal and stored. The importer's own findings are what judge whether the report
+    // is about the property on this file — address, unit count, property type — and each of those
+    // disagreements is a FATAL finding raised in the same call, a moment ago. So the accept below
+    // has to consult them, or a report delivered against the wrong order is auto-accepted; and an
+    // accepted document is exactly the one that leaves the building (db/424): it ships in the
+    // investor TPR package and rides along on the closing-prep email to the attorney.
+    //
+    // FAILS CLOSED, like the As-Is writer that asks the same question through the same module: an
+    // unreadable findings table answers 'unknown' and the documents stay `pending`. Nothing is
+    // lost either way — the documents are filed on the condition and a human accepts them with one
+    // click after looking at the fatal finding on the Appraisal tab, which is the honest state.
+    let identityIssue = null;
+    try { identityIssue = await require('../lib/appraisal/property-identity').identityIssue(order.application_id, dbh); }
+    catch (_) { identityIssue = 'unknown'; }
+    if (identityIssue) {
+      // NEVER SILENTLY. The pending documents on the condition and the fatal finding on the
+      // Appraisal tab are what a human sees; this line is what an operator sees.
+      console.error('[amc] returned appraisal NOT auto-accepted for order', order.id,
+        '— it may not be this property:', identityIssue);
+    } else {
+      // The import is the proof: these two documents ARE the appraisal we ordered, for THIS
+      // property, so they are accepted rather than left waiting for somebody to vouch for a report
+      // we commissioned. A delivery that did NOT import stays pending.
+      await conditionSlots.acceptImportedSources(dbh, [xmlDocId, pdfDocId]);
+    }
+    // The ORDER is finished at the vendor either way — the report came back. Completing it is a
+    // statement about the AMC's lifecycle, not about vouching for what they sent.
     await dbh.query(
       `UPDATE amc_orders SET status='completed', completed_at=COALESCE(completed_at, now()), updated_at=now() WHERE id=$1`,
       [order.id]);

@@ -1,0 +1,61 @@
+{
+   "responseData": {
+      "responseType": "Product Fees",
+      "count": 1,
+      "responseFields": [
+         {
+            "num": 1,
+            "fieldlist": [
+               {
+                  "fieldName": "clientFee",
+                  "fieldValue": "450.00"
+               },
+               {
+                  "fieldName": "managementFee",
+                  "fieldValue": "0"
+               },
+               {
+                  "fieldName": "managementFeeStatus",
+                  "fieldValue": "0"
+               },
+               {
+                  "fieldName": "clientRushFee",
+                  "fieldValue": "50.00"
+               },               
+               {
+                  "fieldName": "totalClientFee",
+                  "fieldValue": "450.00"
+               },
+               {
+                  "fieldName": "loanTypeFee",
+                  "fieldValue": "0"
+               },
+               {
+                  "fieldName": "propertyCharFee",
+                  "fieldValue": "0"
+               },
+               {
+                  "fieldName": "intendedUseFee",
+                  "fieldValue": "0"
+               },
+               {
+                  "fieldName": "jobTypeName",
+                  "fieldValue": "Single-family Investment (1004 and 1007)"
+               },
+               {
+                  "fieldName": "job_fee",
+                  "fieldValue": "450.00"
+               },
+               {
+                  "fieldName": "management_fee",
+                  "fieldValue": "0"
+               },
+               {
+                  "fieldName": "rush_fee",
+                  "fieldValue": "0"
+               }
+            ]
+         }
+      ]
+   }
+}

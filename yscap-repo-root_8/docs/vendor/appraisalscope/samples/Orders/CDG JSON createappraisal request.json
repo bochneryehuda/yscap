@@ -1,0 +1,396 @@
+{
+	"message": {
+		"clientSystem": {
+			"referenceIdentifiers": [
+				{
+					"referenceIdentifierType": "ApiKey",
+					"referenceIdentifierValue": "{{api_key}}"
+				},
+				{
+					"referenceIdentifierType": "ClientOrderNumber",
+					"referenceIdentifierValue": "1234AB"
+				},
+				{
+					"referenceIdentifierType": "ClientReferenceNumber",
+					"referenceIdentifierValue": "ABD-6564521354-01"
+				}
+			],
+			"sourceInformation": {
+				"sourceClientIdentifier": "267"
+			}
+		},
+        "digitalGatewaySystem": {
+			"referenceIdentifiers": [
+				{
+					"referenceIdentifierType": "DigitalGatewayLenderIdentifier",
+					"referenceIdentifierValue": "GG000146"
+				}
+			]
+		},
+		"serviceProviderSystem": {
+			"referenceIdentifiers": [
+				{
+					"referenceIdentifierType": "ServiceProviderSubDomain",
+					"referenceIdentifierValue": "integrations.uat"
+				}
+			]
+		},
+		"requestActionType": "CreateAppraisal",
+		"products": [
+			{
+				"productCode": "76",
+				"embeddedFiles": [
+					{
+                        "documentEffectiveDate": "2021-03-14",
+                        "objectName": "2017-4506T-Transcript.pdf",
+						"objectURL": "https://nspdocstorage.com/getdocument/12345"
+					}
+				],
+				"jobFee": "25.00",
+				"managementFee": "50.00",
+				"requestCommentText": "This is a comment for Vendor to read",
+				"serviceExpediteType": "0",
+				"notifications": [
+					{
+						"contactEmail": "test@test.com"
+					}
+				],
+				"serviceNeedByDate": "2021-08-31",
+				"subproducts": [
+					{
+						"identifier": "5"
+					},
+					{
+						"identifier": "6"
+					}
+				]
+			}
+		],
+		"deals": [
+			{
+				"appraisers": [
+					{
+						"partyRoleType": "AMC",
+						"identifier": "426"
+					}
+				],
+				"borrowers": [
+					{
+						"borrowerClassificationType": "Primary",
+						"legalEntityName": "ABC James",
+						"firstName": "Peter",
+						"middleName": "Posey",
+						"lastName": "Parker",
+						"fullName": "Peter Parker Posey",
+						"intentToProceedReceivedDate": "2019-01-26",
+						"contacts": [
+							{
+								"contactType": "Home",
+								"contactEmail": "fake@fake.com",
+								"contactPhone": "123-456-7890"
+							},
+							{
+								"contactType": "Work",
+								"contactPhone": "456-456-7890"
+							},
+							{
+								"contactType": "Mobile",
+								"contactPhone": "789-456-7890"
+							}
+						],
+						"productDeliveryTypes": [
+							{
+								"productDeliveryType": "Mail",
+								"overrideProductDeliveryTypeIndicator": "1"
+							}
+						],
+						"residences": [
+							{
+								"borrowerResidencyType": "Current",
+								"address": {
+									"addressLine": "175 13th Street",
+									"addressLine2": "Line2",
+									"cityName": "Washington",
+									"postalCode": "20013",
+									"stateCode": "DC",
+									"countyName": "Orange"
+								}
+							}
+						],
+						"preferredResponseMethodType": "Mail"
+					},
+					{
+						"borrowerClassificationType": "Secondary",
+						"firstName": "Mary",
+						"middleName": "Lee",
+						"lastName": "Parker",
+						"fullName": "Mary Lee Posey",
+						"intentToProceedReceivedDate": "2019-01-26",
+						"contacts": [
+							{
+								"contactType": "Home",
+								"contactEmail": "mlp@fake.com",
+								"contactPhone": "222-456-7890"
+							},
+							{
+								"contactType": "Work",
+								"contactPhone": "333-456-7890"
+							},
+							{
+								"contactType": "Mobile",
+								"contactPhone": "444-456-7890"
+							}
+						],
+						"productDeliveryTypes": [
+							{
+								"productDeliveryType": "Mail"
+							}
+						],
+						"residences": [
+							{
+								"borrowerResidencyType": "Current",
+								"address": {
+									"addressLine": "175 13th Street",
+									"addressLine2": "D-1422",
+									"cityName": "Orlando",
+									"postalCode": "32839-1234",
+									"stateCode": "FL",
+									"countyName": "Orange"
+								}
+							}
+						],
+						"preferredResponseMethodType": "Mail"
+					}
+				],
+				"parties": [
+					{
+						"partyRoleType": "LoanOfficer",
+						"partyRoleTypeIdentifier": "429",
+						"contactFullName": "abc def"
+					},
+					{
+						"partyRoleType": "LoanProcessor",
+						"partyRoleTypeIdentifier": "484",
+						"contactFullName": "6564 5464565"
+					},
+					{
+						"partyRoleType": "Investor",
+						"partyRoleTypeIdentifier": "447"
+					},
+					{
+						"partyRoleType": "Lender",
+						"fdicInformation": {
+							"certificateIdentifier": "123BC",
+							"taskOrder": "A1B2",
+							"assetNumber": "ABCDEF123456",
+							"line": "1",
+							"contractor": "Billy Joe Bob",
+							"assetType": "Settlement"
+						}
+					},
+					{
+						"partyRoleType": "SubmittingParty",
+						"partyRoleTypeIdentifier": "Postman Testing"
+					},
+					{
+						"partyRoleType": "BestContact",
+						"partyRoleTypeOtherDescription": "Assistant"
+					},
+					{
+						"partyRoleType": "PropertyOwner",
+						"partyContacts": [
+							{
+								"contactFirstName": "Tikka",
+								"contactLastName": "Tacca",
+								"contactMiddleName": "Tokka",
+								"contacts": [
+									{
+										"contactType": "Work",
+										"contactPhone": "333-444-9999"
+									},
+									{
+										"contactType": "Home",
+										"contactPhone": "333-222-9999",
+										"contactEmail": "owner@fake.com"
+									},
+									{
+										"contactType": "Mobile",
+										"contactPhone": "333-555-9999"
+									}
+								]
+							}
+						]
+					},
+					{
+						"partyRoleType": "Other",
+						"partyContacts": [
+							{
+								"contactFirstName": "Jilly",
+								"contactLastName": "Johnson",
+								"contactMiddleName": "Jamie",
+								"contacts": [
+									{
+										"contactType": "Work",
+										"contactPhone": "111-333-4444"
+									},
+									{
+										"contactType": "Home",
+										"contactPhone": "111-222-3333",
+										"contactEmail": "other@fake.com"
+									},
+									{
+										"contactType": "Mobile",
+										"contactPhone": "111-444-5555"
+									}
+								]
+							}
+						]
+					},
+					{
+						"partyRoleType": "Other",
+						"partyRoleTypeOtherDescription": "Assistant",
+						"partyContacts": [
+							{
+								"contactFirstName": "Amy",
+								"contactLastName": "Aspen",
+								"contactMiddleName": "Alley",
+								"contacts": [
+									{
+										"contactType": "Work",
+										"contactPhone": "407-111-3333"
+									},
+									{
+										"contactType": "Home",
+										"contactPhone": "407-111-2222",
+										"contactEmail": "assistance@fake.com"
+									},
+									{
+										"contactType": "Mobile",
+										"contactPhone": "407-111-4444"
+									}
+								]
+							}
+						]
+					},
+					{
+						"partyRoleType": "Other",
+						"partyRoleTypeOtherDescription": "Listing Agent",
+						"partyContacts": [
+							{
+								"contactFirstName": "Tammy",
+								"contactLastName": "Brown",
+								"contactMiddleName": "Lee",
+								"contacts": [
+									{
+										"contactType": "Work",
+										"contactPhone": "405-222-5555"
+									},
+									{
+										"contactType": "Home",
+										"contactPhone": "405-999-6666",
+										"contactEmail": "listingagent@fake.com"
+									},
+									{
+										"contactType": "Mobile",
+										"contactPhone": "405-222-4444"
+									}
+								]
+							}
+						]
+					},
+					{
+						"partyRoleType": "SellersAgent",
+						"partyContacts": [
+							{
+								"contactFirstName": "Lily",
+								"contactLastName": "Peppercorn",
+								"contactMiddleName": "Allen",
+								"contacts": [
+									{
+										"contactType": "Work",
+										"contactPhone": "777-333-4444"
+									},
+									{
+										"contactType": "Home",
+										"contactPhone": "777-222-3333",
+										"contactEmail": "sellingagent@fake.com"
+									},
+									{
+										"contactType": "Mobile",
+										"contactPhone": "777-444-4444"
+									}
+								]
+							}
+						]
+					},
+					{
+						"partyRoleType": "RealEstateAgent",
+						"partyContacts": [
+							{
+								"contactFirstName": "Joey",
+								"contactLastName": "Baggo",
+								"contactMiddleName": "Donuts",
+								"contacts": [
+									{
+										"contactType": "Work",
+										"contactPhone": "888-222-2222"
+									},
+									{
+										"contactType": "Home",
+										"contactPhone": "888-111-2222",
+										"contactEmail": "realtor@fake.com"
+									},
+									{
+										"contactType": "Mobile",
+										"contactPhone": "888-333-2222"
+									}
+								]
+							}
+						]
+					}
+				],
+				"loans": [
+					{
+						"lienPriorityType": "FirstLien",
+						"loanIdentifiers": {
+							"lenderLoanIdentifier": "AB-1234567890",
+							"fhaCaseIdentifier": "123-4567890-123"
+						},
+						"baseLoanAmount": "180000",
+						"estimatedClosingDate": "2021-08-23",
+						"loanPurposeType": "Purchase",
+						"mortgageType": "Conventional",
+						"overrideBorrowerPreferredResponseMethodType": "Mail"
+					}
+				],
+				"properties": [
+					{
+						"address": {
+							"addressFormatType": "Individual",
+							"addressLine": "2422 Knapps Way",
+							"addressLine2": "Address Line2",
+							"cityName": "Dane",
+							"countyName": "someCounty",
+							"postalCode": "21113",
+							"stateCode": "MD",
+							"propertyLocationDescription": "short legal description"
+						},
+						"propertyCurrentOccupancyType": "Owner",
+						"purchasePriceAmount": 150000,
+						"salesConcessionAmount": 20000.0,
+						"salesConcessionType": "ClosingCosts",
+						"salesContractAmount": 275000.0,
+						"siteAnalysis": {
+							"propertyView": [
+								{
+									"propertyViewType": "21"
+								}
+							]
+						},
+						"titleCategoryType": "SingleFamily"
+					}
+				]
+			}
+		]
+	}
+}

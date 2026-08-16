@@ -1,0 +1,21 @@
+{
+    "message": {
+        "clientSystem": {
+            "referenceIdentifiers": [
+                {
+                    "referenceIdentifierType": "ApiKey",
+                    "referenceIdentifierValue": "{{api_key}}"
+                }
+            ]
+        },
+        "serviceProviderSystem": {
+        	"referenceIdentifiers": [
+        		{
+        			"referenceIdentifierType": "ServiceProviderSubDomain",
+        			"referenceIdentifierValue": "integrations.uat"
+        		}
+        	]
+        },
+        "requestActionType": "GetJobType"
+    }   
+}

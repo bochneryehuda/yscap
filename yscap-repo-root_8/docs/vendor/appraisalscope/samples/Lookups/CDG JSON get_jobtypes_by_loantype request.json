@@ -1,0 +1,33 @@
+{
+    "message": {
+        "clientSystem": {
+            "referenceIdentifiers": [
+                {
+                    "referenceIdentifierType": "ApiKey",
+                    "referenceIdentifierValue": "{{api_key}}"
+                }
+            ],
+            "sourceInformation": {
+                "sourceClientIdentifier": "267"
+            }
+        },
+        "deals": [
+            {
+                "loans": [
+                    {
+                        "mortgageType": "15"
+                    }
+                ]
+            }
+        ],
+        "serviceProviderSystem": {
+            "referenceIdentifiers": [
+                {
+                    "referenceIdentifierType": "ServiceProviderSubDomain",
+                    "referenceIdentifierValue": "integrations.uat"
+                }
+            ]
+        },
+        "requestActionType": "Get_JobTypes_By_LoanType"
+    }
+}
