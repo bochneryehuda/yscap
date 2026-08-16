@@ -275,6 +275,20 @@ function offline() {
   const cn = lp.buildSearch({ value: 5e5, loan: 4e5, countyName: 'Union' });
   ok(cn.property.address.countyName === 'Union', 'countyName input is honored');
 
+  // 20) DISQUALIFY searchKey store — kick off ONCE, poll-only by stable key, never restart.
+  const kb = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 });                       // kickoff (cached=false)
+  const pb = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 }, { disqualify: { cached: true } }); // poll (cached=true)
+  ok(lp.searchKeyFor(kb) === lp.searchKeyFor(pb), 'searchKey ignores cachedDisqualified — kickoff & poll share ONE key');
+  const kbOther = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.30, prepayMonths: 60 });
+  ok(lp.searchKeyFor(kb) !== lp.searchKeyFor(kbOther), 'searchKey changes when the scenario changes');
+  // the stored kickoff body, with ONLY cachedDisqualified flipped to true, is byte-identical to a
+  // freshly-built poll body — so polling the STORED body hits the same computation (never restarts).
+  ok(JSON.stringify({ ...kb, cachedDisqualified: true }) === JSON.stringify(pb), 'stored kickoff + cached flip == poll body (byte-identical)');
+  const skey = lp._internals.storeKickoff('https://api.digitallending.com/rest/v1/x', kb);
+  ok(lp.hasStoredSearch(skey), 'storeKickoff registers the searchKey');
+  ok(lp._internals.DISQ_STORE.get(skey).body.cachedDisqualified === false, 'stored kickoff body carries cachedDisqualified=false');
+  ok(!lp.hasStoredSearch('deadbeefdeadbeefdeadbeefdeadbeef'), 'an unknown searchKey is not stored (poll returns unknown → tells caller to re-run /price)');
+
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }
 
