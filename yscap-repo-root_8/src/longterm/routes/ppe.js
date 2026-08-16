@@ -343,7 +343,12 @@ async function decideFindingRoute(req, res) {
     return res.status(400).json({ error: 'Add a short reason (at least 8 characters) — a settled finding is never re-opened, so this note is the record of why.' });
   }
 
-  const decidedBy = (req.actor && (req.actor.id || req.actor.staffId)) || null;
+  // `req.actor` only ever carries `.id` (src/auth/index.js) — a `.staffId`
+  // fallback is always undefined, which is why #617's guard forbids it. Dropping
+  // it changes nothing: `id || undefined || null` and `id || null` are the same
+  // answer for every value `id` can hold. Every other LT route already reads
+  // `req.actor && req.actor.id`.
+  const decidedBy = (req.actor && req.actor.id) || null;
   const changed = await findingStore.decideFinding(scope, key, { status, reason, decidedBy }, db);
   if (!changed) return res.status(404).json({ error: 'No such finding on this scope.' });
 
