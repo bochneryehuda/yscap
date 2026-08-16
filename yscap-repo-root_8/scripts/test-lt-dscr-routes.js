@@ -20,6 +20,39 @@ ok(r && typeof r === 'function' && typeof r.use === 'function', 'makeRouter() re
 const diag = require('../src/longterm/routes/lenderprice-diag');
 ok(typeof diag === 'function' && typeof diag.use === 'function', 'lenderprice-diag is an express router');
 
+// 2b) shapeDisqualified — the per-lender item CURSOR (audit §C3): a lender with more items than the
+//     cap is fully retrievable by paging itemOffset.
+const { shapeDisqualified, effectiveOf, unsupportedFields } = dp._internals;
+const dq = { ready: true, lenderCount: 3, itemCount: 8, reasonCount: 8, lenders: [
+  { lender: 'A', lenderId: 'a', itemCount: 5, items: [1, 2, 3, 4, 5] },
+  { lender: 'B', lenderId: 'b', itemCount: 2, items: [1, 2] },
+  { lender: 'C', lenderId: 'c', itemCount: 1, items: [1] },
+] };
+{
+  const s0 = shapeDisqualified(dq, { itemLimit: 2, itemOffset: 0 }).disqualified;
+  ok(s0.lenders[0].items.length === 2 && s0.lenders[0].itemNextOffset === 2 && s0.lenders[0].itemTruncated === true, 'first item page returns 2 + a cursor to the remainder');
+  const s2 = shapeDisqualified(dq, { limit: 1, offset: 0, itemLimit: 2, itemOffset: 2 }).disqualified;
+  ok(s2.lenders[0].items[0] === 3 && s2.lenders[0].itemNextOffset === 4, 'the cursor walks INTO the same lender (items 3,4 next)');
+  const s4 = shapeDisqualified(dq, { limit: 1, offset: 0, itemLimit: 10, itemOffset: 4 }).disqualified;
+  ok(s4.lenders[0].items.length === 1 && s4.lenders[0].itemNextOffset === null && s4.lenders[0].itemTruncated === false, 'the last item page has no further cursor');
+  const lp1 = shapeDisqualified(dq, { limit: 1, offset: 1 }).disqualified;
+  ok(lp1.lenders.length === 1 && lp1.lenders[0].lenderId === 'b' && lp1.page.nextOffset === 2, 'lender pagination still works alongside the item cursor');
+}
+
+// 2c) effectiveScenario now shows every transmitted selector (audit) + the new independent fields.
+{
+  const lp = require('../src/longterm/lenderprice/client');
+  const payload = lp.buildSearch({ purpose: 'Cash out', value: 6e5, loan: 42e4, propertyType: 'Condo', attachment: 'Detached', nonWarrantable: true, prepayMonths: 60, cashoutAmount: 50000, zip: '33101', state: 'FL', countyFps: '12086' });
+  const eff = effectiveOf(payload);
+  ok(eff.reserves === 'Reserves_24' && eff.addlOccupancyType === 'Long_Term_Rental_Property', 'effectiveScenario shows reserves + rental term');
+  ok(eff.location && eff.location.state === 'FL' && eff.location.county === '12086', 'effectiveScenario shows the complete location');
+  ok(eff.cashoutAmount === 50000, 'effectiveScenario shows the transmitted cashoutAmount');
+  ok(eff.attachmentType === 'Detached' && eff.nonWarrantableProject === true, 'effectiveScenario shows the independent attachment + non-warrantable');
+  ok(Array.isArray(eff.specialMortgageOptions) && eff.specialMortgageOptions.every((s) => 'id' in s && 'name' in s), 'SMOs are reported as {id,name} identities');
+  ok(unsupportedFields({ attachment: 'Detached', nonWarrantable: true, purpose: 'Purchase' }).length === 0, 'attachment + nonWarrantable are supported fields');
+  ok(unsupportedFields({ madeUpField: 1 }).includes('madeUpField'), 'a truly unknown field is still rejected');
+}
+
 // 3) Exercise the secret gate directly by pulling its first layer's handle.
 //    layer[0] is the gate middleware added by router.use((req,res,next)=>{...}).
 const gate = diag.stack && diag.stack[0] && diag.stack[0].handle;

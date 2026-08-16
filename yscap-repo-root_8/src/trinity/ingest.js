@@ -86,6 +86,25 @@ async function syncStatus(orderRow) {
      remote.subStatus && remote.subStatus.name ? String(remote.subStatus.name).slice(0, 120) : null,
      changed, remote.completedAt ? new Date(remote.completedAt) : null]);
 
+  // THE TIMELINE. Trinity has no history endpoint — verified 2026-08-16, /history,
+  // /events, /statuses and /status all answer 404 — so the sequence the desk shows
+  // ("ordered → scheduled → inspected → report back") exists only because we write each
+  // transition down as we see it. The unique index drops a repeat, so the poller
+  // re-reading the same order every few minutes cannot fill it with copies of one
+  // moment; it is appended on EVERY sync rather than only when our own five-state
+  // ladder moves, because Trinity's own wording changes far more often than our state
+  // does ("Searching for Inspector" → "Accepted by Inspector" → "In Review" are three
+  // distinct things a coordinator wants to see, and two of them are the same state).
+  await require('./order').recordEvent(orderRow.application_id, orderRow.id, {
+    kind: 'status',
+    state: next,
+    statusId,
+    status: remote.status && remote.status.name,
+    substatus: remote.subStatus && remote.subStatus.name,
+    percentComplete: Number.isFinite(Number(remote.percentComplete)) ? Number(remote.percentComplete) : null,
+    source: 'poller',
+  }).catch(() => {});
+
   return {
     ok: true, changed, state: next,
     trinityStatus: remote.status && remote.status.name,
@@ -128,17 +147,29 @@ async function readResults(orderRow) {
        l.inspector_remarks ? String(l.inspector_remarks).slice(0, 2000) : null, l.trinity_line_id]);
     // A line Trinity added on their side (no customerKey of ours) is still recorded, so
     // the desk shows the WHOLE of what the inspector reported, not only our own lines.
+    //
+    // It must UPSERT, not "do nothing". Trinity re-completes an order for a revision
+    // (statuses 72 "Revised" / 83 "Budget Changed" / 223 "Revision Requested"), and the
+    // whole point of re-reading is to pick up what changed — a DO NOTHING here meant a
+    // revised amount or a corrected remark on one of THEIR lines was silently discarded
+    // on every poll after the first.
     if (l.customer_key) continue;
+    const synthKey = l.trinity_line_id != null ? `trinity-${l.trinity_line_id}` : null;
+    if (!synthKey) continue;   // no stable identity — never guess which row to overwrite
     await db.query(
       `INSERT INTO trinity_order_lines
          (trinity_inspection_order_id, application_id, name, trinity_line_id, budgeted_cents,
           requested_cents, completed_pct, approved_cents, inspector_remarks, customer_key)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       ON CONFLICT DO NOTHING`,
+       ON CONFLICT (trinity_inspection_order_id, customer_key) WHERE customer_key IS NOT NULL DO UPDATE
+         SET name=EXCLUDED.name, budgeted_cents=EXCLUDED.budgeted_cents,
+             requested_cents=EXCLUDED.requested_cents, completed_pct=EXCLUDED.completed_pct,
+             approved_cents=EXCLUDED.approved_cents, inspector_remarks=EXCLUDED.inspector_remarks,
+             updated_at=now()`,
       [orderRow.id, orderRow.application_id, l.name, l.trinity_line_id, l.budgeted_cents,
        l.requested_cents, l.completed_pct, l.approved_cents,
        l.inspector_remarks ? String(l.inspector_remarks).slice(0, 2000) : null,
-       l.trinity_line_id != null ? `trinity-${l.trinity_line_id}` : null]).catch(() => {});
+       synthKey]).catch(() => {});
   }
 
   await db.query(
@@ -239,6 +270,57 @@ async function pullReport(orderRow) {
   return { ok: true, documentId };
 }
 
+/**
+ * The INVOICE for a completed order — what this inspection cost us.
+ *
+ * docs/TRINITY-INSPECTION-API-RESEARCH.md §9.2 recorded as an open question that
+ * "nothing in the API returns our cost, so the draw fee stays PILOT's own figure". That
+ * is answered: `GET /orders/{id}/documents/invoice` returns it once the order completes,
+ * and answers a clean 404 ("The invoice for this order is not ready.") before then —
+ * the same unambiguous not-yet as the report, so it is never treated as a failure.
+ *
+ * Filed STAFF-ONLY, always. What we pay an inspector is our own cost of doing business:
+ * it is not part of the borrower's draw and must never ride along to them.
+ */
+async function pullInvoice(orderRow) {
+  let doc;
+  try { doc = await client.getInvoice(orderRow.trinity_order_id); }
+  catch (e) {
+    if (e && e.status === 404) return { skipped: 'not_ready' };
+    throw e;
+  }
+  if (!doc || !doc.url) return { skipped: 'not_ready' };
+
+  const archived = await archiveOne(orderRow, 'invoice', doc, { filenameHint: 'trinity-invoice' });
+  if (!archived.ok && !archived.skipped) return archived;
+
+  const media = (await db.query(
+    `SELECT * FROM trinity_order_media WHERE trinity_inspection_order_id=$1 AND kind='invoice' AND storage_ref IS NOT NULL
+      ORDER BY archived_at DESC NULLS LAST LIMIT 1`, [orderRow.id])).rows[0];
+  if (!media) return { skipped: 'not_stored' };
+
+  const existing = (await db.query(
+    `SELECT id FROM documents WHERE application_id=$1 AND doc_kind='trinity_inspection_invoice' AND sha256=$2 LIMIT 1`,
+    [orderRow.application_id, media.sha256])).rows[0];
+  let documentId = existing ? existing.id : null;
+  if (!documentId) {
+    const ins = await db.query(
+      `INSERT INTO documents (application_id, filename, content_type, storage_ref, storage_provider,
+          doc_kind, source_type, visibility, review_status, sha256, size_bytes, is_current)
+       VALUES ($1,$2,$3,$4,$5,'trinity_inspection_invoice','system','staff_only','accepted',$6,$7,true)
+       RETURNING id`,
+      [orderRow.application_id, media.file_name || 'trinity-inspection-invoice.pdf',
+       media.content_type || 'application/pdf', media.storage_ref, media.storage_provider,
+       media.sha256, media.bytes]);
+    documentId = ins.rows[0].id;
+  }
+  await db.query(
+    `UPDATE trinity_inspection_orders
+        SET invoice_document_id=COALESCE(invoice_document_id,$2::uuid), invoice_read_at=now(), updated_at=now()
+      WHERE id=$1`, [orderRow.id, documentId]).catch(() => {});
+  return { ok: true, documentId };
+}
+
 /** Every inspection photo, archived. */
 async function pullPhotos(orderRow) {
   const photos = await client.getPhotos(orderRow.trinity_order_id);
@@ -254,32 +336,135 @@ async function pullPhotos(orderRow) {
 // ---------------------------------------------------------------------------
 // inbound messages
 // ---------------------------------------------------------------------------
+/**
+ * OUR OWN MESSAGE COMING BACK IS NOT A REPLY.
+ *
+ * `order.postComment` records what we send with the id Trinity answered with, so the
+ * ordinary echo is already excluded by id. But if that response was lost — a timeout
+ * AFTER Trinity stored the comment, the one case where we have no id to record — the
+ * echo arrives here looking exactly like an inbound message, and the desk would be told
+ * "Trinity replied" about its own words. So the AUTHOR decides the direction: a comment
+ * written by our own draw desk is filed as OUTBOUND however it got here, and can never
+ * raise a reply notification.
+ *
+ * The address is READ from `draw-recipients.DRAW_DESK_INBOX` rather than retyped: it is
+ * the same constant `order.postComment` signs our messages with, and two copies of it
+ * would drift the day the desk inbox changes — at which point our own echoes would start
+ * emailing the team as "Trinity replied", silently, with nothing failing.
+ */
+function ourCommentEmails() {
+  const out = new Set();
+  try { out.add(String(require('../lib/draw-recipients').DRAW_DESK_INBOX || '').toLowerCase()); }
+  catch (_) { /* fall through to the literal below */ }
+  out.add('draws@yscapgroup.com');   // belt-and-suspenders: never fewer than what we sign with
+  out.delete('');
+  return out;
+}
+
+function commentIsOurs(c) {
+  const who = (c && c.commenter) || {};
+  const email = String(who.emailAddress || '').trim().toLowerCase();
+  return !!email && ourCommentEmails().has(email);
+}
+
 /** Mirror Trinity's comments into our thread so the desk sees both sides. */
 async function pullComments(orderRow) {
   const rows = await client.getComments(orderRow.trinity_order_id);
-  if (!Array.isArray(rows) || !rows.length) return { added: 0 };
+  if (!Array.isArray(rows) || !rows.length) return { added: 0, inbound: 0 };
   const mine = new Set((await db.query(
     `SELECT trinity_comment_id FROM trinity_order_comments
       WHERE trinity_inspection_order_id=$1 AND trinity_comment_id IS NOT NULL`, [orderRow.id]))
     .rows.map((r) => Number(r.trinity_comment_id)));
   let added = 0;
+  const inbound = [];
   for (const c of rows) {
     const id = c && c.id != null ? Number(c.id) : null;
     if (!id || mine.has(id)) continue;
     const who = c.commenter || {};
+    const ours = commentIsOurs(c);
+    const author = [who.firstName, who.lastName].filter(Boolean).join(' ') || 'Trinity';
+    const content = String(c.content || '').slice(0, 4000);
     const ins = await db.query(
       `INSERT INTO trinity_order_comments
          (trinity_inspection_order_id, application_id, trinity_comment_id, direction, content,
           important, visible_to_vendor, author_name, trinity_created_at)
-       VALUES ($1,$2,$3,'in',$4,$5,$6,$7,$8)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        ON CONFLICT (trinity_comment_id) WHERE trinity_comment_id IS NOT NULL DO NOTHING RETURNING id`,
-      [orderRow.id, orderRow.application_id, id, String(c.content || '').slice(0, 4000),
-       !!c.important, c.visibleToVendor !== false,
-       [who.firstName, who.lastName].filter(Boolean).join(' ') || 'Trinity',
+      [orderRow.id, orderRow.application_id, id, ours ? 'out' : 'in', content,
+       !!c.important, c.visibleToVendor !== false, author,
        c.createdAt ? new Date(c.createdAt) : null]).catch(() => ({ rows: [] }));
-    if (ins.rows && ins.rows.length) added++;
+    if (ins.rows && ins.rows.length) {
+      added++;
+      if (!ours) inbound.push({ id, author, content, important: !!c.important });
+    }
   }
-  return { added };
+  // TELL THE PEOPLE WHO HAVE TO ANSWER. Owner-answered 2026-08-16, asked who should hear
+  // a Trinity reply: *"the draw coordinator and the loan officer"*. Best-effort — a
+  // notification failure must never lose the message itself, which is already filed.
+  if (inbound.length) await notifyTrinityReply(orderRow, inbound).catch(() => {});
+  return { added, inbound: inbound.length };
+}
+
+/**
+ * A message from the Trinity team reaches the two people who own the conversation.
+ *
+ * WHY THIS IS TWO CALLS AND NOT ONE. `notifyAppStaff` fans out over
+ * `application_assignees`, whose roles are loan_officer and processor — the DRAW
+ * COORDINATOR is not an assignee role at all (db/103), and is resolved from what they
+ * actually DID on the file (`draw-recipients.coordinatorsOrDesk`: whoever pressed
+ * "Start the draw process", else a live draw-coordinator hand-off, else the whole active
+ * desk so a message is never uncovered). So the officer comes from the fan-out and the
+ * coordinator from the resolver, and the fan-out's returned recipient list is what stops
+ * a person who is both from getting two copies of one message.
+ *
+ * This EMAILS (`inAppOnly:false`): an outside vendor asking us a question is waiting on
+ * an answer, which is the definition of an action-needed staff event.
+ */
+async function notifyTrinityReply(orderRow, inbound) {
+  const notify = require('../lib/notify');
+  const appId = orderRow.application_id;
+  const addr = (await db.query(
+    `SELECT property_address->>'oneLine' AS addr FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+  const latest = inbound[inbound.length - 1];
+  const many = inbound.length > 1;
+  const important = inbound.some((m) => m.important);
+  // Their words, quoted — trimmed to a length that reads in an inbox rather than
+  // reproducing a whole message body in a notification title.
+  const quote = String(latest.content || '').replace(/\s+/g, ' ').trim();
+  const shown = quote.length > 220 ? `${quote.slice(0, 219)}…` : quote;
+
+  const opts = {
+    type: 'draw',
+    title: many
+      ? `Trinity sent ${inbound.length} new messages about the inspection`
+      : 'Trinity sent a message about the inspection',
+    badge: important ? { text: 'Marked important', tone: 'gold' } : undefined,
+    body: `${latest.author} at Trinity wrote about the physical inspection on ${addr.addr || 'this property'}:\n\n`
+      + `“${shown || '(no text)'}”\n\n`
+      + (many ? `There are ${inbound.length} new messages in the thread. ` : '')
+      + 'Open the draw desk to read the whole conversation and reply to them there. '
+      + 'Nothing has been sent to the borrower.',
+    applicationId: appId,
+    link: `/internal/app/${appId}/draws`,
+    ctaLabel: 'Open the draw desk',
+    inAppOnly: false,
+  };
+
+  const reached = await notify.notifyAppStaff(appId, opts).catch(() => []);
+  const already = new Set((Array.isArray(reached) ? reached : []).map(String));
+
+  let coordinators = [];
+  try { coordinators = await require('../lib/draw-recipients').coordinatorsOrDesk(appId); }
+  catch (_) { coordinators = []; }
+  let extra = 0;
+  for (const person of coordinators) {
+    if (!person || !person.id || already.has(String(person.id))) continue;
+    already.add(String(person.id));
+    // One bad recipient must not swallow the rest — the same discipline notifyAppStaff
+    // applies to its own fan-out.
+    try { await notify.notifyStaff(person.id, { ...opts }); extra++; } catch (_) { /* keep going */ }
+  }
+  return { ok: true, staff: already.size, coordinators: extra };
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +500,12 @@ async function syncOrder(appId, orderRowId) {
     catch (e) { out.results = { error: String(e && e.message).slice(0, 200) }; }
     try { out.photos = await pullPhotos(fresh); }
     catch (e) { out.photos = { error: String(e && e.message).slice(0, 200) }; }
+    // What the inspection cost us. Staff-only, and never a reason to fail the sync —
+    // a missing invoice must not hold up the numbers the desk is waiting for.
+    if (!fresh.invoice_read_at) {
+      try { out.invoice = await pullInvoice(fresh); }
+      catch (e) { out.invoice = { error: String(e && e.message).slice(0, 200) }; }
+    }
 
     // Tell the DESK, not the borrower. This is the hand-off the owner described: the
     // figures are in, and a human decides what goes out.
@@ -348,6 +539,7 @@ async function notifyDeskReady(orderRow, results) {
 }
 
 module.exports = {
-  syncOrder, syncStatus, readResults, pullReport, pullPhotos, pullComments,
-  archiveOne, notifyDeskReady, _internals: { sourceKeyFor, extFor },
+  syncOrder, syncStatus, readResults, pullReport, pullInvoice, pullPhotos, pullComments,
+  archiveOne, notifyDeskReady, notifyTrinityReply,
+  _internals: { sourceKeyFor, extFor, commentIsOurs },
 };
