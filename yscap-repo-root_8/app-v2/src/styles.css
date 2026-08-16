@@ -4780,3 +4780,8 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
   padding:12px 0;border-top:1px solid rgba(20,27,34,.08);align-items:start}
 .ltset-row.ltset-mid{align-items:center;padding:10px 0}
 @media(max-width:720px){ .ltset-row{grid-template-columns:1fr;gap:8px} }
+
+/* The long-term loan workspace: content and its summary rail. Under 900px the rail
+   drops below the content rather than squeezing both — a 300px rail beside a
+   narrowing column is how a table of figures ends up one word per line. */
+@media(max-width:900px){ .lt-workspace{grid-template-columns:1fr !important} }
