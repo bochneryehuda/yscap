@@ -94,6 +94,32 @@ rtl-import app-v2/src/App.jsx
 
 # The staff shell renders the Short-Term / Long-Term switch.
 rtl-import app-v2/src/components/StaffLayout.jsx
+
+# ---------------------------------------------------------------------------
+# ADDRESS → COUNTY LOOKUP — authorized in writing by the owner, 2026-08-16:
+#   "Yes, you have my written OK to reuse that."
+#
+# Asked as one specific question: the Lender Price DSCR pricer needs a ZIP to
+# become city / state / county name / county FIPS before it can price, exactly
+# as the vendor's own screen does. We already own that ability — but it lives
+# in the RTL/shared zone, so re-using it is a crossing.
+#
+# SCOPE: this ONE module, used as a READ-ONLY LOOKUP (resolveCounty / geocode /
+# canonicalize). It is not a licence to reuse RTL's address WRITERS
+# (address-heal, address-review-close, address-usps-verify) or to let Long-Term
+# rewrite any RTL address record — those need their own row.
+#
+# NOTE for a future reader: the module keeps its own permanent lookup cache
+# (`address_canon_cache`, db/124) and uses the RTL pool internally. That is the
+# module's own business and is covered by this import — Long-Term code writes
+# no SQL against it. The alternative (a second Long-Term geocoder) was
+# deliberately rejected: it would duplicate a solved problem, need its own API
+# keys and cache, and drift from the one the rest of the company relies on.
+# ---------------------------------------------------------------------------
+
+# ZIP → city / state / county name / county FIPS, so a Long-Term DSCR quote can
+# be priced from a ZIP instead of demanding a county FIPS from the caller.
+import src/lib/address-canon.js
 ```
 
 ## Log of authorizations
@@ -106,6 +132,7 @@ rtl-import app-v2/src/components/StaffLayout.jsx
 | 2026-08-03 | `import app-v2/src/components/BorrowerProfilePanel.jsx` — the ONE shared borrower editor, mounted on a long-term file | RTL → LT | *"officers should be able to change the borrower profile on long term files"* — confirmed in the same breath as *"keep borrower read only"*, so the edit goes through the existing shared editor and the existing borrower endpoint; Long-Term code still never writes `borrowers` | #975 |
 | 2026-08-03 | `sql-ref borrower_officers` + `sql-write borrower_officers` — Long-Term records the officer↔person link | RTL → LT | Required to make the line above actually work: a non-privileged officer may only open a borrower profile they have a recorded relationship to, and today that means an **RTL** file. `borrower_officers` (db/327) is the identity-zone link built for precisely this — *"the client who has only ever done non-RTL business with them, so there is no file to match on"* | #975 |
 | 2026-08-14 | `rtl-import app-v2/src/App.jsx` + `rtl-import app-v2/src/components/StaffLayout.jsx` — the FRONT-END mount seam: the router mounts the Long-Term screens, and the staff shell renders the Short-Term / Long-Term switch | LT → RTL | *"You were authorized to touch that switch of the short-term shell."* Asked directly, because rule 5 forbids touching RTL to make LT work and the switch cannot exist without it. Deliberately as narrow as the back-end seam (`src/server.js`): these two files may reference LT code ONLY to mount it and to render the switch — no RTL screen may import an LT component for its own use, and no LT logic may move into a shared file | this PR |
+| 2026-08-16 | `import src/lib/address-canon.js` — ZIP → city/state/county/county-FIPS lookup for the Long-Term DSCR pricer | RTL → LT | *"Yes, you have my written OK to reuse that."* Asked as one specific question: the vendor's own screen turns a ZIP into the full location before pricing, while our connector required the caller to supply the county FIPS and refused an incomplete location. Scoped to this one module used as a READ-ONLY lookup — NOT the RTL address writers, and Long-Term still rewrites no RTL address record | this PR |
 | 2026-08-14 | **The Encompass integration — brought into Long-Term as a self-contained BY-VALUE copy** (logic, authorization, requests, credentials mechanism, field map). Lives entirely in `src/longterm/encompass/**`. | RTL → LT | *"Pull in and copy: the logic of Encompass integration, the credentials of Encompass integration, the requests, the authorization. We need to start long-term loans with a full Encompass understanding … take also all the fields from this mapping and bring it in."* This is a specific, owner-directed exception to the 2026-08-03 "no shared integrations" line below (Encompass only; everything else still stays separate). | this PR |
 
 ### Note on the Encompass copy (2026-08-14)
