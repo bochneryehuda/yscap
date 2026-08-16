@@ -156,11 +156,19 @@ async function ingestDocuments(dbh, order, deps = {}) {
 
   for (const d of docs) {
     try {
-      // Dedupe on the AMC's own document id so re-polling never double-files.
+      // Dedupe on the AMC's own document id so re-polling never double-files — but
+      // the id ALONE is not an identity here. AppraisalScope's own sample response
+      // returns two different documents both carrying `documentId: "1004_XML"`, so
+      // an id-only test would file the first and silently drop the second, losing a
+      // returned appraisal document with nothing anywhere saying so. The pair (id,
+      // name) is what tells two documents apart, and two entries agreeing on BOTH
+      // really are the same document.
       if (d.amcDocumentId) {
         const seen = await dbh.query(
-          `SELECT 1 FROM amc_order_documents WHERE order_id=$1 AND direction='inbound' AND amc_document_id=$2`,
-          [order.id, d.amcDocumentId]);
+          `SELECT 1 FROM amc_order_documents
+            WHERE order_id=$1 AND direction='inbound' AND amc_document_id=$2
+              AND COALESCE(object_name,'') = COALESCE($3,'')`,
+          [order.id, d.amcDocumentId, d.objectName || null]);
         if (seen.rowCount) continue;
       }
       if (!d.objectUrl) continue;

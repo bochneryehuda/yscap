@@ -52,15 +52,34 @@ const REFRESH_THROTTLE_MS = 5 * 60 * 1000;
 const _lastRefresh = new Map();   // cacheKey → ms
 const _inflight = new Map();      // cacheKey → Promise
 
-function feeKey(productCode) { return `GetFee#${String(productCode || '').trim()}`; }
+// THE ZIP IS PART OF THE KEY, because it is now part of the REQUEST. A fee is
+// quoted for a place, so a quote cached for one property must never be served as
+// the quote for another — that is how a cache turns a correctness fix into a
+// wrong number nobody can explain. A quote with no ZIP keeps its old key exactly,
+// so nothing already cached is orphaned.
+function feeKey(productCode, zip) {
+  const z = String(zip == null ? '' : zip).trim();
+  return `GetFee#${String(productCode || '').trim()}` + (z ? `@${z}` : '');
+}
 function locationKey(state, zip) {
   return `GetAppraiserFeesByLocation#${String(state || '').toUpperCase().trim()}:${String(zip || '').trim()}`;
 }
 
-/** A money value out of a vendor row, whatever they called the column. */
+/**
+ * A money value out of a vendor row, whatever they called the column.
+ *
+ * `totalClientFee` LEADS, and that is the whole point of this order: it is
+ * AppraisalScope's own headline figure — what the order costs us all in — and it
+ * was unread, so the quote a person saw was `job_fee`, a COMPONENT. On the
+ * vendor's own sample those two agree at $450 while a separate `clientRushFee` of
+ * $50 sits beside them, so the base fee is exactly the number that goes wrong the
+ * moment anything is added to an order. The old list is kept beneath it as the
+ * fallback for a lookup that states no total (GetAppraiserFeesByLocation returns a
+ * different shape), so nothing that quoted before stops quoting now.
+ */
 function feeAmount(row) {
   if (!row || typeof row !== 'object') return null;
-  for (const k of ['fee', 'amount', 'fee_amount', 'job_fee', 'total_fee', 'price']) {
+  for (const k of ['totalClientFee', 'clientFee', 'fee', 'amount', 'fee_amount', 'job_fee', 'total_fee', 'price']) {
     if (row[k] == null || row[k] === '') continue;
     const n = Number(String(row[k]).replace(/[^0-9.]/g, ''));
     if (Number.isFinite(n) && n > 0) return n;
@@ -157,8 +176,8 @@ async function quoteFor(db, { productCode, state, zip, subdomain } = {}) {
 
   const halves = [
     productCode ? {
-      slot: 'form', key: feeKey(productCode),
-      build: ({ apiKey, subdomain: s }) => cdg.buildGetFee({ apiKey, subdomain: s, productCode }),
+      slot: 'form', key: feeKey(productCode, zip),
+      build: ({ apiKey, subdomain: s }) => cdg.buildGetFee({ apiKey, subdomain: s, productCode, postalCode: zip }),
     } : null,
     (state || zip) ? {
       slot: 'location', key: locationKey(state, zip),

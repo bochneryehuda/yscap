@@ -111,17 +111,26 @@ function buildLookup({ actionType, apiKey, subdomain, searchCriteria }) {
  * both spellings carry the same value: whichever they read, they get the right
  * one. Drop the other once a live call proves which it is.
  */
-function buildGetFee({ apiKey, subdomain, productCode }) {
+// A FEE IS QUOTED FOR A PLACE. The vendor's own GetFee sample carries
+// `deals[].properties[].address.postalCode`, and appraisal fees plainly vary by
+// location — asking without one gets a list price rather than this property's
+// price. Sent only when we have a ZIP, so an early quote with no address behaves
+// exactly as it did before. (`productcode`, lowercase, is kept beside `productCode`:
+// the vendor spells it that way on two OTHER actions, and sending both costs
+// nothing while removing it on a guess could stop the lookup answering.)
+function buildGetFee({ apiKey, subdomain, productCode, productDescription, postalCode }) {
   const p = {};
   if (productCode != null && productCode !== '') { p.productCode = String(productCode); p.productcode = String(productCode); }
-  return {
-    message: {
-      clientSystem: clientSystem({ apiKey }),
-      serviceProviderSystem: serviceProviderSystem({ subdomain }),
-      products: [p],
-      requestActionType: 'GetFee',
-    },
+  if (productDescription) p.productDescription = String(productDescription);
+  const message = {
+    clientSystem: clientSystem({ apiKey }),
+    serviceProviderSystem: serviceProviderSystem({ subdomain }),
+    products: [p],
+    requestActionType: 'GetFee',
   };
+  const zip = postalCode == null ? '' : String(postalCode).trim();
+  if (zip) message.deals = [{ properties: [{ address: { postalCode: zip } }] }];
+  return { message };
 }
 
 /** Appraiser fees where the property is. The vendor's shape, verbatim:
@@ -392,6 +401,7 @@ function parseDetail(resp) {
     // `partyRoleType`s, and the AMC is the management company — telling a loan
     // officer that "Appraisal Management Company Name" is inspecting their
     // property would be worse than telling them nothing.
+    const prop = (deal && Array.isArray(deal.properties) && deal.properties[0]) ? deal.properties[0] : null;
     const parties = (deal && Array.isArray(deal.appraisers)) ? deal.appraisers : [];
     const role = (t) => parties.find((a) => a && String(a.partyRoleType || '').toLowerCase() === t) || null;
     const appraiser = role('appraiser');
@@ -434,6 +444,25 @@ function parseDetail(resp) {
       paidAmount: p ? detailMoney(p.paidAmount) : null,
       invoicedAmount: p ? detailMoney(p.invoicedAmount) : null,
       productDescription: p ? detailText(p.productDescription) : null,
+      // THE NUMBER EVERYBODY IS WAITING FOR, and it is REPORTED here, never applied.
+      // Writing it onto the file's as-is or after-repair value is the As-Is desk's
+      // job (src/lib/appraisal/as-is-reader.js) and it has a page of guards for
+      // doing so — the appraisal must be about this property, the file must not be
+      // frozen, a human's decision must not be overturned. This is the vendor
+      // stating a figure on their order record; it goes on the screen beside their
+      // name for it and nowhere near a priced number.
+      appraisedValue: prop ? detailMoney(prop.appraisedValueofSubjectProperty) : null,
+      parcelIdentifier: prop ? detailText(prop.parcelIdentifier) : null,
+      // The report the vendor is holding, if they have named it. Nothing downloads
+      // from here — RetriveAppraisalDocuments is the pull — but knowing a file
+      // exists is what tells a person the wait is over rather than ongoing.
+      files: (p && Array.isArray(p.embeddedFiles) ? p.embeddedFiles : [])
+        .filter((f) => f && (f.objectName || f.objectURL))
+        .map((f) => ({
+          name: detailText(f.objectName),
+          url: detailText(f.objectURL),
+          effectiveDate: detailDate(f.documentEffectiveDate),
+        })),
     };
     return out;
   } catch (_) { return null; }
@@ -639,8 +668,16 @@ function property(pr) {
   if (pr.salesContractAmount != null) out.salesContractAmount = money(pr.salesContractAmount);
   if (pr.salesConcessionAmount != null) out.salesConcessionAmount = money(pr.salesConcessionAmount);
   if (pr.salesConcessionType) out.salesConcessionType = pr.salesConcessionType;
+  // THE KEY IS `propertyViewType`, NOT `propertyViewTypeIdentifier`. We invented the
+  // longer name: it appears NOWHERE in the vendor's package, while `propertyViewType`
+  // appears 30 times across their CreateAppraisal / AddForm samples and their Postman
+  // collection. A field the gateway does not recognise is dropped in silence, so every
+  // order ever placed threw the property view away — waterfront, golf course, busy road,
+  // the whole GetPropertyViewType selection a person had made on the order form — and
+  // nothing anywhere said so. Never rename a key toward what looks tidier; the vendor's
+  // spelling is the contract.
   if (Array.isArray(pr.viewTypeIds) && pr.viewTypeIds.length) {
-    out.siteAnalysis = { propertyView: pr.viewTypeIds.map((id) => ({ propertyViewTypeIdentifier: String(id) })) };
+    out.siteAnalysis = { propertyView: pr.viewTypeIds.map((id) => ({ propertyViewType: String(id) })) };
   }
   return out;
 }
@@ -743,10 +780,22 @@ function parseRevisionAck(resp) {
   return { amcRevisionId: first && first.revisionId != null ? String(first.revisionId) : null };
 }
 function buildGetRevisions(ctx) { return orderLookup('GetRevisions', ctx); }
+// THE REVISION'S OWN WORDS. The vendor returns the text, who wrote it and when
+// (`revisedRequestCommentText` / `revisedCommentContactFullName` /
+// `revisedCommentTextDatetime`); we read only the id, so a revision raised at the
+// AMC reached the file as the literal placeholder "(revision seen at the AMC)" —
+// a row telling somebody that something was asked for, and refusing to say what.
 function parseRevisions(resp) {
   const products = resp && resp.message && resp.message.products;
   if (!Array.isArray(products)) return [];
-  return products.map((r) => ({ amcRevisionId: r && r.revisionId != null ? String(r.revisionId) : null, raw: r }));
+  return products.map((r) => ({
+    amcRevisionId: r && r.revisionId != null ? String(r.revisionId) : null,
+    body: (r && detailText(r.revisedRequestCommentText)) || null,
+    author: (r && detailText(r.revisedCommentContactFullName)) || null,
+    // Kept verbatim, for the reason db/567 records: the vendor sends no timezone.
+    createdAt: (r && detailText(r.revisedCommentTextDatetime)) || null,
+    raw: r,
+  }));
 }
 
 // ---- documents -------------------------------------------------------------
@@ -785,6 +834,14 @@ function parseDocuments(resp) {
     objectSize: f.objectSize != null ? String(f.objectSize) : null,
     createdDatetime: f.createdDatetime || null,
     isAdditional: String(f.isAdditionalDocument) === '1',
+    // THE MISMO DATA FILE THE APPRAISAL IMPORTER RUNS ON. The vendor names it as an
+    // ATTRIBUTE of the document entry (`objectXMLFileName`) rather than as an entry
+    // of its own, and flags whether one exists at all (`includeXMLIndicator`) —
+    // both read only out of `raw` before, which nothing read. Surfaced so the poll
+    // can say plainly "the vendor holds an XML for this report" instead of the
+    // ingest silently ending up with a PDF and no data file.
+    xmlFileName: detailText(f.objectXMLFileName),
+    hasXml: f.includeXMLIndicator === true || String(f.includeXMLIndicator) === 'true' || String(f.includeXMLIndicator) === '1',
     raw: f,
   }));
 }
@@ -827,20 +884,106 @@ function money(v) {
 
 // A NACK / error carried in either the top-level or product status responses.
 // statusCondition 'Nack'/'Failure'/'ERROR' (or a negative code) means the call failed.
+/**
+ * PER-FILE FAILURES, which live somewhere else entirely.
+ *
+ * A multi-file upload does not fail as a whole: the vendor's own NACK sample
+ * carries `products[].statusResponses[]` naming EACH rejected file
+ * (`{objectName:'happy.abc', statusCondition:'fail', statusDescription:'Invalid
+ * file extension'}`) — and `'fail'` is not one of the words the envelope check
+ * below recognises. So a send of three documents where two were rejected could
+ * report success, and the two would simply never exist at the vendor with nothing
+ * on any screen saying so.
+ *
+ * Returns [] when there is nothing wrong, so a caller can test it as a list.
+ */
+function parseFileErrors(resp) {
+  const products = resp && resp.message && resp.message.products;
+  if (!Array.isArray(products)) return [];
+  const out = [];
+  for (const p of products) {
+    const list = p && p.statusResponses;
+    if (!Array.isArray(list)) continue;
+    for (const s of list) {
+      if (!s) continue;
+      // IT MUST NAME A FILE. `products[].statusResponses[]` is the SAME array the
+      // ORDER STATUS arrives in (`parseStatus` reads it), so testing the condition
+      // word alone would read a vendor order status of "Error" — a rejected order,
+      // an ordinary lifecycle state — as a rejected upload, and the poll would stop
+      // advancing that order. A per-file failure is about a file and says which one;
+      // a status row carries a statusCode and a statusName and never an objectName.
+      if (!s.objectName) continue;
+      const cond = String(s.statusCondition || '').toLowerCase();
+      // Read the word rather than assume it: an ACK-shaped row must not be raised.
+      if (!(cond === 'fail' || cond === 'failure' || cond === 'error' || cond === 'nack')) continue;
+      out.push({
+        objectName: s.objectName || null,
+        description: s.statusDescription || null,
+        comments: s.comments || null,
+      });
+    }
+  }
+  return out;
+}
+
 function parseError(resp) {
   const m = (resp && resp.message) || {};
   const st = firstStatus(m.digitalGatewaySystem && m.digitalGatewaySystem.statusResponses)
           || firstStatus(m.statusResponses);
-  if (!st) return null;
+  // THE FILES CAN FAIL WITHOUT THE ENVELOPE FAILING. The vendor's sample happens to
+  // carry both, but nothing guarantees that pairing, and an upload that lost two of
+  // three documents while answering ACK is the worst shape this integration has —
+  // it reads as success forever. So per-file failures are an error in their own
+  // right, whatever the envelope said.
+  const files = parseFileErrors(resp);
+  if (!st) {
+    if (!files.length) return null;
+    return {
+      code: null, name: 'FILE_REJECTED', vendorCode: vendorErrorCode(m),
+      description: composeErrorText(null, vendorErrorCode(m), files),
+      vendorDescription: null, files,
+    };
+  }
   const cond = String(st.statusCondition || '').toLowerCase();
   const code = Number(st.statusCode);
   const isError = cond === 'nack' || cond === 'failure' || cond === 'error' || (Number.isFinite(code) && code < 0);
-  if (!isError) return null;
+  if (!isError && !files.length) return null;
   return {
     code: st.statusCode != null ? String(st.statusCode) : null,
-    name: st.statusName || null,
-    description: st.statusDescription || null,
+    name: st.statusName || (isError ? null : 'FILE_REJECTED'),
+    // AppraisalScope's OWN error code, which the gateway's generic "Service Provider
+    // Processing Error" does not carry. It is in BOTH NACK samples and it is the only
+    // thing their support can look up, so losing it means every vendor conversation
+    // starts from nothing.
+    vendorCode: vendorErrorCode(m),
+    // `description` IS THE SENTENCE SOMEBODY READS, and roughly a dozen call sites
+    // already write it into `last_error`, the journal and the screen. So the two
+    // things the gateway's own generic wording leaves out are composed into it here,
+    // at the one place errors are read, rather than swept into twelve — the vendor's
+    // own code (the only thing their support can look up) and WHICH files they
+    // rejected. `vendorDescription` keeps their words unmixed for anything that
+    // needs them raw.
+    vendorDescription: st.statusDescription || null,
+    description: composeErrorText(st.statusDescription || null, vendorErrorCode(m), files),
+    files: files.length ? files : undefined,
   };
+}
+
+function vendorErrorCode(m) {
+  const sp = firstStatus(m && m.serviceProviderSystem && m.serviceProviderSystem.statusResponses);
+  return sp && sp.statusCode != null ? String(sp.statusCode) : null;
+}
+function describeFileErrors(files) {
+  return files.map((f) => `${f.objectName || 'a file'}: ${f.description || 'rejected'}`).join('; ');
+}
+/** The one sentence: the gateway's words, which files were rejected, their code. */
+function composeErrorText(desc, vendorCode, files) {
+  const parts = [];
+  if (desc) parts.push(desc);
+  if (files && files.length) parts.push(describeFileErrors(files));
+  let out = parts.join(' — ');
+  if (vendorCode) out = (out ? out + ' ' : '') + `[AppraisalScope ${vendorCode}]`;
+  return out || null;
 }
 
 // Map a CDG/AppraisalScope status (code + name) to PILOT's amc_orders.status lifecycle.
@@ -919,7 +1062,7 @@ module.exports = {
   buildAddRevision, parseRevisionAck, buildGetRevisions, parseRevisions,
   buildUploadDocuments, buildRetrieveDocuments, parseDocuments,
   buildGetStatus, buildGetDetail, parseStatus, parseDetail,
-  parseError, mapStatusToLifecycle, maskRequest,
+  parseError, parseFileErrors, mapStatusToLifecycle, maskRequest,
   // exported for tests
-  _internals: { clientSystem, serviceProviderSystem, digitalGatewaySystem, borrower, property, address, orderLookup, paymentAccount, detailText, detailDate, detailMoney },
+  _internals: { clientSystem, serviceProviderSystem, digitalGatewaySystem, borrower, property, address, orderLookup, paymentAccount, detailText, detailDate, detailMoney, composeErrorText, vendorErrorCode },
 };

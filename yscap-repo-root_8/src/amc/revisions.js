@@ -96,7 +96,20 @@ async function syncRevisions(dbh, order, deps = {}) {
     if (!rv.amcRevisionId) continue;
     const seen = await dbh.query(`SELECT 1 FROM amc_order_revisions WHERE order_id=$1 AND amc_revision_id=$2`, [order.id, rv.amcRevisionId]);
     if (seen.rowCount) continue;
-    await insertRevision(dbh, order.id, { kind: 'other', body: '(revision seen at the AMC)', amcRevisionId: rv.amcRevisionId, status: 'acknowledged', rovDetail: rv.raw ? { raw: rv.raw } : null });
+    // THE VENDOR'S OWN WORDS, when they sent them. This used to file the literal
+    // placeholder below on every inbound revision while `revisedRequestCommentText`
+    // sat unread in the payload — a row telling somebody something was asked for and
+    // refusing to say what. The placeholder remains as the honest fallback for a
+    // revision the vendor genuinely sent no text with.
+    const body = rv.body || '(revision seen at the AMC)';
+    await insertRevision(dbh, order.id, {
+      kind: 'other', body, amcRevisionId: rv.amcRevisionId, status: 'acknowledged',
+      rovDetail: {
+        ...(rv.author ? { amcAuthor: rv.author } : {}),
+        ...(rv.createdAt ? { amcCreatedAt: rv.createdAt } : {}),
+        ...(rv.raw ? { raw: rv.raw } : {}),
+      },
+    });
     added += 1;
   }
   return { ok: true, added };
