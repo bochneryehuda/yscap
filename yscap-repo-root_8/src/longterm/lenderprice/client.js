@@ -34,6 +34,7 @@
  *   single token holder for a small pool behind the same manager — no caller changes.
  */
 
+const crypto = require('crypto');
 const { buildSearch, smoRegistryFromList } = require('./search-model');
 
 const AUTH_BASE = (process.env.LP_AUTH_BASE || 'https://auth.digitallending.com').replace(/\/+$/, '');
@@ -291,6 +292,37 @@ async function postSearchRaw(url, session, payload, opts = {}) {
   return { ok: true, session: s, raw, empty };
 }
 
+// ---- disqualify search store (kickoff once, poll by stable searchKey) ------
+// The disqualify computation is async: a normal /price is ALREADY the kickoff (its body carries
+// showDisqualify + disqualifyAsync + cachedDisqualified=false). To READ the result, the poll must
+// re-post a BYTE-IDENTICAL body with only cachedDisqualified flipped to true — that is how the
+// frontend hits the SAME server-side computation (~16s later, a ~111 MB tree). Rebuilding the body
+// on each poll (re-fetching the live base/SMO) risks a different body → a NEW upstream search that
+// is never ready. So we STORE the exact kickoff body under a stable searchKey and poll THAT.
+const DISQ_STORE = new Map(); // searchKey -> { body, url, createdAt, expiresAt }
+const DISQ_STORE_TTL_MS = Number(process.env.LP_DISQUALIFY_STORE_TTL_MS || 15 * 60 * 1000);
+const DISQ_STORE_MAX = 200;
+// Stable key for a search: sha256 of the canonical body with cachedDisqualified removed (the only
+// field that differs between kickoff and poll). Deterministic → the same scenario reuses one slot.
+function searchKeyFor(body) {
+  const clone = { ...body }; delete clone.cachedDisqualified;
+  return crypto.createHash('sha256').update(JSON.stringify(clone)).digest('hex').slice(0, 32);
+}
+function pruneDisqStore() {
+  const now = Date.now();
+  for (const [k, v] of DISQ_STORE) if (v.expiresAt <= now) DISQ_STORE.delete(k);
+  while (DISQ_STORE.size > DISQ_STORE_MAX) { const first = DISQ_STORE.keys().next().value; DISQ_STORE.delete(first); }
+}
+function storeKickoff(url, body) {
+  pruneDisqStore();
+  const key = searchKeyFor(body);
+  const now = Date.now();
+  // Store the kickoff body verbatim (cachedDisqualified is already false on it). Refresh the TTL
+  // on a repeat so an active scenario stays pollable.
+  DISQ_STORE.set(key, { body, url, createdAt: now, expiresAt: now + DISQ_STORE_TTL_MS });
+  return key;
+}
+
 async function price(scenario) {
   const f = await priceFoundation();
   if (!f.ok) return f;
@@ -301,7 +333,10 @@ async function price(scenario) {
   const payload = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo });
   const r = await postSearchRaw(f.url, f.session, payload);
   if (!r.ok) return { ...r, request: payload };
-  return { ok: true, raw: r.raw, request: payload };
+  // A normal price IS the disqualify kickoff — store the exact body so a later status poll can
+  // re-post it byte-identically (only cachedDisqualified flipped) and hit the SAME computation.
+  const searchKey = storeKickoff(f.url, payload);
+  return { ok: true, raw: r.raw, request: payload, searchKey };
 }
 
 // Whether a searchRaw response carries a POPULATED disqualify tree (the async result is ready).
@@ -379,6 +414,27 @@ async function pollDisqualified(scenario) {
   if (r.empty || !hasDisqualifyData(r.raw)) return { ok: true, ready: false, request: body };
   return { ok: true, ready: true, raw: r.raw, request: body };
 }
+
+// POLL-ONLY by searchKey — the correct, idempotent status check (the audit's required design).
+// Loads the STORED kickoff body (never rebuilds via buildSearch, never re-fetches base/SMO), flips
+// ONLY cachedDisqualified to true, and posts it ONCE. So every poll hits the SAME upstream
+// computation the price() kickoff started — it can never restart/replace it, and the cache key is
+// byte-stable across polls. Returns { unknown:true } when the searchKey is absent/expired so the
+// route can tell the caller to re-run the price. Never holds a long loop: one post, then answer.
+async function pollDisqualifiedByKey(searchKey) {
+  pruneDisqStore();
+  const entry = DISQ_STORE.get(searchKey);
+  if (!entry) return { ok: true, unknown: true, ready: false };
+  const f = await priceFoundation(); // session/auth only — the scenario body comes from the store
+  if (!f.ok) return f;
+  const body = { ...entry.body, cachedDisqualified: true }; // ONLY this field differs from the kickoff
+  const r = await postSearchRaw(entry.url || f.url, f.session, body, { timeoutMs: DISQUALIFY_TIMEOUT_MS });
+  if (!r.ok) return { ...r, searchKey };
+  if (r.empty || !hasDisqualifyData(r.raw)) return { ok: true, ready: false, searchKey };
+  return { ok: true, ready: true, raw: r.raw, searchKey };
+}
+// Test/introspection helper — is a searchKey currently stored (kicked off, not expired)?
+function hasStoredSearch(searchKey) { pruneDisqStore(); return DISQ_STORE.has(searchKey); }
 
 // ---- request builder (decoded field mapping; README "Field mapping") -------
 // Turns a plain scenario into the Lender Price searchRaw body. Confirmed tokens per the
@@ -865,7 +921,8 @@ function countArrays(root, keys) {
 }
 
 module.exports = {
-  configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, pollDisqualified, parse, parseFull, parseDisqualified, summarizeRaw,
+  configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, pollDisqualified, pollDisqualifiedByKey,
+  hasStoredSearch, searchKeyFor, parse, parseFull, parseDisqualified, summarizeRaw,
   hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
-  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID },
+  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE },
 };
