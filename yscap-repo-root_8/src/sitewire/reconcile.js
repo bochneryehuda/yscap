@@ -198,7 +198,11 @@ function reactFor(status, n, addr, ctx) {
 // keeps getting the designed findings/release emails from the human deliver/release flows, unchanged.
 async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, fileCtx) {
   const notify = require('../lib/notify');
-  const ctx = fileCtx || { platform: 'sitewire', method: null };
+  // FAILS CLOSED when no routing context was supplied. `resolved:false` is what
+  // `trinity/eligibility` reads as "we could not look" — and ordering an inspection
+  // spends real money and sends a real person to a real address, so a caller that did
+  // not resolve the file must never be able to trigger one by omission.
+  const ctx = fileCtx || { platform: 'sitewire', method: null, resolved: false };
   const drawId = draw.sitewire_draw_id;
   const newStatus = draw.status || null;
   const newAppr = Number(draw.total_approved_cents) || 0;
@@ -239,8 +243,20 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
     // 'trinity'-routed file (physical, non-Blue-Lake) places the physical inspection
     // order. It returns immediately for every other platform, so a Sitewire virtual
     // file and a TrustPoint/Blue Lake file are untouched by its presence here.
+    //
+    // THE WHOLE ROUTING CONTEXT GOES THROUGH, and that is not tidiness — it is the
+    // difference between this door working and not existing. `eligibility.isTrinityFile`
+    // asks THREE questions (physical method, PILOT-administered platform, routing
+    // actually resolved), and until 2026-08-16 this call site passed only `platform`.
+    // A missing `method` reads as "not physical", so the rule answered NO on every draw
+    // ever submitted and a physical inspection was never ordered from this door —
+    // silently, because the call is fire-and-forget and its refusal is a plain return
+    // value nobody was reading. The eligibility fix of the same day corrected the RULE;
+    // this is the CALLER that feeds it. Guarded by a source assertion in
+    // scripts/test-trinity-eligibility-pure.js so it cannot regress by omission again.
     require('../trinity/intake').maybeOrderFromSitewire(appId, {
-      drawId, status: newStatus, platform: ctx.platform,
+      drawId, status: newStatus,
+      platform: ctx.platform, method: ctx.method, resolved: ctx.resolved,
     }).catch(() => {});
   };
 

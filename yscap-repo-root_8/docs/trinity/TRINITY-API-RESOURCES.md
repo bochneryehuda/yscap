@@ -419,6 +419,57 @@ fan-out's returned recipient list is what stops somebody who is both from gettin
 It emails rather than sitting in-app: an outside vendor asking us a question is waiting on an
 answer. **Nothing about a Trinity message ever reaches the borrower.**
 
+## 4.10 The THIRD door — ordering it ourselves from the draw desk
+
+Owner-directed 2026-08-16: *"It should automatically start ordering the reports whenever a
+physical inspection comes in. We should also have the option to order it on our end in the
+draw center. When we are ordering manually, it should also send over all the information
+that we set up."*
+
+`POST /api/trinity/files/:appId/orders` (`intake.orderManually`, `manage_draws`). It exists
+because the two automatic doors mint the order record as a SIDE EFFECT of a borrower
+submitting a draw, so when an automatic order stood down for any of the ordinary reasons it
+can — the connection off during setup, credentials not in yet, Trinity unreachable for an
+hour, a draw that arrived before this program existed — there was nothing to press. The
+desk's existing button only ever RE-DROVE a record that already existed.
+
+**It changes nothing about what is sent, by construction rather than by promise.** It
+resolves the same record the automatic door would, keyed identically (`swd-<drawId>` /
+`pdr-<requestId>`), and hands it to the SAME `order.placeOrder` — so the construction
+budget, the historical draws per line, the budget-and-draws spreadsheet, the appraisal, the
+scope of work and the most recent previous inspection report all travel exactly as they do
+on an automatic order. Because the key is the claim, a manual click and a later automatic
+pass can never produce two orders for one draw (proven both ways in
+`test-trinity-order-db.js` §N and `test-trinity-desk-route-db.js` §E).
+
+**It requires a draw, deliberately.** Form 19 is a LINE-ITEM draw and `buildOrderPayload`
+refuses a payload with no line requesting an amount, so an order with no draw behind it has
+nothing to inspect against. `intake.orderOptions` is the read behind the picker: the file's
+own submitted Sitewire draws and trinity portal requests, each marked whether Trinity is
+already holding an order for it, and — when the file is not Trinity's — the plain reason
+why, from the shared `eligibility` rule. The amount shown is the SUM of the draw's own
+request lines rather than Sitewire's header total, because that sum is literally what
+`placeOrder` sends and the header total is 0 whenever their payload omits it.
+
+### 4.10a Three defects this pass found, each invisible to the tests that existed
+
+1. **THE WHOLE DESK WAS UNREACHABLE.** `src/routes/trinity.js` mounted `requireStaff`
+   without `requireAuth`. There is no global `authenticate` in `server.js` — every other
+   staff router mounts both — so `req.actor` was never populated and every route on the
+   Trinity desk answered `403 "staff only"`, to everyone, for every file. Nothing noticed
+   because every test called the modules directly and none went through Express.
+   `test-trinity-desk-route-db.js` is the first thing here to speak HTTP.
+2. **THE SITEWIRE AUTO-ORDER DOOR WAS STILL DEAD.** The eligibility RULE was fixed on
+   2026-08-14; the CALLER was not. `reconcile.js` passed only `platform`, so `method`
+   arrived undefined, rule 1 read "not physical", and the rule answered no on every draw
+   ever submitted — silently, because the call is fire-and-forget and its refusal is a
+   return value nobody reads. Pinned by a source assertion in
+   `test-trinity-eligibility-pure.js` §F.
+3. **A DRAW COUNTED AS ITS OWN HISTORY.** `budgetLines` summed every approved request on
+   the file, including the draw being inspected, so a draw already approved on our side
+   when the inspection was ordered was reported to the inspector BOTH as money already
+   released AND as the amount being requested. `placeOrder` now excludes it by id.
+
 ## 5. The status ladder (all 19, `api/orders_statuses.json`)
 
 | Trinity | id | our state |
