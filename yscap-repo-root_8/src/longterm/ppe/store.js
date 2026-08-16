@@ -133,8 +133,133 @@ async function listPrograms(db, scope, investorId) {
   return r.rows;
 }
 
+// ---- rate-sheet store (db/556) — versions, grids, LLPAs, limits ------------
+
+// Create (or idempotently update) a rate-sheet version under a program. A version is the effective-
+// dated container the grid/adjustments/limit hang off; (scope, program, version_no, reprice_seq) is
+// unique. Channel defaults to the coded product default.
+async function createRateSheetVersion(db, scope, opts = {}) {
+  const { programId, versionNo, repriceSeq = 0, channel, status = 'draft', sourceFormat = null,
+    effectiveFrom = null, contentHash = null, createdBy = null } = opts;
+  const ch = channel || settings.resolve('program.default_channel').value;
+  const r = await db.query(
+    `INSERT INTO lt_ppe_rate_sheet_version
+       (scope, program_id, version_no, reprice_seq, channel, status, source_format, effective_from, content_hash, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     ON CONFLICT (scope, program_id, version_no, reprice_seq)
+       DO UPDATE SET channel = EXCLUDED.channel, status = EXCLUDED.status,
+                     source_format = EXCLUDED.source_format, content_hash = EXCLUDED.content_hash,
+                     updated_at = now()
+     RETURNING *`,
+    [scope, programId, versionNo, repriceSeq, ch, status, sourceFormat, effectiveFrom, contentHash, createdBy]);
+  return r.rows[0];
+}
+
+// Replace a version's base-price grid (append-only versioning means a version's grid is set once; this
+// is a full-set write used at ingestion). Each row: { noteRateMilliPct, lockDays, product?, priceMilli }.
+async function replaceBasePrices(db, scope, versionId, rows = []) {
+  await db.query('DELETE FROM lt_ppe_base_price WHERE version_id = $1', [versionId]);
+  for (const bp of rows) {
+    await db.query(
+      `INSERT INTO lt_ppe_base_price (scope, version_id, note_rate_milli_pct, lock_days, product, price_milli)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+      [scope, versionId, bp.noteRateMilliPct, bp.lockDays, bp.product || '', bp.priceMilli]);
+  }
+  return rows.length;
+}
+
+// Replace a version's LLPA adjustment rows. Each row: { dimension, ficoMin?, ficoMax?, ltvMin?,
+// ltvMax?, dscrMin?, dscrMax?, predicate?, adjMilli, adjustmentTarget?, unit?, signConvention?,
+// cumulative?, priority?, reason?, code?, meta? }. Bands are half-open [min,max).
+async function replaceAdjustments(db, scope, versionId, rows = []) {
+  await db.query('DELETE FROM lt_ppe_adjustment WHERE version_id = $1', [versionId]);
+  for (const a of rows) {
+    await db.query(
+      `INSERT INTO lt_ppe_adjustment
+         (scope, version_id, dimension, fico_min, fico_max, ltv_min, ltv_max, dscr_min, dscr_max,
+          predicate, adj_milli, adjustment_target, unit, sign_convention, cumulative, priority, reason, code, meta)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb)`,
+      [scope, versionId, a.dimension, a.ficoMin ?? null, a.ficoMax ?? null, a.ltvMin ?? null, a.ltvMax ?? null,
+        a.dscrMin ?? null, a.dscrMax ?? null, a.predicate ? JSON.stringify(a.predicate) : null,
+        a.adjMilli, a.adjustmentTarget || 'price', a.unit || 'points', a.signConvention || 'cost_positive',
+        a.cumulative !== false, a.priority || 0, a.reason || null, a.code || null, JSON.stringify(a.meta || {})]);
+  }
+  return rows.length;
+}
+
+// Set (upsert) a version's price limits. { minPriceMilli?, roundingIncrementMilli?, roundingMode?,
+// capTiers?, onExceed? }.
+async function setPriceLimit(db, scope, versionId, opts = {}) {
+  const { minPriceMilli = null, roundingIncrementMilli = 125, roundingMode = 'nearest_eighth',
+    capTiers = [], onExceed = 'cap_and_keep_eligible' } = opts;
+  const r = await db.query(
+    `INSERT INTO lt_ppe_price_limit
+       (scope, version_id, min_price_milli, rounding_increment_milli, rounding_mode, cap_tiers, on_exceed)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+     ON CONFLICT (scope, version_id)
+       DO UPDATE SET min_price_milli = EXCLUDED.min_price_milli,
+                     rounding_increment_milli = EXCLUDED.rounding_increment_milli,
+                     rounding_mode = EXCLUDED.rounding_mode, cap_tiers = EXCLUDED.cap_tiers,
+                     on_exceed = EXCLUDED.on_exceed, updated_at = now()
+     RETURNING *`,
+    [scope, versionId, minPriceMilli, roundingIncrementMilli, roundingMode, JSON.stringify(capTiers), onExceed]);
+  return r.rows[0];
+}
+
+// Load a complete rate sheet for pricing: { version, basePrices[], adjustments[], priceLimit }.
+async function loadRateSheet(db, versionId) {
+  const v = await db.query('SELECT * FROM lt_ppe_rate_sheet_version WHERE id = $1', [versionId]);
+  if (!v.rows.length) return null;
+  const bp = await db.query('SELECT * FROM lt_ppe_base_price WHERE version_id = $1 ORDER BY note_rate_milli_pct, lock_days', [versionId]);
+  const adj = await db.query('SELECT * FROM lt_ppe_adjustment WHERE version_id = $1 ORDER BY priority, id', [versionId]);
+  const pl = await db.query('SELECT * FROM lt_ppe_price_limit WHERE version_id = $1', [versionId]);
+  return { version: v.rows[0], basePrices: bp.rows, adjustments: adj.rows, priceLimit: pl.rows[0] || null };
+}
+
+// Publish a version: mark it published + effective from now, and CLOSE the prior published version's
+// effective_to (the effective-dating discipline — nothing is deleted, "current" is a thin predicate).
+// One transaction. Returns the published version row.
+async function publishRateSheetVersion(db, scope, versionId) {
+  // Works with LT's db wrapper (getClient) or a raw pg Pool (connect).
+  const client = await (typeof db.getClient === 'function' ? db.getClient() : db.connect());
+  try {
+    await client.query('BEGIN');
+    const cur = await client.query('SELECT program_id, channel FROM lt_ppe_rate_sheet_version WHERE id = $1', [versionId]);
+    if (!cur.rows.length) { await client.query('ROLLBACK'); return null; }
+    const { program_id: programId, channel } = cur.rows[0];
+    await client.query(
+      `UPDATE lt_ppe_rate_sheet_version
+          SET status = 'superseded', effective_to = now(), updated_at = now()
+        WHERE scope = $1 AND program_id = $2 AND channel = $3 AND status = 'published' AND id <> $4`,
+      [scope, programId, channel, versionId]);
+    const r = await client.query(
+      `UPDATE lt_ppe_rate_sheet_version
+          SET status = 'published', effective_from = now(), effective_to = NULL, updated_at = now()
+        WHERE id = $1 RETURNING *`, [versionId]);
+    await client.query('COMMIT');
+    return r.rows[0];
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* the original error is the one that matters */ }
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// The published version currently in effect for a program+channel (the thin "current" predicate).
+async function currentRateSheetVersion(db, scope, programId, channel = 'correspondent') {
+  const r = await db.query(
+    `SELECT * FROM lt_ppe_rate_sheet_version
+      WHERE scope = $1 AND program_id = $2 AND channel = $3 AND status = 'published'
+        AND effective_from <= now() AND (effective_to IS NULL OR effective_to > now())
+      ORDER BY effective_from DESC LIMIT 1`, [scope, programId, channel]);
+  return r.rows[0] || null;
+}
+
 module.exports = {
   normAlias,
   loadSettingOverrides, resolveSettings, resolveSetting, setSetting, clearSetting,
   findInvestorByName, createInvestor, listInvestors, createProgram, listPrograms,
+  createRateSheetVersion, replaceBasePrices, replaceAdjustments, setPriceLimit,
+  loadRateSheet, publishRateSheetVersion, currentRateSheetVersion,
 };

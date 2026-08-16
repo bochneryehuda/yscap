@@ -1166,7 +1166,8 @@ model LtPpeProgram {
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  investor LtPpeInvestor? @relation(fields: [investorId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  investor          LtPpeInvestor?          @relation(fields: [investorId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  rateSheetVersions LtPpeRateSheetVersion[]
 
   @@unique([scope, investorId, code], map: "lt_ppe_program_scope_investor_code_uk")
   @@index([investorId])
@@ -1204,4 +1205,102 @@ model LtLpDisqualifySearch {
 
   @@index([expiresAt])
   @@map("lt_lp_disqualify_search")
+}
+
+// PPE rate-sheet store (db/556) — the effective-dated, versioned price-bearing layer hanging off
+// LtPpeProgram: a rate-sheet version container, the base-price grid, the flat LLPA rows, and the
+// price limits. Integer milli-points; half-open [min,max) integer bands. LT-only.
+model LtPpeRateSheetVersion {
+  id            String    @id @default(uuid()) @db.Uuid
+  scope         String    @default("company")
+  programId     String    @map("program_id") @db.Uuid
+  versionNo     Int       @map("version_no")
+  repriceSeq    Int       @default(0) @map("reprice_seq")
+  status        String    @default("draft")
+  channel       String    @default("correspondent")
+  effectiveFrom DateTime? @map("effective_from") @db.Timestamptz(6)
+  effectiveTo   DateTime? @map("effective_to") @db.Timestamptz(6)
+  recordedAt    DateTime  @default(now()) @map("recorded_at") @db.Timestamptz(6)
+  contentHash   String?   @map("content_hash")
+  sourceFormat  String?   @map("source_format")
+  approvedBy    String?   @map("approved_by") @db.Uuid
+  approvedAt    DateTime? @map("approved_at") @db.Timestamptz(6)
+  meta          Json      @default("{}") @db.JsonB
+  createdBy     String?   @map("created_by") @db.Uuid
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  program     LtPpeProgram      @relation(fields: [programId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  basePrices  LtPpeBasePrice[]
+  adjustments LtPpeAdjustment[]
+  priceLimit  LtPpePriceLimit?
+
+  @@unique([scope, programId, versionNo, repriceSeq], map: "lt_ppe_rsv_scope_prog_ver_seq_uk")
+  @@index([programId])
+  @@map("lt_ppe_rate_sheet_version")
+}
+
+model LtPpeBasePrice {
+  id               String   @id @default(uuid()) @db.Uuid
+  scope            String   @default("company")
+  versionId        String   @map("version_id") @db.Uuid
+  noteRateMilliPct Int      @map("note_rate_milli_pct")
+  lockDays         Int      @map("lock_days")
+  product          String   @default("")
+  priceMilli       Int      @map("price_milli")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  version LtPpeRateSheetVersion @relation(fields: [versionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([versionId, noteRateMilliPct, lockDays, product], map: "lt_ppe_base_price_cell_uk")
+  @@index([versionId])
+  @@map("lt_ppe_base_price")
+}
+
+model LtPpeAdjustment {
+  id               String   @id @default(uuid()) @db.Uuid
+  scope            String   @default("company")
+  versionId        String   @map("version_id") @db.Uuid
+  dimension        String
+  ficoMin          Int?     @map("fico_min")
+  ficoMax          Int?     @map("fico_max")
+  ltvMin           Int?     @map("ltv_min")
+  ltvMax           Int?     @map("ltv_max")
+  dscrMin          Int?     @map("dscr_min")
+  dscrMax          Int?     @map("dscr_max")
+  predicate        Json?    @db.JsonB
+  adjMilli         Int      @map("adj_milli")
+  adjustmentTarget String   @default("price") @map("adjustment_target")
+  unit             String   @default("points")
+  signConvention   String   @default("cost_positive") @map("sign_convention")
+  cumulative       Boolean  @default(true)
+  priority         Int      @default(0)
+  reason           String?
+  code             String?
+  meta             Json     @default("{}") @db.JsonB
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  version LtPpeRateSheetVersion @relation(fields: [versionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([versionId])
+  @@index([versionId, dimension])
+  @@map("lt_ppe_adjustment")
+}
+
+model LtPpePriceLimit {
+  id                     String   @id @default(uuid()) @db.Uuid
+  scope                  String   @default("company")
+  versionId              String   @map("version_id") @db.Uuid
+  minPriceMilli          Int?     @map("min_price_milli")
+  roundingIncrementMilli Int      @default(125) @map("rounding_increment_milli")
+  roundingMode           String   @default("nearest_eighth") @map("rounding_mode")
+  capTiers               Json     @default("[]") @map("cap_tiers") @db.JsonB
+  onExceed               String   @default("cap_and_keep_eligible") @map("on_exceed")
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  version LtPpeRateSheetVersion @relation(fields: [versionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([scope, versionId], map: "lt_ppe_price_limit_version_uk")
+  @@map("lt_ppe_price_limit")
 }
