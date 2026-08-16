@@ -218,6 +218,14 @@ async function loadLine(trackRecordId, { role, canSignOff } = {}, client) {
       // degrades the structured line1/city/state/zip to a bare one-line).
       propertyAddressRaw: t.property_address || null,
       dealType: t.deal_type,
+      /* WHAT KIND OF BUILDING IT WAS. The query above is `t.*`, so this value
+         was already in hand and was simply not being passed on — which is why
+         the whole Track Record Center had no property type to show or to edit
+         (owner-reported 2026-08-16). Rendered through the shared vocabulary so
+         a stored "single family" and a stored "Single-family" read as one thing
+         on every screen; an unrecognised spelling is shown as it was stored,
+         never rewritten. */
+      propertyType: require('../property-type').trackRecordPropertyTypeLabel(t.property_type),
       purchaseDate: t.purchase_date,
       saleDate: t.sale_date,
       rentDate: t.rent_date,

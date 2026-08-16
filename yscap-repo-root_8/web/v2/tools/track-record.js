@@ -8,7 +8,21 @@ const TR=(function(){
   const $=s=>document.querySelector(s), $$=s=>Array.from(document.querySelectorAll(s));
 
   /* ---------- constants ---------- */
-  const PROP_TYPES=["Single-family","2-4 unit residential","5+ unit multifamily","Condo / townhome","Mixed-use","Commercial","Land / lot"];
+  /* WHAT KIND OF BUILDING A PAST DEAL WAS — the SAME vocabulary the portal and
+     the server use. This is a MIRROR of TRACK_RECORD_PROPERTY_GROUPS in
+     src/lib/property-type.js: this file is a standalone static asset served to
+     a browser and cannot require server code, so the list is restated, and
+     scripts/test-track-record-property-type-pure.js reads BOTH files and fails
+     the build the moment they disagree. The reasoning behind every entry lives
+     in the server file — including why the tool's original spellings are kept
+     verbatim, why "Condo / townhome" was split into Condo and Townhouse, and
+     why the commercial sub-types were added. Do not edit one list alone. */
+  const PROP_TYPE_GROUPS=[
+    {group:"Residential",types:["Single-family","Townhouse","Condo","PUD","2-4 unit residential","5+ unit multifamily","Manufactured","Modular"]},
+    {group:"Commercial & mixed-use",types:["Mixed-use","Office","Retail","Industrial","Warehouse","Self storage","Commercial"]},
+    {group:"Land",types:["Land / lot"]}
+  ];
+  const PROP_TYPES=PROP_TYPE_GROUPS.reduce(function(a,g){ return a.concat(g.types); },[]);
   const STATUS={
     pending:{label:"Pending review", cls:"pending", desc:"Submitted, not yet reviewed."},
     docs:{label:"Documentation required", cls:"docs", desc:"Needs a closing statement, deed, or lease to verify."},
@@ -331,7 +345,20 @@ const TR=(function(){
     addKind=p.kind; editingId=p.id;
     const ov=$("#tr-ov")||mkOverlay();
     const isFlip=p.kind==="flip", isGnd=p.kind==="ground";
-    const opt=(sel)=>PROP_TYPES.map(t=>'<option'+(sel===t?" selected":"")+'>'+t+'</option>').join("");
+    /* The picker, grouped — and it ALWAYS offers back whatever this line already
+       holds. A <select> whose value is not among its options renders EMPTY, so a
+       spelling stored before this list existed (or brought in by the Excel
+       import) would look erased and would then actually BE erased on the next
+       save, because the form posts every field it shows. */
+    const opt=(sel)=>{
+      const cur=String(sel||"").trim();
+      let html=PROP_TYPE_GROUPS.map(g=>'<optgroup label="'+esc(g.group)+'">'
+        +g.types.map(t=>'<option'+(cur===t?" selected":"")+'>'+esc(t)+'</option>').join("")
+        +'</optgroup>').join("");
+      if(cur && PROP_TYPES.indexOf(cur)<0)
+        html+='<optgroup label="On this deal"><option selected>'+esc(cur)+'</option></optgroup>';
+      return html;
+    };
     // Offer a switch to EACH of the other two deal types (the data has three).
     const switchBtns=["flip","hold","ground"].filter(k=>k!==p.kind)
       .map(k=>'<button class="tr-switch" data-switch="'+k+'">Switch to '+esc(kindLabel(k))+'</button>').join("");

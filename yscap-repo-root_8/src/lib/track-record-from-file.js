@@ -60,7 +60,14 @@ function figuresOf(app) {
     purchase_date: app.acquisition_date || null,
     rehab_amount: app.rehab_budget ?? null,
     current_value: refi ? (app.as_is_value ?? null) : null,
-    property_type: app.property_type || null,
+    /* THIS IS THE PATH THAT COULD CARRY A FORM CODE ONTO A TRACK RECORD. It
+       copies `applications.property_type` verbatim, and that column is exactly
+       where "FNM1025" — the Fannie Mae appraisal FORM for a 2-4 unit report,
+       not a property type — turned up (db/322). The two save doors run this
+       refusal already; the INSERT below does not go through them, so it runs
+       it here. Also canonicalises a spelling, so a line born from a file reads
+       the same as one a borrower typed. */
+    property_type: require('./property-type').sanitizeTrackRecordPropertyType(app.property_type),
   };
 }
 
