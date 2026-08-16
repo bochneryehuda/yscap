@@ -311,21 +311,11 @@ async function loadContext(db, appId) {
 }
 
 // The appraisal payment card + its condition status for the order preview.
-async function cardStatus(db, appId) {
-  try {
-    const c = await db.query(
-      `SELECT last4, brand FROM application_payment_cards WHERE application_id = $1`, [appId]);
-    const cond = await db.query(
-      `SELECT status FROM checklist_items WHERE application_id = $1 AND tool_key = 'appraisal_card' LIMIT 1`, [appId]);
-    const row = c.rows[0];
-    return {
-      onFile: !!row,
-      last4: row ? row.last4 : null,
-      brand: row ? row.brand : null,
-      conditionStatus: cond.rows[0] ? cond.rows[0].status : null,
-    };
-  } catch (_) { return { onFile: false, last4: null, brand: null, conditionStatus: null }; }
-}
+// DELEGATES to `lib/appraisal-card.js` — the one answer to "what does this file's
+// card look like". This module and `richervalues/payment.js` each carried their own
+// and had drifted (onFile vs present, expiry vs condition status), so a caller
+// written against one shape read a real card as absent when handed the other.
+const cardStatus = (dbh, appId) => require('../lib/appraisal-card').cardStatus(dbh, appId);
 
 // ---------------------------------------------------------------------------
 // Form-selection rules (admin-editable amc_form_map rows).
@@ -424,6 +414,17 @@ async function buildPreview(db, appId, opts = {}) {
   const spec = orderBuild.buildOrderSpec(ctx, chosen, opts.overrides || {});
   const missing = orderBuild.missingRequired(spec);
   const forms = await formsCatalog(db, ctx, rules);
+  // The fee quote for THIS form at THIS property. Cache-first, refreshed in the
+  // background; a failure answers a null quote and never touches the preview.
+  let feeQuote = null;
+  try {
+    const prop = (spec && spec.property) || {};
+    feeQuote = await require('./fees').quoteFor(db, {
+      productCode: spec && spec.productCode,
+      state: prop.state, zip: prop.postalCode,
+      subdomain: (cfg.amc && cfg.amc.subdomain) || '',
+    });
+  } catch (_) { feeQuote = null; }
   return {
     context: ctx,
     deal,
@@ -438,6 +439,13 @@ async function buildPreview(db, appId, opts = {}) {
     forms,            // the form catalog [{id,name}], for the staff override dropdown
     notifyEmails: ctx.notifyEmails,   // who NAN will email order updates to
     card: ctx.card,
+    // WHAT IT WILL COST, before it goes out (2026-08-16). Two answers, because
+    // they are two questions: the account's list price for this FORM, and what
+    // appraisers charge WHERE the property is. Read from cache and refreshed in
+    // the background, so a preview never waits on the vendor and a cold cache
+    // simply answers null (the next preview carries the numbers). Best-effort —
+    // a fee we cannot quote must never stop an order being built.
+    feeQuote,
     config: client.configured(),
   };
 }
@@ -598,8 +606,16 @@ async function createOrder(db, appId, opts = {}) {
     });
   }
 
+  // The appraisal condition this order fulfils, so the report files itself into the
+  // right slot when it comes back (see lib/appraisal/condition-slots.js). The caller
+  // may name one; otherwise it is the file's own appraisal-documents condition. It is
+  // resolved HERE rather than left to the caller because neither order panel sends it,
+  // which left every order's link NULL and every returned report off the condition.
+  const checklistItemId = opts.checklistItemId
+    || (await require('../lib/appraisal/condition-slots').conditionItemId(db, appId));
+
   const order = await insertOrder(db, appId, spec, cdg.maskRequest(built.message ? built : { message: built }),
-    opts.staffId, { checklistItemId: opts.checklistItemId, parentOrderId: opts.parentOrderId });
+    opts.staffId, { checklistItemId, parentOrderId: opts.parentOrderId });
 
   if (!opts.place) return { ok: true, order, missing, draft: true };
 
@@ -650,6 +666,9 @@ async function createOrder(db, appId, opts = {}) {
   const ack = cdg.parseAck(resp);
   const updated = await applyAck(db, order.id, ack, resp);
   await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, response: resp, ok: true, staffId: opts.staffId });
+  // The Orders desk mirrors this order (lib/appraisal-order-mirror.js). Fired,
+  // never awaited: the desk is a projection and must never delay or fail a placement.
+  require('../lib/appraisal-order-mirror').fire(appId);
   return { ok: true, order: updated };
 }
 
@@ -715,7 +734,13 @@ async function listOrders(db, appId) {
             status, status_code, status_name, status_description, rush, need_by_date,
             dryrun, last_error, last_status_response, cancel_reason, cancel_requested_at,
             cancel_requested_by, request_payload, created_at, ordered_at, completed_at,
-            last_polled_at, updated_at
+            last_polled_at, updated_at,
+            -- How many messages the AMC has sent that nobody has read yet. Class has
+            -- carried this since it shipped; NAN never did, so an inbound comment
+            -- arrived with nothing on the screen to say so and the "mark read" door
+            -- (which has always existed) could not be reached.
+            (SELECT count(*)::int FROM amc_order_comments c
+              WHERE c.order_id = amc_orders.id AND c.direction='inbound' AND c.read_at IS NULL) AS unread
        FROM amc_orders WHERE application_id = $1 ORDER BY created_at DESC`, [appId]);
   // Attach the plain "what was sent" summary; drop the raw envelope so the response
   // stays lean and never carries the internals of the masked message to the screen.

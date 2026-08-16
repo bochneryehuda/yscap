@@ -14,7 +14,7 @@
 const express = require('express');
 const lp = require('../lenderprice/client');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
-const { REGISTRY_WARNINGS, validateScenario } = require('../lenderprice/search-model');
+const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario } = require('../lenderprice/search-model');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
 const BATTERY = [
@@ -42,8 +42,8 @@ function trimPrograms(parsed, limit = 60) {
 // fields are implemented; a not-yet-implemented field is rejected with 422 unsupported_field.
 const SUPPORTED_FIELDS = new Set([
   'purpose', 'value', 'appraisedValue', 'asIsValue', 'loan', 'ltv', 'fico', 'dscr',
-  'propertyType', 'units', 'zip', 'state', 'county', 'countyFps', 'city', 'countyName',
-  'borrowerType', 'prepayMonths', 'io', 'escrowWaive', 'fthb', 'date',
+  'propertyType', 'units', 'attachment', 'nonWarrantable', 'zip', 'state', 'county', 'countyFps', 'city', 'countyName',
+  'borrowerType', 'prepayMonths', 'io', 'escrowWaive', 'fthb', 'date', 'rentalTerm', 'reservesMonths',
   'term', 'termYears', 'lockDays', 'cashoutAmount',
   // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). Each maps to an
   // exact upstream path/token; an invalid VALUE for one is rejected as invalid_field_value (below).
@@ -62,16 +62,35 @@ function effectiveOf(payload) {
   const p = payload.property || {};
   const dp = payload.dynamicPropertiesMap || {};
   const dyn = (k) => (dp[k] && typeof dp[k] === 'object' ? dp[k].value : dp[k]);
+  const a = p.address || {};
   return {
     loanPurpose: c.loanPurpose, purchasePrice: c.purchasePrice, appraisedValue: c.appraisedValue,
+    // §32.2 — cash-out amount is FAIL-CLOSED: the live capture carried no legitimate vendor field, so
+    // it is retained internally but NOT transmitted. `criteria.cashoutAmount` is ALWAYS absent (it is
+    // never set — even the operator escape hatch LP_CASHOUT_AMOUNT_FIELD writes a dynamic property, not
+    // this criteria field), so `cashoutAmount` here is always undefined; `cashoutAmountInternal` is the
+    // received value we deliberately did not price, shown for transparency.
+    cashoutAmount: c.cashoutAmount,
+    cashoutAmountInternal: payload[CASHOUT_INTERNAL] != null ? payload[CASHOUT_INTERNAL] : undefined,
     loanAmount: c.loanAmount, ltv: c.ltv, fico: c.fico, dscr: c.dscr,
+    // §32.3 — the derived DSCR band token actually transmitted (dynamicPropertiesMap.DSCRRATIO), so a
+    // caller can confirm the reviewed threshold table was applied to the entered DSCR.
+    dscrRatio: dyn('DSCRRATIO'),
     loanYear: c.loanYear, termsCriteria: payload.termsCriteria, termsInMonths: payload.termsInMonths,
     dayLocks: payload.brokerCriteria && payload.brokerCriteria.dayLocks, dayLocksCriteria: payload.dayLocksCriteria,
     loanType: c.loanType, loanTypeCriteria: payload.loanTypeCriteria,
     propertyUse: c.propertyUse, propertyType: p.propertyType, numberOfUnit: p.numberOfUnit, attachmentType: p.attachmentType,
+    // Complete location actually transmitted (audit — effectiveScenario was incomplete).
+    location: { zip: a.zip, state: a.state, city: a.city, county: a.county, censustract: a.censustract, countyName: a.countyName },
     interestOnly: c.interestOnly, escrowWaiver: c.escrowWaiver, firstTimeHomeBuyer: c.firstTimeHomeBuyer,
+    // Reserves / rental-term / prepay-structure selectors (audit — must appear in effectiveScenario).
+    reserves: dyn('GLOBAL_RESERVES'), addlOccupancyType: dyn('AddlOccupancyType'),
+    prepayPlanType: dyn('PrePayment_Plan_Type'),
     compensationType: c.compensationType, incomeDocType: dyn('IncomeDocType'), borrowerType: dyn('GLOBAL_BorrowerType'),
-    prepayTerm: dyn('PrepayTerm'), specialMortgageOptions: Array.isArray(c.specialMortgageOptions) ? c.specialMortgageOptions.map((s) => s && s.name).filter(Boolean) : undefined,
+    // Every special-mortgage-option IDENTITY (id + name), not just the names, so a caller can verify
+    // the exact program-selecting options that were transmitted (audit).
+    prepayTerm: dyn('PrepayTerm'),
+    specialMortgageOptions: Array.isArray(c.specialMortgageOptions) ? c.specialMortgageOptions.map((s) => (s && (s.name || s.id)) ? { id: s.id || null, name: s.name || null } : null).filter(Boolean) : undefined,
     // Registry-backed advanced fields ACTUALLY sent upstream — so a caller can confirm a supported
     // advanced field was applied (not silently dropped). Only present when non-default.
     nonWarrantableProject: c.nonWarrantableProject,
@@ -80,6 +99,7 @@ function effectiveOf(payload) {
     lenderFeeWaiver: c.lenderFeeWaiver, rural: c.rural,
     citizenship: dyn('Citizenship'), tradelines: dyn('Tradelines'),
     mixedUse: dyn('GLOBAL_MixedUse'), noMortgageHistory: dyn('GLOBAL_NoMortgageHistory'),
+    crossCollateral: dyn('GLOBAL_Cross_Collateralization_Product'), firstTimeInvestor: dyn('FirstTimeInvestor'), livingRentFree: dyn('Global_Living_Rent_Free'),
     bankruptcyChapter: dyn('BankruptcyChapter'), bankruptcyStatus: dyn('BankruptcyStatus'), bankruptcySeasoning: dyn('BankruptcySeasoning'),
     foreclosure: dyn('Global_FORECLOSURES'), shortSale: dyn('Global_SHORTSALES'), deedInLieu: dyn('Global_DEEDINLIEU'),
     chargeOff: dyn('GLOBAL_MortgageLoanChargeOffs'), forbearance: dyn('GLOBAL_Forbearances'),
@@ -115,19 +135,29 @@ function rejectInvalidRequest(sc, res) {
   return false;
 }
 
-// Cash-out amount ("cash in hand") transparency — so it's never SILENTLY handled. The vendor UI field
-// has no valid dynamic-property code today (the frontend drops the value), so by default we store it
-// and do NOT transmit it (matching the frontend). Once LP_CASHOUT_AMOUNT_FIELD is set to the confirmed
-// vendor code, it is transmitted. Returns null when no cash-out amount was supplied.
+// Cash-out amount ("cash in hand") transparency — so it's never SILENTLY handled. §32.2 FAIL-CLOSED:
+// the clean live cash-out capture (2026-08-16) carried no legitimate vendor field, so the amount is
+// retained INTERNALLY but is NOT transmitted (see search-model.js) — this SUPERSEDES the earlier
+// "vendor fixed the field" note. The ONLY way it is transmitted is the DELIBERATE operator escape
+// hatch LP_CASHOUT_AMOUNT_FIELD (set once a new capture confirms a real field); `criteria.cashoutAmount`
+// is NEVER set either way. Returns null when no cash-out amount was supplied. Must agree with
+// effectiveScenario.cashoutAmountInternal in the same response.
 function cashoutNote(sc) {
   if (!sc || sc.cashoutAmount == null || sc.cashoutAmount === '') return null;
-  const field = process.env.LP_CASHOUT_AMOUNT_FIELD;
+  const confirmedField = process.env.LP_CASHOUT_AMOUNT_FIELD;
+  if (confirmedField) {
+    return {
+      value: sc.cashoutAmount,
+      transmitted: true,
+      field: `dynamicPropertiesMap.${confirmedField}`,
+      note: `Retained internally AND transmitted under the operator-configured dynamic field dynamicPropertiesMap.${confirmedField} (LP_CASHOUT_AMOUNT_FIELD). criteria.cashoutAmount is never set.`,
+    };
+  }
   return {
     value: sc.cashoutAmount,
-    transmitted: !!field,
-    note: field
-      ? `Transmitted to Lender Price as dynamicPropertiesMap.${field}.`
-      : 'Accepted and stored, but NOT transmitted to Lender Price — the vendor has not assigned this UI field a dynamic-property code yet (the frontend does not send it either, so pricing is unaffected). Set LP_CASHOUT_AMOUNT_FIELD once the vendor confirms the code.',
+    transmitted: false,
+    field: null,
+    note: 'Retained internally but NOT transmitted (§32.2 fail-closed): the live cash-out capture carried no legitimate vendor field, so PILOT does not invent or transmit one. Set LP_CASHOUT_AMOUNT_FIELD only once a new capture confirms a real field.',
   };
 }
 
@@ -220,14 +250,24 @@ function shapeDisqualified(d, opts = {}) {
   const limit = clampInt(opts.limit, 1, LENDER_PAGE_MAX, LENDER_PAGE_MAX);
   const offset = clampInt(opts.offset, 0, Number.MAX_SAFE_INTEGER, 0);
   const itemLimit = clampInt(opts.itemLimit, 1, ITEM_PAGE_MAX, ITEM_PAGE_MAX);
+  // §C3 — a per-lender item OFFSET so a caller can page THROUGH a single lender's items when that
+  // lender has more reasons/programs than itemLimit (previously the remainder was unreachable). Pair
+  // it with lender limit=1 + offset=<lenderIndex> to walk one lender's items to the end.
+  const itemOffset = clampInt(opts.itemOffset, 0, Number.MAX_SAFE_INTEGER, 0);
   const all = Array.isArray(d.lenders) ? d.lenders : [];
   const page = all.slice(offset, offset + limit);
   let returnedItemCount = 0;
   const lenders = page.map((g) => {
-    const items = (g.items || []).slice(0, itemLimit);
+    const allItems = g.items || [];
+    const items = allItems.slice(itemOffset, itemOffset + itemLimit);
     returnedItemCount += items.length;
+    const consumed = itemOffset + items.length;
     return { lender: g.lender, investor: g.investor || null, lenderId: g.lenderId || null,
-      itemCount: g.itemCount, itemTruncated: (g.items || []).length > items.length, items };
+      itemCount: g.itemCount,
+      itemTruncated: consumed < allItems.length,
+      itemOffset,
+      itemNextOffset: consumed < allItems.length ? consumed : null, // cursor to this lender's remainder
+      items };
   });
   const nextOffset = offset + page.length < all.length ? offset + page.length : null;
   const out = {
@@ -235,7 +275,7 @@ function shapeDisqualified(d, opts = {}) {
     lenderCount: d.lenderCount, itemCount: d.itemCount, reasonCount: d.reasonCount,
     returnedLenderCount: lenders.length, returnedItemCount,
     truncated: nextOffset != null || lenders.some((l) => l.itemTruncated),
-    page: { limit, offset, itemLimit, nextOffset },
+    page: { limit, offset, itemLimit, itemOffset, nextOffset },
     lenders,
   };
   return opts.debug ? { disqualified: out, rawSummary: opts.rawSummary || null } : { disqualified: out };
@@ -243,7 +283,8 @@ function shapeDisqualified(d, opts = {}) {
 // Read pagination controls from a request (query on GET, body on POST).
 function pageOptsOf(req) {
   const q = req.query || {}; const b = req.body || {};
-  return { limit: b.limit != null ? b.limit : q.limit, offset: b.offset != null ? b.offset : q.offset, itemLimit: b.itemLimit != null ? b.itemLimit : q.itemLimit };
+  const pick = (k) => (b[k] != null ? b[k] : q[k]);
+  return { limit: pick('limit'), offset: pick('offset'), itemLimit: pick('itemLimit'), itemOffset: pick('itemOffset') };
 }
 
 // GET /disqualifications/:searchKey  (also POST with { searchKey }) — the POLL-ONLY status route.
@@ -330,4 +371,5 @@ function makeRouter() {
   return router;
 }
 
-module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest }, BATTERY };
+module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest }, BATTERY,
+  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields } };

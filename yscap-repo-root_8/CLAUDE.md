@@ -97,9 +97,41 @@ later decision.
   owner asking for it by name — including read-only additions. It is the one thing here whose failure
   cannot be repaired after the fact.
 
-When a schema change is needed, the workflow is unchanged and unaffected by any of the above: a new
-numbered idempotent `db/NNN_*.sql`, applied by the existing runner. If a migration lands and the map is
-not regenerated, `check-schema-behind.js` says so on the next test run, with no database needed.
+### Adding a migration — the two commands, and the one thing you no longer have to remember
+
+**Ask for the number, never pick one: `npm run migration:new -- "what it is for"`.** It writes
+`db/NNN_what_it_is_for.sql` with the idempotent shape `migrate-boot` requires and a header self-labelled
+with its own number. **Do not hand-pick a number by looking at `db/`** — that is how 033, 088 and 113
+collided. The tool takes the next number after every one it can see across `db/` **and every git ref this
+clone knows about**, because the collision is between two sessions on two BRANCHES and the working tree
+shows you only one of them; it prints what it searched and says plainly that a branch nobody has pushed
+is invisible to it. It never re-uses a gap: a gap exists because a number was abandoned, which usually
+means another branch still holds a file with it. `check-migrations.js` remains the gate that CATCHES a
+collision; this is what stops you creating one.
+
+**The schema map now refreshes ITSELF on your pull request — do not regenerate it by hand.** When your
+migration changes the database, CI rebuilds `docs/schema/` from the database your migrations actually
+build and commits it back to your branch (job `schema-push` in `.github/workflows/test.yml`, via
+`scripts/ci-schema-commit.js`). It commits ONLY those generated files, it **never force-pushes** — if you
+pushed while it was working it does nothing at all and the refreshed copy is still attached to the run as
+the `schema-map` artifact — and it carries `[skip ci]`. So `git pull` before your next commit, and expect
+a commit from `github-actions[bot]` on your branch. **That job holds the only write permission in the
+whole workflow, and it must stay the smallest job in it: never move its `contents: write` onto `test-db`
+or up to the workflow level** (`scripts/test-ci-schema-commit-pure.js` fails the build if you do — it
+counts). Nothing about this runs on main: there the check stays advisory and must never fail, because
+`deploy` needs `test-db` and a documentation file must never block a release.
+
+**If you do regenerate by hand, it is TWO commands, not one:** `npm run schema:snapshot` (needs
+`DATABASE_URL` pointing at a database built from these migrations) **and then** `npm run schema:restamp`
+(no database needed). Stopping after the first leaves the map's header quoting the previous database's
+numbers and fails the header test — following the old one-command advice is what broke a build once, and
+`check-schema-behind.js` now prints both. `npm run schema:picture` regenerates the readable page from the
+inventory. All three honour `SCHEMA_OUT_DIR`, which is how CI rebuilds the whole set into a scratch
+directory without touching your working tree.
+
+Everything else about a schema change is unchanged and unaffected by any of the above: a new numbered
+idempotent `db/NNN_*.sql`, applied by the existing runner. If a migration lands and the map is somehow
+still not regenerated, `check-schema-behind.js` says so on the next test run, with no database needed.
 
 ## Repository layout gotcha
 

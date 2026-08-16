@@ -315,6 +315,8 @@ async function processEvent(row, { dbc } = {}) {
               application_id  = COALESCE(application_id, $3)
         WHERE id = $1`,
       [row.id, order ? order.id : null, order ? order.application_id : null]);
+    // Keep the Orders desk's copy of this appraisal in step (lib/appraisal-order-mirror.js).
+    if (order && order.application_id) require('../lib/appraisal-order-mirror').fire(order.application_id);
     return { ok: true, matched: !!order, version: versionOf(order) };
   } catch (e) {
     // A FAILURE MUST STEP OUT OF THE QUEUE. Recording the error alone left the row

@@ -239,7 +239,14 @@ console.log('\n--- the screen\'s editable fields match what the server accepts -
     return src.slice(open + 1, close).match(/'([a-zA-Z]+)'/g).map((s) => s.replace(/'/g, '')).sort();
   };
   const server = grab('src/routes/class.js', 'const OVERRIDE_KEYS');
-  const screen = grab('app-v2/src/components/ClassAppraisalPanel.jsx', 'const EDITABLE');
+  // THE LIVE SCREEN, which is not the one this used to read. The two per-vendor
+  // panels were replaced by the ONE unified appraisal-order section, and this
+  // guard went on comparing the server's allowlist against the retired
+  // ClassAppraisalPanel — so it was proving something about a screen nobody could
+  // open while the screen people DO use was unguarded. (Found by the appraisal
+  // audit, 2026-08-16; the two dead panels were deleted in the same pass, which is
+  // what would have made this read throw rather than quietly pass.)
+  const screen = grab('app-v2/src/components/AppraisalOrderSection.jsx', 'const EDITABLE');
   ok(server && server.length, 'the server\'s override allowlist was found');
   ok(screen && screen.length, 'the screen\'s editable list was found');
   ok(JSON.stringify(server) === JSON.stringify(screen),

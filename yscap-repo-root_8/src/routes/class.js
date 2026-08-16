@@ -152,11 +152,16 @@ router.post('/files/:id/order', async (req, res) => {
   try {
     const ins = await db.query(
       `INSERT INTO class_orders (application_id, reference_number, api_version, uad, order_path,
-                                 product_id, request_body, dryrun, status, placed_by, placed_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,'placing',$9, now()) RETURNING id`,
+                                 product_id, request_body, dryrun, status, placed_by, placed_at,
+                                 checklist_item_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,'placing',$9, now(),$10) RETURNING id`,
       [appId, preview.body.referenceNumber || null, preview.apiVersion, preview.uad, preview.path,
        preview.body.productId != null ? String(preview.body.productId) : null,
-       require('../lib/fields').jsonbText(preview.body), !!cfgd.dryrun, req.actor.id]);
+       require('../lib/fields').jsonbText(preview.body), !!cfgd.dryrun, req.actor.id,
+       // The appraisal condition this order fulfils, so the report files itself into
+       // the right slot when it comes back (lib/appraisal/condition-slots.js). Nothing
+       // ever set this, so every Class order's link was NULL.
+       await require('../lib/appraisal/condition-slots').conditionItemId(db, appId)]);
     orderRowId = ins.rows[0].id;
   } catch (e) {
     // A bookkeeping failure must not stop the order — but it MUST be visible, because

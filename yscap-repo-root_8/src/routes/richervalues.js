@@ -523,6 +523,20 @@ router.post('/orders/:orderId/pay', async (req, res) => {
     await audit(req, 'rv_order_paid', 'application', order.application_id, {
       orderId: order.id, method: updated.payment_method, settled: !!p.settled, ok: !!p.ok,
     });
+    // WRITE DOWN WHICH WAY THIS ONE WAS PAID, so the Orders desk reads the same
+    // sentence for a Richer Values order as for the two companies PILOT cannot
+    // charge (owner-directed 2026-08-16, "keep all the options open"). BEST-EFFORT
+    // and deliberately after the audit: this is a note about a payment that has
+    // already happened, and failing to write a note must never be reported as a
+    // failed payment. `settled` is the verdict `payIntake` reached — a payment
+    // link that was merely SENT is recorded as chosen, never as paid.
+    if (method) {
+      const noted = await require('../lib/appraisal/payment-intent').record({
+        appId: order.application_id, vendor: 'rv', orderId: order.id,
+        method, staffId: req.actor.id, settled: !!p.settled,
+      });
+      if (!noted.ok) console.warn('[rv] payment intent not recorded:', noted.error);
+    }
     const detail = await orderService.orderDetail(db, order.id);
     // `payIntake` never throws for a payment problem — it records what happened in
     // words on the row, so the desk reads the outcome rather than a 500.
