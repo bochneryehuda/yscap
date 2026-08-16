@@ -134,6 +134,24 @@ function offline() {
   ok(dq.reasonCount === 4 && dq.lenders[0].items[0].reasons.length === 2, 'parseDisqualified collects reason text');
   ok(lp.hasDisqualifyData(dqRaw) === true && lp.hasDisqualifyData({ results: { disqualifiedData: { childs: [] } } }) === false, 'hasDisqualifyData detects populated vs empty tree');
 
+  // 14) No-prepay (months=0) must send "No PPP" / PrepayTerm "None" — never "0 Yr PPP" (live HTTP 400).
+  const noPpp = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 0 });
+  ok(noPpp.criteria.specialMortgageOptions.some((o) => o.name === 'No PPP'), 'no-prepay → No PPP special option');
+  ok(noPpp.dynamicPropertiesMap.PrepayTerm.value === 'None', 'no-prepay → PrepayTerm "None"');
+  const p12 = lp.buildSearch({ prepayMonths: 12 });
+  ok(p12.criteria.specialMortgageOptions.some((o) => o.name === '1 Yr PPP'), '12-month prepay → 1 Yr PPP');
+  const fthb = lp.buildSearch({ fthb: true });
+  ok(fthb.criteria.firstTimeHomeBuyer === true, 'first-time buyer reaches criteria');
+
+  // 15) Parser reports minPoints + priceDerivedFromPoints per program (points-quoted leaves).
+  const ptsRaw = { results: { qualifiedNonQMData: { childs: [ { childs: [ { leafs: [
+    { rate: 5.75, adjustedPoints: 3, notRoundedAPR: 6.03, programName: 'DSCR 30yr' },
+    { rate: 5.99, adjustedPoints: 1.5, programName: 'DSCR 30yr' },
+  ] } ] } ] } } };
+  const pp = lp.parse(ptsRaw);
+  ok(pp.programCount === 1 && pp.programs[0].minPoints === 1.5, 'parser reports minPoints across rungs');
+  ok(pp.programs[0].rungs[0].priceDerivedFromPoints === true && pp.programs[0].rungs[0].price === 97, 'parser derives price = 100 − points');
+
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }
 

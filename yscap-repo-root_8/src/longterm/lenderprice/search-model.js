@@ -24,9 +24,15 @@ const SMO_DSCR = [
 ];
 // Prepay-term SMOs by months. Terms without a known id fall back to dynaToSmo + the dynamic
 // PrepayTerm value (Lender Price derives the SMO because the request carries dynaToSmo:true).
+// 0 = No PPP: a no-prepay scenario MUST resolve to "No PPP" / PrepayTerm "None" — sending
+// "0 Yr PPP" / PrepayTerm 0 makes Lender Price reject the search with HTTP 400.
 const SMO_PPP = {
-  60: { id: '58263ae7e4b0e7f399741293', name: '5 Yr PPP' },
+  0: { id: '592868b74cedfd00015bdd64', name: 'No PPP' },
+  12: { id: '592868b74cedfd00015bdd61', name: '1 Yr PPP' },
+  24: { id: '592868b74cedfd00015bdd62', name: '2 Yr PPP' },
   36: { id: '592868b74cedfd00015bdd63', name: '3 Yr PPP' },
+  48: { id: '583608ece4b075381a196a57', name: '4 Yr PPP' },
+  60: { id: '58263ae7e4b0e7f399741293', name: '5 Yr PPP' },
 };
 
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -96,14 +102,16 @@ function buildSearch(sc = {}, opts = {}) {
   c.compensationType = 'BorrowerCompPlan';
   c.interestOnly = !!sc.io;
   c.escrowWaiver = !!sc.escrowWaive;
+  c.firstTimeHomeBuyer = !!sc.fthb;
   c.nonWarrantableProject = pm.nonWarrantableProject;
 
   // Special mortgage options: DSCR pair (+ PPP), resolved to the company's CURRENT {id,name}
-  // via the live registry when present, else the captured built-in ids.
+  // via the live registry when present, else the captured built-in ids. months===0 → "No PPP".
   const smo = SMO_DSCR.map((d) => resolveSmo(d.name, smoReg, d));
   if (months != null) {
     const fb = SMO_PPP[months] || null;
-    const pppName = (months % 12 === 0) ? `${months / 12} Yr PPP` : `${months} Months PPP`;
+    const pppName = months === 0 ? 'No PPP'
+      : (months % 12 === 0) ? `${months / 12} Yr PPP` : `${months} Months PPP`;
     smo.unshift(resolveSmo(fb ? fb.name : pppName, smoReg, fb));
   }
   c.specialMortgageOptions = smo;
@@ -133,7 +141,9 @@ function buildSearch(sc = {}, opts = {}) {
   setDyn('IncomeDocType', 'DSCR');
   setDyn('AddlOccupancyType', 'Long_Term_Rental_Property');
   setDyn('GLOBAL_BorrowerType', sc.borrowerType || 'LLC');
-  setDyn('PrepayTerm', months ? `${months} Months` : null);
+  // months===0 is an EXPLICIT "no prepay" (PrepayTerm "None"), NOT "unset" — sending 0/"0 Months"
+  // is what triggered the live HTTP 400. A missing prepayMonths leaves it null.
+  setDyn('PrepayTerm', months === 0 ? 'None' : (months ? `${months} Months` : null));
   setDyn('PrePayment_Plan_Type', months ? 'Standard' : null);
   m.dynaToSmo = true;
 

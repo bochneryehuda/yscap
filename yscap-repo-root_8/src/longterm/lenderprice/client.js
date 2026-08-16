@@ -463,21 +463,29 @@ function parse(raw) {
     const rate = firstNum(node, RATE_KEYS);
     if (rate == null) return;
     const points = firstNum(node, POINT_KEYS);
-    let price = firstNum(node, PRICE_KEYS);
+    const quoted = firstNum(node, PRICE_KEYS);
+    let price = quoted;
+    // Live grouped results quote cost as adjusted POINTS, not a secondary-market price field.
+    // A rate + points is a complete rung; its price equivalent is 100 − points.
     if (price == null && points != null) price = Math.round((100 - points) * 1000) / 1000;
     if (price == null && points == null) return; // a rate with no cost info at all → not a priced rung
-    const lender = ctx.lender || firstStr(node, LENDER_KEYS) || 'Lender';
-    const program = ctx.program || firstStr(node, PROGRAM_KEYS) || firstStr(node, ['mortgageType']) || 'DSCR';
+    const lender = ctx.lender || firstStr(node, LENDER_KEYS)
+      || firstStr(node.ratePeriod, ['company', 'companyName', ...LENDER_KEYS])
+      || firstStr(node.rateGrid, ['company', 'companyName', ...LENDER_KEYS]) || 'Lender';
+    const program = ctx.program || firstStr(node, PROGRAM_KEYS)
+      || firstStr(node.rateGrid, ['name', 'description', ...PROGRAM_KEYS])
+      || firstStr(node.dynamicDataResult, PROGRAM_KEYS) || firstStr(node, ['mortgageType']) || 'DSCR';
     const key = lender + '||' + program;
     let p = seen.get(key);
     if (!p) { p = { lender, program, rungs: [] }; seen.set(key, p); programs.push(p); }
     p.rungs.push({
       rate, price, points,
+      priceDerivedFromPoints: quoted == null,
       apr: firstNum(node, ['apr', 'annualPercentageRate', 'notRoundedAPR']),
       monthly: monthlyOf(node),
       loanAmount: firstNum(node, ['loanAmount']),
       term: firstNum(node, ['term']),
-      lockDays: firstNum(node, ['dayLock', 'ratePeriod', 'lockPeriod', 'dayLocks']),
+      lockDays: firstNum(node, ['dayLock', 'lockDays', 'lockPeriod']),
     });
   }
   // A priced rung is a terminal node: it carries a rate and does NOT itself branch into childs/leafs.
@@ -499,6 +507,7 @@ function parse(raw) {
     p.rungs.sort((a, b) => a.rate - b.rate);
     p.rungCount = p.rungs.length;
     p.minRate = p.rungs.length ? p.rungs[0].rate : null;
+    p.minPoints = p.rungs.reduce((m, r) => (r.points != null && (m == null || r.points < m) ? r.points : m), null);
     p.maxPrice = p.rungs.reduce((m, r) => (r.price != null && r.price > m ? r.price : m), -Infinity);
     if (!isFinite(p.maxPrice)) p.maxPrice = null;
   }
@@ -511,7 +520,7 @@ function parse(raw) {
   };
 }
 function firstNum(o, keys) { for (const k of keys) { if (o[k] != null && isFinite(Number(o[k]))) return Number(o[k]); } return null; }
-function firstStr(o, keys) { for (const k of keys) { const v = o[k]; if (typeof v === 'string' && v.trim()) return v.trim(); } return null; }
+function firstStr(o, keys) { if (!o || typeof o !== 'object') return null; for (const k of keys) { const v = o[k]; if (typeof v === 'string' && v.trim()) return v.trim(); } return null; }
 
 // ---- disqualify parser -----------------------------------------------------
 // results.disqualifiedData is a grouped tree (ROOT → childs …, keyLabel naming each group's
