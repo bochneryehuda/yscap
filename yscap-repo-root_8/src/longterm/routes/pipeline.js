@@ -41,6 +41,12 @@ router.get('/', async (req, res) => {
       search: req.query.search,
       officerStaffId: req.query.officer,
       unassigned: String(req.query.unassigned || '') === 'true',
+      // "Mine" is asked for as a flag and resolved from the SESSION, never from an
+      // id in the query string — a viewer who sees the whole book could otherwise
+      // ask for somebody else's personal queue by typing their id into the URL. The
+      // `officer` filter is the deliberate, named way to look at another officer's
+      // files, and it exists for exactly that.
+      mine: String(req.query.mine || '') === 'true',
       sort: req.query.sort,
       dir: req.query.dir,
       limit: req.query.limit,

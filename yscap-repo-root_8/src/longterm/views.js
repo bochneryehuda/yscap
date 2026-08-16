@@ -46,6 +46,12 @@ const FILTER_KEYS = {
   search: (v) => str(v),
   officerStaffId: (v) => uuid(v),
   unassigned: (v) => (v === true || v === 'true' ? true : null),
+  // `mine` is stored as a FLAG, never as a staff id, and that is what makes a SHARED
+  // view of it behave sensibly: it resolves against whoever is looking, so "Mine, at
+  // underwriting" is one view the whole desk can use rather than a saved pointer at
+  // one person's queue. It is also why nobody can save a view of somebody else's
+  // personal book — `officerStaffId` is the deliberate, named way to look at that.
+  mine: (v) => (v === true || v === 'true' ? true : null),
   sort: (v) => str(v),
   dir: (v) => (String(v).toLowerCase() === 'asc' ? 'asc' : String(v).toLowerCase() === 'desc' ? 'desc' : null),
 };

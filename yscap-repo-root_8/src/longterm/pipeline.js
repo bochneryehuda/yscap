@@ -63,6 +63,107 @@ const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
 
 /**
+ * The tables every pipeline read shares — the list, its total, and the chip counts.
+ * ONE definition, because a count over a different FROM is a count that describes
+ * different rows than the page it sits above.
+ *
+ * There is no `lt_borrowers` table, and inventing one is the phantom-table trap this
+ * codebase keeps paying for: `lt_loans.borrower_id` points at the SHARED `borrowers`
+ * record (db/549's own FK), which is the identity zone Long-Term is authorized to
+ * READ — `sql-read borrowers`, ledger 2026-08-03. It is read, never written.
+ * `borrowers.full_name` is a generated column (db/346), so it can never disagree with
+ * the name parts it is built from.
+ *
+ * Every join is LEFT. A loan whose borrower has not been mirrored yet must still
+ * appear; an inner join would silently shrink the pipeline, which on a screen meant
+ * to be somebody's whole book is the worst kind of wrong. `lt_locks` and
+ * `lt_properties` join LEFT for the same reason — a loan with no lock or no property
+ * read yet is an ordinary loan whose columns simply read empty. `lt_properties` is
+ * keyed BY `loan_id` (db/549's primary key), so it can never multiply a row.
+ */
+const FROM = `
+      FROM lt_loans l
+      LEFT JOIN borrowers b ON b.id = l.borrower_id
+      LEFT JOIN lt_locks k ON k.loan_id = l.id
+      LEFT JOIN lt_properties p ON p.loan_id = l.id`;
+
+/** "This loan officer's files" — one predicate, so the list and its count agree. */
+const officerIsSql = (ph) => `EXISTS (
+      SELECT 1 FROM lt_loan_contacts c2
+       WHERE c2.loan_id = l.id
+         AND c2.role = 'loan_officer'
+         AND COALESCE(c2.override_staff_id, c2.staff_id) = ${ph}::uuid
+    )`;
+
+/** "Nobody is on it yet" — the closer's and funder's reason for seeing the whole book. */
+const UNASSIGNED_SQL = `NOT EXISTS (
+      SELECT 1 FROM lt_loan_contacts c3
+       WHERE c3.loan_id = l.id
+         AND COALESCE(c3.override_staff_id, c3.staff_id) IS NOT NULL
+    )`;
+
+/**
+ * Compose the WHERE every pipeline read shares.
+ *
+ * `omit` NAMES A FILTER TO LEAVE OUT, and it exists for the chip counts. A facet
+ * count has to describe WHAT CLICKING IT WOULD SHOW, so counting the stages while
+ * the stage filter is applied answers zero for every stage except the selected one —
+ * and a row of zeroes is a row nobody can navigate with. So the stage counts are
+ * built with `omit:'stage'` and everything else (scope, search, who it belongs to)
+ * still applied, and the scope counts the mirror image. Both come from THIS function
+ * rather than a second hand-written WHERE, because a count assembled separately from
+ * the list is a count that eventually describes different rows.
+ *
+ * @param viewerAccess the viewer's resolved access (`accessFor`)
+ * @param staffId      the viewer's PILOT id
+ * @param filters      {stage, folder, search, officerStaffId, unassigned}
+ * @param omit         Set of filter names to leave out
+ * @returns {{whereSql, params, p}}
+ */
+function buildWhere(viewerAccess, staffId, filters = {}, omit = new Set()) {
+  const params = [];
+  const p = (v) => { params.push(v); return `$${params.length}`; };
+  const where = [];
+  const skip = (k) => (omit instanceof Set ? omit.has(k) : Array.isArray(omit) && omit.includes(k));
+
+  // WHO MAY SEE IT — composed, never re-derived, and NEVER omittable: the scope is
+  // the authorization, not a filter, so no facet may count past it.
+  const scope = access.pipelineScopeSql(viewerAccess, staffId, params.length + 1);
+  if (scope.where) {
+    where.push(scope.where);
+    // The fragment used ONE placeholder; keep the counter in step with it.
+    params.push(...scope.params);
+  }
+
+  if (!skip('stage') && filters.stage) where.push(`l.stage_key = ${p(String(filters.stage))}`);
+  if (!skip('folder') && filters.folder) where.push(`l.loan_folder = ${p(String(filters.folder))}`);
+
+  // "Somebody else's files" — only meaningful to a viewer who sees everything; a
+  // scoped viewer already cannot see them, so it narrows rather than widens.
+  if (!skip('whose') && filters.officerStaffId) {
+    where.push(officerIsSql(p(String(filters.officerStaffId))));
+  }
+  if (!skip('whose') && filters.unassigned) where.push(UNASSIGNED_SQL);
+
+  // "Mine" for somebody who sees the whole book. It is `access.onFileSql`, the SAME
+  // predicate that decides what a SCOPED viewer may see at all — so "my files" means
+  // one thing on this side, whichever chair you are sitting in. Defining it as "the
+  // loan officer is me" would hand every processor an empty book of their own.
+  if (!skip('whose') && filters.mine && staffId) {
+    where.push(access.onFileSql(p(String(staffId))));
+  }
+
+  if (!skip('search') && filters.search) {
+    const q = `%${String(filters.search).trim().toLowerCase()}%`;
+    const ph = p(q);
+    where.push(`(lower(COALESCE(l.loan_number, '')) LIKE ${ph}
+              OR lower(COALESCE(b.full_name, '')) LIKE ${ph})`);
+  }
+
+  return { whereSql: where.length ? `WHERE ${where.join('\n        AND ')}` : '', params, p };
+}
+
+/**
  * Build the pipeline query for one viewer.
  *
  * @param access  the viewer's resolved access (`accessFor`)
@@ -72,52 +173,7 @@ const DEFAULT_LIMIT = 50;
  *          never describe a different set of rows than the page.
  */
 function buildPipelineQuery(viewerAccess, staffId, filters = {}) {
-  const params = [];
-  const p = (v) => { params.push(v); return `$${params.length}`; };
-
-  const where = [];
-
-  // WHO MAY SEE IT — composed, never re-derived. The fragment is asked for the
-  // index it will actually occupy.
-  const scope = access.pipelineScopeSql(viewerAccess, staffId, params.length + 1);
-  if (scope.where) {
-    where.push(scope.where);
-    // The fragment used ONE placeholder; keep the counter in step with it.
-    params.push(...scope.params);
-  }
-
-  if (filters.stage) where.push(`l.stage_key = ${p(String(filters.stage))}`);
-  if (filters.folder) where.push(`l.loan_folder = ${p(String(filters.folder))}`);
-
-  // "Somebody else's files" — only meaningful to a viewer who sees everything; a
-  // scoped viewer already cannot see them, so it narrows rather than widens.
-  if (filters.officerStaffId) {
-    where.push(`EXISTS (
-      SELECT 1 FROM lt_loan_contacts c2
-       WHERE c2.loan_id = l.id
-         AND c2.role = 'loan_officer'
-         AND COALESCE(c2.override_staff_id, c2.staff_id) = ${p(String(filters.officerStaffId))}::uuid
-    )`);
-  }
-
-  // The files nobody is on yet — the closer's and funder's reason for seeing the
-  // whole book before assignment.
-  if (filters.unassigned) {
-    where.push(`NOT EXISTS (
-      SELECT 1 FROM lt_loan_contacts c3
-       WHERE c3.loan_id = l.id
-         AND COALESCE(c3.override_staff_id, c3.staff_id) IS NOT NULL
-    )`);
-  }
-
-  if (filters.search) {
-    const q = `%${String(filters.search).trim().toLowerCase()}%`;
-    const ph = p(q);
-    where.push(`(lower(COALESCE(l.loan_number, '')) LIKE ${ph}
-              OR lower(COALESCE(b.full_name, '')) LIKE ${ph})`);
-  }
-
-  const whereSql = where.length ? `WHERE ${where.join('\n        AND ')}` : '';
+  const { whereSql, params } = buildWhere(viewerAccess, staffId, filters);
 
   const sortKey = SORTABLE[filters.sort] ? filters.sort : DEFAULT_SORT;
   const dir = String(filters.dir || '').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
@@ -130,28 +186,6 @@ function buildPipelineQuery(viewerAccess, staffId, filters = {}) {
     MAX_LIMIT,
   );
   const offset = Math.max(0, Number.isFinite(Number(filters.offset)) ? Math.floor(Number(filters.offset)) : 0);
-
-  // There is no `lt_borrowers` table, and inventing one is the phantom-table trap
-  // this codebase keeps paying for: `lt_loans.borrower_id` points at the SHARED
-  // `borrowers` record (db/549's own FK), which is the identity zone Long-Term is
-  // authorized to READ — `sql-read borrowers`, ledger 2026-08-03. It is read, never
-  // written. `borrowers.full_name` is a generated column (db/346), so it can never
-  // disagree with the name parts it is built from.
-  //
-  // The join is LEFT: a loan whose borrower has not been mirrored yet must still
-  // appear. An inner join would silently shrink the pipeline, which on a screen
-  // that is meant to be somebody's whole book is the worst kind of wrong.
-  //
-  // `lt_locks` joins LEFT for the same reason: a loan with no lock mirrored yet is
-  // an ordinary loan, and the lock column simply reads empty.
-  const FROM = `
-      FROM lt_loans l
-      LEFT JOIN borrowers b ON b.id = l.borrower_id
-      LEFT JOIN lt_locks k ON k.loan_id = l.id
-      -- The property carries the address and the LTV, both of which the plan names as
-      -- pipeline columns (§4.1). LEFT, always: a loan whose property has not been read
-      -- must stay in somebody's book, not vanish from it.
-      LEFT JOIN lt_properties p ON p.loan_id = l.id`;
 
   const sql = `
     SELECT l.id, l.loan_number, l.loan_amount, l.note_rate_pct, l.dscr_ratio,
@@ -201,6 +235,77 @@ function buildPipelineQuery(viewerAccess, staffId, filters = {}) {
 }
 
 /**
+ * The counts behind the two chip rows.
+ *
+ * §4.1: "Two independent control rows above it (status chips, scope chips) plus
+ * free-text search." A chip without a count is a guess about where the work is; with
+ * one, the row triages the book before anybody opens a file.
+ *
+ * EACH FACET IS COUNTED WITH ITS OWN FILTER LIFTED, and that is the whole subtlety.
+ * Count the stages while a stage is selected and every other stage answers zero — a
+ * row of zeroes nobody can navigate out of, because the way back is the chip that
+ * says there is nothing there. So the stage counts drop `stage` and keep everything
+ * else; the scope counts drop `whose` and keep the stage. Both are built by
+ * `buildWhere`, so neither can drift from the list they describe.
+ *
+ * THE SCOPE IS NEVER LIFTED. It is the authorization, not a filter — a chip counting
+ * files the viewer may not open would tell them a book exists that they cannot reach.
+ */
+function buildFacetQueries(viewerAccess, staffId, filters = {}) {
+  const forStages = buildWhere(viewerAccess, staffId, filters, new Set(['stage']));
+  const stagesSql = `
+    SELECT COALESCE(l.stage_key, '') AS stage_key, count(*)::int AS n
+      ${FROM} ${forStages.whereSql}
+     GROUP BY 1`;
+
+  // The scope counts. `mine` needs the viewer's own id, and a viewer we cannot
+  // identify simply has no "mine" — reported as null, never as 0, because "nobody
+  // knows who you are" and "you have no files" are different answers.
+  const forScope = buildWhere(viewerAccess, staffId, filters, new Set(['whose']));
+  const me = staffId ? String(staffId) : null;
+  const minePh = me ? `$${forScope.params.length + 1}` : null;
+  if (me) forScope.params.push(me);
+  const scopeSql = `
+    SELECT count(*)::int AS all_n,
+           ${me ? `count(*) FILTER (WHERE ${access.onFileSql(minePh)})::int` : 'NULL::int'} AS mine_n,
+           count(*) FILTER (WHERE ${UNASSIGNED_SQL})::int AS unassigned_n
+      ${FROM} ${forScope.whereSql}`;
+
+  return {
+    stagesSql, stagesParams: forStages.params,
+    scopeSql, scopeParams: forScope.params,
+  };
+}
+
+/**
+ * Run the two facet queries and shape them for the chip rows.
+ *
+ * A stage the tenant declares but that no loan is in reports **0**, deliberately —
+ * "there is nothing at this stage" is a real answer a desk acts on, and a chip that
+ * disappears when it empties makes the row jump around as the book moves. A stage no
+ * loan carries AND the tenant has not declared is a different thing: it is a milestone
+ * mapping nobody has written yet, so it is listed under its raw key rather than hidden
+ * (§4.1.1 — "a milestone with no mapping is shown, not hidden").
+ */
+async function loadFacets(f, staffId) {
+  const [{ rows: stageRows }, { rows: scopeRows }] = await Promise.all([
+    lazy.db.query(f.stagesSql, f.stagesParams),
+    lazy.db.query(f.scopeSql, f.scopeParams),
+  ]);
+  const byStage = {};
+  for (const r of stageRows) byStage[String(r.stage_key || '')] = Number(r.n) || 0;
+  const s = scopeRows[0] || {};
+  return {
+    byStage,
+    scope: {
+      all: Number(s.all_n) || 0,
+      mine: staffId ? (Number(s.mine_n) || 0) : null,
+      unassigned: Number(s.unassigned_n) || 0,
+    },
+  };
+}
+
+/**
  * Run it, and say WHY the answer is empty when it is.
  *
  * "You have no long-term files" and "nobody has linked your Encompass account yet"
@@ -214,9 +319,15 @@ async function loadPipeline(staff, filters = {}) {
   const staffId = staff && staff.id ? String(staff.id) : null;
 
   const q = buildPipelineQuery(viewerAccess, staffId, filters);
-  const [{ rows }, { rows: counted }] = await Promise.all([
+  const f = buildFacetQueries(viewerAccess, staffId, filters);
+  const [{ rows }, { rows: counted }, facets] = await Promise.all([
     lazy.db.query(q.sql, q.params),
     lazy.db.query(q.countSql, q.params),
+    // The chip counts are a CONVENIENCE on top of the list, so a failure to count
+    // must never cost somebody their pipeline: the chips lose their numbers and the
+    // rows still arrive. Reported as null rather than zero — a zero would say the
+    // book is empty, which is precisely the thing the list beside it disproves.
+    loadFacets(f, staffId).catch(() => null),
   ]);
 
   let emptyReason = null;
@@ -242,8 +353,33 @@ async function loadPipeline(staff, filters = {}) {
     scope: viewerAccess.scope,
     ltRole: viewerAccess.ltRole,
     emptyReason,
-    stages: stages.stageList(stages.configFrom(settings)),
+    stages: stageChips(stages.stageList(stages.configFrom(settings)), facets),
+    facets: facets ? facets.scope : null,
   };
+}
+
+/**
+ * The stage chips: the tenant's own ladder, each with its count, plus any stage the
+ * BOOK holds that the ladder does not name.
+ *
+ * That last part is §4.1.1's rule expressed for the control row — a milestone with no
+ * mapping is shown, not hidden. A loan sitting under a stage key nobody declared is
+ * unreachable from a chip row built only from the declared ladder, and a file you
+ * cannot filter to is a file people stop seeing. It is marked `undeclared` so the
+ * screen can say what it is rather than pretend it was configured.
+ */
+function stageChips(declared, facets) {
+  const counts = facets ? facets.byStage : null;
+  const list = (declared || []).map((s) => ({
+    ...s, count: counts ? (counts[s.key] || 0) : null,
+  }));
+  if (!counts) return list;
+  const known = new Set(list.map((s) => s.key));
+  for (const [key, n] of Object.entries(counts)) {
+    if (!key || known.has(key)) continue;
+    list.push({ key, label: key, count: n, undeclared: true });
+  }
+  return list;
 }
 
 module.exports = {
@@ -252,5 +388,7 @@ module.exports = {
   MAX_LIMIT,
   DEFAULT_LIMIT,
   buildPipelineQuery,
+  buildFacetQueries,
+  stageChips,
   loadPipeline,
 };

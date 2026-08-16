@@ -69,6 +69,38 @@ function LockCell({ row }) {
 }
 
 /**
+ * One control chip.
+ *
+ * THE COUNT IS ABSENT, NEVER ZERO, WHEN WE DO NOT HAVE ONE. The counting is a
+ * convenience on top of the list and is allowed to fail without costing anybody their
+ * pipeline — but a chip that then reads "0" would tell them the book is empty, which
+ * is exactly what the rows underneath it disprove. So `null` draws no number at all.
+ *
+ * Colours are explicit darks: every `--ink*` token in this palette is a LIGHT paper
+ * colour and would render white on white.
+ */
+function Chip({ on, onClick, label, count, note, group }) {
+  return (
+    <button type="button" onClick={onClick} title={note || undefined}
+      aria-pressed={on} data-chip={group}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+        padding: '5px 12px', borderRadius: 999, fontSize: 13, fontWeight: on ? 700 : 550,
+        background: on ? '#141B22' : '#FFFFFF',
+        color: on ? '#FFFFFF' : '#141B22',
+        border: `1px solid ${on ? '#141B22' : '#EAE4D7'}`,
+        whiteSpace: 'nowrap',
+      }}>
+      <span>{label}</span>
+      {count != null && (
+        <span style={{ fontSize: 11, fontWeight: 700, opacity: on ? 0.85 : 1,
+          color: on ? '#FFFFFF' : '#4B585C' }}>{count}</span>
+      )}
+    </button>
+  );
+}
+
+/**
  * What to draw when the server did not say — the nine columns this screen carried
  * before the setting was wired up. It is a FALLBACK, not a second definition of the
  * catalog: `src/longterm/pipeline-columns.js` is the one that decides, and this only
@@ -152,6 +184,8 @@ export default function LtPipeline() {
   const [err, setErr] = useState(null);
   const [search, setSearch] = useState('');
   const [stage, setStage] = useState('');
+  // The second control row: '' (everyone's) | 'mine' | 'unassigned'.
+  const [whose, setWhose] = useState('');
   const [views, setViews] = useState(null);
   const [activeView, setActiveView] = useState('');
   const [naming, setNaming] = useState(false);
@@ -167,10 +201,17 @@ export default function LtPipeline() {
 
   const load = useCallback(() => {
     setErr(null);
-    ltApi.pipeline({ search: search.trim(), stage, sort: sortReq, dir: dirReq })
+    ltApi.pipeline({
+      search: search.trim(), stage, sort: sortReq, dir: dirReq,
+      // "Mine" is asked for as a FLAG. The server resolves whose from the session,
+      // so a viewer who sees the whole book cannot ask for somebody else's personal
+      // queue by editing a URL.
+      mine: whose === 'mine' ? 'true' : '',
+      unassigned: whose === 'unassigned' ? 'true' : '',
+    })
       .then(setData)
       .catch((e) => setErr(e.message || 'Could not load the long-term pipeline.'));
-  }, [search, stage, sortReq, dirReq]);
+  }, [search, stage, whose, sortReq, dirReq]);
 
   useEffect(() => {
     const t = setTimeout(load, search ? 250 : 0);
@@ -195,6 +236,9 @@ export default function LtPipeline() {
     const f = (v && v.filters) || {};
     setSearch(f.search || '');
     setStage(f.stage || '');
+    // A saved "mine" is a flag, so a SHARED view of it means whoever opens it — which
+    // is what makes "Mine, at underwriting" one view the whole desk can use.
+    setWhose(f.mine ? 'mine' : f.unassigned ? 'unassigned' : '');
   };
 
   const reloadViews = () => ltApi.views().then(setViews).catch(() => {});
@@ -206,7 +250,10 @@ export default function LtPipeline() {
   const saveCurrent = async (shared) => {
     const name = (viewName || '').trim();
     if (!name) return;
-    const out = await ltApi.saveView({ name, filters: { search: search.trim(), stage }, shared })
+    const filters = { search: search.trim(), stage };
+    if (whose === 'mine') filters.mine = true;
+    if (whose === 'unassigned') filters.unassigned = true;
+    const out = await ltApi.saveView({ name, filters, shared })
       .catch((e) => ({ error: (e && e.message) || 'Could not save that view.' }));
     if (out && out.error) { setErr(out.error); return; }
     setViewName('');
@@ -289,15 +336,47 @@ export default function LtPipeline() {
         </div>
       )}
 
+      {/* TWO INDEPENDENT CONTROL ROWS, plus free-text search (§4.1) — which is the
+          arrangement the owner's reference portal uses and the reason it stays simple
+          while being exhaustive. They narrow TOGETHER: a stage and a scope are
+          different questions about the same book, so neither clears the other.
+
+          Each chip carries its own count, and each count is computed with that chip's
+          OWN filter lifted, so it always says what CLICKING it would show. A row of
+          chips reading zero because one of them is selected is a row nobody can
+          navigate out of. */}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+        <Chip group="stage" on={!stage} onClick={() => setStage('')} label="Every stage"
+          count={data ? data.total : null} />
+        {(data && data.stages ? data.stages : []).map((s) => (
+          <Chip key={s.key} group="stage" on={stage === s.key} onClick={() => setStage(s.key)}
+            label={s.label} count={s.count}
+            // A stage no settings map names still gets a chip — §4.1.1: a milestone
+            // with no mapping is shown, not hidden, and a file you cannot filter to
+            // is a file people stop seeing.
+            note={s.undeclared ? 'Encompass is using this stage and the settings do not name it yet' : null} />
+        ))}
+      </div>
+
+      {/* The scope row means nothing to somebody who only ever sees their own files —
+          every chip would select the same book — so it is not drawn for them. */}
+      {data && data.scope === 'all' && data.facets && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+          <Chip group="scope" on={!whose} onClick={() => setWhose('')} label="Everyone’s files"
+            count={data.facets.all} />
+          {data.facets.mine != null && (
+            <Chip group="scope" on={whose === 'mine'} onClick={() => setWhose('mine')} label="Mine"
+              count={data.facets.mine} />
+          )}
+          <Chip group="scope" on={whose === 'unassigned'} onClick={() => setWhose('unassigned')}
+            label="Nobody yet" count={data.facets.unassigned}
+            note="Files with no one on them — a closing or a wire is picked up off the queue, so they have to be findable" />
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
         <input className="input" placeholder="Search a loan number or borrower" value={search}
           onChange={(e) => setSearch(e.target.value)} style={{ maxWidth: 300 }} />
-        <select className="input" value={stage} onChange={(e) => setStage(e.target.value)} style={{ maxWidth: 220 }}>
-          <option value="">Every stage</option>
-          {(data && data.stages ? data.stages : []).map((s) => (
-            <option key={s.key} value={s.key}>{s.label}</option>
-          ))}
-        </select>
         {data && <span style={{ alignSelf: 'center', fontSize: 13, color: '#4B585C' }}>
           {data.total} file{data.total === 1 ? '' : 's'}
         </span>}
