@@ -386,6 +386,168 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
     'scoreboard: the go-live gate therefore cannot pass — the honest state, not a failure');
 
   // -------------------------------------------------------------------------
+  // 11b) THE RUN SERIES — the canary's measurement is DURABLE, and the scoreboard
+  //      reads back the very series the canary wrote.
+  //
+  // The findings ledger answers "what disagreed"; the run series answers "how well
+  // the two engines agreed on this date". The scoreboard's clean-day streak and
+  // agreement trend are computed from the SERIES, so with nothing persisting it the
+  // go-live gate could never pass however long the engine behaved — the investor
+  // would be permanently unmeasured, which reads exactly like a permanent failure.
+  //
+  // The trap this section exists to catch: the series is keyed on
+  // (scope, investor, program) and run-store stores those as LABELS. The canary
+  // writes with the loaded program OBJECT in hand and the scoreboard reads with a
+  // query STRING, so if the two do not resolve to the same label the write lands in
+  // one series and the read finds an empty one — and "nothing measured" is
+  // indistinguishable from "no canary has run". Passing the object stringifies to
+  // "[object Object]": still a valid series key, just one nothing will ever read.
+  // Hence ONE helper used by both, and the round-trip below is what proves it.
+  // -------------------------------------------------------------------------
+  {
+    // an in-memory `lt_ppe_shadow_run` keyed exactly as db/565 keys it, so the WRITE
+    // and the READ have to agree about the key for anything at all to come back.
+    const runTable = [];
+    const sheet = {
+      version: { id: 'v1', label: 'Sheet A' },
+      basePrices: [{ note_rate_milli_pct: 7125, lock_days: 30, product: 'DSCR30', price_milli: 102850 }],
+      adjustments: [], priceLimit: null,
+    };
+    const withRuns = (text, params) => {
+      if (/INSERT INTO lt_ppe_shadow_run/.test(text)) {
+        const [scope2, investor2, program2, , dayMs, rate, keys, summary] = params;
+        const row = {
+          scope: scope2, investor: investor2, program: program2, day_ms: dayMs,
+          agreement_rate: rate,
+          finding_keys: JSON.parse(keys),
+          summary: summary == null ? null : JSON.parse(summary),
+        };
+        const at = runTable.findIndex((x) => x.scope === scope2 && x.investor === investor2
+          && x.program === program2 && String(x.day_ms) === String(dayMs));
+        if (at >= 0) runTable[at] = row; else runTable.push(row);
+        return { rows: [], rowCount: 1 };
+      }
+      if (/FROM lt_ppe_shadow_run/.test(text)) {
+        const [scope2, investor2, program2] = params;
+        return {
+          rows: runTable.filter((x) => x.scope === scope2 && x.investor === investor2 && x.program === program2),
+        };
+      }
+      if (/lt_ppe_rate_sheet_version/.test(text)) return { rows: [sheet.version] };
+      if (/lt_ppe_base_price/.test(text)) return { rows: sheet.basePrices };
+      return ledgerStub(text, params);
+    };
+    dbStub.next = withRuns;
+
+    // Call it the way the ROUTER does. `wrap()` turns a throw into a 500, so a
+    // handler that throws must be asserted as a 500 answer, not left to crash the
+    // suite: a crashing test also "fails" and looks like proof, while telling you
+    // nothing about what the endpoint actually returns to a caller. Mis-wiring the
+    // engines threw exactly here, so this is the assertion that has to be legible.
+    const callWrapped = async (fn, req) => {
+      const res = mkRes();
+      try { await fn(req || {}, res); } catch (e) {
+        if (!res.headersSent) res.status(500).json({ error: String((e && e.message) || e) });
+      }
+      return res;
+    };
+
+    r = await callWrapped(H.canaryRoute, {
+      body: { investor: 'ACME', rateSheetVersionId: 'v1', scenarios: [{ fico: 760 }] },
+    });
+    ok(r.code === 200,
+      `RUN-1 a canary with a real program RUNS rather than 500ing (${r.code}: ${(r.body && r.body.error) || 'ok'})`);
+    ok(r.body.runPersisted === true && r.body.runPersistError === null,
+      'RUN-2 …and its run record reaches the series (a measurement nobody stored is one nobody can act on)');
+    ok(runTable.length === 1, 'RUN-3 …as exactly one row');
+
+    // THE KEY. `programLabel` collapses the loaded program to its code; handing the
+    // OBJECT to run-store would store the literal string "[object Object]".
+    ok(runTable[0].program === 'v1',
+      'RUN-4 the series is keyed on the program CODE, never the stringified object');
+    ok(!/\[object Object\]/.test(String(runTable[0].program)),
+      'RUN-5 …so the key is one a reader can actually name');
+    ok(runTable[0].investor === 'ACME' && runTable[0].scope === I.SCOPE,
+      'RUN-6 …and scoped to the investor and tenant that were priced');
+
+    // THE ROUND TRIP — the point of the whole change. The scoreboard reads with a
+    // query string; the canary wrote with an object in hand. This passes only if
+    // both resolved to the SAME label.
+    dbStub.queries = [];
+    r = await call(H.scoreboardRoute, { query: { investor: 'ACME', program: 'v1' } });
+    ok(r.code === 200 && r.body.measured === true,
+      'RUN-7 the scoreboard reads back the series the canary just wrote — the write key and the read key are ONE definition');
+    ok(r.body.scoreboard.canaryAgreementRate != null,
+      'RUN-8 …so the agreement rate is a MEASURED number, not the permanent null it was before');
+    ok(r.body.runs === 1 && r.body.days === 1,
+      'RUN-9 runs and days are counted separately (a day can hold several runs)');
+    ok(r.body.dropped === 0,
+      'RUN-10 `dropped` is the NUMBER zero — "nothing was dropped" must not collapse into the same null a failed read produces');
+    {
+      const q = dbStub.queries.find((x) => /FROM lt_ppe_shadow_run/.test(x.text));
+      ok(q && q.params.includes('ACME') && q.params.includes('v1'),
+        'RUN-11 …and the series is narrowed in SQL, not by reading every run in the tenant');
+    }
+
+    // TWO RUNS IN A DAY ARE TWO ROWS AND ONE DAY, and that split is the whole reason
+    // the response reports both numbers. run-store stores `day_ms` VERBATIM — the row
+    // key is the run's own instant, so a second canary minutes later is a second
+    // measurement, not an overwrite — while `scoreboard.dailySeries` buckets those
+    // rows to a calendar day and takes the freshest as that day's agreement rate. So
+    // the clean-day streak can never be inflated by running the canary twice, and the
+    // run count can never be deflated by reporting days as runs.
+    r = await call(H.canaryRoute, {
+      body: { investor: 'ACME', rateSheetVersionId: 'v1', scenarios: [{ fico: 700 }] },
+    });
+    ok(r.body.runPersisted === true && runTable.length === 2,
+      'RUN-12 a second canary the same day is a second RUN row (day_ms is the instant, stored verbatim)');
+    r = await call(H.scoreboardRoute, { query: { investor: 'ACME', program: 'v1' } });
+    ok(r.body.runs === 2 && r.body.days === 1,
+      'RUN-12b …but ONE day in the series — running the canary twice can never inflate the clean-day streak');
+
+    // ASKING ABOUT A DIFFERENT PROGRAM MUST NOT ANSWER WITH THIS ONE. If the read
+    // ever stopped honouring the program key, every investor would appear measured
+    // the moment any one of their programs was.
+    r = await call(H.scoreboardRoute, { query: { investor: 'ACME', program: 'other-sheet' } });
+    ok(r.code === 200 && r.body.measured === false,
+      'RUN-13 a program with no runs of its own reads as unmeasured (the series key is honoured)');
+    ok(r.body.gate && r.body.gate.eligible === false,
+      'RUN-14 …and therefore cannot pass the go-live gate');
+
+    // THE TWO STORES FAIL INDEPENDENTLY, and are reported that way: "the findings
+    // landed but the run did not" is a different problem from the reverse, and a
+    // caller told only "persisted: true" would believe the series had grown.
+    dbStub.next = (text, params) => {
+      if (/lt_ppe_shadow_run/.test(text)) throw new Error('run store down');
+      return withRuns(text, params);
+    };
+    r = await call(H.canaryRoute, {
+      body: { investor: 'ACME', rateSheetVersionId: 'v1', scenarios: [{ fico: 760 }] },
+    });
+    ok(r.code === 200 && r.body.persisted === true,
+      'RUN-15 a run-series failure does not take the findings ledger down with it');
+    ok(r.body.runPersisted === false && /run store down/.test(r.body.runPersistError || ''),
+      'RUN-16 …and it is reported separately, naming what actually failed');
+
+    // A SERIES WE COULD NOT READ IS NOT AN INVESTOR WE DID NOT MEASURE. Both are
+    // "not proven" for the gate — which is the safe verdict either way — but only
+    // one of them is somebody's fault, and only one is fixable.
+    dbStub.next = (text, params) => {
+      if (/lt_ppe_shadow_run/.test(text)) throw new Error('series unreadable');
+      return ledgerStub(text, params);
+    };
+    r = await call(H.scoreboardRoute, { query: { investor: 'ACME', program: 'v1' } });
+    ok(r.code === 200 && r.body.measured === false && /series unreadable/.test(r.body.seriesError || ''),
+      'RUN-17 an unreadable series says so — never silently reported as an unmeasured investor');
+    ok(r.body.gate && r.body.gate.eligible === false,
+      'RUN-18 …and still cannot pass the gate (fails closed)');
+    ok(r.body.scoreboard && typeof r.body.scoreboard.openFindings === 'number',
+      'RUN-19 …while the findings picture it CAN read is still shown');
+
+    dbStub.next = ledgerStub;
+  }
+
+  // -------------------------------------------------------------------------
   // 12) the admin gate — and it fails CLOSED
   // -------------------------------------------------------------------------
   const gate = async () => {

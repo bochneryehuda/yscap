@@ -59,6 +59,7 @@ const finding = require('../ppe/finding');
 const findingStore = require('../ppe/finding-store');
 const reviewQueue = require('../ppe/review-queue');
 const cutover = require('../ppe/cutover');
+const runStore = require('../ppe/run-store');
 const scenarioMatrix = require('../ppe/scenario-matrix');
 const ratesheet = require('../ppe/ratesheet');
 
@@ -118,6 +119,14 @@ const wrap = (fn, code) => (req, res) => fn(req, res).catch((e) => {
 // routing concern). Read through ONE helper so the day a tenant id arrives there
 // is one place to change, not eleven call sites.
 function readScope(_req) { return SCOPE; }
+
+// The run series is keyed on (scope, investor, program) and `run-store` stores those as
+// LABELS. Both the write and the read must produce the SAME label or the canary would
+// persist into one series and the scoreboard would read an empty one — a silent
+// "nothing measured" that looks exactly like "no canary has run". Passing the program
+// OBJECT would stringify to "[object Object]", which is a series key too, just a
+// useless one. So: one helper, used by both.
+function programLabel(program) { return (program && (program.code || program.name)) || ''; }
 
 /** A positive integer within [1, max], else null. Never NaN, never a coerced string. */
 function intIn(v, max) {
@@ -440,11 +449,20 @@ async function canaryRoute(req, res) {
   const lp = require('../lenderprice/client');
   const nowMs = Date.now();
 
+  // TWO ADJACENT CONTRACTS, AND THEY ARE NOT THE SAME ONE. The /quote route above
+  // drives `facade.priceWithShadow`, whose injected engines are named
+  // `priceLp` / `ourQuote`; the canary drives `shadow.runShadow` (through
+  // canary.runCanary), whose engines are named `ours` / `theirs`. Passing the
+  // facade's names here does not mis-price anything — `runShadow` refuses outright
+  // ("requires engines.ours and engines.theirs"), so EVERY canary call 500s and the
+  // endpoint is simply dead. It read as correct because both objects are two
+  // scenario-taking functions sitting three lines apart. `theirs` is Lender Price,
+  // which is authoritative; `ours` is the engine on trial.
   const run = await canary.runCanary(
     scenarios,
     {
-      priceLp: (sc) => lp.price(sc),
-      ourQuote: (sc) => quote.quoteProgram({ scenario: sc, program, settings }),
+      ours: (sc) => quote.quoteProgram({ scenario: sc, program, settings }),
+      theirs: (sc) => lp.price(sc),
     },
     {
       investor,
@@ -458,13 +476,28 @@ async function canaryRoute(req, res) {
 
   // Persisting is best-effort AND SAID SO: a measurement we could not store is
   // still worth showing, but the caller must never believe it reached the ledger
-  // when it did not.
+  // when it did not. TWO durable records, and they answer different questions —
+  // the FINDINGS ledger is "what disagreed", the RUN series is "how well the two
+  // engines agreed on this date". The scoreboard's clean-day streak and agreement
+  // trend are computed from the run series, so without it the go-live gate can
+  // never pass however long the engine behaves: an unmeasured investor is not an
+  // eligible one, which is correct, but it would never STOP being unmeasured.
   let persisted = null;
   let persistError = null;
   try {
     persisted = await findingStore.persistRun(scope, run.records, { db, nowMs });
   } catch (e) {
     persistError = String((e && e.message) || e).slice(0, 200);
+  }
+
+  let runPersisted = null;
+  let runPersistError = null;
+  try {
+    runPersisted = await runStore.persistRun(scope, run.runRecord, {
+      db, investor, program: programLabel(program),
+    });
+  } catch (e) {
+    runPersistError = String((e && e.message) || e).slice(0, 200);
   }
 
   return res.json({
@@ -479,6 +512,11 @@ async function canaryRoute(req, res) {
     persisted: !persistError,
     persistError,
     persistedSummary: persisted ? persisted.summary : null,
+    // Reported separately: the two stores fail independently, and "the findings
+    // landed but the run did not" is a different problem from the reverse.
+    runPersisted: runPersistError ? false : !!(runPersisted && runPersisted.persisted),
+    runPersistError,
+    runPersistReason: runPersisted && !runPersisted.persisted ? runPersisted.reason : null,
   });
 }
 
@@ -491,23 +529,68 @@ async function scoreboardRoute(req, res) {
   const investor = req.query.investor ? String(req.query.investor) : null;
   if (!investor) return res.status(400).json({ error: 'Which investor? Pass ?investor=<code>.' });
 
+  const program = req.query.program ? String(req.query.program) : '';
   const rows = await findingStore.listFindings(scope, { investor }, db);
   const records = rows.map(findingStore.rowToRecord);
+  const nowMs = Date.now();
 
-  // `canaryAgreementRate` and `dailyNewFindings` are DELIBERATELY not supplied:
-  // canary runs are not persisted yet (`lt_ppe_shadow_run` exists but this route
-  // writes no history), and buildScoreboard reads a missing rate as "not proven"
-  // rather than as a pass. Passing a fabricated 1.0 would make the gate report
-  // eligible on an investor nobody has measured.
-  const board = cutover.buildScoreboard({ findings: records, nowMs: Date.now() });
-  const gate = cutover.eligibleForLive(board);
+  // The canary's run history IS persisted now, so the agreement rate and the
+  // clean-day streak are read from it rather than left unmeasured. `assembleScoreboard`
+  // loads the series and DELEGATES to `scoreboard.assemble`, which in turn delegates the
+  // eligibility verdict to `cutover.eligibleForLive` — one definition of "eligible",
+  // reached through the same path a screen and a cron would take.
+  let assembled = null;
+  let seriesError = null;
+  try {
+    assembled = await runStore.assembleScoreboard(scope, {
+      db, investor, program, findings: records, nowMs,
+    });
+  } catch (e) {
+    seriesError = String((e && e.message) || e).slice(0, 200);
+  }
+
+  if (assembled) {
+    // `scoreboard.assemble` returns { scoreboard, eligible, series, trend,
+    // latestAgreementRate, dropped }. `eligible` is already cutover's own verdict —
+    // re-deriving it here would be a second definition of "eligible".
+    return res.json({
+      ok: true,
+      scope,
+      investor,
+      program: program || null,
+      scoreboard: assembled.scoreboard,
+      gate: assembled.eligible,
+      trend: assembled.trend || null,
+      // `series` is the DAY series, not the run list — a day can hold several runs, so
+      // reporting its length as "runs" would under-count every day the canary ran twice.
+      // Both numbers are stated, each named for what it actually counts.
+      days: Array.isArray(assembled.series) ? assembled.series.length : 0,
+      runs: Array.isArray(assembled.series)
+        ? assembled.series.reduce((n, d) => n + (Number.isFinite(d.runCount) ? d.runCount : 0), 0)
+        : 0,
+      // Whether anything has actually been MEASURED, said plainly: a null agreement
+      // rate is "no canary has run", which is not the same as a bad score and must
+      // never be rendered as 0%.
+      measured: assembled.scoreboard.canaryAgreementRate != null,
+      // No silent caps: assemble reports how many stored runs it could not place in
+      // time. Reported as the NUMBER, so a real zero reads as "nothing was dropped"
+      // rather than collapsing into the same null a failed read would produce.
+      dropped: Number.isFinite(assembled.dropped) ? assembled.dropped : null,
+    });
+  }
+
+  // The run series could not be read. FALL BACK to the findings-only picture and SAY
+  // the agreement rate is unread rather than unmeasured — a missing rate reads as
+  // "not proven", which is the safe verdict either way, but the two are different
+  // facts and only one of them is anybody's fault.
+  const board = cutover.buildScoreboard({ findings: records, nowMs });
   return res.json({
-    ok: true,
-    scope,
-    investor,
+    ok: true, scope, investor, program: program || null,
     scoreboard: board,
-    gate,
-    note: 'Canary history is not persisted yet, so the agreement rate reads as not-proven and the gate cannot pass. That is the honest state, not a failure.',
+    gate: cutover.eligibleForLive(board),
+    measured: false,
+    seriesError,
+    note: 'The canary run history could not be read, so the agreement rate is unknown and the gate cannot pass. That is a read failure, not a measurement.',
   });
 }
 
@@ -529,5 +612,5 @@ module.exports.handlers = {
 };
 module.exports._internals = {
   requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe,
-  MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K,
+  MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K, programLabel,
 };

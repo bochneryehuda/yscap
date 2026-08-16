@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
+import { rate } from './format.js';
 
 // ---------------------------------------------------------------------------
 // The Product & Pricing Engine, made visible.
@@ -79,8 +80,6 @@ function Figure({ label, value, hint }) {
     </div>
   );
 }
-
-const pct = (v) => (typeof v === 'number' && Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : '—');
 
 export default function LtPpe() {
   const [health, setHealth] = useState(null);
@@ -274,7 +273,7 @@ export default function LtPpe() {
           {board && board.scoreboard ? (
             <>
               <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap', marginBottom: 12 }}>
-                <Figure label="Agreement" value={pct(board.scoreboard.canaryAgreementRate)}
+                <Figure label="Agreement" value={rate(board.scoreboard.canaryAgreementRate)}
                   hint={board.scoreboard.canaryAgreementRate == null ? 'not measured yet' : undefined} />
                 <Figure label="Still open" value={board.scoreboard.openFindings} />
                 <Figure label="Oldest open" value={board.scoreboard.oldestOpenFindingDays == null ? '—' : `${board.scoreboard.oldestOpenFindingDays}d`} />
