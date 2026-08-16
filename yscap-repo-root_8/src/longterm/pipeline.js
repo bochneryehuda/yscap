@@ -143,13 +143,23 @@ function buildWhere(viewerAccess, staffId, filters = {}, omit = new Set()) {
   if (!skip('whose') && filters.officerStaffId) {
     where.push(officerIsSql(p(String(filters.officerStaffId))));
   }
-  if (!skip('whose') && filters.unassigned) where.push(UNASSIGNED_SQL);
+
+  // A SCOPE FILTER THAT CANNOT MEAN ANYTHING FOR THIS VIEWER IS NOT APPLIED, and that
+  // is a safety rule rather than a tidiness one. A saved view is SHARED: an admin who
+  // saves "Nobody yet" and shares it hands a loan officer a filter that is
+  // CONTRADICTORY with their own scope — their book is the files they are on, and
+  // "nobody is on it" can never overlap that — so the view would open an empty
+  // pipeline, and the screen does not draw the scope row for them, so there would be
+  // no control to clear it with. `mine` is the harmless twin: for them it is exactly
+  // their scope restated. Both are ignored and REPORTED, never silently obeyed.
+  const scopeFilterMoot = !viewerAccess || !viewerAccess.seesAll;
+  if (!skip('whose') && filters.unassigned && !scopeFilterMoot) where.push(UNASSIGNED_SQL);
 
   // "Mine" for somebody who sees the whole book. It is `access.onFileSql`, the SAME
   // predicate that decides what a SCOPED viewer may see at all — so "my files" means
   // one thing on this side, whichever chair you are sitting in. Defining it as "the
   // loan officer is me" would hand every processor an empty book of their own.
-  if (!skip('whose') && filters.mine && staffId) {
+  if (!skip('whose') && filters.mine && staffId && !scopeFilterMoot) {
     where.push(access.onFileSql(p(String(staffId))));
   }
 
@@ -293,10 +303,21 @@ async function loadFacets(f, staffId) {
     lazy.db.query(f.scopeSql, f.scopeParams),
   ]);
   const byStage = {};
-  for (const r of stageRows) byStage[String(r.stage_key || '')] = Number(r.n) || 0;
+  let allStages = 0;
+  for (const r of stageRows) {
+    byStage[String(r.stage_key || '')] = Number(r.n) || 0;
+    allStages += Number(r.n) || 0;
+  }
   const s = scopeRows[0] || {};
   return {
     byStage,
+    // What the "Every stage" chip must show. It is NOT the list's own total: that is
+    // counted WITH the stage filter, so with a stage selected the "Every stage" chip
+    // would read the selected stage's number and nobody could see how big the book
+    // is — the same defect the per-stage counts are built to avoid, on the one chip
+    // that undoes them. These rows are already counted stage-lifted, so their sum is
+    // the answer and no third query is needed.
+    allStages,
     scope: {
       all: Number(s.all_n) || 0,
       mine: staffId ? (Number(s.mine_n) || 0) : null,
@@ -354,8 +375,37 @@ async function loadPipeline(staff, filters = {}) {
     ltRole: viewerAccess.ltRole,
     emptyReason,
     stages: stageChips(stages.stageList(stages.configFrom(settings)), facets),
-    facets: facets ? facets.scope : null,
+    facets: facets ? { ...facets.scope, allStages: facets.allStages } : null,
+    // A scope filter this viewer's own scope makes moot — NAMED, so the screen can
+    // say so rather than showing a book that quietly ignores what was asked for.
+    filtersIgnored: ignoredScopeFilters(viewerAccess, filters),
   };
+}
+
+/**
+ * Which scope filters this viewer's own scope makes meaningless, in plain words.
+ *
+ * Saying so matters because a saved view is SHARED: an admin's "Nobody yet" opened by
+ * a loan officer is not a narrower book, it is a contradiction with their own scope,
+ * and answering it literally would be an empty pipeline they have no control to clear.
+ * The filter is dropped in `buildWhere`; this is what tells them it was.
+ */
+function ignoredScopeFilters(viewerAccess, filters = {}) {
+  if (viewerAccess && viewerAccess.seesAll) return [];
+  const out = [];
+  if (filters.unassigned) {
+    out.push({
+      key: 'unassigned',
+      why: 'You see the files you are on, so "nobody yet" cannot match any of them — it has been left off.',
+    });
+  }
+  if (filters.mine) {
+    out.push({
+      key: 'mine',
+      why: 'Every file you can see is already one of yours, so this changes nothing.',
+    });
+  }
+  return out;
 }
 
 /**
@@ -390,5 +440,6 @@ module.exports = {
   buildPipelineQuery,
   buildFacetQueries,
   stageChips,
+  ignoredScopeFilters,
   loadPipeline,
 };

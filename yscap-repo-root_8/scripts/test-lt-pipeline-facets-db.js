@@ -88,8 +88,12 @@ async function facets(access, staffId, filters) {
     ltDb.query(f.scopeSql, f.scopeParams),
   ]);
   const byStage = {};
-  for (const r of a.rows) byStage[String(r.stage_key || '')] = Number(r.n);
-  return { byStage, scope: b.rows[0] };
+  let allStages = 0;
+  for (const r of a.rows) { byStage[String(r.stage_key || '')] = Number(r.n); allStages += Number(r.n); }
+  // The sum of the stage-lifted counts IS what the "Every stage" chip must show —
+  // computed here the same way production computes it, and compared against the real
+  // `loadPipeline` answer in section E so the two can never drift.
+  return { byStage, allStages, scope: b.rows[0] };
 }
 
 (async () => {
@@ -187,6 +191,33 @@ async function facets(access, staffId, filters) {
     check(pipeline.stageChips([{ key: SETUP, label: 'Setup' }], null)[0].count === null,
       'and when the counting failed the chips carry NULL, never 0 — a zero would claim the book is empty, which the list beside it disproves');
 
+    // ── D2. The "Every stage" chip ──────────────────────────────────────────
+    console.log('\nthe "Every stage" chip counts the whole book, not the selected stage');
+
+    const fSel = await facets(ALL, ME, { stage: SETUP });
+    const fNone = await facets(ALL, ME, {});
+    check(fSel.allStages === fNone.allStages && fSel.allStages >= 5,
+      'THE ONE THAT MATTERS: the all-stages count does not move when a stage is selected — using the LIST’s own total there would make the chip read the selected stage’s number, undoing every other count in the row on the one chip that is supposed to clear them');
+    const listTotal = await ltDb.query(
+      `SELECT count(*)::int n ${'FROM lt_loans l'} WHERE l.stage_key = $1`, [SETUP]);
+    check(fSel.allStages > listTotal.rows[0].n,
+      '…and it is genuinely bigger than the selected stage, which is the whole point');
+
+    // ── D3. A filter this viewer's scope makes moot ─────────────────────────
+    console.log('\na scope filter that cannot mean anything is dropped and said out loud');
+
+    const strandedRows = await listIds(own, ME, { unassigned: true });
+    check(strandedRows.length === 3,
+      'THE ONE THAT MATTERS: a scoped viewer opening a SHARED view of "nobody yet" still sees their book — answering it literally is an empty pipeline, and the screen draws no scope row for them, so there would be no control to clear it with');
+    const ignored = pipeline.ignoredScopeFilters(own, { unassigned: true });
+    check(ignored.length === 1 && ignored[0].key === 'unassigned' && /cannot match/.test(ignored[0].why),
+      '…and it is NAMED in plain words rather than silently ignored');
+    check(pipeline.ignoredScopeFilters(ALL, { unassigned: true }).length === 0,
+      'a viewer who sees the whole book has the filter applied as asked');
+    const mineStranded = await listIds(own, ME, { mine: true });
+    check(mineStranded.length === 3,
+      '"mine" is simply their scope restated, so it changes nothing for them');
+
     // ── E. The whole thing, through loadPipeline ────────────────────────────
     console.log('\nthe route’s own answer carries both rows');
 
@@ -195,6 +226,9 @@ async function facets(access, staffId, filters) {
       'the stages come back with counts on them');
     check(out.facets && typeof out.facets.all === 'number' && typeof out.facets.unassigned === 'number',
       'and the scope counts ride alongside');
+    const declaredSum = (out.stages || []).reduce((n, s2) => n + (s2.count || 0), 0);
+    check(out.facets.allStages === declaredSum,
+      'THE ONE THAT MATTERS: the route’s all-stages count equals the sum of the chips beside it — a header number that disagrees with the row under it is the kind of thing nobody reports and everybody stops trusting');
     check(out.facets.mine !== null, 'a viewer we can identify has a "mine" count');
     const anon = await pipeline.loadPipeline({ role: 'admin' }, {});
     check(anon.facets && anon.facets.mine === null,

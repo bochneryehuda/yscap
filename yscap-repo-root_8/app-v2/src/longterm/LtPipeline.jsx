@@ -335,8 +335,12 @@ export default function LtPipeline() {
           chips reading zero because one of them is selected is a row nobody can
           navigate out of. */}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+        {/* NOT `data.total` — that is counted WITH the stage filter, so with a stage
+            selected this chip would read the selected stage's number and nobody could
+            see how big the book is. `allStages` is counted stage-lifted, like every
+            other chip in this row. */}
         <Chip group="stage" on={!stage} onClick={() => setStage('')} label="Every stage"
-          count={data ? data.total : null} />
+          count={data && data.facets ? data.facets.allStages : null} />
         {(data && data.stages ? data.stages : []).map((s) => (
           <Chip key={s.key} group="stage" on={stage === s.key} onClick={() => setStage(s.key)}
             label={s.label} count={s.count}
@@ -393,6 +397,15 @@ export default function LtPipeline() {
           ))}
         </div>
       )}
+      {/* A scope filter this viewer's own scope makes meaningless — most likely a
+          SHARED saved view written by somebody who sees the whole book. Saying so
+          beats a pipeline that quietly shows something other than what was asked. */}
+      {data && (data.filtersIgnored || []).length > 0 && (
+        <div className="card" style={{ color: '#4B585C', fontSize: 13, marginBottom: 12 }}>
+          {data.filtersIgnored.map((f) => <div key={f.key} style={{ marginTop: 2 }}>{f.why}</div>)}
+        </div>
+      )}
+
       {data && (data.unknown || []).length > 0 && (
         <div className="card" style={{ color: '#4B585C', fontSize: 13, marginBottom: 12 }}>
           The pipeline columns setting names {data.unknown.length === 1 ? 'a column' : 'columns'} nobody
