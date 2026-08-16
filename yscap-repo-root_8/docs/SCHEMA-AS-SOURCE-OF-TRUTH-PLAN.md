@@ -1,6 +1,9 @@
 # One readable schema for the whole system — the plan
 
-**Status: PHASES 0–3 ALL BUILT — 1, 2, 3, the 3b enrichment, 3c, and both §6c/§8 carry-overs. The map records
+**Status: PHASES 0–3 ALL BUILT — 1, 2, 3, the 3b enrichment, 3c, and both §6c/§8 carry-overs.
+PHASE 4 IS CLOSED BY THE OWNER (2026-08-16): _"we are not renaming anything. Please don't do the risky
+stuff."_ It is not deferred and not pending a later decision — it is off. Do not reopen it, do not
+propose it, and do not rename a table, a column or a relation as part of any other work. The map records
 the relationship layer, tells you when it has fallen behind with no database needed to ask, and now has
 a browsable picture — `docs/schema/PICTURE.html`. The one thing left in Phase 3 is a decision, not code
 (§6d); §8.2's CODEOWNERS was evaluated and rejected on measurement, with a working substitute built in
@@ -102,6 +105,30 @@ So Phase 0 gains a second step: introspect **both** (the migration-built databas
 production backup) and diff the two schema files. If they match, that is a strong statement about the
 health of the migration chain. If they do not, the difference is something real that nobody knows
 about, found at zero risk. Either outcome is worth having.
+
+> **STATUS (2026-08-16): this needs NO NEW CODE, and one deliberate non-decision is recorded here.**
+>
+> The tool already exists. Pointed at a restored copy, `npm run schema:check` answers exactly this
+> question and names every difference:
+>
+> ```
+> DATABASE_URL=<the restored copy>  npm run schema:check
+> ```
+>
+> The weekly restore drill (`scripts/backup-verify.js`) already downloads a real backup and restores it
+> into a scratch database, so the comparison could be made to run automatically, every week, with no
+> new credential and without ever touching production.
+>
+> **It was deliberately NOT wired in.** That script is the backup system — the one thing in this
+> repository whose failure cannot be recovered from by fixing the code afterwards — and the owner's
+> direction on 2026-08-16 was *"Please don't do the risky stuff."* Adding anything to it, even a
+> read-only comparison that cannot change its verdict, is not a change to make unasked. It is a small,
+> well-understood job whenever the owner wants it; until then the one-line command above is the answer.
+>
+> One thing the work of 2026-08-16 already fixed in advance: a restored production copy carries
+> `schema_migrations`, PILOT's own migration ledger, which a `npm run migrate`-built database does not.
+> Before that table was excluded, this comparison would have opened by accusing production of holding
+> "something no migration here explains" — every single time.
 
 ## 1. Three corrections before the plan
 
@@ -531,7 +558,13 @@ a difference is usually a documentation chore — a difference here is a real de
 today only because of the standing rule that nothing starts failing that passes now, and the flip is one
 variable (`LT_SCHEMA_DRIFT_ENFORCE=1`).
 
-### Phase 4 — Renaming for beauty. Optional, slow, possibly never.
+### Phase 4 — CLOSED. Not happening. (owner-directed 2026-08-16)
+
+**The owner's words: _"we are not renaming anything. Please don't do the risky stuff."_** That settles
+it. Everything below is retained as the record of why it was never worth doing, not as a proposal.
+
+It was always the part of this plan that carried real risk and bought the least — the analysis below
+said so before the decision, and the decision agrees with it. Nothing in Phases 0–3 depends on it.
 The genuinely risky part, and the one that buys the least. `llcs` now holds corporations, partnerships
 and trusts; CLAUDE.md already records the decision **not** to rename it, because ~200 files, nine
 foreign keys, the ClickUp field map and the SharePoint folder resolver all reference it — *"a
@@ -727,7 +760,13 @@ had assumed rather than checked. Seven mutations proven red.
 **CODEOWNERS becomes worth revisiting the moment there is a second GitHub account** — then it can fire,
 and the branch-protection question becomes a real one. That is an owner decision, not a code change.
 
-## 9. Open question for the owner
+## 9. ANSWERED — the owner closed Phase 4 (2026-08-16)
+
+_"we are not renaming anything. Please don't do the risky stuff."_ Phases 0–3 are built; Phase 4 is
+off. There is no open question left in this plan. What remains is listed in §6d and §0.1 below, and
+both are switches the owner may throw whenever they choose — neither is work waiting to be done.
+
+The original question is kept for the record:
 
 **How far do you want Phase 4 to go?** Phases 0–3 give you the readable schema and cost essentially no
 risk. Phase 4 — actually renaming tables and columns so the names read nicely — is where the danger

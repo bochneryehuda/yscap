@@ -74,6 +74,33 @@ Enforcement (the same rules, in every place a rule can live): CI gate `scripts/c
 
 **What the gate can and cannot see — a green build is NOT proof that nothing crossed.** It catches *structural* crossings: an import either way, raw SQL against the other product's tables, a cross-product foreign key, an `lt_`/`long_term` column on an RTL table, a migration touching both sides, a trigger or function carrying one product's logic onto the other's table, an LT table or function not named `lt_*`, RTL back-end code calling `/api/lt`, and any attempt to delete the rules or unwire the gate itself. It CANNOT see RTL code **copied by value** into an LT folder, a plainly-named new column added to an RTL table for LT's benefit, a new ClickUp/Encompass/SharePoint mapping, or a new checklist template. Rules 1, 4, 5, 7 and 8 above rest on the person doing the work.
 
+## THE DATABASE IS NOT RENAMED, AND THE SCHEMA WORK IS DOCUMENTATION ONLY — STRICT RULE (owner-directed 2026-08-16)
+
+**Owner's words: *"we are not renaming anything. Please don't do the risky stuff."*** This closes
+Phase 4 of `docs/SCHEMA-AS-SOURCE-OF-TRUTH-PLAN.md` permanently. It is not deferred and not pending a
+later decision.
+
+- **NEVER rename a table, a column, a relation or a constraint** for readability, tidiness, consistency,
+  or as a side effect of any other work. If a name is wrong, it is wrong and it stays — `llcs` already
+  holds corporations, partnerships and trusts under a name that no longer fits, and CLAUDE.md already
+  records the decision not to rename it. That is the standard.
+- **The `docs/schema/` files are DOCUMENTATION.** `beyond-prisma.json`, `BEYOND-PRISMA.md`,
+  `PICTURE.html` and `schema.prisma` are generated, read by nothing at runtime, and every statement
+  their scripts run is a `SELECT`. **Never rebuild a database from `schema.prisma`** — it cannot express
+  749 objects this database has, and the generated SQL runs without a single error while omitting every
+  one of them. The numbered `db/*.sql` migrations are the only thing that builds this database.
+- **The two schema drift checks are ADVISORY on purpose** (`check-schema-snapshot.js`,
+  `check-lt-schema-drift.js`). Making either blocking is one environment variable
+  (`SCHEMA_SNAPSHOT_ENFORCE=1`, `LT_SCHEMA_DRIFT_ENFORCE=1`) and is **the owner's call, not an
+  agent's** — it would start failing other people's pull requests.
+- **Do not add anything to the backup system** (`scripts/backup-*.js`, `src/lib/backup/**`) without the
+  owner asking for it by name — including read-only additions. It is the one thing here whose failure
+  cannot be repaired after the fact.
+
+When a schema change is needed, the workflow is unchanged and unaffected by any of the above: a new
+numbered idempotent `db/NNN_*.sql`, applied by the existing runner. If a migration lands and the map is
+not regenerated, `check-schema-behind.js` says so on the next test run, with no database needed.
+
 ## Repository layout gotcha
 
 The entire project lives in the **`yscap-repo-root_8/`** subfolder of the git root — `package.json`, `src/`, `db/`, `web/`, `app/` are all there, not at the git top level. Run all `npm` commands from inside `yscap-repo-root_8/`. Render auto-detects this nested `package.json`; deploys run from that folder.
