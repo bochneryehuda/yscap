@@ -152,6 +152,16 @@ function offline() {
   ok(pp.programCount === 1 && pp.programs[0].minPoints === 1.5, 'parser reports minPoints across rungs');
   ok(pp.programs[0].rungs[0].priceDerivedFromPoints === true && pp.programs[0].rungs[0].price === 97, 'parser derives price = 100 − points');
 
+  // 16) ALL OPTIONS default: every scenario returns all rates + all points, never a target —
+  // even if the (live) base carried a saved target rate/price.
+  const B = require('../src/longterm/lenderprice/search-base.json');
+  const tampered = JSON.parse(JSON.stringify(B));
+  tampered.rate = 6.5; tampered.rates = [6.5]; tampered.maxListingPerRate = 1; tampered.targetInterpolatedPrices = [100]; tampered.rateRange = { from: 6, to: 7 };
+  const allOpt = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 }, { base: tampered });
+  ok(allOpt.rate === null && allOpt.rates.length === 0, 'all-options: no target rate');
+  ok(allOpt.maxListingPerRate === -1, 'all-options: unlimited points per rate (maxListingPerRate -1)');
+  ok(allOpt.targetInterpolatedPrices.length === 0 && allOpt.rateRange.from === null && allOpt.rateRange.to === null, 'all-options: no target price, full rate range');
+
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }
 
