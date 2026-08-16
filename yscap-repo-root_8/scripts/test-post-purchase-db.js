@@ -92,11 +92,19 @@ function call(server, method, p, token, body) {
     const bor = (await db.query(
       `INSERT INTO borrowers(first_name,last_name,email) VALUES('Post','Purchase',$1) RETURNING id`, [mail('bo')])).rows[0].id;
 
+    // Unique BY CONSTRUCTION, not by luck. This used to end in
+    // `Math.floor(Math.random() * 1000)`, and `sfx` is fixed for the whole run — so
+    // the only thing separating one file's ys_loan_number from the next was a draw
+    // from a thousand values. Six files a run is a ~1.5% chance of a duplicate-key
+    // crash every time CI runs, which is exactly what it did. A counter cannot
+    // collide with itself.
+    let fileSeq = 0;
     const mkFile = async () => {
+      fileSeq += 1;
       const id = (await db.query(
         `INSERT INTO applications(borrower_id,status,ys_loan_number,lender,property_address)
          VALUES($1,'funded',$2,'CorrFirst','{"oneLine":"14 Held St","city":"Lakewood","state":"NJ","zip":"08701"}') RETURNING id`,
-        [bor, `PP${sfx.slice(-6)}${Math.floor(Math.random() * 1000)}`])).rows[0].id;
+        [bor, `PP${sfx.slice(-6)}${fileSeq}`])).rows[0].id;
       await db.query(`INSERT INTO purchasing_workflow (application_id) VALUES ($1) ON CONFLICT DO NOTHING`, [id]);
       return id;
     };
