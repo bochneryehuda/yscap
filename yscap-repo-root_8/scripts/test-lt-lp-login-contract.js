@@ -214,6 +214,49 @@ console.log('lender price — the password login, pinned to the verified capture
       'FAULT-6 …and it only ever judges a failure, never a success');
   }
 
+  // ---- THE PRICING PATH NEEDS THE *PPE* USER ID ---------------------------
+  // The cause of every reasonless 500. Two user identities exist behind this vendor — the login
+  // (Digital Lending Platform) issues one, the pricing engine has its own — and we had always put
+  // the LOGIN's id into the pricing path, so their service looked up a loan officer that does not
+  // exist in it. With the right id the SAME request returns a real, actionable sentence.
+  {
+    reset();
+    RESPOND = (c) => {
+      if (/\/oauth\/token$/.test(c.url)) return { status: 200, body: TOKEN };
+      if (/ppe-user-link$/.test(c.url)) return { status: 200, body: JSON.stringify({ userId: 'PPE-USER', linkId: 'L1' }) };
+      return { status: 200, body: '{}' };
+    };
+    const id = await I.fetchPpeUserId('u1');
+    ok(id === 'PPE-USER', 'PPEID-1 the pricing user id is resolved from the platform\'s documented ppe-user-link endpoint');
+    const linkCall = CALLS.find((c) => /ppe-user-link$/.test(c.url));
+    ok(linkCall && /\/rest\/v1\/loanofficer\/u1\/ppe-user-link$/.test(linkCall.url),
+      'PPEID-2 …looked up by the LOGIN\'s user id, which is the only id we start with');
+    const before = CALLS.length;
+    await I.fetchPpeUserId('u1');
+    ok(CALLS.length === before, 'PPEID-3 …and cached, because it changes only when an admin re-links a user');
+    // FAIL-SAFE: an unresolvable link must never make pricing worse than it already was.
+    I.invalidatePpeUser();
+    RESPOND = (c) => (/\/oauth\/token$/.test(c.url) ? { status: 200, body: TOKEN } : { status: 500, body: '{}' });
+    ok((await I.fetchPpeUserId('u1')) === null,
+      'PPEID-4 an unresolvable link answers null — the caller then falls back to the login id, exactly as before this existed');
+  }
+
+  // ---- A NAMED SETUP PROBLEM IS NOT AN OUTAGE ----------------------------
+  // Measured verbatim once the right id was sent. Telling these apart is the difference between
+  // chasing a vendor about an outage and asking them to finish an account.
+  {
+    const C = I.classifyUpstreamError;
+    const cfg = C(500, JSON.stringify({ status: 500, message: 'Loan Officer Pricing Configuration not setup' }));
+    ok(cfg.kind === 'vendor_not_configured',
+      'SETUP-1 a NAMED configuration problem reads as a setup step, not as an outage and not as our bug');
+    ok(/Loan Officer Pricing Configuration not setup/.test(cfg.message) && /understood/.test(cfg.message),
+      'SETUP-2 …quoting the vendor verbatim and saying the request itself was fine');
+    ok(C(500, JSON.stringify({ message: '500 ' })).kind === 'vendor_downstream',
+      'SETUP-3 …while a reasonless 500 still reads as their downstream outage');
+    ok(C(500, JSON.stringify({ message: 'null cannot be cast to non-null type ObjectNode' })).kind === 'request_rejected',
+      'SETUP-4 …and a parser error still reads as ours');
+  }
+
   console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
   process.exit(fail === 0 ? 0 : 1);
 })().catch((e) => { console.error('THREW:', e); process.exit(1); });

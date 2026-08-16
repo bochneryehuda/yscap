@@ -15,8 +15,32 @@ with accepted data types and defaults.
 
 ## 0. What is NOT code (needs a human — ops, vendor, or an owner decision)
 
-- **PRICING IS DOWN AT LENDER PRICE'S END, AND IT IS NOT OUR REQUEST — measured live
-  2026-08-16 with the owner's written authorization.** This is the current blocker
+- **PRICING NEEDS ONE SETUP STEP AT LENDER PRICE — "Loan Officer Pricing
+  Configuration not setup" (measured live 2026-08-16, with the owner's written
+  authorization). THIS IS THE CURRENT BLOCKER, and it is neither a code bug nor a
+  credential problem.** It was found by fixing a real defect of ours first, so both
+  halves belong together:
+
+  **OUR DEFECT: the pricing path needs the PPE user id, and we were sending the
+  login's.** There are TWO user identities behind this vendor — the login (the
+  Digital Lending Platform) issues one, and the pricing engine, a separate product
+  the platform SSOs into, has its own. Their platform exposes the mapping at
+  `GET /rest/v1/loanofficer/{dlpUserId}/ppe-user-link`. Sending the wrong id made
+  their service look up a loan officer that does not exist in it, and the call
+  behind that failed, which it relayed as `"message": "500 "` — a status code where
+  a sentence belongs, indistinguishable from an outage. **With the correct id the
+  identical request returns the real message above.** Now resolved and cached per
+  foundation TTL, falling back to the login's id if the lookup ever fails, so this
+  can never be worse than it was.
+
+  **THEIR STEP: the loan officer's pricing configuration.** Someone at Lender Price
+  (or a company admin in their portal) has to complete it for this user before any
+  quote can return. Nothing on our side is waiting on us.
+
+  ~~PRICING IS DOWN AT LENDER PRICE'S END, AND IT IS NOT OUR REQUEST~~ — the
+  reasoning below is kept because it is how the above was found, and every
+  measurement in it still stands. What it could not see was that a *reasonless* 500
+  was itself the symptom of sending the wrong id. This is the current blocker
   and the only thing on this page that stops a real quote. What was proven, in
   order, against the live vendor:
 

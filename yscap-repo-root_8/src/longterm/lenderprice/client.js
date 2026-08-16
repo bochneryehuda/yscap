@@ -394,6 +394,14 @@ function classifyUpstreamError(status, body) {
       message: 'Lender Price\'s pricing service returned an internal error with no reason given (their body carries a bare status code where a message belongs, which is what a service returns when a call IT made failed). This is NOT our request: their own defaultSearch model, posted back unchanged, fails the same way. Nothing on our side fixes it — it needs raising with Lender Price.',
     };
   }
+  // A NAMED configuration problem is neither an outage nor a malformed request: it is a setup step
+  // a human performs at Lender Price. Measured verbatim on 2026-08-16 once the correct PPE user id
+  // was sent. Telling the two apart is the difference between chasing a vendor about an outage and
+  // asking them to finish an account.
+  if (status === 500 && msg && /not setup|not set up|not configured|configuration/i.test(msg)) {
+    return { kind: 'vendor_not_configured',
+      message: 'Lender Price answered: "' + String(msg).slice(0, 160) + '". This is a setup step on their side for this loan officer / company — the request itself was understood. It needs completing in Lender Price before pricing can return anything.' };
+  }
   if (status === 500 && msg) {
     return { kind: 'request_rejected', message: 'Lender Price rejected the request while reading it: ' + String(msg).slice(0, 200) };
   }
@@ -506,7 +514,7 @@ function resetTokenState() { _session = null; _inflight = null; _refreshBlockedU
 // the rejection history, so a suite can prove the grant is retried afterwards. Production never
 // shortens a window it opened.
 function expireRefreshBackoff() { _refreshBlockedUntil = 0; }
-function invalidateFoundation() { _defaultSearch = null; _smoRegistry = null; }
+function invalidateFoundation() { _defaultSearch = null; _smoRegistry = null; _ppeUser = null; }
 // §28.2 — in production the owner can REQUIRE a live pricing foundation: when LP_REQUIRE_LIVE_FOUNDATION
 // is set, a searchRaw whose base/SMO resolved to the STATIC FALLBACK (e.g. the live endpoints 404) is
 // REFUSED with a named 502 instead of silently pricing on stale configuration. Default off, so a dev
@@ -572,6 +580,41 @@ async function fetchSmoRegistry(companyId) {
 // on the first Render run — this module builds from the recordings' decoded mapping.
 function sleep(ms) { return new Promise((rs) => setTimeout(rs, ms)); }
 
+// THE PRICING PATH NEEDS THE *PPE* USER ID, WHICH IS NOT THE ONE THE LOGIN RETURNS.
+//
+// Discovered by live probing 2026-08-16, and it is the whole reason every price returned a bare,
+// reasonless 500. There are TWO user identities behind this vendor: the login (the Digital Lending
+// Platform) issues one, and the pricing engine (PPE) — a separate product the platform SSOs into —
+// has its OWN, exposed by the platform's documented endpoint
+// GET /rest/v1/loanofficer/{dlpUserId}/ppe-user-link. We had always put the LOGIN's id into the
+// searchRaw path, so the pricing service looked up a loan officer that does not exist in it and a
+// call behind it failed, which it relayed as `"message": "500 "` — a status code where a sentence
+// belongs, and no way to tell it apart from an outage.
+//
+// With the RIGHT id the same request returns a REAL, actionable message: "Loan Officer Pricing
+// Configuration not setup". That is a configuration item a human sets up at Lender Price, and being
+// told it plainly is the difference between an hour of probing and a two-line email.
+//
+// FAILS SAFE: if the link cannot be resolved for any reason, pricing falls back to the login's own
+// id — exactly what it did before — so a vendor outage on this lookup can never make things worse
+// than they already were. Cached for the foundation's TTL because it changes only when an admin
+// re-links a user.
+const PPE_USER_LINK_PATH = process.env.LP_PPE_USER_LINK_PATH || '/rest/v1/loanofficer/{userId}/ppe-user-link';
+let _ppeUser = null;   // { at, dlpUserId, ppeUserId, error }
+async function fetchPpeUserId(dlpUserId) {
+  if (_ppeUser && _ppeUser.dlpUserId === dlpUserId && Date.now() - _ppeUser.at < FOUNDATION_TTL_MS) return _ppeUser.ppeUserId;
+  let ppeUserId = null, error = null;
+  try {
+    const r = await apiGet(PPE_USER_LINK_PATH.replace('{userId}', encodeURIComponent(dlpUserId)));
+    const v = r.ok && r.data && typeof r.data === 'object' ? r.data.userId : null;
+    if (typeof v === 'string' && v.trim()) ppeUserId = v.trim();
+    else error = r.ok ? 'ppe-user-link returned no userId' : `${r.error || 'lp_get_status'}${r.http ? ' ' + r.http : ''}`;
+  } catch (e) { error = scrub(errText(e)); }
+  _ppeUser = { at: Date.now(), dlpUserId, ppeUserId, error };
+  return ppeUserId;
+}
+function invalidatePpeUser() { _ppeUser = null; }
+
 // Resolve the session + company/user ids + the live base/SMO foundation once. Shared by the
 // qualified price() and the disqualify workflow so both build from the identical model.
 async function priceFoundation({ force = false } = {}) {
@@ -580,10 +623,16 @@ async function priceFoundation({ force = false } = {}) {
   const companyId = s.companyId || process.env.LP_COMPANY_ID;
   const userId = s.userId || process.env.LP_USER_ID;
   if (!companyId || !userId) return { ok: false, error: 'lp_no_ids', message: 'Missing companyId/userId from the Lender Price session.' };
-  const [liveBase, smoReg] = await Promise.all([fetchDefaultSearch(companyId, userId), fetchSmoRegistry(companyId)]);
-  const url = `${API_BASE}/rest/v1/lp-ppe-integration/pricing/searchRaw/${encodeURIComponent(companyId)}/${encodeURIComponent(userId)}`;
+  const [liveBase, smoReg, ppeUserId] = await Promise.all([
+    fetchDefaultSearch(companyId, userId), fetchSmoRegistry(companyId), fetchPpeUserId(userId),
+  ]);
+  // The PPE id when we have it, the login's id when we do not — never a hard failure on the lookup.
+  const pricingUserId = ppeUserId || userId;
+  const url = `${API_BASE}/rest/v1/lp-ppe-integration/pricing/searchRaw/${encodeURIComponent(companyId)}/${encodeURIComponent(pricingUserId)}`;
   return {
     ok: true, session: s, companyId, userId, url,
+    pricingUserId, ppeUserId: ppeUserId || null,
+    ppeUserError: (_ppeUser && _ppeUser.error) || null,
     liveBase: liveBase || undefined, smo: smoReg || undefined,
     // Live-vs-fallback provenance (+ the preserved live-fetch error) for diagnostics.
     baseSource: (_defaultSearch && _defaultSearch.source) || 'fallback',
@@ -624,9 +673,19 @@ async function searchRawWithRecovery(buildBody, opts = {}) {
   const r2 = await postSearchRaw(f2.url, f2.session, body2, opts);
   if (r2.ok) return { ...r2, foundation: f2, request: body2, recovered: true };
   // Final failure — stable error with BOTH upstream statuses and the (refetched) provenance.
+  //
+  // THE VENDOR'S OWN DIAGNOSIS IS CARRIED THROUGH, not replaced by ours. The retry wrapper used to
+  // overwrite the message with 'returned 500 before and after a fresh login', which is TRUE and
+  // useless: it describes what we did rather than what they said. When their answer names the
+  // problem — 'Loan Officer Pricing Configuration not setup' — that sentence is the entire fix, and
+  // burying it under our retry narrative is how a two-line email becomes an hour of probing.
+  const why = r2.fault && r2.fault !== 'unknown' ? r2 : (r1.fault && r1.fault !== 'unknown' ? r1 : null);
   return {
     ok: false, error: 'lp_price_500_after_retry', http: r2.http || 500,
-    message: 'Lender Price searchRaw returned 500 both before and after a fresh login + live-config refetch.',
+    message: why
+      ? why.message + ' (unchanged after a fresh login and a live-config refetch, so it is not a stale session.)'
+      : 'Lender Price searchRaw returned 500 both before and after a fresh login + live-config refetch.',
+    fault: (why && why.fault) || 'unknown',
     firstHttp: r1.http || null, retryHttp: r2.http || null,
     upstream: r2.upstream || r1.upstream || null,
     provenance: foundationProvenance(f2),
@@ -1470,6 +1529,6 @@ module.exports = {
   hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
   loginSelfTest,
   _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, pollDisqualifiedByKey, hasStoredSearch, searchKeyFor, disqStore, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, foundationLiveGate, foundationReadiness, requireLiveFoundation, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery,
-    renewalPlan, mergeRefreshed, sessionFromTokenBody, refreshSession, authDiagnostics, resetTokenState, reauthenticate, errText, classifyUpstreamError,
+    renewalPlan, mergeRefreshed, sessionFromTokenBody, refreshSession, authDiagnostics, resetTokenState, reauthenticate, errText, classifyUpstreamError, fetchPpeUserId, invalidatePpeUser,
     refreshBackoffMs, expireRefreshBackoff, REFRESH_GRANT_BACKOFF_MS, REFRESH_GRANT_BACKOFF_MAX_MS },
 };
