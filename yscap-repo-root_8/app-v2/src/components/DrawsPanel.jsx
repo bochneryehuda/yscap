@@ -1215,6 +1215,7 @@ function TrinityInspectionCard({ appId }) {
   const [note, setNote] = useState({});          // per-order message box
   const [openId, setOpenId] = useState(null);    // which order's detail is expanded
   const [when, setWhen] = useState({});          // per-order requested inspection date
+  const [pick, setPick] = useState('');          // which draw a hand-placed order is for
   // Trinity refuses a date inside 24 hours, so the picker cannot offer one. Two days
   // out is the first date that is certainly acceptable in every timezone.
   const earliestInspect = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
@@ -1223,7 +1224,24 @@ function TrinityInspectionCard({ appId }) {
     api.get(`/api/trinity/files/${appId}`).then(setData).catch(() => setData(null));
   }, [appId]);
   useEffect(() => { load(); }, [load]);
-  if (!data || !Array.isArray(data.orders) || !data.orders.length) return null;
+  if (!data) return null;
+  const orders = Array.isArray(data.orders) ? data.orders : [];
+  // What may be ordered by hand right now. The card has to render on a file with NO
+  // orders at all — that is precisely the state the "order it on our end" button exists
+  // for, and hiding the card there is what left a coordinator with nothing to press when
+  // an automatic order stood down.
+  const orderable = data.orderable || { eligible: false, draws: [], requests: [] };
+  const canOrder = [
+    ...(orderable.draws || []).filter((d) => !d.ordered).map((d) => ({
+      value: `d:${d.sitewire_draw_id}`,
+      label: `Draw ${d.number == null ? d.sitewire_draw_id : `#${d.number}`} — ${usd(d.total_requested_cents)} requested`,
+    })),
+    ...(orderable.requests || []).filter((r) => !r.ordered).map((r) => ({
+      value: `p:${r.id}`,
+      label: `Draw request P${r.id} — ${usd(r.total_requested_cents)} requested`,
+    })),
+  ];
+  if (!orders.length && !(orderable.eligible && canOrder.length)) return null;
 
   const conn = data.connection || {};
   const STATE = {
@@ -1262,7 +1280,43 @@ function TrinityInspectionCard({ appId }) {
 
       {msg && <div className="small" style={{ marginTop: 8, fontWeight: 600, color: '#141B22' }}>{msg}</div>}
 
-      {data.orders.map((o) => {
+      {/* ORDER IT OURSELVES. The inspection is ordered automatically the moment a draw
+          comes in, so this is here for the times it stood down — the connection was off,
+          Trinity was unreachable, or the draw arrived before this was switched on. It
+          sends exactly what an automatic order sends. */}
+      {orderable.eligible && canOrder.length > 0 && (
+        <div className="dd-note" style={{ marginTop: 10 }}>
+          <div className="small" style={{ fontWeight: 600, color: '#141B22' }}>Order an inspection</div>
+          <div className="small" style={{ color: '#4B585C', marginTop: 2 }}>
+            Trinity gets the construction budget, how much has already been drawn on every line, the
+            appraisal, the scope of work and the last inspection report.
+          </div>
+          <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            <select className="input" style={{ flex: 1, minWidth: 220 }} value={pick}
+              onChange={(e) => setPick(e.target.value)}>
+              <option value="">Which draw is this inspection for?</option>
+              {canOrder.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+            </select>
+            <button className="btn primary" disabled={busy || !pick}
+              onClick={() => act(async () => {
+                if (!(await askConfirm(
+                  'Order this physical inspection from Trinity? It dispatches an inspector and Trinity charges for it.',
+                  { confirmLabel: 'Order the inspection' }))) return null;
+                const [kind, id] = pick.split(':');
+                const r = await api.post(`/api/trinity/files/${appId}/orders`,
+                  kind === 'd' ? { sitewireDrawId: Number(id) } : { portalRequestId: Number(id) });
+                setPick('');
+                return r;
+              }, (r) => (r == null ? '' : r.already ? 'That inspection was already ordered.'
+                : r.dryrun ? 'Test mode — the order was built but nothing was sent to Trinity.'
+                  : 'Ordered from Trinity.'))}>
+              Order the inspection
+            </button>
+          </div>
+        </div>
+      )}
+
+      {orders.map((o) => {
         const s = STATE[o.status] || { label: o.status, cls: 'sw-draft' };
         const open = openId === o.id;
         const resultLines = (o.lines || []).filter((l) => Number(l.requested_cents || 0) > 0 || l.approved_cents != null);

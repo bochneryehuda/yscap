@@ -62,6 +62,11 @@ const WIRED = [
   { match: /\/attachments\/\$\{[^}]+\}\/file`/,             what: 'opening one of those documents' },
   { match: /\/api\/borrower\/draws\/\$\{[^}]+\}\/attachments`/, what: 'the borrower adding a document to a draw already in flight' },
   { match: /body\.attachments\s*=/,                         what: 'the borrower attaching invoices and photos WITH the request' },
+  // Owner-directed 2026-08-16: *"We should also have the option to order it on our end in the draw
+  // center."* The back end for this is the whole Trinity adapter, which was already green — and a
+  // green adapter with no button is exactly the class this file exists for.
+  { match: /\/api\/trinity\/files\/\$\{[^}]+\}\/orders`/,   what: 'ordering a physical inspection by hand from the draw desk' },
+  { match: /\borderable\b/,                                 what: 'the desk reading which draws may be ordered against (without it the button has nothing to offer)' },
 ];
 
 for (const r of WIRED) {

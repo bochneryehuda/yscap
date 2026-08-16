@@ -44,6 +44,7 @@ client.companyId = async () => 39400;
 client.formId = () => 19;
 client.createOrder = async (payload) => {
   calls.created++;
+  calls.lastCreate = payload;          // what we actually put on the wire, for §N
   if (nextCreateThrows) { const e = nextCreateThrows; nextCreateThrows = null; throw e; }
   return { id: 900000 + calls.created, order: { id: 800000 + calls.created, total: {} }, _sent: payload };
 };
@@ -467,6 +468,169 @@ const eq = (a, b, label) => ok(a === b, `${label} (got ${JSON.stringify(a)}, exp
     `SELECT count(*)::int AS c FROM notifications WHERE application_id=$1 AND borrower_id IS NOT NULL`, [a.id])).rows[0].c,
     0, 'M12 the borrower is never notified about a Trinity message');
   client.getComments = async () => [];
+
+  // ---- N. ORDERING IT OURSELVES — the draw centre's own button --------------------
+  //
+  // Owner-directed 2026-08-16: *"We should also have the option to order it on our end in
+  // the draw center. When we are ordering manually, it should also send over all the
+  // information that we set up."* The whole point of the design is that the n_manual door
+  // resolves the SAME record the automatic one would and hands it to the SAME placeOrder,
+  // so these assertions are about the two things that could actually go wrong: ordering
+  // on a file that is not Trinity's, and ordering the same draw twice.
+
+  const n_createdBeforeN = calls.created;
+
+  // N0. Before anything says this file is on physical inspections, the door is shut.
+  // `resolveInspection` defaults to 'mobile' with no link and no rule — a VIRTUAL file,
+  // which is Sitewire's and must never gain a second inspector.
+  const n_beforePhysical = await intake.orderOptions(a.id);
+  eq(n_beforePhysical.eligible, false, 'N0 a file with no physical-inspection setup cannot be ordered on');
+  ok(/virtual/i.test(n_beforePhysical.reason || ''), 'N0b and the desk is told why, in plain words');
+  const n_refusedVirtual = await intake.orderManually(a.id, { sitewireDrawId: drawId });
+  eq(n_refusedVirtual.blocked, true, 'N0c and the order itself is refused, not just hidden');
+  eq(calls.created, n_createdBeforeN, 'N0d nothing was sent to Trinity');
+
+  // Put the file on PHYSICAL inspections the way the coordinator's Start-draw screen
+  // does — the per-file method on the property link.
+  await db.query(
+    `INSERT INTO sitewire_property_links (application_id, sitewire_property_id, matched_by, inspection_method)
+     VALUES ($1,$2,'created','traditional')`, [a.id, prop]);
+
+  const n_opts1 = await intake.orderOptions(a.id);
+  eq(n_opts1.eligible, true, 'N1 a physical, non-Blue-Lake file may be ordered on');
+  const n_cand = (n_opts1.draws || []).find((d) => d.sitewire_draw_id === drawId);
+  ok(n_cand, 'N2 the file’s own submitted draw is offered as something to order against');
+  eq(n_cand && n_cand.ordered, false, 'N3 …and is correctly shown as not yet ordered');
+
+  // N4. The two refusals a human could actually hit, each said in words they can act on.
+  const n_noPick = await intake.orderManually(a.id, {});
+  eq(n_noPick.blocked, true, 'N4 an order with no draw picked is refused');
+  ok(/pick the draw/i.test(n_noPick.message || ''), 'N4b …and says what to do about it');
+  const n_otherFile = await intake.orderManually(a.id, { sitewireDrawId: drawId + 4242 });
+  eq(n_otherFile.blocked, true, 'N5 a draw that is not on this file is refused');
+  eq(calls.created, n_createdBeforeN, 'N5b and still nothing was sent to Trinity');
+
+  // N6. The real thing.
+  const n_manual = await intake.orderManually(a.id, { sitewireDrawId: drawId, staffId: stf.id });
+  eq(n_manual.ok, true, 'N6 a hand-placed order goes through');
+  ok(n_manual.trinityOrderId > 0, 'N6b and comes back with Trinity’s own order id');
+  const n_manRow = (await db.query(
+    `SELECT * FROM trinity_inspection_orders WHERE customer_key=$1`, [`swd-${drawId}`])).rows[0];
+  ok(n_manRow, 'N7 the record is keyed EXACTLY as the automatic door would key it');
+  eq(Number(n_manRow.sitewire_draw_id), drawId, 'N7b and is tied to the draw it was ordered for');
+  eq(n_manRow.status, 'ordered', 'N7c and moves to ordered');
+  eq(String(n_manRow.ordered_by), String(stf.id), 'N7d recording WHO ordered it — there is no autopilot here');
+
+  // N8. IT SENDS EVERYTHING THE AUTOMATIC ORDER SENDS. This is the owner's ask, and it
+  // is provable on the n_wire rather than by reading the code: the whole construction
+  // budget travels (not only the requested lines), each line carries what has already
+  // been drawn as its previousPercentCompleted, and the readable budget-and-draws
+  // spreadsheet is attached.
+  const n_wire = calls.lastCreate;
+  eq(n_wire.order.lineItems.length, 3, 'N8 the WHOLE construction budget goes, not just this draw’s lines');
+  const n_wireRoof = n_wire.order.lineItems.find((l) => /Roof/i.test(l.description));
+  eq(Number(n_wireRoof.itemCost), 40000, 'N8b every line carries its budget');
+  eq(Number(n_wireRoof.amountRequested), 20000, 'N8d …and what this draw is asking for');
+  // THE DRAW BEING INSPECTED IS NOT ITS OWN HISTORY. This draw's own $20,000 is on the
+  // ledger, so an unfiltered historical sum would tell the inspector the roof is already
+  // 50% paid AND ask him to release the same $20,000 again — the same dollars twice.
+  eq(Number(n_wireRoof.previousPercentCompleted), 0,
+    'N8g the draw being inspected is excluded from its own historical draws');
+  eq((await order.budgetLines(a.id)).find((l) => l.sitewire_job_item_id === items[0].jid).previous_drawn_cents,
+    2000000, 'N8h …while every OTHER reader still sees it as money released');
+  ok(calls.documents.some((d) => /construction-budget-and-draws\.xlsx$/.test(d.fileName || '')),
+    'N8e the readable budget + historical-draw spreadsheet is attached');
+  ok(calls.documents.some((d) => /budget/.test(String(d.customerKey || ''))),
+    'N8f …under its own exactly-once key, so a retry can never attach it twice');
+
+  // N9. THE ONE THING THAT MUST NEVER HAPPEN: two inspectors on one draw. A second click,
+  // or a later automatic pass, must ADOPT the order rather than place another.
+  const n_createdAfterManual = calls.created;
+  const n_again = await intake.orderManually(a.id, { sitewireDrawId: drawId, staffId: stf.id });
+  eq(n_again.already, true, 'N9 a second click adopts the order that already exists');
+  eq(calls.created, n_createdAfterManual, 'N9b and places nothing new with Trinity');
+  const n_auto = await intake.maybeOrderFromSitewire(a.id, {
+    drawId, status: 'pending', platform: 'sitewire', method: 'traditional', resolved: true,
+  });
+  eq(n_auto.skipped, 'already', 'N9c and a later automatic pass on the same draw stands down');
+  eq((await db.query(
+    `SELECT count(*)::int AS c FROM trinity_inspection_orders WHERE sitewire_draw_id=$1`, [drawId])).rows[0].c,
+    1, 'N9d exactly ONE inspection order exists for that draw');
+
+  // N10. And the desk now shows it as ordered, so the button stops offering it.
+  const n_opts2 = await intake.orderOptions(a.id);
+  eq((n_opts2.draws || []).find((d) => d.sitewire_draw_id === drawId).ordered, true,
+    'N10 the draw is reported as already ordered');
+
+  // N11. Switching the file back to virtual shuts the door n_again — the rule is read
+  // LIVE, never remembered from when the record was made.
+  await db.query(`UPDATE sitewire_property_links SET inspection_method='mobile' WHERE application_id=$1`, [a.id]);
+  eq((await intake.orderOptions(a.id)).eligible, false, 'N11 a file moved back to virtual can no longer be ordered on');
+  await db.query(`DELETE FROM sitewire_property_links WHERE application_id=$1`, [a.id]);
+
+  // ---- O. AN ORDER THAT NEVER REACHED TRINITY IS RE-DRIVEN -----------------------
+  //
+  // The two automatic doors call `placeOrder` ONCE, fire and forget. Anything that made
+  // that one call fail — writes off during setup, Trinity unreachable for ten minutes,
+  // a lease lost mid-deploy — used to leave a record with no Trinity order behind it and
+  // nothing that ever tried again, so the inspection simply never happened and the first
+  // anybody knew was a draw sitting for a week.
+  const poller = require('../src/trinity/poller');
+  const strandedDraw = drawId + 5150;
+  await db.query(
+    `INSERT INTO sitewire_draws (application_id, sitewire_draw_id, sitewire_property_id, number, status)
+     VALUES ($1,$2,$3,9,'pending')`, [a.id, strandedDraw, prop]);
+  await db.query(
+    `INSERT INTO sitewire_draw_requests (sitewire_draw_id, sitewire_request_id, sitewire_job_item_id, requested_cents)
+     VALUES ($1,$2,$3,500000)`, [strandedDraw, base + 61, items[1].jid]);
+  const stranded = (await db.query(
+    `INSERT INTO trinity_inspection_orders (application_id, sitewire_draw_id, customer_key, note)
+     VALUES ($1,$2,$3,'stranded by an outage') RETURNING id`,
+    [a.id, strandedDraw, `swd-${strandedDraw}`])).rows[0];
+
+  const createdBeforeO = calls.created;
+  let swept = await poller.placePendingOnce(5);
+  ok(swept.placed >= 1, 'O1 the sweep places an order that was minted but never sent');
+  ok(calls.created > createdBeforeO, 'O2 …by actually calling Trinity');
+  ok((await db.query(
+    `SELECT trinity_order_id FROM trinity_inspection_orders WHERE id=$1`, [stranded.id])).rows[0].trinity_order_id > 0,
+    'O3 …and the record now holds Trinity’s order id');
+
+  // O4. A record whose FILE is missing something is NOT re-asked every ten minutes —
+  // re-driving cannot fix a missing contractor email, and only a human can.
+  const blockedDraw = drawId + 5151;
+  await db.query(
+    `INSERT INTO sitewire_draws (application_id, sitewire_draw_id, sitewire_property_id, number, status)
+     VALUES ($1,$2,$3,10,'pending')`, [a.id, blockedDraw, prop]);
+  await db.query(
+    `INSERT INTO trinity_inspection_orders (application_id, sitewire_draw_id, customer_key, blocked_reason)
+     VALUES ($1,$2,$3,'Trinity needs a few things first: the contractor''s email address is missing.')`,
+    [a.id, blockedDraw, `swd-${blockedDraw}`]);
+  // The assertion is on what the sweep CONSIDERS, not on whether Trinity was called:
+  // `placeOrder` refuses a blocked record on its own (the payload is still incomplete), so
+  // counting calls cannot tell "the sweep left it alone" from "the sweep re-asked and was
+  // refused again" — and the second one re-stamps blocked_reason and burns the lease on
+  // every tick forever. Proven by mutation: with the guard removed this reads 3, not 0.
+  swept = await poller.placePendingOnce(5);
+  eq(swept.considered, 0, 'O4 a record blocked on the FILE is not even looked at by the sweep');
+  eq((await db.query(
+    `SELECT trinity_order_id FROM trinity_inspection_orders WHERE customer_key=$1`, [`swd-${blockedDraw}`])).rows[0].trinity_order_id,
+    null, 'O4b …and is left exactly as the human found it');
+
+  // O5. And with writes switched off the sweep does nothing at all — it must never be
+  // the thing that places an order somebody deliberately switched off.
+  await db.query(
+    `INSERT INTO trinity_inspection_orders (application_id, sitewire_draw_id, customer_key)
+     VALUES ($1,$2,$3)`, [a.id, drawId + 5152, `swd-${drawId + 5152}`]);
+  const realOutbound = client.outboundEnabled, realDryrun = client.dryrun;
+  client.outboundEnabled = () => false; client.dryrun = () => false;
+  const off = await poller.placePendingOnce(5);
+  eq(off.skipped, 'writes_off', 'O5 the sweep stands down when Trinity writing is switched off');
+  client.outboundEnabled = realOutbound; client.dryrun = realDryrun;
+  await db.query(`DELETE FROM trinity_inspection_orders WHERE customer_key = ANY($1::text[])`,
+    [[`swd-${blockedDraw}`, `swd-${drawId + 5152}`]]);
+  await db.query(`DELETE FROM sitewire_draw_requests WHERE sitewire_draw_id=$1`, [strandedDraw]);
+  await db.query(`DELETE FROM sitewire_draws WHERE sitewire_draw_id = ANY($1::bigint[])`, [[strandedDraw, blockedDraw]]);
 
   // ---- cleanup -------------------------------------------------------------------
   await db.query(`DELETE FROM applications WHERE id=$1`, [a.id]);
