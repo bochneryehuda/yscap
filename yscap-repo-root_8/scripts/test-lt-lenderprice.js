@@ -369,7 +369,22 @@ async function offline() {
     '§26.3 ZIP + state is completed by the county lookup (no longer missing_county_fips)');
   ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, zip: '30301', state: 'GA' }).error === 'zip_not_found',
     '§26.5 a location the ZIP lookup cannot complete still 422s (fails closed)');
-  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, citizenship: 'Martian' }).error === 'invalid_field_value', '§26.5 invalid registry value → 422 invalid_field_value (moved BEFORE the upstream call)');
+  // The fixture now carries a location. Not a weakening: this assertion's SUBJECT is that a bad
+  // registry VALUE is refused before any upstream call, and it never meant to also assert that a
+  // locationless scenario prices. It did price — silently, in the captured base's New Jersey town —
+  // which is the rule below.
+  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, zip: '11211', citizenship: 'Martian' }).error === 'invalid_field_value', '§26.5 invalid registry value → 422 invalid_field_value (moved BEFORE the upstream call)');
+  // A PRICED SCENARIO MUST SAY WHERE THE PROPERTY IS (re-audit of #1220). Before the address became
+  // scenario-owned this silently inherited the captured base's address and priced a deal in Linden,
+  // NJ wherever it actually was; afterwards it would have sent no state and no county at all.
+  // Both are wrong and they fail differently, so it is refused by name.
+  {
+    const noLoc = sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760 });
+    ok(noLoc.ok === false && noLoc.error === 'location_required', '§26.3 a scenario with NO location is refused (never priced in the capture\'s town)');
+    ok(/5-digit ZIP is enough/.test(noLoc.message || ''), '§26.3 …and the refusal says the cheapest way to satisfy it');
+    ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760, zip: '11211' }).ok === true,
+      '§26.3 …while a bare ZIP alone still satisfies it (enrichment runs first)');
+  }
   ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5 }).status === 422 || sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5 }).ok === true, '§26.5 validateScenario returns a shaped result');
 
   // 26) §27 STRICT INPUT VALIDATION — the silent-mispricing class (HTTP 200 with a wrong answer).
@@ -435,20 +450,21 @@ async function offline() {
   ok(sm.validateScenario({ purpose: 'Cash out', value: 5e5, loan: 3e5, cashoutAmount: 50000, state: 'NJ', countyFps: '34039' }).ok === true, 'cash-out amount is an accepted, validated field');
   ok(sm.validateScenario({ purpose: 'Cash out', value: 5e5, loan: 3e5, cashoutAmount: -5, state: 'NJ', countyFps: '34039' }).error === 'out_of_range', 'a negative cash-out amount is rejected');
   const coTx = lp.buildSearch({ purpose: 'CashOut', value: 5e5, loan: 3e5, cashoutAmount: 47321 });
-  ok(coTx.criteria.cashoutAmount === undefined && JSON.stringify(coTx).includes('47321') === false, '§32.2 cash-out amount is NOT transmitted (criteria.cashoutAmount absent, value not in the wire)');
+  ok(coTx.criteria.cashoutAmount === 47321 && JSON.stringify(coTx).includes('47321'), 'cash-out amount IS transmitted as numeric criteria.cashoutAmount (the captured vendor field)');
   ok(coTx[sm.CASHOUT_INTERNAL] === 47321, '§32.2 cash-out amount is retained internally (Symbol-keyed, not serialized)');
   ok(!Object.keys(coTx.dynamicPropertiesMap).some((k) => k === 'undefined'), 'no invented dynamicPropertiesMap.undefined key is ever emitted');
   const noCo = lp.buildSearch({ purpose: 'CashOut', value: 5e5, loan: 3e5 });
   ok(noCo.criteria.cashoutAmount === undefined && noCo[sm.CASHOUT_INTERNAL] === undefined, 'no cash-out amount supplied → nothing set, nothing retained');
-  // The operator escape hatch transmits a CONFIRMED dynamic field (set only once a capture confirms one).
+  // The operator escape hatch is RETIRED — it addressed a dynamic property that never existed, so it
+  // was a guess waiting to be configured. Setting it must now do nothing at all.
   process.env.LP_CASHOUT_AMOUNT_FIELD = 'CashInHand';
   const tx = lp.buildSearch({ purpose: 'CashOut', value: 5e5, loan: 3e5, cashoutAmount: 47321 });
-  ok(tx.criteria.cashoutAmount === undefined && tx.dynamicPropertiesMap.CashInHand && tx.dynamicPropertiesMap.CashInHand.value === 47321, 'the operator escape hatch transmits under the configured dynamic key ONLY (criteria still never set)');
+  ok(tx.dynamicPropertiesMap.CashInHand === undefined && tx.criteria.cashoutAmount === 47321, 'the retired escape hatch writes no dynamic property; the amount rides its one captured path');
   delete process.env.LP_CASHOUT_AMOUNT_FIELD;
 
   // 31) AUDIT §3 — appraised value is NOT manufactured from the estimated value.
   const buyAppr = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 375000 });
-  ok(buyAppr.criteria.appraisedValue === 5e5, '§3 purchase: appraised = value (frontend mirrors it)');
+  ok(buyAppr.criteria.appraisedValue === null, 'purchase: appraised value is BLANK unless separately entered — never mirrored from the price');
   const coBlank = lp.buildSearch({ purpose: 'CashOut', value: 6e5, loan: 42e4 });
   ok(coBlank.criteria.appraisedValue === null, '§3 cash-out with no appraisal: appraised is BLANK, not the $600k estimated value');
   const refiBlank = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5 });
@@ -493,7 +509,7 @@ async function offline() {
   // 35) GOLDEN FIXTURE A — the audit's canonical DSCR purchase (permanent request-structure fixture).
   const goldA = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 375000, fico: 760, dscr: 1.25,
     propertyType: 'SingleFamily', prepayMonths: 60, borrowerType: 'LLC', zip: '07036', state: 'NJ', countyFps: '34039' });
-  ok(goldA.criteria.loanPurpose === 'Purchase' && goldA.criteria.purchasePrice === 5e5 && goldA.criteria.appraisedValue === 5e5, 'GOLDEN A: purchase 500k, appraised 500k');
+  ok(goldA.criteria.loanPurpose === 'Purchase' && goldA.criteria.purchasePrice === 5e5 && goldA.criteria.appraisedValue === null, 'GOLDEN A: purchase 500k, appraised BLANK (not mirrored)');
   ok(goldA.criteria.loanAmount === 375000 && Math.abs(goldA.criteria.ltv - 0.75) < 1e-9, 'GOLDEN A: loan 375k, LTV 0.75');
   ok(goldA.criteria.fico === 760 && goldA.criteria.dscr === 1.25, 'GOLDEN A: FICO 760 / DSCR 1.25');
   ok(goldA.criteria.loanYear === 30 && goldA.brokerCriteria.dayLocks === 30, 'GOLDEN A: 30yr / 30-day lock');
@@ -511,7 +527,7 @@ async function offline() {
   ok(goldB.criteria.interestOnly === true, 'GOLDEN B: interest-only');
   ok(goldB.property.propertyType === 'Condos' && goldB.property.attachmentType === 'Detached' && goldB.criteria.nonWarrantableProject === true, 'GOLDEN B: non-warrantable condo, detached');
   ok(goldB.criteria.loanYear === 15 && goldB.brokerCriteria.dayLocks === 15, 'GOLDEN B: 15yr / 15-day lock');
-  ok(goldB.criteria.cashoutAmount === undefined && goldB[sm.CASHOUT_INTERNAL] === 50000, 'GOLDEN B: §32.2 cashoutAmount 50000 is retained internally, NOT transmitted (fail-closed)');
+  ok(goldB.criteria.cashoutAmount === 50000 && goldB[sm.CASHOUT_INTERNAL] === 50000, 'GOLDEN B: cashoutAmount 50000 transmitted on criteria AND retained internally (the two agree)');
 
   // 37) AUDIT — advanced numerics are STRICTLY validated (no more silent coercion of "12abc" → 123).
   ok(vErr({ ...G, monthlyIncome: '12abc' }) === 'invalid_field_value', 'a malformed monthlyIncome → 422 invalid_field_value');

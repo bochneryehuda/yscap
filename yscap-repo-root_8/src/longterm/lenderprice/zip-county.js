@@ -132,10 +132,22 @@ function enrichLocation(sc = {}) {
         message: `ZIP ${zip} is in county ${hit.countyFps} (${hit.countyName}), but county FIPS ${suppliedFps} was supplied. Fix the conflicting location.` };
     }
   }
-  // The county NAME is only filled when we are the one supplying the FIPS, so a caller's explicit
-  // county keeps its own name rather than being relabelled with the dominant county's.
+  // The county NAME is filled whenever we know it applies — that is, whenever the county the request
+  // will actually carry IS the county this ZIP resolved to. The earlier rule refused to fill it
+  // whenever the caller had supplied ANY countyFps, whose stated reason ("a caller's explicit county
+  // keeps its own name rather than being relabelled") does not hold in the case that matters: a
+  // caller who supplied a FIPS and NO name has no name to keep, so withholding ours left the name to
+  // be inherited from whatever the pricing foundation happened to carry. The post-merge audit of
+  // #1220 reproduced the result — one response asserting `countyEnrichment.countyName = "Bronx"`
+  // while the built request said `countyName: "Union"`, a New Jersey county, in the same answer.
+  //
+  // A caller's OWN name still always wins (we never relabel it), and on a SPLIT ZIP where the caller
+  // overrode the county we still fill nothing: their FIPS is a county this table does not hold the
+  // name of, and guessing it would put the dominant county's name on a different county — exactly
+  // the FIPS-says-one-county / name-says-another contradiction being fixed here.
   const suppliedName = String(sc.countyName || sc.county || '').trim();
-  if (!suppliedName && !suppliedFps) { location.countyName = hit.countyName; filled.push('countyName'); }
+  const effectiveFps = suppliedFps || hit.countyFps;
+  if (!suppliedName && effectiveFps === hit.countyFps) { location.countyName = hit.countyName; filled.push('countyName'); }
   return { ok: true, location, filled, split: hit.split, resolved: hit };
 }
 

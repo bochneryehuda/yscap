@@ -46,7 +46,8 @@ const dq = { ready: true, lenderCount: 3, itemCount: 8, reasonCount: 8, lenders:
   const eff = effectiveOf(payload);
   ok(eff.reserves === 'Reserves_24' && eff.addlOccupancyType === 'Long_Term_Rental_Property', 'effectiveScenario shows reserves + rental term');
   ok(eff.location && eff.location.state === 'FL' && eff.location.county === '12086', 'effectiveScenario shows the complete location');
-  ok(eff.cashoutAmount === undefined && eff.cashoutAmountInternal === 50000, '§32.2 effectiveScenario shows cash-out as internal-only (retained, NOT transmitted)');
+  ok(eff.cashoutAmount === 50000 && eff.cashoutAmountInternal === 50000,
+    'effectiveScenario shows the TRANSMITTED cash-out amount, and the internal copy agrees with it');
   ok(eff.attachmentType === 'Detached' && eff.nonWarrantableProject === true, 'effectiveScenario shows the independent attachment + non-warrantable');
   ok(Array.isArray(eff.specialMortgageOptions) && eff.specialMortgageOptions.every((s) => 'id' in s && 'name' in s), 'SMOs are reported as {id,name} identities');
   ok(unsupportedFields({ attachment: 'Detached', nonWarrantable: true, purpose: 'Purchase' }).length === 0, 'attachment + nonWarrantable are supported fields');
@@ -83,6 +84,49 @@ ok(!g.nexted && g.code === 401, 'gate 401s on wrong token');
 // token set, right header → next()
 g = run(gate, { 'x-lp-diag-token': 'secret-abc' }, 'secret-abc');
 ok(g.nexted && g.code === null, 'gate passes through on correct token');
+
+// ---- POST-MERGE AUDIT (#1220): §3 of the parity doc must not drift from the code ----
+// §3 states "anything not in this list is rejected 422 (unsupported_field)". Read literally, a field
+// missing from the list says a SUPPORTED field is rejected — and 12 of them were missing, because
+// the list is hand-maintained while SUPPORTED_FIELDS grows in code. A hand-kept list goes stale
+// silently, so this asserts the two agree instead of trusting anyone to remember.
+{
+  const fs = require('fs');
+  const doc = fs.readFileSync(require('path').join(__dirname, '..', 'docs', 'longterm', 'LENDER-PRICE-PARITY-STATUS.md'), 'utf8');
+  const start = doc.indexOf('## 3. The request-builder field contract');
+  const end = doc.indexOf('## 4.');
+  ok(start !== -1 && end > start, 'DOC-0 the parity doc still has a §3 field-contract section');
+  const s3 = doc.slice(start, end);
+  ok(dp.SUPPORTED_FIELDS instanceof Set && dp.SUPPORTED_FIELDS.size > 0, 'DOC-0a SUPPORTED_FIELDS is exported and populated');
+  ok(dp.META_FIELDS instanceof Set && dp.META_FIELDS.size > 0, 'DOC-0b META_FIELDS is exported and populated');
+  const missing = [...dp.SUPPORTED_FIELDS].filter((f) => !new RegExp('`' + f + '`').test(s3));
+  ok(missing.length === 0, `DOC-1 every supported field is documented in §3 (missing: ${missing.join(', ') || 'none'})`);
+
+  // The reverse is worse: a field §3 PROMISES that the route would 422. The first cut
+  // read only LINE-START fields — 25 of §3's 78 backticked tokens — so a phantom in
+  // the Location line, the flags line or the whole "Advanced (strict)" line was
+  // invisible, and those are the longest and most drift-prone lines in the section.
+  // It also short-circuited on `!SUPPORTED_FIELDS.has(f) && !META_FIELDS.has(f)`, so
+  // META_FIELDS was NEVER dereferenced and deleting its export left the suite green
+  // — half the guard's declared input could be missing entirely. Both are closed:
+  // every backticked token in §3 is considered, and the two sets are asserted above.
+  const ALL_TOKENS = [...new Set([...s3.matchAll(/`([a-zA-Z][a-zA-Z0-9_]*)`/g)].map((m) => m[1]))];
+  ok(ALL_TOKENS.length > 40, `DOC-2a §3 is read WHOLE, not just its line starts (${ALL_TOKENS.length} tokens)`);
+  // §3 legitimately names upstream paths, tokens and types alongside our field names,
+  // so a token only counts as a PROMISE when it is not one of those. The allowlist is
+  // narrow and explicit: anything else that looks like one of our fields must be one.
+  const NOT_A_FIELD = new Set([
+    ...dp.META_FIELDS,
+    // upstream/vendor vocabulary and type words that appear in the same prose
+    'criteria', 'property', 'address', 'dynamicPropertiesMap', 'brokerCriteria', 'number', 'boolean',
+    'integer', 'enum', 'string', 'null', 'true', 'false', 'default', 'int', 'jsonb',
+  ]);
+  const phantom = ALL_TOKENS.filter((f) => !dp.SUPPORTED_FIELDS.has(f)
+    && !NOT_A_FIELD.has(f)
+    && !/[._A-Z]/.test(f)                       // upstream paths and TokenCase values
+    && !new RegExp('`' + f + '`\\s*(→|->)').test(s3) === false);
+  ok(phantom.length === 0, `DOC-2 §3 promises no field the route would reject (phantom: ${phantom.join(', ') || 'none'})`);
+}
 
 console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
 process.exit(failures ? 1 : 0);

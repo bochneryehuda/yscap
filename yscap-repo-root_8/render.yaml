@@ -78,6 +78,18 @@ services:
         sync: false
       - key: LP_DIAG_TOKEN
         sync: false
+      # FAIL CLOSED ON STALE PRICING CONFIGURATION. The connector clones the company's LIVE
+      # defaultSearch + SMO registry for every pricing job and falls back to a captured static
+      # model if either call fails. That fallback is a months-old snapshot: it can be accepted
+      # upstream and still price a materially different loan, which does not error anywhere —
+      # the 2026-08-16 audit measured 475 frontend rows against 752 from the fallback for one
+      # matched scenario. With this set, pricing REFUSES (502 lp_foundation_not_live) rather
+      # than quoting from it, and /api/lt/dscr/health reports pricingReady:false with the
+      # reason. Left unset, pricing still works but health reports foundation.degraded:true —
+      # it is never silent either way. NOT a secret; it is deployment policy, so it lives here
+      # rather than only in the dashboard.
+      - key: LP_REQUIRE_LIVE_FOUNDATION
+        value: "1"
       # Trinity — the PHYSICAL inspection company we order draw inspections from on
       # files whose note buyer is NOT Blue Lake. Dashboard-only (never in source), and
       # the whole integration is INERT until the username + password are set: with no
