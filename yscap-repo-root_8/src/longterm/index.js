@@ -47,6 +47,11 @@ router.use('/sync', require('./routes/sync'));
 // /api/lt/pipeline
 router.use('/pipeline', require('./routes/pipeline'));
 
+// Saved pipeline views — a named set of FILTERS, never a scope. A view is appended
+// to the viewer's own access inside the query, so it can only ever narrow.
+// /api/lt/views
+router.use('/views', require('./routes/views'));
+
 // The signed-in person's own long-term preferences — today, which product side
 // they open on (the owner's switch), remembered per user. /api/lt/me
 router.use('/me', require('./routes/me'));
