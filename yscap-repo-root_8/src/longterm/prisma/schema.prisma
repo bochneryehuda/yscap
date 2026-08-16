@@ -294,6 +294,14 @@ model LtLoan {
   /// visible rather than silently stale.
   encompassSyncError String? @map("encompass_sync_error")
 
+  /// When the CURRENT milestone was first observed. Denormalised from
+  /// LtMilestoneEvent so the pipeline can sort on "longest at its milestone".
+  milestoneSince DateTime? @map("milestone_since") @db.Timestamptz(6)
+  /// TRUE while `milestoneSince` is only "when we started watching" rather than
+  /// when the loan arrived. A consumer that ignores this reports a stale figure
+  /// as a fresh one — see db/554.
+  milestoneSinceIsBaseline Boolean @default(true) @map("milestone_since_is_baseline")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -303,6 +311,7 @@ model LtLoan {
   contacts      LtLoanContact[]
   lock          LtLock?
   lockEvents    LtLockEvent[]
+  milestoneEvents LtMilestoneEvent[]
 
   @@index([borrowerId])
   @@index([loanOfficerId])
@@ -1086,6 +1095,37 @@ model LtLockEvent {
 
   @@index([loanId, eventAt])
   @@map("lt_lock_events")
+}
+
+/// WHEN a loan reached each milestone — what PILOT WATCHED, never what Encompass
+/// recorded. Its own milestone log answers 403 on this tenant (the client
+/// registration lacks `encompass_admin`), so noticing that a loan's milestone is not
+/// what it was is the only history available. Every event type is `observed_*` so
+/// ours can never be mistaken for theirs.
+///
+/// A FIRST SIGHTING IS A BASELINE, NOT AN ARRIVAL. On the first read we cannot know
+/// how long the loan had already been sitting there, and dating it from that day
+/// would make the whole back book look freshly moved. See db/554.
+model LtMilestoneEvent {
+  id     String @id @default(uuid()) @db.Uuid
+  loanId String @map("loan_id") @db.Uuid
+
+  /// observed_entered | observed_baseline
+  eventType     String  @map("event_type")
+  fromMilestone String? @map("from_milestone")
+  toMilestone   String? @map("to_milestone")
+  fromStage     String? @map("from_stage")
+  toStage       String? @map("to_stage")
+
+  /// When PILOT observed it. Never Encompass's own completion timestamp.
+  observedAt        DateTime  @default(now()) @map("observed_at") @db.Timestamptz(6)
+  encompassSyncedAt DateTime? @map("encompass_synced_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  loan LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([loanId, observedAt])
+  @@map("lt_milestone_events")
 }
 
 /// A mapping is either awaiting a human, accepted, or refused. The one enum this

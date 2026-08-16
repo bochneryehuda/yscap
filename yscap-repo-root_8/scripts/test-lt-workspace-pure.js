@@ -26,7 +26,7 @@ const check = (cond, msg) => {
 
 const DSCR = {
   loan_number: 'YSCAP1', borrower_name: 'A Borrower', product_kind: 'dscr',
-  employment_applies: false, dscr_ratio: 1.28, gross_rent: 2600,
+  employment_applies: false, dscr_ratio: 1.28,
   housing_expense_total: 2025.31, loan_amount: 612000, note_rate_pct: 7.25,
   term_months: 360, milestone_name: 'Processing', lock_status: 'Locked',
 };
@@ -110,9 +110,28 @@ check(shuffled.currentIndex === 2, '…so the current position is right regardle
 // ── The rail ────────────────────────────────────────────────────────────────
 console.log('\nthe summary rail');
 
-const rail = ws.summaryRail(DSCR);
+// The property figures are passed as the SAME sections the Property tab renders —
+// they live on `lt_properties`, so the loan row cannot supply them and the rail must
+// not pretend otherwise. `file.js` shapes them; this mirrors that shape.
+const PROP = { appraisedValue: 875000, estimatedValue: 860000, ltvPct: 70, occupancy: 'Investment' };
+const INC = { grossMonthlyRent: 2600, actualMonthlyRent: 2450 };
+
+const rail = ws.summaryRail(DSCR, { property: PROP, income: INC });
 check(rail.dscr === 1.28 && rail.grossRent === 2600 && rail.housingExpense === 2025.31,
   'the DSCR figures the plan names are all on the rail');
+check(rail.propertyValue === 875000 && rail.ltv === 70 && rail.occupancy === 'Investment',
+  'the property figures come from the property section, so the rail and the Property tab state one value');
+
+// THE ONE THAT MATTERS: these columns are on `lt_properties`, and reading them off the
+// loan row answered null on every loan while the Property tab showed the real number.
+const railNoProp = ws.summaryRail({ ...DSCR, appraised_value: 875000, ltv_pct: 70, gross_rent: 2600, occupancy: 'Investment' });
+check(railNoProp.propertyValue === null && railNoProp.ltv === null
+  && railNoProp.grossRent === null && railNoProp.occupancy === null,
+  'THE ONE THAT MATTERS: the rail does not read property figures off the LOAN row — those columns are not on it, and a row that happens to carry them is not where the answer comes from');
+check(ws.summaryRail(DSCR, { property: {}, income: {} }).propertyValue === null,
+  'a property nobody has read leaves the row honestly empty rather than wrong');
+check(ws.summaryRail(DSCR, { property: { estimatedValue: 500000 } }).propertyValue === 500000,
+  'with no appraisal yet it falls back to the estimated value rather than showing nothing');
 check(rail.loanAmount === 612000 && rail.noteRate === 7.25 && rail.termMonths === 360,
   'the money and the terms are numbers, not strings');
 check(rail.stage.key === 'underwriting' && rail.milestone === 'Processing',
