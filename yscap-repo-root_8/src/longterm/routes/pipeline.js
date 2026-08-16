@@ -108,6 +108,8 @@ router.get('/:loanId', async (req, res) => {
     // When PILOT watched this loan reach each milestone. Best-effort and EMPTY when
     // unreadable, which draws the stepper with no dates rather than with wrong ones.
     const reachedAt = await milestones.reachedAtByMilestone(rows[0].id).catch(() => ({}));
+    // The movement history itself — what PILOT watched, in order. Best-effort.
+    const milestoneHistory = await milestones.loadHistory(rows[0].id, 25).catch(() => []);
     const currentMs = catalog.find(
       (m) => String(m.name || '').trim().toLowerCase() === String(rows[0].milestone_name || '').trim().toLowerCase(),
     );
@@ -135,6 +137,7 @@ router.get('/:loanId', async (req, res) => {
       stepper: workspace.milestoneStepper(rows[0], catalog, { reachedAt }),
       // How long it has been at this milestone — and, when the first sighting is all
       // we have, a plain sentence saying we do not know rather than a number we made up.
+      milestoneHistory,
       milestoneClock: milestones.describeClock(rows[0], {
         expectedDays: currentMs ? currentMs.expected_days : null,
       }),

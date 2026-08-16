@@ -501,7 +501,7 @@ function Declarations({ data }) {
  * that is genuinely empty and one we could not ask about look identical on a screen and
  * mean opposite things to whoever has to chase it.
  */
-function Summary({ data, file, sections, lock, contacts }) {
+function Summary({ data, file, sections, lock, contacts, history }) {
   const b = file.borrowers || { parties: [] };
   const people = b.parties.filter((p) => p.partyType !== 'entity');
   const entities = b.parties.filter((p) => p.partyType === 'entity');
@@ -533,6 +533,34 @@ function Summary({ data, file, sections, lock, contacts }) {
         ['Rate lock', lock && lock.status ? plain(lock.status) : 'Not locked'],
         ['Team on this file', contacts && contacts.length ? String(contacts.length) : '—'],
       ]} />
+
+      {/* HOW THIS FILE HAS MOVED — what PILOT watched, in order.
+          A BASELINE IS LABELLED AS ONE and never rendered as an arrival: it says
+          where the loan already was when we started watching, which is a different
+          statement from "it reached this on that date". Encompass keeps its own
+          milestone log and our API permissions do not reach it, so the note under
+          the list says plainly whose record this is. */}
+      {history && history.length ? (
+        <Group
+          title="How this file has moved"
+          note="What PILOT watched change between two reads — not Encompass’s own milestone log, which our permissions do not reach."
+        >
+          <Rows
+            cols={[
+              { key: 'when', label: 'Observed', render: (r) => day(r.observedAt) },
+              {
+                key: 'what',
+                label: 'Movement',
+                render: (r) => (r.isBaseline
+                  ? `Already at ${plain(r.toMilestone)} when PILOT started watching`
+                  : `${plain(r.fromMilestone)} → ${plain(r.toMilestone)}`),
+              },
+            ]}
+            rows={history.map((h, i) => ({ ...h, id: `${h.observedAt}-${i}` }))}
+            empty="Nothing observed yet."
+          />
+        </Group>
+      ) : null}
 
       <Group
         title="What has been read from Encompass"
@@ -595,7 +623,7 @@ const SLICE_OF = { summary: 'terms' };
 /** True when this screen can draw the section itself. */
 export const hasFileSection = (key) => Object.prototype.hasOwnProperty.call(RENDERERS, key);
 
-export default function LtFileSection({ sectionKey, file, sections, lock, contacts }) {
+export default function LtFileSection({ sectionKey, file, sections, lock, contacts, history }) {
   const Renderer = RENDERERS[sectionKey];
   if (!Renderer) return null;
   const slice = SLICE_OF[sectionKey] || sectionKey;
@@ -609,5 +637,6 @@ export default function LtFileSection({ sectionKey, file, sections, lock, contac
       </p>
     );
   }
-  return <Renderer data={file[slice]} file={file} sections={sections} lock={lock} contacts={contacts} />;
+  return <Renderer data={file[slice]} file={file} sections={sections} lock={lock}
+    contacts={contacts} history={history} />;
 }

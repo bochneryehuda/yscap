@@ -245,7 +245,7 @@ export default function LtLoan() {
   if (!data) return <LtLayout title="Long-term file"><div className="card" style={{ color: INK }}>Loading…</div></LtLayout>;
 
   const { rail, stepper, sections = [], contacts = [], lock, file, milestoneClock } = data;
-  const { product: productKey, productLabel } = data;
+  const { product: productKey, productLabel, milestoneHistory } = data;
   const current = sections.find((s) => s.key === active) || sections[0];
   // A section is drawn from the file ONLY when the server said it applies. A section
   // the workspace greyed out has a reason attached, and that reason is the answer —
@@ -323,7 +323,8 @@ export default function LtLoan() {
                     long-term side reads Encompass and never writes to it.
                   </p>
                   <LtFileSection sectionKey={current.key} file={file}
-                    sections={sections} lock={lock} contacts={contacts} />
+                    sections={sections} lock={lock} contacts={contacts}
+                    history={milestoneHistory} />
                 </>
               ) : (
                 <p style={{ margin: 0, color: MUTED, lineHeight: 1.55 }}>
