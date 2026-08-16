@@ -138,6 +138,82 @@ function mapProp(t) {
     `Unknown property type ${JSON.stringify(String(t))}. The request is rejected rather than defaulted to single-family.`);
 }
 
+// ---- §31.6/§31.8 SCENARIO-OWNERSHIP CLEARING LAYER --------------------------
+// A live /pricing/defaultSearch foundation is a SNAPSHOT of the pricing model as some earlier
+// session last left it. Cloning it (buildSearch, below) inherits every default — which is CORRECT
+// for STRUCTURAL defaults (closing-cost tables, the {fieldId,value} scaffolding, the filter shape,
+// the flag inherits documented at "OMITTED flag inherits the cloned default") but WRONG for
+// SCENARIO-OWNED fields: a prior session's second-lien amount, rehab budget, comp override, or core
+// economics ride along and silently price the NEW scenario as if it carried them. buildSearch
+// overlays the fields it knows about, but a scenario-owned field it NEVER writes back
+// (subordinateLoanAmount) or writes only WHEN THE CALLER SUPPLIES IT (loanAmount, fico, dscr) leaks
+// the stale value on omission.
+//
+// The audit's algorithm (§31.6): after cloning, CLEAR every scenario-owned field to a documented
+// neutral state, BEFORE the DSCR profile + caller overlay — so an omitted field FAILS CLOSED to
+// neutral instead of leaking, and a supplied one is re-applied on top exactly as before. This is a
+// TARGETED clear driven by a REGISTRY, never a broad deletion: a field OUTSIDE the registry inherits
+// unchanged (property type, prepay-when-omitted, the io/escrow/fthb flags, and every structural
+// default). Each entry documents WHY the field is scenario-owned and its neutral value; every
+// neutral is the captured base's OWN default for that field, so clearing can never introduce a value
+// the engine has not already accepted (it can only ever remove a stale one). Adding a field is one
+// registry line, so the clearing stays intentional and testable — never re-derived per call site.
+const DELETE = Symbol('scenario-owned-delete');
+const SCENARIO_OWNED = [
+  // Core deal economics — buildSearch RE-APPLIES each from the caller below, so clearing changes
+  // behavior ONLY on OMISSION: the field then fails closed to neutral instead of inheriting the
+  // foundation's value. (appraisedValue + loanYear are ALWAYS forced by buildSearch, so they cannot
+  // leak and are deliberately NOT listed here.)
+  { path: 'criteria.purchasePrice', neutral: null, why: 'per-deal purchase/estimated price' },
+  { path: 'criteria.loanAmount',    neutral: null, why: 'per-deal loan amount' },
+  { path: 'criteria.ltv',           neutral: null, why: 'per-deal LTV (buildSearch falls back to criteria.ltv when value/loan/ltv are all absent)' },
+  { path: 'criteria.fico',          neutral: null, why: 'per-borrower credit score' },
+  { path: 'criteria.dscr',          neutral: null, why: 'per-deal DSCR ratio' },
+  // Per-deal amounts buildSearch NEVER writes back — the audit's leak class. Neutral is the captured
+  // base default (0), so a stale non-zero from a prior session is reset and no value the engine has
+  // not already accepted is ever introduced. A real value would only reach these through a wired
+  // caller field (none today), so on every current DSCR scenario they are correctly 0.
+  { path: 'criteria.subordinateLoanAmount', neutral: 0, why: 'second-lien amount — audit §31.6 leak example' },
+  { path: 'criteria.lineAmount',            neutral: 0, why: 'line-of-credit amount' },
+  { path: 'criteria.rehabBudget',           neutral: 0, why: 'rehab budget' },
+  { path: 'criteria.drawAmount',            neutral: 0, why: 'construction draw amount' },
+  { path: 'criteria.downPaymentAmount',     neutral: 0, why: 'down-payment amount' },
+  // Cash-out "cash in hand": buildSearch adds it ONLY on a cash-out that supplies it, so its neutral
+  // is ABSENT (delete the key), never a null — a non-cash-out scenario must carry no cashoutAmount at
+  // all, and a stale one inherited from the foundation is removed.
+  { path: 'criteria.cashoutAmount', neutral: DELETE, why: 'cash-out amount; absent unless the caller supplies it' },
+  // Broker COMP-PLAN override — the audit's compPlan leak. Neutral is the base default false ("do not
+  // override; the standard comp plan governs"), which neutralizes any per-session comp override
+  // (rangeComplan only applies while this flag is true, so clearing the flag is sufficient and no
+  // comp value we cannot document is touched).
+  { path: 'brokerCriteria.overrideExistingComplan', neutral: false, why: 'per-session comp override — audit §31.6 compPlan example' },
+];
+// Clear every registered scenario-owned field to its neutral state, IN PLACE. Operates on the
+// already-cloned model (buildSearch clones first), so it never mutates the shared BASE or a caller's
+// base object. A DELETE neutral removes the key (and skips a path whose parent is absent — there is
+// nothing to clear); every other neutral is written, creating a missing parent object only when the
+// neutral is a real value to set.
+function clearScenarioOwnedFields(search) {
+  for (const e of SCENARIO_OWNED) {
+    const parts = e.path.split('.');
+    let o = search;
+    let reachable = true;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const k = parts[i];
+      if (o[k] == null || typeof o[k] !== 'object') {
+        if (e.neutral === DELETE) { reachable = false; break; } // nothing to delete
+        o[k] = {};
+      }
+      o = o[k];
+    }
+    if (!reachable) continue;
+    const leaf = parts[parts.length - 1];
+    if (e.neutral === DELETE) delete o[leaf];
+    else o[leaf] = e.neutral;
+  }
+  return search;
+}
+
 /**
  * Build a complete searchRaw body for a scenario by overlaying it onto the canonical base model.
  * @param sc scenario { purpose,value,loan,ltv,fico,dscr,propertyType,units,zip,state,county,countyFps,city,borrowerType,prepayMonths,io,escrowWaive,date }
@@ -147,6 +223,10 @@ function mapProp(t) {
  */
 function buildSearch(sc = {}, opts = {}) {
   const m = clone(opts.base || BASE);
+  // §31.6 — clear scenario-owned fields to neutral BEFORE the DSCR profile + caller overlay, so a
+  // stale value inherited from a live foundation can never leak into this scenario. Runs on the
+  // clone, immediately after it, so every read below (e.g. the criteria.ltv fallback) sees neutral.
+  clearScenarioOwnedFields(m);
   const smoReg = opts.smo || null;
   const value = num(sc.value);
   const loan = num(sc.loan);
@@ -476,5 +556,5 @@ function validateScenario(sc = {}) {
   return { ok: true, request };
 }
 
-module.exports = { BASE, buildSearch, smoRegistryFromList, REGISTRY_WARNINGS, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS } };
+module.exports = { BASE, buildSearch, clearScenarioOwnedFields, smoRegistryFromList, REGISTRY_WARNINGS, validateScenario, validateLocation, validateInputs, LpValidationError,
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE } };
