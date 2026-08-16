@@ -657,6 +657,10 @@ export const api = {
   rvPrice:       (appId, overrides) => req('POST', `/api/richer-value/files/${appId}/price`, overrides || {}),
   rvPlaceOrder:  (appId, body) => req('POST', `/api/richer-value/files/${appId}/order`, body),
   rvOrders:      (appId) => req('GET', `/api/richer-value/files/${appId}/orders`),
+  // Talking to their team. Their API has no messaging, so this is email — the
+  // thread is read and written here, and their replies join it on their own.
+  rvMessages:    (appId) => req('GET', `/api/richer-value/files/${appId}/messages`),
+  rvSendMessage: (appId, body) => req('POST', `/api/richer-value/files/${appId}/messages`, { body }),
   rvOrder:       (orderId) => req('GET', `/api/richer-value/orders/${orderId}`),
   rvRefresh:     (orderId) => req('POST', `/api/richer-value/orders/${orderId}/refresh`, {}),
   rvApplyValues: (orderId) => req('POST', `/api/richer-value/orders/${orderId}/apply-values`, {}),
