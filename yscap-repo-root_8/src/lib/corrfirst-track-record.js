@@ -26,6 +26,28 @@
  *     line endings, no BOM, and NO trailing newline. `assertMatchesCorrfirstSample`
  *     pins all of that against the sample's exact bytes.
  *
+ * ── CONFIRMED AGAINST THEIR OWN FORM (2026-08-16) ───────────────────────────
+ * The owner recorded themselves entering a track-record line in CorrFirst's system
+ * and sent the network capture, so these are no longer read off a sample — they are
+ * what CorrFirst's own software stores:
+ *   · money      `"purchasePrice":"100,000"` — a STRING, thousands separators, no
+ *                `$`, no cents. Exactly what `money()` writes.
+ *   · ownership  `"ownershipPercent":"50"` — a bare number, no `%`. Exactly `pct()`.
+ *   · RETAINED   `"asRental"` is a BOOLEAN, and when it is true their payload OMITS
+ *                `salesDate` and `salesPrice` ENTIRELY. So "retained ⇒ both sold
+ *                cells empty" is structural on their side, not a habit of the two
+ *                sample rows — which is what `corrfirstCells` already enforces, and
+ *                what section 4 of the test pins. Do not let a later edit write a
+ *                sale date onto a retained line "for completeness": their own form
+ *                cannot hold that combination.
+ *   · address    they store ONE Google-Places line, `"1107 W Henry St, Linden, NJ
+ *                07036"` — street, city, state ZIP. Our four columns rejoin into
+ *                exactly that shape, which is also what `address.canonicalOneLine`
+ *                produces, so their importer has nothing to reconcile.
+ *   · title/notes free text.
+ * (Their API takes dates as `YYYY-MM-DD` while their CSV sample writes MM/DD/YYYY —
+ * their importer converts. The CSV is what we produce, so the CSV's format wins.)
+ *
  * ── ONLY VERIFIED LINES GO OUT ──────────────────────────────────────────────
  * Owner-directed, and already the rule for the TPR/REO investor package
  * (tpr-export.js): `is_verified = true` — the same definition the tier, the

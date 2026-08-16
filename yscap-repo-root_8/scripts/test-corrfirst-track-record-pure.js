@@ -169,10 +169,18 @@ ok(cf.wasSold({ rent_date: '2024-02-05' }) === false, 'a lease-up is not a sale'
 ok(cf.wasSold({ refi_date: '2024-02-05', deal_type: 'flip' }) === false, 'a refinance is not a sale');
 ok(cf.wasSold({}) === false, 'nothing recorded → not sold');
 {
-  // The invariant CorrFirst's own sample shows: Y ⇒ both sold cells empty.
+  // Y ⇒ both sold cells empty. Their own sample shows it, and their own SOFTWARE
+  // enforces it: a network capture of a staffer entering a line in CorrFirst's
+  // system (2026-08-16) shows `asRental:true` sending a payload with NO salesDate
+  // and NO salesPrice keys at all. Their form cannot hold the other combination,
+  // so this is structural — never "complete" a retained line with a sale date.
   const cells = cf.corrfirstCells(retainedDeal);
   ok(cells[8] === 'Y' && cells[9] === '' && cells[10] === '',
     'retained (Y) ⇒ Sold Date and Sold Price are empty');
+  // Even when the row DOES carry a stale sale figure, the retained line ships clean.
+  const staleRetained = cf.corrfirstCells({ ...retainedDeal, sale_price: null, sale_date: null, rent_date: '2024-02-05' });
+  ok(staleRetained[8] === 'Y' && staleRetained[9] === '' && staleRetained[10] === '',
+    'a retained line never carries a sold cell — the combination their form cannot hold');
   const soldCells = cf.corrfirstCells(soldDeal);
   ok(soldCells[8] === 'N' && soldCells[9] === '02/05/2024' && soldCells[10] === '200,000',
     'sold (N) ⇒ Sold Date and Sold Price are filled');
