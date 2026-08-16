@@ -139,14 +139,17 @@ function mapPurpose(p) {
 // invents a number from ONE input (that would be a guess, and `known < 2` is refused upstream by
 // validateInputs). LTV is accepted as either 75 or 0.75 and always normalized to the 0.75 decimal
 // form the vendor expects. Money is rounded to cents and LTV to 6dp so a derived figure is stable.
-function deriveAmounts(sc = {}) {
+function deriveAmounts(sc) {
+  sc = sc || {}; // a `= {}` default only catches undefined; this module promises never to throw
   const money = (n) => Math.round(n * 100) / 100;
   const ratio = (n) => Math.round(n * 1e6) / 1e6;
   let value = num(sc.value);
   let loan = num(sc.loan);
   const ltvRaw = num(sc.ltv);
   // Accept a percentage (75) or a decimal (0.75). A value at or below 1 is already a decimal.
-  let ltv = ltvRaw != null ? (ltvRaw > 1 ? ltvRaw / 100 : ltvRaw) : null;
+  // A SUPPLIED ltv is rounded to the same 6dp a DERIVED one gets, so 33.333333 cannot transmit as
+  // 0.33333333000000004 — the wire form must not depend on which way the figure arrived.
+  let ltv = ltvRaw != null ? ratio(ltvRaw > 1 ? ltvRaw / 100 : ltvRaw) : null;
   const supplied = { value: value != null, loan: loan != null, ltv: ltv != null };
   const derived = [];
   // A zero value or a zero LTV cannot participate in a derivation (division by zero / a meaningless
@@ -160,7 +163,14 @@ function deriveAmounts(sc = {}) {
   } else if (value != null && ltv != null && value > 0) {
     loan = money(value * ltv); derived.push('loan');
   }
-  const known = [value, loan, ltv].filter((x) => x != null).length;
+  // `known` counts only figures that can actually PARTICIPATE in the triangle — a zero or negative
+  // value/loan/ltv is not a usable amount. Counting a bare `!= null` let `ltv: 0` masquerade as one
+  // of the two required figures while deriving nothing, so a null purchase price reached upstream.
+  // validateInputs also floors the LTV, but this belongs here too: deriveAmounts is exported and
+  // read by the route's derivedScenario echo, which must never report a usable triangle it does not
+  // have. NaN/Infinity are already excluded by num().
+  const usable = (x) => x != null && x > 0;
+  const known = [value, loan, ltv].filter(usable).length;
   return { value, loan, ltv, supplied, derived, known };
 }
 
@@ -681,6 +691,10 @@ const ALLOWED_LOCKS = (process.env.LP_ALLOWED_LOCKS
 // Allowed loan terms (years) — the LIVE frontend list (audit §7): 5, then 8 through 30, then 40.
 // env-overridable (LP_ALLOWED_TERMS). The old [5,10,15,20,25,30,40] rejected valid 8/9/11..29-year
 // visible choices.
+// The smallest LTV that is a real scenario rather than a typo. Arithmetic sanity, NOT a business
+// cap: the triangle divides by the LTV, so a vanishing one derives an absurd property value
+// (0.000001 on a $400k loan → $400bn). 0.1% sits far below any real deal.
+const MIN_LTV = Number(process.env.LP_MIN_LTV || 0.001);
 const LIVE_TERMS = [5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 40];
 const ALLOWED_TERMS = (process.env.LP_ALLOWED_TERMS
   ? process.env.LP_ALLOWED_TERMS.split(',').map((x) => Number(x.trim())).filter((n) => isFinite(n))
@@ -753,6 +767,15 @@ function validateInputs(sc = {}) {
     const maxLtv = Number(process.env.LP_MAX_LTV || 1);
     if (normLtv > maxLtv) {
       return bad('ltv_out_of_range', 'ltv', `LTV ${(normLtv * 100).toFixed(2)}% exceeds the maximum ${(maxLtv * 100).toFixed(0)}%.`);
+    }
+    // A ZERO (or vanishing) LTV is not a scenario. It also cannot participate in the amount
+    // triangle — dividing by it is meaningless — so without this floor it counted toward "two
+    // figures known" while deriving nothing, and a null purchase price reached upstream: exactly
+    // what the triangle rule exists to prevent. The floor is arithmetic sanity, not a business
+    // cap: below 0.1% the derived property value explodes (a 0.000001 LTV on a $400k loan derives
+    // a $400bn value), which is a typo, never a deal.
+    if (normLtv < MIN_LTV) {
+      return bad('ltv_out_of_range', 'ltv', `LTV ${(normLtv * 100).toFixed(4)}% is below the minimum ${(MIN_LTV * 100).toFixed(1)}% — an LTV of zero or near-zero is not a priceable scenario.`);
     }
   }
   if (value.v != null && loan.v != null) {

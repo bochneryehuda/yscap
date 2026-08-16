@@ -114,6 +114,10 @@ function effectiveOf(payload) {
     citizenship: dyn('Citizenship'), tradelines: dyn('Tradelines'),
     mixedUse: dyn('GLOBAL_MixedUse'), noMortgageHistory: dyn('GLOBAL_NoMortgageHistory'),
     crossCollateral: dyn('GLOBAL_Cross_Collateralization_Product'), firstTimeInvestor: dyn('FirstTimeInvestor'), livingRentFree: dyn('Global_Living_Rent_Free'),
+    // §31.3/§31.7 — the two true-only flags. Echoed like every sibling above so a caller can confirm
+    // they were applied; asset depletion carries the vendor's "Yes" (not "true"), which is precisely
+    // the distinction worth being able to SEE on the wire.
+    dscrAssetDepletion: dyn('Global_DSCR_Asset_Depletion'), lateInLast12Months: dyn('Lateinlast12months'),
     bankruptcyChapter: dyn('BankruptcyChapter'), bankruptcyStatus: dyn('BankruptcyStatus'), bankruptcySeasoning: dyn('BankruptcySeasoning'),
     foreclosure: dyn('Global_FORECLOSURES'), shortSale: dyn('Global_SHORTSALES'), deedInLieu: dyn('Global_DEEDINLIEU'),
     chargeOff: dyn('GLOBAL_MortgageLoanChargeOffs'), forbearance: dyn('GLOBAL_Forbearances'),
