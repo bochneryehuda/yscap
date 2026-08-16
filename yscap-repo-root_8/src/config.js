@@ -1304,6 +1304,16 @@ module.exports = {
     pollSec:   Math.max(60, parseInt(process.env.RV_POLL_SEC || '300', 10) || 300),
     pollBatch: Math.max(1, parseInt(process.env.RV_POLL_BATCH || '25', 10) || 25),
     timeoutMs: Math.max(1000, parseInt(process.env.RV_TIMEOUT_MS || '60000', 10) || 60000),
+
+    // ---- talking to their team (owner-directed 2026-08-16) ----
+    // THEIR API HAS NO MESSAGING. 31 messaging-shaped paths were probed live
+    // (message/messages/comment/note/thread/conversation/chat/ticket/revision/
+    // rebuttal/dispute/inquiry/notification/correspondence…) on both GET and POST,
+    // and every one answered 404 — so a desk question, a revision request or a
+    // rebuttal cannot be an API call and has to be EMAIL. This is the address their
+    // team answers on; it is overridable because a vendor changes an inbox far more
+    // often than we ship code.
+    ordersEmail: (process.env.RV_ORDERS_EMAIL || 'orders@richervalues.com').trim(),
   },
 
   // ---- DocLab (Private Lender Law) — loan-document drafting. RTL ONLY. ----

@@ -178,6 +178,11 @@ const CATEGORY_OF = {
   title_order: 'orders', title_followup: 'orders', title_message: 'orders',
   insurance_order: 'orders', insurance_followup: 'orders', insurance_message: 'orders',
   attorney_order: 'orders', attorney_followup: 'orders', attorney_message: 'orders',
+  // The APPRAISAL VENDOR's thread (src/richervalues/messages.js). Their API carries
+  // no messaging at all, so a question, a revision request and a rebuttal are all
+  // email — bucketed with the other vendor orders so the file's Orders inbox shows
+  // one conversation per vendor rather than a separate place to look.
+  rv_message: 'orders',
   // The CLOSING CHAIN (src/lib/closing-thread.js) — the closing-prep request, the
   // automatic updates that ride the same chain, and every message the attorney's own
   // chain sends us. Its own bucket: this is the closing conversation, not an order.
@@ -294,6 +299,7 @@ async function captureOutbound(send = {}, ctx = {}) {
 // the closing chain) pick the message up directly rather than inferring it.
 const INBOUND_MSG_TYPES = new Set([
   'title_message', 'insurance_message', 'attorney_message', 'closing_message',
+  'rv_message',
 ]);
 
 /**

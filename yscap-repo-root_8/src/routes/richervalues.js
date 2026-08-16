@@ -32,6 +32,8 @@ const sync = require('../richervalues/sync');
 const documents = require('../richervalues/documents');
 const payment = require('../richervalues/payment');
 const xmlWaiver = require('../lib/appraisal/xml-waiver');
+const rvMessages = require('../richervalues/messages');
+const { rvReplyTo } = require('../lib/file-address');
 
 router.use(requireAuth, requireStaff);
 
@@ -265,6 +267,53 @@ router.get('/orders/:orderId', async (req, res) => {
   if (!order) return undefined;
   const detail = await orderService.orderDetail(db, order.id);
   return res.json(detail);
+});
+
+/* ───────────────────────── TALKING TO THEIR TEAM ─────────────────────────────
+   Their API carries no messaging (31 messaging-shaped paths, both methods, all
+   404), so a question, a revision request and a rebuttal all travel by email to
+   the address their desk answers on. The thread is `email_messages`, which their
+   replies join on their own via the rv+<file>@ Reply-To — so this is two thin
+   routes over machinery that already exists, not a second messaging system.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+router.get('/files/:id/messages', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const [messages, order] = await Promise.all([
+    rvMessages.thread(appId),
+    rvMessages.liveOrder(appId),
+  ]);
+  // The screen needs to say WHO this reaches and whether a reply comes back to the
+  // file — a desk that cannot see that is guessing about an outside conversation.
+  res.json({
+    messages,
+    vendorEmail: rvMessages.vendorEmail(),
+    canSend: !!order,
+    routedBack: !!rvReplyTo(appId),
+  });
+});
+
+router.post('/files/:id/messages', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  let out;
+  try {
+    out = await rvMessages.sendMessage(appId, {
+      body: req.body && req.body.body,
+      staffName: (req.actor && (req.actor.fullName || req.actor.email)) || null,
+    });
+  } catch (e) {
+    // The vendor's desk not receiving a message is worth saying plainly, with the
+    // reason — the same rule the client's error wording follows.
+    return res.status(502).json({ error: `Could not send the message: ${e.message}` });
+  }
+  // A refusal a human can act on (nothing ordered yet, an empty box) is a 400 that
+  // NAMES the fix, never a generic failure.
+  if (!out.ok) return res.status(400).json({ error: out.message, reason: out.reason });
+  await audit(req, 'rv_message_sent', 'application', appId,
+    { to: out.to, subject: out.subject, routedBack: out.routedBack });
+  return res.json(out);
 });
 
 // Ask them again, now. The same read the poller makes — offered as a button so a

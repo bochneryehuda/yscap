@@ -83,6 +83,48 @@ function orderRefFromRecipient(addr) {
   return UUID_RE.test(id) ? { applicationId: id, orderType } : null;
 }
 
+/* ═══════════════════ THE APPRAISAL-VENDOR MESSAGE ADDRESS ═══════════════════
+   `rv+<applicationId>@<domain>` — how a Richer Values reply finds its way back to
+   the order it is about.
+
+   WHY AN ADDRESS AND NOT AN API CALL. Their API has no messaging: 31
+   messaging-shaped paths were probed live on both GET and POST and every one
+   answered 404. A question to their desk, a revision request and a rebuttal all
+   have to travel by email, so the address IS the integration — exactly the
+   position the closing chain is in.
+
+   WHY THE FILE ID RATHER THAN AN OPAQUE TOKEN, unlike closing+. This address is
+   never printed in a body for a human to retype: it rides the Reply-To of a
+   message we send, so it only has to be machine-stable. It therefore follows the
+   title+/insurance+ shape — a vendor order scoped to a file — and the live order
+   is resolved from the file the way the Orders desk already does it. A file has at
+   most one live Richer Values order, so the file id is unambiguous.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/** Build `rv+<applicationId>@<domain>`, or null when the inbound domain is unset
+    or the id is not an application UUID — the message then still sends, just
+    without a reply route (identical to how fileReplyTo/orderReplyTo degrade). */
+function rvReplyTo(applicationId) {
+  if (!cfg.chatReplyDomain) return null;
+  const id = String(applicationId || '').trim().toLowerCase();
+  if (!UUID_RE.test(id)) return null;
+  return `rv+${id}@${cfg.chatReplyDomain}`;
+}
+
+/** Parse `rv+<uuid>@<domain>` into the application id, case-insensitively.
+    Null for anything that is not a well-formed rv address on the configured
+    reply domain — the caller then silently ignores that recipient. */
+function rvRefFromRecipient(addr) {
+  // No configured reply domain = the whole inbound feature is DORMANT. Never
+  // extract an id from an address on some other domain (the round-2 audit lesson
+  // recorded on applicationIdFromRecipient — "it's dormant anyway" did not hold).
+  if (!cfg.chatReplyDomain) return null;
+  const m = String(addr || '').trim().toLowerCase().match(/^rv\+([^@\s]+)@([^@\s]+)$/);
+  if (!m) return null;
+  if (m[2] !== cfg.chatReplyDomain) return null;
+  return UUID_RE.test(m[1]) ? m[1] : null;
+}
+
 /* ══════════════════════════ THE CLOSING CHAIN ADDRESS ═══════════════════════
    A per-CLOSING address, and the one address family here whose local part is NOT
    the application id:
@@ -130,6 +172,7 @@ function closingTokenFromRecipient(addr) {
 module.exports = {
   fileReplyTo, applicationIdFromRecipient,
   orderReplyTo, orderRefFromRecipient,
+  rvReplyTo, rvRefFromRecipient,
   closingReplyTo, closingTokenFromRecipient,
   UUID_RE, CLOSING_TOKEN_RE,
 };
