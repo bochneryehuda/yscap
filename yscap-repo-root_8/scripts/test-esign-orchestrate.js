@@ -117,6 +117,20 @@ function fakeStorage() {
 }
 
 (async () => {
+  // DB-gated, and deliberately NOT through scripts/lib/db-gate: that helper
+  // probes `src/db`, which reads DATABASE_URL, while THIS suite connects with
+  // its own admin Client built from HOST/PORT/USER/PW above (it creates and
+  // drops a throwaway fixture database, so it cannot reuse the app's pool).
+  // Probing the wrong connection would skip a run that could have worked — or,
+  // worse, proceed when the connection it actually needs is unreachable. So the
+  // probe IS the first admin call, which is the exact connection every later
+  // statement uses.
+  try {
+    await admin('SELECT 1');
+  } catch (e) {
+    console.log('esign-orchestrate: SKIPPED — no database (' + (e && e.message) + ')');
+    process.exit(0);
+  }
   // Fresh DB + fixture.
   await admin(`DROP DATABASE IF EXISTS ${DBNAME}`);
   await admin(`CREATE DATABASE ${DBNAME}`);

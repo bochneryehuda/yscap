@@ -39,6 +39,9 @@ function signFormToken(ts) {
 const leadCount = async (email) => (await db.query(`SELECT count(*)::int AS n FROM leads WHERE email=$1`, [email])).rows[0].n;
 
 async function main() {
+  // DB-gated: `npm test` runs this whole chain in the no-database CI job too,
+  // so a suite that dials a database must skip rather than take the build down.
+  await require(__dirname + "/lib/db-gate").skipUnlessDb("leads-antispam");
   const app = require(REPO + '/src/server.js');
   const server = app.listen(PORT);
   await require(REPO + '/src/migrate-boot').ensureSchema();

@@ -42,6 +42,9 @@ const fakeStorage = { async save() { return { ref: 'x', provider: 'local' }; }, 
 const TAG = 'cntr-' + Date.now().toString(36);
 
 async function main() {
+  // DB-gated: `npm test` runs this whole chain in the no-database CI job too,
+  // so a suite that dials a database must skip rather than take the build down.
+  await require(__dirname + "/lib/db-gate").skipUnlessDb("esign-countersign-notify");
   await require(REPO + '/src/migrate-boot').ensureSchema();
   const loId = crypto.randomUUID();
   const bId = crypto.randomUUID();
