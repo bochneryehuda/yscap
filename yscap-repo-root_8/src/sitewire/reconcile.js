@@ -235,6 +235,13 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
     tpIntake.maybeOpenImportTask(appId, {
       drawId, drawNumber: draw.number, status: newStatus, addrText, platform: ctx.platform,
     }).catch(() => {});
+    // Trinity ordering hook (2026-08-14): the SAME live-submission moment on a
+    // 'trinity'-routed file (physical, non-Blue-Lake) places the physical inspection
+    // order. It returns immediately for every other platform, so a Sitewire virtual
+    // file and a TrustPoint/Blue Lake file are untouched by its presence here.
+    require('../trinity/intake').maybeOrderFromSitewire(appId, {
+      drawId, status: newStatus, platform: ctx.platform,
+    }).catch(() => {});
   };
 
   // A draw with no prior mirror row. ATOMIC claim: set the watermark only if still unset, and notify

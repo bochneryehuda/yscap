@@ -255,21 +255,61 @@ model LtLoan {
   milestoneId String? @map("milestone_id")
   milestone   LtEncompassMilestone? @relation(fields: [milestoneId], references: [milestoneId])
 
+  // ── The three stage layers (db/553, owner-directed 2026-08-14) ─────────────
+  // "we're going to use the Encompass stages, but we're going to map those
+  //  Encompass stages to our own stages. We're not going to have, on the consumer
+  //  side, all stages from Encompass."
+  //
+  // Layer 1 is the Encompass milestone, mirrored verbatim, above and here.
+  // Layer 2 is OUR stage, below.
+  // Layer 3 — what the BORROWER sees — is deliberately NOT stored on the loan. It
+  // comes from the milestone's own consumerStatus (db/547), so our internal
+  // renaming can never leak into what a borrower reads.
+
+  /// The Encompass milestone NAME, mirrored verbatim. Read it from MS.STATUS —
+  /// the pipeline's own Loan.CurrentMilestone column is BLANK on every loan in
+  /// this tenant.
+  milestoneName String? @map("milestone_name")
+
+  /// OUR stage. Stored rather than derived on read so the pipeline can group and
+  /// sort on it in SQL. A milestone with no mapping leaves this NULL, and an
+  /// unmapped loan is SHOWN under its raw Encompass name rather than hidden —
+  /// losing a loan off a screen is the worse error.
+  stageKey String? @map("stage_key")
+
+  /// The Encompass loan folder ("Pipeline", "Corr Post Purchase", …). Load-bearing:
+  /// a read-only sweep on 2026-08-14 found every condition in the tenant sits in the
+  /// correspondent post-close folders and NONE in the active Pipeline folder.
+  loanFolder String? @map("loan_folder")
+
   // ── Bookkeeping ───────────────────────────────────────────────────────────
   /// When Encompass was last read for this file. Encompass is the source of truth;
   /// this records how fresh our copy is.
   encompassSyncedAt DateTime? @map("encompass_synced_at") @db.Timestamptz(6)
-  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  /// Encompass's own last-modified stamp for the loan, which the sync pages on.
+  encompassLastModified DateTime? @map("encompass_last_modified") @db.Timestamptz(6)
+
+  /// Why the last read failed, if it did. Kept so a file that stops refreshing is
+  /// visible rather than silently stale.
+  encompassSyncError String? @map("encompass_sync_error")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   borrowerPairs LtBorrowerPair[]
   property      LtProperty?
   investor      LtLoanInvestor?
+  contacts      LtLoanContact[]
+  lock          LtLock?
+  lockEvents    LtLockEvent[]
 
   @@index([borrowerId])
   @@index([loanOfficerId])
   @@index([milestoneId])
   @@index([productKind])
+  @@index([stageKey])
+  @@index([loanFolder])
   @@map("lt_loans")
 }
 
@@ -827,4 +867,234 @@ enum LtLiabilitySection {
   obligations
 
   @@map("lt_liability_section")
+}
+
+// =============================================================================
+// THE PIPELINE FOUNDATION (db/553)
+//
+// Everything the long-term pipeline needs before a screen can exist: the
+// settings persistence, the Encompass roster and its mapping to PILOT people,
+// who is on each loan, saved views, and the lock posture.
+// =============================================================================
+
+/// The persistence behind src/longterm/settings/encompass-settings.js, which has
+/// declared 44 settings in 10 groups with OUR values as defaults since it was
+/// written and has never had a table.
+///
+/// Reads start from the declared defaults and overlay this table, so a missing
+/// row, a missing key, or an unreadable table all resolve to a concrete value —
+/// the system degrades to OUR behaviour rather than to nothing.
+model LtSetting {
+  /// 'company' today. This column exists so that selling the system to a second
+  /// lender is a new scope value rather than a schema change.
+  scope String @default("company")
+
+  /// The dotted setting key, e.g. "dscr.housingExpenseFieldId". Validated against
+  /// the declared whitelist on write — an unknown key is REFUSED, never stored,
+  /// so this can never become a junk drawer.
+  key String
+
+  value Json @db.JsonB
+
+  updatedBy String?  @map("updated_by") @db.Uuid
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@id([scope, key])
+  @@map("lt_settings")
+}
+
+/// The Encompass roster, mirrored.
+///
+/// The primary key is the LOGIN ID because it is the only stable identity
+/// Encompass exposes — it is what `LoanTeamMember.UserId.<role>` returns and what
+/// /encompass/v1/company/users reports as `id`.
+///
+/// Do NOT key anything on email or full name. Measured on the live tenant
+/// 2026-08-14: 10 of the 46 users share the placeholder `change.me@email.com`,
+/// and names carry double and trailing spaces.
+model LtEncompassUser {
+  loginId  String  @id @map("login_id")
+  fullName String? @map("full_name")
+  email    String?
+  phone    String?
+
+  /// Encompass personas (17 configured on this tenant).
+  personas String[] @default([])
+
+  /// Encompass role names (12 configured). NOTE: this tenant has no role called
+  /// "Loan Officer" — its loan-officer slot is `Loan Coordinator`, roleId 1.
+  roleNames String[] @default([]) @map("role_names")
+
+  isActive Boolean @default(true) @map("is_active")
+
+  encompassSyncedAt DateTime? @map("encompass_synced_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  link LtStaffLink?
+
+  @@map("lt_encompass_users")
+}
+
+/// Encompass person -> PILOT person. Owner-directed 2026-08-14: auto-match by
+/// email, an ADMIN CONFIRMS.
+///
+/// `status` is the whole point. A 'suggested' link is displayed and never acted
+/// on; only a 'confirmed' link decides whose pipeline a file appears in. A shared
+/// or mistyped Encompass email must never silently hand somebody another
+/// officer's book — and on this tenant that is not hypothetical.
+model LtStaffLink {
+  encompassLoginId String @id @map("encompass_login_id")
+
+  /// The authorized `sql-ref staff_users`. ON DELETE SET NULL: a deactivated
+  /// staff member must leave the Encompass row and its history intact.
+  staffId String? @map("staff_id") @db.Uuid
+
+  status LtLinkStatus @default(suggested)
+
+  /// How the pair was proposed: 'email_exact' or 'manual'. Recorded so a later
+  /// audit can tell an automated suggestion from a human's own judgement.
+  matchMethod String? @map("match_method")
+
+  confirmedBy String?   @map("confirmed_by") @db.Uuid
+  confirmedAt DateTime? @map("confirmed_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  encompassUser LtEncompassUser @relation(fields: [encompassLoginId], references: [loginId], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([status])
+  @@map("lt_staff_links")
+}
+
+/// Who is on this loan.
+///
+/// Encompass fills it; PILOT may override locally (owner-directed 2026-08-14).
+/// That is deliberately two sources of truth, so the columns keep them apart:
+/// `encompass*` is always stored and always shown; `overrideStaffId` is a
+/// PILOT-side routing decision, stamped with who and why.
+///
+/// A sync NEVER clears an override, and an override NEVER overwrites the
+/// Encompass columns. Nothing here is ever written back to Encompass.
+model LtLoanContact {
+  id     String @id @default(uuid()) @db.Uuid
+  loanId String @map("loan_id") @db.Uuid
+
+  /// TEXT, not an enum, and deliberately so. A read-only probe of the live tenant
+  /// found it has NO role called "Loan Officer", and that `Loan Opener`, `Shipper`
+  /// and `Insurer` — all standard Encompass roles — do not exist here at all.
+  /// Role names are a TENANT configuration; an enum would be a migration every
+  /// time a buyer spells their org chart differently.
+  role String
+
+  encompassName    String? @map("encompass_name")
+  encompassEmail   String? @map("encompass_email")
+  encompassPhone   String? @map("encompass_phone")
+  encompassLoginId String? @map("encompass_login_id")
+
+  /// Resolved from encompassLoginId through a CONFIRMED lt_staff_links row.
+  staffId String? @map("staff_id") @db.Uuid
+
+  overrideStaffId String?   @map("override_staff_id") @db.Uuid
+  overrideBy      String?   @map("override_by") @db.Uuid
+  overrideAt      DateTime? @map("override_at") @db.Timestamptz(6)
+  overrideReason  String?   @map("override_reason")
+
+  encompassSyncedAt DateTime? @map("encompass_synced_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  loan LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([loanId, role])
+  @@index([encompassLoginId])
+  @@map("lt_loan_contacts")
+}
+
+/// A user's saved pipeline views. A saved view is a row, never a code change.
+model LtPipelineView {
+  id        String  @id @default(uuid()) @db.Uuid
+  staffId   String? @map("staff_id") @db.Uuid
+  name      String
+  filters   Json    @default("{}") @db.JsonB
+  isDefault Boolean @default(false) @map("is_default")
+  sortOrder Int     @default(100) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([staffId, sortOrder])
+  @@map("lt_pipeline_views")
+}
+
+/// The current lock posture, mirrored. READ-ONLY from Encompass.
+///
+/// HARD RULE: TRUST `expirationDate`. Never recompute it from lock date plus
+/// days — extensions and re-locks move it, and a recomputed date will quietly
+/// disagree with the investor's.
+///
+/// Measured 2026-08-14: every lock-SPECIFIC endpoint on this tenant answers 403,
+/// so this is filled from the loan itself (`?entities=rateLock`, fields 761/762,
+/// the Loan.Lock* canonicals) rather than the lock request history. Field 2148 is
+/// EMPTY here despite being widely documented as the lock date.
+model LtLock {
+  loanId String @id @map("loan_id") @db.Uuid
+
+  lockStatus     String?  @map("lock_status")
+  noteRatePct    Decimal? @map("note_rate_pct") @db.Decimal(9, 5)
+  price          Decimal? @db.Decimal(12, 5)
+  lockDate       DateTime? @map("lock_date") @db.Date
+  expirationDate DateTime? @map("expiration_date") @db.Date
+  lockDays       Int?      @map("lock_days")
+  productName    String?   @map("product_name")
+  commitmentType String?   @map("commitment_type")
+
+  raw Json? @db.JsonB
+
+  encompassSyncedAt DateTime? @map("encompass_synced_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  loan LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@map("lt_locks")
+}
+
+/// How the lock got where it is. Append-only history beside a snapshot-replaced
+/// posture — a lock can be rolled back exactly as a milestone can.
+///
+/// This table will be THIN until the 403s are lifted: the request history is not
+/// readable on this client registration today.
+model LtLockEvent {
+  id     String @id @default(uuid()) @db.Uuid
+  loanId String @map("loan_id") @db.Uuid
+
+  eventType      String    @map("event_type")
+  eventAt        DateTime? @map("event_at") @db.Timestamptz(6)
+  noteRatePct    Decimal?  @map("note_rate_pct") @db.Decimal(9, 5)
+  price          Decimal?  @db.Decimal(12, 5)
+  expirationDate DateTime? @map("expiration_date") @db.Date
+  actorName      String?   @map("actor_name")
+
+  raw Json? @db.JsonB
+
+  encompassSyncedAt DateTime? @map("encompass_synced_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  loan LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([loanId, eventAt])
+  @@map("lt_lock_events")
+}
+
+/// A mapping is either awaiting a human, accepted, or refused. The one enum this
+/// migration adds, and only because those three states are true of the domain
+/// rather than of us.
+enum LtLinkStatus {
+  suggested
+  confirmed
+  rejected
+
+  @@map("lt_link_status")
 }
