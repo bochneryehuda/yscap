@@ -724,6 +724,25 @@ own — and it is asked for as a flag resolved from the session, so nobody can r
 personal queue by editing a URL. The scope row is not drawn for a viewer who only sees their own
 files: three chips that all select the same book is not a control.
 
+**Auditing that work back found four more, none of which any test had failed on**, and they
+are worth keeping because they are all one shape: a number or a control that looks right and
+quietly describes the wrong thing. (1) The **"Every stage" chip read the LIST's own total**,
+which is counted WITH the stage filter — so selecting a stage made it show that stage's number
+and nobody could see how big the book was, undoing every other count in the row on the one chip
+whose job is to clear them. (2) **A scope filter a viewer's own scope makes contradictory was
+being obeyed**: a saved view is SHARED, so an admin's "Nobody yet" opened by a loan officer asks
+for files nobody is on inside a book defined as the files they ARE on — an empty pipeline, with
+no scope row drawn for them to clear it with. It is now dropped and said out loud. (3) **The
+loans with NO stage at all were visible and unreachable** — this tenant's pipeline-search
+milestone column is blank on every loan, so an unstaged loan is the normal state of the NEWEST
+files; they sat in the list, were counted in the header, and no chip could reach them, which
+also meant the chips did not sum to the number above them. (4) The front end carried **three
+copies of the same formatters**, two of which had lost the calendar-day guard — a DATE column
+handed to `new Date` prints the day before in every US timezone, and making the columns
+configurable is exactly what would have made that visible for the first time. One shared module,
+and a test that fails the build if a long-term screen defines a formatter of its own; that guard
+found the third copy immediately, which is the argument for having it.
+
 **The columns took a second pass, and the reason is worth keeping.** `pipeline.columns` was
 declared in phase 6 with the fifteen-key default §4.1 names, and **nothing read it** — the screen
 hard-coded nine. So a buyer could change the pipeline, save it, reload, and see exactly what they
