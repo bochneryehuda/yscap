@@ -186,6 +186,11 @@ function call(server, method, p, token, body) {
 
   } catch (e) { console.error(e); fail++; }
   finally {
+    // Wait for the fire-and-forget email fan-out before tearing down: its
+    // sent_emails INSERT is still in flight when the fan-out resolves, and it
+    // deadlocks with the DELETEs below (notify.js documents this and exports
+    // drainEmails for exactly this).
+    await require('../src/lib/notify').drainEmails().catch(() => {});
     email.sendMail = realSendMail;
     console.log(`\ntest-tpo-orders-db: ${pass} passed, ${fail} failed`);
     await new Promise((r) => server.close(r));
