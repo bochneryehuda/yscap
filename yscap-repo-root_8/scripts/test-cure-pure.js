@@ -141,20 +141,92 @@ const idIntent = {
   assert.ok(r.requirements[0].reason.includes('400000') || r.requirements[0].reason.includes('712500'));
 }
 
-// ---- Entity not screened → new finding ----
+// ---- entity_screened_when_present — the whole truth table ----
+//
+// The four branches answer four DIFFERENT questions, and the distinction that
+// matters is "the report says who it screened and our entity is not on the
+// list" (a real gap, a finding) versus "the report does not say who it screened
+// at all" (we could not tell, a human looks). Asserting the first while feeding
+// a fixture that exercises the second is what this block used to do, and it had
+// never passed: cure.js and this suite were added in the SAME commit (cc78975,
+// #1127), so the two halves have disagreed from birth and the suite has never
+// been in `npm test`. The rule is the half that is right — its no-data branch is
+// deliberate and carries its own written reasoning ("that is unreadable, not
+// unscreened"), which is the standing never-guess doctrine. So the fixtures move
+// to the branch each one is actually asking about.
+const screenIntent = {
+  satisfaction_requirements: [
+    { id: 'screened_entity', label: 'Entity screened', assertion: 'entity_screened_when_present' },
+  ],
+};
+
+// (a) The report LISTS who it screened and the borrowing entity is not among
+//     them. This is the real gap — and the only shape that raises the finding.
 {
   const r = cure.analyze({
-    intent: {
-      satisfaction_requirements: [
-        { id: 'screened_entity', label: 'Entity screened', assertion: 'entity_screened_when_present' },
-      ],
+    intent: screenIntent,
+    extractionFields: {
+      subjectName: 'Noach Mendelovits',
+      screenedParties: ['Noach Mendelovits', 'Mutty Kaufman Holdings LLC'],
     },
-    extractionFields: { subjectName: 'Noach Mendelovits' /* no entityName */ },
     twinFacts: {},
     subject: { entity_name: 'Yehuda Bochner LLC' },
   });
   assert.strictEqual(r.result, 'creates_new_finding');
   assert.strictEqual(r.newFindings[0].code, 'entity_not_screened');
+  assert.strictEqual(r.recommended_action, 'post_condition');
+}
+
+// (b) Nothing anywhere says WHO was screened. Unreadable is not unscreened, so
+//     this must NOT assert a gap and must NOT raise a finding — a human reads
+//     the report. This is the fixture the old (a) actually supplied.
+{
+  const r = cure.analyze({
+    intent: screenIntent,
+    extractionFields: { subjectName: 'Noach Mendelovits' /* nothing about screening */ },
+    twinFacts: {},
+    subject: { entity_name: 'Yehuda Bochner LLC' },
+  });
+  assert.strictEqual(r.result, 'unable_to_determine');
+  assert.strictEqual(r.newFindings.length, 0);
+}
+
+// (c) The report names ONE screened party in its header and it is not the
+//     vesting entity — a plain mismatch a reviewer can read off the page, so it
+//     is not_satisfied without minting a separate finding.
+{
+  const r = cure.analyze({
+    intent: screenIntent,
+    extractionFields: { entityName: 'Mutty Kaufman Holdings LLC' },
+    twinFacts: {},
+    subject: { entity_name: 'Yehuda Bochner LLC' },
+  });
+  assert.strictEqual(r.result, 'not_satisfied');
+  assert.strictEqual(r.newFindings.length, 0);
+  assert.ok(/Yehuda Bochner LLC/.test(r.requirements[0].reason), `reason names the vesting entity: ${r.requirements[0].reason}`);
+}
+
+// (d) The entity IS on the list — satisfied, however the name is spelled.
+{
+  const r = cure.analyze({
+    intent: screenIntent,
+    extractionFields: { screenedParties: ['Noach Mendelovits', 'Yehuda Bochner LLC'] },
+    twinFacts: {},
+    subject: { entity_name: 'Yehuda Bochner LLC' },
+  });
+  assert.strictEqual(r.result, 'satisfied');
+  assert.strictEqual(r.newFindings.length, 0);
+}
+
+// (e) No borrowing entity on the file at all — nothing to screen.
+{
+  const r = cure.analyze({
+    intent: screenIntent,
+    extractionFields: {},
+    twinFacts: {},
+    subject: {},
+  });
+  assert.strictEqual(r.result, 'satisfied');
 }
 
 // ---- Undocumented deposits ----
