@@ -1,8 +1,8 @@
 -- ============================================================================
--- LONG-TERM (LT) — db/556 — PPE rate-sheet store (versions, grids, LLPAs, limits).
+-- LONG-TERM (LT) — db/560 — PPE rate-sheet store (versions, grids, LLPAs, limits).
 --
 -- The price-bearing layer of the MEGA Product & Pricing Engine (docs/longterm/
--- PPE-MEGA-PLAN.md §3.1), hanging off the db/554 anchors (investor, program). A
+-- PPE-MEGA-PLAN.md §3.1), hanging off the db/558 anchors (investor, program). A
 -- rate sheet is an EFFECTIVE-DATED, APPEND-ONLY VERSION that is never mutated:
 -- publishing a new version closes the prior's effective_to; an intraday reprice
 -- is a first-class event (reprice_seq), never an overwrite. This is the unit
@@ -23,7 +23,7 @@
 -- MULTI-TENANCY + SELLABLE: every configurable row carries `scope` (default
 -- 'company'); no value here is specific to us (the sheet content is a tenant's
 -- data, not code). SEPARATION: every table is lt_ppe_*; no RTL table is read or
--- written; no trigger or function is defined; FKs reference only db/554's own
+-- written; no trigger or function is defined; FKs reference only db/558's own
 -- lt_ppe_* tables. `approved_by`/`created_by` are plain UUIDs (no FK).
 --
 -- SOURCE OF TRUTH FOR THE SHAPE: src/longterm/prisma/schema.prisma (the LtPpe*

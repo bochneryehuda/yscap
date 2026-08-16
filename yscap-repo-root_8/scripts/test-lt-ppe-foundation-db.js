@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * LT PPE foundation (db/554) + store bridge.
+ * LT PPE foundation (db/558) + store bridge.
  *   - PURE section (always runs): the settings-override bridge logic against a fake db.
- *   - DB section (runs only when DATABASE_URL is set): applies db/554 and does real round-trips
+ *   - DB section (runs only when DATABASE_URL is set): applies db/558 and does real round-trips
  *     for investor/alias resolution, program creation, and the setting override store.
  *
  *   node scripts/test-lt-ppe-foundation-db.js
@@ -65,9 +65,9 @@ function ok(cond, label) { console.log(`${cond ? '  ok  ' : ' FAIL '} ${label}`)
   const { Pool } = require('pg');
   const db = new Pool({ connectionString: process.env.DATABASE_URL });
   try {
-    const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '554_lt_ppe_foundation.sql'), 'utf8');
+    const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '558_lt_ppe_foundation.sql'), 'utf8');
     await db.query(sql); // idempotent — safe to re-run
-    ok(true, 'db/554 applied (idempotent)');
+    ok(true, 'db/558 applied (idempotent)');
 
     const scope = 'test_' + Math.abs((process.pid || 1)); // isolate this run
     await db.query('DELETE FROM lt_ppe_program WHERE scope = $1', [scope]);

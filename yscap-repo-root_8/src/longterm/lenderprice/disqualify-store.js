@@ -1,6 +1,6 @@
 'use strict';
 /**
- * LENDER PRICE — durable L2 store for the ineligible (disqualify) workflow (db/555).
+ * LENDER PRICE — durable L2 store for the ineligible (disqualify) workflow (db/559).
  *
  * The client keeps kickoff state + the cached result in an in-memory Map (L1, in
  * client.js). This module is the DURABLE L2 (Postgres, LT's own pool) so that

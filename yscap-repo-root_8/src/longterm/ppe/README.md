@@ -76,7 +76,7 @@ Never introduce a float price/rate on a stored or compared value; never re-deriv
   stored ledger, **never re-open a settled finding** (a fixed one that reappears is flagged
   `regressed`), report disappeared findings for auto-close.
 - **`finding-store.js`** (§10.4) — the durable BRIDGE for the findings ledger: persists to
-  `lt_ppe_finding` (db/557) what pure `finding.js` produces and **delegates every merge to
+  `lt_ppe_finding` (db/561) what pure `finding.js` produces and **delegates every merge to
   `finding.reconcile`** (no SQL copy of the "never re-open a settled finding" rule to drift). `db` is an
   injected pool (same convention as `store.js`); everything is `scope`-scoped.
 - **`cutover.js`** (§10.5/§11) — per-investor scoreboard (open findings, clean-day streak, canary rate,

@@ -1,5 +1,5 @@
 -- ============================================================================
--- LONG-TERM (LT) — db/554 — PPE foundation (investors, programs, settings store).
+-- LONG-TERM (LT) — db/558 — PPE foundation (investors, programs, settings store).
 --
 -- The FIRST migration of the MEGA Product & Pricing Engine (docs/longterm/
 -- PPE-MEGA-PLAN.md). It lays the two long-lived anchors the whole engine hangs

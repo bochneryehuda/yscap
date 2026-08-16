@@ -2,7 +2,7 @@
 /**
  * LT PPE — data-store bridge (Phase 1). Ties the coded setting DEFINITIONS
  * (settings.js — the single source of truth for types/options/defaults) to the
- * per-tenant OVERRIDE table `lt_ppe_setting_value` (db/554), and provides the
+ * per-tenant OVERRIDE table `lt_ppe_setting_value` (db/558), and provides the
  * thin investor/program reads/writes the admin surface needs.
  *
  * `db` is a pg pool/client exposing `.query(text, params)`. Everything is scoped
@@ -133,7 +133,7 @@ async function listPrograms(db, scope, investorId) {
   return r.rows;
 }
 
-// ---- rate-sheet store (db/556) — versions, grids, LLPAs, limits ------------
+// ---- rate-sheet store (db/560) — versions, grids, LLPAs, limits ------------
 
 // Create (or idempotently update) a rate-sheet version under a program. A version is the effective-
 // dated container the grid/adjustments/limit hang off; (scope, program, version_no, reprice_seq) is

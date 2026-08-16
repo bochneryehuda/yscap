@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * LT PPE rate-sheet store (db/556) + the sheet→engine→quote chain.
+ * LT PPE rate-sheet store (db/560) + the sheet→engine→quote chain.
  *   PURE section (always): the ratesheet.js mapper + a full fake-sheet → quoteProgram price.
  *   DB section (DATABASE_URL): store a version + grid + LLPAs + limits, load it back, map it, and
  *     price a scenario — proving a DB rate sheet prices identically to the in-memory one, plus the
@@ -74,10 +74,10 @@ function assertPricedChain(program, label) {
   const { Pool } = require('pg');
   const db = new Pool({ connectionString: process.env.DATABASE_URL });
   try {
-    for (const f of ['554_lt_ppe_foundation.sql', '556_lt_ppe_ratesheet.sql']) {
+    for (const f of ['558_lt_ppe_foundation.sql', '560_lt_ppe_ratesheet.sql']) {
       await db.query(fs.readFileSync(path.join(__dirname, '..', 'db', f), 'utf8'));
     }
-    ok(true, 'db/554 + db/556 applied (idempotent)');
+    ok(true, 'db/558 + db/560 applied (idempotent)');
 
     const scope = 'test_rs_' + Math.abs(process.pid || 1);
     await db.query('DELETE FROM lt_ppe_program WHERE scope = $1', [scope]);

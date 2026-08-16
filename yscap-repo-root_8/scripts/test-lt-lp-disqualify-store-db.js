@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * LT Lender Price durable ineligible-store (db/555) — proves the A-to-Z audit's #1 ineligible-workflow
+ * LT Lender Price durable ineligible-store (db/559) — proves the A-to-Z audit's #1 ineligible-workflow
  * fix: the disqualify kickoff + cached result SURVIVE a reboot (the in-memory Map is L1; Postgres is
  * the durable L2). Degrades gracefully when the DB is absent.
  *
@@ -38,9 +38,9 @@ function ok(cond, label) { console.log(`${cond ? '  ok  ' : ' FAIL '} ${label}`)
   const db = new Pool({ connectionString: process.env.DATABASE_URL });
   store._setDb(db); // client's disqStore is the SAME cached module — one injection covers both
   try {
-    const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '555_lt_lp_disqualify_search.sql'), 'utf8');
+    const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '559_lt_lp_disqualify_search.sql'), 'utf8');
     await db.query(sql); // idempotent
-    ok(true, 'db/555 applied (idempotent)');
+    ok(true, 'db/559 applied (idempotent)');
     ok(store.enabled() === true, 'the store is enabled once a DB is present');
 
     const key = 'test_' + Math.abs(process.pid || 1) + '_' + Date.now();

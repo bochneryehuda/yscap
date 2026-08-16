@@ -9,17 +9,17 @@
 // *** IT IS INCOMPLETE, AND THAT IS NOT A DEFECT — IT IS A PROPERTY OF THE
 // *** PRISMA SCHEMA LANGUAGE. It cannot express triggers, functions, CHECK
 // *** constraints, generated columns or partial indexes. On this database
-// *** that is 751 objects it cannot see, listed in full in
+// *** that is 759 objects it cannot see, listed in full in
 // *** BEYOND-PRISMA.md next to this file.
 //
 // *** SO: NEVER REBUILD A DATABASE FROM THIS FILE. Doing so produces SQL that
 // *** runs without a single error and silently leaves out every one of those
-// *** 751 objects — including the guard that keeps a budget
+// *** 759 objects — including the guard that keeps a budget
 // *** condition from being signed off unless the totals match to the cent.
-// *** The 555 numbered migrations in db/ (highest db/557) are the only
+// *** The 558 numbered migrations in db/ (highest db/561) are the only
 // *** thing that builds this database.
 //
-// Snapshot: 332 tables, 5394 columns.
+// Snapshot: 333 tables, 5422 columns.
 // ===========================================================================
 datasource db {
   provider = "postgresql"
@@ -598,6 +598,7 @@ model applications {
   tpo_firm_id                                                                              String?                          @db.Uuid
   borrower_portal_enabled                                                                  Boolean                          @default(true)
   purchase_advice_notified_at                                                              DateTime?                        @db.Timestamptz(6)
+  lock_box_code                                                                            String?
   ai_admin_questions                                                                       ai_admin_questions[]
   ai_cost_events                                                                           ai_cost_events[]
   ai_suggestions                                                                           ai_suggestions[]
@@ -728,6 +729,7 @@ model applications {
   track_record_findings                                                                    track_record_findings[]
   trinity_inspection_orders                                                                trinity_inspection_orders[]
   trinity_order_comments                                                                   trinity_order_comments[]
+  trinity_order_events                                                                     trinity_order_events[]
   trinity_order_lines                                                                      trinity_order_lines[]
   trinity_order_media                                                                      trinity_order_media[]
   trustpoint_draw_comments                                                                 trustpoint_draw_comments[]
@@ -5289,6 +5291,8 @@ model lt_loans {
   loan_folder                     String?
   encompass_last_modified         DateTime?                @db.Timestamptz(6)
   encompass_sync_error            String?
+  milestone_since                 DateTime?                @db.Timestamptz(6)
+  milestone_since_is_baseline     Boolean                  @default(true)
   lt_borrower_pairs               lt_borrower_pairs[]
   lt_loan_contacts                lt_loan_contacts[]
   lt_loan_investors               lt_loan_investors?
@@ -7521,7 +7525,9 @@ model staff_users {
   track_records                                                                         track_records[]
   training_proposals                                                                    training_proposals[]
   trinity_inspection_orders                                                             trinity_inspection_orders[]
+  trinity_inspection_orders_trinity_inspection_orders_rescheduled_byTostaff_users       trinity_inspection_orders[]      @relation("trinity_inspection_orders_rescheduled_byTostaff_users")
   trinity_order_comments                                                                trinity_order_comments[]
+  trinity_order_events                                                                  trinity_order_events[]
   trustpoint_draw_lines                                                                 trustpoint_draw_lines[]
   trustpoint_milestone_links                                                            trustpoint_milestone_links[]
   trustpoint_project_links                                                              trustpoint_project_links[]
@@ -7968,40 +7974,56 @@ model training_proposals {
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model trinity_inspection_orders {
-  id                     BigInt                   @id @default(autoincrement())
-  application_id         String                   @db.Uuid
-  portal_draw_request_id BigInt?
-  sitewire_draw_id       BigInt?
-  status                 String                   @default("requested")
-  ordered_at             DateTime?                @db.Timestamptz(6)
-  ordered_by             String?                  @db.Uuid
-  report_document_id     String?                  @db.Uuid
-  note                   String?
-  created_at             DateTime                 @default(now()) @db.Timestamptz(6)
-  updated_at             DateTime                 @default(now()) @db.Timestamptz(6)
-  trinity_order_id       BigInt?
-  trinity_project_id     BigInt?
-  customer_key           String?
-  trinity_status_id      Int?
-  trinity_status         String?
-  trinity_substatus      String?
-  status_changed_at      DateTime?                @db.Timestamptz(6)
-  scheduled_at           DateTime?                @db.Timestamptz(6)
-  completed_at           DateTime?                @db.Timestamptz(6)
-  polled_at              DateTime?                @db.Timestamptz(6)
-  cancel_requested_at    DateTime?                @db.Timestamptz(6)
-  approved_cents         BigInt?
-  results_read_at        DateTime?                @db.Timestamptz(6)
-  notified_ready_at      DateTime?                @db.Timestamptz(6)
-  blocked_reason         String?
-  order_claimed_at       DateTime?                @db.Timestamptz(6)
-  documents_sent_at      DateTime?                @db.Timestamptz(6)
-  applications           applications             @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  staff_users            staff_users?             @relation(fields: [ordered_by], references: [id], onUpdate: NoAction)
-  portal_draw_requests   portal_draw_requests?    @relation(fields: [portal_draw_request_id], references: [id], onUpdate: NoAction)
-  trinity_order_comments trinity_order_comments[]
-  trinity_order_lines    trinity_order_lines[]
-  trinity_order_media    trinity_order_media[]
+  id                                                                BigInt                   @id @default(autoincrement())
+  application_id                                                    String                   @db.Uuid
+  portal_draw_request_id                                            BigInt?
+  sitewire_draw_id                                                  BigInt?
+  status                                                            String                   @default("requested")
+  ordered_at                                                        DateTime?                @db.Timestamptz(6)
+  ordered_by                                                        String?                  @db.Uuid
+  report_document_id                                                String?                  @db.Uuid
+  note                                                              String?
+  created_at                                                        DateTime                 @default(now()) @db.Timestamptz(6)
+  updated_at                                                        DateTime                 @default(now()) @db.Timestamptz(6)
+  trinity_order_id                                                  BigInt?
+  trinity_project_id                                                BigInt?
+  customer_key                                                      String?
+  trinity_status_id                                                 Int?
+  trinity_status                                                    String?
+  trinity_substatus                                                 String?
+  status_changed_at                                                 DateTime?                @db.Timestamptz(6)
+  scheduled_at                                                      DateTime?                @db.Timestamptz(6)
+  completed_at                                                      DateTime?                @db.Timestamptz(6)
+  polled_at                                                         DateTime?                @db.Timestamptz(6)
+  cancel_requested_at                                               DateTime?                @db.Timestamptz(6)
+  approved_cents                                                    BigInt?
+  results_read_at                                                   DateTime?                @db.Timestamptz(6)
+  notified_ready_at                                                 DateTime?                @db.Timestamptz(6)
+  blocked_reason                                                    String?
+  order_claimed_at                                                  DateTime?                @db.Timestamptz(6)
+  documents_sent_at                                                 DateTime?                @db.Timestamptz(6)
+  inspect_on                                                        DateTime?                @db.Timestamptz(6)
+  rush                                                              Boolean                  @default(false)
+  reschedule_count                                                  Int                      @default(0)
+  rescheduled_at                                                    DateTime?                @db.Timestamptz(6)
+  rescheduled_by                                                    String?                  @db.Uuid
+  invoice_document_id                                               String?                  @db.Uuid
+  invoice_read_at                                                   DateTime?                @db.Timestamptz(6)
+  project_synced_at                                                 DateTime?                @db.Timestamptz(6)
+  budget_verified_at                                                DateTime?                @db.Timestamptz(6)
+  budget_mismatch                                                   String?
+  remote_budget_cents                                               BigInt?
+  remote_drawn_cents                                                BigInt?
+  writeback_fingerprint                                             String?
+  writeback_at                                                      DateTime?                @db.Timestamptz(6)
+  applications                                                      applications             @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users                                                       staff_users?             @relation(fields: [ordered_by], references: [id], onUpdate: NoAction)
+  portal_draw_requests                                              portal_draw_requests?    @relation(fields: [portal_draw_request_id], references: [id], onUpdate: NoAction)
+  staff_users_trinity_inspection_orders_rescheduled_byTostaff_users staff_users?             @relation("trinity_inspection_orders_rescheduled_byTostaff_users", fields: [rescheduled_by], references: [id], onUpdate: NoAction)
+  trinity_order_comments                                            trinity_order_comments[]
+  trinity_order_events                                              trinity_order_events[]
+  trinity_order_lines                                               trinity_order_lines[]
+  trinity_order_media                                               trinity_order_media[]
 
   @@index([application_id, created_at(sort: Desc)], map: "idx_tio_app")
 }
@@ -8518,6 +8540,45 @@ model workflow_items {
   @@index([application_id, status], map: "idx_wf_app")
   @@index([to_role, status, received_at], map: "idx_wf_to_role")
   @@index([to_staff_id, status, received_at], map: "idx_wf_to_staff")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model lt_milestone_events {
+  id                  String    @id @db.Uuid
+  loan_id             String    @db.Uuid
+  event_type          String
+  from_milestone      String?
+  to_milestone        String?
+  from_stage          String?
+  to_stage            String?
+  observed_at         DateTime  @default(now()) @db.Timestamptz(6)
+  encompass_synced_at DateTime? @db.Timestamptz(6)
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([loan_id, observed_at(sort: Desc)], map: "lt_milestone_events_loan_idx")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model trinity_order_events {
+  id                          BigInt                    @id @default(autoincrement())
+  trinity_inspection_order_id BigInt
+  application_id              String                    @db.Uuid
+  state                       String?
+  trinity_status_id           Int?
+  trinity_status              String?
+  trinity_substatus           String?
+  kind                        String                    @default("status")
+  detail                      String?
+  percent_complete            Decimal?                  @db.Decimal(9, 4)
+  source                      String                    @default("poller")
+  staff_id                    String?                   @db.Uuid
+  occurred_at                 DateTime                  @default(now()) @db.Timestamptz(6)
+  applications                applications              @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users                 staff_users?              @relation(fields: [staff_id], references: [id], onUpdate: NoAction)
+  trinity_inspection_orders   trinity_inspection_orders @relation(fields: [trinity_inspection_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([application_id, occurred_at(sort: Desc)], map: "idx_toe_app")
+  @@index([trinity_inspection_order_id, occurred_at(sort: Desc), id(sort: Desc)], map: "idx_toe_order")
 }
 
 enum lt_amortization_type {

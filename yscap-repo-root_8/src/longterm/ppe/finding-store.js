@@ -1,7 +1,7 @@
 'use strict';
 /**
  * LT PPE — the durable bridge for the shadow findings ledger (§10.4). Persists to `lt_ppe_finding`
- * (db/557) what the PURE `finding.js` produces, and delegates every MERGE decision to finding.js so
+ * (db/561) what the PURE `finding.js` produces, and delegates every MERGE decision to finding.js so
  * "never re-open a settled finding" has ONE definition (no SQL copy to drift).
  *
  * `db` is an injected pg pool/client exposing `.query(text, params)` — same convention as store.js,

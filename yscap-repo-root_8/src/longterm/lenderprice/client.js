@@ -36,7 +36,7 @@
 
 const crypto = require('crypto');
 const { buildSearch, smoRegistryFromList, _internals: searchModelInternals } = require('./search-model');
-// Durable L2 for the disqualify (ineligible) workflow (db/555) — best-effort; the in-memory Map
+// Durable L2 for the disqualify (ineligible) workflow (db/559) — best-effort; the in-memory Map
 // below stays the L1 cache, this survives a reboot / deploy / instance-move. Every call degrades to
 // in-memory-only on any DB error, so the pricing path never hard-depends on it.
 const disqStore = require('./disqualify-store');

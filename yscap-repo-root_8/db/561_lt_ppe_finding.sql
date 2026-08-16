@@ -1,5 +1,5 @@
 -- ============================================================================
--- LONG-TERM (LT) — db/557 — PPE shadow FINDINGS ledger.
+-- LONG-TERM (LT) — db/561 — PPE shadow FINDINGS ledger.
 --
 -- A shadow disagreement (§10.4 of docs/longterm/PPE-MEGA-PLAN.md) persisted so a
 -- fixed/dismissed finding NEVER re-opens itself on the next run (the RTL finding-
@@ -13,7 +13,7 @@
 -- forward, never reopened (a fixed one that reappears is flagged regressed).
 --
 -- SEPARATION: lt_ppe_* only; no RTL table read or written; no trigger or function
--- defined; the one FK references db/554's own lt_ppe_program. approved/decided
+-- defined; the one FK references db/558's own lt_ppe_program. approved/decided
 -- actors are plain UUIDs (no FK). MULTI-TENANT + SELLABLE: every row carries scope
 -- (default 'company'); nothing here is specific to us.
 --

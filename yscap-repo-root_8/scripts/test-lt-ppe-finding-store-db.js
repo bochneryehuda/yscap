@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * LT PPE findings store (db/557) — the durable ledger bridge.
+ * LT PPE findings store (db/561) — the durable ledger bridge.
  *   PURE section (always): the row<->record mapping.
  *   DB section (DATABASE_URL): a real reconcile lifecycle against lt_ppe_finding — new -> recurred ->
  *     a human fix -> a regression carried (never reopened) -> a disappeared finding auto-resolved.

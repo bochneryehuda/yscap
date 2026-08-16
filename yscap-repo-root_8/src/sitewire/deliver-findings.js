@@ -205,7 +205,11 @@ async function borrowerFindingAttachments(appId, sitewireDrawId) {
  * Persist the draw's findings and deliver them to the borrower (and loop in the team). Shared by the
  * manual HTTP route and the autopilot. `persistDrawFindings` is allowed to THROW (an upstream Sitewire
  * outage) so the route can answer 502 and the poll can skip and retry; every step AFTER the persist is
- * independently best-effort and never throws. `opts.source` ('manual' | 'autopilot') is for logging.
+ * independently best-effort and never throws. `opts.source` ('manual' | 'autopilot' | 'trinity')
+ * is for logging ONLY — 'trinity' is a human pressing Deliver on a physical inspection, so it
+ * behaves exactly like 'manual'. Anything that is not 'autopilot' reads as a human's action; if
+ * you ever branch on this value, treat every non-'autopilot' value as manual rather than
+ * testing `=== 'manual'`, or the physical route silently falls out of that branch.
  *
  * Returns the persist result plus the delivery outcome:
  *   { ...persistResult, media_archived, reports_ready, reports_pending, attachments_sent,

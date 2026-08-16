@@ -36,6 +36,11 @@ const err = (status, message) => { const e = new Error(message); e.status = stat
 
 // Trinity document groups (GET /api/v1.1/documents/groups). The group validates the
 // file EXTENSION as well as the kind, so each entry records what it will accept.
+// The most a single document may be before we decline to send it. Trinity accepted
+// 40 MB in 9.6s (measured 2026-08-16) — this ceiling exists to protect OUR 30-second
+// client timeout on a POST that is deliberately never retried, not to satisfy theirs.
+const MAX_DOC_BYTES = Math.max(1, parseInt(process.env.TRINITY_MAX_DOC_MB || '25', 10) || 25) * 1024 * 1024;
+
 const DOC_GROUP = {
   APPRAISAL: 1,          // .pdf .xls .doc .tif .jpg .png .xlsx …
   COST_BREAKDOWN: 2,     // .pdf .xls .doc .tif .jpg .png .xlsx  (NOT .csv — verified)
@@ -74,6 +79,41 @@ async function budgetLines(appId) {
       GROUP BY r.sitewire_job_item_id`, [appId])).rows;
   const drawnBy = new Map(drawn.map((d) => [Number(d.jid), Number(d.c)]));
 
+  // …PLUS the money THIS program has already approved that has not reached Sitewire yet.
+  //
+  // A Trinity draw is approved on our desk and only afterwards closed out into Sitewire
+  // as a HISTORICAL draw (`portal-draws.historicalCloseOut`). That close-out can be
+  // skipped or parked for perfectly ordinary reasons — Sitewire writes switched off, no
+  // Sitewire property link yet, a lease lost to another driver, a sum that did not
+  // reconcile. Until it lands, the approval exists ONLY on the portal draw request.
+  //
+  // The query above reads Sitewire alone, so in that window the next order would tell
+  // the inspector a line still had its money available when the borrower had already
+  // been paid for it — the single most expensive thing this integration could get wrong,
+  // and the exact opposite of what the historical draws are for. So the approved-but-
+  // not-yet-closed-out requests are added here.
+  //
+  // No double counting: a request that HAS closed out carries its `sitewire_draw_id` and
+  // its money is already in `sitewire_draw_requests` above, so only rows still missing
+  // that id are counted. The draw being ordered right now is 'submitted', never
+  // 'approved', so it can never count itself as history.
+  const pending = (await db.query(
+    `SELECT l.value->>'sitewire_job_item_id' AS jid,
+            COALESCE(SUM((l.value->>'approved_cents')::bigint), 0)::bigint AS c
+       FROM portal_draw_requests p
+       CROSS JOIN LATERAL jsonb_array_elements(p.lines) AS l(value)
+      WHERE p.application_id = $1
+        AND p.status = 'approved'
+        AND p.sitewire_draw_id IS NULL
+        AND l.value->>'sitewire_job_item_id' IS NOT NULL
+        AND COALESCE(l.value->>'approved_cents', '') <> ''
+      GROUP BY l.value->>'sitewire_job_item_id'`, [appId])).rows;
+  for (const p of pending) {
+    const jid = Number(p.jid);
+    if (!Number.isFinite(jid)) continue;
+    drawnBy.set(jid, (drawnBy.get(jid) || 0) + Number(p.c || 0));
+  }
+
   return rows.map((r) => ({
     sitewire_job_item_id: Number(r.sitewire_job_item_id),
     sow_line_key: r.sow_line_key,
@@ -95,8 +135,11 @@ async function fileContext(appId) {
       WHERE a.id = $1 AND a.deleted_at IS NULL`, [appId])).rows[0];
   if (!a) throw err(404, 'file not found');
 
+  // `phones` is the contact record's extra numbers (mobile, office, …). Trinity needs
+  // at least ONE usable number and does not care which field it arrives in, so every
+  // number we hold is offered and the mapper picks the first it can clean.
   const contractor = (await db.query(
-    `SELECT sc.company_name, sc.contact_name, sc.email, sc.phone
+    `SELECT sc.company_name, sc.contact_name, sc.email, sc.phone, sc.phones
        FROM application_service_contacts asc2
        JOIN service_contacts sc ON sc.id = asc2.service_contact_id
       WHERE asc2.application_id = $1 AND sc.contact_type = 'contractor'
@@ -124,7 +167,14 @@ async function fileContext(appId) {
     },
     contractor: contractor ? {
       name: contractor.contact_name, companyName: contractor.company_name,
-      email: contractor.email, phone: contractor.phone,
+      email: contractor.email,
+      phone: contractor.phone,
+      // The first ALTERNATE number on the contact record (the primary already rode in
+      // as `phone`), offered so a contractor whose only good number is the mobile one
+      // still produces a sendable order.
+      mobilePhone: (Array.isArray(contractor.phones) ? contractor.phones : [])
+        .map((p) => String(p || '').trim())
+        .filter((p) => p && p !== String(contractor.phone || '').trim())[0] || null,
     } : null,
     appraisal: appraisal ? {
       valueCents: appraisal.as_is_value != null ? Math.round(Number(appraisal.as_is_value) * 100)
@@ -319,16 +369,138 @@ async function placeOrder(appId, orderRowId, { staffId = null } = {}) {
          src.previous_drawn_cents || 0, it.previousPercentCompleted]);
     }
 
+    // ---- the order's first timeline entry: this is where progress starts ----
+    await recordEvent(appId, orderRowId, {
+      kind: 'ordered', source: 'order', staffId,
+      detail: `Ordered from Trinity — ${sentItems.length} budget line${sentItems.length === 1 ? '' : 's'}, ${usd(requestedTotal)} requested.`,
+    }).catch(() => {});
+
     // ---- everything below is BEST-EFFORT: the order exists and must never be undone ----
+    // PROVE the budget landed before anything else — a broken crosswalk is worth
+    // knowing about now, not when the report comes back and nothing can be matched.
+    const proof = await verifyBudget(appId, orderRowId, trinityOrderId, sentItems).catch(
+      (e) => ({ error: String(e && e.message).slice(0, 200) }));
+
     const docs = await sendDocuments(appId, orderRowId, trinityOrderId, { lines, requestedTotal }).catch(
       (e) => ({ error: String(e && e.message).slice(0, 200) }));
-    await openingComment(appId, orderRowId, trinityOrderId, { lines, requestedTotal, ctx }).catch(() => {});
+    // The opening message names what ACTUALLY attached, not what we hoped would — an
+    // inspector told to look for a document that is not there wastes a phone call.
+    await openingComment(appId, orderRowId, trinityOrderId, { lines, requestedTotal, ctx, sent: (docs && docs.sent) || [] }).catch(() => {});
 
-    return { ok: true, trinityOrderId, trinityProjectId, documents: docs, lines: sentItems.length, requestedTotal };
+    return { ok: true, trinityOrderId, trinityProjectId, documents: docs, budget: proof, lines: sentItems.length, requestedTotal };
   } catch (e) {
     await release();
     return { error: true, message: String(e && e.message).slice(0, 300) };
   }
+}
+
+// ---------------------------------------------------------------------------
+// the progress timeline — Trinity has no history endpoint, so this is the record
+// ---------------------------------------------------------------------------
+/**
+ * Append one entry to the order's timeline.
+ *
+ * VERIFIED 2026-08-16: Trinity exposes only the CURRENT status —
+ * `GET /orders/{id}/history`, `/events`, `/statuses` and `/status` all answer 404. So
+ * the sequence the owner asked to see ("ordered, scheduled, inspected, report back")
+ * exists ONLY here, and only because we write it down as we watch.
+ *
+ * APPEND-ONLY and never throws — a timeline is a record of what happened and must never
+ * be the reason something fails to happen. A duplicate status collides on
+ * `uq_toe_status_once` and is dropped, so the poller re-reading the same order every
+ * few minutes cannot fill the timeline with copies of one moment.
+ */
+async function recordEvent(appId, orderRowId, {
+  kind = 'status', state = null, statusId = null, status = null, substatus = null,
+  detail = null, percentComplete = null, source = 'poller', staffId = null,
+} = {}) {
+  try {
+    const r = await db.query(
+      `INSERT INTO trinity_order_events
+         (trinity_inspection_order_id, application_id, state, trinity_status_id, trinity_status,
+          trinity_substatus, kind, detail, percent_complete, source, staff_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::uuid)
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [orderRowId, appId, state, statusId,
+       status ? String(status).slice(0, 120) : null,
+       substatus ? String(substatus).slice(0, 120) : null,
+       kind, detail ? String(detail).slice(0, 500) : null, percentComplete, source, staffId]);
+    return { ok: true, added: r.rows.length > 0 };
+  } catch (e) {
+    console.warn('[trinity] timeline write failed:', e && e.message);
+    return { ok: false };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// the budget proof — "their system really understands our construction budget"
+// ---------------------------------------------------------------------------
+/**
+ * Read Trinity's budget straight back and reconcile it against what we sent.
+ *
+ * This is the answer to the owner's *"how we force them to be linked together"*. The
+ * link is forced from BOTH ends: Trinity refuses an order whose line keys collide
+ * (400, verified), and this proves — on every single order, not once in a lab — that
+ * the budget their inspector will work from is the budget we sent, that the money
+ * already drawn survived the percentage conversion, and above all that OUR reference
+ * came back on EVERY line. Without that reference a completed report is a set of
+ * numbers we cannot attach to our own budget lines.
+ *
+ * A disagreement is recorded in plain words for the desk and does NOT undo the order —
+ * the inspection is real and cancelling it over a reconciliation is worse than showing
+ * a human what differs. Best-effort throughout: it can never fail a placement.
+ */
+async function verifyBudget(appId, orderRowId, trinityOrderId, sentItems) {
+  if (!client.available() || !client.enabled()) return { skipped: 'off' };
+  let remote;
+  try { remote = await client.getBudget(trinityOrderId); }
+  catch (e) { return { skipped: 'unreadable', message: String(e && e.message).slice(0, 200) }; }
+  if (remote && remote.__dryrun) return { skipped: 'dryrun' };
+
+  const v = mapper.verifyRemoteBudget(sentItems, remote);
+  const s = v.summary || {};
+
+  // Record Trinity's own line ids on our crosswalk. This is what lets a human ask
+  // Trinity about "your line 13286139" and get an answer about OUR budget line.
+  try {
+    for (const it of (remote && remote.lineItems) || []) {
+      if (it.customerKey == null || it.id == null) continue;
+      await db.query(
+        `UPDATE trinity_order_lines SET trinity_line_id=$3, updated_at=now()
+          WHERE trinity_inspection_order_id=$1 AND customer_key=$2 AND trinity_line_id IS NULL`,
+        [orderRowId, String(it.customerKey), Number(it.id)]);
+    }
+  } catch (_) { /* the crosswalk already ties on customerKey; their id is a convenience */ }
+
+  const mismatch = v.ok ? null
+    : `Trinity's copy of the construction budget does not match ours: ${v.problems.join(' ')}`;
+  await db.query(
+    `UPDATE trinity_inspection_orders
+        SET budget_verified_at=now(), budget_mismatch=$2,
+            remote_budget_cents=$3, remote_drawn_cents=$4, updated_at=now()
+      WHERE id=$1`,
+    [orderRowId, mismatch ? mismatch.slice(0, 2000) : null,
+     s.remoteBudgetCents != null ? s.remoteBudgetCents : null,
+     s.remoteDrawnCents != null ? s.remoteDrawnCents : null]).catch(() => {});
+
+  await recordEvent(appId, orderRowId, {
+    kind: 'note', source: 'order',
+    detail: v.ok
+      ? `Trinity's budget checked and agrees: ${s.checked} line${s.checked === 1 ? '' : 's'}, `
+        + `${usd(s.remoteBudgetCents)} budget, ${usd(s.remoteDrawnCents)} already drawn.`
+      : `Trinity's budget does NOT match ours — ${v.problems.length} difference${v.problems.length === 1 ? '' : 's'}.`,
+  }).catch(() => {});
+
+  // A line Trinity added on their side is not a fault, but the desk should know it is
+  // there before it turns up in the results with no line of ours to belong to.
+  if (v.ok && s.extraLines) {
+    await recordEvent(appId, orderRowId, {
+      kind: 'note', source: 'order',
+      detail: `Trinity's budget also carries ${s.extraLines} line${s.extraLines === 1 ? '' : 's'} of their own: ${s.extraNames.join(', ')}.`,
+    }).catch(() => {});
+  }
+  return { ok: v.ok, problems: v.problems, ...s };
 }
 
 // ---------------------------------------------------------------------------
@@ -383,10 +555,41 @@ async function sendDocuments(appId, orderRowId, trinityOrderId, { lines, request
     else sent.push('construction budget + historical draws');   // already there
   }
 
-  // 2. The appraisal report and the scope of work, when the file holds them.
+  // 2. The appraisal report, the scope of work, and the MOST RECENT PRIOR INSPECTION
+  //    REPORT, when the file holds them.
+  //
+  // The prior report is there because of what actually happens on a real file
+  // (owner-directed 2026-08-16): *"We need to have a way of giving over to the inspector
+  // the current, most recent inspection report in case he's taking over in the middle of
+  // the process."* A Trinity inspector arriving at draw 3 has never seen the property.
+  // The percentages tell him how much money was released; only the previous report tells
+  // him what the last inspector actually SAW, and what they refused and why.
+  //
+  // "Most recent" spans all three report kinds this system produces, newest first, so it
+  // works whichever pipeline the earlier draws ran on:
+  //   · `draw_inspection_report`      — a Sitewire VIRTUAL draw's findings report. This
+  //                                     is the common case the owner described: the first
+  //                                     draws were virtual and this is the first physical.
+  //   · `trinity_pilot_report`        — our branded report from a previous Trinity draw.
+  //   · `trinity_inspection_report`   — Trinity's own report from a previous draw.
+  //
+  // It goes into MISCELLANEOUS, deliberately. Group 46 "Draw (Report complete)" is where
+  // Trinity files THEIR finished report for an order, and putting a historical document
+  // there could be read as this inspection's own result. Miscellaneous plus a
+  // self-describing filename cannot be mistaken for anything, and the opening comment
+  // (§openingComment) names it so the inspector knows it is waiting for him.
   const wanted = [
-    { kinds: ['appraisal_pdf'], codes: ['rtl_cond_appraisaldocs'], group: DOC_GROUP.APPRAISAL, label: 'appraisal report', key: 'appraisal' },
-    { kinds: ['sow_pdf', 'rehab_budget_pdf'], codes: ['rtl_p3_sow', 'rtl_cond_sow'], group: DOC_GROUP.SOW, label: 'scope of work', key: 'sow' },
+    { kinds: ['appraisal_pdf'], codes: ['rtl_cond_appraisaldocs'], group: DOC_GROUP.APPRAISAL, label: 'appraisal report', key: 'appraisal', fileName: 'appraisal-report' },
+    { kinds: ['sow_pdf', 'rehab_budget_pdf'], codes: ['rtl_p3_sow', 'rtl_cond_sow'], group: DOC_GROUP.SOW, label: 'scope of work', key: 'sow', fileName: 'scope-of-work' },
+    {
+      kinds: ['draw_inspection_report', 'trinity_pilot_report', 'trinity_inspection_report'],
+      codes: [], group: DOC_GROUP.MISC,
+      label: 'the PREVIOUS inspection report', key: 'previous-inspection-report',
+      // The filename is the only label Trinity's own screen shows, and an inspector
+      // opening "inspection report" on a live order would reasonably assume it is about
+      // THIS visit. It says PREVIOUS, in full.
+      fileName: 'PREVIOUS-INSPECTION-REPORT-not-this-visit',
+    },
   ];
   for (const w of wanted) {
     try {
@@ -406,11 +609,23 @@ async function sendDocuments(appId, orderRowId, trinityOrderId, { lines, request
       if (!row) continue;
       const buf = await storage.forRow(row).read(row.storage_ref);
       if (!buf || !buf.length) continue;
+      // NEVER GAMBLE THE ORDER ON ONE FAT UPLOAD. Measured 2026-08-16: Trinity itself
+      // accepted 40 MB (53 MB base64) in 9.6s and showed no rate limiting — the ceiling
+      // that actually bites is OUR `TRINITY_TIMEOUT_MS` (30s), and a document POST is
+      // never retried in-call. So an oversize document is SKIPPED and NAMED rather than
+      // risking a timeout on a placement that has already succeeded.
+      if (buf.length > MAX_DOC_BYTES) {
+        failed.push(`${w.label} (too large to send — ${(buf.length / 1048576).toFixed(1)} MB)`);
+        continue;
+      }
       await client.addDocument(trinityOrderId, {
         buffer: buf,
         contentType: row.content_type || 'application/pdf',
-        // The group validates the EXTENSION, so the name we send always ends .pdf.
-        fileName: `${w.key}.pdf`,
+        // The group validates the EXTENSION, so the name we send always ends .pdf. The
+        // NAME is also what a human reads on Trinity's screen, so it says what the
+        // document IS — an inspector must never have to guess whether a report describes
+        // this visit or the last one.
+        fileName: `${w.fileName || w.key}.pdf`,
         groupId: w.group,
         customerKey: `o${orderRowId}-${w.key}`,
         uploader,
@@ -427,11 +642,48 @@ async function sendDocuments(appId, orderRowId, trinityOrderId, { lines, request
   return { sent, failed };
 }
 
+// WE DELIBERATELY DO NOT SEND INSPECTION PHOTOS (owner-directed 2026-08-16: *"We don't
+// really need to send the photos. The inspection report itself does the job: the PDF of
+// the inspection report from the previous inspection."*).
+//
+// It was built and then removed on purpose, and the reasoning is worth keeping so it is
+// not "helpfully" re-added:
+//
+//   · THE REPORT ALREADY CARRIES THE PICTURES. Our branded draw report embeds the
+//     inspection photographs, so attaching the report hands the inspector the images AND
+//     the findings and the per-line figures that explain them — one document instead of
+//     a dozen loose files with no captions.
+//   · IT IS THE EXPENSIVE PART OF PLACING AN ORDER. Measured against the live API on
+//     2026-08-16: a document POST costs ~2.6s at 1 MB and ~9.6s at 40 MB. Eight photos
+//     is eight more multi-second round trips on the critical path of an order that has
+//     already been accepted — the single biggest way this integration could start
+//     timing out, and for information the report already contains.
+//   · SIZE AND RATE ARE NOT THE CONSTRAINT — OUR OWN TIMEOUT IS. Trinity accepted a
+//     40 MB document and showed no 429 at 7.9 requests/second sequential or 20
+//     concurrent. What can actually break is `TRINITY_TIMEOUT_MS` (30s) on a single fat
+//     upload, which is why `sendDocuments` skips a document too large to be sent
+//     comfortably rather than gambling the order on it.
+//
+// If a future reader genuinely needs loose photographs on Trinity's side: group 86
+// "Photo Album" sounds right and accepts **.pdf ONLY** (verified — a .jpg into it is a
+// 400). Images go to group 3 (Miscellaneous). Send them AFTER the order is settled,
+// never inline with placement.
+
 /** The opening message to the Trinity team — the picture in words. */
-async function openingComment(appId, orderRowId, trinityOrderId, { lines, requestedTotal, ctx }) {
+async function openingComment(appId, orderRowId, trinityOrderId, { lines, requestedTotal, ctx, sent = [] }) {
   const budget = lines.reduce((s, l) => s + l.budgeted_cents, 0);
   const drawn = lines.reduce((s, l) => s + l.previous_drawn_cents, 0);
   const asking = lines.filter((l) => (l.requested_cents || 0) > 0);
+  const drawNo = lines.some((l) => l.previous_drawn_cents > 0);
+
+  // Name only what actually attached. If a previous inspection report went with the
+  // order, say so plainly and say WHY it is there — an inspector taking the property
+  // over mid-project needs to know the last visit's findings exist and where they are.
+  const hasPrior = sent.includes('the PREVIOUS inspection report');
+  const attached = sent.length
+    ? `Attached: ${sent.join(', ')}.`
+    : 'The construction budget with the historical draws is on the order.';
+
   const body = [
     `Draw inspection requested by YS Capital Group (PILOT) for ${ctx.address.street || 'this property'}.`,
     `Construction budget ${usd(budget)} · already drawn ${usd(drawn)} · still available ${usd(Math.max(0, budget - drawn))}.`,
@@ -439,7 +691,18 @@ async function openingComment(appId, orderRowId, trinityOrderId, { lines, reques
     ...asking.slice(0, 20).map((l) => `  • ${l.name}: ${usd(l.requested_cents)} (budget ${usd(l.budgeted_cents)}, drawn to date ${usd(l.previous_drawn_cents)})`),
     asking.length > 20 ? `  • …and ${asking.length - 20} more (see the attached spreadsheet)` : '',
     '',
-    'The construction budget with the historical draws, the appraisal and the scope of work are attached. Please reply here with any questions.',
+    attached,
+    drawn > 0
+      ? 'Every line carries its percent-complete from the draws already released, so the budget shows what is still available on each item.'
+      : 'This is the first draw on this project — no money has been released yet.',
+    hasPrior
+      ? 'ATTACHED UNDER MISCELLANEOUS: the report from the PREVIOUS inspection on this project — not this visit. '
+        + 'It shows what the last inspector found, the photographs they took of the property at that visit, '
+        + 'and what was approved or held back on each line, so you can see how the project stood before this draw.'
+      : (drawNo ? 'Earlier draws on this project were inspected elsewhere; tell us if you would like the previous inspection report and we will attach it.' : ''),
+    'Each budget line carries our own reference in the customerKey field — please keep it on the line when you report, so your figures land on the right item in our system.',
+    '',
+    'Please reply here with any questions.',
   ].filter(Boolean).join('\n').slice(0, 2790);
 
   return postComment(appId, orderRowId, trinityOrderId, body, { staffId: null, important: false });
@@ -451,7 +714,12 @@ async function postComment(appId, orderRowId, trinityOrderId, content, { staffId
     content: String(content).slice(0, 2790),
     important: !!important,
     visibleToVendor: true,
-    commenter: { isExternalPerson: false, firstName: 'Draw', lastName: 'Coordinator', emailAddress: 'draws@yscapgroup.com' },
+    // The address we SIGN WITH is the same constant `ingest.commentIsOurs` recognises on
+    // the way back, so our own echo can never be read as a message FROM Trinity.
+    commenter: {
+      isExternalPerson: false, firstName: 'Draw', lastName: 'Coordinator',
+      emailAddress: require('../lib/draw-recipients').DRAW_DESK_INBOX,
+    },
   });
   if (res && res.__dryrun) return { dryrun: true };
   await db.query(
@@ -464,7 +732,143 @@ async function postComment(appId, orderRowId, trinityOrderId, content, { staffId
   return { ok: true, id: res && res.id };
 }
 
+// ---------------------------------------------------------------------------
+// scheduling — "schedule the inspection"
+// ---------------------------------------------------------------------------
+/** Trinity's own floor: an inspection date must be at least 24 hours out. */
+const MIN_LEAD_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Move the inspection date, and/or put the order on rush.
+ *
+ * Owner-directed 2026-08-14: *"follow up on the status of the inspection, schedule the
+ * inspection…"*. `PATCH /api/v1.1/orders/{id}` is how, and it is a PARTIAL patch — a
+ * null is read by Trinity as "reset this to its default", not "leave it alone" — so only
+ * the fields actually being changed are ever sent.
+ *
+ * The 24-hour floor is Trinity's, enforced with a clean 400 ("Value cannot be earlier
+ * than 24 hours from now."). We check it FIRST and say so in our own words, because a
+ * coordinator picking tomorrow morning deserves an answer about the date rather than a
+ * validation error out of somebody else's API.
+ */
+async function reschedule(appId, orderRowId, { dateIso = null, rush = null, staffId = null } = {}) {
+  const o = (await db.query(
+    `SELECT * FROM trinity_inspection_orders WHERE id=$1 AND application_id=$2`, [orderRowId, appId])).rows[0];
+  if (!o) return { skipped: 'not_found' };
+  if (!o.trinity_order_id) return { blocked: true, message: 'This inspection has not been ordered from Trinity yet.' };
+  if (o.status === 'cancelled') return { blocked: true, message: 'This inspection is cancelled.' };
+  if (o.status === 'report_received' || o.status === 'entered') {
+    return { blocked: true, message: 'The inspection is already done — there is nothing left to schedule.' };
+  }
+  if (!client.outboundEnabled() && !client.dryrun()) {
+    return { blocked: true, message: 'Trinity writing is switched off.' };
+  }
+
+  const patch = { actionBy: { firstName: 'Draw', lastName: 'Coordinator', emailAddress: 'draws@yscapgroup.com' } };
+  let when = null;
+  if (dateIso != null) {
+    when = new Date(dateIso);
+    if (Number.isNaN(when.getTime())) return { blocked: true, message: 'That date could not be read.' };
+    if (when.getTime() - Date.now() < MIN_LEAD_MS) {
+      return { blocked: true, message: 'Trinity needs at least 24 hours’ notice — pick a date from the day after tomorrow onwards.' };
+    }
+    patch.dateToPerformInspection = when.toISOString();
+  }
+  if (rush != null) patch.rush = !!rush;
+  if (patch.dateToPerformInspection === undefined && patch.rush === undefined) {
+    return { skipped: 'nothing_to_change' };
+  }
+
+  let res;
+  try { res = await client.patchOrder(o.trinity_order_id, patch); }
+  catch (e) {
+    return { error: true, retryable: !!(e && e.retryable), message: String(e && e.message).slice(0, 300) };
+  }
+  if (res && res.__dryrun) return { ok: true, dryrun: true, patch };
+
+  await db.query(
+    `UPDATE trinity_inspection_orders
+        SET inspect_on = COALESCE($2::timestamptz, inspect_on),
+            rush = COALESCE($3::boolean, rush),
+            reschedule_count = reschedule_count + 1,
+            rescheduled_at = now(), rescheduled_by = $4::uuid, updated_at = now()
+      WHERE id = $1`,
+    [orderRowId, when ? when.toISOString() : null, rush == null ? null : !!rush, staffId]);
+
+  // Tell the Trinity team in words too — a date change they can see on the order is
+  // worth more than one buried in an API field.
+  const said = [
+    when ? `Please perform this inspection on or after ${when.toISOString().slice(0, 10)}.` : '',
+    rush === true ? 'This order has been marked RUSH.' : (rush === false ? 'The rush flag on this order has been removed.' : ''),
+  ].filter(Boolean).join(' ');
+  if (said) await postComment(appId, orderRowId, o.trinity_order_id, said, { staffId, important: !!rush }).catch(() => {});
+
+  return { ok: true, inspectOn: when ? when.toISOString() : null, rush: rush == null ? !!o.rush : !!rush };
+}
+
+// ---------------------------------------------------------------------------
+// project sync — keeping their picture of the property current
+// ---------------------------------------------------------------------------
+/**
+ * Push the current property/appraisal/borrower/contractor picture onto the Trinity
+ * PROJECT, without placing an order (`PATCH /api/v1.1/projects/{id}`).
+ *
+ * Creating an order already refreshes all of this, so what this is FOR is the thing that
+ * changes between draws and that an inspector needs before the next visit — above all a
+ * LOCK BOX CODE, which is the difference between getting inside and a wasted trip.
+ *
+ * PARTIAL PATCH DISCIPLINE: Trinity reads a null as "set this to its default", so a
+ * field we do not have is OMITTED, never sent as null. Sending our whole object with
+ * blanks in it would quietly erase the borrower's phone number on their side.
+ */
+async function syncProject(appId, orderRowId, { staffId = null } = {}) {
+  const o = (await db.query(
+    `SELECT * FROM trinity_inspection_orders WHERE id=$1 AND application_id=$2`, [orderRowId, appId])).rows[0];
+  if (!o) return { skipped: 'not_found' };
+  if (!o.trinity_project_id) return { skipped: 'no_project' };
+  if (!client.outboundEnabled() && !client.dryrun()) return { skipped: 'outbound_off' };
+
+  const ctx = await fileContext(appId);
+  const lock = (await db.query(
+    `SELECT lock_box_code FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+
+  const property = {
+    address: {
+      street: ctx.address.street, city: ctx.address.city, state: ctx.address.state,
+      zipCode: ctx.address.zip,
+      ...(ctx.address.county ? { county: ctx.address.county } : {}),
+    },
+    type: /commercial|mixed/i.test(String(ctx.app.property_type || '')) ? 'Commercial' : 'Residential',
+    ...(lock.lock_box_code ? { lockBoxCode: String(lock.lock_box_code).slice(0, 50) } : {}),
+    ...(ctx.appraisal && ctx.appraisal.valueCents
+      ? { appraisal: {
+        value: Math.round(ctx.appraisal.valueCents) / 100,
+        ...(ctx.appraisal.datePerformed ? { datePerformed: ctx.appraisal.datePerformed } : {}),
+        ...(ctx.appraisal.performedBy ? { performedBy: String(ctx.appraisal.performedBy).slice(0, 100) } : {}),
+      } }
+      : {}),
+  };
+  if (!property.address.street || !property.address.city || !property.address.state || !property.address.zipCode) {
+    return { skipped: 'incomplete_address' };
+  }
+
+  const patch = {
+    property,
+    actionBy: { firstName: 'Draw', lastName: 'Coordinator', emailAddress: 'draws@yscapgroup.com' },
+  };
+  if (ctx.app.loan_amount != null) patch.totalProjectCost = Math.round(Number(ctx.app.loan_amount) * 100) / 100;
+
+  let res;
+  try { res = await client.patchProject(o.trinity_project_id, patch); }
+  catch (e) { return { error: true, message: String(e && e.message).slice(0, 300) }; }
+  if (res && res.__dryrun) return { ok: true, dryrun: true, patch };
+
+  await db.query(
+    `UPDATE trinity_inspection_orders SET project_synced_at=now(), updated_at=now() WHERE id=$1`, [orderRowId]).catch(() => {});
+  return { ok: true, lockBoxSent: !!lock.lock_box_code };
+}
+
 module.exports = {
-  DOC_GROUP, budgetLines, fileContext, placeOrder, sendDocuments, postComment,
-  budgetWorkbook, openingComment,
+  DOC_GROUP, MAX_DOC_BYTES, MIN_LEAD_MS, budgetLines, fileContext, placeOrder, sendDocuments, postComment,
+  budgetWorkbook, openingComment, reschedule, syncProject, recordEvent, verifyBudget,
 };
