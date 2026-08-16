@@ -217,6 +217,14 @@ async function makeLoan(extra = {}) {
     check(entityDecl && entityDecl.answered === false && entityDecl.answers === null,
       'and a party who has not answered reads as unanswered — never the other party\'s answers');
 
+    // ── B2. What has actually been read ─────────────────────────────────────
+    console.log('\nthe file says what it has actually read');
+
+    check(f.coverage && f.coverage.borrowers.state === 'read' && f.coverage.borrowers.count === 2,
+      'a section with rows on it reports `read`, and how many');
+    check(f.coverage.reo.state === 'read' && f.coverage.assets.count === 3,
+      'the assets count is assets AND liabilities — the section holds both');
+
     // ── C. The number that never leaves ─────────────────────────────────────
     console.log('\nthe Social Security number never leaves the server');
 
@@ -257,6 +265,33 @@ async function makeLoan(extra = {}) {
     check(fixedFile.borrowers.parties.length === 0 && fixedFile.declarations.rows.length === 0
       && !fixedFile.borrowers.error,
       'and every section is PRESENT and empty — "we read this and there is nothing" is not the same as "we did not read it"');
+
+    // ── F2. Empty and unreadable are NOT the same answer ────────────────────
+    console.log('\n"nothing on file" and "we could not ask" are different answers');
+
+    check(fixedFile.coverage.reo.state === 'empty' && fixedFile.coverage.reo.count === 0,
+      'a section that was asked about and had nothing reports `empty`, not `unreadable`');
+    check(fixedFile.coverage.borrowers.state === 'empty',
+      '…on every section of a loan nobody has entered yet');
+    check(Object.values(f.coverage).every((c) => c.state !== 'unreadable'),
+      'and a healthy loan reports nothing as unreadable');
+
+    // THE ONE THAT MATTERS: collapsing these two states is the bug this exists to stop.
+    // "Encompass holds nothing for this borrower" and "we could not ask" look identical
+    // on a screen full of dashes and mean opposite things to whoever has to chase it.
+    //
+    // A REAL failure is forced rather than simulated: an id that is not a uuid makes
+    // every one of the ten casts raise, which is exactly the swallowed error the whole
+    // suite exists to expose. Anything less than a real throw here would be asserting
+    // that the happy path has a coverage block, which section B2 already proved.
+    const brokenFile = await file.loadFile('not-a-uuid', {});
+    const states = Object.values(brokenFile.coverage);
+    check(states.length > 0 && states.every((c) => c.state === 'unreadable'),
+      'THE ONE THAT MATTERS: when the queries genuinely FAIL, every section reports `unreadable` — never `empty`, which would claim the loan has nothing on it');
+    check(states.every((c) => c.count === null),
+      '…and reports no count at all, because a failed read knows nothing either way');
+    check(brokenFile.borrowers.parties.length === 0 && brokenFile.borrowers.error,
+      'the section itself still carries its own error, so one broken table cannot make the other nine read as empty');
 
     // ── G. It cannot break the screen that carries it ───────────────────────
     console.log('\nit can never break the loan that carries it');

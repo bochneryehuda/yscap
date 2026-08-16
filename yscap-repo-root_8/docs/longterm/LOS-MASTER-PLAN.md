@@ -715,6 +715,34 @@ landed on the fallback. A section that does not apply is greyed **and still clic
 disabled control that does nothing when pressed teaches people the screen is broken while one that
 answers "the Condition Center is coming soon" answers the question they had.
 
+**The sections themselves shipped afterwards, and this line is here because for a while this
+phase read as finished while every section still showed a placeholder.** `src/longterm/file.js`
+is the one read behind all of them — ten queries returned keyed by SECTION KEY, so the screen
+renders `file[active]` and owns no map of its own. Three properties are stated in its header and
+each is asserted from BOTH sides, because a rule proven only one way is proven about the wrong
+thing: **the Social Security number is never SELECTed** (the pure suite reads the source, the DB
+suite puts real encrypted bytes in a row and searches the response for them); **a missing figure
+totals to NULL, never 0**; and **the investor is absent by construction** (the DB suite gives the
+loan an investor and proves the file still cannot see it).
+
+**And it surfaced two more of the same class it was built to surface — both invisible, both
+found only by running against a real database.** The ARM block was gated on the word `arm` while
+the column is the enum `('fixed','adjustable')`, so the adjustable-rate terms would never have
+appeared on a single adjustable loan; the guard that read the SOURCE passed the whole time,
+because the string it was looking for was right there. And `summaryRail` read the appraised
+value, LTV, occupancy and rent off the LOAN row while all four live on `lt_properties` — so the
+rail said "Property value —" on a file whose Property section showed $400,000 two clicks away.
+The rail now takes the SAME sections the Property tab renders, which is why the two can no longer
+disagree; and the lesson worth carrying into phase 8 is that **a swallowing catch turns a wrong
+name OR a wrong value into a confident empty answer, and only a real row of the real type can
+tell the two apart from "there is genuinely nothing here".**
+
+**One more, from the screen rather than the data.** A grid with no declared column gets an
+implicit `auto` one that sizes to its content, so a section carrying a table wider than a phone
+stretched its whole card to 759px inside a 390px screen — and `html{overflow-x:clip}` then hid
+it, so the page reported no sideways scrolling while half of every row was cut off and
+unreachable. Measuring `documentElement` is what made it invisible; measure `document.body`.
+
 ### Phase 5 — The Condition Center (read) — **DEFERRED (owner-directed 2026-08-14)**
 Set aside. The nav entry and the workspace section ship as a **"Coming soon"** placeholder
 behind the `conditions.enabled` setting (default off); no tables, no sync, no dependants.

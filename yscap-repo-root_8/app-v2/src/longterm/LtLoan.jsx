@@ -290,7 +290,8 @@ export default function LtLoan() {
                     Read from Encompass. Nothing on this screen is editable — the
                     long-term side reads Encompass and never writes to it.
                   </p>
-                  <LtFileSection sectionKey={current.key} file={file} />
+                  <LtFileSection sectionKey={current.key} file={file}
+                    sections={sections} lock={lock} contacts={contacts} />
                 </>
               ) : (
                 <p style={{ margin: 0, color: MUTED, lineHeight: 1.55 }}>

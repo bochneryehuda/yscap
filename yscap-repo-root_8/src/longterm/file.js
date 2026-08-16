@@ -244,7 +244,33 @@ async function loadFile(loanId, loan = null) {
   const prop = property.rows[0] || null;
   const l = loan || {};
 
+  /**
+   * What has actually been read, per section — the answer to "is this file thin, or is
+   * something broken?", which nobody can tell from a screen full of dashes.
+   *
+   * THREE STATES, and collapsing any two of them is the whole bug this exists to avoid:
+   *   `read`       — rows came back.
+   *   `empty`      — the query RAN and there is genuinely nothing on this loan.
+   *   `unreadable` — the query FAILED, so we know nothing either way.
+   * "Encompass holds nothing for this borrower" and "we could not ask" look identical on
+   * a screen and mean opposite things to whoever has to chase it.
+   */
+  const coverage = (result, count) => ({
+    state: result.error ? 'unreadable' : (count > 0 ? 'read' : 'empty'),
+    count: result.error ? null : count,
+  });
+
   return {
+    coverage: {
+      borrowers: coverage(parties, parties.rows.length),
+      property: coverage(property, property.rows.length),
+      income: coverage(otherIncomes, otherIncomes.rows.length),
+      employment: coverage(employments, employments.rows.length),
+      assets: coverage(assets, assets.rows.length + liabilities.rows.length),
+      reo: coverage(reo, reo.rows.length),
+      declarations: coverage(declarations, declarations.rows.length),
+    },
+
     borrowers: {
       error: parties.error,
       pairs: pairs.rows.map((p) => ({

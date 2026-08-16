@@ -493,7 +493,92 @@ function Declarations({ data }) {
   );
 }
 
+/**
+ * The landing section: who, what, on what terms, and — the part nobody can get from a
+ * screen full of dashes — WHAT HAS ACTUALLY BEEN READ.
+ *
+ * The three coverage states come from the server and are never collapsed here: a section
+ * that is genuinely empty and one we could not ask about look identical on a screen and
+ * mean opposite things to whoever has to chase it.
+ */
+function Summary({ data, file, sections, lock, contacts }) {
+  const b = file.borrowers || { parties: [] };
+  const people = b.parties.filter((p) => p.partyType !== 'entity');
+  const entities = b.parties.filter((p) => p.partyType === 'entity');
+  const cov = file.coverage || {};
+  const labelFor = (k) => {
+    const s = (sections || []).find((x) => x.key === k);
+    return s ? s.label : k;
+  };
+  // Only sections the workspace says APPLY are worth reporting on — telling somebody
+  // the Employment section is empty on a DSCR loan is noise dressed as a finding.
+  const applies = new Set((sections || []).filter((s) => s.available).map((s) => s.key));
+  const entries = Object.keys(cov).filter((k) => applies.has(k)).map((k) => ({ key: k, ...cov[k] }));
+  const missing = entries.filter((e) => e.state === 'empty');
+  const broken = entries.filter((e) => e.state === 'unreadable');
+
+  return (
+    <>
+      <Facts columns={3} rows={[
+        ['Borrowers', people.length ? people.map((p) => p.name || 'Name not read yet').join(' · ') : '—'],
+        ['Vesting entity', entities.length ? entities.map((e) => e.name || 'Name not read yet').join(' · ') : '—'],
+        ['Property', plain(file.property && file.property.address)],
+        ['Loan amount', money(data.loanAmount)],
+        ['Note rate', data.noteRatePct != null ? pct(data.noteRatePct) : '—'],
+        ['Term', data.termMonths != null ? `${data.termMonths} months` : '—'],
+        ['Program', plain(data.program)],
+        ['Purpose', plain(data.purpose)],
+        ['DSCR', file.income && file.income.dscr != null
+          ? Number(file.income.dscr).toFixed(3).replace(/0+$/, '').replace(/\.$/, '') : '—'],
+        ['Rate lock', lock && lock.status ? plain(lock.status) : 'Not locked'],
+        ['Team on this file', contacts && contacts.length ? String(contacts.length) : '—'],
+      ]} />
+
+      <Group
+        title="What has been read from Encompass"
+        note="A section listed as empty was asked about and had nothing on it. One listed as unreadable could not be asked — that is a different thing, and it is worth chasing."
+      >
+        {broken.length ? (
+          <p style={{ margin: '0 0 6px', color: '#8A2D2D', fontSize: 13 }}>
+            <strong>Could not be read:</strong> {broken.map((e) => labelFor(e.key)).join(', ')}.
+            Nothing is being claimed about {broken.length === 1 ? 'it' : 'them'} either way.
+          </p>
+        ) : null}
+        {missing.length ? (
+          <p style={{ margin: '0 0 6px', color: INK, fontSize: 13 }}>
+            <span style={{ color: MUTED }}>Nothing on file yet for: </span>
+            {missing.map((e) => labelFor(e.key)).join(', ')}.
+          </p>
+        ) : null}
+        {!broken.length && !missing.length ? (
+          <p style={{ margin: '0 0 6px', color: INK, fontSize: 13 }}>
+            Every section that applies to this loan has something on it.
+          </p>
+        ) : null}
+        <Rows
+          cols={[
+            { key: 'sec', label: 'Section', render: (r) => labelFor(r.key) },
+            {
+              key: 'state',
+              label: 'Read from Encompass',
+              render: (r) => (r.state === 'read' ? 'Yes'
+                : r.state === 'empty' ? 'Nothing on file'
+                  : 'Could not be read'),
+            },
+            { key: 'n', label: 'Entries', align: 'right', render: (r) => (r.count == null ? '—' : String(r.count)) },
+          ]}
+          rows={entries}
+          empty="No sections apply to this loan."
+        />
+      </Group>
+    </>
+  );
+}
+
 const RENDERERS = {
+  // `summary` reads the loan's TERMS and then borrows from the other sections, so it is
+  // given the whole file rather than one slice.
+  summary: Summary,
   borrowers: Borrowers,
   property: Property,
   terms: Terms,
@@ -504,13 +589,17 @@ const RENDERERS = {
   declarations: Declarations,
 };
 
+/** The section key each renderer takes its own slice from. */
+const SLICE_OF = { summary: 'terms' };
+
 /** True when this screen can draw the section itself. */
 export const hasFileSection = (key) => Object.prototype.hasOwnProperty.call(RENDERERS, key);
 
-export default function LtFileSection({ sectionKey, file }) {
+export default function LtFileSection({ sectionKey, file, sections, lock, contacts }) {
   const Renderer = RENDERERS[sectionKey];
   if (!Renderer) return null;
-  if (!file || !file[sectionKey]) {
+  const slice = SLICE_OF[sectionKey] || sectionKey;
+  if (!file || !file[slice]) {
     // The whole read failed. Say that, rather than drawing eight empty sections that
     // each claim this loan has nothing on it.
     return (
@@ -520,5 +609,5 @@ export default function LtFileSection({ sectionKey, file }) {
       </p>
     );
   }
-  return <Renderer data={file[sectionKey]} />;
+  return <Renderer data={file[slice]} file={file} sections={sections} lock={lock} contacts={contacts} />;
 }
