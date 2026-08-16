@@ -18,6 +18,15 @@ const SWITCHES = [
   { key: 'SITEWIRE_ENABLED', integration: 'sitewire', label: 'Sitewire sync (reading)', dangerous: false, resume: true, envDefault: () => cfg.sitewireEnabled },
   { key: 'SITEWIRE_OUTBOUND_ENABLED', integration: 'sitewire', label: 'Sitewire writing (push to Sitewire)', dangerous: true, envDefault: () => cfg.sitewireOutboundEnabled },
   { key: 'TRUSTPOINT_ENABLED', integration: 'trustpoint', label: 'TrustPoint mirror (reading + webhooks)', dangerous: false, resume: true, envDefault: () => cfg.trustpointEnabled },
+  // Trinity — the PHYSICAL inspection company we order from on the general physical
+  // program (a physical draw whose note buyer is NOT Blue Lake). Same three-stage shape
+  // as the AMC / Class / flood integrations: a master switch for reads + the poller, a
+  // TEST MODE that builds the call and sends nothing, and a separate write gate for
+  // actually placing orders. `resume: false` — the poller re-reads the switch on every
+  // tick and the client at call time, so turning it back on needs no restart.
+  { key: 'TRINITY_ENABLED', integration: 'trinity', label: 'Trinity physical inspections (reading + following orders)', dangerous: false, resume: false, envDefault: () => !!(cfg.trinity && cfg.trinity.enabled) },
+  { key: 'TRINITY_DRYRUN', integration: 'trinity', label: 'Trinity orders — TEST MODE (build the order but don’t send it)', dangerous: false, envDefault: () => !!(cfg.trinity && cfg.trinity.dryrun) },
+  { key: 'TRINITY_OUTBOUND_ENABLED', integration: 'trinity', label: 'Place Trinity inspection orders / send documents + messages (write)', dangerous: true, envDefault: () => !!(cfg.trinity && cfg.trinity.outboundEnabled) },
   { key: 'CLICKUP_SYNC_ENABLED', integration: 'clickup', label: 'ClickUp sync', dangerous: false, resume: true, envDefault: () => cfg.clickupSyncEnabled },
   { key: 'CLICKUP_OUTBOUND_ENABLED', integration: 'clickup', label: 'ClickUp writing (push to ClickUp)', dangerous: true, envDefault: () => cfg.clickupOutboundEnabled },
   { key: 'CLICKUP_INBOUND_CREATE_FILES', integration: 'clickup', label: 'Create loan files from ClickUp tasks', dangerous: true, envDefault: () => cfg.clickupInboundCreateFiles },
