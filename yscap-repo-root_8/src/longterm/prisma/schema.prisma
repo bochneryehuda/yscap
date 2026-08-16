@@ -1098,3 +1098,91 @@ enum LtLinkStatus {
 
   @@map("lt_link_status")
 }
+
+// ============================================================================
+// PPE — Product & Pricing Engine (docs/longterm/PPE-MEGA-PLAN.md). db/554.
+// Multi-tenancy via `scope` (default "company"), matching lt_settings. The
+// heavier price-bearing tables (rate-sheet versions, base-price grids, LLPA
+// rows, rules) land on top of these anchors in a later migration.
+// ============================================================================
+
+/// PPE — a note buyer / capital provider. The stable anchor of the pricing
+/// engine. `name` is INTERNAL-ONLY (an investor name may never reach a
+/// borrower/TPO surface — the standing hard rule).
+model LtPpeInvestor {
+  id        String   @id @default(uuid()) @db.Uuid
+  scope     String   @default("company")
+  code      String
+  name      String
+  active    Boolean  @default(true)
+  createdBy String?  @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  aliases  LtPpeInvestorAlias[]
+  programs LtPpeProgram[]
+
+  @@unique([scope, code], map: "lt_ppe_investor_scope_code_uk")
+  @@map("lt_ppe_investor")
+}
+
+/// Every recorded spelling of an investor (an investor is "spelled 151 ways"),
+/// so a hand-typed or vendor-supplied name resolves to the one canonical record.
+model LtPpeInvestorAlias {
+  id         String   @id @default(uuid()) @db.Uuid
+  scope      String   @default("company")
+  investorId String   @map("investor_id") @db.Uuid
+  aliasNorm  String   @map("alias_norm")
+  alias      String
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  investor LtPpeInvestor @relation(fields: [investorId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([scope, aliasNorm], map: "lt_ppe_investor_alias_scope_norm_uk")
+  @@index([investorId])
+  @@map("lt_ppe_investor_alias")
+}
+
+/// A product family under an investor (several per investor). `status` is the
+/// per-investor lifecycle: draft | shadow | live | retired — the engine prices a
+/// program for the business only when it is shadow or live, and Lender Price
+/// stays authoritative until it is live.
+model LtPpeProgram {
+  id             String   @id @default(uuid()) @db.Uuid
+  scope          String   @default("company")
+  investorId     String?  @map("investor_id") @db.Uuid
+  code           String
+  name           String
+  channel        String   @default("correspondent")
+  status         String   @default("draft")
+  maxLoanAmount  Decimal? @map("max_loan_amount") @db.Decimal(14, 2)
+  maxLtv         Decimal? @map("max_ltv") @db.Decimal(6, 3)
+  minFico        Int?     @map("min_fico")
+  minDscr        Decimal? @map("min_dscr") @db.Decimal(6, 3)
+  cashOutAllowed Boolean? @map("cash_out_allowed")
+  propertyTypes  Json?    @map("property_types") @db.JsonB
+  meta           Json     @default("{}") @db.JsonB
+  createdBy      String?  @map("created_by") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  investor LtPpeInvestor? @relation(fields: [investorId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([scope, investorId, code], map: "lt_ppe_program_scope_investor_code_uk")
+  @@index([investorId])
+  @@map("lt_ppe_program")
+}
+
+/// The OVERRIDE store for the coded PPE setting definitions (settings.js). Holds
+/// only what a tenant changed on top of the shipped defaults; a missing row, a
+/// missing key, or an unreadable table all resolve to the coded default.
+model LtPpeSettingValue {
+  scope     String   @default("company")
+  key       String
+  value     Json     @db.JsonB
+  updatedBy String?  @map("updated_by") @db.Uuid
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@id([scope, key])
+  @@map("lt_ppe_setting_value")
+}
