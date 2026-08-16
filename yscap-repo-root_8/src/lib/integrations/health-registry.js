@@ -223,6 +223,36 @@ const INTEGRATIONS = [
     },
   },
   {
+    key: 'trinity', name: 'Trinity (physical inspections)', group: 'workflow',
+    purpose: 'Orders the PHYSICAL draw inspection on files that are not Blue Lake — we send Trinity the construction budget, the draws already taken and the appraisal, follow the inspector from ordered to scheduled to done, and read back the report, the photos and what was approved on each line. Nothing reaches the borrower automatically: a person on the team reviews the findings and sends them.',
+    direction: 'Two-way (we place the order and send documents; they return the report, photos and results)',
+    auth: 'Username + password exchanged for a 2-hour token',
+    env: [
+      { name: 'TRINITY_USERNAME', required: true },
+      { name: 'TRINITY_PASSWORD', required: true },
+      { name: 'TRINITY_BASE_URL', required: false },
+      { name: 'TRINITY_WEBHOOK_TOKEN', required: false },
+      { name: 'TRINITY_COMPANY_ID', required: false },
+    ],
+    switches: [
+      { name: 'TRINITY_ENABLED', label: 'Following inspections' },
+      { name: 'TRINITY_DRYRUN', label: 'Test mode' },
+      { name: 'TRINITY_OUTBOUND_ENABLED', label: 'Placing orders' },
+    ],
+    liveProbe: true,
+    async probe() {
+      const c = require('../../trinity/client');
+      if (!c.available()) return { configured: false, live: null, detail: 'The Trinity username and password are not set.' };
+      if (!c.enabled()) return { configured: true, enabled: false, live: null, detail: 'The sign-in details are set, but the master switch (TRINITY_ENABLED) is off, so no inspections are being followed yet.' };
+      try {
+        const r = await timebox(c.ping());
+        return { configured: true, enabled: true, live: !!(r && r.ok), detail: r && r.ok ? `Reached Trinity as ${r.company}.` : 'Reached Trinity but it did not recognise the company.' };
+      } catch (e) {
+        return { configured: true, enabled: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching Trinity.' : (e.message || 'Not reachable — the sign-in details may be wrong.') };
+      }
+    },
+  },
+  {
     key: 'doclab', name: 'DocLab (Private Lender Law) — loan documents', group: 'workflow',
     purpose: 'Drafts the closing loan documents — note, mortgage or deed of trust, guaranty, loan agreement. The API form of the closing-prep package PILOT already emails to the same law firm. RTL only: no DSCR products and no prepayment penalties.',
     direction: 'Two-way (we submit a loan request, they return the drafted documents)',

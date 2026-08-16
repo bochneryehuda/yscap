@@ -517,6 +517,35 @@ module.exports = {
   // must present it (Authorization: Bearer <token> or X-Api-Key). Render env ONLY.
   trustpointWebhookToken: process.env.TRUSTPOINT_WEBHOOK_TOKEN || null,
 
+  // ---- Trinity (the PHYSICAL inspection company we ORDER from — the general       ----
+  // ---- physical program: a physical draw on a file whose note buyer is NOT        ----
+  // ---- Blue Lake. Blueprint §2 Path C / D8. Research + the verified probe log:    ----
+  // ---- docs/TRINITY-INSPECTION-API-RESEARCH.md.                                   ----
+  // A separate pipeline from Sitewire (virtual) and TrustPoint (Blue Lake) — one file
+  // is only ever live on ONE of the three, and NOTHING here delivers to a borrower
+  // automatically (owner-directed: the autopilot is for virtual inspections only).
+  trinity: {
+    enabled:        process.env.TRINITY_ENABLED === '1',          // master: reads + the poller
+    outboundEnabled: process.env.TRINITY_OUTBOUND_ENABLED === '1',// actually place orders / send documents
+    dryrun:         process.env.TRINITY_DRYRUN === '1',           // build + log the call, send nothing
+    // Credentials — Render env ONLY, never source. Separate pairs per environment.
+    username:       process.env.TRINITY_USERNAME || null,
+    password:       process.env.TRINITY_PASSWORD || null,
+    baseUrl:        (process.env.TRINITY_BASE_URL || 'https://api.trinityonline.com').replace(/\/+$/, ''),
+    // Our company on Trinity's side (GET /companies/default). Left null = resolve once
+    // and cache, so a fresh tenant needs no env change.
+    companyId:      process.env.TRINITY_COMPANY_ID ? parseInt(process.env.TRINITY_COMPANY_ID, 10) : null,
+    // Form 19 — "Blank General Purpose Line Item Draw", the DOLLAR-based draw. The only
+    // shape whose line items carry itemCost + previousPercentCompleted, which is what
+    // lets the construction budget AND the historical draws travel. Configurable so a
+    // production company enabled on a different draw form needs no deploy.
+    formId:         parseInt(process.env.TRINITY_FORM_ID || '19', 10),
+    pollSec:        parseInt(process.env.TRINITY_POLL_SEC || '600', 10),   // open-order status sweep
+    // Trinity webhooks carry NO signature, so the receiver authenticates on a secret
+    // path token we choose and then hydrates every fact with an authenticated GET.
+    webhookToken:   process.env.TRINITY_WEBHOOK_TOKEN || null,
+  },
+
   // ---- Elementix (recorded deeds / mortgages, reached over MCP). READ-ONLY. ----
   // No API key is bought: the endpoint uses the standard MCP OAuth flow, so PILOT
   // signs in on the seat the owner already pays for, approved once in a browser.
