@@ -182,7 +182,14 @@ const fmt = read('app-v2/src/longterm/format.js');
 check(/const day = \(v\)/.test(fmt) && /\\d\{4\}\)-\(\\d\{2\}/.test(fmt),
   'the shared module holds the calendar-day guard');
 
-const FORMATTERS = ['money', 'money2', 'pct', 'ratio', 'plain', 'day', 'yesNo'];
+// DERIVED from what `format.js` actually exports, never hand-listed. A hand-kept list
+// is one somebody has to remember to update, so a formatter added later would get no
+// protection at all and the next screen would hand-roll its own copy unnoticed — which
+// is exactly how `pct` and `rate` come to be confused (one takes a whole percent, one
+// takes a fraction; swap them and you print 0.97% or 7250.0%).
+const FORMATTERS = [...fmt.matchAll(/^export const (\w+) = /gm)].map((m) => m[1]);
+check(FORMATTERS.length >= 7 && FORMATTERS.includes('pct') && FORMATTERS.includes('rate'),
+  `the formatter list is read off format.js itself (${FORMATTERS.length}: ${FORMATTERS.join(', ')})`);
 for (const f of fs.readdirSync(path.join(__dirname, '..', 'app-v2/src/longterm'))) {
   if (!/\.(jsx|js)$/.test(f) || f === 'format.js') continue;
   const src = strip(read(`app-v2/src/longterm/${f}`));
