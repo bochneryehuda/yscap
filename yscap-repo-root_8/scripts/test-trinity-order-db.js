@@ -418,6 +418,56 @@ const eq = (a, b, label) => ok(a === b, `${label} (got ${JSON.stringify(a)}, exp
   eq(proofErr.skipped, 'unreadable', 'L10 an unreachable budget is reported as unasked, never as agreement');
   client.getBudget = realGetBudget;
 
+  // ---- M. TWO-WAY MESSAGING — a reply reaches the people who must answer -----------
+  //
+  // Owner-asked 2026-08-16, on who should hear a Trinity reply: *"the draw coordinator
+  // and the loan officer"*. Two things are proven here, and the second is the subtle
+  // one: OUR OWN MESSAGE COMING BACK IS NOT A REPLY. `order.postComment` records what we
+  // send with the id Trinity answered with, so the ordinary echo is excluded by id — but
+  // a timeout AFTER Trinity stored the comment leaves us with no id to record, and that
+  // echo arrives looking exactly like an inbound message. Without the author test the
+  // desk would be emailed "Trinity replied" about its own words.
+  client.getComments = async () => ([
+    { id: 611001, content: 'The inspector could not reach the site — the gate was locked. Please confirm access.',
+      important: true, visibleToVendor: true, createdAt: new Date().toISOString(),
+      commenter: { isExternalPerson: true, firstName: 'Dana', lastName: 'Field', emailAddress: 'dana@trinityonline.com' } },
+    // OUR OWN opening message coming back with no id recorded on our side.
+    { id: 611002, content: 'Budget attached — please inspect the roof and kitchen lines.',
+      important: false, visibleToVendor: true, createdAt: new Date().toISOString(),
+      commenter: { isExternalPerson: false, firstName: 'Draw', lastName: 'Coordinator', emailAddress: 'draws@yscapgroup.com' } },
+  ]);
+  const pulled = await ingest.pullComments((await db.query(
+    `SELECT * FROM trinity_inspection_orders WHERE id=$1`, [rec.id])).rows[0]);
+  eq(pulled.added, 2, 'M1 both messages are mirrored into our thread');
+  eq(pulled.inbound, 1, 'M2 but only ONE of them is a message FROM Trinity');
+  const theirs = (await db.query(
+    `SELECT direction, author_name FROM trinity_order_comments WHERE trinity_comment_id=611001`)).rows[0];
+  eq(theirs.direction, 'in', 'M3 their message is filed as inbound');
+  const ours = (await db.query(
+    `SELECT direction FROM trinity_order_comments WHERE trinity_comment_id=611002`)).rows[0];
+  eq(ours.direction, 'out', 'M4 our own message coming back is filed as OUTBOUND, never as a reply');
+  const afterNotes = (await db.query(
+    `SELECT title, body FROM notifications WHERE application_id=$1 AND title ILIKE '%Trinity sent%'`, [a.id])).rows;
+  ok(afterNotes.length >= 1, 'M5 a Trinity reply notifies the team');
+  ok(/gate was locked/i.test(afterNotes[0].body || ''), 'M6 and quotes what they actually wrote');
+  ok(/nothing has been sent to the borrower/i.test(afterNotes[0].body || ''),
+    'M7 while saying plainly that the borrower has not been told anything');
+  ok(afterNotes.every((x) => !/Budget attached/i.test(x.body || '')),
+    'M8 our own echoed message never raises a "Trinity replied" notice');
+  // A re-poll must not re-file or re-notify: the desk would be told twice about one message.
+  const repeat = await ingest.pullComments((await db.query(
+    `SELECT * FROM trinity_inspection_orders WHERE id=$1`, [rec.id])).rows[0]);
+  eq(repeat.added, 0, 'M9 a re-poll files nothing again');
+  eq(repeat.inbound, 0, 'M10 and raises no second notification');
+  eq((await db.query(
+    `SELECT count(*)::int AS c FROM notifications WHERE application_id=$1 AND title ILIKE '%Trinity sent%'`, [a.id])).rows[0].c,
+    afterNotes.length, 'M11 the team is told once per message, not once per poll');
+  // AND STILL NOTHING REACHES THE BORROWER — a vendor conversation is staff-only.
+  eq((await db.query(
+    `SELECT count(*)::int AS c FROM notifications WHERE application_id=$1 AND borrower_id IS NOT NULL`, [a.id])).rows[0].c,
+    0, 'M12 the borrower is never notified about a Trinity message');
+  client.getComments = async () => [];
+
   // ---- cleanup -------------------------------------------------------------------
   await db.query(`DELETE FROM applications WHERE id=$1`, [a.id]);
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [b.id]);

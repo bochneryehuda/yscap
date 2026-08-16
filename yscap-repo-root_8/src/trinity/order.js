@@ -714,7 +714,12 @@ async function postComment(appId, orderRowId, trinityOrderId, content, { staffId
     content: String(content).slice(0, 2790),
     important: !!important,
     visibleToVendor: true,
-    commenter: { isExternalPerson: false, firstName: 'Draw', lastName: 'Coordinator', emailAddress: 'draws@yscapgroup.com' },
+    // The address we SIGN WITH is the same constant `ingest.commentIsOurs` recognises on
+    // the way back, so our own echo can never be read as a message FROM Trinity.
+    commenter: {
+      isExternalPerson: false, firstName: 'Draw', lastName: 'Coordinator',
+      emailAddress: require('../lib/draw-recipients').DRAW_DESK_INBOX,
+    },
   });
   if (res && res.__dryrun) return { dryrun: true };
   await db.query(

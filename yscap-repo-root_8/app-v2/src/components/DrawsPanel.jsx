@@ -1360,6 +1360,25 @@ function TrinityInspectionCard({ appId }) {
                   )}
                 </div>
 
+                {/* Where this one gets delivered. Said up front rather than discovered
+                    by clicking a button that refuses. */}
+                {o.delivery && o.delivery.here === false && (
+                  <div className="small" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6,
+                    background: '#FBF7EC', border: '1px solid #E3D6B4', color: '#4B585C' }}>
+                    <span style={{ fontWeight: 600, color: '#141B22' }}>Delivered from the draw desk, not here. </span>
+                    {o.delivery.reason}
+                  </div>
+                )}
+                {/* A draw the borrower submitted in Sitewire reaches them the same way a
+                    virtual one does — but it gets there by writing Trinity's figures onto
+                    the draw first, so say that BEFORE the button, not after. */}
+                {o.delivery && o.delivery.here && o.delivery.note && (
+                  <div className="small" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6,
+                    background: '#F4F6F8', border: '1px solid #D8DFE5', color: '#4B585C' }}>
+                    {o.delivery.note}
+                  </div>
+                )}
+
                 {/* Did their system actually take our construction budget? Asked and
                     answered on every order — a broken crosswalk is worth knowing about
                     now, not when the report comes back and nothing can be matched. */}
@@ -1393,7 +1412,8 @@ function TrinityInspectionCard({ appId }) {
                             background: ev.kind === 'delivered' ? '#2F7F86' : (ev.kind === 'note' ? '#C9C2B2' : '#AE8746') }} />
                           <span style={{ color: '#141B22', fontWeight: 550 }}>
                             {ev.trinity_status || (ev.kind === 'ordered' ? 'Ordered from Trinity'
-                              : ev.kind === 'delivered' ? 'Delivered to the borrower' : 'Note')}
+                              : ev.kind === 'delivered' ? 'Delivered to the borrower'
+                                : ev.kind === 'writeback' ? 'Figures written onto the draw' : 'Note')}
                           </span>
                           {ev.trinity_substatus ? ` · ${ev.trinity_substatus}` : ''}
                           <span style={{ color: '#8A8578' }}>
@@ -1471,8 +1491,13 @@ function TrinityInspectionCard({ appId }) {
                   )}
                 </div>
 
-                {/* THE manual step. Deliberately the only thing here that reaches a borrower. */}
-                {o.results_read_at && o.status !== 'entered' && o.portal_draw_request_id && (
+                {/* THE manual step. Deliberately the only thing here that reaches a borrower.
+                    Shown for BOTH doors — a portal draw request and a draw the borrower
+                    submitted in Sitewire — because the server delivers both (the Sitewire one
+                    by writing Trinity's figures onto the draw first). Gating it on
+                    `portal_draw_request_id` is what used to leave a completed Sitewire
+                    inspection with no way out. */}
+                {o.results_read_at && o.status !== 'entered' && o.delivery && o.delivery.here && (
                   <div className="act-card" style={{ marginTop: 12 }}>
                     <div>
                       <div style={{ fontWeight: 600, color: '#141B22' }}>Deliver the findings to the borrower</div>

@@ -339,6 +339,86 @@ minutes cannot fill it with copies of one moment. The manual **Deliver to the bo
 is recorded there too — with no autopilot on this program, that row is the only record of
 who sent the findings and when.
 
+## 4.8 The TWO doors — and how a Sitewire-submitted draw reaches the borrower
+
+A physical draw arrives two ways, and until 2026-08-16 only one of them ended anywhere.
+
+| Door | Where the draw lives | How the inspector's figures land | How the borrower is asked |
+|---|---|---|---|
+| **Portal draw request** | `portal_draw_requests` — PILOT's own record | `portal-draws.approveTrinityRequest` records the approved amounts | the portal's own accept/dispute page |
+| **Sitewire-submitted draw** | `sitewire_draws` — the draw is Sitewire's | `trinity/writeback.js` PATCHes each request line's **`approved_cents`** | `sitewire/deliver-findings.deliverFindings` — **the same function the draw desk's own button calls** |
+
+The second row is the one that was missing: a Trinity order placed against a draw the
+borrower submitted in Sitewire produced a completed inspection whose numbers had nowhere
+to go, and the Deliver button refused. Owner-directed, choosing between three designs:
+*"Write Trinity's numbers into the Sitewire draw"* — and, immediately after, *"we still
+need to follow the workflow of getting borrower approval that he agrees with the findings
+and he doesn't want to push back. Follow everything like it was in the beginning."*
+
+**The field is the whole decision, and the obvious choice is wrong.**
+`pending_approved_cents` is literally named for a pending approval and is a CREATE-time
+field. The borrower's findings are built by `reconcile.fetchDrawFindings`, which reads
+**`approved_cents`** and treats a null as *"the inspector has not answered this line"*
+(the tri-state doctrine, db/518 — the root that once printed "Approved $0" on unreviewed
+work). Writing the pending field would have handed the borrower an accept page saying the
+inspector had answered nothing. On a VIRTUAL draw the Sitewire inspector's figures sit in
+`approved_cents` while the draw is still unapproved — which is exactly how a borrower
+accepts or disputes BEFORE any release — so writing Trinity's figures to the same field is
+what makes *"follow everything like it was in the beginning"* literally true: the accept
+page, the dispute flow, the branded report, the wire deadline and the release are
+byte-for-byte the ones that already exist, and the only thing that changed is who did the
+inspecting.
+
+**What it never does, and that is the point.** It never approves, releases or transitions
+the draw. `drawTransition('approve')` is a human's action on the draw desk and is
+deliberately unreachable from this path, and so is any release. There is no autopilot on
+the physical program: a human presses **Deliver**, and a human approves and releases.
+
+**The guards are the ones every other Sitewire write uses** — both switches, the volume
+circuit breaker, a journal row per write, read-after-write verification, and
+park-on-failure. Three more are specific to this path:
+
+* **A cap.** A line is never written above what the borrower requested on it. Over-approving
+  is a deliberate human act in Sitewire and must never be something an adapter does alone.
+* **A fingerprint** (`trinity_inspection_orders.writeback_fingerprint`, db/556) — the
+  FIGURES themselves, sorted. The poller re-reads a completed order on every tick, so
+  without it the same write would be journaled a minute forever; because the key is the
+  figures, a **revision** (Trinity re-completing an order with corrected numbers) genuinely
+  differs and IS written again, which is what must happen when an inspector fixes a report.
+* **Stop at the first failure.** A half-written draw is worse than an unwritten one, because
+  a coordinator looking at it cannot tell which lines carry the inspector's figure and which
+  still carry nothing. The failure parks with a plain-language instruction; the fingerprint
+  is left unstamped so the next poll re-drives it.
+
+**Unverified against live Sitewire, and said out loud:** this repo has no Sitewire sandbox,
+so whether their PATCH accepts `approved_cents` on a live request is read from how the
+field behaves on a virtual draw, not from a test call. A refusal is PARKED with a message
+naming the field rather than swallowed, so the first real order tells a human immediately.
+Confirm it with one live draw before go-live.
+
+## 4.9 Two-way messaging — and why our own message coming back is not a reply
+
+`POST /orders/{id}/comments` / `GET /orders/{id}/comments` is the channel with the Trinity
+team, mirrored into `trinity_order_comments` so the desk sees both sides in one thread.
+
+`order.postComment` records what we send with the id Trinity answers with, so the ordinary
+echo is excluded by id on the next pull. **The case that needs a second guard is a timeout
+AFTER Trinity stored the comment** — the one situation where we have no id to record. That
+echo arrives looking exactly like an inbound message, and the desk would be emailed
+*"Trinity replied"* about its own words. So the AUTHOR decides the direction: a comment
+written by our own draw desk is filed as OUTBOUND however it got here, and can never raise
+a reply notification.
+
+A genuine reply notifies **the draw coordinator and the loan officer** (owner-answered).
+That is two lookups rather than one: `notifyAppStaff` fans out over `application_assignees`,
+whose roles are loan_officer and processor — the draw coordinator is not an assignee role
+at all (db/103) and is resolved from what they actually DID on the file
+(`draw-recipients.coordinatorsOrDesk`: whoever pressed *Start the draw process*, else a live
+draw-coordinator hand-off, else the whole active desk so a message is never uncovered). The
+fan-out's returned recipient list is what stops somebody who is both from getting two copies.
+It emails rather than sitting in-app: an outside vendor asking us a question is waiting on an
+answer. **Nothing about a Trinity message ever reaches the borrower.**
+
 ## 5. The status ladder (all 19, `api/orders_statuses.json`)
 
 | Trinity | id | our state |
@@ -579,6 +659,13 @@ report; **203 Redacted Draw**; **86 Photo Album**; **151 Construction Loan Budge
    is safe either way.
 5. **Confirm the invoice's contents/format** so the inspection cost can be reconciled
    against the draw fee rather than only filed.
+
+**Not a Trinity question, but open in the same way — confirm with one live draw before
+go-live:** whether Sitewire's `PATCH /api/v2/requests/{id}` accepts **`approved_cents`** on a
+live request. This repo has no Sitewire sandbox, so that field is read from how it behaves on
+a virtual draw, not from a test call. It is not left to chance: a refusal is PARKED with a
+message naming the field, so the first real order tells a human immediately instead of
+failing quietly (§4.8).
 
 ---
 

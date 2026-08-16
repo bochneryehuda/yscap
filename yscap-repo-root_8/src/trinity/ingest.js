@@ -336,32 +336,135 @@ async function pullPhotos(orderRow) {
 // ---------------------------------------------------------------------------
 // inbound messages
 // ---------------------------------------------------------------------------
+/**
+ * OUR OWN MESSAGE COMING BACK IS NOT A REPLY.
+ *
+ * `order.postComment` records what we send with the id Trinity answered with, so the
+ * ordinary echo is already excluded by id. But if that response was lost — a timeout
+ * AFTER Trinity stored the comment, the one case where we have no id to record — the
+ * echo arrives here looking exactly like an inbound message, and the desk would be told
+ * "Trinity replied" about its own words. So the AUTHOR decides the direction: a comment
+ * written by our own draw desk is filed as OUTBOUND however it got here, and can never
+ * raise a reply notification.
+ *
+ * The address is READ from `draw-recipients.DRAW_DESK_INBOX` rather than retyped: it is
+ * the same constant `order.postComment` signs our messages with, and two copies of it
+ * would drift the day the desk inbox changes — at which point our own echoes would start
+ * emailing the team as "Trinity replied", silently, with nothing failing.
+ */
+function ourCommentEmails() {
+  const out = new Set();
+  try { out.add(String(require('../lib/draw-recipients').DRAW_DESK_INBOX || '').toLowerCase()); }
+  catch (_) { /* fall through to the literal below */ }
+  out.add('draws@yscapgroup.com');   // belt-and-suspenders: never fewer than what we sign with
+  out.delete('');
+  return out;
+}
+
+function commentIsOurs(c) {
+  const who = (c && c.commenter) || {};
+  const email = String(who.emailAddress || '').trim().toLowerCase();
+  return !!email && ourCommentEmails().has(email);
+}
+
 /** Mirror Trinity's comments into our thread so the desk sees both sides. */
 async function pullComments(orderRow) {
   const rows = await client.getComments(orderRow.trinity_order_id);
-  if (!Array.isArray(rows) || !rows.length) return { added: 0 };
+  if (!Array.isArray(rows) || !rows.length) return { added: 0, inbound: 0 };
   const mine = new Set((await db.query(
     `SELECT trinity_comment_id FROM trinity_order_comments
       WHERE trinity_inspection_order_id=$1 AND trinity_comment_id IS NOT NULL`, [orderRow.id]))
     .rows.map((r) => Number(r.trinity_comment_id)));
   let added = 0;
+  const inbound = [];
   for (const c of rows) {
     const id = c && c.id != null ? Number(c.id) : null;
     if (!id || mine.has(id)) continue;
     const who = c.commenter || {};
+    const ours = commentIsOurs(c);
+    const author = [who.firstName, who.lastName].filter(Boolean).join(' ') || 'Trinity';
+    const content = String(c.content || '').slice(0, 4000);
     const ins = await db.query(
       `INSERT INTO trinity_order_comments
          (trinity_inspection_order_id, application_id, trinity_comment_id, direction, content,
           important, visible_to_vendor, author_name, trinity_created_at)
-       VALUES ($1,$2,$3,'in',$4,$5,$6,$7,$8)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        ON CONFLICT (trinity_comment_id) WHERE trinity_comment_id IS NOT NULL DO NOTHING RETURNING id`,
-      [orderRow.id, orderRow.application_id, id, String(c.content || '').slice(0, 4000),
-       !!c.important, c.visibleToVendor !== false,
-       [who.firstName, who.lastName].filter(Boolean).join(' ') || 'Trinity',
+      [orderRow.id, orderRow.application_id, id, ours ? 'out' : 'in', content,
+       !!c.important, c.visibleToVendor !== false, author,
        c.createdAt ? new Date(c.createdAt) : null]).catch(() => ({ rows: [] }));
-    if (ins.rows && ins.rows.length) added++;
+    if (ins.rows && ins.rows.length) {
+      added++;
+      if (!ours) inbound.push({ id, author, content, important: !!c.important });
+    }
   }
-  return { added };
+  // TELL THE PEOPLE WHO HAVE TO ANSWER. Owner-answered 2026-08-16, asked who should hear
+  // a Trinity reply: *"the draw coordinator and the loan officer"*. Best-effort — a
+  // notification failure must never lose the message itself, which is already filed.
+  if (inbound.length) await notifyTrinityReply(orderRow, inbound).catch(() => {});
+  return { added, inbound: inbound.length };
+}
+
+/**
+ * A message from the Trinity team reaches the two people who own the conversation.
+ *
+ * WHY THIS IS TWO CALLS AND NOT ONE. `notifyAppStaff` fans out over
+ * `application_assignees`, whose roles are loan_officer and processor — the DRAW
+ * COORDINATOR is not an assignee role at all (db/103), and is resolved from what they
+ * actually DID on the file (`draw-recipients.coordinatorsOrDesk`: whoever pressed
+ * "Start the draw process", else a live draw-coordinator hand-off, else the whole active
+ * desk so a message is never uncovered). So the officer comes from the fan-out and the
+ * coordinator from the resolver, and the fan-out's returned recipient list is what stops
+ * a person who is both from getting two copies of one message.
+ *
+ * This EMAILS (`inAppOnly:false`): an outside vendor asking us a question is waiting on
+ * an answer, which is the definition of an action-needed staff event.
+ */
+async function notifyTrinityReply(orderRow, inbound) {
+  const notify = require('../lib/notify');
+  const appId = orderRow.application_id;
+  const addr = (await db.query(
+    `SELECT property_address->>'oneLine' AS addr FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+  const latest = inbound[inbound.length - 1];
+  const many = inbound.length > 1;
+  const important = inbound.some((m) => m.important);
+  // Their words, quoted — trimmed to a length that reads in an inbox rather than
+  // reproducing a whole message body in a notification title.
+  const quote = String(latest.content || '').replace(/\s+/g, ' ').trim();
+  const shown = quote.length > 220 ? `${quote.slice(0, 219)}…` : quote;
+
+  const opts = {
+    type: 'draw',
+    title: many
+      ? `Trinity sent ${inbound.length} new messages about the inspection`
+      : 'Trinity sent a message about the inspection',
+    badge: important ? { text: 'Marked important', tone: 'gold' } : undefined,
+    body: `${latest.author} at Trinity wrote about the physical inspection on ${addr.addr || 'this property'}:\n\n`
+      + `“${shown || '(no text)'}”\n\n`
+      + (many ? `There are ${inbound.length} new messages in the thread. ` : '')
+      + 'Open the draw desk to read the whole conversation and reply to them there. '
+      + 'Nothing has been sent to the borrower.',
+    applicationId: appId,
+    link: `/internal/app/${appId}/draws`,
+    ctaLabel: 'Open the draw desk',
+    inAppOnly: false,
+  };
+
+  const reached = await notify.notifyAppStaff(appId, opts).catch(() => []);
+  const already = new Set((Array.isArray(reached) ? reached : []).map(String));
+
+  let coordinators = [];
+  try { coordinators = await require('../lib/draw-recipients').coordinatorsOrDesk(appId); }
+  catch (_) { coordinators = []; }
+  let extra = 0;
+  for (const person of coordinators) {
+    if (!person || !person.id || already.has(String(person.id))) continue;
+    already.add(String(person.id));
+    // One bad recipient must not swallow the rest — the same discipline notifyAppStaff
+    // applies to its own fan-out.
+    try { await notify.notifyStaff(person.id, { ...opts }); extra++; } catch (_) { /* keep going */ }
+  }
+  return { ok: true, staff: already.size, coordinators: extra };
 }
 
 // ---------------------------------------------------------------------------
@@ -437,5 +540,6 @@ async function notifyDeskReady(orderRow, results) {
 
 module.exports = {
   syncOrder, syncStatus, readResults, pullReport, pullInvoice, pullPhotos, pullComments,
-  archiveOne, notifyDeskReady, _internals: { sourceKeyFor, extFor },
+  archiveOne, notifyDeskReady, notifyTrinityReply,
+  _internals: { sourceKeyFor, extFor, commentIsOurs },
 };

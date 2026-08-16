@@ -52,6 +52,45 @@ async function fileScope(req, res, next) {
   } catch (e) { next(e); }
 }
 
+/**
+ * Why this inspection's findings cannot be delivered from here yet.
+ *
+ * THE TWO DOORS DO NOT END IN THE SAME PLACE, and until 2026-08-16 only one of them
+ * ended anywhere at all. A PORTAL draw request carries its own decision record, so
+ * `portal-draws.approveTrinityRequest` can record the approved amounts and tell the
+ * borrower. A draw the borrower submitted IN SITEWIRE has no portal request — the draw
+ * itself lives in Sitewire — so there is nothing here for that function to approve, and
+ * delivering it means putting the inspector's figures onto the SITEWIRE draw, which is
+ * the money write-back and a servicing decision that has not been made yet.
+ *
+ * So this says so plainly, on the surface where somebody is standing waiting to press a
+ * button, instead of the old bare "not tied to a portal draw request" — which named an
+ * internal record the reader has no way to create and gave them nothing to do. The
+ * inspection itself is complete and nothing is lost: the report, the photos and the
+ * per-line figures are all on the file, and the draw is approved on the draw desk in
+ * Sitewire exactly as it is today.
+ */
+function deliveryBlockedMessage(o) {
+  return 'This inspection is not tied to a draw request — there is nothing here to deliver. '
+    + 'The report, the photos and the per-line figures are all on the file.';
+}
+
+/**
+ * The per-line DECISION endpoint is the PORTAL door's own screen — it edits the approved
+ * amounts on a `portal_draw_requests` row before they are recorded. A draw the borrower
+ * submitted in Sitewire has no such row: its amounts live on the Sitewire draw's own
+ * request lines, and they are edited on the draw desk like every other Sitewire draw.
+ * Saying that is the difference between a refusal somebody can act on and one that names
+ * an internal record they have no way to create.
+ */
+function decisionUnavailableMessage(o) {
+  if (o.sitewire_draw_id) {
+    return 'This draw was submitted in Sitewire, so its amounts are reviewed on the draw desk. '
+      + 'Deliver sends Trinity’s figures there for the borrower to accept or dispute.';
+  }
+  return deliveryBlockedMessage(o);
+}
+
 async function loadOrder(appId, orderId) {
   return (await db.query(
     `SELECT * FROM trinity_inspection_orders WHERE id=$1 AND application_id=$2`, [orderId, appId])).rows[0] || null;
@@ -91,6 +130,17 @@ router.get('/files/:appId', fileScope, async (req, res, next) => {
       out.push({
         ...o,
         timeline,
+        // Where this inspection's findings get delivered — said UP FRONT, so nobody
+        // works an order to completion and only then discovers the button refuses.
+        // HOW this one reaches the borrower. Both doors end in the same borrower
+        // experience — accept or dispute — but a Sitewire-submitted draw gets there by
+        // writing Trinity's figures onto the draw first, so the desk says so plainly.
+        delivery: o.portal_draw_request_id
+          ? { here: true, via: 'portal_request' }
+          : (o.sitewire_draw_id
+            ? { here: true, via: 'sitewire_draw',
+                note: 'Delivering writes Trinity’s figures onto the Sitewire draw, then sends the borrower the findings to accept or dispute — exactly as a virtual inspection does. Nothing is released.' }
+            : { here: false, via: 'unknown', reason: deliveryBlockedMessage(o) }),
         // What the desk needs to know at a glance about where this sits.
         progress: {
           state: o.status,
@@ -306,7 +356,7 @@ router.get('/files/:appId/orders/:orderId/decision', fileScope, async (req, res,
   try {
     const o = await loadOrder(req.appId, req.params.orderId);
     if (!o) return bad(res, 404, 'That inspection order was not found on this file.');
-    if (!o.portal_draw_request_id) return bad(res, 409, 'This inspection is not tied to a portal draw request.');
+    if (!o.portal_draw_request_id) return bad(res, 409, decisionUnavailableMessage(o));
     const pr = (await db.query(
       `SELECT id, status, lines, total_requested_cents FROM portal_draw_requests WHERE id=$1 AND application_id=$2`,
       [o.portal_draw_request_id, req.appId])).rows[0];
@@ -337,8 +387,54 @@ router.post('/files/:appId/orders/:orderId/deliver', fileScope, async (req, res,
     if (!can(req, 'manage_draws')) return bad(res, 403, 'You do not have permission to manage draws.');
     const o = await loadOrder(req.appId, req.params.orderId);
     if (!o) return bad(res, 404, 'That inspection order was not found on this file.');
-    if (!o.portal_draw_request_id) return bad(res, 409, 'This inspection is not tied to a portal draw request.');
     if (o.blocked_reason) return bad(res, 422, o.blocked_reason);
+
+    // ---- THE SITEWIRE DOOR: same borrower workflow, different inspector ----------
+    //
+    // Owner-directed 2026-08-16: *"we still need to follow the workflow of getting
+    // borrower approval that he agrees with the findings and he doesn't want to push
+    // back. Follow everything like it was in the beginning."*
+    //
+    // So a draw the borrower submitted IN SITEWIRE is delivered by the EXACT machinery a
+    // virtual draw uses — `deliver-findings.deliverFindings`, the same function the draw
+    // desk's own button calls. Two steps, in this order and only this order:
+    //   1. put Trinity's per-line figures onto the Sitewire draw, because that is where
+    //      `persistDrawFindings` reads the inspector's numbers from;
+    //   2. deliver, which builds the borrower's accept/dispute findings, the reply token,
+    //      the branded report and the email — all of it already built, none of it copied.
+    // Nothing is released: the borrower accepts or disputes, and the coordinator approves
+    // on the draw desk exactly as today.
+    if (!o.portal_draw_request_id) {
+      if (!o.sitewire_draw_id) return bad(res, 409, deliveryBlockedMessage(o));
+      if (!o.results_read_at) return bad(res, 422, 'Trinity’s figures have not been read back yet — refresh the inspection first.');
+
+      const trinLines = (await db.query(
+        `SELECT sitewire_job_item_id, approved_cents, name FROM trinity_order_lines
+          WHERE trinity_inspection_order_id=$1 AND approved_cents IS NOT NULL`, [o.id])).rows;
+      const wb = await require('../trinity/writeback').pushApprovalsToSitewire(req.appId, o,
+        trinLines.map((l) => ({
+          sitewire_job_item_id: l.sitewire_job_item_id, approved_cents: Number(l.approved_cents), name: l.name,
+        })));
+      // A failed write-back STOPS the delivery: findings built from numbers Sitewire does
+      // not hold would show the borrower the wrong figures.
+      if (wb.error) {
+        return res.status(502).json({
+          error: 'Trinity’s figures could not be written onto the Sitewire draw, so nothing was sent to the borrower. It has been parked for review.',
+          writeback: wb,
+        });
+      }
+
+      const out = await require('../sitewire/deliver-findings')
+        .deliverFindings(req.appId, Number(o.sitewire_draw_id), { source: 'trinity' });
+      await db.query(
+        `UPDATE trinity_inspection_orders SET status='entered', updated_at=now() WHERE id=$1`, [o.id]).catch(() => {});
+      await order.recordEvent(req.appId, o.id, {
+        kind: 'delivered', state: 'entered', source: 'staff', staffId: req.actor.id,
+        detail: `${req.actor.full_name || 'A coordinator'} delivered Trinity’s findings to the borrower on Sitewire draw ${o.sitewire_draw_id} `
+          + `(${wb.written || 0} line${wb.written === 1 ? '' : 's'} written). The borrower now accepts or disputes as usual.`,
+      }).catch(() => {});
+      return res.json({ ok: true, via: 'sitewire_draw', writeback: wb, ...out });
+    }
 
     const pr = (await db.query(
       `SELECT id, lines FROM portal_draw_requests WHERE id=$1 AND application_id=$2`,
