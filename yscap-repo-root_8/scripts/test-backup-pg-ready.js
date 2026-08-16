@@ -241,6 +241,59 @@ async function main() {
     'and the wait happens BEFORE the "cannot reach the database" verdict, not after it');
 }
 
+// ── 4c. a CRASHED server is not a STARTING server ───────────────────────────
+//
+// This is the distinction that cost a whole wrong diagnosis on 2026-08-16. When
+// the scratch database died under the restore, pg_restore reported "server
+// closed the connection unexpectedly", the server restarted into crash
+// recovery, and the next connection answered 57P03 — so the alert said "the
+// database system is in recovery mode", which is the AFTERMATH. Twice, on two
+// separate runs, on the same table. The waiting fix above is correct and does
+// NOT address this, and the two must never again be reported as one thing.
+{
+  const { lostServerDuringRestore, firstFailedTable } = require('./backup-verify.js')._internals;
+
+  // The real tail from the failed run, trimmed.
+  const crashed = {
+    code: 1,
+    errors: 317,
+    tail: 'pg_restore: error: COPY failed for table "rv_orders": server closed the connection unexpectedly\n'
+      + 'pg_restore: error: could not commit database transaction: no connection to the server\n'
+      + 'pg_restore: error: could not execute query: no connection to the server\n',
+  };
+  ok(lostServerDuringRestore(crashed), 'a server that died mid-restore is recognised as a CRASH');
+  eq(firstFailedTable(crashed), 'rv_orders', 'and the first failing table is named — the useful half of 317 errors');
+
+  // Ordinary per-object errors are NOT a crash: the restore carried on, and
+  // calling those a crash would send somebody resizing a database over a
+  // missing extension.
+  const ordinary = {
+    code: 1,
+    errors: 3,
+    tail: 'pg_restore: error: could not execute query: ERROR:  extension "pg_trgm" is not available\n'
+      + 'pg_restore: error: could not execute query: ERROR:  role "someone" does not exist\n',
+  };
+  ok(!lostServerDuringRestore(ordinary), 'ordinary per-object restore errors are NOT a crash');
+  eq(firstFailedTable(ordinary), null, 'and no table is invented when none failed');
+
+  ok(!lostServerDuringRestore({ code: 0, errors: 0, tail: '' }), 'a clean restore is not a crash');
+  ok(!lostServerDuringRestore(null), 'null does not throw');
+  ok(!lostServerDuringRestore({}), 'a result with no tail is not assumed to be a crash');
+  ok(lostServerDuringRestore({ tail: 'FATAL: terminating connection due to administrator command' }),
+    'a terminated connection counts too');
+
+  // And the drill must RAISE it, before anything reconnects — otherwise the
+  // reconnect answers 57P03 and buries the cause exactly as it did.
+  const src = fs.readFileSync(path.join(__dirname, 'backup-verify.js'), 'utf8');
+  const iCrash = src.indexOf('if (lostServerDuringRestore(res))');
+  const iReconnect = src.indexOf('const client = await connectWhenReady(target');
+  ok(iCrash > 0, 'the drill checks for a crashed server after the restore');
+  ok(iReconnect > iCrash,
+    'and it does so BEFORE reconnecting — or 57P03 masks the real cause, which is exactly what happened');
+  ok(/is NOT a bad backup/.test(src), 'and the message says plainly that this is not a bad backup');
+  ok(/BACKUP_VERIFY_JOBS/.test(src), 'and offers the free mitigation as well as the real one');
+}
+
 // ── 5. the drill still checks WHERE it is pointing before it connects ───────
 //
 // The waiting must never become the first thing that happens to an unchecked
