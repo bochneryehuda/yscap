@@ -13,6 +13,8 @@
  */
 const express = require('express');
 const lp = require('../lenderprice/client');
+const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
+const { REGISTRY_WARNINGS } = require('../lenderprice/search-model');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
 const BATTERY = [
@@ -43,6 +45,9 @@ const SUPPORTED_FIELDS = new Set([
   'propertyType', 'units', 'zip', 'state', 'county', 'countyFps', 'city', 'countyName',
   'borrowerType', 'prepayMonths', 'io', 'escrowWaive', 'fthb', 'date',
   'term', 'termYears', 'lockDays',
+  // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). Each maps to an
+  // exact upstream path/token; an invalid VALUE for one is rejected as invalid_field_value (below).
+  ...REGISTRY_FIELDS,
 ]);
 // Request-envelope keys the ROUTE consumes (not pricing inputs) — always allowed.
 const META_FIELDS = new Set(['scenario', 'debug', 'full', 'raw', 'poll', 'disqualify', 'maxWaitMs', 'pollMs', 'companyId']);
@@ -67,8 +72,34 @@ function effectiveOf(payload) {
     interestOnly: c.interestOnly, escrowWaiver: c.escrowWaiver, firstTimeHomeBuyer: c.firstTimeHomeBuyer,
     compensationType: c.compensationType, incomeDocType: dyn('IncomeDocType'), borrowerType: dyn('GLOBAL_BorrowerType'),
     prepayTerm: dyn('PrepayTerm'), specialMortgageOptions: Array.isArray(c.specialMortgageOptions) ? c.specialMortgageOptions.map((s) => s && s.name).filter(Boolean) : undefined,
+    // Registry-backed advanced fields ACTUALLY sent upstream — so a caller can confirm a supported
+    // advanced field was applied (not silently dropped). Only present when non-default.
+    nonWarrantableProject: c.nonWarrantableProject,
+    selfEmployed: c.selfEmployed, monthlyIncome: c.monthlyIncome, monthlyDebt: c.monthlyDebt,
+    clientDti: c.clientDti, numberOfBorrower: c.numberOfBorrower, ownProperties: c.ownProperties,
+    lenderFeeWaiver: c.lenderFeeWaiver, rural: c.rural,
+    citizenship: dyn('Citizenship'), tradelines: dyn('Tradelines'),
+    mixedUse: dyn('GLOBAL_MixedUse'), noMortgageHistory: dyn('GLOBAL_NoMortgageHistory'),
+    bankruptcyChapter: dyn('BankruptcyChapter'), bankruptcyStatus: dyn('BankruptcyStatus'), bankruptcySeasoning: dyn('BankruptcySeasoning'),
+    foreclosure: dyn('Global_FORECLOSURES'), shortSale: dyn('Global_SHORTSALES'), deedInLieu: dyn('Global_DEEDINLIEU'),
+    chargeOff: dyn('GLOBAL_MortgageLoanChargeOffs'), forbearance: dyn('GLOBAL_Forbearances'),
   };
 }
+// 422 the caller if a SUPPORTED registry field carried an invalid enum value — the builder collects
+// these as warnings and does NOT apply the bad value, so returning pricing would again be a silent
+// substitution (accepted field, ignored value). Reads the JSON-invisible Symbol channel off the
+// built payload. Returns true if it responded. (Belongs AFTER the upstream call: warnings live on
+// the built request.)
+function rejectInvalidValues(request, res) {
+  const w = request && request[REGISTRY_WARNINGS];
+  if (Array.isArray(w) && w.length) {
+    res.status(422).json({ ok: false, error: 'invalid_field_value', warnings: w,
+      message: `One or more fields carried a value the pricing engine does not recognize; the value would be silently dropped, so the request is rejected rather than mis-priced: ${w.map((x) => x.field).join(', ')}.` });
+    return true;
+  }
+  return false;
+}
+
 // 422 the caller if they sent a field the builder does not implement (never silently ignore it).
 function rejectUnsupported(sc, res) {
   const bad = unsupportedFields(sc);
@@ -82,7 +113,15 @@ function rejectUnsupported(sc, res) {
 
 // GET /health — is the module up and are Lender Price credentials configured (no login attempted).
 async function health(req, res) {
-  res.json({ ok: true, product: 'long-term', feature: 'dscr-pricer', configured: lp.configured() });
+  // Expose the deployed source commit so production can be reproduced/audited from the exact code.
+  // Render sets RENDER_GIT_COMMIT / RENDER_GIT_BRANCH on every deploy.
+  const build = {
+    commit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null,
+    branch: process.env.RENDER_GIT_BRANCH || null,
+    service: process.env.RENDER_SERVICE_NAME || null,
+    deployedAt: process.env.RENDER_DEPLOY_FINISHED_AT || null,
+  };
+  res.json({ ok: true, product: 'long-term', feature: 'dscr-pricer', configured: lp.configured(), build });
 }
 
 // GET /login-check — actually attempt a login and report ok/failure (no pricing). Confirms the
@@ -102,22 +141,52 @@ async function price(req, res) {
     const code = (r.http && r.http >= 500) ? 502 : 400;
     return res.status(code).json({ ok: false, error: r.error, http: r.http || null, message: r.message, upstream: r.upstream || r.body || null });
   }
+  if (rejectInvalidValues(r.request, res)) return; // a supported field carried an unrecognized value
   const effective = effectiveOf(r.request); // requested-vs-effective transparency
   // full:true → the COMPLETE capture (every option's price build, itemized LLPAs, margin/holdback,
   // comp, fees, ratios, monthly payment). Add raw:true to also attach each option's untouched leaf.
+  // A price is ALSO the disqualify kickoff — hand back the stable searchKey so the caller polls the
+  // separate status route (GET /disqualifications/:searchKey) instead of ever restarting the search.
   if (req.body && req.body.full) {
     const full = lp.parseFull(r.raw, { raw: !!req.body.raw });
-    const out = { ok: true, ...full, effectiveScenario: effective, request: r.request };
+    const out = { ok: true, ...full, effectiveScenario: effective, request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing' };
     if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
     return res.json(out);
   }
   const parsed = lp.parse(r.raw);
-  const out = { ok: true, ...trimPrograms(parsed), effectiveScenario: effective, request: r.request };
+  const out = { ok: true, ...trimPrograms(parsed), effectiveScenario: effective, request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing' };
   // Secret-gated diagnostics (the whole router is behind the diag token / staff login): when the
   // caller asks, include a structural summary of the raw response so we can see whether Lender
   // Price returned programs the parser missed, or truly zero — and any disqualify reasons.
   if (req.body && req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
   res.json(out);
+}
+
+// Shape a ready disqualified raw response into the compact per-lender/reason summary.
+function shapeDisqualified(raw, debug) {
+  const d = lp.parseDisqualified(raw);
+  const out = {
+    ready: true, lenderCount: d.lenderCount, itemCount: d.itemCount, reasonCount: d.reasonCount,
+    lenders: d.lenders.slice(0, 80).map((g) => ({ lender: g.lender, investor: g.investor || null, lenderId: g.lenderId || null, itemCount: g.itemCount, items: g.items.slice(0, 40) })),
+  };
+  return debug ? { disqualified: out, rawSummary: lp.summarizeRaw(raw) } : { disqualified: out };
+}
+
+// GET /disqualifications/:searchKey  (also POST with { searchKey }) — the POLL-ONLY status route.
+// A prior POST /price kicked off the async ineligible computation and returned the searchKey; this
+// polls the SAME computation (the stored kickoff body, only cachedDisqualified flipped) exactly
+// ONCE. It never rebuilds or restarts the search. 200 = ready, 202 = still computing (poll again),
+// 409 = unknown/expired searchKey (re-run /price).
+async function disqualifications(req, res) {
+  const body = req.body || {};
+  const searchKey = (req.params && req.params.searchKey) || body.searchKey;
+  if (!searchKey) return res.status(400).json({ ok: false, error: 'missing_search_key', message: 'Provide the searchKey returned by POST /price.' });
+  const pr = await lp.pollDisqualifiedByKey(searchKey);
+  if (pr.unknown) return res.status(409).json({ ok: false, error: 'unknown_search_key', searchKey,
+    message: 'No kickoff found for this searchKey (it may have expired). Re-run POST /price to start the ineligible calculation, then poll the searchKey it returns.' });
+  if (!pr.ok) { const code = (pr.http && pr.http >= 500) ? 502 : 400; return res.status(code).json({ ok: false, error: pr.error, http: pr.http || null, message: pr.message, upstream: pr.upstream || pr.body || null }); }
+  if (!pr.ready) { res.set('Retry-After', '2'); return res.status(202).json({ ok: true, ready: false, searchKey, retryAfterMs: 2000, message: 'Ineligible results still computing — poll again shortly.' }); }
+  return res.json({ ok: true, ready: true, searchKey, ...shapeDisqualified(pr.raw, body.debug) });
 }
 
 // POST /disqualify — body is a scenario (or { scenario }). Returns the QUALIFIED summary plus the
@@ -138,6 +207,7 @@ async function disqualify(req, res) {
       const code = (pr.http && pr.http >= 500) ? 502 : 400;
       return res.status(code).json({ ok: false, error: pr.error, http: pr.http || null, message: pr.message, upstream: pr.upstream || pr.body || null });
     }
+    if (rejectInvalidValues(pr.request, res)) return;
     if (!pr.ready) return res.status(202).json({ ok: true, ready: false, retryAfterMs: 2000, message: 'Disqualify reasons still computing — poll again shortly.' });
     const d = lp.parseDisqualified(pr.raw);
     const outp = {
@@ -156,6 +226,7 @@ async function disqualify(req, res) {
     const code = (r.http && r.http >= 500) ? 502 : 400;
     return res.status(code).json({ ok: false, error: r.error, http: r.http || null, message: r.message, upstream: r.upstream || r.body || null });
   }
+  if (rejectInvalidValues(r.request, res)) return;
   const qualified = trimPrograms(lp.parse(r.qualified));
   const disq = lp.parseDisqualified(r.disqualified);
   const out = {
@@ -204,9 +275,12 @@ function makeRouter() {
   router.get('/health', (req, res) => health(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_health_error' })));
   router.get('/login-check', (req, res) => loginCheck(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_login_error' })));
   router.post('/price', (req, res) => price(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_price_error' })));
+  // Poll-only ineligible status by searchKey (kicked off by POST /price) — never restarts the search.
+  router.get('/disqualifications/:searchKey', (req, res) => disqualifications(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualifications_error' })));
+  router.post('/disqualifications', (req, res) => disqualifications(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualifications_error' })));
   router.post('/disqualify', (req, res) => disqualify(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualify_error' })));
   router.post('/selftest', (req, res) => selftest(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_selftest_error' })));
   return router;
 }
 
-module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, selftest }, BATTERY };
+module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest }, BATTERY };
