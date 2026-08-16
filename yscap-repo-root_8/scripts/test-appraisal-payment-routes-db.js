@@ -82,8 +82,21 @@ const CARD = { number: '4111111111111111', expMonth: 12, expYear: new Date().get
     assert(!!opts.vendors && ['nan', 'class', 'rv'].every((v) => opts.vendors[v]),
       '1: all three appraisal companies are described');
     for (const v of ['nan', 'class', 'rv']) {
-      assert((opts.vendors[v].options || []).length === 3,
-        `1: ${opts.vendors[v].name} offers all three ways — the whole point of the ask`);
+      // ASSERTS THE ASK, NOT A COUNT (changed 2026-08-16). This used to pin
+      // `length === 3`, which broke the moment #1198 gave Richer Values a real
+      // fourth way (COMPANY_CARD — the card YS Capital keeps on their account).
+      // A count cannot tell "a company gained a way it genuinely has" from "a way
+      // went missing", and only the second is a bug. So: every company must offer
+      // each of the owner's three BY NAME, and may offer more.
+      const methods = (opts.vendors[v].options || []).map((o) => o.method);
+      for (const m of ['PAYMENT_LINK', 'CARD_ON_FILE', 'NEW_CARD']) {
+        assert(methods.includes(m),
+          `1: ${opts.vendors[v].name} offers ${m} — the whole point of the ask`);
+      }
+      // The company card is Richer Values' alone; the other two must not advertise
+      // a button that could never work there.
+      assert(methods.includes('COMPANY_CARD') === (v === 'rv'),
+        `1: ${opts.vendors[v].name} offers the company card only if it really has one`);
     }
     assert(opts.card && opts.card.present === false,
       '1: it reports there is no card on the file yet');

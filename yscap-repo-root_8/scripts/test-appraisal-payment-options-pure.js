@@ -28,9 +28,22 @@ const eq = (a, b, name) => {
   catch (_) { fail++; console.error(`FAIL ${name} — got ${JSON.stringify(a)}, expected ${JSON.stringify(b)}`); }
 };
 
-console.log('\n1. the vocabulary is the owner\'s three, in the owner\'s order');
-eq(O.METHODS, ['PAYMENT_LINK', 'CARD_ON_FILE', 'NEW_CARD'],
-  'send a payment link, use the card on file, enter a card now');
+console.log('\n1. the vocabulary carries the owner\'s three, and every way any company has');
+// THIS ASSERTION DELIBERATELY CHANGED (2026-08-16). It used to pin the flat array
+// to exactly the owner's three. On the same day, from the same instruction read
+// from the Richer Values end, #1198 added a FOURTH that exists there and nowhere
+// else — COMPANY_CARD, the card YS Capital keeps on their account, which is the
+// one card route their Stripe does not refuse. Pinning "exactly three" here would
+// have meant deleting a real production capability to make a test pass.
+//
+// WHAT THE GUARD IS NOW: the owner's three are all present and still lead, in the
+// owner's order, and the array may only ever grow by a way some company genuinely
+// has. The thing it protects — an option quietly disappearing — is unchanged, and
+// is asserted per vendor in section 3 where it actually bites.
+eq(O.METHODS.slice(0, 3), ['PAYMENT_LINK', 'CARD_ON_FILE', 'NEW_CARD'],
+  'send a payment link, use the card on file, enter a card now — first, and in order');
+ok(O.METHODS.includes('COMPANY_CARD'),
+  'and the fourth Richer Values genuinely has: pay on our own card');
 ok(O.METHODS.every((m) => O.METHOD_LABEL[m] && O.METHOD_BLURB[m]),
   'every one has a name and a sentence a person can read');
 // Invoice and ACH were refused by name on 2026-08-14 and must not creep back in
@@ -41,18 +54,54 @@ ok(!O.METHODS.some((m) => /INVOICE|ACH/i.test(m)),
 console.log('\n2. ONE definition — Richer Values does not keep a second copy');
 {
   const rv = require('../src/richervalues/payment');
-  ok(rv.METHODS === O.METHODS,
-    'richervalues/payment.js re-exports this very array — not a copy that can drift');
+  // It is no longer the very same ARRAY OBJECT, because Richer Values asks the
+  // table what IT offers (`methodsFor('rv')`) rather than taking the whole
+  // vocabulary — which is what lets it have the fourth without advertising it on
+  // the two companies that cannot do it. The anti-drift property is the one that
+  // matters and is asserted directly: its list is DERIVED from this module, so a
+  // change here moves it and a second hand-written copy would fail this.
+  eq(rv.METHODS, O.methodsFor('rv'),
+    'richervalues/payment.js takes its list from this module — not a copy that can drift');
+  ok(rv.METHODS.includes('COMPANY_CARD'),
+    'and Richer Values still offers the company card, which only it has');
+  // A source guard, because the equality above would also pass if somebody
+  // re-typed the same four strings by hand today and the two drifted tomorrow.
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src/richervalues/payment.js'), 'utf8');
+  ok(/methodsFor\(\s*['"]rv['"]\s*\)/.test(src) && !/const METHODS\s*=\s*\[/.test(src),
+    'it asks for the list rather than declaring one');
 }
 
-console.log('\n3. every appraisal company offers all three — that is the whole ask');
+console.log('\n3. every appraisal company offers the owner\'s three — that is the whole ask');
 for (const v of O.VENDORS) {
   const opts = O.optionsFor(v, { cardOnFile: { present: true } });
-  eq(opts.map((o) => o.method), O.METHODS, `${O.VENDOR_NAME[v]} offers all three, in order`);
+  // Per vendor, because the offer is per vendor now. The owner's ask — all three
+  // ways open on every company — is asserted directly rather than via the flat
+  // array, so it keeps biting no matter what any one vendor adds.
+  for (const m of ['PAYMENT_LINK', 'CARD_ON_FILE', 'NEW_CARD']) {
+    ok(opts.some((o) => o.method === m), `${O.VENDOR_NAME[v]} offers ${m}`);
+  }
+  eq(opts.map((o) => o.method), O.methodsFor(v), `${O.VENDOR_NAME[v]} offers exactly what it can, in its own order`);
   ok(opts.every((o) => o.does !== O.DOES.UNAVAILABLE),
     `${O.VENDOR_NAME[v]} has no option that is simply missing`);
   ok(opts.every((o) => o.says && o.says.length > 10),
     `${O.VENDOR_NAME[v]} says what each one will do`);
+}
+
+console.log('\n3b. the company card is Richer Values only — never advertised elsewhere');
+{
+  ok(O.methodsFor('rv')[0] === 'COMPANY_CARD',
+    'Richer Values leads with it, as the owner asked');
+  for (const v of ['nan', 'class']) {
+    ok(!O.methodsFor(v).includes('COMPANY_CARD'),
+      `${O.VENDOR_NAME[v]} does not offer it — there is no such card there`);
+    ok(!O.optionsFor(v, { cardOnFile: { present: true } }).some((o) => o.method === 'COMPANY_CARD'),
+      `${O.VENDOR_NAME[v]} does not even render it as a dead row`);
+    ok(O.capability(v, 'COMPANY_CARD').does === O.DOES.UNAVAILABLE,
+      `${O.VENDOR_NAME[v]} answers "unavailable" if something asks anyway`);
+  }
+  // An unknown vendor must not be handed a way that only one company has.
+  ok(!O.methodsFor('zzz').includes('COMPANY_CARD'),
+    'an unrecognised company is never offered it either');
 }
 
 console.log('\n4. who actually performs it differs, and is never blurred');
@@ -141,9 +190,27 @@ console.log('\n8. "to be paid" and "paid" are different sentences');
     'nothing chosen yet describes as nothing, rather than as an empty instruction');
 
   // Each method reads as itself — a desk that called them all "paid" would defeat
-  // the point of recording which one was chosen.
-  const heads = O.METHODS.map((m) => O.describeIntent({ vendor: 'nan', method: m, settled_at: null }).head);
-  ok(new Set(heads).size === 3, 'all three read differently on the desk');
+  // the point of recording which one was chosen. Counted against the vocabulary
+  // rather than against the number three, so adding a way cannot silently make two
+  // of them share a sentence.
+  const heads = O.METHODS.map((m) => O.describeIntent({ vendor: 'rv', method: m, settled_at: null }).head);
+  ok(new Set(heads).size === O.METHODS.length, 'every way reads differently on the desk');
+  ok(heads.every((h) => h && /^To be /.test(h)), 'and every one of them reads as not yet done');
+
+  // THE TAIL USED TO BE A CATCH-ALL that named the borrower's card, so the day a
+  // fourth way arrived the desk would have printed a confident, wrong sentence
+  // about a card nobody could point at, with nothing failing anywhere.
+  const cc = O.describeIntent({ vendor: 'rv', method: 'COMPANY_CARD', settled_at: null });
+  ok(/our own card/i.test(cc.head) && !/entered here|on file/i.test(cc.head),
+    'the company card is described as ours — never as the card entered on the file');
+  ok(!cc.awaitingBackOffice,
+    'and Richer Values charges it, so it is not on the back office\'s list');
+  ok(/Paid on our own card/.test(O.describeIntent({ vendor: 'rv', method: 'COMPANY_CARD', settled_at: new Date() }).head),
+    'once settled it reads as paid on our own card');
+  // An unrecognised method says only what is certain rather than naming a card.
+  const unknown = O.describeIntent({ vendor: 'rv', method: 'SOMETHING_NEW', settled_at: null });
+  ok(unknown.head === 'To be paid' && !/card|link/i.test(unknown.head),
+    'an unrecognised way names no card and no link');
 }
 
 console.log('\n9. "what does this file\'s card look like" has ONE answer');

@@ -1,7 +1,13 @@
 'use strict';
 /**
- * HOW AN APPRAISAL GETS PAID FOR — the three ways, and what each one can
- * actually do at each of the three appraisal companies.
+ * HOW AN APPRAISAL GETS PAID FOR — the ways, and what each one can actually do at
+ * each of the three appraisal companies.
+ *
+ * READ `methodsFor(vendor)`, NEVER THE FLAT `METHODS` ARRAY. Every company offers
+ * the owner's three; Richer Values additionally offers a fourth (COMPANY_CARD, the
+ * card YS Capital keeps on their account) that genuinely does not exist at the
+ * other two. The flat array is the VOCABULARY — every way any company can be paid
+ * — and is not an offer.
  *
  * THE OWNER'S RULE (2026-08-16, re-stating and widening the 2026-08-05 one):
  *   *"We're gonna keep it manual. We're gonna have all the options over there,
@@ -9,9 +15,9 @@
  *    to, share to use the card on file. We should be able to use the card
  *    manually. We should keep all the options open."*
  *
- * So: PILOT never charges anything on its own. A person picks one of three ways,
- * every time, on purpose. This module is the ONE place that says what those three
- * ways are and what pressing each one does at a given vendor.
+ * So: PILOT never charges anything on its own. A person picks a way, every time,
+ * on purpose. This module is the ONE place that says what the ways are and what
+ * pressing each one does at a given vendor.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * WHY A SHARED DEFINITION AT ALL
@@ -23,9 +29,10 @@
  * options stopped being "open": on two vendors out of three there was only ever
  * one option, and no way to say which of the three you meant.
  *
- * `richervalues/payment.js` now re-exports `METHODS` from here, so the vocabulary
- * has exactly one definition and the vendor that performs the payment and the
- * desk that records it can never disagree about what the three ways are called.
+ * `richervalues/payment.js` now builds its own `METHODS` from `methodsFor('rv')`,
+ * so the vocabulary has exactly one definition and the vendor that performs the
+ * payment and the desk that records it can never disagree about what the ways are
+ * called — while Richer Values still honestly offers the extra one it alone has.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * "MANUAL" IS THE WHOLE POINT, AND IT IS WHY THE CHOICE IS RECORDED
@@ -111,9 +118,12 @@ const METHOD_BLURB = {
  *   'vendor'      the appraisal company carries it out when you press it
  *   'back_office' PILOT records the decision; a person settles it by hand
  *   'unavailable' there is no such path at this vendor at all
- * `unavailable` exists so a future vendor can honestly have fewer than three; no
- * vendor uses it today, because all three ways are genuinely open on all three
- * companies — the difference is only who performs it.
+ * `unavailable` is what lets a vendor honestly offer a different set. The owner's
+ * three are genuinely open on all three companies — there the difference is only
+ * who performs it — but COMPANY_CARD exists at Richer Values alone, so it is
+ * `unavailable` at AppraisalScope and Class by simply having no row there, and
+ * `methodsFor` leaves it out of their screens entirely rather than showing a row
+ * that could never work.
  */
 const DOES = { VENDOR: 'vendor', BACK_OFFICE: 'back_office', UNAVAILABLE: 'unavailable' };
 
@@ -130,6 +140,16 @@ const VENDOR_NAME = { nan: 'AppraisalScope', class: 'Class Valuation', rv: 'Rich
  */
 const CAPABILITY = {
   rv: {
+    // FIRST ON PURPOSE — the Richer Values order screen leads with this and
+    // defaults to it (owner-directed 2026-08-16: our own card by default, with the
+    // payment link as the per-order backup). It is also the one card route their
+    // Stripe does not refuse, because no card number is ever sent: a human saves
+    // the card ONCE in the Richer Values portal and we reference the payment
+    // source they already hold.
+    COMPANY_CARD: {
+      does: DOES.VENDOR,
+      says: 'Richer Values charges the card YS Capital keeps on their account. The borrower is not asked for anything.',
+    },
     PAYMENT_LINK: {
       does: DOES.VENDOR,
       says: 'Richer Values emails the borrower their payment page. The order waits until it is paid.',
@@ -148,16 +168,6 @@ const CAPABILITY = {
       does: DOES.VENDOR,
       says: 'The card is saved onto the file first, then charged at Richer Values.',
       caveat: 'rv_raw_card',
-    },
-    // The one card route their Stripe does not refuse, because no card number is
-    // ever sent: a human saves the card ONCE in the Richer Values portal and we
-    // reference the payment source they already hold. It is a REAL vendor action —
-    // pressing it charges — so, like the other three here, the shared staff route
-    // refuses to merely "record" it (`vendor_performs`); Richer Values' own proven
-    // route does the work and the recording rides along afterwards.
-    COMPANY_CARD: {
-      does: DOES.VENDOR,
-      says: 'Richer Values charges the card YS Capital keeps on their account. The borrower is not asked for anything.',
     },
   },
 
@@ -233,7 +243,14 @@ function methodsFor(vendor) {
   const v = String(vendor || '').toLowerCase();
   const table = CAPABILITY[v];
   if (!table) return METHODS.filter((m) => m !== 'COMPANY_CARD');
-  return METHODS.filter((m) => table[m] && table[m].does !== DOES.UNAVAILABLE);
+  // THE VENDOR'S OWN TABLE ORDER, not the flat vocabulary's — so "which way does
+  // this company lead with" is a property of that company's entry and is decided
+  // once, where its rows are written. Richer Values leads with COMPANY_CARD
+  // (owner-directed: our own card by default, the payment link as the per-order
+  // backup); the other two have no such card and lead with the owner's three in
+  // the owner's order. Object key order is insertion order for string keys, so
+  // this is the literal order the rows are written in below.
+  return Object.keys(table).filter((m) => METHODS.includes(m) && table[m].does !== DOES.UNAVAILABLE);
 }
 
 /**
