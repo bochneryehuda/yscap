@@ -31,6 +31,7 @@
 const access = require('./access');
 const product = require('./product');
 const stages = require('./stages');
+const book = require('./pipeline-book');
 
 const lazy = {
   get db() { return require('./db'); },
@@ -133,11 +134,15 @@ const UNASSIGNED_SQL = `NOT EXISTS (
  *
  * @param viewerAccess the viewer's resolved access (`accessFor`)
  * @param staffId      the viewer's PILOT id
- * @param filters      {stage, folder, search, officerStaffId, unassigned}
+ * @param filters      {stage, folder, search, officerStaffId, unassigned, book}
  * @param omit         Set of filter names to leave out
+ * @param opts         {inactiveFolders} — TENANT CONFIG, not a filter. It is passed in
+ *                     rather than read here so this stays pure and unit-testable; with
+ *                     it absent (or empty, which is the shipped default) the SQL is
+ *                     byte-identical to what it was before the live/closed split.
  * @returns {{whereSql, params, p}}
  */
-function buildWhere(viewerAccess, staffId, filters = {}, omit = new Set()) {
+function buildWhere(viewerAccess, staffId, filters = {}, omit = new Set(), opts = {}) {
   const params = [];
   const p = (v) => { params.push(v); return `$${params.length}`; };
   const where = [];
@@ -158,6 +163,15 @@ function buildWhere(viewerAccess, staffId, filters = {}, omit = new Set()) {
     where.push(`l.stage_key = ${p(String(filters.stage))}`);
   }
   if (!skip('folder') && filters.folder) where.push(`l.loan_folder = ${p(String(filters.folder))}`);
+
+  // THE LIVE BOOK vs THE CLOSED ONE. Composed from `pipeline-book`, which is the one
+  // place that decides what "over" means — and which answers NULL whenever the tenant
+  // has named no folders, so this adds nothing to the query on a tenant that has not
+  // configured it. An unlisted folder, and a loan with no folder, are always LIVE.
+  if (!skip('book')) {
+    const bookSql = book.bookWhereSql(filters.book, opts.inactiveFolders, p);
+    if (bookSql) where.push(bookSql);
+  }
 
   // "Somebody else's files" — only meaningful to a viewer who sees everything; a
   // scoped viewer already cannot see them, so it narrows rather than widens.
@@ -203,8 +217,8 @@ function buildWhere(viewerAccess, staffId, filters = {}, omit = new Set()) {
  * @returns {{sql, countSql, params}} — the SAME params serve both, so the count can
  *          never describe a different set of rows than the page.
  */
-function buildPipelineQuery(viewerAccess, staffId, filters = {}) {
-  const { whereSql, params } = buildWhere(viewerAccess, staffId, filters);
+function buildPipelineQuery(viewerAccess, staffId, filters = {}, opts = {}) {
+  const { whereSql, params } = buildWhere(viewerAccess, staffId, filters, new Set(), opts);
 
   const sortKey = SORTABLE[filters.sort] ? filters.sort : DEFAULT_SORT;
   const dir = String(filters.dir || '').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
@@ -282,8 +296,8 @@ function buildPipelineQuery(viewerAccess, staffId, filters = {}) {
  * THE SCOPE IS NEVER LIFTED. It is the authorization, not a filter — a chip counting
  * files the viewer may not open would tell them a book exists that they cannot reach.
  */
-function buildFacetQueries(viewerAccess, staffId, filters = {}) {
-  const forStages = buildWhere(viewerAccess, staffId, filters, new Set(['stage']));
+function buildFacetQueries(viewerAccess, staffId, filters = {}, opts = {}) {
+  const forStages = buildWhere(viewerAccess, staffId, filters, new Set(['stage']), opts);
   const stagesSql = `
     SELECT COALESCE(l.stage_key, '') AS stage_key, count(*)::int AS n
       ${FROM} ${forStages.whereSql}
@@ -292,7 +306,7 @@ function buildFacetQueries(viewerAccess, staffId, filters = {}) {
   // The scope counts. `mine` needs the viewer's own id, and a viewer we cannot
   // identify simply has no "mine" — reported as null, never as 0, because "nobody
   // knows who you are" and "you have no files" are different answers.
-  const forScope = buildWhere(viewerAccess, staffId, filters, new Set(['whose']));
+  const forScope = buildWhere(viewerAccess, staffId, filters, new Set(['whose']), opts);
   const me = staffId ? String(staffId) : null;
   const minePh = me ? `$${forScope.params.length + 1}` : null;
   if (me) forScope.params.push(me);
@@ -302,9 +316,36 @@ function buildFacetQueries(viewerAccess, staffId, filters = {}) {
            count(*) FILTER (WHERE ${UNASSIGNED_SQL})::int AS unassigned_n
       ${FROM} ${forScope.whereSql}`;
 
+  // The live/closed counts, with the BOOK filter lifted and every other one kept —
+  // the same rule as the two rows above, for the same reason: with "Closed" selected,
+  // a "Live" chip counted under the closed filter would read zero and the way back
+  // would be the chip claiming there is nothing there.
+  //
+  // NULL when the tenant has named no folder: the row is not drawn at all in that
+  // case, and a count of 0 closed files would otherwise read as a measurement rather
+  // than as "nobody has said which folders mean finished".
+  let bookSql = null;
+  let bookParams = null;
+  if (book.bookSplitApplies(opts.inactiveFolders)) {
+    const forBook = buildWhere(viewerAccess, staffId, filters, new Set(['book']), opts);
+    const ph = `$${forBook.params.length + 1}`;
+    // Normalized for the same reason `bookWhereSql` does it: the SQL lower-cases only
+    // its own side, so a raw list here would count zero closed loans on a tenant that
+    // has plenty — a chip reading 0 that nobody would think to doubt.
+    forBook.params.push(book.normalizeFolders(opts.inactiveFolders));
+    const closed = book.closedFolderSql('l', ph);
+    bookSql = `
+    SELECT count(*) FILTER (WHERE NOT (${closed}))::int AS live_n,
+           count(*) FILTER (WHERE ${closed})::int AS closed_n,
+           count(*)::int AS all_n
+      ${FROM} ${forBook.whereSql}`;
+    bookParams = forBook.params;
+  }
+
   return {
     stagesSql, stagesParams: forStages.params,
     scopeSql, scopeParams: forScope.params,
+    bookSql, bookParams,
   };
 }
 
@@ -319,9 +360,10 @@ function buildFacetQueries(viewerAccess, staffId, filters = {}) {
  * (§4.1.1 — "a milestone with no mapping is shown, not hidden").
  */
 async function loadFacets(f, staffId) {
-  const [{ rows: stageRows }, { rows: scopeRows }] = await Promise.all([
+  const [{ rows: stageRows }, { rows: scopeRows }, bookRes] = await Promise.all([
     lazy.db.query(f.stagesSql, f.stagesParams),
     lazy.db.query(f.scopeSql, f.scopeParams),
+    f.bookSql ? lazy.db.query(f.bookSql, f.bookParams) : Promise.resolve(null),
   ]);
   const byStage = {};
   let allStages = 0;
@@ -330,8 +372,16 @@ async function loadFacets(f, staffId) {
     allStages += Number(r.n) || 0;
   }
   const s = scopeRows[0] || {};
+  const bk = bookRes && bookRes.rows && bookRes.rows[0] ? bookRes.rows[0] : null;
   return {
     byStage,
+    // NULL, not zeroes, when no folder is configured — the row is not drawn and
+    // "0 finished" would be a claim nobody measured.
+    book: bk ? {
+      live: Number(bk.live_n) || 0,
+      closed: Number(bk.closed_n) || 0,
+      all: Number(bk.all_n) || 0,
+    } : null,
     // What the "Every stage" chip must show. It is NOT the list's own total: that is
     // counted WITH the stage filter, so with a stage selected the "Every stage" chip
     // would read the selected stage's number and nobody could see how big the book
@@ -360,8 +410,14 @@ async function loadPipeline(staff, filters = {}) {
   const viewerAccess = access.accessFor(staff, settings);
   const staffId = staff && staff.id ? String(staff.id) : null;
 
-  const q = buildPipelineQuery(viewerAccess, staffId, filters);
-  const f = buildFacetQueries(viewerAccess, staffId, filters);
+  // Which folders this tenant says mean the deal is over. Read ONCE here and threaded
+  // into both builders, so the list, its total and every chip count are describing the
+  // same book — reading it twice is how a count comes to disagree with the page.
+  const inactive = book.inactiveFolders(settings);
+  const opts = { inactiveFolders: inactive };
+
+  const q = buildPipelineQuery(viewerAccess, staffId, filters, opts);
+  const f = buildFacetQueries(viewerAccess, staffId, filters, opts);
   const [{ rows }, { rows: counted }, facets] = await Promise.all([
     lazy.db.query(q.sql, q.params),
     lazy.db.query(q.countSql, q.params),
@@ -397,9 +453,20 @@ async function loadPipeline(staff, filters = {}) {
     emptyReason,
     stages: stageChips(stages.stageList(stages.configFrom(settings)), facets),
     facets: facets ? { ...facets.scope, allStages: facets.allStages } : null,
-    // A scope filter this viewer's own scope makes moot — NAMED, so the screen can
+    // WHICH BOOK IS BEING SHOWN, and whether there is anything to switch between.
+    // `bookControl` is false on a tenant that has named no finished folders — the
+    // screen draws no row then, because three chips selecting identical rows is not a
+    // control (the same rule the scope row follows for a viewer who sees only their
+    // own files).
+    book: book.normalizeBook(filters.book),
+    bookControl: book.bookSplitApplies(inactive),
+    bookCounts: facets ? facets.book : null,
+    // A filter this tenant's own configuration makes moot — NAMED, so the screen can
     // say so rather than showing a book that quietly ignores what was asked for.
-    filtersIgnored: ignoredScopeFilters(viewerAccess, filters),
+    filtersIgnored: [
+      ...ignoredScopeFilters(viewerAccess, filters),
+      ...[book.ignoredBookFilter(filters.book, inactive)].filter(Boolean),
+    ],
   };
 }
 

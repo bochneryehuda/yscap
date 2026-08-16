@@ -36,7 +36,15 @@ const fs = require('fs');
 const path = require('path');
 const { GLOSSARY } = require('./schema-glossary');
 
-const OUT_DIR = path.join(__dirname, '..', 'docs', 'schema');
+// SCHEMA_OUT_DIR redirects BOTH the input and the output, exactly as
+// `schema-snapshot.js` does. CI regenerates the whole map into a scratch
+// directory so it can compare it against what is committed WITHOUT touching the
+// working tree — the picture is derived from the snapshot, so reading the
+// committed inventory while writing a scratch picture would produce a picture
+// of the OLD database and quietly call it fresh.
+const OUT_DIR = process.env.SCHEMA_OUT_DIR
+  ? path.resolve(process.env.SCHEMA_OUT_DIR)
+  : path.join(__dirname, '..', 'docs', 'schema');
 const SNAPSHOT = path.join(OUT_DIR, 'beyond-prisma.json');
 const OUT_FILE = path.join(OUT_DIR, 'PICTURE.html');
 

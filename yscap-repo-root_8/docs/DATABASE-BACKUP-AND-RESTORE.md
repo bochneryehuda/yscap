@@ -522,3 +522,168 @@ from this section — the point is that the runbook in section 6 is what gets ex
 | `db/408_backup_runs.sql` | The ledger tables |
 | `Dockerfile.backup` | The cron container (pins the Postgres client version) |
 | `scripts/test-backup-*.js` | Tests, in `npm test` |
+
+---
+
+## 7. OPERATIONS — sizing, logs, re-running, and what each failure actually means
+
+Written 2026-08-16, after the weekly drill failed twice in one morning and the
+first diagnosis was **wrong**. Everything below is measured from the live
+account, not assumed.
+
+### 7.1 The four moving parts, and their real identities
+
+| what | Render id | schedule (UTC) | notes |
+|---|---|---|---|
+| **Nightly backup** `ys-capital-backup` | `crn-d9nt1nvqj5pc73fiotig` | `10 7 * * *` — daily 07:10 | runs `scripts/backup-run.js` |
+| **Weekly drill** `ys-capital-backup-verify` | `crn-d9nt307qj5pc73fiq920` | `30 8 * * 0` — Sundays 08:30 | runs `scripts/backup-verify.js` |
+| **Live database** `yscap` | `dpg-d95006svikkc73d2ve4g-a` | — | `basic_1gb`, 15 GB disk, PostgreSQL 18 |
+| **Drill's scratch database** `yscap-verify` | `dpg-d9nssae1egvs738ogk8g-a` | — | `basic_256mb`, 5 GB disk, PostgreSQL 18 |
+
+**Both crons say `autoDeploy: no` and are nevertheless redeployed on every commit
+to `main`** — by the deploy hooks in §5, visible in their deploy history as
+`trigger: api`. Do not repeat the mistake of reading the setting and concluding
+a fix will not reach them: **read the deploy history instead.** A fix merged to
+`main` lands on both jobs on the next deploy, with nothing to click.
+
+### 7.2 THE SCRATCH DATABASE MUST BE BIG ENOUGH TO HOLD PRODUCTION
+
+This is the sizing rule, and it is the whole of the 2026-08-16 incident:
+
+> The drill restores a **complete copy of production** into the scratch
+> database. If the scratch database is smaller than the live one, the restore
+> kills it — every time, at whatever table happens to exhaust it.
+
+Measured: production is `basic_1gb`; the scratch database was `basic_256mb`, a
+**quarter** of it. The restore (322 tables, 2,834,872 rows, 132.5 MB compressed)
+crashed the server part-way through on both the 08:30 scheduled run and the
+13:30 manual re-run, **both times on the same table**, `rv_orders`.
+
+**Rule: the scratch database gets AT LEAST the live database's plan.** It is
+cheaper to be generous — it is idle six days a week, and an under-sized one buys
+a weekly false alarm plus no assurance at all.
+
+#### Step by step — upgrading the scratch database (do this one first; it is safe)
+
+Nothing in the loan system touches `yscap-verify`. It is wiped at the start of
+every drill by design, so **there is nothing in it to lose** and no downtime that
+matters.
+
+1. Render dashboard → **`yscap-verify`** → **Settings**.
+2. Find the **Instance Type** (plan) control → change `Basic 256 MB` to **at
+   least `Basic 1 GB`**, to match production. If production is later grown, grow
+   this one with it.
+3. Confirm. Render restarts the database; it is briefly unavailable, which
+   matters to nothing.
+4. **Check whether the connection string changed.** A resize normally keeps the
+   same instance and the same URL — but verify rather than assume: Render →
+   `yscap-verify` → **Connect** → copy the **Internal Database URL**, and compare
+   it to `BACKUP_VERIFY_DATABASE_URL` on the `ys-capital-backup-verify` cron
+   (Environment tab). If they differ, update the variable and redeploy that cron.
+5. Re-run the drill (§7.4) and watch the log (§7.3).
+
+**Disk does not need attention here.** 5 GB against a 132.5 MB compressed dump
+is ample; it is MEMORY that the restore exhausts.
+
+#### Step by step — upgrading the LIVE database (different risk entirely)
+
+This one carries real downtime and real consequences. Do it deliberately.
+
+1. **Take a backup first and prove it.** Trigger the nightly job (§7.4) and wait
+   for `[backup] done`. Do not resize on the strength of last night's copy.
+2. Render dashboard → **`yscap`** → **Settings** → **Instance Type** → choose the
+   larger plan.
+3. **Expect the site to be down for a few minutes.** Render restarts the
+   database; PILOT's own connections drop and reconnect. Pick a quiet window.
+4. **If the PostgreSQL MAJOR version changes** (18 → 19), you must also bump
+   `PG_MAJOR` in `yscap-repo-root_8/Dockerfile.backup` and let both crons
+   redeploy. `pg_dump` flatly refuses to dump a server newer than itself, so a
+   missed bump means **the nightly backup stops working**. `backup-run.js
+   --preflight` refuses loudly rather than producing a half-archive, which is
+   the protection — but it is a refusal, not a backup.
+5. Afterwards: confirm the site is up (`/api/health`), then run the drill and
+   confirm it passes end to end.
+
+**Disk grows but never shrinks on Render.** Sizing it up is one-way; be
+deliberate.
+
+### 7.3 WHERE TO LOOK WHEN SOMETHING FAILS
+
+**First place: your inbox.** Both jobs email on failure, and the drill emails on
+success too (`BACKUP_ALERT_ON_SUCCESS`). PILOT's own email says what happened in
+plain English; the Render alert only carries an exit code. **The email is the
+answer; the Render alert is only the notification.**
+
+**Second place: the Render logs.** Dashboard → the cron → **Logs**. Read from the
+start of the run, not the end — the last line is usually a consequence.
+
+#### The failure signatures, and what each one actually means
+
+| what you see in the log | what it means | what to do |
+|---|---|---|
+| `COPY failed for table "…": server closed the connection unexpectedly`, then many `no connection to the server`, then `the database system is in recovery mode` | **The scratch database crashed under the restore.** The error COUNT is meaningless — hundreds of errors is one crash. Not a bad backup. | Upgrade the scratch database (§7.2). Free first attempt: set `BACKUP_VERIFY_JOBS=1` on the drill cron to halve peak memory. |
+| `the database system is in recovery mode` **as the first thing**, before any restore | The server was genuinely still starting up. | Nothing — since 2026-08-16 both jobs wait this out (`src/lib/backup/pg-ready.js`). If it still appears, the server never came back: check the database itself. |
+| `pg_dump is version N but the database is PostgreSQL M` | The database was upgraded past the pinned client. | Bump `PG_MAJOR` in `Dockerfile.backup`, merge, let the crons redeploy. |
+| `BACKUP_VERIFY_DATABASE_URL points at the LIVE database` | A refusal, and a correct one — the drill WIPES its target. | Point it at the scratch database. Never override this. |
+| `…does not look like a scratch database` | Same guard, softer. | Rename the target to contain `verify`/`scratch`, or set `BACKUP_VERIFY_FORCE=1` **only** if you are certain. |
+| `the backup is STALE` / nothing recent in the vault | The nightly stopped running. | Check the nightly cron's own logs and schedule. This is the one that actually threatens data. |
+| `password authentication failed`, `database … does not exist` | A wrong or unset URL. | Fix the environment variable. These are never waited on, deliberately — waiting would hide them. |
+
+#### Reading a drill log — what a HEALTHY run looks like
+
+```
+[verify] testing backup <id> from <when> (322 tables, 2,834,872 rows)
+[verify] the backup is present and the right size ✓
+[verify] decrypted 132.5 MB and the checksum matches ✓
+[verify] scratch database emptied (N schemas dropped)
+[verify] test restore finished (exit 0, 0 errors)
+[verify] PASS — backup <id> was restored and matches the original
+```
+
+**The first three lines passing already prove a great deal**: the backup exists,
+is the right size, decrypts with your key, and matches its checksum. Everything
+after that proves the stronger claim — that it can actually be **loaded**.
+
+### 7.4 HOW TO RE-RUN EITHER JOB
+
+Render dashboard → the cron job → **Trigger Run** (cron jobs have no "Manual
+Deploy" button; deploys arrive from `main` on their own, per §7.1).
+
+- **Nightly backup** — safe to run any time. It only reads the live database and
+  writes a new copy to the vault. Running it twice in a day costs a little
+  storage and nothing else.
+- **Weekly drill** — safe to run any time. It WIPES the scratch database, which
+  it does on every run by design.
+
+Either can also be triggered from the Render API with an API key:
+
+```
+curl -X POST -H "Authorization: Bearer $RENDER_API_KEY" \
+  https://api.render.com/v1/cron-jobs/<cron-id>/runs -d '{}'
+```
+
+**Never commit an API key, and rotate any key that has been pasted into a chat,
+a ticket or a transcript.**
+
+### 7.5 The 2026-08-16 incident, recorded
+
+Worth keeping because the wrong diagnosis was the *reasonable* one.
+
+- **Symptom:** the weekly drill exited 1. PILOT's email said *"the database
+  system is in recovery mode"*.
+- **First diagnosis (WRONG):** a server that happened to be restarting when the
+  drill reached it. Plausible — that is exactly what 57P03 means — and it led to
+  a real fix (both jobs now wait a starting server out) that did **not** address
+  the actual failure.
+- **What it really was:** the scratch database crashed *during* the restore,
+  restarted into crash recovery, and the drill's next connection reported the
+  recovery — **the aftermath, reported as the cause.** Proven by comparing two
+  runs five hours apart: identical, same table, `rv_orders`.
+- **Root cause:** the scratch database was a quarter the size of production.
+- **What was changed:** the drill now names a crashed server explicitly, before
+  anything reconnects, so the cause can never again be masked by its
+  consequence (`lostServerDuringRestore` in `backup-verify.js`); both jobs wait
+  out a genuinely starting server; and `BACKUP_VERIFY_JOBS` allows lowering the
+  restore's peak memory without a code change.
+- **The lesson worth keeping:** when a log ends in an error, read from the
+  START. The last line is what the system said after it was already broken.

@@ -107,3 +107,43 @@ anything else.
   owner's written authorization and add it to the pad.
 - The strongest enforcement is ALSO at the credential level: the Encompass API user's persona should be set
   read-only in ICE, so a write is refused by Encompass itself — see the pad.
+
+## 4. Migrations: ask for the number, and let the schema map refresh itself
+
+**Never hand-pick a migration number by looking at `db/`.** Run:
+
+```
+cd yscap-repo-root_8
+npm run migration:new -- "what the migration is for"
+```
+
+It writes `db/NNN_what_the_migration_is_for.sql` with the idempotent shape the boot-time runner
+requires (every file in `db/` is replayed on EVERY boot, so a statement that throws the second time
+breaks every future deploy — quietly, because the runner logs the failure and continues).
+
+**Why the tool and not your own eyes:** the collision this prevents is between two sessions working on
+two BRANCHES, and your working tree shows you only one of them. The tool takes the next number after
+every one it can see across `db/` *and every git ref this clone knows about* — measured on this repo,
+two numbers were claimed on another branch and present in no working tree. It prints what it searched
+and states plainly that a branch nobody has pushed is invisible to it. It never re-uses a gap: a gap
+exists *because* a number was abandoned, which usually means another branch still holds a file with it.
+`scripts/check-migrations.js` is the gate that CATCHES a collision (it has fired three times: 033, 088,
+113); this is what stops you creating one.
+
+**Do not regenerate `docs/schema/` by hand.** When your migration changes the database, CI rebuilds the
+map from the database your migrations actually build and commits it back to your pull request branch —
+so `git pull` before your next commit and expect a commit from `github-actions[bot]`. It commits ONLY
+the generated map files, it **never force-pushes** (if you pushed while it was working it does nothing
+and leaves the refreshed copy attached to the run as an artifact), and it carries `[skip ci]`.
+
+That job (`schema-push`) holds **the only write permission in the entire workflow**, and it must stay
+the smallest job in it — its whole input is a checkout and an artifact. **Never move `contents: write`
+onto the job that runs the test suite, and never put it at the workflow level.** The build fails if you
+do: `scripts/test-ci-schema-commit-pure.js` counts them. The reasoning, and what Kubernetes, the Azure
+SDK and SLSA's source track each do about bots writing to a trunk, is in
+`yscap-repo-root_8/docs/SCHEMA-MAP-AUTO-REFRESH-RESEARCH.md`.
+
+**If you must regenerate by hand, it is TWO commands, not one:** `npm run schema:snapshot` (needs a
+`DATABASE_URL` built from these migrations) **and then** `npm run schema:restamp` (no database needed).
+Stopping after the first leaves the map's header quoting the previous database's numbers and fails the
+header test — following the old one-command advice broke a build once.

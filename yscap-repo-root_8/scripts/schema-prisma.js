@@ -49,7 +49,18 @@ const { GLOSSARY } = require('./schema-glossary');
 /** Exact, not a range. See the note above. */
 const PRISMA_VERSION = 'prisma@6.19.1';
 
-const SCHEMA = path.join(__dirname, '..', 'docs', 'schema', 'schema.prisma');
+// SCHEMA_OUT_DIR redirects the whole folder, exactly as `schema-snapshot.js`
+// and `schema-picture.js` do, so CI can regenerate the complete map into a
+// scratch directory and compare it against what is committed without touching
+// the working tree. It must move the INVENTORY too (`readInventory` below):
+// restamping a scratch schema from the COMMITTED inventory would write the old
+// database's numbers into the header of the fresh file and call it refreshed —
+// the header exists to state which database the map describes.
+const SCHEMA_DIR = process.env.SCHEMA_OUT_DIR
+  ? path.resolve(process.env.SCHEMA_OUT_DIR)
+  : path.join(__dirname, '..', 'docs', 'schema');
+
+const SCHEMA = path.join(SCHEMA_DIR, 'schema.prisma');
 
 /** The minimum Prisma needs in order to introspect, when there is nothing to keep. */
 const SEED = `datasource db {
@@ -283,8 +294,7 @@ function injectGlossary(text, glossary) {
 
 /** The committed inventory — the one source of every number in the header. */
 function readInventory() {
-  return JSON.parse(fs.readFileSync(
-    path.join(__dirname, '..', 'docs', 'schema', 'beyond-prisma.json'), 'utf8'));
+  return JSON.parse(fs.readFileSync(path.join(SCHEMA_DIR, 'beyond-prisma.json'), 'utf8'));
 }
 
 /**

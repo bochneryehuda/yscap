@@ -22,6 +22,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const { parseLtSchema, compareLtSchema, LT_SCHEMA, SNAPSHOT } = require('./check-lt-schema-drift');
+const { migrationState } = require('./schema-inventory');
 
 let checks = 0;
 const ok = (c, w) => { assert.ok(c, w); checks++; };
@@ -178,10 +179,45 @@ if (fs.existsSync(LT_SCHEMA) && fs.existsSync(SNAPSHOT)) {
   }
 
   const real = JSON.parse(fs.readFileSync(SNAPSHOT, 'utf8'));
-  const problems = compareLtSchema(declared, real, {});
+
+  // THE MAP'S STALENESS IS PART OF THE QUESTION, and leaving it out made this
+  // test accuse people of doing it RIGHT. The production check computes the
+  // watermark and ABSTAINS from the "declared but missing" accusation while a
+  // migration has landed since the map was taken — because that is exactly the
+  // shape of somebody adding an LT table correctly: the model and the migration
+  // land together, and the map is regenerated afterwards. This test called the
+  // same function with NO options, so `stale` was false and the strict
+  // comparison ran against a map that was legitimately behind.
+  //
+  // It fired the first time anyone used it: db/565 added `lt_ppe_shadow_run`
+  // with its model, the map was still built from db/564, and the build went red
+  // on main for a correct change. A check that turns doing-it-right into a red
+  // build is worse than no check, because the fix people learn is to delete it.
+  //
+  // Computed the SAME way as `check-lt-schema-drift.main()` — same watermark,
+  // same comparison — so the test and the thing it tests can never disagree
+  // about whether the map is current.
+  const was = (real.generatedFrom || {}).migrations || null;
+  const now = migrationState();
+  const stale = !!(was && now && (was.count !== now.count || (was.highest ?? null) !== (now.highest ?? null)));
+
+  const problems = compareLtSchema(declared, real, { stale });
   assert.deepStrictEqual(problems, [],
-    `the Long-Term schema and the database disagree:\n  ${problems.join('\n  ')}`);
+    `the Long-Term schema and the database disagree:\n  ${problems.join('\n  ')}`
+    + (stale ? '\n  (the map is behind the migrations, so only non-abstained problems are listed)' : ''));
   checks++;
+
+  // AND THE ABSTENTION IS NOT A BLIND SPOT. A stale map excuses only the
+  // "declared but missing" direction; everything else is still compared, and a
+  // CURRENT map still answers strictly. Assert both, so "stale" can never
+  // quietly become "skip the whole check".
+  if (stale) {
+    const strict = compareLtSchema(declared, real, { stale: false });
+    ok(strict.length >= problems.length,
+      'the strict comparison is a superset — abstaining only ever REMOVES accusations');
+    ok(strict.every((p) => /has no such table/.test(p) || problems.includes(p)),
+      'and the only thing a stale map excuses is a table the map has not caught up with yet');
+  }
 
   // AND THE PARSER IS NOT SIMPLY RETURNING NOTHING. A parser that produced an
   // empty column set for every table would pass the comparison above in perfect
