@@ -369,7 +369,22 @@ async function offline() {
     '§26.3 ZIP + state is completed by the county lookup (no longer missing_county_fips)');
   ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, zip: '30301', state: 'GA' }).error === 'zip_not_found',
     '§26.5 a location the ZIP lookup cannot complete still 422s (fails closed)');
-  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, citizenship: 'Martian' }).error === 'invalid_field_value', '§26.5 invalid registry value → 422 invalid_field_value (moved BEFORE the upstream call)');
+  // The fixture now carries a location. Not a weakening: this assertion's SUBJECT is that a bad
+  // registry VALUE is refused before any upstream call, and it never meant to also assert that a
+  // locationless scenario prices. It did price — silently, in the captured base's New Jersey town —
+  // which is the rule below.
+  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, zip: '11211', citizenship: 'Martian' }).error === 'invalid_field_value', '§26.5 invalid registry value → 422 invalid_field_value (moved BEFORE the upstream call)');
+  // A PRICED SCENARIO MUST SAY WHERE THE PROPERTY IS (re-audit of #1220). Before the address became
+  // scenario-owned this silently inherited the captured base's address and priced a deal in Linden,
+  // NJ wherever it actually was; afterwards it would have sent no state and no county at all.
+  // Both are wrong and they fail differently, so it is refused by name.
+  {
+    const noLoc = sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760 });
+    ok(noLoc.ok === false && noLoc.error === 'location_required', '§26.3 a scenario with NO location is refused (never priced in the capture\'s town)');
+    ok(/5-digit ZIP is enough/.test(noLoc.message || ''), '§26.3 …and the refusal says the cheapest way to satisfy it');
+    ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760, zip: '11211' }).ok === true,
+      '§26.3 …while a bare ZIP alone still satisfies it (enrichment runs first)');
+  }
   ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5 }).status === 422 || sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5 }).ok === true, '§26.5 validateScenario returns a shaped result');
 
   // 26) §27 STRICT INPUT VALIDATION — the silent-mispricing class (HTTP 200 with a wrong answer).

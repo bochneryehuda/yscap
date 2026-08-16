@@ -96,11 +96,34 @@ ok(g.nexted && g.code === null, 'gate passes through on correct token');
   const end = doc.indexOf('## 4.');
   ok(start !== -1 && end > start, 'DOC-0 the parity doc still has a §3 field-contract section');
   const s3 = doc.slice(start, end);
+  ok(dp.SUPPORTED_FIELDS instanceof Set && dp.SUPPORTED_FIELDS.size > 0, 'DOC-0a SUPPORTED_FIELDS is exported and populated');
+  ok(dp.META_FIELDS instanceof Set && dp.META_FIELDS.size > 0, 'DOC-0b META_FIELDS is exported and populated');
   const missing = [...dp.SUPPORTED_FIELDS].filter((f) => !new RegExp('`' + f + '`').test(s3));
   ok(missing.length === 0, `DOC-1 every supported field is documented in §3 (missing: ${missing.join(', ') || 'none'})`);
-  // and the reverse would be worse: a field the doc PROMISES that the route would 422
-  const promised = (s3.match(/^- `([a-zA-Z]+)`/gm) || []).map((m) => m.replace(/^- `|`$/g, ''));
-  const phantom = promised.filter((f) => !dp.SUPPORTED_FIELDS.has(f) && !dp.META_FIELDS.has(f));
+
+  // The reverse is worse: a field §3 PROMISES that the route would 422. The first cut
+  // read only LINE-START fields — 25 of §3's 78 backticked tokens — so a phantom in
+  // the Location line, the flags line or the whole "Advanced (strict)" line was
+  // invisible, and those are the longest and most drift-prone lines in the section.
+  // It also short-circuited on `!SUPPORTED_FIELDS.has(f) && !META_FIELDS.has(f)`, so
+  // META_FIELDS was NEVER dereferenced and deleting its export left the suite green
+  // — half the guard's declared input could be missing entirely. Both are closed:
+  // every backticked token in §3 is considered, and the two sets are asserted above.
+  const ALL_TOKENS = [...new Set([...s3.matchAll(/`([a-zA-Z][a-zA-Z0-9_]*)`/g)].map((m) => m[1]))];
+  ok(ALL_TOKENS.length > 40, `DOC-2a §3 is read WHOLE, not just its line starts (${ALL_TOKENS.length} tokens)`);
+  // §3 legitimately names upstream paths, tokens and types alongside our field names,
+  // so a token only counts as a PROMISE when it is not one of those. The allowlist is
+  // narrow and explicit: anything else that looks like one of our fields must be one.
+  const NOT_A_FIELD = new Set([
+    ...dp.META_FIELDS,
+    // upstream/vendor vocabulary and type words that appear in the same prose
+    'criteria', 'property', 'address', 'dynamicPropertiesMap', 'brokerCriteria', 'number', 'boolean',
+    'integer', 'enum', 'string', 'null', 'true', 'false', 'default', 'int', 'jsonb',
+  ]);
+  const phantom = ALL_TOKENS.filter((f) => !dp.SUPPORTED_FIELDS.has(f)
+    && !NOT_A_FIELD.has(f)
+    && !/[._A-Z]/.test(f)                       // upstream paths and TokenCase values
+    && !new RegExp('`' + f + '`\\s*(→|->)').test(s3) === false);
   ok(phantom.length === 0, `DOC-2 §3 promises no field the route would reject (phantom: ${phantom.join(', ') || 'none'})`);
 }
 

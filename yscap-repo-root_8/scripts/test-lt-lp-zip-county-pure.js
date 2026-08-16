@@ -165,7 +165,7 @@ for (const [zip, state, fips, name] of KNOWN) {
   const stale = () => {
     const b = JSON.parse(JSON.stringify(sm.BASE));
     b.property = b.property || {}; b.property.address = b.property.address || {};
-    Object.assign(b.property.address, { zip: '90210', state: 'CA', city: 'Beverly Hills', county: '06037', censustract: '06037', countyName: 'Los Angeles' });
+    Object.assign(b.property.address, { street: '9601 Wilshire Blvd', streetCont: 'Ste 200', zipExt: '5213', zip: '90210', state: 'CA', city: 'Beverly Hills', county: '06037', censustract: '06037', countyName: 'Los Angeles' });
     return b;
   };
   const addrOf = (sc) => sm.buildSearch(sc, { base: stale() }).property.address;
@@ -182,11 +182,31 @@ for (const [zip, state, fips, name] of KNOWN) {
   const noZip = addrOf({ purpose: 'Purchase', loan: 4e5, ltv: 75, state: 'NY', countyFps: '36047' });
   ok(noZip.zip === undefined, 'STALE-4 a scenario with no ZIP does not inherit a CA ZIP alongside state NY');
 
-  // every address part is registered, so a part added later cannot quietly reopen this
+  // EVERY per-deal part is registered. The first cut of this guard listed only the six
+  // parts the fix happened to add, so unregistering `street`/`streetCont`/`zipExt` left
+  // it green — a guard that cannot see the thing it is guarding. It is now derived from
+  // the BASE's own address, so a part added to the address shape later cannot quietly
+  // reopen this: the test fails until somebody decides whether it is per-deal.
   const paths = sm._internals.SCENARIO_OWNED.map((e) => e.path);
-  for (const part of ['zip', 'state', 'city', 'county', 'censustract', 'countyName']) {
-    ok(paths.includes(`property.address.${part}`), `STALE-REG property.address.${part} is in the clearing registry`);
+  // `country` and `province` are STRUCTURAL — every request carries them — so they are
+  // deliberately not scenario-owned. Everything else on the address describes THIS deal.
+  const STRUCTURAL = new Set(['country', 'province']);
+  const addrKeys = Object.keys((sm.BASE.property && sm.BASE.property.address) || {});
+  ok(addrKeys.length >= 9, `STALE-REG0 the base address has its full shape (${addrKeys.length} keys)`);
+  for (const part of addrKeys) {
+    if (STRUCTURAL.has(part)) {
+      ok(!paths.includes(`property.address.${part}`), `STALE-REG property.address.${part} is structural and stays inherited`);
+    } else {
+      ok(paths.includes(`property.address.${part}`), `STALE-REG property.address.${part} is per-deal and IS cleared`);
+    }
   }
+  // and the leak itself, on the three the first guard missed
+  const leaked = addrOf({ purpose: 'Purchase', loan: 4e5, ltv: 75, zip: '11211', state: 'NY', countyFps: '36047' });
+  ok(leaked.street === undefined && leaked.streetCont === undefined,
+    'STALE-5 a prior session\'s STREET does not ride along (it is not in effectiveScenario either, so nothing would have shown it)');
+  ok(leaked.zipExt === undefined,
+    'STALE-6 …nor its ZIP+4, which is a LOCATION field sitting beside a different ZIP');
+  ok(leaked.country === 'US', 'STALE-7 …while the structural country survives');
 }
 
 // ---- POST-MERGE AUDIT (#1220): the county NAME is filled when it APPLIES ----

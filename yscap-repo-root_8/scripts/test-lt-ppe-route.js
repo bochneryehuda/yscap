@@ -102,9 +102,17 @@ ok(Object.keys(H).length === 8, `all 8 handlers are exported for testing (${Obje
 // 2) the decision vocabulary is the LEDGER's, not the route's
 // ---------------------------------------------------------------------------
 {
-  const expected = [...finding.SETTLED_STATUSES, ...finding.OPEN_STATUSES].sort();
+  const expected = [...finding.SETTLED_STATUSES].sort();
   ok(JSON.stringify([...I.DECIDABLE].sort()) === JSON.stringify(expected),
     'DECIDABLE is derived from finding.js, so the route can never invent a status the ledger refuses');
+  // SETTLING statuses ONLY. Accepting the open ones let this endpoint move a settled
+  // finding back to open, and decideFinding overwrites decision_reason
+  // unconditionally — so the re-open DESTROYED the note the route itself calls the
+  // only lasting record of why. A finding re-opens by REPRODUCING (finding.reconcile
+  // marks it `regressed`), never by a decision.
+  for (const openStatus of finding.OPEN_STATUSES) {
+    ok(!I.DECIDABLE.includes(openStatus), `REOPEN-${openStatus} is not offered as a decision`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +215,76 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
   }
 
   // -------------------------------------------------------------------------
+  // 7c) THE ROUNDING-MODE VOCABULARY GAP — the re-audit's second blocker
+  // `lt_ppe_price_limit.rounding_mode` is NOT NULL DEFAULT 'nearest_eighth' (db/560)
+  // with NO CHECK — the SETTINGS vocabulary. The pricer accepts only
+  // nearest|up|down|half_even|none, and quote.js lets a sheet's own mode WIN over
+  // resolveRounding, the only thing that translates between them. So a price-limit
+  // row created at the schema DEFAULT produced a program that passed every one of
+  // loadProgram's guards and then threw INSIDE quoteProgram — recorded by the shadow
+  // facade as an engine_error finding on EVERY quote. loadProgram's guard only
+  // covered the one throw it had happened to observe. Every fixture missed this by
+  // using 'none' (the one token both vocabularies share) or no price-limit row.
+  {
+    const ratesheet = require('../src/longterm/ppe/ratesheet');
+    const quoteMod = require('../src/longterm/ppe/quote');
+    const ppeSettings2 = require('../src/longterm/ppe/settings');
+    const settings2 = ppeSettings2.resolveAll({}).values;
+    const sheetWith = (mode) => ({
+      version: { id: 'v1' },
+      basePrices: [{ note_rate_milli_pct: 7125, lock_days: 30, product: 'P', price_milli: 102850 }],
+      adjustments: [],
+      priceLimit: { min_price_milli: 98000, rounding_mode: mode, rounding_increment_milli: 125, cap_tiers: [] },
+    });
+    const throwsWith = (mode) => {
+      const prog = ratesheet.rateSheetToProgram(sheetWith(mode), { code: 'v1' });
+      try { quoteMod.quoteProgram({ scenario: { fico: 760, loan_amount: 400000 }, program: prog, settings: settings2 }); return null; }
+      catch (e) { return e.message; }
+    };
+    ok(throwsWith('nearest_eighth') === null,
+      'ROUND-DEFAULT the db/560 column DEFAULT prices instead of throwing (this is the whole finding)');
+    for (const m of ['nearest_increment', 'up', 'down', 'half_even', 'none']) {
+      ok(throwsWith(m) === null, `ROUND-SETTINGS "${m}" translates to a mode the pricer accepts`);
+    }
+    for (const m of ['nearest', 'up', 'down', 'half_even', 'none']) {
+      const prog = ratesheet.rateSheetToProgram(sheetWith(m), { code: 'v1' });
+      ok(prog.priceLimit.roundingMode === m, `ROUND-PASSTHRU "${m}" is left exactly as stored`);
+    }
+    ok(/bad_rounding_mode:banana/.test(throwsWith('banana') || ''),
+      'ROUND-UNKNOWN an unrecognised mode is still refused BY NAME, never silently defaulted to a rounding nobody chose');
+  }
+
+  // -------------------------------------------------------------------------
+  // 7b) THE SETTINGS SHAPE — the re-audit's first blocker
+  // `settings.resolveAll` returns {values, sources} and its keys are NAMESPACED.
+  // The route wrapped that object a SECOND time and read flat keys off it, so every
+  // setting was undefined. Nothing errored: the engine fell back to its coded
+  // defaults, which meant a MARGIN OF 0 instead of the configured 250 milli — our
+  // shadow engine priced every scenario a quarter point off Lender Price and
+  // manufactured a systematic disagreement, filling the ledger with our own
+  // misconfiguration. The old assertion (`typeof values === 'object'`) was satisfied
+  // by the double-wrapped object, which is why it was blind.
+  {
+    const ppeSettings = require('../src/longterm/ppe/settings');
+    const { values, sources } = await I.resolveSettingsSafe('company');
+    ok(!Object.prototype.hasOwnProperty.call(values, 'values'),
+      'SET-1 resolveSettingsSafe returns the FLAT map, not the {values,sources} wrapper');
+    ok(values['pricing.correspondent_margin_milli'] === 250,
+      `SET-2 the configured margin resolves (got ${values['pricing.correspondent_margin_milli']}) — 0 would misprice every shadow quote by a quarter point`);
+    ok(typeof values[I.K.priceTolerance] === 'number',
+      `SET-3 the parity tolerance resolves through the namespaced key (${I.K.priceTolerance})`);
+    ok(sources && typeof sources === 'object', 'SET-4 …and where each value came from is kept, not discarded');
+    // every key the route reads must EXIST in the registry — a typo here is silent
+    for (const k of Object.values(I.K)) {
+      ok(Object.prototype.hasOwnProperty.call(values, k), `SET-KEY ${k} is a real setting key`);
+    }
+    // a screen doing values[def.key] must not get undefined for every definition
+    const defs = ppeSettings.allDefinitions();
+    const undef = defs.filter((d) => values[d.key] === undefined && d.default !== undefined);
+    ok(undef.length === 0, `SET-5 a screen can read every definition off the map (${undef.length} undefined)`);
+  }
+
+  // -------------------------------------------------------------------------
   // 8) findings — vocabulary, filtering, and no silent caps
   // -------------------------------------------------------------------------
   r = await call(H.listFindingsRoute, { query: { status: 'banana' } });
@@ -234,6 +312,12 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
   // -------------------------------------------------------------------------
   r = await call(H.decideFindingRoute, { params: { key: 'k1' }, body: { status: 'banana', reason: 'a good long reason' } });
   ok(r.code === 400, 'decide: refuses a status the ledger does not know');
+
+  for (const openStatus of finding.OPEN_STATUSES) {
+    const rr = await call(H.decideFindingRoute, { params: { key: 'k1' }, body: { status: openStatus, reason: 'a good long reason' } });
+    ok(rr.code === 400 && /where a finding STARTS/.test(rr.body.error || ''),
+      `decide: refuses "${openStatus}" — re-opening would overwrite the very note that records why it was settled`);
+  }
 
   r = await call(H.decideFindingRoute, { params: { key: 'k1' }, body: { status: 'fixed', reason: 'short' } });
   ok(r.code === 400 && /never re-opened/.test(r.body.error), 'decide: refuses a too-short reason, and says WHY it matters');

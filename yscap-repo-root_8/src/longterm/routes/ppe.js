@@ -29,9 +29,19 @@
 //     screen would let a bad sheet reprice a book with nobody looking.
 //
 // AUTH: staff authentication is applied at the mount seam in `src/server.js`,
-// like every other LT router. Reads are open to any staff member (an engineer has
-// to be able to see why a scenario disagreed); everything that WRITES — deciding
-// a finding, running a canary against a live upstream — is admin-gated here.
+// like every other LT router. Reads are open to any staff member — an engineer has
+// to be able to see why a scenario disagreed. The ADMIN gate is on the two
+// deliberate operator actions: settling a finding, and running a canary battery.
+//
+// `POST /quote` is deliberately NOT admin-gated, and it is worth being precise
+// about why, because it DOES have side effects: it calls the live Lender Price
+// upstream, and a disagreement appends to the findings ledger. An earlier version
+// of this header claimed "everything that WRITES is admin-gated", which was simply
+// false. It is left open because pricing a scenario is the ordinary thing a staff
+// member does with a pricing engine, and its write is an OBSERVATION — the ledger
+// records that the two engines disagreed, which is true whoever asked. What an
+// ordinary user must not do is SETTLE that observation or launch a 500-scenario
+// battery at the upstream, and those are the two gated routes.
 
 const express = require('express');
 const router = express.Router();
@@ -62,7 +72,16 @@ const MAX_CANARY_SCENARIOS = 500;
 // The vocabulary is the LEDGER's (`finding.js`), never this route's. A status
 // invented here would be written into the ledger and quietly break
 // `finding.reconcile`'s "never re-open a settled finding" rule.
-const DECIDABLE = [...finding.SETTLED_STATUSES, ...finding.OPEN_STATUSES];
+//
+// SETTLING statuses only. The first cut also accepted the OPEN ones, which let this
+// endpoint move a SETTLED finding back to open — and `findingStore.decideFinding`
+// overwrites `decision_reason` unconditionally, so the re-open DESTROYED the note
+// this very route calls "the only lasting record of why". The endpoint's own refusal
+// message says a settled finding is never re-opened; it must not be the thing that
+// re-opens one. Re-opening legitimately happens ONE way: the finding reproduces, and
+// `finding.reconcile` marks it `regressed` on its own.
+const DECIDABLE = [...finding.SETTLED_STATUSES];
+const NOT_DECIDABLE = [...finding.OPEN_STATUSES];
 
 // ---------------------------------------------------------------------------
 // gates
@@ -140,14 +159,34 @@ async function loadProgram(scope, versionId) {
   }
 }
 
+// `settings.resolveAll` (and therefore `store.resolveSettings`) returns
+// **{ values, sources }** — the resolved map PLUS where each value came from —
+// and the keys inside it are NAMESPACED (`pricing.correspondent_margin_milli`,
+// `validation.price_tolerance_milli`). The first cut of this route wrapped that
+// object a SECOND time and then read flat, un-namespaced keys off the wrapper, so
+// every setting resolved to `undefined`. Nothing errored: the engine fell back to
+// its coded defaults, which meant a **margin of 0 instead of the configured 250
+// milli** — our shadow engine priced every scenario a quarter point off Lender
+// Price and manufactured a systematic price disagreement on every single quote,
+// filling the findings ledger with our own misconfiguration. That is the exact
+// outcome this route's no-program rule exists to prevent, arriving by another
+// door. Unwrap ONCE here so every caller gets the flat map, and read the
+// namespaced keys through the constants below.
+const K = {
+  priceTolerance: 'validation.price_tolerance_milli',
+  rateTolerance: 'validation.rate_tolerance_milli',
+};
+
 async function resolveSettingsSafe(scope) {
   try {
-    return { values: await store.resolveSettings(db, scope), source: 'db+defaults' };
+    const resolved = await store.resolveSettings(db, scope);
+    return { values: (resolved && resolved.values) || {}, sources: (resolved && resolved.sources) || {}, source: 'db+defaults' };
   } catch (_) {
     // store.resolveSettings already degrades to coded defaults on a read failure;
     // if it threw anyway, use the coded defaults and SAY they are a fallback
     // rather than presenting them as the tenant's configuration.
-    return { values: ppeSettings.resolveAll({}), source: 'defaults-fallback' };
+    const coded = ppeSettings.resolveAll({});
+    return { values: coded.values || {}, sources: coded.sources || {}, source: 'defaults-fallback' };
   }
 }
 
@@ -193,8 +232,12 @@ async function health(req, res) {
 
 async function getSettings(req, res) {
   const scope = readScope(req);
-  const { values, source } = await resolveSettingsSafe(scope);
-  return res.json({ ok: true, scope, source, definitions: ppeSettings.allDefinitions(), values });
+  const { values, sources, source } = await resolveSettingsSafe(scope);
+  // `values` is the FLAT map keyed exactly as `allDefinitions()[].key`, so a screen
+  // can do `values[def.key]`. It was previously the {values,sources} wrapper, which
+  // made every one of those lookups undefined — defeating the whole "the screen is
+  // drawn from the server's own description" point.
+  return res.json({ ok: true, scope, source, definitions: ppeSettings.allDefinitions(), values, sources });
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +281,13 @@ async function listFindingsRoute(req, res) {
     return res.status(400).json({ error: `Unknown status. Use one of: ${DECIDABLE.join(', ')}.`, allowed: DECIDABLE });
   }
 
+  // NOTE (re-audit): `listFindings` has no SQL LIMIT and no investor predicate — it
+  // returns the whole scope. The investor filter and the page slice below therefore
+  // run in JS over every row, so both this route and /scoreboard degrade linearly
+  // with total ledger history. Paging belongs in the store, not here: adding a LIMIT
+  // at this layer would silently drop the tail BEFORE the queue ranks it, which is
+  // exactly the "reports a cleaner picture than the truth" failure this surface is
+  // built to avoid. Recorded rather than half-fixed.
   const rows = await findingStore.listFindings(scope, status ? { status } : {}, db);
   // The store returns raw table rows; every pure consumer speaks RECORDS.
   let records = rows.map(findingStore.rowToRecord);
@@ -273,6 +323,12 @@ async function decideFindingRoute(req, res) {
 
   const b = req.body || {};
   const status = String(b.status || '').trim();
+  if (NOT_DECIDABLE.includes(status)) {
+    return res.status(400).json({
+      error: `"${status}" is where a finding STARTS, not a decision. A finding re-opens only by reproducing — settle it with one of: ${DECIDABLE.join(', ')}.`,
+      allowed: DECIDABLE,
+    });
+  }
   if (!DECIDABLE.includes(status)) {
     return res.status(400).json({ error: `A decision must be one of: ${DECIDABLE.join(', ')}.`, allowed: DECIDABLE });
   }
@@ -333,8 +389,8 @@ async function quoteRoute(req, res) {
       nowMs,
     },
     {
-      priceToleranceMilli: settings.price_tolerance_milli,
-      rateToleranceMilli: settings.rate_tolerance_milli,
+      priceToleranceMilli: settings[K.priceTolerance],
+      rateToleranceMilli: settings[K.rateTolerance],
     },
   );
 
@@ -399,8 +455,8 @@ async function canaryRoute(req, res) {
       investor,
       program,
       nowMs,
-      priceToleranceMilli: settings.price_tolerance_milli,
-      rateToleranceMilli: settings.rate_tolerance_milli,
+      priceToleranceMilli: settings[K.priceTolerance],
+      rateToleranceMilli: settings[K.rateTolerance],
       concurrency: intIn(b.concurrency, 8) || 4,
     },
   );
@@ -478,5 +534,5 @@ module.exports.handlers = {
 };
 module.exports._internals = {
   requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe,
-  MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE,
+  MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K,
 };
