@@ -68,6 +68,16 @@ services:
         generateValue: true
       - key: SSN_ENCRYPTION_KEY
         generateValue: true
+      # Long-Term Lender Price read-only pricing. The browser login authenticates both
+      # the borrower and the OAuth client; all four values are dashboard-only.
+      - key: LP_USERNAME
+        sync: false
+      - key: LP_PASSWORD
+        sync: false
+      - key: LP_CLIENT_SECRET
+        sync: false
+      - key: LP_DIAG_TOKEN
+        sync: false
       - key: INTAKE_API_KEY
         generateValue: true
       # 'auto' picks the provider from whatever credentials are present:
