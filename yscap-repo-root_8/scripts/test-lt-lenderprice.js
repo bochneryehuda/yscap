@@ -497,6 +497,31 @@ async function offline() {
   ok(goldB.criteria.loanYear === 15 && goldB.brokerCriteria.dayLocks === 15, 'GOLDEN B: 15yr / 15-day lock');
   ok(goldB.criteria.cashoutAmount === 50000, 'GOLDEN B: cashoutAmount 50000 transmits as criteria.cashoutAmount');
 
+  // 37) AUDIT — advanced numerics are STRICTLY validated (no more silent coercion of "12abc" → 123).
+  ok(vErr({ ...G, monthlyIncome: '12abc' }) === 'invalid_field_value', 'a malformed monthlyIncome → 422 invalid_field_value');
+  ok(vErr({ ...G, numberOfBorrowers: 0 }) === 'invalid_field_value', 'numberOfBorrowers 0 is out of range (min 1) → 422');
+  ok(vErr({ ...G, financedProperties: 1.5 }) === 'invalid_field_value', 'a fractional financedProperties → 422 (integer required)');
+  ok(vErr({ ...G, dti: 150 }) === 'invalid_field_value', 'a DTI of 150 is out of range (max 100) → 422');
+  ok(vErr({ ...G, monthlyDebt: -5 }) === 'invalid_field_value', 'a negative monthlyDebt → 422');
+  ok(sm.validateScenario({ ...G, monthlyIncome: 8000, monthlyDebt: 2000, numberOfBorrowers: 2, dti: 43 }).ok === true, 'valid advanced numerics are accepted');
+  const advReq = lp.buildSearch({ ...G, monthlyIncome: 8000, numberOfBorrowers: 2, dti: 43 });
+  ok(advReq.criteria.monthlyIncome === 8000 && advReq.criteria.numberOfBorrower === 2 && Math.abs(advReq.criteria.clientDti - 0.43) < 1e-9, 'valid advanced numerics are actually applied to the request');
+
+  // 38) AUDIT — a wrong-shape nested field is REJECTED, not silently ignored.
+  ok(vErr({ ...G, bankruptcy: 'chapter7' }) === 'invalid_field_value', 'bankruptcy sent as a STRING → 422 (dangerous to price without it)');
+  ok(vErr({ ...G, mortgageLates: 'none' }) === 'invalid_field_value', 'mortgageLates sent as a STRING → 422');
+  ok(sm.validateScenario({ ...G, bankruptcy: { chapter: 'Chapter 7', seasoning: '4-7 Years' } }).ok === true, 'a correctly-shaped bankruptcy object is accepted');
+
+  // 39) AUDIT — explicit-false four-state: omitted inherits, true turns on, false turns OFF.
+  const muOff = lp.buildSearch({ ...G, mixedUse: false });
+  ok(muOff.dynamicPropertiesMap.GLOBAL_MixedUse && muOff.dynamicPropertiesMap.GLOBAL_MixedUse.value === false, 'explicit mixedUse:false is transmitted as OFF (no longer swallowed)');
+  const muOn = lp.buildSearch({ ...G, mixedUse: true });
+  ok(muOn.dynamicPropertiesMap.GLOBAL_MixedUse.value === true, 'explicit mixedUse:true is transmitted as ON');
+  const muOmit = lp.buildSearch({ ...G });
+  ok(muOmit.dynamicPropertiesMap.GLOBAL_MixedUse === undefined, 'omitted mixedUse inherits (nothing written)');
+  const nmhOff = lp.buildSearch({ ...G, noMortgageHistory: false });
+  ok(nmhOff.dynamicPropertiesMap.GLOBAL_NoMortgageHistory && nmhOff.dynamicPropertiesMap.GLOBAL_NoMortgageHistory.value === false, 'explicit noMortgageHistory:false is transmitted as OFF');
+
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }
 
