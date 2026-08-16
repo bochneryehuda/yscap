@@ -26,6 +26,25 @@ const day = (v) => {
  * itself says so — the file's own lock section is where that distinction is spelled
  * out, because a pipeline cell has no room for a sentence.
  */
+/**
+ * Days at the current milestone — or an honest blank.
+ *
+ * `milestone_days` is NULL whenever the loan was only baselined (the server refuses
+ * to age a first sighting), so this renders the reason rather than a dash a reader
+ * would take for "no time at all".
+ */
+function MilestoneAge({ row }) {
+  const d = row.milestone_days;
+  if (d == null) {
+    return (
+      <span title={row.milestone_since
+        ? 'This is where the loan already was when PILOT started watching it — how long it has been here is not known.'
+        : 'PILOT has not read this loan yet.'} style={{ color: '#4B585C' }}>—</span>
+    );
+  }
+  return <span style={{ color: '#141B22' }}>{d} day{d === 1 ? '' : 's'}</span>;
+}
+
 function LockCell({ row }) {
   if (!row.lock_status && row.lock_expiration_date == null) {
     return <span style={{ color: '#4B585C' }}>—</span>;
@@ -209,6 +228,7 @@ export default function LtPipeline() {
             <thead><tr>
               <th style={th}>Loan #</th><th style={th}>Borrower</th><th style={th}>Amount</th>
               <th style={th}>Stage</th><th style={th}>Milestone</th>
+              <th style={th}>At milestone</th>
               <th style={th}>Loan officer</th><th style={th}>Lock</th><th style={th}>Updated</th>
             </tr></thead>
             <tbody>
@@ -230,6 +250,11 @@ export default function LtPipeline() {
                     <td style={td}>{money(l.loan_amount)}</td>
                     <td style={td}>{l.stage_key || '—'}</td>
                     <td style={td}>{l.milestone_name || '—'}</td>
+                    {/* HOW LONG IT HAS SAT THERE. Blank on a loan PILOT only ever
+                        baselined — we know when we started watching, not when it
+                        arrived, and a number there would be a confident guess on
+                        exactly the back-book files this column exists to surface. */}
+                    <td style={td}><MilestoneAge row={l} /></td>
                     <td style={td}>
                       {officer ? (officer.name || '—') : '—'}
                       {officer && officer.overridden && (

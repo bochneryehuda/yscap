@@ -52,6 +52,10 @@ const SORTABLE = {
   synced: 'l.encompass_synced_at',
   // The lock desk's own order: whatever expires soonest, first.
   lock_expiration: 'k.expiration_date',
+  // "Which files are stuck" — oldest sighting first. Sorting on the STAMP rather
+  // than on the computed age is the same ordering and needs no expression here;
+  // a loan we have only baselined sorts last, because its stamp is not an age.
+  milestone_since: 'CASE WHEN l.milestone_since_is_baseline THEN NULL ELSE l.milestone_since END',
 };
 const DEFAULT_SORT = 'last_modified';
 
@@ -157,6 +161,18 @@ function buildPipelineQuery(viewerAccess, staffId, filters = {}) {
            -- one: the expiration itself is always taken as Encompass states it.
            CASE WHEN k.expiration_date IS NULL THEN NULL
                 ELSE (k.expiration_date - CURRENT_DATE) END AS lock_days_remaining,
+           l.milestone_since, l.milestone_since_is_baseline,
+           -- HOW LONG IT HAS SAT WHERE IT IS — computed here, like the lock
+           -- countdown, so the list can be SORTED on it.
+           --
+           -- NULL ON A BASELINE, and that is the whole point. A baseline stamp is
+           -- when PILOT started watching, not when the loan arrived; turning it into
+           -- a number would put a confident age on every file in the back book and
+           -- would be wrong on exactly the stuck ones this column exists to surface.
+           -- milestones.describeClock refuses the same thing for one file; this is
+           -- that rule expressed for the list, so the two can never disagree.
+           CASE WHEN l.milestone_since IS NULL OR l.milestone_since_is_baseline THEN NULL
+                ELSE EXTRACT(DAY FROM (now() - l.milestone_since))::int END AS milestone_days,
            (SELECT json_agg(json_build_object(
                      'role', c.role,
                      'name', c.encompass_name,

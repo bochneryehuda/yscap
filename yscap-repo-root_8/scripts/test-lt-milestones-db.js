@@ -156,6 +156,28 @@ const eventsOf = async (id) => (await ltDb.query(
     check(new Date(reached2.processing).toISOString().startsWith('2026-08-14'),
       'a file that rolled back and returned is dated from when it reached it AGAIN, not the first time');
 
+    // ── E2. The pipeline carries the same honesty ───────────────────────────
+    console.log('\nthe pipeline column tells the same truth as the file screen');
+
+    const pipeline = require('../src/longterm/pipeline');
+    const q = pipeline.buildPipelineQuery({ seesAll: true, staffId: null }, { limit: 200 });
+    const { rows: pipeRows } = await ltDb.query(q.sql, q.params);
+    const watched = pipeRows.find((r) => String(r.id) === String(loan2.id));
+    const baselined = pipeRows.find((r) => String(r.id) === String(loan.id));
+
+    check(watched && typeof watched.milestone_days === 'number' && watched.milestone_days >= 0,
+      'a loan whose move we WATCHED reports a real number of days on the pipeline');
+    check(baselined && baselined.milestone_days === null,
+      'THE ONE THAT MATTERS: a loan we only BASELINED reports NULL — the list must not put a confident age on a file we never watched arrive, which is exactly the back book');
+    check(baselined && baselined.milestone_since !== null,
+      '…while still carrying the stamp itself, so a screen can say WHEN we started watching');
+
+    // The sort must be accepted and must not throw against the real schema.
+    const qs = pipeline.buildPipelineQuery({ seesAll: true, staffId: null },
+      { sort: 'milestone_since', dir: 'asc', limit: 50 });
+    const { rows: sorted } = await ltDb.query(qs.sql, qs.params);
+    check(Array.isArray(sorted), 'and the list can be SORTED on it — "which files are stuck" is one click');
+
     // ── F. It can never break the sync that carries it ──────────────────────
     console.log('\nit can never break the loan mirror');
 
