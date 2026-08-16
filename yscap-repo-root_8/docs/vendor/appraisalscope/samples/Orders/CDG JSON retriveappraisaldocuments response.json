@@ -1,0 +1,61 @@
+{
+	"message": {
+		"digitalGatewaySystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "DigitalGatewayOrderNumber",
+				"referenceIdentifierValue": "CLGGL100417"
+			}],
+			"statusResponses": [{
+				"statusCode": "0",
+				"statusCondition": "Success",
+				"statusDescription": "Acknowledgement",
+				"statusName": "ACK"
+			}]
+		},
+		"deals": [{
+			"embeddedFiles": [{
+					"appraisalFileSequenceIdentifier": "1",
+					"appraisalIdentifier": "1070",
+					"createdDatetime": "2021-03-29 13:54:07",
+					"documentId": "1004_XML",
+					"documentType": "Sales Contract",
+					"includeXMLIndicator": true,
+					"isAdditionalDocument": "0",
+					"lenderLoanIdentifier": "1235553221aabc",
+					"objectDescription": "2017 4506T Transcript",
+					"objectName": "2017-4506T-Transcript.pdf",
+					"objectSize": "2629260",
+					"objectXMLFileName": "integrations_Testborrower(1070)-V1.xml",
+					"objectURL": "https://uat1.globalgateway.corelogic.com/getappraisalscopedocument/clgx-vsg-ascope-glb-uat-ascope-docs/6112d2f37cd941628623603.pdf",
+					"referenceIdentifierValue": "1070",
+					"ucdpDocFileIdentifier": "null",
+					"ucdpFannieMaeFileName:": "",
+					"ucdpFreddieMacFileName": "",
+					"ucdpOrderIdentifier": "null",
+					"ucdpOrderStatus": "null"
+				},
+				{
+					"appraisalFileSequenceIdentifier": "1",
+					"appraisalIdentifier": "1070",
+					"createdDatetime": "2021-03-29 13:54:07",
+					"documentId": "1004_XML",
+					"documentType": "Sales Contract",
+					"includeXMLIndicator": true,
+					"isAdditionalDocument": "0",
+					"lenderLoanIdentifier": "1235553221aabc",
+					"objectDescription": "2017 4506T Transcript",
+					"objectName": "2017-4506T-Transcript.pdf",
+					"objectSize": "2629260",
+					"objectXMLFileName": "integrations_Testborrower(1070)-V1.xml",
+					"objectURL": "https://uat1.globalgateway.corelogic.com/getappraisalscopedocument/clgx-vsg-ascope-glb-uat-ascope-docs/6112d2f37cd941628623604.pdf",
+					"referenceIdentifierValue": "1070",
+					"ucdpDocFileIdentifier": "null",
+					"ucdpFannieMaeFileName:": "",
+					"ucdpFreddieMacFileName": "",
+					"ucdpOrderIdentifier": "null",
+					"ucdpOrderStatus": "null"
+				}
+			]
+		}]
+	}
+}

@@ -1,0 +1,517 @@
+{
+    "success": true,
+    "result": [
+        {
+            "id": "133",
+            "name": "TannerTestJobType"
+        },
+        {
+            "id": "131",
+            "name": "Rush - 1004 Conventional"
+        },
+        {
+            "id": "130",
+            "name": "AQA PDC"
+        },
+        {
+            "id": "129",
+            "name": "AQA 1004P"
+        },
+        {
+            "id": "128",
+            "name": "AQA N/A"
+        },
+        {
+            "id": "1",
+            "name": "Test Form - 1004 Conventional"
+        },
+        {
+            "id": "4",
+            "name": "Test Form - 1004D FHA"
+        },
+        {
+            "id": "3",
+            "name": "Test Form - 1004D Conventional"
+        },
+        {
+            "id": "2",
+            "name": "Test Form - 1004 FHA"
+        },
+        {
+            "id": "5",
+            "name": "Single-family Appraisal (1004)"
+        },
+        {
+            "id": "6",
+            "name": "Single-family Investment (1004 and 1007)"
+        },
+        {
+            "id": "7",
+            "name": "Single-family Investment (1004 and 216)"
+        },
+        {
+            "id": "8",
+            "name": "Single-family Investment (1004, 1007, and 216)"
+        },
+        {
+            "id": "9",
+            "name": "Single-family REO (1004 w/REO Addendum)"
+        },
+        {
+            "id": "10",
+            "name": "Single-family REO Exterior (2055 w/REO Addendum)"
+        },
+        {
+            "id": "11",
+            "name": "Exterior-only Single-family Appraisal (2055)"
+        },
+        {
+            "id": "12",
+            "name": "Exterior-only Single-family Investment (2055 and 1007)"
+        },
+        {
+            "id": "13",
+            "name": "Exterior-only Single-family Investment (2055, 1007, and 216)"
+        },
+        {
+            "id": "14",
+            "name": "Exterior-only Single-family w/Comparable Photos (2055)"
+        },
+        {
+            "id": "15",
+            "name": "Condo Appraisal (1073)"
+        },
+        {
+            "id": "16",
+            "name": "Condo Exterior-only Appraisal (1075)"
+        },
+        {
+            "id": "17",
+            "name": "Condo Exterior-only Investment (1075 and 1007)"
+        },
+        {
+            "id": "18",
+            "name": "Condo Exterior-only Investment (1075, 1007, and 216)"
+        },
+        {
+            "id": "19",
+            "name": "Condo Investment (1073 and 1007)"
+        },
+        {
+            "id": "20",
+            "name": "Condo Investment (1073 and 216)"
+        },
+        {
+            "id": "21",
+            "name": "Condo Investment (1073, 1007, and 216)"
+        },
+        {
+            "id": "22",
+            "name": "Condo REO Appraisal (1073)"
+        },
+        {
+            "id": "23",
+            "name": "Appraisal Update/Inspection of Repairs (1004D)"
+        },
+        {
+            "id": "24",
+            "name": "Appraisal Update/Recertification (1004D)"
+        },
+        {
+            "id": "25",
+            "name": "Manufactured Home (1004C)"
+        },
+        {
+            "id": "26",
+            "name": "Manufactured Home Investment (1004C and 1007)"
+        },
+        {
+            "id": "27",
+            "name": "Manufactured Home Investment (1004C, 1007, and 216)"
+        },
+        {
+            "id": "28",
+            "name": "Multi-family Appraisal (1025)"
+        },
+        {
+            "id": "29",
+            "name": "Multi-family Investment (1025 and 216)"
+        },
+        {
+            "id": "30",
+            "name": "Multi-family REO Appraisal (1025)"
+        },
+        {
+            "id": "31",
+            "name": "Exterior-only Co-op Appraisal (2095)"
+        },
+        {
+            "id": "32",
+            "name": "Conversion - Conventional to FHA"
+        },
+        {
+            "id": "33",
+            "name": "Conversion - FHA to Conventional"
+        },
+        {
+            "id": "34",
+            "name": "Conversion - USDA to Conventional"
+        },
+        {
+            "id": "35",
+            "name": "Conversion - USDA to FHA"
+        },
+        {
+            "id": "36",
+            "name": "JUMBO Single-family (1004)"
+        },
+        {
+            "id": "37",
+            "name": "JUMBO Single-family Investment (1004 and 1007)"
+        },
+        {
+            "id": "38",
+            "name": "JUMBO Single-family Investment (1004 and 216)"
+        },
+        {
+            "id": "39",
+            "name": "JUMBO Single-family Investment (1004, 1007, and 216)"
+        },
+        {
+            "id": "40",
+            "name": "JUMBO Condo (1073)"
+        },
+        {
+            "id": "41",
+            "name": "JUMBO Multi-family (1025)"
+        },
+        {
+            "id": "42",
+            "name": "JUMBO Multi-family Investment (1025 and 216)"
+        },
+        {
+            "id": "43",
+            "name": "JUMBO Investment Form (1007)"
+        },
+        {
+            "id": "44",
+            "name": "JUMBO Investment Form (216)"
+        },
+        {
+            "id": "45",
+            "name": "JUMBO Investment Forms Only (1007 and 216)"
+        },
+        {
+            "id": "46",
+            "name": "JUMBO Field Review"
+        },
+        {
+            "id": "47",
+            "name": "JUMBO Desk Review"
+        },
+        {
+            "id": "48",
+            "name": "JUMBO Enhanced Desk Review"
+        },
+        {
+            "id": "49",
+            "name": "JUMBO Disaster Inspection Report"
+        },
+        {
+            "id": "50",
+            "name": "JUMBO Appraisal Update/Final Inspection (1004D)"
+        },
+        {
+            "id": "51",
+            "name": "JUMBO Appraisal Update/Recertification of Value (1004D)"
+        },
+        {
+            "id": "52",
+            "name": "Field Review (2000)"
+        },
+        {
+            "id": "53",
+            "name": "Multi-family Field Review (FNMA 2000A)"
+        },
+        {
+            "id": "54",
+            "name": "FHA Reverse mortgage appraisal (1004)"
+        },
+        {
+            "id": "55",
+            "name": "FHA Single-family appraisal (FNMA 1004)"
+        },
+        {
+            "id": "56",
+            "name": "FHA Single-family Investment (1004 and 216)"
+        },
+        {
+            "id": "57",
+            "name": "FHA Single-family investment (1004 and 1007)"
+        },
+        {
+            "id": "58",
+            "name": "FHA Single-family investment (1004, 1007, and 216)"
+        },
+        {
+            "id": "59",
+            "name": "FHA Single-family REO (1004 w/REO addendum)"
+        },
+        {
+            "id": "60",
+            "name": "FHA Appraisal Update/Inspection of Repairs (1004D)"
+        },
+        {
+            "id": "61",
+            "name": "FHA Appraisal Update/Recertification of Value (1004D)"
+        },
+        {
+            "id": "62",
+            "name": "FHA Condo (1073)"
+        },
+        {
+            "id": "63",
+            "name": "FHA Condo investment (1073 and 1007)"
+        },
+        {
+            "id": "64",
+            "name": "FHA Condo investment (1073, 1007, and 216)"
+        },
+        {
+            "id": "65",
+            "name": "FHA Exterior-only residential report (2055)"
+        },
+        {
+            "id": "66",
+            "name": "FHA Exterior-only Condo (1075)"
+        },
+        {
+            "id": "67",
+            "name": "FHA Multi-family (1025)"
+        },
+        {
+            "id": "68",
+            "name": "FHA Multi-family Investment (1025 and 216)"
+        },
+        {
+            "id": "69",
+            "name": "FHA Manufactured Home (1004C)"
+        },
+        {
+            "id": "70",
+            "name": "FHA Manufactured Home Final Inspection (1004D)"
+        },
+        {
+            "id": "71",
+            "name": "FHA Manufactured Home Recertification of Value (1004D)"
+        },
+        {
+            "id": "72",
+            "name": "FHA Field Review (HUD 1038)"
+        },
+        {
+            "id": "73",
+            "name": "FHA Field Review (FNMA 2000)"
+        },
+        {
+            "id": "74",
+            "name": "FHA Desktop Review"
+        },
+        {
+            "id": "75",
+            "name": "FHA Desktop Review (Enhanced)"
+        },
+        {
+            "id": "76",
+            "name": "FHA Disaster Inspection Report"
+        },
+        {
+            "id": "77",
+            "name": "FHA Compliance Inspection (CIR)"
+        },
+        {
+            "id": "78",
+            "name": "FHA Comparable Rent Schedule (1007)"
+        },
+        {
+            "id": "79",
+            "name": "FHA Operating Income Statement (216)"
+        },
+        {
+            "id": "80",
+            "name": "FHA Investment Forms Only (1007 and 216)"
+        },
+        {
+            "id": "81",
+            "name": "FHA 203K Single-family (1004)"
+        },
+        {
+            "id": "82",
+            "name": "FHA 203K Multi-family (1025)"
+        },
+        {
+            "id": "83",
+            "name": "FHA 203K Multi-family Investment (1025 and 216)"
+        },
+        {
+            "id": "84",
+            "name": "FHA 203K Field Review"
+        },
+        {
+            "id": "85",
+            "name": "FHA 203K Desk Review"
+        },
+        {
+            "id": "86",
+            "name": "FHA 203K Enhanced Desk Review"
+        },
+        {
+            "id": "87",
+            "name": "FHA 203K Disaster Inspection Report"
+        },
+        {
+            "id": "88",
+            "name": "FHA 203K Appraisal Update/Final Inspection (1004D)"
+        },
+        {
+            "id": "89",
+            "name": "FHA 203K Appraisal Update/Recertification of Value (1004D)"
+        },
+        {
+            "id": "90",
+            "name": "USDA Single-family (1004)"
+        },
+        {
+            "id": "91",
+            "name": "USDA Single-family Investment (1004 and 1007)"
+        },
+        {
+            "id": "92",
+            "name": "USDA Single-family Investment (1004 and 216)"
+        },
+        {
+            "id": "93",
+            "name": "USDA Single-family Investment (1004, 1007, and 216)"
+        },
+        {
+            "id": "94",
+            "name": "USDA Manufactured Home (1004C)"
+        },
+        {
+            "id": "95",
+            "name": "USDA Multi-family Investment (1025 and 216)"
+        },
+        {
+            "id": "96",
+            "name": "USDA Appraisal Update/Inspection of Repairs (1004D)"
+        },
+        {
+            "id": "97",
+            "name": "USDA Appraisal Update/Recertification of Value (1004D)"
+        },
+        {
+            "id": "98",
+            "name": "USDA Condo (FNMA 1073)"
+        },
+        {
+            "id": "99",
+            "name": "USDA Disaster Inspection Report"
+        },
+        {
+            "id": "100",
+            "name": "USDA Existing Dwelling Certification"
+        },
+        {
+            "id": "101",
+            "name": "USDA Enhanced Desk Review"
+        },
+        {
+            "id": "102",
+            "name": "USDA Field Review (2000)"
+        },
+        {
+            "id": "103",
+            "name": "Collateral Desktop Analysis"
+        },
+        {
+            "id": "104",
+            "name": "Comparable Rent Schedule (1007)"
+        },
+        {
+            "id": "105",
+            "name": "Standalone Investment Forms (1007 and 216)"
+        },
+        {
+            "id": "106",
+            "name": "Condition and Marketability Report (FHLMC 2070)"
+        },
+        {
+            "id": "107",
+            "name": "Co-op Appraisal (FNMA 2090)"
+        },
+        {
+            "id": "108",
+            "name": "Desktop Appraisal (No Inspection)"
+        },
+        {
+            "id": "109",
+            "name": "Desktop Appraisal (Exterior)"
+        },
+        {
+            "id": "110",
+            "name": "Desktop Appraisal (Interior)"
+        },
+        {
+            "id": "111",
+            "name": "Desktop Review"
+        },
+        {
+            "id": "112",
+            "name": "Desktop Review (Enhanced)"
+        },
+        {
+            "id": "113",
+            "name": "Disaster Inspection"
+        },
+        {
+            "id": "114",
+            "name": "Drive by Appraisal (Legacy 2055)"
+        },
+        {
+            "id": "115",
+            "name": "General Purpose Appraisal Report (GPAR)"
+        },
+        {
+            "id": "116",
+            "name": "Land Appraisal"
+        },
+        {
+            "id": "117",
+            "name": "Land Appraisal - REO"
+        },
+        {
+            "id": "118",
+            "name": "Operating Income Statement (216)"
+        },
+        {
+            "id": "119",
+            "name": "Property Inspection (FNMA 2075)"
+        },
+        {
+            "id": "120",
+            "name": "Real Estate Value Estimate (RVE)"
+        },
+        {
+            "id": "121",
+            "name": "Residential Appraisal Form - 71B"
+        },
+        {
+            "id": "122",
+            "name": "Retrospective Field Review"
+        },
+        {
+            "id": "123",
+            "name": "Supplemental REO Addendum"
+        }
+    ]
+}

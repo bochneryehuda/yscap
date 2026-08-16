@@ -1,0 +1,46 @@
+{
+	"message": {
+		"clientSystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "ApiKey",
+				"referenceIdentifierValue": "{{api_key}}"
+			    },
+				{
+					"referenceIdentifierType": "ClientOrderNumber",
+					"referenceIdentifierValue": "1234AB"
+				}]
+		},
+		"products": [{
+			"payments": [{
+				"paymentReferenceIdentifier": "38298",
+				"paymentAccountCardHolderFirstName": "API",
+				"paymentAccountCardHolderLastName": "Testing",
+				"paymentAccountCardHolderAddress1": "501 NE 122nd St",
+				"paymentAccountCardHolderAddress2": "Apt B",
+				"paymentAccountCardHolderCity": "OKLAHOMA CITY",
+				"paymentAccountCardHolderState": "OK",
+				"paymentAccountCardHolderPostalCode": "73114",
+				"paymentAccountCardHolderCountry": "United States",
+				"paymentAccountCardHolderPhone": "555-222-5555",
+				"paymentAccountCardHolderEmail": "brittthompson@corelogic.com",
+				"paymentAccountIdentifier": "4012888888881881",
+				"paymentAccountCardSecurityCode": "111",
+				"paymentAccountCardExpirationMonth": "01",
+				"paymentAccountCardExpirationYear": "22",
+				"paymentTotalAmount": "300.22"
+			}]
+		}],
+		"serviceProviderSystem": {
+			"referenceIdentifiers": [{
+					"referenceIdentifierType": "ServiceProviderSubDomain",
+					"referenceIdentifierValue": "integrations.uat"
+				},
+				{
+					"referenceIdentifierType": "ServiceProviderOrderNumber",
+					"referenceIdentifierValue": "1417"
+				}
+			]
+		},
+		"requestActionType": "PartialPayment"
+	}
+}

@@ -1,0 +1,47 @@
+{
+   "responseData": {
+      "responseType": "Products",
+      "count": 3,
+      "responseFields": [
+         {
+            "num": 1,
+            "fieldlist": [
+               {
+                  "fieldName": "id",
+                  "fieldValue": "128"
+               },
+               {
+                  "fieldName": "name",
+                  "fieldValue": "AQA N/A"
+               }
+            ]
+         },
+         {
+            "num": 2,
+            "fieldlist": [
+               {
+                  "fieldName": "id",
+                  "fieldValue": "129"
+               },
+               {
+                  "fieldName": "name",
+                  "fieldValue": "AQA 1004P"
+               }
+            ]
+         },
+         {
+            "num": 3,
+            "fieldlist": [
+               {
+                  "fieldName": "id",
+                  "fieldValue": "6"
+               },
+               {
+                  "fieldName": "name",
+                  "fieldValue": "Single-family Investment (1004 and 1007)"
+               }
+            ]
+         }
+      ]
+   }
+}

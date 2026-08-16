@@ -1,0 +1,23 @@
+{
+	"message": {
+		"createdDatetime": "2017-01-25T03:02:24.045Z",
+		"digitalGatewaySystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "DigitalGatewayOrderNumber",
+				"referenceIdentifierValue": "CLGGL100417"
+			}],
+			"statusResponses": [{
+				"statusCode": "-1008",
+				"statusCondition": "ERROR",
+				"statusDescription": "Service Provider Processing Error: Authentication Failed",
+				"statusName": "NACK",
+				"statusCreatedDatetime": "2017-01-25T03:02:24.045Z"
+			}]
+		},
+		"serviceProviderSystem": {
+			"statusResponses": [{
+				"statusCode": "E003"
+			}]
+		}
+	}
+}

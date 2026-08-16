@@ -1,0 +1,26 @@
+{
+  "message": {
+    "clientSystem": {
+      "referenceIdentifiers": [{
+        "referenceIdentifierType": "ApiKey",
+        "referenceIdentifierValue": "{{api_key}}"
+      }]
+    },
+    "deals": [{
+      "properties": [{
+        "address": {
+          "stateCode": "OK",
+          "zip": "73034"
+        }
+
+      }]
+    }],
+    "serviceProviderSystem": {
+      "referenceIdentifiers": [{
+        "referenceIdentifierType": "ServiceProviderSubDomain",
+        "referenceIdentifierValue": "integrations.uat"
+      }]
+    },
+    "requestActionType": "GetAppraiserFeesByLocation"
+  }
+}

@@ -1,0 +1,216 @@
+{
+    "responseData": {
+        "responseType": "Property Types",
+        "count": 16,
+        "responseFields": [
+            {
+                "num": 1,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_type",
+                        "fieldValue": "Condominium"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "No"
+                    }
+                ]
+            },
+            {
+                "num": 2,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_type",
+                        "fieldValue": "Developed Land"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "No"
+                    }
+                ]
+            },
+            {
+                "num": 3,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_type",
+                        "fieldValue": "Duplex"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "No"
+                    }
+                ]
+            },
+            {
+                "num": 4,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_type",
+                        "fieldValue": "Industrial"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "No"
+                    }
+                ]
+            },
+            {
+                "num": 5,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_type",
+                        "fieldValue": "Manufactured Home"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "No"
+                    }
+                ]
+            },
+            {
+                "num": 6,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_type",
+                        "fieldValue": "Mobile Home"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "No"
+                    }
+                ]
+            },
+            {
+                "num": 7,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_type",
+                        "fieldValue": "Modular Home"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "No"
+                    }
+                ]
+            },
+            {
+                "num": 8,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_type",
+                        "fieldValue": "Multi Family"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "No"
+                    }
+                ]
+            },
+            {
+                "num": 9,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_type",
+                        "fieldValue": "Multi-family"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "No"
+                    }
+                ]
+            },
+            {
+                "num": 10,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_type",
+                        "fieldValue": "Office"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "Yes"
+                    }
+                ]
+            },
+            {
+                "num": 11,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_type",
+                        "fieldValue": "Other"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "No"
+                    }
+                ]
+            },
+            {
+                "num": 12,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_type",
+                        "fieldValue": "Raw Land"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "No"
+                    }
+                ]
+            },
+            {
+                "num": 13,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_type",
+                        "fieldValue": "Retail"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "No"
+                    }
+                ]
+            },
+            {
+                "num": 14,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_type",
+                        "fieldValue": "Single Family"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "Yes"
+                    }
+                ]
+            },
+            {
+                "num": 15,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_type",
+                        "fieldValue": "Vacant Land"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "0"
+                    }
+                ]
+            },
+            {
+                "num": 16,
+                "fieldlist": [
+                    {
+                        "fieldName": "property_type",
+                        "fieldValue": "Vacant Lot"
+                    },
+                    {
+                        "fieldName": "is_default",
+                        "fieldValue": "No"
+                    }
+                ]
+            }
+        ]
+    }
+}

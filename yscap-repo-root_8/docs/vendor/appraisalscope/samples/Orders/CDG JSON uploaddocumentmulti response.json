@@ -1,0 +1,60 @@
+
+
+*************************************************************************************
+SAMPLE RESPONSE WHEN ENTIRE REQUEST IS PROCESSED SUCCESSFULLY
+*************************************************************************************
+
+{
+	"message": {
+		"digitalGatewaySystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "DigitalGatewayOrderNumber",
+				"referenceIdentifierValue": "CLGGL100417"
+			}],
+			"statusResponses": [{
+				"statusCode": "0",
+				"statusCondition": "Success",
+				"statusDescription": "Acknowledgement",
+				"statusName": "ACK"
+			}]
+		}
+	}
+}
+
+
+
+*************************************************************************************
+SAMPLE RESPONSE WHEN HALF OF REQUEST IS PROCESSED SUCCESSFULLY
+*************************************************************************************
+
+{
+	"message": {
+		"digitalGatewaySystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "DigitalGatewayOrderNumber",
+				"referenceIdentifierValue": "CLGGL100417"
+			}],
+			"statusResponses": [{
+				"statusCode": "0",
+				"statusCondition": "Success",
+				"statusDescription": "Acknowledgement",
+				"statusName": "ACK"
+			}]
+		},
+		"products": [{
+			"statusResponses": [{
+					"objectName": "happy.zap",
+					"statusCondition": "fail",
+					"statusDescription": "Invalid file extension",
+					"comments": "content: Required, file_name: Required"
+				},
+				{
+					"objectName": "test-file-for-upload.pdf",
+					"statusCondition": "success",
+					"statusDescription": "",
+					"comments": ""
+				}
+			]
+		}]
+	}
+}

@@ -1,0 +1,26 @@
+{
+	"message": {
+		"digitalGatewaySystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "DigitalGatewayOrderNumber",
+				"referenceIdentifierValue": "CLGGL100417"
+			}],
+			"statusResponses": [{
+				"statusCode": "0",
+				"statusCondition": "Success",
+				"statusDescription": "Acknowledgement",
+				"statusName": "ACK"
+			}]
+		},
+		"serviceProviderSystem": {
+			"responseMessage": "Branch updated successfully."
+		},
+		"deals": [{
+			"parties": [{
+				"companyName": "Test Branch",
+				"serviceProviderInternalIdentifier": "49"
+
+			}]
+		}]
+	}
+}
