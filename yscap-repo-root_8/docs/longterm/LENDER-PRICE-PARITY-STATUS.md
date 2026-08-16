@@ -15,6 +15,45 @@ with accepted data types and defaults.
 
 ## 0. What is NOT code (needs a human — ops, vendor, or an owner decision)
 
+- **PRICING IS DOWN AT LENDER PRICE'S END, AND IT IS NOT OUR REQUEST — measured live
+  2026-08-16 with the owner's written authorization.** This is the current blocker
+  and the only thing on this page that stops a real quote. What was proven, in
+  order, against the live vendor:
+
+  | step | result |
+  |---|---|
+  | `POST auth/oauth/token` password grant | **200** — access token, refresh token, companyId, userId |
+  | `grant_type=refresh_token` | **200**, four chained refreshes, each returning a fresh pair |
+  | `GET pricing/defaultSearch` | **200** |
+  | `GET pricing/smo` | **200** |
+  | `POST pricing/searchRaw/{companyId}/{userId}` | **500, every body** |
+
+  **It is not our payload.** Lender Price's OWN `defaultSearch` model, posted back
+  to them completely unchanged, also returns 500. **It is not the wrong address:**
+  every other path tried returns 404 while this one returns 500, `GET` returns 405
+  and a null body returns 400 — the endpoint exists, is routed, and validates.
+  **It is not the token:** `GET pricing/smo` on the same host with the same bearer
+  returns 200 in the same run.
+
+  **The error text is the tell, and it differs by body.** A malformed body returns a
+  real parser error — `"null cannot be cast to non-null type
+  com.fasterxml.jackson.databind.node.ObjectNode"` — so our request is genuinely
+  parsed and understood. A WELL-FORMED body (theirs or ours) returns
+  `"message": "500 "`: a bare status code where a message belongs, which is what a
+  service does when a call it made DOWNSTREAM returned 500 and it stringified the
+  status. So the request reaches their pricing service and something behind it
+  fails.
+
+  **The question to put to Lender Price**, with nothing to fix on our side until
+  they answer: *"Calls to `POST /rest/v1/lp-ppe-integration/pricing/searchRaw/{companyId}/{userId}`
+  return HTTP 500 with `"message": "500 "`, including when we post your own
+  `defaultSearch` response back unchanged. Login, `defaultSearch` and `smo` all
+  return 200 on the same token. Is PPE pricing enabled for this company/user, and
+  what is the downstream 500?"* Note this is not new — the audit's §25.7 recorded
+  all four of its fixtures returning an upstream 500, which is why the connector
+  already carries the re-login-and-retry recovery. The recovery is working
+  correctly; there is simply nothing on our side left to recover from.
+
 - **Production API health.** The audit could not run live backend↔frontend
   comparisons because the deployed LT `/health` did not respond (the reboot →
   "server briefly unavailable"). The backup job's "database system is in recovery
@@ -30,13 +69,26 @@ with accepted data types and defaults.
   change: someone must ask Lender Price for a service user and put its credentials
   in Render as `LP_USERNAME`/`LP_PASSWORD`. Nothing in the code assumes a human
   account, so the swap is a settings change.
-- **Multiple Render instances share no token state (§37.5).** Each instance keeps
-  its own warm token in memory, so N instances hold N sessions. The refresh-grant
-  renewal below reduces how often each one logs in, but it does not COORDINATE
-  them. The two ways to close it are both decisions, not code we may guess at: a
-  dedicated upstream service user per instance, or ONE encrypted token record
-  behind a PostgreSQL advisory lock. **Ask the owner/developer which** before
-  building either — a shared token record is a new place a credential lives.
+- ~~**Multiple Render instances share no token state (§37.5).**~~ **CLOSED
+  2026-08-16 BY MEASUREMENT — no coordination is needed.** The concern was that
+  the vendor might cap an account to one live token, so a second instance logging
+  in would bump the first. It does not: two sessions were opened for the same
+  account and BOTH tokens still answered the API afterwards. So N instances each
+  holding their own warm token is fine, and neither of the two proposed fixes — a
+  service user per instance, or one encrypted token record behind an advisory lock
+  — needs building. A shared token record would have been a new place a credential
+  lives, for no benefit. **Re-test if the vendor ever changes session policy**;
+  the login response does carry `loanAppSessionPolicy` and `deviceId` fields,
+  which suggests one exists and could be tightened.
+- **THE REFRESH TOKEN LASTS ONE HOUR — the same as the access token (measured
+  2026-08-16), so it can never be what makes the login permanent.** The vendor does
+  not state `refresh_expires_in`; the lifetime was read from the refresh token's
+  own JWT `exp` claim. The refresh grant works and rotates cleanly, so it saves
+  re-sending the password while a service is continuously up — but a process that
+  sleeps for an hour comes back with BOTH tokens dead. The permanent anchor is
+  therefore the PASSWORD login from Render's settings, always available, which is
+  exactly why the renewal is built to fall through to it on any failure. **Nothing
+  should ever store a token**, and nothing does.
 - **The production acceptance test must run INSIDE Render**, where `LP_DIAG_TOKEN`
   and the Lender Price credentials exist. No production Lender Price or diagnostic
   secret exists in this audit workstation, so no local run can stand in for it.

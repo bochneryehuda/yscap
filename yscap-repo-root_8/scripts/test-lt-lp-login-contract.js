@@ -187,6 +187,33 @@ console.log('lender price — the password login, pinned to the verified capture
     ok(apiHits === 2, 'REAUTH-3 …retried exactly ONCE');
   }
 
+  // ---- WHOSE FAULT IS AN UPSTREAM 500? ------------------------------------
+  // Measured against the live vendor 2026-08-16: a well-formed body (ours OR Lender Price's own
+  // defaultSearch posted back unchanged) returns a bare status code where a message belongs, while a
+  // malformed one returns a real parser error. The two look identical in a log while one is an
+  // outage to escalate and the other is a bug to fix, so the connector now SAYS which — and this
+  // pins the reading, because the next occurrence should cost minutes rather than the hour it cost
+  // to establish.
+  {
+    const C = I.classifyUpstreamError;
+    const bare = C(500, JSON.stringify({ timestamp: 'x', status: 500, error: 'Internal Server Error', message: '500 ', path: '/…/searchRaw' }));
+    ok(bare.kind === 'vendor_downstream',
+      'FAULT-1 a bare status code where a message belongs reads as THEIR downstream failure — the exact body the live vendor returns today');
+    ok(/NOT our request/i.test(bare.message) && /Lender Price/.test(bare.message),
+      'FAULT-2 …and says so plainly, with what to do about it (nothing on our side)');
+    const parsed = C(500, JSON.stringify({ status: 500, message: 'null cannot be cast to non-null type com.fasterxml.jackson.databind.node.ObjectNode' }));
+    ok(parsed.kind === 'request_rejected' && /ObjectNode/.test(parsed.message),
+      'FAULT-3 a real parser error is OURS, and the vendor\'s own words are carried through');
+    ok(C(500, '{"message":"  502  "}').kind === 'vendor_downstream',
+      'FAULT-4 any bare status code counts, whitespace and all (it is a shape, not one magic string)');
+    ok(C(422, JSON.stringify({ message: 'bad scenario' })).kind === 'unknown' &&
+       C(500, 'not json at all').kind === 'unknown' &&
+       C(500, null).kind === 'unknown' && C(500, undefined).kind === 'unknown',
+      'FAULT-5 anything it cannot read confidently is UNKNOWN — it never guesses whose fault a failure is');
+    ok(C(500, JSON.stringify({ message: '500 ' })).message !== null && C(200, '{}').kind === 'unknown',
+      'FAULT-6 …and it only ever judges a failure, never a success');
+  }
+
   console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
   process.exit(fail === 0 ? 0 : 1);
 })().catch((e) => { console.error('THREW:', e); process.exit(1); });

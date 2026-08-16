@@ -366,6 +366,40 @@ async function getSession({ force = false } = {}) {
   try { return await _inflight; } finally { _inflight = null; }
 }
 
+// PURE — WHOSE FAULT IS AN UPSTREAM 500? Reading the vendor's error body, so the next person does
+// not spend an hour establishing what live probing established on 2026-08-16.
+//
+// Lender Price's pricing service answers a 500 in two distinguishable shapes, and they mean
+// opposite things about what to do next:
+//
+//   * a bare STATUS CODE where a sentence belongs (message: "500 "). That is what a service
+//     produces when a call IT made downstream returned 500 and it stringified the status. Measured:
+//     this is returned for a well-formed body AND for Lender Price's OWN defaultSearch model posted
+//     back to them completely unchanged — so it cannot be our payload. No retry helps; it is theirs.
+//   * anything else — e.g. "null cannot be cast to non-null type ...ObjectNode", returned for an
+//     empty object — is their parser reading OUR request and objecting to it. That one IS ours, and
+//     it names the problem.
+//
+// The distinction matters because the two look identical in a log ("searchRaw -> 500") while one is
+// an outage to escalate and the other is a bug to fix. REPORTED, NEVER ACTED ON: this only changes
+// what we SAY, never whether we retry, so a vendor who starts writing better messages tomorrow
+// cannot break pricing.
+function classifyUpstreamError(status, body) {
+  const text = typeof body === 'string' ? body : (body == null ? '' : JSON.stringify(body));
+  let msg = null;
+  try { const j = JSON.parse(text); if (j && typeof j.message === 'string') msg = j.message; } catch { /* not JSON */ }
+  if (status === 500 && msg != null && /^\s*\d{3}\s*$/.test(msg)) {
+    return {
+      kind: 'vendor_downstream',
+      message: 'Lender Price\'s pricing service returned an internal error with no reason given (their body carries a bare status code where a message belongs, which is what a service returns when a call IT made failed). This is NOT our request: their own defaultSearch model, posted back unchanged, fails the same way. Nothing on our side fixes it — it needs raising with Lender Price.',
+    };
+  }
+  if (status === 500 && msg) {
+    return { kind: 'request_rejected', message: 'Lender Price rejected the request while reading it: ' + String(msg).slice(0, 200) };
+  }
+  return { kind: 'unknown', message: null };
+}
+
 // A 401 MEANS THE TOKEN WAS REJECTED — CLEAR IT AND LOG IN WITH THE PASSWORD.
 //
 // The developer's verified instruction is explicit and is a DIFFERENT path from the proactive
@@ -616,7 +650,12 @@ async function postSearchRaw(url, session, payload, opts = {}) {
     try { r = await req(url, { ...reqOpts, bearer: s.token }); }
     catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(errText(e)) }; }
   }
-  if (r.status !== 200) return { ok: false, error: 'lp_price_status', http: r.status, message: `searchRaw → ${r.status}`, upstream: scrub((r.text || '').slice(0, 600)) };
+  if (r.status !== 200) {
+    const why = classifyUpstreamError(r.status, r.text);
+    return { ok: false, error: 'lp_price_status', http: r.status,
+      message: why.message || ('searchRaw → ' + r.status),
+      fault: why.kind, upstream: scrub((r.text || '').slice(0, 600)) };
+  }
   const raw = r.json != null ? r.json : r.text;
   const empty = raw == null || (typeof raw === 'string' && raw.trim() === '') || (typeof raw === 'object' && Object.keys(raw).length === 0);
   return { ok: true, session: s, raw, empty };
@@ -1431,6 +1470,6 @@ module.exports = {
   hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
   loginSelfTest,
   _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, pollDisqualifiedByKey, hasStoredSearch, searchKeyFor, disqStore, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, foundationLiveGate, foundationReadiness, requireLiveFoundation, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery,
-    renewalPlan, mergeRefreshed, sessionFromTokenBody, refreshSession, authDiagnostics, resetTokenState, reauthenticate, errText,
+    renewalPlan, mergeRefreshed, sessionFromTokenBody, refreshSession, authDiagnostics, resetTokenState, reauthenticate, errText, classifyUpstreamError,
     refreshBackoffMs, expireRefreshBackoff, REFRESH_GRANT_BACKOFF_MS, REFRESH_GRANT_BACKOFF_MAX_MS },
 };
