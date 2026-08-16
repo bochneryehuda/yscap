@@ -144,12 +144,32 @@ async function login() {
     return { ok: false, error: 'lp_login_failed', http: r.status,
       message: `Lender Price login returned ${r.status}.`, bodyPreview: scrub((r.text || '').slice(0, 200)) };
   }
-  const b = r.json;
+  return sessionFromTokenBody(r.json);
+}
+
+// PURE — ONE definition of how an OAuth token body becomes a session, shared by the password login
+// and the refresh-grant renewal below. Two bodies for the same account must never become two
+// differently-shaped sessions: everything downstream reads `token` / `expiresAt` / `companyId`, and
+// a renewal that quietly dropped one of them would break pricing only on the SECOND hour of uptime.
+//
+// `lifetimeMs` fails SAFE rather than trusting the wire: a non-numeric `expires_in` would make
+// `expiresAt` NaN, `_fresh()` false forever, and every single request perform its own login — a
+// login storm caused by one malformed field. An unreadable lifetime falls back to the vendor's
+// ordinary hour.
+function lifetimeMs(v, fallbackSec) {
+  const n = Number(v);
+  return (Number.isFinite(n) && n > 0 ? n : fallbackSec) * 1000;
+}
+function sessionFromTokenBody(b, { now = Date.now() } = {}) {
+  const refreshSec = Number(b.refresh_expires_in);
   return {
     ok: true,
     token: b.access_token,
     refreshToken: b.refresh_token || null,
-    expiresAt: Date.now() + (Number(b.expires_in || 3599) * 1000),
+    expiresAt: now + lifetimeMs(b.expires_in, 3599),
+    // Optional in the spec and not confirmed for this vendor — null means "unknown", which
+    // renewalPlan treats as "worth trying", never as "expired".
+    refreshExpiresAt: Number.isFinite(refreshSec) && refreshSec > 0 ? now + refreshSec * 1000 : null,
     companyId: b.companyId || process.env.LP_COMPANY_ID || null,
     userId: b.userId || process.env.LP_USER_ID || null,
     profile: {
@@ -161,9 +181,119 @@ async function login() {
   };
 }
 
+// ---- OAuth2 refresh-token renewal -----------------------------------------
+// §37.3 — the login response has always CARRIED a refresh token and we have never once used it:
+// every renewal replayed the account password. That is the standing developer instruction:
+//   "access token approaching expiration → try grant_type=refresh_token → store replacement access
+//    token AND replacement refresh token → if refresh is rejected, perform one password login."
+//
+// THIS IS BUILT FAIL-SAFE BY CONSTRUCTION, which is what makes it shippable before the vendor has
+// confirmed the grant: EVERY failure path — a 400, a 401, an unparseable body, a network throw —
+// falls through to the password login that has always run here. So the worst case is one wasted
+// round trip, never a lost session. And because a vendor that does not support the grant would
+// otherwise cost that wasted round trip before every renewal FOREVER, a rejection also opens a
+// backoff window (below) so the client stops asking for a while.
+//
+// The returned access token is OUTPUT, never configuration: it is held in memory for its hour and
+// replaced. Nothing here reads a token from a browser, a request header, or an env var — the only
+// inputs are the Render-held service credentials and the refresh token the vendor itself issued.
+const REFRESH_GRANT_BACKOFF_MS = Number(process.env.LP_REFRESH_BACKOFF_MS || 15 * 60 * 1000);
+const REFRESH_GRANT_BACKOFF_MAX_MS = Number(process.env.LP_REFRESH_BACKOFF_MAX_MS || 24 * 60 * 60 * 1000);
+
+// PURE — how long to stop asking for the refresh grant after N CONSECUTIVE rejections.
+//
+// THE FIRST CUT OF THIS WAS DEAD CODE and the suite caught it: a rejection opened the window and the
+// password login that immediately followed — the fall-through, which always succeeds — cleared it,
+// so the backoff never once applied. The window has to survive its own fallback to mean anything.
+//
+// It ESCALATES because one rejection cannot tell the two causes apart, and they want opposite
+// treatment. A refresh token that is merely SPENT or revoked (a password change) is a one-off: the
+// fallback login issues a new one, the next renewal falls outside the short first window, the grant
+// succeeds and the counter resets to zero — total cost, one wasted round trip. A vendor that does not
+// SUPPORT the grant at all rejects every time, so the window doubles each renewal (15m, 30m, 1h … to
+// a day) and the client settles at asking about once a day instead of once an hour, forever. Neither
+// case ever loses a session: the password login runs either way.
+function refreshBackoffMs(consecutiveRejections) {
+  const n = Math.max(1, Math.floor(Number(consecutiveRejections) || 1));
+  const ms = REFRESH_GRANT_BACKOFF_MS * Math.pow(2, Math.min(n - 1, 20));
+  return Math.min(ms, REFRESH_GRANT_BACKOFF_MAX_MS);
+}
+async function refreshSession(refreshToken) {
+  const c = credentials();
+  if (!c.ok) return { ok: false, error: 'lp_creds_missing', message: 'Set LP_USERNAME, LP_PASSWORD, and LP_CLIENT_SECRET in Render to enable Lender Price pricing.' };
+  if (!refreshToken) return { ok: false, error: 'lp_refresh_missing', message: 'No refresh token to renew with.' };
+  const form = new URLSearchParams({
+    grant_type: 'refresh_token', refresh_token: refreshToken, client_id: CLIENT_ID,
+  }).toString();
+  let r;
+  try {
+    r = await req(`${AUTH_BASE}/oauth/token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        Authorization: basicClientAuthorization(CLIENT_ID, c.clientSecret),
+      },
+      body: form,
+    });
+  } catch (e) { return { ok: false, error: 'lp_refresh_error', message: scrub(e.message) }; }
+
+  // 400 invalid_grant is the ORDINARY way an OAuth server says "that refresh token is spent or
+  // revoked" — it is not an outage, and it is exactly the case the password fallback exists for.
+  if (r.status === 400 || r.status === 401) {
+    return { ok: false, error: 'lp_refresh_rejected', http: r.status, rejected: true,
+      message: `Lender Price refused the refresh token (${r.status}); falling back to a password login.` };
+  }
+  if (r.status !== 200 || !r.json || !r.json.access_token) {
+    return { ok: false, error: 'lp_refresh_failed', http: r.status,
+      message: `Lender Price refresh returned ${r.status}.`, bodyPreview: scrub((r.text || '').slice(0, 200)) };
+  }
+  return sessionFromTokenBody(r.json);
+}
+
+// PURE — MERGE a refreshed token onto the session it renewed.
+//
+// A refresh response is a TOKEN response, not a LOGIN response: RFC 6749 makes `refresh_token`
+// itself OPTIONAL in it, and this vendor's refresh body has not been observed at all, so it may
+// carry none of the identity fields the password login returns. `companyId` is the one that bites —
+// every foundation fetch (defaultSearch + SMO) is keyed on it, so a renewal that took the fresh body
+// wholesale would leave a perfectly valid token with no company, and pricing would fall back to the
+// static capture an hour into every deployment. So: the fresh ACCESS TOKEN always wins; anything the
+// refresh did not restate is carried over from the session being renewed.
+function mergeRefreshed(prev, fresh) {
+  const p = prev || {};
+  return {
+    ...fresh,
+    refreshToken: fresh.refreshToken || p.refreshToken || null,
+    refreshExpiresAt: fresh.refreshExpiresAt != null ? fresh.refreshExpiresAt : (p.refreshExpiresAt != null ? p.refreshExpiresAt : null),
+    companyId: fresh.companyId || p.companyId || null,
+    userId: fresh.userId || p.userId || null,
+    profile: (fresh.profile && (fresh.profile.email || fresh.profile.person)) ? fresh.profile : (p.profile || fresh.profile || null),
+    renewedBy: 'refresh',
+  };
+}
+
+// PURE — WHICH grant to renew with. Split out from the IO for the standing reason: `getSession`
+// calls its collaborators as LOCAL functions, so a require-cache stub silently does nothing and a
+// test written against the wrapper would exercise a different branch while appearing to pass.
+// Returns { action: 'refresh' | 'login', reason }. Fails toward `login`, which is the path that has
+// always worked, so an unreadable session state can never leave the client unable to authenticate.
+function renewalPlan(session, { now = Date.now(), refreshBlockedUntil = 0 } = {}) {
+  if (!session || !session.ok) return { action: 'login', reason: 'no_session' };
+  if (!session.refreshToken) return { action: 'login', reason: 'no_refresh_token' };
+  if (refreshBlockedUntil > now) return { action: 'login', reason: 'refresh_backoff' };
+  // Only a refresh lifetime the vendor STATED can rule the grant out; an unknown one is tried.
+  if (session.refreshExpiresAt != null && session.refreshExpiresAt <= now) {
+    return { action: 'login', reason: 'refresh_expired' };
+  }
+  return { action: 'refresh', reason: 'refresh_available' };
+}
+
 // ---- token manager: one warm token, single-flight refresh -----------------
-let _session = null;      // last successful login result
-let _inflight = null;     // a login Promise currently resolving (single-flight)
+let _session = null;            // last successful login/renewal result
+let _inflight = null;           // a renewal Promise currently resolving (single-flight)
+let _refreshBlockedUntil = 0;   // set when the vendor rejects the refresh grant (see above)
+let _refreshRejections = 0;     // CONSECUTIVE rejections; zeroed by a successful refresh
+let _lastRenewal = null;        // { at, action, reason, ok, fellBack } — diagnostics ONLY, never a token
 
 function _fresh(s) { return s && s.ok && s.token && s.expiresAt - REFRESH_EARLY_MS > Date.now(); }
 
@@ -171,8 +301,35 @@ async function getSession({ force = false } = {}) {
   if (!force && _fresh(_session)) return _session;
   if (_inflight) return _inflight;
   _inflight = (async () => {
+    const prev = _session;
+    const plan = renewalPlan(prev, { now: Date.now(), refreshBlockedUntil: _refreshBlockedUntil });
+    let fellBack = null;
+    if (plan.action === 'refresh') {
+      const rr = await refreshSession(prev.refreshToken);
+      if (rr.ok) {
+        _session = mergeRefreshed(prev, rr);
+        _refreshRejections = 0;      // the grant works; forget any history
+        _refreshBlockedUntil = 0;
+        _lastRenewal = { at: Date.now(), action: 'refresh', reason: plan.reason, ok: true, fellBack: null };
+        return _session;
+      }
+      // FAIL-SAFE: any refresh failure falls through to the password login. A REJECTION additionally
+      // opens an escalating backoff window so a vendor that does not honour the grant is not asked
+      // before every renewal forever; a transient error (network, 5xx) does NOT, because the grant
+      // may be perfectly fine. The window deliberately SURVIVES the fallback login below — clearing
+      // it there is what made the first cut of this dead code.
+      if (rr.rejected) {
+        _refreshRejections += 1;
+        _refreshBlockedUntil = Date.now() + refreshBackoffMs(_refreshRejections);
+      }
+      fellBack = rr.error;
+    }
     const s = await login();
-    if (s.ok) _session = s;
+    if (s.ok) {
+      s.renewedBy = 'password';
+      _session = s;
+    }
+    _lastRenewal = { at: Date.now(), action: 'login', reason: plan.reason, ok: !!s.ok, fellBack };
     return s;
   })();
   try { return await _inflight; } finally { _inflight = null; }
@@ -242,6 +399,28 @@ function breakerOpen() {
 }
 function recordRecovery() { _recoveryTimes.push(Date.now()); }
 function invalidateSession() { _session = null; }
+// Deliberately NOT resetting `_refreshBlockedUntil`: invalidateSession is the 500-recovery path, and
+// clearing the backoff there would re-arm the wasted rejected-refresh round trip on every upstream
+// 500. A successful password login clears it instead — that is when a fresh refresh token exists.
+
+// Auth diagnostics for the health card (§37.4). NEVER carries a token, a refresh token, or any
+// credential — only which grant last renewed the session and whether the refresh grant is in backoff.
+function authDiagnostics() {
+  return {
+    renewedBy: (_session && _session.renewedBy) || null,
+    hasRefreshToken: !!(_session && _session.refreshToken),
+    refreshBackoff: _refreshBlockedUntil > Date.now() ? new Date(_refreshBlockedUntil).toISOString() : null,
+    refreshRejections: _refreshRejections,
+    lastRenewal: _lastRenewal ? { ...(_lastRenewal), at: new Date(_lastRenewal.at).toISOString() } : null,
+  };
+}
+// TEST SEAM ONLY — clears every piece of token state so a suite can drive the renewal ladder from a
+// known start. Never call this from production code: it discards a live single-flight promise.
+function resetTokenState() { _session = null; _inflight = null; _refreshBlockedUntil = 0; _refreshRejections = 0; _lastRenewal = null; }
+// TEST SEAM ONLY — stand in for the clock reaching the end of the backoff window WITHOUT resetting
+// the rejection history, so a suite can prove the grant is retried afterwards. Production never
+// shortens a window it opened.
+function expireRefreshBackoff() { _refreshBlockedUntil = 0; }
 function invalidateFoundation() { _defaultSearch = null; _smoRegistry = null; }
 // §28.2 — in production the owner can REQUIRE a live pricing foundation: when LP_REQUIRE_LIVE_FOUNDATION
 // is set, a searchRaw whose base/SMO resolved to the STATIC FALLBACK (e.g. the live endpoints 404) is
@@ -1118,7 +1297,7 @@ async function pricingReadiness({ price: deep = false } = {}) {
   if (!s.ok) return { pricingReady: false, auth: { ok: false, error: s.error, http: s.http || null, message: s.message } };
   const f = await priceFoundation();
   if (!f.ok) return { pricingReady: false, auth: { ok: true, expiresAt: new Date(s.expiresAt).toISOString() }, foundation: { ok: false, error: f.error, message: f.message } };
-  const auth = { ok: true, expiresAt: new Date(s.expiresAt).toISOString(), companyId: f.companyId };
+  const auth = { ok: true, expiresAt: new Date(s.expiresAt).toISOString(), companyId: f.companyId, ...authDiagnostics() };
   const fr = foundationReadiness(f);
   if (fr.blocked) return { pricingReady: false, reason: fr.reason, message: fr.message, auth, foundation: fr.foundation };
   const foundation = fr.foundation;
@@ -1174,5 +1353,7 @@ module.exports = {
   configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, pollDisqualified, pollDisqualifiedByKey,
   hasStoredSearch, searchKeyFor, parse, parseFull, parseDisqualified, summarizeRaw, pricingReadiness,
   hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
-  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, pollDisqualifiedByKey, hasStoredSearch, searchKeyFor, disqStore, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, foundationLiveGate, foundationReadiness, requireLiveFoundation, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery },
+  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, pollDisqualifiedByKey, hasStoredSearch, searchKeyFor, disqStore, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, foundationLiveGate, foundationReadiness, requireLiveFoundation, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery,
+    renewalPlan, mergeRefreshed, sessionFromTokenBody, refreshSession, authDiagnostics, resetTokenState,
+    refreshBackoffMs, expireRefreshBackoff, REFRESH_GRANT_BACKOFF_MS, REFRESH_GRANT_BACKOFF_MAX_MS },
 };

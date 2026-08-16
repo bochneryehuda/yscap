@@ -13,7 +13,7 @@ Scope: the Long-Term DSCR pricer's Lender Price integration
 document is the backend counterpart to that audit — every finding mapped to code,
 with accepted data types and defaults.
 
-## 0. Three things that are NOT code (need a human)
+## 0. What is NOT code (needs a human — ops, vendor, or an owner decision)
 
 - **Production API health.** The audit could not run live backend↔frontend
   comparisons because the deployed LT `/health` did not respond (the reboot →
@@ -25,6 +25,23 @@ with accepted data types and defaults.
 - **`LP_REQUIRE_LIVE_FOUNDATION=1`** should be set in Render so production can
   never silently price on the static fallback foundation (the gate already exists
   — `client.js foundationLiveGate`, named 502 `lp_foundation_not_live`).
+- **A DEDICATED Lender Price service account (§37.1).** Pricing currently
+  authenticates as a named human's login. That is an ops/vendor action, not a code
+  change: someone must ask Lender Price for a service user and put its credentials
+  in Render as `LP_USERNAME`/`LP_PASSWORD`. Nothing in the code assumes a human
+  account, so the swap is a settings change.
+- **Multiple Render instances share no token state (§37.5).** Each instance keeps
+  its own warm token in memory, so N instances hold N sessions. The refresh-grant
+  renewal below reduces how often each one logs in, but it does not COORDINATE
+  them. The two ways to close it are both decisions, not code we may guess at: a
+  dedicated upstream service user per instance, or ONE encrypted token record
+  behind a PostgreSQL advisory lock. **Ask the owner/developer which** before
+  building either — a shared token record is a new place a credential lives.
+- **The production acceptance test must run INSIDE Render**, where `LP_DIAG_TOKEN`
+  and the Lender Price credentials exist. No production Lender Price or diagnostic
+  secret exists in this audit workstation, so no local run can stand in for it.
+  `LP_DIAG_TOKEN` is server-only: never in browser JavaScript, never in a URL or
+  query string, never in a log, a screenshot or a report.
 - ~~**ZIP → county-FIPS enrichment is an OWNER decision.**~~ **CLOSED
   2026-08-16** — the owner authorized it in writing (*"Yes, you have my written
   OK to reuse that."*) and it is BUILT. See the §1 row. The authorization is
@@ -39,8 +56,8 @@ Each item is covered by an offline test in `scripts/test-lt-lenderprice.js`,
 
 | Audit finding | Status | Where / behavior |
 |---|---|---|
-| **§32.2 Cash-out amount** (FAIL-CLOSED; supersedes the earlier "vendor fixed the field") | FIXED | A clean live cash-out capture (2026-08-16) sent `loanPurpose="CashoutRefinance"` but its JSON carried NEITHER the value NOR `criteria.cashoutAmount` — only a frontend bug (`dynamicPropertiesMap.undefined: null`). So the amount is accepted + validated + **retained internally** (a Symbol-keyed prop skipped by `JSON.stringify`) but **NEVER transmitted** as a criteria field and NEVER as an invented key; `criteria.cashoutAmount` stays cleared (`SCENARIO_OWNED` DELETE). The frontend `undefined` bug is never replicated. `LP_CASHOUT_AMOUNT_FIELD` remains the DELIBERATE operator escape hatch — set it ONLY once a new capture confirms a legitimate field; unset (default) transmits nothing. `effectiveScenario.cashoutAmountInternal` surfaces the received-but-not-priced value. Test `scripts/test-lt-lp-cashout-pure.js` (not-in-wire + internal retention + escape hatch + fail-closed leak; proven to FAIL when the criteria transmission is re-added). |
-| **§3 appraised value manufactured** | FIXED | No longer copies estimated → appraised. Purchase → `appraisedValue = value`; refinance/cash-out → **blank** unless `asIsValue`/`appraisedValue` supplied. |
+| **§32.2 Cash-out amount** (FAIL-CLOSED) — **SUPERSEDED by the "cash-out amount dropped" row below; kept for the reasoning, not as current behavior** | WAS FIXED, NOW REVERSED | A clean live cash-out capture (2026-08-16) sent `loanPurpose="CashoutRefinance"` but its JSON carried NEITHER the value NOR `criteria.cashoutAmount` — only a frontend bug (`dynamicPropertiesMap.undefined: null`). So the amount is accepted + validated + **retained internally** (a Symbol-keyed prop skipped by `JSON.stringify`) but **NEVER transmitted** as a criteria field and NEVER as an invented key; `criteria.cashoutAmount` stays cleared (`SCENARIO_OWNED` DELETE). The frontend `undefined` bug is never replicated. `LP_CASHOUT_AMOUNT_FIELD` remains the DELIBERATE operator escape hatch — set it ONLY once a new capture confirms a legitimate field; unset (default) transmits nothing. `effectiveScenario.cashoutAmountInternal` surfaces the received-but-not-priced value. Test `scripts/test-lt-lp-cashout-pure.js` (not-in-wire + internal retention + escape hatch + fail-closed leak; proven to FAIL when the criteria transmission is re-added). |
+| **§3 appraised value manufactured** — **SUPERSEDED by the "appraised value mirrored on a Purchase" row below (it is now blank on EVERY purpose)** | WAS FIXED, NOW NARROWED | No longer copies estimated → appraised. Purchase → `appraisedValue = value`; refinance/cash-out → **blank** unless `asIsValue`/`appraisedValue` supplied. |
 | **§1 DSCR defaults not enforced** (24mo reserves / 30yr / 30-day lock) | FIXED | Forced when omitted: `loanYear=30`, `dayLocks=30`, `GLOBAL_RESERVES=Reserves_24`. Overrides a live default carrying different values. |
 | **2026-08-16 audit — appraised value mirrored on a Purchase** | FIXED | `value` no longer populates `criteria.appraisedValue` on ANY purpose. The earlier reading ("on a purchase the appraisal comes in at contract price and the frontend mirrors it") was disproved by the live capture: the page carries Purchase Price 500,000 with Appraised Value blank. Mirroring asserted an appraisal nobody supplied, and appraised value is an LTV/eligibility basis — the same silent-mispricing class as a stale address. Blank unless `appraisedValue`/`asIsValue` is given. |
 | **2026-08-16 audit — cash-out amount dropped** | FIXED | Transmitted as numeric `criteria.cashoutAmount`. **The audit contradicts itself here and the reasoning is recorded in the code:** §30.4/§31.4 capture the key (§30.4 lists it as a confirmed direct criteria field), §32.2 reports a later run without it. Fail-closed was right while the only evidence was the frontend bug `dynamicPropertiesMap.undefined` — not a field name, so anything sent under it would have been a guess. A captured criteria key is different in kind, and the asymmetry decides it: dropping a real amount prices a cash-out as though no cash were taken. `LP_CASHOUT_AMOUNT_FIELD` is RETIRED (it addressed a field that never existed). Still cleared off the foundation then re-applied from the caller. |
@@ -73,6 +90,7 @@ Each item is covered by an offline test in `scripts/test-lt-lenderprice.js`,
 
 Two permanent **golden request-structure fixtures** encode the audit's canonical
 DSCR purchase and cash-out combination (`test-lt-lenderprice.js` sections 35–36).
+| **§37.3 refresh token captured and never used** | FIXED | The login response has always carried `refresh_token` and every renewal replayed the account PASSWORD. `getSession` now follows the developer's ladder: a session approaching expiry renews with **`grant_type=refresh_token`**, storing the replacement access token AND the replacement refresh token; if the grant is **rejected**, exactly ONE password login follows. **Fail-safe by construction** — every failure shape (400, 401, 5xx, unparseable body, network throw) falls through to the password login that has always worked, so the worst case is one wasted round trip and never a lost session; that is what made it shippable before the vendor confirms the grant. A REJECTION additionally opens an **escalating backoff** (15m doubling to a day, reset by the first successful refresh) so a vendor that does not honour the grant is not asked before every renewal forever; a transient failure deliberately does not. The merge is a **carry-over, not a replacement** — a refresh body is a token response and may omit `companyId`, and taking it wholesale would leave a valid token with no company and drop pricing onto the static fallback an hour into every deploy. The access token is treated as OUTPUT: held in memory for its hour, replaced, never a Render setting, never read from a browser. The decision is split PURE (`renewalPlan`/`mergeRefreshed`/`sessionFromTokenBody`/`refreshBackoffMs`) from the IO for the standing reason that `getSession` calls its collaborators locally, so a require-cache stub would silently do nothing. Test `scripts/test-lt-lp-token-renewal.js` — driven through the real `fetch` seam, with an 18-mutation battery each proven to turn it red, including the one the suite caught during the build (the backoff being cleared by its own fallback login, which made it dead code). |
 
 ## 2. Deferred — and EXACTLY what closes each
 
@@ -107,15 +125,14 @@ mis-price, which is worse than the current explicit-reject behavior.
   - **Student-loan cash-out** — BROKEN IN THE VENDOR'S OWN FORM: it serializes
     to `dynamicPropertiesMap.undefined`. Do not invent a field; the vendor must
     assign a real code first.
-  - **Cash-out AMOUNT transmission** — fail-closed per §32.2 (the clean capture
-    carried no legitimate vendor field). The value is retained internally and
-    reported, never transmitted.
   - **QM scope, favorite lenders, historical pricing, Native American /
     Section 184** — Section 184 is additionally a COMPOUND state machine
     (§31.2: it flips mortgage type to USDA and does not cleanly reverse), so it
     must be implemented atomically or stay rejected for DSCR scope.
 **No longer deferred:** ZIP → county-FIPS enrichment, which this list previously
-carried, shipped 2026-08-16 and has moved to §1.
+carried, shipped 2026-08-16 and has moved to §1. **The cash-out AMOUNT also left
+this list**: it is transmitted as the captured `criteria.cashoutAmount`, and the
+reasoning for reversing the earlier fail-closed reading is in the §1 row.
 
 ## 3. The request-builder field contract (accepted types)
 
@@ -137,7 +154,7 @@ above). Anything not in this list is **rejected 422** (`unsupported_field`).
 - `termYears`/`term` → `criteria.loanYear` + `termsCriteria` — one of the live terms; default 30.
 - `lockDays` → `brokerCriteria.dayLocks` + `dayLocksCriteria` — one of the live locks; default 30.
 - `prepayMonths` → `dynamicPropertiesMap.PrepayTerm` — number (0 = No PPP); omitted → inherit.
-- `cashoutAmount` → **NOT TRANSMITTED** — number ≥ 0, accepted and validated but **never sent as a criteria field** (§32.2 fail-closed: the clean live capture carried no legitimate vendor field for it). `criteria.cashoutAmount` is a DELETE-neutral in the clearing registry, so it is cleared and never re-applied; the value is retained on an internal Symbol channel and surfaced as `effectiveScenario.cashoutAmountInternal`. *(This line previously read `→ criteria.cashoutAmount`, the exact opposite of the rule — corrected after the post-merge audit of #1220.)*
+- `cashoutAmount` → `criteria.cashoutAmount` — number ≥ 0, transmitted as a JSON **number** on the captured criteria key. It is a DELETE-neutral in the clearing registry, so a stale amount on a live foundation is cleared and the caller's is re-applied AFTER the clear (the standing scenario-owned footgun); the value is also retained on an internal Symbol channel and surfaced as `effectiveScenario.cashoutAmountInternal`, which can never disagree with what was sent. *(This line has now said both things: it read `→ criteria.cashoutAmount` originally, was corrected to NOT TRANSMITTED after the post-merge audit of #1220 under the §32.2 fail-closed reading, and is back — deliberately — because §30.4 captures the key while §32.2 only reports one run without it. The reasoning is recorded in `search-model.js` and in `scripts/test-lt-lp-cashout-pure.js`, which is the authority if this line and the code ever disagree again.)*
 - `borrowerType` → `dynamicPropertiesMap.GLOBAL_BorrowerType` — default `LLC`.
 - `io`/`escrowWaive`/`fthb` → `criteria.interestOnly`/`escrowWaiver`/`firstTimeHomeBuyer` — strict boolean.
 - Location: `zip`/`state`/`city`/`county`/`countyName`/`countyFps` → `property.address.*` — a 5-digit `zip` ALONE is enough: state + county FIPS + county name are derived from the committed Census ZCTA table (`zip-county.js`) and the response reports what was derived. A caller-supplied value is an ASSERTION — never overwritten, and one that CONTRADICTS the ZIP is 422 `location_conflict`. A ZIP with no ZCTA entry (a PO-box-only ZIP) is 422 `zip_not_found` **only when the county is actually missing** — a caller who already supplied state + countyFps is served. A ZIP spanning several counties resolves to the dominant one and says so (`split: true`); there an explicit county is honored, not rejected.
