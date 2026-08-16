@@ -65,4 +65,11 @@ router.use('/settings', require('./routes/settings'));
 //   /api/lt/dscr/{health,login-check,price,selftest}
 router.use('/dscr', require('./routes/dscr-pricer').makeRouter());
 
+// The Product & Pricing Engine. Lender Price stays AUTHORITATIVE — our engine
+// runs beside it in shadow and every disagreement becomes a finding. Reads are
+// open to any staff member; deciding a finding and running a canary are
+// admin-gated inside the router. /api/lt/ppe/{health,settings,investors,
+// findings,scoreboard,quote,canary}
+router.use('/ppe', require('./routes/ppe'));
+
 module.exports = { router };
