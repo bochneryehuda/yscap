@@ -100,6 +100,64 @@ router.post('/files/:id/order', async (req, res) => {
     parentOrderId: Number.isInteger(body.parentOrderId) ? body.parentOrderId : null,
   });
   if (!out.ok) return res.status(out.error === 'file_not_found' ? 404 : 400).json(out);
+
+  // PAY IT AS PART OF PLACING IT — the owner's three ways, offered at the moment
+  // the order goes out (owner-directed 2026-08-16). Optional: a body with no
+  // `payment` places the order exactly as it always did, and the Pay button on the
+  // order card is still there for later.
+  //
+  // AFTER, NEVER BEFORE, AND THE ORDER IS NEVER ROLLED BACK. The order has been
+  // placed with the vendor by this point and cannot be unsent, so a payment that
+  // fails is REPORTED beside a successful placement rather than pretended away.
+  // Reporting the pair honestly is the whole job here: "ordered, not paid" is a
+  // real and recoverable state; "the order failed" would be a lie that sends
+  // somebody to place a second one.
+  //
+  // A DRAFT OR A DRY RUN IS NEVER CHARGED — there is no order at the vendor to pay
+  // for, and charging a card against one would be the worst kind of surprise.
+  const wants = body.payment && typeof body.payment === 'object' ? body.payment : null;
+  const placedLive = !!body.place && !out.dryrun && out.order && out.order.id;
+  if (wants && wants.method && placedLive) {
+    const payment = require('../amc/payment');
+    const staffId = req.actor && req.actor.id;
+    try {
+      if (String(wants.method).toUpperCase() === 'PAYMENT_LINK') {
+        let emails = Array.isArray(wants.emails) && wants.emails.length ? wants.emails : null;
+        if (!emails) {
+          const r = await db.query(
+            `SELECT b.email AS borrower_email, lo.email AS officer_email
+               FROM applications a
+               JOIN borrowers b ON b.id = a.borrower_id
+               LEFT JOIN staff_users lo ON lo.id = a.loan_officer_id AND lo.is_active = true
+              WHERE a.id=$1`, [appId]);
+          const row = r.rows[0] || {};
+          emails = [row.borrower_email, row.officer_email];
+        }
+        out.payment = await payment.sendInvoice(db, { orderId: out.order.id, emails, staffId });
+      } else {
+        out.payment = await payment.charge(db, {
+          orderId: out.order.id, method: wants.method, card: wants.card, staffId,
+        });
+      }
+      await audit(req, out.payment.ok ? 'appraisal_payment_charged' : 'appraisal_payment_failed',
+        'application', appId, {
+          orderId: out.order.id, method: wants.method, atPlacement: true,
+          transactionId: out.payment.transactionId, error: out.payment.error,
+        });
+    } catch (e) {
+      // The ORDER still succeeded. Never let a payment failure turn into a failed
+      // placement — that is how a second order gets placed for the same appraisal.
+      out.payment = { ok: false, error: 'error', detail: (e && e.message) || String(e) };
+    }
+  } else if (wants && wants.method) {
+    // Said out loud rather than silently ignored, so nobody believes a draft was paid.
+    out.payment = {
+      ok: false, error: 'not_placed',
+      detail: out.dryrun
+        ? 'Nothing was charged — this was a test run, so there is no order at AppraisalScope to pay for.'
+        : 'Nothing was charged — this was saved as a draft. Place it, then pay it from the order card.',
+    };
+  }
   res.json(out);
 });
 

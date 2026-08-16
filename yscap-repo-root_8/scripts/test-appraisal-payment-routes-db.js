@@ -201,6 +201,47 @@ const CARD = { number: '4111111111111111', expMonth: 12, expYear: new Date().get
     assert(orphan.status === 409 && /how this one is being paid/i.test(json(orphan).detail || ''),
       '8: an order nobody chose a way for cannot be marked paid');
 
+    // ---- 10. PAYING AS PART OF PLACING — and the two cases that must NOT pay --
+    // Owner-directed 2026-08-16: the three ways are offered at the moment the
+    // order goes out. The dangerous half of that is everything it must NOT do.
+    {
+      const appC = await mkApp();
+
+      // A DRAFT IS NEVER CHARGED. There is no order at the vendor to pay for, and
+      // charging a card against one would be the worst possible surprise. It is
+      // said out loud rather than silently ignored, so nobody believes it was paid.
+      const draft = await call(server, 'POST', `/api/amc/files/${appC}/order`, token,
+        { place: false, payment: { method: 'CARD_ON_FILE' } });
+      const dOut = json(draft);
+      assert(draft.status === 200 && dOut.ok && dOut.order,
+        '10: a draft with a payment choice still saves the draft');
+      assert(dOut.payment && dOut.payment.ok === false && dOut.payment.error === 'not_placed',
+        '10: …and says plainly that nothing was charged');
+      assert(/draft/i.test((dOut.payment && dOut.payment.detail) || ''),
+        '10: naming the reason, so it is not read as a failure');
+      const noneYet = await db.query(
+        `SELECT 1 FROM appraisal_payment_intents WHERE vendor='nan' AND vendor_order_id=$1::bigint`, [dOut.order.id]);
+      assert(noneYet.rows.length === 0, '10: and NOTHING was recorded against the draft');
+
+      // AN ORDER THAT NEVER WENT OUT IS NEVER PAID FOR. This file is deliberately
+      // incomplete, so the placement is refused before the vendor is called —
+      // which is exactly when a payment must not happen either.
+      const bad = await call(server, 'POST', `/api/amc/files/${appC}/order`, token,
+        { place: true, payment: { method: 'CARD_ON_FILE' } });
+      assert(bad.status === 400 && json(bad).ok === false,
+        '10: an incomplete file is refused, as it always was');
+      assert(json(bad).payment === undefined,
+        '10: …with no payment attempted or reported — a failed order is never a paid one');
+      const stillNone = await db.query(
+        `SELECT 1 FROM appraisal_payment_intents WHERE application_id=$1`, [appC]);
+      assert(stillNone.rows.length === 0, '10: and no payment instruction exists for that file at all');
+
+      // No `payment` block at all is the old behaviour, byte for byte.
+      const plain = await call(server, 'POST', `/api/amc/files/${appC}/order`, token, { place: false });
+      assert(plain.status === 200 && json(plain).ok && json(plain).payment === undefined,
+        '10: an order placed without choosing a way behaves exactly as it did before');
+    }
+
     // ---- 9. only somebody on the file --------------------------------------
     for (const [m, p, b] of [
       ['GET', `/api/staff/applications/${appB}/appraisal-payment`, null],

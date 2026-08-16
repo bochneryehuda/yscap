@@ -484,8 +484,57 @@ function NanBuilder({ appId, cfg, onPlaced }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [notice, setNotice] = useState('');
+  // A payment failure on an order that WAS placed — kept apart from `err`, which
+  // is the order-failure box, because "placed but not paid" and "not placed" are
+  // different facts and must never render as the same one.
+  const [payErr, setPayErr] = useState('');
   const [formOverride, setFormOverride] = useState('');
   const [cdorOverride, setCdorOverride] = useState('');
+
+  // HOW THIS ORDER GETS PAID, chosen at the moment it goes out (owner-directed
+  // 2026-08-16). `null` means "not now" and is the default, so an order can still
+  // be placed exactly as before and paid later from its own card — nobody is ever
+  // stuck because a card is wrong on the day.
+  const [payMethod, setPayMethod] = useState(null);
+  const [payCard, setPayCard] = useState({ number: '', expMonth: '', expYear: '', cvc: '', zip: '' });
+  const [payOpts, setPayOpts] = useState(null);
+
+  // The ways this company can be paid come from the SHARED table, never a list
+  // typed into this screen — that table is what keeps the desk, the server and the
+  // recorded instruction agreeing about what the ways are called.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const s = await api.staffAppraisalPayment(appId);
+        if (alive && s && s.vendors && s.vendors.nan) setPayOpts(s.vendors.nan.options || []);
+      } catch (_) { if (alive) setPayOpts(null); }
+    })();
+    return () => { alive = false; };
+  }, [appId]);
+
+  // PRE-FILLED FROM THE CARD ON FILE, and editable — the owner's own words for
+  // option 1: *"pre-filled with the credit card on file. You can manually change
+  // it if you want."* So "enter a card now" starts as the card we already hold
+  // rather than as five empty boxes, and typing over it is the change.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const c = await api.staffAppraisalCard(appId);
+        if (alive && c && c.number) {
+          setPayCard({
+            number: c.number,
+            expMonth: c.expMonth != null ? String(c.expMonth) : '',
+            expYear: c.expYear != null ? String(c.expYear) : '',
+            cvc: c.cvc || '',
+            zip: c.zip || '',
+          });
+        }
+      } catch (_) { /* no card yet — the boxes stay empty, which is the truth */ }
+    })();
+    return () => { alive = false; };
+  }, [appId]);
 
   const overrideParams = useCallback(() => {
     const o = {};
@@ -504,17 +553,43 @@ function NanBuilder({ appId, cfg, onPlaced }) {
   useEffect(() => { load(); }, [load]);
 
   const place = useCallback(async (doPlace) => {
-    setBusy(true); setNotice(''); setErr('');
+    setBusy(true); setNotice(''); setErr(''); setPayErr('');
     try {
-      const out = await api.amcPlaceOrder(appId, { place: doPlace, ...overrideParams() });
+      const out = await api.amcPlaceOrder(appId, {
+        place: doPlace,
+        ...overrideParams(),
+        // Only when a way was actually chosen. No `payment` block is the old
+        // behaviour, byte for byte.
+        payment: (doPlace && payMethod)
+          ? { method: payMethod, card: payMethod === 'NEW_CARD' ? payCard : undefined }
+          : undefined,
+      });
       if (!out.ok) setErr(parseOrderFailure(null, out));
       else {
-        setNotice(doPlace ? (out.dryrun ? 'Order built in test mode (nothing sent).' : 'Order placed with AppraisalScope / NAN.') : 'Draft saved.');
+        const placed = doPlace
+          ? (out.dryrun ? 'Order built in test mode (nothing sent).' : 'Order placed with AppraisalScope / NAN.')
+          : 'Draft saved.';
+        // TWO OUTCOMES, REPORTED SEPARATELY. The order has been placed and cannot
+        // be unsent, so a payment that failed is said out loud beside a successful
+        // placement — never folded into it, and never reported as a failed order,
+        // which is how somebody ends up placing a second one for the same
+        // appraisal.
+        const p = out.payment;
+        if (!p) setNotice(placed);
+        else if (p.ok && p.transactionId) setNotice(`${placed} Paid — AppraisalScope's receipt is ${p.transactionId}.`);
+        else if (p.ok && Array.isArray(p.sent)) setNotice(`${placed} Invoice emailed to ${p.sent.join(' and ')} — it is not paid until they pay it.`);
+        else {
+          setNotice(placed);
+          // A WARNING, NOT the order-failure box — that box's headline reads
+          // "AppraisalScope could not place this order", which would be a lie
+          // about the one fact that matters most here.
+          setPayErr(p.detail || p.error || 'The payment did not go through.');
+        }
         await onPlaced();
       }
     } catch (e) { setErr(parseOrderFailure(e, null)); }
     setBusy(false);
-  }, [appId, overrideParams, onPlaced]);
+  }, [appId, overrideParams, onPlaced, payMethod, payCard]);
 
   const notConfigured = !cfg || !cfg.enabled;
 
@@ -522,11 +597,18 @@ function NanBuilder({ appId, cfg, onPlaced }) {
     <div style={{ marginTop: 12 }}>
       <OrderFailure info={err} vendor="AppraisalScope / NAN" />
       {notice ? <Banner tone="good">{notice}</Banner> : null}
+      {payErr ? (
+        <Banner tone="warn">
+          <strong>The order is placed — the payment is not.</strong> {payErr} Pay it from the order card below.
+        </Banner>
+      ) : null}
       {preview ? (
         <PreviewCard preview={preview} busy={busy} onDraft={() => place(false)} onPlace={() => place(true)}
           outbound={!!(cfg && cfg.outbound)} appId={appId} onCardSaved={load}
           formValue={formOverride || (preview.spec && preview.spec.productCode) || ''} onPickForm={setFormOverride}
-          cdorValue={cdorOverride || (preview.spec && preview.spec.clientDisplayedId) || ''} onPickCdor={setCdorOverride} />
+          cdorValue={cdorOverride || (preview.spec && preview.spec.clientDisplayedId) || ''} onPickCdor={setCdorOverride}
+          payOptions={payOpts} payMethod={payMethod} onPayMethod={setPayMethod}
+          payCard={payCard} onPayCard={setPayCard} />
       ) : (
         <div style={{ color: MUTED, fontSize: 13 }}>
           {notConfigured
@@ -585,7 +667,8 @@ function FeeQuote({ quote }) {
   );
 }
 
-function PreviewCard({ preview, busy, onDraft, onPlace, outbound, appId, onCardSaved, formValue, onPickForm, cdorValue, onPickCdor }) {
+function PreviewCard({ preview, busy, onDraft, onPlace, outbound, appId, onCardSaved, formValue, onPickForm, cdorValue, onPickCdor,
+  payOptions, payMethod, onPayMethod, payCard, onPayCard }) {
   const spec = preview.spec || {};
   const missing = preview.missing || [];
   const cardOnFile = preview.card || {};
@@ -655,6 +738,10 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound, appId, onCardS
       </div>
 
       <FeeQuote quote={preview.feeQuote} />
+
+      <AmcPayment options={payOptions} method={payMethod} onMethod={onPayMethod}
+        card={payCard} onCard={onPayCard} cardOnFile={cardOnFile}
+        notifyEmails={notifyEmails} outbound={outbound} />
 
       {missing.length ? (
         <div style={{ marginTop: 10, color: '#9A3B33', fontSize: 13 }}>
@@ -1593,6 +1680,132 @@ const RV_PAY_LABEL = {
   NEW_CARD: 'Enter a card now',
   PAYMENT_LINK: 'Send the borrower a payment link',
 };
+
+/**
+ * HOW THIS APPRAISALSCOPE ORDER GETS PAID — chosen as it goes out.
+ *
+ * The owner's three (2026-08-16), in the owner's own words:
+ *   1. charge a card, PRE-FILLED with the card on file, editable
+ *   2. if there is no card on file, type one in
+ *   3. send a payment link to the borrower and the loan officer
+ *
+ * Note that 1 and 2 are the SAME control here, which is deliberate rather than a
+ * shortcut: "the card on file, which you may change" and "a card typed in" differ
+ * only by whether the boxes started full, and splitting them into two radio
+ * buttons would ask a person to classify their own intent before they have looked
+ * at the number. "Use the card on file" charges what we hold; "enter a card now"
+ * opens those same boxes pre-filled with it, and typing over them is the change.
+ *
+ * THE WAYS COME FROM THE SHARED TABLE, never a list typed here — a hard-coded set
+ * is how a screen ends up offering a way the server refuses, or hiding one it
+ * added. `options` being null (the read failed, or the desk has not answered yet)
+ * renders NOTHING rather than a guessed set: an order placed with no payment is a
+ * recoverable state, and one placed against an invented option is not.
+ *
+ * NOT NOW IS ALWAYS AVAILABLE and is the default. A card can be wrong on the day,
+ * a fee can be in dispute, and an order that cannot be placed because payment is
+ * insisted upon is a dead end — the Pay button on the order card is still there.
+ */
+function AmcPayment({ options, method, onMethod, card, onCard, cardOnFile, notifyEmails, outbound }) {
+  if (!Array.isArray(options) || !options.length) return null;
+  const set = (k, v) => onCard({ ...card, [k]: v });
+  const chosen = options.find((o) => o.method === method) || null;
+  const officerLine = (notifyEmails || []).filter(Boolean);
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <SectionTitle>How this order gets paid</SectionTitle>
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 6, fontSize: 13, color: INK }}>
+        <label style={{ display: 'inline-flex', gap: 7, alignItems: 'center', cursor: 'pointer' }}>
+          <input type="radio" name="amc-pay" checked={!method} onChange={() => onMethod(null)} />
+          Not now
+        </label>
+        {options.map((o) => (
+          <label key={o.method} title={o.disabled || o.says}
+            style={{ display: 'inline-flex', gap: 7, alignItems: 'center', cursor: o.available ? 'pointer' : 'not-allowed',
+              color: o.available ? INK : MUTED }}>
+            <input type="radio" name="amc-pay" disabled={!o.available}
+              checked={method === o.method} onChange={() => onMethod(o.method)} />
+            {o.label}
+          </label>
+        ))}
+      </div>
+
+      {/* WHY a way cannot be used, kept on screen rather than hiding the option —
+          a greyed row with a reason teaches what to do next; a vanished one just
+          looks like the feature is missing. */}
+      {options.filter((o) => !o.available && o.disabled).map((o) => (
+        <div key={o.method} style={{ fontSize: 12, color: WARN, marginTop: 6, lineHeight: 1.45 }}>
+          <b>{o.label}:</b> {o.disabled}
+        </div>
+      ))}
+
+      {chosen ? (
+        <div style={{ fontSize: 12, color: MUTED, marginTop: 6, lineHeight: 1.45 }}>
+          {chosen.says}
+          {chosen.caveat ? <div style={{ color: WARN, marginTop: 3 }}>{chosen.caveat}</div> : null}
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, color: MUTED, marginTop: 6, lineHeight: 1.45 }}>
+          Nothing is charged when the order goes out. You can pay it from the order card afterwards.
+        </div>
+      )}
+
+      {method === 'CARD_ON_FILE' && cardOnFile && cardOnFile.onFile ? (
+        <div style={{ fontSize: 12.5, color: INK, marginTop: 6 }}>
+          AppraisalScope will charge <b>{cardOnFile.brand || 'the card'} ••{cardOnFile.last4 || '????'}</b>.
+        </div>
+      ) : null}
+
+      {method === 'PAYMENT_LINK' ? (
+        <div style={{ fontSize: 12.5, color: INK, marginTop: 6, lineHeight: 1.5 }}>
+          AppraisalScope emails their invoice to the borrower and the loan officer.
+          {officerLine.length ? <> Order updates already go to <span style={{ color: MUTED }}>{officerLine.join(', ')}</span>.</> : null}
+        </div>
+      ) : null}
+
+      {method === 'NEW_CARD' ? (
+        <>
+          <div style={{ fontSize: 12, color: MUTED, margin: '6px 0 8px', lineHeight: 1.45 }}>
+            Pre-filled with the card already on this file — change anything you need to. It is saved onto the
+            appraisal-card condition first, encrypted the same way every card here is, and then charged. The security
+            code is required: AppraisalScope will not charge a card without it.
+          </div>
+          <div className="aord-row3">
+            <Field label="Card number">
+              <input className="input" inputMode="numeric" autoComplete="off" value={card.number}
+                onChange={(e) => set('number', e.target.value)} />
+            </Field>
+            <Field label="Expiry month">
+              <input className="input" inputMode="numeric" placeholder="MM" value={card.expMonth}
+                onChange={(e) => set('expMonth', e.target.value)} />
+            </Field>
+            <Field label="Expiry year">
+              <input className="input" inputMode="numeric" placeholder="YYYY" value={card.expYear}
+                onChange={(e) => set('expYear', e.target.value)} />
+            </Field>
+          </div>
+          <div className="aord-row3">
+            <Field label="Security code">
+              <input className="input" inputMode="numeric" autoComplete="off" value={card.cvc}
+                onChange={(e) => set('cvc', e.target.value)} />
+            </Field>
+            <Field label="Billing ZIP">
+              <input className="input" inputMode="numeric" value={card.zip}
+                onChange={(e) => set('zip', e.target.value)} />
+            </Field>
+          </div>
+        </>
+      ) : null}
+
+      {method && !outbound ? (
+        <div style={{ fontSize: 12, color: WARN, marginTop: 8, lineHeight: 1.45 }}>
+          Sending to AppraisalScope is switched off, so this will be saved as a draft and nothing will be charged.
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function RvPayment({ payment, method, onMethod, card, onCard, linkTo, onLinkTo }) {
   if (!payment) return null;
