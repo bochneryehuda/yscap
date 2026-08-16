@@ -375,6 +375,46 @@ const SCENARIO_OWNED = [
   // buildSearch AFTER this clear when the caller supplies compPercent, so the DELETE footgun above
   // does not apply.
   { path: 'brokerCriteria.compPlan', neutral: DELETE, why: 'broker comp percent — audit §31.6 stale compPlan leak' },
+  // §31.6 — THE PROPERTY ADDRESS. Found by the post-merge audit of #1220, and it is the same leak
+  // class as compPlan with a worse consequence: every address part was written ONLY when the caller
+  // supplied it, so against a LIVE foundation (production clones /pricing/defaultSearch) whatever
+  // address the previous session left rode onto the wire. Reproduced: a caller sending ZIP 11211
+  // priced as {zip:"11211", state:"NY", county:"36047", countyName:"Kings", city:"Beverly Hills"} —
+  // a Brooklyn deal with a California city — and, worse, a payload whose county FIPS said Kings
+  // while its county NAME said Los Angeles, because the name came from the stale base and the FIPS
+  // from the caller. A wrong location does not fail loudly; it prices the wrong market.
+  //
+  // Neutral is ABSENT for every part. Unlike the economics neutrals (the base's own defaults), the
+  // captured base's address is a REAL property's address — keeping it as the neutral would mean
+  // "clearing" a stale address by writing a different stale one. Deleting can only ever REMOVE a
+  // value, never introduce one. Every part is re-applied by buildSearch's address overlay AFTER this
+  // clear; what disappears is exactly the inherited part nobody asked for.
+  //
+  // CORRECTION (re-audit): this comment previously claimed "validateScenario refuses a priced
+  // scenario without state + county FIPS, so a real request is complete." That was FALSE —
+  // `validateLocation` short-circuits `{ok:true}` when NO location field is present at all, so a
+  // locationless scenario passed validation and, once the address became scenario-owned, would have
+  // gone upstream with no state and no county. The claim is now TRUE because `validateScenario`
+  // was given the explicit `location_required` refusal it was described as already having; the
+  // safety property is asserted rather than assumed.
+  { path: 'property.address.zip',         neutral: DELETE, why: 'per-deal ZIP — a stale one contradicts the state' },
+  { path: 'property.address.state',       neutral: DELETE, why: 'per-deal state' },
+  { path: 'property.address.city',        neutral: DELETE, why: 'per-deal city — never derived from a ZIP, so a stale one survives every enrichment' },
+  { path: 'property.address.county',      neutral: DELETE, why: 'per-deal county FIPS' },
+  { path: 'property.address.censustract', neutral: DELETE, why: 'per-deal county FIPS (the vendor carries it twice)' },
+  { path: 'property.address.countyName',  neutral: DELETE, why: 'per-deal county name — the FIPS/name contradiction' },
+  // The re-audit caught the first cut of this entry covering only SIX parts. The
+  // address object has ELEVEN keys and NINE of them are per-deal; `street`,
+  // `streetCont` and `zipExt` were left behind, so a stale foundation still put a
+  // Beverly Hills street and a Beverly Hills ZIP+4 on a Brooklyn deal — and `zipExt`
+  // is a LOCATION field, so that is a location contradiction, not merely spilled
+  // detail. Worse, none of the three appears in `effectiveOf`, so the mechanism whose
+  // whole job is to prove what went upstream could not see them.
+  // `country` ("US") and `province` ("") are NOT per-deal and are deliberately absent
+  // from this list: they are structural defaults every request carries.
+  { path: 'property.address.street',      neutral: DELETE, why: 'per-deal street' },
+  { path: 'property.address.streetCont',  neutral: DELETE, why: 'per-deal street line 2' },
+  { path: 'property.address.zipExt',      neutral: DELETE, why: 'per-deal ZIP+4 — a stale one contradicts the ZIP beside it' },
 ];
 // Clear every registered scenario-owned field to its neutral state, IN PLACE. Operates on the
 // already-cloned model (buildSearch clones first), so it never mutates the shared BASE or a caller's
@@ -896,12 +936,47 @@ function validateScenario(sc = {}) {
   // scenario. `countyEnrichment` is reported so the response can say the county was inferred (and,
   // for a ZIP spanning counties, that it was the dominant one).
   const enriched = enr.filled.length ? { ...sc, ...enr.location } : sc;
+  // `countyEnrichment` must describe the county the REQUEST WILL CARRY, not the one the ZIP
+  // resolved to. Reporting `enr.resolved` unconditionally reproduced the very contradiction the
+  // name-fill rule was written to close, one level up: on a split ZIP where the caller supplied
+  // their own county, the built request said New York County while this block said Bronx — one
+  // answer naming two counties. The dominant county is still reported, under its own name, because
+  // on a split ZIP "we would have picked this one" is genuinely useful; it is just not the answer.
+  // `enr.resolved` exists only when a ZIP actually resolved; a scenario with no ZIP fills nothing,
+  // so guard it rather than reading through an absent object.
+  const resolved = enr.resolved || null;
+  const effFps = (sc.countyFps != null && String(sc.countyFps).trim() !== '') ? String(sc.countyFps).trim() : (resolved ? resolved.countyFps : null);
+  const overrode = !!resolved && effFps !== resolved.countyFps;
   const countyEnrichment = enr.filled.length
-    ? { filled: enr.filled, split: enr.split, countyFps: enr.resolved.countyFps, countyName: enr.resolved.countyName, source: `census-zcta-${zipCounty._internals.meta.vintage}` }
+    ? {
+      filled: enr.filled,
+      split: enr.split,
+      countyFps: effFps,
+      countyName: overrode ? (enr.location.countyName || sc.countyName || sc.county || null) : (resolved ? resolved.countyName : null),
+      // Only meaningful when the caller overrode the dominant county; null otherwise so nobody
+      // reads it as "we changed your county".
+      dominantCountyFps: overrode ? resolved.countyFps : null,
+      dominantCountyName: overrode ? resolved.countyName : null,
+      source: `census-zcta-${zipCounty._internals.meta.vintage}`,
+    }
     : null;
   sc = enriched;
   const loc = validateLocation(sc);
   if (!loc.ok) return { ok: false, status: 422, error: loc.code, field: loc.field, message: loc.message };
+  // A PRICED SCENARIO MUST SAY WHERE THE PROPERTY IS. `validateLocation` deliberately passes a
+  // scenario carrying NO location at all — its comment reads "base defaults apply", which was true
+  // while the request inherited the pricing foundation's address. It no longer is: the address is
+  // now scenario-owned and cleared, so a locationless scenario would send no state and no county.
+  // Neither behaviour is acceptable and they fail differently — the OLD one silently priced every
+  // such deal in Linden, New Jersey (the captured base's town), which is the silent-mis-pricing
+  // class this connector exists to refuse; the NEW one would send a location-less request whose
+  // upstream handling nothing has established. State and county drive DSCR eligibility and pricing,
+  // so the honest answer is to refuse and say what is missing. Enrichment has already run, so a
+  // 5-digit ZIP alone satisfies this.
+  if (sc.state == null && sc.countyFps == null && sc.zip == null && sc.county == null && sc.countyName == null) {
+    return { ok: false, status: 422, error: 'location_required', field: 'zip',
+      message: 'Say where the property is: a 5-digit ZIP is enough (state and county are derived from it), or supply state + countyFps yourself. A quote cannot be priced without a location.' };
+  }
   const inp = validateInputs(sc); // §27 — strict booleans/numerics/ranges/ltv/term/lock/units
   if (!inp.ok) return { ok: false, status: 422, error: inp.code, field: inp.field, message: inp.message };
   let request;

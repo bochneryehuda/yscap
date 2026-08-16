@@ -17,15 +17,26 @@
 const router = require('../lib/safe-router')();
 const db = require('../db');
 const cfg = require('../config');
-const { requireStaff } = require('../auth');
+const { requireAuth, requireStaff } = require('../auth');
 const perms = require('../lib/permissions');
 const client = require('../trinity/client');
 const order = require('../trinity/order');
 const ingest = require('../trinity/ingest');
+const intake = require('../trinity/intake');
 const report = require('../trinity/report');
 const mapper = require('../trinity/mapper');
 
-router.use(requireStaff);
+// BOTH, in this order, exactly as /api/sitewire and /api/trustpoint mount their walls.
+// `requireAuth` IS `authenticate` — it is what reads the bearer token and puts `req.actor`
+// on the request; there is no global authenticate in server.js, so a router that mounts
+// only `requireStaff` is asking about an actor nobody ever resolved. This shipped with
+// `requireStaff` alone, which meant `req.actor` was ALWAYS undefined and every single
+// route on the Trinity desk answered 403 "staff only" — to everyone, for every file,
+// forever. The whole desk was unreachable from the portal and nothing noticed, because
+// every test called the modules directly and never once went through Express.
+// Guarded by scripts/test-trinity-desk-route-db.js, which is the first thing here to
+// speak HTTP.
+router.use(requireAuth, requireStaff);
 
 const can = (req, cap) => perms.can(req.actor, cap);
 const bad = (res, code, msg) => res.status(code).json({ error: msg });
@@ -154,8 +165,16 @@ router.get('/files/:appId', fileScope, async (req, res, next) => {
         documents: media.filter((m) => m.kind !== 'photo'),
       });
     }
+    // What the desk may ORDER an inspection against right now — computed even when there
+    // are no orders yet, because that is exactly the state the manual button exists for.
+    // Best-effort: a routing read that fails must never take the whole desk down with it,
+    // and an unknown routing is not permission to order (it reports ineligible).
+    const orderable = await intake.orderOptions(req.appId)
+      .catch(() => ({ eligible: false, reason: 'the file routing could not be read', draws: [], requests: [] }));
+
     res.json({
       orders: out,
+      orderable,
       connection: {
         configured: client.available(),
         enabled: client.enabled(),
@@ -172,6 +191,47 @@ router.get('/files/:appId', fileScope, async (req, res, next) => {
 // ---------------------------------------------------------------------------
 // placing / re-driving an order
 // ---------------------------------------------------------------------------
+/**
+ * ORDER AN INSPECTION BY HAND — the owner's *"we should also have the option to order it
+ * on our end in the draw center"* (2026-08-16).
+ *
+ * The automatic doors mint an order record as a side effect of a borrower submitting a
+ * draw. This one mints it on purpose, against a draw the coordinator picks, and then
+ * hands it to the SAME `placeOrder` — so everything that travels on an automatic order
+ * travels here: the construction budget as Trinity's own line items, how much has
+ * already been drawn on each line, the readable budget-and-draws spreadsheet, the
+ * appraisal, the scope of work and the most recent previous inspection report.
+ *
+ * It is deliberately NOT a "create anything" endpoint. It refuses a file whose
+ * inspections are not Trinity's, refuses a draw that is not on this file, and adopts an
+ * existing record rather than ever minting a second one for the same draw.
+ */
+router.post('/files/:appId/orders', fileScope, async (req, res, next) => {
+  try {
+    if (!can(req, 'manage_draws')) return bad(res, 403, 'You do not have permission to manage draws.');
+    const b = req.body || {};
+    const r = await intake.orderManually(req.appId, {
+      sitewireDrawId: b.sitewireDrawId != null ? b.sitewireDrawId : (b.sitewire_draw_id != null ? b.sitewire_draw_id : null),
+      portalRequestId: b.portalRequestId != null ? b.portalRequestId : (b.portal_request_id != null ? b.portal_request_id : null),
+      staffId: req.actor.id,
+    });
+    if (r.blocked) return res.status(422).json(r);
+    if (r.error) return res.status(502).json(r);
+    // A SKIP IS NOT A SUCCESS. `placeOrder` stands down with `{skipped:'off'|'outbound_off'
+    // |'not_configured'|'in_flight'|…}` and NO error — which is right for the pollers that
+    // call it, and wrong to hand back to somebody who just pressed a button: the screen
+    // would say "Ordered from Trinity" about an order that was never sent. `already` is the
+    // one skip that IS a success (the order exists), and it carries `ok`.
+    if (r.skipped && !r.already) {
+      return res.status(409).json({
+        error: r.message || 'The inspection could not be ordered just now.',
+        skipped: r.skipped,
+      });
+    }
+    res.json(r);
+  } catch (e) { next(e); }
+});
+
 router.post('/files/:appId/orders/:orderId/place', fileScope, async (req, res, next) => {
   try {
     if (!can(req, 'manage_draws')) return bad(res, 403, 'You do not have permission to manage draws.');

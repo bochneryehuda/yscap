@@ -78,4 +78,31 @@ eq(e.portalPlatformFor({ platform: 'sitewire' }), 'trinity', 'E2 every other phy
 eq(e.portalPlatformFor({ platform: 'external' }), 'trinity', 'E3 unchanged from the original composer behaviour');
 eq(e.portalPlatformFor(null), 'trinity', 'E4 and is total');
 
+// ---------------------------------------------------------------------------
+// F. THE CALL SITE — a correct rule fed the wrong context is still a dead door
+// ---------------------------------------------------------------------------
+// The original defect was fixed in the RULE on 2026-08-14, and the door stayed dead
+// anyway: `reconcile.js` passed only `platform`, so `method` arrived undefined, rule 1
+// read "not physical", and every draw ever submitted through Sitewire was refused — in
+// silence, because the call is fire-and-forget and its refusal is a return value nobody
+// reads. That is not something the rule's own unit tests can see, so it is asserted on
+// the SOURCE of the caller. If the hook is ever rewritten, this fails and the three
+// questions the rule asks have to be answered deliberately.
+const fs = require('fs');
+const path = require('path');
+const reconcileSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'sitewire', 'reconcile.js'), 'utf8');
+const hook = reconcileSrc.slice(reconcileSrc.indexOf('maybeOrderFromSitewire'));
+const hookCall = hook.slice(0, hook.indexOf('}'));
+ok(/platform:\s*ctx\.platform/.test(hookCall), 'F1 the reconcile hook passes the resolved PLATFORM');
+ok(/method:\s*ctx\.method/.test(hookCall), 'F2 …and the resolved inspection METHOD — without it the rule can only ever answer no');
+ok(/resolved:\s*ctx\.resolved/.test(hookCall), 'F3 …and whether the routing was resolved at all, so it can fail closed');
+// The fallback context a caller that supplied nothing gets must itself be a refusal.
+ok(/fileCtx \|\| \{[^}]*resolved:\s*false/.test(reconcileSrc),
+  'F4 the no-context fallback is marked unresolved, so an omission can never order an inspection');
+// And the rule the caller feeds must agree: exactly this shape is what orders.
+ok(e.isTrinityFile({ platform: 'sitewire', method: 'traditional', resolved: true }),
+  'F5 the shape the fixed call site produces on a physical file DOES order');
+ok(!e.isTrinityFile({ platform: 'sitewire', method: undefined, resolved: undefined }),
+  'F6 the shape the BROKEN call site produced does NOT — this is the bug, pinned');
+
 console.log(`test-trinity-eligibility-pure: ${n} assertions passed`);

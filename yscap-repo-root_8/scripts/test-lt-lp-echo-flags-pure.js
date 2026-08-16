@@ -94,6 +94,33 @@ for (const field of ['dscrAssetDepletion', 'lateInLast12Months']) {
   ok(Object.keys(requestedOf({})).length === 0, 'ECHOFN-6 an empty scenario echoes empty');
 }
 
+// ---- POST-MERGE AUDIT (#1220): requestedScenario means what the CALLER SENT ----
+// The route reassigns `sc` to the ZIP-ENRICHED scenario before pricing (correct — pricing the
+// original would send a county-less request upstream). But `requestedOf(sc)` was then called on the
+// ENRICHED value, so `requestedScenario` echoed the derived state/county too: requested and
+// effective agreed about the location BY CONSTRUCTION, defeating the very comparison the
+// requested/derived/effective triple exists for. The route must capture it BEFORE the reassignment.
+{
+  const src = require('fs').readFileSync(require.resolve('../src/longterm/routes/dscr-pricer'), 'utf8');
+  const capture = src.indexOf('const requestedScenario = requestedOf(sc)');
+  const reassign = src.indexOf('sc = chk.scenario');
+  ok(capture !== -1, 'REQECHO-1 the route captures requestedScenario in a variable');
+  ok(capture !== -1 && reassign !== -1 && capture < reassign,
+    'REQECHO-2 …and captures it BEFORE sc is reassigned to the enriched scenario');
+  ok(!/requestedScenario:\s*requestedOf\(sc\)/.test(src),
+    'REQECHO-3 no response builder re-derives it from the (by then enriched) sc');
+
+  // and the meaning itself: a caller who sent ONLY a ZIP must not see a county in `requested`
+  const { requestedOf } = require('../src/longterm/routes/dscr-pricer')._internals;
+  const raw = { purpose: 'Purchase', fico: 760, loan: 4e5, ltv: 75, zip: '11211' };
+  const v = sm.validateScenario(raw);
+  const asked = requestedOf(raw);
+  ok(asked.zip === '11211' && asked.countyFps === undefined && asked.state === undefined,
+    'REQECHO-4 the caller\'s own scenario carries no location they did not send');
+  ok(v.scenario.countyFps === '36047' && v.scenario.state === 'NY',
+    'REQECHO-5 …while the ENRICHED scenario (what is priced) does — so the two are comparable');
+}
+
 // ---- §36.11 the derived echo actually carries content ------------------------
 {
   const t = sm._internals.deriveAmounts({ loan: 400000, ltv: 75 });

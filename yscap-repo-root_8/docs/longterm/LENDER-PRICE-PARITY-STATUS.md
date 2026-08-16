@@ -25,16 +25,12 @@ with accepted data types and defaults.
 - **`LP_REQUIRE_LIVE_FOUNDATION=1`** should be set in Render so production can
   never silently price on the static fallback foundation (the gate already exists
   — `client.js foundationLiveGate`, named 502 `lp_foundation_not_live`).
-- **ZIP → county-FIPS enrichment is an OWNER decision, not a capture.** The
-  frontend turns a ZIP into city/state/county/FIPS before searching; the backend
-  requires the caller to supply the county FIPS and refuses an incomplete
-  location. The repo ALREADY has this ability (`src/lib/address-canon.js`
-  `resolveCounty`/`geocode`) — but in the RTL/shared zone, so LT importing it is
-  a product-separation crossing that needs the owner's written authorization
-  recorded in `docs/LONG-TERM-AUTHORIZED-COPIES.md` (per-item, never blanket).
-  Until then the current behavior stands: safe (it never guesses a county), just
-  less convenient. The alternative — a separate LT-only enrichment — duplicates a
-  solved problem and would drift, so it should not be built without that decision.
+- ~~**ZIP → county-FIPS enrichment is an OWNER decision.**~~ **CLOSED
+  2026-08-16** — the owner authorized it in writing (*"Yes, you have my written
+  OK to reuse that."*) and it is BUILT. See the §1 row. The authorization is
+  recorded in `docs/LONG-TERM-AUTHORIZED-COPIES.md`; note that the authorized
+  RTL module was ultimately **not** the thing used — see that ledger's log row
+  for what was built instead and why.
 
 ## 1. Fixed (with the exact behavior + data types)
 
@@ -66,6 +62,7 @@ Each item is covered by an offline test in `scripts/test-lt-lenderprice.js`,
 | **§33.1 complete property-type enum** | FIXED | The four current-tenant tokens the capture lists and the builder lacked: `CondoGarden`, `MidRiseCondo`, `CondoTel`, `ManufacturedHomeCondominium` (distinct from the longer `…OrPUDOrCooperative`), plus the ON-SCREEN LABEL aliases `"2 - 4 Unit"` / `"2-4 Unit"` → `UnitDwelling_2_4` (the label was previously 422'd). Each carries its exact upstream token + auto-minimum unit count; an unknown type still 422s (no fall-through to SingleFamily). **CondoTel** carries the confirmed side effect `nonWarrantableProject:true` (§17.2 — the live UI auto-checks Non-Warrantable Condo); its siblings do NOT. Attachment is NOT a per-condo-type capture, so the new tokens inherit the profile default `Detached` and stay overridable (the older condo rows' guessed `Attached` is deliberately not copied). The label alias also makes the units-conflict check enforce the 2–4 range for the label. Test `scripts/test-lt-lp-property-types-pure.js` (the whole §33.1 table, 76 checks). |
 | **§33.2/§33.3/§33.4 the confirmed MENU enums** | FIXED | Three fields the builder decided FOR the caller. `IncomeDocType` was hard-coded `'DSCR'` → now any of the **25** confirmed values (label OR exact token); `PrePayment_Plan_Type` was hard-coded `'Standard'` → now any of the **19** structures, **independent of the term** (it may be supplied alone, and `"No Prepay"` is a real choice whose token is `null` — distinct from `PrepayTerm "None"`, which produces the No PPP SMO); `GLOBAL_BorrowerType` accepted ANY string → now validated against the exact six-value enum (the last silent substitution in the borrower block). **The token is NEVER derived by formatting the label** — `"WVOE"`→`VOEOnly`, `"12 Mo Alt Doc"`→`AltDoc12Months`, and the tax-vs-CPA P&L rows split Month vs Mo on the same line. Citizenship gained the two combined foreign-national values whose real vendor spelling carries a **trailing `)`** — kept verbatim, and the "clean" spelling is deliberately NOT accepted (a lender rule matches the stored token). Omission still forces the profile default; an unrecognized value 422s. Test `scripts/test-lt-lp-menu-enums-pure.js` (115 checks). |
 | **§35.2/§36.2 the AMOUNT TRIANGLE** | FIXED | Any **TWO** of value / loan / LTV determine the third, so the short form deals are actually quoted in — "Purchase, 760 FICO, $400,000 loan, 75% LTV, ZIP 11211" — is now priceable; it previously could not be sent at all (no value → a null purchase price upstream). `deriveAmounts` is pure + total: `loan+ltv→value`, `value+ltv→loan`, `value+loan→ltv`; it NEVER derives from one figure (that is a guess), so a single amount is refused 422 `insufficient_amounts` before any upstream call. LTV is accepted as `75` or `0.75` and normalized to the vendor's decimal form; a conflicting supplied LTV is still rejected, never silently replaced. An unknown **purpose** is now resolved BEFORE the amount rule, so a mistyped purpose is reported as such instead of sending the caller hunting for a missing amount. A **cash-out amount on a Purchase / rate-and-term Refinance is rejected** (§36.3/§36.4) — it describes a different transaction than the purpose states. Test `scripts/test-lt-lp-amount-triangle-pure.js`. |
+| **§26.3/§35.2 price from a ZIP** | FIXED | Pricing is ZIP-driven: the vendor's own screen turns a 5-digit ZIP into state + county + county FIPS before it searches, while this connector demanded all of them and refused an incomplete location — so "Purchase, 760 FICO, $400k loan, 75% LTV, ZIP 11211" could not be served. `zip-county.js` resolves it from the Census Bureau's own ZCTA-to-county relationship file (vintage 2020, 33,791 ZIPs, source URL + sha256 pinned in `zip-county.json`, generated by `scripts/build-lt-zip-county.js`) — **PURE + OFFLINE**: no network, no database, so a quote never depends on an outside service being reachable. A caller's own values are ASSERTIONS: never overwritten, and a contradiction is 422 `location_conflict` rather than one side silently winning — **on a single-county ZIP**. On a SPLIT ZIP an explicit county is deliberately HONORED instead (that is what `split:true` is for), and because the table stores only the dominant county it cannot check that the caller's county is one the ZIP actually touches; an out-of-state FIPS is still caught by the state-prefix rule, an in-state one is taken at its word. An unresolvable ZIP (a PO-box-only ZIP has no ZCTA) fails CLOSED with `zip_not_found` — but **only when the county is genuinely missing**, so a caller who supplied state + countyFps is still served. 28% of ZIPs really do span more than one county: those resolve to the DOMINANT county (largest land overlap, the same choice the vendor's screen must make) and report `split: true` so the caller is TOLD it was inferred and can override it; a <1% sliver is a boundary artifact and is not reported as a split. `validateScenario` returns the ENRICHED scenario and the route prices THAT — pricing the original would validate one request and send a different, county-less one upstream. `countyEnrichment` names which fields were derived and the source. Test `scripts/test-lt-lp-zip-county-pure.js`. |
 | **§31.5/§31.6 subordinate financing + broker comp percent** | FIXED | `subordinateLoanAmount` → `criteria.subordinateLoanAmount` (confirmed live), with **no invented CLTV field** — the engine derives the combined ratio, so we VALIDATE it instead (first lien + subordinate may not exceed the value; the rule also applies against a DERIVED value). `compPercent` → `brokerCriteria.compPlan` with the confirmed **SIGN INVERSION** (a visible `2.5` transmits as `-2.5`); the public input is the positive number a human reads and one named conversion (`compPlanValue`) owns the flip, so a negative input is refused rather than double-negated and `0` can never serialize as `-0`. Both are scenario-owned, closing the §31.6 leak the audit reproduced (clearing the visible inputs did not clear the model): the subordinate amount clears to its captured neutral `0` and `compPlan` is **deleted** — the captured base carries no `compPlan` key at all — each re-applied only when supplied, AFTER the clear (the registry's documented footgun). Test `scripts/test-lt-lp-subordinate-comp-pure.js`. |
 | **§36.11 requested vs derived vs effective** | FIXED | The response echoes `requestedScenario` (the caller's own scenario minus request-envelope keys) and `derivedScenario` (what the amount triangle worked out, and **which** figures were supplied vs derived) alongside the existing `effectiveScenario` + foundation provenance — so a short request can be PROVEN to have expanded into the intended full DSCR profile rather than inheriting a stale search. |
 | **§31.3/§31.7 asset depletion + late-window parent flag** | FIXED | `dscrAssetDepletion` → `Global_DSCR_Asset_Depletion` with the confirmed token **`"Yes"`** (deliberately NOT the `"true"` its sibling flags use — copying their shape would be a guess about a different field); `lateInLast12Months` → `Lateinlast12months` `"true"`, the parent toggle the live UI sends alongside the per-bucket `MORT*LATESLAST12M` counts. Both true-only: the off token was never captured, so an explicit `false` INHERITS rather than writing an invented value. The **13–24 month** parent toggle stays unwired — its field name was never captured (only its per-bucket counts were). |
@@ -113,13 +110,8 @@ mis-price, which is worse than the current explicit-reject behavior.
     Section 184** — Section 184 is additionally a COMPOUND state machine
     (§31.2: it flips mortgage type to USDA and does not cleanly reverse), so it
     must be implemented atomically or stay rejected for DSCR scope.
-- **ZIP → county-FIPS enrichment** is deferred for a DIFFERENT reason, and it is
-  an OWNER decision, not a capture: the repo already has `resolveCounty`/geocode,
-  but in `src/lib/` (the RTL/shared zone). LT importing it is a product-separation
-  crossing that needs written authorization recorded in
-  `docs/LONG-TERM-AUTHORIZED-COPIES.md`. Until then the connector REQUIRES a
-  caller-supplied county FIPS and refuses an incomplete location — safe, just
-  less convenient than the frontend.
+**No longer deferred:** ZIP → county-FIPS enrichment, which this list previously
+carried, shipped 2026-08-16 and has moved to §1.
 
 ## 3. The request-builder field contract (accepted types)
 
@@ -134,18 +126,27 @@ above). Anything not in this list is **rejected 422** (`unsupported_field`).
 - `fico` → `criteria.fico` — integer 300–850.
 - `dscr` → `criteria.dscr` — number 0–2.
 - `propertyType` → `property.propertyType` (+ attachment/units defaults) — enum (see `field-registry.PROPERTY_TYPES`); unknown → 422.
-- `attachment` → `property.attachmentType` — enum `Detached`|`Attached`.
+- `attachment` → `property.attachmentType` — enum `Detached`|`Attached`|`SemiDetached` (all three confirmed; see `field-registry.ATTACHMENT_TYPES`).
 - `nonWarrantable` → `criteria.nonWarrantableProject` — boolean.
 - `units` → `property.numberOfUnit` — integer 1–20; must agree with property type.
 - `termYears`/`term` → `criteria.loanYear` + `termsCriteria` — one of the live terms; default 30.
 - `lockDays` → `brokerCriteria.dayLocks` + `dayLocksCriteria` — one of the live locks; default 30.
 - `prepayMonths` → `dynamicPropertiesMap.PrepayTerm` — number (0 = No PPP); omitted → inherit.
-- `cashoutAmount` → `criteria.cashoutAmount` — number ≥ 0.
+- `cashoutAmount` → **NOT TRANSMITTED** — number ≥ 0, accepted and validated but **never sent as a criteria field** (§32.2 fail-closed: the clean live capture carried no legitimate vendor field for it). `criteria.cashoutAmount` is a DELETE-neutral in the clearing registry, so it is cleared and never re-applied; the value is retained on an internal Symbol channel and surfaced as `effectiveScenario.cashoutAmountInternal`. *(This line previously read `→ criteria.cashoutAmount`, the exact opposite of the rule — corrected after the post-merge audit of #1220.)*
 - `borrowerType` → `dynamicPropertiesMap.GLOBAL_BorrowerType` — default `LLC`.
 - `io`/`escrowWaive`/`fthb` → `criteria.interestOnly`/`escrowWaiver`/`firstTimeHomeBuyer` — strict boolean.
-- Location: `zip`/`state`/`city`/`county`/`countyName`/`countyFps` → `property.address.*` — ZIP/state without a 5-digit countyFips → 422 (frontend enriches ZIP→FIPS).
+- Location: `zip`/`state`/`city`/`county`/`countyName`/`countyFps` → `property.address.*` — a 5-digit `zip` ALONE is enough: state + county FIPS + county name are derived from the committed Census ZCTA table (`zip-county.js`) and the response reports what was derived. A caller-supplied value is an ASSERTION — never overwritten, and one that CONTRADICTS the ZIP is 422 `location_conflict`. A ZIP with no ZCTA entry (a PO-box-only ZIP) is 422 `zip_not_found` **only when the county is actually missing** — a caller who already supplied state + countyFps is served. A ZIP spanning several counties resolves to the dominant one and says so (`split: true`); there an explicit county is honored, not rejected.
+- `incomeDocType` → `dynamicPropertiesMap.IncomeDocType` — 25 confirmed values (§33.2); omitted → `DSCR`.
+- `prepayStructure` → `dynamicPropertiesMap.PrePayment_Plan_Type` — 19 confirmed structures (§33.3); independent of `prepayMonths`.
+- `rentalTerm` → `dynamicPropertiesMap.AddlOccupancyType` — `long`|`short` (§31.3); omitted → long-term.
+- `reservesMonths` → `dynamicPropertiesMap.GLOBAL_RESERVES` — confirmed enum (§32.4); omitted → `Reserves_24`.
+- `subordinateLoanAmount` → `criteria.subordinateLoanAmount` — number ≥ 0, CLTV-validated (§31.5).
+- `compPercent` → `brokerCriteria.compPlan` — the POSITIVE number a human sees; the vendor's negative wire form is produced by one named conversion (§31.5).
+- `crossCollateral`, `firstTimeInvestor`, `livingRentFree`, `dscrAssetDepletion`, `lateInLast12Months` → registry-backed flags; TRUE-ONLY where only the ON token was captured (an explicit `false` INHERITS rather than writing an invented off-token).
+- `date` → `date` — the pricing date.
 - Advanced (strict): `selfEmployed`, `financedProperties`(int 0–100), `numberOfBorrowers`(int 1–10), `monthlyIncome`(≥0), `monthlyDebt`(≥0), `dti`(0–100), `compensationType`, `waiveLenderFee`, `rural`, `mixedUse`, `citizenship`, `tradelines`, `noMortgageHistory`, `bankruptcy`{chapter,status,seasoning}, `mortgageLates`{last12,months13To24}, `foreclosure`/`shortSale`/`deedInLieu`/`chargeOff`/`forbearance` (enum tokens in `field-registry`).
-- Always forced (DSCR profile): `propertyUse=Investment`, `compensationType=BorrowerCompPlan`, `IncomeDocType=DSCR`, `AddlOccupancyType=Long_Term_Rental_Property`, `GLOBAL_RESERVES=Reserves_24`, all-rates/all-prices, disqualify kickoff flags.
+- Always forced (DSCR profile), i.e. a live foundation's value can never win: `propertyUse=Investment`, `compensationType=BorrowerCompPlan`, all-rates/all-prices, disqualify kickoff flags.
+- **Forced ONLY when omitted** (the caller may select any confirmed value; an unrecognized one is 422, never silently the default): `IncomeDocType` (default `DSCR`, 25 values — §33.2), `AddlOccupancyType` (default `Long_Term_Rental_Property`, short/long — §31.3), `GLOBAL_RESERVES` (default `Reserves_24` — §32.4), `loanYear` (30), `dayLocks` (30), `GLOBAL_BorrowerType` (`LLC`). *(These three were listed as "always forced" until the post-merge audit of #1220 — §3 contradicted §1 of this same document.)*
 
 ## 4. Running the tests
 

@@ -110,11 +110,33 @@ async function decideFinding(scope, findingKey, decision = {}, db) {
   return r.rowCount > 0;
 }
 
+/**
+ * Read the ledger.
+ *   opts: { status, statusIn[], investor, limit }
+ *
+ * EVERY option here is a SQL PREDICATE, never a post-filter — that is the whole point
+ * of them existing. The route used to fetch the entire scope and narrow by investor in
+ * JS, so a growing ledger slowed down every read of every investor.
+ *
+ * `limit` is offered but is NOT how the review queue should be paged, and the
+ * distinction matters: `review-queue.buildQueue` RANKS by severity, and severity is a
+ * function of the record (kind, price-gap magnitude, regressed, recurrence, age) that
+ * only exists in JS. Truncating in SQL therefore drops rows BEFORE anything knows how
+ * important they are, so the "top 100" would be the 100 most RECENT, presented as the
+ * 100 most important. Use `statusIn` to bound the set by something true (a settled
+ * finding is never in the queue) and let the ranker see all of what remains. Real
+ * paging needs severity expressed in SQL, which would be a SECOND definition of it.
+ */
 async function listFindings(scope, opts = {}, db) {
   const params = [scope];
   let sql = 'SELECT * FROM lt_ppe_finding WHERE scope = $1';
   if (opts.status) { params.push(opts.status); sql += ` AND status = $${params.length}`; }
+  if (Array.isArray(opts.statusIn) && opts.statusIn.length) {
+    params.push(opts.statusIn); sql += ` AND status = ANY($${params.length}::text[])`;
+  }
+  if (opts.investor) { params.push(opts.investor); sql += ` AND investor = $${params.length}`; }
   sql += ' ORDER BY last_seen_at DESC NULLS LAST, finding_key';
+  if (Number.isInteger(opts.limit) && opts.limit > 0) { params.push(opts.limit); sql += ` LIMIT $${params.length}`; }
   const { rows } = await db.query(sql, params);
   return rows;
 }

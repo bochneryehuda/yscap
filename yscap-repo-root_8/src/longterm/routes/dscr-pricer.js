@@ -258,6 +258,11 @@ async function price(req, res) {
   if (rejectUnsupported(sc, res)) return; // never silently ignore an unimplemented field
   const chk = rejectInvalidRequest(sc, res); // §26.5 — 422 a bad request BEFORE any upstream call
   if (chk.rejected) return;
+  // §36.11 — CAPTURE THE CALLER'S OWN SCENARIO BEFORE ENRICHING IT. `requestedScenario` means "what
+  // the caller sent"; taking it after the reassignment below made it echo the DERIVED location too,
+  // so requested and effective agreed on the location BY CONSTRUCTION and the very comparison the
+  // triple exists for was defeated (post-merge audit of #1220).
+  const requestedScenario = requestedOf(sc);
   sc = chk.scenario; // price the ZIP-ENRICHED scenario, never the original
   const r = await lp.price(sc);
   if (!r.ok) return res.status((r.http && r.http >= 500) ? 502 : 400).json(priceErrorBody(r));
@@ -269,12 +274,12 @@ async function price(req, res) {
   // separate status route (GET /disqualifications/:searchKey) instead of ever restarting the search.
   if (req.body && req.body.full) {
     const full = lp.parseFull(r.raw, { raw: !!req.body.raw });
-    const out = { ok: true, ...full, requestedScenario: requestedOf(sc), derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+    const out = { ok: true, ...full, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
     if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
     return res.json(out);
   }
   const parsed = lp.parse(r.raw);
-  const out = { ok: true, ...trimPrograms(parsed), requestedScenario: requestedOf(sc), derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+  const out = { ok: true, ...trimPrograms(parsed), requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
   // Secret-gated diagnostics (the whole router is behind the diag token / staff login): when the
   // caller asks, include a structural summary of the raw response so we can see whether Lender
   // Price returned programs the parser missed, or truly zero — and any disqualify reasons.
@@ -416,5 +421,5 @@ function makeRouter() {
   return router;
 }
 
-module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest }, BATTERY,
+module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest }, BATTERY, SUPPORTED_FIELDS, META_FIELDS,
   _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf } };

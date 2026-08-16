@@ -108,4 +108,199 @@ async function maybeOrderFromSitewire(appId, { drawId, status, platform, method,
   }
 }
 
-module.exports = { SUBMITTED_STATUSES, orderForPortalRequest, maybeOrderFromSitewire, eligibility };
+// ---------------------------------------------------------------------------
+// THE THIRD DOOR: a coordinator orders the inspection HERSELF, from the draw desk
+// ---------------------------------------------------------------------------
+/**
+ * Owner-directed 2026-08-16: *"It should automatically start ordering the reports
+ * whenever a physical inspection comes in. We should also have the option to order it on
+ * our end in the draw center. When we are ordering manually, it should also send over all
+ * the information that we set up."*
+ *
+ * The two automatic doors above mint an order record as a SIDE EFFECT of a borrower
+ * submitting a draw. Until now there was no way to mint one on purpose — so when an
+ * automatic order stood down for any of the perfectly ordinary reasons it can (the
+ * connection switched off during setup, credentials not in yet, Trinity unreachable for
+ * an hour, a draw that arrived before this program existed), the coordinator had nothing
+ * to press. The desk's existing button only ever RE-DROVE a record that already existed.
+ *
+ * THIS DOOR CHANGES NOTHING ABOUT WHAT IS SENT. It resolves the same record the automatic
+ * door would have created — keyed identically, so a manual click and a later automatic
+ * pass can never produce two orders for one draw — and hands it to the SAME
+ * `order.placeOrder`. That is what makes the owner's "it should also send over all the
+ * information" true by construction rather than by a second copy that drifts: the
+ * construction budget, how much has already been drawn on every line, the readable
+ * budget spreadsheet, the appraisal, the scope of work and the most recent previous
+ * inspection report all travel exactly as they do on an automatic order.
+ *
+ * IT REFUSES ON A FILE THAT IS NOT TRINITY'S, through the same shared rule the automatic
+ * doors use — a virtual file belongs to Sitewire's own inspector and a Blue Lake file to
+ * TrustPoint, and manually ordering a second physical inspection onto one of those would
+ * put two inspectors on one draw.
+ */
+async function orderManually(appId, { sitewireDrawId = null, portalRequestId = null, staffId = null } = {}) {
+  const ctx = await fileRouting(appId);
+  if (!eligibility.isTrinityFile(ctx)) {
+    return { blocked: true, message: `This file's inspections are not Trinity's — ${eligibility.reasonNotTrinity(ctx)}.` };
+  }
+
+  let orderRowId = null;
+
+  if (sitewireDrawId != null) {
+    const drawId = Number(sitewireDrawId);
+    if (!Number.isFinite(drawId)) return { blocked: true, message: 'That draw could not be read.' };
+    // The draw must be ON THIS FILE. A draw id naming another file's draw is a data
+    // fault, and ordering an inspection against it would send an inspector to the wrong
+    // property — far worse than refusing.
+    const own = (await db.query(
+      `SELECT sitewire_draw_id FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`,
+      [drawId, appId])).rows[0];
+    if (!own) return { blocked: true, message: 'That draw is not on this file.' };
+
+    // THE SAME KEY THE AUTOMATIC DOOR USES. `customer_key` is unique, so this insert IS
+    // the claim: if the automatic pass already minted the record, this adopts it instead
+    // of creating a second one, and if this runs first the automatic pass adopts ours.
+    // The ON CONFLICT target carries the partial index's own WHERE clause (42P10).
+    const customerKey = `swd-${drawId}`;
+    const ins = await db.query(
+      `INSERT INTO trinity_inspection_orders (application_id, sitewire_draw_id, customer_key, note)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (customer_key) WHERE customer_key IS NOT NULL DO NOTHING
+       RETURNING id`,
+      [appId, drawId, customerKey, `Sitewire draw ${drawId} — physical inspection ordered by hand`]);
+    if (ins.rows.length) orderRowId = ins.rows[0].id;
+    else {
+      const existing = (await db.query(
+        `SELECT id, trinity_order_id FROM trinity_inspection_orders WHERE customer_key=$1`, [customerKey])).rows[0];
+      if (!existing) return { error: true, message: 'The inspection record could not be read back.' };
+      if (existing.trinity_order_id) {
+        return { ok: true, already: true, orderRowId: existing.id, trinityOrderId: Number(existing.trinity_order_id) };
+      }
+      orderRowId = existing.id;
+    }
+  } else if (portalRequestId != null) {
+    const reqId = Number(portalRequestId);
+    if (!Number.isFinite(reqId)) return { blocked: true, message: 'That draw request could not be read.' };
+    const pr = (await db.query(
+      `SELECT id, platform, total_requested_cents FROM portal_draw_requests WHERE id=$1 AND application_id=$2`,
+      [reqId, appId])).rows[0];
+    if (!pr) return { blocked: true, message: 'That draw request is not on this file.' };
+    if (pr.platform !== 'trinity') return { blocked: true, message: 'That draw request is administered by the note buyer, not Trinity.' };
+    const existing = (await db.query(
+      `SELECT id, trinity_order_id FROM trinity_inspection_orders
+        WHERE application_id=$1 AND portal_draw_request_id=$2 ORDER BY id DESC LIMIT 1`, [appId, reqId])).rows[0];
+    if (existing && existing.trinity_order_id) {
+      return { ok: true, already: true, orderRowId: existing.id, trinityOrderId: Number(existing.trinity_order_id) };
+    }
+    if (existing) orderRowId = existing.id;
+    else {
+      // The composer creates this record in the same transaction as the request, so
+      // normally there is one. It can be missing on a request composed before this
+      // program existed — which is exactly a case somebody needs a button for.
+      orderRowId = (await db.query(
+        `INSERT INTO trinity_inspection_orders (application_id, portal_draw_request_id, note)
+         VALUES ($1,$2,$3) RETURNING id`,
+        [appId, reqId, `Portal draw request #${reqId} — physical inspection ordered by hand`])).rows[0].id;
+    }
+  } else {
+    // A draw is not optional, and saying so beats a confusing refusal from Trinity's own
+    // validation two calls later. Trinity's form 19 is a LINE-ITEM DRAW: it requires at
+    // least one line with an amount requested (`mapper.buildOrderPayload`), so an order
+    // with no draw behind it has nothing to inspect against. The way to order an
+    // inspection when the borrower has not asked for a draw is to compose the draw
+    // request on the desk first — which orders the inspection on its own.
+    return { blocked: true, message: 'Pick the draw this inspection is for.' };
+  }
+
+  const placed = await require('./order').placeOrder(appId, orderRowId, { staffId });
+  return { orderRowId, ...placed };
+}
+
+/** The file's routing, in the shape `eligibility` reads, failing CLOSED if we cannot look. */
+async function fileRouting(appId) {
+  try {
+    const rp = await require('../sitewire/routing').resolveFilePlatform(appId);
+    return { platform: rp.platform, method: rp.method, resolved: rp.resolved !== false };
+  } catch (_) {
+    return { platform: null, method: null, resolved: false };
+  }
+}
+
+/**
+ * What the desk may order an inspection AGAINST, and why it may not.
+ *
+ * Everything here is a READ. It exists so the button can be offered with a real choice
+ * rather than a free-text id, and so a file that cannot be ordered on says why in plain
+ * words instead of failing on the click.
+ */
+async function orderOptions(appId) {
+  const ctx = await fileRouting(appId);
+  const eligible = eligibility.isTrinityFile(ctx);
+  const out = {
+    eligible,
+    reason: eligible ? null : eligibility.reasonNotTrinity(ctx),
+    draws: [],
+    requests: [],
+  };
+  if (!eligible) return out;
+
+  const statuses = Array.from(SUBMITTED_STATUSES);
+  // THE AMOUNT SHOWN IS THE ONE THE INSPECTOR WILL SEE. `sitewire_draws.total_requested_cents`
+  // is Sitewire's own header total and is 0 whenever their payload did not carry one, so a
+  // picker built on it can offer "Draw 2 — $0.00 requested" for a real draw. The per-line
+  // requests are what `placeOrder` actually sends as `amountRequested`, so their SUM is
+  // preferred and the mirrored header is only the fallback.
+  out.draws = (await db.query(
+    `SELECT d.sitewire_draw_id, d.number, d.status, d.submitted_at,
+            GREATEST(COALESCE(d.total_requested_cents,0), COALESCE(rq.c,0)) AS total_requested_cents,
+            o.id AS order_row_id, o.trinity_order_id, o.status AS order_status
+       FROM sitewire_draws d
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(SUM(COALESCE(r.requested_cents,0)),0)::bigint AS c
+           FROM sitewire_draw_requests r WHERE r.sitewire_draw_id = d.sitewire_draw_id
+       ) rq ON true
+       LEFT JOIN trinity_inspection_orders o
+              ON o.sitewire_draw_id = d.sitewire_draw_id AND o.application_id = d.application_id
+      WHERE d.application_id = $1
+        AND d.historical = false
+        AND d.status = ANY($2::text[])
+      ORDER BY d.number DESC NULLS LAST, d.sitewire_draw_id DESC
+      LIMIT 10`, [appId, statuses])).rows.map((r) => ({
+    sitewire_draw_id: Number(r.sitewire_draw_id),
+    number: r.number,
+    status: r.status,
+    total_requested_cents: Number(r.total_requested_cents || 0),
+    submitted_at: r.submitted_at,
+    // "Already ordered" is TRINITY holding an order, not merely our record existing — a
+    // record with no Trinity order id is precisely what this door is for.
+    ordered: !!r.trinity_order_id,
+    order_row_id: r.order_row_id || null,
+  }));
+
+  out.requests = (await db.query(
+    `SELECT p.id, p.status, p.total_requested_cents, p.created_at,
+            o.id AS order_row_id, o.trinity_order_id
+       FROM portal_draw_requests p
+       LEFT JOIN trinity_inspection_orders o
+              ON o.portal_draw_request_id = p.id AND o.application_id = p.application_id
+      WHERE p.application_id = $1
+        AND p.platform = 'trinity'
+        AND p.status IN ('submitted','entered')
+      ORDER BY p.id DESC
+      LIMIT 10`, [appId])).rows.map((r) => ({
+    id: Number(r.id),
+    status: r.status,
+    total_requested_cents: Number(r.total_requested_cents || 0),
+    created_at: r.created_at,
+    ordered: !!r.trinity_order_id,
+    order_row_id: r.order_row_id || null,
+  }));
+
+  return out;
+}
+
+module.exports = {
+  SUBMITTED_STATUSES, orderForPortalRequest, maybeOrderFromSitewire,
+  orderManually, orderOptions, eligibility,
+  _internals: { fileRouting },
+};

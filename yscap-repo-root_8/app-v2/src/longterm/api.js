@@ -59,6 +59,25 @@ export const ltApi = {
   // there is nothing in the request that could point at somebody else.
   mySettings: () => ltGet(lt('/settings/mine')),
   saveMySettings: (settings) => ltPatch(lt('/settings/mine'), { settings }),
+
+  // The Product & Pricing Engine. Lender Price stays authoritative — these read
+  // the SHADOW: what our engine disagreed with, and how far it is from ready.
+  // Every list is served pre-ordered by the server's own review queue, so this
+  // client never sorts and cannot drift from "what to work on first".
+  ppeHealth: () => ltGet(lt('/ppe/health')),
+  ppeInvestors: () => ltGet(lt('/ppe/investors')),
+  ppeFindings(params = {}) {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+    }
+    const q = qs.toString();
+    return ltGet(lt(`/ppe/findings${q ? `?${q}` : ''}`));
+  },
+  ppeScoreboard: (investor) => ltGet(lt(`/ppe/scoreboard?investor=${encodeURIComponent(investor)}`)),
+  // Admin-only on the server. Called anyway from a non-admin's screen so the
+  // REFUSAL is shown — a hidden button is indistinguishable from a broken one.
+  ppeDecideFinding: (key, body) => ltPost(lt(`/ppe/findings/${encodeURIComponent(key)}/decide`), body),
 };
 
 export default ltApi;
