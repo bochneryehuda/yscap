@@ -272,15 +272,42 @@ Two things worth knowing from that run:
 > credit card entered yet under conditions, you can pay it manually right over here,
 > put in the credit card information in our system, or we can send payment links."*
 
-Exactly three ways, in `src/richervalues/payment.js`. **Add to Invoice and ACH are
+Their founder, asked how a production order should be paid (2026-08-16):
+
+> *"If your team usually sends payment links to your borrower, then you will use our
+> payment link API. Alternatively if you usually pay for the reports in house, then
+> you'll need to set up a payment method on our training server, and then use the
+> payment API to initiate payment for the report."*
+
+The owner picked **both**: *"our card, link as backup"* — we pay in-house on every
+order, and a staffer can switch a single order to a payment link.
+
+Exactly four ways, in `src/richervalues/payment.js`. **Add to Invoice and ACH are
 not offered anywhere** — not as a config value, not as a control, not as an accepted
 request field.
 
 | | What it does |
 |---|---|
+| **`COMPANY_CARD`** | **THE DEFAULT.** Charges the card YS Capital already keeps at Richer Values, by referencing the source id they hold (`USE_EXISTING_SOURCE`). **No card number is ever sent**, which is exactly why it is the one card route their Stripe cannot refuse. Nothing is added and nothing has to be deleted afterwards. |
 | `CARD_ON_FILE` | charges the card on the file's **appraisal-card condition**, revealed through the one audited chokepoint (`view_appraisal_card` is written) |
 | `NEW_CARD` | a card typed at the moment of ordering: **saved onto the file first** through the shared `lib/appraisal-card.js` chokepoint — so paying also answers that condition — then charged |
 | `PAYMENT_LINK` | Richer Values emails the borrower their own hosted payment page; the order exists and starts once they pay |
+
+### Which company card — it never guesses
+
+`resolveCompanySource` reads **only** the `creditCards` side of their reply, so an
+ACH source on the account is unreachable rather than merely unlisted (the owner
+forbade ACH outright). Then:
+
+- a **configured** `RV_PAYMENT_SOURCE_ID` wins outright — an operator naming a card is deliberate;
+- **exactly one** card is unambiguous and is used;
+- **two or more is a REFUSAL, not a pick.** Choosing between company cards is a money decision belonging to a person, and the wrong one is charged silently. The refusal names both cards and both ways forward;
+- **no cards** is the ordinary not-set-up-yet state, worded so the reader knows to save one in the Richer Values portal;
+- an **unreadable list** refuses too — never a guess.
+
+Every one of those refusals falls through to the payment link, so none of them is a
+dead end. The order screen asks the same question **before** anyone presses pay, so
+"there is no card on the account" is said while there is still time to fix it.
 
 **The card is taken back off their account.** Their `add-card` is COMPANY-level, so
 a borrower's card added there is chargeable for anybody's order. The charge runs
@@ -297,10 +324,15 @@ Their `add-card` forwards the number straight to Stripe and **Stripe refuses it 
 their account**: *"Sending credit card numbers directly to the Stripe API is
 generally unsafe… To enable testing raw card data APIs, see …"*. A Stripe **token**
 cannot be used instead, because their own validator rejects it first: `"card_number"
-must be a number`. That is a setting on **their** Stripe account. The code is
-written the documented way and will work the day they enable it; until then that
-specific refusal is recognised, said in plain words with **tech@richervalues.com**
-named, and the order falls through to the payment link, which works today.
+must be a number`. That is a setting on **their** Stripe account.
+
+So `CARD_ON_FILE` and `NEW_CARD` — the two routes that send a NUMBER — can only end
+in a refusal today. The code is written the documented way and will work the day
+they enable it; until then that specific refusal is recognised, said in plain words
+with **tech@richervalues.com** named, and the order falls through to the payment
+link. **`COMPANY_CARD` is the way round it** and is why it is the default: a human
+saves the card once in their portal, and every order after that charges a source
+they already hold, with no number crossing the wire.
 
 ---
 

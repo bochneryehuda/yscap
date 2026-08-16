@@ -632,11 +632,17 @@ function sectionG() {
   const forbidden = /invoice|ach|bank|wire/i;
   ok('G payment', 'no forbidden payment method is offered',
     payment.METHODS.every((m) => !forbidden.test(m)), { methods: payment.METHODS });
-  ok('G payment', 'exactly the three allowed methods are offered',
-    payment.METHODS.length === 3
+  ok('G payment', 'exactly the four allowed methods are offered',
+    payment.METHODS.length === 4
+    && payment.METHODS.includes('COMPANY_CARD')
     && payment.METHODS.includes('CARD_ON_FILE')
     && payment.METHODS.includes('NEW_CARD')
     && payment.METHODS.includes('PAYMENT_LINK'), { methods: payment.METHODS });
+  // OUR OWN CARD IS THE DEFAULT (owner-directed 2026-08-16, "we pay in-house, link
+  // as the backup"). Asserted as the FIRST entry because that ordering is what an
+  // unconfigured deployment and the order screen's own fallback list both read.
+  ok('G payment', 'our own card with Richer Values is the first method offered',
+    payment.METHODS[0] === 'COMPANY_CARD', { methods: payment.METHODS });
 
   // Their processor refuses a raw card on this account; recognising that refusal is
   // what turns a dead end into a payment link.

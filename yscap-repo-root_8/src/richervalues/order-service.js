@@ -454,7 +454,25 @@ async function buildPreview(db, appId, { overrides = {}, refresh = false } = {})
   // What paying will do, said in advance. A card is described by its last four and
   // nothing else — a preview is not a reveal.
   const card = await payment.cardStatus(db, appId);
-  const configuredMethod = String(RV().paymentMethod || 'CARD_ON_FILE').toUpperCase();
+  const configuredMethod = String(RV().paymentMethod || 'COMPANY_CARD').toUpperCase();
+
+  // OUR OWN CARD, the default route since the owner chose "we pay in-house, link as
+  // backup". Asked BEFORE anyone presses pay, because "there is no card on the YS
+  // Capital account" is a thing a human has to go and fix in the Richer Values
+  // portal — telling them at the moment of payment is telling them too late.
+  // Best-effort in every direction: it costs one read, and a read we could not make
+  // must never stop the screen drawing or block the payment-link route underneath.
+  let companyCard = { known: false, ready: false, why: null, card: null };
+  if (cfgd.enabled && companyToken) {
+    try {
+      const src = await payment.resolveCompanySource(companyToken, RV().paymentSourceId || null);
+      companyCard = src.ok
+        ? { known: true, ready: true, why: null, card: src.card || null }
+        : { known: true, ready: false, why: src.error || null, code: src.code || null, card: null };
+    } catch (e) {
+      companyCard = { known: false, ready: false, why: (e && e.message) || String(e), card: null };
+    }
+  }
 
   return {
     vendor: 'richer_value',
@@ -502,11 +520,12 @@ async function buildPreview(db, appId, { overrides = {}, refresh = false } = {})
     },
     loanGuard: guard,
     payment: {
-      // Exactly the three the owner allows. Invoice and ACH are not offered here
+      // Exactly the four the owner allows. Invoice and ACH are not offered here
       // because they are not offered at all.
       methods: payment.METHODS,
-      method: payment.METHODS.includes(configuredMethod) ? configuredMethod : 'CARD_ON_FILE',
+      method: payment.METHODS.includes(configuredMethod) ? configuredMethod : 'COMPANY_CARD',
       card,
+      companyCard,
       borrowerEmail: ctx.borrowerEmail,
       note: card.present
         ? (card.expired
@@ -721,9 +740,14 @@ async function placeOrder(db, appId, {
  * SETTLE THE INTAKE, so it becomes a real order.
  *
  * THE OWNER'S RULE (2026-08-14) — *"We don't want to allow Add to Invoice. We
- * don't want to allow ACH."* — leaves exactly three ways, and this is the one
+ * don't want to allow ACH."* — leaves exactly four ways, and this is the one
  * place that chooses between them:
  *
+ *   COMPANY_CARD   charge the card YS Capital keeps with Richer Values. THE DEFAULT
+ *                  (owner-directed 2026-08-16, "we pay in-house, link as backup")
+ *                  and the only card route their Stripe account does not refuse,
+ *                  because no card NUMBER is ever sent — only the id of a card a
+ *                  human saved in their portal.
  *   CARD_ON_FILE   charge the card on the appraisal-card condition.
  *   NEW_CARD       a card typed at the moment of ordering; it is SAVED onto the
  *                  file first (through the shared chokepoint, so the condition is
@@ -745,7 +769,7 @@ async function placeOrder(db, appId, {
  */
 async function payIntake(db, order, { staffId = null, method: methodIn = null, card = null,
   paymentLinkTo = null, paymentLinkCc = [], borrowerId = null } = {}) {
-  const method = String(methodIn || RV().paymentMethod || 'CARD_ON_FILE').toUpperCase();
+  const method = String(methodIn || RV().paymentMethod || 'COMPANY_CARD').toUpperCase();
   if (method === 'NONE') return order;
   if (!order.intake_token) return order;
 
@@ -810,6 +834,27 @@ async function payIntake(db, order, { staffId = null, method: methodIn = null, c
   };
 
   if (method === 'PAYMENT_LINK') return sendLink('');
+
+  // ---- OUR OWN CARD, the one Richer Values already holds ------------------
+  // Owner-directed 2026-08-16 (their CEO named the two routes that can work in
+  // production; the owner chose both — this one by default, the payment link as
+  // the per-order backup). It is the ONLY card route their Stripe cannot refuse,
+  // because no card number is ever sent: a human saves the card once in the Richer
+  // Values portal and this references the source they already hold. Nothing is
+  // added and nothing has to be deleted afterwards.
+  //
+  // A failure here falls through to the payment link exactly as the other card
+  // routes do — "link as backup" is the owner's own phrase, and an intake that
+  // already exists at the vendor must never be thrown away over a payment problem.
+  if (method === 'COMPANY_CARD') {
+    const out = await payment.payWithCompanyCard(order.intake_token, {
+      companyToken: order.company_token,
+      paymentSourceId: RV().paymentSourceId || null,
+      journal: j,
+    });
+    if (out.ok) return settle(out, 'COMPANY_CARD');
+    return sendLink(`${out.error} `);
+  }
 
   // ---- a card ------------------------------------------------------------
   const journalCard = (entry) => journal(db, {

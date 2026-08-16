@@ -1273,11 +1273,17 @@ function RvScopeOfWork({ sow }) {
 
 /* ── how it gets paid ────────────────────────────────────────────────────── */
 /*
- * Exactly the three ways the owner allows. Add to Invoice and ACH are not shown
+ * Exactly the four ways the owner allows. Add to Invoice and ACH are not shown
  * because they are not offered at all — a control for something the server refuses
  * is worse than no control.
+ *
+ * OUR OWN CARD IS FIRST AND IS THE DEFAULT, because the owner's answer was "we pay
+ * in-house, payment link as the backup". It is also the one card route that works:
+ * Richer Values' Stripe account refuses a raw card number, so both of the card
+ * routes underneath it can only end in a refusal today.
  */
 const RV_PAY_LABEL = {
+  COMPANY_CARD: 'Charge our card with Richer Values',
   CARD_ON_FILE: 'Charge the card on this file',
   NEW_CARD: 'Enter a card now',
   PAYMENT_LINK: 'Send the borrower a payment link',
@@ -1285,8 +1291,9 @@ const RV_PAY_LABEL = {
 
 function RvPayment({ payment, method, onMethod, card, onCard, linkTo, onLinkTo }) {
   if (!payment) return null;
-  const methods = payment.methods || ['CARD_ON_FILE', 'NEW_CARD', 'PAYMENT_LINK'];
-  const chosen = method || payment.method || 'CARD_ON_FILE';
+  const methods = payment.methods || ['COMPANY_CARD', 'CARD_ON_FILE', 'NEW_CARD', 'PAYMENT_LINK'];
+  const chosen = method || payment.method || 'COMPANY_CARD';
+  const cc = payment.companyCard || null;
   const set = (k, v) => onCard({ ...card, [k]: v });
 
   return (
@@ -1300,6 +1307,20 @@ function RvPayment({ payment, method, onMethod, card, onCard, linkTo, onLinkTo }
           </label>
         ))}
       </div>
+
+      {/* OUR CARD — what it will charge, or exactly what a human has to go and do
+          about it, said here rather than at the moment of payment. */}
+      {chosen === 'COMPANY_CARD' ? (
+        <div style={{ fontSize: 12, color: cc && cc.known && !cc.ready ? WARN : MUTED, marginTop: 6, lineHeight: 1.45 }}>
+          {!cc || !cc.known
+            ? 'PILOT will charge the card YS Capital keeps with Richer Values. It could not check which card that is right now — if the charge does not go through, the payment link below still works.'
+            : cc.ready
+              ? (cc.card && cc.card.last4
+                ? <>The card YS Capital keeps with Richer Values (<b>{cc.card.brand || 'card'} ending {cc.card.last4}</b>) will be charged. The borrower is not asked to pay.</>
+                : 'The card YS Capital keeps with Richer Values will be charged. The borrower is not asked to pay.')
+              : cc.why}
+        </div>
+      ) : null}
 
       {chosen === 'CARD_ON_FILE' ? (
         <div style={{ fontSize: 12, color: payment.card && payment.card.expired ? WARN : MUTED, marginTop: 6, lineHeight: 1.45 }}>
@@ -1538,10 +1559,12 @@ function RvOrderCard({ order, onChanged }) {
         ) : null}
         {!order.paid_at && order.intake_token ? (
           <>
+            {/* OUR CARD FIRST. It falls through to the payment link on the server if
+                the charge cannot be made, so this button can never be a dead end. */}
             <button className="aord-btn" disabled={!!busy}
-              onClick={() => run('pay', () => api.rvPay(order.id, { method: 'CARD_ON_FILE' }),
-                'Charged the card on this file — it is a real order now.')}>
-              {busy === 'pay' ? 'Charging…' : 'Charge the card on file'}
+              onClick={() => run('pay', () => api.rvPay(order.id, { method: 'COMPANY_CARD' }),
+                'Paid with our card at Richer Values — it is a real order now.')}>
+              {busy === 'pay' ? 'Charging…' : 'Pay with our card'}
             </button>
             <button className="aord-btn" disabled={!!busy}
               onClick={() => run('link', () => api.rvPay(order.id, { method: 'PAYMENT_LINK' }),

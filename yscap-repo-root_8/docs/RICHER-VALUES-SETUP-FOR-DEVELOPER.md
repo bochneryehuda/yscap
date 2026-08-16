@@ -44,7 +44,7 @@ dormant until Step 4.
 | `RV_PASSWORD` | the API password | |
 | `RV_ENVIRONMENT` | `training` | Start on training. Change to `production` only at Step 6. |
 | `RV_DRYRUN` | `1` | Builds the order and writes it to the log, sends nothing. |
-| `RV_PAYMENT_METHOD` | `CARD_ON_FILE` | Charge the card on the file. Do not set this to anything else without asking — invoicing and ACH are not permitted. |
+| `RV_PAYMENT_METHOD` | `COMPANY_CARD` | Pay with the card YS Capital keeps at Richer Values. This is the default and the owner's choice — do not set it to anything else without asking; invoicing and ACH are not permitted. |
 
 Save. The service restarts.
 
@@ -183,17 +183,34 @@ If they prefer a username/password instead of a header, use these two instead:
 
 ---
 
-## Step 8 — Two things to ask Richer Values for
+## Step 8 — Save our card at Richer Values (this is how orders get paid)
 
-Both are on their side; neither is a code problem here.
+**Do this once, by hand, and everything else pays itself.** A human signs in to the
+Richer Values portal on the YS Capital account and saves a company credit card
+(Company → payment methods). PILOT never sees that card number — it only tells them
+"charge the card you already hold."
 
-1. **Raw card data on their Stripe account.** Today their system refuses a card
-   number, so *"charge the card on the file"* cannot complete — Stripe blocks it on
-   *their* account. Until they switch it on, use **"Send the borrower a payment
-   link"**, which works today. Ask tech@richervalues.com to enable raw card data
-   APIs (or to give us a tokenised card endpoint).
-2. **The card surcharge.** They add **$3.50** to every card payment. Confirm whether
-   that is charged on a payment link too, so the desk can say the right total.
+That is why it works when the other card options do not: their Stripe account
+**refuses a raw card number**, so *"charge the card on this file"* and *"enter a card
+now"* both end in a refusal today. Saving the card in their portal is the way round
+it, and it is the route their CEO named.
+
+**If the account holds more than one card,** PILOT will not choose between them — it
+says so and stops, because charging the wrong company card is silent. Add
+`RV_PAYMENT_SOURCE_ID` with the id of the card you want charged.
+
+| Key | Value | When |
+|---|---|---|
+| `RV_PAYMENT_SOURCE_ID` | the card's id from Richer Values | **Only** if more than one card is saved on the account |
+
+Nothing breaks while the card is missing: every order falls through to **"Send the
+borrower a payment link"**, and the order screen says plainly that there is no card
+saved yet.
+
+### One thing to confirm with them
+
+**The card surcharge.** They add **$3.50** to every card payment. Confirm whether
+that is charged on a payment link too, so the desk can say the right total.
 
 ---
 
@@ -206,7 +223,8 @@ Both are on their side; neither is a code problem here.
 | `RV_PASSWORD` | **yes** | from Richer Values |
 | `RV_ENVIRONMENT` | **yes** | `training` then `production` |
 | `RV_OUTBOUND_ENABLED` | **yes, to order** | `1` |
-| `RV_PAYMENT_METHOD` | recommended | `CARD_ON_FILE` |
+| `RV_PAYMENT_METHOD` | recommended | `COMPANY_CARD` |
+| `RV_PAYMENT_SOURCE_ID` | only if 2+ cards | the card id from Richer Values |
 | `RV_DRYRUN` | while testing | `1`, then remove |
 | `RV_WEBHOOK_TOKEN` | recommended | a long random string |
 | `RV_WEBHOOK_TOKEN_HEADER` | only if they insist | default `x-api-key` |
@@ -241,6 +259,8 @@ part of `npm test`, so it runs on every build.
 | Order button greyed with *"writes are gated off"* | `RV_OUTBOUND_ENABLED` is not `1` | Add it |
 | *"the master switch is off"* | `RV_ENABLED` is not `1` | Add it |
 | Order comes back **On Hold** | No scope of work went with it | Add the scope of work to the file and re-send it from the order card |
-| *"Richer Values cannot take a card number"* | Their Stripe account blocks it | Use the payment link; see Step 8 |
+| *"Richer Values cannot take a card number"* | Their Stripe account blocks it | Save our card in their portal and use **Charge our card with Richer Values**; see Step 8 |
+| *"There is no card saved on the YS Capital account"* | Nobody has saved one in their portal yet | Save one; see Step 8. The payment link works meanwhile |
+| *"Richer Values holds more than one card for YS Capital"* | PILOT will not choose between them | Set `RV_PAYMENT_SOURCE_ID` to the card you want charged |
 | Nothing updates on an order | Webhook not set up | Fine — PILOT re-checks every 5 minutes anyway |
 | A field is refused by name | Their validator rejected it | The message names the field; the order screen shows it |
