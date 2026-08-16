@@ -285,6 +285,14 @@ LTV · Milestone · Days in milestone · Loan officer · Processor · Conditions
 The **Conditions column does real work on its own** — a red count of what is outstanding
 means a user triages urgency from the list without opening a file.
 
+**Two of those columns cannot be sourced yet, and they say so on the screen rather than
+rendering empty.** *Conditions* waits on the Condition Center (phase 5, deferred). *Expected
+closing* has no closing date on `lt_loans` at all — it is in the setting's own default, which is
+exactly how a column nobody can fill gets configured by accident, so the resolver drops it and
+names the reason. Everything else on this list is live, plus a **Stage**, an **At milestone** age
+and an **Updated** column the build added. When a closing date is mirrored, the column becomes
+one entry in `src/longterm/pipeline-columns.js` and nothing else.
+
 **Saved views** are per-user rows in an `lt_pipeline_views` table, not a code change.
 
 ### 4.1.1 Stages — three layers, not one
@@ -700,6 +708,36 @@ Writes `lt_loans` and its sections, `lt_loan_contacts`, milestones. Records
 `app-v2/src/longterm/**` comes into existence: the shell, the product switch, the pipeline
 table, filters, saved views, scope. **Ends with:** an officer signs in, flips to Long-Term,
 and sees their own long-term book.
+
+**The columns took a second pass, and the reason is worth keeping.** `pipeline.columns` was
+declared in phase 6 with the fifteen-key default §4.1 names, and **nothing read it** — the screen
+hard-coded nine. So a buyer could change the pipeline, save it, reload, and see exactly what they
+saw before, with no error to act on. That is worse than offering no control at all: a dead switch
+teaches people the system ignores them, and the lesson is expensive to unteach. Seven of the
+columns this section names were not shown at all, and two of them (the property address, the LTV)
+had no source in the query because `lt_properties` was never joined.
+
+`src/longterm/pipeline-columns.js` is the catalog and the resolver, and it carries two rules.
+**A column we cannot source is dropped and REPORTED, never rendered empty** — `expected_closing`
+is in the setting's own default and there is no closing date on `lt_loans` to fill it, and a
+column of dashes on every row of every loan forever reads as "we failed to fetch this" rather
+than "we do not hold it", which is the confident blank this side keeps finding. A key nobody
+declared is named on the screen for the same reason: a typo that silently disappears looks
+identical to a setting that did not save. **And the setting never becomes SQL** — the query
+selects the same fixed expressions every time and the setting decides only what the SCREEN draws,
+in what order; building a SELECT list out of a stored value would put what an administrator types
+into the query text and hand the planner a different statement per configuration. The test
+asserts the statement is byte-identical under two different configurations, and that the query
+module does not so much as `require` the catalog.
+
+Each column carries the ROW FIELD it reads, so the screen holds no map of its own — a table
+repeated on both sides is one that eventually disagrees with itself, and the disagreement shows
+up as an "LTV" heading over a rate. Every sortable column is asserted to name a key `SORTABLE`
+actually accepts, so a heading can never ask for an order the query refuses, and the arrow is
+drawn from what the server says it DID rather than from what the screen asked for. **The product
+stamp rides the FIRST column, whichever column that is** (CLAUDE.md §7): hanging it off the loan
+number would let a configuration that drops that column drop the stamp with it, and the stamp is
+not configurable.
 
 ### Phase 4 — The loan workspace — **BUILT**
 The three-region layout, the URLA-sectioned read-only file, the Summary rail, the Contacts
