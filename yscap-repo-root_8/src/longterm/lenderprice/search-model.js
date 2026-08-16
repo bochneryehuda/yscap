@@ -283,14 +283,43 @@ function dscrBand(dscr) {
 // DISTINCT from blank/inherit (JSON null). We do NOT expose blank/inherit: the DSCR profile always
 // emits a reserves value, so a caller either takes the forced default or an explicit enum value.
 // An unrecognized value is REJECTED (422 via LpValidationError), never priced at a guessed token.
+//
+// §37.14 — 9 AND 36 MONTHS WERE MISSING, AND THE COST OF GUESSING ONE IS MEASURED, NOT ASSERTED.
+// The vendor publishes its own token list at `GET /company/config/{companyId}` with
+// `Accept: application/json-no-enum` (quickPricer.customConfigs[].pricingConfig.customConfig, the
+// field whose `path` is GLOBAL_RESERVES). It publishes EIGHT values; this table carried six. The
+// two it did not carry are `Reserves_9` and `Reserves_36`, so a caller simply could not ask for 9
+// or 36 months of reserves — mapReserves refused them as unknown.
+//
+// The registry alone did not settle it: the vendor publishes 9 and 36 on ONE pricer UI (RateX) and
+// not on another (PriceX), and searchRaw carries no pricer id, so "published somewhere" is not
+// "priced here". It was therefore MEASURED live against one scenario (NJ purchase, $500k value,
+// $400k loan, DSCR 1.25, FICO 760), every token in turn, twice:
+//
+//     Reserve_none  76 options    Reserves_9   394 options / 11 programs
+//     Reserves_3   231 options    Reserves_12  394 / 11      Reserves_24  394 / 11
+//     Reserve_6    394 options    Reserves_18  394 / 11      Reserves_36  394 / 11
+//
+// So the field genuinely discriminates (none → 76, 3 → 231, 6+ → 394) and 9 and 36 sit exactly on
+// the same plateau as the tokens already proven real. AND THE CONTROL IS THE PART WORTH KEEPING:
+// a DELIBERATELY MADE-UP token (`Reserves_5_FAKE`) did NOT error — it answered HTTP 200 with
+// 371 options / 10 programs, reproducibly, both passes. A wrong reserves token costs a whole
+// lender program and says nothing. That is why this table is copied from the vendor's own registry
+// and an unrecognized value is refused here rather than sent.
+//
+// The singular/plural prefixes are GENUINELY INCONSISTENT in the vendor's list (`Reserve_6` and
+// `Reserve_none` singular, `Reserves_3/9/12/18/24/36` plural); they are copied EXACTLY — do NOT
+// "fix" Reserve_6 to Reserves_6.
 const RESERVES_TOKENS = {
   none: 'Reserve_none',
   '0':  'Reserve_none',
   '3':  'Reserves_3',
   '6':  'Reserve_6',     // SINGULAR — confirmed live inconsistency (§32.4). Copy exactly.
+  '9':  'Reserves_9',    // §37.14 — published by the vendor, prices identically to 12/24/36.
   '12': 'Reserves_12',
   '18': 'Reserves_18',
   '24': 'Reserves_24',
+  '36': 'Reserves_36',   // §37.14
 };
 function reservesKey(v) { return String(v == null ? '' : v).trim().toLowerCase(); }
 // Returns the mapped GLOBAL_RESERVES token, or null when reserves is OMITTED (buildSearch then applies
@@ -301,7 +330,7 @@ function mapReserves(v) {
   const t = RESERVES_TOKENS[k];
   if (!t) {
     throw new LpValidationError('unknown_reserves', 'reservesMonths',
-      `Unknown reserves requirement ${JSON.stringify(String(v))}. Supported: "none" (or 0), 3, 6, 12, 18, 24 months. The request is rejected rather than priced at a guessed reserves token.`);
+      `Unknown reserves requirement ${JSON.stringify(String(v))}. Supported: "none" (or 0), 3, 6, 9, 12, 18, 24, 36 months — the eight the vendor publishes. The request is rejected rather than priced at a guessed reserves token, because a token the vendor does not publish is NOT refused upstream: it answers 200 and silently prices a whole lender program fewer.`);
   }
   return t;
 }
@@ -1058,7 +1087,10 @@ const ALLOWED_TERMS = (process.env.LP_ALLOWED_TERMS
 // this one drifts in the UNSAFE direction: a future confirmed vendor token (a '5' bucket) added to
 // LATE_COUNT alone would be accepted by the builder and silently NOT counted as a conflict here, so
 // the contradictory payload this rule exists to refuse would go upstream. Proven by the re-audit.
-const NONZERO_LATE_COUNTS = new Set(Array.from(registry._tokens.LATE_COUNT).filter((v) => String(v) !== '0'));
+// It reads the KEYS because it is handed the CALLER's raw input (`bucket[sev]`), not the token we
+// end up sending — LATE_COUNT became an alias map in §37.15, so "4+" is a key that ships as "4".
+// `Array.from` over that object would silently yield [] and quietly switch this whole rule off.
+const NONZERO_LATE_COUNTS = new Set(Object.keys(registry._tokens.LATE_COUNT).filter((v) => String(v) !== '0'));
 function mortgageHistoryConflict(sc = {}) {
   if (sc.noMortgageHistory !== true) return null;
   const conflicts = [];

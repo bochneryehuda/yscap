@@ -191,7 +191,29 @@ const SHORTSALE = new Set(['SS_Set', 'SS_1yr', 'SS_2yr', 'SS_3yr', 'SS_4yr', 'SS
 const DEEDINLIEU = new Set(['DIL_Set', 'DIL_1yr', 'DIL_2yr', 'DIL_3yr', 'DIL_4yr', 'DIL_5yr', 'DIL_7yr']);
 const CHARGEOFF = new Set(['MLCO2yr', 'MLCO4yr', 'MLCOSet']);
 const FORBEARANCE = new Set(['Forbear3mo', 'Forbear6mo', 'ForbearOver18mo']);
-const LATE_COUNT = new Set(['0', '1', '2', '3', '4+']);
+// §37.15 — THE WORST MORTGAGE HISTORY WAS PRICING AS THE BEST.
+// This was `new Set(['0','1','2','3','4+'])` and the emitted value was the caller's string
+// verbatim. The vendor's registry publishes `0 | 1 | 2 | 3 | 4` for every MORT*LATESLAST* field —
+// there is no "4+". Measured live on one scenario (NJ purchase, $500k/$400k, DSCR 1.25, FICO 760),
+// reproducibly, twice:
+//
+//     "0"  → 394 options / 11 programs      "4"      → 14 / 1
+//     "1"  → 206 / 5                        "4+"     → 394 / 11   ← ours
+//     "2"  → 0 / 0                          "9_FAKE" → 394 / 11
+//     "3"  → 14 / 1
+//
+// So the field genuinely discriminates, AND AN UNRECOGNIZED VALUE IS TREATED AS NO LATES AT ALL:
+// "4+" priced identically to a spotless mortgage history, exactly as an obviously-invented token
+// did. A borrower with four or more 30-day mortgage lates in the last twelve months was being
+// quoted 11 programs instead of 1 — the single worst credit input in this table pricing as the
+// single best, with HTTP 200 and no warning anywhere.
+//
+// So this is an ALIAS MAP now, not a set: a caller may still say "4+" (it is the natural way to
+// say it, and refusing it would break a caller that works today), and what goes ON THE WIRE is the
+// vendor's own "4". Mapping "4+" onto "4" is not a guessed token — "4" is published; it is the
+// reading that the top rung of a 0..4 ladder is the catch-all bucket, which is the only way to
+// express "four or more" at all and is strictly safer than the alternative of pricing it as zero.
+const LATE_COUNT = { '0': '0', '1': '1', '2': '2', '3': '3', '4': '4', '4+': '4' };
 const COMP_TYPE = { BorrowerPaid: 'BorrowerCompPlan', LenderPaid: 'LenderCompPlan', BorrowerCompPlan: 'BorrowerCompPlan', LenderCompPlan: 'LenderCompPlan' };
 
 // Apply the registry-backed fields onto the model `m`. Returns { warnings } — a field with an
@@ -316,8 +338,12 @@ function applyRegistry(m, sc) {
       for (const sev of ['30', '60', '90', '120']) {
         if (obj[sev] == null) continue;
         const v = String(obj[sev]);
-        if (LATE_COUNT.has(v)) setDyn(m, `MORT${sev}LATESLAST${suffix}`, v);
-        else bad(`mortgageLates.${window}.${sev}`, v, LATE_COUNT);
+        // Send the VENDOR's token, never the caller's spelling — see LATE_COUNT above. An
+        // unrecognized count is refused rather than passed through, because the vendor answers a
+        // value it does not publish with "no lates" instead of an error.
+        const tok = Object.prototype.hasOwnProperty.call(LATE_COUNT, v) ? LATE_COUNT[v] : null;
+        if (tok) setDyn(m, `MORT${sev}LATESLAST${suffix}`, tok);
+        else bad(`mortgageLates.${window}.${sev}`, v, new Set(Object.keys(LATE_COUNT)));
       }
     };
     applyBucket(sc.mortgageLates.last12, 'last12', '12M');
