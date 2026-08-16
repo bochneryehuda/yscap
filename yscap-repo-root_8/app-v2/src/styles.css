@@ -4785,3 +4785,8 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
    drops below the content rather than squeezing both — a 300px rail beside a
    narrowing column is how a table of figures ends up one word per line. */
 @media(max-width:900px){ .lt-workspace{grid-template-columns:1fr !important} }
+
+/* The 1003 sections' label/value lists. Two columns is right on a desktop and is a
+   guaranteed one-word-per-line on a phone, so they stack — the table rows inside a
+   section scroll in their own box instead (the page body must never scroll sideways). */
+@media(max-width:640px){ .ltf-facts{grid-template-columns:1fr !important} }

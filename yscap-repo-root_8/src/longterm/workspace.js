@@ -135,16 +135,28 @@ function summaryRail(loan, opts = {}) {
   const num = (v) => (v == null || v === '' ? null : Number(v));
   const stage = stages.stageForMilestone(l.milestone_name, opts.stageConfig || {});
 
+  // THE PROPERTY FIGURES COME FROM THE PROPERTY, NOT FROM THE LOAN ROW.
+  //
+  // `appraised_value`, `ltv_pct`, `occupancy` and the rent live on `lt_properties`
+  // (db/549); `lt_loans` has none of them, so reading them off the loan row answered
+  // null on EVERY loan, silently and forever — the rail said "Property value —" on a
+  // file whose Property section was showing $400,000 two clicks away. Two answers to
+  // one question on two screens is worse than one answer we did not derive, so the
+  // caller passes the SAME sections the Property tab renders (`file.js`) and the two
+  // cannot disagree. Absent, the rows are honestly empty rather than wrong.
+  const p = opts.property || {};
+  const inc = opts.income || {};
+
   return {
     loanNumber: l.loan_number || null,
     borrower: l.borrower_name || null,
     purpose: l.loan_purpose || null,
-    occupancy: l.occupancy || null,
+    occupancy: p.occupancy || null,
     loanAmount: num(l.loan_amount),
-    propertyValue: num(l.appraised_value != null ? l.appraised_value : l.property_value),
-    ltv: num(l.ltv_pct),
+    propertyValue: num(p.appraisedValue != null ? p.appraisedValue : p.estimatedValue),
+    ltv: num(p.ltvPct),
     dscr: num(l.dscr_ratio),
-    grossRent: num(l.gross_rent),
+    grossRent: num(inc.grossMonthlyRent != null ? inc.grossMonthlyRent : inc.actualMonthlyRent),
     housingExpense: num(l.housing_expense_total),
     noteRate: num(l.note_rate_pct),
     termMonths: l.term_months == null ? null : Number(l.term_months),

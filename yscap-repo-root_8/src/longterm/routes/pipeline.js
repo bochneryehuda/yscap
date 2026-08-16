@@ -17,6 +17,7 @@ const access = require('../access');
 const contacts = require('../people/contacts');
 const workspace = require('../workspace');
 const locks = require('../locks');
+const ltFile = require('../file');
 const stages = require('../stages');
 const settingsStore = require('../settings/store');
 const db = require('../db');
@@ -103,15 +104,27 @@ router.get('/:loanId', async (req, res) => {
     // change. Best-effort: a loan still opens when its lock cannot be read.
     const lock = await locks.loadLock(rows[0].id).catch(() => null);
 
+    // The sections themselves — the 1003 as this loan actually reads. Best-effort
+    // like the lock: a file whose sections cannot be assembled still opens, with its
+    // header, its stepper and its rail intact.
+    const file = await ltFile.loadFile(rows[0].id, rows[0]).catch(() => null);
+
     const labels = settings['contacts.roleLabels'] || {};
     res.json({
       loan: rows[0],
       lock,
+      file,
       sections: workspace.sectionMenu(rows[0], {
         conditionsEnabled: settings['conditions.enabled'] === true,
       }),
       stepper: workspace.milestoneStepper(rows[0], catalog),
-      rail: workspace.summaryRail(rows[0], { stageConfig: stages.configFrom(settings) }),
+      // The rail's property figures come from the SAME sections the Property tab
+      // renders, so the two can never state different values for one loan.
+      rail: workspace.summaryRail(rows[0], {
+        stageConfig: stages.configFrom(settings),
+        property: file && file.property,
+        income: file && file.income,
+      }),
       contacts: team.map((t) => contacts.describeContact(t, {
         staffName: t.staff_id ? names.get(String(t.staff_id)) : null,
         overrideName: t.override_staff_id ? names.get(String(t.override_staff_id)) : null,

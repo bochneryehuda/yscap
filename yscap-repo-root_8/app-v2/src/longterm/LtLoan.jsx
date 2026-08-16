@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import LtLayout from './LtLayout.jsx';
+import LtFileSection, { hasFileSection } from './LtFileSections.jsx';
 import { ltApi } from './api.js';
 
 /**
@@ -221,8 +222,12 @@ export default function LtLoan() {
   }
   if (!data) return <LtLayout title="Long-term file"><div className="card" style={{ color: INK }}>Loading…</div></LtLayout>;
 
-  const { rail, stepper, sections = [], contacts = [], lock } = data;
+  const { rail, stepper, sections = [], contacts = [], lock, file } = data;
   const current = sections.find((s) => s.key === active) || sections[0];
+  // A section is drawn from the file ONLY when the server said it applies. A section
+  // the workspace greyed out has a reason attached, and that reason is the answer —
+  // drawing it anyway would contradict the sentence right above it.
+  const showFile = !!(current && current.available && hasFileSection(current.key));
 
   return (
     <LtLayout title={rail && rail.loanNumber ? `Loan ${rail.loanNumber}` : 'Long-term file'}>
@@ -230,7 +235,14 @@ export default function LtLoan() {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 300px', gap: 14, alignItems: 'start' }}
         className="lt-workspace">
-        <div style={{ display: 'grid', gap: 12, minWidth: 0 }}>
+        {/* `gridTemplateColumns:'minmax(0,1fr)'` is load-bearing, not decoration. A grid
+            with no declared column gets an IMPLICIT `auto` one, which sizes to its
+            content — so a section carrying a 620px-wide table stretched this column to
+            759px inside a 390px phone, and `html{overflow-x:clip}` then hid the damage:
+            the page reported no sideways scroll while half of every row was cut off and
+            unreachable. `minmax(0,…)` pins the column to the container, which is what
+            lets each table scroll inside its OWN box the way it was meant to. */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr)', gap: 12, minWidth: 0 }}>
           {/* The section menu. A section that does not apply is GREYED WITH ITS
               REASON — the reason comes from the server, and clicking it says so
               rather than doing nothing, which is what makes a greyed control
@@ -272,13 +284,22 @@ export default function LtLoan() {
           ) : (
             <div className="card" style={{ color: INK }}>
               <h2 style={{ margin: '0 0 6px', fontSize: 16 }}>{current ? current.label : 'Loan summary'}</h2>
-              <p style={{ margin: 0, color: MUTED, lineHeight: 1.55 }}>
-                {current && !current.available
-                  ? current.why
-                  : 'The figures for this section are on the Summary panel while the URLA-sectioned '
-                    + 'read-only file is built. Nothing here is editable yet: the long-term side reads '
-                    + 'Encompass and never writes to it.'}
-              </p>
+              {showFile ? (
+                <>
+                  <p style={{ margin: '0 0 10px', color: MUTED, fontSize: 13 }}>
+                    Read from Encompass. Nothing on this screen is editable — the
+                    long-term side reads Encompass and never writes to it.
+                  </p>
+                  <LtFileSection sectionKey={current.key} file={file} />
+                </>
+              ) : (
+                <p style={{ margin: 0, color: MUTED, lineHeight: 1.55 }}>
+                  {current && !current.available
+                    ? current.why
+                    : 'This loan’s headline figures are on the Summary panel. Nothing here is '
+                      + 'editable: the long-term side reads Encompass and never writes to it.'}
+                </p>
+              )}
             </div>
           )}
         </div>
