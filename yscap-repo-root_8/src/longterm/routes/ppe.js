@@ -343,7 +343,12 @@ async function decideFindingRoute(req, res) {
     return res.status(400).json({ error: 'Add a short reason (at least 8 characters) — a settled finding is never re-opened, so this note is the record of why.' });
   }
 
-  const decidedBy = (req.actor && (req.actor.id || req.actor.staffId)) || null;
+  // `.id` only — the actor object has never carried a `staffId`, so the old
+  // fallback onto that property was unreachable by construction, which is the
+  // whole class `test-attribution-dedupe-pure.js` sweeps the tree for. That
+  // sweep is a plain text match, so do not name the forbidden property here
+  // either: a comment quoting it fails the gate exactly as the code did.
+  const decidedBy = (req.actor && req.actor.id) || null;
   const changed = await findingStore.decideFinding(scope, key, { status, reason, decidedBy }, db);
   if (!changed) return res.status(404).json({ error: 'No such finding on this scope.' });
 
