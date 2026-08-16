@@ -225,6 +225,13 @@ async function makeLoan(extra = {}) {
     check(f.coverage.reo.state === 'read' && f.coverage.assets.count === 3,
       'the assets count is assets AND liabilities — the section holds both');
 
+    // Income's substance is the DSCR and the housing expense, which live on the LOAN
+    // row; `lt_other_incomes` is an extra most DSCR files correctly have none of.
+    // Counting only the rows would report a loan with a good 1.35 DSCR as "nothing on
+    // file yet" — the exact confident wrong answer this block exists to prevent.
+    check(f.coverage.income.state === 'read' && f.coverage.income.count === null,
+      'income counts as READ on the strength of its DSCR, and offers no row count because there is nothing a number would honestly describe');
+
     // ── C. The number that never leaves ─────────────────────────────────────
     console.log('\nthe Social Security number never leaves the server');
 
@@ -273,6 +280,8 @@ async function makeLoan(extra = {}) {
       'a section that was asked about and had nothing reports `empty`, not `unreadable`');
     check(fixedFile.coverage.borrowers.state === 'empty',
       '…on every section of a loan nobody has entered yet');
+    check(fixedFile.coverage.income.state === 'empty',
+      'and income with no DSCR, no rent and no expense on it really is empty — the substance test says nothing is there, not that nothing was asked');
     check(Object.values(f.coverage).every((c) => c.state !== 'unreadable'),
       'and a healthy loan reports nothing as unreadable');
 

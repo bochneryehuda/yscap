@@ -260,11 +260,29 @@ async function loadFile(loanId, loan = null) {
     count: result.error ? null : count,
   });
 
+  /**
+   * A section whose substance is not a LIST of rows.
+   *
+   * Income is the one: its real content is the DSCR, the rent and the housing expense —
+   * all on the loan row — while `lt_other_incomes` is an extra that most DSCR files
+   * correctly have none of. Counting only the rows would report a loan with a perfectly
+   * good 1.35 DSCR as "nothing on file yet", which is exactly the confident wrong answer
+   * the coverage block exists to prevent. `count` is null because there is nothing here
+   * a number would honestly describe.
+   */
+  const coverageOf = (result, hasSubstance) => ({
+    state: result.error ? 'unreadable' : (hasSubstance ? 'read' : 'empty'),
+    count: null,
+  });
+
   return {
     coverage: {
       borrowers: coverage(parties, parties.rows.length),
       property: coverage(property, property.rows.length),
-      income: coverage(otherIncomes, otherIncomes.rows.length),
+      income: coverageOf(otherIncomes, otherIncomes.rows.length > 0
+        || num(l.dscr_ratio) !== null
+        || num(l.housing_expense_total) !== null
+        || (prop ? num(prop.gross_monthly_rent) !== null || num(prop.actual_monthly_rent) !== null : false)),
       employment: coverage(employments, employments.rows.length),
       assets: coverage(assets, assets.rows.length + liabilities.rows.length),
       reo: coverage(reo, reo.rows.length),
