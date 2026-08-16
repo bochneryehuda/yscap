@@ -9,17 +9,17 @@
 // *** IT IS INCOMPLETE, AND THAT IS NOT A DEFECT — IT IS A PROPERTY OF THE
 // *** PRISMA SCHEMA LANGUAGE. It cannot express triggers, functions, CHECK
 // *** constraints, generated columns or partial indexes. On this database
-// *** that is 752 objects it cannot see, listed in full in
+// *** that is 765 objects it cannot see, listed in full in
 // *** BEYOND-PRISMA.md next to this file.
 //
 // *** SO: NEVER REBUILD A DATABASE FROM THIS FILE. Doing so produces SQL that
 // *** runs without a single error and silently leaves out every one of those
-// *** 752 objects — including the guard that keeps a budget
+// *** 765 objects — including the guard that keeps a budget
 // *** condition from being signed off unless the totals match to the cent.
-// *** The 554 numbered migrations in db/ (highest db/557) are the only
+// *** The 561 numbered migrations in db/ (highest db/564) are the only
 // *** thing that builds this database.
 //
-// Snapshot: 323 tables, 5297 columns.
+// Snapshot: 334 tables, 5435 columns.
 // ===========================================================================
 datasource db {
   provider = "postgresql"
@@ -621,6 +621,7 @@ model applications {
   staff_users_applications_underwriter_idTostaff_users                                     staff_users?                     @relation("applications_underwriter_idTostaff_users", fields: [underwriter_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   appraisal_findings                                                                       appraisal_findings[]
   appraisal_format_refusals                                                                appraisal_format_refusals[]
+  appraisal_payment_intents                                                                appraisal_payment_intents[]
   appraisal_xml_waivers                                                                    appraisal_xml_waivers?
   appraisals                                                                               appraisals[]
   borrower_view_sessions                                                                   borrower_view_sessions[]
@@ -7319,6 +7320,8 @@ model staff_users {
   applications_applications_pipeline_removed_byTostaff_users                            applications[]                   @relation("applications_pipeline_removed_byTostaff_users")
   applications_applications_processor_idTostaff_users                                   applications[]                   @relation("applications_processor_idTostaff_users")
   applications_applications_underwriter_idTostaff_users                                 applications[]                   @relation("applications_underwriter_idTostaff_users")
+  appraisal_payment_intents_appraisal_payment_intents_chosen_byTostaff_users            appraisal_payment_intents[]      @relation("appraisal_payment_intents_chosen_byTostaff_users")
+  appraisal_payment_intents_appraisal_payment_intents_settled_byTostaff_users           appraisal_payment_intents[]      @relation("appraisal_payment_intents_settled_byTostaff_users")
   appraisal_xml_waivers                                                                 appraisal_xml_waivers[]
   appraisals_appraisals_arv_confirmed_byTostaff_users                                   appraisals[]                     @relation("appraisals_arv_confirmed_byTostaff_users")
   appraisals_appraisals_as_is_confirmed_byTostaff_users                                 appraisals[]                     @relation("appraisals_as_is_confirmed_byTostaff_users")
@@ -8579,6 +8582,229 @@ model trinity_order_events {
 
   @@index([application_id, occurred_at(sort: Desc)], map: "idx_toe_app")
   @@index([trinity_inspection_order_id, occurred_at(sort: Desc), id(sort: Desc)], map: "idx_toe_order")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model appraisal_payment_intents {
+  id                                                            BigInt       @id @default(autoincrement())
+  application_id                                                String       @db.Uuid
+  vendor                                                        String
+  vendor_order_id                                               BigInt
+  method                                                        String
+  chosen_by                                                     String?      @db.Uuid
+  chosen_at                                                     DateTime     @default(now()) @db.Timestamptz(6)
+  note                                                          String?
+  performed_by                                                  String       @default("back_office")
+  settled_at                                                    DateTime?    @db.Timestamptz(6)
+  settled_by                                                    String?      @db.Uuid
+  settled_note                                                  String?
+  updated_at                                                    DateTime     @default(now()) @db.Timestamptz(6)
+  applications                                                  applications @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users_appraisal_payment_intents_chosen_byTostaff_users  staff_users? @relation("appraisal_payment_intents_chosen_byTostaff_users", fields: [chosen_by], references: [id], onUpdate: NoAction)
+  staff_users_appraisal_payment_intents_settled_byTostaff_users staff_users? @relation("appraisal_payment_intents_settled_byTostaff_users", fields: [settled_by], references: [id], onUpdate: NoAction)
+
+  @@unique([vendor, vendor_order_id], map: "uq_appr_pay_intent_order")
+  @@index([application_id], map: "ix_appr_pay_intent_app")
+}
+
+model lt_lp_disqualify_search {
+  search_key  String    @id
+  url         String
+  body        Json
+  request_id  String?
+  result      Json?
+  raw_summary Json?
+  ready_at    DateTime? @db.Timestamptz(6)
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime  @default(now()) @db.Timestamptz(6)
+  expires_at  DateTime  @db.Timestamptz(6)
+
+  @@index([expires_at], map: "lt_lp_disqualify_search_expires_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model lt_ppe_adjustment {
+  id                        String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  scope                     String                    @default("company")
+  version_id                String                    @db.Uuid
+  dimension                 String
+  fico_min                  Int?
+  fico_max                  Int?
+  ltv_min                   Int?
+  ltv_max                   Int?
+  dscr_min                  Int?
+  dscr_max                  Int?
+  predicate                 Json?
+  adj_milli                 Int
+  adjustment_target         String                    @default("price")
+  unit                      String                    @default("points")
+  sign_convention           String                    @default("cost_positive")
+  cumulative                Boolean                   @default(true)
+  priority                  Int                       @default(0)
+  reason                    String?
+  code                      String?
+  meta                      Json                      @default("{}")
+  created_at                DateTime                  @default(now()) @db.Timestamptz(6)
+  lt_ppe_rate_sheet_version lt_ppe_rate_sheet_version @relation(fields: [version_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([version_id, dimension], map: "lt_ppe_adjustment_dim_idx")
+  @@index([version_id], map: "lt_ppe_adjustment_version_idx")
+}
+
+model lt_ppe_base_price {
+  id                        String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  scope                     String                    @default("company")
+  version_id                String                    @db.Uuid
+  note_rate_milli_pct       Int
+  lock_days                 Int
+  product                   String                    @default("")
+  price_milli               Int
+  created_at                DateTime                  @default(now()) @db.Timestamptz(6)
+  lt_ppe_rate_sheet_version lt_ppe_rate_sheet_version @relation(fields: [version_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([version_id, note_rate_milli_pct, lock_days, product], map: "lt_ppe_base_price_cell_uk")
+  @@index([version_id], map: "lt_ppe_base_price_version_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model lt_ppe_finding {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  scope           String          @default("company")
+  finding_key     String
+  investor        String?
+  program         String?
+  program_id      String?         @db.Uuid
+  scenario        String?
+  scenario_facts  Json?
+  kind            String
+  diff            Json            @default("{}")
+  our_payload     Json?
+  their_payload   Json?
+  status          String          @default("open")
+  regressed       Boolean         @default(false)
+  recurrence      Int             @default(1)
+  first_seen_at   DateTime?       @db.Timestamptz(6)
+  last_seen_at    DateTime?       @db.Timestamptz(6)
+  decided_by      String?         @db.Uuid
+  decided_at      DateTime?       @db.Timestamptz(6)
+  decision_reason String?
+  created_at      DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime        @default(now()) @db.Timestamptz(6)
+  lt_ppe_program  lt_ppe_program? @relation(fields: [program_id], references: [id], onUpdate: NoAction)
+
+  @@unique([scope, finding_key], map: "lt_ppe_finding_scope_key_uk")
+  @@index([scope, status], map: "lt_ppe_finding_status_idx")
+}
+
+model lt_ppe_investor {
+  id                    String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  scope                 String                  @default("company")
+  code                  String
+  name                  String
+  active                Boolean                 @default(true)
+  created_by            String?                 @db.Uuid
+  created_at            DateTime                @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime                @default(now()) @db.Timestamptz(6)
+  lt_ppe_investor_alias lt_ppe_investor_alias[]
+  lt_ppe_program        lt_ppe_program[]
+
+  @@unique([scope, code], map: "lt_ppe_investor_scope_code_uk")
+}
+
+model lt_ppe_investor_alias {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  scope           String          @default("company")
+  investor_id     String          @db.Uuid
+  alias_norm      String
+  alias           String
+  created_at      DateTime        @default(now()) @db.Timestamptz(6)
+  lt_ppe_investor lt_ppe_investor @relation(fields: [investor_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([scope, alias_norm], map: "lt_ppe_investor_alias_scope_norm_uk")
+  @@index([investor_id], map: "lt_ppe_investor_alias_investor_idx")
+}
+
+model lt_ppe_price_limit {
+  id                        String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  scope                     String                    @default("company")
+  version_id                String                    @db.Uuid
+  min_price_milli           Int?
+  rounding_increment_milli  Int                       @default(125)
+  rounding_mode             String                    @default("nearest_eighth")
+  cap_tiers                 Json                      @default("[]")
+  on_exceed                 String                    @default("cap_and_keep_eligible")
+  created_at                DateTime                  @default(now()) @db.Timestamptz(6)
+  updated_at                DateTime                  @default(now()) @db.Timestamptz(6)
+  lt_ppe_rate_sheet_version lt_ppe_rate_sheet_version @relation(fields: [version_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([scope, version_id], map: "lt_ppe_price_limit_version_uk")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model lt_ppe_program {
+  id                        String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  scope                     String                      @default("company")
+  investor_id               String?                     @db.Uuid
+  code                      String
+  name                      String
+  channel                   String                      @default("correspondent")
+  status                    String                      @default("draft")
+  max_loan_amount           Decimal?                    @db.Decimal(14, 2)
+  max_ltv                   Decimal?                    @db.Decimal(6, 3)
+  min_fico                  Int?
+  min_dscr                  Decimal?                    @db.Decimal(6, 3)
+  cash_out_allowed          Boolean?
+  property_types            Json?
+  meta                      Json                        @default("{}")
+  created_by                String?                     @db.Uuid
+  created_at                DateTime                    @default(now()) @db.Timestamptz(6)
+  updated_at                DateTime                    @default(now()) @db.Timestamptz(6)
+  lt_ppe_finding            lt_ppe_finding[]
+  lt_ppe_investor           lt_ppe_investor?            @relation(fields: [investor_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  lt_ppe_rate_sheet_version lt_ppe_rate_sheet_version[]
+
+  @@unique([scope, investor_id, code], map: "lt_ppe_program_scope_investor_code_uk")
+  @@index([investor_id], map: "lt_ppe_program_investor_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model lt_ppe_rate_sheet_version {
+  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  scope              String               @default("company")
+  program_id         String               @db.Uuid
+  version_no         Int
+  reprice_seq        Int                  @default(0)
+  status             String               @default("draft")
+  channel            String               @default("correspondent")
+  effective_from     DateTime?            @db.Timestamptz(6)
+  effective_to       DateTime?            @db.Timestamptz(6)
+  recorded_at        DateTime             @default(now()) @db.Timestamptz(6)
+  content_hash       String?
+  source_format      String?
+  approved_by        String?              @db.Uuid
+  approved_at        DateTime?            @db.Timestamptz(6)
+  meta               Json                 @default("{}")
+  created_by         String?              @db.Uuid
+  created_at         DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime             @default(now()) @db.Timestamptz(6)
+  lt_ppe_adjustment  lt_ppe_adjustment[]
+  lt_ppe_base_price  lt_ppe_base_price[]
+  lt_ppe_price_limit lt_ppe_price_limit[]
+  lt_ppe_program     lt_ppe_program       @relation(fields: [program_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([scope, program_id, version_no, reprice_seq], map: "lt_ppe_rsv_scope_prog_ver_seq_uk")
+  @@index([program_id, status, effective_from], map: "lt_ppe_rsv_current_idx")
+  @@index([program_id], map: "lt_ppe_rsv_program_idx")
+}
+
+model lt_ppe_setting_value {
+  scope      String   @default("company")
+  key        String
+  value      Json
+  updated_by String?  @db.Uuid
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([scope, key])
 }
 
 enum lt_amortization_type {

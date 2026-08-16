@@ -258,6 +258,69 @@ router.post('/orders/:orderId/documents', async (req, res) => {
   res.json(out);
 });
 
+/**
+ * WHAT DOES THE APPRAISAL COMPANY THINK WE HAVE ORDERED? (2026-08-16)
+ *
+ * Reads their own order list and reports anything on their side that PILOT has no
+ * row for — an appraisal ordered on their website, or re-issued by them under a
+ * new number, which would otherwise never be polled, never file its report onto
+ * the condition, and never reach the Orders desk.
+ *
+ * REPORTS ONLY. It creates nothing: deciding that one of their orders IS a given
+ * file's appraisal is a judgement with an expensive wrong answer, so it hands a
+ * human the evidence instead. A pure vendor READ, so it is safe with ordering off.
+ *
+ * `platform_setup` — this reads the WHOLE account's orders across every file, so
+ * it is not a per-file surface and must not be behind the per-file scope.
+ */
+router.get('/reconcile', async (req, res) => {
+  if (!can(req.actor, 'platform_setup')) return res.status(403).json({ error: 'forbidden' });
+  const out = await require('../amc/reconcile').findUnknownOrders(db, {
+    days: req.query.days,
+    loanNumber: req.query.loanNumber ? String(req.query.loanNumber) : null,
+  });
+  res.json(out);
+});
+
+/**
+ * WHICH PAYMENT ROUTES THIS ACCOUNT IS ALLOWED TO USE — a pure read.
+ *
+ * PILOT does not charge appraisals: payment is manual by the owner's standing
+ * direction (2026-08-05), the back office charges the stored card by hand, and
+ * none of the vendor's Payment* actions is wired. This asks the vendor which
+ * routes the account has TURNED ON, so the answer to "could we let PILOT take the
+ * payment?" is a fact on a screen rather than a guess — and so that if the owner
+ * ever says yes, the ground is already known. It authorises nothing and charges
+ * nothing.
+ */
+router.get('/payment-options', async (req, res) => {
+  if (!can(req.actor, 'platform_setup')) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const cfgd = client.configured();
+    if (!cfgd.enabled) return res.json({ ok: false, error: 'not_enabled' });
+    if (!cfgd.ready) return res.json({ ok: false, error: 'not_configured' });
+    const cdg = require('../amc/cdg');
+    const session = require('../amc/session');
+    const ctx = await session.authContext();
+    const resp = await client.lookup(cdg.buildGetPaymentOptions({ apiKey: ctx.apiKey, subdomain: ctx.subdomain }),
+      { label: 'GetPaymentOptions' });
+    const err = cdg.parseError(resp);
+    if (err) return res.json({ ok: false, error: 'vendor', message: err.description || String(err.code) });
+    const options = cdg.parseLookup(resp);
+    res.json({
+      ok: true,
+      // Their own flag for whether a payment form is offered at all.
+      formAvailable: !!(resp && resp.responseData && String(resp.responseData.paymentFormAvailable) === '1'),
+      options,
+      // Said out loud on the payload, so nothing that renders it can imply PILOT
+      // is about to start charging cards.
+      note: 'Read-only. PILOT does not charge appraisals — the card is stored on the file and the back office charges it by hand.',
+    });
+  } catch (e) {
+    res.json({ ok: false, error: 'error', message: (e && e.message) || String(e) });
+  }
+});
+
 // Parse the overridable order fields from a query/body object. Staff can change the
 // auto-picked form and the request options on the preview / place.
 function readOverrides(src) {

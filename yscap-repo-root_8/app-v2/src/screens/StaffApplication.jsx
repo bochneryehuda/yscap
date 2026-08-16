@@ -59,6 +59,7 @@ import GuarantyWaiverCard from '../components/GuarantyWaiverCard.jsx';
 import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import AppraisalOrderSection from '../components/AppraisalOrderSection.jsx';
+import AppraisalCardEntry from '../components/AppraisalCardEntry.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import EncompassSyncPanel from '../components/EncompassSyncPanel.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
@@ -3138,35 +3139,11 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
 // borrower's behalf (often taken over the phone). Same validation + at-rest
 // encryption + condition completion as the borrower's own form, via the staff
 // endpoint. An inline, toggle-open form — never persists anything until Save.
-function StaffCardEntry({ appId, onSaved }) {
-  const [open, setOpen] = useState(false);
-  const [f, setF] = useState({ number: '', expMonth: '', expYear: '', cvc: '', zip: '' });
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
-  async function save() {
-    setBusy(true); setErr('');
-    try {
-      await api.staffSaveAppraisalCard(appId, f);
-      setOpen(false); setF({ number: '', expMonth: '', expYear: '', cvc: '', zip: '' });
-      if (onSaved) await onSaved();
-    } catch (e) { setErr(e.message || 'Could not save the card.'); }
-    finally { setBusy(false); }
-  }
-  if (!open) return <button className="btn ghost small" onClick={() => setOpen(true)}>Enter card</button>;
-  return (
-    <div className="small" style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', justifyContent: 'flex-end' }}>
-      <input className="input" style={{ maxWidth: 170 }} inputMode="numeric" placeholder="Card number" value={f.number} onChange={set('number')} />
-      <input className="input" style={{ maxWidth: 56 }} inputMode="numeric" placeholder="MM" value={f.expMonth} onChange={set('expMonth')} />
-      <input className="input" style={{ maxWidth: 72 }} inputMode="numeric" placeholder="YYYY" value={f.expYear} onChange={set('expYear')} />
-      <input className="input" style={{ maxWidth: 64 }} inputMode="numeric" placeholder="CVC" value={f.cvc} onChange={set('cvc')} />
-      <ZipInput style={{ maxWidth: 84 }} placeholder="ZIP" value={f.zip} onChange={v => setF(p => ({ ...p, zip: v }))} />
-      <button className="btn small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save card'}</button>
-      <button className="btn ghost small" disabled={busy} onClick={() => { setOpen(false); setErr(''); }}>Cancel</button>
-      {err && <span style={{ color: 'var(--bad, #c0392b)', flexBasis: '100%', textAlign: 'right' }}>{err}</span>}
-    </div>
-  );
-}
+// The card entry moved into its OWN component (components/AppraisalCardEntry.jsx)
+// so the appraisal ORDER desk renders the same one — the owner's "one card,
+// entered once, both places" needs one form, not two that drift. This name is
+// kept because the condition row below refers to it.
+const StaffCardEntry = AppraisalCardEntry;
 
 // Staff can enter/EDIT the title or insurance contact directly ON the condition
 // (owner-directed 2026-07-20) — the same structured contact form the borrower
@@ -6084,6 +6061,13 @@ export default function StaffApplication() {
           The two vendors stay TECHNICALLY SEPARATE — no mixing of backends. The owner
           has not picked a default ("none of them are ready right now"), so the selector
           only chooses the display/builder target; it never registers a file preference. */}
+      {/* THE ORDERS-DESK STRIP for the appraisal (owner-directed 2026-08-05,
+          re-confirmed 2026-08-16). The appraisal is now a real order on the Orders
+          desk — its own due date, owner, note and history, and a row in the
+          cross-file Orders queue — and this is that half of it, sitting above the
+          builder exactly as the attorney strip sits above the closing card. It
+          RENDERS NOTHING until an appraisal has actually been ordered. */}
+      <OrdersPanel appId={id} canAccept={canComplete(role)} only="appraisal" />
       <AppraisalOrderSection appId={id} onChanged={load} />
       </Section>
 
