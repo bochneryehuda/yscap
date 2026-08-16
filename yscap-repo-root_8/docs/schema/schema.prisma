@@ -9,17 +9,17 @@
 // *** IT IS INCOMPLETE, AND THAT IS NOT A DEFECT — IT IS A PROPERTY OF THE
 // *** PRISMA SCHEMA LANGUAGE. It cannot express triggers, functions, CHECK
 // *** constraints, generated columns or partial indexes. On this database
-// *** that is 736 objects it cannot see, listed in full in
+// *** that is 749 objects it cannot see, listed in full in
 // *** BEYOND-PRISMA.md next to this file.
 //
 // *** SO: NEVER REBUILD A DATABASE FROM THIS FILE. Doing so produces SQL that
 // *** runs without a single error and silently leaves out every one of those
-// *** 736 objects — including the guard that keeps a budget
+// *** 749 objects — including the guard that keeps a budget
 // *** condition from being signed off unless the totals match to the cent.
 // *** The 549 numbered migrations in db/ are the only thing that builds this
 // *** database.
 //
-// Snapshot: 309 tables, 5106 columns.
+// Snapshot: 321 tables, 5257 columns.
 // ===========================================================================
 datasource db {
   provider = "postgresql"
@@ -724,6 +724,9 @@ model applications {
   tpo_view_sessions                                                                        tpo_view_sessions[]
   track_record_findings                                                                    track_record_findings[]
   trinity_inspection_orders                                                                trinity_inspection_orders[]
+  trinity_order_comments                                                                   trinity_order_comments[]
+  trinity_order_lines                                                                      trinity_order_lines[]
+  trinity_order_media                                                                      trinity_order_media[]
   trustpoint_draw_comments                                                                 trustpoint_draw_comments[]
   trustpoint_draw_lines                                                                    trustpoint_draw_lines[]
   trustpoint_draws                                                                         trustpoint_draws[]
@@ -5140,6 +5143,21 @@ model lt_encompass_milestones {
   @@index([sequence])
 }
 
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model lt_encompass_users {
+  login_id            String          @id
+  full_name           String?
+  email               String?
+  phone               String?
+  personas            String[]        @default([])
+  role_names          String[]        @default([])
+  is_active           Boolean         @default(true)
+  encompass_synced_at DateTime?       @db.Timestamptz(6)
+  created_at          DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime        @default(now()) @db.Timestamptz(6)
+  lt_staff_links      lt_staff_links?
+}
+
 model lt_liabilities {
   id                String               @id @db.Uuid
   party_id          String               @db.Uuid
@@ -5161,6 +5179,31 @@ model lt_liabilities {
   @@index([reo_property_id])
 }
 
+model lt_loan_contacts {
+  id                                                          String       @id @db.Uuid
+  loan_id                                                     String       @db.Uuid
+  role                                                        String
+  encompass_name                                              String?
+  encompass_email                                             String?
+  encompass_phone                                             String?
+  encompass_login_id                                          String?
+  staff_id                                                    String?      @db.Uuid
+  override_staff_id                                           String?      @db.Uuid
+  override_by                                                 String?      @db.Uuid
+  override_at                                                 DateTime?    @db.Timestamptz(6)
+  override_reason                                             String?
+  encompass_synced_at                                         DateTime?    @db.Timestamptz(6)
+  created_at                                                  DateTime     @default(now()) @db.Timestamptz(6)
+  updated_at                                                  DateTime     @default(now()) @db.Timestamptz(6)
+  lt_loans                                                    lt_loans     @relation(fields: [loan_id], references: [id], onDelete: Cascade, map: "lt_loan_contacts_loan_fkey")
+  staff_users_lt_loan_contacts_override_byTostaff_users       staff_users? @relation("lt_loan_contacts_override_byTostaff_users", fields: [override_by], references: [id])
+  staff_users_lt_loan_contacts_override_staff_idTostaff_users staff_users? @relation("lt_loan_contacts_override_staff_idTostaff_users", fields: [override_staff_id], references: [id], map: "lt_loan_contacts_override_fkey")
+  staff_users_lt_loan_contacts_staff_idTostaff_users          staff_users? @relation("lt_loan_contacts_staff_idTostaff_users", fields: [staff_id], references: [id], map: "lt_loan_contacts_staff_fkey")
+
+  @@unique([loan_id, role], map: "lt_loan_contacts_loan_role_uk")
+  @@index([encompass_login_id], map: "lt_loan_contacts_login_idx")
+}
+
 model lt_loan_investors {
   loan_id              String   @id @db.Uuid
   shorthand_name       String?
@@ -5177,6 +5220,7 @@ model lt_loan_investors {
   @@index([investor_loan_number])
 }
 
+/// This model contains an index with non-default null sort order and requires additional setup for migrations. Visit https://pris.ly/d/default-index-null-ordering for more info.
 model lt_loans {
   id                              String                   @id @db.Uuid
   loan_number                     String?                  @unique
@@ -5216,17 +5260,62 @@ model lt_loans {
   encompass_synced_at             DateTime?                @db.Timestamptz(6)
   created_at                      DateTime                 @default(now()) @db.Timestamptz(6)
   updated_at                      DateTime                 @default(now()) @db.Timestamptz(6)
+  milestone_name                  String?
+  stage_key                       String?
+  loan_folder                     String?
+  encompass_last_modified         DateTime?                @db.Timestamptz(6)
+  encompass_sync_error            String?
   lt_borrower_pairs               lt_borrower_pairs[]
+  lt_loan_contacts                lt_loan_contacts[]
   lt_loan_investors               lt_loan_investors?
   borrowers                       borrowers?               @relation(fields: [borrower_id], references: [id], onUpdate: NoAction)
   staff_users                     staff_users?             @relation(fields: [loan_officer_id], references: [id], onUpdate: NoAction)
   lt_encompass_milestones         lt_encompass_milestones? @relation(fields: [milestone_id], references: [milestone_id])
+  lt_lock_events                  lt_lock_events[]
+  lt_locks                        lt_locks?
   lt_properties                   lt_properties?
 
   @@index([borrower_id])
+  @@index([loan_folder], map: "lt_loans_folder_idx")
   @@index([loan_officer_id])
   @@index([milestone_id])
   @@index([product_kind])
+  @@index([stage_key], map: "lt_loans_stage_idx")
+  @@index([encompass_synced_at], map: "lt_loans_synced_idx")
+}
+
+model lt_lock_events {
+  id                  String    @id @db.Uuid
+  loan_id             String    @db.Uuid
+  event_type          String
+  event_at            DateTime? @db.Timestamptz(6)
+  note_rate_pct       Decimal?  @db.Decimal(9, 5)
+  price               Decimal?  @db.Decimal(12, 5)
+  expiration_date     DateTime? @db.Date
+  actor_name          String?
+  raw                 Json?
+  encompass_synced_at DateTime? @db.Timestamptz(6)
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+  lt_loans            lt_loans  @relation(fields: [loan_id], references: [id], onDelete: Cascade, map: "lt_lock_events_loan_fkey")
+
+  @@index([loan_id, event_at(sort: Desc)], map: "lt_lock_events_loan_idx")
+}
+
+model lt_locks {
+  loan_id             String    @id @db.Uuid
+  lock_status         String?
+  note_rate_pct       Decimal?  @db.Decimal(9, 5)
+  price               Decimal?  @db.Decimal(12, 5)
+  lock_date           DateTime? @db.Date
+  expiration_date     DateTime? @db.Date
+  lock_days           Int?
+  product_name        String?
+  commitment_type     String?
+  raw                 Json?
+  encompass_synced_at DateTime? @db.Timestamptz(6)
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime  @default(now()) @db.Timestamptz(6)
+  lt_loans            lt_loans  @relation(fields: [loan_id], references: [id], onDelete: Cascade, map: "lt_locks_loan_fkey")
 }
 
 model lt_other_incomes {
@@ -5286,6 +5375,20 @@ model lt_parties {
 
   @@unique([pair_id, role])
   @@index([borrower_id])
+}
+
+model lt_pipeline_views {
+  id          String       @id @db.Uuid
+  staff_id    String?      @db.Uuid
+  name        String
+  filters     Json         @default("{}")
+  is_default  Boolean      @default(false)
+  sort_order  Int          @default(100)
+  created_at  DateTime     @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime     @default(now()) @db.Timestamptz(6)
+  staff_users staff_users? @relation(fields: [staff_id], references: [id], map: "lt_pipeline_views_staff_fkey")
+
+  @@index([staff_id, sort_order], map: "lt_pipeline_views_staff_idx")
 }
 
 model lt_properties {
@@ -5357,6 +5460,33 @@ model lt_residences {
   lt_parties      lt_parties         @relation(fields: [party_id], references: [id], onDelete: Cascade)
 
   @@index([party_id, residency_type])
+}
+
+model lt_settings {
+  scope       String       @default("company")
+  key         String
+  value       Json
+  updated_by  String?      @db.Uuid
+  updated_at  DateTime     @default(now()) @db.Timestamptz(6)
+  staff_users staff_users? @relation(fields: [updated_by], references: [id])
+
+  @@id([scope, key])
+}
+
+model lt_staff_links {
+  encompass_login_id                                   String             @id
+  staff_id                                             String?            @db.Uuid
+  status                                               lt_link_status     @default(suggested)
+  match_method                                         String?
+  confirmed_by                                         String?            @db.Uuid
+  confirmed_at                                         DateTime?          @db.Timestamptz(6)
+  created_at                                           DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at                                           DateTime           @default(now()) @db.Timestamptz(6)
+  staff_users_lt_staff_links_confirmed_byTostaff_users staff_users?       @relation("lt_staff_links_confirmed_byTostaff_users", fields: [confirmed_by], references: [id])
+  lt_encompass_users                                   lt_encompass_users @relation(fields: [encompass_login_id], references: [login_id], onDelete: Cascade, map: "lt_staff_links_login_fkey")
+  staff_users_lt_staff_links_staff_idTostaff_users     staff_users?       @relation("lt_staff_links_staff_idTostaff_users", fields: [staff_id], references: [id], map: "lt_staff_links_staff_fkey")
+
+  @@index([status])
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -7289,7 +7419,14 @@ model staff_users {
   loan_exceptions_loan_exceptions_withdrawn_byTostaff_users                             loan_exceptions[]                @relation("loan_exceptions_withdrawn_byTostaff_users")
   loan_facts                                                                            loan_facts[]
   logical_documents                                                                     logical_documents[]
+  lt_loan_contacts_lt_loan_contacts_override_byTostaff_users                            lt_loan_contacts[]               @relation("lt_loan_contacts_override_byTostaff_users")
+  lt_loan_contacts_lt_loan_contacts_override_staff_idTostaff_users                      lt_loan_contacts[]               @relation("lt_loan_contacts_override_staff_idTostaff_users")
+  lt_loan_contacts_lt_loan_contacts_staff_idTostaff_users                               lt_loan_contacts[]               @relation("lt_loan_contacts_staff_idTostaff_users")
   lt_loans                                                                              lt_loans[]
+  lt_pipeline_views                                                                     lt_pipeline_views[]
+  lt_settings                                                                           lt_settings[]
+  lt_staff_links_lt_staff_links_confirmed_byTostaff_users                               lt_staff_links[]                 @relation("lt_staff_links_confirmed_byTostaff_users")
+  lt_staff_links_lt_staff_links_staff_idTostaff_users                                   lt_staff_links[]                 @relation("lt_staff_links_staff_idTostaff_users")
   manual_program_escalations_manual_program_escalations_countered_byTostaff_users       manual_program_escalations[]     @relation("manual_program_escalations_countered_byTostaff_users")
   manual_program_escalations_manual_program_escalations_decided_byTostaff_users         manual_program_escalations[]     @relation("manual_program_escalations_decided_byTostaff_users")
   manual_program_escalations_manual_program_escalations_requested_byTostaff_users       manual_program_escalations[]     @relation("manual_program_escalations_requested_byTostaff_users")
@@ -7353,6 +7490,7 @@ model staff_users {
   track_records                                                                         track_records[]
   training_proposals                                                                    training_proposals[]
   trinity_inspection_orders                                                             trinity_inspection_orders[]
+  trinity_order_comments                                                                trinity_order_comments[]
   trustpoint_draw_lines                                                                 trustpoint_draw_lines[]
   trustpoint_milestone_links                                                            trustpoint_milestone_links[]
   trustpoint_project_links                                                              trustpoint_project_links[]
@@ -7795,22 +7933,135 @@ model training_proposals {
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model trinity_inspection_orders {
-  id                     BigInt                @id @default(autoincrement())
-  application_id         String                @db.Uuid
+  id                     BigInt                   @id @default(autoincrement())
+  application_id         String                   @db.Uuid
   portal_draw_request_id BigInt?
   sitewire_draw_id       BigInt?
-  status                 String                @default("requested")
-  ordered_at             DateTime?             @db.Timestamptz(6)
-  ordered_by             String?               @db.Uuid
-  report_document_id     String?               @db.Uuid
+  status                 String                   @default("requested")
+  ordered_at             DateTime?                @db.Timestamptz(6)
+  ordered_by             String?                  @db.Uuid
+  report_document_id     String?                  @db.Uuid
   note                   String?
-  created_at             DateTime              @default(now()) @db.Timestamptz(6)
-  updated_at             DateTime              @default(now()) @db.Timestamptz(6)
-  applications           applications          @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  staff_users            staff_users?          @relation(fields: [ordered_by], references: [id], onUpdate: NoAction)
-  portal_draw_requests   portal_draw_requests? @relation(fields: [portal_draw_request_id], references: [id], onUpdate: NoAction)
+  created_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  trinity_order_id       BigInt?
+  trinity_project_id     BigInt?
+  customer_key           String?
+  trinity_status_id      Int?
+  trinity_status         String?
+  trinity_substatus      String?
+  status_changed_at      DateTime?                @db.Timestamptz(6)
+  scheduled_at           DateTime?                @db.Timestamptz(6)
+  completed_at           DateTime?                @db.Timestamptz(6)
+  polled_at              DateTime?                @db.Timestamptz(6)
+  cancel_requested_at    DateTime?                @db.Timestamptz(6)
+  approved_cents         BigInt?
+  results_read_at        DateTime?                @db.Timestamptz(6)
+  notified_ready_at      DateTime?                @db.Timestamptz(6)
+  blocked_reason         String?
+  order_claimed_at       DateTime?                @db.Timestamptz(6)
+  documents_sent_at      DateTime?                @db.Timestamptz(6)
+  applications           applications             @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users            staff_users?             @relation(fields: [ordered_by], references: [id], onUpdate: NoAction)
+  portal_draw_requests   portal_draw_requests?    @relation(fields: [portal_draw_request_id], references: [id], onUpdate: NoAction)
+  trinity_order_comments trinity_order_comments[]
+  trinity_order_lines    trinity_order_lines[]
+  trinity_order_media    trinity_order_media[]
 
   @@index([application_id, created_at(sort: Desc)], map: "idx_tio_app")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model trinity_order_comments {
+  id                          BigInt                    @id @default(autoincrement())
+  trinity_inspection_order_id BigInt
+  application_id              String                    @db.Uuid
+  trinity_comment_id          BigInt?
+  direction                   String
+  content                     String
+  important                   Boolean                   @default(false)
+  visible_to_vendor           Boolean                   @default(true)
+  author_name                 String?
+  sent_by_staff               String?                   @db.Uuid
+  trinity_created_at          DateTime?                 @db.Timestamptz(6)
+  created_at                  DateTime                  @default(now()) @db.Timestamptz(6)
+  applications                applications              @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users                 staff_users?              @relation(fields: [sent_by_staff], references: [id], onUpdate: NoAction)
+  trinity_inspection_orders   trinity_inspection_orders @relation(fields: [trinity_inspection_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([trinity_inspection_order_id, created_at(sort: Desc)], map: "idx_toc_order")
+}
+
+model trinity_order_lines {
+  id                          BigInt                    @id @default(autoincrement())
+  trinity_inspection_order_id BigInt
+  application_id              String                    @db.Uuid
+  sitewire_job_item_id        BigInt?
+  sow_line_key                String?
+  name                        String
+  trinity_line_id             BigInt?
+  customer_key                String?
+  budgeted_cents              BigInt                    @default(0)
+  requested_cents             BigInt                    @default(0)
+  previous_drawn_cents        BigInt                    @default(0)
+  previous_pct                Decimal?                  @db.Decimal(9, 4)
+  completed_pct               Decimal?                  @db.Decimal(9, 4)
+  approved_cents              BigInt?
+  inspector_remarks           String?
+  created_at                  DateTime                  @default(now()) @db.Timestamptz(6)
+  updated_at                  DateTime                  @default(now()) @db.Timestamptz(6)
+  applications                applications              @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  trinity_inspection_orders   trinity_inspection_orders @relation(fields: [trinity_inspection_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([application_id], map: "idx_tol_app")
+  @@index([trinity_inspection_order_id], map: "idx_tol_order")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model trinity_order_media {
+  id                          BigInt                    @id @default(autoincrement())
+  trinity_inspection_order_id BigInt
+  application_id              String                    @db.Uuid
+  kind                        String                    @default("photo")
+  trinity_id                  BigInt?
+  source_key                  String
+  file_name                   String?
+  content_type                String?
+  bytes                       BigInt?
+  labels                      String[]
+  storage_ref                 String?
+  storage_provider            String?
+  sha256                      String?
+  archived_at                 DateTime?                 @db.Timestamptz(6)
+  skip_reason                 String?
+  created_at                  DateTime                  @default(now()) @db.Timestamptz(6)
+  applications                applications              @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  trinity_inspection_orders   trinity_inspection_orders @relation(fields: [trinity_inspection_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([trinity_inspection_order_id, source_key], map: "uq_tom_source")
+  @@index([trinity_inspection_order_id, kind], map: "idx_tom_order")
+}
+
+model trinity_state {
+  key        String   @id
+  value      String?
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+}
+
+model trinity_webhook_events {
+  id                 BigInt    @id @default(autoincrement())
+  event              String
+  trinity_order_id   BigInt?
+  trinity_project_id BigInt?
+  payload            Json
+  payload_hash       String
+  received_at        DateTime  @default(now()) @db.Timestamptz(6)
+  processed_at       DateTime? @db.Timestamptz(6)
+  claimed_at         DateTime? @db.Timestamptz(6)
+  attempts           Int       @default(0)
+  error              String?
+
+  @@unique([event, payload_hash], map: "uq_twe_dedupe")
 }
 
 model trustpoint_draw_comments {
@@ -8257,6 +8508,12 @@ enum lt_liability_section {
 enum lt_lien_position {
   first
   second
+}
+
+enum lt_link_status {
+  suggested
+  confirmed
+  rejected
 }
 
 enum lt_loan_purpose {

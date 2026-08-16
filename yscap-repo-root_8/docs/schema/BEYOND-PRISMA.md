@@ -5,7 +5,7 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**736 objects**, and a database rebuilt from the Prisma
+**749 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
@@ -14,13 +14,13 @@ the only thing that builds this database.
 
 | | |
 |---|---|
-| Tables | 309 |
-| Columns | 5106 |
+| Tables | 321 |
+| Columns | 5257 |
 | Triggers | 33 |
 | Functions | 136 |
-| CHECK constraints | 247 |
+| CHECK constraints | 249 |
 | Generated columns | 12 |
-| Partial indexes | 308 |
+| Partial indexes | 319 |
 
 ## Triggers (33)
 
@@ -212,7 +212,7 @@ the only thing that builds this database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (308)
+## Partial indexes (319)
 
 - **borrower_assistants_borrower_idx** on `borrower_assistants`
 - **borrower_assistants_email_uk** on `borrower_assistants`
@@ -409,6 +409,7 @@ the only thing that builds this database.
 - **idx_sync_review_open** on `sync_review_queue`
 - **idx_sync_review_source** on `sync_review_queue`
 - **idx_templates_auto_apply** on `checklist_templates`
+- **idx_tio_open** on `trinity_inspection_orders`
 - **idx_tpl_unlinked** on `trustpoint_project_links`
 - **idx_tpoview_open** on `tpo_view_sessions`
 - **idx_tpwe_pending** on `trustpoint_webhook_events`
@@ -423,6 +424,7 @@ the only thing that builds this database.
 - **idx_trp_expiring** on `track_record_pillars`
 - **idx_trp_open** on `track_record_pillars`
 - **idx_tso_open** on `term_sheet_offers`
+- **idx_twe_unprocessed** on `trinity_webhook_events`
 - **idx_uw_conflicts_eligible** on `underwriting_conflicts`
 - **idx_uw_runs_current** on `underwriting_runs`
 - **idx_wf_due** on `workflow_items`
@@ -452,6 +454,11 @@ the only thing that builds this database.
 - **ix_property_adjustments_spans** on `property_adjustments`
 - **ix_property_adjustments_zip** on `property_adjustments`
 - **ix_staff_last_active_at** on `staff_users`
+- **lt_loan_contacts_override_idx** on `lt_loan_contacts`
+- **lt_loan_contacts_staff_idx** on `lt_loan_contacts`
+- **lt_locks_expiration_idx** on `lt_locks`
+- **lt_pipeline_views_default_uk** on `lt_pipeline_views`
+- **lt_staff_links_confirmed_staff_uk** on `lt_staff_links`
 - **market_areas_name_uk** on `market_areas`
 - **market_areas_where_idx** on `market_areas`
 - **reminders_due_idx** on `reminders`
@@ -516,6 +523,10 @@ the only thing that builds this database.
 - **uq_section_1071_current** on `section_1071_coverage`
 - **uq_swji_jid** on `sitewire_job_item_links`
 - **uq_sync_review_open** on `sync_review_queue`
+- **uq_tio_customer_key** on `trinity_inspection_orders`
+- **uq_tio_trinity_order** on `trinity_inspection_orders`
+- **uq_toc_trinity_id** on `trinity_order_comments`
+- **uq_tol_order_key** on `trinity_order_lines`
 - **uq_tpd_sw_draw** on `trustpoint_draws`
 - **uq_track_records_client_row** on `track_records`
 - **uq_track_records_source_task** on `track_records`
@@ -523,7 +534,7 @@ the only thing that builds this database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (247)
+## CHECK constraints (249)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -586,6 +597,7 @@ the only thing that builds this database.
 - **chk_templates_category** on `checklist_templates`
 - **chk_templates_origin** on `checklist_templates`
 - **chk_tpml_matched_by** on `trustpoint_milestone_links`
+- **chk_trinity_order_status** on `trinity_inspection_orders`
 - **chk_workflow_submission_type** on `workflow_items`
 - **class_notes_direction_check** on `class_notes`
 - **class_orders_api_version_check** on `class_orders`
@@ -765,7 +777,8 @@ the only thing that builds this database.
 - **training_proposals_status_check** on `training_proposals`
 - **trc_decided_by_kind_check** on `track_record_candidates`
 - **trc_one_decider_check** on `track_record_candidates`
-- **trinity_inspection_orders_status_check** on `trinity_inspection_orders`
+- **trinity_order_comments_direction_check** on `trinity_order_comments`
+- **trinity_order_media_kind_check** on `trinity_order_media`
 - **trustpoint_draw_lines_approved_cents_check** on `trustpoint_draw_lines`
 - **trustpoint_draw_lines_source_check** on `trustpoint_draw_lines`
 - **trustpoint_milestone_snapshots_phase_check** on `trustpoint_milestone_snapshots`

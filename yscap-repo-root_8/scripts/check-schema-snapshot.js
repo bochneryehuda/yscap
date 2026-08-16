@@ -27,10 +27,18 @@
 
 const fs = require('fs');
 const path = require('path');
-const { buildInventory } = require('./schema-inventory');
+const { buildInventory, migrationState } = require('./schema-inventory');
 
 const SNAPSHOT = path.join(__dirname, '..', 'docs', 'schema', 'beyond-prisma.json');
 const ENFORCE = process.env.SCHEMA_SNAPSHOT_ENFORCE === '1';
+
+// WHICH snapshot to compare against. Almost always the committed one; the
+// override exists so the drift check can be PROVEN TO FAIL without touching a
+// database — `test-schema-drift-db.js` points it at a deliberately tampered
+// copy and asserts this script exits 1. A guard nobody has watched go red is
+// decoration, and proving this one by editing the real database instead would
+// mean a test that can leave a scratch schema altered when it dies mid-run.
+const snapshotPath = () => process.env.SCHEMA_SNAPSHOT_FILE || SNAPSHOT;
 
 /** Compare two inventories and describe every difference in words. */
 function diffInventories(committed, live) {
@@ -69,7 +77,8 @@ async function main() {
     console.log('check-schema-snapshot: no DATABASE_URL — skipped');
     return;
   }
-  if (!fs.existsSync(SNAPSHOT)) {
+  const snapFile = snapshotPath();
+  if (!fs.existsSync(snapFile)) {
     console.log('check-schema-snapshot: no snapshot committed yet — skipped');
     return;
   }
@@ -80,7 +89,7 @@ async function main() {
   let live;
   try { live = await buildInventory(client); } finally { await client.end(); }
 
-  const committed = JSON.parse(fs.readFileSync(SNAPSHOT, 'utf8'));
+  const committed = JSON.parse(fs.readFileSync(snapFile, 'utf8'));
   const problems = diffInventories(committed, live);
 
   if (!problems.length) {
@@ -89,9 +98,39 @@ async function main() {
     return;
   }
 
+  // WHICH KIND OF DRIFT IS THIS? The two look identical in the list below and
+  // could not matter more differently, so say it first, in words.
+  //
+  //   • migrations moved  → somebody added a migration and did not regenerate
+  //     the map. Ordinary. One command fixes it.
+  //   • migrations IDENTICAL → this database contains something no migration in
+  //     this checkout explains: a hand-edited schema, or a map generated against
+  //     a different database entirely. That one is worth stopping for.
+  //
+  // An unknown watermark (a snapshot written before this stamp existed, or an
+  // unreadable db/ directory) says exactly that rather than guessing either way.
+  const wasMig = (committed.generatedFrom || {}).migrations || null;
+  const nowMig = migrationState();
+  let verdict;
+  if (!wasMig || !nowMig) {
+    verdict = 'This snapshot carries no record of which migrations it was built from, '
+      + 'so the cause cannot be narrowed down — regenerate it to fix that for next time.';
+  } else if (wasMig.count !== nowMig.count || wasMig.highest !== nowMig.highest) {
+    verdict = `EXPECTED KIND: migrations have landed since this map was made — it was `
+      + `built from ${wasMig.count} migration file(s) (highest db/${wasMig.highest}) and this `
+      + `checkout has ${nowMig.count} (highest db/${nowMig.highest}). Regenerate and commit.`;
+  } else {
+    verdict = `WORTH A LOOK: the migration files are UNCHANGED (${nowMig.count}, highest `
+      + `db/${nowMig.highest}) and the schema still differs — so this database contains `
+      + `something no migration here explains. Check it was built from these migrations `
+      + `and that nobody altered it by hand before regenerating.`;
+  }
+
   const head = ENFORCE ? '::error::' : '::warning::';
   console.log(`${head}The committed schema snapshot no longer matches the database `
     + `— ${problems.length} difference(s):`);
+  console.log(`   ${verdict}`);
+  console.log('');
   // Every difference is named. A truncated list is how somebody concludes the
   // only change is the one they happen to see first.
   problems.forEach((p) => console.log(`   • ${p}`));
@@ -117,4 +156,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { diffInventories, SNAPSHOT };
+module.exports = { diffInventories, SNAPSHOT, snapshotPath };

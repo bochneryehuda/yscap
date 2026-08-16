@@ -1,6 +1,7 @@
 # One readable schema for the whole system — the plan
 
-**Status: RESEARCH COMPLETE, NOTHING BUILT. For owner approval.**
+**Status: PHASES 0–3 BUILT. The one thing left in Phase 3 is a decision, not code —
+see §6d. Phase 4 remains not approved and probably never.**
 
 Owner-directed 2026-08-16, after deciding against the two-repo split: *"Why is our system on the
 short-term side so messed up? It doesn't have a nice Prisma schema. The long term was set from the
@@ -245,6 +246,50 @@ database agree, so the two can never drift — that check is the whole value of 
 **The 549 existing migrations are not touched.** Not squashed, not deleted, not rewritten. They are the
 history and they still run on every boot.
 
+#### Phase 3 — what was actually built (2026-08-16)
+
+**The map had already drifted, in days, which is the whole argument for the check.** The snapshot was
+generated against 549 migrations; `db/550`–`db/553` landed while this branch was open, and the drift
+check caught **29 differences** unprompted and named every one (12 new tables, 11 new partial indexes,
+4 CHECK constraints, and two tables whose columns moved). Regenerated: **321 tables, 5,257 columns,
+749 objects Prisma cannot express** (was 309 / 5,106 / 736).
+
+**The check is now proven to fail, which was the gate condition.** `scripts/test-schema-drift-db.js`
+(29 assertions, in `npm test`) proves it in three layers, because each covers what the others cannot:
+
+- **the database read** genuinely sees an `ALTER TABLE` — one real mutation, applied inside a
+  transaction that is **rolled back**, so the scratch schema is byte-identical afterwards whether the
+  test passes, fails, or dies half way through;
+- **the diff** names every class of change — table added / removed, column changed, trigger, function,
+  CHECK, partial index, generated column — applied to copies of the live inventory, because ten real
+  `ALTER`s would be ten more chances to leave residue proving something arithmetic;
+- **the exit code** — `SCHEMA_SNAPSHOT_ENFORCE=1` really exits 1, proven against a *tampered copy* of
+  the snapshot via the new `SCHEMA_SNAPSHOT_FILE` override, so that layer touches no database at all.
+
+**Ten mutations of the production code were each proven to turn it red**, with an unmutated control
+green either side — diff-always-silent, each detection arm removed in turn, and the enforce branch
+exiting 0. One of those mutations first reported as *surviving*: the harness was grepping the last four
+lines of output for "FAILED", and with 12 failures that header had scrolled off. The test was fine and
+the harness was lying — re-run on exit code, all ten are red. Worth recording, because it is precisely
+the false-confidence failure the build rule warns about.
+
+**The snapshot now records which migrations it was built from** (`generatedFrom.migrations`), and the
+drift report leads with the verdict that follows from it. Without this the two causes of drift are
+indistinguishable in a list that looks identical, and they could not matter more differently:
+
+| what the watermark says | what it means | what to do |
+|---|---|---|
+| migrations moved | somebody added a migration and did not regenerate | one command |
+| migrations **unchanged**, schema differs | this database holds something **no migration explains** | stop and look |
+| no watermark | an older snapshot — it says so rather than guessing | regenerate |
+
+**One latent bug was found and fixed on the way**: `schema-inventory.js` used `fs` and `path` without
+requiring either. It worked here only because this container's Node exposes them as globals; on a Node
+that does not — which includes any CI runner we do not control — it would have thrown. Both are now
+imported explicitly. Nothing else in the schema scripts had the same gap (checked, not assumed).
+
+**Still advisory.** See §6d.
+
 ### Phase 4 — Renaming for beauty. Optional, slow, possibly never.
 The genuinely risky part, and the one that buys the least. `llcs` now holds corporations, partnerships
 and trusts; CLAUDE.md already records the decision **not** to rename it, because ~200 files, nine
@@ -297,6 +342,32 @@ nothing deployed.
 | 2 — the gap | The trigger/function/check inventory is complete and reconciles to the catalog counts (33 / 136 / 247 / 12 / 309); the schema file carries an "incomplete picture" header until it does |
 | 3 — source of truth | The drift check runs in CI and is **mutation-proven to fail** — add a column by hand to a scratch database and confirm it goes red; the first generated migration is trivial and reversible |
 | 4 — renaming | Not approved. Requires its own decision with the finished picture in hand |
+
+## 6d. The one thing left in Phase 3 is the owner's decision, not code
+
+The drift check is built, wired into the test chain, and proven to work. It runs today as a **warning**:
+it reports drift in full and does not fail the build. Making it **blocking** is one environment variable
+(`SCHEMA_SNAPSHOT_ENFORCE=1` on the `test-db` job) and needs no code change.
+
+It is deliberately not flipped here, because flipping it is not zero-risk in the way everything else in
+this plan is. The owner's standing rule is *"you should not break anything that exists already … we
+shouldn't have any new errors born from these changes."* Enforcement would create new failures — for
+other people's work:
+
+**What it buys:** the map can never silently stop being true. Anyone adding a migration is told, in the
+same run, to regenerate — so the picture stays current by construction rather than by memory.
+
+**What it costs:** every pull request that adds a migration and does not regenerate `docs/schema/`
+starts failing `test-db`. That is not hypothetical — four migrations landed from other sessions during
+the few days this branch was open. Each of those pull requests would have gone red, on a step whose
+subject is documentation rather than the change being made.
+
+**The middle option** is what is in place now: it reports loudly, names every difference, and says which
+of the two kinds of drift it is. Nothing goes stale silently; nobody is blocked.
+
+Recommendation: **leave it advisory until the regenerate step has been used a few times in anger**, then
+flip it. That is the staged-rollout principle this plan borrows from §6a.4 — and the flip is reversible
+in one line if it turns out to be noisy.
 
 ## 6c. Two zero-risk additions worth taking
 

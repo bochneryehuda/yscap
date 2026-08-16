@@ -40,7 +40,7 @@
 const fs = require('fs');
 const path = require('path');
 const { Client } = require('pg');
-const { buildInventory, beyondPrismaCount, serialize } = require('./schema-inventory');
+const { buildInventory, beyondPrismaCount, serialize, migrationState } = require('./schema-inventory');
 
 const OUT_DIR = path.join(__dirname, '..', 'docs', 'schema');
 const JSON_FILE = path.join(OUT_DIR, 'beyond-prisma.json');
@@ -108,6 +108,11 @@ async function main() {
   } finally {
     await client.end();
   }
+
+  // STAMP WHICH MIGRATIONS THIS MAP WAS BUILT FROM. Without it a stale map and
+  // a database carrying something no migration explains look identical in the
+  // drift report — and only one of those two is an emergency.
+  inv.generatedFrom = { migrations: migrationState() };
 
   const c = inv.counts;
   console.log(`schema-snapshot: ${c.tables} tables, ${c.columns} columns, `
