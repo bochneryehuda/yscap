@@ -194,6 +194,40 @@ function dscrBand(dscr) {
   return             { ratio: '1.25',    smo: 'DSCR >=1.25 - J' };
 }
 
+// ---- §32.4 RESERVES SELECTOR TABLE ----------------------------------------
+// GLOBAL_RESERVES dynamic token. The DSCR profile FORCES a default (Reserves_24, env-overridable via
+// LP_RESERVES_TOKEN) when the caller omits reserves — the audit's rule "explicitly override the
+// inherited live default to Reserves_24". A caller MAY instead choose a specific reserves requirement
+// via `reservesMonths`, mapped to the CONFIRMED live enum below — NEVER a token built by formatting
+// the number. The singular/plural prefixes are GENUINELY INCONSISTENT in the live app (`Reserve_6`
+// but `Reserves_3/12/18/24`, and `Reserve_none`); they are copied EXACTLY — do NOT "fix" Reserve_6 to
+// Reserves_6. `none` (or 0) → the explicit "None" state `Reserve_none`, which the capture stresses is
+// DISTINCT from blank/inherit (JSON null). We do NOT expose blank/inherit: the DSCR profile always
+// emits a reserves value, so a caller either takes the forced default or an explicit enum value.
+// An unrecognized value is REJECTED (422 via LpValidationError), never priced at a guessed token.
+const RESERVES_TOKENS = {
+  none: 'Reserve_none',
+  '0':  'Reserve_none',
+  '3':  'Reserves_3',
+  '6':  'Reserve_6',     // SINGULAR — confirmed live inconsistency (§32.4). Copy exactly.
+  '12': 'Reserves_12',
+  '18': 'Reserves_18',
+  '24': 'Reserves_24',
+};
+function reservesKey(v) { return String(v == null ? '' : v).trim().toLowerCase(); }
+// Returns the mapped GLOBAL_RESERVES token, or null when reserves is OMITTED (buildSearch then applies
+// the profile default). An unrecognized value throws LpValidationError (→ 422 upstream).
+function mapReserves(v) {
+  const k = reservesKey(v);
+  if (k === '') return null;                              // omitted → profile default (handled by caller)
+  const t = RESERVES_TOKENS[k];
+  if (!t) {
+    throw new LpValidationError('unknown_reserves', 'reservesMonths',
+      `Unknown reserves requirement ${JSON.stringify(String(v))}. Supported: "none" (or 0), 3, 6, 12, 18, 24 months. The request is rejected rather than priced at a guessed reserves token.`);
+  }
+  return t;
+}
+
 // ---- §31.6/§31.8 SCENARIO-OWNERSHIP CLEARING LAYER --------------------------
 // A live /pricing/defaultSearch foundation is a SNAPSHOT of the pricing model as some earlier
 // session last left it. Cloning it (buildSearch, below) inherits every default — which is CORRECT
@@ -407,10 +441,12 @@ function buildSearch(sc = {}, opts = {}) {
   if (band) setDyn('DSCRRATIO', band.ratio);
   setDyn('AddlOccupancyType', mapRentalTerm(sc.rentalTerm));
   setDyn('GLOBAL_BorrowerType', sc.borrowerType || 'LLC');
-  // Reserves — the intentional DSCR profile default is 24 MONTHS (audit §1). Forced (the
-  // GLOBAL_RESERVES token is confirmed from the captured base) so a live default carrying blank or
-  // different reserves cannot silently override the profile. Env-overridable per company.
-  setDyn('GLOBAL_RESERVES', process.env.LP_RESERVES_TOKEN || 'Reserves_24');
+  // Reserves — §32.4. The intentional DSCR profile default is 24 MONTHS (audit §1), forced when the
+  // caller omits reserves so a live default carrying blank/different reserves cannot silently override
+  // the profile (env-overridable per company via LP_RESERVES_TOKEN). A caller MAY choose a specific
+  // reserves requirement via reservesMonths → the CONFIRMED live enum (mapReserves); an unknown value
+  // 422s (never a guessed token). Always set (GLOBAL_RESERVES is confirmed from the captured base).
+  setDyn('GLOBAL_RESERVES', mapReserves(sc.reservesMonths) || process.env.LP_RESERVES_TOKEN || 'Reserves_24');
   // Prepay term / structure. An OMITTED prepay INHERITS the live default (audit §2 — the backend used
   // to CLEAR PrepayTerm/PrePayment_Plan_Type to null on omission, changing the model the user left
   // alone). months===0 is an EXPLICIT "no prepay" (PrepayTerm "None"); a positive months sets the
@@ -645,4 +681,4 @@ function validateScenario(sc = {}) {
 }
 
 module.exports = { BASE, buildSearch, clearScenarioOwnedFields, smoRegistryFromList, REGISTRY_WARNINGS, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE } };
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE } };
