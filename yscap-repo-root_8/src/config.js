@@ -1281,13 +1281,14 @@ module.exports = {
     defaultFloodCert:      process.env.RV_DEFAULT_FLOOD_CERT === '1',
 
     // How the intake is paid so it becomes a real order. The owner allows exactly
-    // THREE ways (2026-08-14): the card already on the file's appraisal-card
-    // condition, a card typed at the moment of ordering, or a payment link emailed
-    // to the borrower. ADD_TO_INVOICE and ACH are deliberately NOT offered — see
-    // `src/richervalues/payment.js`. 'NONE' leaves the intake unpaid so a human
-    // settles it, which is a real choice for a desk that wants a second look
-    // before the money moves.
-    paymentMethod: (process.env.RV_PAYMENT_METHOD || 'CARD_ON_FILE').trim().toUpperCase(),
+    // FOUR ways: the card YS Capital keeps with Richer Values (the DEFAULT, owner-
+    // directed 2026-08-16 — "we pay in-house, payment link as the backup"), the card
+    // already on the file's appraisal-card condition, a card typed at the moment of
+    // ordering, or a payment link emailed to the borrower. ADD_TO_INVOICE and ACH are
+    // deliberately NOT offered — see `src/richervalues/payment.js`. 'NONE' leaves the
+    // intake unpaid so a human settles it, which is a real choice for a desk that
+    // wants a second look before the money moves.
+    paymentMethod: (process.env.RV_PAYMENT_METHOD || 'COMPANY_CARD').trim().toUpperCase(),
 
     // Apply the vendor's returned As-Is + ARV to the loan file automatically
     // (owner-directed 2026-08-14). Off = the figures are still read and shown on
@@ -1295,6 +1296,11 @@ module.exports = {
     autoApplyValues: process.env.RV_AUTO_APPLY_VALUES !== '0',
 
     // ---- the webhook half: credentials WE issue to them ----
+    // WHICH of our own cards Richer Values should charge, when more than one is
+    // saved on the YS Capital account. Unset is the ordinary case: with exactly one
+    // card there is nothing to choose, and with several PILOT refuses rather than
+    // pick one — charging the wrong company card silently is not a thing to guess.
+    paymentSourceId: (process.env.RV_PAYMENT_SOURCE_ID || '').trim() || null,
     webhookUrl:      (process.env.RV_WEBHOOK_URL || '').trim() || null,
     webhookUser:     process.env.RV_WEBHOOK_USER || null,
     webhookPassword: process.env.RV_WEBHOOK_PASSWORD || null,

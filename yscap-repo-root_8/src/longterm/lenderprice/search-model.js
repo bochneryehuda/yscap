@@ -63,22 +63,79 @@ function smoRegistryFromList(list) {
   if (Array.isArray(list)) for (const o of list) { if (o && o.name && o.id) map.set(normName(o.name), { id: o.id, name: o.name }); }
   return map;
 }
-function num(v) { if (v == null || v === '') return null; const n = parseFloat(String(v).replace(/[^0-9.]/g, '')); return isFinite(n) ? n : null; }
-
-function mapPurpose(p) {
-  return p === 'Purchase' ? 'Purchase'
-    : (p === 'CashOut' || p === 'CashoutRefinance') ? 'CashoutRefinance'
-    : 'Refinance';
+// Numeric parse used to BUILD the payload. Tolerates currency formatting ($ , %) but — unlike the
+// old `replace(/[^0-9.]/g,'')` — it PRESERVES the sign and REJECTS exponent/garbage instead of
+// corrupting them (the §27.10 bug: "-1" became 1, "1e3" became 13). Returns a finite number or null.
+function num(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  const s = String(v).trim();
+  if (/^-?\d*\.?\d+$/.test(s)) return parseFloat(s);
+  const cleaned = s.replace(/[$,%\s]/g, '');            // strip only currency formatting, never a sign
+  if (/^-?\d*\.?\d+$/.test(cleaned)) return parseFloat(cleaned);
+  return null;                                          // exponent notation, letters, multiple dots → not a number
 }
+// Strict numeric parse used for VALIDATION only: distinguishes ABSENT (null) from PRESENT-BUT-INVALID
+// (undefined), so the validator can 422 a garbage value instead of silently treating it as absent.
+function strictNum(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return isFinite(v) ? v : undefined;
+  const s = String(v).trim();
+  if (/^-?\d*\.?\d+$/.test(s)) return parseFloat(s);
+  const cleaned = s.replace(/[$,%\s]/g, '');
+  if (/^-?\d*\.?\d+$/.test(cleaned)) return parseFloat(cleaned);
+  return undefined;
+}
+
+// §26.4 — EXPLICIT loan-purpose alias table. The old exact-match version defaulted EVERYTHING it
+// did not recognize to 'Refinance', so a lowercase `purchase`/`cashout` (or any typo) was silently
+// re-priced as a rate-and-term refinance. There is NO default-to-refinance now: an unknown purpose is
+// REJECTED (422 upstream, via LpValidationError) rather than mis-priced. The table is case-, space-
+// and punctuation-tolerant (purposeKey strips to letters). Explicit contract the owner set:
+//   Purchase                          → Purchase
+//   Cash out (cash-out refinance)     → CashoutRefinance
+//   Refinance (rate-and-term)         → Refinance
+class LpValidationError extends Error {
+  constructor(code, field, message) { super(message); this.name = 'LpValidationError'; this.lpValidation = true; this.code = code; this.field = field; }
+}
+const PURPOSE_ALIASES = {
+  purchase: 'Purchase',
+  // Cash-out refinance
+  cashout: 'CashoutRefinance',
+  cashoutrefinance: 'CashoutRefinance',
+  cashoutrefi: 'CashoutRefinance',
+  cashoutrefinancing: 'CashoutRefinance',
+  // Rate-and-term refinance (the plain "refinance")
+  refinance: 'Refinance',
+  refi: 'Refinance',
+  rateterm: 'Refinance',
+  rateandterm: 'Refinance',
+  ratetermrefinance: 'Refinance',
+  rateandtermrefinance: 'Refinance',
+  ratetermrefi: 'Refinance',
+};
+function purposeKey(p) { return String(p == null ? '' : p).toLowerCase().replace(/[^a-z]/g, ''); }
+function mapPurpose(p) {
+  const mapped = PURPOSE_ALIASES[purposeKey(p)];
+  if (!mapped) {
+    throw new LpValidationError('unknown_loan_purpose', 'purpose',
+      `Unknown loan purpose ${JSON.stringify(p == null ? null : String(p))}. Supported: "Purchase", "Cash out" (cash-out refinance), "Refinance" (rate-and-term). The request is rejected rather than defaulted to a refinance.`);
+  }
+  return mapped;
+}
+const SFR_PROP = { propertyType: 'SingleFamily', nonWarrantableProject: false, attachmentType: 'Detached', units: 1 };
 function mapProp(t) {
+  // No property type on the scenario → default single-family (a DEFAULT, not a silent SUBSTITUTION
+  // of a value the caller supplied).
+  if (t == null || t === '') return { ...SFR_PROP };
   // Prefer the full registry enum (audit §17.1 — every upstream property.propertyType token).
   const r = registry.resolvePropertyType(t);
   if (r) return { propertyType: r.propertyType, nonWarrantableProject: !!r.nonWarrantableProject, attachmentType: r.attachmentType, units: r.units };
-  // Fallback for legacy scenario spellings the registry map does not carry; default SingleFamily.
-  switch (t) {
-    case 'Condominium': return { propertyType: 'Condos', nonWarrantableProject: false, attachmentType: 'Attached', units: 1 };
-    default: return { propertyType: 'SingleFamily', nonWarrantableProject: false, attachmentType: 'Detached', units: 1 };
-  }
+  if (t === 'Condominium') return { propertyType: 'Condos', nonWarrantableProject: false, attachmentType: 'Attached', units: 1 };
+  // §27.5 — a property type we do not recognize is REJECTED (422), never silently priced as
+  // single-family. Falling through to SingleFamily returned plausible pricing for a "Castle".
+  throw new LpValidationError('unknown_property_type', 'propertyType',
+    `Unknown property type ${JSON.stringify(String(t))}. The request is rejected rather than defaulted to single-family.`);
 }
 
 /**
@@ -116,11 +173,17 @@ function buildSearch(sc = {}, opts = {}) {
   const lockDays = num(sc.lockDays);
   if (lockDays != null) { const bc = m.brokerCriteria || (m.brokerCriteria = {}); bc.dayLocks = lockDays; m.dayLocksCriteria = [lockDays]; }
   c.loanPurpose = purpose;
+  // DSCR product profile — INTENTIONAL (investment occupancy, DSCR income doc, borrower-comp) and
+  // asserted explicitly so a live base carrying a different saved default never changes the product.
   c.propertyUse = 'Investment';
   c.compensationType = 'BorrowerCompPlan';
-  c.interestOnly = !!sc.io;
-  c.escrowWaiver = !!sc.escrowWaive;
-  c.firstTimeHomeBuyer = !!sc.fthb;
+  // §28.5 — an OMITTED flag inherits the cloned (live) default; only an EXPLICITLY supplied value
+  // overwrites it. Previously `!!sc.io` wrote `false` even when io was absent, silently clobbering
+  // the live default. A provided value is already a real boolean (strict validation), so 0/false is
+  // preserved and a string can never sneak through.
+  if (sc.io !== undefined) c.interestOnly = !!sc.io;
+  if (sc.escrowWaive !== undefined) c.escrowWaiver = !!sc.escrowWaive;
+  if (sc.fthb !== undefined) c.firstTimeHomeBuyer = !!sc.fthb;
   c.nonWarrantableProject = pm.nonWarrantableProject;
 
   // Special mortgage options: DSCR pair (+ PPP), resolved to the company's CURRENT {id,name}
@@ -164,6 +227,16 @@ function buildSearch(sc = {}, opts = {}) {
   // is what triggered the live HTTP 400. A missing prepayMonths leaves it null.
   setDyn('PrepayTerm', months === 0 ? 'None' : (months ? `${months} Months` : null));
   setDyn('PrePayment_Plan_Type', months ? 'Standard' : null);
+  // Cash-out amount ("cash in hand"). CONFIRMED from the live site: the Lender Price UI field has NO
+  // valid dynamic-property code today — the frontend emits `dynamicPropertiesMap.undefined` and DROPS
+  // the value, so NEITHER the frontend NOR we transmit it (not transmitting is the parity-correct
+  // behavior right now, not a gap). We never invent a key. We only transmit once the vendor assigns
+  // the real code, wired via LP_CASHOUT_AMOUNT_FIELD — no code change needed then. The amount is still
+  // accepted + validated (and can drive an eligibility rule in our own engine: too-large cash in hand
+  // makes certain programs ineligible).
+  const cashoutAmt = num(sc.cashoutAmount);
+  const cashoutField = process.env.LP_CASHOUT_AMOUNT_FIELD;
+  if (cashoutAmt != null && cashoutField) setDyn(cashoutField, cashoutAmt);
   m.dynaToSmo = true;
 
   // ALL OPTIONS — the default the web app always searches with (confirmed byte-for-byte from the
@@ -209,4 +282,150 @@ function buildSearch(sc = {}, opts = {}) {
   return m;
 }
 
-module.exports = { BASE, buildSearch, smoRegistryFromList, REGISTRY_WARNINGS, _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp } };
+// ---- §26.3 location completeness ------------------------------------------
+// Upstream searchRaw returns a raw HTTP 500 (not a helpful validation error) when a location carries
+// a ZIP/state but no county FIPS code — the frontend always enriches a ZIP into
+// state/city/countyName/countyFps before pricing. So we DETERMINISTICALLY reject an incomplete or
+// conflicting location with 422 BEFORE any upstream call, instead of letting it 500. STATE_FIPS lets
+// us also catch a countyFps whose 2-digit state prefix contradicts the stated state.
+const STATE_FIPS = {
+  AL: '01', AK: '02', AZ: '04', AR: '05', CA: '06', CO: '08', CT: '09', DE: '10', DC: '11',
+  FL: '12', GA: '13', HI: '15', ID: '16', IL: '17', IN: '18', IA: '19', KS: '20', KY: '21',
+  LA: '22', ME: '23', MD: '24', MA: '25', MI: '26', MN: '27', MS: '28', MO: '29', MT: '30',
+  NE: '31', NV: '32', NH: '33', NJ: '34', NM: '35', NY: '36', NC: '37', ND: '38', OH: '39',
+  OK: '40', OR: '41', PA: '42', RI: '44', SC: '45', SD: '46', TN: '47', TX: '48', UT: '49',
+  VT: '50', VA: '51', WA: '53', WV: '54', WI: '55', WY: '56',
+  PR: '72', VI: '78', GU: '66', AS: '60', MP: '69',
+};
+// Returns { ok:true } when the location is absent or complete, else { ok:false, code, field, message }.
+function validateLocation(sc = {}) {
+  const hasLoc = sc.zip != null || sc.state != null || sc.city != null || sc.county != null || sc.countyName != null || sc.countyFps != null;
+  if (!hasLoc) return { ok: true }; // no location fields — nothing to validate (base defaults apply)
+  const state = sc.state != null && String(sc.state).trim() !== '' ? String(sc.state).trim().toUpperCase() : null;
+  const fps = sc.countyFps != null && String(sc.countyFps).trim() !== '' ? String(sc.countyFps).trim() : null;
+  if (state && !STATE_FIPS[state]) {
+    return { ok: false, code: 'invalid_state', field: 'state',
+      message: `Unrecognized state code ${JSON.stringify(sc.state)}. Use a 2-letter US state/territory code (e.g. NJ, NY, CA).` };
+  }
+  if (!fps) {
+    return { ok: false, code: 'missing_county_fips', field: 'countyFps',
+      message: 'This location has a ZIP/state but no county FIPS code. Lender Price needs the 5-digit county FIPS (frontend enriches ZIP → state/city/countyName/countyFps); supply countyFps so the search is not rejected upstream.' };
+  }
+  if (!/^\d{5}$/.test(fps)) {
+    return { ok: false, code: 'invalid_county_fips', field: 'countyFps',
+      message: `County FIPS must be a 5-digit code; got ${JSON.stringify(sc.countyFps)}.` };
+  }
+  if (state && fps.slice(0, 2) !== STATE_FIPS[state]) {
+    return { ok: false, code: 'location_conflict', field: 'countyFps',
+      message: `County FIPS ${fps} (state prefix ${fps.slice(0, 2)}) does not belong to state ${state} (prefix ${STATE_FIPS[state]}). Fix the conflicting location.` };
+  }
+  return { ok: true };
+}
+
+// ---- §27 strict input validation (reject silent substitutions) --------------
+// Every one of these was a live HTTP-200-with-a-wrong-answer defect: a string "false" turned a
+// flag ON, a sign-stripped "-1" DSCR became +1, an unknown property type priced as single-family,
+// a conflicting LTV was silently replaced, and an unsupported term/lock was accepted. We reject
+// them (422) BEFORE any upstream call rather than mis-price.
+// Boolean scenario fields that must be a real JSON boolean (never a truthy string).
+const BOOLEAN_FIELDS = ['io', 'escrowWaive', 'fthb', 'selfEmployed', 'rural', 'mixedUse', 'waiveLenderFee', 'noMortgageHistory'];
+// Allowed rate-lock days come from the company's own capability list (dayLocksList) — the SAME set
+// the live default search exposes ([14,15,21,30,45,60,90]); env-overridable per company.
+const ALLOWED_LOCKS = (process.env.LP_ALLOWED_LOCKS
+  ? process.env.LP_ALLOWED_LOCKS.split(',').map((x) => Number(x.trim())).filter((n) => isFinite(n))
+  : ((BASE.brokerCriteria && Array.isArray(BASE.brokerCriteria.dayLocksList) && BASE.brokerCriteria.dayLocksList) || [14, 15, 21, 30, 45, 60, 90]));
+// Allowed loan terms (years). The static base carries no capability list, so this is a conservative
+// standard-DSCR set, env-overridable (LP_ALLOWED_TERMS). 17-year is rejected, not priced to 0 programs.
+const ALLOWED_TERMS = (process.env.LP_ALLOWED_TERMS
+  ? process.env.LP_ALLOWED_TERMS.split(',').map((x) => Number(x.trim())).filter((n) => isFinite(n))
+  : [5, 10, 15, 20, 25, 30, 40]);
+
+function validateInputs(sc = {}) {
+  const bad = (code, field, message) => ({ ok: false, code, field, message });
+  // Strict booleans — a JSON string "false" is TRUTHY and used to flip the flag on.
+  for (const f of BOOLEAN_FIELDS) {
+    if (sc[f] != null && typeof sc[f] !== 'boolean') {
+      return bad('non_boolean_value', f, `Field "${f}" must be a JSON boolean (true/false); got ${JSON.stringify(sc[f])}. A string is rejected rather than coerced.`);
+    }
+  }
+  // Strict numerics + ranges. Returns { v } (value or null) or { err }.
+  const numField = (field, opts = {}) => {
+    if (sc[field] == null || sc[field] === '') return { v: null };
+    const v = strictNum(sc[field]);
+    if (v === undefined) return { err: bad('invalid_number', field, `Field "${field}" must be a plain number; got ${JSON.stringify(sc[field])}.`) };
+    if (opts.integer && !Number.isInteger(v)) return { err: bad('invalid_number', field, `Field "${field}" must be a whole number; got ${v}.`) };
+    if (opts.min != null && v < opts.min) return { err: bad('out_of_range', field, `Field "${field}" must be at least ${opts.min}; got ${v}.`) };
+    if (opts.max != null && v > opts.max) return { err: bad('out_of_range', field, `Field "${field}" must be at most ${opts.max}; got ${v}.`) };
+    return { v };
+  };
+  const value = numField('value', { min: 1 }); if (value.err) return value.err;
+  const appr = numField('appraisedValue', { min: 1 }); if (appr.err) return appr.err;
+  const asIs = numField('asIsValue', { min: 1 }); if (asIs.err) return asIs.err;
+  const loan = numField('loan', { min: 1 }); if (loan.err) return loan.err;
+  const fico = numField('fico', { min: 300, max: 850, integer: true }); if (fico.err) return fico.err;
+  const dscr = numField('dscr', { min: 0, max: 2 }); if (dscr.err) return dscr.err;
+  const units = numField('units', { min: 1, max: 20, integer: true }); if (units.err) return units.err;
+  const cashout = numField('cashoutAmount', { min: 0 }); if (cashout.err) return cashout.err; // "cash in hand"; stored, transmitted only when the vendor field is configured
+  // Term / lock against the allowed capability sets (a 17-year term / 22-day lock does not exist).
+  const t1 = numField('termYears', {}); if (t1.err) return t1.err;
+  const t2 = numField('term', {}); if (t2.err) return t2.err;
+  const termVal = t1.v != null ? t1.v : t2.v;
+  if (termVal != null && !ALLOWED_TERMS.includes(termVal)) {
+    return bad('unsupported_term', 'termYears', `Loan term ${termVal} years is not offered. Supported: ${ALLOWED_TERMS.join(', ')}.`);
+  }
+  const lock = numField('lockDays', {}); if (lock.err) return lock.err;
+  if (lock.v != null && !ALLOWED_LOCKS.includes(lock.v)) {
+    return bad('unsupported_lock', 'lockDays', `Rate-lock ${lock.v} days is not offered. Supported: ${ALLOWED_LOCKS.join(', ')}.`);
+  }
+  // LTV: loan must not exceed value (LTV > 100%), and a SUPPLIED ltv must not contradict loan/value.
+  const ltvRaw = numField('ltv', { min: 0 }); if (ltvRaw.err) return ltvRaw.err;
+  if (value.v != null && loan.v != null) {
+    if (loan.v > value.v) return bad('loan_exceeds_value', 'loan', `Loan amount (${loan.v}) exceeds property value (${value.v}) — LTV over 100%.`);
+    if (ltvRaw.v != null) {
+      const calc = loan.v / value.v;
+      const supplied = ltvRaw.v > 1 ? ltvRaw.v / 100 : ltvRaw.v; // accept 75 or 0.75
+      if (Math.abs(calc - supplied) > 0.01) {
+        return bad('ltv_conflict', 'ltv', `Supplied LTV (${supplied}) conflicts with loan ÷ value (${calc.toFixed(4)}). Omit ltv or make it agree.`);
+      }
+    }
+  }
+  // Units must agree with the property type (a single-family "4-unit" is a contradiction).
+  if (units.v != null && sc.propertyType != null && sc.propertyType !== '') {
+    const pt = registry.resolvePropertyType(sc.propertyType);
+    const canon = pt ? pt.propertyType : (sc.propertyType === 'Condominium' ? 'Condos' : null);
+    if (canon === 'SingleFamily' && units.v !== 1) return bad('units_conflict', 'units', `A single-family property has 1 unit; got ${units.v}.`);
+    if (canon === 'UnitDwelling_2_4' && (units.v < 2 || units.v > 4)) return bad('units_conflict', 'units', `A 2–4 unit property has 2–4 units; got ${units.v}.`);
+    if (canon === 'MultiFamily' && units.v < 5) return bad('units_conflict', 'units', `A multifamily property has 5 or more units; got ${units.v}.`);
+  }
+  return { ok: true };
+}
+
+// ---- §26.5 build + validate LOCALLY (zero upstream requests) ----------------
+// Build the payload from the STATIC base and run every DETERMINISTIC check that can reject a request,
+// so a 422 is returned BEFORE any searchRaw call: §26.3 location completeness, §26.4 unknown loan
+// purpose, and invalid registry enum VALUES (a supported field carrying a value the engine drops).
+// The scenario alone drives all three, so validating against the static base is exact (a live
+// foundation cannot change any of these verdicts). Returns { ok:true, request } or
+// { ok:false, status:422, error, field?, warnings?, message }.
+function validateScenario(sc = {}) {
+  const loc = validateLocation(sc);
+  if (!loc.ok) return { ok: false, status: 422, error: loc.code, field: loc.field, message: loc.message };
+  const inp = validateInputs(sc); // §27 — strict booleans/numerics/ranges/ltv/term/lock/units
+  if (!inp.ok) return { ok: false, status: 422, error: inp.code, field: inp.field, message: inp.message };
+  let request;
+  try {
+    request = buildSearch(sc); // static base — no live foundation needed to validate the scenario
+  } catch (e) {
+    if (e && e.lpValidation) return { ok: false, status: 422, error: e.code, field: e.field, message: e.message };
+    throw e;
+  }
+  const w = request[REGISTRY_WARNINGS];
+  if (Array.isArray(w) && w.length) {
+    return { ok: false, status: 422, error: 'invalid_field_value', warnings: w,
+      message: `One or more fields carried a value the pricing engine does not recognize; the value would be silently dropped, so the request is rejected rather than mis-priced: ${w.map((x) => x.field).join(', ')}.` };
+  }
+  return { ok: true, request };
+}
+
+module.exports = { BASE, buildSearch, smoRegistryFromList, REGISTRY_WARNINGS, validateScenario, validateLocation, validateInputs, LpValidationError,
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, BOOLEAN_FIELDS } };

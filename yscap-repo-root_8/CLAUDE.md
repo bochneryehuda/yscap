@@ -10,6 +10,46 @@ The owner is not a developer. **Every message to the owner must be in PLAIN, SHO
 - **Talk BUSINESS, not code:** explain what things mean for the business (files, borrowers, ClickUp cards, emails), not what they mean in the code.
 - Commit messages and code comments stay technical; chat with the owner never is.
 
+## How to BUILD (ALWAYS) — HIGHEST-END, NEVER CHEAP — STRICT RULE (owner-directed 2026-08-16)
+
+**Owner's words: *"everything that they build should be built how Microsoft, Google, Apple, and the
+military would build something — which means highest end, not cheapy. Even if there's a cheaper, easier
+way to do it, they should go the harder way. It should be professional and high-end, not cheapy."***
+
+This is a standing rule over every change, in both products. It is not a licence to gold-plate a
+one-line fix; it is a ban on the *cheap shape* — the spot-patch, the second copy, the hand-kept list,
+the assertion in place of a proof. When the cheap way and the structural way both work, **take the
+structural way.** Ten concrete tests of that, all of which this repo already applies somewhere:
+
+1. **Prove it, don't assert it.** Rehearse against the real thing before proposing it — a real
+   Postgres, a real payload, a real render — never a mock that agrees with you. ("Test like you fly":
+   the aerospace practice that exists because systems met real conditions for the first time in flight.)
+2. **A test must be proven to FAIL.** Break the production rule on purpose and confirm the suite goes
+   red — with an unmutated control green on either side. A test nobody has seen fail is decoration.
+   Watch for false confidence: a *crashing* test also "fails", and looks like proof.
+3. **One definition, never a second copy.** Two copies of a rule drift, and the one that drifts is the
+   one that leaks. Where a mirror is unavoidable (a browser twin of a server rule), a test must fail
+   the moment they disagree.
+4. **Generate, don't hand-maintain.** A list somebody has to remember to update is a list that goes
+   stale silently. Derive it from the source of truth.
+5. **Fail closed, and never silently.** Unreadable input, an unknown value, a vendor timeout — answer
+   the safe way and SAY SO. No swallowed errors, no silent caps, no "probably fine".
+6. **Never remove something until nothing depends on it.** Add the new beside the old, move every
+   reader, then remove. Never a rename in place on a live system.
+7. **Fix the root and every place it surfaces**, never only the instance you were shown. (The
+   long-standing rule below; it is the same principle.)
+8. **Pin your tools.** Same input, same version, same result. An unpinned dependency is an outage
+   scheduled for a date you do not control.
+9. **Write the acceptance evidence BEFORE the step**, and do not proceed on the feeling that it went
+   fine. State what must be true; then check it.
+10. **Stage anything that touches production**, and roll back before diagnosing. Recovery first,
+    understanding second.
+
+**And the honesty half, which is what actually makes the above worth anything:** report what was
+measured, not what was hoped. If a number is estimated, say estimated. If a guard is redundant today,
+write that down rather than implying it bites. If something was not done, name it. A confident wrong
+answer is the most expensive thing that can be produced here.
+
 ## TWO PRODUCTS, TWO SYSTEMS — RTL and LONG-TERM never mix (owner-directed 2026-08-02) — STRICT, HARD RULE, NO EXCEPTIONS
 
 PILOT now has **two loan products, and they are two separate systems**:
@@ -33,6 +73,33 @@ Treat them like **two different companies' software that happen to share one rep
 Enforcement (the same rules, in every place a rule can live): CI gate `scripts/check-product-separation.js` (runs at the head of `npm test`, blocks the PR and the deploy) with `scripts/test-product-separation-gate.js` proving it still bites, PR checklist `.github/pull_request_template.md`, rule mirror for GitHub + other AI agents `.github/PRODUCT-SEPARATION.md` and `AGENTS.md` (git root), the authorization ledger `docs/LONG-TERM-AUTHORIZED-COPIES.md`, and the architecture/research write-up `docs/LONG-TERM-LOANS-SEPARATION-CHARTER.md`.
 
 **What the gate can and cannot see — a green build is NOT proof that nothing crossed.** It catches *structural* crossings: an import either way, raw SQL against the other product's tables, a cross-product foreign key, an `lt_`/`long_term` column on an RTL table, a migration touching both sides, a trigger or function carrying one product's logic onto the other's table, an LT table or function not named `lt_*`, RTL back-end code calling `/api/lt`, and any attempt to delete the rules or unwire the gate itself. It CANNOT see RTL code **copied by value** into an LT folder, a plainly-named new column added to an RTL table for LT's benefit, a new ClickUp/Encompass/SharePoint mapping, or a new checklist template. Rules 1, 4, 5, 7 and 8 above rest on the person doing the work.
+
+## THE DATABASE IS NOT RENAMED, AND THE SCHEMA WORK IS DOCUMENTATION ONLY — STRICT RULE (owner-directed 2026-08-16)
+
+**Owner's words: *"we are not renaming anything. Please don't do the risky stuff."*** This closes
+Phase 4 of `docs/SCHEMA-AS-SOURCE-OF-TRUTH-PLAN.md` permanently. It is not deferred and not pending a
+later decision.
+
+- **NEVER rename a table, a column, a relation or a constraint** for readability, tidiness, consistency,
+  or as a side effect of any other work. If a name is wrong, it is wrong and it stays — `llcs` already
+  holds corporations, partnerships and trusts under a name that no longer fits, and CLAUDE.md already
+  records the decision not to rename it. That is the standard.
+- **The `docs/schema/` files are DOCUMENTATION.** `beyond-prisma.json`, `BEYOND-PRISMA.md`,
+  `PICTURE.html` and `schema.prisma` are generated, read by nothing at runtime, and every statement
+  their scripts run is a `SELECT`. **Never rebuild a database from `schema.prisma`** — it cannot express
+  749 objects this database has, and the generated SQL runs without a single error while omitting every
+  one of them. The numbered `db/*.sql` migrations are the only thing that builds this database.
+- **The two schema drift checks are ADVISORY on purpose** (`check-schema-snapshot.js`,
+  `check-lt-schema-drift.js`). Making either blocking is one environment variable
+  (`SCHEMA_SNAPSHOT_ENFORCE=1`, `LT_SCHEMA_DRIFT_ENFORCE=1`) and is **the owner's call, not an
+  agent's** — it would start failing other people's pull requests.
+- **Do not add anything to the backup system** (`scripts/backup-*.js`, `src/lib/backup/**`) without the
+  owner asking for it by name — including read-only additions. It is the one thing here whose failure
+  cannot be repaired after the fact.
+
+When a schema change is needed, the workflow is unchanged and unaffected by any of the above: a new
+numbered idempotent `db/NNN_*.sql`, applied by the existing runner. If a migration lands and the map is
+not regenerated, `check-schema-behind.js` says so on the next test run, with no database needed.
 
 ## Repository layout gotcha
 

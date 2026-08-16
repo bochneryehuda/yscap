@@ -8,6 +8,21 @@ This file is for **every AI agent and every developer** working in this reposito
 `package.json`, `src/`, `db/`, `web/`, `app/`, `app-v2/`, `docs/`, `scripts/` are all inside
 **`yscap-repo-root_8/`**, not at the git root. Run every `npm` command from inside that folder.
 
+## 1a. Build it the highest-end way, never the cheap way
+
+**Owner-directed 2026-08-16, strict, over every change in both products:** *"everything that they build
+should be built how Microsoft, Google, Apple, and the military would build something — which means
+highest end, not cheapy. Even if there's a cheaper, easier way to do it, they should go the harder way."*
+
+Not a licence to gold-plate a one-line fix — a ban on the cheap *shape*: the spot-patch, the second
+copy, the hand-kept list, the assertion in place of a proof. Prove it against the real thing; make
+every test fail on purpose before you trust it; one definition, never two; generate rather than
+hand-maintain; fail closed and say so; never remove what something still depends on; pin your tools;
+write the acceptance evidence before the step; stage anything that touches production. And report what
+was **measured**, not what was hoped.
+
+The full rule, with the ten tests spelled out: `yscap-repo-root_8/CLAUDE.md` → *"How to BUILD"*.
+
 ## 2. There are TWO products, and they are TWO systems that never mix
 
 **Owner-directed, 2026-08-02. Strict, hard rule, no exceptions.**

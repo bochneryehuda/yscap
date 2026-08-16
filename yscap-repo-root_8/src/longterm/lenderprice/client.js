@@ -35,7 +35,8 @@
  */
 
 const crypto = require('crypto');
-const { buildSearch, smoRegistryFromList } = require('./search-model');
+const { buildSearch, smoRegistryFromList, _internals: searchModelInternals } = require('./search-model');
+const sharedMapPurpose = searchModelInternals.mapPurpose;
 
 const AUTH_BASE = (process.env.LP_AUTH_BASE || 'https://auth.digitallending.com').replace(/\/+$/, '');
 const API_BASE = (process.env.LP_API_BASE || 'https://api.digitallending.com').replace(/\/+$/, '');
@@ -210,8 +211,11 @@ async function enrichZip(zip, { loanAmount = 0, units = 1 } = {}) {
 // We do the same — but every fetch FALLS BACK to the captured static model / built-in ids,
 // so an unavailable (or differently-pathed) endpoint degrades to the proven defaults instead
 // of breaking pricing. Paths are env-overridable because they are not confirmed from a capture.
-const DEFAULTSEARCH_PATH = process.env.LP_DEFAULTSEARCH_PATH || '/rest/v1/lp-ppe-integration/pricing/defaultSearch/{companyId}/{userId}';
-const SMO_PATH = process.env.LP_SMO_PATH || '/rest/v1/lp-ppe-integration/pricing/smo/{companyId}';
+// §26.2: the frontend GETs these WITHOUT path params — the earlier `/{companyId}/{userId}`
+// suffixes 404'd every live fetch and pinned the foundation to the static fallback forever.
+// fillPath is a no-op when a path carries no placeholders, so an env override MAY still add them.
+const DEFAULTSEARCH_PATH = process.env.LP_DEFAULTSEARCH_PATH || '/rest/v1/lp-ppe-integration/pricing/defaultSearch';
+const SMO_PATH = process.env.LP_SMO_PATH || '/rest/v1/lp-ppe-integration/pricing/smo';
 let _defaultSearch = null;   // { at, model, source, error } — source 'live'|'fallback', error is the live-fetch reason when it fell back
 let _smoRegistry = null;     // { at, map, source, error }
 const FOUNDATION_TTL_MS = Number(process.env.LP_FOUNDATION_TTL_MS || 30 * 60 * 1000);
@@ -235,6 +239,19 @@ function breakerOpen() {
 function recordRecovery() { _recoveryTimes.push(Date.now()); }
 function invalidateSession() { _session = null; }
 function invalidateFoundation() { _defaultSearch = null; _smoRegistry = null; }
+// §28.2 — in production the owner can REQUIRE a live pricing foundation: when LP_REQUIRE_LIVE_FOUNDATION
+// is set, a searchRaw whose base/SMO resolved to the STATIC FALLBACK (e.g. the live endpoints 404) is
+// REFUSED with a named 502 instead of silently pricing on stale configuration. Default off, so a dev
+// run / the static base still works; the owner turns it on only after confirming base/smo report live.
+function requireLiveFoundation() { const v = process.env.LP_REQUIRE_LIVE_FOUNDATION; return v === '1' || v === 'true'; }
+function foundationLiveGate(f) {
+  if (!requireLiveFoundation()) return null;
+  const prov = foundationProvenance(f);
+  if (prov.base === 'live' && prov.smo === 'live') return null;
+  return { ok: false, error: 'lp_foundation_not_live', http: 502,
+    message: 'Live Lender Price pricing configuration is unavailable (the search is running on the static fallback). Refusing to price on stale configuration; check the defaultSearch/smo endpoints.',
+    provenance: prov, foundation: f };
+}
 // Live-vs-fallback provenance for a resolved foundation (diagnostics; never logs credentials).
 function foundationProvenance(f) {
   return {
@@ -316,6 +333,8 @@ async function priceFoundation({ force = false } = {}) {
 async function searchRawWithRecovery(buildBody, opts = {}) {
   const f1 = await priceFoundation();
   if (!f1.ok) return f1;
+  const gate1 = foundationLiveGate(f1); // §28.2 — refuse to price on the static fallback in production
+  if (gate1) return gate1;
   const body1 = buildBody(f1);
   const r1 = await postSearchRaw(f1.url, f1.session, body1, opts);
   if (r1.ok) return { ...r1, foundation: f1, request: body1, recovered: false };
@@ -331,6 +350,8 @@ async function searchRawWithRecovery(buildBody, opts = {}) {
   invalidateFoundation();
   const f2 = await priceFoundation({ force: true });
   if (!f2.ok) return f2;
+  const gate2 = foundationLiveGate(f2); // §28.2 — still on the fallback after re-login → refuse in prod
+  if (gate2) return gate2;
   const body2 = buildBody(f2);
   const r2 = await postSearchRaw(f2.url, f2.session, body2, opts);
   if (r2.ok) return { ...r2, foundation: f2, request: body2, recovered: true };
@@ -419,8 +440,19 @@ function storeKickoff(url, body, requestId) {
   pruneDisqStore();
   const key = searchKeyFor(body);
   const now = Date.now();
-  // Store the kickoff body verbatim (cachedDisqualified is already false on it) + the upstream
-  // requestId. Refresh the TTL on a repeat so an active scenario stays pollable.
+  const existing = DISQ_STORE.get(key);
+  // §27.4 — two IDENTICAL concurrent /price calls hash to the SAME key. Overwriting an active
+  // kickoff would swap in the second call's requestId, so a client polling the first search would
+  // suddenly poll the second (fresh, not-yet-ready) upstream computation — and a result that was
+  // already READY would be reset. So DON'T overwrite an active record: keep the first kickoff, only
+  // FILL a requestId it was missing, and refresh the TTL. (Deliberate, reference-free de-dup: the
+  // two searches are byte-identical, so the first search's result is the correct answer for both.)
+  if (existing && existing.expiresAt > now) {
+    if (!existing.requestId && requestId) existing.requestId = requestId;
+    existing.expiresAt = now + DISQ_STORE_TTL_MS;
+    return key;
+  }
+  // Store the kickoff body verbatim (cachedDisqualified is already false on it) + the upstream requestId.
   DISQ_STORE.set(key, { body, url, requestId: requestId || null, createdAt: now, expiresAt: now + DISQ_STORE_TTL_MS });
   return key;
 }
@@ -541,13 +573,22 @@ async function pollDisqualifiedByKey(searchKey) {
   // would 202 forever. Surface a named, controlled error instead (the caller re-runs /price).
   if (!entry.requestId) return { ok: false, error: 'lp_missing_request_id', searchKey,
     message: 'The kickoff response did not include an upstream requestId, so the ineligible result cannot be polled. Re-run the price search.' };
+  // §27.3 — once a search is READY we MATERIALIZE its parsed result (a compact structure, not the
+  // ~111 MB raw tree) on the store entry. Every later poll for the same searchKey serves that
+  // materialized result with ZERO upstream calls, instead of re-downloading + re-parsing the tree
+  // (the audit measured a 30s re-download on every repeat poll).
+  if (entry.result) return { ok: true, ready: true, searchKey, parsed: entry.result, rawSummary: entry.rawSummary || null, cached: true };
   const f = await priceFoundation(); // session/auth only — the scenario body comes from the store
   if (!f.ok) return f;
   const body = applyPollDelta(entry.body, entry.requestId); // cachedDisqualified + requestId + nullable defaults
   const r = await postSearchRaw(entry.url || f.url, f.session, body, { timeoutMs: DISQUALIFY_TIMEOUT_MS });
   if (!r.ok) return { ...r, searchKey };
   if (r.empty || !hasDisqualifyData(r.raw)) return { ok: true, ready: false, searchKey };
-  return { ok: true, ready: true, raw: r.raw, searchKey };
+  const parsed = parseDisqualified(r.raw);
+  entry.result = parsed;                         // materialize — subsequent polls skip upstream
+  entry.rawSummary = summarizeRaw(r.raw);        // small structural summary kept for debug on cached hits
+  entry.readyAt = Date.now();
+  return { ok: true, ready: true, searchKey, parsed, rawSummary: entry.rawSummary, raw: r.raw };
 }
 // Test/introspection helper — is a searchKey currently stored (kicked off, not expired)?
 function hasStoredSearch(searchKey) { pruneDisqStore(); return DISQ_STORE.has(searchKey); }
@@ -589,7 +630,9 @@ function buildSearchPayload(sc = {}) {
     ...(sc.date ? { date: sc.date } : {}),   // historical as-of pricing (blueprint / audit)
   };
 }
-function mapPurpose(p) { return p === 'Purchase' ? 'Purchase' : (p === 'CashOut' || p === 'CashoutRefinance') ? 'CashoutRefinance' : 'Refinance'; }
+// Delegate to the ONE shared alias table (search-model.mapPurpose) so this legacy builder can never
+// silently default an unknown purpose to Refinance either (§26.4). Throws LpValidationError on unknown.
+function mapPurpose(p) { return sharedMapPurpose(p); }
 function mapPropertyType(t) {
   switch (t) {
     case 'Unit2_4': case 'UnitDwelling_2_4': return { propertyType: 'UnitDwelling_2_4', nonWarrantableProject: false, units: 2 };
@@ -1051,7 +1094,7 @@ async function pricingReadiness({ price: deep = false } = {}) {
   const foundation = foundationProvenance(f);
   if (!deep) return { pricingReady: true, auth, foundation };
   // Deep check — a real minimal searchRaw (the only thing that proves a stale-session 500 is gone).
-  const pr = await price({ value: 500000, loan: 350000, fico: 780, dscr: 1.1 });
+  const pr = await price({ purpose: 'Purchase', value: 500000, loan: 350000, fico: 780, dscr: 1.1 });
   return {
     pricingReady: !!pr.ok, auth, foundation,
     price: pr.ok ? { ok: true, recovered: !!pr.recovered } : { ok: false, error: pr.error, http: pr.http || null, message: pr.message },
@@ -1062,5 +1105,5 @@ module.exports = {
   configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, pollDisqualified, pollDisqualifiedByKey,
   hasStoredSearch, searchKeyFor, parse, parseFull, parseDisqualified, summarizeRaw, pricingReadiness,
   hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
-  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery },
+  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, foundationLiveGate, requireLiveFoundation, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery },
 };
