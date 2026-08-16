@@ -1373,3 +1373,27 @@ model LtPpeFinding {
   @@index([scope, status], map: "lt_ppe_finding_status_idx")
   @@map("lt_ppe_finding")
 }
+
+// PPE shadow RUN-RECORD store (db/565). One row per shadow validation run:
+// { dayMs, agreementRate, findingKeys, summary }. The scoreboard aggregates the
+// series into the cutover gate's daily agreement rate + new-findings trend.
+// run-store.js is the bridge; scoreboard.js owns the aggregation. investor/program
+// are NOT NULL DEFAULT '' because they are part of the unique key (a NULL would
+// defeat the same-day upsert).
+model LtPpeShadowRun {
+  id            String    @id @default(uuid()) @db.Uuid
+  scope         String    @default("company")
+  investor      String    @default("")
+  program       String    @default("")
+  programId     String?   @map("program_id") @db.Uuid
+  dayMs         BigInt    @map("day_ms")
+  agreementRate Decimal?  @map("agreement_rate") @db.Decimal
+  findingKeys   Json      @default("[]") @map("finding_keys") @db.JsonB
+  summary       Json?     @db.JsonB
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([scope, investor, program, dayMs], map: "lt_ppe_shadow_run_key_uk")
+  @@index([scope, investor, program, dayMs], map: "lt_ppe_shadow_run_series_idx")
+  @@map("lt_ppe_shadow_run")
+}
