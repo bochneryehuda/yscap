@@ -36,6 +36,10 @@
 
 const crypto = require('crypto');
 const { buildSearch, smoRegistryFromList, _internals: searchModelInternals } = require('./search-model');
+// Durable L2 for the disqualify (ineligible) workflow (db/559) — best-effort; the in-memory Map
+// below stays the L1 cache, this survives a reboot / deploy / instance-move. Every call degrades to
+// in-memory-only on any DB error, so the pricing path never hard-depends on it.
+const disqStore = require('./disqualify-store');
 const sharedMapPurpose = searchModelInternals.mapPurpose;
 
 const AUTH_BASE = (process.env.LP_AUTH_BASE || 'https://auth.digitallending.com').replace(/\/+$/, '');
@@ -436,10 +440,12 @@ function applyPollDelta(kickBody, requestId) {
   if (rr.to === undefined) rr.to = null;
   return body;
 }
+let _lastDurablePruneAt = 0;
 function storeKickoff(url, body, requestId) {
   pruneDisqStore();
   const key = searchKeyFor(body);
   const now = Date.now();
+  const expiresAt = now + DISQ_STORE_TTL_MS;
   const existing = DISQ_STORE.get(key);
   // §27.4 — two IDENTICAL concurrent /price calls hash to the SAME key. Overwriting an active
   // kickoff would swap in the second call's requestId, so a client polling the first search would
@@ -447,13 +453,20 @@ function storeKickoff(url, body, requestId) {
   // already READY would be reset. So DON'T overwrite an active record: keep the first kickoff, only
   // FILL a requestId it was missing, and refresh the TTL. (Deliberate, reference-free de-dup: the
   // two searches are byte-identical, so the first search's result is the correct answer for both.)
+  let entry;
   if (existing && existing.expiresAt > now) {
     if (!existing.requestId && requestId) existing.requestId = requestId;
-    existing.expiresAt = now + DISQ_STORE_TTL_MS;
-    return key;
+    existing.expiresAt = expiresAt;
+    entry = existing;
+  } else {
+    // Store the kickoff body verbatim (cachedDisqualified is already false on it) + the upstream requestId.
+    entry = { body, url, requestId: requestId || null, createdAt: now, expiresAt };
+    DISQ_STORE.set(key, entry);
   }
-  // Store the kickoff body verbatim (cachedDisqualified is already false on it) + the upstream requestId.
-  DISQ_STORE.set(key, { body, url, requestId: requestId || null, createdAt: now, expiresAt: now + DISQ_STORE_TTL_MS });
+  // Durable L2 (best-effort, fire-and-forget): persist so the kickoff survives a reboot; the PG
+  // upsert applies the SAME "keep the first requestId" rule via COALESCE.
+  disqStore.persist(key, { url: entry.url, body: entry.body, requestId: entry.requestId, expiresAt }).catch(() => {});
+  if (now - _lastDurablePruneAt > 5 * 60 * 1000) { _lastDurablePruneAt = now; disqStore.prune().catch(() => {}); }
   return key;
 }
 
@@ -567,7 +580,19 @@ async function pollDisqualified(scenario) {
 // route can tell the caller to re-run the price. Never holds a long loop: one post, then answer.
 async function pollDisqualifiedByKey(searchKey) {
   pruneDisqStore();
-  const entry = DISQ_STORE.get(searchKey);
+  let entry = DISQ_STORE.get(searchKey);
+  if (!entry) {
+    // DURABLE REHYDRATE (audit): after a reboot / deploy / instance-move the L1 Map is empty, but the
+    // kickoff (and any materialized result) persist in Postgres. Load and repopulate L1 so the poll
+    // hits the SAME upstream computation the original price() kicked off — instead of "unknown key".
+    const loaded = await disqStore.load(searchKey);
+    if (loaded) {
+      entry = { body: loaded.body, url: loaded.url, requestId: loaded.requestId,
+        result: loaded.result || null, rawSummary: loaded.rawSummary || null,
+        createdAt: Date.now(), expiresAt: loaded.expiresAt, rehydrated: true };
+      DISQ_STORE.set(searchKey, entry);
+    }
+  }
   if (!entry) return { ok: true, unknown: true, ready: false };
   // Without the upstream requestId the poll can never correlate to the kickoff's computation — it
   // would 202 forever. Surface a named, controlled error instead (the caller re-runs /price).
@@ -588,6 +613,9 @@ async function pollDisqualifiedByKey(searchKey) {
   entry.result = parsed;                         // materialize — subsequent polls skip upstream
   entry.rawSummary = summarizeRaw(r.raw);        // small structural summary kept for debug on cached hits
   entry.readyAt = Date.now();
+  // Durable L2 (best-effort): persist the materialized result so ANOTHER instance (or this one after
+  // a restart) serves it from cache instead of re-downloading the large tree.
+  disqStore.saveResult(searchKey, parsed, entry.rawSummary).catch(() => {});
   return { ok: true, ready: true, searchKey, parsed, rawSummary: entry.rawSummary, raw: r.raw };
 }
 // Test/introspection helper — is a searchKey currently stored (kicked off, not expired)?
@@ -1105,5 +1133,5 @@ module.exports = {
   configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, pollDisqualified, pollDisqualifiedByKey,
   hasStoredSearch, searchKeyFor, parse, parseFull, parseDisqualified, summarizeRaw, pricingReadiness,
   hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
-  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, foundationLiveGate, requireLiveFoundation, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery },
+  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, pollDisqualifiedByKey, hasStoredSearch, searchKeyFor, disqStore, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, foundationLiveGate, requireLiveFoundation, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery },
 };

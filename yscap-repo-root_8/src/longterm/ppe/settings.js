@@ -93,9 +93,23 @@ const DEFINITIONS = {
 
   // ---- Per-investor cutover (§11) ------------------------------------------
   'cutover.clean_weeks_required': {
-    type: 'number', integer: true, min: 1, max: 52, default: 4,
+    type: 'number', integer: true, min: 1, max: 52, default: 8,
     group: 'Cutover', label: 'Clean weeks required to go live',
-    help: 'Consecutive weeks of zero disagreements (with the canary matrix at 100%) before an investor may be promoted to live (leaving shadow mode).',
+    help: 'Consecutive weeks of zero disagreements (with the canary matrix at 100%) before an investor may be promoted to live (leaving shadow mode). Owner default: 8 (most cautious).',
+  },
+
+  // ---- Investor / program defaults (owner pre-fills; per-investor overridable) ----
+  'program.default_channel': {
+    type: 'enum', options: ['correspondent', 'wholesale', 'retail'],
+    default: 'correspondent',
+    group: 'Programs', label: 'Default channel for a new program',
+    help: 'The delivery channel a new program starts in. Correspondent = we fund/close in our own name then sell the loan. Set per-investor as needed.',
+  },
+  'ingestion.default_format': {
+    type: 'enum', options: ['excel', 'pdf', 'website', 'api'],
+    default: 'excel',
+    group: 'Ingestion', label: 'Default rate-sheet format',
+    help: 'How rate sheets are loaded by default. Excel is the most common today; PDF, investor-website, and API feeds are supported per-investor as they come online.',
   },
 };
 

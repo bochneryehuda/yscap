@@ -376,9 +376,15 @@ async function offline() {
   ok(vErr({ ...G, loan: 600000 }) === 'loan_exceeds_value', '§27.10 loan > value (LTV > 100%) → 422');
   ok(vErr({ ...G, fico: 999 }) === 'out_of_range', '§27.10 FICO 999 → 422 out_of_range');
   ok(vErr({ ...G, dscr: -1 }) === 'out_of_range', '§27.10 DSCR -1 → 422 (sign no longer stripped to +1)');
-  ok(vErr({ ...G, termYears: 17 }) === 'unsupported_term', '§27.8 17-year term → 422 unsupported_term');
+  // Term/lock capability lists now match the LIVE frontend (audit §7): terms 5 + 8..30 + 40, locks
+  // 10/12/15/21/25/30/40/45/60/75/90/120/180. So 17-year is VALID (it is within 8..30); a 7-year term
+  // (a gap between 5 and 8) is the unsupported case.
+  ok(sm.validateScenario({ ...G, termYears: 17 }).ok === true, '§27.8 17-year term is now accepted (within the live 8..30 range)');
+  ok(vErr({ ...G, termYears: 7 }) === 'unsupported_term', '§27.8 7-year term → 422 unsupported_term (gap between 5 and 8)');
   ok(sm.validateScenario({ ...G, termYears: 15 }).ok === true, '§27.8 15-year term is accepted');
-  ok(vErr({ ...G, lockDays: 22 }) === 'unsupported_lock', '§27.8 22-day lock → 422 unsupported_lock');
+  ok(vErr({ ...G, lockDays: 22 }) === 'unsupported_lock', '§27.8 22-day lock → 422 unsupported_lock (not in the live list)');
+  ok(sm.validateScenario({ ...G, lockDays: 120 }).ok === true, '§27.8 120-day lock is now accepted (live list)');
+  ok(vErr({ ...G, lockDays: 14 }) === 'unsupported_lock', '§27.8 14-day lock → 422 (the stale base offered it; the live frontend never does)');
   ok(sm.validateScenario({ ...G, lockDays: 45 }).ok === true, '§27.8 45-day lock is accepted');
   ok(vErr({ ...G, units: 4 }) === 'units_conflict', '§27.10 single-family + 4 units → 422 units_conflict');
   ok(sm.validateScenario({ ...G, propertyType: 'Unit2_4', units: 3 }).ok === true, '§27.10 2–4 unit + 3 units is accepted');
@@ -414,17 +420,107 @@ async function offline() {
   ok(gated && gated.error === 'lp_foundation_not_live' && gated.http === 502, '§28.2 gate refuses a fallback foundation with a named 502');
   delete process.env.LP_REQUIRE_LIVE_FOUNDATION;
 
-  // 30) Cash-out amount ("cash in hand"): accepted + validated, but NOT transmitted until the vendor
-  // field is configured (the LP UI field has no valid dynamic-property code today).
+  // 30) Cash-out amount ("cash in hand"). THE VENDOR FIXED THE FIELD (audit): the frontend now sends a
+  // numeric criteria.cashoutAmount, so we transmit it there. It is still accepted + validated.
   delete process.env.LP_CASHOUT_AMOUNT_FIELD;
   ok(sm.validateScenario({ purpose: 'Cash out', value: 5e5, loan: 3e5, cashoutAmount: 50000, state: 'NJ', countyFps: '34039' }).ok === true, 'cash-out amount is an accepted, validated field');
   ok(sm.validateScenario({ purpose: 'Cash out', value: 5e5, loan: 3e5, cashoutAmount: -5, state: 'NJ', countyFps: '34039' }).error === 'out_of_range', 'a negative cash-out amount is rejected');
-  const noTx = lp.buildSearch({ purpose: 'CashOut', value: 5e5, loan: 3e5, cashoutAmount: 47321 });
-  ok(!Object.keys(noTx.dynamicPropertiesMap).some((k) => k === 'undefined') && !JSON.stringify(noTx).includes('47321'), 'cash-out amount is NOT transmitted when the vendor field is unset (no invented key, no dynamicPropertiesMap.undefined)');
+  const coTx = lp.buildSearch({ purpose: 'CashOut', value: 5e5, loan: 3e5, cashoutAmount: 47321 });
+  ok(coTx.criteria.cashoutAmount === 47321, 'cash-out amount transmits as the numeric criteria.cashoutAmount (vendor fixed the field)');
+  ok(!Object.keys(coTx.dynamicPropertiesMap).some((k) => k === 'undefined'), 'no invented dynamicPropertiesMap.undefined key is ever emitted');
+  const noCo = lp.buildSearch({ purpose: 'CashOut', value: 5e5, loan: 3e5 });
+  ok(noCo.criteria.cashoutAmount === undefined, 'no cash-out amount supplied → criteria.cashoutAmount is not set');
+  // The legacy dynamic-property override still works if the vendor ever moves the field back.
   process.env.LP_CASHOUT_AMOUNT_FIELD = 'CashInHand';
   const tx = lp.buildSearch({ purpose: 'CashOut', value: 5e5, loan: 3e5, cashoutAmount: 47321 });
-  ok(tx.dynamicPropertiesMap.CashInHand && tx.dynamicPropertiesMap.CashInHand.value === 47321, 'once the vendor field is configured, the cash-out amount transmits under that exact key');
+  ok(tx.criteria.cashoutAmount === 47321 && tx.dynamicPropertiesMap.CashInHand && tx.dynamicPropertiesMap.CashInHand.value === 47321, 'the legacy override ALSO transmits under the configured dynamic key');
   delete process.env.LP_CASHOUT_AMOUNT_FIELD;
+
+  // 31) AUDIT §3 — appraised value is NOT manufactured from the estimated value.
+  const buyAppr = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 375000 });
+  ok(buyAppr.criteria.appraisedValue === 5e5, '§3 purchase: appraised = value (frontend mirrors it)');
+  const coBlank = lp.buildSearch({ purpose: 'CashOut', value: 6e5, loan: 42e4 });
+  ok(coBlank.criteria.appraisedValue === null, '§3 cash-out with no appraisal: appraised is BLANK, not the $600k estimated value');
+  const refiBlank = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5 });
+  ok(refiBlank.criteria.appraisedValue === null, '§3 refinance with no appraisal: appraised is blank');
+  const coAsIs = lp.buildSearch({ purpose: 'CashOut', value: 6e5, loan: 42e4, asIsValue: 58e4 });
+  ok(coAsIs.criteria.appraisedValue === 58e4, '§3 an explicit as-is value fills appraised on a cash-out');
+
+  // 32) AUDIT §1 — the intentional DSCR defaults are FORCED (30yr fixed / 30-day lock / 24mo reserves),
+  //     even when a live default model carried something else.
+  const def = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 375000 });
+  ok(def.criteria.loanYear === 30 && def.termsCriteria[0] === 30 && def.termsInMonths === false, '§1 omitted term → forced 30-year');
+  ok(def.brokerCriteria.dayLocks === 30 && def.dayLocksCriteria[0] === 30, '§1 omitted lock → forced 30-day');
+  ok(def.dynamicPropertiesMap.GLOBAL_RESERVES.value === 'Reserves_24', '§1 reserves forced to 24 months');
+  ok(def.criteria.propertyUse === 'Investment' && def.criteria.compensationType === 'BorrowerCompPlan', '§1 investment + borrower-paid comp forced');
+  ok(def.dynamicPropertiesMap.IncomeDocType.value === 'DSCR' && def.dynamicPropertiesMap.AddlOccupancyType.value === 'Long_Term_Rental_Property', '§1 DSCR income doc + long-term rental forced');
+  // a tampered LIVE base carrying a different term/lock/reserves must be overridden by the profile
+  const B0 = require('../src/longterm/lenderprice/search-base.json');
+  const tamperedBase = JSON.parse(JSON.stringify(B0));
+  tamperedBase.criteria.loanYear = 40; tamperedBase.brokerCriteria.dayLocks = 45;
+  tamperedBase.dynamicPropertiesMap.GLOBAL_RESERVES = { fieldId: 'GLOBAL_RESERVES', value: 'Reserves_0' };
+  const over = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 375000 }, { base: tamperedBase });
+  ok(over.criteria.loanYear === 30 && over.brokerCriteria.dayLocks === 30 && over.dynamicPropertiesMap.GLOBAL_RESERVES.value === 'Reserves_24',
+    '§1 a live default carrying 40yr/45day/blank-reserves is OVERRIDDEN by the DSCR profile');
+
+  // 33) AUDIT §6 — attachment / non-warrantable are INDEPENDENT of property type.
+  const condoDet = lp.buildSearch({ purpose: 'Purchase', value: 6e5, loan: 42e4, propertyType: 'Condo', attachment: 'Detached', nonWarrantable: true });
+  ok(condoDet.property.propertyType === 'Condos' && condoDet.property.attachmentType === 'Detached', '§6 Condo + Detached is reproducible (independent attachment)');
+  ok(condoDet.criteria.nonWarrantableProject === true, '§6 non-warrantable flag is independent');
+  ok(vErr({ ...G, attachment: 'Sideways' }) === 'invalid_attachment', '§6 an invalid attachment → 422 invalid_attachment');
+
+  // 34) AUDIT — isolated LTV range is checked whether or not value+loan were supplied.
+  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 105, state: 'NJ', countyFps: '34039' }).error === 'ltv_out_of_range', 'a bare LTV of 105% → 422 ltv_out_of_range');
+  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 95, state: 'NJ', countyFps: '34039' }).ok === true, 'a bare LTV of 95% is accepted');
+  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 0.7, state: 'NJ', countyFps: '34039' }).ok === true, 'a fractional LTV of 0.70 is accepted');
+
+  // 35) GOLDEN FIXTURE A — the audit's canonical DSCR purchase (permanent request-structure fixture).
+  const goldA = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 375000, fico: 760, dscr: 1.25,
+    propertyType: 'SingleFamily', prepayMonths: 60, borrowerType: 'LLC', zip: '07036', state: 'NJ', countyFps: '34039' });
+  ok(goldA.criteria.loanPurpose === 'Purchase' && goldA.criteria.purchasePrice === 5e5 && goldA.criteria.appraisedValue === 5e5, 'GOLDEN A: purchase 500k, appraised 500k');
+  ok(goldA.criteria.loanAmount === 375000 && Math.abs(goldA.criteria.ltv - 0.75) < 1e-9, 'GOLDEN A: loan 375k, LTV 0.75');
+  ok(goldA.criteria.fico === 760 && goldA.criteria.dscr === 1.25, 'GOLDEN A: FICO 760 / DSCR 1.25');
+  ok(goldA.criteria.loanYear === 30 && goldA.brokerCriteria.dayLocks === 30, 'GOLDEN A: 30yr / 30-day lock');
+  ok(goldA.property.propertyType === 'SingleFamily' && goldA.property.attachmentType === 'Detached' && goldA.property.numberOfUnit === 1, 'GOLDEN A: SFR / detached / 1 unit');
+  ok(goldA.dynamicPropertiesMap.GLOBAL_BorrowerType.value === 'LLC' && goldA.dynamicPropertiesMap.GLOBAL_RESERVES.value === 'Reserves_24', 'GOLDEN A: LLC borrower / 24mo reserves');
+  ok(goldA.dynamicPropertiesMap.PrepayTerm.value === '60 Months', 'GOLDEN A: 5-year (60-month) prepay');
+
+  // 36) GOLDEN FIXTURE B — the audit's cash-out combination (non-warrantable condo, detached, IO, 15yr).
+  const goldB = lp.buildSearch({ purpose: 'Cash out', value: 6e5, loan: 42e4, fico: 720, dscr: 1.10, io: true,
+    propertyType: 'CondoNonWarr', attachment: 'Detached', prepayMonths: 60, borrowerType: 'LLC', termYears: 15, lockDays: 15,
+    cashoutAmount: 50000, zip: '33101', state: 'FL', countyFps: '12086' });
+  ok(goldB.criteria.loanPurpose === 'CashoutRefinance', 'GOLDEN B: cash-out → CashoutRefinance');
+  ok(goldB.criteria.purchasePrice === 6e5 && goldB.criteria.appraisedValue === null, 'GOLDEN B: estimated 600k, appraised BLANK (not manufactured)');
+  ok(goldB.criteria.loanAmount === 42e4 && Math.abs(goldB.criteria.ltv - 0.70) < 1e-9, 'GOLDEN B: loan 420k, LTV 0.70');
+  ok(goldB.criteria.interestOnly === true, 'GOLDEN B: interest-only');
+  ok(goldB.property.propertyType === 'Condos' && goldB.property.attachmentType === 'Detached' && goldB.criteria.nonWarrantableProject === true, 'GOLDEN B: non-warrantable condo, detached');
+  ok(goldB.criteria.loanYear === 15 && goldB.brokerCriteria.dayLocks === 15, 'GOLDEN B: 15yr / 15-day lock');
+  ok(goldB.criteria.cashoutAmount === 50000, 'GOLDEN B: cashoutAmount 50000 transmits as criteria.cashoutAmount');
+
+  // 37) AUDIT — advanced numerics are STRICTLY validated (no more silent coercion of "12abc" → 123).
+  ok(vErr({ ...G, monthlyIncome: '12abc' }) === 'invalid_field_value', 'a malformed monthlyIncome → 422 invalid_field_value');
+  ok(vErr({ ...G, numberOfBorrowers: 0 }) === 'invalid_field_value', 'numberOfBorrowers 0 is out of range (min 1) → 422');
+  ok(vErr({ ...G, financedProperties: 1.5 }) === 'invalid_field_value', 'a fractional financedProperties → 422 (integer required)');
+  ok(vErr({ ...G, dti: 150 }) === 'invalid_field_value', 'a DTI of 150 is out of range (max 100) → 422');
+  ok(vErr({ ...G, monthlyDebt: -5 }) === 'invalid_field_value', 'a negative monthlyDebt → 422');
+  ok(sm.validateScenario({ ...G, monthlyIncome: 8000, monthlyDebt: 2000, numberOfBorrowers: 2, dti: 43 }).ok === true, 'valid advanced numerics are accepted');
+  const advReq = lp.buildSearch({ ...G, monthlyIncome: 8000, numberOfBorrowers: 2, dti: 43 });
+  ok(advReq.criteria.monthlyIncome === 8000 && advReq.criteria.numberOfBorrower === 2 && Math.abs(advReq.criteria.clientDti - 0.43) < 1e-9, 'valid advanced numerics are actually applied to the request');
+
+  // 38) AUDIT — a wrong-shape nested field is REJECTED, not silently ignored.
+  ok(vErr({ ...G, bankruptcy: 'chapter7' }) === 'invalid_field_value', 'bankruptcy sent as a STRING → 422 (dangerous to price without it)');
+  ok(vErr({ ...G, mortgageLates: 'none' }) === 'invalid_field_value', 'mortgageLates sent as a STRING → 422');
+  ok(sm.validateScenario({ ...G, bankruptcy: { chapter: 'Chapter 7', seasoning: '4-7 Years' } }).ok === true, 'a correctly-shaped bankruptcy object is accepted');
+
+  // 39) AUDIT — explicit-false four-state: omitted inherits, true turns on, false turns OFF.
+  const muOff = lp.buildSearch({ ...G, mixedUse: false });
+  ok(muOff.dynamicPropertiesMap.GLOBAL_MixedUse && muOff.dynamicPropertiesMap.GLOBAL_MixedUse.value === false, 'explicit mixedUse:false is transmitted as OFF (no longer swallowed)');
+  const muOn = lp.buildSearch({ ...G, mixedUse: true });
+  ok(muOn.dynamicPropertiesMap.GLOBAL_MixedUse.value === true, 'explicit mixedUse:true is transmitted as ON');
+  const muOmit = lp.buildSearch({ ...G });
+  ok(muOmit.dynamicPropertiesMap.GLOBAL_MixedUse === undefined, 'omitted mixedUse inherits (nothing written)');
+  const nmhOff = lp.buildSearch({ ...G, noMortgageHistory: false });
+  ok(nmhOff.dynamicPropertiesMap.GLOBAL_NoMortgageHistory && nmhOff.dynamicPropertiesMap.GLOBAL_NoMortgageHistory.value === false, 'explicit noMortgageHistory:false is transmitted as OFF');
 
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }

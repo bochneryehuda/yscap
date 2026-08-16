@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**752 objects**, and a database rebuilt from the Prisma
+**759 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 554 numbered migrations in `db/` (highest `db/557`) remain the only thing that builds this database.
+rebuild a database from them.** The 558 numbered migrations in `db/` (highest `db/561`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 323 |
-| Columns | 5297 |
+| Tables | 333 |
+| Columns | 5422 |
 | Triggers | 33 |
 | Functions | 136 |
-| CHECK constraints | 250 |
+| CHECK constraints | 257 |
 | Generated columns | 12 |
 | Partial indexes | 321 |
-| Primary keys | 323 |
-| Foreign keys | 684 |
-| Unique constraints | 37 |
-| Indexes (all kinds) | 1123 |
+| Primary keys | 333 |
+| Foreign keys | 691 |
+| Unique constraints | 44 |
+| Indexes (all kinds) | 1149 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -547,7 +547,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (250)
+## CHECK constraints (257)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -728,6 +728,13 @@ the live database.
 - **loan_exceptions_status_check** on `loan_exceptions`
 - **loan_facts_status_check** on `loan_facts`
 - **lt_milestone_events_type_check** on `lt_milestone_events`
+- **lt_ppe_adjustment_target_chk** on `lt_ppe_adjustment`
+- **lt_ppe_adjustment_unit_chk** on `lt_ppe_adjustment`
+- **lt_ppe_finding_status_chk** on `lt_ppe_finding`
+- **lt_ppe_program_channel_chk** on `lt_ppe_program`
+- **lt_ppe_program_status_chk** on `lt_ppe_program`
+- **lt_ppe_rsv_channel_chk** on `lt_ppe_rate_sheet_version`
+- **lt_ppe_rsv_status_chk** on `lt_ppe_rate_sheet_version`
 - **manual_program_escalations_status_check** on `manual_program_escalations`
 - **market_areas_box_ck** on `market_areas`
 - **market_areas_kind_ck** on `market_areas`
@@ -800,7 +807,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (684)
+## Foreign keys (691)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -1252,6 +1259,13 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **lt_parties** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
 - **lt_parties** → `lt_borrower_pairs` — `FOREIGN KEY (pair_id) REFERENCES lt_borrower_pairs(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_pipeline_views** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_ppe_adjustment** → `lt_ppe_rate_sheet_version` — `FOREIGN KEY (version_id) REFERENCES lt_ppe_rate_sheet_version(id) ON DELETE CASCADE`
+- **lt_ppe_base_price** → `lt_ppe_rate_sheet_version` — `FOREIGN KEY (version_id) REFERENCES lt_ppe_rate_sheet_version(id) ON DELETE CASCADE`
+- **lt_ppe_finding** → `lt_ppe_program` — `FOREIGN KEY (program_id) REFERENCES lt_ppe_program(id) ON DELETE SET NULL`
+- **lt_ppe_investor_alias** → `lt_ppe_investor` — `FOREIGN KEY (investor_id) REFERENCES lt_ppe_investor(id) ON DELETE CASCADE`
+- **lt_ppe_price_limit** → `lt_ppe_rate_sheet_version` — `FOREIGN KEY (version_id) REFERENCES lt_ppe_rate_sheet_version(id) ON DELETE CASCADE`
+- **lt_ppe_program** → `lt_ppe_investor` — `FOREIGN KEY (investor_id) REFERENCES lt_ppe_investor(id) ON DELETE CASCADE`
+- **lt_ppe_rate_sheet_version** → `lt_ppe_program` — `FOREIGN KEY (program_id) REFERENCES lt_ppe_program(id) ON DELETE CASCADE`
 - **lt_properties** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_reo_properties** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_residences** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
@@ -1489,7 +1503,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **workflow_items** → `staff_users` — `FOREIGN KEY (from_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **workflow_items** → `staff_users` — `FOREIGN KEY (to_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
 
-## Unique constraints (37)
+## Unique constraints (44)
 
 - **application_service_contacts** — `UNIQUE (application_id, service_contact_id)`
 - **appraisers** — `UNIQUE (identity_key)`
@@ -1510,6 +1524,13 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **file_orders** — `UNIQUE (application_id, order_type)`
 - **inbound_file_emails** — `UNIQUE (resend_email_id)`
 - **investors** — `UNIQUE (label_norm)`
+- **lt_ppe_base_price** — `UNIQUE (version_id, note_rate_milli_pct, lock_days, product)`
+- **lt_ppe_finding** — `UNIQUE (scope, finding_key)`
+- **lt_ppe_investor_alias** — `UNIQUE (scope, alias_norm)`
+- **lt_ppe_investor** — `UNIQUE (scope, code)`
+- **lt_ppe_price_limit** — `UNIQUE (scope, version_id)`
+- **lt_ppe_program** — `UNIQUE (scope, investor_id, code)`
+- **lt_ppe_rate_sheet_version** — `UNIQUE (scope, program_id, version_no, reprice_seq)`
 - **message_reactions** — `UNIQUE (message_id, actor_kind, actor_id, emoji)`
 - **partners** — `UNIQUE (owner_borrower_id, email)`
 - **post_closing_items** — `UNIQUE (application_id, code)`
@@ -1550,7 +1571,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 323 primary keys and 1123 indexes is
+Every one of the 333 primary keys and 1149 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

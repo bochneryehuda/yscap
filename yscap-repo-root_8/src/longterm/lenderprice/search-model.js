@@ -154,24 +154,42 @@ function buildSearch(sc = {}, opts = {}) {
     : (num(sc.ltv) != null ? (num(sc.ltv) > 1 ? num(sc.ltv) / 100 : num(sc.ltv)) : (m.criteria ? m.criteria.ltv : null));
   const purpose = mapPurpose(sc.purpose);
   const pm = mapProp(sc.propertyType);
+  // Attachment type is INDEPENDENT of property type (audit §6): the live frontend can send e.g.
+  // Condo + Detached. An explicit `attachment` overrides the type's default attachment; an explicit
+  // `nonWarrantable` overrides the type's warrantability. Unit count stays independent (set below).
+  if (sc.attachment != null && sc.attachment !== '') pm.attachmentType = sc.attachment;
+  if (sc.nonWarrantable !== undefined) pm.nonWarrantableProject = !!sc.nonWarrantable;
   const months = num(sc.prepayMonths);
 
   const c = m.criteria || (m.criteria = {});
-  if (value != null) { c.purchasePrice = value; c.appraisedValue = value; }
-  // Appraised (as-is) value is SEPARATE from the purchase price — do not always mirror it.
-  if (num(sc.appraisedValue != null ? sc.appraisedValue : sc.asIsValue) != null) c.appraisedValue = num(sc.appraisedValue != null ? sc.appraisedValue : sc.asIsValue);
+  if (value != null) c.purchasePrice = value;
+  // Appraised (as-is) value is SEPARATE from the estimated/purchase price (audit §3). We do NOT
+  // manufacture it from the estimated value. On a PURCHASE the appraisal comes in at contract price
+  // and the frontend mirrors it, so appraised = value. On a REFINANCE / CASH-OUT the frontend leaves
+  // it BLANK unless the user supplies an appraisal (asIsValue / appraisedValue); manufacturing the
+  // estimated value into it was the "$600k appraised the user never entered" bug. An explicit value
+  // always wins.
+  const apprSupplied = num(sc.appraisedValue != null ? sc.appraisedValue : sc.asIsValue);
+  if (apprSupplied != null) c.appraisedValue = apprSupplied;
+  else if (purpose === 'Purchase' && value != null) c.appraisedValue = value;
+  else c.appraisedValue = null; // refi/cash-out with no appraisal → blank, matching the frontend
   if (loan != null) c.loanAmount = loan;
   if (ltv != null) c.ltv = ltv;
   if (num(sc.fico) != null) c.fico = num(sc.fico);
   if (num(sc.dscr) != null) c.dscr = num(sc.dscr);
-  // Loan TERM (years) — honor it instead of silently sending the base's 30. loanYear +
-  // termsCriteria must agree; termsInMonths=false means the number is years, NOT a day-lock.
+  // Loan TERM (years). The intentional DSCR profile default is 30-year FIXED (audit §1): when the
+  // scenario omits the term we FORCE 30 rather than inherit whatever a live default model carried
+  // (the "some DSCR defaults are not enforced" finding). loanYear + termsCriteria must agree;
+  // termsInMonths=false means the number is years, NOT a day-lock.
   const termYears = num(sc.termYears != null ? sc.termYears : sc.term);
-  if (termYears != null) { c.loanYear = termYears; m.termsCriteria = [termYears]; m.termsInMonths = false; }
-  // Rate-LOCK days — honor it instead of the base's 30. Lives in brokerCriteria.dayLocks +
-  // dayLocksCriteria; this is a LOCK period (days), NOT the loan term (years).
+  const effTermYears = termYears != null ? termYears : 30;
+  c.loanYear = effTermYears; m.termsCriteria = [effTermYears]; m.termsInMonths = false;
+  // Rate-LOCK days. The intentional DSCR profile default is a 30-day lock; forced when omitted so a
+  // live default carrying a different lock can never change the profile. This is a LOCK period
+  // (days), NOT the loan term (years).
   const lockDays = num(sc.lockDays);
-  if (lockDays != null) { const bc = m.brokerCriteria || (m.brokerCriteria = {}); bc.dayLocks = lockDays; m.dayLocksCriteria = [lockDays]; }
+  const effLockDays = lockDays != null ? lockDays : 30;
+  { const bc = m.brokerCriteria || (m.brokerCriteria = {}); bc.dayLocks = effLockDays; m.dayLocksCriteria = [effLockDays]; }
   c.loanPurpose = purpose;
   // DSCR product profile — INTENTIONAL (investment occupancy, DSCR income doc, borrower-comp) and
   // asserted explicitly so a live base carrying a different saved default never changes the product.
@@ -223,20 +241,30 @@ function buildSearch(sc = {}, opts = {}) {
   setDyn('IncomeDocType', 'DSCR');
   setDyn('AddlOccupancyType', 'Long_Term_Rental_Property');
   setDyn('GLOBAL_BorrowerType', sc.borrowerType || 'LLC');
-  // months===0 is an EXPLICIT "no prepay" (PrepayTerm "None"), NOT "unset" — sending 0/"0 Months"
-  // is what triggered the live HTTP 400. A missing prepayMonths leaves it null.
-  setDyn('PrepayTerm', months === 0 ? 'None' : (months ? `${months} Months` : null));
-  setDyn('PrePayment_Plan_Type', months ? 'Standard' : null);
-  // Cash-out amount ("cash in hand"). CONFIRMED from the live site: the Lender Price UI field has NO
-  // valid dynamic-property code today — the frontend emits `dynamicPropertiesMap.undefined` and DROPS
-  // the value, so NEITHER the frontend NOR we transmit it (not transmitting is the parity-correct
-  // behavior right now, not a gap). We never invent a key. We only transmit once the vendor assigns
-  // the real code, wired via LP_CASHOUT_AMOUNT_FIELD — no code change needed then. The amount is still
-  // accepted + validated (and can drive an eligibility rule in our own engine: too-large cash in hand
-  // makes certain programs ineligible).
+  // Reserves — the intentional DSCR profile default is 24 MONTHS (audit §1). Forced (the
+  // GLOBAL_RESERVES token is confirmed from the captured base) so a live default carrying blank or
+  // different reserves cannot silently override the profile. Env-overridable per company.
+  setDyn('GLOBAL_RESERVES', process.env.LP_RESERVES_TOKEN || 'Reserves_24');
+  // Prepay term / structure. An OMITTED prepay INHERITS the live default (audit §2 — the backend used
+  // to CLEAR PrepayTerm/PrePayment_Plan_Type to null on omission, changing the model the user left
+  // alone). months===0 is an EXPLICIT "no prepay" (PrepayTerm "None"); a positive months sets the
+  // term. Only write these when the caller actually supplied a prepay.
+  if (months != null) {
+    setDyn('PrepayTerm', months === 0 ? 'None' : `${months} Months`);
+    setDyn('PrePayment_Plan_Type', months === 0 ? null : 'Standard');
+  }
+  // Cash-out amount ("cash in hand"). THE VENDOR FIXED THE FIELD: as of the post-repair capture
+  // (2026-08-16) the live frontend now sends a NUMERIC `criteria.cashoutAmount` (its request was
+  // `{criteria:{loanPurpose:'CashoutRefinance', cashoutAmount:50000}}`, HTTP 200). So we transmit it
+  // as a real criteria field — the previous "store but do not transmit / wait for a dynamic-property
+  // code" behavior is now OUTDATED and retired. LP_CASHOUT_AMOUNT_FIELD remains only as an optional
+  // override in case the vendor ever moves it back to a dynamic property.
   const cashoutAmt = num(sc.cashoutAmount);
-  const cashoutField = process.env.LP_CASHOUT_AMOUNT_FIELD;
-  if (cashoutAmt != null && cashoutField) setDyn(cashoutField, cashoutAmt);
+  if (cashoutAmt != null) {
+    c.cashoutAmount = cashoutAmt;
+    const cashoutField = process.env.LP_CASHOUT_AMOUNT_FIELD;
+    if (cashoutField) setDyn(cashoutField, cashoutAmt); // optional legacy dynamic-property override
+  }
   m.dynaToSmo = true;
 
   // ALL OPTIONS — the default the web app always searches with (confirmed byte-for-byte from the
@@ -328,17 +356,24 @@ function validateLocation(sc = {}) {
 // a conflicting LTV was silently replaced, and an unsupported term/lock was accepted. We reject
 // them (422) BEFORE any upstream call rather than mis-price.
 // Boolean scenario fields that must be a real JSON boolean (never a truthy string).
-const BOOLEAN_FIELDS = ['io', 'escrowWaive', 'fthb', 'selfEmployed', 'rural', 'mixedUse', 'waiveLenderFee', 'noMortgageHistory'];
-// Allowed rate-lock days come from the company's own capability list (dayLocksList) — the SAME set
-// the live default search exposes ([14,15,21,30,45,60,90]); env-overridable per company.
+const BOOLEAN_FIELDS = ['io', 'escrowWaive', 'fthb', 'selfEmployed', 'rural', 'mixedUse', 'waiveLenderFee', 'noMortgageHistory', 'nonWarrantable'];
+// Attachment types the frontend exposes independently of property type (audit §6).
+const ATTACHMENT_TYPES = ['Detached', 'Attached'];
+// Allowed rate-lock days — the LIVE frontend capability list (audit §7), env-overridable per company.
+// The captured base's dayLocksList ([14,15,21,30,45,60,90]) was STALE: it rejected legitimate visible
+// locks (10/12/25/40/75/120/180) and accepted a 14-day lock the frontend never offers. This is the
+// current live set; ideally derived from live company config (a follow-up), captured verbatim for now.
+const LIVE_LOCKS = [10, 12, 15, 21, 25, 30, 40, 45, 60, 75, 90, 120, 180];
 const ALLOWED_LOCKS = (process.env.LP_ALLOWED_LOCKS
   ? process.env.LP_ALLOWED_LOCKS.split(',').map((x) => Number(x.trim())).filter((n) => isFinite(n))
-  : ((BASE.brokerCriteria && Array.isArray(BASE.brokerCriteria.dayLocksList) && BASE.brokerCriteria.dayLocksList) || [14, 15, 21, 30, 45, 60, 90]));
-// Allowed loan terms (years). The static base carries no capability list, so this is a conservative
-// standard-DSCR set, env-overridable (LP_ALLOWED_TERMS). 17-year is rejected, not priced to 0 programs.
+  : LIVE_LOCKS);
+// Allowed loan terms (years) — the LIVE frontend list (audit §7): 5, then 8 through 30, then 40.
+// env-overridable (LP_ALLOWED_TERMS). The old [5,10,15,20,25,30,40] rejected valid 8/9/11..29-year
+// visible choices.
+const LIVE_TERMS = [5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 40];
 const ALLOWED_TERMS = (process.env.LP_ALLOWED_TERMS
   ? process.env.LP_ALLOWED_TERMS.split(',').map((x) => Number(x.trim())).filter((n) => isFinite(n))
-  : [5, 10, 15, 20, 25, 30, 40]);
+  : LIVE_TERMS);
 
 function validateInputs(sc = {}) {
   const bad = (code, field, message) => ({ ok: false, code, field, message });
@@ -377,8 +412,22 @@ function validateInputs(sc = {}) {
   if (lock.v != null && !ALLOWED_LOCKS.includes(lock.v)) {
     return bad('unsupported_lock', 'lockDays', `Rate-lock ${lock.v} days is not offered. Supported: ${ALLOWED_LOCKS.join(', ')}.`);
   }
+  // Attachment must be one of the frontend's independent options when supplied (audit §6).
+  if (sc.attachment != null && sc.attachment !== '' && !ATTACHMENT_TYPES.includes(sc.attachment)) {
+    return bad('invalid_attachment', 'attachment', `Attachment must be one of: ${ATTACHMENT_TYPES.join(', ')}; got ${JSON.stringify(sc.attachment)}.`);
+  }
   // LTV: loan must not exceed value (LTV > 100%), and a SUPPLIED ltv must not contradict loan/value.
   const ltvRaw = numField('ltv', { min: 0 }); if (ltvRaw.err) return ltvRaw.err;
+  // A SUPPLIED ltv is range-checked on its OWN (audit — isolated LTV), whether or not value+loan were
+  // both given: an ltv normalizing above 100% is invalid by itself and used to slip through when
+  // value/loan were absent. Accept 75 or 0.75; ceiling env-overridable (LP_MAX_LTV, default 100%).
+  if (ltvRaw.v != null) {
+    const normLtv = ltvRaw.v > 1 ? ltvRaw.v / 100 : ltvRaw.v;
+    const maxLtv = Number(process.env.LP_MAX_LTV || 1);
+    if (normLtv > maxLtv) {
+      return bad('ltv_out_of_range', 'ltv', `LTV ${(normLtv * 100).toFixed(2)}% exceeds the maximum ${(maxLtv * 100).toFixed(0)}%.`);
+    }
+  }
   if (value.v != null && loan.v != null) {
     if (loan.v > value.v) return bad('loan_exceeds_value', 'loan', `Loan amount (${loan.v}) exceeds property value (${value.v}) — LTV over 100%.`);
     if (ltvRaw.v != null) {
@@ -428,4 +477,4 @@ function validateScenario(sc = {}) {
 }
 
 module.exports = { BASE, buildSearch, smoRegistryFromList, REGISTRY_WARNINGS, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, BOOLEAN_FIELDS } };
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS } };

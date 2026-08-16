@@ -1138,3 +1138,238 @@ enum LtLinkStatus {
 
   @@map("lt_link_status")
 }
+
+// ============================================================================
+// PPE — Product & Pricing Engine (docs/longterm/PPE-MEGA-PLAN.md). db/554.
+// Multi-tenancy via `scope` (default "company"), matching lt_settings. The
+// heavier price-bearing tables (rate-sheet versions, base-price grids, LLPA
+// rows, rules) land on top of these anchors in a later migration.
+// ============================================================================
+
+/// PPE — a note buyer / capital provider. The stable anchor of the pricing
+/// engine. `name` is INTERNAL-ONLY (an investor name may never reach a
+/// borrower/TPO surface — the standing hard rule).
+model LtPpeInvestor {
+  id        String   @id @default(uuid()) @db.Uuid
+  scope     String   @default("company")
+  code      String
+  name      String
+  active    Boolean  @default(true)
+  createdBy String?  @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  aliases  LtPpeInvestorAlias[]
+  programs LtPpeProgram[]
+
+  @@unique([scope, code], map: "lt_ppe_investor_scope_code_uk")
+  @@map("lt_ppe_investor")
+}
+
+/// Every recorded spelling of an investor (an investor is "spelled 151 ways"),
+/// so a hand-typed or vendor-supplied name resolves to the one canonical record.
+model LtPpeInvestorAlias {
+  id         String   @id @default(uuid()) @db.Uuid
+  scope      String   @default("company")
+  investorId String   @map("investor_id") @db.Uuid
+  aliasNorm  String   @map("alias_norm")
+  alias      String
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  investor LtPpeInvestor @relation(fields: [investorId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([scope, aliasNorm], map: "lt_ppe_investor_alias_scope_norm_uk")
+  @@index([investorId])
+  @@map("lt_ppe_investor_alias")
+}
+
+/// A product family under an investor (several per investor). `status` is the
+/// per-investor lifecycle: draft | shadow | live | retired — the engine prices a
+/// program for the business only when it is shadow or live, and Lender Price
+/// stays authoritative until it is live.
+model LtPpeProgram {
+  id             String   @id @default(uuid()) @db.Uuid
+  scope          String   @default("company")
+  investorId     String?  @map("investor_id") @db.Uuid
+  code           String
+  name           String
+  channel        String   @default("correspondent")
+  status         String   @default("draft")
+  maxLoanAmount  Decimal? @map("max_loan_amount") @db.Decimal(14, 2)
+  maxLtv         Decimal? @map("max_ltv") @db.Decimal(6, 3)
+  minFico        Int?     @map("min_fico")
+  minDscr        Decimal? @map("min_dscr") @db.Decimal(6, 3)
+  cashOutAllowed Boolean? @map("cash_out_allowed")
+  propertyTypes  Json?    @map("property_types") @db.JsonB
+  meta           Json     @default("{}") @db.JsonB
+  createdBy      String?  @map("created_by") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  investor          LtPpeInvestor?          @relation(fields: [investorId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  rateSheetVersions LtPpeRateSheetVersion[]
+
+  @@unique([scope, investorId, code], map: "lt_ppe_program_scope_investor_code_uk")
+  @@index([investorId])
+  @@map("lt_ppe_program")
+}
+
+/// The OVERRIDE store for the coded PPE setting definitions (settings.js). Holds
+/// only what a tenant changed on top of the shipped defaults; a missing row, a
+/// missing key, or an unreadable table all resolve to the coded default.
+model LtPpeSettingValue {
+  scope     String   @default("company")
+  key       String
+  value     Json     @db.JsonB
+  updatedBy String?  @map("updated_by") @db.Uuid
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@id([scope, key])
+  @@map("lt_ppe_setting_value")
+}
+
+// Lender Price ineligible (disqualify) durable store (db/555). Best-effort L2 behind the client's
+// in-memory Map; survives a reboot / deploy / instance-move so a mid-poll client never loses the
+// kickoff or the cached result. LT-only.
+model LtLpDisqualifySearch {
+  searchKey  String    @id @map("search_key")
+  url        String
+  body       Json      @db.JsonB
+  requestId  String?   @map("request_id")
+  result     Json?     @db.JsonB
+  rawSummary Json?     @map("raw_summary") @db.JsonB
+  readyAt    DateTime? @map("ready_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+
+  @@index([expiresAt])
+  @@map("lt_lp_disqualify_search")
+}
+
+// PPE rate-sheet store (db/556) — the effective-dated, versioned price-bearing layer hanging off
+// LtPpeProgram: a rate-sheet version container, the base-price grid, the flat LLPA rows, and the
+// price limits. Integer milli-points; half-open [min,max) integer bands. LT-only.
+model LtPpeRateSheetVersion {
+  id            String    @id @default(uuid()) @db.Uuid
+  scope         String    @default("company")
+  programId     String    @map("program_id") @db.Uuid
+  versionNo     Int       @map("version_no")
+  repriceSeq    Int       @default(0) @map("reprice_seq")
+  status        String    @default("draft")
+  channel       String    @default("correspondent")
+  effectiveFrom DateTime? @map("effective_from") @db.Timestamptz(6)
+  effectiveTo   DateTime? @map("effective_to") @db.Timestamptz(6)
+  recordedAt    DateTime  @default(now()) @map("recorded_at") @db.Timestamptz(6)
+  contentHash   String?   @map("content_hash")
+  sourceFormat  String?   @map("source_format")
+  approvedBy    String?   @map("approved_by") @db.Uuid
+  approvedAt    DateTime? @map("approved_at") @db.Timestamptz(6)
+  meta          Json      @default("{}") @db.JsonB
+  createdBy     String?   @map("created_by") @db.Uuid
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  program     LtPpeProgram      @relation(fields: [programId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  basePrices  LtPpeBasePrice[]
+  adjustments LtPpeAdjustment[]
+  priceLimit  LtPpePriceLimit?
+
+  @@unique([scope, programId, versionNo, repriceSeq], map: "lt_ppe_rsv_scope_prog_ver_seq_uk")
+  @@index([programId])
+  @@map("lt_ppe_rate_sheet_version")
+}
+
+model LtPpeBasePrice {
+  id               String   @id @default(uuid()) @db.Uuid
+  scope            String   @default("company")
+  versionId        String   @map("version_id") @db.Uuid
+  noteRateMilliPct Int      @map("note_rate_milli_pct")
+  lockDays         Int      @map("lock_days")
+  product          String   @default("")
+  priceMilli       Int      @map("price_milli")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  version LtPpeRateSheetVersion @relation(fields: [versionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([versionId, noteRateMilliPct, lockDays, product], map: "lt_ppe_base_price_cell_uk")
+  @@index([versionId])
+  @@map("lt_ppe_base_price")
+}
+
+model LtPpeAdjustment {
+  id               String   @id @default(uuid()) @db.Uuid
+  scope            String   @default("company")
+  versionId        String   @map("version_id") @db.Uuid
+  dimension        String
+  ficoMin          Int?     @map("fico_min")
+  ficoMax          Int?     @map("fico_max")
+  ltvMin           Int?     @map("ltv_min")
+  ltvMax           Int?     @map("ltv_max")
+  dscrMin          Int?     @map("dscr_min")
+  dscrMax          Int?     @map("dscr_max")
+  predicate        Json?    @db.JsonB
+  adjMilli         Int      @map("adj_milli")
+  adjustmentTarget String   @default("price") @map("adjustment_target")
+  unit             String   @default("points")
+  signConvention   String   @default("cost_positive") @map("sign_convention")
+  cumulative       Boolean  @default(true)
+  priority         Int      @default(0)
+  reason           String?
+  code             String?
+  meta             Json     @default("{}") @db.JsonB
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  version LtPpeRateSheetVersion @relation(fields: [versionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([versionId])
+  @@index([versionId, dimension])
+  @@map("lt_ppe_adjustment")
+}
+
+model LtPpePriceLimit {
+  id                     String   @id @default(uuid()) @db.Uuid
+  scope                  String   @default("company")
+  versionId              String   @map("version_id") @db.Uuid
+  minPriceMilli          Int?     @map("min_price_milli")
+  roundingIncrementMilli Int      @default(125) @map("rounding_increment_milli")
+  roundingMode           String   @default("nearest_eighth") @map("rounding_mode")
+  capTiers               Json     @default("[]") @map("cap_tiers") @db.JsonB
+  onExceed               String   @default("cap_and_keep_eligible") @map("on_exceed")
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  version LtPpeRateSheetVersion @relation(fields: [versionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([scope, versionId], map: "lt_ppe_price_limit_version_uk")
+  @@map("lt_ppe_price_limit")
+}
+
+model LtPpeFinding {
+  id             String    @id @default(uuid()) @db.Uuid
+  scope          String    @default("company")
+  findingKey     String    @map("finding_key")
+  investor       String?
+  program        String?
+  programId      String?   @map("program_id") @db.Uuid
+  scenario       String?
+  scenarioFacts  Json?     @map("scenario_facts") @db.JsonB
+  kind           String
+  diff           Json      @default("{}") @db.JsonB
+  ourPayload     Json?     @map("our_payload") @db.JsonB
+  theirPayload   Json?     @map("their_payload") @db.JsonB
+  status         String    @default("open")
+  regressed      Boolean   @default(false)
+  recurrence     Int       @default(1)
+  firstSeenAt    DateTime? @map("first_seen_at") @db.Timestamptz(6)
+  lastSeenAt     DateTime? @map("last_seen_at") @db.Timestamptz(6)
+  decidedBy      String?   @map("decided_by") @db.Uuid
+  decidedAt      DateTime? @map("decided_at") @db.Timestamptz(6)
+  decisionReason String?   @map("decision_reason")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([scope, findingKey], map: "lt_ppe_finding_scope_key_uk")
+  @@index([scope, status], map: "lt_ppe_finding_status_idx")
+  @@map("lt_ppe_finding")
+}
