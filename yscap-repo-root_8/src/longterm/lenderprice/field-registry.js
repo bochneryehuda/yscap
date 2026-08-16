@@ -267,6 +267,31 @@ function applyRegistry(m, sc) {
   // --- citizenship / tradelines ---
   if (sc.citizenship != null) { if (CITIZENSHIP.has(sc.citizenship)) setDyn(m, 'Citizenship', sc.citizenship); else bad('citizenship', sc.citizenship, CITIZENSHIP); }
   if (sc.tradelines != null && sc.tradelines !== '') { if (TRADELINES.has(sc.tradelines)) setDyn(m, 'Tradelines', sc.tradelines); else bad('tradelines', sc.tradelines, TRADELINES); }
+  // §31.8 item 7 — OPEN QUESTION FOR THE VENDOR, DELIBERATELY NOT RESOLVED HERE. The audit
+  // contradicts ITSELF about how "no mortgage history" travels, and the two halves are different
+  // KINDS of evidence rather than one being stale:
+  //   • §13.3 read it out of the vendor's own JS bundle as a RULE-BACKED dynamic field —
+  //     `GLOBAL_NoMortgageHistory`, which is what this line sends. That proves the field EXISTS and
+  //     that rules read it.
+  //   • §31.7 CAPTURED a live request in which the fact travelled as a special mortgage option
+  //     named "No Mortgage History", with NO such dynamic field present. That proves what the
+  //     frontend actually SENDS.
+  // Both can be true at once — a field can exist and be rule-backed while the UI expresses the fact
+  // some other way — and that is exactly why this is not ours to settle. Getting it wrong is not
+  // symmetric with getting the cash-out amount wrong (where omitting a real number was strictly
+  // worse than sending a captured key): here BOTH mistakes mis-price. Sending a dynamic field the
+  // frontend never sends can apply a rule the frontend never applies; sending only an SMO whose name
+  // the live registry cannot resolve would drop the fact silently, so a borrower with no mortgage
+  // history would price as though the question were never asked. There is no fail-safe direction to
+  // pick, so it is NOT picked.
+  //
+  // Current behaviour is UNCHANGED (the bundle-backed dynamic field), because it is the shape this
+  // connector has always sent and switching it on the weaker inference would be the guess. WHAT
+  // WOULD SETTLE IT, in one step: a live capture of a search with the box ticked, read alongside
+  // `/pricing/smo` — if the registry carries an option named "No Mortgage History" and the request
+  // carries its id, replace this line with a `resolveSmo` push (the mechanism the DSCR band SMO
+  // already uses, where `dynaToSmo: true` maps a confirmed NAME even with no id). Ask before
+  // changing it; do not infer it from the audit alone.
   if (sc.noMortgageHistory != null) setDyn(m, 'GLOBAL_NoMortgageHistory', !!sc.noMortgageHistory);
 
   // --- bankruptcy (chapter/status/seasoning) ---
