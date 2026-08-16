@@ -17,9 +17,11 @@
  */
 
 const lp = require('../src/longterm/lenderprice/client');
+const sm = require('../src/longterm/lenderprice/search-model');
 
 let failures = 0;
 function ok(cond, label) { console.log(`${cond ? '  ok  ' : ' FAIL '} ${label}`); if (!cond) failures++; }
+function threws(fn) { try { fn(); return false; } catch { return true; } }
 
 async function offline() {
   console.log('OFFLINE verification (no network)\n');
@@ -177,9 +179,9 @@ async function offline() {
   const noPpp = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 0 });
   ok(noPpp.criteria.specialMortgageOptions.some((o) => o.name === 'No PPP'), 'no-prepay → No PPP special option');
   ok(noPpp.dynamicPropertiesMap.PrepayTerm.value === 'None', 'no-prepay → PrepayTerm "None"');
-  const p12 = lp.buildSearch({ prepayMonths: 12 });
+  const p12 = lp.buildSearch({ purpose: 'Refinance', prepayMonths: 12 });
   ok(p12.criteria.specialMortgageOptions.some((o) => o.name === '1 Yr PPP'), '12-month prepay → 1 Yr PPP');
-  const fthb = lp.buildSearch({ fthb: true });
+  const fthb = lp.buildSearch({ purpose: 'Refinance', fthb: true });
   ok(fthb.criteria.firstTimeHomeBuyer === true, 'first-time buyer reaches criteria');
 
   // 15) Parser reports minPoints + priceDerivedFromPoints per program (points-quoted leaves).
@@ -196,20 +198,20 @@ async function offline() {
   const B = require('../src/longterm/lenderprice/search-base.json');
   const tampered = JSON.parse(JSON.stringify(B));
   tampered.rate = 6.5; tampered.rates = [6.5]; tampered.maxListingPerRate = 1; tampered.targetInterpolatedPrices = [100]; tampered.rateRange = { from: 6, to: 7 };
-  const allOpt = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 }, { base: tampered });
+  const allOpt = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 }, { base: tampered });
   ok(allOpt.rate === null && allOpt.rates.length === 0, 'all-options: no target rate');
   ok(allOpt.maxListingPerRate === -1, 'all-options: unlimited points per rate (maxListingPerRate -1)');
   ok(allOpt.targetInterpolatedPrices.length === 0 && allOpt.rateRange.from === null && allOpt.rateRange.to === null, 'all-options: no target price, full rate range');
 
   // 17) Term-years + lock-days are HONORED (the silent-substitution / 15-year-15-day bug).
-  const t15 = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, termYears: 15, lockDays: 15 });
+  const t15 = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, dscr: 1.25, termYears: 15, lockDays: 15 });
   ok(t15.criteria.loanYear === 15 && Array.isArray(t15.termsCriteria) && t15.termsCriteria[0] === 15 && t15.termsInMonths === false, 'term 15yr → loanYear 15 + termsCriteria [15]');
   ok(t15.brokerCriteria.dayLocks === 15 && Array.isArray(t15.dayLocksCriteria) && t15.dayLocksCriteria[0] === 15, 'lock 15-day → dayLocks 15 + dayLocksCriteria [15]');
   ok(t15.criteria.loanYear !== t15.brokerCriteria.dayLocks || 15 === 15, 'term (years) and lock (days) are distinct fields'); // both 15 here but different paths
-  const appr = lp.buildSearch({ value: 5e5, loan: 4e5, appraisedValue: 460000 });
+  const appr = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, appraisedValue: 460000 });
   ok(appr.criteria.appraisedValue === 460000 && appr.criteria.purchasePrice === 500000, 'appraised value is separate from purchase price');
   // kickoff flags are always present (every search kicks off the async disqualify), poll flips only cachedDisqualified.
-  const kn = lp.buildSearch({ value: 5e5, loan: 4e5 });
+  const kn = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5 });
   ok(kn.showDisqualify === true && kn.disqualifyAsync === true && kn.cachedDisqualified === false, 'every search carries the disqualify kickoff flags');
 
   // 18) FIELD REGISTRY — advanced fields map to their exact upstream path/token, and an invalid
@@ -218,24 +220,24 @@ async function offline() {
   const fr = require('../src/longterm/lenderprice/field-registry');
   const dyn = (m, k) => (m.dynamicPropertiesMap && m.dynamicPropertiesMap[k] && typeof m.dynamicPropertiesMap[k] === 'object' ? m.dynamicPropertiesMap[k].value : (m.dynamicPropertiesMap ? m.dynamicPropertiesMap[k] : undefined));
   // full property-type enum
-  const cond = lp.buildSearch({ value: 5e5, loan: 4e5, propertyType: 'HighRiseCondo' });
+  const cond = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, propertyType: 'HighRiseCondo' });
   ok(cond.property.propertyType === 'HighRiseCondo' && cond.property.attachmentType === 'Attached', 'registry: HighRiseCondo property type mapped');
-  const nonwarr = lp.buildSearch({ value: 5e5, loan: 4e5, propertyType: 'CondoNonWarr' });
+  const nonwarr = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, propertyType: 'CondoNonWarr' });
   ok(nonwarr.criteria.nonWarrantableProject === true, 'registry: CondoNonWarr sets nonWarrantableProject');
   // borrower criteria paths
-  const borr = lp.buildSearch({ value: 5e5, loan: 4e5, selfEmployed: true, monthlyIncome: 12000, dti: 43, numberOfBorrowers: 2, waiveLenderFee: true });
+  const borr = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, selfEmployed: true, monthlyIncome: 12000, dti: 43, numberOfBorrowers: 2, waiveLenderFee: true });
   ok(borr.criteria.selfEmployed === true && borr.criteria.monthlyIncome === 12000 && borr.criteria.numberOfBorrower === 2 && borr.criteria.lenderFeeWaiver === true, 'registry: borrower criteria applied');
   ok(borr.criteria.clientDti === 0.43, 'registry: dti 43 → clientDti 0.43 (percent normalized)');
   // adverse-credit dynamics with valid tokens
-  const adv = lp.buildSearch({ value: 5e5, loan: 4e5, citizenship: 'Foreign National', tradelines: 'Limited', foreclosure: 'FC_3yr', bankruptcy: { chapter: 'Chapter 7', seasoning: '4-7 Years' } });
+  const adv = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, citizenship: 'Foreign National', tradelines: 'Limited', foreclosure: 'FC_3yr', bankruptcy: { chapter: 'Chapter 7', seasoning: '4-7 Years' } });
   ok(dyn(adv, 'Citizenship') === 'Foreign National' && dyn(adv, 'Tradelines') === 'Limited', 'registry: citizenship + tradelines dynamics set');
   ok(dyn(adv, 'Global_FORECLOSURES') === 'FC_3yr' && dyn(adv, 'BankruptcyChapter') === 'Chapter 7' && dyn(adv, 'BankruptcySeasoning') === '4-7 Years', 'registry: foreclosure + bankruptcy dynamics set');
   ok(adv[sm.REGISTRY_WARNINGS] === undefined, 'registry: valid values produce no warnings');
   // mortgage lates bucket
-  const lates = lp.buildSearch({ value: 5e5, loan: 4e5, mortgageLates: { last12: { 30: '1', 60: '0' }, months13To24: { 30: '2' } } });
+  const lates = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, mortgageLates: { last12: { 30: '1', 60: '0' }, months13To24: { 30: '2' } } });
   ok(dyn(lates, 'MORT30LATESLAST12M') === '1' && dyn(lates, 'MORT30LATESLAST24M') === '2', 'registry: mortgage-lates buckets map to MORT{sev}LATESLAST{window}');
   // invalid enum value → warning, NOT applied
-  const badv = lp.buildSearch({ value: 5e5, loan: 4e5, citizenship: 'Martian' });
+  const badv = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, citizenship: 'Martian' });
   const w = badv[sm.REGISTRY_WARNINGS];
   ok(Array.isArray(w) && w.length === 1 && w[0].field === 'citizenship', 'registry: invalid enum value recorded as a warning');
   // base carries Citizenship: "US Citizen"; an invalid value must NOT overwrite it (stays the base default, never the bad value).
@@ -245,24 +247,24 @@ async function offline() {
   // the route exposes REGISTRY_FIELDS in its supported set
   ok(Array.isArray(fr.REGISTRY_FIELDS) && fr.REGISTRY_FIELDS.includes('citizenship') && fr.REGISTRY_FIELDS.includes('bankruptcy'), 'registry: REGISTRY_FIELDS lists the implemented advanced fields');
   // a present-but-unparseable NUMERIC is a warning (not silently dropped)
-  const badnum = lp.buildSearch({ value: 5e5, loan: 4e5, dti: 'high' });
+  const badnum = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, dti: 'high' });
   const baseDti = require('../src/longterm/lenderprice/search-base.json').criteria.clientDti;
   const wn = badnum[sm.REGISTRY_WARNINGS];
   ok(Array.isArray(wn) && wn.some((x) => x.field === 'dti') && badnum.criteria.clientDti === baseDti, 'registry: unparseable numeric → warning, not applied (base default unchanged)');
   // an unknown NESTED sub-key is a warning (bankruptcy.dischargeDate is not implemented)
-  const badnest = lp.buildSearch({ value: 5e5, loan: 4e5, bankruptcy: { chapter: 'Chapter 7', dischargeDate: '2020-01-01' } });
+  const badnest = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, bankruptcy: { chapter: 'Chapter 7', dischargeDate: '2020-01-01' } });
   const wk = badnest[sm.REGISTRY_WARNINGS];
   ok(Array.isArray(wk) && wk.some((x) => x.field === 'bankruptcy.dischargeDate'), 'registry: unknown nested sub-key → warning');
   ok(dyn(badnest, 'BankruptcyChapter') === 'Chapter 7', 'registry: valid sibling still applied alongside an unknown-key warning');
   // an out-of-range mortgage-late severity warns
-  const badsev = lp.buildSearch({ value: 5e5, loan: 4e5, mortgageLates: { last12: { 180: '1' } } });
+  const badsev = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, mortgageLates: { last12: { 180: '1' } } });
   ok((badsev[sm.REGISTRY_WARNINGS] || []).some((x) => x.field === 'mortgageLates.last12.180'), 'registry: unknown mortgage-late severity → warning');
 
   // 19) DISQUALIFY fetch: the kickoff kicks off the async computation; the POLL replays the SAME
   // body with the documented frontend-normalization delta. disqualifyAsync stays true and
   // disqualifyFullResult stays FALSE on both (the frontend never flips them); the ready poll
   // returns a ~111 MB populated tree.
-  const dqKick = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 });
+  const dqKick = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 });
   ok(dqKick.cachedDisqualified === false && dqKick.disqualifyFullResult === false && dqKick.disqualifyAsync === true, 'disqualify kickoff: cached=false, async=true, fullResult=false');
   // The REAL poll body is the kickoff body + applyPollDelta (cachedDisqualified + requestId + the
   // four nullable compensation/rate defaults) — NOT "only cachedDisqualified flips" (the old, wrong
@@ -287,14 +289,14 @@ async function offline() {
   const dqPollNoRid = lp._internals.applyPollDelta(dqKick, null);
   ok(!('requestId' in dqPollNoRid) && dqPollNoRid.cachedDisqualified === true, 'applyPollDelta without a requestId flips cachedDisqualified but adds no requestId key');
   // countyName is honored as a real input (was accepted but ignored before)
-  const cn = lp.buildSearch({ value: 5e5, loan: 4e5, countyName: 'Union' });
+  const cn = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, countyName: 'Union' });
   ok(cn.property.address.countyName === 'Union', 'countyName input is honored');
 
   // 20) DISQUALIFY searchKey store — kick off ONCE, poll-only by stable key, never restart.
-  const kb = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 });                       // kickoff (cached=false)
-  const pb = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 }, { disqualify: { cached: true } }); // poll (cached=true)
+  const kb = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 });                       // kickoff (cached=false)
+  const pb = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 }, { disqualify: { cached: true } }); // poll (cached=true)
   ok(lp.searchKeyFor(kb) === lp.searchKeyFor(pb), 'searchKey ignores cachedDisqualified — kickoff & poll share ONE key');
-  const kbOther = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.30, prepayMonths: 60 });
+  const kbOther = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, dscr: 1.30, prepayMonths: 60 });
   ok(lp.searchKeyFor(kb) !== lp.searchKeyFor(kbOther), 'searchKey changes when the scenario changes');
   const skey = lp._internals.storeKickoff('https://api.digitallending.com/rest/v1/x', kb, '6a8149b3de295a00071c3632');
   ok(lp.hasStoredSearch(skey), 'storeKickoff registers the searchKey');
@@ -306,12 +308,12 @@ async function offline() {
   ok(lp._internals.requestIdOf({ baseSearch: { requestId: '6a8149b3de295a00071c3632' } }) === '6a8149b3de295a00071c3632', 'requestIdOf reads baseSearch.requestId (top-level shape)');
   ok(lp._internals.requestIdOf({ results: { baseSearch: { requestId: '6a8149b3de295a00071c3632' } } }) === '6a8149b3de295a00071c3632', 'requestIdOf reads results.baseSearch.requestId (wrapped shape)');
   ok(lp._internals.requestIdOf({ results: {} }) === null && lp._internals.requestIdOf(null) === null, 'requestIdOf is null-safe when absent');
-  const kb2 = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60, io: true });
+  const kb2 = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60, io: true });
   const skey2 = lp._internals.storeKickoff('https://api.digitallending.com/x', kb2, '6a8149b3de295a00071c3632');
   ok(lp._internals.DISQ_STORE.get(skey2).requestId === '6a8149b3de295a00071c3632', 'storeKickoff persists the requestId for the poll to echo');
   // A stored kickoff with NO requestId can never correlate to the async computation → the poll-by-key
   // must surface a named, controlled error instead of 202-ing forever.
-  const skeyNoRid = lp._internals.storeKickoff('https://api.digitallending.com/x', lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.4 }), null);
+  const skeyNoRid = lp._internals.storeKickoff('https://api.digitallending.com/x', lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, dscr: 1.4 }), null);
   const noRidRes = await lp.pollDisqualifiedByKey(skeyNoRid);
   ok(noRidRes.ok === false && noRidRes.error === 'lp_missing_request_id', 'poll-by-key with a stored kickoff lacking a requestId returns lp_missing_request_id (not a perpetual 202)');
 
@@ -328,6 +330,89 @@ async function offline() {
   // invalidation helpers never throw.
   lp._internals.invalidateSession(); lp._internals.invalidateFoundation();
   ok(true, 'invalidateSession/invalidateFoundation run without throwing');
+
+  // 22) §26.2 — the live foundation paths carry NO {companyId}/{userId} suffix (the frontend GETs
+  // the bare paths; the old suffixes 404'd every live fetch and pinned the foundation to fallback).
+  {
+    const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'longterm', 'lenderprice', 'client.js'), 'utf8');
+    ok(/DEFAULTSEARCH_PATH\s*=\s*process\.env\.LP_DEFAULTSEARCH_PATH\s*\|\|\s*'\/rest\/v1\/lp-ppe-integration\/pricing\/defaultSearch'/.test(src),
+      '§26.2 defaultSearch path drops the {companyId}/{userId} suffix');
+    ok(/SMO_PATH\s*=\s*process\.env\.LP_SMO_PATH\s*\|\|\s*'\/rest\/v1\/lp-ppe-integration\/pricing\/smo'/.test(src),
+      '§26.2 smo path drops the {companyId} suffix');
+  }
+
+  // 23) §26.4 — explicit loan-purpose alias table; NO default-to-refinance.
+  const mapPurpose = sm._internals.mapPurpose;
+  ok(mapPurpose('Purchase') === 'Purchase' && mapPurpose('purchase') === 'Purchase' && mapPurpose('  PURCHASE ') === 'Purchase', '§26.4 Purpose → Purchase (case/space tolerant)');
+  ok(mapPurpose('Cash out') === 'CashoutRefinance' && mapPurpose('cashout') === 'CashoutRefinance' && mapPurpose('CashOut') === 'CashoutRefinance', '§26.4 Cash out → CashoutRefinance');
+  ok(mapPurpose('Refinance') === 'Refinance' && mapPurpose('refi') === 'Refinance' && mapPurpose('Rate/Term') === 'Refinance', '§26.4 Refinance (rate-and-term) → Refinance');
+  ok(threws(() => mapPurpose('mortgage')) && threws(() => mapPurpose(undefined)) && threws(() => mapPurpose('')), '§26.4 unknown/absent purpose THROWS (never defaults to Refinance)');
+
+  // 24) §26.3 — location completeness guard (reject ZIP/state without countyFps, and conflicts).
+  const vl = sm.validateLocation;
+  ok(vl({}).ok === true, '§26.3 absent location is valid (base defaults apply)');
+  ok(vl({ zip: '07036', state: 'NJ' }).code === 'missing_county_fips', '§26.3 ZIP/state without countyFps → 422 missing_county_fips');
+  ok(vl({ state: 'NJ', countyFps: '34039' }).ok === true, '§26.3 complete NJ location is valid');
+  ok(vl({ state: 'NJ', countyFps: '12086' }).code === 'location_conflict', '§26.3 countyFps state-prefix conflicting with state → 422');
+  ok(vl({ state: 'ZZ', countyFps: '34039' }).code === 'invalid_state', '§26.3 unknown state code → 422 invalid_state');
+  ok(vl({ state: 'NJ', countyFps: 'abc' }).code === 'invalid_county_fips', '§26.3 non-5-digit countyFps → 422 invalid_county_fips');
+
+  // 25) §26.5 — validateScenario builds+validates LOCALLY (zero upstream) and 422s a bad request.
+  const okScn = sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 375000, dscr: 1.25, zip: '07036', state: 'NJ', county: 'Union', countyFps: '34039' });
+  ok(okScn.ok === true && okScn.request && okScn.request.criteria.loanPurpose === 'Purchase', '§26.5 a complete scenario validates and returns the built request');
+  ok(sm.validateScenario({ purpose: 'banana', state: 'NJ', countyFps: '34039' }).error === 'unknown_loan_purpose', '§26.5 unknown purpose → 422 unknown_loan_purpose');
+  ok(sm.validateScenario({ purpose: 'Purchase', zip: '07036', state: 'NJ' }).error === 'missing_county_fips', '§26.5 incomplete location → 422 missing_county_fips');
+  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, citizenship: 'Martian' }).error === 'invalid_field_value', '§26.5 invalid registry value → 422 invalid_field_value (moved BEFORE the upstream call)');
+  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5 }).status === 422 || sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5 }).ok === true, '§26.5 validateScenario returns a shaped result');
+
+  // 26) §27 STRICT INPUT VALIDATION — the silent-mispricing class (HTTP 200 with a wrong answer).
+  const G = { purpose: 'Purchase', value: 500000, loan: 375000, fico: 760, dscr: 1.25, propertyType: 'SingleFamily', state: 'NJ', countyFps: '34039' };
+  const vErr = (sc) => sm.validateScenario(sc).error;
+  ok(sm.validateScenario(G).ok === true, '§27 baseline scenario validates');
+  ok(vErr({ ...G, propertyType: 'Castle' }) === 'unknown_property_type', '§27.5 unknown property type → 422 (never priced as single-family)');
+  ok(vErr({ ...G, io: 'false' }) === 'non_boolean_value', '§27.6 string "false" boolean → 422 (never coerced to true)');
+  ok(vErr({ ...G, ltv: 50 }) === 'ltv_conflict', '§27.7 conflicting LTV (50% vs 75% calc) → 422');
+  ok(sm.validateScenario({ ...G, ltv: 75 }).ok === true, '§27.7 agreeing LTV (75) is accepted');
+  ok(vErr({ ...G, loan: 600000 }) === 'loan_exceeds_value', '§27.10 loan > value (LTV > 100%) → 422');
+  ok(vErr({ ...G, fico: 999 }) === 'out_of_range', '§27.10 FICO 999 → 422 out_of_range');
+  ok(vErr({ ...G, dscr: -1 }) === 'out_of_range', '§27.10 DSCR -1 → 422 (sign no longer stripped to +1)');
+  ok(vErr({ ...G, termYears: 17 }) === 'unsupported_term', '§27.8 17-year term → 422 unsupported_term');
+  ok(sm.validateScenario({ ...G, termYears: 15 }).ok === true, '§27.8 15-year term is accepted');
+  ok(vErr({ ...G, lockDays: 22 }) === 'unsupported_lock', '§27.8 22-day lock → 422 unsupported_lock');
+  ok(sm.validateScenario({ ...G, lockDays: 45 }).ok === true, '§27.8 45-day lock is accepted');
+  ok(vErr({ ...G, units: 4 }) === 'units_conflict', '§27.10 single-family + 4 units → 422 units_conflict');
+  ok(sm.validateScenario({ ...G, propertyType: 'Unit2_4', units: 3 }).ok === true, '§27.10 2–4 unit + 3 units is accepted');
+  ok(vErr({ ...G, value: '1e3' }) === 'invalid_number', '§27.10 exponent string "1e3" → 422 (not corrupted to 13)');
+  // strictNum preserves the sign; num (builder) no longer strips it.
+  ok(sm._internals.strictNum('-1') === -1 && sm._internals.strictNum('1e3') === undefined && sm._internals.strictNum('$500,000') === 500000, '§27.10 strictNum preserves sign, rejects exponent, tolerates currency');
+
+  // 27) §28.5 — an OMITTED boolean inherits the base default; an EXPLICIT value overwrites it.
+  const baseJson = require('../src/longterm/lenderprice/search-base.json');
+  const baseIO = baseJson.criteria ? baseJson.criteria.interestOnly : undefined;
+  const omit = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5 });
+  ok(omit.criteria.interestOnly === baseIO, '§28.5 omitted io inherits the base interestOnly default (not forced false)');
+  const expl = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, io: false });
+  ok(expl.criteria.interestOnly === false, '§28.5 explicit io:false is preserved');
+  const explT = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, io: true });
+  ok(explT.criteria.interestOnly === true, '§28.5 explicit io:true is preserved');
+
+  // 28) §27.4 — a second identical kickoff must NOT overwrite the first search's requestId.
+  const dupBody = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 });
+  const dk1 = lp._internals.storeKickoff('https://api.digitallending.com/x', dupBody, 'RID_FIRST');
+  const dk2 = lp._internals.storeKickoff('https://api.digitallending.com/x', dupBody, 'RID_SECOND');
+  ok(dk1 === dk2 && lp._internals.DISQ_STORE.get(dk1).requestId === 'RID_FIRST', '§27.4 identical kickoff keeps the FIRST requestId (no reset)');
+  const nullBody = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.33, prepayMonths: 60 });
+  const nk = lp._internals.storeKickoff('https://api.digitallending.com/x', nullBody, null);
+  lp._internals.storeKickoff('https://api.digitallending.com/x', nullBody, 'RID_LATE');
+  ok(lp._internals.DISQ_STORE.get(nk).requestId === 'RID_LATE', '§27.4 a missing requestId is later upgraded');
+
+  // 29) §28.2 — require-live-foundation gate refuses the static fallback (only when the flag is set).
+  ok(lp._internals.foundationLiveGate({ baseSource: 'fallback', smoSource: 'fallback' }) === null, '§28.2 gate is a no-op when LP_REQUIRE_LIVE_FOUNDATION is unset');
+  process.env.LP_REQUIRE_LIVE_FOUNDATION = '1';
+  ok(lp._internals.foundationLiveGate({ baseSource: 'live', smoSource: 'live' }) === null, '§28.2 gate passes a fully-live foundation');
+  const gated = lp._internals.foundationLiveGate({ baseSource: 'fallback', smoSource: 'live' });
+  ok(gated && gated.error === 'lp_foundation_not_live' && gated.http === 502, '§28.2 gate refuses a fallback foundation with a named 502');
+  delete process.env.LP_REQUIRE_LIVE_FOUNDATION;
 
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }
