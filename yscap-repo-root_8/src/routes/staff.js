@@ -4859,6 +4859,62 @@ router.get('/applications/:id/export/mismo', async (req, res) => {
   }
 });
 
+// ====================== CorrFirst Export (Track Record Investor Export) ======
+// CorrFirst asks for the borrower's prior projects on THEIR OWN CSV — a header
+// row they sent us, one line per property, formatted exactly the way the sample
+// they sent us is formatted. We fill that exact file: the header comes from the
+// checked-in copy of their empty file, byte-for-byte, and we append one line per
+// VERIFIED track record (owner-directed; the same `is_verified = true` rule the
+// TPR/REO package already uses — a line pending review never reaches an
+// investor). All of the shaping lives in src/lib/corrfirst-track-record.js.
+//
+// Readiness preview — counts + everything the exporting staffer must be told
+// BEFORE the file goes out (a line with no property type, an ownership share
+// nobody recorded, a CorrFirst property-type value they have not confirmed to us).
+router.get('/applications/:id/export/corrfirst-track-record/preview', async (req, res) => {
+  try {
+    const out = await require('../lib/corrfirst-track-record').previewCorrfirstExport(req.params.id, db);
+    if (!out) return res.status(404).json({ error: 'application not found' });
+    res.json(out);
+  } catch (e) {
+    console.error('[corrfirst] preview failed:', db.describeError ? db.describeError(e) : e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+// The download. Same issuance backstop as the TPR + MISMO exports beside it —
+// a confirmed-fatal file is a super-admin-overridable HARD WARNING before this
+// borrower's data leaves for a capital partner. Fails OPEN on no run.
+router.get('/applications/:id/export/corrfirst-track-record', async (req, res) => {
+  try {
+    const issuance = await issuanceBackstop.backstopForRun(req.params.id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: req.query && req.query.overrideReason });
+    if (issuance.hardWarning && !issuance.proceed) {
+      return res.status(409).json({ error: 'blocked', action: 'export_corrfirst_track_record', issuance });
+    }
+    if (issuance.override && issuance.override.applied) {
+      await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_corrfirst_track_record', tier: issuance.tier, reason: issuance.override.reason });
+      await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_corrfirst_track_record: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_corrfirst_track_record', tier: issuance.tier || null, at: new Date().toISOString() } });
+    }
+    const out = await require('../lib/corrfirst-track-record').buildCorrfirstExport(req.params.id, db);
+    if (!out) return res.status(404).json({ error: 'application not found' });
+    // The count + every warning ride on the AUDIT ROW: a CSV has nowhere to put a
+    // note, so this is the only durable record of what the investor was sent.
+    await audit(req, 'export_corrfirst_track_record', 'application', req.params.id, {
+      rows: out.rowCount, bytes: Buffer.byteLength(out.csv, 'utf8'),
+      missingPropertyType: (out.warnings.missingPropertyType || []).length,
+      unprovenPropertyType: (out.warnings.unprovenPropertyType || []).length,
+      missingOwnership: (out.warnings.missingOwnership || []).length,
+    });
+    // No BOM and LF endings — CorrFirst's own files carry neither a BOM nor CRLF,
+    // and the import has to read this file exactly as it reads theirs.
+    res.set('Content-Type', 'text/csv; charset=utf-8');
+    res.set('Content-Disposition', `attachment; filename="${out.filename}"`);
+    res.send(Buffer.from(out.csv, 'utf8'));
+  } catch (e) {
+    console.error('[corrfirst] export failed:', db.describeError ? db.describeError(e) : e.message);
+    res.status(500).json({ error: 'export failed' });
+  }
+});
+
 // ============================ Capital-provider data tapes =====================
 // A "data tape" is one capital provider's required loan export — their own Excel
 // workbook with our loan's figures typed into its data-entry row so the provider's
