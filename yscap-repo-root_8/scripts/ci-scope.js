@@ -74,7 +74,13 @@ const ALWAYS_FULL = [
  *   - the migration-number gate protects the shared boot chain;
  *   - the Encompass read-only gates cover the hardest rule in the repo, which
  *     Long-Term is the largest consumer of;
- *   - the parse check is the cheapest possible "did anything become invalid".
+ *   - the parse check is the cheapest possible "did anything become invalid";
+ *   - the schema-map freshness check answers, with no database and in
+ *     milliseconds, the one question a migration makes urgent — is the
+ *     committed map now describing a database that no longer exists. Selection
+ *     could not be trusted to reach it: a Long-Term migration is provably
+ *     Long-Term-only, so the reduced plan would skip it precisely when it
+ *     matters. It never fails the build.
  */
 const ALWAYS_RUN_STEPS = [
   'check-product-separation.js',
@@ -83,6 +89,7 @@ const ALWAYS_RUN_STEPS = [
   'check-encompass-readonly.js',
   'test-encompass-readonly-gate.js',
   'test-source-parses-pure.js',
+  'check-schema-behind.js',
 ];
 
 /** A step that is a Long-Term test. */

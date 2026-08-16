@@ -1,7 +1,8 @@
 # One readable schema for the whole system — the plan
 
-**Status: PHASES 0–3 BUILT. The one thing left in Phase 3 is a decision, not code —
-see §6d. Phase 4 remains not approved and probably never.**
+**Status: PHASES 0–3 BUILT, INCLUDING THE 3b ENRICHMENT — the map now records the relationship layer
+and tells you when it has fallen behind, with no database needed to ask. The one thing left in Phase 3
+is a decision, not code — see §6d. Phase 4 remains not approved and probably never.**
 
 Owner-directed 2026-08-16, after deciding against the two-repo split: *"Why is our system on the
 short-term side so messed up? It doesn't have a nice Prisma schema. The long term was set from the
@@ -289,6 +290,100 @@ that does not — which includes any CI runner we do not control — it would ha
 imported explicitly. Nothing else in the schema scripts had the same gap (checked, not assumed).
 
 **Still advisory.** See §6d.
+
+#### Phase 3b — the map gets richer, and keeps itself honest (owner-directed 2026-08-16)
+
+Owner: *"I want the design of the code to be that the database should get expanded and enhanced if
+something is being added. Let's enrich this even further."* Read as two things — make it **richer**,
+and make it **self-updating** — and both were built.
+
+**Richer: the relationship layer had never been written down, and that was the map's biggest blind
+spot.** The map recorded exactly the five things Prisma's schema language cannot express. Prisma *can*
+express foreign keys, so they were never recorded here — and the drift check only compares what the map
+records. The practical consequence: **a dropped foreign key was invisible.** So were 321 primary keys,
+37 unique constraints, 797 ordinary indexes, 12 enum types and 1,373 column defaults.
+
+| now recorded and compared | count |
+|---|---|
+| Primary keys | 321 |
+| Foreign keys (with their full `ON DELETE` behaviour) | 680 |
+| Unique constraints | 37 |
+| Indexes, all kinds | 1,116 |
+| Enum types, with their values | 12 |
+| Views | 0 |
+| Column defaults | folded into every column signature |
+
+The `ON DELETE` clause is kept verbatim because `CASCADE` silently becoming `SET NULL` is the difference
+between losing a document and keeping it — a change no count would show.
+
+**One comparison, walked over both groups.** `diffInventories` reads its section lists from the
+inventory rather than repeating them. A second hand-kept list here is *precisely* how the relationship
+layer went unguarded: the inventory knew about foreign keys long before anything compared them.
+
+**A richer map makes an older snapshot differ without anything in the database having moved**, and the
+migration watermark cannot see that — it would report the alarming *"this database holds something no
+migration explains"* on a change that is entirely ours. So a fourth verdict, **THE MAP GOT RICHER**, is
+checked *first*. Getting this wrong teaches people that the loudest message is usually nothing, which is
+how a real one gets missed.
+
+**Self-updating, in three layers, because no single one covers the moment it matters.**
+
+| layer | needs a database? | what it answers |
+|---|---|---|
+| `check-schema-behind.js` | **no** | is the map behind the migrations? |
+| `check-schema-snapshot.js` | yes | does the map still describe this database, object by object? |
+| CI `test-db` refresh | CI has one | here is the corrected map, ready to commit |
+
+The first layer is the one that closes the real hole. The thorough check self-skips without a database,
+so it is skipped in most places most of the time — and **the moment the map goes stale is the moment
+nobody has a database handy**: somebody adds `db/554_*.sql` and moves on. But the snapshot records which
+migrations built it and `db/` says which exist now, so *"is the map behind?"* is answerable from a
+directory listing and a JSON file. It runs in the pure job, on every pull request, and in every local
+`npm test`, and it is in `ALWAYS_RUN_STEPS` — because a Long-Term migration is *provably*
+Long-Term-only, so the reduced plan would otherwise skip it exactly when it matters. It names which
+migrations landed, not just how many.
+
+It also distinguishes the map being **ahead** of `db/` from being behind, and refuses to call that
+stale: the fix for stale is "regenerate", and regenerating there would quietly rebuild the map from the
+*smaller* set. That is a map from another checkout, or a deleted migration — a different problem with a
+different answer.
+
+The third layer removes the friction that makes refreshing get skipped. CI's `test-db` job is the one
+place a database built from *this checkout's* migrations always exists, for free; it regenerates the map
+there and attaches the corrected files to the run, so the fix is a download rather than *"find a
+Postgres, apply 550 migrations, point `DATABASE_URL` at it"*. It runs **last** — overwriting
+`docs/schema/` before the suite would leave the drift check comparing files just written from the very
+database it is checking them against, a guard that passes always and guards nothing.
+
+**CI deliberately does not commit the refresh back**, and that is a decision rather than an omission.
+It would race the branch an agent is actively pushing to, and a force-push would silently drop the
+refresh while everyone believed it was automatic. *A stale map nobody is watching any more is worse
+than one nobody is watching yet.* Turning it on is a real option later; it is not a free one.
+
+**Proof.** `test-schema-drift-db.js` is now 48 assertions and covers a dropped foreign key, a changed
+column default and all six new sections; `test-schema-behind-pure.js` adds 33 with no database at all.
+Across both, **every mutation was proven to turn them red** with a clean control either side — and
+**four mutations came back VACUOUS on the first run**, every one a genuine hole in the tests rather than
+in the code:
+
+- *column defaults dropped from the signature* — asserted nowhere;
+- *the predates-verdict branch deleted* — asserted nowhere;
+- *the migration file list sorted as strings* — the fixture used zero-padded names (`001`, `002`,
+  `1000`), which sort identically either way, so it proved nothing. Unpadded names do not: as strings,
+  `10` precedes `9`;
+- *the snapshot stamping the whole state* — asserted against the committed file, which a code mutation
+  does not touch until somebody regenerates. A guard on an artifact, not on the rule.
+
+One mutation reported red with **zero failed assertions**: `SET DEFAULT 'zzz'` is invalid on a
+`timestamptz` column, so the test was *crashing* rather than failing — identical in an exit code. It
+uses `DROP DEFAULT`, valid for every column type. Both are the same lesson as the harness bug above,
+and both cost a full re-run to notice.
+
+**The readable map stopped lying about itself.** `BEYOND-PRISMA.md` carried a hand-typed *"549 numbered
+migrations"* while the database was already on 550. It is derived from the same watermark now, and says
+so plainly rather than guessing when `db/` cannot be read. The 321 primary keys and 1,116 indexes are
+**named as deliberately not listed**, with the reason — a reader who is not told they were left out
+reasonably concludes the database has none.
 
 ### Phase 4 — Renaming for beauty. Optional, slow, possibly never.
 The genuinely risky part, and the one that buys the least. `llcs` now holds corporations, partnerships

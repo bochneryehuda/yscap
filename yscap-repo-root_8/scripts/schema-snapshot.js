@@ -66,6 +66,22 @@ function migrationSentence(inv) {
     + 'thing that builds this database.';
 }
 
+/**
+ * The watermark that gets STORED in the snapshot: the two numbers, and nothing
+ * else.
+ *
+ * `migrationState()` also returns every migration FILENAME, which
+ * `check-schema-behind.js` uses to say which ones landed since — but 550
+ * filenames baked into a file that is read on every drift check is a directory
+ * listing pretending to be a fingerprint. Stamping the whole object would also
+ * make the snapshot churn on any migration RENAME, which changes nothing about
+ * the database it describes.
+ */
+function stampFrom(mig) {
+  if (!mig || !Number.isFinite(mig.count)) return null;
+  return { count: mig.count, highest: mig.highest ?? null };
+}
+
 /** The readable companion. Same data, same order, for a human rather than a diff. */
 function toMarkdown(inv) {
   const c = inv.counts;
@@ -171,7 +187,7 @@ async function main() {
   // STAMP WHICH MIGRATIONS THIS MAP WAS BUILT FROM. Without it a stale map and
   // a database carrying something no migration explains look identical in the
   // drift report — and only one of those two is an emergency.
-  inv.generatedFrom = { migrations: migrationState() };
+  inv.generatedFrom = { migrations: stampFrom(migrationState()) };
 
   const c = inv.counts;
   console.log(`schema-snapshot: ${c.tables} tables, ${c.columns} columns, `
@@ -193,4 +209,4 @@ if (require.main === module) {
   main().catch((e) => { console.error('schema-snapshot failed:', e.message); process.exit(1); });
 }
 
-module.exports = { toMarkdown, JSON_FILE, MD_FILE, OUT_DIR };
+module.exports = { toMarkdown, stampFrom, JSON_FILE, MD_FILE, OUT_DIR };

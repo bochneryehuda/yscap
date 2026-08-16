@@ -355,6 +355,10 @@ function migrationState(dbDir) {
   return {
     count: files.length,
     highest: nums.length ? Math.max(...nums) : null,
+    // The NAMES too, because "the map is 4 migrations behind" is a fact and
+    // "db/551, db/552, db/553 and db/554 landed since" is something a person can
+    // act on. Sorted numerically, not by string: '1000' sorts before '999'.
+    files: files.slice().sort((a, b) => (parseInt(a, 10) || 0) - (parseInt(b, 10) || 0)),
   };
 }
 
