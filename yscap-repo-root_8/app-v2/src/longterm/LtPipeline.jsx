@@ -13,6 +13,37 @@ const day = (v) => {
 };
 
 /**
+ * A loan's lock, in one cell.
+ *
+ * The countdown is to the date ENCOMPASS STATED and is never calculated from a lock
+ * date plus a day count — an extension moves the expiration without moving the lock
+ * date, so a calculated number would show a desk an expiry that has not happened.
+ * `lock_days_remaining` comes from the server for exactly that reason.
+ *
+ * A loan with no lock mirrored reads as a plain dash. "No lock" and "we have not
+ * looked yet" are different, and this column may only claim the first when the loan
+ * itself says so — the file's own lock section is where that distinction is spelled
+ * out, because a pipeline cell has no room for a sentence.
+ */
+function LockCell({ row }) {
+  if (!row.lock_status && row.lock_expiration_date == null) {
+    return <span style={{ color: '#4B585C' }}>—</span>;
+  }
+  const left = row.lock_days_remaining == null ? null : Number(row.lock_days_remaining);
+  const tone = left == null ? '#4B585C' : left < 0 ? '#8A2D2D' : left <= 7 ? '#8A6A22' : '#1F5F3F';
+  return (
+    <span style={{ color: tone, whiteSpace: 'nowrap' }}>
+      {row.lock_status || 'Lock'}
+      {left != null && (
+        <span style={{ marginLeft: 6, fontSize: 12 }}>
+          {left < 0 ? `expired ${Math.abs(left)}d ago` : left === 0 ? 'expires today' : `${left}d left`}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/**
  * The long-term pipeline.
  *
  * Every row here is one the server's SCOPE already allowed — this screen does no
@@ -80,7 +111,7 @@ export default function LtPipeline() {
             <thead><tr>
               <th style={th}>Loan #</th><th style={th}>Borrower</th><th style={th}>Amount</th>
               <th style={th}>Stage</th><th style={th}>Milestone</th>
-              <th style={th}>Loan officer</th><th style={th}>Updated</th>
+              <th style={th}>Loan officer</th><th style={th}>Lock</th><th style={th}>Updated</th>
             </tr></thead>
             <tbody>
               {data.loans.map((l) => {
@@ -99,6 +130,7 @@ export default function LtPipeline() {
                         <span style={{ marginLeft: 6, fontSize: 11, color: '#AE8746' }}>reassigned</span>
                       )}
                     </td>
+                    <td style={td}><LockCell row={l} /></td>
                     <td style={td}>{day(l.encompass_last_modified)}</td>
                   </tr>
                 );

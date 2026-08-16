@@ -16,6 +16,7 @@ const pipeline = require('../pipeline');
 const access = require('../access');
 const contacts = require('../people/contacts');
 const workspace = require('../workspace');
+const locks = require('../locks');
 const stages = require('../stages');
 const settingsStore = require('../settings/store');
 const db = require('../db');
@@ -51,10 +52,16 @@ router.get('/:loanId', async (req, res) => {
     const { settings } = await settingsStore.load();
     const viewer = access.accessFor(req.actor, settings);
 
+    // The lock joins here because the workspace's rail and its "Rate lock" section
+    // both read `lock_status` / `lock_expiration_date` off the loan row. Without the
+    // join those read as empty on every loan — a section permanently greyed with a
+    // reason that is not true, which is worse than no section at all.
     const { rows } = await db.query(
-      `SELECT l.*, b.full_name AS borrower_name
+      `SELECT l.*, b.full_name AS borrower_name,
+              k.lock_status, k.expiration_date AS lock_expiration_date
          FROM lt_loans l
          LEFT JOIN borrowers b ON b.id = l.borrower_id
+         LEFT JOIN lt_locks k ON k.loan_id = l.id
         WHERE l.id = $1::uuid`,
       [String(req.params.loanId)],
     );
@@ -92,9 +99,14 @@ router.get('/:loanId', async (req, res) => {
         ORDER BY sequence`,
     ).catch(() => ({ rows: [] }));
 
+    // The lock's own detail — the posture, the countdown, and what PILOT watched
+    // change. Best-effort: a loan still opens when its lock cannot be read.
+    const lock = await locks.loadLock(rows[0].id).catch(() => null);
+
     const labels = settings['contacts.roleLabels'] || {};
     res.json({
       loan: rows[0],
+      lock,
       sections: workspace.sectionMenu(rows[0], {
         conditionsEnabled: settings['conditions.enabled'] === true,
       }),

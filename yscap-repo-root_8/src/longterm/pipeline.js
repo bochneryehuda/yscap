@@ -49,6 +49,8 @@ const SORTABLE = {
   milestone: 'l.milestone_name',
   borrower: 'b.full_name',
   synced: 'l.encompass_synced_at',
+  // The lock desk's own order: whatever expires soonest, first.
+  lock_expiration: 'k.expiration_date',
 };
 const DEFAULT_SORT = 'last_modified';
 
@@ -134,15 +136,26 @@ function buildPipelineQuery(viewerAccess, staffId, filters = {}) {
   // The join is LEFT: a loan whose borrower has not been mirrored yet must still
   // appear. An inner join would silently shrink the pipeline, which on a screen
   // that is meant to be somebody's whole book is the worst kind of wrong.
+  //
+  // `lt_locks` joins LEFT for the same reason: a loan with no lock mirrored yet is
+  // an ordinary loan, and the lock column simply reads empty.
   const FROM = `
       FROM lt_loans l
-      LEFT JOIN borrowers b ON b.id = l.borrower_id`;
+      LEFT JOIN borrowers b ON b.id = l.borrower_id
+      LEFT JOIN lt_locks k ON k.loan_id = l.id`;
 
   const sql = `
     SELECT l.id, l.loan_number, l.loan_amount, l.note_rate_pct, l.dscr_ratio,
            l.milestone_name, l.stage_key, l.loan_folder,
            l.encompass_last_modified, l.encompass_synced_at, l.encompass_sync_error,
            b.full_name AS borrower_name,
+           k.lock_status, k.expiration_date AS lock_expiration_date,
+           k.note_rate_pct AS locked_rate_pct,
+           -- Days to expiry is computed HERE rather than in JS so the pipeline can
+           -- sort on it. It is a countdown TO a stated date, never a calculation OF
+           -- one: the expiration itself is always taken as Encompass states it.
+           CASE WHEN k.expiration_date IS NULL THEN NULL
+                ELSE (k.expiration_date - CURRENT_DATE) END AS lock_days_remaining,
            (SELECT json_agg(json_build_object(
                      'role', c.role,
                      'name', c.encompass_name,

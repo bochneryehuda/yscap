@@ -32,6 +32,7 @@
 const stages = require('../stages');
 const discover = require('./discover');
 const contacts = require('../people/contacts');
+const locks = require('../locks');
 
 const lazy = {
   get db() { return require('../db'); },
@@ -136,10 +137,25 @@ async function readLoan(loanId, guid, settings) {
     [loanId, milestoneName, stageKey],
   );
 
-  // The team is its own read (fieldReader), and its own failure. A loan whose team
-  // cannot be read is still a loan we successfully mirrored.
-  const team = await contacts.syncLoanContacts(loanId, guid);
-  return { ok: true, milestoneName, stageKey, team };
+  // ONE fieldReader for everything read by number — the team's ids and the lock's
+  // together. The pacing rule on this tenant is a self-imposed gap between calls, so
+  // two calls per loan is twice as long holding a connection the whole company
+  // shares. A failure here is its own: a loan whose team or lock could not be read
+  // is still a loan we successfully mirrored, and the failure must not undo that.
+  let values = null;
+  try {
+    const ids = [...new Set([...contacts.fieldIdsFor(settings), ...locks.fieldIdsFor(settings)])];
+    if (ids.length) values = await lazy.client.fieldReader(guid, ids);
+  } catch (_) { /* each consumer below reports its own miss */ }
+
+  const team = await contacts.syncLoanContacts(loanId, guid, { values });
+
+  // The lock posture rides the loan we already have — no lock endpoint is called,
+  // and none would answer: every lock-specific endpoint on this tenant is 403.
+  const lock = locks.lockFromLoan(loan, values, settings);
+  const lockWrite = await locks.writeLock(loanId, lock);
+
+  return { ok: true, milestoneName, stageKey, team, lock: { ...lockWrite, posture: lock.posture } };
 }
 
 /**

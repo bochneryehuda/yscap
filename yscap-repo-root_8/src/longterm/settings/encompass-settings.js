@@ -409,6 +409,37 @@ const SETTINGS = [
     evidence: 'Long-Term is a side build and is not live, so the default must stay RTL — '
       + 'nobody should be moved to the new side by a deploy.' },
 
+  // ── Rate lock (phase 7) ───────────────────────────────────────────────────
+  // Every lock-SPECIFIC endpoint on this tenant answers 403, so the posture is read
+  // from the loan itself: the `rateLock` entity where it answers, and these two
+  // numbered fields where it does not. WHICH number holds which date is tenant
+  // configuration, which is why it is a setting and not a constant — and why the
+  // reader also trusts the ORDER of two dates over the mapping, since an expiration
+  // cannot precede the lock it expires.
+  { key: 'lock.lockDateFieldId', group: 'Rate lock', label: 'Lock date field',
+    type: 'fieldId', default: '761',
+    description: 'The Encompass field holding the date the rate was locked.',
+    evidence: 'Fields 761 and 762 are populated on this tenant. Field 2148 — quoted as '
+      + 'the lock date in a lot of general Encompass material — is EMPTY here.' },
+  { key: 'lock.expirationFieldId', group: 'Rate lock', label: 'Lock expiration field',
+    type: 'fieldId', default: '762',
+    description: 'The Encompass field holding the date the lock expires. This value is '
+      + 'ALWAYS trusted as stated and is never calculated from the lock date plus a day '
+      + 'count — an extension moves it, and a calculated date would read as expired while '
+      + 'the investor still honours it.' },
+  { key: 'lock.lockedStatuses', group: 'Rate lock', label: 'Words that mean LOCKED',
+    type: 'list', default: ['locked', 'lock confirmed', 'confirmed', 'accepted', 'active'],
+    description: 'A status word not on this list or the next one is reported as UNKNOWN '
+      + 'rather than guessed: a desk told a loan is floating when nobody knows will lock '
+      + 'it twice, and one told it is locked when nobody knows will let a rate float.' },
+  { key: 'lock.unlockedStatuses', group: 'Rate lock', label: 'Words that mean NOT LOCKED',
+    type: 'list',
+    default: ['not locked', 'unlocked', 'floating', 'float', 'cancelled', 'canceled', 'denied', 'expired', 'none'],
+    description: 'Compared case-insensitively, with spaces, dashes and underscores treated alike.' },
+  { key: 'lock.expiringSoonDays', group: 'Rate lock', label: 'Warn this many days before expiry',
+    type: 'number', default: 7,
+    description: 'How close to its expiration a lock is flagged on the pipeline.' },
+
   // ── Condition Center — DEFERRED (owner-directed 2026-08-14) ───────────────
   // "put the condition center in side for now that center should say colming soom
   // continie building the rest non stop".

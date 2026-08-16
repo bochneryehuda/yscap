@@ -239,8 +239,15 @@ async function confirmedLinkMap(dbc) {
 /**
  * Read one loan's team from Encompass and mirror it. READ-ONLY.
  * Never throws for an ordinary failure — returns `{ok:false, reason}`.
+ *
+ * `opts.values` lets a caller that has ALREADY read this loan's fields hand them
+ * over instead of paying for a second fieldReader. The loan sync does exactly that:
+ * it asks for the team's field ids and the lock's in ONE call, because the pacing
+ * rule on this tenant is a self-imposed gap between calls — halving the calls per
+ * loan halves how long a pass holds the shared connection. With nothing supplied
+ * this reads for itself, so the standalone path is unchanged.
  */
-async function syncLoanContacts(loanId, encompassLoanGuid) {
+async function syncLoanContacts(loanId, encompassLoanGuid, opts = {}) {
   if (!lazy.client.configured()) {
     return { ok: false, reason: 'Encompass is not connected yet.' };
   }
@@ -248,11 +255,13 @@ async function syncLoanContacts(loanId, encompassLoanGuid) {
   const ids = fieldIdsFor(settings);
   if (!ids.length) return { ok: false, reason: 'No loan-team roles are configured to read.' };
 
-  let values;
-  try {
-    values = await lazy.client.fieldReader(encompassLoanGuid, ids);
-  } catch (e) {
-    return { ok: false, reason: `Could not read the loan team: ${(e && e.message) || e}` };
+  let values = opts.values || null;
+  if (!values) {
+    try {
+      values = await lazy.client.fieldReader(encompassLoanGuid, ids);
+    } catch (e) {
+      return { ok: false, reason: `Could not read the loan team: ${(e && e.message) || e}` };
+    }
   }
 
   const dbc = await lazy.db.getClient();
