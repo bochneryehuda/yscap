@@ -665,7 +665,7 @@ function validateLocation(sc = {}) {
 // a conflicting LTV was silently replaced, and an unsupported term/lock was accepted. We reject
 // them (422) BEFORE any upstream call rather than mis-price.
 // Boolean scenario fields that must be a real JSON boolean (never a truthy string).
-const BOOLEAN_FIELDS = ['io', 'escrowWaive', 'fthb', 'selfEmployed', 'rural', 'mixedUse', 'waiveLenderFee', 'noMortgageHistory', 'nonWarrantable', 'crossCollateral', 'firstTimeInvestor', 'livingRentFree'];
+const BOOLEAN_FIELDS = ['io', 'escrowWaive', 'fthb', 'selfEmployed', 'rural', 'mixedUse', 'waiveLenderFee', 'noMortgageHistory', 'nonWarrantable', 'crossCollateral', 'firstTimeInvestor', 'livingRentFree', 'dscrAssetDepletion', 'lateInLast12Months'];
 // Attachment types the frontend exposes independently of property type (audit §6).
 // Attachment types the frontend exposes independently of property type (audit §6). SemiDetached is the
 // confirmed live upstream token (§31.3) — added so the validator stops rejecting a legitimate choice.

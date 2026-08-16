@@ -252,6 +252,17 @@ function applyRegistry(m, sc) {
   if (sc.crossCollateral != null) setDyn(m, 'GLOBAL_Cross_Collateralization_Product', sc.crossCollateral ? 'true' : 'false');
   if (sc.firstTimeInvestor === true) setDyn(m, 'FirstTimeInvestor', 'true');
   if (sc.livingRentFree === true) setDyn(m, 'Global_Living_Rent_Free', 'true');
+  // §31.3 — DSCR WITH ASSET DEPLETION. The ON value is the confirmed live token "Yes" (NOT the string
+  // "true" the sibling flags use — copying their shape here would be a guess). The OFF token was
+  // never captured ("blank later serialized null/absence depending on UI state"), so an explicit
+  // false INHERITS the live default exactly like omission, same as firstTimeInvestor above. When a
+  // capture confirms the off value, add the else-branch in this ONE place.
+  if (sc.dscrAssetDepletion === true) setDyn(m, 'Global_DSCR_Asset_Depletion', 'Yes');
+  // §31.7 — the PARENT "late in the last 12 months" toggle, which the live UI sends ALONGSIDE the
+  // per-bucket MORT*LATESLAST12M counts. Confirmed ON token "true"; the off token was not captured,
+  // so an explicit false inherits. NOTE the 13-24 month parent toggle's field name was never
+  // captured, so it is deliberately NOT wired — only its per-bucket counts are.
+  if (sc.lateInLast12Months === true) setDyn(m, 'Lateinlast12months', 'true');
 
   // --- citizenship / tradelines ---
   if (sc.citizenship != null) { if (CITIZENSHIP.has(sc.citizenship)) setDyn(m, 'Citizenship', sc.citizenship); else bad('citizenship', sc.citizenship, CITIZENSHIP); }
@@ -307,6 +318,7 @@ const REGISTRY_FIELDS = [
   'compensationType', 'waiveLenderFee', 'rural', 'mixedUse', 'citizenship', 'tradelines',
   'noMortgageHistory', 'bankruptcy', 'mortgageLates', 'foreclosure', 'shortSale', 'deedInLieu',
   'chargeOff', 'forbearance', 'crossCollateral', 'firstTimeInvestor', 'livingRentFree',
+  'dscrAssetDepletion', 'lateInLast12Months',
 ];
 
 module.exports = { applyRegistry, resolvePropertyType, PROPERTY_TYPES, REGISTRY_FIELDS,
