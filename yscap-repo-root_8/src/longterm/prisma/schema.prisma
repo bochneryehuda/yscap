@@ -1397,3 +1397,23 @@ model LtPpeShadowRun {
   @@index([scope, investor, program, dayMs], map: "lt_ppe_shadow_run_series_idx")
   @@map("lt_ppe_shadow_run")
 }
+
+model LtPpeCutoverLedger {
+  id         String   @id @default(uuid()) @db.Uuid
+  scope      String   @default("company")
+  investor   String   @default("")
+  seq        Int
+  action     String
+  fromMode   String   @map("from_mode")
+  toMode     String   @map("to_mode")
+  decidedBy  String   @map("decided_by")
+  decidedAt  BigInt   @map("decided_at")
+  reason     String
+  eligible   Boolean  @default(false)
+  scoreboard Json?    @db.JsonB
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([scope, investor, seq], map: "lt_ppe_cutover_ledger_seq_uk")
+  @@index([scope, investor, seq], map: "lt_ppe_cutover_ledger_history_idx")
+  @@map("lt_ppe_cutover_ledger")
+}

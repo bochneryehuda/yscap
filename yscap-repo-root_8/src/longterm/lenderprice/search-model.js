@@ -51,6 +51,12 @@ const SMO_PPP = {
   60: { id: '58263ae7e4b0e7f399741293', name: '5 Yr PPP' },
 };
 
+// The DSCR profile's prepay default (§35.3/§36.6): five-year Standard. Module-scope because BOTH the
+// special-mortgage-option list and the dynamic PrepayTerm/PrePayment_Plan_Type pair must agree about
+// which term is in force — resolving it in two places is how a request comes to carry a 5 Yr PPP
+// option beside a 36-month term.
+const DEFAULT_PREPAY_MONTHS = 60;
+
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
 function normName(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
 // Resolve one special-mortgage-option name → {id,name} against a live registry (opts.smo:
@@ -355,7 +361,7 @@ const SCENARIO_OWNED = [
   // criteria.cashoutAmount must always be absent — cleared here and never re-applied. A supplied value
   // is retained on the internal Symbol channel (buildSearch), and a stale one inherited from the
   // foundation is removed here.
-  { path: 'criteria.cashoutAmount', neutral: DELETE, why: 'cash-out amount; §32.2 never transmitted, always cleared' },
+  { path: 'criteria.cashoutAmount', neutral: DELETE, why: 'cash-out amount; cleared so a prior scenario cannot leak one, re-applied from the caller' },
   // §32.3 DSCR band token — a DYNAMIC property derived from the per-deal DSCR (dscrBand). It is
   // scenario-owned exactly like criteria.dscr, so a live foundation's stale DSCRRATIO must not leak
   // when this scenario omits dscr. Neutral is ABSENT (delete the whole {fieldId,value} object): on
@@ -467,24 +473,40 @@ function buildSearch(sc = {}, opts = {}) {
   const purpose = mapPurpose(sc.purpose);
   const pm = mapProp(sc.propertyType);
   // Attachment type is INDEPENDENT of property type (audit §6): the live frontend can send e.g.
-  // Condo + Detached. An explicit `attachment` overrides the type's default attachment; an explicit
+  // Condo + Detached. An explicit attachment overrides the type's default attachment; an explicit
   // `nonWarrantable` overrides the type's warrantability. Unit count stays independent (set below).
-  if (sc.attachment != null && sc.attachment !== '') pm.attachmentType = sc.attachment;
+  //
+  // BOTH SPELLINGS ARE ACCEPTED, and that is the whole bug this line closes. The independence was
+  // implemented, but only under the key `attachment`, while the audit's contract — and every caller
+  // following it — names the field `attachmentType` (the upstream path is `property.attachmentType`).
+  // So a caller correctly asking for Condo + SemiDetached was silently given the type's default
+  // Attached: the value was not refused, it was DROPPED, which is the silent-substitution class this
+  // whole audit is about. `attachmentType` is the documented name and wins; `attachment` stays as an
+  // accepted alias so nothing built against the older shape breaks.
+  const attach = [sc.attachmentType, sc.attachment].find((v) => v != null && v !== '');
+  if (attach !== undefined) pm.attachmentType = attach;
   if (sc.nonWarrantable !== undefined) pm.nonWarrantableProject = !!sc.nonWarrantable;
   const months = num(sc.prepayMonths);
+  // Omitted → the profile's five-year default; 0 stays an explicit "no prepay". Both the SMO list
+  // and the dynamic pair below read THIS value, never `months`, so they cannot disagree.
+  const effMonths = months != null ? months : DEFAULT_PREPAY_MONTHS;
 
   const c = m.criteria || (m.criteria = {});
   if (value != null) c.purchasePrice = value;
-  // Appraised (as-is) value is SEPARATE from the estimated/purchase price (audit §3). We do NOT
-  // manufacture it from the estimated value. On a PURCHASE the appraisal comes in at contract price
-  // and the frontend mirrors it, so appraised = value. On a REFINANCE / CASH-OUT the frontend leaves
-  // it BLANK unless the user supplies an appraisal (asIsValue / appraisedValue); manufacturing the
-  // estimated value into it was the "$600k appraised the user never entered" bug. An explicit value
-  // always wins.
+  // Appraised (as-is) value is SEPARATE from the estimated/purchase price, ON EVERY PURPOSE
+  // (2026-08-16 audit: "Entering Purchase Price $500,000 also sends appraisedValue=500000. The
+  // frontend leaves Appraised Value blank/zero unless separately entered. Stop automatically copying
+  // Purchase Price into Appraised Value.").
+  //
+  // THE EARLIER READING WAS WRONG AND ONLY WRONG ON PURCHASE. This code used to mirror value into
+  // appraisedValue for a Purchase on the theory that "the appraisal comes in at contract price and
+  // the frontend mirrors it". The live capture disproves that: the frontend carries Purchase Price
+  // 500,000 with Appraised Value left at 0/blank, and the two are independent inputs there. Mirroring
+  // states an appraised value NOBODY SUPPLIED — and appraised value is an LTV/eligibility basis, so
+  // asserting one we were never given is the same class of silent mispricing as inheriting a stale
+  // address: it does not fail, it prices a different deal. Blank on every purpose unless supplied.
   const apprSupplied = num(sc.appraisedValue != null ? sc.appraisedValue : sc.asIsValue);
-  if (apprSupplied != null) c.appraisedValue = apprSupplied;
-  else if (purpose === 'Purchase' && value != null) c.appraisedValue = value;
-  else c.appraisedValue = null; // refi/cash-out with no appraisal → blank, matching the frontend
+  c.appraisedValue = apprSupplied != null ? apprSupplied : null;
   if (loan != null) c.loanAmount = loan;
   if (ltv != null) c.ltv = ltv;
   // §31.5 — SUBORDINATE FINANCING. Confirmed live: selecting Closed End Second and entering 50,000
@@ -547,10 +569,10 @@ function buildSearch(sc = {}, opts = {}) {
   // AFTER the DSCR pair and BEFORE the PPP unshift, so the final order matches the captured
   // [PPP, DSCVR, DSCR, band]. Only bands ≥ 0.75 add one (band.smo null below 0.75).
   if (band && band.smo) smo.push(resolveSmo(band.smo, smoReg, null));
-  if (months != null) {
-    const fb = SMO_PPP[months] || null;
-    const pppName = months === 0 ? 'No PPP'
-      : (months % 12 === 0) ? `${months / 12} Yr PPP` : `${months} Months PPP`;
+  {
+    const fb = SMO_PPP[effMonths] || null;
+    const pppName = effMonths === 0 ? 'No PPP'
+      : (effMonths % 12 === 0) ? `${effMonths / 12} Yr PPP` : `${effMonths} Months PPP`;
     smo.unshift(resolveSmo(fb ? fb.name : pppName, smoReg, fb));
   }
   c.specialMortgageOptions = smo;
@@ -600,42 +622,64 @@ function buildSearch(sc = {}, opts = {}) {
   // reserves requirement via reservesMonths → the CONFIRMED live enum (mapReserves); an unknown value
   // 422s (never a guessed token). Always set (GLOBAL_RESERVES is confirmed from the captured base).
   setDyn('GLOBAL_RESERVES', mapReserves(sc.reservesMonths) || process.env.LP_RESERVES_TOKEN || 'Reserves_24');
-  // Prepay term / structure. An OMITTED prepay INHERITS the live default (audit §2 — the backend used
-  // to CLEAR PrepayTerm/PrePayment_Plan_Type to null on omission, changing the model the user left
-  // alone). months===0 is an EXPLICIT "no prepay" (PrepayTerm "None"); a positive months sets the
-  // term. Only write these when the caller actually supplied a prepay.
+  // Prepay term / structure. An OMITTED prepay takes the DSCR PROFILE DEFAULT — five-year Standard —
+  // not whatever the live foundation happens to carry (2026-08-16 audit: "Five-year Standard prepay
+  // is not a true default. It works only when prepayMonths:60 is explicitly supplied… Default must
+  // be: PrepayTerm='60 Months', PrePayment_Plan_Type='Standard', 5 Yr PPP SMO"; §35.3/§36.6 list it
+  // among the profile's automatic values).
+  //
+  // THIS SUPERSEDES §34.2's "omission must inherit the current Lender Price default", which was
+  // written earlier in the same audit and reversed by §35/§36 and the final summary. Inheriting was
+  // measurably wrong in practice: against the captured foundation an omitted prepay produced
+  // "36 Months" with no 5 Yr PPP option — a THREE-year prepay on a deal the owner quotes at five,
+  // silently, because a quote that omits prepay is the ordinary case rather than a rare one.
+  // Prepayment changes the note's economics, so defaulting it to whatever the vendor last stored is
+  // exactly the leak `clearScenarioOwnedFields` exists to stop.
+  //
+  // months===0 remains an EXPLICIT "no prepay" (PrepayTerm "None" → the No PPP SMO), which is a
+  // different thing from omission and must stay distinguishable.
   // §33.3 — the STRUCTURE is an INDEPENDENT input from the term. "No Prepay" (a null plan value) is
   // NOT the same operation as PrepayTerm "None" (which produces the No PPP SMO), so an explicit
   // structure is honored on its own: it may be supplied with or without a term, and it overrides the
   // Standard default a term alone implies. Unrecognized values 422 (validated in validateInputs).
   const structure = mapPrepayStructure(sc.prepayStructure);
-  if (months != null) {
-    setDyn('PrepayTerm', months === 0 ? 'None' : `${months} Months`);
-    // A caller-supplied structure wins; otherwise a positive term implies the Standard default and
-    // an explicit no-prepay term carries the null plan.
-    setDyn('PrePayment_Plan_Type', structure != null
-      ? (structure === PREPAY_STRUCTURE_NULL ? null : structure)
-      : (months === 0 ? null : 'Standard'));
-  } else if (structure != null) {
-    // Structure supplied ALONE — write only the plan, leaving the live default's term untouched.
-    setDyn('PrePayment_Plan_Type', structure === PREPAY_STRUCTURE_NULL ? null : structure);
-  }
-  // Cash-out amount ("cash in hand") — §32.2 FAIL-CLOSED. A clean live cash-out capture (2026-08-16)
-  // sent `criteria.loanPurpose="CashoutRefinance"` but its JSON contained NEITHER the numeric value
-  // (50000) NOR `criteria.cashoutAmount`; it carried only a frontend BUG,
-  // `dynamicPropertiesMap.undefined = { value: null }`. This SUPERSEDES the earlier "the vendor fixed
-  // the field" finding (§31.4) — in the live path the field is NOT fixed. So per the audit: retain the
-  // amount INTERNALLY but do NOT transmit it and do NOT invent a vendor key. We store it on a
-  // Symbol-keyed property (skipped by JSON.stringify, exactly like REGISTRY_WARNINGS), so it is
-  // available for diagnostics/storage but never reaches upstream — `criteria.cashoutAmount` stays
-  // CLEARED (SCENARIO_OWNED DELETE-neutral). LP_CASHOUT_AMOUNT_FIELD remains the DELIBERATE operator
-  // escape hatch: set it ONLY once a NEW live capture confirms a legitimate cash-out field, and it is
-  // then transmitted as that exact dynamic property. Unset (the default) → nothing is transmitted.
+  setDyn('PrepayTerm', effMonths === 0 ? 'None' : `${effMonths} Months`);
+  // A caller-supplied structure wins; otherwise a positive term implies the Standard default and an
+  // explicit no-prepay term carries the null plan. A structure supplied ALONE still rides the
+  // profile's default term, which is what makes "Standard" mean five-year Standard.
+  setDyn('PrePayment_Plan_Type', structure != null
+    ? (structure === PREPAY_STRUCTURE_NULL ? null : structure)
+    : (effMonths === 0 ? null : 'Standard'));
+  // Cash-out amount ("cash in hand") — TRANSMITTED as numeric `criteria.cashoutAmount`.
+  //
+  // THE AUDIT CONTRADICTS ITSELF HERE, so the reasoning is written down rather than left implied.
+  // §31.4 and §30.4 both record a live capture carrying `criteria.cashoutAmount: 50000` as a JSON
+  // number, and §30.4 lists it in the criteria table as a "newly confirmed direct criteria field".
+  // §32.2 then reports a LATER re-test in which the visible input still held 50000 while the request
+  // carried neither the number nor the key, and declares the earlier finding superseded. The final
+  // instruction is unambiguous and is what this implements: "A $50,000 cash-out amount never reaches
+  // criteria.cashoutAmount. Remove the obsolete dynamic-field feature flag. Send numeric
+  // criteria.cashoutAmount=50000."
+  //
+  // WHY THAT IS NOT A GUESS, WHICH IS THE ONLY REASON IT MAY BE SENT AT ALL. The standing rule is
+  // never to invent a vendor token — the old fail-closed behaviour existed because the only evidence
+  // then was the frontend BUG `dynamicPropertiesMap.undefined`, which is not a field name and could
+  // never be one. `criteria.cashoutAmount` is different in kind: it is a captured key on the criteria
+  // object, recorded twice, and named explicitly in the instruction. The §32.2 non-appearance is most
+  // consistent with the UI not having committed the input on that run; it is evidence about one
+  // capture, not evidence that the key is wrong. The asymmetry decides it — omitting a real amount
+  // silently prices a cash-out as though no cash were taken, while sending a captured criteria key
+  // the vendor ignores costs nothing.
+  //
+  // The purpose guard in validateScenario has already refused a positive amount on a purchase or a
+  // rate-and-term refinance, so reaching here means the purpose is CashoutRefinance. It is written
+  // AFTER clearScenarioOwnedFields (which clears this key to neutral), which is the standing footgun:
+  // a scenario-owned field's caller value must be re-applied after the clear or it is silently lost.
+  // LP_CASHOUT_AMOUNT_FIELD is GONE — it addressed a dynamic property that never existed.
   const cashoutAmt = num(sc.cashoutAmount);
   if (cashoutAmt != null) {
-    m[CASHOUT_INTERNAL] = cashoutAmt;                    // retained internally, NEVER serialized upstream
-    const cashoutField = process.env.LP_CASHOUT_AMOUNT_FIELD; // set ONLY when a capture confirms the field
-    if (cashoutField) setDyn(cashoutField, cashoutAmt);
+    c.cashoutAmount = cashoutAmt;
+    m[CASHOUT_INTERNAL] = cashoutAmt; // still retained for diagnostics; Symbol keys never serialize
   }
   m.dynaToSmo = true;
 
@@ -813,9 +857,15 @@ function validateInputs(sc = {}) {
   if (lock.v != null && !ALLOWED_LOCKS.includes(lock.v)) {
     return bad('unsupported_lock', 'lockDays', `Rate-lock ${lock.v} days is not offered. Supported: ${ALLOWED_LOCKS.join(', ')}.`);
   }
-  // Attachment must be one of the frontend's independent options when supplied (audit §6).
-  if (sc.attachment != null && sc.attachment !== '' && !ATTACHMENT_TYPES.includes(sc.attachment)) {
-    return bad('invalid_attachment', 'attachment', `Attachment must be one of: ${ATTACHMENT_TYPES.join(', ')}; got ${JSON.stringify(sc.attachment)}.`);
+  // Attachment must be one of the frontend's independent options when supplied (audit §6). BOTH
+  // spellings are checked — `attachmentType` is the documented API name and `attachment` the accepted
+  // alias — because a key the BUILDER honours but the VALIDATOR ignores is strictly worse than one
+  // neither knows: it is the only path by which an unchecked value reaches the vendor.
+  for (const key of ['attachmentType', 'attachment']) {
+    const v = sc[key];
+    if (v != null && v !== '' && !ATTACHMENT_TYPES.includes(v)) {
+      return bad('invalid_attachment', key, `Attachment must be one of: ${ATTACHMENT_TYPES.join(', ')}; got ${JSON.stringify(v)}.`);
+    }
   }
   // LTV: loan must not exceed value (LTV > 100%), and a SUPPLIED ltv must not contradict loan/value.
   const ltvRaw = numField('ltv', { min: 0 }); if (ltvRaw.err) return ltvRaw.err;
