@@ -34,6 +34,8 @@
  *   single token holder for a small pool behind the same manager — no caller changes.
  */
 
+const { buildSearch } = require('./search-model');
+
 const AUTH_BASE = (process.env.LP_AUTH_BASE || 'https://auth.digitallending.com').replace(/\/+$/, '');
 const API_BASE = (process.env.LP_API_BASE || 'https://api.digitallending.com').replace(/\/+$/, '');
 const ORIGIN = (process.env.LP_ORIGIN || 'https://yscapgroup.digitallending.com').replace(/\/+$/, '');
@@ -209,7 +211,10 @@ async function price(scenario) {
   const companyId = s.companyId || process.env.LP_COMPANY_ID;
   const userId = s.userId || process.env.LP_USER_ID;
   if (!companyId || !userId) return { ok: false, error: 'lp_no_ids', message: 'Missing companyId/userId from the Lender Price session.' };
-  const payload = buildSearchPayload(scenario);
+  // Build the FULL canonical search model by overlaying the scenario onto a real captured
+  // search that Lender Price accepted (search-base.json). A hand-built minimal payload is
+  // rejected with 500 — Lender Price wants every default structure present.
+  const payload = buildSearch({ ...scenario, companyId });
   const url = `${API_BASE}/rest/v1/lp-ppe-integration/pricing/searchRaw/${encodeURIComponent(companyId)}/${encodeURIComponent(userId)}`;
   let r;
   try {
@@ -221,7 +226,7 @@ async function price(scenario) {
     try { r = await req(url, { method: 'POST', bearer: s2.token, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
     catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
   }
-  if (r.status !== 200) return { ok: false, error: 'lp_price_status', http: r.status, message: `searchRaw → ${r.status}`, body: scrub((r.text || '').slice(0, 300)), request: payload };
+  if (r.status !== 200) return { ok: false, error: 'lp_price_status', http: r.status, message: `searchRaw → ${r.status}`, upstream: scrub((r.text || '').slice(0, 600)), request: payload };
   return { ok: true, raw: r.json != null ? r.json : r.text, request: payload };
 }
 
@@ -330,6 +335,6 @@ function firstNum(o, keys) { for (const k of keys) { if (o[k] != null && isFinit
 
 module.exports = {
   configured, login, getSession, apiGet, enrichZip, price, parse,
-  buildSearchPayload,
+  buildSearchPayload, buildSearch,
   _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID },
 };
