@@ -34,6 +34,7 @@
  *   single token holder for a small pool behind the same manager — no caller changes.
  */
 
+const crypto = require('crypto');
 const { buildSearch, smoRegistryFromList } = require('./search-model');
 
 const AUTH_BASE = (process.env.LP_AUTH_BASE || 'https://auth.digitallending.com').replace(/\/+$/, '');
@@ -41,6 +42,10 @@ const API_BASE = (process.env.LP_API_BASE || 'https://api.digitallending.com').r
 const ORIGIN = (process.env.LP_ORIGIN || 'https://yscapgroup.digitallending.com').replace(/\/+$/, '');
 const CLIENT_ID = process.env.LP_CLIENT_ID || 'acme2';
 const TIMEOUT_MS = Number(process.env.LP_TIMEOUT_MS || 60000);
+// The disqualify poll's READY response is very large (~111 MB — the full failing-lender/rule tree),
+// so downloading + parsing it needs far longer than an ordinary price call. A still-computing poll
+// returns an empty body and comes back fast, so this longer timeout only ever applies to the ready one.
+const DISQUALIFY_TIMEOUT_MS = Number(process.env.LP_DISQUALIFY_TIMEOUT_MS || 240000);
 const REFRESH_EARLY_MS = Number(process.env.LP_REFRESH_EARLY_MS || 5 * 60 * 1000); // refresh 5 min early
 const UA = process.env.LP_USER_AGENT ||
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36 Edg/151.0.0.0';
@@ -84,10 +89,10 @@ function basicClientAuthorization(clientId, clientSecret) {
 }
 
 // ---- fetch with timeout, browser-shaped headers ---------------------------
-async function req(url, { method = 'GET', headers = {}, body = null, bearer = null } = {}) {
+async function req(url, { method = 'GET', headers = {}, body = null, bearer = null, timeoutMs = TIMEOUT_MS } = {}) {
   const u = assertAllowed(url);
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
   const h = {
     Accept: 'application/json, text/plain, */*',
     Origin: ORIGIN,
@@ -207,9 +212,36 @@ async function enrichZip(zip, { loanAmount = 0, units = 1 } = {}) {
 // of breaking pricing. Paths are env-overridable because they are not confirmed from a capture.
 const DEFAULTSEARCH_PATH = process.env.LP_DEFAULTSEARCH_PATH || '/rest/v1/lp-ppe-integration/pricing/defaultSearch/{companyId}/{userId}';
 const SMO_PATH = process.env.LP_SMO_PATH || '/rest/v1/lp-ppe-integration/pricing/smo/{companyId}';
-let _defaultSearch = null;   // { at, model } | { at, model:null } (unavailable, cached to avoid re-hammering)
-let _smoRegistry = null;     // { at, map } | { at, map:null }
+let _defaultSearch = null;   // { at, model, source, error } — source 'live'|'fallback', error is the live-fetch reason when it fell back
+let _smoRegistry = null;     // { at, map, source, error }
 const FOUNDATION_TTL_MS = Number(process.env.LP_FOUNDATION_TTL_MS || 30 * 60 * 1000);
+
+// ---- upstream-500 recovery: re-login + refetch + retry ONCE, with a breaker --
+// Lender Price sometimes represents a stale/unusable backend session (or a lost live-config fetch)
+// as an HTTP 500 on searchRaw rather than a 401. postSearchRaw only re-logs in on a 401, so a 500
+// used to be returned straight to the caller (the audit's "all four fixtures returned upstream 500"
+// regression). On a 500 we invalidate the cached session + live-config cache, log in fresh, refetch
+// the live base/SMO, rebuild the body ONCE, and retry exactly ONCE. A 4xx is a deterministic
+// request-validation error and is NEVER retried (it would loop and hide the real reason). A breaker
+// caps 500-triggered relogins per window so repeated 500s can't cause a login storm.
+const RECOVERY_WINDOW_MS = Number(process.env.LP_RECOVERY_WINDOW_MS || 60000);
+const RECOVERY_MAX = Number(process.env.LP_RECOVERY_MAX || 3);
+let _recoveryTimes = [];
+function breakerOpen() {
+  const now = Date.now();
+  _recoveryTimes = _recoveryTimes.filter((t) => now - t < RECOVERY_WINDOW_MS);
+  return _recoveryTimes.length >= RECOVERY_MAX;
+}
+function recordRecovery() { _recoveryTimes.push(Date.now()); }
+function invalidateSession() { _session = null; }
+function invalidateFoundation() { _defaultSearch = null; _smoRegistry = null; }
+// Live-vs-fallback provenance for a resolved foundation (diagnostics; never logs credentials).
+function foundationProvenance(f) {
+  return {
+    base: (f && f.baseSource) || 'fallback', smo: (f && f.smoSource) || 'fallback',
+    baseError: (f && f.baseError) || null, smoError: (f && f.smoError) || null,
+  };
+}
 
 function fillPath(tpl, companyId, userId) {
   return tpl.replace('{companyId}', encodeURIComponent(companyId || '')).replace('{userId}', encodeURIComponent(userId || ''));
@@ -218,28 +250,32 @@ function fillPath(tpl, companyId, userId) {
 // Fetch (and cache) the company's live default search model. Returns the model or null.
 async function fetchDefaultSearch(companyId, userId) {
   if (_defaultSearch && Date.now() - _defaultSearch.at < FOUNDATION_TTL_MS) return _defaultSearch.model;
-  let model = null;
+  let model = null, source = 'fallback', error = null;
   try {
     const r = await apiGet(fillPath(DEFAULTSEARCH_PATH, companyId, userId));
     // A usable default search is an object carrying a criteria block (the shape searchRaw expects).
     if (r.ok && r.data && typeof r.data === 'object' && (r.data.criteria || (r.data.search && r.data.search.raw))) {
       model = r.data.criteria ? r.data : (r.data.search && r.data.search.raw) || null;
+      if (model) source = 'live';
     }
-  } catch { /* fall back to the static base */ }
-  _defaultSearch = { at: Date.now(), model };
+    // Preserve WHY the live fetch didn't yield a usable model (do not silently turn it into undefined).
+    if (!model) error = r.ok ? 'live default search returned an unusable shape' : `${r.error || 'lp_get_status'}${r.http ? ' ' + r.http : ''}`;
+  } catch (e) { error = scrub(e.message); }
+  _defaultSearch = { at: Date.now(), model, source, error };
   return model;
 }
 
 // Fetch (and cache) the company's live special-mortgage-option registry as a name→{id,name} Map.
 async function fetchSmoRegistry(companyId) {
   if (_smoRegistry && Date.now() - _smoRegistry.at < FOUNDATION_TTL_MS) return _smoRegistry.map;
-  let map = null;
+  let map = null, source = 'fallback', error = null;
   try {
     const r = await apiGet(fillPath(SMO_PATH, companyId));
     const list = Array.isArray(r.data) ? r.data : (r.data && Array.isArray(r.data.data) ? r.data.data : (r.data && Array.isArray(r.data.smo) ? r.data.smo : null));
-    if (r.ok && list && list.length) map = smoRegistryFromList(list);
-  } catch { /* fall back to built-in ids */ }
-  _smoRegistry = { at: Date.now(), map };
+    if (r.ok && list && list.length) { map = smoRegistryFromList(list); if (map) source = 'live'; }
+    if (!map) error = r.ok ? 'live SMO registry returned an unusable shape' : `${r.error || 'lp_get_status'}${r.http ? ' ' + r.http : ''}`;
+  } catch (e) { error = scrub(e.message); }
+  _smoRegistry = { at: Date.now(), map, source, error };
   return map;
 }
 
@@ -253,30 +289,76 @@ function sleep(ms) { return new Promise((rs) => setTimeout(rs, ms)); }
 
 // Resolve the session + company/user ids + the live base/SMO foundation once. Shared by the
 // qualified price() and the disqualify workflow so both build from the identical model.
-async function priceFoundation() {
-  const s = await getSession();
+async function priceFoundation({ force = false } = {}) {
+  const s = await getSession({ force });
   if (!s.ok) return { ok: false, ...s };
   const companyId = s.companyId || process.env.LP_COMPANY_ID;
   const userId = s.userId || process.env.LP_USER_ID;
   if (!companyId || !userId) return { ok: false, error: 'lp_no_ids', message: 'Missing companyId/userId from the Lender Price session.' };
   const [liveBase, smoReg] = await Promise.all([fetchDefaultSearch(companyId, userId), fetchSmoRegistry(companyId)]);
   const url = `${API_BASE}/rest/v1/lp-ppe-integration/pricing/searchRaw/${encodeURIComponent(companyId)}/${encodeURIComponent(userId)}`;
-  return { ok: true, session: s, companyId, userId, url, liveBase: liveBase || undefined, smo: smoReg || undefined };
+  return {
+    ok: true, session: s, companyId, userId, url,
+    liveBase: liveBase || undefined, smo: smoReg || undefined,
+    // Live-vs-fallback provenance (+ the preserved live-fetch error) for diagnostics.
+    baseSource: (_defaultSearch && _defaultSearch.source) || 'fallback',
+    smoSource: (_smoRegistry && _smoRegistry.source) || 'fallback',
+    baseError: (_defaultSearch && _defaultSearch.error) || null,
+    smoError: (_smoRegistry && _smoRegistry.error) || null,
+  };
+}
+
+// searchRaw with the upstream-500 recovery: build the body from the resolved foundation and POST it;
+// on a 500, invalidate the session + live-config cache, re-login once, refetch, rebuild ONCE, retry
+// ONCE. buildBody:(foundation)=>payload is called with whichever foundation is in force so the retry
+// is built from the FRESH live base/SMO. Returns { ...postResult, foundation, request, recovered } on
+// success, or a stable error carrying both upstream statuses + the live-vs-fallback provenance.
+async function searchRawWithRecovery(buildBody, opts = {}) {
+  const f1 = await priceFoundation();
+  if (!f1.ok) return f1;
+  const body1 = buildBody(f1);
+  const r1 = await postSearchRaw(f1.url, f1.session, body1, opts);
+  if (r1.ok) return { ...r1, foundation: f1, request: body1, recovered: false };
+  // Only a 500 is recoverable — a 4xx is deterministic request validation and must never be retried.
+  if (r1.http !== 500) return { ...r1, foundation: f1, request: body1 };
+  if (breakerOpen()) {
+    return { ok: false, error: 'lp_price_500_circuit_open', http: 500,
+      message: 'Repeated upstream 500s from Lender Price — the one-time re-login was skipped to avoid a login storm. Try again shortly.',
+      upstream: r1.upstream || null, provenance: foundationProvenance(f1) };
+  }
+  recordRecovery();
+  invalidateSession();
+  invalidateFoundation();
+  const f2 = await priceFoundation({ force: true });
+  if (!f2.ok) return f2;
+  const body2 = buildBody(f2);
+  const r2 = await postSearchRaw(f2.url, f2.session, body2, opts);
+  if (r2.ok) return { ...r2, foundation: f2, request: body2, recovered: true };
+  // Final failure — stable error with BOTH upstream statuses and the (refetched) provenance.
+  return {
+    ok: false, error: 'lp_price_500_after_retry', http: r2.http || 500,
+    message: 'Lender Price searchRaw returned 500 both before and after a fresh login + live-config refetch.',
+    firstHttp: r1.http || null, retryHttp: r2.http || null,
+    upstream: r2.upstream || r1.upstream || null,
+    provenance: foundationProvenance(f2),
+  };
 }
 
 // POST one searchRaw body (with a single 401 re-login retry). Returns { ok, http, raw, empty }.
 // `empty` marks an ACCEPTED-but-empty body — how Lender Price answers "the async result isn't
 // cached yet" during the disqualify poll.
-async function postSearchRaw(url, session, payload) {
+async function postSearchRaw(url, session, payload, opts = {}) {
   let s = session;
   let r;
-  try { r = await req(url, { method: 'POST', bearer: s.token, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
+  const reqOpts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) };
+  if (opts.timeoutMs) reqOpts.timeoutMs = opts.timeoutMs; // the disqualify poll returns a ~111 MB body — allow more time to download + parse it
+  try { r = await req(url, { ...reqOpts, bearer: s.token }); }
   catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
   if (r.status === 401) {
     const s2 = await getSession({ force: true });
     if (!s2.ok) return { ok: false, ...s2 };
     s = s2;
-    try { r = await req(url, { method: 'POST', bearer: s.token, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
+    try { r = await req(url, { ...reqOpts, bearer: s.token }); }
     catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
   }
   if (r.status !== 200) return { ok: false, error: 'lp_price_status', http: r.status, message: `searchRaw → ${r.status}`, upstream: scrub((r.text || '').slice(0, 600)) };
@@ -285,17 +367,79 @@ async function postSearchRaw(url, session, payload) {
   return { ok: true, session: s, raw, empty };
 }
 
+// ---- disqualify search store (kickoff once, poll by stable searchKey) ------
+// The disqualify computation is async: a normal /price is ALREADY the kickoff (its body carries
+// showDisqualify + disqualifyAsync + cachedDisqualified=false). To READ the result, the poll must
+// re-post a BYTE-IDENTICAL body with only cachedDisqualified flipped to true — that is how the
+// frontend hits the SAME server-side computation (~16s later, a ~111 MB tree). Rebuilding the body
+// on each poll (re-fetching the live base/SMO) risks a different body → a NEW upstream search that
+// is never ready. So we STORE the exact kickoff body under a stable searchKey and poll THAT.
+const DISQ_STORE = new Map(); // searchKey -> { body, url, createdAt, expiresAt }
+const DISQ_STORE_TTL_MS = Number(process.env.LP_DISQUALIFY_STORE_TTL_MS || 15 * 60 * 1000);
+const DISQ_STORE_MAX = 200;
+// Stable key for a search: sha256 of the canonical body with cachedDisqualified removed (the only
+// field that differs between kickoff and poll). Deterministic → the same scenario reuses one slot.
+function searchKeyFor(body) {
+  const clone = { ...body }; delete clone.cachedDisqualified;
+  return crypto.createHash('sha256').update(JSON.stringify(clone)).digest('hex').slice(0, 32);
+}
+function pruneDisqStore() {
+  const now = Date.now();
+  for (const [k, v] of DISQ_STORE) if (v.expiresAt <= now) DISQ_STORE.delete(k);
+  while (DISQ_STORE.size > DISQ_STORE_MAX) { const first = DISQ_STORE.keys().next().value; DISQ_STORE.delete(first); }
+}
+// The kickoff RESPONSE assigns this search a requestId (at results.baseSearch.requestId). The poll
+// MUST echo it at the top level of the poll body, or Lender Price treats the poll as a brand-new
+// search (a fresh root id every time — the "different search id on every call" the audit measured)
+// and the async result is never found. This is the single missing link that made the poll fail.
+function requestIdOf(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  // The kickoff assigns the requestId at baseSearch.requestId OR results.baseSearch.requestId
+  // (both shapes occur). Check both.
+  const a = raw.baseSearch && raw.baseSearch.requestId;
+  const b = raw.results && raw.results.baseSearch && raw.results.baseSearch.requestId;
+  const rid = (typeof a === 'string' && a) || (typeof b === 'string' && b) || null;
+  return rid || null;
+}
+// Build the poll body from the stored kickoff body applying the EXACT frontend normalization the
+// captured HAR uses: cachedDisqualified=true, the upstream requestId, and four nullable defaults the
+// frontend fills in (compensation bounds + rate range) so the poll body matches byte-for-byte.
+function applyPollDelta(kickBody, requestId) {
+  const body = { ...kickBody, cachedDisqualified: true };
+  if (requestId) body.requestId = requestId;
+  const bc = body.brokerCriteria = { ...(body.brokerCriteria || {}) };
+  if (bc.minimunCompensation === undefined) bc.minimunCompensation = null;
+  if (bc.maxCompensation === undefined) bc.maxCompensation = null;
+  const rr = body.rateRange = { ...(body.rateRange || {}) };
+  if (rr.from === undefined) rr.from = null;
+  if (rr.to === undefined) rr.to = null;
+  return body;
+}
+function storeKickoff(url, body, requestId) {
+  pruneDisqStore();
+  const key = searchKeyFor(body);
+  const now = Date.now();
+  // Store the kickoff body verbatim (cachedDisqualified is already false on it) + the upstream
+  // requestId. Refresh the TTL on a repeat so an active scenario stays pollable.
+  DISQ_STORE.set(key, { body, url, requestId: requestId || null, createdAt: now, expiresAt: now + DISQ_STORE_TTL_MS });
+  return key;
+}
+
 async function price(scenario) {
-  const f = await priceFoundation();
-  if (!f.ok) return f;
   // Build the FULL canonical search model. Prefer the company's LIVE default search (so every
   // current default/config is preserved) and its LIVE special-mortgage-option ids; both fall
   // back to the captured static base / built-in ids when the endpoints are unavailable, so a
-  // hand-built minimal payload (which Lender Price rejects with 500) is never sent.
-  const payload = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo });
-  const r = await postSearchRaw(f.url, f.session, payload);
-  if (!r.ok) return { ...r, request: payload };
-  return { ok: true, raw: r.raw, request: payload };
+  // hand-built minimal payload (which Lender Price rejects with 500) is never sent. The recovery
+  // wrapper re-logs in + refetches the live config + retries ONCE on a 500 (a stale-session 500).
+  const build = (f) => buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo });
+  const r = await searchRawWithRecovery(build);
+  if (!r.ok) return r;
+  const f = r.foundation;
+  // A normal price IS the disqualify kickoff — store the exact body AND the upstream requestId the
+  // response assigned, so a later status poll re-posts it with only cachedDisqualified flipped +
+  // that requestId, hitting the SAME computation.
+  const searchKey = storeKickoff(f.url, r.request, requestIdOf(r.raw));
+  return { ok: true, raw: r.raw, request: r.request, searchKey, provenance: foundationProvenance(f), recovered: !!r.recovered };
 }
 
 // Whether a searchRaw response carries a POPULATED disqualify tree (the async result is ready).
@@ -316,20 +460,23 @@ function hasDisqualifyData(raw) {
 // never blocks an HTTP request indefinitely; returns ready:false with the qualified data when the
 // window elapses.
 async function priceDisqualified(scenario, opts = {}) {
-  const f = await priceFoundation();
-  if (!f.ok) return f;
-  const kickBody = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo, disqualify: { cached: false } });
-  const pollBody = { ...kickBody, cachedDisqualified: true };
+  const build = (f) => buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo, disqualify: { cached: false } });
   const maxWaitMs = opts.maxWaitMs != null ? opts.maxWaitMs : Number(process.env.LP_DISQUALIFY_MAX_WAIT_MS || 80000);
   const pollMs = opts.pollMs != null ? opts.pollMs : Number(process.env.LP_DISQUALIFY_POLL_MS || 5000);
 
-  // Phase 1 — kick off + qualified.
-  let session = f.session;
-  const first = await postSearchRaw(f.url, session, kickBody);
-  if (!first.ok) return { ...first, request: kickBody };
-  if (first.session) session = first.session;
+  // Phase 1 — kick off + qualified (through the 500 recovery: re-login + refetch + rebuild + retry once).
+  const first = await searchRawWithRecovery(build);
+  if (!first.ok) return first;
+  const f = first.foundation;
+  let session = first.session || f.session;
+  const kickBody = first.request;
+  // Echo the kickoff's requestId on the poll so it reads the SAME async computation (not a new one),
+  // applying the exact frontend normalization delta (cachedDisqualified + requestId + nullable defaults).
+  const rid = requestIdOf(first.raw);
+  const pollBody = applyPollDelta(kickBody, rid);
+  storeKickoff(f.url, kickBody, rid); // also make it pollable by searchKey afterwards
   if (hasDisqualifyData(first.raw)) {
-    return { ok: true, ready: true, polls: 0, qualified: first.raw, disqualified: first.raw, request: kickBody };
+    return { ok: true, ready: true, polls: 0, qualified: first.raw, disqualified: first.raw, request: kickBody, provenance: foundationProvenance(f) };
   }
 
   // Phase 2 — poll the cached async result.
@@ -339,7 +486,7 @@ async function priceDisqualified(scenario, opts = {}) {
   while (Date.now() - t0 < maxWaitMs) {
     await sleep(pollMs);
     polls += 1;
-    const p = await postSearchRaw(f.url, session, pollBody);
+    const p = await postSearchRaw(f.url, session, pollBody, { timeoutMs: DISQUALIFY_TIMEOUT_MS });
     if (p.session) session = p.session;
     if (!p.ok) continue;      // transient upstream error — keep polling within the window
     if (p.empty) continue;    // still computing (empty body) — keep polling
@@ -367,12 +514,43 @@ async function priceDisqualified(scenario, opts = {}) {
 async function pollDisqualified(scenario) {
   const f = await priceFoundation();
   if (!f.ok) return f;
-  const body = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo, disqualify: { cached: true } });
-  const r = await postSearchRaw(f.url, f.session, body);
+  // If a prior /price for this scenario stored the kickoff's requestId, echo it (+ the nullable
+  // defaults) so we poll the SAME computation. (searchKeyFor ignores cachedDisqualified, so the key
+  // matches the kickoff's.) Build the kickoff-shaped body first to compute the key.
+  const kickBody = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo, disqualify: { cached: false } });
+  pruneDisqStore();
+  const entry = DISQ_STORE.get(searchKeyFor(kickBody));
+  const body = applyPollDelta(kickBody, entry && entry.requestId);
+  const r = await postSearchRaw(f.url, f.session, body, { timeoutMs: DISQUALIFY_TIMEOUT_MS });
   if (!r.ok) return { ...r, request: body };
   if (r.empty || !hasDisqualifyData(r.raw)) return { ok: true, ready: false, request: body };
   return { ok: true, ready: true, raw: r.raw, request: body };
 }
+
+// POLL-ONLY by searchKey — the correct, idempotent status check (the audit's required design).
+// Loads the STORED kickoff body (never rebuilds via buildSearch, never re-fetches base/SMO), flips
+// ONLY cachedDisqualified to true, and posts it ONCE. So every poll hits the SAME upstream
+// computation the price() kickoff started — it can never restart/replace it, and the cache key is
+// byte-stable across polls. Returns { unknown:true } when the searchKey is absent/expired so the
+// route can tell the caller to re-run the price. Never holds a long loop: one post, then answer.
+async function pollDisqualifiedByKey(searchKey) {
+  pruneDisqStore();
+  const entry = DISQ_STORE.get(searchKey);
+  if (!entry) return { ok: true, unknown: true, ready: false };
+  // Without the upstream requestId the poll can never correlate to the kickoff's computation — it
+  // would 202 forever. Surface a named, controlled error instead (the caller re-runs /price).
+  if (!entry.requestId) return { ok: false, error: 'lp_missing_request_id', searchKey,
+    message: 'The kickoff response did not include an upstream requestId, so the ineligible result cannot be polled. Re-run the price search.' };
+  const f = await priceFoundation(); // session/auth only — the scenario body comes from the store
+  if (!f.ok) return f;
+  const body = applyPollDelta(entry.body, entry.requestId); // cachedDisqualified + requestId + nullable defaults
+  const r = await postSearchRaw(entry.url || f.url, f.session, body, { timeoutMs: DISQUALIFY_TIMEOUT_MS });
+  if (!r.ok) return { ...r, searchKey };
+  if (r.empty || !hasDisqualifyData(r.raw)) return { ok: true, ready: false, searchKey };
+  return { ok: true, ready: true, raw: r.raw, searchKey };
+}
+// Test/introspection helper — is a searchKey currently stored (kicked off, not expired)?
+function hasStoredSearch(searchKey) { pruneDisqStore(); return DISQ_STORE.has(searchKey); }
 
 // ---- request builder (decoded field mapping; README "Field mapping") -------
 // Turns a plain scenario into the Lender Price searchRaw body. Confirmed tokens per the
@@ -858,8 +1036,31 @@ function countArrays(root, keys) {
   return n;
 }
 
+// Authenticated pricing readiness for /health — proves more than "configured": that a login
+// SUCCEEDS and the live pricing-config endpoints (defaultSearch + SMO) answer, with live-vs-fallback
+// provenance. With { price:true } it also runs a real minimal searchRaw so callers can confirm
+// pricing end-to-end on demand (kept opt-in so a frequently-polled health check never hammers Lender
+// Price). Never throws.
+async function pricingReadiness({ price: deep = false } = {}) {
+  if (!configured()) return { pricingReady: false, reason: 'not_configured' };
+  const s = await getSession();
+  if (!s.ok) return { pricingReady: false, auth: { ok: false, error: s.error, http: s.http || null, message: s.message } };
+  const f = await priceFoundation();
+  if (!f.ok) return { pricingReady: false, auth: { ok: true, expiresAt: new Date(s.expiresAt).toISOString() }, foundation: { ok: false, error: f.error, message: f.message } };
+  const auth = { ok: true, expiresAt: new Date(s.expiresAt).toISOString(), companyId: f.companyId };
+  const foundation = foundationProvenance(f);
+  if (!deep) return { pricingReady: true, auth, foundation };
+  // Deep check — a real minimal searchRaw (the only thing that proves a stale-session 500 is gone).
+  const pr = await price({ value: 500000, loan: 350000, fico: 780, dscr: 1.1 });
+  return {
+    pricingReady: !!pr.ok, auth, foundation,
+    price: pr.ok ? { ok: true, recovered: !!pr.recovered } : { ok: false, error: pr.error, http: pr.http || null, message: pr.message },
+  };
+}
+
 module.exports = {
-  configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, pollDisqualified, parse, parseFull, parseDisqualified, summarizeRaw,
+  configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, pollDisqualified, pollDisqualifiedByKey,
+  hasStoredSearch, searchKeyFor, parse, parseFull, parseDisqualified, summarizeRaw, pricingReadiness,
   hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
-  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID },
+  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery },
 };

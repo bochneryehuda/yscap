@@ -111,9 +111,25 @@ function rejectUnsupported(sc, res) {
   return false;
 }
 
-// GET /health — is the module up and are Lender Price credentials configured (no login attempted).
+// GET /health — module up + deployed build id, AND authenticated pricing readiness (not just
+// config). By default it proves a login succeeds and the live pricing-config endpoints answer
+// (live-vs-fallback provenance). ?config=1 skips the login for a pure config probe; ?price=1 also
+// runs a real minimal searchRaw (proves a stale-session 500 is gone) end-to-end.
 async function health(req, res) {
-  res.json({ ok: true, product: 'long-term', feature: 'dscr-pricer', configured: lp.configured() });
+  // Expose the deployed source commit so production can be reproduced/audited from the exact code.
+  // Render sets RENDER_GIT_COMMIT / RENDER_GIT_BRANCH on every deploy.
+  const build = {
+    commit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null,
+    branch: process.env.RENDER_GIT_BRANCH || null,
+    service: process.env.RENDER_SERVICE_NAME || null,
+    deployedAt: process.env.RENDER_DEPLOY_FINISHED_AT || null,
+  };
+  const base = { ok: true, product: 'long-term', feature: 'dscr-pricer', configured: lp.configured(), build };
+  // A pure config probe (no login) — the old behavior, kept for a cheap liveness check.
+  if (req.query && (req.query.config === '1' || req.query.config === 'true')) return res.json(base);
+  const deep = !!(req.query && (req.query.price === '1' || req.query.price === 'true'));
+  const readiness = await lp.pricingReadiness({ price: deep });
+  res.json({ ...base, ...readiness });
 }
 
 // GET /login-check — actually attempt a login and report ok/failure (no pricing). Confirms the
@@ -124,32 +140,68 @@ async function loginCheck(req, res) {
   res.json({ ok: true, companyId: s.companyId, userId: s.userId, expiresAt: new Date(s.expiresAt).toISOString(), profile: s.profile });
 }
 
+// Shared error body for a failed pricing call — surfaces the stable-error diagnostics the audit
+// requires: both upstream statuses (firstHttp/retryHttp) and the live-vs-fallback provenance.
+function priceErrorBody(r) {
+  const out = { ok: false, error: r.error, http: r.http || null, message: r.message, upstream: r.upstream || r.body || null };
+  if (r.firstHttp != null) out.firstHttp = r.firstHttp;
+  if (r.retryHttp != null) out.retryHttp = r.retryHttp;
+  if (r.provenance) out.provenance = r.provenance;
+  return out;
+}
+
 // POST /price — body is a scenario (or { scenario }). Returns the parsed program summary.
 async function price(req, res) {
   const sc = (req.body && req.body.scenario) ? req.body.scenario : (req.body || {});
   if (rejectUnsupported(sc, res)) return; // never silently ignore an unimplemented field
   const r = await lp.price(sc);
-  if (!r.ok) {
-    const code = (r.http && r.http >= 500) ? 502 : 400;
-    return res.status(code).json({ ok: false, error: r.error, http: r.http || null, message: r.message, upstream: r.upstream || r.body || null });
-  }
+  if (!r.ok) return res.status((r.http && r.http >= 500) ? 502 : 400).json(priceErrorBody(r));
   if (rejectInvalidValues(r.request, res)) return; // a supported field carried an unrecognized value
   const effective = effectiveOf(r.request); // requested-vs-effective transparency
   // full:true → the COMPLETE capture (every option's price build, itemized LLPAs, margin/holdback,
   // comp, fees, ratios, monthly payment). Add raw:true to also attach each option's untouched leaf.
+  // A price is ALSO the disqualify kickoff — hand back the stable searchKey so the caller polls the
+  // separate status route (GET /disqualifications/:searchKey) instead of ever restarting the search.
   if (req.body && req.body.full) {
     const full = lp.parseFull(r.raw, { raw: !!req.body.raw });
-    const out = { ok: true, ...full, effectiveScenario: effective, request: r.request };
+    const out = { ok: true, ...full, effectiveScenario: effective, request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
     if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
     return res.json(out);
   }
   const parsed = lp.parse(r.raw);
-  const out = { ok: true, ...trimPrograms(parsed), effectiveScenario: effective, request: r.request };
+  const out = { ok: true, ...trimPrograms(parsed), effectiveScenario: effective, request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
   // Secret-gated diagnostics (the whole router is behind the diag token / staff login): when the
   // caller asks, include a structural summary of the raw response so we can see whether Lender
   // Price returned programs the parser missed, or truly zero — and any disqualify reasons.
   if (req.body && req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
   res.json(out);
+}
+
+// Shape a ready disqualified raw response into the compact per-lender/reason summary.
+function shapeDisqualified(raw, debug) {
+  const d = lp.parseDisqualified(raw);
+  const out = {
+    ready: true, lenderCount: d.lenderCount, itemCount: d.itemCount, reasonCount: d.reasonCount,
+    lenders: d.lenders.slice(0, 80).map((g) => ({ lender: g.lender, investor: g.investor || null, lenderId: g.lenderId || null, itemCount: g.itemCount, items: g.items.slice(0, 40) })),
+  };
+  return debug ? { disqualified: out, rawSummary: lp.summarizeRaw(raw) } : { disqualified: out };
+}
+
+// GET /disqualifications/:searchKey  (also POST with { searchKey }) — the POLL-ONLY status route.
+// A prior POST /price kicked off the async ineligible computation and returned the searchKey; this
+// polls the SAME computation (the stored kickoff body, only cachedDisqualified flipped) exactly
+// ONCE. It never rebuilds or restarts the search. 200 = ready, 202 = still computing (poll again),
+// 409 = unknown/expired searchKey (re-run /price).
+async function disqualifications(req, res) {
+  const body = req.body || {};
+  const searchKey = (req.params && req.params.searchKey) || body.searchKey;
+  if (!searchKey) return res.status(400).json({ ok: false, error: 'missing_search_key', message: 'Provide the searchKey returned by POST /price.' });
+  const pr = await lp.pollDisqualifiedByKey(searchKey);
+  if (pr.unknown) return res.status(409).json({ ok: false, error: 'unknown_search_key', searchKey,
+    message: 'No kickoff found for this searchKey (it may have expired). Re-run POST /price to start the ineligible calculation, then poll the searchKey it returns.' });
+  if (!pr.ok) { const code = (pr.http && pr.http >= 500) ? 502 : 400; return res.status(code).json({ ok: false, error: pr.error, http: pr.http || null, message: pr.message, upstream: pr.upstream || pr.body || null }); }
+  if (!pr.ready) { res.set('Retry-After', '2'); return res.status(202).json({ ok: true, ready: false, searchKey, retryAfterMs: 2000, message: 'Ineligible results still computing — poll again shortly.' }); }
+  return res.json({ ok: true, ready: true, searchKey, ...shapeDisqualified(pr.raw, body.debug) });
 }
 
 // POST /disqualify — body is a scenario (or { scenario }). Returns the QUALIFIED summary plus the
@@ -185,10 +237,7 @@ async function disqualify(req, res) {
   if (body.maxWaitMs != null) opts.maxWaitMs = Math.min(Number(body.maxWaitMs) || 0, 100000);
   if (body.pollMs != null) opts.pollMs = Math.max(Number(body.pollMs) || 0, 1000);
   const r = await lp.priceDisqualified(sc, opts);
-  if (!r.ok) {
-    const code = (r.http && r.http >= 500) ? 502 : 400;
-    return res.status(code).json({ ok: false, error: r.error, http: r.http || null, message: r.message, upstream: r.upstream || r.body || null });
-  }
+  if (!r.ok) return res.status((r.http && r.http >= 500) ? 502 : 400).json(priceErrorBody(r));
   if (rejectInvalidValues(r.request, res)) return;
   const qualified = trimPrograms(lp.parse(r.qualified));
   const disq = lp.parseDisqualified(r.disqualified);
@@ -221,7 +270,7 @@ async function selftest(req, res) {
   const results = [];
   for (const sc of BATTERY) {
     const r = await lp.price(sc);
-    if (!r.ok) { results.push({ name: sc.name, ok: false, error: r.error, http: r.http || null, message: r.message, upstream: r.upstream || r.body || null }); continue; }
+    if (!r.ok) { results.push({ name: sc.name, ...priceErrorBody(r) }); continue; }
     const p = lp.parse(r.raw);
     const best = p.programs.reduce((m, x) => (x.minRate != null && (m == null || x.minRate < m) ? x.minRate : m), null);
     results.push({ name: sc.name, ok: true, programCount: p.programCount, lenderCount: p.lenderCount, rungCount: p.rungCount, bestRate: best });
@@ -238,9 +287,12 @@ function makeRouter() {
   router.get('/health', (req, res) => health(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_health_error' })));
   router.get('/login-check', (req, res) => loginCheck(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_login_error' })));
   router.post('/price', (req, res) => price(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_price_error' })));
+  // Poll-only ineligible status by searchKey (kicked off by POST /price) — never restarts the search.
+  router.get('/disqualifications/:searchKey', (req, res) => disqualifications(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualifications_error' })));
+  router.post('/disqualifications', (req, res) => disqualifications(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualifications_error' })));
   router.post('/disqualify', (req, res) => disqualify(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualify_error' })));
   router.post('/selftest', (req, res) => selftest(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_selftest_error' })));
   return router;
 }
 
-module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, selftest }, BATTERY };
+module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest }, BATTERY };
