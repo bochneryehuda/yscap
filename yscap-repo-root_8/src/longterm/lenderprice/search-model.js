@@ -804,6 +804,56 @@ const ALLOWED_TERMS = (process.env.LP_ALLOWED_TERMS
   ? process.env.LP_ALLOWED_TERMS.split(',').map((x) => Number(x.trim())).filter((n) => isFinite(n))
   : LIVE_TERMS);
 
+// §31.8 — "NO MORTGAGE HISTORY" AND A MORTGAGE LATE CANNOT BOTH BE TRUE.
+//
+// PURE. A borrower who has never held a mortgage cannot have been late on one, so a scenario
+// asserting both describes no real borrower. Upstream this does not error: each field is applied
+// independently and the engine prices on whichever the rules happen to read — which is the
+// silent-mis-pricing class this connector exists to refuse, and the worst shape of it, because the
+// two answers ("clean, no history" and "a 90-day mortgage late") sit at opposite ends of the credit
+// grid. It is also the ORDINARY way the contradiction arises: `noMortgageHistory` is a sticky
+// checkbox, so leaving it ticked while entering the lates that were just pulled is one click.
+//
+// SCOPE IS EXACTLY WHAT THE AUDIT ESTABLISHED, and no wider. The lates (the eight
+// `MORT*LATESLAST*` buckets) and their PARENT toggle `lateInLast12Months` are the same fact stated
+// twice by the same UI — the parent is documented as being sent alongside those buckets — so both
+// are in. DELIBERATELY NOT INCLUDED, because each is a business rule about what the vendor's flag
+// MEANS rather than an arithmetic impossibility, and guessing one would refuse legitimate scenarios:
+// a foreclosure, short sale, deed-in-lieu, mortgage charge-off or forbearance all imply a mortgage
+// existed at some point, but "no mortgage history" may well mean no CURRENT or no RECENT mortgage —
+// only the vendor can say. Ask before widening this; do not infer it.
+//
+// A count of "0" is NOT a contradiction: stating that a borrower with no mortgage history has zero
+// lates is consistent, and it is what a form pre-filled with zeros sends. Only a real count
+// conflicts. A count the registry does not recognise at all is left to the existing invalid-value
+// refusal, so one wrong value is never reported as two different problems.
+const NONZERO_LATE_COUNTS = new Set(['1', '2', '3', '4+']);
+function mortgageHistoryConflict(sc = {}) {
+  if (sc.noMortgageHistory !== true) return null;
+  const conflicts = [];
+  const lates = sc.mortgageLates;
+  if (lates && typeof lates === 'object' && !Array.isArray(lates)) {
+    for (const [window, label] of [['last12', 'the last 12 months'], ['months13To24', 'months 13–24']]) {
+      const bucket = lates[window];
+      if (!bucket || typeof bucket !== 'object') continue;
+      for (const sev of ['30', '60', '90', '120']) {
+        if (bucket[sev] == null) continue;
+        // String()-normalised exactly as applyRegistry does, so a numeric 1 and a "1" are one value.
+        if (NONZERO_LATE_COUNTS.has(String(bucket[sev]))) {
+          conflicts.push(`${bucket[sev]} × ${sev}-day late in ${label} (mortgageLates.${window}.${sev})`);
+        }
+      }
+    }
+  }
+  if (sc.lateInLast12Months === true) conflicts.push('lateInLast12Months = true');
+  if (!conflicts.length) return null;
+  return {
+    field: 'noMortgageHistory',
+    message: `Contradictory scenario: noMortgageHistory is true, but the request also reports ${conflicts.join('; ')}. A borrower with no mortgage history cannot have been late on a mortgage. Clear noMortgageHistory, or remove the mortgage lates — whichever the credit report actually shows. Nothing was priced, because the two halves price at opposite ends of the credit grid and the engine would silently follow one of them.`,
+    conflicts,
+  };
+}
+
 function validateInputs(sc = {}) {
   const bad = (code, field, message) => ({ ok: false, code, field, message });
   // Strict booleans — a JSON string "false" is TRUTHY and used to flip the flag on.
@@ -812,6 +862,9 @@ function validateInputs(sc = {}) {
       return bad('non_boolean_value', f, `Field "${f}" must be a JSON boolean (true/false); got ${JSON.stringify(sc[f])}. A string is rejected rather than coerced.`);
     }
   }
+  // §31.8 — A SCENARIO THAT CONTRADICTS ITSELF IS REFUSED, not priced on whichever half wins.
+  const conflict = mortgageHistoryConflict(sc);
+  if (conflict) return bad('contradictory_mortgage_history', conflict.field, conflict.message);
   // §33.2/§33.3/§33.4 — confirmed-token enums. Each is REJECTED (422) when unrecognized rather than
   // falling back to the profile default: silently pricing a bank-statement scenario as DSCR, an
   // exotic prepay schedule as Standard, or an unknown vesting type as LLC is the exact
@@ -1045,4 +1098,4 @@ function validateScenario(sc = {}) {
 }
 
 module.exports = { BASE, buildSearch, clearScenarioOwnedFields, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue } };
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, mortgageHistoryConflict, NONZERO_LATE_COUNTS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue } };
