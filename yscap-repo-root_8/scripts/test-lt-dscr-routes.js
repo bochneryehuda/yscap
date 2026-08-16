@@ -51,6 +51,10 @@ const dq = { ready: true, lenderCount: 3, itemCount: 8, reasonCount: 8, lenders:
   ok(Array.isArray(eff.specialMortgageOptions) && eff.specialMortgageOptions.every((s) => 'id' in s && 'name' in s), 'SMOs are reported as {id,name} identities');
   ok(unsupportedFields({ attachment: 'Detached', nonWarrantable: true, purpose: 'Purchase' }).length === 0, 'attachment + nonWarrantable are supported fields');
   ok(unsupportedFields({ madeUpField: 1 }).includes('madeUpField'), 'a truly unknown field is still rejected');
+  // rentalTerm must be in the route allow-list (a builder field the route rejected = an inert feature).
+  ok(unsupportedFields({ rentalTerm: 'short', purpose: 'Purchase' }).length === 0, 'rentalTerm is a supported route field (reachable over HTTP)');
+  const stEff = effectiveOf(lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, rentalTerm: 'short' }));
+  ok(stEff.addlOccupancyType === 'Short_Term_Rental_Property', 'a rentalTerm:short request round-trips to Short_Term_Rental_Property in effectiveScenario');
 }
 
 // 3) Exercise the secret gate directly by pulling its first layer's handle.
