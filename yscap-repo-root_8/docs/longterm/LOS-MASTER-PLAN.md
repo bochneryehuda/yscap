@@ -680,12 +680,12 @@ notification choices).
 Each phase is independently useful and independently reviewable. Each ends with something on
 a screen.
 
-### Phase 1 — The people map
+### Phase 1 — The people map — **BUILT**
 `lt_encompass_users`, `lt_staff_links`, `lt_loan_contacts`; the roster pull; the email
 auto-match; the admin confirm screen. **Ends with:** an admin can see every Encompass user,
 confirm who they are in PILOT, and the mapping is ready for everything downstream.
 
-### Phase 2 — Bring the loans in
+### Phase 2 — Bring the loans in — **BUILT**
 The sync: pipeline discovery, then a full per-loan read for anything a decision depends on.
 Writes `lt_loans` and its sections, `lt_loan_contacts`, milestones. Records
 `encompass_synced_at` so freshness is always visible. **No writes to Encompass.**
@@ -696,15 +696,24 @@ Writes `lt_loans` and its sections, `lt_loan_contacts`, milestones. Records
 > fields as null that the full loan read populates. Never populate a decision-bearing
 > snapshot from a pipeline row.
 
-### Phase 3 — The pipeline and the switch
+### Phase 3 — The pipeline and the switch — **BUILT**
 `app-v2/src/longterm/**` comes into existence: the shell, the product switch, the pipeline
 table, filters, saved views, scope. **Ends with:** an officer signs in, flips to Long-Term,
 and sees their own long-term book.
 
-### Phase 4 — The loan workspace
+### Phase 4 — The loan workspace — **BUILT**
 The three-region layout, the URLA-sectioned read-only file, the Summary rail, the Contacts
 section, the milestone stepper. **Ends with:** a real file on our own screen — which is what
 surfaces the gaps in the model before anything depends on them.
+
+**What it surfaced, as promised.** Two gaps, both fixed where they belonged rather than on the
+screen: the workspace read `lock_status` and `lock_expiration_date` off the loan row while those
+columns live in `lt_locks`, so its "Rate lock" section was greyed with a reason that was not true
+on every loan (the single-loan route now joins the lock — phase 7); and the pipeline's rows had
+been navigating to a route that did not exist since phase 3, so every click on a long-term file
+landed on the fallback. A section that does not apply is greyed **and still clickable**, because a
+disabled control that does nothing when pressed teaches people the screen is broken while one that
+answers "the Condition Center is coming soon" answers the question they had.
 
 ### Phase 5 — The Condition Center (read) — **DEFERRED (owner-directed 2026-08-14)**
 Set aside. The nav entry and the workspace section ship as a **"Coming soon"** placeholder
@@ -712,14 +721,45 @@ behind the `conditions.enabled` setting (default off); no tables, no sync, no de
 The design is held in §5. **Ends with:** nothing — this phase does not run until the owner
 lifts the deferral, and the phases below moved up one to take its slot.
 
-### Phase 6 — Settings
+### Phase 6 — Settings — **BUILT**
 `lt_settings`, both screens, and the pass that moves every value this plan named as a
 setting out of code and into it. **Ends with:** the sellable rule stops being a comment and
 starts being a feature.
 
-### Phase 7 — Locks and pricing (read)
+**The screen is drawn from the server's own description**, so adding a setting server-side makes it
+appear with no front-end change. There is no list of settings in the front end and there must never
+be one — a copy there is a second source of truth for "what can be configured", and the day the two
+disagree the front end is the half people trust. The editor is chosen from the declaration's TYPE,
+which is why a `fieldId` edits as text (an Encompass field number is the single most likely thing a
+buyer has to change) while a `map` is shown read-only (a generic editor over the milestone ladder
+would let one mistyped brace destroy it).
+
+**And one real defect this phase turned up:** `access.adminRoles` decides who may change the
+settings, **so it can edit itself out of reach**. Saving `['loan_officer']` locked every
+administrator out of the screen that undoes it, leaving a hand-written database row as the only way
+back. `super_admin` is now a floor, added to the list whatever the setting says — a gate whose own
+remedy nobody at the company can perform is a dead end.
+
+### Phase 7 — Locks and pricing (read) — **BUILT**
 `lt_locks`, `lt_lock_events`, the lock section and the pipeline column. **Ends with:** the
 lock posture of every loan, visible and current, ready for the lock desk build.
+
+**Built as §6.1 describes it, and no wider.** The posture is read from the loan the sync already
+fetched — the `rateLock` entity where it answers, the two numbered fields where it does not — so no
+lock endpoint is called and none would answer. The expiration is taken **exactly as stated** and is
+never calculated from the lock date plus a day count; a loan carrying "30 days" and no stated
+expiration reports none and says why, because a calculated date is wrong in the direction that
+costs money. The ONE inference the reader permits itself is ORDER: where both numbered fields parse
+as dates the LATER is the expiration, since an expiration cannot precede the lock it expires — that
+is arithmetic, not a guess about a business rule, and it is what stops a mis-set field id making
+every loan look expired the day it locked.
+
+`lt_lock_events` is filled from what PILOT itself watched change between two reads, every event
+type named `observed_*` so it can never pretend to be Encompass's own request history, and the lock
+screen says so in words. The posture is replaced wholesale on each read while the history is only
+appended — a lock can be rolled back exactly as a milestone can — and a re-read that changed
+nothing appends nothing. The pipeline carries the status, the expiration and a SQL-computed
+countdown, computed there so the column can be SORTED on: whatever expires soonest, first.
 
 ### Phase 8 — Editing, and the eFolder write **(blocked)**
 Our own fields become editable. The eFolder upload ships **only** once its contract is
