@@ -118,6 +118,22 @@ eq(S.latestAgreementRate([{ dayMs: d(0), agreementRate: null }, { dayMs: d(2), a
   eq(notClean.scoreboard.consecutiveCleanDays, 0, 'assemble: a new finding today zeroes the streak');
   eq(notClean.eligible.eligible, false, 'assemble: broken streak -> not eligible');
   eq(notClean.trend.direction, 'worsening', 'assemble: trend surfaces the dip');
+
+  // §10.6 threaded end to end: the latest run's summary counts reach the gate.
+  const incRuns = [];
+  for (let i = 0; i < 14; i += 1) {
+    incRuns.push({ dayMs: d(i), agreementRate: 1, findingKeys: [], summary: { comparable: 300, incomparable: i === 0 ? 2 : 0 } });
+  }
+  const inc = S.assemble(incRuns, [], { nowMs: NOW, settings: { minCleanDays: 14 } });
+  eq(inc.scoreboard.canaryScenarioCount, 300, 'assemble: latest run comparable count reaches the scoreboard');
+  eq(inc.scoreboard.canaryIncomparable, 2, 'assemble: latest run incomparable count reaches the scoreboard');
+  eq(inc.eligible.eligible, false, 'assemble: an incomparable scenario blocks promotion end to end');
+
+  // §10.5 coverage floor threaded end to end.
+  const thinRuns = [];
+  for (let i = 0; i < 14; i += 1) thinRuns.push({ dayMs: d(i), agreementRate: 1, findingKeys: [], summary: { comparable: 8, incomparable: 0 } });
+  const thin = S.assemble(thinRuns, [], { nowMs: NOW, settings: { minCleanDays: 14, minCanaryScenarios: 200 } });
+  eq(thin.eligible.eligible, false, 'assemble: a thin canary (8 scenarios) fails the coverage floor');
 }
 
 console.log(`ok - lt ppe scoreboard (${n} assertions)`);

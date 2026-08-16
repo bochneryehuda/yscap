@@ -79,9 +79,12 @@ Never introduce a float price/rate on a stored or compared value; never re-deriv
   `lt_ppe_finding` (db/557) what pure `finding.js` produces and **delegates every merge to
   `finding.reconcile`** (no SQL copy of the "never re-open a settled finding" rule to drift). `db` is an
   injected pool (same convention as `store.js`); everything is `scope`-scoped.
-- **`cutover.js`** (§10.5/§11) — per-investor scoreboard (open findings, clean-day streak, canary rate)
-  + the go-live gate + the `draft→shadow→live→retired` lifecycle (promotion gated, rollback always
-  allowed).
+- **`cutover.js`** (§10.5/§11) — per-investor scoreboard (open findings, clean-day streak, canary rate,
+  compared/incomparable scenario counts) + the go-live gate + the `draft→shadow→live→retired` lifecycle
+  (promotion gated, rollback always allowed). Two coverage gates: an **incomparable** scenario blocks
+  promotion always (§10.6, no setting turns it off — "100% agreement" over scenarios that couldn't all
+  be compared isn't 100%), and an opt-in `minCanaryScenarios` coverage floor (off by default, fails
+  closed when set).
 
 ### The shadow LOOP (canary → measure → decide → record)
 - **`canary.js`** (§10.3/§10.5) — the CANARY run: prices one scenario matrix beside Lender Price in ONE

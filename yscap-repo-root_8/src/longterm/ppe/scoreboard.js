@@ -91,6 +91,17 @@ function latestAgreementRate(runs = []) {
   return best;
 }
 
+// The most recent run's `summary` object ({} when there is none), so the gate can read how much the
+// latest canary actually compared (comparable / incomparable counts).
+function latestRunSummary(runs = []) {
+  let best = null; let bestDay = -Infinity;
+  for (const r of Array.isArray(runs) ? runs : []) {
+    if (!r || !isFiniteNum(r.dayMs) || r.dayMs < bestDay) continue;
+    if (r.dayMs > bestDay || best == null) { bestDay = r.dayMs; best = (r.summary && typeof r.summary === 'object') ? r.summary : {}; }
+  }
+  return best || {};
+}
+
 /**
  * The direction of agreement over the trailing `window` measured days (default 7).
  * Compares the mean agreement of the newest half to the older half.
@@ -123,8 +134,12 @@ function assemble(runs = [], findings = [], opts = {}) {
   const nowMs = isFiniteNum(opts.nowMs) ? opts.nowMs : null;
   const { days, dropped } = dailySeries(runs);
   const canaryAgreementRate = latestAgreementRate(runs);
+  const latestSummary = latestRunSummary(runs);
   const scoreboard = cutover.buildScoreboard({
     canaryAgreementRate,
+    // how much the freshest canary actually compared (§10.5/§10.6) — the gate reads these
+    canaryScenarioCount: isFiniteNum(latestSummary.comparable) ? latestSummary.comparable : null,
+    canaryIncomparable: isFiniteNum(latestSummary.incomparable) ? latestSummary.incomparable : null,
     findings: Array.isArray(findings) ? findings : [],
     dailyNewFindings: days.map((d) => ({ dayMs: d.dayMs, count: d.newFindings })),
     nowMs,
@@ -142,6 +157,6 @@ function assemble(runs = [], findings = [], opts = {}) {
 
 module.exports = {
   DAY_MS,
-  dailySeries, dailyNewFindings, latestAgreementRate, trend, assemble,
+  dailySeries, dailyNewFindings, latestAgreementRate, latestRunSummary, trend, assemble,
   _internals: { dayBucket },
 };

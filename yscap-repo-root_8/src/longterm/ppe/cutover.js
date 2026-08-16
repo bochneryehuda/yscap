@@ -51,6 +51,9 @@ function buildScoreboard(input = {}) {
     openFindings: open.length,
     oldestOpenFindingDays,
     consecutiveCleanDays: consecutiveCleanDays(input.dailyNewFindings),
+    // How much the latest canary actually COMPARED (§10.5/§10.6). null when not supplied.
+    canaryScenarioCount: typeof input.canaryScenarioCount === 'number' ? input.canaryScenarioCount : null,
+    canaryIncomparable: typeof input.canaryIncomparable === 'number' ? input.canaryIncomparable : null,
   };
 }
 
@@ -68,12 +71,13 @@ function consecutiveCleanDays(daily) {
 
 /**
  * The cutover gate (§10.5): is this investor eligible to promote shadow → live?
- *   settings: { minCleanDays=14, requireCanaryPerfect=true }
+ *   settings: { minCleanDays=14, requireCanaryPerfect=true, minCanaryScenarios=0 }
  * Returns { eligible, reasons } — reasons lists every gate that FAILED (empty when eligible).
  */
 function eligibleForLive(scoreboard = {}, settings = {}) {
   const minClean = settings.minCleanDays == null ? 14 : settings.minCleanDays;
   const requirePerfect = settings.requireCanaryPerfect !== false;
+  const minScenarios = settings.minCanaryScenarios == null ? 0 : settings.minCanaryScenarios;
   const reasons = [];
 
   if (scoreboard.openFindings > 0) {
@@ -85,6 +89,22 @@ function eligibleForLive(scoreboard = {}, settings = {}) {
     } else if (scoreboard.canaryAgreementRate < 1) {
       const pct = Math.round(scoreboard.canaryAgreementRate * 1000) / 10;
       reasons.push(`canary agreement is ${pct}%, must be 100%`);
+    }
+  }
+  // §10.6 HARD RULE: a scenario the harness could not fully compare is never proof of agreement — it
+  // blocks promotion whenever the count is known, no setting can turn it off. (100% "agreement" over
+  // scenarios that could not all be compared is not 100% agreement.)
+  if (typeof scoreboard.canaryIncomparable === 'number' && scoreboard.canaryIncomparable > 0) {
+    reasons.push(`${scoreboard.canaryIncomparable} canary scenario(s) could not be compared`);
+  }
+  // §10.5 COVERAGE FLOOR (owner-set, opt-in): an investor may not go live on too thin a canary. Off
+  // by default (0); when set, an unknown/absent count fails CLOSED.
+  if (minScenarios > 0) {
+    const nSc = scoreboard.canaryScenarioCount;
+    if (typeof nSc !== 'number') {
+      reasons.push(`no canary coverage recorded, needs at least ${minScenarios} compared scenario(s)`);
+    } else if (nSc < minScenarios) {
+      reasons.push(`only ${nSc} compared canary scenario(s), needs at least ${minScenarios}`);
     }
   }
   if ((scoreboard.consecutiveCleanDays || 0) < minClean) {

@@ -89,6 +89,59 @@ eq(C.consecutiveCleanDays([{ dayMs: NOW - DAY, count: 0 }, { dayMs: NOW, count: 
   ok(!r.reasons.some((x) => x.includes('consecutive')), 'relaxed: clean-day gate met at 2');
 })();
 
+// ---- canary coverage carried onto the scoreboard ---------------------------
+(() => {
+  const sb = C.buildScoreboard({
+    canaryAgreementRate: 1, findings: [], dailyNewFindings: [], nowMs: NOW,
+    canaryScenarioCount: 240, canaryIncomparable: 3,
+  });
+  eq(sb.canaryScenarioCount, 240, 'scoreboard: compared-scenario count carried');
+  eq(sb.canaryIncomparable, 3, 'scoreboard: incomparable count carried');
+
+  const none = C.buildScoreboard({ findings: [], dailyNewFindings: [], nowMs: NOW });
+  eq(none.canaryScenarioCount, null, 'scoreboard: unknown count -> null');
+  eq(none.canaryIncomparable, null, 'scoreboard: unknown incomparable -> null');
+})();
+
+// ---- §10.6: an incomparable scenario blocks promotion, no setting turns it off
+(() => {
+  const base = { canaryAgreementRate: 1, openFindings: 0, consecutiveCleanDays: 14 };
+  const r = C.eligibleForLive({ ...base, canaryIncomparable: 2 });
+  eq(r.eligible, false, 'incomparable > 0 blocks promotion');
+  ok(r.reasons.some((x) => x.includes('could not be compared')), 'reason names the incomparable scenarios');
+
+  // even under fully relaxed settings the incomparable gate stands
+  const relaxed = C.eligibleForLive({ ...base, canaryIncomparable: 1, consecutiveCleanDays: 0 },
+    { minCleanDays: 0, requireCanaryPerfect: false });
+  ok(!relaxed.eligible, 'incomparable gate cannot be relaxed away');
+
+  // zero incomparable is fine
+  const clean = C.eligibleForLive({ ...base, canaryIncomparable: 0 });
+  eq(clean.eligible, true, 'zero incomparable does not block');
+})();
+
+// ---- §10.5 coverage floor: opt-in, fails closed on an unknown count --------
+(() => {
+  const base = { canaryAgreementRate: 1, openFindings: 0, consecutiveCleanDays: 14 };
+
+  // off by default: no count present, still eligible
+  eq(C.eligibleForLive(base).eligible, true, 'coverage floor off by default');
+
+  // met
+  eq(C.eligibleForLive({ ...base, canaryScenarioCount: 300 }, { minCanaryScenarios: 200 }).eligible, true,
+    'coverage floor met -> eligible');
+
+  // below
+  const below = C.eligibleForLive({ ...base, canaryScenarioCount: 12 }, { minCanaryScenarios: 200 });
+  eq(below.eligible, false, 'below the coverage floor -> blocked');
+  ok(below.reasons.some((x) => x.includes('needs at least 200')), 'reason names the coverage shortfall');
+
+  // required but unknown -> fail CLOSED
+  const unknown = C.eligibleForLive(base, { minCanaryScenarios: 200 });
+  eq(unknown.eligible, false, 'coverage floor required but no count -> blocked (fail closed)');
+  ok(unknown.reasons.some((x) => x.includes('no canary coverage recorded')), 'reason names the missing coverage');
+})();
+
 // ---- transition (lifecycle) -------------------------------------------------
 (() => {
   eq(C.transition(C.MODES.DRAFT, 'activate').mode, C.MODES.SHADOW, 'activate: draft -> shadow');
