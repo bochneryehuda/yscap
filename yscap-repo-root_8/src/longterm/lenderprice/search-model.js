@@ -227,6 +227,16 @@ function buildSearch(sc = {}, opts = {}) {
   // is what triggered the live HTTP 400. A missing prepayMonths leaves it null.
   setDyn('PrepayTerm', months === 0 ? 'None' : (months ? `${months} Months` : null));
   setDyn('PrePayment_Plan_Type', months ? 'Standard' : null);
+  // Cash-out amount ("cash in hand"). CONFIRMED from the live site: the Lender Price UI field has NO
+  // valid dynamic-property code today — the frontend emits `dynamicPropertiesMap.undefined` and DROPS
+  // the value, so NEITHER the frontend NOR we transmit it (not transmitting is the parity-correct
+  // behavior right now, not a gap). We never invent a key. We only transmit once the vendor assigns
+  // the real code, wired via LP_CASHOUT_AMOUNT_FIELD — no code change needed then. The amount is still
+  // accepted + validated (and can drive an eligibility rule in our own engine: too-large cash in hand
+  // makes certain programs ineligible).
+  const cashoutAmt = num(sc.cashoutAmount);
+  const cashoutField = process.env.LP_CASHOUT_AMOUNT_FIELD;
+  if (cashoutAmt != null && cashoutField) setDyn(cashoutField, cashoutAmt);
   m.dynaToSmo = true;
 
   // ALL OPTIONS — the default the web app always searches with (confirmed byte-for-byte from the
@@ -355,6 +365,7 @@ function validateInputs(sc = {}) {
   const fico = numField('fico', { min: 300, max: 850, integer: true }); if (fico.err) return fico.err;
   const dscr = numField('dscr', { min: 0, max: 2 }); if (dscr.err) return dscr.err;
   const units = numField('units', { min: 1, max: 20, integer: true }); if (units.err) return units.err;
+  const cashout = numField('cashoutAmount', { min: 0 }); if (cashout.err) return cashout.err; // "cash in hand"; stored, transmitted only when the vendor field is configured
   // Term / lock against the allowed capability sets (a 17-year term / 22-day lock does not exist).
   const t1 = numField('termYears', {}); if (t1.err) return t1.err;
   const t2 = numField('term', {}); if (t2.err) return t2.err;

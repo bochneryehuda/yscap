@@ -414,6 +414,18 @@ async function offline() {
   ok(gated && gated.error === 'lp_foundation_not_live' && gated.http === 502, '§28.2 gate refuses a fallback foundation with a named 502');
   delete process.env.LP_REQUIRE_LIVE_FOUNDATION;
 
+  // 30) Cash-out amount ("cash in hand"): accepted + validated, but NOT transmitted until the vendor
+  // field is configured (the LP UI field has no valid dynamic-property code today).
+  delete process.env.LP_CASHOUT_AMOUNT_FIELD;
+  ok(sm.validateScenario({ purpose: 'Cash out', value: 5e5, loan: 3e5, cashoutAmount: 50000, state: 'NJ', countyFps: '34039' }).ok === true, 'cash-out amount is an accepted, validated field');
+  ok(sm.validateScenario({ purpose: 'Cash out', value: 5e5, loan: 3e5, cashoutAmount: -5, state: 'NJ', countyFps: '34039' }).error === 'out_of_range', 'a negative cash-out amount is rejected');
+  const noTx = lp.buildSearch({ purpose: 'CashOut', value: 5e5, loan: 3e5, cashoutAmount: 47321 });
+  ok(!Object.keys(noTx.dynamicPropertiesMap).some((k) => k === 'undefined') && !JSON.stringify(noTx).includes('47321'), 'cash-out amount is NOT transmitted when the vendor field is unset (no invented key, no dynamicPropertiesMap.undefined)');
+  process.env.LP_CASHOUT_AMOUNT_FIELD = 'CashInHand';
+  const tx = lp.buildSearch({ purpose: 'CashOut', value: 5e5, loan: 3e5, cashoutAmount: 47321 });
+  ok(tx.dynamicPropertiesMap.CashInHand && tx.dynamicPropertiesMap.CashInHand.value === 47321, 'once the vendor field is configured, the cash-out amount transmits under that exact key');
+  delete process.env.LP_CASHOUT_AMOUNT_FIELD;
+
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }
 

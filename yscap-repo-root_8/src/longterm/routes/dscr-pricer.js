@@ -44,7 +44,7 @@ const SUPPORTED_FIELDS = new Set([
   'purpose', 'value', 'appraisedValue', 'asIsValue', 'loan', 'ltv', 'fico', 'dscr',
   'propertyType', 'units', 'zip', 'state', 'county', 'countyFps', 'city', 'countyName',
   'borrowerType', 'prepayMonths', 'io', 'escrowWaive', 'fthb', 'date',
-  'term', 'termYears', 'lockDays',
+  'term', 'termYears', 'lockDays', 'cashoutAmount',
   // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). Each maps to an
   // exact upstream path/token; an invalid VALUE for one is rejected as invalid_field_value (below).
   ...REGISTRY_FIELDS,
@@ -115,6 +115,22 @@ function rejectInvalidRequest(sc, res) {
   return false;
 }
 
+// Cash-out amount ("cash in hand") transparency — so it's never SILENTLY handled. The vendor UI field
+// has no valid dynamic-property code today (the frontend drops the value), so by default we store it
+// and do NOT transmit it (matching the frontend). Once LP_CASHOUT_AMOUNT_FIELD is set to the confirmed
+// vendor code, it is transmitted. Returns null when no cash-out amount was supplied.
+function cashoutNote(sc) {
+  if (!sc || sc.cashoutAmount == null || sc.cashoutAmount === '') return null;
+  const field = process.env.LP_CASHOUT_AMOUNT_FIELD;
+  return {
+    value: sc.cashoutAmount,
+    transmitted: !!field,
+    note: field
+      ? `Transmitted to Lender Price as dynamicPropertiesMap.${field}.`
+      : 'Accepted and stored, but NOT transmitted to Lender Price — the vendor has not assigned this UI field a dynamic-property code yet (the frontend does not send it either, so pricing is unaffected). Set LP_CASHOUT_AMOUNT_FIELD once the vendor confirms the code.',
+  };
+}
+
 // 422 the caller if they sent a field the builder does not implement (never silently ignore it).
 function rejectUnsupported(sc, res) {
   const bad = unsupportedFields(sc);
@@ -180,12 +196,12 @@ async function price(req, res) {
   // separate status route (GET /disqualifications/:searchKey) instead of ever restarting the search.
   if (req.body && req.body.full) {
     const full = lp.parseFull(r.raw, { raw: !!req.body.raw });
-    const out = { ok: true, ...full, effectiveScenario: effective, request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+    const out = { ok: true, ...full, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
     if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
     return res.json(out);
   }
   const parsed = lp.parse(r.raw);
-  const out = { ok: true, ...trimPrograms(parsed), effectiveScenario: effective, request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+  const out = { ok: true, ...trimPrograms(parsed), effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
   // Secret-gated diagnostics (the whole router is behind the diag token / staff login): when the
   // caller asks, include a structural summary of the raw response so we can see whether Lender
   // Price returned programs the parser missed, or truly zero — and any disqualify reasons.
