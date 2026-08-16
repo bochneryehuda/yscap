@@ -136,5 +136,27 @@ check(tables.length > 0 && tables.every((t) => /^lt_/.test(t)),
   `every table it touches is an lt_ one (${[...new Set(tables)].join(', ')})`);
 check(!/lt_loan_investors/.test(code), 'the investor table is not read here');
 
+// ── The ordering the whole feature rests on ─────────────────────────────────
+console.log('\nthe sync reads the OLD milestone before it writes the new one');
+
+// This is the one thing that cannot be checked from the module alone, and the one
+// that fails SILENTLY. `loadPrior` reads `lt_loans.milestone_name`; the sync then
+// OVERWRITES that column. If the read ever moved after the write, `prev` would equal
+// `next` on every pass, `decideMilestoneEvent` would answer `unchanged` every time,
+// and the history would simply stop being recorded — no error, no empty table to
+// notice, just a feature that quietly reports nothing forever. Nothing about the
+// three statements looks order-dependent, which is exactly why it is guarded here.
+const sync = fs.readFileSync(path.join(__dirname, '..', 'src/longterm/sync/loans.js'), 'utf8');
+const iPrior = sync.indexOf('milestones.loadPrior');
+const iUpdate = sync.indexOf('SET milestone_name =');
+const iWrite = sync.indexOf('milestones.writeMilestone');
+
+check(iPrior > -1 && iUpdate > -1 && iWrite > -1,
+  'the sync reads the prior milestone, updates the loan, and records the movement');
+check(iPrior < iUpdate,
+  'THE ONE THAT MATTERS: `loadPrior` runs BEFORE the UPDATE that overwrites the milestone — after it, every read would compare the new value with itself and the history would silently stop');
+check(iUpdate < iWrite,
+  'and the movement is recorded after the loan is mirrored, so a failed history write can never undo the mirror');
+
 console.log(`\n${failures ? `${failures} FAILED` : 'all passed'}`);
 process.exit(failures ? 1 : 0);
