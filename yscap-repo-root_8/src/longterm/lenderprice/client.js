@@ -35,7 +35,7 @@
  */
 
 const crypto = require('crypto');
-const { buildSearch, smoRegistryFromList, _internals: searchModelInternals } = require('./search-model');
+const { buildSearch, validateScenario, smoRegistryFromList, _internals: searchModelInternals } = require('./search-model');
 // Durable L2 for the disqualify (ineligible) workflow (db/559) — best-effort; the in-memory Map
 // below stays the L1 cache, this survives a reboot / deploy / instance-move. Every call degrades to
 // in-memory-only on any DB error, so the pricing path never hard-depends on it.
@@ -811,7 +811,40 @@ function storeKickoff(url, body, requestId) {
   return key;
 }
 
+// §37.7 — EVERY PRICED SCENARIO IS VALIDATED AND ENRICHED HERE, AT THE ONE CHOKEPOINT.
+//
+// `validateScenario` is what fills a location in from its ZIP — state, county NAME and county FIPS —
+// and its own §26.3 note is explicit that a caller "MUST go on to price the returned scenario:
+// pricing the original would validate one request and send a different, county-less one upstream."
+// Only `routes/dscr-pricer.js` did that. `routes/ppe.js` — the SHADOW/CANARY path, whose entire job
+// is to compare our engine against Lender Price — called `price()` with the raw scenario, so it
+// priced a county-less location while the real pricer priced a county-carrying one. The comparison
+// that decides whether we may cut over was measuring two different requests, and nothing anywhere
+// said so.
+//
+// Enriching at the CALL SITE can only ever be as complete as the list of call sites somebody
+// remembered, which is exactly how this gap opened, so it is done HERE instead: every caller,
+// present and future, is covered by construction. It is safe to run twice — the enrichment fills
+// only what is absent, so a scenario the route already enriched passes through unchanged — and it
+// is offline (a table lookup), so it costs no upstream call.
+//
+// A scenario that cannot be priced is REFUSED here rather than sent: `searchRaw` answers a bad body
+// with a bare "Internal Server Error" carrying no field name, so letting it through converts a
+// precise, local, fixable complaint into the least diagnosable failure the vendor can produce.
+// The refusal keeps the shape every caller already handles ({ok:false, reason}).
+function validatedScenario(scenario) {
+  let v;
+  try { v = validateScenario(scenario); } catch (e) { return { ok: false, reason: 'lp_scenario_invalid', message: errText(e) }; }
+  if (!v || v.ok !== true) {
+    return { ok: false, reason: 'lp_scenario_invalid', error: v && v.error, field: v && v.field, message: v && v.message };
+  }
+  return { ok: true, scenario: v.scenario || scenario, countyEnrichment: v.countyEnrichment || null };
+}
+
 async function price(scenario) {
+  const v = validatedScenario(scenario);
+  if (!v.ok) return v;
+  scenario = v.scenario;
   // Build the FULL canonical search model. Prefer the company's LIVE default search (so every
   // current default/config is preserved) and its LIVE special-mortgage-option ids; both fall
   // back to the captured static base / built-in ids when the endpoints are unavailable, so a
@@ -846,6 +879,11 @@ function hasDisqualifyData(raw) {
 // never blocks an HTTP request indefinitely; returns ready:false with the qualified data when the
 // window elapses.
 async function priceDisqualified(scenario, opts = {}) {
+  // Same chokepoint as price() — the ineligible-products path must price the SAME enriched location
+  // as the eligible one, or the two halves of one search disagree about where the property is.
+  const v = validatedScenario(scenario);
+  if (!v.ok) return v;
+  scenario = v.scenario;
   const build = (f) => buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo, disqualify: { cached: false } });
   const maxWaitMs = opts.maxWaitMs != null ? opts.maxWaitMs : envMs('LP_DISQUALIFY_MAX_WAIT_MS', 80000);
   const pollMs = opts.pollMs != null ? opts.pollMs : envMs('LP_DISQUALIFY_POLL_MS', 5000);
