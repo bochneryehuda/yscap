@@ -626,8 +626,14 @@ async function priceFoundation({ force = false } = {}) {
   const [liveBase, smoReg, ppeUserId] = await Promise.all([
     fetchDefaultSearch(companyId, userId), fetchSmoRegistry(companyId), fetchPpeUserId(userId),
   ]);
-  // The PPE id when we have it, the login's id when we do not — never a hard failure on the lookup.
-  const pricingUserId = ppeUserId || userId;
+  // OPT-IN, AND DEFAULT OFF — because the evidence turned against it. The vendor's OWN frontend
+  // bundle calls searchRaw(userInfo.companyId, userInfo.userId, ...), i.e. the LOGIN's id, which is
+  // what this connector has always sent; and the owner reports pricing working yesterday on these
+  // same credentials. So the PPE id is NOT the fix, and shipping it as the default would have been a
+  // silent behaviour change made on a wrong inference. It is kept, switched off, because it did
+  // produce a genuinely different and NAMED response from the vendor, which is worth being able to
+  // reproduce in one env var while the real cause is still open.
+  const pricingUserId = (process.env.LP_USE_PPE_USER_ID === '1' && ppeUserId) ? ppeUserId : userId;
   const url = `${API_BASE}/rest/v1/lp-ppe-integration/pricing/searchRaw/${encodeURIComponent(companyId)}/${encodeURIComponent(pricingUserId)}`;
   return {
     ok: true, session: s, companyId, userId, url,
