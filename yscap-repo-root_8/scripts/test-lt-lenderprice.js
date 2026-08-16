@@ -315,6 +315,20 @@ async function offline() {
   const noRidRes = await lp.pollDisqualifiedByKey(skeyNoRid);
   ok(noRidRes.ok === false && noRidRes.error === 'lp_missing_request_id', 'poll-by-key with a stored kickoff lacking a requestId returns lp_missing_request_id (not a perpetual 202)');
 
+  // 21) UPSTREAM-500 RECOVERY internals (§25.7) — provenance, circuit breaker, invalidation.
+  const prov = lp._internals.foundationProvenance({ baseSource: 'live', smoSource: 'fallback', baseError: null, smoError: 'lp_get_status 500' });
+  ok(prov.base === 'live' && prov.smo === 'fallback' && prov.smoError === 'lp_get_status 500', 'foundationProvenance reports live-vs-fallback source + the preserved live-fetch error');
+  ok(lp._internals.foundationProvenance(null).base === 'fallback' && lp._internals.foundationProvenance({}).smo === 'fallback', 'foundationProvenance defaults to fallback when the source is unknown');
+  // circuit breaker: the first RECOVERY_MAX 500-triggered relogins are allowed; the next is skipped.
+  const MAX = lp._internals.RECOVERY_MAX;
+  ok(lp._internals.breakerOpen() === false, 'breaker starts closed (no relogins yet)');
+  for (let i = 0; i < MAX - 1; i++) { lp._internals.recordRecovery(); ok(lp._internals.breakerOpen() === false, `breaker still closed after ${i + 1} relogin(s) (< max ${MAX})`); }
+  lp._internals.recordRecovery();
+  ok(lp._internals.breakerOpen() === true, `breaker opens at ${MAX} relogins in the window (no login storm)`);
+  // invalidation helpers never throw.
+  lp._internals.invalidateSession(); lp._internals.invalidateFoundation();
+  ok(true, 'invalidateSession/invalidateFoundation run without throwing');
+
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }
 
