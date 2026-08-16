@@ -474,8 +474,14 @@ async function offline() {
 
   // 34) AUDIT — isolated LTV range is checked whether or not value+loan were supplied.
   ok(sm.validateScenario({ purpose: 'Purchase', ltv: 105, state: 'NJ', countyFps: '34039' }).error === 'ltv_out_of_range', 'a bare LTV of 105% → 422 ltv_out_of_range');
-  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 95, state: 'NJ', countyFps: '34039' }).ok === true, 'a bare LTV of 95% is accepted');
-  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 0.7, state: 'NJ', countyFps: '34039' }).ok === true, 'a fractional LTV of 0.70 is accepted');
+  // §35.2/§36.2 CONTRACT CHANGE — a LONE ltv is no longer a priceable scenario. The amount triangle
+  // needs any TWO of value / loan / ltv (the third is derived), so one amount alone is refused as
+  // insufficient_amounts rather than sent upstream with a null purchase price. The RANGE checking
+  // these two rows were written for is unchanged and still proven by the 105% case above (it fires
+  // before the triangle rule), and by the in-range rows below which now supply a second amount.
+  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 95, state: 'NJ', countyFps: '34039' }).error === 'insufficient_amounts', 'a bare LTV of 95% alone → 422 insufficient_amounts (needs two of value/loan/ltv)');
+  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 95, loan: 4e5, state: 'NJ', countyFps: '34039' }).ok === true, 'an in-range LTV of 95% WITH a loan is accepted (value derived)');
+  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 0.7, loan: 4e5, state: 'NJ', countyFps: '34039' }).ok === true, 'a fractional LTV of 0.70 with a loan is accepted');
 
   // 35) GOLDEN FIXTURE A — the audit's canonical DSCR purchase (permanent request-structure fixture).
   const goldA = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 375000, fico: 760, dscr: 1.25,

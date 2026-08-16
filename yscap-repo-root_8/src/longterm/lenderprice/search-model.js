@@ -132,6 +132,38 @@ function mapPurpose(p) {
   }
   return mapped;
 }
+// §35.2/§36.2 — THE AMOUNT TRIANGLE. `value` (the purpose-appropriate property value), `loan` (first
+// lien) and `ltv` are three views of two facts: any TWO determine the third. The owner quotes deals
+// in the short form "$400,000 loan at 75% LTV", so the server must derive the value rather than
+// demand it. PURE + total: it derives what it can and reports what it did; it never throws and never
+// invents a number from ONE input (that would be a guess, and `known < 2` is refused upstream by
+// validateInputs). LTV is accepted as either 75 or 0.75 and always normalized to the 0.75 decimal
+// form the vendor expects. Money is rounded to cents and LTV to 6dp so a derived figure is stable.
+function deriveAmounts(sc = {}) {
+  const money = (n) => Math.round(n * 100) / 100;
+  const ratio = (n) => Math.round(n * 1e6) / 1e6;
+  let value = num(sc.value);
+  let loan = num(sc.loan);
+  const ltvRaw = num(sc.ltv);
+  // Accept a percentage (75) or a decimal (0.75). A value at or below 1 is already a decimal.
+  let ltv = ltvRaw != null ? (ltvRaw > 1 ? ltvRaw / 100 : ltvRaw) : null;
+  const supplied = { value: value != null, loan: loan != null, ltv: ltv != null };
+  const derived = [];
+  // A zero value or a zero LTV cannot participate in a derivation (division by zero / a meaningless
+  // ratio), so only positive figures derive. The range checks live in validateInputs.
+  if (value != null && loan != null) {
+    // Both amounts present: the LTV they imply is authoritative (a conflicting supplied ltv is
+    // rejected by validateInputs, so we never silently overwrite a caller's disagreeing figure).
+    if (value > 0) { const calc = ratio(loan / value); if (ltv == null) derived.push('ltv'); ltv = calc; }
+  } else if (loan != null && ltv != null && ltv > 0) {
+    value = money(loan / ltv); derived.push('value');
+  } else if (value != null && ltv != null && value > 0) {
+    loan = money(value * ltv); derived.push('loan');
+  }
+  const known = [value, loan, ltv].filter((x) => x != null).length;
+  return { value, loan, ltv, supplied, derived, known };
+}
+
 const SFR_PROP = { propertyType: 'SingleFamily', nonWarrantableProject: false, attachmentType: 'Detached', units: 1 };
 function mapProp(t) {
   // No property type on the scenario → default single-family (a DEFAULT, not a silent SUBSTITUTION
@@ -346,10 +378,14 @@ function buildSearch(sc = {}, opts = {}) {
   // clone, immediately after it, so every read below (e.g. the criteria.ltv fallback) sees neutral.
   clearScenarioOwnedFields(m);
   const smoReg = opts.smo || null;
-  const value = num(sc.value);
-  const loan = num(sc.loan);
-  const ltv = (value && loan) ? Math.round((loan / value) * 1e6) / 1e6
-    : (num(sc.ltv) != null ? (num(sc.ltv) > 1 ? num(sc.ltv) / 100 : num(sc.ltv)) : (m.criteria ? m.criteria.ltv : null));
+  // §35.2/§36.2 — THE AMOUNT TRIANGLE. Any TWO of value / loan / LTV determine the third, so a caller
+  // may send the short form the owner actually quotes from ("$400,000 loan at 75% LTV") and the
+  // server derives the property value. Falls back to the live foundation's LTV only when fewer than
+  // two are known (validateInputs refuses that case before we get here).
+  const tri = deriveAmounts(sc);
+  const value = tri.value;
+  const loan = tri.loan;
+  const ltv = tri.ltv != null ? tri.ltv : (m.criteria ? m.criteria.ltv : null);
   const purpose = mapPurpose(sc.purpose);
   const pm = mapProp(sc.propertyType);
   // Attachment type is INDEPENDENT of property type (audit §6): the live frontend can send e.g.
@@ -696,6 +732,36 @@ function validateInputs(sc = {}) {
       }
     }
   }
+  // §35.2/§36.2 — THE AMOUNT TRIANGLE. A quote is priced off the property value, the first-lien
+  // amount and the LTV; any TWO determine the third. Fewer than two is not a scenario we can price,
+  // and deriving from ONE would be a guess, so it is refused here — BEFORE any upstream call —
+  // rather than sent with a null purchase price that upstream would answer 500 or mis-price.
+  {
+    // The PURPOSE is the more fundamental fact, so an unknown one is reported as an unknown purpose
+    // rather than being masked by the amount rule below (a caller who typed the purpose wrong should
+    // be told THAT, not sent hunting for a missing amount).
+    try { mapPurpose(sc.purpose); } catch (e) {
+      if (e && e.lpValidation) return bad(e.code, e.field, e.message);
+      throw e;
+    }
+    const tri = deriveAmounts(sc);
+    if (tri.known < 2) {
+      return bad('insufficient_amounts', 'loan',
+        'A quote needs any TWO of property value, loan amount and LTV — the third is derived. '
+        + `Supplied: ${Object.keys(tri.supplied).filter((k) => tri.supplied[k]).join(', ') || 'none'}.`);
+    }
+  }
+  // §36.3/§36.4 — a cash-out amount belongs ONLY to a cash-out refinance. On a Purchase or a
+  // rate-and-term Refinance it is REJECTED rather than ignored: a caller who sends one is describing
+  // a different transaction than the purpose says, and silently dropping it would price the wrong deal.
+  if (num(sc.cashoutAmount) != null && num(sc.cashoutAmount) > 0) {
+    let p = null;
+    try { p = mapPurpose(sc.purpose); } catch (_) { p = null; } // an unknown purpose is reported by mapPurpose itself
+    if (p && p !== 'CashoutRefinance') {
+      return bad('cashout_not_allowed', 'cashoutAmount',
+        `A cash-out amount is only valid on a cash-out refinance; this request is a ${p === 'Purchase' ? 'purchase' : 'rate-and-term refinance'}. Use purpose "Cash out", or remove cashoutAmount.`);
+    }
+  }
   // Units must agree with the property type (a single-family "4-unit" is a contradiction).
   if (units.v != null && sc.propertyType != null && sc.propertyType !== '') {
     const pt = registry.resolvePropertyType(sc.propertyType);
@@ -735,4 +801,4 @@ function validateScenario(sc = {}) {
 }
 
 module.exports = { BASE, buildSearch, clearScenarioOwnedFields, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE } };
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts } };
