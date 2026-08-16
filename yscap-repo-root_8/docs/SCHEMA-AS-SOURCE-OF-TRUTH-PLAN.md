@@ -11,6 +11,85 @@ Supersedes `TWO-REPO-SPLIT-PLAN.md`, which is retained as the record of a decisi
 
 ---
 
+## 0. The dry run — Phase 0 has already been performed, on a throwaway database
+
+Owner-directed 2026-08-16: *"make sure that it's zero risk and everything will work perfectly, like it
+works now … do research on how Google will do that, and how the military will do that."*
+
+The transferable military practice here is **Test Like You Fly** — an aerospace/DoD mission-assurance
+process whose founding observation is that post-mortems of lost missions repeatedly traced the root
+cause to *insufficiently realistic testing: the system meeting real conditions for the first time in
+flight.* So this procedure was rehearsed end-to-end against a real Postgres 16 built from the real
+migrations, before proposing it. Everything below is **measured, not estimated.**
+
+**What was run** (scratch cluster, created and destroyed; production never contacted):
+
+```
+initdb → createdb → npm run migrate        # all 549 migrations, exactly as CI does
+prisma@6 db pull                            # introspect
+prisma@6 migrate diff --from-empty          # what a rebuild-from-schema would produce
+prisma@6 migrate diff --exit-code           # the drift check Phase 3 depends on
+```
+
+**Result 1 — every migration applies cleanly to an empty database.** All 549, no failures. The real
+object counts, read from the catalog rather than grepped from files:
+
+| | |
+|---|---|
+| Tables | 309 |
+| Columns | 5,106 |
+| Foreign keys | 662 |
+| Indexes | 1,078 (309 of them partial) |
+| Functions | 136 |
+| Triggers | 33 |
+| CHECK constraints | 247 |
+| Generated columns | 12 |
+| Views | 0 |
+
+**Result 2 — introspection produced a complete, usable schema.** `prisma db pull` generated
+**8,271 lines**: **309 models**, **11 enums**, relations wired, indexes named, exactly one field it
+could not type (`Unsupported(...)`). This is the deliverable the owner asked for, and it took minutes.
+
+**Result 3 — introspection is provably read-only.** Object counts before and after the pull were
+identical (309 tables / 33 triggers / 136 functions). It reads the catalog and writes nothing.
+
+**Result 4 — the drift check works.** `prisma migrate diff --exit-code` between the schema and the
+database returned **0** (they agree). That is the CI gate Phase 3 rests on, and it is confirmed
+functional against the real schema.
+
+**Result 5 — and the decisive one. A database rebuilt from that schema file would silently lose 737
+objects:**
+
+| Object | In the SQL Prisma would generate | In the real database |
+|---|---|---|
+| Triggers | **0** | 33 |
+| Functions | **0** | 136 |
+| CHECK constraints | **0** | 247 |
+| Generated columns | **0** | 12 |
+| Partial indexes | **0** | 309 |
+
+10,346 lines of generated SQL that would run **without a single error** and leave a database missing
+every rule listed in §2. This is no longer a warning quoted from documentation — it is a measurement of
+this system. It is why §7's "do not rebuild the database from the schema" is the load-bearing rule of
+this plan.
+
+**Result 6 — an incidental supply-chain finding.** `prisma@latest` (v7) **rejects the schema format
+v6 uses**: the `datasource.url` property was removed and moved to a separate config file. An unpinned
+Prisma would have broken this workflow the day v7 shipped. **Pin the version** — the hermetic-build
+principle Google applies to release engineering (builds depend on *known* versions of tools so the same
+input always produces the same output) applies to a schema tool exactly as it does to a compiler.
+
+### 0.1 One Phase 0 test worth adding, which the dry run revealed
+
+The schema above was built by **replaying the 549 migrations onto an empty database.** Production is a
+different thing: it is those migrations applied incrementally over a year, plus anything ever changed
+by hand. **Those two should be identical — and nobody has ever checked.**
+
+So Phase 0 gains a second step: introspect **both** (the migration-built database and a restore of the
+production backup) and diff the two schema files. If they match, that is a strong statement about the
+health of the migration chain. If they do not, the difference is something real that nobody knows
+about, found at zero risk. Either outcome is worth having.
+
 ## 1. Three corrections before the plan
 
 ### 1.1 You already have one big database
@@ -166,6 +245,59 @@ mechanical change with a real chance of a silent miss, buying nothing a human ca
 If any renaming is ever done, do it one column at a time by **Parallel Change** (add the new alongside
 the old, migrate every reader, then remove — never remove something until nothing depends on it).
 Never as a sweep.
+
+## 6a. The zero-risk practices this plan borrows, and where each comes from
+
+Owner asked how Google / Microsoft / Apple / the military would build this so it cannot go wrong. Five
+practices, each mapped to a phase rather than quoted as a slogan.
+
+**1. Test Like You Fly — rehearse on the real thing before proposing it.** Aerospace/DoD mission
+assurance, born from post-mortems that traced mission losses to testing that was not realistic enough.
+Applied in §0: the whole procedure was run against a real Postgres built from the real 549 migrations,
+so every number in this plan is measured. **Every later phase carries the same obligation** — Phase 0
+runs against a restored copy, never a mock.
+
+**2. Hermetic, pinned tooling.** Google's builds are insensitive to what happens to be installed on the
+machine: same input, same tool version, same result. Result 6 above is exactly why — an unpinned Prisma
+would have silently broken this workflow on a major release. **Pin `prisma@6.x` explicitly, in
+`devDependencies`**, never `latest`.
+
+**3. Read-only by default.** The dry run used a full-access role because it was a throwaway. Production
+introspection should use a **role with `SELECT` only** — then "it cannot write" is a property of the
+credential rather than a property of the command, and no mistake at the keyboard can change that.
+
+**4. Staged rollout, and roll back before diagnosing.** Google SRE: canarying is a partial,
+time-limited deployment evaluated before full rollout; on unexpected behaviour, revert first and
+investigate afterwards to minimise recovery time. Only Phase 3 touches how changes reach production, so
+that is where this applies — the first schema-generated migration should be a **trivial, reversible
+one** (a comment or an index), not a real change.
+
+**5. Gate reviews — write the acceptance evidence before the phase starts.** Restated from the earlier
+research and unchanged. §6b below is that table for this plan.
+
+**And the practice that removes the most risk here costs nothing: none of Phases 0–2 touch production
+at all.** They read a copy and produce text files. There is no rollout to stage, because there is
+nothing deployed.
+
+## 6b. Gate reviews — what must be true before each phase proceeds
+
+| Phase | Evidence required |
+|---|---|
+| 0 — generate | Runs against a restored copy with a read-only role; the migration-built and backup-restored schemas are diffed and any difference is explained; production object counts unchanged (they cannot change — nothing writes) |
+| 1 — readable | Re-running `db pull` over the cleaned file preserves the hand-written comments (Prisma merges rather than overwrites — verify this on a copy before relying on it) |
+| 2 — the gap | The trigger/function/check inventory is complete and reconciles to the catalog counts (33 / 136 / 247 / 12 / 309); the schema file carries an "incomplete picture" header until it does |
+| 3 — source of truth | The drift check runs in CI and is **mutation-proven to fail** — add a column by hand to a scratch database and confirm it goes red; the first generated migration is trivial and reversible |
+| 4 — renaming | Not approved. Requires its own decision with the finished picture in hand |
+
+## 6c. Two zero-risk additions worth taking
+
+**Put the documentation inside the database.** Postgres `COMMENT ON TABLE/COLUMN` attaches
+documentation to the object itself. It survives every tool change, is read by Prisma, SchemaSpy and
+psql alike, and cannot drift from the schema because it lives in it. Cheapest durable win available.
+
+**Generate a picture, not just a file.** SchemaSpy connects to a database read-only and produces
+browsable HTML documentation with entity-relationship diagrams. Zero risk (it only reads), and it gives
+the non-developer view of the 309 tables that a `.prisma` file does not.
 
 ## 7. What this plan explicitly does NOT do
 
