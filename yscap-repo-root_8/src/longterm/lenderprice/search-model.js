@@ -60,10 +60,10 @@ function mapPurpose(p) {
 }
 function mapProp(t) {
   switch (t) {
-    case 'Unit2_4': case 'UnitDwelling_2_4': return { propertyType: 'UnitDwelling_2_4', nonWarrantableProject: false };
-    case 'CondoWarr': case 'Condos': case 'Condominium': return { propertyType: 'Condos', nonWarrantableProject: false };
-    case 'CondoNonWarr': return { propertyType: 'Condos', nonWarrantableProject: true };
-    default: return { propertyType: 'SingleFamily', nonWarrantableProject: false };
+    case 'Unit2_4': case 'UnitDwelling_2_4': return { propertyType: 'UnitDwelling_2_4', nonWarrantableProject: false, attachmentType: 'Attached', units: 2 };
+    case 'CondoWarr': case 'Condos': case 'Condominium': return { propertyType: 'Condos', nonWarrantableProject: false, attachmentType: 'Attached', units: 1 };
+    case 'CondoNonWarr': return { propertyType: 'Condos', nonWarrantableProject: true, attachmentType: 'Attached', units: 1 };
+    default: return { propertyType: 'SingleFamily', nonWarrantableProject: false, attachmentType: 'Detached', units: 1 };
   }
 }
 
@@ -113,10 +113,13 @@ function buildSearch(sc = {}, opts = {}) {
   m.date = sc.date || null;
   if (Array.isArray(m.loanTypeCriteria) && !m.loanTypeCriteria.length) m.loanTypeCriteria = ['Fixed'];
 
-  // Property.
+  // Property. numberOfUnit MUST match the property type (the captured base is a 2–4 unit, so
+  // its stale numberOfUnit would otherwise contradict a SingleFamily scenario and disqualify
+  // every program). Always set it: the scenario's explicit unit count, else the type default.
   const prop = m.property || (m.property = { address: {} });
   prop.propertyType = pm.propertyType;
-  if (num(sc.units) != null) prop.numberOfUnit = num(sc.units);
+  prop.numberOfUnit = num(sc.units) != null ? num(sc.units) : pm.units;
+  prop.attachmentType = pm.attachmentType;
   const a = prop.address || (prop.address = {});
   if (sc.zip != null) a.zip = String(sc.zip);
   if (sc.state != null) a.state = sc.state;

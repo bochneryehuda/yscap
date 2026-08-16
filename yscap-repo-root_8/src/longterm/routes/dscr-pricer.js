@@ -54,7 +54,12 @@ async function price(req, res) {
     return res.status(code).json({ ok: false, error: r.error, http: r.http || null, message: r.message, upstream: r.upstream || r.body || null });
   }
   const parsed = lp.parse(r.raw);
-  res.json({ ok: true, ...trimPrograms(parsed), request: r.request });
+  const out = { ok: true, ...trimPrograms(parsed), request: r.request };
+  // Secret-gated diagnostics (the whole router is behind the diag token / staff login): when the
+  // caller asks, include a structural summary of the raw response so we can see whether Lender
+  // Price returned programs the parser missed, or truly zero — and any disqualify reasons.
+  if (req.body && req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
+  res.json(out);
 }
 
 // POST /selftest — run the fixed battery; returns one row per scenario. Paced, gentle on the login.

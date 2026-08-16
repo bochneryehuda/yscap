@@ -391,6 +391,37 @@ function parse(raw) {
 }
 function firstNum(o, keys) { for (const k of keys) { if (o[k] != null && isFinite(Number(o[k]))) return Number(o[k]); } return null; }
 function firstStr(o, keys) { for (const k of keys) { const v = o[k]; if (typeof v === 'string' && v.trim()) return v.trim(); } return null; }
+
+// Structural summary of the raw searchRaw response — for diagnostics ONLY (secret-gated).
+// Tells us whether Lender Price actually returned programs (so the parser is the gap) or truly
+// zero (so the request is the gap), plus the exact container/field names + any disqualify reasons.
+function summarizeRaw(raw) {
+  if (raw == null || typeof raw !== 'object') return { type: typeof raw, note: 'non-object response', preview: scrub(String(raw).slice(0, 400)) };
+  const arrays = {};        // dotted path → length, for every array found (depth ≤ 5)
+  const reasons = new Set();
+  let sampleRateRow = null;
+  const seen = new Set();
+  (function walk(node, path, depth) {
+    if (node == null || typeof node !== 'object' || depth > 5 || seen.has(node)) return;
+    seen.add(node);
+    if (!sampleRateRow && (RATE_KEYS.some((k) => k in node) || PROGRAM_KEYS.some((k) => k in node))) {
+      sampleRateRow = { path, keys: Object.keys(node).slice(0, 40) };
+    }
+    for (const k of Object.keys(node)) {
+      const v = node[k];
+      const p = path ? `${path}.${k}` : k;
+      if (/reason/i.test(k) && (typeof v === 'string' || typeof v === 'number')) reasons.add(String(v).slice(0, 120));
+      if (Array.isArray(v)) { arrays[p] = v.length; v.slice(0, 1).forEach((el) => walk(el, `${p}[0]`, depth + 1)); }
+      else if (v && typeof v === 'object') walk(v, p, depth + 1);
+    }
+  })(raw, '', 0);
+  return {
+    topKeys: Object.keys(raw).slice(0, 60),
+    nonEmptyArrays: Object.fromEntries(Object.entries(arrays).filter(([, n]) => n > 0).slice(0, 40)),
+    sampleRateRow,
+    disqualifyReasons: Array.from(reasons).slice(0, 12),
+  };
+}
 // Sum the lengths of any arrays reachable under the named keys anywhere in the tree.
 function countArrays(root, keys) {
   let n = 0; const stack = [root]; const seen = new Set();
@@ -408,7 +439,7 @@ function countArrays(root, keys) {
 }
 
 module.exports = {
-  configured, login, getSession, apiGet, enrichZip, price, parse,
+  configured, login, getSession, apiGet, enrichZip, price, parse, summarizeRaw,
   buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
   _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID },
 };
