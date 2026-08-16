@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { api } from '../lib/api';
 import { moneyNum } from '../lib/money';
+import { rvOrderTotal, moneyExact } from '../lib/rvPrice.js';
 import { askConfirm, askPrompt } from '../lib/dialog.js';
 import OrderFailure, { parseOrderFailure } from './OrderFailure.jsx';
 
@@ -1070,37 +1071,36 @@ function RicherValueBuilder({ appId, cfg, onPlaced }) {
           {price ? (
             <div className="aord-figs" style={{ gridTemplateColumns: '1fr' }}>
               <div className="aord-fig">
+                {/*
+                  THE HEADLINE IS THE ALL-IN FIGURE — what is actually charged, and
+                  what the desk quotes the borrower (owner-directed 2026-08-16).
+                  Their `cc_surcharge` sits OUTSIDE `total_price`, so before this the
+                  number on this screen was the one figure nobody ever pays.
+                */}
                 <div className="k">Price for this property</div>
-                <div className="v">{money(price.total_price)}</div>
+                <div className="v">{moneyExact(rvOrderTotal(price))}</div>
                 <div className="n">
                   {[
-                    price.report_type_fee ? `report ${money(price.report_type_fee)}` : null,
-                    price.inspection_fee ? `inspection ${money(price.inspection_fee)}` : null,
-                    price.rush_fee ? `rush ${money(price.rush_fee)}` : null,
-                    price.gla_surcharge ? `floor plan ${money(price.gla_surcharge)}` : null,
-                    price.licensing_surcharge ? `licensed ${money(price.licensing_surcharge)}` : null,
-                    price.flood_charge ? `flood ${money(price.flood_charge)}` : null,
+                    price.report_type_fee ? `report ${moneyExact(price.report_type_fee)}` : null,
+                    price.inspection_fee ? `inspection ${moneyExact(price.inspection_fee)}` : null,
+                    price.rush_fee ? `rush ${moneyExact(price.rush_fee)}` : null,
+                    price.gla_surcharge ? `floor plan ${moneyExact(price.gla_surcharge)}` : null,
+                    price.licensing_surcharge ? `licensed ${moneyExact(price.licensing_surcharge)}` : null,
+                    price.flood_charge ? `flood ${moneyExact(price.flood_charge)}` : null,
+                    Number(price.cc_surcharge) > 0 ? `card fee ${moneyExact(price.cc_surcharge)}` : null,
                   ].filter(Boolean).join(' · ')}
                   {price.due_date ? ` · report due ${fmtDate(price.due_date)}` : ''}
                 </div>
                 {/*
-                  THE CARD SURCHARGE IS NOT IN THEIR TOTAL. Every quote carries
-                  `cc_surcharge` OUTSIDE `total_price` (measured live: $3.50 flat,
-                  from their company settings `cc_surcharge_type: "flat"`). Our
-                  payment design is card-first — CARD_ON_FILE is the default and
-                  NEW_CARD is the other card route — so on essentially every order
-                  the amount actually charged is higher than the figure above, and
-                  the desk was quoting the borrower the wrong total.
-
-                  It is shown as its own line rather than folded into the headline
-                  because it depends on HOW it is paid: a payment link is their own
-                  hosted page and whether they add the same surcharge there is a
-                  question outstanding with their team, so claiming it applies to
-                  every route would be stating something we have not confirmed.
+                  THE CARD FEE IS NAMED, not merely folded in. The breakdown above
+                  already lists it, and this line says plainly that the headline
+                  INCLUDES it — a total that silently differs from the vendor's own
+                  invoice line is how somebody comes to think we were overcharged.
                 */}
                 {Number(price.cc_surcharge) > 0 ? (
                   <div className="n" style={{ marginTop: 4 }}>
-                    Paying by card adds {money(price.cc_surcharge)} — <b>{money(Number(price.total_price) + Number(price.cc_surcharge))}</b> charged to the card.
+                    Includes the {moneyExact(price.cc_surcharge)} card fee Richer Values adds
+                    (their own report price is {moneyExact(price.total_price)}). Quote the borrower the total above.
                   </div>
                 ) : null}
               </div>
@@ -1425,13 +1425,13 @@ function RvPlaceOrder({ cfg, preview, busy, onPlace, enabled, price }) {
       <button className="btn primary" disabled={busy || !canPlace || (!outbound && !dry)}
         aria-disabled={busy || !canPlace} onClick={onPlace}>
         {busy ? 'Ordering…' : dry ? 'Build the order (test mode)'
-          : price ? `Order the Hybrid Appraisal — ${money(price.total_price)}` : 'Order the Hybrid Appraisal'}
+          : price ? `Order the Hybrid Appraisal — ${moneyExact(rvOrderTotal(price))}` : 'Order the Hybrid Appraisal'}
       </button>
       {block ? <WhyBox title={block.title}>{block.help}</WhyBox>
         : dry ? <WhyBox title="Test mode is on — this button will NOT send anything.">To place the order for real, turn OFF “Richer Values orders — TEST MODE” on the API Health page.</WhyBox>
           : (
             <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>
-              This costs money{price ? ` (${money(price.total_price)})` : ''} and sends an inspector to the property.
+              This costs money{price ? ` (${moneyExact(rvOrderTotal(price))})` : ''} and sends an inspector to the property.
               It also waives the appraisal data file on this file — this report does not produce one.
             </div>
           )}

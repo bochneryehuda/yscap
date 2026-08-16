@@ -557,14 +557,31 @@ Hybrid appraisal paid by card is **$493.49**. Since the owner's payment design i
 card-first, this applies to essentially every order, and the desk was quoting a total
 lower than what would actually be charged.
 
-The order screen now prints it as its own line — *"Paying by card adds $3.50 — $493.49
-charged to the card"* — rather than folding it into the headline, because whether it
-applies depends on HOW it is paid: a payment link is their own hosted page, and whether
-they add the same surcharge there is still an open question with their team (§Step 8 of
-the setup guide). Claiming it applies to every route would state something we have not
-confirmed. The live audit now pins the SHAPE as well as the figure — that
-`total_price` is the sum of its own lines and the surcharge sits outside it — so if they
-ever fold it in, the audit fails rather than the screen silently double-counting it.
+**THE HEADLINE IS THE ALL-IN FIGURE** — owner-directed 2026-08-16, asked directly and
+answered: *"the borrower should be quoted the total with the $3.50."* Every route we pay
+by is a card, so the fee applies on essentially every order, and a headline that excluded
+it was the one number nobody ever pays. The fee is still **named** — it appears in the
+breakdown line and the screen says plainly that the total includes it, with their own
+report price shown beside it so our figure reconciles to their invoice.
+
+**One definition, three places.** `app-v2/src/lib/rvPrice.js` `rvOrderTotal` is read by
+the price panel, the order button and the confirmation line under it. A number retyped
+in three places is exactly how a button comes to promise one total while the panel above
+shows another — and this one is read out to a borrower.
+
+**Prices are printed to the CENT here, not to the dollar.** The portal's ordinary
+`money()` rounds to whole dollars, which is right for a loan amount and wrong for a
+$489.99 invoice: rounded, the fee all but disappears and $493.49 prints as $493 — quoting
+a borrower *less* than they will be charged, which is the smaller version of this same
+bug. The two halves are summed **in whole cents**, because plain addition is exact for
+some prices and not others: `489.99 + 3.5` happens to be exact, `508.57 + 3.5` is
+512.0699999999999, and 168 prices between $300 and $1,200 behave that way. Their pricing
+moves with the state and the ZIP, so which prices a desk sees is not something we choose.
+
+The live audit pins the SHAPE as well as the figure — that `total_price` is the sum of
+its own lines and the surcharge sits outside it — so if they ever fold it in, the audit
+fails rather than the screen silently double-counting it. Test
+`scripts/test-richer-value-price-total.mjs`.
 
 ### 15.5 The price quote cannot see three of the add-ons
 

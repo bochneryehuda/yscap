@@ -207,10 +207,13 @@ Nothing breaks while the card is missing: every order falls through to **"Send t
 borrower a payment link"**, and the order screen says plainly that there is no card
 saved yet.
 
-### One thing to confirm with them
+### The card surcharge — settled
 
-**The card surcharge.** They add **$3.50** to every card payment. Confirm whether
-that is charged on a payment link too, so the desk can say the right total.
+They add **$3.50** to every card payment, and it sits **outside** the price they
+quote. Owner-directed 2026-08-16: **the borrower is quoted the all-in total**, so the
+order screen's headline is their price plus the $3.50 (a $489.99 report reads
+$493.49). The fee is named in the breakdown and their own price is shown beside it,
+so our figure still reconciles to their invoice.
 
 ---
 
