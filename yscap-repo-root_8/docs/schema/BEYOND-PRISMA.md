@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**751 objects**, and a database rebuilt from the Prisma
+**752 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 553 numbered migrations in `db/` (highest `db/556`) remain the only thing that builds this database.
+rebuild a database from them.** The 554 numbered migrations in `db/` (highest `db/557`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 322 |
-| Columns | 5285 |
+| Tables | 323 |
+| Columns | 5297 |
 | Triggers | 33 |
 | Functions | 136 |
-| CHECK constraints | 249 |
+| CHECK constraints | 250 |
 | Generated columns | 12 |
 | Partial indexes | 321 |
-| Primary keys | 322 |
+| Primary keys | 323 |
 | Foreign keys | 684 |
 | Unique constraints | 37 |
-| Indexes (all kinds) | 1121 |
+| Indexes (all kinds) | 1123 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -547,7 +547,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (249)
+## CHECK constraints (250)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -727,6 +727,7 @@ the live database.
 - **loan_exceptions_severity_check** on `loan_exceptions`
 - **loan_exceptions_status_check** on `loan_exceptions`
 - **loan_facts_status_check** on `loan_facts`
+- **lt_milestone_events_type_check** on `lt_milestone_events`
 - **manual_program_escalations_status_check** on `manual_program_escalations`
 - **market_areas_box_ck** on `market_areas`
 - **market_areas_kind_ck** on `market_areas`
@@ -1549,7 +1550,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 322 primary keys and 1121 indexes is
+Every one of the 323 primary keys and 1123 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

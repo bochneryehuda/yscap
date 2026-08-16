@@ -9,17 +9,17 @@
 // *** IT IS INCOMPLETE, AND THAT IS NOT A DEFECT — IT IS A PROPERTY OF THE
 // *** PRISMA SCHEMA LANGUAGE. It cannot express triggers, functions, CHECK
 // *** constraints, generated columns or partial indexes. On this database
-// *** that is 751 objects it cannot see, listed in full in
+// *** that is 752 objects it cannot see, listed in full in
 // *** BEYOND-PRISMA.md next to this file.
 //
 // *** SO: NEVER REBUILD A DATABASE FROM THIS FILE. Doing so produces SQL that
 // *** runs without a single error and silently leaves out every one of those
-// *** 751 objects — including the guard that keeps a budget
+// *** 752 objects — including the guard that keeps a budget
 // *** condition from being signed off unless the totals match to the cent.
-// *** The 553 numbered migrations in db/ (highest db/556) are the only
+// *** The 554 numbered migrations in db/ (highest db/557) are the only
 // *** thing that builds this database.
 //
-// Snapshot: 322 tables, 5285 columns.
+// Snapshot: 323 tables, 5297 columns.
 // ===========================================================================
 datasource db {
   provider = "postgresql"
@@ -5291,6 +5291,8 @@ model lt_loans {
   loan_folder                     String?
   encompass_last_modified         DateTime?                @db.Timestamptz(6)
   encompass_sync_error            String?
+  milestone_since                 DateTime?                @db.Timestamptz(6)
+  milestone_since_is_baseline     Boolean                  @default(true)
   lt_borrower_pairs               lt_borrower_pairs[]
   lt_loan_contacts                lt_loan_contacts[]
   lt_loan_investors               lt_loan_investors?
@@ -8538,6 +8540,22 @@ model workflow_items {
   @@index([application_id, status], map: "idx_wf_app")
   @@index([to_role, status, received_at], map: "idx_wf_to_role")
   @@index([to_staff_id, status, received_at], map: "idx_wf_to_staff")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model lt_milestone_events {
+  id                  String    @id @db.Uuid
+  loan_id             String    @db.Uuid
+  event_type          String
+  from_milestone      String?
+  to_milestone        String?
+  from_stage          String?
+  to_stage            String?
+  observed_at         DateTime  @default(now()) @db.Timestamptz(6)
+  encompass_synced_at DateTime? @db.Timestamptz(6)
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([loan_id, observed_at(sort: Desc)], map: "lt_milestone_events_loan_idx")
 }
 
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments

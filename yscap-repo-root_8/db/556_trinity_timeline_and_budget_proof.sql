@@ -1,4 +1,4 @@
--- 555_trinity_timeline_and_budget_proof.sql
+-- 556_trinity_timeline_and_budget_proof.sql
 -- Idempotent. Two things the 2026-08-16 deep verification proved we need, both about
 -- KNOWING rather than assuming: a progress timeline Trinity cannot give us, and a
 -- per-order proof that their system really did take our construction budget.

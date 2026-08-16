@@ -1,4 +1,4 @@
--- 556_trinity_writeback.sql
+-- 557_trinity_writeback.sql
 -- Idempotent. The record of what the physical inspector's figures did to the SITEWIRE
 -- draw the borrower actually submitted — the second of the Trinity program's two doors.
 --
@@ -58,7 +58,7 @@ COMMENT ON COLUMN trinity_inspection_orders.writeback_at IS
 -- ---------------------------------------------------------------------------
 -- 2. THE TIMELINE LEARNS TWO MORE WORDS
 -- ---------------------------------------------------------------------------
--- db/555 built the append-only progress timeline because Trinity has no history
+-- db/556 built the append-only progress timeline because Trinity has no history
 -- endpoint. Its `kind` column is documented prose, not a CHECK, so nothing has to be
 -- widened — but the two new kinds are recorded here so the vocabulary lives in one
 -- place: 'writeback' (the inspector's figures landed on the Sitewire draw) and

@@ -213,7 +213,7 @@ async function pushApprovalsToSitewire(appId, orderRow, resultLines) {
       WHERE id=$1`, [orderRow.id, fingerprint]).catch(() => {});
 
   // The timeline is the ONLY record of the sequence (Trinity has no history endpoint —
-  // db/555), and "when did the inspector's figures reach the draw?" is a question a
+  // db/556), and "when did the inspector's figures reach the draw?" is a question a
   // coordinator asks the moment a number looks wrong. Recorded HERE rather than at the
   // call site so it stays true if a second caller ever appears; best-effort, because a
   // timeline row is never worth reversing a write that landed and verified.

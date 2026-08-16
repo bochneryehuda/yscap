@@ -100,7 +100,7 @@ function sectionMenu(loan, opts = {}) {
  * at -1, and NOTHING is marked reached — inventing progress from an unknown position
  * is worse than showing none.
  */
-function milestoneStepper(loan, catalog = []) {
+function milestoneStepper(loan, catalog = [], opts = {}) {
   const current = stages.normalizeMilestone((loan || {}).milestone_name);
   const ordered = (catalog || []).slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   const currentIndex = ordered.findIndex((m) => stages.normalizeMilestone(m.name) === current);
@@ -111,11 +111,21 @@ function milestoneStepper(loan, catalog = []) {
     // True only when the loan names a milestone the catalog does not carry — the
     // screen says "we do not recognise this milestone" rather than drawing nothing.
     unrecognised: !!current && currentIndex === -1,
+    // `reachedAt` is a date PILOT WATCHED this loan arrive at that milestone, from
+    // `lt_milestone_events` (db/554) — passed in by the caller, never read off the
+    // catalog row. This used to be `m.completed_at`, a column that does not exist:
+    // the rows here come from `lt_encompass_milestones`, the tenant's GLOBAL catalog
+    // of milestone names, which has no per-loan row and no completion date at all.
+    // So the field was null on every step of every loan, silently, forever.
+    //
+    // Encompass's own completion dates are unreadable on this tenant (the milestone
+    // log answers 403), so a step we did not witness has NO date — never a guess, and
+    // never the day we first noticed the loan sitting there.
     steps: ordered.map((m, i) => ({
       name: m.name,
       reached: currentIndex >= 0 && i <= currentIndex,
       current: i === currentIndex,
-      completedAt: m.completed_at || null,
+      reachedAt: (opts.reachedAt || {})[String(m.name || '').trim().toLowerCase()] || null,
     })),
   };
 }
@@ -135,16 +145,28 @@ function summaryRail(loan, opts = {}) {
   const num = (v) => (v == null || v === '' ? null : Number(v));
   const stage = stages.stageForMilestone(l.milestone_name, opts.stageConfig || {});
 
+  // THE PROPERTY FIGURES COME FROM THE PROPERTY, NOT FROM THE LOAN ROW.
+  //
+  // `appraised_value`, `ltv_pct`, `occupancy` and the rent live on `lt_properties`
+  // (db/549); `lt_loans` has none of them, so reading them off the loan row answered
+  // null on EVERY loan, silently and forever — the rail said "Property value —" on a
+  // file whose Property section was showing $400,000 two clicks away. Two answers to
+  // one question on two screens is worse than one answer we did not derive, so the
+  // caller passes the SAME sections the Property tab renders (`file.js`) and the two
+  // cannot disagree. Absent, the rows are honestly empty rather than wrong.
+  const p = opts.property || {};
+  const inc = opts.income || {};
+
   return {
     loanNumber: l.loan_number || null,
     borrower: l.borrower_name || null,
     purpose: l.loan_purpose || null,
-    occupancy: l.occupancy || null,
+    occupancy: p.occupancy || null,
     loanAmount: num(l.loan_amount),
-    propertyValue: num(l.appraised_value != null ? l.appraised_value : l.property_value),
-    ltv: num(l.ltv_pct),
+    propertyValue: num(p.appraisedValue != null ? p.appraisedValue : p.estimatedValue),
+    ltv: num(p.ltvPct),
     dscr: num(l.dscr_ratio),
-    grossRent: num(l.gross_rent),
+    grossRent: num(inc.grossMonthlyRent != null ? inc.grossMonthlyRent : inc.actualMonthlyRent),
     housingExpense: num(l.housing_expense_total),
     noteRate: num(l.note_rate_pct),
     termMonths: l.term_months == null ? null : Number(l.term_months),

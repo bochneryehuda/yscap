@@ -333,7 +333,7 @@ side.
 
 The owner's *"keep track of the progress with the status, scheduled, inspected, and
 report back"* therefore exists only because we write each transition down as we see it:
-`trinity_order_events` (db/555) is append-only, records Trinity's own wording alongside
+`trinity_order_events` (db/556) is append-only, records Trinity's own wording alongside
 our five-state ladder, and is deduped so the poller re-reading the same order every few
 minutes cannot fill it with copies of one moment. The manual **Deliver to the borrower**
 is recorded there too — with no autopilot on this program, that row is the only record of
@@ -380,7 +380,7 @@ park-on-failure. Three more are specific to this path:
 
 * **A cap.** A line is never written above what the borrower requested on it. Over-approving
   is a deliberate human act in Sitewire and must never be something an adapter does alone.
-* **A fingerprint** (`trinity_inspection_orders.writeback_fingerprint`, db/556) — the
+* **A fingerprint** (`trinity_inspection_orders.writeback_fingerprint`, db/557) — the
   FIGURES themselves, sorted. The poller re-reads a completed order on every tick, so
   without it the same write would be journaled a minute forever; because the key is the
   figures, a **revision** (Trinity re-completing an order with corrected numbers) genuinely

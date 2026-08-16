@@ -17,6 +17,10 @@ const access = require('../access');
 const contacts = require('../people/contacts');
 const workspace = require('../workspace');
 const locks = require('../locks');
+const milestones = require('../milestones');
+const product = require('../product');
+const pipelineColumns = require('../pipeline-columns');
+const ltFile = require('../file');
 const stages = require('../stages');
 const settingsStore = require('../settings/store');
 const db = require('../db');
@@ -24,18 +28,31 @@ const db = require('../db');
 // GET /api/lt/pipeline — the viewer's long-term book.
 router.get('/', async (req, res) => {
   try {
+    // Which columns to draw comes from `pipeline.columns` (db/553) — a setting that
+    // has existed since the pipeline shipped and that nothing read, so a buyer could
+    // change it and nothing happened. The SCREEN renders what this resolves; the
+    // QUERY is unchanged by it, deliberately (see pipeline-columns.js).
+    const { settings } = await settingsStore.load().catch(() => ({ settings: {} }));
+    const cols = pipelineColumns.resolveColumns(settings['pipeline.columns']);
+
     const out = await pipeline.loadPipeline(req.actor, {
       stage: req.query.stage,
       folder: req.query.folder,
       search: req.query.search,
       officerStaffId: req.query.officer,
       unassigned: String(req.query.unassigned || '') === 'true',
+      // "Mine" is asked for as a flag and resolved from the SESSION, never from an
+      // id in the query string — a viewer who sees the whole book could otherwise
+      // ask for somebody else's personal queue by typing their id into the URL. The
+      // `officer` filter is the deliberate, named way to look at another officer's
+      // files, and it exists for exactly that.
+      mine: String(req.query.mine || '') === 'true',
       sort: req.query.sort,
       dir: req.query.dir,
       limit: req.query.limit,
       offset: req.query.offset,
     });
-    res.json(out);
+    res.json({ ...out, ...cols });
   } catch (e) {
     console.error('[lt] pipeline failed:', (e && e.message) || e);
     res.status(500).json({ error: 'Could not load the long-term pipeline.' });
@@ -92,26 +109,59 @@ router.get('/:loanId', async (req, res) => {
     // Aliased to what the workspace expects rather than renamed there, so the
     // stepper stays a pure function of a plain shape. `is_archived` milestones are
     // excluded: a retired step must not sit in the middle of a live file's progress.
+    // `expected_days` rides along so the workspace can say whether the loan has been
+    // sitting where it is for longer than the TENANT's own expectation — the plan's
+    // "a stalled file reads as stalled without a word of text".
     const { rows: catalog } = await db.query(
-      `SELECT milestone_name AS name, sequence AS sort_order
+      `SELECT milestone_name AS name, sequence AS sort_order, expected_days
          FROM lt_encompass_milestones
         WHERE COALESCE(is_archived, false) = false
         ORDER BY sequence`,
     ).catch(() => ({ rows: [] }));
 
+    // When PILOT watched this loan reach each milestone. Best-effort and EMPTY when
+    // unreadable, which draws the stepper with no dates rather than with wrong ones.
+    const reachedAt = await milestones.reachedAtByMilestone(rows[0].id).catch(() => ({}));
+    // The movement history itself — what PILOT watched, in order. Best-effort.
+    const milestoneHistory = await milestones.loadHistory(rows[0].id, 25).catch(() => []);
+    const currentMs = catalog.find(
+      (m) => String(m.name || '').trim().toLowerCase() === String(rows[0].milestone_name || '').trim().toLowerCase(),
+    );
+
     // The lock's own detail — the posture, the countdown, and what PILOT watched
     // change. Best-effort: a loan still opens when its lock cannot be read.
     const lock = await locks.loadLock(rows[0].id).catch(() => null);
 
+    // The sections themselves — the 1003 as this loan actually reads. Best-effort
+    // like the lock: a file whose sections cannot be assembled still opens, with its
+    // header, its stepper and its rail intact.
+    const file = await ltFile.loadFile(rows[0].id, rows[0]).catch(() => null);
+
     const labels = settings['contacts.roleLabels'] || {};
     res.json({
-      loan: rows[0],
+      // The FILE HEADER's stamp (CLAUDE.md §7), carried on the loan itself so the
+      // screen renders what the row says rather than what screen it is.
+      ...product.stamp(),
+      loan: product.tagRow(rows[0]),
       lock,
+      file,
       sections: workspace.sectionMenu(rows[0], {
         conditionsEnabled: settings['conditions.enabled'] === true,
       }),
-      stepper: workspace.milestoneStepper(rows[0], catalog),
-      rail: workspace.summaryRail(rows[0], { stageConfig: stages.configFrom(settings) }),
+      stepper: workspace.milestoneStepper(rows[0], catalog, { reachedAt }),
+      // How long it has been at this milestone — and, when the first sighting is all
+      // we have, a plain sentence saying we do not know rather than a number we made up.
+      milestoneHistory,
+      milestoneClock: milestones.describeClock(rows[0], {
+        expectedDays: currentMs ? currentMs.expected_days : null,
+      }),
+      // The rail's property figures come from the SAME sections the Property tab
+      // renders, so the two can never state different values for one loan.
+      rail: workspace.summaryRail(rows[0], {
+        stageConfig: stages.configFrom(settings),
+        property: file && file.property,
+        income: file && file.income,
+      }),
       contacts: team.map((t) => contacts.describeContact(t, {
         staffName: t.staff_id ? names.get(String(t.staff_id)) : null,
         overrideName: t.override_staff_id ? names.get(String(t.override_staff_id)) : null,

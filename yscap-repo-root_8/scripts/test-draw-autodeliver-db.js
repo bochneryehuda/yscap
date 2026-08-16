@@ -156,6 +156,18 @@ const findingCount = async (draw) => Number((await db.query(`SELECT count(*)::in
   ok('9g finding total updated to 1750000', Number((await findingOf(DRAW3)).total_approved_cents) === 1750000);
 
   console.log(`\n${fail === 0 ? 'ALL' : fail + ' FAILED,'} ${pass} auto-deliver wiring assertions ${fail === 0 ? 'passed' : ''}`);
+
+  // Let the borrower fan-out this test just triggered finish before tearing the file
+  // down. `notify._emailRow` is deliberately FIRE-AND-FORGET, so its `sent_emails`
+  // INSERT can still be in flight here — and the cleanup DELETE cascades into
+  // `notifications`, which is the same parent that insert is holding. The two grab the
+  // rows in opposite orders and Postgres kills one of them (40P01). The INSERT side
+  // already retries a deadlock; the DELETE side is the victim and does not, so the
+  // test dies AFTER every assertion has passed. `drainEmails()` is the test-only
+  // helper built for exactly this — notify.js's own comment names this failure — and
+  // the sibling draw suite (test-draw-loop-in-db.js) already uses it.
+  await require('../src/lib/notify').drainEmails().catch(() => {});
+
   await db.query(`DELETE FROM applications WHERE id=$1`, [app]);
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [bor]);
   process.exit(fail === 0 ? 0 : 1);

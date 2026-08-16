@@ -315,7 +315,7 @@ const eq = (a, b, label) => ok(a === b, `${label} (got ${JSON.stringify(a)}, exp
     'H2m and the deliver route gates on that positive test, never on the absence of an error');
 
   // ---- H. the timeline records when the figures landed -----------------------------
-  // Trinity has no history endpoint (db/555), so this is the only record of the
+  // Trinity has no history endpoint (db/556), so this is the only record of the
   // sequence — and "when did the inspector's figures reach the draw?" is the question a
   // coordinator asks the moment a number looks wrong.
   const ev = (await db.query(

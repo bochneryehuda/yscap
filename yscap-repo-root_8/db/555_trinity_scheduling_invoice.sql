@@ -1,4 +1,4 @@
--- 554_trinity_scheduling_invoice.sql
+-- 555_trinity_scheduling_invoice.sql
 -- Idempotent. Three capabilities of the Trinity Customer API that the first build
 -- (db/552) did not use, each verified LIVE against the sandbox on 2026-08-16 and each
 -- answering something the owner asked for by name.
