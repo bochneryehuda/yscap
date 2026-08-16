@@ -137,6 +137,71 @@ published?
 
 ---
 
+## Pass 2 — sweeping a real request, so no field escapes because nobody mapped it
+
+The table above is **hand-maintained**, which is the exact shape that goes stale silently. It checks
+the whole *table* of what each family could send — but only for families somebody remembered to add.
+Measured: a real request emitted **eight dynamic fields and a dozen criteria paths that table did
+not cover at all**, so "24 families, all ok" was a pass over a subset.
+
+So the checker now also **derives** its field list from what `buildSearch` actually produces, across
+three scenarios (minimum facts, every optional field the builder accepts, and a cash-out refinance).
+The two passes answer different questions and both are needed: the table can see a value no scenario
+happened to emit; the sweep can see a **field** nobody mapped.
+
+**Result: 42 emitted fields resolved against the registry, 0 carrying a value it does not publish.**
+
+Two things that had to be right for that number to mean anything:
+
+- **The registry's `path` IS the request path.** A dotted path addresses the nested request object
+  (`criteria.loanPurpose`); a bare name is a `dynamicPropertiesMap` key (`GLOBAL_RESERVES`). Not
+  assumed — every path is looked up by that exact string, and the 42 that resolve are the proof.
+- **Booleans and numbers are swept too, compared as `String(v)`.** The registry publishes
+  `criteria.interestOnly` as the strings `"true" | "false"`, but the **real frontend capture sends a
+  JSON boolean** there (verified in anchors req-01 and req-07) and we match it. So the registry's
+  values describe the UI's option list while the wire **type** is whatever the frontend sends.
+  Collecting only strings made that entire class invisible — the one place a type mismatch could
+  hide — and made the discovery list falsely claim we never send those fields. **Parity with the
+  capture decides the type; the registry decides the value. Where they could disagree, the capture
+  wins and this pass must not "fix" it.**
+
+Eleven emitted fields carry a *word* the registry publishes no list for
+(`brokerCriteria.sortView`, `businessSourceType`, `criteria.loanType`, the `accessCriteria` flags…).
+Every one of them was checked against the captured frontend request and **all 11 match it exactly**
+— a gap in what the registry publishes, not a defect in what we send. Thirty-five more are free
+numbers, which have no enum by definition. Both are reported as **unchecked**, never as passed.
+
+## The discovery list — 25 fields the vendor publishes that we never send
+
+This is the list that answers a "the field name was never captured" deferral, and one of them lands
+squarely on an open item in `LENDER-PRICE-PARITY-STATUS.md` §2:
+
+> **`Lateinlast24months` — `true | false`.** `field-registry.js` records that the 13–24-month parent
+> late toggle "was never captured, so it is deliberately NOT wired — only its per-bucket counts
+> are." The vendor publishes the field name and both values. Its 12-month sibling is already wired
+> with the confirmed ON token `true`.
+
+Others worth a decision rather than a change: `criteria.nonOccCoBorrower` and
+`criteria.numberOfBorrower` (both listed in §2 as "company-specific fields, no capture" — the
+registry publishes both), `brokerCriteria.qmTypes` (§2 "QM scope"), `GLOBAL_CONDOTYPE` and
+`GLOBAL_HOMEEQUITYTYPE` (§2 "HELOC / lien-priority subtypes"), and `GLOBAL_Section184` /
+`GLOBAL_NativeAmerican` (§2, where Section 184 is additionally a compound state machine and must
+stay atomic-or-rejected).
+
+**None of these were wired tonight, on purpose.** The registry proves a field name and its permitted
+values; it does **not** prove that the frontend sends that field, or when. Parity is measured against
+the captured request, so wiring a field the frontend omits would diverge from the thing we are trying
+to match. Each of these now needs one capture — or one owner decision — rather than more research,
+which is a materially better position than "never captured".
+
+The same reasoning applies to several "off tokens" the code notes as uncaptured
+(`Global_DSCR_Asset_Depletion` publishes `No | Yes`; `FirstTimeInvestor`, `Global_Living_Rent_Free`
+and `Lateinlast12months` all publish `true | false`). The off value is now **known to be valid** —
+what is still unknown is whether the frontend sends it or omits the field, and only a capture
+settles that.
+
+---
+
 ## Values the vendor offers that we cannot send
 
 These are not defects. Each is either a deliberate scope decision or a gap worth a decision:

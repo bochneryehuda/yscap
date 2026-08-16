@@ -216,6 +216,36 @@ mis-price, which is worse than the current explicit-reject behavior.
     Section 184** — Section 184 is additionally a COMPOUND state machine
     (§31.2: it flips mortgage type to USDA and does not cleanly reverse), so it
     must be implemented atomically or stay rejected for DSCR scope.
+**HALF OF THOSE ARE NO LONGER "NEVER CAPTURED" — the vendor publishes a field
+registry, and it was read on 2026-08-16** (`ppe-research/TOKEN-REGISTRY-FINDINGS.md`,
+re-runnable via `ppe-research/token-registry-check.js`). `GET /company/config/{id}`
+with `Accept: application/json-no-enum` publishes **75 enum fields with their
+permitted values**, and it names several of the fields above outright:
+
+| deferred above | the registry publishes |
+| --- | --- |
+| non-occupying co-borrower | `criteria.nonOccCoBorrower` — `true \| false` |
+| (number of borrowers) | `criteria.numberOfBorrower` — `1 \| 2 \| 3 \| 4` |
+| QM scope | `brokerCriteria.qmTypes` — `All \| QM \| NONQM` |
+| HELOC / lien-priority subtypes | `GLOBAL_HOMEEQUITYTYPE` — `StandAloneSecond \| PiggyBackPurchase \| PiggyBackRefi \| FirstLienHE`; `GLOBAL_CONDOTYPE` (8 values) |
+| Native American / Section 184 | `GLOBAL_NativeAmerican`, `GLOBAL_Section184` — `true \| false` |
+| the 13–24-month parent late toggle | `Lateinlast24months` — `true \| false` |
+
+**They stay deferred, and the reason has changed.** The registry proves a field
+name and its permitted values. It does **not** prove the frontend *sends* that
+field, or when — and parity is measured against the captured request, so wiring
+a field the frontend omits would diverge from the very thing we are matching.
+Each of these now needs **one capture, or one owner decision**, rather than more
+research. Section 184 additionally stays atomic-or-rejected regardless (§31.2).
+AUS is unchanged: the registry publishes only `brokerCriteria.ausList`, which is
+the capability array and is explicitly NOT the selected-criteria field.
+
+The same applies to the "off tokens" the code records as uncaptured
+(`Global_DSCR_Asset_Depletion` → `No | Yes`; `FirstTimeInvestor`,
+`Global_Living_Rent_Free`, `Lateinlast12months` → `true | false`): the off value
+is now known to be **valid**; whether the frontend sends it or omits the field is
+still a capture question.
+
 **No longer deferred:** ZIP → county-FIPS enrichment, which this list previously
 carried, shipped 2026-08-16 and has moved to §1. **The cash-out AMOUNT also left
 this list**: it is transmitted as the captured `criteria.cashoutAmount`, and the

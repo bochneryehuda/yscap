@@ -93,6 +93,79 @@ const FAMILIES = [
   { name: 'state',             path: 'property.address.state',    emit: () => strings(Object.keys(sm._internals.STATE_FIPS || {})) },
 ];
 
+// ---- PASS 2: sweep a REAL request, so no field escapes because nobody mapped it ----
+// The FAMILIES table above is HAND-MAINTAINED, which is the exact shape that goes stale silently:
+// it checks the whole TABLE of what each family COULD send, but only for the families somebody
+// remembered to add. Measured when this was written, a real request emitted EIGHT dynamic fields
+// that table did not cover at all (AddlOccupancyType, PrepayTerm, GLOBAL_Section184,
+// GLOBAL_NativeAmerican, Global_DSCR_Asset_Depletion, GLOBAL_Cross_Collateralization_Product,
+// GLOBAL_DECLININGMARKET, GLOBAL_GIFTFUNDPERCENT) plus a dozen criteria paths — so a "24 families,
+// all ok" result was a pass over a subset.
+//
+// So this second pass DERIVES its field list from what `buildSearch` actually produces. The two
+// passes answer different questions and both are needed: the table can see a value no scenario
+// happened to emit, and the sweep can see a FIELD nobody mapped.
+//
+// The registry's `path` IS the request path — a dotted path addresses the nested request object
+// (`criteria.loanPurpose`) and a bare name is a `dynamicPropertiesMap` key (`GLOBAL_RESERVES`).
+// That is not assumed: every dotted path this sweep collects is looked up in the registry by that
+// exact string, and the ones that resolve are what prove the convention holds.
+const SCENARIOS = [
+  { label: 'purchase, minimum facts',
+    sc: { purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, state: 'NJ', countyFps: '34039', fico: 760 } },
+  { label: 'purchase, every optional field the builder accepts',
+    sc: { purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, state: 'NJ', countyFps: '34039', fico: 760,
+      reservesMonths: 12, propertyType: 'SingleFamily', borrowerType: 'LLC', citizenship: 'US Citizen',
+      incomeDocType: 'DSCR', prepayStructure: 'Standard', prepayMonths: 60, io: true, escrowWaive: true,
+      rentalTerm: 'Long Term', attachmentType: 'Detached', tradelines: 'Limited',
+      compensationType: 'BorrowerCompPlan', crossCollateral: true, dscrAssetDepletion: true,
+      firstTimeInvestor: true, livingRentFree: true, lateInLast12Months: true,
+      // BOTH late windows. Exercising only `last12` left MORT*LASTLAST24M out of the sweep, and the
+      // discovery list then claimed we never send them — a false claim about our own request.
+      mortgageLates: { last12: { 30: '1', 60: '2', 90: '3', 120: '4+' },
+                       months13To24: { 30: '1', 60: '2', 90: '3', 120: '4' } } } },
+  { label: 'cash-out refinance',
+    sc: { purpose: 'CashoutRefinance', value: 6e5, loan: 3.5e5, dscr: 1.4, state: 'FL', countyFps: '12086',
+      fico: 700, cashoutAmount: 5e4, reservesMonths: 'none', borrowerType: 'Individual' } },
+];
+
+// A field whose value is a free NUMBER, an id, or a Jackson type discriminator is not an enum and
+// must not be reported as an unpublished token. Everything else is swept.
+const NOT_AN_ENUM = /(^|\.)(@class|country|county|censustract|city|countyName|street|streetCont|zip|zipExt|name)$/;
+
+// A BOOLEAN AND A NUMBER ARE SWEPT TOO, COMPARED AS `String(v)` — and that is the whole reason
+// this pass sees anything interesting. The registry publishes `criteria.interestOnly` as the
+// strings "true" | "false", but the REAL frontend capture sends a JSON boolean `true` there
+// (verified in anchors req-01 and req-07), and we match it. So the registry's values describe the
+// UI's option list while the WIRE TYPE is whatever the frontend sends. Collecting only strings
+// made every one of those fields invisible to this sweep — the exact class where a type mismatch
+// would hide — and made the discovery list claim we never send them.
+// Parity with the captured frontend, not the registry, decides the TYPE; the registry decides the
+// VALUE. Where those two could disagree, the capture wins and this pass must not "fix" it.
+const scalar = (v) => (typeof v === 'string' || typeof v === 'boolean' || typeof v === 'number');
+
+function sweepRequest(model) {
+  const found = [];               // { path, value }
+  for (const [k, v] of Object.entries(model.dynamicPropertiesMap || {})) {
+    const val = v && typeof v === 'object' ? v.value : v;
+    if (scalar(val) && String(val) !== '') found.push({ path: k, value: String(val) });
+  }
+  (function walk(node, prefix) {
+    if (!node || typeof node !== 'object') return;
+    for (const [k, v] of Object.entries(node)) {
+      const p = prefix ? `${prefix}.${k}` : k;
+      if (NOT_AN_ENUM.test(p)) continue;
+      if (scalar(v) && String(v) !== '') found.push({ path: p, value: String(v) });
+      // An array is a multi-select (criteria.mortgageTypes) — every member is a token.
+      else if (Array.isArray(v) && v.length && v.every(scalar)) {
+        for (const x of v) found.push({ path: p, value: String(x) });
+      } else if (v && typeof v === 'object' && !Array.isArray(v)) walk(v, p);
+    }
+  })({ criteria: model.criteria, property: model.property, brokerCriteria: model.brokerCriteria,
+       accessCriteria: model.accessCriteria, loanTypeCriteria: model.loanTypeCriteria }, '');
+  return found;
+}
+
 // ---- the vendor's own list --------------------------------------------------
 function publishedEnums(cfg) {
   const byPath = new Map();
@@ -178,5 +251,55 @@ async function login() {
 
   L(`\n${checked} token families checked against the vendor registry; ${wrong} carry a value the vendor does not publish.`);
   if (uncheckable) L(`${uncheckable} could not be checked (the registry publishes no list for them) — reported, never counted as passing.`);
-  process.exit(wrong ? 1 : 0);
+
+  // ---- PASS 2 -----------------------------------------------------------------
+  L('\n--- sweeping real built requests, field by field ---');
+  const swept = new Map();          // path -> Set(values we were seen to emit)
+  for (const { label, sc } of SCENARIOS) {
+    let model;
+    try { model = sm.buildSearch(sc); } catch (e) { L(`  ! "${label}" could not be built: ${e.message}`); continue; }
+    for (const { path: p, value } of sweepRequest(model)) {
+      const set = swept.get(p) || new Set();
+      set.add(value);
+      swept.set(p, set);
+    }
+  }
+
+  let sweptBad = 0, sweptOk = 0;
+  const unpublishedPaths = [];
+  for (const [p, values] of [...swept.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const theirs = vendor.get(p);
+    if (!theirs) { unpublishedPaths.push({ path: p, values: [...values] }); continue; }
+    const bad = [...values].filter((v) => !theirs.has(v));
+    if (bad.length) {
+      sweptBad++;
+      L(`✗ ${p.padEnd(40)} WE SEND: ${bad.join(' | ')}`);
+      L(`     the vendor publishes: ${[...theirs].join(' | ').slice(0, 150)}`);
+    } else sweptOk++;
+  }
+  L(`\n${sweptOk + sweptBad} emitted fields resolved against the registry; ${sweptBad} carry a value it does not publish.`);
+  if (unpublishedPaths.length) {
+    // NOT a failure. But the list is only useful if the genuinely interesting rows are not buried
+    // under the loan amount and the FICO, so it is split by a DERIVED test — "is every value we
+    // sent a number?" — rather than by a hand-kept list of numeric field names, which would be the
+    // same stale-list problem this whole pass exists to remove. A free number has no enum by
+    // definition; a WORD with no published list is the row worth a human's attention.
+    const numericOnly = unpublishedPaths.filter((u) => u.values.every((v) => v !== '' && !Number.isNaN(Number(v))));
+    const wordy = unpublishedPaths.filter((u) => !numericOnly.includes(u));
+    if (wordy.length) {
+      L(`\n${wordy.length} emitted fields carry a WORD the registry publishes no list for — UNCHECKED, not passed:`);
+      for (const u of wordy) L(`  ${u.path.padEnd(40)} ${u.values.join(' | ')}`);
+    }
+    L(`\n${numericOnly.length} more are free numbers (a number has no enum) — not checkable and not a concern.`);
+  }
+
+  // Fields the vendor publishes that no request of ours ever touches. Not a defect — this is the
+  // DISCOVERY list, and it is what answers a "the field name was never captured" deferral.
+  const never = [...vendor.keys()].filter((p) => !swept.has(p) && !FAMILIES.some((f) => f.path === p)).sort();
+  if (never.length) {
+    L(`\n${never.length} fields the vendor publishes that we never send (the discovery list):`);
+    for (const p of never) L(`  ${p.padEnd(40)} ${[...vendor.get(p)].join(' | ').slice(0, 110)}`);
+  }
+
+  process.exit(wrong || sweptBad ? 1 : 0);
 })().catch((e) => { L('THREW: ' + (e && e.message ? e.message : String(e))); process.exit(2); });
