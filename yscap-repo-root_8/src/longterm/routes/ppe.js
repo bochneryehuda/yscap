@@ -343,11 +343,19 @@ async function decideFindingRoute(req, res) {
     return res.status(400).json({ error: 'Add a short reason (at least 8 characters) — a settled finding is never re-opened, so this note is the record of why.' });
   }
 
-  // `req.actor` only ever carries `.id` (src/auth/index.js) — a `.staffId`
-  // fallback is always undefined, which is why #617's guard forbids it. Dropping
-  // it changes nothing: `id || undefined || null` and `id || null` are the same
-  // answer for every value `id` can hold. Every other LT route already reads
-  // `req.actor && req.actor.id`.
+  // `.id` is the WHOLE actor identity — authenticate() builds req.actor as
+  // { id, kind, role, sid } and has never put a staff-id field beside it, so
+  // the fallback that used to sit here could only ever read undefined. That
+  // dead read is the 2026-07-23 (#208) silent-attribution bug, and its whole
+  // cost is that it LOOKS like a safety net: a reader sees two sources and
+  // assumes one covers the other, while a decision taken through the arm that
+  // was supposed to be covered is recorded against nobody.
+  //
+  // scripts/test-attribution-dedupe-pure.js source-scans src/ for that dead
+  // read, and it scans the RAW TEXT — comments included — so do not spell the
+  // pattern out here, even to explain it. Naming it in prose fails the build
+  // just as loudly as writing the code, which is how this comment got worded
+  // the long way round.
   const decidedBy = (req.actor && req.actor.id) || null;
   const changed = await findingStore.decideFinding(scope, key, { status, reason, decidedBy }, db);
   if (!changed) return res.status(404).json({ error: 'No such finding on this scope.' });

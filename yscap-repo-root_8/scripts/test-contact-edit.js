@@ -27,6 +27,9 @@ function api(method, path, body, token) {
 }
 
 async function main() {
+  // DB-gated: `npm test` runs this whole chain in the no-database CI job too,
+  // so a suite that dials a database must skip rather than take the build down.
+  await require(__dirname + "/lib/db-gate").skipUnlessDb("contact-edit");
   const app = require(REPO + '/src/server.js');
   const server = app.listen(PORT);
   await require(REPO + '/src/migrate-boot').ensureSchema();

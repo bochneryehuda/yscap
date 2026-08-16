@@ -32,6 +32,9 @@ function api(method, path, body) {
 const kindOf = (tok) => { try { return JSON.parse(Buffer.from(tok.split('.')[1], 'base64url').toString()).kind; } catch { return null; } };
 
 async function main() {
+  // DB-gated: `npm test` runs this whole chain in the no-database CI job too,
+  // so a suite that dials a database must skip rather than take the build down.
+  await require(__dirname + "/lib/db-gate").skipUnlessDb("cross-login");
   const app = require(REPO + '/src/server.js');
   const server = app.listen(PORT);
   await require(REPO + '/src/migrate-boot').ensureSchema();

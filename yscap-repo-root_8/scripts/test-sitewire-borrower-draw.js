@@ -97,14 +97,17 @@ function png() { const W = 6, H = 6; const ih = Buffer.alloc(13); ih.writeUInt32
   ok('draw_dispute_resolved notification row created for the borrower', after === before + 1);
 
   console.log(`\n${fail === 0 ? 'ALL' : fail + ' FAILED,'} ${pass} borrower-draw assertions ${fail === 0 ? 'passed' : ''}`);
-  // The email fan-out is FIRE-AND-FORGET (notify.js `_track`), so `notifyAppBorrowers`
-  // above resolves while its `sent_emails` INSERT is still running — measured, not
-  // assumed: the row is absent the instant the fan-out resolves and present after the
-  // drain. That INSERT and the cleanup DELETE below then take each other's locks on
-  // `notifications` and Postgres kills one of them (40P01) — which is exactly how this
-  // job went red on main at 17:01 UTC, after all 14 assertions had already passed.
-  // notify.js documents this and exports the drain for it; the fix is to call it.
-  await notify.drainEmails().catch(() => {});
+  // The notify above fans its email out FIRE-AND-FORGET (deliberately — a failed send
+  // must never break the request), and that fan-out ends in an INSERT INTO sent_emails
+  // referencing BOTH the notifications row and the application. Deleting the application
+  // while that insert is still in flight deadlocks: the DELETE holds `applications` and
+  // wants the notifications tuple its cascade must remove, while the INSERT holds an FK
+  // share lock on that tuple and wants `applications`. Postgres kills one side (40P01)
+  // and the suite dies in teardown with all 14 assertions already passed — which is
+  // exactly how it took main's test-db job down on 39f8d6c.
+  // drainEmails() exists for this and its own comment names this failure; it is bounded,
+  // and a no-op when nothing is in flight.
+  await notify.drainEmails();
   await db.query(`DELETE FROM applications WHERE id=$1`, [app]); await db.query(`DELETE FROM borrowers WHERE id=$1`, [bor]);
   process.exit(fail === 0 ? 0 : 1);
 })().catch((e) => { console.error('THREW', e); process.exit(1); });
