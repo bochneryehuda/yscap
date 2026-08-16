@@ -71,6 +71,36 @@ function roundToIncrement(valueMilli, incrementMilli) {
   return r * inc;
 }
 
+// The full set of rounding MODES the settings expose (settings.js
+// pricing.rounding_mode). `none` and an increment ≤ 0 both pass the value
+// through untouched. Every mode rounds to the same declared increment.
+//   nearest   — half-away-from-zero (the industry default, nearest 1/8)
+//   up        — toward +∞ (ceil to the increment)
+//   down      — toward −∞ (floor to the increment)
+//   half_even — banker's rounding (ties to the even multiple)
+function roundPrice(valueMilli, incrementMilli, mode) {
+  const inc = Number(incrementMilli) || 0;
+  const m = mode || 'nearest';
+  if (m === 'none' || inc <= 0) return valueMilli;
+  const q = valueMilli / inc;
+  let r;
+  switch (m) {
+    case 'nearest': r = q >= 0 ? Math.floor(q + 0.5) : Math.ceil(q - 0.5); break;
+    case 'up': r = Math.ceil(q); break;
+    case 'down': r = Math.floor(q); break;
+    case 'half_even': {
+      const fl = Math.floor(q);
+      const diff = q - fl;
+      if (diff < 0.5) r = fl;
+      else if (diff > 0.5) r = fl + 1;
+      else r = (fl % 2 === 0) ? fl : fl + 1; // tie → even
+      break;
+    }
+    default: throw new Error(`pricing:bad_rounding_mode:${m}`);
+  }
+  return r * inc;
+}
+
 function clamp(valueMilli, floorMilli, capMilli) {
   let v = valueMilli;
   if (floorMilli != null) v = Math.max(v, floorMilli);
@@ -176,11 +206,22 @@ function priceRung(input) {
 
   const rawAdjustments = Array.isArray(input.adjustments) ? input.adjustments : [];
   const adjustments = rawAdjustments.map(normalizeAdjustment);
-  const adjustmentCostMilli = adjustments.reduce((s, a) => s + a.costMilli, 0);
+  const adjustmentCostRawMilli = adjustments.reduce((s, a) => s + a.costMilli, 0);
+
+  // Cumulative-adjustment cap (§5.1 / settings pricing.cumulative_adjustment_cap_milli):
+  // an optional ceiling on the MAGNITUDE of the total LLPA stack. null = uncapped.
+  const capMagMilli = input.cumulativeAdjustmentCapMilli == null
+    ? null
+    : assertMilli('cumulative_adjustment_cap', input.cumulativeAdjustmentCapMilli);
+  const adjustmentCostMilli = capMagMilli == null
+    ? adjustmentCostRawMilli
+    : Math.max(-capMagMilli, Math.min(capMagMilli, adjustmentCostRawMilli));
+  const adjustmentCapped = adjustmentCostMilli !== adjustmentCostRawMilli;
 
   // On PRICE (cost-positive): a cost lowers the price.
+  const roundingMode = input.roundingMode || 'nearest';
   const rawPriceMilli = basePriceMilli - adjustmentCostMilli - marginMilli - compMilli + srpMilli;
-  const roundedPriceMilli = roundToIncrement(rawPriceMilli, roundingIncrementMilli);
+  const roundedPriceMilli = roundPrice(rawPriceMilli, roundingIncrementMilli, roundingMode);
   const finalPriceMilli = clamp(roundedPriceMilli, floorMilli, capMilli);
   const clamped = finalPriceMilli !== roundedPriceMilli;
 
@@ -194,7 +235,10 @@ function priceRung(input) {
     basePointsMilli: priceToPoints(basePriceMilli),
     // Layer 2 — itemized, verbatim + normalized —
     adjustments,
+    adjustmentCostRawMilli,
     adjustmentCostMilli,
+    adjustmentCapMilli: capMagMilli,
+    adjustmentCapped,
     adjustmentPointsMilli: adjustmentCostMilli, // (points are cost-positive too)
     // Layers 3–5 — separate components, never folded silently —
     srpMilli,
@@ -204,6 +248,7 @@ function priceRung(input) {
     rawPriceMilli,
     roundedPriceMilli,
     roundingIncrementMilli,
+    roundingMode,
     finalPriceMilli,
     finalPointsMilli: priceToPoints(finalPriceMilli),
     floorMilli,
@@ -237,6 +282,7 @@ module.exports = {
   priceToPoints,
   pointsToPrice,
   roundToIncrement,
+  roundPrice,
   clamp,
   normalizeAdjustment,
   interpolatePrice,

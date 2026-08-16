@@ -85,6 +85,20 @@ ok(p.pointsToPrice(p.priceToPoints(101375)) === 101375, 'price↔points round-tr
   ok(capped.finalPriceMilli === 103000 && capped.clamped === true, 'an over-cap price clamps DOWN to the tier ceiling and is flagged');
 }
 
+// 7b) The full rounding-mode set the settings expose (none/nearest/up/down/half_even).
+ok(p.roundPrice(102600, 125, 'nearest') === 102625, 'nearest rounds 102.600 → 102.625');
+ok(p.roundPrice(102600, 125, 'up') === 102625, 'up ceils to the next 1/8');
+ok(p.roundPrice(102600, 125, 'down') === 102500, 'down floors to the prior 1/8');
+ok(p.roundPrice(102600, 0, 'nearest') === 102600, 'a zero increment disables rounding');
+ok(p.roundPrice(102600, 125, 'none') === 102600, 'mode none passes the value through');
+ok(p.roundPrice(1050, 100, 'half_even') === 1000, 'half_even breaks a .5 tie toward the even multiple (down)');
+ok(p.roundPrice(1150, 100, 'half_even') === 1200, 'half_even breaks the next .5 tie toward the even multiple (up)');
+ok(threw(() => p.roundPrice(100, 125, 'sideways')), 'an unknown rounding mode is refused');
+{
+  const down = p.priceRung({ basePriceMilli: 102600, roundingIncrementMilli: 125, roundingMode: 'down' });
+  ok(down.finalPriceMilli === 102500 && down.roundingMode === 'down', 'priceRung honors the rounding mode and records it');
+}
+
 // 8) Rate-axis interpolation blends price linearly and records provenance (§5.1).
 {
   const mid = p.interpolatePrice({ rate: 7.0, priceMilli: 101000 }, { rate: 7.25, priceMilli: 100000 }, 7.125);
