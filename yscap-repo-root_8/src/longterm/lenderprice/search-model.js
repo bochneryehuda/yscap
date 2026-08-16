@@ -154,10 +154,16 @@ function mapProp(t) {
 // neutral instead of leaking, and a supplied one is re-applied on top exactly as before. This is a
 // TARGETED clear driven by a REGISTRY, never a broad deletion: a field OUTSIDE the registry inherits
 // unchanged (property type, prepay-when-omitted, the io/escrow/fthb flags, and every structural
-// default). Each entry documents WHY the field is scenario-owned and its neutral value; every
-// neutral is the captured base's OWN default for that field, so clearing can never introduce a value
-// the engine has not already accepted (it can only ever remove a stale one). Adding a field is one
-// registry line, so the clearing stays intentional and testable — never re-derived per call site.
+// default). Each entry documents WHY the field is scenario-owned and its neutral value. Two neutral
+// shapes, both safe:
+//   • per-deal AMOUNTS + the comp override → the captured base's OWN default (0 / absent / false), so
+//     clearing only ever REMOVES a stale value the engine already accepts, never introduces a new one;
+//   • core ECONOMICS (purchasePrice/loanAmount/ltv/fico/dscr) → null, which is NOT the base default —
+//     it FAILS CLOSED on omission. buildSearch re-applies each from the caller, so clearing changes
+//     behavior only when the caller omits the field, and a null removes the value rather than leaking
+//     the foundation's; a null can never over-lend.
+// Adding a field is one registry line, so the clearing stays intentional and testable — never
+// re-derived per call site.
 const DELETE = Symbol('scenario-owned-delete');
 const SCENARIO_OWNED = [
   // Core deal economics — buildSearch RE-APPLIES each from the caller below, so clearing changes
@@ -173,6 +179,9 @@ const SCENARIO_OWNED = [
   // base default (0), so a stale non-zero from a prior session is reset and no value the engine has
   // not already accepted is ever introduced. A real value would only reach these through a wired
   // caller field (none today), so on every current DSCR scenario they are correctly 0.
+  // FOOTGUN: unlike cashoutAmount (re-applied in buildSearch when supplied), these have NO re-apply
+  // path — so if you ever add a caller field for one, you MUST add its re-apply AFTER this clear runs,
+  // or the caller's value will be silently zeroed.
   { path: 'criteria.subordinateLoanAmount', neutral: 0, why: 'second-lien amount — audit §31.6 leak example' },
   { path: 'criteria.lineAmount',            neutral: 0, why: 'line-of-credit amount' },
   { path: 'criteria.rehabBudget',           neutral: 0, why: 'rehab budget' },
