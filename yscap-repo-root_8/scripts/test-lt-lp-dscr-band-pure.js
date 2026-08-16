@@ -76,6 +76,9 @@ ok(dscrBand(0).ratio === 'NoDSCR' && dscrBand(0.01).ratio === '0.75',
 // ---- null in → null out (an omitted DSCR writes no band) ------------------
 ok(dscrBand(null) === null && dscrBand(undefined) === null,
   'NULL an absent DSCR produces no band (null)');
+// A non-finite value fails CLOSED to "no band" — never the top "1.25" band (defense-in-depth).
+ok(dscrBand(NaN) === null && dscrBand(Infinity) === null,
+  'NANSAFE a NaN/Infinity DSCR produces no band (null), never a mis-priced top band');
 
 // ---- the token is transmitted in the built payload ------------------------
 const a = sm.buildSearch({ ...S, dscr: 1.25 });

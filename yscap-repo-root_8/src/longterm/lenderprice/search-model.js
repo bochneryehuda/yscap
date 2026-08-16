@@ -182,7 +182,11 @@ function mapRentalTerm(v) {
 // when the band adds none). Caller passes a num()-parsed dscr (validated to [0, 2] upstream); null in
 // → null out (no DSCRRATIO written, matching an omitted DSCR).
 function dscrBand(dscr) {
-  if (dscr == null) return null;
+  // Absent OR non-finite → no band (defense-in-depth). The sole production caller passes a
+  // num()-parsed value (finite-or-null) and the route 422s garbage before buildSearch, but dscrBand
+  // is exported in _internals; without this guard a NaN would skip every < comparison and fall
+  // through to the top "1.25" band — a mis-price. Fail closed to "no band" instead.
+  if (dscr == null || !isFinite(dscr)) return null;
   if (dscr <= 0)   return { ratio: 'NoDSCR',  smo: null };
   if (dscr < 0.75) return { ratio: '0.75',    smo: null };
   if (dscr < 1.00) return { ratio: 'DSCR<1',  smo: 'DSCR <1.15' };
