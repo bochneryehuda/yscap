@@ -1,9 +1,76 @@
-# Encompass API access — why 65 endpoints answer 403, and how to open them
+# Encompass API access — why 68 endpoints answer 403, and how to open them
 
 **Long-Term (LT). Investigated 2026-08-14 against the live tenant. Read-only.**
+**Revised 2026-08-16 — the 2026-08-14 conclusion below was too narrow. Read this first.**
 
-The short answer: **this is not a persona problem on the user. It is a scope limit on
-the API client**, and it is fixed with ICE, not in the Encompass admin screens.
+---
+
+## CORRECTION (2026-08-16): it is not one gate, it is three — and the first one is free
+
+The 2026-08-14 finding said: *"this is not a persona problem on the user. It is a scope
+limit on the API client, fixed with ICE, not in the Encompass admin screens."* The
+evidence for that (the token endpoint refusing `encompass_admin`) is real and is
+reproduced below. **The conclusion drawn from it was too narrow, in two ways that
+matter.**
+
+**First — `encompass_admin` is not a documented scope on either ICE platform.** ICE's
+own Developer Connect authorization page names exactly one scope, `lp`. Partner
+Connect names `pc pcapi`. `encompass_admin` appears only in third-party write-ups.
+So the token endpoint's *"exceeds that which the client is permitted"* is very likely
+saying **there is no such scope to grant**, not *"you have not been given this one
+yet."* **Asking ICE to "entitle client `z1xx73r` to `encompass_admin`" is therefore
+likely to go nowhere** — it asks for something their own documentation does not
+describe. That ask, as originally written below, should not be sent as-is.
+
+**Second — ICE's own persona matrix describes a gate we had ruled out.** *Out-of-the-Box
+Persona Access to Encompass Settings and Add-On Products — Encompass Banker Edition*
+(rev. June 2025) says, area after area:
+
+> "…can be added/edited/deleted **only if the persona has been granted access** to
+> `<area>` on the **Personas > Settings tab**; **if no persona permissions have been
+> granted, the minimum access needed is Super Administrator.**"
+
+Read the second clause carefully. **Super Administrator is the fallback for a persona
+nobody has configured.** Once somebody ticks *some* boxes on that tab, the ticked list
+is what governs — so a **partially configured** Super Administrator persona can be
+*more* restricted than an untouched one. That shape fits what we see exactly: the user
+is a super admin, the Encompass UI lets them everywhere, and the API refuses.
+
+And a **third** gate the matrix names, which no persona can substitute for:
+
+> "In order for [a] user to access Public and Company-wide **Loan Programs**, **both of
+> these folders must be selected in the user's user group**."
+
+So there are three independent gates, and a bare 403 does not say which one closed:
+
+| # | Gate | Who can open it | Cost |
+|---|---|---|---|
+| 1 | **Persona > Settings tab**, per settings area | Our own Encompass admin | Free, minutes |
+| 2 | **User group** template folders (loan programs) | Our own Encompass admin | Free, minutes |
+| 3 | **Licensed add-on product** (pricing/EPPS, secondary & lock desk, tasks) | ICE — contract | Depends |
+
+**Do gates 1 and 2 before contacting ICE.** They are free, they are reversible, and if
+they open the endpoints then there was never anything to ask for.
+
+### The one thing still missing, and how to get it
+
+Neither the earlier probe nor this review can say *which* gate closed *which*
+endpoint, because **the 403 response bodies were never kept** — only the status codes.
+ICE puts a summary in the body and the wording differs by gate, so those bodies are
+the evidence that decides it.
+
+`scripts/test-lt-encompass-access-probe.js` collects exactly that. Run it where the
+credentials live; it is read-only, it groups the refusals by what ICE actually said,
+and it prints which of the three gates to go and open for each. **Run it before
+raising anything with ICE** — it turns "68 endpoints are blocked" into a short list of
+distinct problems, each with an owner.
+
+---
+
+## The 2026-08-14 investigation, as recorded then
+
+*Kept because the measurements are sound and are the input to the correction above;
+the recommendation at the end of it is superseded.*
 
 ---
 
@@ -59,16 +126,17 @@ ICE's model has two independent gates, and both must pass:
    **Settings → Company/User Setup → Personas → (select persona) → Access tab →**
    tick both **Microsoft Windows Encompass Client** and **Encompass Mobile**, save.
 
-## What to ask for
+## What to ask for — **SUPERSEDED, see the correction at the top**
 
-Contact ICE / your Encompass account team and ask them to:
+> ~~Entitle Client ID `z1xx73r` on instance `BE11397907` to the `encompass_admin`
+> scope…~~
 
-> Entitle Client ID `z1xx73r` on instance `BE11397907` to the `encompass_admin` scope,
-> so the integration can read administrative settings endpoints (loan programs,
-> business rules, condition settings, milestone logs).
-
-Then confirm the persona assigned to the `admin` API user has LO Connect access
-enabled per the path above.
+**Do not send this.** `encompass_admin` is not a scope ICE documents for Developer
+Connect (`lp`) or Partner Connect (`pc pcapi`), so the request names something their
+own documentation does not describe. Work the three gates in the correction above
+instead, and if something still refuses after gates 1 and 2, send ICE the endpoint,
+**the exact refusal wording the probe captured**, the instance id and the client id,
+and ask which entitlement opens it — their words, not ours.
 
 ## What opens up if you do
 

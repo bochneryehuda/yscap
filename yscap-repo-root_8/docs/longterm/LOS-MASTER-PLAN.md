@@ -951,11 +951,25 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
 
 5. **§5.0 — do conditions exist in this tenant or not?** Two of our own measurements disagree.
    This is the largest open question in the plan and it blocks phase 5.
-6. **ICE entitlement.** Client id `z1xx73r` lacks the `encompass_admin` scope — the token
-   endpoint refuses it. That is why 68 endpoints answer 403, including the loan-folder list,
-   milestone logs, the v3 associates roster and **69 of the 91 Milestone Completion rules**.
-   Asking ICE to add the scope to the client registration unblocks all of it. This is the
-   **client registration**, not the persona.
+6. **ICE entitlement — REVISED 2026-08-16, and the first two steps cost nothing.** 68
+   endpoints answer 403, including the loan-folder list, milestone logs, the v3 associates
+   roster and **69 of the 91 Milestone Completion rules**. The 2026-08-14 reading — "the
+   client registration lacks the `encompass_admin` scope, ask ICE" — was too narrow.
+   `encompass_admin` is **not a scope ICE documents** for Developer Connect (`lp`) or
+   Partner Connect (`pc pcapi`), so the token endpoint's refusal most likely means *no such
+   scope exists to grant*, and that ask would go nowhere. ICE's own persona matrix (rev.
+   June 2025) names two gates we can open ourselves: a settings area opens "only if the
+   persona has been granted access on the **Personas > Settings tab**; **if no persona
+   permissions have been granted**, the minimum access needed is Super Administrator" — so
+   super-admin is the fallback for an UNCONFIGURED persona, and a partially configured one
+   can be *more* restricted, which fits what we see; and loan programs additionally need the
+   Public and Company-wide template folders selected in the user's **user group**, which no
+   persona can substitute for. A third set (pricing/EPPS, secondary and the lock desk, tasks)
+   are licensed add-ons and are a genuine ICE question. **Which gate closed which endpoint is
+   still unknown**, because the earlier sweep kept only status codes and not the response
+   bodies — ICE's wording differs by gate. `scripts/test-lt-encompass-access-probe.js`
+   captures them; run it before raising anything with ICE. Full write-up:
+   `docs/longterm/ENCOMPASS-ACCESS-AND-PERSONA.md`.
 7. **Is there a sandbox instance?** Today every read runs against production, which carries
    real borrower PII. This matters before anything writes.
 8. **The ten files** carrying a 12- or 24-month interest-only period on the plain 30-year
