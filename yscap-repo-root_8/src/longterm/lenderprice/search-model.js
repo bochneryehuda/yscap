@@ -834,7 +834,11 @@ const ALLOWED_TERMS = (process.env.LP_ALLOWED_TERMS
 // lates is consistent, and it is what a form pre-filled with zeros sends. Only a real count
 // conflicts. A count the registry does not recognise at all is left to the existing invalid-value
 // refusal, so one wrong value is never reported as two different problems.
-const NONZERO_LATE_COUNTS = new Set(['1', '2', '3', '4+']);
+// DERIVED from the registry's own LATE_COUNT, never a hand-written second copy. A copy drifts, and
+// this one drifts in the UNSAFE direction: a future confirmed vendor token (a '5' bucket) added to
+// LATE_COUNT alone would be accepted by the builder and silently NOT counted as a conflict here, so
+// the contradictory payload this rule exists to refuse would go upstream. Proven by the re-audit.
+const NONZERO_LATE_COUNTS = new Set(Array.from(registry._tokens.LATE_COUNT).filter((v) => String(v) !== '0'));
 function mortgageHistoryConflict(sc = {}) {
   if (sc.noMortgageHistory !== true) return null;
   const conflicts = [];
@@ -905,7 +909,7 @@ function validateInputs(sc = {}) {
   const fico = numField('fico', { min: 300, max: 850, integer: true }); if (fico.err) return fico.err;
   const dscr = numField('dscr', { min: 0, max: 2 }); if (dscr.err) return dscr.err;
   const units = numField('units', { min: 1, max: 20, integer: true }); if (units.err) return units.err;
-  const cashout = numField('cashoutAmount', { min: 0 }); if (cashout.err) return cashout.err; // "cash in hand"; stored, transmitted only when the vendor field is configured
+  const cashout = numField('cashoutAmount', { min: 0 }); if (cashout.err) return cashout.err; // "cash in hand"; stored, and transmitted as the captured criteria.cashoutAmount
   // Term / lock against the allowed capability sets (a 17-year term / 22-day lock does not exist).
   const t1 = numField('termYears', {}); if (t1.err) return t1.err;
   const t2 = numField('term', {}); if (t2.err) return t2.err;

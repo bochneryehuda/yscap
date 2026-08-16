@@ -113,6 +113,7 @@ global.fetch = async (url, init = {}) => {
   CALLS.push(call);
   const r = RESPOND(call, CALLS.length);
   if (r.throws) throw new Error(r.throws);
+  if (r.hold) await r.hold;          // model a request still in flight
   return { status: r.status, text: async () => (typeof r.body === 'string' ? r.body : JSON.stringify(r.body)) };
 };
 const tokenBody = (over = {}) => JSON.stringify({ access_token: 'T', refresh_token: 'R', expires_in: 60, companyId: 'c1', userId: 'u1', ...over });
@@ -254,7 +255,48 @@ const grants = () => CALLS.map((c) => c.grant);
     RESPOND = () => ({ status: 200, body: tokenBody({ expires_in: 3600 }) });
     const s = await lp.getSession({ force: true });
     ok(s.ok === true && grants().join(',') === 'password',
-      'RECOVER-2 …and the recovery still performs a real PASSWORD login (there is no session to refresh from)');
+      'RECOVER-2 …and the recovery still performs a real PASSWORD login');
+  }
+
+  // RECOVER-2 ALONE IS A TAUTOLOGY, and a re-audit proved it: at that point the backoff window is
+  // open, so the plan answers `refresh_backoff → login` whether or not the session was cleared.
+  // Mutating invalidateSession() into a no-op left the WHOLE suite green — nothing anywhere pinned
+  // that it clears the session. This is that assertion, with no backoff in play.
+  {
+    reset();
+    RESPOND = () => ({ status: 200, body: tokenBody({ expires_in: 3600 }) });
+    await lp.getSession();                       // a warm session WITH a usable refresh token
+    I.invalidateSession();
+    CALLS.length = 0;
+    await lp.getSession({ force: true });
+    ok(grants().join(',') === 'password',
+      'CLEARED-1 invalidateSession() really DISCARDS the session — the next renewal is a password login, not a refresh');
+  }
+
+  // A FORCED renewal must not adopt one already IN FLIGHT. While every renewal was a password login
+  // that was harmless; now the in-flight one can be a REFRESH of the very session the caller just
+  // invalidated, and its merge RE-INSTALLS it — silently undoing invalidateSession(). The
+  // upstream-500 recovery is built on exactly that sequence, and 500s cluster under load, which is
+  // when a concurrent renewal is most likely. Reproduced by the re-audit.
+  {
+    reset();
+    RESPOND = () => ({ status: 200, body: tokenBody({ expires_in: 60 }) });   // due immediately
+    await lp.getSession();
+    CALLS.length = 0;
+    let release;
+    const held = new Promise((r) => { release = r; });
+    RESPOND = (c) => (c.grant === 'refresh_token'
+      ? { status: 200, body: tokenBody({ access_token: 'T-REFRESH', expires_in: 3600 }), hold: held }
+      : { status: 200, body: tokenBody({ access_token: 'T-PASSWORD', expires_in: 3600 }) });
+    const slow = lp.getSession();                // starts a REFRESH and parks on the held promise
+    await new Promise((r) => setImmediate(r));
+    I.invalidateSession();                       // what the 500-recovery does
+    const recovery = lp.getSession({ force: true });
+    release();
+    const [, rec] = await Promise.all([slow, recovery]);
+    ok(rec.token === 'T-PASSWORD',
+      'FORCE-1 a FORCED renewal does its own PASSWORD login rather than adopting an in-flight refresh of the session it just discarded');
+    ok(grants().includes('password'), 'FORCE-2 …so a real password login is actually sent');
   }
 
   // A REJECTED refresh falls back to ONE password login — the developer's rule, and the property
@@ -424,6 +466,46 @@ const grants = () => CALLS.map((c) => c.grant);
     const good = await call();
     ok(good.status === 200 && good.body.ok === true && good.body.grant === 'password',
       'LOGINCHECK-3 a working password answers ok, saying WHICH grant proved it');
+  }
+
+  // ---- THE THREE SMALL FIXES THAT SHIPPED UNPROTECTED ---------------------
+  // A re-audit reverted each individually and every suite stayed green. The repo's own rule is that
+  // a test must be PROVEN to fail, so each now has one.
+  {
+    // envMs: a unit-suffixed knob falls back to its default rather than becoming NaN — and a knob's
+    // natural OFF value (0) is HONOURED, because re-enabling what an operator just turned off during
+    // an incident is the silent-substitution class this connector exists to refuse.
+    const read = (env, expr) => JSON.parse(require('child_process').execFileSync(process.execPath,
+      ['-e', "const lp=require('./src/longterm/lenderprice/client');console.log(JSON.stringify(" + expr + "))"],
+      { env: { ...process.env, ...env }, encoding: 'utf8' }));
+    ok(read({ LP_RECOVERY_MAX: '3x' }, 'lp._internals.RECOVERY_MAX') === 3,
+      'ENVMS-1 a junk numeric knob falls back to its default, never NaN (NaN silently disables every bound it guards)');
+    ok(read({ LP_RECOVERY_MAX: '0' }, 'lp._internals.RECOVERY_MAX') === 0,
+      'ENVMS-2 …and ZERO is HONOURED — it is how an operator disables the 500-recovery, and re-enabling it would be the exact silent substitution this connector refuses');
+    ok(read({ LP_RECOVERY_MAX: '7' }, 'lp._internals.RECOVERY_MAX') === 7,
+      'ENVMS-3 …while a real value is used unchanged');
+  }
+  {
+    // errText: a non-object throw must not become "Cannot read properties of undefined".
+    reset();
+    RESPOND = () => ({ throws: 'boom' });
+    const r = await I.refreshSession('R1');
+    ok(r.ok === false && /boom/.test(r.message || ''), 'ERRTEXT-1 a thrown Error is reported as its message');
+    ok(typeof I.errText === 'function' && I.errText(undefined) === 'unknown error' && I.errText('plain') === 'plain' && I.errText(null) === 'unknown error',
+      'ERRTEXT-2 …and a non-object throw reads as text instead of throwing its own TypeError out of a function whose contract is that it never throws');
+  }
+  {
+    // authDiagnostics on the FAILURE branch — the one health read where it explains the outage.
+    reset();
+    RESPOND = (c) => (c.grant === 'refresh_token' ? { status: 400, body: '{}' } : { status: 401, body: '{}' });
+    I.resetTokenState();
+    RESPOND = () => ({ status: 200, body: tokenBody({ expires_in: 60 }) });
+    await lp.getSession();
+    RESPOND = (c) => (c.grant === 'refresh_token' ? { status: 400, body: '{}' } : { status: 401, body: '{}' });
+    const r = await lp.pricingReadiness();
+    ok(r.pricingReady === false && r.auth && r.auth.ok === false, 'DIAG-1 a failed login reports not ready');
+    ok(r.auth.lastRenewal && r.auth.lastRenewal.fellBack === 'lp_refresh_rejected',
+      'DIAG-2 …carrying WHY: the refresh was rejected before the login failed (invisible before this fix)');
   }
 
   // The wrapper must actually CONSULT the rule — a pure decision nothing calls is decoration.

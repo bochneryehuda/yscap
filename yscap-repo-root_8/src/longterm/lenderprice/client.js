@@ -56,7 +56,12 @@ function envMs(name, dflt) {
   const raw = process.env[name];
   if (raw == null || raw === '') return dflt;
   const n = Number(raw);
-  return (Number.isFinite(n) && n > 0) ? n : dflt;
+  // `>= 0`, NOT `> 0`: the NaN bug needed only `Number.isFinite`, and demanding a positive value
+  // silently turns a knob's natural OFF value back ON. LP_RECOVERY_MAX=0 is an operator disabling the
+  // 500-recovery during an incident; LP_DISQUALIFY_MAX_WAIT_MS=0 and LP_FOUNDATION_TTL_MS=0 are both
+  // documented 'do not wait / do not cache' settings. Re-enabling what somebody just turned off is
+  // the silent-substitution class this connector exists to refuse.
+  return (Number.isFinite(n) && n >= 0) ? n : dflt;
 }
 const TIMEOUT_MS = envMs('LP_TIMEOUT_MS', 60000);
 // The disqualify poll's READY response is very large (~111 MB — the full failing-lender/rule tree),
@@ -319,7 +324,13 @@ function _fresh(s) { return s && s.ok && s.token && s.expiresAt - REFRESH_EARLY_
 
 async function getSession({ force = false } = {}) {
   if (!force && _fresh(_session)) return _session;
-  if (_inflight) return _inflight;
+  // A FORCED renewal must NOT adopt one already in flight. While every renewal was a password login
+  // that was harmless; now an in-flight renewal can be a REFRESH of the very session the caller just
+  // invalidated — and that refresh re-installs it, undoing invalidateSession(). The 500-recovery is
+  // built on exactly that sequence ("log in fresh"), so under load — which is when upstream 500s
+  // cluster — it would burn a breaker slot and retry with the stale session it meant to discard.
+  // Reproduced by the re-audit. An unforced caller still joins the in-flight renewal.
+  if (_inflight && !force) return _inflight;
   _inflight = (async () => {
     const prev = _session;
     const plan = renewalPlan(prev, { now: Date.now(), refreshBlockedUntil: _refreshBlockedUntil });
@@ -355,6 +366,26 @@ async function getSession({ force = false } = {}) {
   try { return await _inflight; } finally { _inflight = null; }
 }
 
+// A 401 MEANS THE TOKEN WAS REJECTED — CLEAR IT AND LOG IN WITH THE PASSWORD.
+//
+// The developer's verified instruction is explicit and is a DIFFERENT path from the proactive
+// renewal: "On 401, clear it, log in again, and retry once." Both of their rules now hold, each on
+// its own path:
+//   • approaching EXPIRY (getSession's ordinary renewal) → try grant_type=refresh_token first,
+//     falling back to a password login if it is refused. That is §37.3.
+//   • a 401 from the API → this. The session is DISCARDED first, so renewalPlan sees no session and
+//     resolves to a password login.
+//
+// Why not simply force a renewal: with a session still in hand the ladder would try the REFRESH
+// grant, and a 401 is precisely the state in which the whole session may have been invalidated
+// upstream — in which case the refresh token is dead too and the attempt is a wasted round trip in
+// front of the recovery, on the request a user is waiting for. Clearing first is also what the
+// upstream-500 recovery already does, so "start over" has one meaning in this file.
+function reauthenticate() {
+  invalidateSession();
+  return getSession({ force: true });
+}
+
 // A single authenticated GET against the API host, re-logging in once on a 401.
 async function apiGet(path, { retryOn401 = true } = {}) {
   const s = await getSession();
@@ -362,12 +393,12 @@ async function apiGet(path, { retryOn401 = true } = {}) {
   const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
   let r;
   try { r = await req(url, { method: 'GET', bearer: s.token }); }
-  catch (e) { return { ok: false, error: 'lp_get_error', message: scrub(e.message) }; }
+  catch (e) { return { ok: false, error: 'lp_get_error', message: scrub(errText(e)) }; }
   if (r.status === 401 && retryOn401) {
-    const s2 = await getSession({ force: true });
+    const s2 = await reauthenticate();
     if (!s2.ok) return { ok: false, ...s2 };
     try { r = await req(url, { method: 'GET', bearer: s2.token }); }
-    catch (e) { return { ok: false, error: 'lp_get_error', message: scrub(e.message) }; }
+    catch (e) { return { ok: false, error: 'lp_get_error', message: scrub(errText(e)) }; }
   }
   if (r.status !== 200) return { ok: false, error: 'lp_get_status', http: r.status, message: `GET ${path} → ${r.status}`, body: scrub((r.text || '').slice(0, 300)) };
   return { ok: true, data: r.json != null ? r.json : r.text };
@@ -480,7 +511,7 @@ async function fetchDefaultSearch(companyId, userId) {
     }
     // Preserve WHY the live fetch didn't yield a usable model (do not silently turn it into undefined).
     if (!model) error = r.ok ? 'live default search returned an unusable shape' : `${r.error || 'lp_get_status'}${r.http ? ' ' + r.http : ''}`;
-  } catch (e) { error = scrub(e.message); }
+  } catch (e) { error = scrub(errText(e)); }
   _defaultSearch = { at: Date.now(), model, source, error };
   return model;
 }
@@ -494,7 +525,7 @@ async function fetchSmoRegistry(companyId) {
     const list = Array.isArray(r.data) ? r.data : (r.data && Array.isArray(r.data.data) ? r.data.data : (r.data && Array.isArray(r.data.smo) ? r.data.smo : null));
     if (r.ok && list && list.length) { map = smoRegistryFromList(list); if (map) source = 'live'; }
     if (!map) error = r.ok ? 'live SMO registry returned an unusable shape' : `${r.error || 'lp_get_status'}${r.http ? ' ' + r.http : ''}`;
-  } catch (e) { error = scrub(e.message); }
+  } catch (e) { error = scrub(errText(e)); }
   _smoRegistry = { at: Date.now(), map, source, error };
   return map;
 }
@@ -577,13 +608,13 @@ async function postSearchRaw(url, session, payload, opts = {}) {
   const reqOpts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) };
   if (opts.timeoutMs) reqOpts.timeoutMs = opts.timeoutMs; // the disqualify poll returns a ~111 MB body — allow more time to download + parse it
   try { r = await req(url, { ...reqOpts, bearer: s.token }); }
-  catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
+  catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(errText(e)) }; }
   if (r.status === 401) {
-    const s2 = await getSession({ force: true });
+    const s2 = await reauthenticate();
     if (!s2.ok) return { ok: false, ...s2 };
     s = s2;
     try { r = await req(url, { ...reqOpts, bearer: s.token }); }
-    catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
+    catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(errText(e)) }; }
   }
   if (r.status !== 200) return { ok: false, error: 'lp_price_status', http: r.status, message: `searchRaw → ${r.status}`, upstream: scrub((r.text || '').slice(0, 600)) };
   const raw = r.json != null ? r.json : r.text;
@@ -1332,6 +1363,29 @@ async function pricingReadiness({ price: deep = false } = {}) {
   };
 }
 
+// A LOGIN CHECK THAT CANNOT PRINT A SECRET.
+//
+// The sanctioned way to verify credentials from inside Render is to run this and print its whole
+// result. `login()` returns the access token, so a check built on it depends on whoever runs it
+// remembering to select fields — and the natural thing to type in a shell is the whole object, into
+// a terminal that may be recorded or pasted into a ticket. This returns the ANSWER only: whether the
+// password worked, the failure reason if not, and the two ids that prove which company answered.
+// There is no token, no refresh token and no credential in the returned shape, by construction.
+//
+// It performs a REAL password login (not a renewal), touches no cached session, and never throws.
+async function loginSelfTest() {
+  const s = await login();
+  if (!s.ok) return { ok: false, error: s.error, http: s.http || null, message: s.message };
+  return {
+    ok: true,
+    grant: 'password',
+    companyId: s.companyId || null,
+    userId: s.userId || null,
+    expiresInSec: Math.max(0, Math.round((s.expiresAt - Date.now()) / 1000)),
+    refreshTokenIssued: !!s.refreshToken,   // whether a renewal is even possible — never the token
+  };
+}
+
 // PURE — the readiness VERDICT on a resolved foundation, split out so it is testable without a
 // session, credentials or a network. `pricingReadiness` above is the thin IO wrapper; this is the
 // rule, in one place, the same split cutover-store/cutover-ledger and gate/gate-disposition use.
@@ -1375,7 +1429,8 @@ module.exports = {
   configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, pollDisqualified, pollDisqualifiedByKey,
   hasStoredSearch, searchKeyFor, parse, parseFull, parseDisqualified, summarizeRaw, pricingReadiness,
   hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
+  loginSelfTest,
   _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, pollDisqualifiedByKey, hasStoredSearch, searchKeyFor, disqStore, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, foundationLiveGate, foundationReadiness, requireLiveFoundation, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery,
-    renewalPlan, mergeRefreshed, sessionFromTokenBody, refreshSession, authDiagnostics, resetTokenState,
+    renewalPlan, mergeRefreshed, sessionFromTokenBody, refreshSession, authDiagnostics, resetTokenState, reauthenticate, errText,
     refreshBackoffMs, expireRefreshBackoff, REFRESH_GRANT_BACKOFF_MS, REFRESH_GRANT_BACKOFF_MAX_MS },
 };

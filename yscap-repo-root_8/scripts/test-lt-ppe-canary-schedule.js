@@ -139,6 +139,61 @@ console.log('LT PPE — canary schedule (never invents a battery; fails toward n
     'CAP-3 a zero/absent cap falls back to one per tick, never to unlimited');
 }
 
+// ---- A MATRIX IS BOUNDED THE SAME WAY A LIST IS -------------------------
+// The first cut checked emptiness and size on the scenario LIST only, so a matrix walked past both.
+// Each of these was reproduced by a re-audit, and each is the module's headline rule inverted.
+{
+  const G = { enabled: true, intervalMs: DAY };
+  ok(sched.validateSchedule({ ...G, matrix: {} }).reason === 'no_battery',
+    'MATRIX-1 an EMPTY matrix is refused — it expands to one scenario carrying no facts, which is literally a battery this code made up');
+  ok(sched.validateSchedule({ ...G, matrix: { fico: [] } }).reason === 'no_battery',
+    'MATRIX-2 …as is an axis with no values, which expands to zero scenarios');
+  const huge = { a: new Array(20).fill(1), b: new Array(20).fill(1), c: new Array(20).fill(1), d: new Array(20).fill(1) };
+  ok(sched.validateSchedule({ ...G, matrix: huge }).reason === 'battery_too_large',
+    'MATRIX-3 …and one that expands past the cap is REFUSED, never silently strided down (a thinned battery reports agreement over scenarios nobody chose)');
+  ok(sched.validateSchedule({ ...G, matrix: { fico: [700, 760] } }).ok === true,
+    'MATRIX-4 an ordinary matrix still validates');
+  ok(sched.validateSchedule({ ...G, matrix: { fico: 'nope' } }).ok === false,
+    'MATRIX-5 a matrix whose axis is not a list is refused rather than throwing');
+}
+
+// ---- A MISCONFIGURED ENV MUST NOT DISABLE A BOUND -----------------------
+// These knobs gate LIVE VENDOR CALLS, so the NaN class is worse here than anywhere: a unit suffix
+// made `intervalMs` NaN, which passed both bound checks, and then `nowMs < (last + NaN)` is false —
+// so the schedule reported DUE on every tick forever, on a battery that ran a millisecond ago.
+{
+  const run = (env, code) => {
+    const out = require('child_process').execFileSync(process.execPath, ['-e', code],
+      { env: { ...process.env, ...env }, encoding: 'utf8' });
+    return JSON.parse(out);
+  };
+  const CODE = "const s=require('./src/longterm/ppe/canary-schedule');" +
+    "const v=s.validateSchedule({enabled:true,scenarios:[{}]});" +
+    "const d=s.decide({enabled:true,scenarios:[{}]},{nowMs:1e12,lastRunMs:1e12-1});" +
+    "console.log(JSON.stringify({ok:v.ok,interval:v.intervalMs,finite:Number.isFinite(v.intervalMs),run:d.run}));";
+  const junkDefault = run({ LT_PPE_CANARY_DEFAULT_INTERVAL_MS: '24h' }, CODE);
+  ok(junkDefault.finite === true && junkDefault.interval === 24 * 60 * 60 * 1000,
+    'ENV-1 a unit-suffixed default cadence falls back to the real default — never NaN');
+  ok(junkDefault.run === false,
+    'ENV-2 …so a schedule that just ran is NOT reported due (NaN made every tick due, forever — an unbounded vendor loop)');
+  const junkFloor = run({ LT_PPE_CANARY_MIN_INTERVAL_MS: '1h' },
+    "const s=require('./src/longterm/ppe/canary-schedule');" +
+    "console.log(JSON.stringify({r:s.validateSchedule({enabled:true,intervalMs:60000,scenarios:[{}]}).reason}));");
+  ok(junkFloor.r === 'interval_too_short',
+    'ENV-3 a unit-suffixed FLOOR still refuses a one-minute cadence — the bound cannot be turned off by a typo');
+}
+
+// ---- A NULL LAST-RUN MEANS NEVER RUN, NOT 1970 --------------------------
+{
+  const d = sched.decide(GOOD, { nowMs: T0, lastRunMs: null });
+  ok(d.run === true && d.reason === 'never_run' && d.dueAt === T0,
+    'NULLRUN-1 a NULL stamp (what MAX() over an empty run series returns) means NEVER RUN — Number(null) is 0, which read as 1 January 1970');
+  const picked = sched.selectDue(
+    [{ id: 'old', schedule: GOOD, lastRunMs: T0 - 9 * DAY }, { id: 'never', schedule: GOOD, lastRunMs: null }],
+    { nowMs: T0, maxPerTick: 1 });
+  ok(picked.run[0].id === 'never', 'NULLRUN-2 …and it sorts as the most overdue, not as epoch 0');
+}
+
 // ---- it is a DECISION, not a runner ---------------------------------------
 {
   const src = require('fs').readFileSync(require.resolve('../src/longterm/ppe/canary-schedule.js'), 'utf8');

@@ -32,6 +32,8 @@
  * LT-only. No RTL imports, no DB, no network.
  */
 
+const scenarioMatrix = require('./scenario-matrix');
+
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 
@@ -41,13 +43,27 @@ const HOUR_MS = 60 * MINUTE_MS;
 // daily) and far above anything that could look like an attack. The CEILING is not a safety rule but
 // an honesty one — a cadence longer than a month cannot feed a clean-DAY streak, so it would leave
 // the gate permanently unmeasurable while looking configured.
-const MIN_INTERVAL_MS = Number(process.env.LT_PPE_CANARY_MIN_INTERVAL_MS || HOUR_MS);
-const MAX_INTERVAL_MS = Number(process.env.LT_PPE_CANARY_MAX_INTERVAL_MS || 31 * 24 * HOUR_MS);
-const DEFAULT_INTERVAL_MS = Number(process.env.LT_PPE_CANARY_DEFAULT_INTERVAL_MS || 24 * HOUR_MS);
+// A MISCONFIGURED ENV MUST NEVER DISABLE A BOUND — and here that failure is far worse than usual,
+// because these knobs gate LIVE VENDOR CALLS. `Number('1h')` is NaN, and every comparison against
+// NaN is false, so a unit suffix does not fall back to the default: it turns the bound OFF. Measured
+// by the re-audit: LT_PPE_CANARY_MIN_INTERVAL_MS='1h' disabled the cadence FLOOR (a one-minute
+// cadence validated ok), and LT_PPE_CANARY_DEFAULT_INTERVAL_MS='24h' produced `ok:true` carrying
+// `intervalMs: NaN` — after which `dueAt = last + NaN` is NaN, `nowMs < NaN` is false, and the
+// schedule reports DUE on every single tick forever, on a battery that ran a millisecond ago. That
+// is precisely the unbounded live-vendor loop this module's header names as its expensive failure.
+function envPos(name, dflt) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return dflt;
+  const n = Number(raw);
+  return (Number.isFinite(n) && n > 0) ? n : dflt;
+}
+const MIN_INTERVAL_MS = envPos('LT_PPE_CANARY_MIN_INTERVAL_MS', HOUR_MS);
+const MAX_INTERVAL_MS = envPos('LT_PPE_CANARY_MAX_INTERVAL_MS', 31 * 24 * HOUR_MS);
+const DEFAULT_INTERVAL_MS = envPos('LT_PPE_CANARY_DEFAULT_INTERVAL_MS', 24 * HOUR_MS);
 // Mirrors the route's own refusal (`MAX_CANARY_SCENARIOS`). Kept as a bound on the SAVED battery so
 // an oversized one is refused when it is stored — once, in front of the person who wrote it — rather
 // than every tick forever, into a log nobody reads.
-const MAX_BATTERY_SCENARIOS = Number(process.env.LT_PPE_CANARY_MAX_SCENARIOS || 500);
+const MAX_BATTERY_SCENARIOS = envPos('LT_PPE_CANARY_MAX_SCENARIOS', 500);
 
 function posInt(v) {
   const n = Number(v);
@@ -106,6 +122,28 @@ function validateSchedule(schedule) {
     }
     return { ok: true, reason: null, message: null, intervalMs, battery: { kind: 'scenarios', scenarios: schedule.scenarios } };
   }
+  // A MATRIX MUST BE BOUNDED THE SAME WAY A LIST IS. The first cut checked emptiness and size on the
+  // scenario LIST only, so a matrix walked straight past both — and the failures are exactly the ones
+  // this module exists to prevent: `matrix: {}` expands to ONE scenario carrying no facts at all,
+  // which is literally a battery this code made up, in the module whose headline rule is that it
+  // never invents one; `{fico: []}` expands to ZERO; and a large matrix silently STRIDES down to the
+  // cap, reporting an agreement rate over scenarios nobody chose. The size comes from
+  // scenario-matrix's own `fullSizeOf` — pure, already exported — so there is no second copy of how
+  // a matrix is counted.
+  let fullSize;
+  try { fullSize = scenarioMatrix.fullSizeOf(schedule.matrix); } catch { fullSize = null; }
+  if (!Number.isFinite(fullSize) || fullSize <= 0) {
+    return { ok: false, reason: 'no_battery',
+      message: 'That matrix expands to no scenarios (an axis with no values, or no axes at all). Save the battery you want measured — PILOT never invents one.' };
+  }
+  if (fullSize === 1 && !Object.keys(schedule.matrix).length) {
+    return { ok: false, reason: 'no_battery',
+      message: 'An empty matrix expands to one scenario carrying no facts. Save the battery you want measured — PILOT never invents one.' };
+  }
+  if (fullSize > MAX_BATTERY_SCENARIOS) {
+    return { ok: false, reason: 'battery_too_large',
+      message: `That matrix expands to ${fullSize} scenarios; a canary run prices at most ${MAX_BATTERY_SCENARIOS}. Narrow it — it is refused rather than strided down, because a quietly-thinned battery reports an agreement rate over scenarios nobody chose.` };
+  }
   return { ok: true, reason: null, message: null, intervalMs, battery: { kind: 'matrix', matrix: schedule.matrix } };
 }
 
@@ -131,7 +169,11 @@ function decide(schedule, opts = {}) {
     return { run: false, reason: 'disabled', message: 'This canary schedule is saved but paused.', dueAt: null, intervalMs: v.intervalMs, battery: v.battery };
   }
 
-  const last = Number(opts.lastRunMs);
+  // `Number(null)` is 0 and `Number.isFinite(0)` is true, so a null stamp — the shape a MAX() over an
+  // empty run series returns, and the most likely way a worker says "never run" — read as "last ran on
+  // 1 January 1970". It still ran (the right direction), but the reason and dueAt a worker would
+  // record were nonsense. Only a real number counts.
+  const last = (opts.lastRunMs == null || opts.lastRunMs === '') ? NaN : Number(opts.lastRunMs);
   // NEVER RUN is not an error, and it is the ordinary state of a schedule somebody just saved: run
   // on the next tick so the first measurement does not wait a whole cadence.
   if (!Number.isFinite(last)) {
@@ -173,8 +215,9 @@ function selectDue(entries = [], opts = {}) {
   // Longest-waiting first, so a scope can never be starved by one that runs more often. A
   // never-run schedule has no stamp to sort by and is the most overdue thing there is, so it leads.
   due.sort((a, b) => {
-    const av = Number.isFinite(Number(a.lastRunMs)) ? Number(a.lastRunMs) : -Infinity;
-    const bv = Number.isFinite(Number(b.lastRunMs)) ? Number(b.lastRunMs) : -Infinity;
+    const stamp = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? -Infinity : Number(v));
+    const av = stamp(a.lastRunMs);
+    const bv = stamp(b.lastRunMs);
     return av - bv;
   });
   return { run: due.slice(0, maxPerTick), skipped: Math.max(0, due.length - maxPerTick), held };

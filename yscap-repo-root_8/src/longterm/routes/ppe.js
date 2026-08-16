@@ -419,7 +419,22 @@ async function canaryRoute(req, res) {
     scenarios = b.scenarios;
   } else if (b.matrix && typeof b.matrix === 'object') {
     try {
-      scenarios = scenarioMatrix.buildMatrix(b.matrix);
+      // buildMatrix returns { scenarios, fullSize, truncated, stride } — NOT an array. Taking it
+      // whole made `Array.isArray(scenarios)` false below, so EVERY matrix-shaped canary answered
+      // 400 "that produced no scenarios to price" and the endpoint's own size refusal was
+      // unreachable from this branch. Found by the re-audit; it matters more now that a saved
+      // schedule can carry a matrix.
+      const expanded = scenarioMatrix.buildMatrix(b.matrix);
+      scenarios = expanded.scenarios;
+      // A STRIDED-DOWN battery is never priced silently: an agreement rate measured over scenarios
+      // nobody chose reads cleaner than it is, and this endpoint already refuses rather than
+      // truncates when a caller sends too many outright.
+      if (expanded.truncated) {
+        return res.status(422).json({
+          error: `That matrix expands to ${expanded.fullSize} scenarios; this endpoint prices at most ${MAX_CANARY_SCENARIOS} in one run. Narrow it — it is refused rather than thinned, because an agreement rate over a thinned battery is measured on scenarios nobody chose.`,
+          limit: MAX_CANARY_SCENARIOS, asked: expanded.fullSize,
+        });
+      }
     } catch (e) {
       return res.status(400).json({ error: `That matrix could not be expanded: ${String((e && e.message) || e).slice(0, 160)}` });
     }
