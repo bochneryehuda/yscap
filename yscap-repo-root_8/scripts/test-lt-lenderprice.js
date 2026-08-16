@@ -261,10 +261,16 @@ function offline() {
   // 19) DISQUALIFY fetch: the POLL asks for the FULL result; the kickoff does not (and only
   // cachedDisqualified + disqualifyFullResult differ between the two bodies — both result-shaping,
   // never search criteria, so the cache slot is unchanged).
+  // Per the captured disqualify HAR: the kickoff and the poll differ ONLY in cachedDisqualified.
+  // disqualifyAsync stays true and disqualifyFullResult stays FALSE on both (the frontend never
+  // flips them); the ready poll returns a ~111 MB populated tree.
   const dqKick = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 });
   const dqPoll = lp.buildSearch({ value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 60 }, { disqualify: { cached: true } });
-  ok(dqKick.cachedDisqualified === false && dqKick.disqualifyFullResult === false, 'disqualify kickoff: cached=false, fullResult=false');
-  ok(dqPoll.cachedDisqualified === true && dqPoll.disqualifyFullResult === true, 'disqualify poll: cached=true, fullResult=true (fetch the full tree)');
+  ok(dqKick.cachedDisqualified === false && dqKick.disqualifyFullResult === false && dqKick.disqualifyAsync === true, 'disqualify kickoff: cached=false, async=true, fullResult=false');
+  ok(dqPoll.cachedDisqualified === true && dqPoll.disqualifyFullResult === false && dqPoll.disqualifyAsync === true, 'disqualify poll: only cachedDisqualified flips (matches the captured HAR handshake)');
+  // kickoff and poll bodies are byte-identical except cachedDisqualified (so the cache slot matches)
+  const kj = JSON.stringify(dqKick), pj = JSON.stringify({ ...dqPoll, cachedDisqualified: false });
+  ok(kj === pj, 'disqualify kickoff vs poll differ ONLY in cachedDisqualified');
   // countyName is honored as a real input (was accepted but ignored before)
   const cn = lp.buildSearch({ value: 5e5, loan: 4e5, countyName: 'Union' });
   ok(cn.property.address.countyName === 'Union', 'countyName input is honored');

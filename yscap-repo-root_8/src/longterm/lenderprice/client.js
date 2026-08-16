@@ -41,6 +41,10 @@ const API_BASE = (process.env.LP_API_BASE || 'https://api.digitallending.com').r
 const ORIGIN = (process.env.LP_ORIGIN || 'https://yscapgroup.digitallending.com').replace(/\/+$/, '');
 const CLIENT_ID = process.env.LP_CLIENT_ID || 'acme2';
 const TIMEOUT_MS = Number(process.env.LP_TIMEOUT_MS || 60000);
+// The disqualify poll's READY response is very large (~111 MB — the full failing-lender/rule tree),
+// so downloading + parsing it needs far longer than an ordinary price call. A still-computing poll
+// returns an empty body and comes back fast, so this longer timeout only ever applies to the ready one.
+const DISQUALIFY_TIMEOUT_MS = Number(process.env.LP_DISQUALIFY_TIMEOUT_MS || 240000);
 const REFRESH_EARLY_MS = Number(process.env.LP_REFRESH_EARLY_MS || 5 * 60 * 1000); // refresh 5 min early
 const UA = process.env.LP_USER_AGENT ||
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36 Edg/151.0.0.0';
@@ -84,10 +88,10 @@ function basicClientAuthorization(clientId, clientSecret) {
 }
 
 // ---- fetch with timeout, browser-shaped headers ---------------------------
-async function req(url, { method = 'GET', headers = {}, body = null, bearer = null } = {}) {
+async function req(url, { method = 'GET', headers = {}, body = null, bearer = null, timeoutMs = TIMEOUT_MS } = {}) {
   const u = assertAllowed(url);
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
   const h = {
     Accept: 'application/json, text/plain, */*',
     Origin: ORIGIN,
@@ -267,16 +271,18 @@ async function priceFoundation() {
 // POST one searchRaw body (with a single 401 re-login retry). Returns { ok, http, raw, empty }.
 // `empty` marks an ACCEPTED-but-empty body — how Lender Price answers "the async result isn't
 // cached yet" during the disqualify poll.
-async function postSearchRaw(url, session, payload) {
+async function postSearchRaw(url, session, payload, opts = {}) {
   let s = session;
   let r;
-  try { r = await req(url, { method: 'POST', bearer: s.token, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
+  const reqOpts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) };
+  if (opts.timeoutMs) reqOpts.timeoutMs = opts.timeoutMs; // the disqualify poll returns a ~111 MB body — allow more time to download + parse it
+  try { r = await req(url, { ...reqOpts, bearer: s.token }); }
   catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
   if (r.status === 401) {
     const s2 = await getSession({ force: true });
     if (!s2.ok) return { ok: false, ...s2 };
     s = s2;
-    try { r = await req(url, { method: 'POST', bearer: s.token, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
+    try { r = await req(url, { ...reqOpts, bearer: s.token }); }
     catch (e) { return { ok: false, error: 'lp_price_error', message: scrub(e.message) }; }
   }
   if (r.status !== 200) return { ok: false, error: 'lp_price_status', http: r.status, message: `searchRaw → ${r.status}`, upstream: scrub((r.text || '').slice(0, 600)) };
@@ -339,7 +345,7 @@ async function priceDisqualified(scenario, opts = {}) {
   while (Date.now() - t0 < maxWaitMs) {
     await sleep(pollMs);
     polls += 1;
-    const p = await postSearchRaw(f.url, session, pollBody);
+    const p = await postSearchRaw(f.url, session, pollBody, { timeoutMs: DISQUALIFY_TIMEOUT_MS });
     if (p.session) session = p.session;
     if (!p.ok) continue;      // transient upstream error — keep polling within the window
     if (p.empty) continue;    // still computing (empty body) — keep polling
@@ -368,7 +374,7 @@ async function pollDisqualified(scenario) {
   const f = await priceFoundation();
   if (!f.ok) return f;
   const body = buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo, disqualify: { cached: true } });
-  const r = await postSearchRaw(f.url, f.session, body);
+  const r = await postSearchRaw(f.url, f.session, body, { timeoutMs: DISQUALIFY_TIMEOUT_MS });
   if (!r.ok) return { ...r, request: body };
   if (r.empty || !hasDisqualifyData(r.raw)) return { ok: true, ready: false, request: body };
   return { ok: true, ready: true, raw: r.raw, request: body };
