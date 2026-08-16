@@ -93,6 +93,30 @@ function offline() {
   ok(parsed.programCount === 1 && parsed.programs[0].lender === 'Test Lender', 'parser groups by lender/program');
   ok(parsed.programs[0].rungCount === 2 && parsed.programs[0].minRate === 6.5, 'parser collects + sorts rungs');
 
+  // 9) Full canonical model overlay (buildSearch) — the shape Lender Price accepts.
+  const full = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760, dscr: 1.25,
+    propertyType: 'SingleFamily', zip: '11211', state: 'NY', county: 'Kings', countyFps: '36047', prepayMonths: 60 });
+  ok(full.criteria.loanAmount === 400000 && full.criteria.ltv === 0.8, 'buildSearch overlays loan/ltv');
+  ok(full.brokerCriteria && full.brokerCriteria.dayLocks === 30, '30-day lock lives in brokerCriteria');
+  ok(Array.isArray(full.dayLocksCriteria) && full.dayLocksCriteria[0] === 30, 'dayLocksCriteria [30] present');
+  ok(Array.isArray(full.termsCriteria) && full.termsCriteria[0] === 30 && full.termsInMonths === false, '30-yr term separate from 30-day lock');
+  ok(full.accessCriteria && Array.isArray(full.accessCriteria.companyIds), 'accessCriteria present');
+  ok(full.dynamicPropertiesMap.IncomeDocType && full.dynamicPropertiesMap.IncomeDocType.fieldId === 'IncomeDocType', 'dynamic props are {fieldId,value}');
+  ok(full.criteria.specialMortgageOptions.every((s) => s && s.name), 'SMOs are {id,name} objects');
+  ok(full.dynaToSmo === true, 'dynaToSmo true');
+
+  // 10) Live SMO registry ids win over the built-in fallbacks.
+  const reg = require('../src/longterm/lenderprice/search-model').smoRegistryFromList([{ id: 'LIVE1', name: 'DSCR' }]);
+  const withReg = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, propertyType: 'SingleFamily' }, { smo: reg });
+  ok(withReg.criteria.specialMortgageOptions.some((s) => s.id === 'LIVE1'), 'live SMO registry id used');
+
+  // 11) Parser handles the structured result shape + disqualified count.
+  const structured = { qualifiedNonQMData: [{ lenderName: 'Inv A', programName: 'DSCR', resultRates: { rateSet: [
+    { noteRate: 6.125, finalPrice: 100.5, ratePeriod: 30 }] } }], disqualifiedData: [{}, {}, {}] };
+  const ps = lp.parse(structured);
+  ok(ps.programCount === 1 && ps.programs[0].minRate === 6.125, 'parser reads qualifiedNonQMData.resultRates.rateSet');
+  ok(ps.disqualifiedCount === 3, 'parser counts disqualified programs');
+
   console.log(`\nOFFLINE: ${failures ? failures + ' FAILED' : 'all passed'}`);
 }
 

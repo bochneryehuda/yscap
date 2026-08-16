@@ -34,7 +34,7 @@
  *   single token holder for a small pool behind the same manager — no caller changes.
  */
 
-const { buildSearch } = require('./search-model');
+const { buildSearch, smoRegistryFromList } = require('./search-model');
 
 const AUTH_BASE = (process.env.LP_AUTH_BASE || 'https://auth.digitallending.com').replace(/\/+$/, '');
 const API_BASE = (process.env.LP_API_BASE || 'https://api.digitallending.com').replace(/\/+$/, '');
@@ -199,6 +199,50 @@ async function enrichZip(zip, { loanAmount = 0, units = 1 } = {}) {
   return out;
 }
 
+// ---- canonical pricing foundation (blueprint step 4): defaultSearch + smo --
+// The Lender Price web app never hand-builds a search: it GETs the company's full default
+// search model and its special-mortgage-option registry, then overlays only the scenario.
+// We do the same — but every fetch FALLS BACK to the captured static model / built-in ids,
+// so an unavailable (or differently-pathed) endpoint degrades to the proven defaults instead
+// of breaking pricing. Paths are env-overridable because they are not confirmed from a capture.
+const DEFAULTSEARCH_PATH = process.env.LP_DEFAULTSEARCH_PATH || '/rest/v1/lp-ppe-integration/pricing/defaultSearch/{companyId}/{userId}';
+const SMO_PATH = process.env.LP_SMO_PATH || '/rest/v1/lp-ppe-integration/pricing/smo/{companyId}';
+let _defaultSearch = null;   // { at, model } | { at, model:null } (unavailable, cached to avoid re-hammering)
+let _smoRegistry = null;     // { at, map } | { at, map:null }
+const FOUNDATION_TTL_MS = Number(process.env.LP_FOUNDATION_TTL_MS || 30 * 60 * 1000);
+
+function fillPath(tpl, companyId, userId) {
+  return tpl.replace('{companyId}', encodeURIComponent(companyId || '')).replace('{userId}', encodeURIComponent(userId || ''));
+}
+
+// Fetch (and cache) the company's live default search model. Returns the model or null.
+async function fetchDefaultSearch(companyId, userId) {
+  if (_defaultSearch && Date.now() - _defaultSearch.at < FOUNDATION_TTL_MS) return _defaultSearch.model;
+  let model = null;
+  try {
+    const r = await apiGet(fillPath(DEFAULTSEARCH_PATH, companyId, userId));
+    // A usable default search is an object carrying a criteria block (the shape searchRaw expects).
+    if (r.ok && r.data && typeof r.data === 'object' && (r.data.criteria || (r.data.search && r.data.search.raw))) {
+      model = r.data.criteria ? r.data : (r.data.search && r.data.search.raw) || null;
+    }
+  } catch { /* fall back to the static base */ }
+  _defaultSearch = { at: Date.now(), model };
+  return model;
+}
+
+// Fetch (and cache) the company's live special-mortgage-option registry as a name→{id,name} Map.
+async function fetchSmoRegistry(companyId) {
+  if (_smoRegistry && Date.now() - _smoRegistry.at < FOUNDATION_TTL_MS) return _smoRegistry.map;
+  let map = null;
+  try {
+    const r = await apiGet(fillPath(SMO_PATH, companyId));
+    const list = Array.isArray(r.data) ? r.data : (r.data && Array.isArray(r.data.data) ? r.data.data : (r.data && Array.isArray(r.data.smo) ? r.data.smo : null));
+    if (r.ok && list && list.length) map = smoRegistryFromList(list);
+  } catch { /* fall back to built-in ids */ }
+  _smoRegistry = { at: Date.now(), map };
+  return map;
+}
+
 // ---- pricing (blueprint step 5): POST searchRaw ---------------------------
 // Endpoint (from README + architecture doc):
 //   POST /rest/v1/lp-ppe-integration/pricing/searchRaw/{companyId}/{userId}
@@ -211,10 +255,15 @@ async function price(scenario) {
   const companyId = s.companyId || process.env.LP_COMPANY_ID;
   const userId = s.userId || process.env.LP_USER_ID;
   if (!companyId || !userId) return { ok: false, error: 'lp_no_ids', message: 'Missing companyId/userId from the Lender Price session.' };
-  // Build the FULL canonical search model by overlaying the scenario onto a real captured
-  // search that Lender Price accepted (search-base.json). A hand-built minimal payload is
-  // rejected with 500 — Lender Price wants every default structure present.
-  const payload = buildSearch({ ...scenario, companyId });
+  // Build the FULL canonical search model. Prefer the company's LIVE default search (so every
+  // current default/config is preserved) and its LIVE special-mortgage-option ids; both fall
+  // back to the captured static base / built-in ids when the endpoints are unavailable, so a
+  // hand-built minimal payload (which Lender Price rejects with 500) is never sent.
+  const [liveBase, smoReg] = await Promise.all([
+    fetchDefaultSearch(companyId, userId),
+    fetchSmoRegistry(companyId),
+  ]);
+  const payload = buildSearch({ ...scenario, companyId }, { base: liveBase || undefined, smo: smoReg || undefined });
   const url = `${API_BASE}/rest/v1/lp-ppe-integration/pricing/searchRaw/${encodeURIComponent(companyId)}/${encodeURIComponent(userId)}`;
   let r;
   try {
@@ -288,33 +337,41 @@ function num(v) { if (v == null || v === '') return null; const n = parseFloat(S
 // per-program list of rate rungs. It is deliberately DEFENSIVE about the exact shape
 // (the tree varies) — it walks for objects that carry a rate + a price and groups them.
 // Refine field names against the first real Render capture.
+const RATE_KEYS = ['rate', 'noteRate', 'interestRate', 'adjustedRate', 'finalRate'];
+const PRICE_KEYS = ['price', 'finalPrice', 'basePrice', 'adjustedPrice', 'netPrice'];
+const LENDER_KEYS = ['lenderName', 'investor', 'investorName', 'lender', 'lenderKey'];
+const PROGRAM_KEYS = ['programName', 'productName', 'program', 'productCode'];
+
 function parse(raw) {
   const programs = [];
   const seen = new Map();
   walk(raw, {});
   function pushRung(ctx, node) {
-    const rate = firstNum(node, ['rate', 'noteRate', 'interestRate']);
-    const price = firstNum(node, ['price', 'finalPrice', 'basePrice']);
+    const rate = firstNum(node, RATE_KEYS);
+    const price = firstNum(node, PRICE_KEYS);
     if (rate == null || price == null) return;
-    const lender = ctx.lender || node.lenderName || node.investor || 'Unknown';
-    const program = ctx.program || node.programName || node.productName || node.program || 'Program';
+    const lender = ctx.lender || firstStr(node, LENDER_KEYS) || 'Unknown';
+    const program = ctx.program || firstStr(node, PROGRAM_KEYS) || 'Program';
     const key = lender + '||' + program;
     let p = seen.get(key);
     if (!p) { p = { lender, program, rungs: [] }; seen.set(key, p); programs.push(p); }
     p.rungs.push({
       rate, price,
-      points: firstNum(node, ['points', 'discountPoints']),
+      points: firstNum(node, ['points', 'discountPoints', 'adjustmentPoints']),
       apr: firstNum(node, ['apr', 'annualPercentageRate']),
       monthly: firstNum(node, ['monthlyPayment', 'payment', 'principalAndInterest']),
+      lockDays: firstNum(node, ['ratePeriod', 'lockPeriod', 'dayLocks']),
     });
   }
+  function hasRate(node) { return RATE_KEYS.some((k) => k in node); }
+  function hasPrice(node) { return PRICE_KEYS.some((k) => k in node); }
   function walk(node, ctx) {
     if (node == null || typeof node !== 'object') return;
     const nextCtx = {
-      lender: node.lenderName || node.investor || node.lender || ctx.lender,
-      program: node.programName || node.productName || ctx.program,
+      lender: firstStr(node, LENDER_KEYS) || ctx.lender,
+      program: firstStr(node, PROGRAM_KEYS) || ctx.program,
     };
-    if (('rate' in node || 'noteRate' in node) && ('price' in node || 'finalPrice' in node)) pushRung(nextCtx, node);
+    if (hasRate(node) && hasPrice(node)) pushRung(nextCtx, node);
     for (const k of Object.keys(node)) { const v = node[k]; if (v && typeof v === 'object') walk(v, nextCtx); }
   }
   for (const p of programs) {
@@ -328,13 +385,30 @@ function parse(raw) {
     programCount: programs.length,
     lenderCount: new Set(programs.map((p) => p.lender)).size,
     rungCount: programs.reduce((n, p) => n + p.rungCount, 0),
+    disqualifiedCount: countArrays(raw, ['disqualifiedData', 'disqualified']),
     programs,
   };
 }
 function firstNum(o, keys) { for (const k of keys) { if (o[k] != null && isFinite(Number(o[k]))) return Number(o[k]); } return null; }
+function firstStr(o, keys) { for (const k of keys) { const v = o[k]; if (typeof v === 'string' && v.trim()) return v.trim(); } return null; }
+// Sum the lengths of any arrays reachable under the named keys anywhere in the tree.
+function countArrays(root, keys) {
+  let n = 0; const stack = [root]; const seen = new Set();
+  while (stack.length) {
+    const node = stack.pop();
+    if (node == null || typeof node !== 'object' || seen.has(node)) continue;
+    seen.add(node);
+    for (const k of Object.keys(node)) {
+      const v = node[k];
+      if (keys.includes(k) && Array.isArray(v)) n += v.length;
+      if (v && typeof v === 'object') stack.push(v);
+    }
+  }
+  return n;
+}
 
 module.exports = {
   configured, login, getSession, apiGet, enrichZip, price, parse,
-  buildSearchPayload, buildSearch,
+  buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
   _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID },
 };

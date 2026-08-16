@@ -25,7 +25,7 @@ const BATTERY = [
 
 function trimPrograms(parsed, limit = 60) {
   return {
-    meta: { programCount: parsed.programCount, lenderCount: parsed.lenderCount, rungCount: parsed.rungCount },
+    meta: { programCount: parsed.programCount, lenderCount: parsed.lenderCount, rungCount: parsed.rungCount, disqualifiedCount: parsed.disqualifiedCount },
     programs: parsed.programs.slice(0, limit).map((p) => ({
       lender: p.lender, program: p.program, minRate: p.minRate, maxPrice: p.maxPrice, rungCount: p.rungCount,
     })),

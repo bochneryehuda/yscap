@@ -15,6 +15,9 @@
 const BASE = require('./search-base.json');
 
 // SMO ids observed in real captures. The DSCR pair selects the DSCR product; it is always sent.
+// These are FALLBACKS: when a live /pricing/smo registry is passed via opts.smo, the current
+// company ids win (an SMO id can be re-issued per company/config); the built-ins below keep the
+// backend pricing even when that registry endpoint is unavailable.
 const SMO_DSCR = [
   { id: '57f2f4cae4b071ea7b978407', name: 'Debt Service Coverage Ratio' },
   { id: '5f37104ace8ad000014c7abe', name: 'DSCR' },
@@ -27,6 +30,27 @@ const SMO_PPP = {
 };
 
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
+function normName(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
+// Resolve one special-mortgage-option name → {id,name} against a live registry (opts.smo:
+// name→{id,name} map OR the raw /pricing/smo array), preferring the current company id and
+// falling back to a known built-in id, else name-only (dynaToSmo lets Lender Price still map it).
+function resolveSmo(name, registry, fallback) {
+  const key = normName(name);
+  let id = null;
+  if (registry) {
+    if (typeof registry.get === 'function') { const hit = registry.get(key); if (hit) id = hit.id || hit; }
+    else if (Array.isArray(registry)) { const hit = registry.find((o) => normName(o && o.name) === key); if (hit) id = hit.id; }
+    else if (registry[key]) { id = registry[key].id || registry[key]; }
+  }
+  if (!id && fallback && fallback.id) id = fallback.id;
+  return id ? { id, name: fallback && fallback.name ? fallback.name : name } : { name: fallback && fallback.name ? fallback.name : name };
+}
+// Turn a raw /pricing/smo list into a name→{id,name} lookup (lowercased names).
+function smoRegistryFromList(list) {
+  const map = new Map();
+  if (Array.isArray(list)) for (const o of list) { if (o && o.name && o.id) map.set(normName(o.name), { id: o.id, name: o.name }); }
+  return map;
+}
 function num(v) { if (v == null || v === '') return null; const n = parseFloat(String(v).replace(/[^0-9.]/g, '')); return isFinite(n) ? n : null; }
 
 function mapPurpose(p) {
@@ -46,10 +70,13 @@ function mapProp(t) {
 /**
  * Build a complete searchRaw body for a scenario by overlaying it onto the canonical base model.
  * @param sc scenario { purpose,value,loan,ltv,fico,dscr,propertyType,units,zip,state,county,countyFps,city,borrowerType,prepayMonths,io,escrowWaive,date }
- * @param opts { base } optional alternate base model (e.g. a live /pricing/defaultSearch)
+ * @param opts { base, smo } — base = a live /pricing/defaultSearch to overlay (falls back to the
+ *   captured BASE); smo = a live /pricing/smo registry (Map or raw array) so option ids are the
+ *   company's current ones. Both are optional; without them the proven captured defaults are used.
  */
 function buildSearch(sc = {}, opts = {}) {
   const m = clone(opts.base || BASE);
+  const smoReg = opts.smo || null;
   const value = num(sc.value);
   const loan = num(sc.loan);
   const ltv = (value && loan) ? Math.round((loan / value) * 1e6) / 1e6
@@ -71,10 +98,14 @@ function buildSearch(sc = {}, opts = {}) {
   c.escrowWaiver = !!sc.escrowWaive;
   c.nonWarrantableProject = pm.nonWarrantableProject;
 
-  // Special mortgage options: DSCR pair (+ PPP when we have a known id).
-  const smo = clone(SMO_DSCR);
-  const ppp = months != null ? SMO_PPP[months] : null;
-  if (ppp) smo.unshift(clone(ppp));
+  // Special mortgage options: DSCR pair (+ PPP), resolved to the company's CURRENT {id,name}
+  // via the live registry when present, else the captured built-in ids.
+  const smo = SMO_DSCR.map((d) => resolveSmo(d.name, smoReg, d));
+  if (months != null) {
+    const fb = SMO_PPP[months] || null;
+    const pppName = (months % 12 === 0) ? `${months / 12} Yr PPP` : `${months} Months PPP`;
+    smo.unshift(resolveSmo(fb ? fb.name : pppName, smoReg, fb));
+  }
   c.specialMortgageOptions = smo;
 
   // Top-level criteria echoes the frontend keeps in sync.
@@ -106,4 +137,4 @@ function buildSearch(sc = {}, opts = {}) {
   return m;
 }
 
-module.exports = { BASE, buildSearch, _internals: { SMO_DSCR, SMO_PPP, mapPurpose, mapProp } };
+module.exports = { BASE, buildSearch, smoRegistryFromList, _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp } };

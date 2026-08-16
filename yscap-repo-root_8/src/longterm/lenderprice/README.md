@@ -30,6 +30,27 @@ content type, and form fields as the browser.
 | `LP_AUTH_BASE` | | `https://auth.digitallending.com` | Token host. |
 | `LP_API_BASE` | | `https://api.digitallending.com` | Pricing + enrichment host. |
 | `LP_COMPANY_ID` / `LP_USER_ID` | | (from login) | Fallbacks; normally discovered from the token response. |
+| `LP_DEFAULTSEARCH_PATH` | | `/rest/v1/lp-ppe-integration/pricing/defaultSearch/{companyId}/{userId}` | Live default-search model to clone. Falls back to the captured `search-base.json` if unavailable. |
+| `LP_SMO_PATH` | | `/rest/v1/lp-ppe-integration/pricing/smo/{companyId}` | Live special-mortgage-option registry (current `{id,name}`). Falls back to captured ids. |
+| `LP_FOUNDATION_TTL_MS` | | `1800000` | How long the fetched default-search + SMO registry are cached (30 min). |
+
+## How the searchRaw body is built (the 500 fix)
+
+Lender Price rejects a hand-built minimal payload with 500 — it wants the FULL search model
+(`brokerCriteria`, `accessCriteria`, `filter`, `miCriteria`, closing-cost defaults, `{fieldId,value}`
+dynamic properties, `{id,name}` special-mortgage-options). So `price()` mirrors the web app:
+
+1. Fetch the company's LIVE `/pricing/defaultSearch` (cached) and its `/pricing/smo` registry.
+2. Deep-clone that model and overlay ONLY the scenario fields (borrower / property / loan /
+   compensation / DSCR) — every unknown default is preserved.
+3. Resolve DSCR + prepay options to the company's CURRENT SMO ids.
+4. Keep the 30-day lock (`brokerCriteria.dayLocks = 30`, `dayLocksCriteria = [30]`); the 30-YEAR
+   term is separate (`termsCriteria = [30]`, `termsInMonths = false`).
+
+If the live endpoints are unavailable the captured `search-base.json` (a real accepted search,
+returned 27 programs) and the built-in SMO ids are used — so pricing never falls back to the
+minimal payload that returned 500. On any non-200 the routes surface up to 600 chars of the
+scrubbed upstream body so Lender Price's validation message is visible.
 
 The login response returns `companyId` and `userId`, which the pricing URL
 (`…/pricing/searchRaw/{companyId}/{userId}`) needs — so those are discovered at login,
