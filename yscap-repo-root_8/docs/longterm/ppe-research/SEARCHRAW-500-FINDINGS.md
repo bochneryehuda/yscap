@@ -24,23 +24,38 @@ substitution of the PPE id here manufactured that error and has been removed.
 ## The payload defect, isolated by bisection
 
 Posting Lender Price's OWN `defaultSearch` back to them unchanged returns 500. Removing the whole
-`criteria` object returns **200**. Testing each of the 102 criteria keys IN ISOLATION identifies
-exactly two that break the request on their own:
+`criteria` object returns **200**. Two fields inside it are implicated, and the sound comparison is
+the one that varies ONE thing against the COMPLETE criteria object — not the earlier
+one-key-in-isolation loop, which reached the same two fields but proves less, because a criteria
+object stripped to a single key is not a valid request and can fail for that reason alone. The
+full-object matrix:
 
-| criteria field | value in their own template | effect |
-|---|---|---|
-| `mortgageTypes` | `null` | 500 on its own |
-| `fico` | `760` | 500 on its own |
+| request (their own defaultSearch, complete) | result |
+|---|---|
+| untouched | 500 |
+| `mortgageTypes: []` only | 500 |
+| `fico` deleted only | 500 |
+| **`mortgageTypes: []` AND `fico` deleted** | **200** (well-formed, empty) |
+| `mortgageTypes: []` + `fico: 760` | 500 |
+| `mortgageTypes: []` + `fico: 700` | 500 |
 
-With **`mortgageTypes: []` and `fico` ABSENT**, the same request returns **HTTP 200** (8,700 bytes,
-a well-formed empty result set). So there is nothing wrong with our credentials, our path, our
-options list or our transport — the request shape is the whole story.
+**Neither fix works alone; together they work.** That is why every earlier single-variable attempt
+looked like a dead end. Their own template ships `mortgageTypes: null`, which their frontend
+overwrites before sending (`l.mortgageTypes = [lineResults.mortgageType]`).
 
-Further measured, and not yet explained:
+Also measured: `mortgageTypes: ["NonQM"]` → 500 (only the EMPTY array has been seen to work), and
+`fico` as a string or an array → 500 (only ABSENCE has been seen to work).
 
-- `mortgageTypes: ["NonQM"]` → 500. Only the EMPTY array has been seen to work.
-- `fico` as a string or an array → 500. Only ABSENCE has been seen to work.
-- `ficoScore` / `creditScore` beside an absent `fico` → 200, but still **0 programs**.
+## THE SHARPEST REMAINING LEAD
+
+**Their frontend does send `criteria.fico` as a plain number** — the bundle binds it to an input
+(`[(ngModel)]="search.criteria.fico"`) and sets it from `ficoScore.effectiveCreditScore`. So a
+numeric `fico` is unquestionably valid in a complete, correctly-shaped request, and it fails for us.
+
+That means **some OTHER field must accompany it** — one their frontend sets and we either omit or
+send differently, without which the credit-score path throws. Finding that field is the whole
+remaining task, and the captured payload names it immediately. Do not guess it: the wrong-user-id
+episode is what guessing costs.
 
 ## What is still open
 
