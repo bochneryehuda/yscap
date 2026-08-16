@@ -27,7 +27,9 @@ function trimPrograms(parsed, limit = 60) {
   return {
     meta: { programCount: parsed.programCount, lenderCount: parsed.lenderCount, rungCount: parsed.rungCount, disqualifiedCount: parsed.disqualifiedCount },
     programs: parsed.programs.slice(0, limit).map((p) => ({
-      lender: p.lender, program: p.program, minRate: p.minRate, minPoints: p.minPoints, maxPrice: p.maxPrice, rungCount: p.rungCount,
+      lender: p.lender, investor: p.investor || null, lenderId: p.lenderId || null,
+      program: p.program, product: p.product || null,
+      minRate: p.minRate, minPoints: p.minPoints, maxPrice: p.maxPrice, rungCount: p.rungCount,
     })),
   };
 }
@@ -52,6 +54,14 @@ async function price(req, res) {
   if (!r.ok) {
     const code = (r.http && r.http >= 500) ? 502 : 400;
     return res.status(code).json({ ok: false, error: r.error, http: r.http || null, message: r.message, upstream: r.upstream || r.body || null });
+  }
+  // full:true → the COMPLETE capture (every option's price build, itemized LLPAs, margin/holdback,
+  // comp, fees, ratios, monthly payment). Add raw:true to also attach each option's untouched leaf.
+  if (req.body && req.body.full) {
+    const full = lp.parseFull(r.raw, { raw: !!req.body.raw });
+    const out = { ok: true, ...full, request: r.request };
+    if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
+    return res.json(out);
   }
   const parsed = lp.parse(r.raw);
   const out = { ok: true, ...trimPrograms(parsed), request: r.request };
@@ -93,6 +103,8 @@ async function disqualify(req, res) {
       reasonCount: disq.reasonCount,
       lenders: disq.lenders.slice(0, 80).map((g) => ({
         lender: g.lender,
+        investor: g.investor || null,
+        lenderId: g.lenderId || null,
         itemCount: g.itemCount,
         items: g.items.slice(0, 40),
       })),
