@@ -33,16 +33,17 @@
  * documents, rejected or not verified for any reason NEVER reaches an investor.
  * The internal track record still shows every line.
  *
- * ── WHAT WE DO NOT KNOW, AND DO NOT PRETEND TO ──────────────────────────────
- * The sample proves exactly two Property Type values — `SFR-Attached` and
- * `SFR-Detached` — and CorrFirst has not given us the rest of their list. So the
- * map below marks each mapping `proven` or not: a one-unit home maps onto a value
- * the sample itself demonstrates and is import-safe; a 2-4 unit, a 5+, mixed-use,
- * commercial or land row maps onto our best reading of the same naming convention
- * and is REPORTED to the exporting staffer (`unprovenTypes`) so it can be checked
- * against CorrFirst's list before the file is sent. A line with no property type on
- * it at all is not invented — it ships blank and is reported (`missing`). Nothing
- * here guesses a fact about a property.
+ * ── PROPERTY TYPE IS THEIR LIST, NOT OUR GUESS ──────────────────────────────
+ * CorrFirst's own Property Type options are checked in verbatim below
+ * (`CORRFIRST_PROPERTY_TYPE_OPTIONS`, read off their system), and every value this
+ * module can emit is one of them — a build-time check refuses a mapping that is
+ * not. Our own property-type vocabulary is NARROWER than theirs, so a stored type
+ * that already IS one of their values (Office, Retail, Industrial, Warehouse, Self
+ * Storage, Automotive, Manufactured, Modular) passes straight through in their
+ * spelling. A shape their list has NO value for — land, a lot, a plain "commercial"
+ * — ships a BLANK cell and is reported by name, and so does a line carrying no
+ * property type at all. Nothing here guesses a fact about a property, and nothing
+ * writes a value their importer would reject.
  *
  * PURE except for `loadCorrfirstTrackRecords` / `buildCorrfirstExport`, which read.
  * Writes nothing, anywhere.
@@ -128,53 +129,120 @@ const yn = (b) => (b ? 'Y' : 'N');
 
 // ------------------------------------------------------------- Property Type
 /**
+ * CORRFIRST'S OWN Property Type LIST, read straight off their system (the loan
+ * they sent us — cf.nexys.com/loan_process/application/32856), in their order and
+ * their exact spelling. This is the AUTHORITY: their importer offers these values
+ * and nothing else, so a cell holding anything not on this list is a value their
+ * form cannot hold. Every mapping below must land on one of these (or on blank),
+ * which `verifyPropertyTypes` asserts at build time.
+ *
+ * It also settles four things our own earlier reading got wrong, and each one is
+ * the reason a value is never trusted until CorrFirst themselves show it:
+ *   · a CONDO is `Condo`, not `SFR-Attached` — they carry it as its own type.
+ *   · a PUD is `PUD`, not `SFR-Detached` — likewise.
+ *   · mixed use is `Mixed-Use` WITH the hyphen, not `Mixed Use`.
+ *   · 5+ units is `Multifamily 5+`, not `5+ Units` — so the "plain unit count"
+ *     convention we read off `2-4 Units` stops at 2-4 and does not continue up.
+ * And there is NO `Other`: a shape with no equivalent on this list ships BLANK
+ * and is reported, rather than inventing a value their form would reject.
+ */
+const CORRFIRST_PROPERTY_TYPE_OPTIONS = [
+  'SFR-Detached',
+  'SFR-Attached',
+  'Condo',
+  '2-4 Units',
+  'PUD',
+  'Mixed-Use',
+  'Modular',
+  'Multifamily 5+',
+  'Industrial',
+  'Manufactured',
+  'Self Storage',
+  'Office',
+  'Retail',
+  'Warehouse',
+  'Automotive',
+];
+
+/** The comparison key for a property-type spelling: letters and digits only, so
+ *  "Self Storage" / "self-storage" / "SELF STORAGE" are one value and nothing
+ *  else is. EXACT equality on that key — never a substring test, which would let
+ *  "Retail" match "Retail Strip Center" and put the wrong type on a property. */
+const typeKey = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+const OPTION_BY_KEY = new Map(CORRFIRST_PROPERTY_TYPE_OPTIONS.map((v) => [typeKey(v), v]));
+
+/** A stored property type that IS one of CorrFirst's own values → their exact
+ *  spelling of it; otherwise null. This is how the eight commercial shapes our own
+ *  vocabulary cannot express (Office, Retail, Industrial, Warehouse, Self Storage,
+ *  Automotive, Manufactured, Modular) reach the file: `normPropertyType` collapses
+ *  every one of them to `other`, so without this they would all ship blank. */
+function corrfirstOptionOf(raw) {
+  return OPTION_BY_KEY.get(typeKey(raw)) || null;
+}
+
+/**
  * Our property-type vocabulary → CorrFirst's.
  *
- * `proven: true` means one of CorrFirst's OWN FILES carries that value verbatim,
- * so the import cannot reject it. `proven: false` is our best reading of the same
- * naming convention for a shape they have not shown us — it is emitted (a blank
- * would lose the fact) and REPORTED, so staff can check it against CorrFirst's
- * own list before sending. This table is the one place that changes when they
- * give us the rest of their list.
+ * `exact: true` — our category and theirs mean the same thing, one for one.
+ * `exact: false` — their list has no value for our category, so the closest one on
+ * THEIR list is used and the line is REPORTED so staff can eyeball it before the
+ * file is sent. Today that is exactly one case: a TOWNHOUSE, which they have no
+ * value for; a townhouse is a one-dwelling home attached to its neighbour, which is
+ * what `SFR-Attached` says, so it goes there rather than blank.
  *
- * PROVEN SO FAR, and where each came from:
- *   SFR-Attached / SFR-Detached  — the two-row sample they sent.
- *   2-4 Units                    — a REAL filled file of theirs (Track_Record_32170),
- *                                  three Newark/Bronx/Brooklyn multis. Note the
- *                                  PLURAL: it is "2-4 Units", not "2-4 Unit" —
- *                                  which is exactly why a value is never called
- *                                  proven until one of their files shows it.
- *
- * THE CONVENTION THOSE THREE REVEAL, which is what the unproven guesses follow:
- * a one-dwelling home is "SFR-" plus how it sits on its lot, and anything bigger
- * is a plain unit COUNT with a plural "Units". So 5+ is written "5+ Units" rather
- * than "Multifamily" — same shape as the value they proved, one step further up.
+ * `other` maps to NOTHING on purpose — our `other` bucket is where a commercial
+ * building, land or a lot ends up, and CorrFirst's list has no value that covers
+ * land at all. That cell ships blank and is reported by name. (A commercial shape
+ * their list DOES carry — Office, Retail, Industrial, Warehouse, Self Storage,
+ * Automotive, Manufactured, Modular — never reaches this table: `corrfirstOptionOf`
+ * recognises it first and passes their own spelling straight through.)
  */
 const CORRFIRST_PROPERTY_TYPES = {
-  sfr:          { value: 'SFR-Detached',   proven: true },
-  pud:          { value: 'SFR-Detached',   proven: true },
-  condo:        { value: 'SFR-Attached',   proven: true },
-  townhouse:    { value: 'SFR-Attached',   proven: true },
-  multi_2_4:    { value: '2-4 Units',      proven: true },
-  multi_5_plus: { value: '5+ Units',       proven: false },
-  mixed_use:    { value: 'Mixed Use',      proven: false },
-  other:        { value: 'Other',          proven: false },
+  sfr:          { value: 'SFR-Detached',   exact: true },
+  pud:          { value: 'PUD',            exact: true },
+  condo:        { value: 'Condo',          exact: true },
+  townhouse:    { value: 'SFR-Attached',   exact: false },
+  multi_2_4:    { value: '2-4 Units',      exact: true },
+  multi_5_plus: { value: 'Multifamily 5+', exact: true },
+  mixed_use:    { value: 'Mixed-Use',      exact: true },
+  other:        { value: '',               exact: false },
 };
 
 /**
- * The CorrFirst Property Type for one line, plus how much we trust the value.
- *   { value, proven, missing }
- * `missing: true` — the line carries no property type at all. NOTHING is invented:
- * the cell ships blank and the caller reports the line.
+ * Every value this module can emit is on CorrFirst's own list. Asserted empty by
+ * `scripts/test-corrfirst-track-record-pure.js`, so a mapping edited to a value
+ * their form cannot hold fails the build rather than the investor's import.
+ */
+function verifyPropertyTypes() {
+  const bad = [];
+  for (const [key, hit] of Object.entries(CORRFIRST_PROPERTY_TYPES)) {
+    if (hit.value === '') continue;
+    if (!CORRFIRST_PROPERTY_TYPE_OPTIONS.includes(hit.value)) bad.push(`${key} -> ${hit.value}`);
+  }
+  return bad;
+}
+
+/**
+ * The CorrFirst Property Type for one line.
+ *   { value, exact, missing, noEquivalent }
+ * `missing: true` — the line carries no property type at all.
+ * `noEquivalent: true` — it carries one, and CorrFirst's list has nothing for it.
+ * Both ship a BLANK cell and are reported: NOTHING here invents a fact about a
+ * property, and nothing writes a value their importer would reject.
  */
 function corrfirstPropertyType(row) {
-  const raw = (row && row.property_type) || '';
-  if (!String(raw).trim()) return { value: '', proven: false, missing: true };
-  // `normPropertyType` is the ONE reading of a property-type string in this
-  // system (conditions/field-registry) — never a second regex here.
+  const raw = String((row && row.property_type) || '').trim();
+  if (!raw) return { value: '', exact: false, missing: true, noEquivalent: false };
+  // The stored text may already BE one of their values (their list is wider than
+  // our own vocabulary) — pass it through in their exact spelling.
+  const verbatim = corrfirstOptionOf(raw);
+  if (verbatim) return { value: verbatim, exact: true, missing: false, noEquivalent: false };
+  // Otherwise read it with `normPropertyType`, the ONE reading of a property-type
+  // string in this system (conditions/field-registry) — never a second regex here.
   const key = reg.normPropertyType(raw) || 'other';
   const hit = CORRFIRST_PROPERTY_TYPES[key] || CORRFIRST_PROPERTY_TYPES.other;
-  return { value: hit.value, proven: hit.proven, missing: false };
+  if (!hit.value) return { value: '', exact: false, missing: false, noEquivalent: true };
+  return { value: hit.value, exact: hit.exact, missing: false, noEquivalent: false };
 }
 
 // ------------------------------------------------------------------- the row
@@ -297,12 +365,16 @@ function buildCorrfirstCsv(records) {
  * same thing from the same code.
  */
 function corrfirstWarnings(records) {
-  const out = { missingPropertyType: [], unprovenPropertyType: [], missingOwnership: [], missingPurchase: [], noTitleName: [] };
+  const out = {
+    missingPropertyType: [], unmappedPropertyType: [], judgedPropertyType: [],
+    missingOwnership: [], missingPurchase: [], noTitleName: [],
+  };
   for (const rec of records || []) {
     const label = streetOf(rec.property_address) || `Project ${String(rec.id || '').slice(0, 8)}`;
     const type = corrfirstPropertyType(rec);
     if (type.missing) out.missingPropertyType.push(label);
-    else if (!type.proven) out.unprovenPropertyType.push({ property: label, value: type.value });
+    else if (type.noEquivalent) out.unmappedPropertyType.push({ property: label, ours: String(rec.property_type || '').trim() });
+    else if (!type.exact) out.judgedPropertyType.push({ property: label, ours: String(rec.property_type || '').trim(), value: type.value });
     if (ownershipPctOf(rec) == null) out.missingOwnership.push(label);
     if (!rec.purchase_date || money(rec.purchase_price) === '') out.missingPurchase.push(label);
     if (!titleHeldInName(rec)) out.noTitleName.push(label);
@@ -431,10 +503,11 @@ const CORRFIRST_REAL_FILE_CSV =
   + '"248 E 93rd St","Brooklyn","NY","11212","2-4 Units","12/01/2024","1,035,000","120,000","Y","","","248 e 93th LLC","100",""';
 
 module.exports = {
-  TEMPLATE_FILE, CORRFIRST_SAMPLE_CSV, CORRFIRST_REAL_FILE_CSV, CORRFIRST_PROPERTY_TYPES,
+  TEMPLATE_FILE, CORRFIRST_SAMPLE_CSV, CORRFIRST_REAL_FILE_CSV,
+  CORRFIRST_PROPERTY_TYPES, CORRFIRST_PROPERTY_TYPE_OPTIONS, verifyPropertyTypes,
   corrfirstHeader, corrfirstColumns,
   csvField, mmddyyyy, money, zip5, pct, yn,
-  corrfirstPropertyType, addressCellsOf, streetOf, wasSold, titleHeldInName, ownershipPctOf,
+  corrfirstPropertyType, corrfirstOptionOf, addressCellsOf, streetOf, wasSold, titleHeldInName, ownershipPctOf,
   corrfirstCells, corrfirstRow, buildCorrfirstCsv, corrfirstWarnings,
   loadCorrfirstTrackRecords, corrfirstFilename, buildCorrfirstExport, previewCorrfirstExport,
 };

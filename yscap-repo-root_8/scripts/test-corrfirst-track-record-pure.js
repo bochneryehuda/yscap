@@ -40,10 +40,13 @@ ok(cf.buildCorrfirstCsv([]) === templateBytes.toString('utf8'),
 // ── 2) The sample, rebuilt from our own row shape ────────────────────────────
 // Sample row 1: SOLD (an attached one-unit home, flipped, held in an entity at 50%).
 // Sample row 2: RETAINED as a rental (detached) — sold cells blank, flag Y.
+// A TOWNHOUSE is what produces `SFR-Attached` now: CorrFirst's own form carries a
+// separate `Condo` type, so a condo goes there and only a townhouse — which their
+// list has no value for — lands on SFR-Attached.
 const soldDeal = {
   id: 'aaaaaaaa-0000-0000-0000-000000000001',
   property_address: { line1: '112 N Main St', unit: '', city: 'Windsor', state: 'NJ', zip: '08561' },
-  property_type: 'Condo / townhome',
+  property_type: 'Townhouse',
   deal_type: 'flip',
   purchase_price: '100000.00', rehab_amount: '100000.00', sale_price: '200000.00',
   purchase_date: '2021-03-10', sale_date: '2024-02-05',
@@ -123,8 +126,8 @@ ok(!builtReal.endsWith('\n') && builtReal.indexOf('\r') === -1,
   ok(cells[13] === '', 'a blank note ships as an empty cell, never omitted');
   ok(cf.corrfirstCells(realFileDeals[1])[11] === 'CLAYAVE LLC', 'a stray trailing space in the entity name is trimmed');
 }
-ok(cf.corrfirstPropertyType({ property_type: '2-4 unit residential' }).proven === true,
-  '2-4 Units is PROVEN now — one of their own files carries it');
+ok(cf.corrfirstPropertyType({ property_type: '2-4 unit residential' }).value === '2-4 Units',
+  'a 2-4 unit is "2-4 Units" — the exact spelling on their own list');
 ok(cf.CORRFIRST_REAL_FILE_CSV.includes('"2-4 Units"') && !cf.CORRFIRST_REAL_FILE_CSV.includes('"2-4 Unit"'),
   'and the fixture is the evidence for it');
 
@@ -179,29 +182,78 @@ ok(cf.wasSold({}) === false, 'nothing recorded → not sold');
   ok(c[8] === 'N' && c[9] === '06/01/2025', 'a rental that was later sold is reported as sold');
 }
 
-// ── 5) Property Type — proven values vs. our reading of their convention ─────
+// ── 5) Property Type — CorrFirst's OWN list is the whole authority ───────────
+// THE HARD RULE: every value this module can emit is on their list. A mapping
+// edited to something their form cannot hold fails right here, not at the import.
+ok(cf.verifyPropertyTypes().length === 0,
+  `every mapping lands on a value CorrFirst's own form offers${cf.verifyPropertyTypes().length ? ' — offenders: ' + cf.verifyPropertyTypes().join(', ') : ''}`);
+{
+  // Nothing may emit an off-list value by ANY route, including the pass-through.
+  const tried = ['Single-family', 'Condo / townhome', 'townhouse', 'PUD', '2-4 unit residential',
+    '5+ unit multifamily', 'Mixed-use', 'Land / lot', 'Commercial', 'Office', 'self storage',
+    'WAREHOUSE', 'Automotive', 'Manufactured', 'Modular', 'Industrial', 'Retail', '', 'nonsense'];
+  const offList = tried
+    .map((t) => cf.corrfirstPropertyType({ property_type: t }).value)
+    .filter((v) => v !== '' && !cf.CORRFIRST_PROPERTY_TYPE_OPTIONS.includes(v));
+  ok(offList.length === 0, `no input can produce a value off their list${offList.length ? ' — got ' + offList.join(', ') : ''}`);
+}
+// The four values our earlier reading got WRONG, each now their own spelling.
+ok(cf.corrfirstPropertyType({ property_type: 'Condo' }).value === 'Condo',
+  'a CONDO is "Condo" — their own type, not SFR-Attached');
+ok(cf.corrfirstPropertyType({ property_type: 'PUD' }).value === 'PUD',
+  'a PUD is "PUD" — their own type, not SFR-Detached');
+ok(cf.corrfirstPropertyType({ property_type: 'Mixed-use' }).value === 'Mixed-Use',
+  'mixed use is "Mixed-Use" WITH the hyphen');
+ok(cf.corrfirstPropertyType({ property_type: '5+ unit multifamily' }).value === 'Multifamily 5+',
+  '5+ units is "Multifamily 5+" — the unit-count naming stops at 2-4 and does not continue up');
 ok(cf.corrfirstPropertyType({ property_type: 'Single-family' }).value === 'SFR-Detached', 'single-family → SFR-Detached');
-ok(cf.corrfirstPropertyType({ property_type: 'Condo / townhome' }).value === 'SFR-Attached', 'condo/townhome → SFR-Attached');
-ok(cf.corrfirstPropertyType({ property_type: 'Single-family' }).proven === true, 'that value is one the sample proves');
-ok(cf.corrfirstPropertyType({ property_type: 'Condo / townhome' }).proven === true, 'so is that one');
-ok(cf.corrfirstPropertyType({ property_type: '5+ unit multifamily' }).proven === false,
-  'a 5+ multifamily uses a value CorrFirst has not confirmed — flagged, never shipped silently');
-ok(cf.corrfirstPropertyType({ property_type: '5+ unit multifamily' }).value === '5+ Units',
-  '…and it follows the convention their own "2-4 Units" proves, not a different word');
-ok(cf.corrfirstPropertyType({ property_type: 'Mixed-use' }).proven === false, 'same for mixed-use');
-ok(cf.corrfirstPropertyType({ property_type: 'Land / lot' }).proven === false, 'same for land');
+for (const t of ['Single-family', 'Condo', 'PUD', 'Mixed-use', '5+ unit multifamily', '2-4 unit residential']) {
+  ok(cf.corrfirstPropertyType({ property_type: t }).exact === true, `"${t}" is a one-for-one match with their list`);
+}
+// A TOWNHOUSE is the one shape their list has no value for. It goes out as the
+// closest one they DO have, and is reported — never silently.
+{
+  const th = cf.corrfirstPropertyType({ property_type: 'Townhouse' });
+  ok(th.value === 'SFR-Attached', 'a townhouse → SFR-Attached, the closest value on their list');
+  ok(th.exact === false && th.noEquivalent === false, '…and is reported as a judgement, not as an exact match');
+}
+// THE PASS-THROUGH: our own vocabulary collapses every commercial shape to
+// `other`, so a stored type that already IS one of their values must survive.
+for (const [stored, expected] of [
+  ['Office', 'Office'], ['Retail', 'Retail'], ['Industrial', 'Industrial'],
+  ['Warehouse', 'Warehouse'], ['self storage', 'Self Storage'], ['SELF-STORAGE', 'Self Storage'],
+  ['automotive', 'Automotive'], ['Manufactured', 'Manufactured'], ['Modular', 'Modular'],
+]) {
+  const got = cf.corrfirstPropertyType({ property_type: stored });
+  ok(got.value === expected, `"${stored}" passes through as CorrFirst's own "${expected}"`);
+  ok(got.exact === true && got.noEquivalent === false, `…and "${stored}" is not flagged`);
+}
+ok(cf.corrfirstOptionOf('Retail Strip Center') === null,
+  'the pass-through is EXACT — "Retail Strip Center" never becomes "Retail"');
+ok(cf.corrfirstOptionOf('sfr') === null, 'a bare "sfr" is not one of their values — it goes through the reader');
+// A shape their list has NOTHING for ships BLANK and is reported. Their form has
+// no land/lot value at all, and there is no "Other" to hide it in.
+for (const t of ['Land / lot', 'Commercial', 'Vacant land']) {
+  const got = cf.corrfirstPropertyType({ property_type: t });
+  ok(got.value === '' && got.noEquivalent === true && got.missing === false,
+    `"${t}" has no CorrFirst equivalent → blank cell, reported by name, never invented`);
+}
+ok(!cf.CORRFIRST_PROPERTY_TYPE_OPTIONS.includes('Other'),
+  'their list has no "Other" — so nothing here may emit one');
 {
   const none = cf.corrfirstPropertyType({ property_type: '' });
-  ok(none.missing === true && none.value === '',
+  ok(none.missing === true && none.value === '' && none.noEquivalent === false,
     'no property type on the line → blank cell; a property fact is never invented');
 }
-// THE MEANING OF `proven`, enforced: a mapping may only claim it when one of
-// CorrFirst's OWN files carries that exact value. Marking something proven
-// without the evidence fails right here.
+// The values their own FILES carry must still be on the list we read off their
+// form — the two sources of truth agreeing is what proves the list was read right.
 const CORRFIRST_EVIDENCE = cf.CORRFIRST_SAMPLE_CSV + '\n' + cf.CORRFIRST_REAL_FILE_CSV;
-for (const [k, v] of Object.entries(cf.CORRFIRST_PROPERTY_TYPES)) {
-  if (v.proven) ok(CORRFIRST_EVIDENCE.includes(`"${v.value}"`), `${k} → "${v.value}" appears in a file CorrFirst sent us`);
-  else ok(!CORRFIRST_EVIDENCE.includes(`"${v.value}"`), `${k} → "${v.value}" is honestly marked unproven (no file of theirs shows it)`);
+for (const v of cf.CORRFIRST_PROPERTY_TYPE_OPTIONS) {
+  if (CORRFIRST_EVIDENCE.includes(`"${v}"`)) ok(true, `"${v}" appears in a file CorrFirst sent us AND on their form`);
+}
+for (const seen of ['SFR-Attached', 'SFR-Detached', '2-4 Units']) {
+  ok(CORRFIRST_EVIDENCE.includes(`"${seen}"`) && cf.CORRFIRST_PROPERTY_TYPE_OPTIONS.includes(seen),
+    `"${seen}" — the value their own files carry — is on the list we read off their form`);
 }
 
 // ── 6) Title Held in Name / % of Ownership ───────────────────────────────────
@@ -242,14 +294,20 @@ ok(cf.ownershipPctOf({ owned_personally: false, entity_ownership_pct: null }) ==
 {
   const w = cf.corrfirstWarnings([
     { id: '1', property_address: { line1: '1 A St' }, property_type: '', owned_personally: true, purchase_date: '2021-01-01', purchase_price: 100000, borrower_name: 'Jane Roe' },
-    { id: '2', property_address: { line1: '2 B St' }, property_type: '5+ unit multifamily', owned_personally: false, entity_name: 'X LLC', entity_ownership_pct: null, purchase_date: null, purchase_price: null },
+    { id: '2', property_address: { line1: '2 B St' }, property_type: 'Land / lot', owned_personally: false, entity_name: 'X LLC', entity_ownership_pct: null, purchase_date: null, purchase_price: null },
     { id: '3', property_address: { line1: '3 C St' }, property_type: '2-4 unit residential', owned_personally: true, purchase_date: '2021-01-01', purchase_price: 100000, borrower_name: 'Jane Roe' },
+    { id: '4', property_address: { line1: '4 D St' }, property_type: 'Townhouse', owned_personally: true, purchase_date: '2021-01-01', purchase_price: 100000, borrower_name: 'Jane Roe' },
   ]);
   ok(w.missingPropertyType.length === 1 && w.missingPropertyType[0] === '1 A St', 'the line with no property type is named');
-  ok(w.unprovenPropertyType.length === 1 && w.unprovenPropertyType[0].property === '2 B St'
-     && w.unprovenPropertyType[0].value === '5+ Units', 'the unconfirmed property-type value is named with its value');
-  ok(!w.unprovenPropertyType.some((u) => u.property === '3 C St'),
-     'a 2-4 unit is NOT flagged any more — their own file proved that value');
+  ok(w.unmappedPropertyType.length === 1 && w.unmappedPropertyType[0].property === '2 B St'
+     && w.unmappedPropertyType[0].ours === 'Land / lot',
+     'the type CorrFirst has no value for is named, with what WE call it so staff can act on it');
+  ok(w.judgedPropertyType.length === 1 && w.judgedPropertyType[0].property === '4 D St'
+     && w.judgedPropertyType[0].value === 'SFR-Attached',
+     'the one judgement call (townhouse) is named with the value being sent');
+  ok(!w.unmappedPropertyType.some((u) => u.property === '3 C St')
+     && !w.judgedPropertyType.some((u) => u.property === '3 C St'),
+     'a 2-4 unit is not flagged at all — it is an exact match on their own list');
   ok(w.missingOwnership.length === 1 && w.missingOwnership[0] === '2 B St', 'the line with no ownership share is named');
   ok(w.missingPurchase.length === 1 && w.missingPurchase[0] === '2 B St', 'the line missing purchase facts is named');
   ok(w.noTitleName.length === 0, 'a line that does have a title name is not flagged');

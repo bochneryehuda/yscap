@@ -4901,7 +4901,8 @@ router.get('/applications/:id/export/corrfirst-track-record', async (req, res) =
     await audit(req, 'export_corrfirst_track_record', 'application', req.params.id, {
       rows: out.rowCount, bytes: Buffer.byteLength(out.csv, 'utf8'),
       missingPropertyType: (out.warnings.missingPropertyType || []).length,
-      unprovenPropertyType: (out.warnings.unprovenPropertyType || []).length,
+      unmappedPropertyType: (out.warnings.unmappedPropertyType || []).length,
+      judgedPropertyType: (out.warnings.judgedPropertyType || []).length,
       missingOwnership: (out.warnings.missingOwnership || []).length,
     });
     // No BOM and LF endings — CorrFirst's own files carry neither a BOM nor CRLF,

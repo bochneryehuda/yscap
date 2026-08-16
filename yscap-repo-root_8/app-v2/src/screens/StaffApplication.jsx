@@ -6444,7 +6444,8 @@ function CorrfirstExport({ appId }) {
     { rows: w.missingPurchase || [], text: 'missing a purchase price or purchase date.' },
     { rows: w.noTitleName || [], text: 'nobody recorded who held title.' },
   ].filter((g) => g.rows.length > 0);
-  const unproven = w.unprovenPropertyType || [];
+  const unmapped = w.unmappedPropertyType || [];
+  const judged = w.judgedPropertyType || [];
   return (
     <div className="panel" style={{ marginTop: 18 }}>
       <div className="row" style={{ marginBottom: 6 }}>
@@ -6486,22 +6487,41 @@ function CorrfirstExport({ appId }) {
               </ul>
             </div>
           )}
-          {/* CorrFirst's sample only ever shows two Property Type values, so anything
-              else is our best reading of the same naming and is worth a glance before
-              the file is sent. Never a blocker — the export still downloads. */}
-          {unproven.length > 0 && (
-            <div className="notice" style={{ marginTop: 8, borderLeft: '3px solid var(--teal,#2F7F86)', padding: '6px 10px' }}>
-              <b style={{ color: '#141B22' }}>Worth a quick check with CorrFirst — {unproven.length} propert{unproven.length === 1 ? 'y uses' : 'ies use'} a property type their sample doesn’t show:</b>
+          {/* CorrFirst's own Property Type list has no value for land, a lot or a
+              plain "commercial" building. Those go out BLANK rather than as a made-up
+              value their form would reject — so the staffer is told by name, with the
+              choices their form actually offers. Never a blocker. */}
+          {unmapped.length > 0 && (
+            <div className="notice" style={{ marginTop: 8, borderLeft: '3px solid var(--gold,#AE8746)', padding: '6px 10px' }}>
+              <b style={{ color: '#141B22' }}>CorrFirst has no property type for {unmapped.length} propert{unmapped.length === 1 ? 'y' : 'ies'} — that column goes out blank:</b>
               <ul style={{ margin: '3px 0 0 18px', padding: 0, color: '#4B585C' }}>
-                {unproven.slice(0, 8).map((u, i) => (
-                  <li key={i} className="small">{u.property} — sending “{u.value}”</li>
+                {unmapped.slice(0, 8).map((u, i) => (
+                  <li key={i} className="small">{u.property}{u.ours ? ` — we have it as “${u.ours}”` : ''}</li>
                 ))}
               </ul>
-              {unproven.length > 8 && <div className="small" style={{ color: '#4B585C' }}>…and {unproven.length - 8} more.</div>}
+              {unmapped.length > 8 && <div className="small" style={{ color: '#4B585C' }}>…and {unmapped.length - 8} more.</div>}
               <div className="small" style={{ color: '#4B585C', marginTop: 3 }}>
-                CorrFirst’s own files show <b style={{ color: '#141B22' }}>SFR-Attached</b>, <b style={{ color: '#141B22' }}>SFR-Detached</b> and <b style={{ color: '#141B22' }}>2-4 Units</b>, so single-family,
-                condo/townhome and 2-4 family are certain. Anything bigger or unusual follows the same naming as far as we can tell — confirm the wording with
-                CorrFirst once and it is fixed for good.
+                CorrFirst’s form only offers: SFR-Detached, SFR-Attached, Condo, 2-4 Units, PUD, Mixed-Use, Modular, Multifamily 5+,
+                Industrial, Manufactured, Self Storage, Office, Retail, Warehouse, Automotive. If one of those fits, set it on the track
+                record and export again; otherwise fill it in on their side.
+              </div>
+            </div>
+          )}
+          {/* A townhouse is the one shape their list has no exact value for, so it goes
+              out as SFR-Attached (a one-dwelling home attached to its neighbour). Worth
+              a glance, never a blocker. */}
+          {judged.length > 0 && (
+            <div className="notice" style={{ marginTop: 8, borderLeft: '3px solid var(--teal,#2F7F86)', padding: '6px 10px' }}>
+              <b style={{ color: '#141B22' }}>{judged.length} propert{judged.length === 1 ? 'y is' : 'ies are'} sent as the closest type on CorrFirst’s list:</b>
+              <ul style={{ margin: '3px 0 0 18px', padding: 0, color: '#4B585C' }}>
+                {judged.slice(0, 8).map((u, i) => (
+                  <li key={i} className="small">{u.property}{u.ours ? ` — we have it as “${u.ours}”` : ''}, sending “{u.value}”</li>
+                ))}
+              </ul>
+              {judged.length > 8 && <div className="small" style={{ color: '#4B585C' }}>…and {judged.length - 8} more.</div>}
+              <div className="small" style={{ color: '#4B585C', marginTop: 3 }}>
+                Their list has no “Townhouse”, so a townhouse goes out as <b style={{ color: '#141B22' }}>SFR-Attached</b> — a one-home
+                property attached to its neighbour. Every other property type we send is a one-for-one match with their own list.
               </div>
             </div>
           )}
