@@ -1,0 +1,136 @@
+<title>DSCR Recording Guide</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --paper:#F5F6F8; --surface:#FFFFFF; --surface-2:#EEF1F6; --ink:#141A24; --muted:#59636F; --faint:#8A94A2;
+    --line:#DEE3EA; --line-2:#CBD3DE; --accent:#2B54F0; --accent-soft:rgba(43,84,240,.09);
+    --ok:#0E9E6E; --ok-soft:rgba(14,158,110,.12); --warn:#B5791A; --warn-soft:rgba(181,121,26,.13);
+    --risk:#CE3F34; --risk-soft:rgba(206,63,52,.11);
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace; --sans:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+    --paper:#0D1119; --surface:#141A24; --surface-2:#1B2330; --ink:#E9EDF3; --muted:#98A3B3; --faint:#6C7787;
+    --line:#242C38; --line-2:#33404F; --accent:#6E8CFF; --accent-soft:rgba(110,140,255,.14);
+    --ok:#34C08C; --ok-soft:rgba(52,192,140,.15); --warn:#E0A94A; --warn-soft:rgba(224,169,74,.15); --risk:#F0685C; --risk-soft:rgba(240,104,92,.15);
+  }}
+  :root[data-theme="dark"]{
+    --paper:#0D1119; --surface:#141A24; --surface-2:#1B2330; --ink:#E9EDF3; --muted:#98A3B3; --faint:#6C7787;
+    --line:#242C38; --line-2:#33404F; --accent:#6E8CFF; --accent-soft:rgba(110,140,255,.14);
+    --ok:#34C08C; --ok-soft:rgba(52,192,140,.15); --warn:#E0A94A; --warn-soft:rgba(224,169,74,.15); --risk:#F0685C; --risk-soft:rgba(240,104,92,.15);
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--paper); color:var(--ink); font-family:var(--sans); font-size:16px; line-height:1.6; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:820px; margin:0 auto; padding:0 24px}
+  code{font-family:var(--mono); font-size:.85em; background:var(--surface-2); padding:1.5px 6px; border-radius:5px}
+  h1,h2,h3{letter-spacing:-.02em; margin:0; text-wrap:balance}
+  .hero{padding:52px 0 26px; border-bottom:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono); font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 12px}
+  h1{font-size:clamp(28px,5vw,42px); line-height:1.05}
+  .lede{font-size:18px; color:var(--muted); margin:14px 0 0; max-width:58ch}
+  section{padding:38px 0; border-bottom:1px solid var(--line)}
+  .kick{font-family:var(--mono); font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); margin:0 0 14px}
+  .kick .n{color:var(--accent); font-weight:700}
+  h2{font-size:24px; margin-bottom:6px} h3{font-size:16px; margin:22px 0 8px}
+  p{max-width:64ch} .muted{color:var(--muted)}
+
+  .rule{display:flex; gap:16px; background:var(--warn-soft); border:1px solid color-mix(in srgb,var(--warn) 32%,var(--line)); border-radius:14px; padding:20px 22px; margin:8px 0 4px}
+  .rule .big{font-size:34px; line-height:1; flex:none}
+  .rule h2{font-size:20px; margin-bottom:6px}
+  .rule p{margin:0; font-size:15px; max-width:none}
+  .rule b{color:var(--ink)}
+
+  ol.steps{counter-reset:s; list-style:none; padding:0; margin:18px 0; max-width:none}
+  ol.steps>li{counter-increment:s; position:relative; padding:14px 0 14px 52px; border-bottom:1px dashed var(--line)}
+  ol.steps>li:last-child{border-bottom:0}
+  ol.steps>li::before{content:counter(s); position:absolute; left:0; top:12px; width:34px; height:34px; border-radius:9px; background:var(--accent-soft); color:var(--accent); font-family:var(--mono); font-weight:700; font-size:15px; display:grid; place-items:center}
+  ol.steps>li b{font-weight:650}
+  ol.steps .did{font-size:13.5px; color:var(--muted); margin-top:3px}
+
+  .grp{background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:6px 22px 10px; margin:18px 0}
+  .grp.req{border-left:4px solid var(--accent)}
+  .grp.opt{border-left:4px solid var(--faint)}
+  .grp h3{display:flex; align-items:center; gap:10px; margin:18px 0 4px}
+  .grp .tag{font-family:var(--mono); font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; padding:2px 8px; border-radius:6px}
+  .grp .tag.r{background:var(--accent-soft); color:var(--accent)}
+  .grp .tag.o{background:var(--surface-2); color:var(--muted)}
+  ul.acts{list-style:none; padding:0; margin:10px 0 6px}
+  ul.acts li{display:flex; gap:12px; padding:10px 0; border-bottom:1px solid var(--line); font-size:15px}
+  ul.acts li:last-child{border-bottom:0}
+  ul.acts .k{flex:none; width:26px; height:26px; border-radius:7px; background:var(--surface-2); display:grid; place-items:center; font-size:13px}
+  ul.acts .t{flex:1}
+  ul.acts .t small{display:block; color:var(--muted); font-size:12.5px; margin-top:1px}
+  ul.acts .re{font-family:var(--mono); font-size:11px; color:var(--ok); background:var(--ok-soft); border-radius:5px; padding:2px 7px; height:fit-content; white-space:nowrap; margin-top:3px}
+
+  .callout{border-radius:12px; padding:14px 18px; margin:18px 0; border:1px solid var(--line); background:var(--surface); display:flex; gap:12px}
+  .callout .tag{font-family:var(--mono); font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; font-weight:700; padding:3px 8px; border-radius:6px; height:fit-content; white-space:nowrap}
+  .callout p{margin:0; font-size:14.5px; max-width:none}
+  .co-risk{background:var(--risk-soft)} .co-risk .tag{background:var(--risk); color:#fff}
+  .co-ok{background:var(--ok-soft)} .co-ok .tag{background:var(--ok); color:#fff}
+  footer{padding:30px 0 60px; color:var(--faint); font-size:13px}
+</style>
+
+<div class="hero"><div class="wrap">
+  <p class="eyebrow">What to record next</p>
+  <h1>One more recording — here's exactly what to click</h1>
+  <p class="lede">A single session in Lender Price captures everything still missing. The trick is one rule that explains why the last recording didn't catch the checkboxes.</p>
+</div></div>
+
+<main class="wrap">
+
+  <section>
+    <div class="rule">
+      <span class="big">⚠️</span>
+      <div>
+        <h2>The one rule: after every change, make it re-price</h2>
+        <p>A checkbox or dropdown by itself <b>does not fire a search</b> — so it never gets recorded. That's exactly why the last recording shows escrow still <b>on</b> even though you unchecked it. <b>After each change below, make sure the prices refresh</b> (click <b>Search</b> / <b>Re-price</b>, or nudge the loan amount by $1 and back). If the results didn't visibly reload, it wasn't captured.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="kick"><span class="n">1</span> Set up the recording</p>
+    <ol class="steps">
+      <li><b>Open the pricer, then open DevTools</b> — press <code>F12</code> (or right-click → Inspect), and click the <b>Network</b> tab.<div class="did">Same as before.</div></li>
+      <li><b>Check "Preserve log"</b> at the top of the Network tab.<div class="did">So it keeps everything across the whole session.</div></li>
+      <li><b>Do a baseline search first</b> — a plain single-family purchase, $500,000 value, $375,000 loan, 760 FICO, DSCR 1.25, 5-year prepay. Let the prices load.<div class="did">This is the reference every later change is compared against.</div></li>
+    </ol>
+  </section>
+
+  <section>
+    <p class="kick"><span class="n">2</span> Then make these changes — one at a time, re-pricing after each</p>
+
+    <div class="grp req">
+      <h3><span class="tag r">Required</span> Values I genuinely can't guess</h3>
+      <p class="muted" style="font-size:14px">Each of these is a hidden token I can only learn by seeing it. Change just the one thing, re-price, then move to the next.</p>
+      <ul class="acts">
+        <li><span class="k">🏢</span><span class="t"><b>Property type → Condo (warrantable)</b><small>Pick Condo in the dropdown, leave non-warrantable unchecked.</small></span><span class="re">re-price</span></li>
+        <li><span class="k">☑️</span><span class="t"><b>Then check "Non-warrantable"</b><small>Same condo, now tick the non-warrantable box.</small></span><span class="re">re-price</span></li>
+        <li><span class="k">🏛️</span><span class="t"><b>Borrower type → Corporation</b><small>Change the vesting/entity to Corporation.</small></span><span class="re">re-price</span></li>
+        <li><span class="k">📅</span><span class="t"><b>Prepay → 4 years</b>, then <b>2 years</b>, then <b>No prepayment</b><small>Three separate changes — re-price after each.</small></span><span class="re">×3</span></li>
+        <li><span class="k">📊</span><span class="t"><b>DSCR-ratio dropdown → each option</b><small>Step through every bucket (&gt;0.75, 0.75–0.85, 0.85–1.0, 1.0–1.15, 1.15–1.25, &gt;1.25), re-pricing at each.</small></span><span class="re">each</span></li>
+      </ul>
+    </div>
+
+    <div class="grp opt">
+      <h3><span class="tag o">Optional</span> Checkboxes — I know the field, this just shows the effect</h3>
+      <p class="muted" style="font-size:14px">These are already wired correctly (<code>criteria.*</code> booleans). Capturing them only confirms how the pricing moves — nice to have, not blocking.</p>
+      <ul class="acts">
+        <li><span class="k">✔️</span><span class="t"><b>Check "Interest-only"</b><small>Shows the rate/program change I/O produces.</small></span><span class="re">re-price</span></li>
+        <li><span class="k">🚫</span><span class="t"><b>Uncheck "Impound"</b> (waives escrow)<small>Shows the escrow-waiver fee. This is the one that slipped last time — re-price after unchecking.</small></span><span class="re">re-price</span></li>
+        <li><span class="k">🏠</span><span class="t"><b>Check "First-time homebuyer"</b><small>Shows any eligibility change.</small></span><span class="re">re-price</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <p class="kick"><span class="n">3</span> Save it</p>
+    <ol class="steps">
+      <li><b>Right-click anywhere in the Network list → "Save all as HAR with content"</b>, and name it something like <code>dscr-tokens.har</code>.</li>
+      <li><b>Send me that one file.</b> One HAR with the whole sequence is all I need — I read the differences between each search to pull out every token.</li>
+    </ol>
+    <div class="callout co-risk"><span class="tag">Remember</span><p>The HAR contains your login. After you export it, treat it as a secret and it's still worth rotating that Lender Price password.</p></div>
+    <div class="callout co-ok"><span class="tag">That's everything</span><p>This one session closes every remaining gap. After it, there are <b>no more recordings needed</b> to build the search — we move straight to your result-display rules (which lenders, white-labeling, what to show).</p></div>
+  </section>
+</main>
+
+<footer><div class="wrap">DSCR recording guide · one session covers the Condo token, Corporation, prepay 4/2/none, DSCR buckets, and the three optional checkbox effects.</div></footer>

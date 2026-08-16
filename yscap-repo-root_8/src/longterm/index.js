@@ -61,4 +61,8 @@ router.use('/me', require('./routes/me'));
 // /api/lt/settings
 router.use('/settings', require('./routes/settings'));
 
+// DSCR pricer (Lender Price backend) — staff-gated at the mount:
+//   /api/lt/dscr/{health,login-check,price,selftest}
+router.use('/dscr', require('./routes/dscr-pricer').makeRouter());
+
 module.exports = { router };
