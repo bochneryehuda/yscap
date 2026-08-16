@@ -210,8 +210,11 @@ async function enrichZip(zip, { loanAmount = 0, units = 1 } = {}) {
 // We do the same — but every fetch FALLS BACK to the captured static model / built-in ids,
 // so an unavailable (or differently-pathed) endpoint degrades to the proven defaults instead
 // of breaking pricing. Paths are env-overridable because they are not confirmed from a capture.
-const DEFAULTSEARCH_PATH = process.env.LP_DEFAULTSEARCH_PATH || '/rest/v1/lp-ppe-integration/pricing/defaultSearch/{companyId}/{userId}';
-const SMO_PATH = process.env.LP_SMO_PATH || '/rest/v1/lp-ppe-integration/pricing/smo/{companyId}';
+// §26.2: the frontend GETs these WITHOUT path params — the earlier `/{companyId}/{userId}`
+// suffixes 404'd every live fetch and pinned the foundation to the static fallback forever.
+// fillPath is a no-op when a path carries no placeholders, so an env override MAY still add them.
+const DEFAULTSEARCH_PATH = process.env.LP_DEFAULTSEARCH_PATH || '/rest/v1/lp-ppe-integration/pricing/defaultSearch';
+const SMO_PATH = process.env.LP_SMO_PATH || '/rest/v1/lp-ppe-integration/pricing/smo';
 let _defaultSearch = null;   // { at, model, source, error } — source 'live'|'fallback', error is the live-fetch reason when it fell back
 let _smoRegistry = null;     // { at, map, source, error }
 const FOUNDATION_TTL_MS = Number(process.env.LP_FOUNDATION_TTL_MS || 30 * 60 * 1000);
@@ -1051,7 +1054,7 @@ async function pricingReadiness({ price: deep = false } = {}) {
   const foundation = foundationProvenance(f);
   if (!deep) return { pricingReady: true, auth, foundation };
   // Deep check — a real minimal searchRaw (the only thing that proves a stale-session 500 is gone).
-  const pr = await price({ value: 500000, loan: 350000, fico: 780, dscr: 1.1 });
+  const pr = await price({ purpose: 'Purchase', value: 500000, loan: 350000, fico: 780, dscr: 1.1 });
   return {
     pricingReady: !!pr.ok, auth, foundation,
     price: pr.ok ? { ok: true, recovered: !!pr.recovered } : { ok: false, error: pr.error, http: pr.http || null, message: pr.message },

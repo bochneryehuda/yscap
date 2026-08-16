@@ -14,7 +14,7 @@
 const express = require('express');
 const lp = require('../lenderprice/client');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
-const { REGISTRY_WARNINGS } = require('../lenderprice/search-model');
+const { REGISTRY_WARNINGS, validateScenario } = require('../lenderprice/search-model');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
 const BATTERY = [
@@ -100,6 +100,21 @@ function rejectInvalidValues(request, res) {
   return false;
 }
 
+// §26.5 — build + validate the scenario LOCALLY and 422 a bad request BEFORE any upstream call, so a
+// deterministic validation error (§26.3 incomplete/conflicting location, §26.4 unknown loan purpose,
+// invalid registry enum value) makes ZERO searchRaw requests. Returns true if it responded.
+function rejectInvalidRequest(sc, res) {
+  const v = validateScenario(sc);
+  if (!v.ok) {
+    const body = { ok: false, error: v.error, message: v.message };
+    if (v.field) body.field = v.field;
+    if (v.warnings) body.warnings = v.warnings;
+    res.status(v.status || 422).json(body);
+    return true;
+  }
+  return false;
+}
+
 // 422 the caller if they sent a field the builder does not implement (never silently ignore it).
 function rejectUnsupported(sc, res) {
   const bad = unsupportedFields(sc);
@@ -154,6 +169,7 @@ function priceErrorBody(r) {
 async function price(req, res) {
   const sc = (req.body && req.body.scenario) ? req.body.scenario : (req.body || {});
   if (rejectUnsupported(sc, res)) return; // never silently ignore an unimplemented field
+  if (rejectInvalidRequest(sc, res)) return; // §26.5 — 422 a bad request BEFORE any upstream call
   const r = await lp.price(sc);
   if (!r.ok) return res.status((r.http && r.http >= 500) ? 502 : 400).json(priceErrorBody(r));
   if (rejectInvalidValues(r.request, res)) return; // a supported field carried an unrecognized value
@@ -213,6 +229,7 @@ async function disqualify(req, res) {
   const body = req.body || {};
   const sc = body.scenario ? body.scenario : body;
   if (rejectUnsupported(sc, res)) return;
+  if (rejectInvalidRequest(sc, res)) return; // §26.5 — 422 a bad request BEFORE any upstream call
   // POLL-ONLY mode ({poll:true}): a prior /price already kicked off the async computation. This
   // just polls the cached result (no re-kickoff, no blocking loop) → 200 when ready, 202 while
   // still computing. This is the recommended flow (kick off on /price, then poll here every ~2s).

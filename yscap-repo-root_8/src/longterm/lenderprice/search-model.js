@@ -65,10 +65,41 @@ function smoRegistryFromList(list) {
 }
 function num(v) { if (v == null || v === '') return null; const n = parseFloat(String(v).replace(/[^0-9.]/g, '')); return isFinite(n) ? n : null; }
 
+// §26.4 — EXPLICIT loan-purpose alias table. The old exact-match version defaulted EVERYTHING it
+// did not recognize to 'Refinance', so a lowercase `purchase`/`cashout` (or any typo) was silently
+// re-priced as a rate-and-term refinance. There is NO default-to-refinance now: an unknown purpose is
+// REJECTED (422 upstream, via LpValidationError) rather than mis-priced. The table is case-, space-
+// and punctuation-tolerant (purposeKey strips to letters). Explicit contract the owner set:
+//   Purchase                          → Purchase
+//   Cash out (cash-out refinance)     → CashoutRefinance
+//   Refinance (rate-and-term)         → Refinance
+class LpValidationError extends Error {
+  constructor(code, field, message) { super(message); this.name = 'LpValidationError'; this.lpValidation = true; this.code = code; this.field = field; }
+}
+const PURPOSE_ALIASES = {
+  purchase: 'Purchase',
+  // Cash-out refinance
+  cashout: 'CashoutRefinance',
+  cashoutrefinance: 'CashoutRefinance',
+  cashoutrefi: 'CashoutRefinance',
+  cashoutrefinancing: 'CashoutRefinance',
+  // Rate-and-term refinance (the plain "refinance")
+  refinance: 'Refinance',
+  refi: 'Refinance',
+  rateterm: 'Refinance',
+  rateandterm: 'Refinance',
+  ratetermrefinance: 'Refinance',
+  rateandtermrefinance: 'Refinance',
+  ratetermrefi: 'Refinance',
+};
+function purposeKey(p) { return String(p == null ? '' : p).toLowerCase().replace(/[^a-z]/g, ''); }
 function mapPurpose(p) {
-  return p === 'Purchase' ? 'Purchase'
-    : (p === 'CashOut' || p === 'CashoutRefinance') ? 'CashoutRefinance'
-    : 'Refinance';
+  const mapped = PURPOSE_ALIASES[purposeKey(p)];
+  if (!mapped) {
+    throw new LpValidationError('unknown_loan_purpose', 'purpose',
+      `Unknown loan purpose ${JSON.stringify(p == null ? null : String(p))}. Supported: "Purchase", "Cash out" (cash-out refinance), "Refinance" (rate-and-term). The request is rejected rather than defaulted to a refinance.`);
+  }
+  return mapped;
 }
 function mapProp(t) {
   // Prefer the full registry enum (audit §17.1 — every upstream property.propertyType token).
@@ -209,4 +240,70 @@ function buildSearch(sc = {}, opts = {}) {
   return m;
 }
 
-module.exports = { BASE, buildSearch, smoRegistryFromList, REGISTRY_WARNINGS, _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp } };
+// ---- §26.3 location completeness ------------------------------------------
+// Upstream searchRaw returns a raw HTTP 500 (not a helpful validation error) when a location carries
+// a ZIP/state but no county FIPS code — the frontend always enriches a ZIP into
+// state/city/countyName/countyFps before pricing. So we DETERMINISTICALLY reject an incomplete or
+// conflicting location with 422 BEFORE any upstream call, instead of letting it 500. STATE_FIPS lets
+// us also catch a countyFps whose 2-digit state prefix contradicts the stated state.
+const STATE_FIPS = {
+  AL: '01', AK: '02', AZ: '04', AR: '05', CA: '06', CO: '08', CT: '09', DE: '10', DC: '11',
+  FL: '12', GA: '13', HI: '15', ID: '16', IL: '17', IN: '18', IA: '19', KS: '20', KY: '21',
+  LA: '22', ME: '23', MD: '24', MA: '25', MI: '26', MN: '27', MS: '28', MO: '29', MT: '30',
+  NE: '31', NV: '32', NH: '33', NJ: '34', NM: '35', NY: '36', NC: '37', ND: '38', OH: '39',
+  OK: '40', OR: '41', PA: '42', RI: '44', SC: '45', SD: '46', TN: '47', TX: '48', UT: '49',
+  VT: '50', VA: '51', WA: '53', WV: '54', WI: '55', WY: '56',
+  PR: '72', VI: '78', GU: '66', AS: '60', MP: '69',
+};
+// Returns { ok:true } when the location is absent or complete, else { ok:false, code, field, message }.
+function validateLocation(sc = {}) {
+  const hasLoc = sc.zip != null || sc.state != null || sc.city != null || sc.county != null || sc.countyName != null || sc.countyFps != null;
+  if (!hasLoc) return { ok: true }; // no location fields — nothing to validate (base defaults apply)
+  const state = sc.state != null && String(sc.state).trim() !== '' ? String(sc.state).trim().toUpperCase() : null;
+  const fps = sc.countyFps != null && String(sc.countyFps).trim() !== '' ? String(sc.countyFps).trim() : null;
+  if (state && !STATE_FIPS[state]) {
+    return { ok: false, code: 'invalid_state', field: 'state',
+      message: `Unrecognized state code ${JSON.stringify(sc.state)}. Use a 2-letter US state/territory code (e.g. NJ, NY, CA).` };
+  }
+  if (!fps) {
+    return { ok: false, code: 'missing_county_fips', field: 'countyFps',
+      message: 'This location has a ZIP/state but no county FIPS code. Lender Price needs the 5-digit county FIPS (frontend enriches ZIP → state/city/countyName/countyFps); supply countyFps so the search is not rejected upstream.' };
+  }
+  if (!/^\d{5}$/.test(fps)) {
+    return { ok: false, code: 'invalid_county_fips', field: 'countyFps',
+      message: `County FIPS must be a 5-digit code; got ${JSON.stringify(sc.countyFps)}.` };
+  }
+  if (state && fps.slice(0, 2) !== STATE_FIPS[state]) {
+    return { ok: false, code: 'location_conflict', field: 'countyFps',
+      message: `County FIPS ${fps} (state prefix ${fps.slice(0, 2)}) does not belong to state ${state} (prefix ${STATE_FIPS[state]}). Fix the conflicting location.` };
+  }
+  return { ok: true };
+}
+
+// ---- §26.5 build + validate LOCALLY (zero upstream requests) ----------------
+// Build the payload from the STATIC base and run every DETERMINISTIC check that can reject a request,
+// so a 422 is returned BEFORE any searchRaw call: §26.3 location completeness, §26.4 unknown loan
+// purpose, and invalid registry enum VALUES (a supported field carrying a value the engine drops).
+// The scenario alone drives all three, so validating against the static base is exact (a live
+// foundation cannot change any of these verdicts). Returns { ok:true, request } or
+// { ok:false, status:422, error, field?, warnings?, message }.
+function validateScenario(sc = {}) {
+  const loc = validateLocation(sc);
+  if (!loc.ok) return { ok: false, status: 422, error: loc.code, field: loc.field, message: loc.message };
+  let request;
+  try {
+    request = buildSearch(sc); // static base — no live foundation needed to validate the scenario
+  } catch (e) {
+    if (e && e.lpValidation) return { ok: false, status: 422, error: e.code, field: e.field, message: e.message };
+    throw e;
+  }
+  const w = request[REGISTRY_WARNINGS];
+  if (Array.isArray(w) && w.length) {
+    return { ok: false, status: 422, error: 'invalid_field_value', warnings: w,
+      message: `One or more fields carried a value the pricing engine does not recognize; the value would be silently dropped, so the request is rejected rather than mis-priced: ${w.map((x) => x.field).join(', ')}.` };
+  }
+  return { ok: true, request };
+}
+
+module.exports = { BASE, buildSearch, smoRegistryFromList, REGISTRY_WARNINGS, validateScenario, validateLocation, LpValidationError,
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, PURPOSE_ALIASES, purposeKey, STATE_FIPS } };
