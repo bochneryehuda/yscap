@@ -31,6 +31,15 @@ function api(method, path, body, token) {
 }
 
 async function main() {
+  // DB-gated FIRST — before app.listen, deliberately. This suite HUNG (not
+  // crashed) with no database: it opens an HTTP server, which keeps the event
+  // loop alive forever, then ensureSchema() resolves without a database (it
+  // never throws) and the queries after it reject with no .catch on main().
+  // In an &&-chain a hang is far worse than a failure — it stalls the whole
+  // job until GitHub's 6-hour limit, which is exactly what it did to CI's
+  // no-database `test` job. Probing before the listen means we exit before
+  // there is a socket to keep us alive.
+  await require(__dirname + '/lib/db-gate').skipUnlessDb('security-batch');
   const app = require(REPO + '/src/server.js');
   const server = app.listen(PORT);
   await require(REPO + '/src/migrate-boot').ensureSchema();
@@ -117,4 +126,7 @@ async function main() {
   console.log(`\nsecurity-batch: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }
-main();
+// A rejection here used to be unhandled while the open HTTP server held the
+// process alive, so ANY failure inside main() hung instead of failing. Exit
+// non-zero so the chain stops on a red suite rather than stalling on a live one.
+main().catch((e) => { console.error(e); process.exit(1); });

@@ -42,6 +42,9 @@ async function ci(appId, audience, status, label, extra = {}) {
 }
 
 async function main() {
+  // DB-gated: `npm test` runs this whole chain in the no-database CI job too,
+  // so a suite that dials a database must skip rather than take the build down.
+  await require(__dirname + "/lib/db-gate").skipUnlessDb("borrower-action-items");
   await require(REPO + '/src/migrate-boot').ensureSchema();
   await listen();
   const bId = uid;

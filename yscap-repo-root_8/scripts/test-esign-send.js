@@ -33,6 +33,9 @@ async function newRow(purpose='term_sheet_package', extra={}){
 const get = async (id) => (await db.query(`SELECT * FROM esign_envelopes WHERE id=$1`,[id])).rows[0];
 
 (async () => {
+  // DB-gated: `npm test` runs this whole chain in the no-database CI job too,
+  // so a suite that dials a database must skip rather than take the build down.
+  await require(__dirname + "/lib/db-gate").skipUnlessDb("esign-send");
   // Send-mechanics cases run as if fully live (test-email gate OFF) — the gate
   // itself is exercised separately in cases 6/6b/6c. (fakeDs defaults to prod host.)
   const dcfg = require(R + '/src/config').docusign;

@@ -58,6 +58,9 @@ async function hit(path, init = {}) {
 const qval = (url, key) => { const m = url && url.match(new RegExp('[?&]' + key + '=([^&]+)')); return m ? decodeURIComponent(m[1]) : null; };
 
 async function main() {
+  // DB-gated: `npm test` runs this whole chain in the no-database CI job too,
+  // so a suite that dials a database must skip rather than take the build down.
+  await require(__dirname + "/lib/db-gate").skipUnlessDb("esign-magic-link");
   await require(REPO + '/src/migrate-boot').ensureSchema();
   await listen();
 
