@@ -345,4 +345,34 @@ const identical = {
   }
 }
 
+// ── 6. the instructions cannot name a command that does not exist ───────────
+//
+// CLAUDE.md and AGENTS.md now tell every agent which commands to run. A
+// document naming a command that was renamed or removed is worse than no
+// document: it is followed confidently and fails, and nothing anywhere would
+// have noticed. So the docs' own claims are asserted against package.json.
+{
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  const claude = fs.readFileSync(path.join(__dirname, '..', 'CLAUDE.md'), 'utf8');
+  const agents = fs.readFileSync(path.join(__dirname, '..', '..', 'AGENTS.md'), 'utf8');
+
+  for (const key of ['migration:new', 'schema:snapshot', 'schema:restamp', 'schema:picture']) {
+    ok(key in pkg.scripts, `the documented command "npm run ${key}" actually exists`);
+  }
+
+  for (const [name, doc] of [['CLAUDE.md', claude], ['AGENTS.md', agents]]) {
+    ok(/npm run migration:new/.test(doc), `${name} tells agents to ask for a migration number`);
+    // The one-command advice is the mistake that broke a build; both documents
+    // must name the SECOND command too.
+    ok(/npm run schema:restamp/.test(doc), `${name} names schema:restamp, not just schema:snapshot`);
+    ok(/never force|never force-push|NEVER force/i.test(doc), `${name} states that the refresh never force-pushes`);
+    ok(/contents: write/.test(doc), `${name} warns about where the write permission may live`);
+  }
+
+  // Every script the docs point at must be a real file.
+  for (const f of ['ci-schema-commit.js', 'migration-new.js', 'check-migrations.js', 'check-schema-behind.js']) {
+    ok(fs.existsSync(path.join(__dirname, f)), `the documented script ${f} exists`);
+  }
+}
+
 console.log(`test-ci-schema-commit-pure: ${checks} assertions passed.`);
