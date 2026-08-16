@@ -1,3 +1,4 @@
+import { money, money2, pct, ratio, plain, day, yesNo } from './format.js';
 import React from 'react';
 
 /**
@@ -32,23 +33,11 @@ const INK = '#141B22';
 const MUTED = '#4B585C';
 const LINE = '#E6E1D6';
 
-export const money = (v) => (v == null || v === '' ? '—'
-  : Number(v).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }));
-export const money2 = (v) => (v == null || v === '' ? '—'
-  : Number(v).toLocaleString('en-US', { style: 'currency', currency: 'USD' }));
-export const pct = (v) => (v == null || v === '' ? '—' : `${Number(v)}%`);
-export const plain = (v) => (v == null || v === '' ? '—' : String(v));
-export const day = (v) => {
-  if (!v) return '—';
-  // A date column is a CALENDAR DAY, not an instant — `new Date('2019-08-01')` is
-  // parsed as UTC midnight and prints as the day before in every US timezone.
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v));
-  if (m) return `${Number(m[2])}/${Number(m[3])}/${m[1]}`;
-  const d = new Date(v);
-  return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-US') : '—';
-};
-/** A yes/no that was ANSWERED false is "No"; one nobody answered is a dash. */
-export const yesNo = (v) => (v === true ? 'Yes' : v === false ? 'No' : '—');
+// How a value is written down lives in ONE place (`./format.js`) — the pipeline draws
+// the same loans and had grown its own copies, which is how two screens come to
+// disagree about one file. IMPORTED (this file calls them ~96 times) and re-exported
+// (other modules import them from here), so nothing outside changes.
+export { money, money2, pct, ratio, plain, day, yesNo };
 
 const num = (v) => (v == null || v === '' ? '—' : String(Number(v)));
 
@@ -294,7 +283,7 @@ function Income({ data }) {
   return (
     <>
       <Facts columns={3} rows={[
-        ['DSCR', data.dscr != null ? Number(data.dscr).toFixed(3).replace(/0+$/, '').replace(/\.$/, '') : '—'],
+        ['DSCR', ratio(data.dscr)],
         ['Gross monthly rent', money2(data.grossMonthlyRent)],
         ['Actual monthly rent', money2(data.actualMonthlyRent)],
       ]} />
@@ -528,8 +517,7 @@ function Summary({ data, file, sections, lock, contacts, history }) {
         ['Term', data.termMonths != null ? `${data.termMonths} months` : '—'],
         ['Program', plain(data.program)],
         ['Purpose', plain(data.purpose)],
-        ['DSCR', file.income && file.income.dscr != null
-          ? Number(file.income.dscr).toFixed(3).replace(/0+$/, '').replace(/\.$/, '') : '—'],
+        ['DSCR', ratio(file.income && file.income.dscr)],
         ['Rate lock', lock && lock.status ? plain(lock.status) : 'Not locked'],
         ['Team on this file', contacts && contacts.length ? String(contacts.length) : '—'],
       ]} />

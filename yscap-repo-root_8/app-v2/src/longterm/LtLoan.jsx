@@ -1,3 +1,4 @@
+import { money, pct, ratio, plain, day } from './format.js';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import LtLayout from './LtLayout.jsx';
@@ -28,17 +29,6 @@ import { ltApi } from './api.js';
 const INK = '#141B22';
 const MUTED = '#4B585C';
 const GOLD = '#AE8746';
-
-const money = (v) => (v == null || v === '' ? '—'
-  : Number(v).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }));
-const pct = (v) => (v == null || v === '' ? '—' : `${Number(v)}%`);
-const ratio = (v) => (v == null || v === '' ? '—' : Number(v).toFixed(3).replace(/0+$/, '').replace(/\.$/, ''));
-const plain = (v) => (v == null || v === '' ? '—' : String(v));
-const day = (v) => {
-  if (!v) return '—';
-  const d = new Date(v);
-  return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-US') : '—';
-};
 
 function Rail({ rail }) {
   if (!rail) return null;

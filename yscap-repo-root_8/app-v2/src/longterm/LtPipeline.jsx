@@ -3,20 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import ProductStamp from './ProductStamp.jsx';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
-
-const money = (v) => (v == null || v === '' ? '—'
-  : Number(v).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }));
-
-const day = (v) => {
-  if (!v) return '—';
-  const d = new Date(v);
-  return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-US') : '—';
-};
-
-// A percentage the server stated. MISSING IS NOT ZERO: a loan whose rate has not been
-// mirrored yet reads as a dash, never as 0.000%.
-const pct = (v) => (v == null || v === '' ? '—' : `${Number(v).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}%`);
-const ratio = (v) => (v == null || v === '' ? '—' : Number(v).toFixed(2));
+// One definition of how a value is written down, shared with the file screen — two
+// screens drawing the same loans must not each carry their own idea of a date.
+import { money, pct, ratio, day } from './format.js';
 
 /**
  * A loan's lock, in one cell.

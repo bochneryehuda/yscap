@@ -168,5 +168,31 @@ for (const k of fbKeys) {
   `fallback ${k} still agrees with the catalog on its label, field and kind`);
 }
 
+// ── One way of writing a value down ─────────────────────────────────────────
+console.log('\ntwo screens drawing the same loans write a value the same way');
+
+// The pipeline had grown its OWN money/pct/day when it grew its own cells, and they
+// had already drifted where it counts: its `day` handed a DATE column to `new Date`,
+// which parses `2019-08-01` as UTC midnight and prints THE DAY BEFORE in every US
+// timezone — the exact bug the file screen carries a guard against. Nothing showed a
+// bare date column on the pipeline yet, so nothing was visibly wrong; making the
+// columns configurable is what would have made it wrong, quietly, the first time a
+// buyer added one. So the rule is structural rather than a fix to one copy.
+const fmt = read('app-v2/src/longterm/format.js');
+check(/const day = \(v\)/.test(fmt) && /\\d\{4\}\)-\(\\d\{2\}/.test(fmt),
+  'the shared module holds the calendar-day guard');
+
+const FORMATTERS = ['money', 'money2', 'pct', 'ratio', 'plain', 'day', 'yesNo'];
+for (const f of fs.readdirSync(path.join(__dirname, '..', 'app-v2/src/longterm'))) {
+  if (!/\.(jsx|js)$/.test(f) || f === 'format.js') continue;
+  const src = strip(read(`app-v2/src/longterm/${f}`));
+  const own = FORMATTERS.filter((n) => new RegExp(`(const|function)\\s+${n}\\s*[=(]`).test(src));
+  check(own.length === 0,
+    `${f} defines no formatter of its own${own.length ? ` (found ${own.join(', ')})` : ''}`);
+}
+check(/export \{ money, money2, pct, ratio, plain, day, yesNo \}/.test(read('app-v2/src/longterm/LtFileSections.jsx'))
+  && /^import \{ money/m.test(read('app-v2/src/longterm/LtFileSections.jsx')),
+'THE ONE THAT MATTERS: the file screen IMPORTS them as well as re-exporting them — a bare `export … from` re-export does not put the names in this module’s own scope, and it calls them ~96 times, so the build would stay green and the page would throw on render');
+
 console.log(`\n${failures ? `${failures} FAILED` : 'all passed'}`);
 process.exit(failures ? 1 : 0);
