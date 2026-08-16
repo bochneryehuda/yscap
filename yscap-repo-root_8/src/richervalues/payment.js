@@ -60,8 +60,28 @@ const client = require('./client');
 const appraisalCard = require('../lib/appraisal-card');
 const C = require('../lib/crypto');
 
-/** The three the owner allows. Invoice and ACH are deliberately absent. */
-const METHODS = ['CARD_ON_FILE', 'NEW_CARD', 'PAYMENT_LINK'];
+/**
+ * The ways the owner allows. Invoice and ACH are deliberately absent, and ACH is
+ * absent from the CODE as well as from this list — `listCompanyCards` reads only
+ * the `creditCards` side of their payment-sources reply and never the `ach` side,
+ * so an ACH source saved on the account is not merely unlisted, it is unreachable.
+ *
+ * COMPANY_CARD was added 2026-08-16, owner-directed, after their CEO named the two
+ * routes that can actually work in production: *"If your team usually sends
+ * payment links to your borrower, then you will use our payment link API.
+ * Alternatively if you usually pay for the reports in house, then you'll need to
+ * set up a payment method on our training server, and then use the payment API to
+ * initiate payment for the report."* Asked to choose, the owner picked **both** —
+ * our own card by default, with the payment link as the per-order backup.
+ *
+ * IT IS THE ONE CARD ROUTE THAT IS NOT BLOCKED. CARD_ON_FILE and NEW_CARD both go
+ * through their `add-card`, which forwards the number to Stripe, and Stripe refuses
+ * raw card numbers on their account (see the long note below) — so today both end
+ * at the payment link. COMPANY_CARD never sends a number at all: a human saves the
+ * card ONCE in the Richer Values portal and we reference the payment source they
+ * already hold. Nothing to add, nothing to delete, nothing for Stripe to refuse.
+ */
+const METHODS = ['COMPANY_CARD', 'CARD_ON_FILE', 'NEW_CARD', 'PAYMENT_LINK'];
 
 /**
  * Stripe's refusal to take a raw card number, told apart from every other
@@ -226,6 +246,92 @@ async function chargeCard(db, { intakeToken, companyToken, card, journal }) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// COMPANY_CARD — the card WE keep with Richer Values.
+// ---------------------------------------------------------------------------
+
+/**
+ * The credit cards saved on the YS Capital account at Richer Values.
+ *
+ * ONLY THE CARD SIDE IS EVER READ. Their reply carries `{stripe:{ach, creditCards}}`
+ * and the owner's rule forbids ACH outright — so this reads `creditCards` and
+ * nothing else, which makes an ACH source on the account unreachable rather than
+ * merely unlisted. Never throws: an unreadable list is "no cards", which ends at
+ * the payment link, and that is the safe direction.
+ *
+ * @returns {Promise<{ok:boolean, cards:Array<{id,last4,brand,expMonth,expYear}>, error?:string}>}
+ */
+async function listCompanyCards(companyToken) {
+  if (!companyToken) return { ok: false, cards: [], error: 'no company token' };
+  let r;
+  try { r = await client.paymentSources(companyToken); } catch (e) {
+    return { ok: false, cards: [], error: (e && e.message) || String(e) };
+  }
+  const raw = (((r && r.data && r.data.paymentSources) || {}).stripe || {}).creditCards || [];
+  const cards = (Array.isArray(raw) ? raw : []).map((c) => ({
+    id: c.payment_source_id || c.id || null,
+    last4: c.last_4 || c.last4 || null,
+    brand: c.brand || c.card_brand || null,
+    expMonth: c.exp_month || null,
+    expYear: c.exp_year || null,
+  })).filter((c) => c.id);
+  return { ok: true, cards };
+}
+
+/**
+ * WHICH card to charge — and it never guesses.
+ *
+ * A configured id always wins (an operator naming a card is deliberate). With no
+ * configuration: exactly one card on the account is unambiguous and is used; TWO
+ * OR MORE IS A REFUSAL, not a pick, because choosing between company cards is a
+ * money decision belonging to a person and the wrong one is charged silently. No
+ * cards at all is the ordinary not-set-up-yet state, worded so the reader knows
+ * precisely what to do about it.
+ */
+async function resolveCompanySource(companyToken, configuredId) {
+  if (configuredId) return { ok: true, paymentSourceId: String(configuredId) };
+  const list = await listCompanyCards(companyToken);
+  if (!list.ok) {
+    return { ok: false, code: 'sources_unreadable',
+      error: `Richer Values would not say which cards are on the YS Capital account (${list.error}), so nothing was charged.` };
+  }
+  if (!list.cards.length) {
+    return { ok: false, code: 'no_company_card',
+      error: 'There is no card saved on the YS Capital account at Richer Values yet, so there was nothing to charge. '
+        + 'Add one in the Richer Values portal (Company → payment methods), or send the borrower a payment link.' };
+  }
+  if (list.cards.length > 1) {
+    const names = list.cards.map((c) => `${c.brand || 'card'} ending ${c.last4 || '????'}`).join(', ');
+    return { ok: false, code: 'several_company_cards',
+      error: `Richer Values holds more than one card for YS Capital (${names}), so PILOT will not choose one. `
+        + 'Set RV_PAYMENT_SOURCE_ID to the card you want charged, or send the borrower a payment link.' };
+  }
+  return { ok: true, paymentSourceId: list.cards[0].id, card: list.cards[0] };
+}
+
+/**
+ * Charge a card Richer Values ALREADY holds for us. No add, no delete — which is
+ * why this is the only card route Stripe cannot refuse.
+ */
+async function payWithCompanyCard(intakeToken, { companyToken, paymentSourceId, journal }) {
+  if (!intakeToken) return { ok: false, code: 'no_intake', error: 'There is nothing to pay for yet.' };
+  const resolved = await resolveCompanySource(companyToken, paymentSourceId);
+  if (!resolved.ok) return resolved;
+
+  try {
+    const paid = await client.payForOrder(intakeToken, {
+      payment_method: 'USE_EXISTING_SOURCE',
+      payment_source_id: resolved.paymentSourceId,
+    });
+    if (paid && paid.__dryrun) return { ok: true, dryrun: true };
+    if (journal) await journal({ action: 'pay_company_card', ok: true, response: paid, request: { source: resolved.paymentSourceId } });
+    return { ok: true, orderTokens: (paid && paid.data && paid.data.order_tokens) || [], card: resolved.card || null };
+  } catch (e) {
+    if (journal) await journal({ action: 'pay_company_card', ok: false, error: e.message, request: { source: resolved.paymentSourceId }, response: e.body || null });
+    return { ok: false, code: 'charge_failed', error: `The YS Capital card was not charged: ${e.message}` };
+  }
+}
+
 /** Their list is the only handle on a source they did not name in the reply. */
 async function findCardSource(companyToken, last4) {
   try {
@@ -288,6 +394,7 @@ function cardFingerprint(number) {
 module.exports = {
   METHODS,
   readFileCard, cardStatus, chargeCard, saveThenCharge, sendPaymentLink,
+  listCompanyCards, resolveCompanySource, payWithCompanyCard,
   isRawCardBlocked, RAW_CARD_BLOCKED_MESSAGE, cardFingerprint,
   _internals: { findCardSource, removeSource, isExpired },
 };
