@@ -14,7 +14,7 @@
 const express = require('express');
 const lp = require('../lenderprice/client');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
-const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario } = require('../lenderprice/search-model');
+const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, _internals: modelInternals } = require('../lenderprice/search-model');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
 const BATTERY = [
@@ -225,6 +225,25 @@ function priceErrorBody(r) {
   return out;
 }
 
+// §36.11 — the REQUESTED scenario, echoed back exactly as the caller sent it (minus the request
+// envelope keys, which are not pricing inputs). Paired with `derivedScenario` and `effectiveScenario`
+// this is what lets a caller prove a short request was expanded into the intended full DSCR profile
+// rather than inheriting a stale search: requested says what they asked for, derived says what the
+// server worked out from it, effective says what actually went upstream.
+function requestedOf(sc) {
+  const out = {};
+  for (const k of Object.keys(sc || {})) if (!META_FIELDS.has(k)) out[k] = sc[k];
+  return out;
+}
+// §35.2/§36.2 — what the amount triangle DERIVED, and from what. Reports only the figures the server
+// worked out itself, so a caller can see e.g. that a value of 533333.33 came from their loan + LTV
+// and was never something they supplied.
+function derivedOf(sc) {
+  const t = modelInternals && modelInternals.deriveAmounts ? modelInternals.deriveAmounts(sc) : null;
+  if (!t) return null;
+  return { value: t.value, loan: t.loan, ltv: t.ltv, derived: t.derived, supplied: t.supplied };
+}
+
 // POST /price — body is a scenario (or { scenario }). Returns the parsed program summary.
 async function price(req, res) {
   const sc = (req.body && req.body.scenario) ? req.body.scenario : (req.body || {});
@@ -240,12 +259,12 @@ async function price(req, res) {
   // separate status route (GET /disqualifications/:searchKey) instead of ever restarting the search.
   if (req.body && req.body.full) {
     const full = lp.parseFull(r.raw, { raw: !!req.body.raw });
-    const out = { ok: true, ...full, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+    const out = { ok: true, ...full, requestedScenario: requestedOf(sc), derivedScenario: derivedOf(sc), effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
     if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
     return res.json(out);
   }
   const parsed = lp.parse(r.raw);
-  const out = { ok: true, ...trimPrograms(parsed), effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+  const out = { ok: true, ...trimPrograms(parsed), requestedScenario: requestedOf(sc), derivedScenario: derivedOf(sc), effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
   // Secret-gated diagnostics (the whole router is behind the diag token / staff login): when the
   // caller asks, include a structural summary of the raw response so we can see whether Lender
   // Price returned programs the parser missed, or truly zero — and any disqualify reasons.
