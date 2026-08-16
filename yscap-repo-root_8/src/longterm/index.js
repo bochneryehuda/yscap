@@ -31,4 +31,8 @@ router.use('/encompass', require('./routes/encompass-milestones'));
 // completion-rules,requests,reconciliation-map,status}.
 router.use('/encompass', require('./routes/encompass-knowledge'));
 
+// DSCR pricer (Lender Price backend) — staff-gated at the mount:
+//   /api/lt/dscr/{health,login-check,price,selftest}
+router.use('/dscr', require('./routes/dscr-pricer').makeRouter());
+
 module.exports = { router };
