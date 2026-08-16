@@ -155,6 +155,173 @@ function buildGetPaymentOptions({ apiKey, subdomain }) {
   };
 }
 
+// ---- payment ---------------------------------------------------------------
+/**
+ * THE CARD BLOCK — one shape, built once, used by every request that carries a card.
+ *
+ * EVERY FIELD NAME BELOW IS COPIED FROM THE VENDOR'S OWN SAMPLES, which are in this
+ * repository at `docs/vendor/appraisalscope/samples/Orders/`. Nothing here is
+ * inferred from a field's name or from how another gateway does it: a wrong guess
+ * at a money endpoint is the most expensive kind of wrong in this codebase, and
+ * "the field is probably called X" is exactly how a charge silently posts against
+ * the wrong card or the wrong order.
+ *
+ * `PaymentAuthCapture`, `PaymentToCaptureLeter` and `PartialPayment` all carry this
+ * identical block; they differ only in `requestActionType` and, for PartialPayment,
+ * an added `paymentTotalAmount`. That is why it is one function.
+ *
+ * THREE THINGS THE SAMPLES SAY THAT THE FIELD NAMES DO NOT:
+ *   1. `paymentReferenceIdentifier` is OURS to generate. It is not something the
+ *      vendor hands back first — it is the handle we and they use for this payment,
+ *      and it is what a later `PaymentCapture` is addressed to.
+ *   2. There is NO AMOUNT on an auth-capture. The vendor's own guide says it
+ *      "authorizes and charges a credit card for the full payment amount" — the fee
+ *      already agreed on the order. Sending a number would be us choosing the price.
+ *      `PartialPayment` is the request that takes an amount, and it is a different
+ *      action for a different purpose.
+ *   3. The security code IS required on an auth-capture. The later `PaymentCapture`
+ *      — against a card their PCI vault already holds — takes only the reference and
+ *      the cardholder's email, and needs neither the number nor the code.
+ *
+ * The vendor's samples spell the country two ways ("US" in one, "United States" in
+ * another) and the expiry year two ways ("2022" and "22"). We send the four-digit
+ * year, which is unambiguous and appears in the auth-capture sample itself, and
+ * whatever country the caller passes, defaulting to the sample's "United States".
+ */
+function paymentAccount(p = {}) {
+  const out = {};
+  const put = (k, v) => { if (v != null && String(v) !== '') out[k] = String(v); };
+  put('paymentReferenceIdentifier', p.referenceId);
+  put('paymentAccountCardHolderFirstName', p.firstName);
+  put('paymentAccountCardHolderLastName', p.lastName);
+  put('paymentAccountCardHolderAddress1', p.address1);
+  put('paymentAccountCardHolderAddress2', p.address2);
+  put('paymentAccountCardHolderCity', p.city);
+  put('paymentAccountCardHolderState', p.state ? String(p.state).toUpperCase().slice(0, 2) : null);
+  put('paymentAccountCardHolderPostalCode', p.postalCode);
+  put('paymentAccountCardHolderCountry', p.country || 'United States');
+  put('paymentAccountCardHolderPhone', p.phone);
+  put('paymentAccountCardHolderEmail', p.email);
+  // The card itself. Digits only — a number typed with spaces or dashes is the
+  // same card, and sending the punctuation is a needless way to be refused.
+  if (p.cardNumber) out.paymentAccountIdentifier = String(p.cardNumber).replace(/\D/g, '');
+  if (p.securityCode) out.paymentAccountCardSecurityCode = String(p.securityCode).replace(/\D/g, '');
+  if (p.expMonth != null && p.expMonth !== '') {
+    out.paymentAccountCardExpirationMonth = String(parseInt(p.expMonth, 10)).padStart(2, '0');
+  }
+  if (p.expYear != null && p.expYear !== '') {
+    const y = parseInt(p.expYear, 10);
+    out.paymentAccountCardExpirationYear = String(y < 100 ? 2000 + y : y);
+  }
+  return out;
+}
+
+/**
+ * CHARGE THE CARD, IN FULL, NOW. The vendor's own words for this action:
+ * *"Authorizes and charges a credit card for the full payment amount."*
+ *
+ * A successful response carries the receipt at
+ * `message.products[0].payments[0].paymentTransactionId` — read it with
+ * `parsePaymentTransactionId`, and record it, because it is the only handle
+ * anybody has afterwards for the money that moved.
+ */
+function buildPaymentAuthCapture({ apiKey, subdomain, clientOrderNumber, spOrderNumber, payment }) {
+  return {
+    message: {
+      clientSystem: clientSystem({ apiKey, clientOrderNumber }),
+      products: [{ payments: [paymentAccount(payment)] }],
+      serviceProviderSystem: serviceProviderSystem({ subdomain, spOrderNumber }),
+      requestActionType: 'PaymentAuthCapture',
+    },
+  };
+}
+
+/**
+ * VAULT THE CARD WITHOUT CHARGING IT. Their words: *"Saves payment details on the
+ * authorize.net PCI compliance server, but does not apply the charge until the
+ * PaymentCapture request is made."* Same block as the charge; only the action
+ * differs. The response carries no transaction id, because nothing was charged.
+ */
+function buildPaymentToCaptureLater({ apiKey, subdomain, clientOrderNumber, spOrderNumber, payment }) {
+  return {
+    message: {
+      clientSystem: clientSystem({ apiKey, clientOrderNumber }),
+      products: [{ payments: [paymentAccount(payment)] }],
+      serviceProviderSystem: serviceProviderSystem({ subdomain, spOrderNumber }),
+      // The vendor spells it "Leter". That is their spelling, on the wire, and
+      // correcting it here would simply make the request unrecognised.
+      requestActionType: 'PaymentToCaptureLeter',
+    },
+  };
+}
+
+/**
+ * CHARGE A CARD THEY ALREADY HOLD. Addressed by the SAME
+ * `paymentReferenceIdentifier` the vault call used, plus the cardholder's email —
+ * and NOTHING ELSE. No card number, no security code: that is the entire point of
+ * having vaulted it, and sending them again would defeat it.
+ */
+function buildPaymentCapture({ apiKey, subdomain, clientOrderNumber, spOrderNumber, referenceId, email }) {
+  const pay = {};
+  if (referenceId != null) pay.paymentReferenceIdentifier = String(referenceId);
+  if (email) pay.paymentAccountCardHolderEmail = String(email);
+  return {
+    message: {
+      clientSystem: clientSystem({ apiKey, clientOrderNumber }),
+      products: [{ payments: [pay] }],
+      serviceProviderSystem: serviceProviderSystem({ subdomain, spOrderNumber }),
+      requestActionType: 'PaymentCapture',
+    },
+  };
+}
+
+/**
+ * EMAIL SOMEBODY THE INVOICE FOR THIS ORDER — the vendor's own payment page, sent
+ * to an address we name. Their words: *"Sends an appraisal order invoice to a
+ * specified email address."*
+ *
+ * ONE ADDRESS PER CALL, DELIBERATELY. The sample carries a `notifications` ARRAY
+ * with a single `{contactEmail}` in it, and the plural reads as though several
+ * entries would each be mailed — but that is an inference, and a vendor that only
+ * ever reads `notifications[0]` would leave the second person silently un-invoiced
+ * with a success answer in our hand. So a caller that wants two people invoiced
+ * sends two calls, which is correct under either reading. `src/amc/payment.js`
+ * does exactly that for the borrower and the loan officer.
+ */
+function buildSendInvoice({ apiKey, subdomain, clientOrderNumber, spOrderNumber, email }) {
+  return {
+    message: {
+      clientSystem: clientSystem({ apiKey, clientOrderNumber }),
+      serviceProviderSystem: serviceProviderSystem({ subdomain, spOrderNumber }),
+      products: [{ notifications: [{ contactEmail: String(email || '') }] }],
+      requestActionType: 'SendInvoice',
+    },
+  };
+}
+
+/**
+ * The receipt for money that moved, or null. Both `PaymentAuthCapture` and
+ * `PaymentCapture` answer with it in the same place.
+ *
+ * Returns null rather than throwing on any shape it does not recognise — the
+ * CALLER decides what an unreadable answer means, and for a payment that decision
+ * is "we do not know whether it went through", never "it failed".
+ */
+function parsePaymentTransactionId(resp) {
+  const products = resp && resp.message && resp.message.products;
+  if (!Array.isArray(products)) return null;
+  for (const p of products) {
+    const payments = p && p.payments;
+    if (!Array.isArray(payments)) continue;
+    for (const pay of payments) {
+      if (pay && pay.paymentTransactionId != null && String(pay.paymentTransactionId) !== '') {
+        return String(pay.paymentTransactionId);
+      }
+    }
+  }
+  return null;
+}
+
 /** Search the account's OWN orders, so an appraisal somebody placed on the
  *  vendor's website can be found and reconciled. `criteria` is their
  *  `searchCriteria[]` of `{fieldName, fieldValue}` (create_date_start,
@@ -577,7 +744,26 @@ function mapStatusToLifecycle(statusCode, statusName) {
   return null; // unknown → leave the current status unchanged
 }
 
-// Mask a request message for the write journal — never persist the api key.
+/**
+ * Mask a request message for the write journal — never persist the api key, and
+ * NEVER a card.
+ *
+ * THE CARD HALF IS A CORRECTNESS REQUIREMENT, NOT TIDINESS. Everything built here
+ * is journaled (`amc_write_log` via `order-service.js`) and logged on a dry run, so
+ * the moment a payment request existed, the card number and the security code
+ * became things this function is the only thing standing between and permanent
+ * storage in our own database. The security code is dropped ENTIRELY rather than
+ * partially shown: there is no such thing as a safe fragment of a three-digit
+ * number, and the last four digits of a card are already recorded elsewhere in
+ * plain sight, so the number keeps its last four and nothing else.
+ *
+ * It is a DENYLIST of the two fields that carry a secret rather than an allowlist
+ * of everything else, because the journal's whole value is being able to read back
+ * what we sent — an allowlist would quietly hollow out every future request shape.
+ * A field added later that carries a secret must be added here in the same commit;
+ * `scripts/test-amc-payment-pure.js` asserts no built payment request survives
+ * masking with its number or code intact.
+ */
 function maskRequest(message) {
   try {
     const clone = JSON.parse(JSON.stringify(message));
@@ -585,6 +771,21 @@ function maskRequest(message) {
     if (Array.isArray(refs)) for (const r of refs) if (r && r.referenceIdentifierType === 'ApiKey') r.referenceIdentifierValue = '***';
     const creds = clone && clone.message && clone.message.clientSystem && clone.message.clientSystem.credentials;
     if (Array.isArray(creds)) for (const c of creds) { if (c) c.loginAccountPassword = '***'; }
+    const products = clone && clone.message && clone.message.products;
+    if (Array.isArray(products)) {
+      for (const p of products) {
+        const payments = p && p.payments;
+        if (!Array.isArray(payments)) continue;
+        for (const pay of payments) {
+          if (!pay) continue;
+          if (pay.paymentAccountIdentifier != null) {
+            const digits = String(pay.paymentAccountIdentifier).replace(/\D/g, '');
+            pay.paymentAccountIdentifier = digits ? `****${digits.slice(-4)}` : '***';
+          }
+          if (pay.paymentAccountCardSecurityCode != null) pay.paymentAccountCardSecurityCode = '***';
+        }
+      }
+    }
     return clone;
   } catch { return { masked: true }; }
 }
@@ -594,6 +795,8 @@ module.exports = {
   buildDoLogin, parseDoLogin,
   buildLookup, parseLookup,
   buildGetFee, buildAppraiserFeesByLocation, buildGetPaymentOptions, buildGetAppraisals,
+  buildPaymentAuthCapture, buildPaymentToCaptureLater, buildPaymentCapture, buildSendInvoice,
+  parsePaymentTransactionId,
   buildCreateAppraisal, parseAck,
   buildAddComment, buildCancelOrder, buildGetComments, parseComments,
   buildAddRevision, parseRevisionAck, buildGetRevisions, parseRevisions,
@@ -601,5 +804,5 @@ module.exports = {
   buildGetStatus, buildGetDetail, parseStatus,
   parseError, mapStatusToLifecycle, maskRequest,
   // exported for tests
-  _internals: { clientSystem, serviceProviderSystem, digitalGatewaySystem, borrower, property, address, orderLookup },
+  _internals: { clientSystem, serviceProviderSystem, digitalGatewaySystem, borrower, property, address, orderLookup, paymentAccount },
 };

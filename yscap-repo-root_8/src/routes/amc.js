@@ -35,6 +35,28 @@ router.use(requireAuth, requireStaff);
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 
+/**
+ * The house audit helper, the same shape every staff router defines for itself
+ * (copied from routes/richervalues.js, deliberately — see its own note). Two
+ * things it must keep doing: wrap a bare scalar, because `detail` is a jsonb
+ * column and pg hands a scalar through verbatim where jsonb refuses it; and be
+ * BEST-EFFORT, because by the time a payment reaches here the money has already
+ * moved at the vendor and a failed log entry must never be reported as a failed
+ * charge.
+ */
+async function audit(req, action, entityType, entityId, detail) {
+  let d = detail;
+  if (d != null && typeof d !== 'object') d = { note: String(d) };
+  try {
+    await db.query(
+      `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+       VALUES ('staff',$1,$2,$3,$4,$5,$6,$7)`,
+      [req.actor.id, action, entityType, entityId || null, req.ip, req.get('user-agent') || null, d || null]);
+  } catch (e) {
+    console.warn(`[audit] failed to log ${action}: ${(e && e.message) || e}`);
+  }
+}
+
 // Same file-scope rule as the draw desk: see_all_files -> any file; else only assigned.
 async function canSeeFile(req, appId) {
   if (!isUuid(appId)) return false;
@@ -113,6 +135,116 @@ router.post('/files/:id/card', async (req, res) => {
     number: v.number, cvc: v.cvc, expMonth: v.expMonth, expYear: v.expYear, zip: v.zip,
   });
   res.json({ ok: true, card: saved });
+});
+
+// ---------------------------------------------------------------------------
+// PAYING THE ORDER — the three ways, actually carried out.
+//
+// Owner-directed 2026-08-16: *"I want to be a real vendor charge, yes. I want them
+// to charge the credit card that I'm importing."* The vendor's own client package
+// is now in the repository, so `src/amc/cdg.js` builds their payment requests from
+// their own samples and `src/amc/payment.js` carries them out.
+//
+// STILL MANUAL, and these routes are the whole reason that stays true: nothing
+// calls them except a person pressing a button. There is no poll, no hook and no
+// scheduler anywhere near this file.
+//
+// Money rules live in `src/amc/payment.js`, not here — this is the door, and it is
+// deliberately thin so that "when may an appraisal be charged" has ONE answer.
+// File-scoped like every other action on this desk, and audited: paying is the
+// most consequential thing the desk can do.
+// ---------------------------------------------------------------------------
+
+/** What a person needs to know BEFORE pressing anything. Reveals no card number. */
+router.get('/orders/:orderId/payment', async (req, res) => {
+  const order = await orderScoped(req, res);
+  if (!order) return;
+  try {
+    res.json(await require('../amc/payment').paymentState(db, order.id));
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'error', detail: (e && e.message) || String(e) });
+  }
+});
+
+/**
+ * PAY IT. `method` is one of the owner's three.
+ *
+ * The card ways go through `payment.charge`, which claims the order before it sends
+ * anything, so two presses can never be two charges. The link way emails the
+ * vendor's own invoice to the borrower AND the loan officer — the owner's own
+ * pairing — and is not locked, because a second invoice email is a nuisance rather
+ * than a second charge.
+ *
+ * EVERY FAILURE IS ANSWERED IN WORDS a person can act on, and the two that mean
+ * "we genuinely do not know whether the money moved" answer 409 with the order left
+ * deliberately locked, never a retryable-looking error.
+ */
+router.post('/orders/:orderId/pay', async (req, res) => {
+  const order = await orderScoped(req, res);
+  if (!order) return;
+  const payment = require('../amc/payment');
+  const b = req.body || {};
+  const method = String(b.method || '').toUpperCase();
+  const staffId = req.actor && req.actor.id;
+
+  try {
+    if (method === 'PAYMENT_LINK') {
+      // The borrower and the loan officer, which is what the owner asked for. A
+      // caller may name addresses explicitly (a co-borrower, a different contact);
+      // otherwise they are read off the file.
+      let emails = Array.isArray(b.emails) ? b.emails : null;
+      if (!emails) {
+        const r = await db.query(
+          `SELECT b.email AS borrower_email, lo.email AS officer_email
+             FROM applications a
+             JOIN borrowers b ON b.id = a.borrower_id
+             LEFT JOIN staff_users lo ON lo.id = a.loan_officer_id AND lo.is_active = true
+            WHERE a.id=$1`, [order.application_id]);
+        const row = r.rows[0] || {};
+        emails = [row.borrower_email, row.officer_email];
+      }
+      const out = await payment.sendInvoice(db, { orderId: order.id, emails, staffId });
+      if (!out.ok) {
+        return res.status(out.error === 'no_recipient' ? 400 : 502).json({
+          ...out,
+          detail: out.detail || 'AppraisalScope could not send the invoice — nobody was emailed.',
+        });
+      }
+      await audit(req, 'appraisal_payment_invoice_sent', 'application', order.application_id,
+        { orderId: order.id, sent: out.sent, failed: out.failed.map((f) => f.email) });
+      return res.json(out);
+    }
+
+    if (method !== 'CARD_ON_FILE' && method !== 'NEW_CARD') {
+      return res.status(400).json({
+        error: 'unknown_method',
+        detail: 'An appraisal is paid one of three ways: the card on file, a card entered now, or a payment link.',
+      });
+    }
+
+    const out = await payment.charge(db, { orderId: order.id, method, card: b.card, staffId });
+    if (!out.ok) {
+      // 409 for the states where money may already have moved or is moving — those
+      // must never read as "try again". 400 for a card the person can fix. 502 for
+      // a refusal or a failed send.
+      const status = ['already_paid', 'charge_in_flight', 'no_receipt', 'unknown_outcome'].includes(out.error) ? 409
+        : ['bad_card', 'no_card', 'no_security_code', 'unknown_method'].includes(out.error) ? 400 : 502;
+      // A charge that ended in an unknown state is worth an audit row of its own —
+      // it is the state somebody will be asked about later.
+      if (status === 409 && out.error !== 'already_paid' && out.error !== 'charge_in_flight') {
+        await audit(req, 'appraisal_payment_unknown', 'application', order.application_id,
+          { orderId: order.id, method, error: out.error });
+      }
+      return res.status(status).json(out);
+    }
+    // NEVER the card number, and never the security code — only what a receipt
+    // legitimately shows.
+    await audit(req, 'appraisal_payment_charged', 'application', order.application_id,
+      { orderId: order.id, method, transactionId: out.transactionId, last4: out.last4, brand: out.brand });
+    return res.json(out);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'error', detail: (e && e.message) || String(e) });
+  }
 });
 
 // ---- the two-way comment thread on an order --------------------------------

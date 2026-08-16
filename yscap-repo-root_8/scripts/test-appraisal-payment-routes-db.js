@@ -106,18 +106,32 @@ const CARD = { number: '4111111111111111', expMonth: 12, expYear: new Date().get
       '1: and it never returns a card number');
 
     // ---- 2. "use the card on file" with no card refuses, and says what to do --
+    // ON CLASS VALUATION, which is now the only company this route records for —
+    // see case 3. The refusal being tested is about the FILE having no card, and it
+    // is identical whichever company is named.
     const noCard = await call(server, 'POST', `/api/staff/applications/${appA}/appraisal-payment`, token,
-      { vendor: 'nan', orderId: 11, method: 'CARD_ON_FILE' });
+      { vendor: 'class', orderId: 11, method: 'CARD_ON_FILE' });
     assert(noCard.status === 409 && /Enter a card now|payment link/i.test(json(noCard).detail || ''),
       '2: no card on file refuses AND names both ways out — never a dead end');
 
-    // ---- 3. Richer Values is refused here — its own route charges it ---------
-    const rvHere = await call(server, 'POST', `/api/staff/applications/${appA}/appraisal-payment`, token,
-      { vendor: 'rv', orderId: 12, method: 'PAYMENT_LINK' });
-    assert(rvHere.status === 400 && json(rvHere).error === 'vendor_performs',
-      '3: Richer Values cannot be RECORDED as done-by-hand — it really takes the payment');
-    assert(/Pay button/i.test(json(rvHere).detail || ''),
-      '3: and the refusal points at where it is actually done');
+    // ---- 3. a company that takes its OWN payment is refused here -------------
+    // This route records an instruction for a person to carry out by hand.
+    // Accepting it for a company that genuinely charges would write down "somebody
+    // will do this" while nobody ever charges anything — the exact silence this
+    // table exists to remove.
+    //
+    // AppraisalScope JOINED Richer Values here on 2026-08-16, when its payment
+    // requests were built from the vendor's own package (owner-directed: *"I want
+    // to be a real vendor charge"*). Looping rather than naming one company is the
+    // point: the next vendor to be wired up is covered without editing this.
+    for (const v of ['rv', 'nan']) {
+      const here = await call(server, 'POST', `/api/staff/applications/${appA}/appraisal-payment`, token,
+        { vendor: v, orderId: 12, method: 'PAYMENT_LINK' });
+      assert(here.status === 400 && json(here).error === 'vendor_performs',
+        `3: ${v} cannot be RECORDED as done-by-hand — it really takes the payment`);
+      assert(/Pay button/i.test(json(here).detail || ''),
+        `3: and the ${v} refusal points at where it is actually done`);
+    }
 
     // ---- 4. a way to pay we do not offer is refused --------------------------
     const ach = await call(server, 'POST', `/api/staff/applications/${appA}/appraisal-payment`, token,
@@ -129,8 +143,9 @@ const CARD = { number: '4111111111111111', expMonth: 12, expYear: new Date().get
     assert(acme.status === 400 && json(acme).error === 'unknown_vendor', '4: so is an unknown company');
 
     // ---- 5. the payment link: recorded, nothing charged ----------------------
+    // On Class Valuation, the one company where this route is still the answer.
     const link = await call(server, 'POST', `/api/staff/applications/${appA}/appraisal-payment`, token,
-      { vendor: 'nan', orderId: 21, method: 'PAYMENT_LINK', note: 'borrower asked to pay it himself' });
+      { vendor: 'class', orderId: 21, method: 'PAYMENT_LINK', note: 'borrower asked to pay it himself' });
     const linkOut = json(link);
     assert(link.status === 201 && linkOut.intent && linkOut.intent.method === 'PAYMENT_LINK',
       '5: the choice is recorded');

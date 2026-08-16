@@ -89,6 +89,40 @@ const ADAPTERS = {
     orderPaid: () => false,                        // NAN exposes no per-order paid flag today
     canCancel: (o) => !!(o.sp_order_number && o.status !== 'cancelled' && o.status !== 'completed'
       && o.status !== 'cancel_requested' && o.status !== 'rejected'),
+    // PAYING IT, for real, as of 2026-08-16 (owner-directed: *"I want them to charge
+    // the credit card that I'm importing"*). The server owns every money rule —
+    // claim before send, never charge a paid order, never release a claim on an
+    // answer we could not read — so this is a thin call plus the honest sentence
+    // for each of the three outcomes.
+    pay: async (order, { method, card, linkTo }) => {
+      const r = await api.amcPay(order.id, {
+        method,
+        card: method === 'NEW_CARD' ? card : undefined,
+        // A person may name one address; otherwise the server sends the invoice to
+        // the borrower AND the loan officer, which is the pairing the owner asked
+        // for and which this screen must not silently narrow.
+        emails: method === 'PAYMENT_LINK' && linkTo ? [linkTo] : undefined,
+      });
+      if (method === 'PAYMENT_LINK') {
+        const sent = (r && r.sent) || [];
+        const failed = (r && r.failed) || [];
+        return {
+          ok: sent.length > 0,
+          settled: false,   // an invoice is not a payment, and never reads as one
+          note: sent.length
+            ? `Invoice emailed by AppraisalScope to ${sent.join(' and ')}. It is not paid until they pay it.`
+              + (failed.length ? ` It could NOT be sent to ${failed.map((x) => x.email).join(', ')}.` : '')
+            : 'AppraisalScope could not send the invoice — nobody was emailed.',
+        };
+      }
+      return {
+        ok: !!(r && r.ok),
+        settled: !!(r && r.transactionId),
+        note: r && r.transactionId
+          ? `Paid. AppraisalScope charged the card${r.last4 ? ` ••${r.last4}` : ''} — their receipt is ${r.transactionId}.`
+          : ((r && r.detail) || 'AppraisalScope did not take the payment.'),
+      };
+    },
   },
   // THE THIRD VENDOR, AND A DIFFERENT PRODUCT. Richer Values's Hybrid Appraisal is
   // an EVALUATION: it comes back with an As-Is value AND an After Repair Value on
@@ -114,6 +148,23 @@ const ADAPTERS = {
     orderFee: (o) => (o.total_price_cents != null ? o.total_price_cents / 100 : null),
     orderPaid: (o) => !!o.paid_at,
     canCancel: (o) => !!(o.intake_token && !['cancelled', 'completed', 'cancel_requested', 'rejected'].includes(o.status)),
+    // Its own route, unchanged — it already reported the three outcomes separately,
+    // which is where the shape below came from.
+    pay: async (order, { method, card, linkTo }) => {
+      const r = await api.rvPay(order.id, {
+        method,
+        card: method === 'NEW_CARD' ? card : null,
+        paymentLinkTo: method === 'PAYMENT_LINK' ? linkTo : null,
+      });
+      if (!r || r.ok === false) return { ok: false, settled: false, note: (r && r.note) || 'Richer Values did not take the payment.' };
+      return {
+        ok: true,
+        settled: !!r.settled,
+        note: r.settled
+          ? 'Paid. Richer Values has the money.'
+          : 'Done — Richer Values has emailed the borrower their payment page. It is not paid until they pay it.',
+      };
+    },
   },
   class: {
     key: 'class',
@@ -3278,8 +3329,32 @@ function PayModal({ appId, order, card, onClose, onPaid }) {
     return () => { alive = false; };
   }, [appId]);
 
+  // WHAT THE VENDOR ITSELF SAYS ABOUT THIS ORDER'S PAYMENT — asked only of the
+  // company that can answer. AppraisalScope's own charge needs the card's security
+  // code, so a card saved without one cannot be charged, and that is a fact about
+  // THIS file that the shared options list has no way to know. Read here so the
+  // button is refused on the screen with a reason, rather than pressed and declined
+  // at the vendor for something nobody in this building can see.
+  const [vendorPay, setVendorPay] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    if (order._vendor !== 'nan') { setVendorPay(null); return undefined; }
+    (async () => {
+      try { const s = await api.amcPayment(order.id); if (alive) setVendorPay(s); }
+      catch (_) { /* the shared options still render — this only ever ADDS a reason */ }
+    })();
+    return () => { alive = false; };
+  }, [order._vendor, order.id]);
+
   const vendorBlock = state && state.vendors ? state.vendors[order._vendor] : null;
-  const opts = (vendorBlock && vendorBlock.options) || [];
+  const rawOpts = (vendorBlock && vendorBlock.options) || [];
+  // The overlay can only ever DISABLE, never enable — a screen must not open a
+  // button the shared table says is shut.
+  const opts = rawOpts.map((o) => {
+    if (o.method !== 'CARD_ON_FILE' || !vendorPay || !vendorPay.ok) return o;
+    if (vendorPay.cardChargeable !== false || !vendorPay.cardReason) return o;
+    return { ...o, disabled: o.disabled || vendorPay.cardReason, available: false };
+  });
   const intent = state && state.intents ? state.intents[`${order._vendor}:${order.id}`] : null;
   const chosen = opts.find((o) => o.method === pick) || null;
 
@@ -3288,20 +3363,27 @@ function PayModal({ appId, order, card, onClose, onPaid }) {
     setBusy('pay'); setErr(''); setDone('');
     try {
       if (chosen.does === 'vendor') {
-        // Richer Values takes the money. Its route reports THREE outcomes — did
-        // what you pressed happen, and did the money actually move — so this
-        // never announces a sent payment link as a completed charge.
-        const r = await api.rvPay(order.id, {
-          method: chosen.method,
-          card: chosen.method === 'NEW_CARD' ? f : null,
-          paymentLinkTo: chosen.method === 'PAYMENT_LINK' ? (linkTo.trim() || null) : null,
-        });
-        if (!r || r.ok === false) {
-          setErr((r && r.note) || 'Richer Values did not take the payment.');
+        // THE COMPANY TAKES THE MONEY, and WHICH company decides which route is
+        // called — so it is asked of the adapter rather than hard-coded here. This
+        // branch called Richer Values by name until 2026-08-16, when AppraisalScope
+        // gained real payment requests; a second `if` on the vendor key would have
+        // been the start of a per-vendor ladder in a component, which is exactly
+        // where "who charges what" goes to drift.
+        //
+        // Every adapter answers the same three things, because a payment has three
+        // distinct outcomes and collapsing them lies to somebody: did the press
+        // work, did the MONEY actually move, and what to tell the person. A sent
+        // payment link is a success that is NOT a payment.
+        if (typeof ad.pay !== 'function') {
+          setErr(`${ad.name} takes its own payments, but this screen has no way to ask it to.`);
         } else {
-          setDone(r.settled
-            ? 'Paid. Richer Values has the money.'
-            : 'Done — Richer Values has emailed the borrower their payment page. It is not paid until they pay it.');
+          const r = await ad.pay(order, {
+            method: chosen.method,
+            card: chosen.method === 'NEW_CARD' ? f : null,
+            linkTo: linkTo.trim() || null,
+          });
+          if (!r || r.ok === false) setErr((r && r.note) || `${ad.name} did not take the payment.`);
+          else setDone(r.note);
         }
       } else {
         const r = await api.staffChooseAppraisalPayment(appId, {
@@ -3343,6 +3425,29 @@ function PayModal({ appId, order, card, onClose, onPaid }) {
             ? <span style={{ color: GOOD, fontWeight: 600 }}>Paid ✓{card && card.last4 ? ` · ••${card.last4}` : ''}</span>
             : fee != null ? <>Fee: <strong>{money(fee)}</strong></> : 'The fee is confirmed by the appraisal company.'}
         </div>
+
+        {/* THE VENDOR'S OWN ANSWER, FIRST, on a company that really charges.
+            Three states worth interrupting for, and the middle one is the reason
+            this block exists: a charge whose outcome we could not read leaves the
+            order deliberately locked, and somebody has to be TOLD that rather than
+            finding a button that quietly does nothing. */}
+        {vendorPay && vendorPay.ok && (vendorPay.paid || vendorPay.charging) ? (
+          <div style={{ marginTop: 12, borderRadius: 10, padding: '10px 12px',
+            border: `1px solid ${vendorPay.paid ? '#CFE6D8' : WARN_LINE}`,
+            background: vendorPay.paid ? '#EEF7F1' : WARN_BG }}>
+            <div style={{ fontWeight: 650, color: vendorPay.paid ? '#1E5E3C' : WARN }}>
+              {vendorPay.paid
+                ? `Paid — ${ad.name}'s receipt is ${vendorPay.transactionId}`
+                : 'A payment on this order is going through'}
+            </div>
+            {!vendorPay.paid ? (
+              <div style={{ fontSize: 12.5, color: MUTED, marginTop: 3, lineHeight: 1.45 }}>
+                {vendorPay.lastError
+                  || 'Give it a moment and reload. Nothing else can be charged on this order until it settles.'}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* WHAT WAS ALREADY DECIDED. Shown before the options, because the first
             question on reopening this is "did somebody already deal with it?" */}

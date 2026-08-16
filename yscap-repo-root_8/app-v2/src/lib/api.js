@@ -595,6 +595,11 @@ export const api = {
   amcPlaceOrder:    (appId, body) => req('POST', `/api/amc/files/${appId}/order`, body),
   amcSaveCard:      (appId, body) => req('POST', `/api/amc/files/${appId}/card`, body),
   amcOrder:         (orderId) => req('GET', `/api/amc/orders/${orderId}`),
+  // PAYING an AppraisalScope order. `amcPayment` is the read a screen does BEFORE
+  // offering a button — is it already paid, is one going through, can this file's
+  // card actually be charged — and reveals no card number. `amcPay` is the press.
+  amcPayment:       (orderId) => req('GET', `/api/amc/orders/${orderId}/payment`),
+  amcPay:           (orderId, body) => req('POST', `/api/amc/orders/${orderId}/pay`, body || {}),
   amcCancelOrder:   (orderId, reason) => req('POST', `/api/amc/orders/${orderId}/cancel`, { reason }),
   amcComments:      (orderId) => req('GET', `/api/amc/orders/${orderId}/comments`),
   amcPostComment:   (orderId, body) => req('POST', `/api/amc/orders/${orderId}/comments`, { body }),
