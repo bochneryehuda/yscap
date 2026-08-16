@@ -598,8 +598,16 @@ async function createOrder(db, appId, opts = {}) {
     });
   }
 
+  // The appraisal condition this order fulfils, so the report files itself into the
+  // right slot when it comes back (see lib/appraisal/condition-slots.js). The caller
+  // may name one; otherwise it is the file's own appraisal-documents condition. It is
+  // resolved HERE rather than left to the caller because neither order panel sends it,
+  // which left every order's link NULL and every returned report off the condition.
+  const checklistItemId = opts.checklistItemId
+    || (await require('../lib/appraisal/condition-slots').conditionItemId(db, appId));
+
   const order = await insertOrder(db, appId, spec, cdg.maskRequest(built.message ? built : { message: built }),
-    opts.staffId, { checklistItemId: opts.checklistItemId, parentOrderId: opts.parentOrderId });
+    opts.staffId, { checklistItemId, parentOrderId: opts.parentOrderId });
 
   if (!opts.place) return { ok: true, order, missing, draft: true };
 
@@ -715,7 +723,13 @@ async function listOrders(db, appId) {
             status, status_code, status_name, status_description, rush, need_by_date,
             dryrun, last_error, last_status_response, cancel_reason, cancel_requested_at,
             cancel_requested_by, request_payload, created_at, ordered_at, completed_at,
-            last_polled_at, updated_at
+            last_polled_at, updated_at,
+            -- How many messages the AMC has sent that nobody has read yet. Class has
+            -- carried this since it shipped; NAN never did, so an inbound comment
+            -- arrived with nothing on the screen to say so and the "mark read" door
+            -- (which has always existed) could not be reached.
+            (SELECT count(*)::int FROM amc_order_comments c
+              WHERE c.order_id = amc_orders.id AND c.direction='inbound' AND c.read_at IS NULL) AS unread
        FROM amc_orders WHERE application_id = $1 ORDER BY created_at DESC`, [appId]);
   // Attach the plain "what was sent" summary; drop the raw envelope so the response
   // stays lean and never carries the internals of the masked message to the screen.

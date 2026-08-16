@@ -48,6 +48,7 @@ const crypto = require('crypto');
 const db = require('../db');
 const client = require('./client');
 const storage = require('../lib/storage');
+const conditionSlots = require('../lib/appraisal/condition-slots');
 
 const RETRY_DAYS = Math.max(1, parseInt(process.env.CLASS_ATTACH_RETRY_DAYS || '3', 10) || 3);
 const SWEEP_BATCH = Math.max(1, parseInt(process.env.CLASS_ATTACH_SWEEP_BATCH || '25', 10) || 25);
@@ -251,6 +252,14 @@ async function ingestForOrderLocked(dbc, order, deps = {}) {
   const borrowerId = app ? app.borrower_id : null;
 
   let filed = 0, xmlDocId = null, xmlString = null, pdfDocId = null;
+
+  // WHERE THE REPORT GOES ON THE FILE — see lib/appraisal/condition-slots.js. The
+  // order row's own link wins; an order that carries none resolves the file's
+  // appraisal-documents condition here, so a delivery is never stranded off the
+  // condition it satisfies.
+  const itemId = order.checklist_item_id || (await conditionSlots.conditionItemId(q, order.application_id));
+  const slotLabels = await conditionSlots.slotLabels(q);
+
   for (const row of rows) {
     try {
       const directUrl = (row.class_attachment_id && urlByKey.get('id:' + row.class_attachment_id))
@@ -271,17 +280,29 @@ async function ingestForOrderLocked(dbc, order, deps = {}) {
       const contentType = got.contentType || row.content_type || 'application/octet-stream';
       const filename = String(got.filename || row.name || 'class-appraisal-document').slice(0, 300);
       const sha = crypto.createHash('sha256').update(bytes).digest('hex');
+      // CLASSIFY BEFORE FILING — the slot label has to ride in the INSERT, or the
+      // condition cannot see the document as filling its slot in between. Only the
+      // FIRST data file and the FIRST report take the two slots; every other
+      // attachment Class returns is filed on the condition unslotted.
+      const isXml = !xmlDocId && looksXml(filename, contentType, bytes);
+      const isPdf = !isXml && !pdfDocId && looksPdf(filename, contentType, bytes);
+      const kind = isXml ? 'xml' : (isPdf ? 'pdf' : null);
+      const slotLabel = kind ? await conditionSlots.labelFor(q, itemId, kind, slotLabels) : null;
       const { ref, provider } = await store.save(bytes, { filename });
 
       const ins = await q.query(
         `INSERT INTO documents
            (application_id, borrower_id, checklist_item_id, filename, content_type, size_bytes,
             storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, review_status, sha256,
-            source_type, visibility)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',NULL,NULL,'pending',$9,'system','staff_only')
+            source_type, visibility, slot_label)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',NULL,$10,'pending',$9,'system','staff_only',$11)
          RETURNING id`,
-        [order.application_id, borrowerId, order.checklist_item_id || null,
-          filename, contentType, bytes.length, provider, ref, sha]);
+        // Only the data file and the report go onto the condition — see the same
+        // note in src/amc/sync.js: a condition refuses sign-off while any document
+        // on it is un-reviewed, so an extra attachment must not become a blocker.
+        [order.application_id, borrowerId, kind ? itemId : (order.checklist_item_id || null),
+          filename, contentType, bytes.length, provider, ref, sha,
+          kind ? conditionSlots.DOC_KIND[kind] : null, slotLabel]);
       const docId = ins.rows[0].id;
 
       await q.query(
@@ -291,8 +312,8 @@ async function ingestForOrderLocked(dbc, order, deps = {}) {
         [row.id, docId, contentType]);
       filed += 1;
 
-      if (!xmlString && looksXml(filename, contentType, bytes)) { xmlDocId = docId; xmlString = bytes.toString('utf8'); }
-      else if (!pdfDocId && looksPdf(filename, contentType, bytes)) { pdfDocId = docId; }
+      if (isXml) { xmlDocId = docId; xmlString = bytes.toString('utf8'); }
+      else if (isPdf) { pdfDocId = docId; }
     } catch (e) {
       await q.query(`UPDATE class_attachments SET fetch_error=$2 WHERE id=$1`,
         [row.id, String((e && e.message) || e).slice(0, 500)]).catch(() => {});
@@ -323,6 +344,10 @@ async function ingestForOrderLocked(dbc, order, deps = {}) {
     } catch (e) {
       console.error('[class] appraisal import failed for order', order.id, (e && e.message) || e);
     }
+    // The import is the proof these two documents are the appraisal we ordered —
+    // see lib/appraisal/condition-slots.js. A delivery that did not import stays
+    // pending for a human.
+    if (imported) await conditionSlots.acceptImportedSources(q, [xmlDocId, pdfDocId]);
   }
   return { ok: true, filed, imported };
 }

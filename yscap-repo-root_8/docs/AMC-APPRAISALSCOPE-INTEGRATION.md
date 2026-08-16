@@ -259,6 +259,46 @@ fields all come from the vendor's own sample payloads and are pinned by the pure
 The lookups (`GetJobType` etc.) also decide the real `amc_form_map` rules, and those
 cannot be finalized until a lookup call actually returns this tenant's form catalog.
 
+## 7b. WHERE A RETURNED REPORT LANDS — the condition's own slots (2026-08-16)
+
+`rtl_cond_appraisaldocs` declares TWO named slots (db/144) and `signOffGate` matches a
+document to a slot by a lower-case SUBSTRING of `documents.slot_label`. So a returned
+document with no slot label fills neither slot, however plainly it is the appraisal.
+
+**The defect this section records.** `sync.js ingestDocuments` filed the returned XML and
+PDF with `slot_label` NULL and `doc_kind` NULL, onto `order.checklist_item_id` — a column
+nothing ever set, because the order routes only accepted a `checklistItemId` neither
+front-end panel sends. Class Valuation had exactly the same two holes. The live result:
+the report came back, the data imported, the findings were built, and the
+appraisal-documents condition still read *"Upload BOTH the appraisal data file (XML) and
+the appraisal report (PDF)"* with both documents sitting on the file — so the condition
+could not be signed off and the file could not clear to close until somebody downloaded
+the two documents and re-uploaded them into the slots by hand.
+
+**`src/lib/appraisal/condition-slots.js` is the one definition** every vendor now files
+through (Richer Values already did this correctly; this is that behaviour shared):
+
+- the condition item is resolved from the order row, else from the file, so an order
+  placed before the link existed still files correctly;
+- the labels are **derived from the template's own `slots` jsonb** (the `order-slots.js`
+  discipline), never restated, and are only adopted when they still carry the substring
+  the gate tests for;
+- the XML and the PDF carry `doc_kind='appraisal_xml'`/`'appraisal_pdf'`, so
+  `undoAppraisalImport` retires them and reopens the condition exactly as it does for a
+  hand-uploaded import;
+- **only those two go onto the condition.** An extra the AMC returns (an invoice, a
+  supplemental) is filed on the loan file in no slot — a condition refuses sign-off while
+  any document on it is un-reviewed, so an appraiser's invoice must never become a
+  clear-to-close blocker;
+- **a SUCCESSFUL MISMO import is what vouches for them.** They are accepted only once the
+  XML has imported as a valid appraisal — positive proof, stronger than db/424's
+  born-accepted rule for an ordered document gets anywhere else. A delivery that does not
+  import stays `pending` and waits for a human.
+
+Test `scripts/test-appraisal-condition-slots-db.js` (in `npm test`) drives both vendors'
+ingest and then calls the REAL `signOffGate` — a copy of its slot test would keep passing
+if the gate changed. Four mutations of the production code were each proven to fail it.
+
 ## 8. Owner decisions (2026-08-05)
 
 - **Credentials:** *(updated 2026-08-13)* the UAT OAuth pair, the GGID, the AppraisalScope

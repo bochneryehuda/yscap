@@ -4,6 +4,7 @@ import { moneyNum } from '../lib/money';
 import { rvOrderTotal, moneyExact } from '../lib/rvPrice.js';
 import { askConfirm, askPrompt } from '../lib/dialog.js';
 import OrderFailure, { parseOrderFailure } from './OrderFailure.jsx';
+import AppraisalCardEntry from './AppraisalCardEntry.jsx';
 
 /**
  * ONE unified "Appraisal order" section that replaces the two side-by-side panels
@@ -126,7 +127,10 @@ const ADAPTERS = {
     orderedAt: (o) => o.placed_at || o.created_at,
     orderFee: (o) => (o.client_fee_cents != null ? o.client_fee_cents / 100 : null),
     orderPaid: (o) => !!o.paid_at,
-    canCancel: () => false,                        // Class cancel needs a reason-picker not in the old panel
+    // A live Class order can be called off. The reason must come from Class's own
+    // closed list, which is what ClassCancelButton's picker is for; an order they
+    // have already finished or cancelled has nothing left to stop.
+    canCancel: (o) => !!(o.class_order_id && !['cancelled', 'completed', 'error'].includes(String(o.status || ''))),
   },
 };
 
@@ -188,7 +192,10 @@ export default function AppraisalOrderSection({ appId, onChanged }) {
     const unreadFor = (id) => ((classData && classData.unread || []).find((u) => String(u.class_order_row) === String(id)) || {}).n || 0;
     const asksFor = (id) => (classData && classData.openAsks || []).filter((a) => String(a.class_order_row) === String(id));
     const attFor = (id) => (classData && classData.attachments || []).filter((a) => String(a.class_order_row) === String(id));
-    const nan = (nanOrders || []).map((o) => ({ ...o, _vendor: 'nan' }));
+    // NAN carries its own unread count on the order row (the AMC's side of the
+    // two-way thread); Class carries it in a separate list. Both end up as
+    // `_unread` so the messages tab reads the same for either vendor.
+    const nan = (nanOrders || []).map((o) => ({ ...o, _vendor: 'nan', _unread: Number(o.unread) || 0 }));
     const cls = ((classData && classData.orders) || []).map((o) => ({
       ...o, _vendor: 'class', _unread: unreadFor(o.id), _asks: asksFor(o.id), _attachments: attFor(o.id),
     }));
@@ -355,7 +362,7 @@ function NanBuilder({ appId, cfg, onPlaced }) {
       {notice ? <Banner tone="good">{notice}</Banner> : null}
       {preview ? (
         <PreviewCard preview={preview} busy={busy} onDraft={() => place(false)} onPlace={() => place(true)}
-          outbound={!!(cfg && cfg.outbound)}
+          outbound={!!(cfg && cfg.outbound)} appId={appId} onCardSaved={load}
           formValue={formOverride || (preview.spec && preview.spec.productCode) || ''} onPickForm={setFormOverride}
           cdorValue={cdorOverride || (preview.spec && preview.spec.clientDisplayedId) || ''} onPickCdor={setCdorOverride} />
       ) : (
@@ -369,7 +376,7 @@ function NanBuilder({ appId, cfg, onPlaced }) {
   );
 }
 
-function PreviewCard({ preview, busy, onDraft, onPlace, outbound, formValue, onPickForm, cdorValue, onPickCdor }) {
+function PreviewCard({ preview, busy, onDraft, onPlace, outbound, appId, onCardSaved, formValue, onPickForm, cdorValue, onPickCdor }) {
   const spec = preview.spec || {};
   const missing = preview.missing || [];
   const cardOnFile = preview.card || {};
@@ -423,7 +430,19 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound, formValue, onP
         <Field label="Purpose">{loan.loanPurpose || '—'}</Field>
         <Field label="Loan amount">{money(loan.baseLoanAmount)}</Field>
         <Field label="Borrowers">{(spec.borrowers || []).map((b) => b.fullName || [b.firstName, b.lastName].filter(Boolean).join(' ') || b.legalEntityName).filter(Boolean).join(', ') || '—'}</Field>
-        <Field label="Payment card">{cardOnFile.onFile ? ((cardOnFile.brand || 'card') + ' ••' + (cardOnFile.last4 || '')) : 'not on file'}</Field>
+        {/* THE CARD IS ENTERABLE HERE, not only on the condition (owner-directed
+            2026-08-05: "one card, entered once, both places"). It saves through the
+            shared chokepoint, so typing it here fills the appraisal-card condition
+            too — and a card the borrower typed on the condition already shows here.
+            Payment stays manual; nothing is charged. */}
+        <div>
+          <Field label="Payment card">{cardOnFile.onFile ? ((cardOnFile.brand || 'card') + ' ••' + (cardOnFile.last4 || '')) : 'not on file'}</Field>
+          {appId ? (
+            <AppraisalCardEntry appId={appId} align="flex-start"
+              label={cardOnFile.onFile ? 'Replace card' : 'Enter card'}
+              onSaved={onCardSaved} />
+          ) : null}
+        </div>
       </div>
 
       {missing.length ? (
@@ -1857,17 +1876,34 @@ function ActiveOrderCard({ order, appId, card, onChanged, onPay }) {
       {/* Quiet action row: communicate · pay · cancel */}
       <div className="aord-acts">
         <button className="aord-btn" onClick={() => toggle('messages')} aria-pressed={open === 'messages'}>
-          Messages{order._vendor === 'class' && order._unread ? <span className="n">{order._unread}</span> : null}
+          Messages{order._unread ? <span className="n">{order._unread}</span> : null}
         </button>
         <button className="aord-btn" onClick={() => toggle('documents')} aria-pressed={open === 'documents'}>Documents</button>
         <button className="aord-btn" onClick={() => toggle('revision')} aria-pressed={open === 'revision'}>Revision</button>
         <span className="sep" />
+        {/* THE BUTTON SAYS WHAT IT DOES. Payment on these two vendors is MANUAL
+            (owner-directed 2026-08-05: the back office charges the card by hand;
+            the vendors' own Payment* actions are deliberately unused). This
+            control stores the card on the file — it does not charge anything —
+            so it must not read "Pay $299" and leave somebody believing the
+            appraisal is paid for. "Paid ✓" on a Class order is their OWN
+            callback telling us they took payment, which is a different fact and
+            still worth showing. */}
         {paid ? (
           <button className="aord-btn paid" onClick={() => onPay(order)}>Paid ✓{card && card.last4 ? ` · ••${card.last4}` : ''}</button>
         ) : (
-          <button className="aord-btn pri" onClick={() => onPay(order)}>{fee != null ? `Pay ${money(fee)}` : 'Pay'}</button>
+          <button className="aord-btn pri" onClick={() => onPay(order)}>
+            {card && card.last4 ? `Card ••${card.last4}` : 'Add the payment card'}
+            {fee != null ? ` · ${money(fee)}` : ''}
+          </button>
         )}
-        {ad.canCancel(order) ? <NanCancelButton orderId={order.id} onChanged={onChanged} /> : null}
+        {/* Each vendor cancels through its OWN door — CDG takes free text, Class
+            takes a code from their closed list. Never one button for both. */}
+        {ad.canCancel(order) ? (
+          order._vendor === 'class'
+            ? <ClassCancelButton appId={appId} order={order} onChanged={onChanged} />
+            : <NanCancelButton orderId={order.id} onChanged={onChanged} />
+        ) : null}
         <button className="aord-more" style={{ marginLeft: 'auto' }} onClick={() => setShowDetails((v) => !v)}>
           {showDetails ? 'Hide details' : 'Details'}
         </button>
@@ -1944,7 +1980,7 @@ function WhatWasOrdered({ order, fee }) {
 /* ---------------------------------------------------- sub-surfaces (adapted) */
 function SubMessages({ order, appId, onChanged }) {
   return order._vendor === 'nan'
-    ? <NanMessages orderId={order.id} />
+    ? <NanMessages orderId={order.id} onChanged={onChanged} />
     : <ClassMessages appId={appId} order={order} onChanged={onChanged} />;
 }
 function SubDocuments({ order, appId, onChanged }) {
@@ -1961,7 +1997,7 @@ function SubRevision({ order, appId, onChanged }) {
 const surfaceWrap = { border: `1px solid ${LINE}`, borderRadius: 10, padding: 12, marginTop: 10, background: '#fff' };
 
 /* ---- NAN messages ---- */
-function NanMessages({ orderId }) {
+function NanMessages({ orderId, onChanged }) {
   const [rows, setRows] = useState([]);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1970,6 +2006,19 @@ function NanMessages({ orderId }) {
     try { const r = await api.amcComments(orderId); setRows((r && r.comments) || []); } catch (_) { /* ignore */ }
   }, [orderId]);
   useEffect(() => { load(); }, [load]);
+  // The AMC's own messages that nobody has marked read. The "mark read" door has
+  // existed on the server since this integration shipped and nothing ever called
+  // it, so an inbound message stayed unread for ever.
+  const unread = rows.filter((c) => c.direction === 'inbound' && !c.read_at);
+  const markRead = async () => {
+    setBusy(true); setErr('');
+    try {
+      for (const c of unread) await api.amcReadComment(orderId, c.id);
+      await load();
+      if (onChanged) await onChanged();
+    } catch (e) { setErr((e && e.message) || 'Could not mark these read.'); }
+    setBusy(false);
+  };
   const send = async () => {
     if (!text.trim()) return;
     setBusy(true); setErr('');
@@ -1980,6 +2029,13 @@ function NanMessages({ orderId }) {
   return (
     <div style={surfaceWrap}>
       {err ? <Banner tone="bad">{err}</Banner> : null}
+      {unread.length ? (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 6 }}>
+          <button className="btn ghost small" disabled={busy} onClick={markRead}>
+            {busy ? '…' : `Mark ${unread.length} read`}
+          </button>
+        </div>
+      ) : null}
       <div style={{ maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
         {rows.length ? rows.map((c) => (
           <div key={c.id} style={{ alignSelf: c.direction === 'outbound' ? 'flex-end' : 'flex-start', maxWidth: '80%', background: c.direction === 'outbound' ? '#EAF3F3' : '#F4F1EA', border: `1px solid ${LINE}`, borderRadius: 10, padding: '7px 10px' }}>
@@ -2447,6 +2503,86 @@ function AskForm({ appId, order, kind, reportIn, onDone }) {
 }
 
 /* ---- NAN cancel ---- */
+/**
+ * CANCELLING A CLASS ORDER — the reason picker the old panel never had.
+ *
+ * The whole back end has existed since the Class integration shipped
+ * (`POST /files/:id/orders/:o/cancel` → `messages.requestCancel`, validating the
+ * chosen codes against Class's OWN closed reason list), and the screen had no way
+ * to reach it — the adapter's `canCancel` returned a hard `false` with a note
+ * saying a reason picker was missing. So a Class order could be placed and never
+ * called off from PILOT.
+ *
+ * Class refuses a free-typed reason, which is why this is a picker and not a text
+ * box: the codes come from `classReasons('cancel')` — their list, read live, never
+ * a copy typed here that could drift out of their vocabulary. The note is the
+ * human sentence that rides along with it.
+ *
+ * Asking is not agreeing: the order is NOT marked cancelled here. It moves when
+ * Class's own StatusChanged callback says Cancelled — the same rule the NAN side
+ * follows while it waits for CDG's 1051.
+ */
+function ClassCancelButton({ appId, order, onChanged }) {
+  const [open, setOpen] = useState(false);
+  const [reasons, setReasons] = useState(null);
+  const [picked, setPicked] = useState('');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    if (!open || reasons) return;
+    let alive = true;
+    (async () => {
+      try { const r = await api.classReasons('cancel'); if (alive) setReasons(r); }
+      catch (_) { if (alive) setReasons({ common: [], all: [] }); }
+    })();
+    return () => { alive = false; };
+  }, [open, reasons]);
+
+  const list = (reasons && (reasons.common && reasons.common.length ? reasons.common : reasons.all)) || [];
+  const codeOf = (r) => (typeof r === 'string' ? r : (r.code || r.reasonType || ''));
+  const labelOf = (r) => (typeof r === 'string' ? r : (r.label || r.name || r.code || r.reasonType || ''));
+
+  const submit = async () => {
+    if (!picked) { setErr('Pick a reason — Class only accepts one from their own list.'); return; }
+    const ok = await askConfirm('Ask Class to cancel this appraisal order?', {
+      title: 'Cancel appraisal order', confirmLabel: 'Cancel the order', cancelLabel: 'Keep it',
+    });
+    if (!ok) return;
+    setBusy(true); setErr('');
+    try {
+      const out = await api.classCancelOrder(appId, order.id, {
+        confirm: true, reasons: [{ reasonType: picked }], note: note.trim() || undefined,
+      });
+      if (out && out.ok) { setOpen(false); setPicked(''); setNote(''); if (onChanged) await onChanged(); }
+      else setErr(parseOrderFailure(null, out));
+    } catch (e) { setErr(parseOrderFailure(e, null)); }
+    setBusy(false);
+  };
+
+  if (!open) return <button className="aord-btn danger" onClick={() => setOpen(true)}>Cancel order</button>;
+  return (
+    <div style={{ flexBasis: '100%', marginTop: 8, border: `1px solid ${LINE}`, borderRadius: 10, padding: 10, background: '#fff' }}>
+      {err ? <Banner tone="bad">{err}</Banner> : null}
+      <div style={{ fontSize: 13, color: MUTED, marginBottom: 6 }}>
+        Class only takes a reason from their own list. Pick the closest one; the note goes with it.
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <select value={picked} onChange={(e) => { setPicked(e.target.value); setErr(''); }}
+          style={{ minWidth: 240, border: `1px solid ${LINE}`, borderRadius: 8, padding: '7px 8px', color: INK, background: '#fff', fontSize: 14 }}>
+          <option value="">{reasons ? 'Choose a reason…' : 'Loading Class’s reasons…'}</option>
+          {list.map((r) => <option key={codeOf(r)} value={codeOf(r)}>{labelOf(r)}</option>)}
+        </select>
+        <input className="input" style={{ flex: 1, minWidth: 180 }} placeholder="Note (optional)"
+          value={note} onChange={(e) => setNote(e.target.value)} />
+        <button className="btn small" disabled={busy || !picked} onClick={submit}>{busy ? 'Cancelling…' : 'Send cancellation'}</button>
+        <button className="btn ghost small" disabled={busy} onClick={() => { setOpen(false); setErr(''); }}>Keep it</button>
+      </div>
+    </div>
+  );
+}
+
 function NanCancelButton({ orderId, onChanged }) {
   const [busy, setBusy] = useState(false);
   const doCancel = async () => {
@@ -2606,8 +2742,12 @@ function PayModal({ appId, order, card, onClose, onPaid }) {
     setBusy(true); setErr(''); setDone('');
     try {
       await api.staffSaveAppraisalCard(appId, f);
-      // TODO(payment-phase): submit card to vendor + record paid status
-      setDone('Card saved — the appraisal payment condition is cleared.');
+      // NOTHING IS CHARGED HERE, ON PURPOSE. Payment is manual (owner-directed
+      // 2026-08-05) — the back office reveals this card and charges it out of
+      // band, and neither vendor's Payment* actions are wired. Say so plainly:
+      // the previous wording ("the payment condition is cleared") was true and
+      // read as "the appraisal is paid for", which it is not.
+      setDone('Card saved on the file. The back office charges it by hand — nothing has been charged yet.');
       await onPaid();
       setTimeout(onClose, 1000);
     } catch (e) { setErr((e && e.message) || 'Could not save the card.'); }
@@ -2617,15 +2757,21 @@ function PayModal({ appId, order, card, onClose, onPaid }) {
   return (
     <div className="cv-modal-back" onClick={onClose}>
       <div className="cv-modal" style={{ padding: 20, color: INK }} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontWeight: 700, fontSize: 17, color: INK }}>{paid ? 'Update the payment card' : 'Pay the appraisal order'}</div>
+        <div style={{ fontWeight: 700, fontSize: 17, color: INK }}>{paid ? 'Update the payment card' : 'Appraisal payment card'}</div>
         <div style={{ fontSize: 13, color: MUTED, marginTop: 4 }}>
           {ad.name}{ad.orderTitle(order) ? ` · ${ad.orderTitle(order)}` : ''}{prop ? ` · ${prop.value}` : ''}
         </div>
         <div style={{ fontSize: 14, color: INK, marginTop: 6, fontVariantNumeric: 'tabular-nums' }}>
           {paid
             ? <span style={{ color: GOOD, fontWeight: 600 }}>Paid ✓{card && card.last4 ? ` · ••${card.last4}` : ''} — update the card on file below if you need to.</span>
-            : fee != null ? <>Amount: <strong>{money(fee)}</strong></> : 'Amount is confirmed by the vendor.'}
+            : fee != null ? <>Fee: <strong>{money(fee)}</strong></> : 'The fee is confirmed by the vendor.'}
         </div>
+        {!paid ? (
+          <div style={{ fontSize: 12.5, color: MUTED, marginTop: 6, lineHeight: 1.45 }}>
+            This stores the card on the loan file and fills the appraisal-payment condition.
+            It does not charge anything — the back office charges the card by hand.
+          </div>
+        ) : null}
 
         {err ? <div style={{ marginTop: 10 }}><OrderFailure info={err} vendor={ad.name} action="save the card" /></div> : null}
         {done ? <div style={{ marginTop: 10 }}><Banner tone="good">{done}</Banner></div> : null}
@@ -2643,7 +2789,7 @@ function PayModal({ appId, order, card, onClose, onPaid }) {
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16, flexWrap: 'wrap' }}>
           <button className="btn ghost" disabled={busy} onClick={onClose}>Cancel</button>
-          <button className="btn primary" disabled={busy} onClick={pay}>{busy ? 'Saving…' : paid ? 'Save card' : (fee != null ? `Pay ${money(fee)}` : 'Pay')}</button>
+          <button className="btn primary" disabled={busy} onClick={pay}>{busy ? 'Saving…' : 'Save card'}</button>
         </div>
       </div>
     </div>
