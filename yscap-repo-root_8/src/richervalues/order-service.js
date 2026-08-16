@@ -312,6 +312,12 @@ function resolveChoices(ctx, catalogue, overrides = {}, tokens = {}) {
     // Straight off their catalogue rather than a list retyped here, so a report
     // whose rules change at their end changes what we ask for with no deploy.
     asksProposedStats: rt ? rt.asksProposedStats : undefined,
+    // Their catalogue's own flag for "does this report describe a building that
+    // already stands?". 0 on the two construction products, whose subject has no
+    // bedrooms or year built to give — see the long note in order-build.js. Left
+    // `undefined` when their catalogue is unreachable, which reads as "ask for
+    // them", i.e. exactly the behaviour before this flag was consulted.
+    asksCurrentStats: rt ? rt.asksCurrentStats : undefined,
     needsRenovationBudget: rt ? rt.needsRenovationBudget : undefined,
 
     borrowerBudget: o.borrowerBudget,

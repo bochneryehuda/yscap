@@ -430,14 +430,36 @@ Three of these line up with loan types PILOT already runs:
 - **`prop-value` is $70 cheaper** and is the right product for a bridge or a no-rehab
   purchase, where there is no renovation budget to analyse.
 
-**What it would take:** the plumbing is already per-product — `catalogueFor()` fetches
-the report types, inspection types and turnaround times for whichever product is asked
-for, and `RV_DEFAULT_REPORT_TYPE` already selects one. What is missing is (a) letting
-the ordering screen choose between all four, and (b) the order builder's branches for
-vacant land and for "no current statistics", which their validator enforces per product
-(`ask_current_stats` / `ask_proposed_stats` / `land_eligible` are on the catalogue and
-are already read). Note the two construction products offer **no inspection at all** —
-their only inspection type is `none`.
+**ALL FOUR ARE ORDERABLE NOW (2026-08-16).** The screen has always fed its report-type
+picker from their live catalogue, so all four were selectable — but the two construction
+ones could not actually be PLACED, and that is worth recording because the failure was
+silent in the worst way: the builder demanded a living area, a bedroom count, a bathroom
+count and a year built on **every** order, a vacant lot has none of them, so `canPlace`
+stayed false for ever on figures nobody could truthfully supply and `placeOrder` refused
+with `incomplete`. Two of their four products were dead.
+
+The fix is one flag they already publish and we already read: `ask_current_stats` is 1 on
+the two reports about a standing building and 0 on the two construction ones.
+`reference.js` had normalized it since day one and **nothing had ever consumed it** —
+`resolveChoices` now threads it and `order-build.js` makes the current statistics
+optional (sent when known, never blocking) on a report that never asked for them.
+
+**MEASURED, NOT ASSUMED.** Their validator was probed live on all four branches, using a
+submit that deliberately omitted a required field so it could only ever be refused and
+could create nothing. Not one current statistic came back `is not allowed` on either
+construction product — so a figure we DO hold still rides along on every product, and
+this relaxes only what BLOCKS. Their real required list is `include_flood_certification`,
+`closing_date`, `property_address`, `property_condition`, `report_contact_phone`; the
+builder already demands each of those. The only per-branch refusal found was
+`is_property_partially_completed` on vacant land, which the builder already drops.
+
+Pinned by section I of `scripts/test-richer-value-order-build.js` (both directions:
+a construction report must be placeable, a Renovation Analysis must still refuse, and an
+UNREACHABLE catalogue must keep the strict behaviour — `asksCurrentStats` is tested
+`=== false` so a vendor outage can never quietly loosen an order). The live sweep now
+also prices every product in their catalogue, so a product that can be picked and not
+ordered fails the audit. Note the two construction products offer **no inspection at
+all** — their only inspection type is `none` — and only a `standard` turnaround.
 
 ### 15.2 They sell DRAW INSPECTIONS — and PILOT runs a whole draw system
 
@@ -470,13 +492,47 @@ is a servicing decision, not a technical one.
 The **post-disaster** pair is a real servicing tool — after a named storm, order an
 exterior sweep of the affected properties in the book to see what was damaged.
 
-### 15.4 A card payment costs $3.50 more, and we do not say so
+Confirmed still 7 standalone types on 2026-08-16 (the five above plus `draw-inspection`
+and `draw-inspection-direct`). Their STANDALONE prices are not re-measured here — that
+endpoint returns the list without a price block — so the figures above are as first
+recorded and should be re-confirmed before anyone quotes one.
 
-Their company settings carry `cc_surcharge: {cc_surcharge: "3.50", cc_surcharge_type: "flat"}`,
+**AN INSPECTION COSTS LESS AS AN ADD-ON THAN STANDALONE, and the add-on figures are the
+ones that matter to this desk** (measured live 2026-08-16, and these ARE what the order
+screen quotes because they come off the same catalogue it reads):
+
+| Inspection (as an add-on to a report) | Add-on price |
+|---|---|
+| Interior (w Exterior) — the default | $70.00 |
+| Exterior | $50.00 |
+| Interior — Homeowner Direct | $40.00 |
+| Draw | $150.00 |
+| None | $0.00 |
+
+So the four evaluation reports price, today, at: Property Valuation $349.99 + inspection,
+Renovation Analysis $419.99 + inspection, New Construction $449.99 and
+Partial/Incomplete Construction $454.99 (both inspection-less), rush +$100 where offered,
+plus $3.50 if it is paid by card. **All five inspection types above are available on
+Property Valuation as well as on Renovation Analysis** — including the draw inspection,
+which means a draw visit is already orderable from this desk as part of a valuation
+without any of the separate work §15.2 describes.
+
+### 15.4 A card payment costs $3.50 more — and the screen says so now (2026-08-16)
+
+Their company settings carry `cc_surcharge: {cc_surcharge: "3.5", cc_surcharge_type: "flat"}`,
 and every price quote returns `cc_surcharge: 3.5` **outside** `total_price`. So a $489.99
 Hybrid appraisal paid by card is **$493.49**. Since the owner's payment design is
-card-first, this applies to essentially every order. The quote already carries the
-figure; the ordering screen does not yet show it.
+card-first, this applies to essentially every order, and the desk was quoting a total
+lower than what would actually be charged.
+
+The order screen now prints it as its own line — *"Paying by card adds $3.50 — $493.49
+charged to the card"* — rather than folding it into the headline, because whether it
+applies depends on HOW it is paid: a payment link is their own hosted page, and whether
+they add the same surcharge there is still an open question with their team (§Step 8 of
+the setup guide). Claiming it applies to every route would state something we have not
+confirmed. The live audit now pins the SHAPE as well as the figure — that
+`total_price` is the sum of its own lines and the surcharge sits outside it — so if they
+ever fold it in, the audit fails rather than the screen silently double-counting it.
 
 ### 15.5 The price quote cannot see three of the add-ons
 
@@ -489,7 +545,19 @@ real invoice will exceed the quote. Worth confirming with them what those three 
 
 ### 15.6 Confirmed absent — do not go looking for these
 
-All 404 on the live tenant: any order **list / search** endpoint, **messages / notes /
+**CORRECTION (2026-08-16): `/api/v2/report-types` is NOT 404 — it answers 200.** The
+original sweep called it without a `company_token` and read the resulting 422 as absence.
+With the token it returns their whole second product line: `aivm` (A.I. Valuation Model,
+**$34.99**), `epo` (Electronic Price Opinion, **$39.99**) and `rental-aivm` (AIVM with
+Rental Analysis, **$39.99**), each carrying `type: "epo"`. Their v2 ORDERING paths
+(`/api/v2/order/pricing`, `/api/v2/order/submit`, `/api/v2/aivm`, `/api/v2/epo`) do still
+404, so the shape of a v2 order is unknown and would have to come from their team. PILOT
+orders none of these — that was owner-directed at the time (*"we're going to build up now
+only evaluation"*) and is a live decision, not a technical limit. **Do not repeat the
+mistake that produced the original claim: probe an endpoint WITH the company token before
+recording it as absent.**
+
+Still 404 on the live tenant: any order **list / search** endpoint, **messages / notes /
 comments**, **revisions**, **invoices**, **webhook management**, **add-ons**, an
 **appointment or scheduling** endpoint, an **activity or timeline** endpoint, and any
 **OpenAPI / Swagger** document. In particular:

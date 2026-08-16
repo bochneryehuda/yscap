@@ -1059,6 +1059,26 @@ function RicherValueBuilder({ appId, cfg, onPlaced }) {
                   ].filter(Boolean).join(' · ')}
                   {price.due_date ? ` · report due ${fmtDate(price.due_date)}` : ''}
                 </div>
+                {/*
+                  THE CARD SURCHARGE IS NOT IN THEIR TOTAL. Every quote carries
+                  `cc_surcharge` OUTSIDE `total_price` (measured live: $3.50 flat,
+                  from their company settings `cc_surcharge_type: "flat"`). Our
+                  payment design is card-first — CARD_ON_FILE is the default and
+                  NEW_CARD is the other card route — so on essentially every order
+                  the amount actually charged is higher than the figure above, and
+                  the desk was quoting the borrower the wrong total.
+
+                  It is shown as its own line rather than folded into the headline
+                  because it depends on HOW it is paid: a payment link is their own
+                  hosted page and whether they add the same surcharge there is a
+                  question outstanding with their team, so claiming it applies to
+                  every route would be stating something we have not confirmed.
+                */}
+                {Number(price.cc_surcharge) > 0 ? (
+                  <div className="n" style={{ marginTop: 4 }}>
+                    Paying by card adds {money(price.cc_surcharge)} — <b>{money(Number(price.total_price) + Number(price.cc_surcharge))}</b> charged to the card.
+                  </div>
+                ) : null}
               </div>
             </div>
           ) : preview.priceError ? (

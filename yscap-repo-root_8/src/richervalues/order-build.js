@@ -412,9 +412,32 @@ function buildOrder(ctx = {}, choices = {}) {
   else need('property_condition', 'Condition', 'Pick the property’s condition today.');
 
   // ---- current specifications --------------------------------------------
-  // Their validator requires all five of these on a single-property order, plus a
-  // lot size on anything that is not a condo. `specFor` records where each value
-  // came from so the screen can show it.
+  // These describe the property AS IT STANDS TODAY, and `specFor` records where
+  // each value came from so the screen can show it.
+  //
+  // A REPORT ABOUT A PROPERTY THAT DOES NOT EXIST YET HAS NONE OF THEM, and that
+  // is the vendor's own distinction, not ours: their report-type catalogue carries
+  // `ask_current_stats`, which is 1 on the two reports about a standing building
+  // (Property Valuation, Renovation Analysis) and 0 on the two construction ones
+  // (New Construction, Partial/Incomplete Construction). A vacant lot has no
+  // bedrooms, no bathrooms, no year built and no living area — so demanding them
+  // made BOTH construction products impossible to order: `canPlace` stayed false
+  // for ever on figures no human could truthfully supply, and `placeOrder` refused
+  // with `incomplete`.
+  //
+  // MEASURED, NOT ASSUMED — this relaxes what BLOCKS, never what is SENT. Their
+  // validator was probed live on every branch (a submit deliberately missing a
+  // required field, so it could only ever be refused and could create nothing):
+  // not one current statistic came back "is not allowed" on either construction
+  // product, and their own required list is `include_flood_certification`,
+  // `closing_date`, `property_address`, `property_condition` and
+  // `report_contact_phone` — none of these. So a figure we DO know is still sent
+  // on every product; only the refusal goes away where the report never asked.
+  //
+  // `asksCurrentStats` is read straight off their catalogue (reference.js already
+  // normalized it and nothing had ever consumed it) and is tested `=== false`, so
+  // an unknown report type, an unreachable catalogue or an older caller keeps
+  // today's behaviour exactly.
   //
   // A MISSING SPEC IS A MISSING SPEC, NOT A CRASH. `ctx.specs` is whatever the
   // caller happened to build, and every read here used to be `specs.<key>.value` —
@@ -445,20 +468,28 @@ function buildOrder(ctx = {}, choices = {}) {
     return v;
   };
 
-  specField('above_grade_sqft', 'Living area (above grade)', choices.aboveGradeSqft, spec('aboveGradeSqft'), { positive: true });
-  // Below-grade square footage is REQUIRED but is legitimately zero on most
-  // properties, so a known-zero is a real answer and only an UNKNOWN is missing.
-  specField('below_grade_sqft', 'Below-grade area', choices.belowGradeSqft, spec('belowGradeSqft'), {});
-  specField('bedrooms', 'Bedrooms', choices.bedrooms, spec('bedrooms'), { positive: true });
-  specField('bathrooms', 'Bathrooms', choices.bathrooms, spec('bathrooms'), { positive: true, asInt: false });
-  specField('year_built', 'Year built', choices.yearBuilt, spec('yearBuilt'), { positive: true });
+  // On a report that never asks about the standing building, every one of these is
+  // "send it if we happen to know it" rather than "answer this before you order".
+  const currentStatsAsked = choices.asksCurrentStats !== false;
+  const curOpt = currentStatsAsked ? {} : { optional: true };
+
+  specField('above_grade_sqft', 'Living area (above grade)', choices.aboveGradeSqft, spec('aboveGradeSqft'), { positive: true, ...curOpt });
+  // Below-grade square footage is legitimately zero on most properties, so a
+  // known-zero is a real answer and only an UNKNOWN is missing.
+  specField('below_grade_sqft', 'Below-grade area', choices.belowGradeSqft, spec('belowGradeSqft'), { ...curOpt });
+  specField('bedrooms', 'Bedrooms', choices.bedrooms, spec('bedrooms'), { positive: true, ...curOpt });
+  specField('bathrooms', 'Bathrooms', choices.bathrooms, spec('bathrooms'), { positive: true, asInt: false, ...curOpt });
+  specField('year_built', 'Year built', choices.yearBuilt, spec('yearBuilt'), { positive: true, ...curOpt });
 
   if (resType && NO_LOT_TYPES.has(resType)) {
     if (choices.lotSizeSquareFeet != null || spec('lotSizeSquareFeet').value != null) {
       drop('lot_size_square_feet', 'A condo has no lot of its own — sending a lot size for one is refused.');
     }
   } else {
-    specField('lot_size_square_feet', 'Lot size (sq ft)', choices.lotSizeSquareFeet, spec('lotSizeSquareFeet'), { positive: true });
+    // The lot is the ONE current figure a vacant site really does have, and on a
+    // ground-up report it is most of what is being valued — so it is still sent
+    // and still asked for; it simply stops blocking when the report never asked.
+    specField('lot_size_square_feet', 'Lot size (sq ft)', choices.lotSizeSquareFeet, spec('lotSizeSquareFeet'), { positive: true, ...curOpt });
   }
 
   // Optional extras — never blocking, sent when known.

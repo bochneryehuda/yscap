@@ -389,4 +389,88 @@ const REPORT = () => ({
   ok(line.includes('$90,000') && line.includes('$164,700'), 'H26 the summary quotes both figures');
 }
 
+// ===========================================================================
+// I  THE FOUR PRODUCTS — a report about a building that does not exist yet
+//
+// Richer Values sell four evaluation reports. Two are about a property standing
+// today (Property Valuation, Renovation Analysis) and two are about one that is
+// not built yet (New Construction, Partial/Incomplete Construction). Their
+// report-type catalogue says which is which with `ask_current_stats`, and the
+// builder used to ignore it — so it demanded a living area, a bedroom count, a
+// bathroom count and a year built for a VACANT LOT, `canPlace` stayed false on
+// figures nobody could truthfully supply, and BOTH construction products were
+// impossible to order at all (`placeOrder` refuses `incomplete`).
+//
+// The relaxation is about what BLOCKS, never about what is SENT: their validator
+// was probed live on all four branches (a submit deliberately missing a required
+// field, so it could only be refused and could create nothing) and not one
+// current statistic came back "is not allowed" on either construction product.
+// So a figure we DO know still rides along on every product.
+// ===========================================================================
+{
+  // A vacant site: the lot is known, nothing about a building is, and the
+  // after-construction figures are.
+  const LOT = () => {
+    const c = CTX();
+    c.rehabType = 'Ground-up';
+    c.specs = {
+      aboveGradeSqft: { value: null }, belowGradeSqft: { value: null },
+      bedrooms: { value: null }, bathrooms: { value: null }, yearBuilt: { value: null },
+      lotSizeSquareFeet: { value: 20000, source: 'the property warehouse' },
+      stories: { value: null }, garageSpaces: { value: null }, conditionUad: null,
+    };
+    c.proposed = { aboveGradeSqft: 2400 };
+    return c;
+  };
+  const GROUND = (over = {}) => CHOICES({
+    reportType: 'new-construction', inspectionType: 'none',
+    isVacantLand: true, propertyCondition: 'new-construction',
+    asksCurrentStats: false, asksProposedStats: true, ...over,
+  });
+
+  const b = B.buildOrder(LOT(), GROUND());
+  eq(b.canPlace, true, 'I1 a ground-up report on a vacant lot CAN be placed');
+  eq(missingFields(b).length, 0, 'I2 …and nothing about a standing building is demanded of it');
+  for (const f of ['above_grade_sqft', 'below_grade_sqft', 'bedrooms', 'bathrooms', 'year_built']) {
+    eq(has(b, f), false, `I3 no ${f} is invented for a property that does not exist yet`);
+  }
+  eq(b.fields.lot_size_square_feet, '20000', 'I4 the lot — the one current figure a site really has — is still sent');
+  eq(b.fields.is_property_vacant_land, '1', 'I5 the order says it is vacant land');
+  eq(has(b, 'is_property_partially_completed'), false,
+    'I6 and never claims a completion state, which their validator refuses on vacant land');
+  eq(b.fields.proposed_above_grade_sqft, '2400', 'I7 the after-construction figures DO ride along');
+
+  // Anything we happen to know is still sent — the relaxation is about blocking.
+  const known = B.buildOrder(CTX(), GROUND({ isVacantLand: false }));
+  eq(known.fields.bedrooms, '3', 'I8 a bedroom count we DO hold is still sent on a construction report');
+  eq(known.fields.year_built, '1990', 'I9 …as is the year built');
+
+  // Partial/incomplete construction: a half-built project, which DOES carry a
+  // completion percentage, and still must not be blocked on a year built.
+  const partial = B.buildOrder(LOT(), GROUND({
+    reportType: 'partial-construction', isVacantLand: false,
+    isPartiallyCompleted: true, partiallyCompletedPercentage: 40,
+  }));
+  eq(partial.canPlace, true, 'I10 a partial-construction report can be placed');
+  eq(partial.fields.is_property_partially_completed, '1', 'I11 …and says the build is under way');
+  eq(partial.fields.partially_completed_estimated_percentage, '40', 'I12 …with how far along it is');
+
+  // THE TWO REPORTS ABOUT A STANDING BUILDING ARE UNTOUCHED. This is the half
+  // that matters most: the relaxation must not leak into the product we order on
+  // essentially every file, where a guessed bedroom count would produce a
+  // valuation of a house that does not exist.
+  const reno = B.buildOrder(LOT(), CHOICES({ asksCurrentStats: true }));
+  eq(reno.canPlace, false, 'I13 a Renovation Analysis still refuses to go without the property’s own figures');
+  for (const f of ['above_grade_sqft', 'below_grade_sqft', 'bedrooms', 'bathrooms', 'year_built']) {
+    ok(missingFields(reno).includes(f), `I14 …${f} is still demanded`);
+  }
+
+  // AN UNREACHABLE CATALOGUE MUST READ AS "ASK FOR THEM". `asksCurrentStats` is
+  // tested `=== false`, so undefined keeps the pre-existing behaviour exactly —
+  // a vendor outage can never quietly loosen what an order must carry.
+  const noCat = B.buildOrder(LOT(), CHOICES({ asksCurrentStats: undefined }));
+  eq(noCat.canPlace, false, 'I15 with their catalogue unreachable the strict behaviour stands');
+  eq(missingFields(noCat).join(','), missingFields(reno).join(','), 'I16 …identically to before the flag existed');
+}
+
 console.log(`test-richer-value-order-build: ${pass} assertions passed`);

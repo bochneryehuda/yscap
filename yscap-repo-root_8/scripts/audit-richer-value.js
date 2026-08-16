@@ -887,6 +887,36 @@ async function sectionJLive(rounds) {
            + Number(p.flood_charge || 0) + Number(p.conversion_fee || 0) + Number(p.surcharge_fee || 0))) < 0.011,
       { rt, insp, p });
     ok('J live', 'a quote always carries a due date', !!p.due_date, { rt });
+    // THE CARD SURCHARGE IS OUTSIDE THE TOTAL, and the desk quotes it separately
+    // because of that. If they ever fold it in, this flips and the screen would
+    // start double-counting it — so the shape is pinned, not just the number.
+    ok('J live', 'the card surcharge is carried on the quote', p.cc_surcharge != null, { rt });
+    ok('J live', 'the card surcharge is NOT already inside the total',
+      Math.abs(Number(p.total_price) - (Number(p.base_fee) + Number(p.inspection_fee)
+        + Number(p.rush_fee || 0) + Number(p.gla_surcharge || 0) + Number(p.licensing_surcharge || 0)
+        + Number(p.flood_charge || 0) + Number(p.conversion_fee || 0) + Number(p.surcharge_fee || 0))) < 0.011,
+      { rt, total: p.total_price, cc: p.cc_surcharge });
+  }
+
+  // ---- every product they sell can be priced -------------------------------
+  // The desk offers whatever their catalogue lists, so a product that cannot be
+  // priced is a product a staffer can pick and then not order. The two
+  // construction reports take no inspection at all — their only inspection type
+  // is `none` — which is exactly the branch that used to be unbuildable here.
+  for (const t of types) {
+    const insp = String(t.slug).includes('construction') ? 'none' : 'interior-w-exterior';
+    try {
+      const q = await client.pricing({
+        company_token: ct, report_type: t.slug, inspection_type: insp,
+        turnaround_time: 'standard', residential_property_type: 'sfr',
+        state: 'PA', postal_code: '18702',
+      });
+      const p = q && q.data && q.data.pricing_data && q.data.pricing_data.single_report_amount;
+      ok('J live', `their ${t.slug} report prices`, !!p && Number.isFinite(Number(p.total_price)),
+        { rt: t.slug, insp, total: p && p.total_price });
+    } catch (e) {
+      ok('J live', `their ${t.slug} report prices`, false, { rt: t.slug, insp, err: String(e.message).slice(0, 160) });
+    }
   }
 }
 
