@@ -74,7 +74,19 @@ for (const [zip, state, fips, name] of KNOWN) {
   // agreeing values are simply kept
   const agree = sm.validateScenario({ purpose: 'Purchase', fico: 760, value: 5e5, loan: 4e5, zip: '11211', state: 'NY', countyFps: '36047' });
   ok(agree.ok === true, 'ASSERT-1 supplying values that AGREE with the ZIP is accepted');
-  ok(agree.countyEnrichment === null, 'ASSERT-2 …and nothing is reported as derived (nothing was)');
+  // CONTRACT CHANGE (post-merge audit of #1220): this used to assert "nothing is reported as
+  // derived". That premise stopped being true when the county-name fill was corrected — the caller
+  // supplied the state and the FIPS but NOT the name, so the NAME genuinely is derived here, and
+  // reporting it is the point (the alternative was leaving the name to be inherited from a stale
+  // pricing foundation). What must still hold is that ONLY the name is claimed, and that nothing the
+  // caller supplied is overwritten.
+  ok(agree.countyEnrichment && agree.countyEnrichment.filled.join() === 'countyName',
+    'ASSERT-2 …and exactly one thing is reported as derived: the county NAME they did not supply');
+  ok(agree.request.property.address.state === 'NY' && agree.request.property.address.county === '36047',
+    'ASSERT-2b …with the caller\'s own state and county FIPS untouched');
+  const allSupplied = sm.validateScenario({ purpose: 'Purchase', fico: 760, value: 5e5, loan: 4e5, zip: '11211', state: 'NY', countyFps: '36047', countyName: 'Kings' });
+  ok(allSupplied.countyEnrichment === null,
+    'ASSERT-2c a caller who supplied EVERY part still has nothing reported as derived');
   // a contradicting state is a conflict, not an overwrite
   const badState = sm.validateScenario({ purpose: 'Purchase', fico: 760, value: 5e5, loan: 4e5, zip: '11211', state: 'NJ' });
   ok(badState.ok === false && badState.error === 'location_conflict' && badState.field === 'state',
@@ -141,6 +153,70 @@ for (const [zip, state, fips, name] of KNOWN) {
   ok(fromEnriched.county === '36047' && fromEnriched.state === 'NY', 'ROUTE-2 building from the enriched scenario carries the right county');
   ok(fromRaw.county !== '36047',
     'ROUTE-3 building from the ORIGINAL would NOT — so the route must swap in the enriched one (this is the bug being prevented)');
+}
+
+// ---- POST-MERGE AUDIT (#1220): the STALE FOUNDATION ADDRESS ---------------
+// Production clones a LIVE /pricing/defaultSearch, so whatever address the previous session left is
+// on the base. Every address part used to be written ONLY when the caller supplied it and NONE was
+// in the scenario-owned clearing registry, so the leftovers rode onto the wire: a Brooklyn deal
+// priced with a California city, and — worse — a payload whose county FIPS said Kings while its
+// county NAME said Los Angeles.
+{
+  const stale = () => {
+    const b = JSON.parse(JSON.stringify(sm.BASE));
+    b.property = b.property || {}; b.property.address = b.property.address || {};
+    Object.assign(b.property.address, { zip: '90210', state: 'CA', city: 'Beverly Hills', county: '06037', censustract: '06037', countyName: 'Los Angeles' });
+    return b;
+  };
+  const addrOf = (sc) => sm.buildSearch(sc, { base: stale() }).property.address;
+
+  const full = addrOf({ purpose: 'Purchase', loan: 4e5, ltv: 75, zip: '11211', state: 'NY', countyFps: '36047', countyName: 'Kings' });
+  ok(full.zip === '11211' && full.state === 'NY' && full.county === '36047' && full.countyName === 'Kings',
+    'STALE-1 the caller\'s own location is what reaches the wire');
+  ok(full.city === undefined, 'STALE-2 the prior session\'s CITY is gone (it was pricing Brooklyn as Beverly Hills)');
+
+  const noName = addrOf({ purpose: 'Purchase', loan: 4e5, ltv: 75, zip: '11211', state: 'NY', countyFps: '36047' });
+  ok(noName.countyName !== 'Los Angeles',
+    'STALE-3 a caller supplying a FIPS and no name never inherits the base\'s county NAME (the FIPS/name contradiction)');
+
+  const noZip = addrOf({ purpose: 'Purchase', loan: 4e5, ltv: 75, state: 'NY', countyFps: '36047' });
+  ok(noZip.zip === undefined, 'STALE-4 a scenario with no ZIP does not inherit a CA ZIP alongside state NY');
+
+  // every address part is registered, so a part added later cannot quietly reopen this
+  const paths = sm._internals.SCENARIO_OWNED.map((e) => e.path);
+  for (const part of ['zip', 'state', 'city', 'county', 'censustract', 'countyName']) {
+    ok(paths.includes(`property.address.${part}`), `STALE-REG property.address.${part} is in the clearing registry`);
+  }
+}
+
+// ---- POST-MERGE AUDIT (#1220): the county NAME is filled when it APPLIES ----
+// The old rule withheld our county name whenever the caller supplied ANY countyFps. Its stated
+// reason ("their explicit county keeps its own name") does not hold when they supplied a FIPS and
+// NO name — there is no name to keep — so the name was left to be inherited, and one response
+// asserted countyEnrichment.countyName = "Bronx" while the built request said a New Jersey county.
+{
+  const r = zc.enrichLocation({ zip: '11211', countyFps: '36047' }); // the ZIP's OWN county
+  ok(r.ok === true && r.location.countyName === 'Kings',
+    'NAMEFILL-1 a caller supplying the ZIP\'s own FIPS and no name DOES get the county name');
+  const keep = zc.enrichLocation({ zip: '11211', countyFps: '36047', countyName: 'Their Name' });
+  ok(keep.location.countyName === undefined, 'NAMEFILL-2 …and a caller\'s OWN name is still never relabelled');
+
+  // on a SPLIT ZIP where the caller overrode the county, we still fill nothing: their FIPS names a
+  // county this table holds no name for, and the dominant county\'s name would be the wrong label.
+  let splitZip = null;
+  for (let n = 1000; n < 99999 && !splitZip; n++) {
+    const z = String(n).padStart(5, '0'); const h = zc.lookupZip(z); if (h && h.split) splitZip = z;
+  }
+  if (splitZip) {
+    const other = zc.enrichLocation({ zip: splitZip, countyFps: '99999' });
+    ok(other.ok === true && other.location.countyName === undefined,
+      'NAMEFILL-3 an overridden county on a split ZIP is never given the dominant county\'s name');
+  }
+
+  // end to end: the response and the built request agree about the county
+  const v = sm.validateScenario({ purpose: 'Purchase', fico: 760, loan: 4e5, ltv: 75, zip: '11211', countyFps: '36047' });
+  ok(v.ok === true && v.request.property.address.countyName === 'Kings',
+    'NAMEFILL-4 the BUILT REQUEST carries the right county name (one answer, one county)');
 }
 
 // ---- the lookup is pure, offline and total --------------------------------

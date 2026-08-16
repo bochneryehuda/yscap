@@ -375,6 +375,27 @@ const SCENARIO_OWNED = [
   // buildSearch AFTER this clear when the caller supplies compPercent, so the DELETE footgun above
   // does not apply.
   { path: 'brokerCriteria.compPlan', neutral: DELETE, why: 'broker comp percent — audit §31.6 stale compPlan leak' },
+  // §31.6 — THE PROPERTY ADDRESS. Found by the post-merge audit of #1220, and it is the same leak
+  // class as compPlan with a worse consequence: every address part was written ONLY when the caller
+  // supplied it, so against a LIVE foundation (production clones /pricing/defaultSearch) whatever
+  // address the previous session left rode onto the wire. Reproduced: a caller sending ZIP 11211
+  // priced as {zip:"11211", state:"NY", county:"36047", countyName:"Kings", city:"Beverly Hills"} —
+  // a Brooklyn deal with a California city — and, worse, a payload whose county FIPS said Kings
+  // while its county NAME said Los Angeles, because the name came from the stale base and the FIPS
+  // from the caller. A wrong location does not fail loudly; it prices the wrong market.
+  //
+  // Neutral is ABSENT for every part. Unlike the economics neutrals (the base's own defaults), the
+  // captured base's address is a REAL property's address — keeping it as the neutral would mean
+  // "clearing" a stale address by writing a different stale one. Deleting can only ever REMOVE a
+  // value, never introduce one. Every part is re-applied by buildSearch's address overlay AFTER this
+  // clear, and validateScenario refuses a priced scenario without state + county FIPS, so a real
+  // request is complete; what disappears is exactly the inherited part nobody asked for.
+  { path: 'property.address.zip',         neutral: DELETE, why: 'per-deal ZIP — a stale one contradicts the state' },
+  { path: 'property.address.state',       neutral: DELETE, why: 'per-deal state' },
+  { path: 'property.address.city',        neutral: DELETE, why: 'per-deal city — never derived from a ZIP, so a stale one survives every enrichment' },
+  { path: 'property.address.county',      neutral: DELETE, why: 'per-deal county FIPS' },
+  { path: 'property.address.censustract', neutral: DELETE, why: 'per-deal county FIPS (the vendor carries it twice)' },
+  { path: 'property.address.countyName',  neutral: DELETE, why: 'per-deal county name — the FIPS/name contradiction' },
 ];
 // Clear every registered scenario-owned field to its neutral state, IN PLACE. Operates on the
 // already-cloned model (buildSearch clones first), so it never mutates the shared BASE or a caller's

@@ -84,5 +84,25 @@ ok(!g.nexted && g.code === 401, 'gate 401s on wrong token');
 g = run(gate, { 'x-lp-diag-token': 'secret-abc' }, 'secret-abc');
 ok(g.nexted && g.code === null, 'gate passes through on correct token');
 
+// ---- POST-MERGE AUDIT (#1220): §3 of the parity doc must not drift from the code ----
+// §3 states "anything not in this list is rejected 422 (unsupported_field)". Read literally, a field
+// missing from the list says a SUPPORTED field is rejected — and 12 of them were missing, because
+// the list is hand-maintained while SUPPORTED_FIELDS grows in code. A hand-kept list goes stale
+// silently, so this asserts the two agree instead of trusting anyone to remember.
+{
+  const fs = require('fs');
+  const doc = fs.readFileSync(require('path').join(__dirname, '..', 'docs', 'longterm', 'LENDER-PRICE-PARITY-STATUS.md'), 'utf8');
+  const start = doc.indexOf('## 3. The request-builder field contract');
+  const end = doc.indexOf('## 4.');
+  ok(start !== -1 && end > start, 'DOC-0 the parity doc still has a §3 field-contract section');
+  const s3 = doc.slice(start, end);
+  const missing = [...dp.SUPPORTED_FIELDS].filter((f) => !new RegExp('`' + f + '`').test(s3));
+  ok(missing.length === 0, `DOC-1 every supported field is documented in §3 (missing: ${missing.join(', ') || 'none'})`);
+  // and the reverse would be worse: a field the doc PROMISES that the route would 422
+  const promised = (s3.match(/^- `([a-zA-Z]+)`/gm) || []).map((m) => m.replace(/^- `|`$/g, ''));
+  const phantom = promised.filter((f) => !dp.SUPPORTED_FIELDS.has(f) && !dp.META_FIELDS.has(f));
+  ok(phantom.length === 0, `DOC-2 §3 promises no field the route would reject (phantom: ${phantom.join(', ') || 'none'})`);
+}
+
 console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
 process.exit(failures ? 1 : 0);
