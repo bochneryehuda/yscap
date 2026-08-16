@@ -102,6 +102,54 @@ async function main() {
     saysSomethingAbout(realProblems, [probeTable, 'columns changed'],
       'A: a column added in the DATABASE is caught by the real catalog read');
 
+    // A DROPPED FOREIGN KEY, against the real database. This is the headline of
+    // the enrichment: before the relationship layer was recorded, this exact
+    // change was invisible — the map did not move and the check said "fine".
+    const fk = live.schema.foreignKeys[0];
+    ok('A: the database has foreign keys to test against', !!fk);
+    if (fk) {
+      await client.query('BEGIN');
+      let withoutFk;
+      try {
+        await client.query(`ALTER TABLE "${fk.table}" DROP CONSTRAINT "${fk.name}"`);
+        withoutFk = await buildInventory(client);
+      } finally {
+        await client.query('ROLLBACK');
+      }
+      saysSomethingAbout(diffInventories(live, withoutFk), ['foreignKeys', fk.name, 'GONE'],
+        'A: a DROPPED FOREIGN KEY is caught — the change that used to be invisible');
+
+      const restored = await buildInventory(client);
+      ok('A: the foreign key is back — the test left no residue',
+        diffInventories(live, restored).length === 0,
+        `${diffInventories(live, restored).length} difference(s) survived the rollback`);
+    }
+
+    // A CHANGED DEFAULT. The type and the nullability do not move, so only the
+    // default being part of the column signature can catch it — and what it
+    // changes is what every row written from then on contains.
+    const defCol = (live.tables.find((t) => t.name === probeTable) || { columns: [] })
+      .columns.find((c) => c.includes(' DEFAULT '));
+    ok('A: column signatures actually carry defaults', !!defCol,
+      `no column of ${probeTable} recorded a DEFAULT`);
+    if (defCol) {
+      const colName = defCol.split(' ')[0];
+      await client.query('BEGIN');
+      let withNewDefault;
+      try {
+        // DROP, not SET: a literal has to be valid for the column's TYPE, and
+        // picking one per type is a needless way for this test to fail on a
+        // timestamp. Dropping is valid for every column and moves the signature
+        // just as decisively.
+        await client.query(`ALTER TABLE ${probeTable} ALTER COLUMN ${colName} DROP DEFAULT`);
+        withNewDefault = await buildInventory(client);
+      } finally {
+        await client.query('ROLLBACK');
+      }
+      saysSomethingAbout(diffInventories(live, withNewDefault), [probeTable, 'columns changed'],
+        'A: a CHANGED COLUMN DEFAULT is caught (type and nullability unmoved)');
+    }
+
     // And the rollback truly restored it — otherwise this test would be the
     // thing that corrupts the scratch schema for every step after it.
     const after = await buildInventory(client);
@@ -159,12 +207,55 @@ async function main() {
         mutate: (inv) => { inv.beyondPrisma.generatedColumns = inv.beyondPrisma.generatedColumns.slice(1); },
         bitsFrom: (inv) => ['generatedColumns', inv.beyondPrisma.generatedColumns[0].name, 'GONE'],
       },
+
+      // The relationship layer. Every one of these was invisible before it was
+      // recorded, so each case here is a hole that used to be open.
+      {
+        label: 'B: a FOREIGN KEY that vanished',
+        group: 'schema', section: 'foreignKeys',
+        mutate: (inv) => { inv.schema.foreignKeys = inv.schema.foreignKeys.slice(1); },
+        bitsFrom: (inv) => ['foreignKeys', inv.schema.foreignKeys[0].name, 'GONE'],
+      },
+      {
+        label: 'B: a foreign key whose ON DELETE rule CHANGED',
+        group: 'schema', section: 'foreignKeys',
+        // The relationship survives; what happens when the parent row is deleted
+        // does not. Nothing about the table shape moves, so only a definition
+        // comparison can see it.
+        mutate: (inv) => { inv.schema.foreignKeys[0].definition += ' ON DELETE CASCADE'; },
+        bitsFrom: (inv) => ['foreignKeys', inv.schema.foreignKeys[0].name, 'changed'],
+      },
+      {
+        label: 'B: an INDEX that vanished',
+        group: 'schema', section: 'indexes',
+        mutate: (inv) => { inv.schema.indexes = inv.schema.indexes.slice(1); },
+        bitsFrom: (inv) => ['indexes', inv.schema.indexes[0].name, 'GONE'],
+      },
+      {
+        label: 'B: a PRIMARY KEY that vanished',
+        group: 'schema', section: 'primaryKeys',
+        mutate: (inv) => { inv.schema.primaryKeys = inv.schema.primaryKeys.slice(1); },
+        bitsFrom: (inv) => ['primaryKeys', inv.schema.primaryKeys[0].name, 'GONE'],
+      },
+      {
+        label: 'B: a UNIQUE CONSTRAINT that vanished',
+        group: 'schema', section: 'uniqueConstraints',
+        mutate: (inv) => { inv.schema.uniqueConstraints = inv.schema.uniqueConstraints.slice(1); },
+        bitsFrom: (inv) => ['uniqueConstraints', inv.schema.uniqueConstraints[0].name, 'GONE'],
+      },
+      {
+        label: 'B: an ENUM that gained a value',
+        group: 'schema', section: 'enums',
+        mutate: (inv) => { inv.schema.enums[0].values += ', zzz_probe_value'; },
+        bitsFrom: (inv) => ['enums', inv.schema.enums[0].name, 'changed'],
+      },
     ];
 
     for (const c of cases) {
       // A section this database happens not to use cannot be proven here, and
       // silently "passing" it would be a lie — say so instead.
-      if (c.section && !(live.beyondPrisma[c.section] || []).length) {
+      const grp = c.group || 'beyondPrisma';
+      if (c.section && !((live[grp] || {})[c.section] || []).length) {
         failures.push(`${c.label} — cannot be proven: the database has no ${c.section} at all`);
         continue;
       }
@@ -252,6 +343,23 @@ async function main() {
 
   ok('D: every verdict still lists the offending object underneath',
     [sameMig, olderMig, noMig].every((s) => /zzz_not_really_here/.test(s)));
+
+  // The THIRD cause, which the watermark cannot see: the map itself learned to
+  // record something new. Reported as our own change, never as "the database
+  // holds something no migration explains" — an alarming verdict on a routine
+  // event is how people learn to ignore the loudest message.
+  const olderShape = path.join(tmp, 'older-shape.json');
+  const shrunk = clone(live);
+  delete shrunk.schema.foreignKeys;
+  delete shrunk.schema.indexes;
+  fs.writeFileSync(olderShape, JSON.stringify(shrunk, null, 2));
+  const shapeOut = String(run(olderShape, false).stdout);
+  ok('D: a snapshot predating a section is reported as THE MAP GOT RICHER',
+    /THE MAP GOT RICHER/.test(shapeOut) && !/WORTH A LOOK/.test(shapeOut),
+    shapeOut.split('\n').slice(0, 3).join(' / '));
+  ok('D: …and it names how many kinds it now records, and which',
+    /predates this section/.test(shapeOut) && /foreignKeys/.test(shapeOut),
+    shapeOut.split('\n').slice(0, 5).join(' / '));
 
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
 

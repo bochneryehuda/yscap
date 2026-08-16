@@ -27,7 +27,9 @@
 
 const fs = require('fs');
 const path = require('path');
-const { buildInventory, migrationState } = require('./schema-inventory');
+const {
+  buildInventory, migrationState, BEYOND_PRISMA_SECTIONS, SCHEMA_SECTIONS,
+} = require('./schema-inventory');
 
 const SNAPSHOT = path.join(__dirname, '..', 'docs', 'schema', 'beyond-prisma.json');
 const ENFORCE = process.env.SCHEMA_SNAPSHOT_ENFORCE === '1';
@@ -44,20 +46,44 @@ const snapshotPath = () => process.env.SCHEMA_SNAPSHOT_FILE || SNAPSHOT;
 function diffInventories(committed, live) {
   const problems = [];
 
-  const sections = ['triggers', 'functions', 'checkConstraints', 'generatedColumns', 'partialIndexes'];
-  for (const section of sections) {
-    const was = new Map((committed.beyondPrisma[section] || []).map((x) => [x.name, x]));
-    const now = new Map((live.beyondPrisma[section] || []).map((x) => [x.name, x]));
+  // ONE comparison, walked over BOTH groups of sections, and the section lists
+  // are imported rather than retyped. A second hand-kept list here is precisely
+  // how the relationship layer went unguarded to begin with: the inventory knew
+  // about foreign keys long before anything compared them.
+  const groups = [
+    ['beyondPrisma', BEYOND_PRISMA_SECTIONS],
+    ['schema', SCHEMA_SECTIONS],
+  ];
 
-    for (const name of now.keys()) {
-      if (!was.has(name)) problems.push(`${section}: "${name}" exists in the database but not in the snapshot`);
-    }
-    for (const name of was.keys()) {
-      if (!now.has(name)) problems.push(`${section}: "${name}" is in the snapshot but GONE from the database`);
-    }
-    for (const [name, a] of was) {
-      const b = now.get(name);
-      if (b && JSON.stringify(a) !== JSON.stringify(b)) problems.push(`${section}: "${name}" changed`);
+  for (const [group, sections] of groups) {
+    for (const section of sections) {
+      // A snapshot written before this section existed has nothing to say about
+      // it. Reading that absence as "everything was deleted" would bury the real
+      // differences under hundreds of phantom ones — so an ABSENT section is
+      // skipped and a PRESENT-but-empty one is compared honestly.
+      const wasList = ((committed[group] || {})[section]) || null;
+      const nowList = ((live[group] || {})[section]) || [];
+      if (!wasList) {
+        if (nowList.length) {
+          problems.push(`${section}: the snapshot predates this section — `
+            + `${nowList.length} object(s) in the database are not described by it`);
+        }
+        continue;
+      }
+
+      const was = new Map(wasList.map((x) => [x.name, x]));
+      const now = new Map(nowList.map((x) => [x.name, x]));
+
+      for (const name of now.keys()) {
+        if (!was.has(name)) problems.push(`${section}: "${name}" exists in the database but not in the snapshot`);
+      }
+      for (const name of was.keys()) {
+        if (!now.has(name)) problems.push(`${section}: "${name}" is in the snapshot but GONE from the database`);
+      }
+      for (const [name, a] of was) {
+        const b = now.get(name);
+        if (b && JSON.stringify(a) !== JSON.stringify(b)) problems.push(`${section}: "${name}" changed`);
+      }
     }
   }
 
@@ -111,8 +137,21 @@ async function main() {
   // unreadable db/ directory) says exactly that rather than guessing either way.
   const wasMig = (committed.generatedFrom || {}).migrations || null;
   const nowMig = migrationState();
+
+  // THE THIRD CAUSE, and it must be checked FIRST. When the map itself learns to
+  // record something new (foreign keys, indexes, enums…), an older snapshot
+  // differs from the database without either of them having moved at all. The
+  // migration watermark cannot see that — it would report the alarming verdict
+  // on a change that is entirely ours. Getting this wrong teaches people that
+  // the loudest message is usually nothing, which is how a real one gets missed.
+  const predates = problems.filter((p) => p.includes('predates this section')).length;
+
   let verdict;
-  if (!wasMig || !nowMig) {
+  if (predates) {
+    verdict = `THE MAP GOT RICHER: it now records ${predates} kind(s) of thing it did not `
+      + `record before, so an older snapshot cannot describe them and this is not evidence `
+      + `that anything in the database changed. Regenerate and commit.`;
+  } else if (!wasMig || !nowMig) {
     verdict = 'This snapshot carries no record of which migrations it was built from, '
       + 'so the cause cannot be narrowed down — regenerate it to fix that for next time.';
   } else if (wasMig.count !== nowMig.count || wasMig.highest !== nowMig.highest) {

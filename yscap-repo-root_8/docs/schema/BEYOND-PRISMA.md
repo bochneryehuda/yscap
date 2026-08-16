@@ -9,8 +9,13 @@ columns or partial indexes. On this database that is
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 549 numbered migrations in `db/` remain
-the only thing that builds this database.
+rebuild a database from them.** The 550 numbered migrations in `db/` (highest `db/553`) remain the only thing that builds this database.
+
+Everything below is also recorded, object by object, in
+`beyond-prisma.json`, which is what `npm run schema:check` compares against
+the live database.
+
+## The database in numbers
 
 | | |
 |---|---|
@@ -21,6 +26,12 @@ the only thing that builds this database.
 | CHECK constraints | 249 |
 | Generated columns | 12 |
 | Partial indexes | 319 |
+| Primary keys | 321 |
+| Foreign keys | 680 |
+| Unique constraints | 37 |
+| Indexes (all kinds) | 1116 |
+| Enum types | 12 |
+| Views | 0 |
 
 ## Triggers (33)
 
@@ -785,4 +796,756 @@ the only thing that builds this database.
 - **trustpoint_project_links_matched_by_check** on `trustpoint_project_links`
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
+
+## Foreign keys (680)
+
+What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
+
+- **ai_admin_questions** → `staff_users` — `FOREIGN KEY (answered_by_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **ai_admin_questions** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **ai_admin_questions** → `ai_suggestions` — `FOREIGN KEY (suggestion_id) REFERENCES ai_suggestions(id) ON DELETE CASCADE`
+- **ai_cost_events** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **ai_cost_events** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **ai_silenced_codes** → `staff_users` — `FOREIGN KEY (silenced_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **ai_suggestions** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **ai_suggestions** → `checklist_items` — `FOREIGN KEY (checklist_item_id) REFERENCES checklist_items(id) ON DELETE SET NULL`
+- **ai_suggestions** → `staff_users` — `FOREIGN KEY (decided_by_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **ai_suggestions** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **ai_suggestions** → `checklist_items` — `FOREIGN KEY (linked_condition_id) REFERENCES checklist_items(id) ON DELETE SET NULL`
+- **amc_form_map** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **amc_order_comments** → `amc_orders` — `FOREIGN KEY (order_id) REFERENCES amc_orders(id) ON DELETE CASCADE`
+- **amc_order_comments** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **amc_order_documents** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **amc_order_documents** → `amc_orders` — `FOREIGN KEY (order_id) REFERENCES amc_orders(id) ON DELETE CASCADE`
+- **amc_order_revisions** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **amc_order_revisions** → `amc_orders` — `FOREIGN KEY (order_id) REFERENCES amc_orders(id) ON DELETE CASCADE`
+- **amc_orders** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **amc_orders** → `staff_users` — `FOREIGN KEY (cancel_requested_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **amc_orders** → `checklist_items` — `FOREIGN KEY (checklist_item_id) REFERENCES checklist_items(id) ON DELETE SET NULL`
+- **amc_orders** → `staff_users` — `FOREIGN KEY (ordered_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **amc_orders** → `amc_orders` — `FOREIGN KEY (parent_order_id) REFERENCES amc_orders(id) ON DELETE SET NULL`
+- **amc_party_map** → `staff_users` — `FOREIGN KEY (confirmed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **amc_party_map** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **amc_status_events** → `amc_orders` — `FOREIGN KEY (order_id) REFERENCES amc_orders(id) ON DELETE CASCADE`
+- **amc_write_log** → `amc_orders` — `FOREIGN KEY (order_id) REFERENCES amc_orders(id) ON DELETE SET NULL`
+- **amc_write_log** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **application_assignees** → `staff_users` — `FOREIGN KEY (added_by) REFERENCES staff_users(id)`
+- **application_assignees** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **application_assignees** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id)`
+- **application_drafts** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **application_drafts** → `applications` — `FOREIGN KEY (submitted_application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **application_field_values** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **application_payment_cards** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **application_payment_cards** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **application_service_contacts** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **application_service_contacts** → `service_contacts` — `FOREIGN KEY (service_contact_id) REFERENCES service_contacts(id) ON DELETE CASCADE`
+- **application_status_history** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **application_status_history** → `staff_users` — `FOREIGN KEY (changed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **applications** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE RESTRICT`
+- **applications** → `staff_users` — `FOREIGN KEY (closer_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **applications** → `borrowers` — `FOREIGN KEY (co_borrower_id) REFERENCES borrowers(id)`
+- **applications** → `staff_users` — `FOREIGN KEY (experience_exception_by) REFERENCES staff_users(id)`
+- **applications** → `llcs` — `FOREIGN KEY (llc_id) REFERENCES llcs(id) ON DELETE SET NULL`
+- **applications** → `staff_users` — `FOREIGN KEY (loan_officer_id) REFERENCES staff_users(id)`
+- **applications** → `staff_users` — `FOREIGN KEY (pipeline_removed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **applications** → `staff_users` — `FOREIGN KEY (processor_id) REFERENCES staff_users(id)`
+- **applications** → `tpo_firms` — `FOREIGN KEY (tpo_firm_id) REFERENCES tpo_firms(id) ON DELETE SET NULL`
+- **applications** → `staff_users` — `FOREIGN KEY (underwriter_id) REFERENCES staff_users(id)`
+- **appraisal_comparables** → `appraisals` — `FOREIGN KEY (appraisal_id) REFERENCES appraisals(id) ON DELETE CASCADE`
+- **appraisal_findings** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **appraisal_findings** → `appraisals` — `FOREIGN KEY (appraisal_id) REFERENCES appraisals(id) ON DELETE CASCADE`
+- **appraisal_format_refusals** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **appraisal_format_refusals** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **appraisal_photos** → `appraisals` — `FOREIGN KEY (appraisal_id) REFERENCES appraisals(id) ON DELETE CASCADE`
+- **appraisal_photos** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **appraisal_rental_comparables** → `appraisals` — `FOREIGN KEY (appraisal_id) REFERENCES appraisals(id) ON DELETE CASCADE`
+- **appraisal_units** → `appraisals` — `FOREIGN KEY (appraisal_id) REFERENCES appraisals(id) ON DELETE CASCADE`
+- **appraisal_xml_waivers** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **appraisal_xml_waivers** → `loan_exceptions` — `FOREIGN KEY (exception_id) REFERENCES loan_exceptions(id) ON DELETE SET NULL`
+- **appraisal_xml_waivers** → `staff_users` — `FOREIGN KEY (waived_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **appraisals** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **appraisals** → `appraisers` — `FOREIGN KEY (appraiser_id) REFERENCES appraisers(id) ON DELETE SET NULL`
+- **appraisals** → `staff_users` — `FOREIGN KEY (arv_confirmed_by) REFERENCES staff_users(id)`
+- **appraisals** → `staff_users` — `FOREIGN KEY (as_is_confirmed_by) REFERENCES staff_users(id)`
+- **appraisals** → `documents` — `FOREIGN KEY (pdf_document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **appraisals** → `documents` — `FOREIGN KEY (source_xml_document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **appraiser_contacts** → `appraisers` — `FOREIGN KEY (appraiser_id) REFERENCES appraisers(id) ON DELETE CASCADE`
+- **appraiser_contacts** → `appraisals` — `FOREIGN KEY (last_appraisal_id) REFERENCES appraisals(id) ON DELETE SET NULL`
+- **appraiser_licenses** → `appraisers` — `FOREIGN KEY (appraiser_id) REFERENCES appraisers(id) ON DELETE CASCADE`
+- **borrower_assistants** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **borrower_assistants** → `staff_users` — `FOREIGN KEY (disabled_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **borrower_assistants** → `staff_users` — `FOREIGN KEY (invited_by_staff) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **borrower_auth** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **borrower_contacts** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **borrower_dedup_candidates** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **borrower_dedup_candidates** → `borrowers` — `FOREIGN KEY (matched_borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **borrower_dedup_candidates** → `staff_users` — `FOREIGN KEY (resolved_by) REFERENCES staff_users(id)`
+- **borrower_link_candidates** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **borrower_link_candidates** → `borrowers` — `FOREIGN KEY (candidate_borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **borrower_merges** → `staff_users` — `FOREIGN KEY (merged_by) REFERENCES staff_users(id)`
+- **borrower_merges** → `borrowers` — `FOREIGN KEY (survivor_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **borrower_notes** → `staff_users` — `FOREIGN KEY (author_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **borrower_notes** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **borrower_officers** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **borrower_officers** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **borrower_pricing_scenarios** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **borrower_profile_links** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **borrower_profile_links** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id)`
+- **borrower_profile_links** → `borrowers` — `FOREIGN KEY (linked_borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **borrower_view_sessions** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **borrower_view_sessions** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **borrower_view_sessions** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **borrowers** → `documents` — `FOREIGN KEY (photo_id_document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **borrowers** → `staff_users` — `FOREIGN KEY (portal_invited_by) REFERENCES staff_users(id)`
+- **borrowers** → `staff_users` — `FOREIGN KEY (primary_officer_id) REFERENCES staff_users(id)`
+- **change_requests** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **change_requests** → `staff_users` — `FOREIGN KEY (decided_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **chat_drafts** → `conversations` — `FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE`
+- **chat_notification_jobs** → `conversations` — `FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE`
+- **chat_notification_jobs** → `messages` — `FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE`
+- **checklist_items** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **checklist_items** → `staff_users` — `FOREIGN KEY (assignee_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **checklist_items** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **checklist_items** → `llcs` — `FOREIGN KEY (llc_id) REFERENCES llcs(id) ON DELETE CASCADE`
+- **checklist_items** → `loan_exceptions` — `FOREIGN KEY (loan_exception_id) REFERENCES loan_exceptions(id) ON DELETE SET NULL`
+- **checklist_items** → `staff_users` — `FOREIGN KEY (override_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **checklist_items** → `staff_users` — `FOREIGN KEY (reviewed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **checklist_items** → `staff_users` — `FOREIGN KEY (signed_off_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **checklist_items** → `checklist_templates` — `FOREIGN KEY (template_id) REFERENCES checklist_templates(id)`
+- **checklist_items** → `track_records` — `FOREIGN KEY (track_record_id) REFERENCES track_records(id) ON DELETE SET NULL`
+- **checklist_items** → `staff_users` — `FOREIGN KEY (waived_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **checklist_templates** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **checklist_templates** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **class_attachments** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **class_attachments** → `class_orders` — `FOREIGN KEY (class_order_row) REFERENCES class_orders(id) ON DELETE CASCADE`
+- **class_attachments** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **class_callback_events** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **class_callback_events** → `class_orders` — `FOREIGN KEY (class_order_row) REFERENCES class_orders(id) ON DELETE SET NULL`
+- **class_callback_registrations** → `staff_users` — `FOREIGN KEY (registered_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **class_form_map** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **class_notes** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **class_notes** → `staff_users` — `FOREIGN KEY (author_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **class_notes** → `class_orders` — `FOREIGN KEY (class_order_row) REFERENCES class_orders(id) ON DELETE CASCADE`
+- **class_orders** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **class_orders** → `checklist_items` — `FOREIGN KEY (checklist_item_id) REFERENCES checklist_items(id) ON DELETE SET NULL`
+- **class_orders** → `staff_users` — `FOREIGN KEY (placed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **class_revisions** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **class_revisions** → `class_orders` — `FOREIGN KEY (class_order_row) REFERENCES class_orders(id) ON DELETE CASCADE`
+- **class_revisions** → `staff_users` — `FOREIGN KEY (requested_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **clickup_field_mappings** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id)`
+- **clickup_task_index** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **clickup_task_index** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
+- **clickup_task_index** → `llcs` — `FOREIGN KEY (llc_id) REFERENCES llcs(id) ON DELETE SET NULL`
+- **clickup_task_index** → `staff_users` — `FOREIGN KEY (loan_officer_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **closing_checklist_items** → `staff_users` — `FOREIGN KEY (checked_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **closing_checklist_items** → `closing_checklists` — `FOREIGN KEY (checklist_id) REFERENCES closing_checklists(id) ON DELETE CASCADE`
+- **closing_checklist_templates** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **closing_checklists** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **closing_checklists** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **closing_checklists** → `closing_checklist_templates` — `FOREIGN KEY (template_id) REFERENCES closing_checklist_templates(id) ON DELETE SET NULL`
+- **closing_notes** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **closing_notes** → `staff_users` — `FOREIGN KEY (author_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **closing_thread_messages** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **closing_thread_messages** → `staff_users` — `FOREIGN KEY (sent_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **closing_thread_messages** → `closing_threads` — `FOREIGN KEY (thread_id) REFERENCES closing_threads(id) ON DELETE CASCADE`
+- **closing_threads** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **closing_threads** → `staff_users` — `FOREIGN KEY (opened_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **closing_workflow** → `documents` — `FOREIGN KEY (actual_cash_to_close_doc_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **closing_workflow** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **closing_workflow** → `staff_users` — `FOREIGN KEY (closing_date_confirmed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **closing_workflow** → `staff_users` — `FOREIGN KEY (investor_ctc_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **closing_workflow** → `staff_users` — `FOREIGN KEY (investor_delivery_signed_off_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **closing_workflow** → `staff_users` — `FOREIGN KEY (removed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **closing_workflow** → `staff_users` — `FOREIGN KEY (table_funded_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **closing_workflow** → `staff_users` — `FOREIGN KEY (tpr_signed_off_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **closing_workflow** → `staff_users` — `FOREIGN KEY (tpr_uploaded_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **closing_workflow** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **closing_workflow** → `workflow_items` — `FOREIGN KEY (workflow_item_id) REFERENCES workflow_items(id) ON DELETE SET NULL`
+- **company_pricing_settings** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **condition_clearance_proofs** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **condition_clearance_proofs** → `checklist_items` — `FOREIGN KEY (checklist_item_id) REFERENCES checklist_items(id) ON DELETE CASCADE`
+- **condition_clearance_proofs** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **condition_clearance_proofs** → `document_extractions` — `FOREIGN KEY (extraction_id) REFERENCES document_extractions(id) ON DELETE SET NULL`
+- **condition_clearance_proofs** → `condition_intents` — `FOREIGN KEY (intent_id) REFERENCES condition_intents(id) ON DELETE SET NULL`
+- **condition_requirement_evidence** → `evidence_spans` — `FOREIGN KEY (evidence_span_id) REFERENCES evidence_spans(id) ON DELETE CASCADE`
+- **condition_requirement_evidence** → `condition_clearance_proofs` — `FOREIGN KEY (clearance_proof_id) REFERENCES condition_clearance_proofs(id) ON DELETE CASCADE`
+- **conditions** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **conditions** → `checklist_items` — `FOREIGN KEY (checklist_item_id) REFERENCES checklist_items(id) ON DELETE SET NULL`
+- **conditions** → `staff_users` — `FOREIGN KEY (cleared_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **conditions** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **conditions** → `staff_users` — `FOREIGN KEY (override_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **conditions** → `staff_users` — `FOREIGN KEY (reviewed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **conversation_external_participants** → `conversations` — `FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE`
+- **conversation_external_participants** → `borrowers` — `FOREIGN KEY (guest_borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
+- **conversation_members** → `conversations` — `FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE`
+- **conversations** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **credit_import_waivers** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **credit_import_waivers** → `checklist_items` — `FOREIGN KEY (checklist_item_id) REFERENCES checklist_items(id) ON DELETE CASCADE`
+- **credit_import_waivers** → `loan_exceptions` — `FOREIGN KEY (exception_id) REFERENCES loan_exceptions(id) ON DELETE SET NULL`
+- **credit_import_waivers** → `staff_users` — `FOREIGN KEY (requested_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **credit_reports** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **credit_reports** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
+- **credit_reports** → `checklist_items` — `FOREIGN KEY (checklist_item_id) REFERENCES checklist_items(id) ON DELETE SET NULL`
+- **credit_reports** → `staff_users` — `FOREIGN KEY (consent_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **credit_reports** → `documents` — `FOREIGN KEY (pdf_document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **credit_reports** → `staff_users` — `FOREIGN KEY (pulled_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **credit_reports** → `documents` — `FOREIGN KEY (xml_document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **custom_fields** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **dashboard_cards** → `dashboards` — `FOREIGN KEY (dashboard_id) REFERENCES dashboards(id) ON DELETE CASCADE`
+- **dashboard_shares** → `dashboards` — `FOREIGN KEY (dashboard_id) REFERENCES dashboards(id) ON DELETE CASCADE`
+- **dashboard_shares** → `staff_users` — `FOREIGN KEY (shared_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **dashboard_shares** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **dashboards** → `dashboards` — `FOREIGN KEY (forked_from) REFERENCES dashboards(id) ON DELETE SET NULL`
+- **dashboards** → `staff_users` — `FOREIGN KEY (owner_staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **decision_certificates** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **decision_certificates** → `staff_users` — `FOREIGN KEY (issued_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **doclab_request_events** → `doclab_requests` — `FOREIGN KEY (doclab_request_id) REFERENCES doclab_requests(id) ON DELETE CASCADE`
+- **doclab_requests** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **doclab_requests** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **doclab_requests** → `documents` — `FOREIGN KEY (pdf_document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **doclab_requests** → `documents` — `FOREIGN KEY (word_document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **document_entities** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **document_entities** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE`
+- **document_entities** → `document_extractions` — `FOREIGN KEY (extraction_id) REFERENCES document_extractions(id) ON DELETE CASCADE`
+- **document_extractions** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **document_extractions** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **document_extractions** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE`
+- **document_findings** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **document_findings** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **document_findings** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **document_findings** → `document_extractions` — `FOREIGN KEY (extraction_id) REFERENCES document_extractions(id) ON DELETE SET NULL`
+- **document_lifecycle_events** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **document_lifecycle_events** → `logical_documents` — `FOREIGN KEY (logical_document_id) REFERENCES logical_documents(id) ON DELETE SET NULL`
+- **document_lifecycle_events** → `document_packages` — `FOREIGN KEY (package_id) REFERENCES document_packages(id) ON DELETE CASCADE`
+- **document_packages** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **document_packages** → `documents` — `FOREIGN KEY (source_document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **document_pages** → `document_pages` — `FOREIGN KEY (duplicate_of_page_id) REFERENCES document_pages(id) ON DELETE SET NULL`
+- **document_pages** → `document_packages` — `FOREIGN KEY (package_id) REFERENCES document_packages(id) ON DELETE CASCADE`
+- **document_pipeline_artifacts** → `document_pipeline_jobs` — `FOREIGN KEY (job_id) REFERENCES document_pipeline_jobs(id) ON DELETE CASCADE`
+- **document_pipeline_attempts** → `document_pipeline_jobs` — `FOREIGN KEY (job_id) REFERENCES document_pipeline_jobs(id) ON DELETE CASCADE`
+- **document_pipeline_evidence** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE`
+- **document_pipeline_evidence** → `document_pipeline_jobs` — `FOREIGN KEY (job_id) REFERENCES document_pipeline_jobs(id) ON DELETE CASCADE`
+- **document_pipeline_evidence** → `applications` — `FOREIGN KEY (loan_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **document_pipeline_evidence** → `document_pipeline_evidence` — `FOREIGN KEY (superseded_by) REFERENCES document_pipeline_evidence(id) ON DELETE SET NULL`
+- **document_pipeline_jobs** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE`
+- **document_pipeline_jobs** → `applications` — `FOREIGN KEY (loan_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **document_pipeline_pages** → `document_pipeline_jobs` — `FOREIGN KEY (job_id) REFERENCES document_pipeline_jobs(id) ON DELETE CASCADE`
+- **document_pipeline_stages** → `document_pipeline_jobs` — `FOREIGN KEY (job_id) REFERENCES document_pipeline_jobs(id) ON DELETE CASCADE`
+- **document_processing_routes** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE`
+- **document_processing_routes** → `document_pipeline_jobs` — `FOREIGN KEY (job_id) REFERENCES document_pipeline_jobs(id) ON DELETE CASCADE`
+- **document_processing_routes** → `applications` — `FOREIGN KEY (loan_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **document_relationships** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **document_relationships** → `staff_users` — `FOREIGN KEY (confirmed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **document_relationships** → `logical_documents` — `FOREIGN KEY (from_logical_document_id) REFERENCES logical_documents(id) ON DELETE CASCADE`
+- **document_relationships** → `logical_documents` — `FOREIGN KEY (to_logical_document_id) REFERENCES logical_documents(id) ON DELETE CASCADE`
+- **document_share_links** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **document_share_links** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **document_share_links** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **document_share_links** → `staff_users` — `FOREIGN KEY (revoked_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **documents** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **documents** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **documents** → `checklist_items` — `FOREIGN KEY (checklist_item_id) REFERENCES checklist_items(id) ON DELETE SET NULL`
+- **documents** → `leads` — `FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE`
+- **documents** → `llcs` — `FOREIGN KEY (llc_id) REFERENCES llcs(id) ON DELETE CASCADE`
+- **documents** → `messages` — `FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE SET NULL`
+- **documents** → `documents` — `FOREIGN KEY (replaces_document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **documents** → `staff_users` — `FOREIGN KEY (reviewed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **documents** → `documents` — `FOREIGN KEY (source_document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **documents** → `track_records` — `FOREIGN KEY (track_record_id) REFERENCES track_records(id) ON DELETE CASCADE`
+- **draw_attachments** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **draw_attachments** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE`
+- **draw_disbursements** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **draw_disbursements** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **draw_finding_lines** → `staff_users` — `FOREIGN KEY (dispute_decided_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **draw_finding_lines** → `draw_findings` — `FOREIGN KEY (finding_id) REFERENCES draw_findings(id) ON DELETE CASCADE`
+- **draw_findings** → `staff_users` — `FOREIGN KEY (accepted_by_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **draw_findings** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **draw_findings** → `staff_users` — `FOREIGN KEY (disputed_by_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **draw_findings** → `staff_users` — `FOREIGN KEY (reviewed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **draw_investor_deliveries** → `staff_users` — `FOREIGN KEY (answered_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **draw_investor_deliveries** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **draw_investor_deliveries** → `staff_users` — `FOREIGN KEY (sent_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **draw_lien_waivers** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **draw_lien_waivers** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **draw_lien_waivers** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **draw_media** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **draw_stage_events** → `staff_users` — `FOREIGN KEY (actor_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **draw_stage_events** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **draw_wire_instructions** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **draw_wire_instructions** → `esign_envelopes` — `FOREIGN KEY (envelope_row_id) REFERENCES esign_envelopes(id) ON DELETE SET NULL`
+- **draw_wire_instructions** → `checklist_items` — `FOREIGN KEY (operating_agreement_item_id) REFERENCES checklist_items(id) ON DELETE SET NULL`
+- **elementix_address_links** → `staff_users` — `FOREIGN KEY (confirmed_by) REFERENCES staff_users(id)`
+- **elementix_address_links** → `track_records` — `FOREIGN KEY (track_record_id) REFERENCES track_records(id) ON DELETE CASCADE`
+- **elementix_calls** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **elementix_oauth** → `staff_users` — `FOREIGN KEY (connected_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **elementix_oauth_pending** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **elementix_oauth_pending** → `staff_users` — `FOREIGN KEY (started_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **elementix_oauth** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **email_messages** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **email_opens** → `notifications` — `FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE`
+- **email_tokens** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **email_tokens** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **encompass_bulk_pull_runs** → `staff_users` — `FOREIGN KEY (started_by) REFERENCES staff_users(id)`
+- **encompass_flood_orders** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **encompass_flood_orders** → `checklist_items` — `FOREIGN KEY (checklist_item_id) REFERENCES checklist_items(id) ON DELETE SET NULL`
+- **encompass_flood_orders** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **encompass_flood_orders** → `staff_users` — `FOREIGN KEY (ordered_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **encompass_loan_snapshot** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **encompass_sync_resolutions** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **encompass_sync_resolutions** → `staff_users` — `FOREIGN KEY (requested_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **entity_removals** → `staff_users` — `FOREIGN KEY (removed_by) REFERENCES staff_users(id)`
+- **esign_envelope_docs** → `checklist_items` — `FOREIGN KEY (checklist_item_id) REFERENCES checklist_items(id) ON DELETE SET NULL`
+- **esign_envelope_docs** → `documents` — `FOREIGN KEY (completed_document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **esign_envelope_docs** → `esign_envelopes` — `FOREIGN KEY (envelope_row_id) REFERENCES esign_envelopes(id) ON DELETE CASCADE`
+- **esign_envelopes** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **esign_envelopes** → `checklist_items` — `FOREIGN KEY (checklist_item_id) REFERENCES checklist_items(id) ON DELETE CASCADE`
+- **esign_envelopes** → `staff_users` — `FOREIGN KEY (cleared_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **esign_envelopes** → `documents` — `FOREIGN KEY (completed_document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **esign_envelopes** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **esign_recipients** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
+- **esign_recipients** → `esign_envelopes` — `FOREIGN KEY (envelope_row_id) REFERENCES esign_envelopes(id) ON DELETE CASCADE`
+- **evaluation_cases** → `staff_users` — `FOREIGN KEY (labeled_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **evaluation_results** → `evaluation_cases` — `FOREIGN KEY (evaluation_case_id) REFERENCES evaluation_cases(id) ON DELETE CASCADE`
+- **evaluation_results** → `evaluation_runs` — `FOREIGN KEY (evaluation_run_id) REFERENCES evaluation_runs(id) ON DELETE CASCADE`
+- **evaluation_runs** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **evidence_spans** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **evidence_spans** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **evidence_spans** → `logical_documents` — `FOREIGN KEY (logical_document_id) REFERENCES logical_documents(id) ON DELETE SET NULL`
+- **evidence_spans** → `document_pages` — `FOREIGN KEY (page_id) REFERENCES document_pages(id) ON DELETE SET NULL`
+- **fact_corrections** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **fact_corrections** → `staff_users` — `FOREIGN KEY (corrected_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **fact_events** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **fact_events** → `loan_facts` — `FOREIGN KEY (fact_id) REFERENCES loan_facts(id) ON DELETE SET NULL`
+- **fact_events** → `fact_observations` — `FOREIGN KEY (observation_id) REFERENCES fact_observations(id) ON DELETE SET NULL`
+- **fact_evidence_links** → `evidence_spans` — `FOREIGN KEY (evidence_span_id) REFERENCES evidence_spans(id) ON DELETE CASCADE`
+- **fact_evidence_links** → `fact_observations` — `FOREIGN KEY (fact_observation_id) REFERENCES fact_observations(id) ON DELETE CASCADE`
+- **fact_observations** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **fact_observations** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **fact_observations** → `document_extractions` — `FOREIGN KEY (extraction_id) REFERENCES document_extractions(id) ON DELETE SET NULL`
+- **file_order_events** → `staff_users` — `FOREIGN KEY (actor_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **file_order_events** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **file_order_events** → `file_orders` — `FOREIGN KEY (order_id) REFERENCES file_orders(id) ON DELETE CASCADE`
+- **file_orders** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **file_orders** → `staff_users` — `FOREIGN KEY (assigned_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **file_orders** → `staff_users` — `FOREIGN KEY (assigned_to) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **file_orders** → `staff_users` — `FOREIGN KEY (ordered_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **file_orders** → `service_contacts` — `FOREIGN KEY (vendor_contact_id) REFERENCES service_contacts(id) ON DELETE SET NULL`
+- **finding_ai_reviews** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **finding_committee_reviews** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **finding_committee_reviews** → `document_findings` — `FOREIGN KEY (finding_id) REFERENCES document_findings(id) ON DELETE CASCADE`
+- **finding_committee_reviews** → `staff_users` — `FOREIGN KEY (requested_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **finding_corrections** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **finding_corrections** → `staff_users` — `FOREIGN KEY (corrected_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **finding_corrections** → `document_findings` — `FOREIGN KEY (finding_id) REFERENCES document_findings(id) ON DELETE CASCADE`
+- **finding_decisions** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **finding_decisions** → `staff_users` — `FOREIGN KEY (decided_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **finding_decisions** → `staff_users` — `FOREIGN KEY (superseded_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **finding_escalations** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **finding_escalations** → `staff_users` — `FOREIGN KEY (assigned_to) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **finding_escalations** → `staff_users` — `FOREIGN KEY (decided_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **finding_escalations** → `staff_users` — `FOREIGN KEY (requested_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **finding_evidence_links** → `ai_suggestions` — `FOREIGN KEY (ai_suggestion_id) REFERENCES ai_suggestions(id) ON DELETE CASCADE`
+- **finding_evidence_links** → `evidence_spans` — `FOREIGN KEY (evidence_span_id) REFERENCES evidence_spans(id) ON DELETE CASCADE`
+- **finding_evidence_links** → `document_findings` — `FOREIGN KEY (finding_id) REFERENCES document_findings(id) ON DELETE CASCADE`
+- **finding_triage** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **guideline_documents** → `investors` — `FOREIGN KEY (investor_id) REFERENCES investors(id) ON DELETE SET NULL`
+- **guideline_exceptions** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **guideline_exceptions** → `staff_users` — `FOREIGN KEY (approved_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **guideline_exceptions** → `guideline_rules` — `FOREIGN KEY (guideline_rule_id) REFERENCES guideline_rules(id) ON DELETE SET NULL`
+- **guideline_exceptions** → `internal_overlays` — `FOREIGN KEY (overlay_id) REFERENCES internal_overlays(id) ON DELETE SET NULL`
+- **guideline_rules** → `guideline_versions` — `FOREIGN KEY (guideline_version_id) REFERENCES guideline_versions(id) ON DELETE CASCADE`
+- **guideline_rules** → `evidence_spans` — `FOREIGN KEY (source_evidence_span_id) REFERENCES evidence_spans(id) ON DELETE SET NULL`
+- **guideline_versions** → `staff_users` — `FOREIGN KEY (approved_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **guideline_versions** → `guideline_documents` — `FOREIGN KEY (guideline_document_id) REFERENCES guideline_documents(id) ON DELETE CASCADE`
+- **guideline_versions** → `guideline_versions` — `FOREIGN KEY (superseded_by) REFERENCES guideline_versions(id) ON DELETE SET NULL`
+- **inbound_file_emails** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **internal_overlays** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **investor_delivery_contacts** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **investor_draw_fees** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **invite_tokens** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id)`
+- **invite_tokens** → `tpo_firms` — `FOREIGN KEY (tpo_firm_id) REFERENCES tpo_firms(id) ON DELETE CASCADE`
+- **label_examples** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **label_examples** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **label_examples** → `staff_users` — `FOREIGN KEY (uploaded_by_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **label_training_runs** → `staff_users` — `FOREIGN KEY (requested_by_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **lead_activities** → `leads` — `FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE`
+- **lead_activities** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **lead_notes** → `leads` — `FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE`
+- **lead_notes** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **lead_tasks** → `staff_users` — `FOREIGN KEY (assignee_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **lead_tasks** → `staff_users` — `FOREIGN KEY (created_by_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **lead_tasks** → `leads` — `FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE`
+- **leads** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **leads** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
+- **leads** → `staff_users` — `FOREIGN KEY (created_by_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **leads** → `staff_users` — `FOREIGN KEY (officer_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **llc_borrowers** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **llc_borrowers** → `llcs` — `FOREIGN KEY (llc_id) REFERENCES llcs(id) ON DELETE CASCADE`
+- **llc_borrowers** → `staff_users` — `FOREIGN KEY (ownership_verified_by) REFERENCES staff_users(id)`
+- **llc_external_links** → `staff_users` — `FOREIGN KEY (confirmed_by) REFERENCES staff_users(id)`
+- **llc_external_links** → `llcs` — `FOREIGN KEY (llc_id) REFERENCES llcs(id) ON DELETE CASCADE`
+- **llc_members** → `llcs` — `FOREIGN KEY (llc_id) REFERENCES llcs(id) ON DELETE CASCADE`
+- **llc_members** → `llcs` — `FOREIGN KEY (owner_llc_id) REFERENCES llcs(id) ON DELETE SET NULL`
+- **llcs** → `applications` — `FOREIGN KEY (adopted_from_application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **llcs** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **llcs** → `staff_users` — `FOREIGN KEY (entity_type_set_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **llcs** → `staff_users` — `FOREIGN KEY (verified_by) REFERENCES staff_users(id)`
+- **lo_batched_emails** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **lo_batched_emails** → `notifications` — `FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE`
+- **lo_batched_emails** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **lo_muted_files** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **lo_muted_files** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **lo_notification_drafts** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **lo_notification_drafts** → `staff_users` — `FOREIGN KEY (discarded_by) REFERENCES staff_users(id)`
+- **lo_notification_drafts** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **lo_notification_file_overrides** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **lo_notification_file_overrides** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **lo_notification_file_overrides** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id)`
+- **lo_notification_prefs** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **lo_notification_prefs** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id)`
+- **lo_notification_rules** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **lo_self_delivery_rules** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **lo_self_notification_prefs** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **lo_self_notification_prefs** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id)`
+- **lo_settings** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **lo_starred_files** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **lo_starred_files** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **loan_exception_comments** → `staff_users` — `FOREIGN KEY (author_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **loan_exception_comments** → `loan_exceptions` — `FOREIGN KEY (loan_exception_id) REFERENCES loan_exceptions(id) ON DELETE CASCADE`
+- **loan_exceptions** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **loan_exceptions** → `staff_users` — `FOREIGN KEY (cleared_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **loan_exceptions** → `staff_users` — `FOREIGN KEY (decided_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **loan_exceptions** → `loan_exceptions` — `FOREIGN KEY (re_request_of) REFERENCES loan_exceptions(id) ON DELETE SET NULL`
+- **loan_exceptions** → `borrowers` — `FOREIGN KEY (requested_by_borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
+- **loan_exceptions** → `staff_users` — `FOREIGN KEY (requested_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **loan_exceptions** → `borrowers` — `FOREIGN KEY (subject_borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
+- **loan_exceptions** → `checklist_items` — `FOREIGN KEY (target_checklist_item_id) REFERENCES checklist_items(id) ON DELETE SET NULL`
+- **loan_exceptions** → `staff_users` — `FOREIGN KEY (withdrawn_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **loan_facts** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **loan_facts** → `staff_users` — `FOREIGN KEY (human_confirmed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **logical_document_pages** → `logical_documents` — `FOREIGN KEY (logical_document_id) REFERENCES logical_documents(id) ON DELETE CASCADE`
+- **logical_document_pages** → `document_pages` — `FOREIGN KEY (page_id) REFERENCES document_pages(id) ON DELETE CASCADE`
+- **logical_documents** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **logical_documents** → `staff_users` — `FOREIGN KEY (confirmed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **logical_documents** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **logical_documents** → `document_packages` — `FOREIGN KEY (package_id) REFERENCES document_packages(id) ON DELETE CASCADE`
+- **lt_assets** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_borrower_pairs** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_declarations** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_employments** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_liabilities** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_liabilities** → `lt_reo_properties` — `FOREIGN KEY (reo_property_id) REFERENCES lt_reo_properties(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_loan_contacts** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_loan_contacts** → `staff_users` — `FOREIGN KEY (override_by) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_loan_contacts** → `staff_users` — `FOREIGN KEY (override_staff_id) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_loan_contacts** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_loan_investors** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_loans** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
+- **lt_loans** → `staff_users` — `FOREIGN KEY (loan_officer_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **lt_loans** → `lt_encompass_milestones` — `FOREIGN KEY (milestone_id) REFERENCES lt_encompass_milestones(milestone_id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_lock_events** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_locks** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_other_incomes** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_parties** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
+- **lt_parties** → `lt_borrower_pairs` — `FOREIGN KEY (pair_id) REFERENCES lt_borrower_pairs(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_pipeline_views** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_properties** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_reo_properties** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_residences** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_settings** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_staff_links** → `staff_users` — `FOREIGN KEY (confirmed_by) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_staff_links** → `lt_encompass_users` — `FOREIGN KEY (encompass_login_id) REFERENCES lt_encompass_users(login_id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_staff_links** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **manual_program_escalations** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **manual_program_escalations** → `staff_users` — `FOREIGN KEY (countered_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **manual_program_escalations** → `staff_users` — `FOREIGN KEY (decided_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **manual_program_escalations** → `product_registrations` — `FOREIGN KEY (registration_id) REFERENCES product_registrations(id) ON DELETE CASCADE`
+- **manual_program_escalations** → `staff_users` — `FOREIGN KEY (requested_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **manual_program_settings** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **market_areas** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **market_observations** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **market_observations** → `appraisals` — `FOREIGN KEY (appraisal_id) REFERENCES appraisals(id) ON DELETE SET NULL`
+- **market_observations** → `appraisers` — `FOREIGN KEY (appraiser_id) REFERENCES appraisers(id) ON DELETE SET NULL`
+- **market_observations** → `research_imports` — `FOREIGN KEY (import_id) REFERENCES research_imports(id) ON DELETE SET NULL`
+- **market_observations** → `properties` — `FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE SET NULL`
+- **market_periods** → `market_observations` — `FOREIGN KEY (observation_id) REFERENCES market_observations(id) ON DELETE CASCADE`
+- **message_reactions** → `messages` — `FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE`
+- **message_revisions** → `messages` — `FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE`
+- **messages** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **messages** → `documents` — `FOREIGN KEY (attachment_document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **messages** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **messages** → `checklist_items` — `FOREIGN KEY (checklist_item_id) REFERENCES checklist_items(id) ON DELETE SET NULL`
+- **messages** → `conversations` — `FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE`
+- **messages** → `messages` — `FOREIGN KEY (reply_to_message_id) REFERENCES messages(id) ON DELETE SET NULL`
+- **note_buyer_conditions** → `guideline_versions` — `FOREIGN KEY (guideline_version_id) REFERENCES guideline_versions(id) ON DELETE CASCADE`
+- **note_buyer_conditions** → `investors` — `FOREIGN KEY (investor_id) REFERENCES investors(id) ON DELETE SET NULL`
+- **notification_prefs** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **notifications** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **notifications** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **notifications** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **partners** → `borrowers` — `FOREIGN KEY (owner_borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **partners** → `borrowers` — `FOREIGN KEY (partner_borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
+- **portal_draw_requests** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **portal_draw_requests** → `borrowers` — `FOREIGN KEY (created_by_borrower) REFERENCES borrowers(id) ON DELETE SET NULL`
+- **portal_draw_requests** → `staff_users` — `FOREIGN KEY (created_by_staff) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **post_closing_items** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **post_closing_items** → `staff_users` — `FOREIGN KEY (assigned_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **post_closing_items** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **post_purchase_notify** → `staff_users` — `FOREIGN KEY (added_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **post_purchase_notify** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **product_registrations** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **product_registrations** → `staff_users` — `FOREIGN KEY (registered_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **property_adjustments** → `property_observations` — `FOREIGN KEY (observation_id) REFERENCES property_observations(id) ON DELETE CASCADE`
+- **property_adjustments** → `properties` — `FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE SET NULL`
+- **property_ingest_log** → `appraisals` — `FOREIGN KEY (appraisal_id) REFERENCES appraisals(id) ON DELETE CASCADE`
+- **property_merges** → `staff_users` — `FOREIGN KEY (merged_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **property_merges** → `properties` — `FOREIGN KEY (survivor_id) REFERENCES properties(id) ON DELETE CASCADE`
+- **property_not_duplicates** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **property_not_duplicates** → `properties` — `FOREIGN KEY (other_property_id) REFERENCES properties(id) ON DELETE CASCADE`
+- **property_not_duplicates** → `properties` — `FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE CASCADE`
+- **property_observations** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **property_observations** → `appraisals` — `FOREIGN KEY (appraisal_id) REFERENCES appraisals(id) ON DELETE SET NULL`
+- **property_observations** → `appraisers` — `FOREIGN KEY (appraiser_id) REFERENCES appraisers(id) ON DELETE SET NULL`
+- **property_observations** → `appraisal_comparables` — `FOREIGN KEY (comparable_id) REFERENCES appraisal_comparables(id) ON DELETE SET NULL`
+- **property_observations** → `research_imports` — `FOREIGN KEY (import_id) REFERENCES research_imports(id) ON DELETE SET NULL`
+- **property_observations** → `properties` — `FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE CASCADE`
+- **property_photos** → `appraisals` — `FOREIGN KEY (appraisal_id) REFERENCES appraisals(id) ON DELETE SET NULL`
+- **property_photos** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE`
+- **property_photos** → `property_observations` — `FOREIGN KEY (observation_id) REFERENCES property_observations(id) ON DELETE SET NULL`
+- **property_photos** → `appraisal_photos` — `FOREIGN KEY (photo_id) REFERENCES appraisal_photos(id) ON DELETE SET NULL`
+- **property_photos** → `properties` — `FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE CASCADE`
+- **property_sales** → `properties` — `FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE CASCADE`
+- **property_sales** → `appraisals` — `FOREIGN KEY (source_appraisal_id) REFERENCES appraisals(id) ON DELETE SET NULL`
+- **property_sales** → `research_imports` — `FOREIGN KEY (source_import_id) REFERENCES research_imports(id) ON DELETE SET NULL`
+- **property_sales** → `property_observations` — `FOREIGN KEY (source_observation_id) REFERENCES property_observations(id) ON DELETE SET NULL`
+- **property_valuation_comps** → `property_observations` — `FOREIGN KEY (observation_id) REFERENCES property_observations(id) ON DELETE SET NULL`
+- **property_valuation_comps** → `properties` — `FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE SET NULL`
+- **property_valuation_comps** → `appraisals` — `FOREIGN KEY (source_appraisal_id) REFERENCES appraisals(id) ON DELETE SET NULL`
+- **property_valuation_comps** → `property_valuations` — `FOREIGN KEY (valuation_id) REFERENCES property_valuations(id) ON DELETE CASCADE`
+- **property_valuations** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **property_valuations** → `properties` — `FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE SET NULL`
+- **property_valuations** → `staff_users` — `FOREIGN KEY (subject_confirmed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **property_valuations** → `property_valuations` — `FOREIGN KEY (supersedes_id) REFERENCES property_valuations(id) ON DELETE SET NULL`
+- **purchasing_advice** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **purchasing_advice** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **purchasing_advice** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **purchasing_conditions** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **purchasing_conditions** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **purchasing_conditions** → `staff_users` — `FOREIGN KEY (resolved_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **purchasing_notes** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **purchasing_notes** → `staff_users` — `FOREIGN KEY (author_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **purchasing_tasks** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **purchasing_tasks** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **purchasing_tasks** → `staff_users` — `FOREIGN KEY (done_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **purchasing_workflow** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **purchasing_workflow** → `staff_users` — `FOREIGN KEY (completed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **purchasing_workflow** → `staff_users` — `FOREIGN KEY (entered_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **purchasing_workflow** → `documents` — `FOREIGN KEY (purchase_advice_document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **purchasing_workflow** → `staff_users` — `FOREIGN KEY (purchase_advice_updated_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **purchasing_workflow** → `staff_users` — `FOREIGN KEY (removed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **purchasing_workflow** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **release_decisions** → `staff_users` — `FOREIGN KEY (approved_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **release_decisions** → `evaluation_runs` — `FOREIGN KEY (evaluation_run_id) REFERENCES evaluation_runs(id) ON DELETE SET NULL`
+- **remediation_options** → `root_cause_cases` — `FOREIGN KEY (root_cause_case_id) REFERENCES root_cause_cases(id) ON DELETE CASCADE`
+- **reminders** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **reminders** → `staff_users` — `FOREIGN KEY (assignee_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **reminders** → `staff_users` — `FOREIGN KEY (completed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **reminders** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **research_imports** → `appraisals` — `FOREIGN KEY (appraisal_id) REFERENCES appraisals(id) ON DELETE SET NULL`
+- **research_imports** → `appraisers` — `FOREIGN KEY (appraiser_id) REFERENCES appraisers(id) ON DELETE SET NULL`
+- **research_imports** → `properties` — `FOREIGN KEY (subject_property_id) REFERENCES properties(id) ON DELETE SET NULL`
+- **research_imports** → `staff_users` — `FOREIGN KEY (uploaded_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **root_cause_cases** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **root_cause_cases** → `staff_users` — `FOREIGN KEY (confirmed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **root_cause_cases** → `documents` — `FOREIGN KEY (root_document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **root_cause_cases** → `fact_observations` — `FOREIGN KEY (root_observation_id) REFERENCES fact_observations(id) ON DELETE SET NULL`
+- **root_cause_impacts** → `root_cause_cases` — `FOREIGN KEY (root_cause_case_id) REFERENCES root_cause_cases(id) ON DELETE CASCADE`
+- **routing_outcomes** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **rv_order_events** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **rv_order_events** → `rv_orders` — `FOREIGN KEY (rv_order_row) REFERENCES rv_orders(id) ON DELETE SET NULL`
+- **rv_orders** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **rv_orders** → `staff_users` — `FOREIGN KEY (cancelled_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **rv_orders** → `checklist_items` — `FOREIGN KEY (checklist_item_id) REFERENCES checklist_items(id) ON DELETE SET NULL`
+- **rv_orders** → `documents` — `FOREIGN KEY (pdf_document_id) REFERENCES documents(id) ON DELETE SET NULL`
+- **rv_orders** → `staff_users` — `FOREIGN KEY (placed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **rv_orders** → `staff_users` — `FOREIGN KEY (values_applied_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **rv_status_events** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **rv_status_events** → `rv_orders` — `FOREIGN KEY (rv_order_row) REFERENCES rv_orders(id) ON DELETE CASCADE`
+- **rv_write_log** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **rv_write_log** → `rv_orders` — `FOREIGN KEY (rv_order_row) REFERENCES rv_orders(id) ON DELETE SET NULL`
+- **rv_write_log** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **section_1071_coverage** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **sent_emails** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **sent_emails** → `notifications` — `FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE`
+- **service_contacts** → `borrowers` — `FOREIGN KEY (added_by_borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
+- **service_contacts** → `staff_users` — `FOREIGN KEY (added_by_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **service_contacts** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **service_contacts** → `service_contacts` — `FOREIGN KEY (merged_into_id) REFERENCES service_contacts(id) ON DELETE SET NULL`
+- **shadow_decisions** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **sitewire_document_links** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **sitewire_draw_requests** → `sitewire_draws` — `FOREIGN KEY (sitewire_draw_id) REFERENCES sitewire_draws(sitewire_draw_id) ON DELETE CASCADE`
+- **sitewire_draws** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **sitewire_job_item_links** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **sitewire_partner_links** → `staff_users` — `FOREIGN KEY (confirmed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **sitewire_property_links** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **sitewire_property_links** → `staff_users` — `FOREIGN KEY (coordinator_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **sitewire_property_links** → `staff_users` — `FOREIGN KEY (draw_setup_started_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **sitewire_property_links** → `staff_users` — `FOREIGN KEY (treat_as_sold_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **sitewire_pull_field_change** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **sow_change_request_details** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **sow_change_request_details** → `change_requests` — `FOREIGN KEY (change_request_id) REFERENCES change_requests(id) ON DELETE CASCADE`
+- **staff_tool_scenarios** → `staff_users` — `FOREIGN KEY (staff_user_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **staff_users** → `tpo_firms` — `FOREIGN KEY (tpo_firm_id) REFERENCES tpo_firms(id) ON DELETE SET NULL`
+- **sync_review_queue** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **sync_review_queue** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
+- **sync_review_queue** → `staff_users` — `FOREIGN KEY (portal_actor_id) REFERENCES staff_users(id)`
+- **sync_review_queue** → `staff_users` — `FOREIGN KEY (resolved_by) REFERENCES staff_users(id)`
+- **term_sheet_offers** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **term_sheet_offers** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
+- **term_sheet_offers** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **term_sheet_offers** → `staff_users` — `FOREIGN KEY (officer_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **tpo_firm_credit_credentials** → `staff_users` — `FOREIGN KEY (configured_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **tpo_firm_credit_credentials** → `tpo_firms` — `FOREIGN KEY (tpo_firm_id) REFERENCES tpo_firms(id) ON DELETE CASCADE`
+- **tpo_firm_pricing** → `staff_users` — `FOREIGN KEY (broker_fee_updated_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **tpo_firm_pricing** → `tpo_firms` — `FOREIGN KEY (tpo_firm_id) REFERENCES tpo_firms(id) ON DELETE CASCADE`
+- **tpo_firm_pricing** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **tpo_firms** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **tpo_pricing_settings** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **tpo_view_sessions** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **tpo_view_sessions** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **tpo_view_sessions** → `tpo_firms` — `FOREIGN KEY (tpo_firm_id) REFERENCES tpo_firms(id) ON DELETE CASCADE`
+- **tpo_view_sessions** → `staff_users` — `FOREIGN KEY (tpo_user_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **track_record_candidates** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **track_record_candidates** → `staff_users` — `FOREIGN KEY (claimed_by) REFERENCES staff_users(id)`
+- **track_record_candidates** → `borrowers` — `FOREIGN KEY (decided_by_borrower) REFERENCES borrowers(id) ON DELETE SET NULL`
+- **track_record_candidates** → `staff_users` — `FOREIGN KEY (decided_by) REFERENCES staff_users(id)`
+- **track_record_candidates** → `track_records` — `FOREIGN KEY (imported_track_record_id) REFERENCES track_records(id) ON DELETE SET NULL`
+- **track_record_candidates** → `track_records` — `FOREIGN KEY (match_track_record_id) REFERENCES track_records(id) ON DELETE SET NULL`
+- **track_record_candidates** → `llcs` — `FOREIGN KEY (proposed_llc_id) REFERENCES llcs(id) ON DELETE SET NULL`
+- **track_record_candidates** → `track_record_searches` — `FOREIGN KEY (search_id) REFERENCES track_record_searches(id) ON DELETE SET NULL`
+- **track_record_findings** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **track_record_findings** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **track_record_findings** → `track_records` — `FOREIGN KEY (other_id) REFERENCES track_records(id) ON DELETE CASCADE`
+- **track_record_findings** → `staff_users` — `FOREIGN KEY (resolved_by) REFERENCES staff_users(id)`
+- **track_record_findings** → `track_records` — `FOREIGN KEY (track_record_id) REFERENCES track_records(id) ON DELETE CASCADE`
+- **track_record_notes** → `staff_users` — `FOREIGN KEY (author_id) REFERENCES staff_users(id)`
+- **track_record_notes** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **track_record_notes** → `staff_users` — `FOREIGN KEY (retracted_by) REFERENCES staff_users(id)`
+- **track_record_pillars** → `staff_users` — `FOREIGN KEY (human_by) REFERENCES staff_users(id)`
+- **track_record_pillars** → `llcs` — `FOREIGN KEY (satisfied_by_llc_id) REFERENCES llcs(id) ON DELETE SET NULL`
+- **track_record_pillars** → `track_records` — `FOREIGN KEY (track_record_id) REFERENCES track_records(id) ON DELETE CASCADE`
+- **track_record_searches** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **track_record_searches** → `staff_users` — `FOREIGN KEY (run_by) REFERENCES staff_users(id)`
+- **track_records** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **track_records** → `llcs` — `FOREIGN KEY (llc_id) REFERENCES llcs(id) ON DELETE SET NULL`
+- **track_records** → `staff_users` — `FOREIGN KEY (verified_by) REFERENCES staff_users(id)`
+- **training_proposals** → `staff_users` — `FOREIGN KEY (reviewed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **trinity_inspection_orders** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **trinity_inspection_orders** → `staff_users` — `FOREIGN KEY (ordered_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **trinity_inspection_orders** → `portal_draw_requests` — `FOREIGN KEY (portal_draw_request_id) REFERENCES portal_draw_requests(id) ON DELETE SET NULL`
+- **trinity_order_comments** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **trinity_order_comments** → `staff_users` — `FOREIGN KEY (sent_by_staff) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **trinity_order_comments** → `trinity_inspection_orders` — `FOREIGN KEY (trinity_inspection_order_id) REFERENCES trinity_inspection_orders(id) ON DELETE CASCADE`
+- **trinity_order_lines** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **trinity_order_lines** → `trinity_inspection_orders` — `FOREIGN KEY (trinity_inspection_order_id) REFERENCES trinity_inspection_orders(id) ON DELETE CASCADE`
+- **trinity_order_media** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **trinity_order_media** → `trinity_inspection_orders` — `FOREIGN KEY (trinity_inspection_order_id) REFERENCES trinity_inspection_orders(id) ON DELETE CASCADE`
+- **trustpoint_draw_comments** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **trustpoint_draw_lines** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **trustpoint_draw_lines** → `staff_users` — `FOREIGN KEY (entered_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **trustpoint_draws** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **trustpoint_milestone_links** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **trustpoint_milestone_links** → `staff_users` — `FOREIGN KEY (confirmed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **trustpoint_milestone_snapshots** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **trustpoint_project_links** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **trustpoint_project_links** → `applications` — `FOREIGN KEY (candidate_application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **trustpoint_project_links** → `staff_users` — `FOREIGN KEY (confirmed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **trustpoint_service_orders** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **underwriting_conflicts** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **underwriting_conflicts** → `fact_observations` — `FOREIGN KEY (observation_a_id) REFERENCES fact_observations(id) ON DELETE SET NULL`
+- **underwriting_conflicts** → `fact_observations` — `FOREIGN KEY (observation_b_id) REFERENCES fact_observations(id) ON DELETE SET NULL`
+- **underwriting_context_snapshots** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **underwriting_context_snapshots** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **underwriting_context_snapshots** → `investors` — `FOREIGN KEY (investor_id) REFERENCES investors(id) ON DELETE SET NULL`
+- **underwriting_reread_state** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **underwriting_run_calculations** → `underwriting_runs` — `FOREIGN KEY (run_id) REFERENCES underwriting_runs(id) ON DELETE CASCADE`
+- **underwriting_run_decisions** → `underwriting_runs` — `FOREIGN KEY (run_id) REFERENCES underwriting_runs(id) ON DELETE CASCADE`
+- **underwriting_run_findings** → `underwriting_runs` — `FOREIGN KEY (run_id) REFERENCES underwriting_runs(id) ON DELETE CASCADE`
+- **underwriting_run_snapshots** → `underwriting_runs` — `FOREIGN KEY (run_id) REFERENCES underwriting_runs(id) ON DELETE CASCADE`
+- **underwriting_runs** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **underwriting_runs** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **workflow_events** → `staff_users` — `FOREIGN KEY (actor_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **workflow_events** → `staff_users` — `FOREIGN KEY (from_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **workflow_events** → `staff_users` — `FOREIGN KEY (to_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **workflow_events** → `workflow_items` — `FOREIGN KEY (workflow_item_id) REFERENCES workflow_items(id) ON DELETE CASCADE`
+- **workflow_items** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **workflow_items** → `staff_users` — `FOREIGN KEY (from_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **workflow_items** → `staff_users` — `FOREIGN KEY (to_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+
+## Unique constraints (37)
+
+- **application_service_contacts** — `UNIQUE (application_id, service_contact_id)`
+- **appraisers** — `UNIQUE (identity_key)`
+- **borrower_contacts** — `UNIQUE (borrower_id, kind, value)`
+- **borrower_link_candidates** — `UNIQUE (borrower_id, candidate_borrower_id)`
+- **checklist_templates** — `UNIQUE (code)`
+- **clickup_field_mappings** — `UNIQUE (portal_key)`
+- **clickup_webhook_inbox** — `UNIQUE (event_id)`
+- **closing_threads** — `UNIQUE (application_id)`
+- **closing_threads** — `UNIQUE (token)`
+- **condition_intents** — `UNIQUE (code)`
+- **conversation_external_participants** — `UNIQUE (conversation_id, email)`
+- **conversation_external_participants** — `UNIQUE (reply_key)`
+- **custom_fields** — `UNIQUE (key)`
+- **document_share_links** — `UNIQUE (token)`
+- **docusign_event_inbox** — `UNIQUE (body_sha256)`
+- **draw_findings** — `UNIQUE (reply_token)`
+- **file_orders** — `UNIQUE (application_id, order_type)`
+- **inbound_file_emails** — `UNIQUE (resend_email_id)`
+- **investors** — `UNIQUE (label_norm)`
+- **message_reactions** — `UNIQUE (message_id, actor_kind, actor_id, emoji)`
+- **partners** — `UNIQUE (owner_borrower_id, email)`
+- **post_closing_items** — `UNIQUE (application_id, code)`
+- **properties** — `UNIQUE (address_key)`
+- **sitewire_draw_requests** — `UNIQUE (sitewire_request_id)`
+- **sitewire_draws** — `UNIQUE (sitewire_draw_id)`
+- **sitewire_property_links** — `UNIQUE (application_id)`
+- **sitewire_property_links** — `UNIQUE (sitewire_property_id)`
+- **staff_users** — `UNIQUE (email)`
+- **term_sheet_offers** — `UNIQUE (token_hash)`
+- **trustpoint_draw_lines** — `UNIQUE (tp_draw_id, sitewire_job_item_id)`
+- **trustpoint_draws** — `UNIQUE (tp_draw_id)`
+- **trustpoint_milestone_links** — `UNIQUE (tp_milestone_id)`
+- **trustpoint_project_links** — `UNIQUE (application_id)`
+- **trustpoint_project_links** — `UNIQUE (tp_project_id)`
+- **trustpoint_webhook_events** — `UNIQUE (event, payload_hash)`
+- **encompass_field_catalog** — `UNIQUE (kind, key)`
+- **track_record_pillars** — `UNIQUE (track_record_id, pillar)`
+
+## Enum types (12)
+
+- **lt_amortization_type** — fixed, adjustable
+- **lt_asset_section** — accounts, credits
+- **lt_employment_type** — current, previous, additional
+- **lt_liability_section** — debts, obligations
+- **lt_lien_position** — first, second
+- **lt_link_status** — suggested, confirmed, rejected
+- **lt_loan_purpose** — purchase, rate_term_refinance, cash_out_refinance
+- **lt_party_role** — borrower, coborrower
+- **lt_party_type** — individual, entity
+- **lt_product_kind** — dscr, full_doc, bank_statement, other
+- **lt_residency_basis** — own, rent, no_primary_housing_expense
+- **lt_residency_type** — current, prior
+
+## Views (0)
+
+_None._
+
+## Primary keys and indexes
+
+Every one of the 321 primary keys and 1116 indexes is
+recorded in `beyond-prisma.json` and compared on every drift check. They are
+deliberately not listed here — one line each would be longer than everything
+above put together, and the partial indexes, which are the ones a person
+actually needs to read, already have their own section.
 

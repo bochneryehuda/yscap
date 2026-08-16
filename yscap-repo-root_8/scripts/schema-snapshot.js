@@ -46,13 +46,36 @@ const OUT_DIR = path.join(__dirname, '..', 'docs', 'schema');
 const JSON_FILE = path.join(OUT_DIR, 'beyond-prisma.json');
 const MD_FILE = path.join(OUT_DIR, 'BEYOND-PRISMA.md');
 
+/**
+ * How many migrations built this map, in words.
+ *
+ * DERIVED, NEVER TYPED. This sentence carried a hand-typed "549" and the
+ * database was already on 550 — a number written into prose goes stale on the
+ * very next migration, and a document that is confidently wrong about one
+ * number teaches the reader to trust none of them. An unreadable `db/`
+ * directory says so plainly rather than guessing a figure.
+ */
+function migrationSentence(inv) {
+  const m = (inv.generatedFrom || {}).migrations || null;
+  if (!m || !Number.isFinite(m.count)) {
+    return 'The numbered migrations in `db/` remain the only thing that builds '
+      + 'this database.';
+  }
+  const highest = m.highest == null ? '' : ` (highest \`db/${m.highest}\`)`;
+  return `The ${m.count} numbered migrations in \`db/\`${highest} remain the only `
+    + 'thing that builds this database.';
+}
+
 /** The readable companion. Same data, same order, for a human rather than a diff. */
 function toMarkdown(inv) {
   const c = inv.counts;
-  const section = (title, rows, render) => {
-    const out = [`## ${title} (${rows.length})`, ''];
-    if (!rows.length) { out.push('_None._', ''); return out.join('\n'); }
-    out.push(...rows.map(render), '');
+  const schema = inv.schema || {};
+  const section = (title, rows, render, note) => {
+    const list = rows || [];
+    const out = [`## ${title} (${list.length})`, ''];
+    if (note) out.push(note, '');
+    if (!list.length) { out.push('_None._', ''); return out.join('\n'); }
+    out.push(...list.map(render), '');
     return out.join('\n');
   };
 
@@ -68,8 +91,13 @@ function toMarkdown(inv) {
     'file alone would be missing every one of them — silently, with no error.',
     '',
     'That is why the rule is absolute: **the schema files are for reading. Never',
-    'rebuild a database from them.** The 549 numbered migrations in `db/` remain',
-    'the only thing that builds this database.',
+    `rebuild a database from them.** ${migrationSentence(inv)}`,
+    '',
+    'Everything below is also recorded, object by object, in',
+    '`beyond-prisma.json`, which is what `npm run schema:check` compares against',
+    'the live database.',
+    '',
+    '## The database in numbers',
     '',
     '| | |',
     '|---|---|',
@@ -80,6 +108,12 @@ function toMarkdown(inv) {
     `| CHECK constraints | ${c.checkConstraints} |`,
     `| Generated columns | ${c.generatedColumns} |`,
     `| Partial indexes | ${c.partialIndexes} |`,
+    `| Primary keys | ${c.primaryKeys} |`,
+    `| Foreign keys | ${c.foreignKeys} |`,
+    `| Unique constraints | ${c.uniqueConstraints} |`,
+    `| Indexes (all kinds) | ${c.indexes} |`,
+    `| Enum types | ${c.enums} |`,
+    `| Views | ${c.views} |`,
     '',
     section('Triggers', inv.beyondPrisma.triggers, (t) => `- **${t.name}** on \`${t.table}\``),
     section('Generated columns', inv.beyondPrisma.generatedColumns,
@@ -89,6 +123,31 @@ function toMarkdown(inv) {
       (i) => `- **${i.name}** on \`${i.table}\``),
     section('CHECK constraints', inv.beyondPrisma.checkConstraints,
       (k) => `- **${k.name}** on \`${k.table}\``),
+
+    // THE RELATIONSHIP LAYER. Prisma CAN express most of this, which is exactly
+    // why it was never written down here — and why a dropped foreign key was
+    // invisible to the drift check for as long as this file existed.
+    section('Foreign keys', schema.foreignKeys,
+      (f) => `- **${f.table}** → \`${f.references}\` — \`${f.definition}\``,
+      'What happens to the child rows on delete is part of each line, because '
+      + 'the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is '
+      + 'the difference between losing a document and keeping it.'),
+    section('Unique constraints', schema.uniqueConstraints,
+      (u) => `- **${u.table}** — \`${u.definition}\``),
+    section('Enum types', schema.enums, (e) => `- **${e.name}** — ${e.values}`),
+    section('Views', schema.views, (v) => `- **${v.name}**`),
+
+    // NAMED, NOT SILENTLY DROPPED. Listing 321 primary keys and 1,116 indexes
+    // here would bury everything above them, and a reader who is not told they
+    // were left out reasonably concludes the database has none.
+    '## Primary keys and indexes',
+    '',
+    `Every one of the ${c.primaryKeys} primary keys and ${c.indexes} indexes is`,
+    'recorded in `beyond-prisma.json` and compared on every drift check. They are',
+    'deliberately not listed here — one line each would be longer than everything',
+    'above put together, and the partial indexes, which are the ones a person',
+    'actually needs to read, already have their own section.',
+    '',
   ].join('\n');
 }
 

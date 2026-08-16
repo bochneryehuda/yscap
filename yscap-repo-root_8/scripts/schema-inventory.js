@@ -50,8 +50,15 @@ async function tablesAndColumns(db) {
     if (!tables.has(r.table_name)) tables.set(r.table_name, []);
     // Compact, human-diffable, and carries the facts a consumer depends on:
     // the name, the type, and whether it may be absent.
+    // THE DEFAULT IS PART OF THE COLUMN. Dropping `DEFAULT now()` changes what
+    // every future row contains while the type and the nullability both stay
+    // exactly as they were — so a signature without it reports "no change" on a
+    // change that silently alters the data from then on.
+    const def = (r.column_default || '').replace(/\s+/g, ' ').trim();
     tables.get(r.table_name).push(
-      `${r.column_name} ${r.data_type}${r.is_nullable === 'NO' ? ' NOT NULL' : ''}`
+      `${r.column_name} ${r.data_type}`
+      + (r.is_nullable === 'NO' ? ' NOT NULL' : '')
+      + (def ? ` DEFAULT ${def}` : '')
     );
   }
   return [...tables.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))
@@ -146,6 +153,108 @@ async function partialIndexes(db) {
   })).sort(byName);
 }
 
+// =============================================================================
+// THE RELATIONSHIP LAYER — what the first cut of this map left out entirely
+// =============================================================================
+//
+// Owner-directed 2026-08-16: *"the database should get expanded and enhanced if
+// something is being added. Let's enrich this even further."*
+//
+// The map began as tables, columns, and the five things Prisma cannot express.
+// Measured against a real database, that left out **680 foreign keys, 797
+// ordinary indexes, 321 primary keys, 37 unique constraints and 12 enum
+// types** — so somebody could DROP A FOREIGN KEY, the map would not change,
+// and the drift check would report everything as fine. A picture of a lending
+// database that omits which loan belongs to which borrower is not a picture of
+// it. Each section below is read from the CATALOG, so it grows on its own as
+// the database grows; none of it is a list anybody maintains.
+
+/** How each table is identified — one row per table, or the schema is broken. */
+async function primaryKeys(db) {
+  const { rows } = await db.query(`
+    SELECT c.conname AS name, rel.relname AS table_name,
+           pg_get_constraintdef(c.oid) AS definition
+      FROM pg_constraint c JOIN pg_class rel ON rel.oid = c.conrelid
+     WHERE c.contype = 'p' AND c.connamespace = 'public'::regnamespace
+     ORDER BY rel.relname`);
+  return rows.map((r) => ({
+    name: r.name, table: r.table_name, definition: r.definition,
+  })).sort(byName);
+}
+
+/** WHICH RECORD POINTS AT WHICH — the relationships, and what happens on delete. */
+async function foreignKeys(db) {
+  const { rows } = await db.query(`
+    SELECT c.conname AS name, rel.relname AS table_name, tgt.relname AS references_table,
+           pg_get_constraintdef(c.oid) AS definition
+      FROM pg_constraint c
+      JOIN pg_class rel ON rel.oid = c.conrelid
+      JOIN pg_class tgt ON tgt.oid = c.confrelid
+     WHERE c.contype = 'f' AND c.connamespace = 'public'::regnamespace
+     ORDER BY rel.relname, c.conname`);
+  // The definition carries ON DELETE CASCADE / SET NULL verbatim, which is the
+  // part that decides whether deleting one row quietly removes a hundred others.
+  return rows.map((r) => ({
+    name: r.name, table: r.table_name, references: r.references_table,
+    definition: r.definition,
+  })).sort(byName);
+}
+
+/** What the database refuses to store twice. */
+async function uniqueConstraints(db) {
+  const { rows } = await db.query(`
+    SELECT c.conname AS name, rel.relname AS table_name,
+           pg_get_constraintdef(c.oid) AS definition
+      FROM pg_constraint c JOIN pg_class rel ON rel.oid = c.conrelid
+     WHERE c.contype = 'u' AND c.connamespace = 'public'::regnamespace
+     ORDER BY rel.relname, c.conname`);
+  return rows.map((r) => ({
+    name: r.name, table: r.table_name, definition: r.definition,
+  })).sort(byName);
+}
+
+/**
+ * EVERY index, not only the partial ones.
+ *
+ * `partialIndexes` above records the subset Prisma cannot express; this records
+ * all of them, because a dropped index does not change a single answer the
+ * system gives — it changes how long the answer takes, which is the kind of
+ * regression nobody attributes to a schema change months later.
+ */
+async function allIndexes(db) {
+  const { rows } = await db.query(`
+    SELECT c.relname AS name, rel.relname AS table_name,
+           pg_get_indexdef(i.indexrelid) AS definition
+      FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+      JOIN pg_class rel ON rel.oid = i.indrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'public'
+     ORDER BY rel.relname, c.relname`);
+  return rows.map((r) => ({
+    name: r.name, table: r.table_name,
+    definition: (r.definition || '').replace(/\s+/g, ' ').trim(),
+  })).sort(byName);
+}
+
+/** The fixed lists of allowed values, and every value each one permits. */
+async function enumTypes(db) {
+  const { rows } = await db.query(`
+    SELECT t.typname AS name, string_agg(e.enumlabel, ', ' ORDER BY e.enumsortorder) AS values
+      FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid
+     WHERE t.typnamespace = 'public'::regnamespace
+     GROUP BY t.typname ORDER BY t.typname`);
+  return rows.map((r) => ({ name: r.name, values: r.values })).sort(byName);
+}
+
+/** Saved queries that look like tables. None today — recorded so one cannot appear unnoticed. */
+async function views(db) {
+  const { rows } = await db.query(`
+    SELECT table_name AS name FROM information_schema.views
+     WHERE table_schema = 'public' ORDER BY table_name`);
+  return rows.map((r) => ({ name: r.name })).sort(byName);
+}
+
 /**
  * The whole inventory. Read-only. Deterministic.
  * @param {{query: Function}} db a `pg` client or pool
@@ -160,6 +269,13 @@ async function buildInventory(db) {
   const trigs = await triggers(db);
   const funcs = await functions(db);
   const partials = await partialIndexes(db);
+  // The relationship layer. Sequential for the same one-connection reason.
+  const pks = await primaryKeys(db);
+  const fks = await foreignKeys(db);
+  const uniques = await uniqueConstraints(db);
+  const indexes = await allIndexes(db);
+  const enums = await enumTypes(db);
+  const vws = await views(db);
 
   return {
     // A note to whoever opens the file, inside the file itself.
@@ -175,6 +291,12 @@ async function buildInventory(db) {
       triggers: trigs.length,
       functions: funcs.length,
       partialIndexes: partials.length,
+      primaryKeys: pks.length,
+      foreignKeys: fks.length,
+      uniqueConstraints: uniques.length,
+      indexes: indexes.length,
+      enums: enums.length,
+      views: vws.length,
     },
     beyondPrisma: {
       generatedColumns: generated,
@@ -182,6 +304,15 @@ async function buildInventory(db) {
       triggers: trigs,
       functions: funcs,
       partialIndexes: partials,
+    },
+    // Expressible in Prisma, and every bit as much part of the picture.
+    schema: {
+      primaryKeys: pks,
+      foreignKeys: fks,
+      uniqueConstraints: uniques,
+      indexes,
+      enums,
+      views: vws,
     },
     tables,
   };
@@ -227,7 +358,14 @@ function migrationState(dbDir) {
   };
 }
 
+// The section names the drift check walks. ONE list, so a section added above
+// is compared automatically instead of being silently left unguarded — which is
+// exactly how 680 foreign keys went unwatched in the first place.
+const BEYOND_PRISMA_SECTIONS = ['triggers', 'functions', 'checkConstraints', 'generatedColumns', 'partialIndexes'];
+const SCHEMA_SECTIONS = ['primaryKeys', 'foreignKeys', 'uniqueConstraints', 'indexes', 'enums', 'views'];
+
 module.exports = {
   buildInventory, beyondPrismaCount, serialize, migrationState,
+  BEYOND_PRISMA_SECTIONS, SCHEMA_SECTIONS,
   _internals: { bodyHash, byName },
 };
