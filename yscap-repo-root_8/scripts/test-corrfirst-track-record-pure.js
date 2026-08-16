@@ -248,6 +248,27 @@ for (const t of ['Land / lot', 'Commercial', 'Vacant land']) {
 }
 ok(!cf.CORRFIRST_PROPERTY_TYPE_OPTIONS.includes('Other'),
   'their list has no "Other" — so nothing here may emit one');
+// THE CROSS-SYSTEM CONTRACT: every property type PILOT's OWN governed vocabulary
+// can hold reaches a value CorrFirst's form offers. `property-type.PROPERTY_TYPES`
+// is what `sanitizePropertyType` lets into the column, so this is the real input
+// set — and adding a type there without teaching this export about it now fails
+// here instead of shipping a blank column to an investor. (`property-type.js` has
+// no requires of its own, so the test stays pure.)
+{
+  const PT = require('../src/lib/property-type');
+  const stranded = [];
+  const judged = [];
+  for (const p of PT.PROPERTY_TYPES) {
+    const got = cf.corrfirstPropertyType({ property_type: p.label });
+    if (got.value && !cf.CORRFIRST_PROPERTY_TYPE_OPTIONS.includes(got.value)) stranded.push(`${p.label} -> ${got.value} (off their list)`);
+    else if (!got.value) stranded.push(`${p.label} -> blank`);
+    else if (!got.exact) judged.push(p.label);
+  }
+  ok(stranded.length === 0,
+    `every property type PILOT can store reaches a value CorrFirst's form offers${stranded.length ? ' — stranded: ' + stranded.join(', ') : ''}`);
+  ok(judged.length === 1 && judged[0] === 'Townhouse',
+    `Townhouse is the ONLY judgement call in our whole vocabulary${judged.length !== 1 ? ' — got: ' + judged.join(', ') : ''}`);
+}
 {
   const none = cf.corrfirstPropertyType({ property_type: '' });
   ok(none.missing === true && none.value === '' && none.noEquivalent === false,
