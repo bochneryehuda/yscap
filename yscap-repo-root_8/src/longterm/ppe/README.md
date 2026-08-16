@@ -73,9 +73,31 @@ Never introduce a float price/rate on a stored or compared value; never re-deriv
 - **`finding.js`** (§10.4) — the findings-ledger LOGIC: stable identity key, reconcile a run against the
   stored ledger, **never re-open a settled finding** (a fixed one that reappears is flagged
   `regressed`), report disappeared findings for auto-close.
+- **`finding-store.js`** (§10.4) — the durable BRIDGE for the findings ledger: persists to
+  `lt_ppe_finding` (db/557) what pure `finding.js` produces and **delegates every merge to
+  `finding.reconcile`** (no SQL copy of the "never re-open a settled finding" rule to drift). `db` is an
+  injected pool (same convention as `store.js`); everything is `scope`-scoped.
 - **`cutover.js`** (§10.5/§11) — per-investor scoreboard (open findings, clean-day streak, canary rate)
   + the go-live gate + the `draft→shadow→live→retired` lifecycle (promotion gated, rollback always
   allowed).
+
+### The shadow LOOP (canary → measure → decide → record)
+- **`canary.js`** (§10.3/§10.5) — the CANARY run: prices one scenario matrix beside Lender Price in ONE
+  reusable call and packages the result for every consumer — `records` (→ `finding-store.persistRun`),
+  `runRecord` (→ the `scoreboard.assemble` series), `report` (→ a human). It MEASURES one run; it never
+  DECIDES (cutover) and never PERSISTS (finding-store).
+- **`scoreboard.js`** (§10.5) — the continuous-measurement layer BETWEEN the canary and the gate:
+  collapses a dated series of run records into the `{ canaryAgreementRate, dailyNewFindings }` shape
+  `cutover` consumes plus a `trend` an admin reads. It MEASURES; `assemble` DELEGATES the eligibility
+  decision to `cutover.buildScoreboard`/`eligibleForLive` (one definition of "eligible").
+- **`cutover-ledger.js`** (§11) — the append-only, replayable DECISION history of an investor's
+  lifecycle moves (who/when/from→to/reason/scoreboard). It manages the SEQUENCE; it never re-implements
+  legality — every step delegates to `cutover.transition`, and promotion to live requires the
+  scoreboard gate's `eligible:true`.
+- **`divergence.js`** (§10.1/§10.4) — makes ONE disagreement actionable: shows our full `pricing.priceRung`
+  build-up beside Lender Price's single number and ranks the component whose magnitude most closely
+  matches the gap (`strong`/`possible`/`none`). Honest by design — LP gives only a final price, so a
+  suspect is a HYPOTHESIS, never a claim that either side is wrong.
 
 ## Data flow
 
@@ -83,7 +105,10 @@ Never introduce a float price/rate on a stored or compared value; never re-deriv
 daily sync:   raw grid ─ ratesheet-ingest ─▶ cells ─ ratesheet-diff ─▶ classify ─▶ auto-apply | review
 pricing:      scenario ─ quote(program, settings) ─▶ ladder (reconstruction records)
 shadow:       scenario ─ facade ─┬─ ourQuote ─ normalizeOurQuote ─┐
-                                 └─ priceLp ─ lp-normalize ────────┴─ parity ─▶ finding ─▶ report ─▶ cutover gate
+                                 └─ priceLp ─ lp-normalize ────────┴─ parity ─▶ finding ─▶ report
+loop:         canary ─▶ records ─ finding-store.persistRun ─▶ ledger
+                    └─▶ runRecord ─ scoreboard.assemble ─▶ cutover gate ─ cutover-ledger (human decision)
+                    findings ─ divergence ─▶ ranked suspect (actionable for a human)
 lock:         a chosen rung ─ lock.freezeSnapshot ─▶ frozen+hashed; extend/relock/reprice append sub-records
 ```
 
@@ -96,9 +121,11 @@ DB; `-db` suites add a round-trip when `DATABASE_URL` is set). All suites are cu
 
 ## Pending (deliberately not built yet)
 
-- **`lt_ppe_finding` table + a DB store** for the findings ledger (§10.4). The *logic* is done
-  (`finding.js`); the migration is held until this branch's base settles to avoid a migration-number
-  collision (main and this branch both currently carry a `db/554`).
-- **The `/api/lt/*` route** mounting `facade.js` against the real LP client + `quote.js` + the store.
-- **The admin UI** (§12) and wiring these suites into CI's `package.json` test chain (kept out of the
-  conflict-prone chain until merge time; `test-lt-ppe-all.js` is the single entry to add).
+- **The `/api/lt/*` route** mounting `facade.js` against the real LP client + `quote.js` + the store,
+  and a scheduler (or an admin "run canary now" button) that calls `canary.runCanary` →
+  `finding-store.persistRun` → `scoreboard.assemble` on a cadence.
+- **The admin UI** (§12) — the scoreboard/trend surface, the findings ledger with `divergence`
+  diagnoses, and the human-gated cutover-ledger promote/rollback controls.
+- **Wiring these suites into CI's `package.json` test chain** (kept out of the conflict-prone chain
+  until merge time; `test-lt-ppe-all.js` is the single entry to add — it auto-discovers every
+  `test-lt-ppe-*.js`).
