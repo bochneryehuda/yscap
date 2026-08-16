@@ -1,6 +1,6 @@
 # One readable schema for the whole system — the plan
 
-**Status: PHASES 0–3 BUILT, INCLUDING THE 3b ENRICHMENT and both §6c/§8 carry-overs. The map records
+**Status: PHASES 0–3 ALL BUILT — 1, 2, 3, the 3b enrichment, 3c, and both §6c/§8 carry-overs. The map records
 the relationship layer, tells you when it has fallen behind with no database needed to ask, and now has
 a browsable picture — `docs/schema/PICTURE.html`. The one thing left in Phase 3 is a decision, not code
 (§6d); §8.2's CODEOWNERS was evaluated and rejected on measurement, with a working substitute built in
@@ -282,6 +282,49 @@ whose name BEGINS with the ledger's, and one that merely CONTAINS it — because
 `includes` mistake would make a real table silently vanish from the map, which is strictly worse than
 the bug being fixed. And end to end: the Prisma map now regenerates BYTE-IDENTICAL from a database
 that has the ledger.
+
+#### Phase 1 — what was actually built (2026-08-16)
+
+With the gate answered, the readable half was built — **generated, not hand-typed.** Phase 1 asked to
+*"comment every non-obvious column"* by hand. Hand-editing an 8,500-line generated file is the cheap
+shape the build rule forbids: it rots, and the first regeneration after somebody stops maintaining it
+takes the work with it. So the notes come from ONE source and are re-applied on every run.
+
+**`scripts/schema-glossary.js` is that source**, and both documents in `docs/schema/` now read it: the
+browsable picture and the Prisma map. Two copies of a sentence about the same table would drift, and
+the drifted one is the one somebody reads. Thirty-six tables — the ones a person needs to orient
+themselves — now open with a line of plain English:
+
+```prisma
+/// One loan file — one property, one deal. Almost everything in the system hangs off this.
+/// This table contains check constraints and requires additional setup for migrations. Visit …
+model applications {
+```
+
+**Ours leads and Prisma's own note is kept below it**, because the sentence saying what the table IS
+should be read first. Nothing is ever written twice: a model already carrying our exact line is left
+alone, so the file is byte-identical across regenerations — **verified by generating it three times in
+a row.**
+
+**Deliberately NOT done, with reasons rather than silence:**
+
+- **Commenting every non-obvious column.** 5,257 columns. Writing a true sentence for each is a
+  research project, and a confident wrong sentence is worse than a bare column name. The thirty-six
+  above are where the knowledge is real; the glossary grows only when somebody actually knows another
+  answer, and a test refuses an entry naming a table that does not exist.
+- **Renaming the 680 relations.** Now proven to survive regeneration, so it is *possible* — but the
+  auto-generated names are mechanical and correct, better ones are a matter of taste, and 680 renames
+  is churn across a file everybody diffs. Low value, high noise.
+- **Re-ordering the models by domain.** The grouping exists and is tested to be a partition
+  (`schema-picture.js`), so this could be done from the same source. It was not, because
+  `PICTURE.html` already presents exactly that grouped view, navigably, to the person who needs it —
+  re-sorting an 8,500-line file to duplicate it would make every future diff noisy for no reader.
+
+Ten mutations of the three text rules (`seedFrom`, `stripLedgerModel`, `injectGlossary`) proven red,
+with **two vacuous on the first pass** — both holes in the test rather than the code. The sharper one:
+a regex matching `model borrowers` INSIDE `model borrowers_extra` rewrites it in place, and BOTH of the
+obvious assertions still passed on a file Prisma could not have parsed. The fix was to assert the
+neighbouring model survives byte-for-byte and that the model COUNT is unchanged.
 
 ### Phase 2 — Write down what Prisma cannot hold.
 Inventory the 57 triggers, 95 functions, 323 checks, 68 partial indexes and 12 generated columns, and

@@ -231,6 +231,7 @@ model amc_order_revisions {
   @@index([order_id, created_at], map: "idx_amc_revisions_order")
 }
 
+/// An appraisal ordered through an appraisal management company, and where that order has got to.
 model amc_orders {
   id                                                      BigInt                @id @default(autoincrement())
   application_id                                          String                @db.Uuid
@@ -348,6 +349,7 @@ model api_rate_limits {
   updated_at     DateTime @default(now()) @db.Timestamptz(6)
 }
 
+/// Who on the team is on which file, and in what role.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model application_assignees {
   id                                                      String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -440,6 +442,7 @@ model application_status_history {
   @@index([to_status, created_at], map: "idx_status_history_to_status")
 }
 
+/// One loan file — one property, one deal. Almost everything in the system hangs off this.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model applications {
@@ -750,6 +753,7 @@ model applications {
   @@index([sync_state], map: "idx_applications_sync_state")
 }
 
+/// The other properties an appraiser compared this one to.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model appraisal_comparables {
@@ -952,6 +956,7 @@ model appraisal_xml_waivers {
   staff_users              staff_users?     @relation(fields: [waived_by], references: [id], onUpdate: NoAction)
 }
 
+/// An appraisal report, and everything read out of it.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model appraisals {
@@ -1284,6 +1289,7 @@ model artifact_versions {
   @@unique([artifact_type, version], map: "idx_artifact_versions_type_ver")
 }
 
+/// Who did what, and when. The record that answers questions years later.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model audit_log {
   id                    BigInt   @id @default(autoincrement())
@@ -1338,6 +1344,7 @@ model backup_runs {
   @@index([status, started_at(sort: Desc)], map: "backup_runs_status_idx")
 }
 
+/// Someone a borrower has asked to help them with their file.
 model borrower_assistants {
   id                                                            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   borrower_id                                                   String       @db.Uuid
@@ -1360,6 +1367,7 @@ model borrower_assistants {
   staff_users_borrower_assistants_invited_by_staffTostaff_users staff_users? @relation("borrower_assistants_invited_by_staffTostaff_users", fields: [invited_by_staff], references: [id], onUpdate: NoAction)
 }
 
+/// The borrower’s login — password and two-factor only. Deliberately holds no personal details.
 model borrower_auth {
   borrower_id         String    @id @db.Uuid
   password_hash       String
@@ -1528,6 +1536,7 @@ model borrower_view_sessions {
   @@index([started_at(sort: Desc)], map: "idx_bview_started")
 }
 
+/// The person. Kept apart from their login on purpose, so a problem with one cannot reach the other.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 /// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
@@ -1698,6 +1707,7 @@ model chat_notification_jobs {
   messages        messages?     @relation(fields: [message_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
+/// The conditions on a file — what is still needed before it can close.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model checklist_items {
   id                                                                        String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -1794,6 +1804,7 @@ model checklist_items {
   @@index([llc_id], map: "idx_checklist_llc")
 }
 
+/// The master list the conditions are created from.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model checklist_templates {
   id                                                      String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -2013,6 +2024,7 @@ model clickup_field_mappings {
   staff_users      staff_users? @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
 }
 
+/// The link between a card in ClickUp and a loan file here.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model clickup_task_index {
   task_id         String        @id
@@ -2182,6 +2194,7 @@ model closing_threads {
   @@index([application_id], map: "idx_closing_threads_app")
 }
 
+/// The run-up to the closing table for one file.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model closing_workflow {
   application_id                                                            String          @id @db.Uuid
@@ -2317,6 +2330,7 @@ model condition_requirement_evidence {
   @@index([evidence_span_id], map: "idx_cond_req_evidence_span")
 }
 
+/// Conditions raised on a file outside the standard checklist.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model conditions {
   id                                              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -2433,6 +2447,7 @@ model credit_import_waivers {
   @@index([application_id], map: "credit_import_waivers_app_idx")
 }
 
+/// A credit pull for one borrower, including the scores the deal was priced on.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model credit_reports {
   id                                                  String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -2713,6 +2728,7 @@ model document_extractions {
   @@index([document_id], map: "idx_docextract_doc")
 }
 
+/// Something the system noticed in a document that a person should look at.
 model document_findings {
   id                        String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   application_id            String?                     @db.Uuid
@@ -3033,6 +3049,7 @@ model document_share_links {
   @@index([token], map: "idx_doc_share_links_token")
 }
 
+/// Every document in the system, whoever uploaded it and wherever it is filed.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model documents {
@@ -3187,6 +3204,7 @@ model draw_attachments {
   @@index([application_id], map: "idx_draw_attach_app")
 }
 
+/// Money actually released on a draw, and the fee taken out of it.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model draw_disbursements {
   id                    BigInt       @id @default(autoincrement())
@@ -3256,6 +3274,7 @@ model draw_finding_lines {
   @@index([finding_id], map: "idx_finding_lines")
 }
 
+/// What an inspector found on site, and what it means for the money.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model draw_findings {
   id                                                          BigInt               @id @default(autoincrement())
@@ -3689,6 +3708,7 @@ model encompass_flood_orders {
   @@index([application_id, ordered_at(sort: Desc)], map: "idx_flood_orders_app")
 }
 
+/// A read-only copy of what Encompass holds for a loan. We never write back to it.
 /// This model contains an index with non-default null sort order and requires additional setup for migrations. Visit https://pris.ly/d/default-index-null-ordering for more info.
 model encompass_loan_snapshot {
   encompass_loan_guid String        @id
@@ -4151,6 +4171,7 @@ model finding_corrections {
   @@index([finding_code, captured_at(sort: Desc)], map: "idx_fc_code")
 }
 
+/// A human’s verdict on a finding, kept so it is never asked again.
 model finding_decisions {
   id                                                       String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   application_id                                           String       @db.Uuid
@@ -4440,6 +4461,7 @@ model investors {
   underwriting_context_snapshots underwriting_context_snapshots[]
 }
 
+/// Outstanding invitations — to join the team, or for a borrower to set up their login.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model invite_tokens {
   id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -4675,6 +4697,7 @@ model llc_members {
   @@index([llc_id], map: "idx_llc_members_llc")
 }
 
+/// The company a loan is taken in the name of. Despite the name it now holds corporations, partnerships and trusts too.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 /// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
@@ -4917,6 +4940,7 @@ model loan_exception_comments {
   @@index([loan_exception_id, created_at], map: "idx_loan_exc_comments")
 }
 
+/// The register of policy exceptions — what was asked for, who approved it, and why.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model loan_exceptions {
@@ -5648,6 +5672,7 @@ model message_revisions {
   @@index([message_id], map: "idx_message_revisions_msg")
 }
 
+/// Messages inside the system — between the team, and with a borrower or a broker.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model messages {
   id                                                   String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -5737,6 +5762,7 @@ model notification_prefs {
   @@id([borrower_id, category])
 }
 
+/// Everything the system has told someone, in the app and by email.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model notifications {
   id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -5836,6 +5862,7 @@ model post_purchase_notify {
   staff_users_post_purchase_notify_staff_idTostaff_users staff_users  @relation("post_purchase_notify_staff_idTostaff_users", fields: [staff_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
+/// The priced structure of a deal at the moment it was registered — the numbers the term sheet was printed from.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model product_registrations {
   id                         String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -5865,6 +5892,7 @@ model product_registrations {
   @@index([application_id, created_at(sort: Desc)], map: "idx_product_reg_app")
 }
 
+/// Every property the system has ever been shown, across all files.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 /// This model contains an index with non-default null sort order and requires additional setup for migrations. Visit https://pris.ly/d/default-index-null-ordering for more info.
@@ -6122,6 +6150,7 @@ model property_not_duplicates {
   @@id([property_id, other_property_id])
 }
 
+/// What one appraiser said about one property on one date. Never overwritten.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 /// This model contains an index with non-default null sort order and requires additional setup for migrations. Visit https://pris.ly/d/default-index-null-ordering for more info.
 model property_observations {
@@ -7104,6 +7133,7 @@ model sitewire_partner_links {
   staff_users  staff_users? @relation(fields: [confirmed_by], references: [id], onUpdate: NoAction)
 }
 
+/// The link between a loan file and its construction-draw project.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model sitewire_property_links {
   id                                                                     BigInt       @id @default(autoincrement())
@@ -7222,6 +7252,7 @@ model staff_tool_scenarios {
   @@index([staff_user_id, tool_slug, updated_at(sort: Desc)], map: "idx_staff_tool_scen_owner")
 }
 
+/// The team roster. Also where an outside broker’s login lives, flagged as external.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model staff_users {
   id                                                                                    String                           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -7509,6 +7540,7 @@ model sync_locks {
   expires_at DateTime @db.Timestamptz(6)
 }
 
+/// Work waiting to be pushed out to ClickUp or another outside system.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model sync_queue {
   id          BigInt   @id @default(autoincrement())
@@ -7528,6 +7560,7 @@ model sync_queue {
   @@index([status, run_after], map: "idx_sync_queue_status")
 }
 
+/// Disagreements between us and an outside system that a person has to settle.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model sync_review_queue {
   id                                                         BigInt        @id @default(autoincrement())
@@ -7648,6 +7681,7 @@ model tpo_firm_pricing {
   staff_users_tpo_firm_pricing_updated_byTostaff_users            staff_users? @relation("tpo_firm_pricing_updated_byTostaff_users", fields: [updated_by], references: [id], onUpdate: NoAction)
 }
 
+/// The outside brokerages that bring us loans.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model tpo_firms {
   id                                             String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -7853,6 +7887,7 @@ model track_record_searches {
   @@index([borrower_id, run_at(sort: Desc)], map: "idx_trs_borrower")
 }
 
+/// Deals a borrower has done before — what their experience level is built from.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model track_records {
@@ -8393,6 +8428,7 @@ model underwriting_run_snapshots {
   underwriting_runs underwriting_runs @relation(fields: [run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
+/// One complete automated read of a whole loan file.
 model underwriting_runs {
   id                            String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   application_id                String                          @db.Uuid

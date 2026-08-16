@@ -31,6 +31,9 @@ const { spawnSync } = require('child_process');
 // inventory. Two lists would drift, and the drifting one would be the reason
 // these two documents disagreed about the same database.
 const { LEDGER_TABLE } = require('./schema-inventory');
+// The SAME plain-English notes the browsable picture uses. One definition, so
+// the two documents in docs/schema/ can never describe a table differently.
+const { GLOSSARY } = require('./schema-glossary');
 
 /** Exact, not a range. See the note above. */
 const PRISMA_VERSION = 'prisma@6.19.1';
@@ -139,6 +142,43 @@ function stripLedgerModel(text) {
   return out.replace(/\n{3,}/g, '\n\n');
 }
 
+/**
+ * Put a plain-English line above the models we genuinely know something about.
+ *
+ * This is Phase 1's "comment the non-obvious", done the way the build rule asks
+ * for: GENERATED from one source rather than hand-typed into an 8,500-line
+ * generated file where it would rot. `prisma db pull` preserves `///` doc
+ * comments (measured 2026-08-16), so a note written here survives every later
+ * regeneration — which is exactly why it must not be written twice.
+ *
+ * IT ONLY EVER ADDS A NOTE WHERE THERE IS NONE OF OURS. A model that already
+ * carries our exact sentence is left alone, so running this twice changes
+ * nothing. A DIFFERENT doc comment — Prisma's own note about check constraints,
+ * or something a human wrote — is never touched or reordered; ours is added
+ * above it, because the sentence saying what the table IS should be read first.
+ *
+ * The trade-off, stated rather than hidden: if a sentence in the glossary is
+ * later reworded, the old one stays in this file until somebody removes it.
+ * The picture is regenerated wholesale and always shows the current text, so
+ * the two would disagree until then. Rewording an entry is rare; silently
+ * rewriting a line somebody may have edited by hand is worse.
+ *
+ * PURE, so the text handling is testable without Prisma or a database.
+ */
+function injectGlossary(text, glossary) {
+  let out = String(text || '');
+  for (const [table, note] of Object.entries(glossary || {})) {
+    const line = `/// ${note}`;
+    // Anchored on a model block at column 0 — Prisma's own formatting.
+    const re = new RegExp(`(^|\\n)((?:///[^\\n]*\\n)*)model\\s+${table}\\s*\\{`, 'm');
+    out = out.replace(re, (m, lead, docs) => {
+      if (docs.includes(line)) return m;               // already ours — idempotent
+      return `${lead}${line}\n${docs}model ${table} {`;
+    });
+  }
+  return out;
+}
+
 function main() {
   if (!process.env.DATABASE_URL) {
     console.error('schema-prisma: DATABASE_URL is not set.');
@@ -185,7 +225,7 @@ function main() {
   // database — disagree about how many tables there are, and this file's own
   // header (which takes its counts from that inventory) contradicts its own
   // contents.
-  let body = stripLedgerModel(fs.readFileSync(SCHEMA, 'utf8'));
+  let body = injectGlossary(stripLedgerModel(fs.readFileSync(SCHEMA, 'utf8')), GLOSSARY);
   fs.writeFileSync(SCHEMA, header({ beyond, tables: c.tables, columns: c.columns }) + body);
 
   console.log(`schema-prisma: wrote ${path.relative(process.cwd(), SCHEMA)} `
@@ -194,4 +234,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { PRISMA_VERSION, SCHEMA, header, seedFrom, SEED, stripLedgerModel };
+module.exports = { PRISMA_VERSION, SCHEMA, header, seedFrom, SEED, stripLedgerModel, injectGlossary };
