@@ -186,7 +186,33 @@ async function anyLoanId() {
     console.log('\n  (Omitting the scope grants the same thing, so `lp` is not what is holding us back.)\n');
   }
 
+  // ── STEP 1: IS THE API USER REALLY THE PERSONA WE THINK? ───────────────────
+  // Assumed since 2026-08-14, never checked. It matters because ICE lists the
+  // settings areas we want as Super Administrator out-of-the-box — so if the API
+  // login really holds that persona, the persona is NOT what is refusing us, and if
+  // it does not, that is the answer and it is ours to fix. The roster endpoint is one
+  // of the ones that already answers, so this costs nothing.
+  console.log('\nSTEP 1 — who is the API user, really?\n');
+  try {
+    const users = await client.apiGet('/encompass/v1/company/users?limit=200');
+    const list = Array.isArray(users) ? users : (users && users.users) || [];
+    const supers = list.filter((u) => (u.personas || []).some(
+      (p) => /super\s*admin/i.test(String(p && (p.name || p) || '')),
+    ));
+    console.log(OK(`roster read: ${list.length} users, ${supers.length} holding a Super Administrator persona`));
+    if (supers.length) {
+      console.log(`        they are: ${supers.map((u) => u.id || u.userId || u.name).join(', ')}`);
+      console.log('        >>> CHECK: is the login these API credentials use in that list?');
+      console.log('            If it is NOT, that is the whole answer and it is ours to fix.');
+      console.log('            If it IS, the persona is not what is refusing us — ICE lists these');
+      console.log('            settings areas as Super Administrator out-of-the-box.');
+    }
+  } catch (e) {
+    console.log(NO(`could not read the roster: ${(e && e.message) || e}`));
+  }
+
   const loanId = await anyLoanId();
+  console.log('\nSTEP 2 — what exactly is refused, and in ICE’s own words\n');
   console.log(loanId ? OK(`reading against loan ${loanId}`) : NO('no loan id — the loan sub-resource checks will be skipped'));
 
   const results = [];
