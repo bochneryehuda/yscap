@@ -74,8 +74,17 @@ ok(omitted.brokerCriteria.overrideExistingComplan === false, 'LEAK-12 stale comp
 // ---- 3) fields OUTSIDE the registry inherit unchanged (not a broad wipe) ---
 ok(omitted.criteria.pmiType === 'STALE_STRUCTURAL', 'INHERIT-1 a structural default (pmiType) survives — clearing is targeted, not a wipe');
 ok(omitted.criteria.interestOnly === true, 'INHERIT-2 the io flag inherits the foundation default when io is omitted');
-ok(omitted.dynamicPropertiesMap.PrepayTerm && omitted.dynamicPropertiesMap.PrepayTerm.value === '36 Months',
-  'INHERIT-3 an omitted prepay INHERITS the foundation prepay (audit §29.12.3 — must not be cleared)');
+// PREPAY IS NOT AN INHERITED FIELD — it is a PROFILE field, and this assertion used to say the
+// opposite. Inheriting was measurably wrong: against this very foundation an omitted prepay produced
+// "36 Months" with no 5 Yr PPP option, i.e. a THREE-year prepay on a book the owner quotes at five,
+// on the ordinary quote that mentions no prepay at all. The 2026-08-16 audit reversed it (§35.3/§36.6
+// list five-year Standard among the profile's automatic values). What INHERIT-1/-2 guard — that
+// clearing is targeted rather than a wipe — is untouched and still asserted above.
+ok(omitted.dynamicPropertiesMap.PrepayTerm && omitted.dynamicPropertiesMap.PrepayTerm.value === '60 Months',
+  'INHERIT-3 an omitted prepay takes the PROFILE default (60 Months), never the foundation\'s stale 36');
+ok(omitted.dynamicPropertiesMap.PrePayment_Plan_Type
+  && omitted.dynamicPropertiesMap.PrePayment_Plan_Type.value === 'Standard',
+  'INHERIT-3b …with the Standard structure that goes with it');
 
 // ---- 4) a SUPPLIED value is re-applied on top of the neutral ---------------
 const supplied = sm.buildSearch(
@@ -91,12 +100,13 @@ ok(supplied.criteria.subordinateLoanAmount === 0 && supplied.criteria.rehabBudge
   'REAPPLY-6 unwired per-deal amounts stay neutral even on a full scenario');
 
 // ---- 5) a supplied cash-out amount clears the stale foundation value and is retained INTERNALLY ----
-// §32.2 — the cash-out amount is NEVER transmitted as criteria.cashoutAmount (fail-closed); the stale
-// foundation value (55555) is cleared to neutral (DELETE) and the supplied value is retained on the
-// internal Symbol channel, not re-applied to criteria.
+// The cash-out amount is now TRANSMITTED as criteria.cashoutAmount, which makes it an ordinary
+// clear-then-re-apply field — and therefore subject to the footgun this whole section exists for: the
+// stale foundation value (55555) must be gone AND the caller's 47321 present. Getting only the first
+// half right is what "cleared to neutral and then forgotten" looks like from the outside.
 const cashout = sm.buildSearch({ purpose: 'CashOut', value: 500000, loan: 300000, cashoutAmount: 47321 }, { base: dirtyBase() });
-ok(cashout.criteria.cashoutAmount === undefined && cashout[sm.CASHOUT_INTERNAL] === 47321,
-  'REAPPLY-7 the stale 55555 is cleared; a supplied cashoutAmount is retained INTERNALLY, never transmitted (§32.2)');
+ok(cashout.criteria.cashoutAmount === 47321,
+  'REAPPLY-7 the stale 55555 is cleared and the SUPPLIED 47321 is re-applied on top');
 
 // ---- 6) the clear runs on a CLONE — the caller's base object is never mutated ----
 const base = dirtyBase();
