@@ -9,7 +9,7 @@ columns or partial indexes. On this database that is
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 561 numbered migrations in `db/` (highest `db/564`) remain the only thing that builds this database.
+rebuild a database from them.** The 562 numbered migrations in `db/` (highest `db/565`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 334 |
-| Columns | 5435 |
+| Tables | 335 |
+| Columns | 5446 |
 | Triggers | 34 |
 | Functions | 137 |
 | CHECK constraints | 260 |
 | Generated columns | 12 |
 | Partial indexes | 322 |
-| Primary keys | 334 |
-| Foreign keys | 694 |
-| Unique constraints | 44 |
-| Indexes (all kinds) | 1153 |
+| Primary keys | 335 |
+| Foreign keys | 695 |
+| Unique constraints | 45 |
+| Indexes (all kinds) | 1156 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -813,7 +813,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (694)
+## Foreign keys (695)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -1275,6 +1275,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **lt_ppe_price_limit** → `lt_ppe_rate_sheet_version` — `FOREIGN KEY (version_id) REFERENCES lt_ppe_rate_sheet_version(id) ON DELETE CASCADE`
 - **lt_ppe_program** → `lt_ppe_investor` — `FOREIGN KEY (investor_id) REFERENCES lt_ppe_investor(id) ON DELETE CASCADE`
 - **lt_ppe_rate_sheet_version** → `lt_ppe_program` — `FOREIGN KEY (program_id) REFERENCES lt_ppe_program(id) ON DELETE CASCADE`
+- **lt_ppe_shadow_run** → `lt_ppe_program` — `FOREIGN KEY (program_id) REFERENCES lt_ppe_program(id) ON DELETE SET NULL`
 - **lt_properties** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_reo_properties** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_residences** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
@@ -1512,7 +1513,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **workflow_items** → `staff_users` — `FOREIGN KEY (from_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **workflow_items** → `staff_users` — `FOREIGN KEY (to_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
 
-## Unique constraints (44)
+## Unique constraints (45)
 
 - **application_service_contacts** — `UNIQUE (application_id, service_contact_id)`
 - **appraisers** — `UNIQUE (identity_key)`
@@ -1540,6 +1541,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **lt_ppe_price_limit** — `UNIQUE (scope, version_id)`
 - **lt_ppe_program** — `UNIQUE (scope, investor_id, code)`
 - **lt_ppe_rate_sheet_version** — `UNIQUE (scope, program_id, version_no, reprice_seq)`
+- **lt_ppe_shadow_run** — `UNIQUE (scope, investor, program, day_ms)`
 - **message_reactions** — `UNIQUE (message_id, actor_kind, actor_id, emoji)`
 - **partners** — `UNIQUE (owner_borrower_id, email)`
 - **post_closing_items** — `UNIQUE (application_id, code)`
@@ -1580,7 +1582,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 334 primary keys and 1153 indexes is
+Every one of the 335 primary keys and 1156 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person
