@@ -1536,6 +1536,116 @@ function RvOrderCard({ order, onChanged }) {
       </div>
 
       {open ? <RvOrderDetail order={order} detail={detail} /> : null}
+
+      <RvMessages appId={order.application_id} />
+    </div>
+  );
+}
+
+/**
+ * Talking to the Richer Values team.
+ *
+ * Their API has no messaging at all, so this is EMAIL to the desk they answer on —
+ * and the reason it belongs on the order rather than in somebody's mail client is
+ * that their reply comes back HERE, onto the file, with its attachments filed.
+ *
+ * Collapsed until asked for: most orders never need a conversation, and an empty
+ * message box on every card is noise. The count is on the header so a waiting reply
+ * is visible without opening anything.
+ */
+function RvMessages({ appId }) {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState(null);
+  const [body, setBody] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [notice, setNotice] = useState('');
+
+  const load = useCallback(async () => {
+    if (!appId) return;
+    try { setState(await api.rvMessages(appId)); } catch (_) { /* the card still renders */ }
+  }, [appId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const msgs = (state && state.messages) || [];
+  const send = async () => {
+    const text = body.trim();
+    if (!text) { setErr('Write a message first.'); return; }
+    setBusy(true); setErr(''); setNotice('');
+    try {
+      const out = await api.rvSendMessage(appId, text);
+      setBody('');
+      // Say plainly whether their answer will come back to the file. When no inbound
+      // address is configured the message still goes — it just replies to the sender —
+      // and a desk that is not told that will wait here for an answer that never lands.
+      setNotice(out && out.routedBack
+        ? 'Sent. Their reply will come back onto this order.'
+        : 'Sent — but their reply will go to your own inbox, not this order.');
+      await load();
+    } catch (e) { setErr(e.message || 'Could not send the message.'); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="aord-msgs">
+      <button className="aord-more" onClick={() => setOpen((v) => !v)}>
+        {open ? 'Hide messages' : 'Messages'}{msgs.length ? ` (${msgs.length})` : ''}
+      </button>
+
+      {open ? (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 12, color: '#4B585C', marginBottom: 8 }}>
+            Goes to <strong style={{ color: '#141B22' }}>{(state && state.vendorEmail) || 'their team'}</strong>.
+            {state && state.routedBack === false
+              ? ' Replies will not come back to this order — inbound email is not switched on.'
+              : ' Their reply comes back here, with anything they attach.'}
+          </div>
+
+          {msgs.length ? (
+            <div className="aord-msg-list">
+              {msgs.map((m) => (
+                <div key={m.id} className="aord-msg" style={{
+                  borderLeft: `3px solid ${m.direction === 'inbound' ? '#2F7F86' : '#AE8746'}`,
+                  padding: '6px 10px', marginBottom: 6, background: '#F6F3EC', borderRadius: 4,
+                }}>
+                  <div style={{ fontSize: 11, color: '#4B585C' }}>
+                    {m.direction === 'inbound' ? (m.from_email || 'Richer Values') : 'Us'}
+                    {' · '}{fmtDate(m.created_at)}
+                    {m.attachments && m.attachments.length ? ` · ${m.attachments.length} attached` : ''}
+                  </div>
+                  <div style={{ color: '#141B22', whiteSpace: 'pre-wrap', marginTop: 2 }}>
+                    {m.preview || '(no preview)'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: '#4B585C', marginBottom: 8 }}>Nothing sent yet.</div>
+          )}
+
+          {state && state.canSend === false ? (
+            <Banner tone="warn">Place the order first — their team looks it up by its reference.</Banner>
+          ) : (
+            <>
+              <textarea
+                className="input"
+                rows={3}
+                style={{ width: '100%', fontSize: 16 }}
+                placeholder="Ask their team something about this order…"
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+              />
+              <button className="aord-btn" disabled={busy} onClick={send} style={{ marginTop: 6 }}>
+                {busy ? 'Sending…' : 'Send to Richer Values'}
+              </button>
+            </>
+          )}
+
+          {err ? <Banner tone="bad">{err}</Banner> : null}
+          {notice ? <Banner tone="good">{notice}</Banner> : null}
+        </div>
+      ) : null}
     </div>
   );
 }
