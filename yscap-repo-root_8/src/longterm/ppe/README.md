@@ -94,6 +94,11 @@ Never introduce a float price/rate on a stored or compared value; never re-deriv
   lifecycle moves (who/when/from→to/reason/scoreboard). It manages the SEQUENCE; it never re-implements
   legality — every step delegates to `cutover.transition`, and promotion to live requires the
   scoreboard gate's `eligible:true`.
+- **`review-queue.js`** (§10.4/§12) — turns the stored ledger into a prioritized, human-workable list:
+  a `severity` per finding (kind + price-gap magnitude; a broken fix is bumped; an unknown/`incomparable`
+  item is surfaced, never hidden), a deterministic priority ordering (severity → regressed → recurrence
+  → age), and a per-investor/kind/severity roll-up. It only ORGANIZES — decisions stay in `cutover`,
+  persistence in `finding-store`, the per-gap prose in `divergence`.
 - **`divergence.js`** (§10.1/§10.4) — makes ONE disagreement actionable: shows our full `pricing.priceRung`
   build-up beside Lender Price's single number and ranks the component whose magnitude most closely
   matches the gap (`strong`/`possible`/`none`). Honest by design — LP gives only a final price, so a
