@@ -374,6 +374,51 @@ function maskSafe(v) {
 const get  = (path, query, label) => request('GET', path, { query, label });
 const post = (path, body, opts = {}) => request('POST', path, { body, write: true, ...opts });
 
+/*
+ * THE ATTACHMENT PATH THE GUIDE CONTRADICTS ITSELF ABOUT — resolved at runtime.
+ *
+ * The V1 guide prints TWO different attachment paths (see the note on
+ * `attachments` below): the newer order-completion walkthrough says
+ * `/orders/{id}/attachments`, the older reference section says `/{id}/attachments`.
+ * The code took the newer one and left a note saying that if the first live pull
+ * 404s, THIS — not the credential — is the thing to try.
+ *
+ * It did 404, on a real order, on every poll: `[class] attachment list failed for
+ * order 29 — Class attachments failed: HTTP 404`, repeating every five minutes,
+ * which meant a finished Class appraisal could never be fetched onto the file.
+ *
+ * So this tries the documented path and, ON A 404 ONLY, tries the other one, then
+ * REMEMBERS which shape the tenant answers on so every later call goes straight
+ * there. Deliberately narrow:
+ *   • 404 alone triggers it. A 401/403/500 is about credentials or their service
+ *     and re-asking on a different path would only bury the real reason.
+ *   • If BOTH shapes 404 the FIRST error is thrown, because that is the honest
+ *     answer: this order id has no attachments at Class.
+ *   • Every call is a READ, so the retry can neither place, change nor charge
+ *     anything.
+ * If the remembered shape ever starts 404-ing again (a tenant migrated between
+ * API revisions), the failure re-opens the search on the next call.
+ */
+const ATTACH_PATHS = ['/orders/', '/'];
+let _attachPathIdx = 0;
+async function attachmentPathTry(run, orderId) {
+  const id = encodeURIComponent(orderId);
+  const order = [_attachPathIdx, ...ATTACH_PATHS.map((_, i) => i).filter((i) => i !== _attachPathIdx)];
+  let firstErr = null;
+  for (const idx of order) {
+    try {
+      const out = await run(`${ATTACH_PATHS[idx]}${id}`);
+      _attachPathIdx = idx;           // remember what answered
+      return out;
+    } catch (e) {
+      if (!firstErr) firstErr = e;
+      if (e && e.status === 404) continue;   // the other shape is worth one try
+      throw e;                                // anything else is a real answer
+    }
+  }
+  throw firstErr;
+}
+
 module.exports = {
   configured, hosts, invalidateToken, getAccessToken, request, get, post,
   // READS (master switch only)
@@ -399,16 +444,17 @@ module.exports = {
   // the older Attachments reference section (p.14) writes `GET /{orderId}/attachments`
   // with no `/orders`. We follow the newer walkthrough. If the first live pull 404s,
   // this — not the credential — is the thing to try.
-  attachments: (orderId, query) => get(`/orders/${encodeURIComponent(orderId)}/attachments`, query, 'attachments'),
+  attachments: (orderId, query) =>
+    attachmentPathTry((p) => get(`${p}/attachments`, query, 'attachments'), orderId),
   attachment: (orderId, attachmentId, query) =>
-    get(`/orders/${encodeURIComponent(orderId)}/attachments/${encodeURIComponent(attachmentId)}`, query, 'attachment'),
+    attachmentPathTry((p) => get(`${p}/attachments/${encodeURIComponent(attachmentId)}`, query, 'attachment'), orderId),
   // The BYTES of one attachment. Kept separate from `attachment` above because that
   // one JSON-parses (right for metadata, wrong for a PDF). Whether this endpoint
   // returns the file directly or a JSON envelope pointing at it is resolved by the
   // caller (src/class/documents.js) — this only fetches, verbatim.
   attachmentBytes: (orderId, attachmentId) =>
-    rawFetch(`${apiBase()}/orders/${encodeURIComponent(orderId)}/attachments/${encodeURIComponent(attachmentId)}`,
-      { label: 'attachmentBytes' }),
+    attachmentPathTry((p) => rawFetch(`${apiBase()}${p}/attachments/${encodeURIComponent(attachmentId)}`,
+      { label: 'attachmentBytes' }), orderId),
   // Follow a download URL an attachment response hands us. Our OWN Class host gets the
   // bearer; a presigned storage link (a different host) does not — see rawFetch.
   fetchUrl: (url, opts = {}) => {
@@ -441,5 +487,6 @@ module.exports = {
   registerCallback: (body) => post('/callbacks', body, { label: 'registerCallback' }),
   registerAllCallbacks: (body) => post('/callbacks/addAll', body, { label: 'registerAllCallbacks' }),
   deleteCallback: (id) => request('DELETE', '/callbacks', { query: { id }, write: true, label: 'deleteCallback' }),
-  _internals: { maskSafe, readBody, backoff, HOSTS, apiPrefix, apiBase },
+  _internals: { maskSafe, readBody, backoff, HOSTS, apiPrefix, apiBase,
+    attachmentPathTry, ATTACH_PATHS, resetAttachPath: () => { _attachPathIdx = 0; } },
 };
