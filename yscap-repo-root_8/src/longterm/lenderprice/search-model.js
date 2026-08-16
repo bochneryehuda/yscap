@@ -14,6 +14,11 @@
  */
 const BASE = require('./search-base.json');
 const registry = require('./field-registry');
+const zipCounty = require('./zip-county');
+// §33.2/§33.3 — confirmed-token resolvers for the two menu fields the builder used to hard-code
+// (IncomeDocType was always "DSCR", PrePayment_Plan_Type always "Standard"). Bound locally so the
+// builder reads the same way as the other mapX helpers in this file.
+const { mapIncomeDocType, mapPrepayStructure, PREPAY_STRUCTURE_NULL } = registry;
 
 // Symbol channel for registry validation warnings (invalid enum values). Symbol-keyed properties
 // are skipped by JSON.stringify, so attaching this to the built payload never pollutes the body
@@ -128,6 +133,68 @@ function mapPurpose(p) {
   }
   return mapped;
 }
+// §35.2/§36.2 — THE AMOUNT TRIANGLE. `value` (the purpose-appropriate property value), `loan` (first
+// lien) and `ltv` are three views of two facts: any TWO determine the third. The owner quotes deals
+// in the short form "$400,000 loan at 75% LTV", so the server must derive the value rather than
+// demand it. PURE + total: it derives what it can and reports what it did; it never throws and never
+// invents a number from ONE input (that would be a guess, and `known < 2` is refused upstream by
+// validateInputs). LTV is accepted as either 75 or 0.75 and always normalized to the 0.75 decimal
+// form the vendor expects. Money is rounded to cents and LTV to 6dp so a derived figure is stable.
+function deriveAmounts(sc) {
+  sc = sc || {}; // a `= {}` default only catches undefined; this module promises never to throw
+  const money = (n) => Math.round(n * 100) / 100;
+  const ratio = (n) => Math.round(n * 1e6) / 1e6;
+  let value = num(sc.value);
+  let loan = num(sc.loan);
+  const ltvRaw = num(sc.ltv);
+  // Accept a percentage (75) or a decimal (0.75). A value at or below 1 is already a decimal.
+  // A SUPPLIED ltv is rounded to the same 6dp a DERIVED one gets, so 33.333333 cannot transmit as
+  // 0.33333333000000004 — the wire form must not depend on which way the figure arrived.
+  let ltv = ltvRaw != null ? ratio(ltvRaw > 1 ? ltvRaw / 100 : ltvRaw) : null;
+  const supplied = { value: value != null, loan: loan != null, ltv: ltv != null };
+  const derived = [];
+  // A zero value or a zero LTV cannot participate in a derivation (division by zero / a meaningless
+  // ratio), so only positive figures derive. The range checks live in validateInputs.
+  if (value != null && loan != null) {
+    // Both amounts present: the LTV they imply is authoritative (a conflicting supplied ltv is
+    // rejected by validateInputs, so we never silently overwrite a caller's disagreeing figure).
+    if (value > 0) { const calc = ratio(loan / value); if (ltv == null) derived.push('ltv'); ltv = calc; }
+  } else if (loan != null && ltv != null && ltv > 0) {
+    value = money(loan / ltv); derived.push('value');
+  } else if (value != null && ltv != null && value > 0) {
+    loan = money(value * ltv); derived.push('loan');
+  }
+  // A DERIVED figure that lands at or below zero is not an answer — it is the arithmetic telling us
+  // the inputs cannot describe a loan (a $4 property at a 0.1% LTV rounds to a $0 loan). Drop it so
+  // `known` cannot count it, which turns the scenario into the honest "not enough to price" refusal
+  // instead of putting a $0 loan on the wire. Same reasoning as `usable` below, applied to the
+  // OUTCOME rather than the input.
+  for (const k of derived.slice()) {
+    const v = k === 'value' ? value : k === 'loan' ? loan : ltv;
+    if (!(v > 0)) {
+      if (k === 'value') value = null; else if (k === 'loan') loan = null; else ltv = null;
+      derived.splice(derived.indexOf(k), 1);
+    }
+  }
+  // `known` counts only figures that can actually PARTICIPATE in the triangle — a zero or negative
+  // value/loan/ltv is not a usable amount. Counting a bare `!= null` let `ltv: 0` masquerade as one
+  // of the two required figures while deriving nothing, so a null purchase price reached upstream.
+  // validateInputs also floors the LTV, but this belongs here too: deriveAmounts is exported and
+  // read by the route's derivedScenario echo, which must never report a usable triangle it does not
+  // have. NaN/Infinity are already excluded by num().
+  const usable = (x) => x != null && x > 0;
+  const known = [value, loan, ltv].filter(usable).length;
+  return { value, loan, ltv, supplied, derived, known };
+}
+
+// §31.5 — the broker comp-percent SIGN INVERSION, isolated in one named conversion. The live capture
+// is unambiguous: a visible Comp Percent of 2.5 leaves the frontend as `brokerCriteria.compPlan:
+// -2.5` (a JSON number). Our public input is the number a human reads off the screen (positive), so
+// this is the ONLY place the sign flips. Kept as a function rather than an inline negation so the
+// rule is greppable and testable, and so a future capture that changes the convention has one edit
+// site. -0 is normalized to 0 (JSON.stringify would otherwise emit "-0" for a 0% comp).
+function compPlanValue(pct) { return pct === 0 ? 0 : -pct; }
+
 const SFR_PROP = { propertyType: 'SingleFamily', nonWarrantableProject: false, attachmentType: 'Detached', units: 1 };
 function mapProp(t) {
   // No property type on the scenario → default single-family (a DEFAULT, not a silent SUBSTITUTION
@@ -301,6 +368,13 @@ const SCENARIO_OWNED = [
   // (rangeComplan only applies while this flag is true, so clearing the flag is sufficient and no
   // comp value we cannot document is touched).
   { path: 'brokerCriteria.overrideExistingComplan', neutral: false, why: 'per-session comp override — audit §31.6 compPlan example' },
+  // §31.5/§31.6 — BROKER COMP PERCENT. The captured base carries NO compPlan key at all, so the
+  // neutral is ABSENT (delete), not a number: an omitted compPercent must leave the request exactly
+  // as the base has it. This is the audit's own leak case — clearing the visible Comp Percent input
+  // did NOT clear the model, so later searches kept sending a prior session's compPlan. Re-applied by
+  // buildSearch AFTER this clear when the caller supplies compPercent, so the DELETE footgun above
+  // does not apply.
+  { path: 'brokerCriteria.compPlan', neutral: DELETE, why: 'broker comp percent — audit §31.6 stale compPlan leak' },
 ];
 // Clear every registered scenario-owned field to its neutral state, IN PLACE. Operates on the
 // already-cloned model (buildSearch clones first), so it never mutates the shared BASE or a caller's
@@ -342,10 +416,14 @@ function buildSearch(sc = {}, opts = {}) {
   // clone, immediately after it, so every read below (e.g. the criteria.ltv fallback) sees neutral.
   clearScenarioOwnedFields(m);
   const smoReg = opts.smo || null;
-  const value = num(sc.value);
-  const loan = num(sc.loan);
-  const ltv = (value && loan) ? Math.round((loan / value) * 1e6) / 1e6
-    : (num(sc.ltv) != null ? (num(sc.ltv) > 1 ? num(sc.ltv) / 100 : num(sc.ltv)) : (m.criteria ? m.criteria.ltv : null));
+  // §35.2/§36.2 — THE AMOUNT TRIANGLE. Any TWO of value / loan / LTV determine the third, so a caller
+  // may send the short form the owner actually quotes from ("$400,000 loan at 75% LTV") and the
+  // server derives the property value. Falls back to the live foundation's LTV only when fewer than
+  // two are known (validateInputs refuses that case before we get here).
+  const tri = deriveAmounts(sc);
+  const value = tri.value;
+  const loan = tri.loan;
+  const ltv = tri.ltv != null ? tri.ltv : (m.criteria ? m.criteria.ltv : null);
   const purpose = mapPurpose(sc.purpose);
   const pm = mapProp(sc.propertyType);
   // Attachment type is INDEPENDENT of property type (audit §6): the live frontend can send e.g.
@@ -369,6 +447,14 @@ function buildSearch(sc = {}, opts = {}) {
   else c.appraisedValue = null; // refi/cash-out with no appraisal → blank, matching the frontend
   if (loan != null) c.loanAmount = loan;
   if (ltv != null) c.ltv = ltv;
+  // §31.5 — SUBORDINATE FINANCING. Confirmed live: selecting Closed End Second and entering 50,000
+  // sent `criteria.subordinateLoanAmount: 50000` and NO separate CLTV field — the engine derives the
+  // combined ratio from first lien + subordinate + value, so we deliberately do NOT invent a CLTV
+  // input. This is one of the SCENARIO_OWNED amounts cleared to 0 above, so this re-apply MUST stay
+  // after that clear (the documented footgun) or a caller's value would be silently zeroed. The
+  // HELOC/HELOAN subtype selectors are NOT wired: only the closed-end second amount was captured.
+  const subordinate = num(sc.subordinateLoanAmount);
+  if (subordinate != null) c.subordinateLoanAmount = subordinate;
   if (num(sc.fico) != null) c.fico = num(sc.fico);
   const dscrVal = num(sc.dscr);
   if (dscrVal != null) c.dscr = dscrVal;
@@ -389,6 +475,16 @@ function buildSearch(sc = {}, opts = {}) {
   const lockDays = num(sc.lockDays);
   const effLockDays = lockDays != null ? lockDays : 30;
   { const bc = m.brokerCriteria || (m.brokerCriteria = {}); bc.dayLocks = effLockDays; m.dayLocksCriteria = [effLockDays]; }
+  // §31.5 — BROKER COMP PERCENT, with the vendor's confirmed SIGN INVERSION: a visible 2.5 is
+  // transmitted as brokerCriteria.compPlan = -2.5 (captured live). The caller sends what a human
+  // SEES (a positive percent) and this one named conversion owns the negation — so the inversion
+  // lives in exactly one place instead of every call site. A negative input is refused by
+  // validateInputs rather than double-negated into a positive. Omitted → the key stays absent
+  // (its cleared neutral), matching the captured base which carries no compPlan at all.
+  {
+    const pct = num(sc.compPercent);
+    if (pct != null) { const bc = m.brokerCriteria || (m.brokerCriteria = {}); bc.compPlan = compPlanValue(pct); }
+  }
   c.loanPurpose = purpose;
   // DSCR product profile — INTENTIONAL (investment occupancy, DSCR income doc, borrower-comp) and
   // asserted explicitly so a live base carrying a different saved default never changes the product.
@@ -442,12 +538,21 @@ function buildSearch(sc = {}, opts = {}) {
   // Dynamic properties are {fieldId, value} objects — set values in place.
   const dp = m.dynamicPropertiesMap || (m.dynamicPropertiesMap = {});
   const setDyn = (k, v) => { if (dp[k]) dp[k].value = v; else dp[k] = { fieldId: k, value: v }; };
-  setDyn('IncomeDocType', 'DSCR');
+  // §33.2 — INCOME DOCUMENTATION. The DSCR profile default is DSCR (audit §29.1/§35.3), forced when
+  // the caller omits it so a live foundation carrying a different doc type cannot silently override
+  // the profile. A caller MAY select any of the 25 CONFIRMED live menu values (label or exact token);
+  // an unrecognized value 422s rather than being priced as DSCR. §33.6 ordering: this is set BEFORE
+  // the DSCR ratio below, because selecting DSCR in the live UI resets the visible ratio.
+  setDyn('IncomeDocType', mapIncomeDocType(sc.incomeDocType) || 'DSCR');
   // §32.3 — DSCRRATIO band token, from the reviewed threshold table (dscrBand). Written only when a
   // DSCR was supplied; on omission it stays cleared to neutral (deleted above), never leaking a live
   // foundation's stale token. NOT derived by formatting the number — the tokens are captured.
   if (band) setDyn('DSCRRATIO', band.ratio);
   setDyn('AddlOccupancyType', mapRentalTerm(sc.rentalTerm));
+  // §33.4/§34.2 — BORROWER TYPE. Previously ANY string was passed straight through to the vendor as a
+  // vesting type; every other advanced enum 422s an unrecognized value, so this was the one silent
+  // substitution left in the borrower block. Validated against the exact six-value tenant enum
+  // (validateInputs rejects an unknown one before we get here); the profile default stays LLC.
   setDyn('GLOBAL_BorrowerType', sc.borrowerType || 'LLC');
   // Reserves — §32.4. The intentional DSCR profile default is 24 MONTHS (audit §1), forced when the
   // caller omits reserves so a live default carrying blank/different reserves cannot silently override
@@ -459,9 +564,21 @@ function buildSearch(sc = {}, opts = {}) {
   // to CLEAR PrepayTerm/PrePayment_Plan_Type to null on omission, changing the model the user left
   // alone). months===0 is an EXPLICIT "no prepay" (PrepayTerm "None"); a positive months sets the
   // term. Only write these when the caller actually supplied a prepay.
+  // §33.3 — the STRUCTURE is an INDEPENDENT input from the term. "No Prepay" (a null plan value) is
+  // NOT the same operation as PrepayTerm "None" (which produces the No PPP SMO), so an explicit
+  // structure is honored on its own: it may be supplied with or without a term, and it overrides the
+  // Standard default a term alone implies. Unrecognized values 422 (validated in validateInputs).
+  const structure = mapPrepayStructure(sc.prepayStructure);
   if (months != null) {
     setDyn('PrepayTerm', months === 0 ? 'None' : `${months} Months`);
-    setDyn('PrePayment_Plan_Type', months === 0 ? null : 'Standard');
+    // A caller-supplied structure wins; otherwise a positive term implies the Standard default and
+    // an explicit no-prepay term carries the null plan.
+    setDyn('PrePayment_Plan_Type', structure != null
+      ? (structure === PREPAY_STRUCTURE_NULL ? null : structure)
+      : (months === 0 ? null : 'Standard'));
+  } else if (structure != null) {
+    // Structure supplied ALONE — write only the plan, leaving the live default's term untouched.
+    setDyn('PrePayment_Plan_Type', structure === PREPAY_STRUCTURE_NULL ? null : structure);
   }
   // Cash-out amount ("cash in hand") — §32.2 FAIL-CLOSED. A clean live cash-out capture (2026-08-16)
   // sent `criteria.loanPurpose="CashoutRefinance"` but its JSON contained NEITHER the numeric value
@@ -571,7 +688,7 @@ function validateLocation(sc = {}) {
 // a conflicting LTV was silently replaced, and an unsupported term/lock was accepted. We reject
 // them (422) BEFORE any upstream call rather than mis-price.
 // Boolean scenario fields that must be a real JSON boolean (never a truthy string).
-const BOOLEAN_FIELDS = ['io', 'escrowWaive', 'fthb', 'selfEmployed', 'rural', 'mixedUse', 'waiveLenderFee', 'noMortgageHistory', 'nonWarrantable', 'crossCollateral', 'firstTimeInvestor', 'livingRentFree'];
+const BOOLEAN_FIELDS = ['io', 'escrowWaive', 'fthb', 'selfEmployed', 'rural', 'mixedUse', 'waiveLenderFee', 'noMortgageHistory', 'nonWarrantable', 'crossCollateral', 'firstTimeInvestor', 'livingRentFree', 'dscrAssetDepletion', 'lateInLast12Months'];
 // Attachment types the frontend exposes independently of property type (audit §6).
 // Attachment types the frontend exposes independently of property type (audit §6). SemiDetached is the
 // confirmed live upstream token (§31.3) — added so the validator stops rejecting a legitimate choice.
@@ -587,6 +704,17 @@ const ALLOWED_LOCKS = (process.env.LP_ALLOWED_LOCKS
 // Allowed loan terms (years) — the LIVE frontend list (audit §7): 5, then 8 through 30, then 40.
 // env-overridable (LP_ALLOWED_TERMS). The old [5,10,15,20,25,30,40] rejected valid 8/9/11..29-year
 // visible choices.
+// The smallest LTV that is a real scenario rather than a typo. Arithmetic sanity, NOT a business
+// cap: the triangle divides by the LTV, so a vanishing one derives an absurd property value
+// (0.000001 on a $400k loan → $400bn). 0.1% sits far below any real deal.
+// A misconfigured env must never SILENTLY disable a bound: Number('abc') is NaN and every
+// comparison against NaN is false, so a typo would turn the floor off with no warning. Fall back to
+// the default unless the override is a real positive number.
+function envRatio(name, dflt) {
+  const n = Number(process.env[name]);
+  return (Number.isFinite(n) && n > 0) ? n : dflt;
+}
+const MIN_LTV = envRatio('LP_MIN_LTV', 0.001);
 const LIVE_TERMS = [5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 40];
 const ALLOWED_TERMS = (process.env.LP_ALLOWED_TERMS
   ? process.env.LP_ALLOWED_TERMS.split(',').map((x) => Number(x.trim())).filter((n) => isFinite(n))
@@ -599,6 +727,22 @@ function validateInputs(sc = {}) {
     if (sc[f] != null && typeof sc[f] !== 'boolean') {
       return bad('non_boolean_value', f, `Field "${f}" must be a JSON boolean (true/false); got ${JSON.stringify(sc[f])}. A string is rejected rather than coerced.`);
     }
+  }
+  // §33.2/§33.3/§33.4 — confirmed-token enums. Each is REJECTED (422) when unrecognized rather than
+  // falling back to the profile default: silently pricing a bank-statement scenario as DSCR, an
+  // exotic prepay schedule as Standard, or an unknown vesting type as LLC is the exact
+  // silent-substitution class this connector exists to prevent.
+  if (sc.incomeDocType != null && sc.incomeDocType !== '' && mapIncomeDocType(sc.incomeDocType) == null) {
+    return bad('invalid_income_doc_type', 'incomeDocType',
+      `Unknown income documentation type ${JSON.stringify(String(sc.incomeDocType))}. Supported: ${Object.keys(registry.INCOME_DOC_TYPES).join(', ')}.`);
+  }
+  if (sc.prepayStructure != null && sc.prepayStructure !== '' && mapPrepayStructure(sc.prepayStructure) == null) {
+    return bad('invalid_prepay_structure', 'prepayStructure',
+      `Unknown prepayment structure ${JSON.stringify(String(sc.prepayStructure))}. Supported: ${Object.keys(registry.PREPAY_STRUCTURES).join(', ')}.`);
+  }
+  if (sc.borrowerType != null && sc.borrowerType !== '' && !registry.BORROWER_TYPES.has(String(sc.borrowerType))) {
+    return bad('invalid_borrower_type', 'borrowerType',
+      `Unknown borrower (vesting) type ${JSON.stringify(String(sc.borrowerType))}. Supported: ${Array.from(registry.BORROWER_TYPES).join(', ')}.`);
   }
   // Strict numerics + ranges. Returns { v } (value or null) or { err }.
   const numField = (field, opts = {}) => {
@@ -640,9 +784,18 @@ function validateInputs(sc = {}) {
   // value/loan were absent. Accept 75 or 0.75; ceiling env-overridable (LP_MAX_LTV, default 100%).
   if (ltvRaw.v != null) {
     const normLtv = ltvRaw.v > 1 ? ltvRaw.v / 100 : ltvRaw.v;
-    const maxLtv = Number(process.env.LP_MAX_LTV || 1);
+    const maxLtv = envRatio('LP_MAX_LTV', 1); // same NaN/zero guard as the floor
     if (normLtv > maxLtv) {
       return bad('ltv_out_of_range', 'ltv', `LTV ${(normLtv * 100).toFixed(2)}% exceeds the maximum ${(maxLtv * 100).toFixed(0)}%.`);
+    }
+    // A ZERO (or vanishing) LTV is not a scenario. It also cannot participate in the amount
+    // triangle — dividing by it is meaningless — so without this floor it counted toward "two
+    // figures known" while deriving nothing, and a null purchase price reached upstream: exactly
+    // what the triangle rule exists to prevent. The floor is arithmetic sanity, not a business
+    // cap: below 0.1% the derived property value explodes (a 0.000001 LTV on a $400k loan derives
+    // a $400bn value), which is a typo, never a deal.
+    if (normLtv < MIN_LTV) {
+      return bad('ltv_out_of_range', 'ltv', `LTV ${(normLtv * 100).toFixed(4)}% is below the minimum ${(MIN_LTV * 100).toFixed(1)}% — an LTV of zero or near-zero is not a priceable scenario.`);
     }
   }
   if (value.v != null && loan.v != null) {
@@ -653,6 +806,63 @@ function validateInputs(sc = {}) {
       if (Math.abs(calc - supplied) > 0.01) {
         return bad('ltv_conflict', 'ltv', `Supplied LTV (${supplied}) conflicts with loan ÷ value (${calc.toFixed(4)}). Omit ltv or make it agree.`);
       }
+    }
+  }
+  // §31.5 — subordinate financing + broker comp percent.
+  const sub = numField('subordinateLoanAmount', { min: 0, max: 1e9 }); if (sub.err) return sub.err;
+  // A comp percent is entered as the number a human SEES (positive); the vendor's negative wire form
+  // is produced by the one named conversion in the builder. A negative input is refused rather than
+  // double-negated into a positive comp. 100 is an arithmetic ceiling for a percentage, not a
+  // business cap — no company/lender cap was captured, so none is invented here.
+  const comp = numField('compPercent', { min: 0, max: 100 }); if (comp.err) return comp.err;
+  // Combined LTV: the first lien plus a subordinate lien cannot exceed the property value. The engine
+  // derives CLTV itself (the live capture sent NO CLTV field), so we validate rather than transmit.
+  if (sub.v != null && sub.v > 0) {
+    const tri = deriveAmounts(sc);
+    if (tri.value != null && tri.value > 0 && tri.loan != null) {
+      const cltv = (tri.loan + sub.v) / tri.value;
+      if (cltv > 1) {
+        return bad('cltv_out_of_range', 'subordinateLoanAmount',
+          `First lien (${tri.loan}) plus subordinate lien (${sub.v}) is ${(cltv * 100).toFixed(2)}% of the property value (${tri.value}) — a combined LTV over 100%.`);
+      }
+    }
+  }
+  // §35.2/§36.2 — THE AMOUNT TRIANGLE. A quote is priced off the property value, the first-lien
+  // amount and the LTV; any TWO determine the third. Fewer than two is not a scenario we can price,
+  // and deriving from ONE would be a guess, so it is refused here — BEFORE any upstream call —
+  // rather than sent with a null purchase price that upstream would answer 500 or mis-price.
+  {
+    // The PURPOSE is the more fundamental fact, so an unknown one is reported as an unknown purpose
+    // rather than being masked by the amount rule below (a caller who typed the purpose wrong should
+    // be told THAT, not sent hunting for a missing amount).
+    try { mapPurpose(sc.purpose); } catch (e) {
+      if (e && e.lpValidation) return bad(e.code, e.field, e.message);
+      throw e;
+    }
+    const tri = deriveAmounts(sc);
+    if (tri.known < 2) {
+      return bad('insufficient_amounts', 'loan',
+        'A quote needs any TWO of property value, loan amount and LTV — the third is derived. '
+        + `Supplied: ${Object.keys(tri.supplied).filter((k) => tri.supplied[k]).join(', ') || 'none'}.`);
+    }
+    // Two figures being PRESENT is not the same as the pair being PRICEABLE. The vendor needs a
+    // property value AND a loan amount, so if the derivation could not produce both as positive
+    // numbers the scenario is not a loan — a $4 property at the 0.1% LTV floor rounds to a $0 loan,
+    // which would otherwise have gone on the wire as `loanAmount: 0`.
+    if (!(tri.value > 0) || !(tri.loan > 0)) {
+      return bad('insufficient_amounts', 'loan',
+        `These amounts do not describe a loan: they work out to a property value of ${tri.value == null ? 'none' : tri.value} and a loan amount of ${tri.loan == null ? 'none' : tri.loan}. Check the value, loan and LTV.`);
+    }
+  }
+  // §36.3/§36.4 — a cash-out amount belongs ONLY to a cash-out refinance. On a Purchase or a
+  // rate-and-term Refinance it is REJECTED rather than ignored: a caller who sends one is describing
+  // a different transaction than the purpose says, and silently dropping it would price the wrong deal.
+  if (num(sc.cashoutAmount) != null && num(sc.cashoutAmount) > 0) {
+    let p = null;
+    try { p = mapPurpose(sc.purpose); } catch (_) { p = null; } // an unknown purpose is reported by mapPurpose itself
+    if (p && p !== 'CashoutRefinance') {
+      return bad('cashout_not_allowed', 'cashoutAmount',
+        `A cash-out amount is only valid on a cash-out refinance; this request is a ${p === 'Purchase' ? 'purchase' : 'rate-and-term refinance'}. Use purpose "Cash out", or remove cashoutAmount.`);
     }
   }
   // Units must agree with the property type (a single-family "4-unit" is a contradiction).
@@ -674,6 +884,22 @@ function validateInputs(sc = {}) {
 // foundation cannot change any of these verdicts). Returns { ok:true, request } or
 // { ok:false, status:422, error, field?, warnings?, message }.
 function validateScenario(sc = {}) {
+  // §26.3/§35.2 — ZIP ENRICHMENT FIRST. Pricing is ZIP-driven: the vendor's own screen turns a
+  // 5-digit ZIP into state + county + county FIPS before it searches, while we used to demand all
+  // of them and refuse an incomplete location. The lookup is a committed Census table (pure,
+  // offline), so this adds no network call and no database read to the pricing path. Anything the
+  // CALLER supplied is an ASSERTION, never overwritten — a supplied value that contradicts the ZIP
+  // is a 422, because silently preferring one side is how a loan gets priced in the wrong county.
+  const enr = zipCounty.enrichLocation(sc);
+  if (!enr.ok) return { ok: false, status: 422, error: enr.code, field: enr.field, message: enr.message };
+  // Merge the filled fields UNDER the caller's own values, then validate/build from the completed
+  // scenario. `countyEnrichment` is reported so the response can say the county was inferred (and,
+  // for a ZIP spanning counties, that it was the dominant one).
+  const enriched = enr.filled.length ? { ...sc, ...enr.location } : sc;
+  const countyEnrichment = enr.filled.length
+    ? { filled: enr.filled, split: enr.split, countyFps: enr.resolved.countyFps, countyName: enr.resolved.countyName, source: `census-zcta-${zipCounty._internals.meta.vintage}` }
+    : null;
+  sc = enriched;
   const loc = validateLocation(sc);
   if (!loc.ok) return { ok: false, status: 422, error: loc.code, field: loc.field, message: loc.message };
   const inp = validateInputs(sc); // §27 — strict booleans/numerics/ranges/ltv/term/lock/units
@@ -690,8 +916,8 @@ function validateScenario(sc = {}) {
     return { ok: false, status: 422, error: 'invalid_field_value', warnings: w,
       message: `One or more fields carried a value the pricing engine does not recognize; the value would be silently dropped, so the request is rejected rather than mis-priced: ${w.map((x) => x.field).join(', ')}.` };
   }
-  return { ok: true, request };
+  return { ok: true, request, scenario: sc, countyEnrichment };
 }
 
 module.exports = { BASE, buildSearch, clearScenarioOwnedFields, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE } };
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, SCENARIO_OWNED, clearScenarioOwnedFields, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue } };

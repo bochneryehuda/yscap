@@ -14,7 +14,7 @@
 const express = require('express');
 const lp = require('../lenderprice/client');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
-const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario } = require('../lenderprice/search-model');
+const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, _internals: modelInternals } = require('../lenderprice/search-model');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
 const BATTERY = [
@@ -45,6 +45,15 @@ const SUPPORTED_FIELDS = new Set([
   'propertyType', 'units', 'attachment', 'nonWarrantable', 'zip', 'state', 'county', 'countyFps', 'city', 'countyName',
   'borrowerType', 'prepayMonths', 'io', 'escrowWaive', 'fthb', 'date', 'rentalTerm', 'reservesMonths',
   'term', 'termYears', 'lockDays', 'cashoutAmount',
+  // §33.2/§33.3 — the two menu fields the builder used to hard-code (IncomeDocType always "DSCR",
+  // PrePayment_Plan_Type always "Standard"). Both carry the CONFIRMED live token sets; an
+  // unrecognized value is 422'd (invalid_income_doc_type / invalid_prepay_structure), never
+  // defaulted. prepayStructure is independent of prepayMonths.
+  'incomeDocType', 'prepayStructure',
+  // §31.5 — subordinate (closed-end second) amount + broker comp percent. The comp percent is
+  // entered as the POSITIVE number a human sees; the vendor's negative wire form is produced by one
+  // named conversion in the builder. HELOC/HELOAN subtype selectors stay unsupported (uncaptured).
+  'subordinateLoanAmount', 'compPercent',
   // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). Each maps to an
   // exact upstream path/token; an invalid VALUE for one is rejected as invalid_field_value (below).
   ...REGISTRY_FIELDS,
@@ -73,6 +82,11 @@ function effectiveOf(payload) {
     cashoutAmount: c.cashoutAmount,
     cashoutAmountInternal: payload[CASHOUT_INTERNAL] != null ? payload[CASHOUT_INTERNAL] : undefined,
     loanAmount: c.loanAmount, ltv: c.ltv, fico: c.fico, dscr: c.dscr,
+    // §31.5 — the subordinate lien actually transmitted, and the broker comp plan in the vendor's own
+    // NEGATIVE wire form (a visible 2.5% reads here as -2.5), so a caller can confirm the sign
+    // conversion was applied rather than guessing at it.
+    subordinateLoanAmount: c.subordinateLoanAmount,
+    compPlan: payload.brokerCriteria && payload.brokerCriteria.compPlan,
     // §32.3 — the derived DSCR band token actually transmitted (dynamicPropertiesMap.DSCRRATIO), so a
     // caller can confirm the reviewed threshold table was applied to the entered DSCR.
     dscrRatio: dyn('DSCRRATIO'),
@@ -100,6 +114,10 @@ function effectiveOf(payload) {
     citizenship: dyn('Citizenship'), tradelines: dyn('Tradelines'),
     mixedUse: dyn('GLOBAL_MixedUse'), noMortgageHistory: dyn('GLOBAL_NoMortgageHistory'),
     crossCollateral: dyn('GLOBAL_Cross_Collateralization_Product'), firstTimeInvestor: dyn('FirstTimeInvestor'), livingRentFree: dyn('Global_Living_Rent_Free'),
+    // §31.3/§31.7 — the two true-only flags. Echoed like every sibling above so a caller can confirm
+    // they were applied; asset depletion carries the vendor's "Yes" (not "true"), which is precisely
+    // the distinction worth being able to SEE on the wire.
+    dscrAssetDepletion: dyn('Global_DSCR_Asset_Depletion'), lateInLast12Months: dyn('Lateinlast12months'),
     bankruptcyChapter: dyn('BankruptcyChapter'), bankruptcyStatus: dyn('BankruptcyStatus'), bankruptcySeasoning: dyn('BankruptcySeasoning'),
     foreclosure: dyn('Global_FORECLOSURES'), shortSale: dyn('Global_SHORTSALES'), deedInLieu: dyn('Global_DEEDINLIEU'),
     chargeOff: dyn('GLOBAL_MortgageLoanChargeOffs'), forbearance: dyn('GLOBAL_Forbearances'),
@@ -123,6 +141,10 @@ function rejectInvalidValues(request, res) {
 // §26.5 — build + validate the scenario LOCALLY and 422 a bad request BEFORE any upstream call, so a
 // deterministic validation error (§26.3 incomplete/conflicting location, §26.4 unknown loan purpose,
 // invalid registry enum value) makes ZERO searchRaw requests. Returns true if it responded.
+// Returns `null` when the request is fine — and, crucially, the ENRICHED scenario to price from.
+// validateScenario fills a caller's location from its ZIP (state / county / county FIPS), so the
+// caller MUST go on to price the returned scenario: pricing the original would validate one request
+// and send a different, county-less one upstream.
 function rejectInvalidRequest(sc, res) {
   const v = validateScenario(sc);
   if (!v.ok) {
@@ -130,9 +152,9 @@ function rejectInvalidRequest(sc, res) {
     if (v.field) body.field = v.field;
     if (v.warnings) body.warnings = v.warnings;
     res.status(v.status || 422).json(body);
-    return true;
+    return { rejected: true };
   }
-  return false;
+  return { rejected: false, scenario: v.scenario || sc, countyEnrichment: v.countyEnrichment || null };
 }
 
 // Cash-out amount ("cash in hand") transparency — so it's never SILENTLY handled. §32.2 FAIL-CLOSED:
@@ -211,11 +233,32 @@ function priceErrorBody(r) {
   return out;
 }
 
+// §36.11 — the REQUESTED scenario, echoed back exactly as the caller sent it (minus the request
+// envelope keys, which are not pricing inputs). Paired with `derivedScenario` and `effectiveScenario`
+// this is what lets a caller prove a short request was expanded into the intended full DSCR profile
+// rather than inheriting a stale search: requested says what they asked for, derived says what the
+// server worked out from it, effective says what actually went upstream.
+function requestedOf(sc) {
+  const out = {};
+  for (const k of Object.keys(sc || {})) if (!META_FIELDS.has(k)) out[k] = sc[k];
+  return out;
+}
+// §35.2/§36.2 — what the amount triangle DERIVED, and from what. Reports only the figures the server
+// worked out itself, so a caller can see e.g. that a value of 533333.33 came from their loan + LTV
+// and was never something they supplied.
+function derivedOf(sc) {
+  const t = modelInternals && modelInternals.deriveAmounts ? modelInternals.deriveAmounts(sc) : null;
+  if (!t) return null;
+  return { value: t.value, loan: t.loan, ltv: t.ltv, derived: t.derived, supplied: t.supplied };
+}
+
 // POST /price — body is a scenario (or { scenario }). Returns the parsed program summary.
 async function price(req, res) {
-  const sc = (req.body && req.body.scenario) ? req.body.scenario : (req.body || {});
+  let sc = (req.body && req.body.scenario) ? req.body.scenario : (req.body || {});
   if (rejectUnsupported(sc, res)) return; // never silently ignore an unimplemented field
-  if (rejectInvalidRequest(sc, res)) return; // §26.5 — 422 a bad request BEFORE any upstream call
+  const chk = rejectInvalidRequest(sc, res); // §26.5 — 422 a bad request BEFORE any upstream call
+  if (chk.rejected) return;
+  sc = chk.scenario; // price the ZIP-ENRICHED scenario, never the original
   const r = await lp.price(sc);
   if (!r.ok) return res.status((r.http && r.http >= 500) ? 502 : 400).json(priceErrorBody(r));
   if (rejectInvalidValues(r.request, res)) return; // a supported field carried an unrecognized value
@@ -226,12 +269,12 @@ async function price(req, res) {
   // separate status route (GET /disqualifications/:searchKey) instead of ever restarting the search.
   if (req.body && req.body.full) {
     const full = lp.parseFull(r.raw, { raw: !!req.body.raw });
-    const out = { ok: true, ...full, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+    const out = { ok: true, ...full, requestedScenario: requestedOf(sc), derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
     if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
     return res.json(out);
   }
   const parsed = lp.parse(r.raw);
-  const out = { ok: true, ...trimPrograms(parsed), effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+  const out = { ok: true, ...trimPrograms(parsed), requestedScenario: requestedOf(sc), derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
   // Secret-gated diagnostics (the whole router is behind the diag token / staff login): when the
   // caller asks, include a structural summary of the raw response so we can see whether Lender
   // Price returned programs the parser missed, or truly zero — and any disqualify reasons.
@@ -312,9 +355,11 @@ async function disqualifications(req, res) {
 // (built from the identical body) comes back quickly. Optional body: { maxWaitMs, pollMs, debug }.
 async function disqualify(req, res) {
   const body = req.body || {};
-  const sc = body.scenario ? body.scenario : body;
+  let sc = body.scenario ? body.scenario : body;
   if (rejectUnsupported(sc, res)) return;
-  if (rejectInvalidRequest(sc, res)) return; // §26.5 — 422 a bad request BEFORE any upstream call
+  const chk = rejectInvalidRequest(sc, res); // §26.5 — 422 a bad request BEFORE any upstream call
+  if (chk.rejected) return;
+  sc = chk.scenario; // price the ZIP-ENRICHED scenario, never the original
   // POLL-ONLY mode ({poll:true}): a prior /price already kicked off the async computation. This
   // just polls the cached result (no re-kickoff, no blocking loop) → 200 when ready, 202 while
   // still computing. This is the recommended flow (kick off on /price, then poll here every ~2s).
@@ -372,4 +417,4 @@ function makeRouter() {
 }
 
 module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest }, BATTERY,
-  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields } };
+  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf } };

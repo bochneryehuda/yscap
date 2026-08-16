@@ -13,7 +13,7 @@ Scope: the Long-Term DSCR pricer's Lender Price integration
 document is the backend counterpart to that audit — every finding mapped to code,
 with accepted data types and defaults.
 
-## 0. Two things that are NOT code (need a human)
+## 0. Three things that are NOT code (need a human)
 
 - **Production API health.** The audit could not run live backend↔frontend
   comparisons because the deployed LT `/health` did not respond (the reboot →
@@ -25,6 +25,16 @@ with accepted data types and defaults.
 - **`LP_REQUIRE_LIVE_FOUNDATION=1`** should be set in Render so production can
   never silently price on the static fallback foundation (the gate already exists
   — `client.js foundationLiveGate`, named 502 `lp_foundation_not_live`).
+- **ZIP → county-FIPS enrichment is an OWNER decision, not a capture.** The
+  frontend turns a ZIP into city/state/county/FIPS before searching; the backend
+  requires the caller to supply the county FIPS and refuses an incomplete
+  location. The repo ALREADY has this ability (`src/lib/address-canon.js`
+  `resolveCounty`/`geocode`) — but in the RTL/shared zone, so LT importing it is
+  a product-separation crossing that needs the owner's written authorization
+  recorded in `docs/LONG-TERM-AUTHORIZED-COPIES.md` (per-item, never blanket).
+  Until then the current behavior stands: safe (it never guesses a county), just
+  less convenient. The alternative — a separate LT-only enrichment — duplicates a
+  solved problem and would drift, so it should not be built without that decision.
 
 ## 1. Fixed (with the exact behavior + data types)
 
@@ -53,6 +63,13 @@ Each item is covered by an offline test in `scripts/test-lt-lenderprice.js`,
 | **§32.4 reserves selector table** (`reservesMonths` → `GLOBAL_RESERVES` enum) | FIXED | A caller may choose a reserves requirement via `reservesMonths`, mapped to the CONFIRMED live enum (`mapReserves`) — copied EXACTLY, including the genuinely inconsistent prefixes: `none`/`0`→`Reserve_none`, `3`→`Reserves_3`, **`6`→`Reserve_6` (SINGULAR)**, `12`→`Reserves_12`, `18`→`Reserves_18`, `24`→`Reserves_24`. OMITTED → the DSCR-profile default `Reserves_24` (env-overridable `LP_RESERVES_TOKEN`); an unknown value → 422 `unknown_reserves` (never a guessed token). Explicit `None` (`Reserve_none`) is DISTINCT from blank/inherit (JSON null); blank is deliberately not exposed — the DSCR profile always emits a reserves value. Reachable over HTTP (route `SUPPORTED_FIELDS`); `effectiveScenario.reserves` surfaces it. Test `scripts/test-lt-lp-reserves-pure.js` (full enum + the singular/plural quirk + 422 + fail-closed; proven to FAIL when `Reserve_6` is "fixed" to `Reserves_6`). |
 | **§32.3 DSCR threshold table** (DSCRRATIO band token + derived pricing-band SMO) | FIXED | The entered DSCR drives, beyond the always-present DSCR pair, a coarse `dynamicPropertiesMap.DSCRRATIO` token AND — above 0.75 — one derived pricing-band SMO. Implemented as a **reviewed range table** (`dscrBand`), NOT string-formatted from the number: `0→NoDSCR`, `(0,0.75)→"0.75"`, `[0.75,1.00)→"DSCR<1"+"DSCR <1.15"`, `[1.00,1.25)→"DSCR>=1"+"DSCR >=1.00"`, `[1.25,∞)→"1.25"+"DSCR >=1.25 - J"` (every token confirmed from the §32.3 capture; discontinuities at 0/0.75/1.00/1.25). `criteria.dscr` carries the verbatim numeric value; the band SMO is appended after the DSCR pair (captured order `[PPP, DSCVR, DSCR, band]`, name-only + `dynaToSmo`). **Fail-closed**: `DSCRRATIO` is scenario-owned (`SCENARIO_OWNED` DELETE-neutral) so an omitted DSCR sends NO token — a live foundation's stale `DSCRRATIO` cannot leak — and is re-applied when supplied. Surfaced in `effectiveScenario.dscrRatio`. Test `scripts/test-lt-lp-dscr-band-pure.js` (full table + boundary just-below/at/just-above + fail-closed; proven to FAIL when a boundary is moved). |
 
+| **§33.1 complete property-type enum** | FIXED | The four current-tenant tokens the capture lists and the builder lacked: `CondoGarden`, `MidRiseCondo`, `CondoTel`, `ManufacturedHomeCondominium` (distinct from the longer `…OrPUDOrCooperative`), plus the ON-SCREEN LABEL aliases `"2 - 4 Unit"` / `"2-4 Unit"` → `UnitDwelling_2_4` (the label was previously 422'd). Each carries its exact upstream token + auto-minimum unit count; an unknown type still 422s (no fall-through to SingleFamily). **CondoTel** carries the confirmed side effect `nonWarrantableProject:true` (§17.2 — the live UI auto-checks Non-Warrantable Condo); its siblings do NOT. Attachment is NOT a per-condo-type capture, so the new tokens inherit the profile default `Detached` and stay overridable (the older condo rows' guessed `Attached` is deliberately not copied). The label alias also makes the units-conflict check enforce the 2–4 range for the label. Test `scripts/test-lt-lp-property-types-pure.js` (the whole §33.1 table, 76 checks). |
+| **§33.2/§33.3/§33.4 the confirmed MENU enums** | FIXED | Three fields the builder decided FOR the caller. `IncomeDocType` was hard-coded `'DSCR'` → now any of the **25** confirmed values (label OR exact token); `PrePayment_Plan_Type` was hard-coded `'Standard'` → now any of the **19** structures, **independent of the term** (it may be supplied alone, and `"No Prepay"` is a real choice whose token is `null` — distinct from `PrepayTerm "None"`, which produces the No PPP SMO); `GLOBAL_BorrowerType` accepted ANY string → now validated against the exact six-value enum (the last silent substitution in the borrower block). **The token is NEVER derived by formatting the label** — `"WVOE"`→`VOEOnly`, `"12 Mo Alt Doc"`→`AltDoc12Months`, and the tax-vs-CPA P&L rows split Month vs Mo on the same line. Citizenship gained the two combined foreign-national values whose real vendor spelling carries a **trailing `)`** — kept verbatim, and the "clean" spelling is deliberately NOT accepted (a lender rule matches the stored token). Omission still forces the profile default; an unrecognized value 422s. Test `scripts/test-lt-lp-menu-enums-pure.js` (115 checks). |
+| **§35.2/§36.2 the AMOUNT TRIANGLE** | FIXED | Any **TWO** of value / loan / LTV determine the third, so the short form deals are actually quoted in — "Purchase, 760 FICO, $400,000 loan, 75% LTV, ZIP 11211" — is now priceable; it previously could not be sent at all (no value → a null purchase price upstream). `deriveAmounts` is pure + total: `loan+ltv→value`, `value+ltv→loan`, `value+loan→ltv`; it NEVER derives from one figure (that is a guess), so a single amount is refused 422 `insufficient_amounts` before any upstream call. LTV is accepted as `75` or `0.75` and normalized to the vendor's decimal form; a conflicting supplied LTV is still rejected, never silently replaced. An unknown **purpose** is now resolved BEFORE the amount rule, so a mistyped purpose is reported as such instead of sending the caller hunting for a missing amount. A **cash-out amount on a Purchase / rate-and-term Refinance is rejected** (§36.3/§36.4) — it describes a different transaction than the purpose states. Test `scripts/test-lt-lp-amount-triangle-pure.js`. |
+| **§31.5/§31.6 subordinate financing + broker comp percent** | FIXED | `subordinateLoanAmount` → `criteria.subordinateLoanAmount` (confirmed live), with **no invented CLTV field** — the engine derives the combined ratio, so we VALIDATE it instead (first lien + subordinate may not exceed the value; the rule also applies against a DERIVED value). `compPercent` → `brokerCriteria.compPlan` with the confirmed **SIGN INVERSION** (a visible `2.5` transmits as `-2.5`); the public input is the positive number a human reads and one named conversion (`compPlanValue`) owns the flip, so a negative input is refused rather than double-negated and `0` can never serialize as `-0`. Both are scenario-owned, closing the §31.6 leak the audit reproduced (clearing the visible inputs did not clear the model): the subordinate amount clears to its captured neutral `0` and `compPlan` is **deleted** — the captured base carries no `compPlan` key at all — each re-applied only when supplied, AFTER the clear (the registry's documented footgun). Test `scripts/test-lt-lp-subordinate-comp-pure.js`. |
+| **§36.11 requested vs derived vs effective** | FIXED | The response echoes `requestedScenario` (the caller's own scenario minus request-envelope keys) and `derivedScenario` (what the amount triangle worked out, and **which** figures were supplied vs derived) alongside the existing `effectiveScenario` + foundation provenance — so a short request can be PROVEN to have expanded into the intended full DSCR profile rather than inheriting a stale search. |
+| **§31.3/§31.7 asset depletion + late-window parent flag** | FIXED | `dscrAssetDepletion` → `Global_DSCR_Asset_Depletion` with the confirmed token **`"Yes"`** (deliberately NOT the `"true"` its sibling flags use — copying their shape would be a guess about a different field); `lateInLast12Months` → `Lateinlast12months` `"true"`, the parent toggle the live UI sends alongside the per-bucket `MORT*LATESLAST12M` counts. Both true-only: the off token was never captured, so an explicit `false` INHERITS rather than writing an invented value. The **13–24 month** parent toggle stays unwired — its field name was never captured (only its per-bucket counts were). |
+
 Two permanent **golden request-structure fixtures** encode the audit's canonical
 DSCR purchase and cash-out combination (`test-lt-lenderprice.js` sections 35–36).
 
@@ -73,11 +90,36 @@ mis-price, which is worse than the current explicit-reject behavior.
   is idempotent by design (§27.4); giving each intentional new search its own
   generation while keeping polls idempotent needs an owner decision on the desired
   semantics.
-- The **coverage-gap fields** the audit lists (asset depletion, cross-collateral,
-  student-loan cash-out, subordinate/CLTV, comp %, first-time investor, ITIN
-  distinctions, AUS, Section 184, several property types, ZIP→county-FIPS
-  enrichment) are **rejected with 422, not silently ignored** — each needs its
-  confirmed upstream token from a capture before it is implemented.
+- Most of the old **coverage-gap list is now CLOSED** — every field whose upstream
+  token the audit actually confirmed has been implemented (see §1 rows for
+  property types, income doc, prepay structure, citizenship, borrower type,
+  asset depletion, subordinate amount, comp %, first-time investor, the
+  late-window parent flag). What remains deferred is only the genuinely
+  **uncaptured**, still **rejected with 422, never silently ignored**:
+  - **AUS** — the selected-criteria field name was never captured (do NOT write
+    into the `ausList` capability array, which is a different thing).
+  - **Separate frontend vs backend DTI**, **average median credit score**,
+    **non-occupying co-borrower** — company-specific fields, no capture.
+  - **HELOC / HELOAN / lien-priority subtypes** — only the closed-end second
+    AMOUNT was captured (`criteria.subordinateLoanAmount`), not the subtype
+    selectors.
+  - **Student-loan cash-out** — BROKEN IN THE VENDOR'S OWN FORM: it serializes
+    to `dynamicPropertiesMap.undefined`. Do not invent a field; the vendor must
+    assign a real code first.
+  - **Cash-out AMOUNT transmission** — fail-closed per §32.2 (the clean capture
+    carried no legitimate vendor field). The value is retained internally and
+    reported, never transmitted.
+  - **QM scope, favorite lenders, historical pricing, Native American /
+    Section 184** — Section 184 is additionally a COMPOUND state machine
+    (§31.2: it flips mortgage type to USDA and does not cleanly reverse), so it
+    must be implemented atomically or stay rejected for DSCR scope.
+- **ZIP → county-FIPS enrichment** is deferred for a DIFFERENT reason, and it is
+  an OWNER decision, not a capture: the repo already has `resolveCounty`/geocode,
+  but in `src/lib/` (the RTL/shared zone). LT importing it is a product-separation
+  crossing that needs written authorization recorded in
+  `docs/LONG-TERM-AUTHORIZED-COPIES.md`. Until then the connector REQUIRES a
+  caller-supplied county FIPS and refuses an incomplete location — safe, just
+  less convenient than the frontend.
 
 ## 3. The request-builder field contract (accepted types)
 
