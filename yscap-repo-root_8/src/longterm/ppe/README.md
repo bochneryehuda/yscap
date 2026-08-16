@@ -136,6 +136,10 @@ DB; `-db` suites add a round-trip when `DATABASE_URL` is set). All suites are cu
   `finding-store.persistRun` → `scoreboard.assemble` on a cadence.
 - **The admin UI** (§12) — the scoreboard/trend surface, the findings ledger with `divergence`
   diagnoses, and the human-gated cutover-ledger promote/rollback controls.
-- **Wiring these suites into CI's `package.json` test chain** (kept out of the conflict-prone chain
-  until merge time; `test-lt-ppe-all.js` is the single entry to add — it auto-discovers every
-  `test-lt-ppe-*.js`).
+_(Done 2026-08-16 — **the suites now run in CI.** `node scripts/test-lt-ppe-all.js` is wired into
+`package.json`'s `test` chain as ONE entry, right after `test-lt-dscr-routes.js`. One entry, not 27,
+because the aggregator auto-discovers every `test-lt-ppe-*.js` — so a suite added later is picked up
+with no second list to keep in step. That it goes RED was PROVEN, not assumed: flipping the
+cost-positive sign in `pricing.js` (`base + Σcost` instead of `base − Σcost`, i.e. a fee that RAISES
+the price) turned 4 suites red and the aggregator exited 1; reverted, it exits 0. Until now all 27
+suites existed and CI ran none of them.)_
