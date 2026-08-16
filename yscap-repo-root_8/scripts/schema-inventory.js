@@ -35,6 +35,40 @@ const bodyHash = (s) => crypto.createHash('sha256').update(String(s || '')).dige
 
 const byName = (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 
+// =============================================================================
+// PILOT'S OWN BOOKKEEPING IS NOT PART OF THE DATA MODEL
+// =============================================================================
+//
+// `schema_migrations` is the ledger the migration runner keeps of which files it
+// has applied. It is created by `src/migrate-boot.js` — the SERVER'S BOOT PATH —
+// and NOT by `npm run migrate`. So whether it exists depends on how a database
+// came to be, which makes it the one table whose presence says nothing about the
+// schema:
+//
+//   built by `npm run migrate`   → absent   (this is how CI and this map are built)
+//   booted once by the server    → present  (this is production, and any test
+//                                            that boots the server mid-suite)
+//   restored from a backup       → present
+//
+// Left in, the map reports "table schema_migrations is new" as DRIFT the moment
+// anything boots — which is exactly what happened here: the committed map said
+// 321 tables, the database said 322, and the only difference was this. Excluding
+// it makes the map say the same thing about the same migrations however the
+// database was built, which is the only way the drift check can be trusted
+// against a production restore.
+//
+// The cost, stated plainly: a change to the ledger's own four columns is
+// invisible to the map. It is owned by the migration runner and changing it is
+// a change to `migrate-boot.js`, which is where it would be noticed.
+// FILTERED IN ONE PLACE, in `buildInventory`, and deliberately NOT in the ten
+// queries. Each of those scopes itself differently — `c.table_schema`,
+// `c.connamespace`, `n.nspname` — so ten edits is ten chances to miss one, and
+// the one missed is invisible: the map simply keeps reporting an object nothing
+// else does. Row shapes differ too (a table carries `name`, everything else
+// carries `table`), so the filter reads both.
+const LEDGER_TABLE = 'schema_migrations';
+const onLedger = (row) => !!row && (row.name === LEDGER_TABLE || row.table === LEDGER_TABLE);
+
 async function tablesAndColumns(db) {
   const { rows } = await db.query(`
     SELECT c.table_name, c.column_name, c.data_type, c.is_nullable,
@@ -263,19 +297,34 @@ async function buildInventory(db) {
   // SEQUENTIAL, NOT Promise.all. A single `pg` Client is one connection and one
   // wire protocol: overlapping queries on it is deprecated and will throw in
   // pg@9. Reading a catalog is fast, so there is nothing to gain by racing it.
-  const tables = await tablesAndColumns(db);
-  const generated = await generatedColumns(db);
-  const checks = await checkConstraints(db);
-  const trigs = await triggers(db);
+  const rawTables = await tablesAndColumns(db);
+  const rawGenerated = await generatedColumns(db);
+  const rawChecks = await checkConstraints(db);
+  const rawTrigs = await triggers(db);
   const funcs = await functions(db);
-  const partials = await partialIndexes(db);
+  const rawPartials = await partialIndexes(db);
   // The relationship layer. Sequential for the same one-connection reason.
-  const pks = await primaryKeys(db);
-  const fks = await foreignKeys(db);
-  const uniques = await uniqueConstraints(db);
-  const indexes = await allIndexes(db);
+  const rawPks = await primaryKeys(db);
+  const rawFks = await foreignKeys(db);
+  const rawUniques = await uniqueConstraints(db);
+  const rawIndexes = await allIndexes(db);
   const enums = await enumTypes(db);
   const vws = await views(db);
+
+  // THE ONE PLACE PILOT'S OWN LEDGER IS DROPPED. See the note above
+  // `LEDGER_TABLE`: its presence depends on whether a database was built by
+  // `npm run migrate` or booted, so leaving it in makes the map disagree with
+  // itself depending on how the database came to be.
+  const drop = (list) => (list || []).filter((r) => !onLedger(r));
+  const tables = drop(rawTables);
+  const generated = drop(rawGenerated);
+  const checks = drop(rawChecks);
+  const trigs = drop(rawTrigs);
+  const partials = drop(rawPartials);
+  const pks = drop(rawPks);
+  const fks = drop(rawFks);
+  const uniques = drop(rawUniques);
+  const indexes = drop(rawIndexes);
 
   return {
     // A note to whoever opens the file, inside the file itself.
@@ -371,5 +420,6 @@ const SCHEMA_SECTIONS = ['primaryKeys', 'foreignKeys', 'uniqueConstraints', 'ind
 module.exports = {
   buildInventory, beyondPrismaCount, serialize, migrationState,
   BEYOND_PRISMA_SECTIONS, SCHEMA_SECTIONS,
+  LEDGER_TABLE, onLedger,
   _internals: { bodyHash, byName },
 };

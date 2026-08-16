@@ -231,6 +231,58 @@ it up using LT's schema as the model — it is 1,100 lines of well-commented Pri
 written by the same standard. Group by domain, name the relations, and comment every non-obvious
 column. Still zero runtime risk: it is a text file that nothing reads yet.
 
+#### Phase 1 — the gate condition, measured at last (2026-08-16)
+
+The gate for Phase 1 (§6b) was *"re-running `db pull` over the cleaned file preserves the hand-written
+comments (Prisma merges rather than overwrites — **verify this on a copy before relying on it**)."*
+Nobody had. It is now measured, twice over, against this database rather than taken from the
+documentation:
+
+| what Phase 1 would add | survives `db pull`? |
+|---|---|
+| `///` doc comment on a **model** | **KEPT** |
+| `///` doc comment on a **field** | **KEPT** — and re-attached to the right field even after that field moved position inside a 152-column model |
+| hand-renamed `@relation("…")` | **KEPT**, on both sides of the relation |
+| hand ordering of existing models | **KEPT**; newly-found models are appended after |
+| `//` plain comment | **LOST** |
+| a file-header comment | **LOST** |
+
+**So Phase 1 is viable, with one rule: comment with `///`, never `//`.** The plan's assumption was
+half right, and the half it got wrong is the half somebody would have discovered the hard way.
+
+**AND OUR OWN GENERATOR WAS THROWING ALL OF IT AWAY.** `schema-prisma.js` wrote a bare seed over the
+file and then pulled, so every regeneration produced a file with no human content in it — defeating a
+preservation Prisma was performing for us. Nobody had noticed because the file has never been
+commented; the first person to do it would have lost the work on the next `npm run schema:map` and had
+no idea why. It now pulls OVER the existing file, falling back to a clean seed only if that fails —
+and saying loudly, rather than silently, when it has had to.
+
+**A second finding fell out of the same experiment: `schema_migrations`.** The database had 322 base
+tables and the map recorded 321. The difference is PILOT's own migration ledger, which
+`src/migrate-boot.js` (the server's BOOT path) creates and `npm run migrate` does not. So its presence
+records how a database came to be, not what its schema is:
+
+| how the database was built | ledger present? |
+|---|---|
+| `npm run migrate` — CI, and how this map is generated | no |
+| booted once by the server — production, and any test that boots mid-suite | yes |
+| restored from a backup | yes |
+
+Left in, the drift check reaches for its most alarming verdict — *"this database contains something no
+migration here explains … check that nobody altered it by hand"* — about a table PILOT creates itself,
+and it does so **on production, on every restored backup, and on any CI run where a test boots before
+the check**. Reproduced exactly. It is now excluded, from ONE chokepoint in `buildInventory` rather
+than from the ten queries that each scope themselves differently (ten edits is ten chances to miss
+one, and the one missed is invisible), and from the Prisma map through the SAME shared constant — so
+the two documents in that folder can no longer disagree about how many tables there are. The stated
+cost: a change to the ledger's own four columns is invisible to the map.
+
+Proven by four mutations of the exclusion, all red, including two near-miss fixtures — a real table
+whose name BEGINS with the ledger's, and one that merely CONTAINS it — because a `startsWith` or
+`includes` mistake would make a real table silently vanish from the map, which is strictly worse than
+the bug being fixed. And end to end: the Prisma map now regenerates BYTE-IDENTICAL from a database
+that has the ledger.
+
 ### Phase 2 — Write down what Prisma cannot hold.
 Inventory the 57 triggers, 95 functions, 323 checks, 68 partial indexes and 12 generated columns, and
 either bring them under Atlas or record them in a companion document. **Until this exists, the Prisma

@@ -116,6 +116,54 @@ const eq = (a, b, m) => { assert.strictEqual(a, b, m); n++; };
       (p) => p.includes('_snap_probe_fn') && p.includes('changed')),
       'rewriting a function body is caught, though its name never moved');
 
+    // ---- F. PILOT'S OWN MIGRATION LEDGER IS NEVER IN THE MAP ----------------
+    //
+    // `schema_migrations` is created by the SERVER'S BOOT PATH (migrate-boot.js)
+    // and not by `npm run migrate`, so whether it exists says nothing about the
+    // schema — only about how this particular database came to be. Left in, the
+    // map reports it as a NEW TABLE the moment anything boots, and the drift
+    // check reaches for its most alarming verdict ("this database contains
+    // something no migration here explains") about a table PILOT created itself.
+    // That fires on production, on every restored backup, and on any CI run
+    // where a test boots before the check. Observed on 2026-08-16.
+    //
+    // The table is created HERE rather than assumed present, so this proves the
+    // exclusion whether or not anything has booted against this database.
+    // Taken IMMEDIATELY before the ledger is created, so the comparison below
+    // isolates the ledger and nothing else. Using the inventory from the top of
+    // this suite would drag in every probe object created since, and the
+    // assertion would fail for reasons that have nothing to do with the ledger.
+    const preLedger = await buildInventory(db);
+    await db.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
+      filename text PRIMARY KEY, sha256 text NOT NULL,
+      applied_at timestamptz NOT NULL DEFAULT now(),
+      last_seen timestamptz NOT NULL DEFAULT now())`);
+    const withLedger = await buildInventory(db);
+    ok(!withLedger.tables.some((t) => t.name === 'schema_migrations'),
+      'the migration ledger is not a table in the map');
+    ok(!JSON.stringify(withLedger).includes('schema_migrations'),
+      'and it leaks into no other section either — not its primary key, not its index');
+
+    // The whole point: a database that HAS the ledger must read as identical to
+    // one that does not. Comparing the map to itself would prove nothing, so
+    // this compares against the inventory taken at the top of this suite.
+    ok(diffInventories(preLedger, withLedger).length === 0,
+      'a database carrying the ledger reports NO drift against the same database without it');
+
+    // AND THE EXCLUSION MUST BE EXACT. Two near-misses, because they fail
+    // differently and one fixture cannot catch both: a name that STARTS with the
+    // ledger's would be swallowed by a `startsWith` test, and one that merely
+    // CONTAINS it would be swallowed by an `includes` test. Either mistake makes
+    // a real table silently vanish from the map — strictly worse than the bug
+    // this exclusion fixes, because nothing would ever report it.
+    await db.query(`CREATE TABLE schema_migrations_probe_backup (id int)`);
+    await db.query(`CREATE TABLE _snap_probe_schema_migrations_like (id int)`);
+    const nearMiss = diffInventories(withLedger, await buildInventory(db));
+    ok(nearMiss.some((p) => p.includes('schema_migrations_probe_backup')),
+      'a real table whose name BEGINS with the ledger name is still reported');
+    ok(nearMiss.some((p) => p.includes('_snap_probe_schema_migrations_like')),
+      'a real table whose name CONTAINS the ledger name is still reported');
+
     console.log(`test-schema-snapshot-db: ${n} assertions passed`);
   } finally {
     // Always. The probe objects never survive this suite.
