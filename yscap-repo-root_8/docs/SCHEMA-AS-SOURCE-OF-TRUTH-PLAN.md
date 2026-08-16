@@ -57,7 +57,7 @@ identical (309 tables / 33 triggers / 136 functions). It reads the catalog and w
 database returned **0** (they agree). That is the CI gate Phase 3 rests on, and it is confirmed
 functional against the real schema.
 
-**Result 5 — and the decisive one. A database rebuilt from that schema file would silently lose 737
+**Result 5 — and the decisive one. A database rebuilt from that schema file would silently lose 736
 objects:**
 
 | Object | In the SQL Prisma would generate | In the real database |
@@ -66,7 +66,16 @@ objects:**
 | Functions | **0** | 136 |
 | CHECK constraints | **0** | 247 |
 | Generated columns | **0** | 12 |
-| Partial indexes | **0** | 309 |
+| Partial indexes | **0** | 308 |
+
+> **CORRECTION, 2026-08-16.** This total was first reported as **737**, with 309 partial indexes. It
+> was wrong. That first count matched index definitions with `indexdef ILIKE '%WHERE%'`, which also
+> caught `idx_market_obs_where` — an index that merely has "where" in its NAME and is not partial at
+> all. The real test is `pg_index.indpred IS NOT NULL`, Postgres's own record of the clause, which
+> gives **308** and a total of **736**. `scripts/schema-inventory.js` now asks the catalog rather than
+> grepping text, and `test-schema-snapshot-db.js` pins the two counts against each other so the cheap
+> version cannot come back. Recorded rather than quietly amended, because a confidently wrong number
+> is exactly what the build rule in CLAUDE.md exists to prevent.
 
 10,346 lines of generated SQL that would run **without a single error** and leave a database missing
 every rule listed in §2. This is no longer a warning quoted from documentation — it is a measurement of

@@ -18,6 +18,31 @@ on:
   push:
     branches: [main]
 
+# ---------------------------------------------------------------------------
+# STOP SUPERSEDED PULL-REQUEST RUNS FROM HOLDING THE QUEUE (owner-reported
+# 2026-08-16: runs queue one after another and slow everything down when
+# several changes are in flight at once).
+#
+# There was no concurrency group at all, so pushing four times to one branch
+# started four full runs and the first three KEPT RUNNING to the end — burning
+# runner capacity to test commits nobody will ever merge. With several agents
+# working at once that is what fills the queue. Now only the newest commit on a
+# branch runs; the older ones are cancelled the moment they are superseded.
+#
+# MAIN IS NEVER CANCELLED, AND THAT IS THE WHOLE CARE HERE. Keying the group on
+# `run_id` for anything that is not a pull request gives every push to main its
+# own group, so one main run can never cancel another — and cancel-in-progress
+# is switched off there outright. A cancelled main run would mean a cancelled
+# DEPLOY, which is the "merged but never published" failure this workflow was
+# written to close.
+#
+# A cancelled PR run belongs to a commit that has already been replaced, so no
+# required check is left waiting: the new commit reports its own fresh result.
+# ---------------------------------------------------------------------------
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest

@@ -10,6 +10,46 @@ The owner is not a developer. **Every message to the owner must be in PLAIN, SHO
 - **Talk BUSINESS, not code:** explain what things mean for the business (files, borrowers, ClickUp cards, emails), not what they mean in the code.
 - Commit messages and code comments stay technical; chat with the owner never is.
 
+## How to BUILD (ALWAYS) — HIGHEST-END, NEVER CHEAP — STRICT RULE (owner-directed 2026-08-16)
+
+**Owner's words: *"everything that they build should be built how Microsoft, Google, Apple, and the
+military would build something — which means highest end, not cheapy. Even if there's a cheaper, easier
+way to do it, they should go the harder way. It should be professional and high-end, not cheapy."***
+
+This is a standing rule over every change, in both products. It is not a licence to gold-plate a
+one-line fix; it is a ban on the *cheap shape* — the spot-patch, the second copy, the hand-kept list,
+the assertion in place of a proof. When the cheap way and the structural way both work, **take the
+structural way.** Ten concrete tests of that, all of which this repo already applies somewhere:
+
+1. **Prove it, don't assert it.** Rehearse against the real thing before proposing it — a real
+   Postgres, a real payload, a real render — never a mock that agrees with you. ("Test like you fly":
+   the aerospace practice that exists because systems met real conditions for the first time in flight.)
+2. **A test must be proven to FAIL.** Break the production rule on purpose and confirm the suite goes
+   red — with an unmutated control green on either side. A test nobody has seen fail is decoration.
+   Watch for false confidence: a *crashing* test also "fails", and looks like proof.
+3. **One definition, never a second copy.** Two copies of a rule drift, and the one that drifts is the
+   one that leaks. Where a mirror is unavoidable (a browser twin of a server rule), a test must fail
+   the moment they disagree.
+4. **Generate, don't hand-maintain.** A list somebody has to remember to update is a list that goes
+   stale silently. Derive it from the source of truth.
+5. **Fail closed, and never silently.** Unreadable input, an unknown value, a vendor timeout — answer
+   the safe way and SAY SO. No swallowed errors, no silent caps, no "probably fine".
+6. **Never remove something until nothing depends on it.** Add the new beside the old, move every
+   reader, then remove. Never a rename in place on a live system.
+7. **Fix the root and every place it surfaces**, never only the instance you were shown. (The
+   long-standing rule below; it is the same principle.)
+8. **Pin your tools.** Same input, same version, same result. An unpinned dependency is an outage
+   scheduled for a date you do not control.
+9. **Write the acceptance evidence BEFORE the step**, and do not proceed on the feeling that it went
+   fine. State what must be true; then check it.
+10. **Stage anything that touches production**, and roll back before diagnosing. Recovery first,
+    understanding second.
+
+**And the honesty half, which is what actually makes the above worth anything:** report what was
+measured, not what was hoped. If a number is estimated, say estimated. If a guard is redundant today,
+write that down rather than implying it bites. If something was not done, name it. A confident wrong
+answer is the most expensive thing that can be produced here.
+
 ## TWO PRODUCTS, TWO SYSTEMS — RTL and LONG-TERM never mix (owner-directed 2026-08-02) — STRICT, HARD RULE, NO EXCEPTIONS
 
 PILOT now has **two loan products, and they are two separate systems**:
