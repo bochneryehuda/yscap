@@ -1119,19 +1119,60 @@ async function pricingReadiness({ price: deep = false } = {}) {
   const f = await priceFoundation();
   if (!f.ok) return { pricingReady: false, auth: { ok: true, expiresAt: new Date(s.expiresAt).toISOString() }, foundation: { ok: false, error: f.error, message: f.message } };
   const auth = { ok: true, expiresAt: new Date(s.expiresAt).toISOString(), companyId: f.companyId };
-  const foundation = foundationProvenance(f);
+  const fr = foundationReadiness(f);
+  if (fr.blocked) return { pricingReady: false, reason: fr.reason, message: fr.message, auth, foundation: fr.foundation };
+  const foundation = fr.foundation;
   if (!deep) return { pricingReady: true, auth, foundation };
   // Deep check — a real minimal searchRaw (the only thing that proves a stale-session 500 is gone).
-  const pr = await price({ purpose: 'Purchase', value: 500000, loan: 350000, fico: 780, dscr: 1.1 });
+  const prDeep = await price({ purpose: 'Purchase', value: 500000, loan: 350000, fico: 780, dscr: 1.1 });
   return {
-    pricingReady: !!pr.ok, auth, foundation,
-    price: pr.ok ? { ok: true, recovered: !!pr.recovered } : { ok: false, error: pr.error, http: pr.http || null, message: pr.message },
+    pricingReady: !!prDeep.ok, auth, foundation,
+    price: prDeep.ok ? { ok: true, recovered: !!prDeep.recovered } : { ok: false, error: prDeep.error, http: prDeep.http || null, message: prDeep.message },
   };
+}
+
+// PURE — the readiness VERDICT on a resolved foundation, split out so it is testable without a
+// session, credentials or a network. `pricingReadiness` above is the thin IO wrapper; this is the
+// rule, in one place, the same split cutover-store/cutover-ledger and gate/gate-disposition use.
+//
+// A GREEN HEALTH CHECK MUST NOT MEAN "the static fallback can still complete a minimal price"
+// (audit §34.2 P0, §28.1). Provenance was always reported, but `pricingReady` ignored it — so a
+// service pricing every loan off a months-old captured search model reported itself perfectly
+// healthy, which is precisely the reading that stops anyone from noticing. The fallback does not
+// error: it is accepted upstream and prices a materially DIFFERENT loan (the audit measured 475
+// frontend rows against 752 from the fallback on one matched scenario, with zero exact rate/price
+// overlap).
+//
+// The verdict reflects the POLICY ACTUALLY IN FORCE, and is honest in BOTH directions rather than
+// simply stricter:
+//   • enforcing (LP_REQUIRE_LIVE_FOUNDATION) + fallback → NOT ready. Not a judgement call:
+//     foundationLiveGate makes every price 502 in that state, so "ready" would be a plain falsehood
+//     about what the next request does.
+//   • not enforcing + fallback → ready (prices really do succeed) but `degraded: true`, so a
+//     stale-configuration outage cannot hide behind a green check. Failing readiness outright here
+//     would paint every environment without live vendor credentials permanently red, which trains
+//     people to ignore the signal — the more expensive failure, and the reason this is not simply
+//     "not live → not ready".
+// Returns { foundation, blocked, reason, message }.
+function foundationReadiness(f) {
+  const foundation = foundationProvenance(f);
+  foundation.live = foundation.base === 'live' && foundation.smo === 'live';
+  foundation.required = requireLiveFoundation();   // is a live foundation ENFORCED in this env
+  foundation.degraded = !foundation.live;          // are we serving off the static capture
+  if (foundation.required && !foundation.live) {
+    return {
+      foundation,
+      blocked: true,
+      reason: 'foundation_not_live',
+      message: 'Live Lender Price pricing configuration is unavailable, and this environment requires it — pricing will refuse rather than quote from the static fallback.',
+    };
+  }
+  return { foundation, blocked: false, reason: null, message: null };
 }
 
 module.exports = {
   configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, pollDisqualified, pollDisqualifiedByKey,
   hasStoredSearch, searchKeyFor, parse, parseFull, parseDisqualified, summarizeRaw, pricingReadiness,
   hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
-  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, pollDisqualifiedByKey, hasStoredSearch, searchKeyFor, disqStore, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, foundationLiveGate, requireLiveFoundation, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery },
+  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, pollDisqualifiedByKey, hasStoredSearch, searchKeyFor, disqStore, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, foundationLiveGate, foundationReadiness, requireLiveFoundation, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery },
 };

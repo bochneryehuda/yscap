@@ -42,7 +42,7 @@ function trimPrograms(parsed, limit = 60) {
 // fields are implemented; a not-yet-implemented field is rejected with 422 unsupported_field.
 const SUPPORTED_FIELDS = new Set([
   'purpose', 'value', 'appraisedValue', 'asIsValue', 'loan', 'ltv', 'fico', 'dscr',
-  'propertyType', 'units', 'attachment', 'nonWarrantable', 'zip', 'state', 'county', 'countyFps', 'city', 'countyName',
+  'propertyType', 'units', 'attachment', 'attachmentType', 'nonWarrantable', 'zip', 'state', 'county', 'countyFps', 'city', 'countyName',
   'borrowerType', 'prepayMonths', 'io', 'escrowWaive', 'fthb', 'date', 'rentalTerm', 'reservesMonths',
   'term', 'termYears', 'lockDays', 'cashoutAmount',
   // §33.2/§33.3 — the two menu fields the builder used to hard-code (IncomeDocType always "DSCR",
@@ -74,11 +74,10 @@ function effectiveOf(payload) {
   const a = p.address || {};
   return {
     loanPurpose: c.loanPurpose, purchasePrice: c.purchasePrice, appraisedValue: c.appraisedValue,
-    // §32.2 — cash-out amount is FAIL-CLOSED: the live capture carried no legitimate vendor field, so
-    // it is retained internally but NOT transmitted. `criteria.cashoutAmount` is ALWAYS absent (it is
-    // never set — even the operator escape hatch LP_CASHOUT_AMOUNT_FIELD writes a dynamic property, not
-    // this criteria field), so `cashoutAmount` here is always undefined; `cashoutAmountInternal` is the
-    // received value we deliberately did not price, shown for transparency.
+    // The cash-out amount as actually TRANSMITTED (numeric criteria.cashoutAmount). The internal copy
+    // is kept beside it deliberately: the two are written from the same value, so a caller comparing
+    // them proves the amount reached the wire rather than only the diagnostics. They can never tell
+    // two different stories without one of them being a bug.
     cashoutAmount: c.cashoutAmount,
     cashoutAmountInternal: payload[CASHOUT_INTERNAL] != null ? payload[CASHOUT_INTERNAL] : undefined,
     loanAmount: c.loanAmount, ltv: c.ltv, fico: c.fico, dscr: c.dscr,
@@ -157,29 +156,19 @@ function rejectInvalidRequest(sc, res) {
   return { rejected: false, scenario: v.scenario || sc, countyEnrichment: v.countyEnrichment || null };
 }
 
-// Cash-out amount ("cash in hand") transparency — so it's never SILENTLY handled. §32.2 FAIL-CLOSED:
-// the clean live cash-out capture (2026-08-16) carried no legitimate vendor field, so the amount is
-// retained INTERNALLY but is NOT transmitted (see search-model.js) — this SUPERSEDES the earlier
-// "vendor fixed the field" note. The ONLY way it is transmitted is the DELIBERATE operator escape
-// hatch LP_CASHOUT_AMOUNT_FIELD (set once a new capture confirms a real field); `criteria.cashoutAmount`
-// is NEVER set either way. Returns null when no cash-out amount was supplied. Must agree with
-// effectiveScenario.cashoutAmountInternal in the same response.
+// Cash-out amount ("cash in hand") transparency — so it is never SILENTLY handled either way. It is
+// now TRANSMITTED as numeric `criteria.cashoutAmount` (see search-model.js for why that captured key
+// may be sent while the frontend's `dynamicPropertiesMap.undefined` bug never could). The note exists
+// because "we sent it" and "we kept it back" must be distinguishable by a caller reading the response
+// rather than by reading our source. Returns null when no cash-out amount was supplied; must agree
+// with effectiveScenario.cashoutAmount in the same response.
 function cashoutNote(sc) {
   if (!sc || sc.cashoutAmount == null || sc.cashoutAmount === '') return null;
-  const confirmedField = process.env.LP_CASHOUT_AMOUNT_FIELD;
-  if (confirmedField) {
-    return {
-      value: sc.cashoutAmount,
-      transmitted: true,
-      field: `dynamicPropertiesMap.${confirmedField}`,
-      note: `Retained internally AND transmitted under the operator-configured dynamic field dynamicPropertiesMap.${confirmedField} (LP_CASHOUT_AMOUNT_FIELD). criteria.cashoutAmount is never set.`,
-    };
-  }
   return {
     value: sc.cashoutAmount,
-    transmitted: false,
-    field: null,
-    note: 'Retained internally but NOT transmitted (§32.2 fail-closed): the live cash-out capture carried no legitimate vendor field, so PILOT does not invent or transmit one. Set LP_CASHOUT_AMOUNT_FIELD only once a new capture confirms a real field.',
+    transmitted: true,
+    field: 'criteria.cashoutAmount',
+    note: 'Transmitted as numeric criteria.cashoutAmount — the captured vendor field. PILOT no longer withholds it; the earlier fail-closed behaviour existed because the only evidence then was the frontend dynamicPropertiesMap.undefined bug, which is not a field name.',
   };
 }
 
