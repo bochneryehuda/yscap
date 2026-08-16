@@ -39,9 +39,22 @@ ok(typeof dyn(on, 'GLOBAL_Cross_Collateralization_Product') === 'string', 'QUIRK
 const mixed = sm.buildSearch({ ...S, mixedUse: true });
 ok(dyn(mixed, 'GLOBAL_MixedUse') === true, 'QUIRK-2 (contrast) GLOBAL_MixedUse stays a JSON boolean true — the two shapes are deliberately different');
 
-// ---- OFF → the confirmed "false" (cross-collateral) -----------------------
+// ---- OFF → cross-collateral has a CONFIRMED off token; the other two do NOT ----
 const off = sm.buildSearch({ ...S, crossCollateral: false });
 ok(dyn(off, 'GLOBAL_Cross_Collateralization_Product') === 'false', 'OFF-1 crossCollateral false → "false" (confirmed off token §31.3)');
+// firstTimeInvestor / living-rent-free: only "true" is confirmed, so an explicit false must NOT write
+// a guessed off token — it inherits the live default (proven against a base carrying a stale "true").
+const baseFti = JSON.parse(JSON.stringify(sm.BASE));
+baseFti.dynamicPropertiesMap = baseFti.dynamicPropertiesMap || {};
+baseFti.dynamicPropertiesMap.FirstTimeInvestor = { fieldId: 'FirstTimeInvestor', value: 'true' };
+baseFti.dynamicPropertiesMap.Global_Living_Rent_Free = { fieldId: 'Global_Living_Rent_Free', value: 'true' };
+const fFalse = sm.buildSearch({ ...S, firstTimeInvestor: false, livingRentFree: false }, { base: baseFti });
+ok(dyn(fFalse, 'FirstTimeInvestor') === 'true', 'OFF-2 firstTimeInvestor false does NOT write a guessed off token — inherits the base');
+ok(dyn(fFalse, 'Global_Living_Rent_Free') === 'true', 'OFF-3 livingRentFree false does NOT write a guessed off token — inherits the base');
+// and on a base WITHOUT them, an explicit false simply leaves them unset (never a fabricated "false")
+const fFalse2 = sm.buildSearch({ ...S, firstTimeInvestor: false, livingRentFree: false });
+ok(dyn(fFalse2, 'FirstTimeInvestor') == null && dyn(fFalse2, 'Global_Living_Rent_Free') == null,
+  'OFF-4 firstTimeInvestor/livingRentFree false writes no token at all when the base has none');
 
 // ---- OMITTED → inherit the base default (not overwritten) ------------------
 // The base carries these as scaffolding field-objects; omitting must not write our own value over
