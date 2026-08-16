@@ -45,6 +45,9 @@ const NAV_ICON = {
   esign: <><path d="M4 17.5c1.8-.4 2.6-2.2 3.4-4.3.7-2 1.3-4.2 2.3-4.2.8 0 .9 1.2.7 2.8-.3 2-.8 3.9 0 4.4.9.6 2-.7 2.8-1.6" /><path d="M14 20h6" /></>,
   emails: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m4 7 8 6 8-6" /></>,
   health: <><path d="M3 12h3.5l2-5.5 3.5 11 2.5-6 1.5 3H21" /></>,
+  // A gear. An unknown icon name renders an EMPTY svg rather than failing, so a
+  // missing entry is invisible until somebody notices a blank square in the nav.
+  settings: <><circle cx="12" cy="12" r="3.2" /><path d="M12 3.5v2.2M12 18.3v2.2M20.5 12h-2.2M5.7 12H3.5M18 6l-1.6 1.6M7.6 16.4 6 18M18 18l-1.6-1.6M7.6 7.6 6 6" /></>,
 };
 function NavIcon({ name }) {
   return (
@@ -446,6 +449,7 @@ export default function StaffLayout({ children }) {
             <NavLink className="sb-link" to="/internal/lt/people"><NavIcon name="team" />People</NavLink>
             <NavLink className="sb-link" to="/internal/lt/conditions"><NavIcon name="conditions" />Condition Center</NavLink>
             <NavLink className="sb-link" to="/internal/lt/sync"><NavIcon name="health" />Sync</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/settings"><NavIcon name="settings" />Settings</NavLink>
           </>
         ) : (<>
         <div className="sb-sec">Main</div>

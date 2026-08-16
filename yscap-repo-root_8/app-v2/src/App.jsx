@@ -34,6 +34,7 @@ import LtPipeline from './longterm/LtPipeline.jsx';
 import LtPeople from './longterm/LtPeople.jsx';
 import LtConditions from './longterm/LtConditions.jsx';
 import LtSync from './longterm/LtSync.jsx';
+import LtSettings from './longterm/LtSettings.jsx';
 import StaffLogin from './screens/StaffLogin.jsx';
 import StaffQueue from './screens/StaffQueue.jsx';
 import StaffTrackRecordWorkspace from './screens/StaffTrackRecordWorkspace.jsx';
@@ -240,6 +241,7 @@ export default function App() {
           <Route path="/internal/lt/people" element={<StaffPrivate><LtPeople /></StaffPrivate>} />
           <Route path="/internal/lt/conditions" element={<StaffPrivate><LtConditions /></StaffPrivate>} />
           <Route path="/internal/lt/sync" element={<StaffPrivate><LtSync /></StaffPrivate>} />
+          <Route path="/internal/lt/settings" element={<StaffPrivate><LtSettings /></StaffPrivate>} />
           <Route path="/internal/new" element={<StaffPrivate><StaffNewFile /></StaffPrivate>} />
           <Route path="/internal/tasks" element={<StaffPrivate><StaffTasks /></StaffPrivate>} />
           <Route path="/internal/workflow" element={<StaffPrivate><StaffWorkflow /></StaffPrivate>} />

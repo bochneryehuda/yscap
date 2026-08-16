@@ -399,6 +399,11 @@ const SETTINGS = [
   // the same validation, a different scope.
   { key: 'ui.defaultProduct', group: 'Interface', label: 'Which side to open on',
     type: 'enum', options: ['rtl', 'long_term'], default: 'rtl',
+    // The stored values are KEYS, not English, and this is the one setting an
+    // ordinary person sees on their own preferences screen. The words live here with
+    // the setting rather than in the screen: a label kept in the front end would be a
+    // second place to change, and the two would drift.
+    optionLabels: { rtl: 'Short-term (RTL)', long_term: 'Long-term' },
     description: 'The product side a person lands on when they sign in. Saved per user; '
       + 'the company default is what a brand-new user gets.',
     evidence: 'Long-Term is a side build and is not live, so the default must stay RTL — '

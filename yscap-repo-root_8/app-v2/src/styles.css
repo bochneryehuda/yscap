@@ -4769,3 +4769,14 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .ah-fields{display:flex;flex-wrap:wrap;gap:6px}
 .ah-fieldchip{font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;border-radius:6px;
   padding:2px 8px;color:var(--ah-fg);background:var(--ah-bg);border:1px solid var(--ah-br);overflow-wrap:anywhere}
+
+/* ── Long-term settings rows ─────────────────────────────────────────────────
+   A label column and a control column. On a phone they STACK: a 56-setting
+   screen at 390px otherwise gives each column ~180px, which wraps a three-word
+   label onto three lines and squeezes every input to the point of unusability.
+   This lives here rather than in an inline style because a media query cannot
+   be written as one — the reason every responsive rule in this app is a class. */
+.ltset-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;
+  padding:12px 0;border-top:1px solid rgba(20,27,34,.08);align-items:start}
+.ltset-row.ltset-mid{align-items:center;padding:10px 0}
+@media(max-width:720px){ .ltset-row{grid-template-columns:1fr;gap:8px} }

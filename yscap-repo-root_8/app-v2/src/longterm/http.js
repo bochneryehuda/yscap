@@ -63,4 +63,5 @@ export async function ltFetch(method, path, body) {
 export const ltGet = (p) => ltFetch('GET', p);
 export const ltPost = (p, b) => ltFetch('POST', p, b);
 export const ltPut = (p, b) => ltFetch('PUT', p, b);
+export const ltPatch = (p, b) => ltFetch('PATCH', p, b);
 export const ltDel = (p) => ltFetch('DELETE', p);

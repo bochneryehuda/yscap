@@ -8,7 +8,7 @@
 // The one rule: a path here always starts `/api/lt/`. Anything else belongs to the
 // other product.
 
-import { ltGet, ltPost, ltPut, ltDel } from './http.js';
+import { ltGet, ltPost, ltPut, ltPatch, ltDel } from './http.js';
 
 const lt = (p) => `/api/lt${p}`;
 
@@ -40,6 +40,18 @@ export const ltApi = {
   // The loan sync.
   syncState: () => ltGet(lt('/sync')),
   runSync: (body = {}) => ltPost(lt('/sync'), body),
+
+  // The settings. The COMPANY screen is drawn from `settings()` — the server's own
+  // description of every group and every declaration — so this client never carries
+  // a list of setting keys and cannot drift from the server's.
+  settings: () => ltGet(lt('/settings')),
+  saveSettings: (settings) => ltPatch(lt('/settings'), { settings }),
+  resetSettings: (keys) => ltPost(lt('/settings/reset'), { keys }),
+
+  // A person's OWN preferences. No id is sent: the scope comes from the session, so
+  // there is nothing in the request that could point at somebody else.
+  mySettings: () => ltGet(lt('/settings/mine')),
+  saveMySettings: (settings) => ltPatch(lt('/settings/mine'), { settings }),
 };
 
 export default ltApi;
