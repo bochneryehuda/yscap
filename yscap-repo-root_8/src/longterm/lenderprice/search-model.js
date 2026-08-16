@@ -245,10 +245,14 @@ function buildSearch(sc = {}, opts = {}) {
   // GLOBAL_RESERVES token is confirmed from the captured base) so a live default carrying blank or
   // different reserves cannot silently override the profile. Env-overridable per company.
   setDyn('GLOBAL_RESERVES', process.env.LP_RESERVES_TOKEN || 'Reserves_24');
-  // months===0 is an EXPLICIT "no prepay" (PrepayTerm "None"), NOT "unset" — sending 0/"0 Months"
-  // is what triggered the live HTTP 400. A missing prepayMonths leaves it null.
-  setDyn('PrepayTerm', months === 0 ? 'None' : (months ? `${months} Months` : null));
-  setDyn('PrePayment_Plan_Type', months ? 'Standard' : null);
+  // Prepay term / structure. An OMITTED prepay INHERITS the live default (audit §2 — the backend used
+  // to CLEAR PrepayTerm/PrePayment_Plan_Type to null on omission, changing the model the user left
+  // alone). months===0 is an EXPLICIT "no prepay" (PrepayTerm "None"); a positive months sets the
+  // term. Only write these when the caller actually supplied a prepay.
+  if (months != null) {
+    setDyn('PrepayTerm', months === 0 ? 'None' : `${months} Months`);
+    setDyn('PrePayment_Plan_Type', months === 0 ? null : 'Standard');
+  }
   // Cash-out amount ("cash in hand"). THE VENDOR FIXED THE FIELD: as of the post-repair capture
   // (2026-08-16) the live frontend now sends a NUMERIC `criteria.cashoutAmount` (its request was
   // `{criteria:{loanPurpose:'CashoutRefinance', cashoutAmount:50000}}`, HTTP 200). So we transmit it

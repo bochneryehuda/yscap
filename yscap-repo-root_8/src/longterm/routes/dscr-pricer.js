@@ -230,14 +230,24 @@ function shapeDisqualified(d, opts = {}) {
   const limit = clampInt(opts.limit, 1, LENDER_PAGE_MAX, LENDER_PAGE_MAX);
   const offset = clampInt(opts.offset, 0, Number.MAX_SAFE_INTEGER, 0);
   const itemLimit = clampInt(opts.itemLimit, 1, ITEM_PAGE_MAX, ITEM_PAGE_MAX);
+  // §C3 — a per-lender item OFFSET so a caller can page THROUGH a single lender's items when that
+  // lender has more reasons/programs than itemLimit (previously the remainder was unreachable). Pair
+  // it with lender limit=1 + offset=<lenderIndex> to walk one lender's items to the end.
+  const itemOffset = clampInt(opts.itemOffset, 0, Number.MAX_SAFE_INTEGER, 0);
   const all = Array.isArray(d.lenders) ? d.lenders : [];
   const page = all.slice(offset, offset + limit);
   let returnedItemCount = 0;
   const lenders = page.map((g) => {
-    const items = (g.items || []).slice(0, itemLimit);
+    const allItems = g.items || [];
+    const items = allItems.slice(itemOffset, itemOffset + itemLimit);
     returnedItemCount += items.length;
+    const consumed = itemOffset + items.length;
     return { lender: g.lender, investor: g.investor || null, lenderId: g.lenderId || null,
-      itemCount: g.itemCount, itemTruncated: (g.items || []).length > items.length, items };
+      itemCount: g.itemCount,
+      itemTruncated: consumed < allItems.length,
+      itemOffset,
+      itemNextOffset: consumed < allItems.length ? consumed : null, // cursor to this lender's remainder
+      items };
   });
   const nextOffset = offset + page.length < all.length ? offset + page.length : null;
   const out = {
@@ -245,7 +255,7 @@ function shapeDisqualified(d, opts = {}) {
     lenderCount: d.lenderCount, itemCount: d.itemCount, reasonCount: d.reasonCount,
     returnedLenderCount: lenders.length, returnedItemCount,
     truncated: nextOffset != null || lenders.some((l) => l.itemTruncated),
-    page: { limit, offset, itemLimit, nextOffset },
+    page: { limit, offset, itemLimit, itemOffset, nextOffset },
     lenders,
   };
   return opts.debug ? { disqualified: out, rawSummary: opts.rawSummary || null } : { disqualified: out };
@@ -253,7 +263,8 @@ function shapeDisqualified(d, opts = {}) {
 // Read pagination controls from a request (query on GET, body on POST).
 function pageOptsOf(req) {
   const q = req.query || {}; const b = req.body || {};
-  return { limit: b.limit != null ? b.limit : q.limit, offset: b.offset != null ? b.offset : q.offset, itemLimit: b.itemLimit != null ? b.itemLimit : q.itemLimit };
+  const pick = (k) => (b[k] != null ? b[k] : q[k]);
+  return { limit: pick('limit'), offset: pick('offset'), itemLimit: pick('itemLimit'), itemOffset: pick('itemOffset') };
 }
 
 // GET /disqualifications/:searchKey  (also POST with { searchKey }) — the POLL-ONLY status route.
@@ -340,4 +351,5 @@ function makeRouter() {
   return router;
 }
 
-module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest }, BATTERY };
+module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest }, BATTERY,
+  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields } };
