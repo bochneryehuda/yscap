@@ -110,14 +110,14 @@ footer p{max-width:74ch;margin:0 0 9px}
   <p class="lede">Every table in the system, what it holds, and what it is connected to.
   This is a picture of a copy — nothing here can change anything.</p>
   <div class="figs">
-    <div class="fig"><b>335</b><span>tables</span></div>
-    <div class="fig"><b>5,446</b><span>fields</span></div>
+    <div class="fig"><b>336</b><span>tables</span></div>
+    <div class="fig"><b>5,459</b><span>fields</span></div>
     <div class="fig"><b>695</b><span>connections</span></div>
     <div class="fig"><b>34</b><span>automatic rules</span></div>
     <div class="fig"><b>260</b><span>value guards</span></div>
-    <div class="fig"><b>1,156</b><span>lookups</span></div>
+    <div class="fig"><b>1,159</b><span>lookups</span></div>
   </div>
-  <p class="stamp">Generated from the committed schema map — built from 562 migration files, up to db/565. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
+  <p class="stamp">Generated from the committed schema map — built from 563 migration files, up to db/566. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
 </div></header>
 
 <section><div class="wrap">
@@ -177,7 +177,7 @@ footer p{max-width:74ch;margin:0 0 9px}
 
 <section><div class="wrap">
   <h2>Everything, by what it is for</h2>
-  <p class="sub">All 335 tables, grouped. Open a group, then open a table to see its
+  <p class="sub">All 336 tables, grouped. Open a group, then open a table to see its
   fields and what it connects to. <strong>“Deleted with it”</strong> marks a connection where removing the
   parent record removes these too — the single most consequential thing a connection can say.</p>
   <div class="search">
@@ -185,7 +185,7 @@ footer p{max-width:74ch;margin:0 0 9px}
     <div class="hits" id="hits"></div>
   </div>
   <div id="groups"><details class="grp">
-    <summary><span class="gn">Long-Term loans</span><span class="gc">32 tables</span></summary>
+    <summary><span class="gn">Long-Term loans</span><span class="gc">33 tables</span></summary>
     <div class="body"><p class="blurb">The second product, built separately from the ground up. By the separation law every one of its tables is named lt_*, and none of them may reference a short-term table.</p><details class="tbl" data-name="lt_loans" data-note="">
 <summary><span class="tn">lt_loans</span>
 <span class="tm">45 fields · 9 links</span>
@@ -492,6 +492,16 @@ footer p{max-width:74ch;margin:0 0 9px}
 </summary>
 <div class="detail">
   <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">created_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">encompass_synced_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">event_type <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">from_milestone</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">from_stage</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">loan_id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">observed_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">to_milestone</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">to_stage</td><td class="t">text</td><td class="t"></td></tr></tbody></table></div>
+  <div class="links">
+    <div><h4>Depends on</h4><ul><li style="color:var(--ink-3)">Nothing — this table stands on its own.</li></ul></div>
+    <div><h4>Depended on by</h4><ul><li style="color:var(--ink-3)">Nothing points at this table.</li></ul></div>
+  </div>
+</div></details><details class="tbl" data-name="lt_ppe_cutover_ledger" data-note="">
+<summary><span class="tn">lt_ppe_cutover_ledger</span>
+<span class="tm">13 fields · 0 links</span>
+</summary>
+<div class="detail">
+  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">action <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">created_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">decided_at <span class="req">required</span></td><td class="t">bigint</td><td class="t"></td></tr><tr><td class="c">decided_by <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">eligible <span class="req">required</span></td><td class="t">boolean</td><td class="t">false</td></tr><tr><td class="c">from_mode <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">uuid</td><td class="t">gen_random_uuid()</td></tr><tr><td class="c">investor <span class="req">required</span></td><td class="t">text</td><td class="t">''::text</td></tr><tr><td class="c">reason <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">scope <span class="req">required</span></td><td class="t">text</td><td class="t">'company'::text</td></tr><tr><td class="c">scoreboard</td><td class="t">jsonb</td><td class="t"></td></tr><tr><td class="c">seq <span class="req">required</span></td><td class="t">integer</td><td class="t"></td></tr><tr><td class="c">to_mode <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr></tbody></table></div>
   <div class="links">
     <div><h4>Depends on</h4><ul><li style="color:var(--ink-3)">Nothing — this table stands on its own.</li></ul></div>
     <div><h4>Depended on by</h4><ul><li style="color:var(--ink-3)">Nothing points at this table.</li></ul></div>
