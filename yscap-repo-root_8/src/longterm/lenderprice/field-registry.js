@@ -47,6 +47,12 @@ const PROPERTY_TYPES = {
   PlannedUnitDevelopment: { propertyType: 'PlannedUnitDevelopment', attachmentType: 'Attached', units: 1 },
   Unit2_4: { propertyType: 'UnitDwelling_2_4', attachmentType: 'Attached', units: 2 },
   UnitDwelling_2_4: { propertyType: 'UnitDwelling_2_4', attachmentType: 'Attached', units: 2 },
+  // §33.1/§34.2 — the exact ON-SCREEN dropdown LABEL "2 - 4 Unit" (and its de-spaced form) must
+  // normalize to UnitDwelling_2_4; the label was previously not an accepted alias, so a caller
+  // echoing the UI label was 422'd. Adding it here also makes the units-conflict check (which routes
+  // through resolvePropertyType) enforce the 2–4 range for the label.
+  '2 - 4 Unit': { propertyType: 'UnitDwelling_2_4', attachmentType: 'Attached', units: 2 },
+  '2-4 Unit': { propertyType: 'UnitDwelling_2_4', attachmentType: 'Attached', units: 2 },
   Modular: { propertyType: 'Modular', attachmentType: 'Detached', units: 1 },
   Townhouse: { propertyType: 'Townhouse', attachmentType: 'Attached', units: 1 },
   Condo: { propertyType: 'Condos', attachmentType: 'Attached', units: 1 },
@@ -56,12 +62,28 @@ const PROPERTY_TYPES = {
   DetachedCondominium: { propertyType: 'DetachedCondominium', attachmentType: 'Detached', units: 1 },
   HighRiseCondo: { propertyType: 'HighRiseCondo', attachmentType: 'Attached', units: 1 },
   SiteCondo: { propertyType: 'SiteCondo', attachmentType: 'Detached', units: 1 },
+  // §33.1 — the current-tenant condo sub-types confirmed by live one-field capture. The exact
+  // upstream property.propertyType token IS the label, and each auto-minimums to 1 unit. Attachment
+  // is NOT captured per condo sub-type (it is an independent field — §34.2 P1); the confirmed live
+  // behavior is that a property-only selection RETAINS the profile default Detached (§33.1/§34.4),
+  // so these inherit Detached and stay overridable via sc.attachment. Do NOT copy the older condo
+  // rows' guessed 'Attached' (flagged as a defect the live capture contradicts).
+  CondoGarden: { propertyType: 'CondoGarden', attachmentType: 'Detached', units: 1 },
+  MidRiseCondo: { propertyType: 'MidRiseCondo', attachmentType: 'Detached', units: 1 },
+  // §33.1/§17.2 — selecting CondoTel in the live UI AUTOMATICALLY checks Non-Warrantable Condo and
+  // adds its SMO, so the confirmed request carries nonWarrantableProject:true alongside the distinct
+  // CondoTel property token (NOT a collapse to generic Condos+nonWarrantable). dynaToSmo resolves the
+  // Non-Warrantable Condo SMO from that flag against the live registry.
+  CondoTel: { propertyType: 'CondoTel', attachmentType: 'Detached', units: 1, nonWarrantableProject: true },
   Cooperative: { propertyType: 'Cooperative', attachmentType: 'Attached', units: 1 },
   MultiFamily: { propertyType: 'MultiFamily', attachmentType: 'Attached', units: 5 },
   ManufacturedHousing: { propertyType: 'ManufacturedHousing', attachmentType: 'Detached', units: 1 },
   ManufacturedHousingDoubleWide: { propertyType: 'ManufacturedHousingDoubleWide', attachmentType: 'Detached', units: 1 },
   ManufacturedHousingSingleWide: { propertyType: 'ManufacturedHousingSingleWide', attachmentType: 'Detached', units: 1 },
   ManufacturedHousingMultiWide: { propertyType: 'ManufacturedHousingMultiWide', attachmentType: 'Detached', units: 1 },
+  // §33.1 — the plain ManufacturedHomeCondominium token (distinct from the longer …OrPUDOrCooperative
+  // combined token), confirmed by live capture; auto-minimums to 1 unit.
+  ManufacturedHomeCondominium: { propertyType: 'ManufacturedHomeCondominium', attachmentType: 'Detached', units: 1 },
   ManufacturedHomeCondominiumOrPUDOrCooperative: { propertyType: 'ManufacturedHomeCondominiumOrPUDOrCooperative', attachmentType: 'Attached', units: 1 },
 };
 function resolvePropertyType(t) { return PROPERTY_TYPES[t] || null; }
