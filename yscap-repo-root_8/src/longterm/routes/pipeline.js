@@ -47,6 +47,10 @@ router.get('/', async (req, res) => {
       // `officer` filter is the deliberate, named way to look at another officer's
       // files, and it exists for exactly that.
       mine: String(req.query.mine || '') === 'true',
+      // Which book — live (the default), closed, or both. The tenant's own list of
+      // finished folders decides what those mean; with none configured all three are
+      // the same book and the screen draws no control for it.
+      book: req.query.book,
       sort: req.query.sort,
       dir: req.query.dir,
       limit: req.query.limit,
