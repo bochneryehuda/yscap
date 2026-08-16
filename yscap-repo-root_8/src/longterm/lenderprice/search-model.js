@@ -492,9 +492,34 @@ function clearScenarioOwnedFields(search) {
 // only ever as values inside a request shape proven to price. Anything unrecognized is dropped, and
 // dropping is safe here precisely because the canonical request already carries a working value for
 // every key it defines.
+// `dynamicPropertiesMap` is the ONE part of the request that is an OPEN MAP rather than a fixed
+// schema: it is a bag of per-deal pricing inputs whose key set genuinely varies by deal (our own
+// registry adds ~18 of them the captured base never carries). Applying the drop-unknown-keys rule to
+// it therefore discards real pricing inputs rather than configuration noise — caught by the
+// advanced-flags suite, which proves that a foundation carrying `FirstTimeInvestor` must keep it
+// when the caller says `false`, precisely so we never fabricate an unconfirmed "off" token. Each
+// entry must still look like a dynamic property ({fieldId, value}); anything else is not one.
+function mergeDynamicProperties(canonical, live) {
+  for (const key of Object.keys(live)) {
+    const got = live[key];
+    if (!got || typeof got !== 'object' || Array.isArray(got)) continue;
+    if (typeof got.fieldId !== 'string' || !('value' in got)) continue;
+    const want = canonical[key];
+    if (want && typeof want === 'object' && !Array.isArray(want)) {
+      if (got.value !== null && got.value !== undefined) want.value = got.value;
+    } else canonical[key] = { fieldId: got.fieldId, value: got.value };
+  }
+  return canonical;
+}
+
 function mergeKnownRequestDefaults(canonical, live) {
   if (!live || typeof live !== 'object' || Array.isArray(live)) return canonical;
+  if (live.dynamicPropertiesMap && typeof live.dynamicPropertiesMap === 'object' && !Array.isArray(live.dynamicPropertiesMap)) {
+    if (!canonical.dynamicPropertiesMap || typeof canonical.dynamicPropertiesMap !== 'object') canonical.dynamicPropertiesMap = {};
+    mergeDynamicProperties(canonical.dynamicPropertiesMap, live.dynamicPropertiesMap);
+  }
   for (const key of Object.keys(canonical)) {
+    if (key === 'dynamicPropertiesMap') continue; // handled above, as an open map
     if (!Object.prototype.hasOwnProperty.call(live, key)) continue; // not offered by the live model
     const want = canonical[key];
     const got = live[key];
@@ -789,6 +814,94 @@ function buildSearch(sc = {}, opts = {}) {
   const reg = registry.applyRegistry(m, sc);
   if (reg && reg.warnings && reg.warnings.length) m[REGISTRY_WARNINGS] = reg.warnings;
 
+  return wireDiscipline(m);
+}
+
+// §37.8 — WHAT LEAVES THIS FUNCTION IS DISCIPLINED, AT ONE PLACE, AFTER EVERYTHING ELSE HAS RUN.
+//
+// Three separate audits found the same class from three directions: a value that is legal in
+// JavaScript, passes every check we wrote, and is then refused — or worse, silently mispriced — by a
+// strict Java service that answers with a bare "Internal Server Error" and no field name. Guarding
+// each producer separately is what let these through, because the list of producers is exactly what
+// nobody can keep complete. So the last thing `buildSearch` does is inspect the finished body.
+//
+// (1) THE DSCR PROFILE CONSTANTS ARE FORCED, NOT INHERITED. `mergeKnownRequestDefaults` refuses a
+//     null from the live configuration model but adopts any value of the right TYPE — which is
+//     correct for a company default and catastrophic for the handful of fields that define what kind
+//     of search this is. Measured against a live-model stub: `criteria.loanType` became "ARM" while
+//     `loanTypeCriteria` stayed ["Fixed"] (a request contradicting itself), and
+//     `criteria.mortgageTypes` became ["FHA"] on a DSCR search. Neither would error; both would
+//     price the wrong product set and look like a successful quote. These five are the identity of a
+//     DSCR investor search and a saved company preference may not move them.
+//
+// (2) A REQUIRED NUMBER IS NEVER null — AND THE ANSWER IS A REFUSAL, NOT A SUBSTITUTE. Probed
+//     directly against the live tenant on a body otherwise proven to price: `criteria.fico` set to
+//     null → HTTP 500, and REMOVED → HTTP 500. It is required and it may not be null, while
+//     `clearScenarioOwnedFields` gives it the neutral `null` — so any caller omitting a credit score
+//     sent a guaranteed 500.
+//
+//     The first cut of this repair filled the gap from the canonical request's own value. That was
+//     WRONG, and four existing suites said so within a minute: the entire point of the
+//     scenario-ownership rule is that an OMITTED economic field FAILS CLOSED to null rather than
+//     inheriting one, because inheriting silently prices a deal nobody asked for — a 500 is a bad
+//     day, a wrong price that looks like a good one is a bad year. So the substitution was removed
+//     and the requirement was moved to `validateScenario`, which refuses the scenario locally with a
+//     message naming the field. Nothing here manufactures an economic value.
+//
+// (3) THE WIRE IS TYPED THE WAY THE CAPTURE IS TYPED. `state`, county FIPS, `city` and `countyName`
+//     were written from the scenario verbatim: a lowercase "ny" was validated uppercased and then
+//     transmitted lowercase; a numeric 36047 went as a JSON number where the capture sends the
+//     string "36047" (which also silently destroys a leading-zero FIPS such as "01001"); and an
+//     object reached `countyName` with no check at all.
+//
+//     `street` / `streetCont` / `zipExt` are deliberately left ABSENT rather than filled with the
+//     capture's empty strings: our own 6,799-byte body omitted all three and returned HTTP 200, so
+//     they are provably not required — and the scenario-ownership suite exists to prove a prior
+//     session's street can never ride along, which is worth more than cosmetic parity.
+//
+// Nothing here invents a value. Every default is the canonical request's own, every coercion is to
+// the type the capture uses, and a field the scenario legitimately set is left alone.
+const PROFILE_FORCED = {
+  loanType: 'Fixed',                  // a DSCR investor search is fixed-rate; ARM is a different product
+  mortgageTypes: ['Conventional'],    // the leaf whose null was the measured cause of the live 500
+  propertyUse: 'Investment',
+  compensationType: 'BorrowerCompPlan',
+  lienPriorityType: 'FirstLien',
+};
+function wireDiscipline(m) {
+  const c = m.criteria || (m.criteria = {});
+
+  // (1) profile identity — forced last, so nothing downstream can have moved it.
+  for (const [k, v] of Object.entries(PROFILE_FORCED)) c[k] = Array.isArray(v) ? v.slice() : v;
+  // An empty array is not a null and survived the merge; on the one leaf whose null is a proven 500
+  // it is the obvious sibling, so it is repaired rather than sent.
+  if (!Array.isArray(c.mortgageTypes) || c.mortgageTypes.length === 0) c.mortgageTypes = ['Conventional'];
+  // loanType and loanTypeCriteria must agree — a body that says Fixed in one place and ARM in the
+  // other is a request no reader can honour.
+  if (!Array.isArray(m.loanTypeCriteria) || m.loanTypeCriteria.length === 0) m.loanTypeCriteria = [c.loanType];
+  else m.loanTypeCriteria = m.loanTypeCriteria.map(() => c.loanType).slice(0, 1);
+
+  // (2) is enforced in validateScenario (a refusal), deliberately NOT here — see the note above.
+
+  // (3) the address is typed and complete, the way the capture is.
+  const a = m.property && m.property.address;
+  if (a) {
+    if (a.state != null) a.state = String(a.state).trim().toUpperCase();
+    for (const k of ['county', 'censustract']) {
+      if (a[k] != null) {
+        // A FIPS is five digits. A number loses a leading zero, so pad rather than merely stringify.
+        const s = String(a[k]).trim();
+        a[k] = /^\d{1,5}$/.test(s) ? s.padStart(5, '0') : s;
+      }
+    }
+    for (const k of ['city', 'countyName']) {
+      // An object or array here is not a place name; drop it rather than serialize it onto the wire.
+      if (a[k] != null && typeof a[k] !== 'string') {
+        if (typeof a[k] === 'number') a[k] = String(a[k]);
+        else delete a[k];
+      }
+    }
+  }
   return m;
 }
 

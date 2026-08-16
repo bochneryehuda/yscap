@@ -166,5 +166,43 @@ console.log('\nE. the source must not have gone back to cloning the live model')
     'buildSearch builds from the canonical request and admits the live model through the normalizer');
 }
 
+// ---- G. the profile identity cannot be moved by a saved company preference -------------------
+console.log('\nG. wireDiscipline — the DSCR profile constants are FORCED, not inherited');
+{
+  const SCEN = { purpose: 'Purchase', value: 500000, loan: 400000, fico: 760, dscr: 1.5,
+    state: 'NY', zip: '11211', countyFps: '36047', propertyType: 'SingleFamily', units: 1 };
+  // A live model that would turn a DSCR investor search into something else. Every one of these was
+  // MEASURED winning against the merge before this guard existed.
+  const hostile = { criteria: { loanType: 'ARM', mortgageTypes: ['FHA'], propertyUse: 'PrimaryResidence',
+    compensationType: 'LenderPaid', lienPriorityType: 'SecondLien' } };
+  const b = buildSearch(SCEN, { base: hostile });
+  ok(b.criteria.loanType === 'Fixed', 'a live ARM default cannot make a DSCR search adjustable');
+  ok(JSON.stringify(b.criteria.mortgageTypes) === JSON.stringify(['Conventional']), 'a live FHA default cannot change the mortgage type');
+  ok(b.criteria.propertyUse === 'Investment', 'property use stays Investment');
+  ok(b.criteria.compensationType === 'BorrowerCompPlan', 'compensation stays borrower-paid');
+  ok(b.criteria.lienPriorityType === 'FirstLien', 'lien priority stays first');
+  ok(JSON.stringify(b.loanTypeCriteria) === JSON.stringify(['Fixed']),
+    'loanTypeCriteria AGREES with criteria.loanType — the body never contradicts itself');
+
+  // An empty array is not a null, so it survived the merge; on the one leaf whose null is a proven
+  // 500 that is the obvious sibling.
+  const empty = buildSearch(SCEN, { base: { criteria: { mortgageTypes: [] } } });
+  ok(empty.criteria.mortgageTypes.length > 0, 'an EMPTY mortgageTypes from a live model is repaired, not sent');
+
+  // The address is typed the way the capture types it.
+  const loose = buildSearch({ ...SCEN, state: 'ny', countyFps: 1001, countyName: { nope: 1 }, city: 42 }, {});
+  const a = loose.property.address;
+  ok(a.state === 'NY', 'a lowercase state is transmitted uppercased, not merely validated uppercased');
+  ok(a.county === '01001' && a.censustract === '01001',
+    'a numeric county FIPS becomes a 5-character string — a leading zero is preserved, not lost');
+  ok(a.countyName === undefined, 'an object offered as a county NAME is dropped rather than serialized onto the wire');
+  ok(a.city === '42', 'a numeric city is coerced to the string the capture uses');
+
+  // And the scenario-ownership property this must not undo.
+  const stale = buildSearch(SCEN, { base: { property: { address: { street: '12 Somewhere Else', zipExt: '9999' } } } });
+  ok(stale.property.address.street === undefined && stale.property.address.zipExt === undefined,
+    'a prior session\'s street/ZIP+4 still cannot ride along');
+}
+
 console.log('\n' + (failed === 0 ? 'OFFLINE: all passed' : 'FAILURES') + ' (' + passed + ' passed, ' + failed + ' failed)');
 process.exit(failed === 0 ? 0 : 1);
