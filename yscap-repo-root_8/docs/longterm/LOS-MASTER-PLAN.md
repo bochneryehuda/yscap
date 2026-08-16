@@ -285,6 +285,14 @@ LTV · Milestone · Days in milestone · Loan officer · Processor · Conditions
 The **Conditions column does real work on its own** — a red count of what is outstanding
 means a user triages urgency from the list without opening a file.
 
+**Two of those columns cannot be sourced yet, and they say so on the screen rather than
+rendering empty.** *Conditions* waits on the Condition Center (phase 5, deferred). *Expected
+closing* has no closing date on `lt_loans` at all — it is in the setting's own default, which is
+exactly how a column nobody can fill gets configured by accident, so the resolver drops it and
+names the reason. Everything else on this list is live, plus a **Stage**, an **At milestone** age
+and an **Updated** column the build added. When a closing date is mirrored, the column becomes
+one entry in `src/longterm/pipeline-columns.js` and nothing else.
+
 **Saved views** are per-user rows in an `lt_pipeline_views` table, not a code change.
 
 ### 4.1.1 Stages — three layers, not one
@@ -701,6 +709,70 @@ Writes `lt_loans` and its sections, `lt_loan_contacts`, milestones. Records
 table, filters, saved views, scope. **Ends with:** an officer signs in, flips to Long-Term,
 and sees their own long-term book.
 
+**The two control rows this section names shipped in the same pass as the columns.** Status
+chips and scope chips, each carrying its own count, because a chip without a number is a guess
+about where the work is. **A facet count has to describe what CLICKING it would show**, which is
+the whole subtlety: counting the stages under the same WHERE the list uses means that with a
+stage selected every other stage answers zero, and a row of zeroes is a row nobody can navigate
+out of — the way back is the chip that says there is nothing there. So each facet is counted with
+its OWN filter lifted and every other one kept, both halves built by the same function the list
+uses. **The scope is never lifted**: it is the authorization rather than a filter, and a chip
+counting files the viewer may not open would tell them a book exists that they cannot reach.
+"Mine" is `access.onFileSql` — the SAME predicate that decides what a scoped viewer may see at
+all, because defining it as "the loan officer is me" hands every processor an empty book of their
+own — and it is asked for as a flag resolved from the session, so nobody can read somebody else's
+personal queue by editing a URL. The scope row is not drawn for a viewer who only sees their own
+files: three chips that all select the same book is not a control.
+
+**Auditing that work back found four more, none of which any test had failed on**, and they
+are worth keeping because they are all one shape: a number or a control that looks right and
+quietly describes the wrong thing. (1) The **"Every stage" chip read the LIST's own total**,
+which is counted WITH the stage filter — so selecting a stage made it show that stage's number
+and nobody could see how big the book was, undoing every other count in the row on the one chip
+whose job is to clear them. (2) **A scope filter a viewer's own scope makes contradictory was
+being obeyed**: a saved view is SHARED, so an admin's "Nobody yet" opened by a loan officer asks
+for files nobody is on inside a book defined as the files they ARE on — an empty pipeline, with
+no scope row drawn for them to clear it with. It is now dropped and said out loud. (3) **The
+loans with NO stage at all were visible and unreachable** — this tenant's pipeline-search
+milestone column is blank on every loan, so an unstaged loan is the normal state of the NEWEST
+files; they sat in the list, were counted in the header, and no chip could reach them, which
+also meant the chips did not sum to the number above them. (4) The front end carried **three
+copies of the same formatters**, two of which had lost the calendar-day guard — a DATE column
+handed to `new Date` prints the day before in every US timezone, and making the columns
+configurable is exactly what would have made that visible for the first time. One shared module,
+and a test that fails the build if a long-term screen defines a formatter of its own; that guard
+found the third copy immediately, which is the argument for having it.
+
+**The columns took a second pass, and the reason is worth keeping.** `pipeline.columns` was
+declared in phase 6 with the fifteen-key default §4.1 names, and **nothing read it** — the screen
+hard-coded nine. So a buyer could change the pipeline, save it, reload, and see exactly what they
+saw before, with no error to act on. That is worse than offering no control at all: a dead switch
+teaches people the system ignores them, and the lesson is expensive to unteach. Seven of the
+columns this section names were not shown at all, and two of them (the property address, the LTV)
+had no source in the query because `lt_properties` was never joined.
+
+`src/longterm/pipeline-columns.js` is the catalog and the resolver, and it carries two rules.
+**A column we cannot source is dropped and REPORTED, never rendered empty** — `expected_closing`
+is in the setting's own default and there is no closing date on `lt_loans` to fill it, and a
+column of dashes on every row of every loan forever reads as "we failed to fetch this" rather
+than "we do not hold it", which is the confident blank this side keeps finding. A key nobody
+declared is named on the screen for the same reason: a typo that silently disappears looks
+identical to a setting that did not save. **And the setting never becomes SQL** — the query
+selects the same fixed expressions every time and the setting decides only what the SCREEN draws,
+in what order; building a SELECT list out of a stored value would put what an administrator types
+into the query text and hand the planner a different statement per configuration. The test
+asserts the statement is byte-identical under two different configurations, and that the query
+module does not so much as `require` the catalog.
+
+Each column carries the ROW FIELD it reads, so the screen holds no map of its own — a table
+repeated on both sides is one that eventually disagrees with itself, and the disagreement shows
+up as an "LTV" heading over a rate. Every sortable column is asserted to name a key `SORTABLE`
+actually accepts, so a heading can never ask for an order the query refuses, and the arrow is
+drawn from what the server says it DID rather than from what the screen asked for. **The product
+stamp rides the FIRST column, whichever column that is** (CLAUDE.md §7): hanging it off the loan
+number would let a configuration that drops that column drop the stamp with it, and the stamp is
+not configurable.
+
 ### Phase 4 — The loan workspace — **BUILT**
 The three-region layout, the URLA-sectioned read-only file, the Summary rail, the Contacts
 section, the milestone stepper. **Ends with:** a real file on our own screen — which is what
@@ -714,6 +786,34 @@ been navigating to a route that did not exist since phase 3, so every click on a
 landed on the fallback. A section that does not apply is greyed **and still clickable**, because a
 disabled control that does nothing when pressed teaches people the screen is broken while one that
 answers "the Condition Center is coming soon" answers the question they had.
+
+**The sections themselves shipped afterwards, and this line is here because for a while this
+phase read as finished while every section still showed a placeholder.** `src/longterm/file.js`
+is the one read behind all of them — ten queries returned keyed by SECTION KEY, so the screen
+renders `file[active]` and owns no map of its own. Three properties are stated in its header and
+each is asserted from BOTH sides, because a rule proven only one way is proven about the wrong
+thing: **the Social Security number is never SELECTed** (the pure suite reads the source, the DB
+suite puts real encrypted bytes in a row and searches the response for them); **a missing figure
+totals to NULL, never 0**; and **the investor is absent by construction** (the DB suite gives the
+loan an investor and proves the file still cannot see it).
+
+**And it surfaced two more of the same class it was built to surface — both invisible, both
+found only by running against a real database.** The ARM block was gated on the word `arm` while
+the column is the enum `('fixed','adjustable')`, so the adjustable-rate terms would never have
+appeared on a single adjustable loan; the guard that read the SOURCE passed the whole time,
+because the string it was looking for was right there. And `summaryRail` read the appraised
+value, LTV, occupancy and rent off the LOAN row while all four live on `lt_properties` — so the
+rail said "Property value —" on a file whose Property section showed $400,000 two clicks away.
+The rail now takes the SAME sections the Property tab renders, which is why the two can no longer
+disagree; and the lesson worth carrying into phase 8 is that **a swallowing catch turns a wrong
+name OR a wrong value into a confident empty answer, and only a real row of the real type can
+tell the two apart from "there is genuinely nothing here".**
+
+**One more, from the screen rather than the data.** A grid with no declared column gets an
+implicit `auto` one that sizes to its content, so a section carrying a table wider than a phone
+stretched its whole card to 759px inside a 390px screen — and `html{overflow-x:clip}` then hid
+it, so the page reported no sideways scrolling while half of every row was cut off and
+unreachable. Measuring `documentElement` is what made it invisible; measure `document.body`.
 
 ### Phase 5 — The Condition Center (read) — **DEFERRED (owner-directed 2026-08-14)**
 Set aside. The nav entry and the workspace section ship as a **"Coming soon"** placeholder
@@ -851,11 +951,29 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
 
 5. **§5.0 — do conditions exist in this tenant or not?** Two of our own measurements disagree.
    This is the largest open question in the plan and it blocks phase 5.
-6. **ICE entitlement.** Client id `z1xx73r` lacks the `encompass_admin` scope — the token
-   endpoint refuses it. That is why 68 endpoints answer 403, including the loan-folder list,
-   milestone logs, the v3 associates roster and **69 of the 91 Milestone Completion rules**.
-   Asking ICE to add the scope to the client registration unblocks all of it. This is the
-   **client registration**, not the persona.
+6. **ICE entitlement — REVISED 2026-08-16. The owner's objection was right, and the
+   likeliest cause is ours, not theirs.** 68 endpoints answer 403, including the loan-folder
+   list, milestone logs, the v3 associates roster and **69 of the 91 Milestone Completion
+   rules**. Two earlier readings were wrong and are corrected in
+   `docs/longterm/ENCOMPASS-ACCESS-AND-PERSONA.md`: **(a)** `encompass_admin` is **not a
+   scope ICE documents** (Developer Connect names `lp`; Partner Connect names `pc pcapi`;
+   two mature open-source clients name neither), so the recorded ask — "entitle client
+   `z1xx73r` to `encompass_admin`" — names something that appears not to exist and should
+   not be sent; **(b)** the persona is **not** the gate. ICE's matrix lists these areas under
+   "Default Persona Access", footnoted *"minimum persona access level required to interact
+   with the functionality out-of-the-box"*, and lists them as **Super Administrator** — which
+   the API user already is. Ticking boxes on Personas > Settings tab extends an area to
+   OTHER personas and opens nothing for a super admin.
+   **The best untested lead is that we ask for too little.** Our token request names
+   `scope=lp`; both reference clients send **no scope at all** on this grant, and OAuth
+   grants a default — normally everything the caller is entitled to — when none is named.
+   The earlier introspection could never have caught it: it reported `lp` because `lp` is
+   what we asked for, which made the measurement circular. Free to test.
+   Genuinely still ICE's: the licensed add-ons (pricing/EPPS, secondary and the lock desk,
+   tasks). **Which cause closed which endpoint remains unknown** — the earlier sweep kept
+   status codes and discarded the response bodies, and the wording differs by cause.
+   `scripts/test-lt-encompass-access-probe.js` tests the scope question first and then
+   captures those bodies. Run it before raising anything with ICE.
 7. **Is there a sandbox instance?** Today every read runs against production, which carries
    real borrower PII. This matters before anything writes.
 8. **The ten files** carrying a 12- or 24-month interest-only period on the plain 30-year
@@ -871,6 +989,18 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     Long-Term would need its own subscription — which is a **write** to Encompass configuration
     and would need its own pad entry. Worth knowing who owns the existing one before anything
     is added beside it.
+13. **Which loan folders mean the deal is over?** §4.1 says inactive loans stay in the one table,
+    "distinguished by status — no separate archive screen", and today nothing distinguishes them:
+    the sweep discovers every folder Encompass returns for a loan amount over zero, so a file
+    somebody moved to Adverse or Trash sits in an officer's live book looking exactly like a
+    live one. Folder names are the TENANT'S OWN — this instance's list is one of the 68 endpoints
+    the missing `encompass_admin` scope refuses (item 6), so we cannot read them and **must not
+    guess**: treating a folder called "Archive" as dead would silently empty part of somebody's
+    pipeline on a hunch. The mechanism is already built and costs one setting once the names are
+    known — a `pipeline.inactiveFolders` list, an unlisted folder ALWAYS counting as live (fail
+    toward showing, like an unmapped milestone), and the pipeline defaulting to the live book
+    with the closed one one click away. **What is needed is the list of folder names and which of
+    them mean the deal is over.**
 
 ---
 

@@ -86,8 +86,18 @@ check(filtered.params.includes('underwriting') && filtered.params.includes('Pipe
   'each filter contributes its own parameter');
 check(filtered.params.some((v) => String(v).includes('smith')),
   'the search term is a parameter, never interpolated');
-check(!/IS NULL OR/i.test(filtered.sql),
+// The trap this guards is a PARAMETERISED optional predicate — `$3 IS NULL OR col = $3`
+// — which makes the planner build one generic plan for every combination of filters.
+// It is matched on the `$n IS NULL OR` form rather than on the bare words, because an
+// unparameterised `x IS NULL OR y` in the SELECT list is ordinary SQL and not this bug
+// (the milestone-age column is one: `CASE WHEN l.milestone_since IS NULL OR ...`).
+// Narrowing it to the real signature keeps it biting on the thing it is about instead
+// of on any expression that happens to contain three of the same words.
+check(!/\$\d+\s+IS NULL OR/i.test(filtered.sql),
   'a filter that was not asked for is ABSENT from the SQL — never a ($n IS NULL OR col = $n) planner trap');
+// …and the guard still catches the real thing.
+check(/\$\d+\s+IS NULL OR/i.test('WHERE ($3 IS NULL OR l.stage_key = $3)'),
+  'THE GUARD ITSELF BITES: a genuine ($n IS NULL OR col = $n) predicate is still detected');
 
 const none = pipeline.buildPipelineQuery(ADMIN, 's2', {});
 check(!none.sql.includes('stage_key ='), 'an unfiltered query mentions no filter at all');

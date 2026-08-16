@@ -104,6 +104,10 @@ function call(server, method, p, token, body) {
     const bor = (await db.query(
       `INSERT INTO borrowers(first_name,last_name,email) VALUES('Post','Purchase',$1) RETURNING id`, [mail('bo')])).rows[0].id;
 
+    // The counter is declared once, at the top of this function — a second `let`
+    // here would SHADOW it, and `++fileSeq` below already does the incrementing.
+    // (Both sides of a merge fixed this same flaky key independently; this keeps
+    // one counter and one increment rather than two of each.)
     const mkFile = async () => {
       const id = (await db.query(
         `INSERT INTO applications(borrower_id,status,ys_loan_number,lender,property_address)
