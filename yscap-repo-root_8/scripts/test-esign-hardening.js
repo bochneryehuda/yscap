@@ -25,6 +25,9 @@ const full = { loanNumber: 'YS-1', loanAmount: 500000, bFirst: 'Pat', bLast: 'B'
   hasCoBorrower: false, propStreet: '1 Main', propCity: 'Lakewood', propState: 'NJ', propZip: '08701' };
 
 (async () => {
+  // DB-gated: `npm test` runs this whole chain in the no-database CI job too,
+  // so a suite that dials a database must skip rather than take the build down.
+  await require(__dirname + "/lib/db-gate").skipUnlessDb("esign-hardening");
   // ---- validateGenerated (pure) --------------------------------------------
   assert.doesNotThrow(() => orchestrate.validateGenerated(TS, full), 'complete data passes'); n++;
   const throws = (data, re, m) => { assert.throws(() => orchestrate.validateGenerated(TS, data),

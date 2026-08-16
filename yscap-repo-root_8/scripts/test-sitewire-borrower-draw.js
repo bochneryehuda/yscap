@@ -97,13 +97,16 @@ function png() { const W = 6, H = 6; const ih = Buffer.alloc(13); ih.writeUInt32
   ok('draw_dispute_resolved notification row created for the borrower', after === before + 1);
 
   console.log(`\n${fail === 0 ? 'ALL' : fail + ' FAILED,'} ${pass} borrower-draw assertions ${fail === 0 ? 'passed' : ''}`);
-  // WAIT FOR THE EMAIL FAN-OUT BEFORE TEARING DOWN. `notifyAppBorrowers` above writes
-  // the in-app row and then sends the email WITHOUT awaiting it (a web request must
-  // never wait on an email), so its `sent_emails` INSERT is still in flight when we
-  // get here — and that row points at the `notifications` row this DELETE cascades
-  // away. The two lock each other and Postgres kills one: `deadlock detected` (40P01),
-  // reported as a failing suite on a run where all 14 assertions had passed. This is
-  // the exact race `drainEmails()` exists for; a no-op when nothing is in flight.
+  // The notify above fans its email out FIRE-AND-FORGET (deliberately — a failed send
+  // must never break the request), and that fan-out ends in an INSERT INTO sent_emails
+  // referencing BOTH the notifications row and the application. Deleting the application
+  // while that insert is still in flight deadlocks: the DELETE holds `applications` and
+  // wants the notifications tuple its cascade must remove, while the INSERT holds an FK
+  // share lock on that tuple and wants `applications`. Postgres kills one side (40P01)
+  // and the suite dies in teardown with all 14 assertions already passed — which is
+  // exactly how it took main's test-db job down on 39f8d6c.
+  // drainEmails() exists for this and its own comment names this failure; it is bounded,
+  // and a no-op when nothing is in flight.
   await notify.drainEmails();
   await db.query(`DELETE FROM applications WHERE id=$1`, [app]); await db.query(`DELETE FROM borrowers WHERE id=$1`, [bor]);
   process.exit(fail === 0 ? 0 : 1);

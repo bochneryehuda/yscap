@@ -40,6 +40,9 @@ async function msgCount(convId) {
 }
 
 async function main() {
+  // DB-gated: `npm test` runs this whole chain in the no-database CI job too,
+  // so a suite that dials a database must skip rather than take the build down.
+  await require(__dirname + "/lib/db-gate").skipUnlessDb("chat-member-reply");
   require(REPO + '/src/server.js');
   await require(REPO + '/src/migrate-boot').ensureSchema();
   const chat = require(REPO + '/src/lib/chat');

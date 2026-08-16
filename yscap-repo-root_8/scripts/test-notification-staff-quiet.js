@@ -70,15 +70,14 @@ const emailsTo = (addr) => sent.filter((m) => (Array.isArray(m.to) ? m.to : [m.t
 
     console.log(`\nAll ${n} staff-quiet checks passed.`);
   } finally {
+    // Wait for the fire-and-forget email fan-out before tearing down: its
+    // sent_emails INSERT is still in flight when the fan-out resolves, and it
+    // deadlocks with the DELETEs below (notify.js documents this and exports
+    // drainEmails for exactly this).
+    await require('../src/lib/notify').drainEmails().catch(() => {});
     if (app) { await db.query(`DELETE FROM notifications WHERE application_id=$1`, [app]).catch(() => {});
       await db.query(`DELETE FROM notifications WHERE staff_id=$1`, [st]).catch(() => {});
       await db.query(`DELETE FROM application_assignees WHERE application_id=$1`, [app]).catch(() => {});
-      // DRAIN BEFORE TEARING DOWN. The email fan-out is fire-and-forget (a web request must
-      // never wait on an email), so a sent_emails INSERT can still be in flight here — and it
-      // points at a notifications row this teardown deletes. The two lock each other and
-      // Postgres kills one: deadlock detected (40P01), which fails a suite whose assertions
-      // all passed. A no-op when nothing is in flight.
-      await notify.drainEmails();
       await db.query(`DELETE FROM applications WHERE id=$1`, [app]).catch(() => {}); }
     if (br) await db.query(`DELETE FROM borrowers WHERE id=$1`, [br]).catch(() => {});
     if (st) await db.query(`DELETE FROM staff_users WHERE id=$1`, [st]).catch(() => {});
