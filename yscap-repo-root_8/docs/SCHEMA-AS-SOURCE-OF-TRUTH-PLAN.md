@@ -1,8 +1,10 @@
 # One readable schema for the whole system — the plan
 
-**Status: PHASES 0–3 BUILT, INCLUDING THE 3b ENRICHMENT — the map now records the relationship layer
-and tells you when it has fallen behind, with no database needed to ask. The one thing left in Phase 3
-is a decision, not code — see §6d. Phase 4 remains not approved and probably never.**
+**Status: PHASES 0–3 BUILT, INCLUDING THE 3b ENRICHMENT and both §6c/§8 carry-overs. The map records
+the relationship layer, tells you when it has fallen behind with no database needed to ask, and now has
+a browsable picture — `docs/schema/PICTURE.html`. The one thing left in Phase 3 is a decision, not code
+(§6d); §8.2's CODEOWNERS was evaluated and rejected on measurement, with a working substitute built in
+its place. Phase 4 remains not approved and probably never.**
 
 Owner-directed 2026-08-16, after deciding against the two-repo split: *"Why is our system on the
 short-term side so messed up? It doesn't have a nice Prisma schema. The long term was set from the
@@ -474,6 +476,47 @@ psql alike, and cannot drift from the schema because it lives in it. Cheapest du
 browsable HTML documentation with entity-relationship diagrams. Zero risk (it only reads), and it gives
 the non-developer view of the 309 tables that a `.prisma` file does not.
 
+### 6c — what was actually built (2026-08-16)
+
+**The picture is built. SchemaSpy is not what built it, deliberately.** SchemaSpy is a Java program
+wanting a JDBC driver, Graphviz and a live connection — none of which can join a build that must stay
+`express` + `pg`. Everything it would draw is already in `beyond-prisma.json`, so
+`scripts/schema-picture.js` reads that and writes one self-contained
+[`docs/schema/PICTURE.html`](schema/PICTURE.html): 843 KB, no internet, opens in any browser.
+
+**It needs NO DATABASE, and that is worth more than the tool would have been.** The snapshot is
+committed, so `npm run schema:picture` regenerates the whole thing on a laptop with no Postgres in
+reach. The page says on its face that it describes a copy, with the migration watermark and the count
+it was built from.
+
+What is on it: the headline numbers; **the spine** — the twelve most-connected tables, *ranked by
+measurement rather than opinion* (`staff_users` 237 connections, `applications` 145, `borrowers` 53);
+all 321 tables grouped by what they are for, each expandable to its fields and both directions of every
+connection; and the fixed lists of allowed values. **`ON DELETE CASCADE` is rendered as "deleted with
+it"** — 298 of the 680 connections delete their children and 344 merely unlink them, and that
+distinction is the most consequential thing a connection can say.
+
+**Two things on that page are hand-written, so both are guarded.** The grouping must be a PARTITION —
+`test-schema-picture-pure.js` asserts the groups sum to the total with nothing duplicated, so a table
+can never quietly vanish from the picture — and every plain-English note must name a table that still
+exists. That second guard **failed on its first run** and caught a table I had invented
+(`staff_invites`; the real one is `invite_tokens`), which is precisely the rot it is there for.
+
+**Eleven mutations were proven to turn it red**, and the first pass found one **vacuous**: deleting the
+catch-all group changed nothing, because every table happens to be placed today. A guard that depends
+on the data having a leftover is not a guard, so the partition is now proven against a **synthetic**
+inventory containing a deliberately unplaceable table. Rendered and read in a real browser — light,
+dark, and at phone width — because a page that builds clean and displays wrong is a class this repo has
+already been bitten by.
+
+**`COMMENT ON` is NOT done, and is not recommended as stated.** It is genuinely zero-behaviour-risk —
+a comment changes nothing at runtime — but it needs a migration against the live database and there are
+**5,257 columns**. Writing a true sentence for each is not a task, it is a research project, and the
+failure mode is the one this plan keeps naming: a confident sentence that is wrong is worse than a bare
+column name. If it is wanted, the honest shape is to start with the ~30 tables the picture's glossary
+already covers — where the knowledge is real — and let it grow only where someone actually knows the
+answer. That is a separate, owner-sized decision.
+
 ## 7. What this plan explicitly does NOT do
 
 - **Does not adopt the Prisma Client at runtime.** That would be the actual rewrite: 813 files of
@@ -497,6 +540,48 @@ keeping:
 2. **CODEOWNERS on the identity zone.** A named human on any change to `borrowers`, `staff_users`, the
    auth module and the shared editor. Cheap, and it is the two-person rule expressed in a tool the repo
    already has.
+
+### 8.2 — evaluated, and it does not work here (2026-08-16)
+
+**CODEOWNERS was not added, and the reason is structural rather than a matter of taste.**
+
+**It could never fire.** Every pull request in this repository is authored by the owner's own GitHub
+account — agents push under it — and **GitHub does not request a review from a pull request's author.**
+A `CODEOWNERS` line naming that account is a control that is incapable of acting: it would appear in
+the repository, look like governance, and do nothing. That is exactly the "assertion in place of a
+proof" the build rule forbids, and it is worse than nothing because it would be believed.
+
+**And the zone the plan named is not rare.** Measured over the last 200 commits:
+
+| file | commits touching it |
+|---|---|
+| `src/auth/index.js` | 38 |
+| `src/lib/permissions.js` | 18 |
+| `src/lib/crypto.js` | 8 |
+| `app-v2/src/components/BorrowerProfilePanel.jsx` | 7 |
+| **any of them** | **60 of 200 — nearly a third** |
+
+A notice on one change in three is not a signal, it is wallpaper. It is the same cry-wolf failure the
+schema freshness check is written to avoid, and it would train the reader to scroll past the one that
+mattered.
+
+**What was built instead — `scripts/check-guarded-paths.js`, which works with one account.** It names,
+in the build output of any pull request, when a change touches something whose failure is expensive AND
+which almost never changes. Ten paths, **each measured at 8 or fewer of the last 200 commits**: the
+encryption module every stored SSN depends on; the two authorization ledgers, where an entry *is* a
+claim that the owner said so in writing; the four separation and Encompass read-only gates and their
+proofs; the read-only Encompass client; the workflow that decides what is tested before code reaches a
+borrower; and `render.yaml`. Each entry says **why**, because "this file is guarded" is not something a
+reader can act on. It is advisory on every path and blocks nothing.
+
+`src/auth/index.js`, `src/lib/permissions.js` and `CLAUDE.md` are **deliberately excluded**, and
+`test-guarded-paths-pure.js` asserts they stay excluded — adding them is the obvious improvement that
+would quietly turn this back into wallpaper. That test also fails if any guarded path stops existing,
+which it did on its first run: `render.yaml` is inside `yscap-repo-root_8/`, not at the git root, and I
+had assumed rather than checked. Seven mutations proven red.
+
+**CODEOWNERS becomes worth revisiting the moment there is a second GitHub account** — then it can fire,
+and the branch-protection question becomes a real one. That is an owner decision, not a code change.
 
 ## 9. Open question for the owner
 

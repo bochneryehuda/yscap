@@ -99,6 +99,17 @@ jobs:
           git diff --name-only "$base"...HEAD > /tmp/changed-files.txt || rm -f /tmp/changed-files.txt
           echo "changed files:"; cat /tmp/changed-files.txt 2>/dev/null || echo "  (could not be determined — the full suite will run)"
 
+      # ---- a quiet change to something load-bearing is made loud -------------
+      # Plan §8.2 asked for CODEOWNERS here. It cannot work in this repository:
+      # every pull request is authored by the owner's own account and GitHub
+      # never requests a review from a pull request's author, so the rule would
+      # be a control incapable of acting. This does the job the plan wanted
+      # through a mechanism that functions with one account. Advisory always.
+      - name: Name anything load-bearing this change touches
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: node scripts/check-guarded-paths.js --changed-from /tmp/changed-files.txt
+
       # ---- the suite --------------------------------------------------------
       # A PULL REQUEST may run a reduced plan when the change is provably
       # Long-Term-only (~11 steps instead of 893). A PUSH TO MAIN always runs
