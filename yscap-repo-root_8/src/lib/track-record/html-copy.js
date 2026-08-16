@@ -106,7 +106,11 @@ function rowHtml(r) {
   const st = String(r.verification_status || 'pending');
   return '<tr><td>' + esc(addrLine(r.property_address)) +
     '</td><td>' + esc(r.owned_personally ? 'Personal name' : (r.entity_name || '—')) +
-    '</td><td>' + esc(r.property_type || '—') +
+    /* Rendered through the shared vocabulary so the saved copy spells a type the
+       same way the tool, the portal and the note buyer's CSV do — a borrower
+       comparing their downloaded copy to the screen must not find two words for
+       one answer. An unrecognised spelling is shown as stored, never rewritten. */
+    '</td><td>' + esc(require('../property-type').trackRecordPropertyTypeLabel(r.property_type) || '—') +
     '</td><td>' + money(r.purchase_price) + (r.purchase_date ? '<br><small>' + esc(day(r.purchase_date)) + '</small>' : '') +
     '</td><td>' + money(r.rehab_amount) +
     '</td><td>' + exitCell(r) +
