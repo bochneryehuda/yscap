@@ -165,6 +165,104 @@ eq(m.previousPct(50000, 0), 0, 'a zero budget never divides by zero');
 eq(m.previousPct(200000, 100000), 100, 'an over-drawn line is clamped to 100, never refused by Trinity');
 
 // ---------------------------------------------------------------------------
+// C4. THE CLAMP IS THE ONLY THING STOPPING CORRUPT MONEY ON THEIR SIDE
+// ---------------------------------------------------------------------------
+// VERIFIED LIVE 2026-08-16 (order 735321): Trinity does NOT validate this ceiling.
+// `previousPercentCompleted: 120` was accepted 200, stored VERBATIM, and their own
+// `total.previousCostCompleted` then read $93,000 on a project where $90,000 had
+// actually been drawn — a $3,000 overstatement shown to the inspector as money already
+// released. An over-drawn line is a real thing (an approved over-limit request), so this
+// is reachable in production. The clamp is not politeness; it is the guard.
+eq(m.previousPct(1500000, 1500000), 100, 'a fully drawn line reads exactly 100');
+ok(m.previousPct(1800000, 1500000) <= 100, 'an over-drawn line can NEVER send more than 100 — Trinity would store it and overstate the money drawn');
+const overdrawn = m.toLineItems([{ sitewire_job_item_id: 7, name: 'Roof', budgeted_cents: 1500000, previous_drawn_cents: 1800000, requested_cents: 1000 }]);
+eq(overdrawn[0].previousPercentCompleted, 100, 'the clamp survives the whole toLineItems path, not just the helper');
+
+// ---------------------------------------------------------------------------
+// C5. LINE KEYS MUST BE UNIQUE — Trinity REFUSES THE WHOLE ORDER OTHERWISE
+// ---------------------------------------------------------------------------
+// VERIFIED LIVE 2026-08-16: two line items sharing a customerKey answers
+//   400 `2 line items have CustomerKey "ji-3001", line item keys must be unique within
+//        an order.`
+// So a collision is not a degraded line — it is a REFUSED INSPECTION. Our last-resort
+// key is a slug of the line's NAME, so two identically-named lines with no ids collide.
+const collide = m.toLineItems([
+  { name: 'Kitchen', budgeted_cents: 100000, requested_cents: 5000 },
+  { name: 'Kitchen', budgeted_cents: 200000, requested_cents: 6000 },
+  { name: 'Kitchen', budgeted_cents: 300000, requested_cents: 0 },
+]);
+eq(new Set(collide.map((i) => i.customerKey)).size, 3, 'three identically-named lines get three distinct keys');
+eq(collide[0].customerKey, 'line-kitchen', 'the FIRST line keeps the stable key — it must not move between re-orders');
+eq(collide[0].itemCost, 1000, 'and the de-duplication never reorders or rewrites the money');
+eq(collide[1].itemCost, 2000, 'second line intact');
+// A budget whose keys are already unique is untouched.
+const alreadyUnique = m.toLineItems(lines);
+eq(new Set(alreadyUnique.map((i) => i.customerKey)).size, alreadyUnique.length, 'ordinary keyed lines are left exactly as they are');
+
+// ---------------------------------------------------------------------------
+// C6. THE BUDGET PROOF — did their system really take what we sent?
+// ---------------------------------------------------------------------------
+// Sending a budget and having the order accepted is NOT the same as knowing it arrived.
+// verifyRemoteBudget is the check that runs on every order.
+const sentItems = m.toLineItems([
+  { sitewire_job_item_id: 8001, name: 'Framing', budgeted_cents: 5000000, previous_drawn_cents: 3750000, requested_cents: 1250000 },
+  { sitewire_job_item_id: 8002, name: 'Roofing', budgeted_cents: 2200000, previous_drawn_cents: 550000, requested_cents: 800000 },
+]);
+// The shape Trinity actually returns (verified against order 735319).
+const remoteGood = {
+  lineItems: [
+    { customerKey: 'ji-8001', description: 'Framing', itemCost: 50000, amountRequested: 12500, previousPercentCompleted: 75, percentCompleted: 75, id: 1 },
+    { customerKey: 'ji-8002', description: 'Roofing', itemCost: 22000, amountRequested: 8000, previousPercentCompleted: 25, percentCompleted: 25, id: 2 },
+  ],
+  total: { totalCost: 72000, previousCostCompleted: 43000, costCompleted: 43000 },
+};
+const vGood = m.verifyRemoteBudget(sentItems, remoteGood);
+ok(vGood.ok, 'a budget Trinity stored correctly verifies clean');
+eq(vGood.problems.length, 0, 'and reports no problems');
+eq(vGood.summary.checked, 2, 'both lines were actually checked, not skipped');
+eq(vGood.summary.remoteBudgetCents, 7200000, 'their budget total is read back in cents');
+eq(vGood.summary.remoteDrawnCents, 4300000, 'their already-drawn total is read back in cents');
+
+// A line of OURS missing from their budget breaks the crosswalk — whatever the inspector
+// approves on it, we could not say which of our lines it belongs to.
+const vMissing = m.verifyRemoteBudget(sentItems, { ...remoteGood, lineItems: [remoteGood.lineItems[0]] });
+ok(!vMissing.ok, 'a line missing from their budget is caught');
+ok(/not on Trinity/i.test(vMissing.problems.join(' ')), 'and says so in plain words');
+
+// The money checks, one at a time.
+const bend = (patch) => ({ ...remoteGood, lineItems: remoteGood.lineItems.map((l, i) => (i === 0 ? { ...l, ...patch } : l)) });
+ok(!m.verifyRemoteBudget(sentItems, bend({ itemCost: 49000 })).ok, 'a different construction budget on their side is caught');
+ok(!m.verifyRemoteBudget(sentItems, bend({ amountRequested: 9999 })).ok, 'a different requested amount is caught');
+ok(!m.verifyRemoteBudget(sentItems, bend({ previousPercentCompleted: 50 })).ok, 'a different already-drawn figure is caught — the one that matters most');
+ok(/already drawn/i.test(m.verifyRemoteBudget(sentItems, bend({ previousPercentCompleted: 50 })).problems.join(' ')),
+  'and the already-drawn message names what it is about');
+// The key check is about OUR reference, not their description — an inspector renaming a
+// line on their side must not read as a broken crosswalk.
+ok(m.verifyRemoteBudget(sentItems, bend({ description: 'Framing & sheathing' })).ok,
+  'a line RENAMED on their side still verifies — the tie is the key, never the description');
+// A cent of dust from the percentage round trip is not an alarm.
+ok(m.verifyRemoteBudget(sentItems, bend({ itemCost: 50000.009 })).ok, 'a sub-cent difference is tolerated, not flagged');
+
+// A line THEY added is not a fault, but the desk must be told it is there.
+const vExtra = m.verifyRemoteBudget(sentItems, {
+  ...remoteGood,
+  lineItems: [...remoteGood.lineItems, { customerKey: null, description: 'Trip fee', itemCost: 500, amountRequested: 0, previousPercentCompleted: 0, percentCompleted: 0, id: 3 }],
+});
+ok(vExtra.ok, 'a line Trinity added on their own side is not an error');
+eq(vExtra.summary.extraLines, 1, 'but it is counted');
+eq(vExtra.summary.extraNames[0], 'Trip fee', 'and named, so it is not a surprise in the results');
+
+// Never throws, never guesses.
+ok(!m.verifyRemoteBudget(sentItems, null).ok, 'no budget at all is reported, never assumed fine');
+ok(!m.verifyRemoteBudget(sentItems, {}).ok, 'an empty answer is reported too');
+ok(m.verifyRemoteBudget([], remoteGood).ok, 'nothing sent means nothing to disagree about');
+// A badly broken order must not write a novel into a text column.
+const manySent = m.toLineItems(Array.from({ length: 40 }, (_, i) => ({ sitewire_job_item_id: 9000 + i, name: `Line ${i}`, budgeted_cents: 100000, requested_cents: 1000 })));
+const vMany = m.verifyRemoteBudget(manySent, { lineItems: [], total: {} });
+ok(vMany.problems.length <= 13, 'the problem list is capped');
+ok(/more/.test(vMany.problems[vMany.problems.length - 1]), 'and says how many it did not list');
+
+// ---------------------------------------------------------------------------
 // D. reading the result — the money path
 // ---------------------------------------------------------------------------
 // The VERBATIM shape the sandbox returned for order 735310, with the percentages moved

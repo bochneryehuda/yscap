@@ -36,6 +36,11 @@ const err = (status, message) => { const e = new Error(message); e.status = stat
 
 // Trinity document groups (GET /api/v1.1/documents/groups). The group validates the
 // file EXTENSION as well as the kind, so each entry records what it will accept.
+// The most a single document may be before we decline to send it. Trinity accepted
+// 40 MB in 9.6s (measured 2026-08-16) — this ceiling exists to protect OUR 30-second
+// client timeout on a POST that is deliberately never retried, not to satisfy theirs.
+const MAX_DOC_BYTES = Math.max(1, parseInt(process.env.TRINITY_MAX_DOC_MB || '25', 10) || 25) * 1024 * 1024;
+
 const DOC_GROUP = {
   APPRAISAL: 1,          // .pdf .xls .doc .tif .jpg .png .xlsx …
   COST_BREAKDOWN: 2,     // .pdf .xls .doc .tif .jpg .png .xlsx  (NOT .csv — verified)
@@ -364,18 +369,138 @@ async function placeOrder(appId, orderRowId, { staffId = null } = {}) {
          src.previous_drawn_cents || 0, it.previousPercentCompleted]);
     }
 
+    // ---- the order's first timeline entry: this is where progress starts ----
+    await recordEvent(appId, orderRowId, {
+      kind: 'ordered', source: 'order', staffId,
+      detail: `Ordered from Trinity — ${sentItems.length} budget line${sentItems.length === 1 ? '' : 's'}, ${usd(requestedTotal)} requested.`,
+    }).catch(() => {});
+
     // ---- everything below is BEST-EFFORT: the order exists and must never be undone ----
+    // PROVE the budget landed before anything else — a broken crosswalk is worth
+    // knowing about now, not when the report comes back and nothing can be matched.
+    const proof = await verifyBudget(appId, orderRowId, trinityOrderId, sentItems).catch(
+      (e) => ({ error: String(e && e.message).slice(0, 200) }));
+
     const docs = await sendDocuments(appId, orderRowId, trinityOrderId, { lines, requestedTotal }).catch(
       (e) => ({ error: String(e && e.message).slice(0, 200) }));
     // The opening message names what ACTUALLY attached, not what we hoped would — an
     // inspector told to look for a document that is not there wastes a phone call.
     await openingComment(appId, orderRowId, trinityOrderId, { lines, requestedTotal, ctx, sent: (docs && docs.sent) || [] }).catch(() => {});
 
-    return { ok: true, trinityOrderId, trinityProjectId, documents: docs, lines: sentItems.length, requestedTotal };
+    return { ok: true, trinityOrderId, trinityProjectId, documents: docs, budget: proof, lines: sentItems.length, requestedTotal };
   } catch (e) {
     await release();
     return { error: true, message: String(e && e.message).slice(0, 300) };
   }
+}
+
+// ---------------------------------------------------------------------------
+// the progress timeline — Trinity has no history endpoint, so this is the record
+// ---------------------------------------------------------------------------
+/**
+ * Append one entry to the order's timeline.
+ *
+ * VERIFIED 2026-08-16: Trinity exposes only the CURRENT status —
+ * `GET /orders/{id}/history`, `/events`, `/statuses` and `/status` all answer 404. So
+ * the sequence the owner asked to see ("ordered, scheduled, inspected, report back")
+ * exists ONLY here, and only because we write it down as we watch.
+ *
+ * APPEND-ONLY and never throws — a timeline is a record of what happened and must never
+ * be the reason something fails to happen. A duplicate status collides on
+ * `uq_toe_status_once` and is dropped, so the poller re-reading the same order every
+ * few minutes cannot fill the timeline with copies of one moment.
+ */
+async function recordEvent(appId, orderRowId, {
+  kind = 'status', state = null, statusId = null, status = null, substatus = null,
+  detail = null, percentComplete = null, source = 'poller', staffId = null,
+} = {}) {
+  try {
+    const r = await db.query(
+      `INSERT INTO trinity_order_events
+         (trinity_inspection_order_id, application_id, state, trinity_status_id, trinity_status,
+          trinity_substatus, kind, detail, percent_complete, source, staff_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::uuid)
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [orderRowId, appId, state, statusId,
+       status ? String(status).slice(0, 120) : null,
+       substatus ? String(substatus).slice(0, 120) : null,
+       kind, detail ? String(detail).slice(0, 500) : null, percentComplete, source, staffId]);
+    return { ok: true, added: r.rows.length > 0 };
+  } catch (e) {
+    console.warn('[trinity] timeline write failed:', e && e.message);
+    return { ok: false };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// the budget proof — "their system really understands our construction budget"
+// ---------------------------------------------------------------------------
+/**
+ * Read Trinity's budget straight back and reconcile it against what we sent.
+ *
+ * This is the answer to the owner's *"how we force them to be linked together"*. The
+ * link is forced from BOTH ends: Trinity refuses an order whose line keys collide
+ * (400, verified), and this proves — on every single order, not once in a lab — that
+ * the budget their inspector will work from is the budget we sent, that the money
+ * already drawn survived the percentage conversion, and above all that OUR reference
+ * came back on EVERY line. Without that reference a completed report is a set of
+ * numbers we cannot attach to our own budget lines.
+ *
+ * A disagreement is recorded in plain words for the desk and does NOT undo the order —
+ * the inspection is real and cancelling it over a reconciliation is worse than showing
+ * a human what differs. Best-effort throughout: it can never fail a placement.
+ */
+async function verifyBudget(appId, orderRowId, trinityOrderId, sentItems) {
+  if (!client.available() || !client.enabled()) return { skipped: 'off' };
+  let remote;
+  try { remote = await client.getBudget(trinityOrderId); }
+  catch (e) { return { skipped: 'unreadable', message: String(e && e.message).slice(0, 200) }; }
+  if (remote && remote.__dryrun) return { skipped: 'dryrun' };
+
+  const v = mapper.verifyRemoteBudget(sentItems, remote);
+  const s = v.summary || {};
+
+  // Record Trinity's own line ids on our crosswalk. This is what lets a human ask
+  // Trinity about "your line 13286139" and get an answer about OUR budget line.
+  try {
+    for (const it of (remote && remote.lineItems) || []) {
+      if (it.customerKey == null || it.id == null) continue;
+      await db.query(
+        `UPDATE trinity_order_lines SET trinity_line_id=$3, updated_at=now()
+          WHERE trinity_inspection_order_id=$1 AND customer_key=$2 AND trinity_line_id IS NULL`,
+        [orderRowId, String(it.customerKey), Number(it.id)]);
+    }
+  } catch (_) { /* the crosswalk already ties on customerKey; their id is a convenience */ }
+
+  const mismatch = v.ok ? null
+    : `Trinity's copy of the construction budget does not match ours: ${v.problems.join(' ')}`;
+  await db.query(
+    `UPDATE trinity_inspection_orders
+        SET budget_verified_at=now(), budget_mismatch=$2,
+            remote_budget_cents=$3, remote_drawn_cents=$4, updated_at=now()
+      WHERE id=$1`,
+    [orderRowId, mismatch ? mismatch.slice(0, 2000) : null,
+     s.remoteBudgetCents != null ? s.remoteBudgetCents : null,
+     s.remoteDrawnCents != null ? s.remoteDrawnCents : null]).catch(() => {});
+
+  await recordEvent(appId, orderRowId, {
+    kind: 'note', source: 'order',
+    detail: v.ok
+      ? `Trinity's budget checked and agrees: ${s.checked} line${s.checked === 1 ? '' : 's'}, `
+        + `${usd(s.remoteBudgetCents)} budget, ${usd(s.remoteDrawnCents)} already drawn.`
+      : `Trinity's budget does NOT match ours — ${v.problems.length} difference${v.problems.length === 1 ? '' : 's'}.`,
+  }).catch(() => {});
+
+  // A line Trinity added on their side is not a fault, but the desk should know it is
+  // there before it turns up in the results with no line of ours to belong to.
+  if (v.ok && s.extraLines) {
+    await recordEvent(appId, orderRowId, {
+      kind: 'note', source: 'order',
+      detail: `Trinity's budget also carries ${s.extraLines} line${s.extraLines === 1 ? '' : 's'} of their own: ${s.extraNames.join(', ')}.`,
+    }).catch(() => {});
+  }
+  return { ok: v.ok, problems: v.problems, ...s };
 }
 
 // ---------------------------------------------------------------------------
@@ -454,12 +579,16 @@ async function sendDocuments(appId, orderRowId, trinityOrderId, { lines, request
   // self-describing filename cannot be mistaken for anything, and the opening comment
   // (§openingComment) names it so the inspector knows it is waiting for him.
   const wanted = [
-    { kinds: ['appraisal_pdf'], codes: ['rtl_cond_appraisaldocs'], group: DOC_GROUP.APPRAISAL, label: 'appraisal report', key: 'appraisal' },
-    { kinds: ['sow_pdf', 'rehab_budget_pdf'], codes: ['rtl_p3_sow', 'rtl_cond_sow'], group: DOC_GROUP.SOW, label: 'scope of work', key: 'sow' },
+    { kinds: ['appraisal_pdf'], codes: ['rtl_cond_appraisaldocs'], group: DOC_GROUP.APPRAISAL, label: 'appraisal report', key: 'appraisal', fileName: 'appraisal-report' },
+    { kinds: ['sow_pdf', 'rehab_budget_pdf'], codes: ['rtl_p3_sow', 'rtl_cond_sow'], group: DOC_GROUP.SOW, label: 'scope of work', key: 'sow', fileName: 'scope-of-work' },
     {
       kinds: ['draw_inspection_report', 'trinity_pilot_report', 'trinity_inspection_report'],
       codes: [], group: DOC_GROUP.MISC,
-      label: 'most recent previous inspection report', key: 'previous-inspection-report',
+      label: 'the PREVIOUS inspection report', key: 'previous-inspection-report',
+      // The filename is the only label Trinity's own screen shows, and an inspector
+      // opening "inspection report" on a live order would reasonably assume it is about
+      // THIS visit. It says PREVIOUS, in full.
+      fileName: 'PREVIOUS-INSPECTION-REPORT-not-this-visit',
     },
   ];
   for (const w of wanted) {
@@ -480,11 +609,23 @@ async function sendDocuments(appId, orderRowId, trinityOrderId, { lines, request
       if (!row) continue;
       const buf = await storage.forRow(row).read(row.storage_ref);
       if (!buf || !buf.length) continue;
+      // NEVER GAMBLE THE ORDER ON ONE FAT UPLOAD. Measured 2026-08-16: Trinity itself
+      // accepted 40 MB (53 MB base64) in 9.6s and showed no rate limiting — the ceiling
+      // that actually bites is OUR `TRINITY_TIMEOUT_MS` (30s), and a document POST is
+      // never retried in-call. So an oversize document is SKIPPED and NAMED rather than
+      // risking a timeout on a placement that has already succeeded.
+      if (buf.length > MAX_DOC_BYTES) {
+        failed.push(`${w.label} (too large to send — ${(buf.length / 1048576).toFixed(1)} MB)`);
+        continue;
+      }
       await client.addDocument(trinityOrderId, {
         buffer: buf,
         contentType: row.content_type || 'application/pdf',
-        // The group validates the EXTENSION, so the name we send always ends .pdf.
-        fileName: `${w.key}.pdf`,
+        // The group validates the EXTENSION, so the name we send always ends .pdf. The
+        // NAME is also what a human reads on Trinity's screen, so it says what the
+        // document IS — an inspector must never have to guess whether a report describes
+        // this visit or the last one.
+        fileName: `${w.fileName || w.key}.pdf`,
         groupId: w.group,
         customerKey: `o${orderRowId}-${w.key}`,
         uploader,
@@ -501,6 +642,33 @@ async function sendDocuments(appId, orderRowId, trinityOrderId, { lines, request
   return { sent, failed };
 }
 
+// WE DELIBERATELY DO NOT SEND INSPECTION PHOTOS (owner-directed 2026-08-16: *"We don't
+// really need to send the photos. The inspection report itself does the job: the PDF of
+// the inspection report from the previous inspection."*).
+//
+// It was built and then removed on purpose, and the reasoning is worth keeping so it is
+// not "helpfully" re-added:
+//
+//   · THE REPORT ALREADY CARRIES THE PICTURES. Our branded draw report embeds the
+//     inspection photographs, so attaching the report hands the inspector the images AND
+//     the findings and the per-line figures that explain them — one document instead of
+//     a dozen loose files with no captions.
+//   · IT IS THE EXPENSIVE PART OF PLACING AN ORDER. Measured against the live API on
+//     2026-08-16: a document POST costs ~2.6s at 1 MB and ~9.6s at 40 MB. Eight photos
+//     is eight more multi-second round trips on the critical path of an order that has
+//     already been accepted — the single biggest way this integration could start
+//     timing out, and for information the report already contains.
+//   · SIZE AND RATE ARE NOT THE CONSTRAINT — OUR OWN TIMEOUT IS. Trinity accepted a
+//     40 MB document and showed no 429 at 7.9 requests/second sequential or 20
+//     concurrent. What can actually break is `TRINITY_TIMEOUT_MS` (30s) on a single fat
+//     upload, which is why `sendDocuments` skips a document too large to be sent
+//     comfortably rather than gambling the order on it.
+//
+// If a future reader genuinely needs loose photographs on Trinity's side: group 86
+// "Photo Album" sounds right and accepts **.pdf ONLY** (verified — a .jpg into it is a
+// 400). Images go to group 3 (Miscellaneous). Send them AFTER the order is settled,
+// never inline with placement.
+
 /** The opening message to the Trinity team — the picture in words. */
 async function openingComment(appId, orderRowId, trinityOrderId, { lines, requestedTotal, ctx, sent = [] }) {
   const budget = lines.reduce((s, l) => s + l.budgeted_cents, 0);
@@ -511,7 +679,7 @@ async function openingComment(appId, orderRowId, trinityOrderId, { lines, reques
   // Name only what actually attached. If a previous inspection report went with the
   // order, say so plainly and say WHY it is there — an inspector taking the property
   // over mid-project needs to know the last visit's findings exist and where they are.
-  const hasPrior = sent.includes('most recent previous inspection report');
+  const hasPrior = sent.includes('the PREVIOUS inspection report');
   const attached = sent.length
     ? `Attached: ${sent.join(', ')}.`
     : 'The construction budget with the historical draws is on the order.';
@@ -528,8 +696,11 @@ async function openingComment(appId, orderRowId, trinityOrderId, { lines, reques
       ? 'Every line carries its percent-complete from the draws already released, so the budget shows what is still available on each item.'
       : 'This is the first draw on this project — no money has been released yet.',
     hasPrior
-      ? 'If a different inspector is taking this property over, the most recent previous inspection report is attached under Miscellaneous — it shows what the last inspection found and what was held back.'
+      ? 'ATTACHED UNDER MISCELLANEOUS: the report from the PREVIOUS inspection on this project — not this visit. '
+        + 'It shows what the last inspector found, the photographs they took of the property at that visit, '
+        + 'and what was approved or held back on each line, so you can see how the project stood before this draw.'
       : (drawNo ? 'Earlier draws on this project were inspected elsewhere; tell us if you would like the previous inspection report and we will attach it.' : ''),
+    'Each budget line carries our own reference in the customerKey field — please keep it on the line when you report, so your figures land on the right item in our system.',
     '',
     'Please reply here with any questions.',
   ].filter(Boolean).join('\n').slice(0, 2790);
@@ -693,6 +864,6 @@ async function syncProject(appId, orderRowId, { staffId = null } = {}) {
 }
 
 module.exports = {
-  DOC_GROUP, MIN_LEAD_MS, budgetLines, fileContext, placeOrder, sendDocuments, postComment,
-  budgetWorkbook, openingComment, reschedule, syncProject,
+  DOC_GROUP, MAX_DOC_BYTES, MIN_LEAD_MS, budgetLines, fileContext, placeOrder, sendDocuments, postComment,
+  budgetWorkbook, openingComment, reschedule, syncProject, recordEvent, verifyBudget,
 };

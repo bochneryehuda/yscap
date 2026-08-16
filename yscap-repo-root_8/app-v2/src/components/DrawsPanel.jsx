@@ -1360,6 +1360,52 @@ function TrinityInspectionCard({ appId }) {
                   )}
                 </div>
 
+                {/* Did their system actually take our construction budget? Asked and
+                    answered on every order — a broken crosswalk is worth knowing about
+                    now, not when the report comes back and nothing can be matched. */}
+                {o.budget_verified_at && (
+                  <div className="small" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6,
+                    background: o.budget_mismatch ? '#FDF3F2' : '#F3F7F4',
+                    border: `1px solid ${o.budget_mismatch ? '#E4C4BF' : '#CFE0D4'}` }}>
+                    <div style={{ fontWeight: 600, color: o.budget_mismatch ? '#B04A3F' : '#2F6B4F' }}>
+                      {o.budget_mismatch
+                        ? 'Trinity’s copy of the budget does NOT match ours'
+                        : 'Trinity has our construction budget, checked line by line'}
+                    </div>
+                    <div style={{ color: '#4B585C', marginTop: 2 }}>
+                      {o.budget_mismatch || (
+                        `Their system holds ${usd(o.remote_budget_cents)} of budget with ${usd(o.remote_drawn_cents)} already drawn — `
+                        + 'the same figures as this file, to the cent.')}
+                    </div>
+                  </div>
+                )}
+
+                {/* THE PROGRESS TIMELINE. Trinity has no history endpoint, so this is
+                    the only record of the sequence — ordered, scheduled, inspected,
+                    report back — in their own words, with when each happened. */}
+                {!!(o.timeline || []).length && (
+                  <div style={{ marginTop: 12 }}>
+                    <div className="small" style={{ fontWeight: 600, color: '#141B22' }}>Progress</div>
+                    <ol style={{ listStyle: 'none', margin: '6px 0 0', padding: 0, borderLeft: '2px solid #E3DED2' }}>
+                      {o.timeline.map((ev) => (
+                        <li key={ev.id} className="small" style={{ position: 'relative', padding: '4px 0 4px 14px', color: '#4B585C' }}>
+                          <span style={{ position: 'absolute', left: -5, top: 10, width: 8, height: 8, borderRadius: 8,
+                            background: ev.kind === 'delivered' ? '#2F7F86' : (ev.kind === 'note' ? '#C9C2B2' : '#AE8746') }} />
+                          <span style={{ color: '#141B22', fontWeight: 550 }}>
+                            {ev.trinity_status || (ev.kind === 'ordered' ? 'Ordered from Trinity'
+                              : ev.kind === 'delivered' ? 'Delivered to the borrower' : 'Note')}
+                          </span>
+                          {ev.trinity_substatus ? ` · ${ev.trinity_substatus}` : ''}
+                          <span style={{ color: '#8A8578' }}>
+                            {' — '}{new Date(ev.occurred_at).toLocaleString()}
+                          </span>
+                          {ev.detail ? <div style={{ marginTop: 1 }}>{ev.detail}</div> : null}
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+
                 {/* Scheduling — the owner's "schedule the inspection". Trinity needs at
                     least 24 hours, so the picker's floor is two days out and the server
                     refuses anything sooner in its own words. */}

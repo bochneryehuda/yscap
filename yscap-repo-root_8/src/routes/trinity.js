@@ -79,8 +79,18 @@ router.get('/files/:appId', fileScope, async (req, res, next) => {
       const media = (await db.query(
         `SELECT id, kind, file_name, content_type, bytes, labels, archived_at, skip_reason
            FROM trinity_order_media WHERE trinity_inspection_order_id=$1 ORDER BY kind, id`, [o.id])).rows;
+      // The progress timeline. Trinity has NO history endpoint (verified — /history,
+      // /events, /statuses and /status all 404), so this table is the only place the
+      // sequence exists: ordered → scheduled → inspected → report back, in their own
+      // words, with the time each step actually happened.
+      const timeline = (await db.query(
+        `SELECT id, state, trinity_status, trinity_substatus, kind, detail,
+                percent_complete, source, occurred_at
+           FROM trinity_order_events WHERE trinity_inspection_order_id=$1
+          ORDER BY occurred_at ASC, id ASC LIMIT 200`, [o.id])).rows;
       out.push({
         ...o,
+        timeline,
         // What the desk needs to know at a glance about where this sits.
         progress: {
           state: o.status,
@@ -354,6 +364,16 @@ router.post('/files/:appId/orders/:orderId/deliver', fileScope, async (req, res,
     const out = await portalDraws.approveTrinityRequest(req.appId, pr.id, entries, { staffId: req.actor.id });
     await db.query(
       `UPDATE trinity_inspection_orders SET status='entered', updated_at=now() WHERE id=$1`, [o.id]).catch(() => {});
+    // The last step of the timeline, and the only one a human performs: this is the
+    // record of WHO decided to send the findings to the borrower, and when. There is no
+    // autopilot on this program, so without this entry the file could never answer it.
+    const total = entries.reduce((s, e) => s + Math.round(Number(e.approved_cents) || 0), 0);
+    await order.recordEvent(req.appId, o.id, {
+      kind: 'delivered', state: 'entered', source: 'staff', staffId: req.actor.id,
+      detail: `${req.actor.full_name || 'A coordinator'} delivered the findings to the borrower — `
+        + `$${(total / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })} approved across `
+        + `${entries.length} line${entries.length === 1 ? '' : 's'}.`,
+    }).catch(() => {});
     res.json({ ok: true, ...out });
   } catch (e) {
     if (e && e.status) return bad(res, e.status, e.message);

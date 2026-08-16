@@ -130,6 +130,73 @@ worst per-line drift  $0.0000
 
 `description` is stored verbatim, including the em dash, at 95 characters.
 
+### 3.2b THEIR SYSTEM IS BUILT FOR A MID-PROJECT BUDGET — proven, not hoped
+
+The question that matters most: does Trinity accept a budget that is already **half
+drawn**, or only a fresh one where no draw has started? **Their own field documentation
+answers it**, and a live order confirms it.
+
+| Their field | Their own words |
+|---|---|
+| `previousPercentCompleted` | *"Percent complete prior to this inspection. **Often used when importing a partially completed project.**"* |
+| `customerKey` | *"Your identifier for this item… **Will carry forward to future orders in this project.**"* |
+| `total.previousCostCompleted` | *"Sum of the completed portion of cost **as of the last inspection**."* |
+
+A real draw #3 — two lines finished and paid in full, two part-drawn, two untouched —
+sent live (order **735319**) and read straight back:
+
+```
+key       description        itemCost   prev%     now%   requested   remaining
+ji-5001   Demolition            15000     100%     100%          0        0.00   <- FULLY DRAWN
+ji-5002   Foundation            32000     100%     100%          0        0.00   <- FULLY DRAWN
+ji-5003   Framing               50000      75%      75%      12500    12500.00   <- part drawn
+ji-5004   Roofing               22000      25%      25%       8000    16500.00   <- part drawn
+ji-5005   Interior finishes     41000       0%       0%          0    41000.00   <- untouched
+ji-5006   Landscaping            9000       0%       0%          0     9000.00   <- untouched
+
+THEIR OWN totals, computed by Trinity:
+  totalCost                = 169,000    (ours 169,000)   EXACT
+  previousCostCompleted    =  90,000    (ours  90,000)   EXACT
+  previousPercentCompleted =  53.2544%  — they weight it themselves
+  costCompleted            =  90,000    — starts EQUAL to previous: nothing approved yet
+  remaining (derived)      =  79,000    (ours  79,000)   EXACT
+```
+
+So their system knows, per line, **which items are gone, which are part drawn, and how
+much is left** — and it aggregates the already-drawn money into its own totals rather
+than taking our word for it. `costCompleted` starting equal to `previousCostCompleted` is
+the signature of a running draw: this inspection has approved nothing *yet*.
+
+### 3.2c TWO THINGS TRINITY DOES **NOT** VALIDATE — our guards are the only ones
+
+1. **`previousPercentCompleted` OVER 100 IS ACCEPTED AND STORED VERBATIM.** Sending
+   `120` on a $15,000 line answered **200**, was stored as `120`, and their own
+   `total.previousCostCompleted` then read **$93,000 on a project where $90,000 had been
+   drawn** — a $3,000 overstatement of released money, shown to the inspector as fact
+   (order **735321**). An over-drawn line is reachable in production (an approved
+   over-limit request), so **`previousPct`'s clamp to 0–100 is not defensive politeness —
+   it is the only thing keeping corrupt money off their screen.** Guarded by
+   `test-trinity-mapper-pure.js` §C4.
+2. **A FULLY DRAWN LINE MAY STILL BE FLAGGED AS REQUESTED.** A line at 100% with
+   `amountRequested` set and `isRequested: true` was accepted 200. Trinity does not stop
+   an over-draw; our own budget rules are what do.
+
+### 3.2d THE LINE-ITEM TIE IS FORCED FROM BOTH ENDS
+
+- **Trinity refuses a collision**: two line items sharing a `customerKey` →
+  **400 `2 line items have CustomerKey "ji-3001", line item keys must be unique within an
+  order.`** A collision is not a degraded line, it is a **refused inspection** — which is
+  why `toLineItems` de-duplicates on the way out (our last-resort key is a slug of the
+  line's NAME, and a real budget carries two lines called "Kitchen").
+- **`number` is `0` on every line of every order** — never identity.
+- **`description` is not identity either**: two lines both named "Kitchen" were kept
+  separate and told apart only by our key.
+- **Every line came back carrying our key**, and Trinity's own `id` is recorded against
+  our crosswalk row so a support call can name their line and get an answer about ours.
+- **We check it on every order.** `order.verifyBudget` reads their budget straight back
+  and reconciles cost, requested, already-drawn and the key, per line —
+  `budget_verified_at` / `budget_mismatch` on the order row, and it is shown on the desk.
+
 ### 3.3 Subsequent draws
 
 On the second and later draws we send the FULL line-item set again with refreshed
@@ -224,6 +291,53 @@ Every one of these was **probed**, not assumed.
 All three are unambiguous not-yets and are never treated as failures.
 
 ---
+
+## 4.6 Scale and rate — measured, so nobody has to guess
+
+Everything below was measured against the live sandbox on 2026-08-16. **Their API is not
+the fragile part; our own timeout is.**
+
+| Probe | Result |
+|---|---|
+| 1 MB document | 200 in 2.6s |
+| 10 MB document | 200 in 3.0s |
+| 20 MB document | 200 in 4.5s |
+| **40 MB document** (53 MB base64) | **200 in 9.6s — no ceiling found** |
+| 30 sequential reads | **no 429**, 7.9 req/s sustained |
+| 20 concurrent reads | **all 200** |
+| 12 documents on one order | all listable |
+| **400-line construction budget** | **200 in 0.9s** |
+
+Consequences, and they are the reason the integration is shaped the way it is:
+
+- **A big budget is not a problem.** 400 line items in under a second, so a real
+  construction budget is never a reason to summarise or truncate.
+- **The binding limit is `TRINITY_TIMEOUT_MS` (30s) on a single fat upload**, and a
+  document POST is deliberately never retried in-call (the first attempt may have
+  committed). So `sendDocuments` **skips and names** a document over
+  `TRINITY_MAX_DOC_MB` (25) rather than gambling an already-successful placement on it.
+- **We do not send loose inspection photographs.** The previous inspection REPORT is
+  attached instead and already embeds the photographs with the findings that explain
+  them — one document, one round trip, instead of eight multi-second POSTs on the
+  critical path of an order (owner-directed 2026-08-16). If loose images are ever needed:
+  group 86 "Photo Album" accepts **`.pdf` only** (a `.jpg` into it is a 400); images go to
+  group 3, and they should be sent *after* the order settles, never inline.
+- Our client's 60 req/min token bucket is far under anything Trinity pushed back on.
+
+## 4.7 Progress: Trinity has NO history — the timeline is ours
+
+`GET /orders/{id}/history`, `/events`, `/statuses` and `/status` **all answer 404.** The
+order carries only its CURRENT `status`, `subStatus`, `percentComplete` and `modifiedAt`,
+so each new status **overwrites** the last and the sequence is unrecoverable from their
+side.
+
+The owner's *"keep track of the progress with the status, scheduled, inspected, and
+report back"* therefore exists only because we write each transition down as we see it:
+`trinity_order_events` (db/555) is append-only, records Trinity's own wording alongside
+our five-state ladder, and is deduped so the poller re-reading the same order every few
+minutes cannot fill it with copies of one moment. The manual **Deliver to the borrower**
+is recorded there too — with no autopilot on this program, that row is the only record of
+who sent the findings and when.
 
 ## 5. The status ladder (all 19, `api/orders_statuses.json`)
 

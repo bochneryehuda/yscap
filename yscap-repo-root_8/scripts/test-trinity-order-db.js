@@ -60,6 +60,7 @@ client.requestCancel = async () => { calls.cancels++; return null; };
 const order = require('../src/trinity/order');
 const ingest = require('../src/trinity/ingest');
 const intake = require('../src/trinity/intake');
+const mapper = require('../src/trinity/mapper');
 
 let n = 0, failed = 0;
 const ok = (cond, label) => { n++; if (cond) return; failed++; console.error('  ✘ ' + label); };
@@ -326,6 +327,96 @@ const eq = (a, b, label) => ok(a === b, `${label} (got ${JSON.stringify(a)}, exp
      VALUES ($1,$2,'requested') RETURNING id`, [a.id, `pdr-empty-${base}`])).rows[0];
   eq(await report.buildBytes(a.id, emptyRec.id, { mode: 'staff' }), null,
     'J4 an inspection with no result produces no report, never a blank one');
+
+  // ---- K. THE PROGRESS TIMELINE — Trinity has no history endpoint ----------------
+  //
+  // VERIFIED against the live API 2026-08-16: GET /orders/{id}/history, /events,
+  // /statuses and /status ALL answer 404. The order carries only its CURRENT status. So
+  // the sequence the desk shows — ordered, scheduled, inspected, report back — exists
+  // ONLY because we write each transition down as we see it, and before this table the
+  // previous status was simply overwritten.
+  const tl = async (id) => (await db.query(
+    `SELECT * FROM trinity_order_events WHERE trinity_inspection_order_id=$1 ORDER BY id`, [id])).rows;
+
+  // Placing the order and every sync above ALREADY wrote to this timeline — that is the
+  // wiring working, and it is why the assertions below measure the CHANGE rather than an
+  // absolute count.
+  let events = await tl(rec.id);
+  ok(events.length > 0, 'K0 placing the order and following it already built a timeline');
+  ok(events.some((e) => e.kind === 'ordered'), 'K0b including the moment it was ordered');
+  const before = events.length;
+
+  await order.recordEvent(a.id, rec.id, { kind: 'status', state: 'scheduled', statusId: 44, status: 'Assigned Order', source: 'poller' });
+  events = await tl(rec.id);
+  eq(events.length, before + 1, 'K1 a new status is added to the timeline');
+  eq(events[events.length - 1].trinity_status, 'Assigned Order', 'K2 in Trinity’s own words, so the desk shows what they show');
+  ok(events[0].occurred_at <= events[events.length - 1].occurred_at, 'K3 and in the order it happened');
+
+  // The poller re-reads the same order every few minutes. Without the once-only rule the
+  // timeline would gain an identical row on every tick and become unreadable.
+  await order.recordEvent(a.id, rec.id, { kind: 'status', state: 'scheduled', statusId: 44, status: 'Assigned Order', source: 'poller' });
+  await order.recordEvent(a.id, rec.id, { kind: 'status', state: 'scheduled', statusId: 44, status: 'Assigned Order', source: 'poller' });
+  eq((await tl(rec.id)).length, before + 1, 'K4 re-reading the same status does NOT repeat it on the timeline');
+  // A genuinely different status still lands.
+  await order.recordEvent(a.id, rec.id, { kind: 'status', state: 'inspected', statusId: 53, status: 'In Review - Pending', source: 'poller' });
+  eq((await tl(rec.id)).length, before + 2, 'K5 but a real move forward is always recorded');
+  // A substatus change is a real change to a coordinator, even at the same status.
+  await order.recordEvent(a.id, rec.id, { kind: 'status', state: 'inspected', statusId: 53, status: 'In Review - Pending', substatus: 'Waiting on the appraiser', source: 'poller' });
+  eq((await tl(rec.id)).length, before + 3, 'K6 and a new substatus at the same status is recorded too');
+  // The human step, which is the whole point of this program having no autopilot.
+  await order.recordEvent(a.id, rec.id, { kind: 'delivered', state: 'entered', source: 'staff', staffId: stf.id, detail: 'Delivered the findings to the borrower.' });
+  events = await tl(rec.id);
+  eq(events[events.length - 1].kind, 'delivered', 'K7 the manual delivery is on the record');
+  eq(events[events.length - 1].staff_id, stf.id, 'K8 naming WHO sent it — there is no autopilot, so this is the only record');
+  // A timeline is a record of what happened; it must never be the reason something fails.
+  const orphanEvent = await order.recordEvent(a.id, 99999999, { kind: 'status', status: 'x' });
+  eq(orphanEvent.ok, false, 'K9 a timeline write against a missing order fails quietly, never throws');
+
+  // ---- L. THE BUDGET PROOF — did their system really take our budget? -------------
+  //
+  // Sending a budget and having the order accepted is NOT the same as knowing it
+  // arrived. This runs on every order.
+  const sentForProof = mapper.toLineItems([
+    { sitewire_job_item_id: 8801, name: 'Framing', budgeted_cents: 5000000, previous_drawn_cents: 3750000, requested_cents: 1250000 },
+  ]);
+  await db.query(
+    `INSERT INTO trinity_order_lines (trinity_inspection_order_id, application_id, sitewire_job_item_id, name, customer_key, budgeted_cents)
+     VALUES ($1,$2,8801,'Framing','ji-8801',5000000)
+     ON CONFLICT (trinity_inspection_order_id, customer_key) WHERE customer_key IS NOT NULL DO NOTHING`, [rec.id, a.id]);
+
+  const goodRemote = {
+    lineItems: [{ customerKey: 'ji-8801', description: 'Framing', itemCost: 50000, amountRequested: 12500, previousPercentCompleted: 75, percentCompleted: 75, id: 424242 }],
+    total: { totalCost: 50000, previousCostCompleted: 37500, costCompleted: 37500 },
+  };
+  const realGetBudget = client.getBudget;
+  client.getBudget = async () => goodRemote;
+  const proofOk = await order.verifyBudget(a.id, rec.id, 991001, sentForProof);
+  eq(proofOk.ok, true, 'L1 a budget Trinity stored correctly is proven clean');
+  let proofRow = (await db.query(`SELECT * FROM trinity_inspection_orders WHERE id=$1`, [rec.id])).rows[0];
+  ok(proofRow.budget_verified_at, 'L2 and the file records that we actually asked');
+  eq(proofRow.budget_mismatch, null, 'L3 with nothing to report');
+  eq(Number(proofRow.remote_budget_cents), 5000000, 'L4 their budget total is stored in cents');
+  eq(Number(proofRow.remote_drawn_cents), 3750000, 'L5 and their already-drawn total too');
+  // Trinity's own line id lands on our crosswalk, so a support call can name their line.
+  const xw = (await db.query(
+    `SELECT trinity_line_id FROM trinity_order_lines WHERE trinity_inspection_order_id=$1 AND customer_key='ji-8801'`, [rec.id])).rows[0];
+  eq(Number(xw.trinity_line_id), 424242, 'L6 Trinity’s own line id is recorded against OUR budget line');
+
+  // A disagreement is reported in plain words — and must NOT undo the order.
+  client.getBudget = async () => ({
+    lineItems: [{ customerKey: 'ji-8801', description: 'Framing', itemCost: 50000, amountRequested: 12500, previousPercentCompleted: 50, percentCompleted: 50, id: 424242 }],
+    total: { totalCost: 50000, previousCostCompleted: 25000, costCompleted: 25000 },
+  });
+  const proofBad = await order.verifyBudget(a.id, rec.id, 991001, sentForProof);
+  eq(proofBad.ok, false, 'L7 a budget that does NOT match is caught');
+  proofRow = (await db.query(`SELECT * FROM trinity_inspection_orders WHERE id=$1`, [rec.id])).rows[0];
+  ok(/already drawn/i.test(proofRow.budget_mismatch || ''), 'L8 and recorded in plain words for the desk');
+  ok(proofRow.trinity_order_id != null || proofRow.status !== 'cancelled', 'L9 the inspection is NOT undone over a reconciliation');
+  // An unreadable budget is not a mismatch — we simply could not ask.
+  client.getBudget = async () => { throw new Error('network'); };
+  const proofErr = await order.verifyBudget(a.id, rec.id, 991001, sentForProof);
+  eq(proofErr.skipped, 'unreadable', 'L10 an unreachable budget is reported as unasked, never as agreement');
+  client.getBudget = realGetBudget;
 
   // ---- cleanup -------------------------------------------------------------------
   await db.query(`DELETE FROM applications WHERE id=$1`, [a.id]);

@@ -86,6 +86,25 @@ async function syncStatus(orderRow) {
      remote.subStatus && remote.subStatus.name ? String(remote.subStatus.name).slice(0, 120) : null,
      changed, remote.completedAt ? new Date(remote.completedAt) : null]);
 
+  // THE TIMELINE. Trinity has no history endpoint — verified 2026-08-16, /history,
+  // /events, /statuses and /status all answer 404 — so the sequence the desk shows
+  // ("ordered → scheduled → inspected → report back") exists only because we write each
+  // transition down as we see it. The unique index drops a repeat, so the poller
+  // re-reading the same order every few minutes cannot fill it with copies of one
+  // moment; it is appended on EVERY sync rather than only when our own five-state
+  // ladder moves, because Trinity's own wording changes far more often than our state
+  // does ("Searching for Inspector" → "Accepted by Inspector" → "In Review" are three
+  // distinct things a coordinator wants to see, and two of them are the same state).
+  await require('./order').recordEvent(orderRow.application_id, orderRow.id, {
+    kind: 'status',
+    state: next,
+    statusId,
+    status: remote.status && remote.status.name,
+    substatus: remote.subStatus && remote.subStatus.name,
+    percentComplete: Number.isFinite(Number(remote.percentComplete)) ? Number(remote.percentComplete) : null,
+    source: 'poller',
+  }).catch(() => {});
+
   return {
     ok: true, changed, state: next,
     trinityStatus: remote.status && remote.status.name,

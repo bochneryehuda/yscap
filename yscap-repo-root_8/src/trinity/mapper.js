@@ -225,19 +225,50 @@ function toLineItems(lines) {
       isRequested: requested > 0,
     });
   }
-  return out;
+  // Trinity REFUSES an order whose line keys collide (400, verified) — so this runs on
+  // the way out, always, rather than being left to the caller to remember.
+  return uniquifyKeys(out);
 }
 
 /**
  * The durable per-line crosswalk key. Our job-item id when we have one (it is the
  * identity the rest of the draw stack uses), else the SOW line key. This is what makes
  * "what did the inspector approve on OUR line" answerable — Trinity's budget read-back
- * returns `number: 0` (verified), so identity can NEVER come from the ordinal.
+ * returns `number: 0` (verified on every line of every order), so identity can NEVER
+ * come from the ordinal, and their `description` is not identity either (a real budget
+ * carries two lines called "Kitchen" — verified: both survive, told apart only by this
+ * key).
  */
 function customerKeyForLine(l) {
   if (l.sitewire_job_item_id != null && l.sitewire_job_item_id !== '') return `ji-${l.sitewire_job_item_id}`;
   if (l.sow_line_key) return `sow-${l.sow_line_key}`;
   return `line-${trim(l.name || 'x', 40).toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+}
+
+/**
+ * Make a set of keys unique, keeping the first occurrence untouched.
+ *
+ * TRINITY ENFORCES THIS AND REFUSES THE WHOLE ORDER OTHERWISE — verified 2026-08-16:
+ * two line items sharing a customerKey answers
+ *   400 `2 line items have CustomerKey "ji-3001", line item keys must be unique within
+ *        an order.`
+ * That is good news (their side polices the crosswalk too), but it means a collision is
+ * not a degraded line — it is a REFUSED INSPECTION. Our own keys are derived, and the
+ * last-resort form is a slug of the line's NAME, so two unnamed-but-identically-named
+ * lines on one budget would collide and take the whole order down. Suffixing the
+ * DUPLICATE (never the first) keeps every key stable across re-orders for every line
+ * that was already unique.
+ */
+function uniquifyKeys(items) {
+  const seen = new Map();
+  for (const it of items) {
+    const base = it.customerKey;
+    if (!seen.has(base)) { seen.set(base, 1); continue; }
+    const n = seen.get(base) + 1;
+    seen.set(base, n);
+    it.customerKey = trim(`${base}-${n}`, 255);
+  }
+  return items;
 }
 
 /**
@@ -366,6 +397,103 @@ function buildOrderPayload({
 }
 
 // ---------------------------------------------------------------------------
+// PROOF: did their system actually take the budget we sent?
+// ---------------------------------------------------------------------------
+/**
+ * Reconcile Trinity's stored budget against the line items we sent, line by line.
+ *
+ * Owner-directed 2026-08-16: *"make sure their system really understands our
+ * construction budget … really understands how much was drawn already from each and
+ * every item … how we force them to be linked together."* Sending a budget and having
+ * the order accepted is NOT the same as knowing it arrived intact, and nothing checked.
+ * This is the check, and it runs on every order.
+ *
+ * It compares the four things an inspector actually works from, per line:
+ *   · `itemCost`                  — the construction budget for that item
+ *   · `previousPercentCompleted`  — reconstituted back to CENTS and compared to the
+ *                                   money already drawn (this is the one the owner
+ *                                   cares most about, and the one a rounding change
+ *                                   would silently break)
+ *   · `amountRequested`           — what this draw is asking for
+ *   · `customerKey`               — OUR key on THEIR line: the crosswalk itself
+ *
+ * PURE. `sent` is what `toLineItems` produced (dollars, as sent); `remote` is the budget
+ * read straight back. Returns `{ok, problems[], summary}` — `problems` is plain language
+ * for the desk, never a stack trace, and is capped so one badly-broken order cannot
+ * write a novel into a text column.
+ *
+ * THE CENTS TOLERANCE IS ONE CENT PER LINE, AND THAT IS NOT SLOP. The drawn figure makes
+ * a round trip through a percentage (cents → % at 6 dp → cents), which is exact for
+ * every realistic line but is still a conversion; a single cent of dust must not raise
+ * an alarm on an order that is in fact correct. Anything larger is a real disagreement.
+ */
+const CENT_TOLERANCE = 1;
+const MAX_PROBLEMS = 12;
+
+function verifyRemoteBudget(sent, remote) {
+  const problems = [];
+  const items = (remote && Array.isArray(remote.lineItems)) ? remote.lineItems : null;
+  if (!items) {
+    return { ok: false, problems: ['Trinity returned no budget to check.'], summary: null, checked: 0 };
+  }
+
+  const byKey = new Map();
+  for (const it of items) if (it && it.customerKey != null) byKey.set(String(it.customerKey), it);
+
+  let checked = 0;
+  for (const s of sent || []) {
+    const t = byKey.get(String(s.customerKey));
+    if (!t) {
+      // The crosswalk is broken for this line: whatever the inspector approves on it,
+      // we would not know which of our budget lines it belongs to.
+      problems.push(`"${trim(s.description, 40)}" is not on Trinity's budget under our reference.`);
+      continue;
+    }
+    checked++;
+    const ourCost = Math.round(Number(s.itemCost || 0) * 100);
+    const theirCost = Math.round(Number(t.itemCost || 0) * 100);
+    if (Math.abs(theirCost - ourCost) > CENT_TOLERANCE) {
+      problems.push(`"${trim(s.description, 40)}": budget ${usdish(ourCost)} on our side, ${usdish(theirCost)} on Trinity's.`);
+    }
+    const ourReq = Math.round(Number(s.amountRequested || 0) * 100);
+    const theirReq = Math.round(Number(t.amountRequested || 0) * 100);
+    if (Math.abs(theirReq - ourReq) > CENT_TOLERANCE) {
+      problems.push(`"${trim(s.description, 40)}": this draw asks for ${usdish(ourReq)}, Trinity recorded ${usdish(theirReq)}.`);
+    }
+    // The historical draw, converted back the way Trinity's own screen does it.
+    const ourDrawn = Math.round(ourCost * (Number(s.previousPercentCompleted || 0) / 100));
+    const theirDrawn = Math.round(theirCost * (Number(t.previousPercentCompleted || 0) / 100));
+    if (Math.abs(theirDrawn - ourDrawn) > CENT_TOLERANCE) {
+      problems.push(`"${trim(s.description, 40)}": already drawn ${usdish(ourDrawn)} on our side, Trinity shows ${usdish(theirDrawn)}.`);
+    }
+  }
+
+  // A line on THEIR budget that is not on ours is not an error — Trinity's team may add
+  // one (a trip fee) — but the desk should know it is there, because it will turn up in
+  // the results with no line of ours to belong to.
+  const extra = items.filter((it) => !(sent || []).some((s) => String(s.customerKey) === String(it.customerKey)));
+
+  const t = (remote && remote.total) || {};
+  const summary = {
+    lines: items.length,
+    checked,
+    extraLines: extra.length,
+    extraNames: extra.slice(0, 5).map((e) => trim(e.description, 40)),
+    remoteBudgetCents: Math.round(Number(t.totalCost || 0) * 100),
+    remoteDrawnCents: Math.round(Number(t.previousCostCompleted || 0) * 100),
+  };
+
+  const capped = problems.slice(0, MAX_PROBLEMS);
+  if (problems.length > MAX_PROBLEMS) capped.push(`…and ${problems.length - MAX_PROBLEMS} more.`);
+  return { ok: problems.length === 0, problems: capped, summary, checked };
+}
+
+/** Plain dollars for a desk message. Not money math — display only. */
+function usdish(cents) {
+  return '$' + (Number(cents || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// ---------------------------------------------------------------------------
 // BACK: Trinity's completed budget -> what the inspector approved, in CENTS
 // ---------------------------------------------------------------------------
 /**
@@ -477,7 +605,7 @@ function toApprovalEntries(resultLines, requestLines) {
 module.exports = {
   STATUS, COMPLETED_IDS, ATTENTION_IDS, ORDER_OF_STATE, PCT_DECIMALS,
   readStatus, nextState,
-  previousPct, toLineItems, customerKeyForLine, buildOrderPayload,
-  readResults, toApprovalEntries,
-  _internals: { cleanPhone, firstUsablePhone, cleanZip, cleanEmail, splitName, trim, centsToDollars },
+  previousPct, toLineItems, customerKeyForLine, uniquifyKeys, buildOrderPayload,
+  readResults, toApprovalEntries, verifyRemoteBudget,
+  _internals: { cleanPhone, firstUsablePhone, cleanZip, cleanEmail, splitName, trim, centsToDollars, usdish },
 };
