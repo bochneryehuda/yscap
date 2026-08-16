@@ -138,3 +138,120 @@ eq(steps.filter((s) => stepRuns(s, 'everything')).length, steps.length,
 
 console.log(`ci-scope: ${n} assertions passed ` +
   `(long-term plan = ${ltPlan.length} of ${steps.length} steps)`);
+
+// ---------------------------------------------------------------------------
+// G. TEST IMPACT — the measured selector.
+//
+// The governing property is asymmetric and every assertion below tests that
+// side of it: the map may ADD a test, never excuse one. So the interesting
+// cases are all the ways it must REFUSE to narrow, not the happy path.
+// ---------------------------------------------------------------------------
+const { loadDepMap, impactedTests, stepRunsImpacted, MAX_MAP_AGE_DAYS, _internals: I2 } = require('./ci-scope');
+
+const TODAY = '2026-08-16';
+const MAP = {
+  builtAtUtcDay: '2026-08-15',
+  tests: {
+    'test-pricing-pure.js': ['src/lib/pricing.js', 'src/lib/rehab-budget.js'],
+    'test-draw-email-pure.js': ['src/lib/email/draw-email.js', 'src/sitewire/rollup.js'],
+    'test-react-hook-order.js': ['app-v2/src/screens/StaffDraws.jsx'],
+  },
+};
+const P = (f) => `yscap-repo-root_8/${f}`;
+
+// The happy path: a change reaches exactly the tests that recorded it.
+let r = impactedTests([P('src/lib/pricing.js')], MAP, TODAY);
+ok(r.ok, 'a mapped file selects');
+eq(r.tests.size, 1, 'one test recorded touching pricing.js');
+ok(r.tests.has('test-pricing-pure.js'), 'and it is the right one');
+
+// A file two tests share selects both.
+r = impactedTests([P('src/lib/pricing.js'), P('src/sitewire/rollup.js')], MAP, TODAY);
+eq(r.tests.size, 2, 'two changed files select both their tests');
+
+// A source guard that only ever READ a .jsx is still selected by a change to it.
+// This is the case a require-only map would miss entirely.
+r = impactedTests([P('app-v2/src/screens/StaffDraws.jsx')], MAP, TODAY);
+ok(r.ok && r.tests.has('test-react-hook-order.js'),
+  'a test that only READS a file is still selected when that file changes');
+
+// --- every way it must refuse to narrow ---
+ok(!impactedTests([P('src/lib/brand-new.js')], MAP, TODAY).ok,
+  'a file no test was ever recorded touching runs everything');
+ok(!impactedTests([P('db/552_new_thing.sql')], MAP, TODAY).ok,
+  'a new migration runs everything — nothing recorded reading it');
+ok(!impactedTests([P('src/lib/pricing.js')], null, TODAY).ok, 'no map at all runs everything');
+ok(!impactedTests([P('src/lib/pricing.js')], { tests: {} }, TODAY).ok, 'an empty map runs everything');
+ok(!impactedTests([P('src/lib/pricing.js')], { builtAtUtcDay: 'nonsense', tests: MAP.tests }, TODAY).ok,
+  'a map with an unusable date runs everything');
+ok(!impactedTests([P('src/lib/pricing.js')], { builtAtUtcDay: '2026-09-01', tests: MAP.tests }, TODAY).ok,
+  'a map dated in the FUTURE runs everything — a clock we cannot trust is not evidence');
+ok(!impactedTests([P('src/lib/pricing.js')], { builtAtUtcDay: '2026-07-01', tests: MAP.tests }, TODAY).ok,
+  `a map older than ${MAX_MAP_AGE_DAYS} days runs everything`);
+ok(impactedTests([P('src/lib/pricing.js')], { builtAtUtcDay: '2026-08-02', tests: MAP.tests }, TODAY).ok,
+  'a map exactly inside the age limit is still trusted');
+ok(!impactedTests(['some/other/repo/file.js'], MAP, TODAY).ok,
+  'a path outside the project folder runs everything');
+
+// A changed TEST always runs itself, even one the baseline never mapped.
+r = impactedTests([P('scripts/test-brand-new-thing.js')], MAP, TODAY);
+ok(r.ok && r.tests.has('test-brand-new-thing.js'), 'a brand-new test file selects itself');
+
+// loadDepMap swallows every failure into "run everything".
+eq(loadDepMap({ readFileSync() { throw new Error('nope'); } }, path, __dirname), null,
+  'an unreadable map file reads as no map');
+eq(loadDepMap({ readFileSync: () => 'not json' }, path, __dirname), null, 'malformed JSON reads as no map');
+eq(loadDepMap({ readFileSync: () => '{"tests":null}' }, path, __dirname), null, 'a null test set reads as no map');
+
+// stepRunsImpacted — the always-run gates survive every narrowing.
+const someTests = new Set(['test-pricing-pure.js']);
+ok(stepRunsImpacted('node scripts/test-pricing-pure.js', someTests), 'an impacted test runs');
+ok(!stepRunsImpacted('node scripts/test-tpo-orders-db.js', someTests), 'an unimpacted test does not');
+for (const g of I2.ALWAYS_RUN_STEPS) {
+  ok(stepRunsImpacted(`node scripts/${g}`, someTests), `the ${g} gate runs even when narrowed`);
+}
+ok(stepRunsImpacted('npm run something-odd', someTests), 'a step whose script cannot be read is run');
+ok(stepRunsImpacted('node scripts/test-anything.js', null), 'a null test set runs everything');
+
+// daysBetween, the primitive the age guard rests on.
+eq(I2.daysBetween('2026-08-01', '2026-08-16'), 15, 'daysBetween counts whole days');
+eq(I2.daysBetween('bad', '2026-08-16'), null, 'daysBetween refuses an unusable date');
+
+
+// ---------------------------------------------------------------------------
+// G2. The guards the first mutation battery proved were NOT covered.
+//
+// Two of section G's assertions passed for the wrong reason — the same trap
+// section D fell into. An empty map was refused because it also had no date,
+// and a null map was "caught" only by throwing. Both are tested directly here,
+// where nothing else can mask them.
+// ---------------------------------------------------------------------------
+const DATED_BUT_EMPTY = JSON.stringify({ builtAtUtcDay: TODAY, tests: {} });
+eq(loadDepMap({ readFileSync: () => DATED_BUT_EMPTY }, path, __dirname), null,
+  'a map with a PERFECTLY GOOD date but no tests in it still reads as no map');
+
+// impactedTests must never throw — a selector that throws stops a build for a
+// reason nobody can act on. Every shape of rubbish answers "everything".
+for (const [label, bad] of [
+  ['null', null], ['a string', 'nope'], ['a number', 7], ['an array', []],
+  ['an object with no tests', { builtAtUtcDay: TODAY }],
+  ['tests set to null', { builtAtUtcDay: TODAY, tests: null }],
+  ['tests set to a string', { builtAtUtcDay: TODAY, tests: 'x' }],
+]) {
+  let res;
+  assert.doesNotThrow(() => { res = impactedTests([P('src/lib/pricing.js')], bad, TODAY); },
+    `impactedTests does not throw on ${label}`);
+  n++;
+  ok(res && res.ok === false, `impactedTests answers "everything" for ${label}`);
+}
+
+// And a dep list that is not an array cannot crash the scan either.
+let res2;
+assert.doesNotThrow(() => {
+  res2 = impactedTests([P('src/lib/pricing.js')],
+    { builtAtUtcDay: TODAY, tests: { 'test-a.js': null } }, TODAY);
+}, 'a malformed dep list does not throw');
+n++;
+ok(res2 && res2.ok === false, 'a malformed dep list answers "everything"');
+
+console.log(`ci-scope impact: ${n} assertions passed in total`);

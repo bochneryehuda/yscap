@@ -30,7 +30,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { scopeFor, stepRuns } = require('./ci-scope');
+const { scopeFor, stepRuns, loadDepMap, impactedTests, stepRunsImpacted } = require('./ci-scope');
 
 /** Every step of `npm test`, in order, exactly as package.json declares them. */
 function allSteps() {
@@ -56,11 +56,40 @@ function main() {
   const i = argv.indexOf('--changed-from');
   const changed = i >= 0 && argv[i + 1] ? readChangedFiles(argv[i + 1]) : null;
 
-  const decision = scopeFor(changed);
   const steps = allSteps();
-  const plan = steps.filter((s) => stepRuns(s, decision.scope));
 
-  console.log(`[ci-plan] scope: ${decision.scope} — ${decision.reason}`);
+  // TWO SELECTORS, TRIED CHEAPEST-AND-MOST-CERTAIN FIRST.
+  //
+  // 1. Is the change provably Long-Term-only? That answer comes from the
+  //    separation law, which CI re-proves on every run, so it needs no
+  //    measurement and cannot go stale.
+  // 2. Otherwise, ask the measured impact map which tests can reach these
+  //    files. Anything it cannot answer confidently falls through to the whole
+  //    suite — the map may only ever ADD a test, never excuse one.
+  const decision = scopeFor(changed);
+  let plan, how;
+
+  if (decision.scope === 'long_term_only') {
+    plan = steps.filter((s) => stepRuns(s, decision.scope));
+    how = `long-term only — ${decision.reason}`;
+  } else if (Array.isArray(changed) && changed.length) {
+    const files = changed.map((s) => String(s).trim()).filter(Boolean);
+    const map = loadDepMap(fs, path, __dirname);
+    const today = new Date().toISOString().slice(0, 10);
+    const impact = impactedTests(files, map, today);
+    if (impact.ok) {
+      plan = steps.filter((s) => stepRunsImpacted(s, impact.tests));
+      how = `impacted only — ${impact.reason}`;
+    } else {
+      plan = steps;
+      how = `everything — ${impact.reason}`;
+    }
+  } else {
+    plan = steps;
+    how = `everything — ${decision.reason}`;
+  }
+
+  console.log(`[ci-plan] ${how}`);
   console.log(`[ci-plan] running ${plan.length} of ${steps.length} step(s)`);
 
   // A selector that silently selected nothing would report a green build having

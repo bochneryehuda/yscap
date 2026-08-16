@@ -140,8 +140,130 @@ function stepRuns(step, scope) {
   return ALWAYS_RUN_STEPS.some((name) => step.includes(name));
 }
 
+// =============================================================================
+// TEST IMPACT — run only the tests a change can actually reach
+// =============================================================================
+//
+// The Long-Term rule above answers one narrow question very cheaply. This
+// answers the general one, and it does it from MEASUREMENT: `ci-deps-build.js`
+// records, during a full run with a database, which repository files each test
+// actually read or required. A change then selects the tests whose recorded
+// list contains one of the changed files. Microsoft's Test Impact Analysis is
+// the same shape, including the part that matters most —
+//
+//   ANYTHING THE MAP DOES NOT KNOW ABOUT RUNS EVERYTHING.
+//
+// A new file, a file type nothing recorded, a test that failed or was skipped
+// during the baseline, a map that is missing, unreadable, or older than
+// MAX_MAP_AGE_DAYS — every one of those falls back to the whole suite. The map
+// can only ever be used to ADD confidence that a test is needed; it is never
+// evidence that one is not.
+
+const MAX_MAP_AGE_DAYS = 14;
+
+/** Load the recorded map. Any problem at all answers null, which means "run everything". */
+function loadDepMap(fsMod, pathMod, dirname) {
+  try {
+    const file = pathMod.join(dirname, '..', 'docs', 'ci', 'test-deps.json');
+    const raw = JSON.parse(fsMod.readFileSync(file, 'utf8'));
+    if (!raw || typeof raw.tests !== 'object' || !raw.tests) return null;
+    if (!Object.keys(raw.tests).length) return null;
+    return raw;
+  } catch (_) { return null; }
+}
+
+/** Whole days between two YYYY-MM-DD strings; null if either is unusable. */
+function daysBetween(fromDay, toDay) {
+  const a = Date.parse(`${fromDay}T00:00:00Z`);
+  const b = Date.parse(`${toDay}T00:00:00Z`);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return Math.round((b - a) / 86400000);
+}
+
+/**
+ * Which tests can this change reach?
+ *
+ * @param {string[]} files   changed paths, already cleaned, relative to the git root
+ * @param {object}   map     the parsed test-deps.json
+ * @param {string}   todayUtcDay  'YYYY-MM-DD' — passed in, never read from the clock,
+ *                                so the decision is reproducible and testable
+ * @returns {{ok:boolean, reason:string, tests?:Set<string>}}
+ */
+function impactedTests(files, map, todayUtcDay) {
+  try {
+    return impactedTestsInner(files, map, todayUtcDay);
+  } catch (e) {
+    // A selector that throws is a selector that stops the build for a reason
+    // nobody can act on. Any internal failure answers "everything" instead —
+    // slower, never weaker. Proven by a mutation test rather than assumed.
+    return { ok: false, reason: `the impact map could not be read (${e && e.message})` };
+  }
+}
+
+function impactedTestsInner(files, map, todayUtcDay) {
+  // BE HONEST: this guard changes no OUTCOME. Mutation testing showed that
+  // deleting it leaves the suite green, because the try/catch above already
+  // turns the resulting TypeError into the same "run everything" answer.
+  // It is kept for one small real reason — it produces a reason a human can
+  // act on ("no dependency map") instead of a caught "cannot read properties
+  // of null". Removing the CATCH, by contrast, IS caught by the tests: that
+  // one is load-bearing.
+  if (!map || typeof map !== 'object' || !map.tests) {
+    return { ok: false, reason: 'no dependency map — running everything' };
+  }
+
+  const age = daysBetween(map.builtAtUtcDay, todayUtcDay);
+  if (age === null) return { ok: false, reason: 'the dependency map has no usable date' };
+  if (age < 0) return { ok: false, reason: 'the dependency map is dated in the future' };
+  if (age > MAX_MAP_AGE_DAYS) {
+    return { ok: false, reason: `the dependency map is ${age} days old (limit ${MAX_MAP_AGE_DAYS})` };
+  }
+
+  // Every file any test was recorded as touching. A changed file outside this
+  // set is one the baseline never saw — a new module, a new migration, a file
+  // type nothing reads — and we cannot reason about it.
+  const known = new Set();
+  for (const deps of Object.values(map.tests)) for (const d of deps) known.add(d);
+
+  const wanted = new Set();
+  for (const f of files) {
+    // The repo lives in a subfolder; the map is relative to that folder while
+    // the changed-file list is relative to the git root.
+    const inner = f.startsWith('yscap-repo-root_8/') ? f.slice('yscap-repo-root_8/'.length) : null;
+    if (!inner) return { ok: false, reason: `${f} is outside the project folder` };
+
+    // A changed TEST always runs itself, whatever the map says.
+    const asTest = inner.startsWith('scripts/') ? inner.slice('scripts/'.length) : null;
+    if (asTest && (map.tests[asTest] || /^(test|check)-/.test(asTest))) wanted.add(asTest);
+
+    if (!known.has(inner)) {
+      if (asTest) continue;                       // a test file we just handled
+      return { ok: false, reason: `no test was ever recorded touching ${inner}` };
+    }
+    for (const [test, deps] of Object.entries(map.tests)) {
+      if (deps.includes(inner)) wanted.add(test);
+    }
+  }
+
+  return { ok: true, reason: `${wanted.size} test(s) can reach these ${files.length} file(s)`, tests: wanted };
+}
+
+/** Should this step run, given an impacted-test set? Always-run steps always do. */
+function stepRunsImpacted(step, tests) {
+  if (typeof step !== 'string') return true;
+  if (ALWAYS_RUN_STEPS.some((name) => step.includes(name))) return true;
+  const m = step.match(/scripts\/([\w.-]+\.(?:js|mjs))/);
+  if (!m) return true;                      // a step we cannot read is a step we run
+  if (!tests) return true;
+  return tests.has(m[1]);
+}
+
 module.exports = {
   scopeFor,
   stepRuns,
-  _internals: { LT_PATTERNS, ALWAYS_FULL, ALWAYS_RUN_STEPS, LT_STEP, isLtPath, isAlwaysFull, cleanPath },
+  loadDepMap,
+  impactedTests,
+  stepRunsImpacted,
+  MAX_MAP_AGE_DAYS,
+  _internals: { LT_PATTERNS, ALWAYS_FULL, ALWAYS_RUN_STEPS, LT_STEP, isLtPath, isAlwaysFull, cleanPath, daysBetween },
 };

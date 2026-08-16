@@ -17,6 +17,27 @@ on:
   pull_request:
   push:
     branches: [main]
+  # THE FULL SUITE, ON A CLOCK (owner-directed 2026-08-16: "another full test
+  # all the time again and again").
+  #
+  # A pull request may run a reduced plan. There are now THREE counterweights,
+  # and the first one already existed:
+  #   1. EVERY MERGE TO MAIN runs the whole suite — that is the `push` trigger
+  #      above, and it is what actually gates the deploy. Nothing reaches a
+  #      borrower without all 897 steps passing.
+  #   2. THIS nightly run catches what a per-change run structurally cannot: a
+  #      flaky test, a vendor or dependency that changed underneath us, and
+  #      anything time-dependent.
+  #   3. `workflow_dispatch` — one button, full suite, any time.
+  #
+  # WHY NIGHTLY AND NOT HOURLY, stated plainly because it is a cost decision:
+  # the database job takes ~20 minutes, so every 3 hours would be ~200 minutes
+  # a day of private-repo Actions time and would exhaust a 2,000-minute monthly
+  # allowance in about ten days. Nightly plus every-merge gives the same safety
+  # for a fraction of that. Change the cron here to go more often.
+  schedule:
+    - cron: '0 7 * * *'     # 07:00 UTC — about 3am New York
+  workflow_dispatch:
 
 # ---------------------------------------------------------------------------
 # STOP SUPERSEDED PULL-REQUEST RUNS FROM HOLDING THE QUEUE (owner-reported
