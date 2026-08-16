@@ -17,6 +17,7 @@ const access = require('../access');
 const contacts = require('../people/contacts');
 const workspace = require('../workspace');
 const locks = require('../locks');
+const milestones = require('../milestones');
 const ltFile = require('../file');
 const stages = require('../stages');
 const settingsStore = require('../settings/store');
@@ -93,12 +94,22 @@ router.get('/:loanId', async (req, res) => {
     // Aliased to what the workspace expects rather than renamed there, so the
     // stepper stays a pure function of a plain shape. `is_archived` milestones are
     // excluded: a retired step must not sit in the middle of a live file's progress.
+    // `expected_days` rides along so the workspace can say whether the loan has been
+    // sitting where it is for longer than the TENANT's own expectation — the plan's
+    // "a stalled file reads as stalled without a word of text".
     const { rows: catalog } = await db.query(
-      `SELECT milestone_name AS name, sequence AS sort_order
+      `SELECT milestone_name AS name, sequence AS sort_order, expected_days
          FROM lt_encompass_milestones
         WHERE COALESCE(is_archived, false) = false
         ORDER BY sequence`,
     ).catch(() => ({ rows: [] }));
+
+    // When PILOT watched this loan reach each milestone. Best-effort and EMPTY when
+    // unreadable, which draws the stepper with no dates rather than with wrong ones.
+    const reachedAt = await milestones.reachedAtByMilestone(rows[0].id).catch(() => ({}));
+    const currentMs = catalog.find(
+      (m) => String(m.name || '').trim().toLowerCase() === String(rows[0].milestone_name || '').trim().toLowerCase(),
+    );
 
     // The lock's own detail — the posture, the countdown, and what PILOT watched
     // change. Best-effort: a loan still opens when its lock cannot be read.
@@ -117,7 +128,12 @@ router.get('/:loanId', async (req, res) => {
       sections: workspace.sectionMenu(rows[0], {
         conditionsEnabled: settings['conditions.enabled'] === true,
       }),
-      stepper: workspace.milestoneStepper(rows[0], catalog),
+      stepper: workspace.milestoneStepper(rows[0], catalog, { reachedAt }),
+      // How long it has been at this milestone — and, when the first sighting is all
+      // we have, a plain sentence saying we do not know rather than a number we made up.
+      milestoneClock: milestones.describeClock(rows[0], {
+        expectedDays: currentMs ? currentMs.expected_days : null,
+      }),
       // The rail's property figures come from the SAME sections the Property tab
       // renders, so the two can never state different values for one loan.
       rail: workspace.summaryRail(rows[0], {

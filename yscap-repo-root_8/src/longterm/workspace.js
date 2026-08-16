@@ -100,7 +100,7 @@ function sectionMenu(loan, opts = {}) {
  * at -1, and NOTHING is marked reached — inventing progress from an unknown position
  * is worse than showing none.
  */
-function milestoneStepper(loan, catalog = []) {
+function milestoneStepper(loan, catalog = [], opts = {}) {
   const current = stages.normalizeMilestone((loan || {}).milestone_name);
   const ordered = (catalog || []).slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   const currentIndex = ordered.findIndex((m) => stages.normalizeMilestone(m.name) === current);
@@ -111,11 +111,21 @@ function milestoneStepper(loan, catalog = []) {
     // True only when the loan names a milestone the catalog does not carry — the
     // screen says "we do not recognise this milestone" rather than drawing nothing.
     unrecognised: !!current && currentIndex === -1,
+    // `reachedAt` is a date PILOT WATCHED this loan arrive at that milestone, from
+    // `lt_milestone_events` (db/554) — passed in by the caller, never read off the
+    // catalog row. This used to be `m.completed_at`, a column that does not exist:
+    // the rows here come from `lt_encompass_milestones`, the tenant's GLOBAL catalog
+    // of milestone names, which has no per-loan row and no completion date at all.
+    // So the field was null on every step of every loan, silently, forever.
+    //
+    // Encompass's own completion dates are unreadable on this tenant (the milestone
+    // log answers 403), so a step we did not witness has NO date — never a guess, and
+    // never the day we first noticed the loan sitting there.
     steps: ordered.map((m, i) => ({
       name: m.name,
       reached: currentIndex >= 0 && i <= currentIndex,
       current: i === currentIndex,
-      completedAt: m.completed_at || null,
+      reachedAt: (opts.reachedAt || {})[String(m.name || '').trim().toLowerCase()] || null,
     })),
   };
 }

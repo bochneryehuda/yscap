@@ -92,21 +92,42 @@ function Rail({ rail }) {
   );
 }
 
-function Stepper({ stepper }) {
+function Stepper({ stepper, clock }) {
   if (!stepper || !stepper.steps || !stepper.steps.length) return null;
   return (
     <div className="card" style={{ color: INK, marginBottom: 12 }}>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
         {stepper.steps.map((s) => (
           <span key={s.name} style={{
+            display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 1,
             fontSize: 12, padding: '3px 9px', borderRadius: 999, whiteSpace: 'nowrap',
             border: `1px solid ${s.current ? GOLD : 'rgba(20,27,34,.14)'}`,
             background: s.current ? 'rgba(174,135,70,.14)' : s.reached ? '#F4F1EA' : 'transparent',
             color: s.reached || s.current ? INK : MUTED,
             fontWeight: s.current ? 700 : 500,
-          }}>{s.name}</span>
+          }}>
+            <span>{s.name}</span>
+            {/* A date ONLY where PILOT actually watched the loan arrive. Encompass's own
+                milestone log is unreadable on this tenant, so a step we did not witness
+                shows nothing — never the day we first noticed the loan sitting there. */}
+            {s.reachedAt ? (
+              <span style={{ fontSize: 10, fontWeight: 500, color: MUTED }}>{day(s.reachedAt)}</span>
+            ) : null}
+          </span>
         ))}
       </div>
+
+      {/* How long it has been here. The server sends the sentence, because the whole
+          point is the difference between "6 days, longer than expected" and "we do not
+          know, we only started watching" — and that distinction must not be re-derived
+          on a screen where it could be got wrong. */}
+      {clock && clock.note ? (
+        <div style={{
+          marginTop: 8, fontSize: 12,
+          color: clock.stalled ? '#8A2D2D' : MUTED,
+          fontWeight: clock.stalled ? 600 : 400,
+        }}>{clock.note}</div>
+      ) : null}
       {/* Nothing is marked reached from a milestone the catalog does not carry, so the
           screen has to SAY that rather than draw an empty ladder. */}
       {stepper.unrecognised && (
@@ -222,7 +243,7 @@ export default function LtLoan() {
   }
   if (!data) return <LtLayout title="Long-term file"><div className="card" style={{ color: INK }}>Loading…</div></LtLayout>;
 
-  const { rail, stepper, sections = [], contacts = [], lock, file } = data;
+  const { rail, stepper, sections = [], contacts = [], lock, file, milestoneClock } = data;
   const current = sections.find((s) => s.key === active) || sections[0];
   // A section is drawn from the file ONLY when the server said it applies. A section
   // the workspace greyed out has a reason attached, and that reason is the answer —
@@ -231,7 +252,7 @@ export default function LtLoan() {
 
   return (
     <LtLayout title={rail && rail.loanNumber ? `Loan ${rail.loanNumber}` : 'Long-term file'}>
-      <Stepper stepper={stepper} />
+      <Stepper stepper={stepper} clock={milestoneClock} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 300px', gap: 14, alignItems: 'start' }}
         className="lt-workspace">
