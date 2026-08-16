@@ -22,7 +22,21 @@
  * LT-only. No RTL imports.
  */
 
-const SEVERITY = { ELIGIBILITY: 'eligibility_mismatch', PRICE: 'price_mismatch', RATE: 'rate_mismatch', MISSING_OURS: 'rung_missing_ours', MISSING_THEIRS: 'rung_missing_theirs' };
+const SEVERITY = { ELIGIBILITY: 'eligibility_mismatch', PRICE: 'price_mismatch', RATE: 'rate_mismatch', MISSING_OURS: 'rung_missing_ours', MISSING_THEIRS: 'rung_missing_theirs', INCOMPARABLE: 'incomparable' };
+
+// A side is COMPARABLE only when the engine actually produced a result: a ladder array, or an object
+// that STATES eligibility or carries a ladder. Anything else — null, undefined, a primitive, an empty
+// object — is ABSENT: the engine gave no answer, so the scenario cannot be fully compared. §10.6: an
+// incomparable scenario is recorded with its reason and is NEVER scored as agreement (a missing side
+// would otherwise read as "ineligible" and could silently agree with the other side's ineligible).
+function isComparable(x) {
+  if (Array.isArray(x)) return true;
+  if (x && typeof x === 'object') {
+    if (typeof x.eligible === 'boolean') return true;
+    if (Array.isArray(x.ladder) || Array.isArray(x.rungs)) return true;
+  }
+  return false;
+}
 
 // Map a quote.js result into the normalized ladder [{ rate, priceMilli }] the comparator uses.
 function normalizeOurQuote(q) {
@@ -51,10 +65,21 @@ function normalizeLadder(x) {
 function compareScenario(ours, theirs, opts = {}) {
   const priceTol = opts.priceToleranceMilli == null ? 1 : opts.priceToleranceMilli;
   const rateTol = opts.rateToleranceMilli == null ? 0 : opts.rateToleranceMilli;
+  const tag = (f) => (opts.scenario ? { ...f, scenario: opts.scenario } : f);
+
+  // 0) §10.6 — a side that produced no result cannot be compared; never scored as agreement.
+  const oursOk = isComparable(ours);
+  const theirsOk = isComparable(theirs);
+  if (!oursOk || !theirsOk) {
+    const side = (!oursOk && !theirsOk) ? 'both' : (!oursOk ? 'ours' : 'theirs');
+    const who = side === 'both' ? 'neither engine' : (side === 'ours' ? 'our engine' : 'Lender Price');
+    const detail = `${who} produced no result to compare — scenario left incomparable`;
+    return { agree: false, incomparable: true, reason: detail, findings: [tag({ kind: SEVERITY.INCOMPARABLE, side, detail })] };
+  }
+
   const A = normalizeLadder(normalizeOurQuoteMaybe(ours));
   const B = normalizeLadder(normalizeOurQuoteMaybe(theirs));
   const findings = [];
-  const tag = (f) => (opts.scenario ? { ...f, scenario: opts.scenario } : f);
 
   // 1) eligibility.
   if (A.eligible !== B.eligible) {
@@ -95,14 +120,19 @@ function normalizeOurQuoteMaybe(x) {
 
 // Roll a batch of per-scenario results into a scoreboard (§10.5): totals + per-kind finding counts.
 function summarize(results) {
-  const out = { scenarios: 0, agreed: 0, disagreed: 0, findings: 0, byKind: {} };
+  const out = { scenarios: 0, agreed: 0, disagreed: 0, incomparable: 0, comparable: 0, findings: 0, byKind: {} };
   for (const r of results || []) {
     out.scenarios += 1;
-    if (r.agree) out.agreed += 1; else out.disagreed += 1;
+    if (r.incomparable) out.incomparable += 1;
+    else if (r.agree) out.agreed += 1;
+    else out.disagreed += 1;
     for (const f of r.findings || []) { out.findings += 1; out.byKind[f.kind] = (out.byKind[f.kind] || 0) + 1; }
   }
-  out.agreementRate = out.scenarios ? out.agreed / out.scenarios : null;
+  out.comparable = out.agreed + out.disagreed;
+  // §10.6: the agreement rate is over what could actually be COMPARED — an incomparable scenario is
+  // never counted as agreement AND never dilutes the rate as a disagreement.
+  out.agreementRate = out.comparable ? out.agreed / out.comparable : null;
   return out;
 }
 
-module.exports = { SEVERITY, normalizeOurQuote, normalizeLadder, compareScenario, summarize };
+module.exports = { SEVERITY, normalizeOurQuote, normalizeLadder, compareScenario, summarize, _internals: { isComparable } };

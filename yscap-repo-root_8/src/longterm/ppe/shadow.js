@@ -40,7 +40,7 @@ async function runOne(scenario, ours, theirs, opts) {
     return { agree: false, scenario: tag, error: 'theirs', findings: [{ kind: ERROR_KIND, side: 'theirs', detail: `Lender Price threw: ${errText(e)}`, scenario: tag }] };
   }
   const cmp = parity.compareScenario(a, b, { ...opts, scenario: tag });
-  return { agree: cmp.agree, scenario: tag, findings: cmp.findings };
+  return { agree: cmp.agree, incomparable: cmp.incomparable || false, scenario: tag, findings: cmp.findings };
 }
 
 function errText(e) {

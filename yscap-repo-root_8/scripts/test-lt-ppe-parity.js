@@ -123,6 +123,58 @@ const eq = (a, b, msg) => { assert.strictEqual(a, b, msg); n += 1; };
   eq(r.findings[0].scenario.program, 'X', 'scenario echoed onto findings');
 })();
 
+// ---- §10.6 incomparable: a side with no result is never scored as agreement -
+(() => {
+  const ladder = { eligible: true, ladder: [{ rate: 7000, finalPriceMilli: 100000 }] };
+
+  // our engine gave nothing (null) — must NOT read as ineligible-agrees-with-ineligible
+  const oursMissing = P.compareScenario(null, { eligible: false });
+  eq(oursMissing.agree, false, 'ours absent -> not agree');
+  eq(oursMissing.incomparable, true, 'ours absent -> incomparable');
+  eq(oursMissing.findings[0].kind, P.SEVERITY.INCOMPARABLE, 'ours absent -> incomparable finding');
+  eq(oursMissing.findings[0].side, 'ours', 'incomparable names the missing side');
+  ok(/no result/i.test(oursMissing.reason), 'incomparable carries a reason');
+
+  // their engine gave nothing
+  const theirsMissing = P.compareScenario(ladder, undefined);
+  eq(theirsMissing.incomparable, true, 'theirs absent -> incomparable');
+  eq(theirsMissing.findings[0].side, 'theirs', 'incomparable names Lender Price when it is absent');
+
+  // an EMPTY object is not a real result either
+  const emptyObj = P.compareScenario({}, ladder);
+  eq(emptyObj.incomparable, true, 'an empty object is not a comparable result');
+
+  // both absent
+  const both = P.compareScenario(null, null);
+  eq(both.incomparable, true, 'both absent -> incomparable');
+  eq(both.findings[0].side, 'both', 'incomparable names both when neither answered');
+
+  // a REAL ineligible result (has eligible boolean) is still comparable — not incomparable
+  const realIneligible = P.compareScenario({ eligible: false }, { eligible: false });
+  ok(!realIneligible.incomparable, 'a stated ineligible is a real result, still comparable');
+  eq(realIneligible.agree, true, 'two stated ineligibles still agree');
+
+  // the scenario tag is echoed onto the incomparable finding
+  const tagged = P.compareScenario(null, ladder, { scenario: { program: 'Z' } });
+  eq(tagged.findings[0].scenario.program, 'Z', 'incomparable finding carries the scenario tag');
+})();
+
+// ---- summarize splits incomparable out of the agreement rate ---------------
+(() => {
+  const results = [
+    P.compareScenario({ eligible: false }, { eligible: false }),          // agree
+    P.compareScenario({ eligible: true, ladder: [] }, { eligible: false }), // eligibility mismatch (disagree)
+    P.compareScenario(null, { eligible: false }),                          // incomparable
+  ];
+  const s = P.summarize(results);
+  eq(s.scenarios, 3, 'summarize: all scenarios counted');
+  eq(s.agreed, 1, 'summarize: one agreed');
+  eq(s.disagreed, 1, 'summarize: one disagreed (incomparable not counted here)');
+  eq(s.incomparable, 1, 'summarize: one incomparable');
+  eq(s.comparable, 2, 'summarize: comparable = agreed + disagreed');
+  ok(Math.abs(s.agreementRate - 1 / 2) < 1e-9, 'summarize: rate is over comparable scenarios (1/2), not 1/3');
+})();
+
 // ---- summarize scoreboard ---------------------------------------------------
 (() => {
   const results = [

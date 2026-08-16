@@ -63,7 +63,9 @@ Never introduce a float price/rate on a stored or compared value; never re-deriv
   ours and recording findings **without ever blocking the response or letting a shadow failure break
   the business answer**. Live mode + optional canary.
 - **`parity.js`** (§10.1) — compare our quote vs LP's for one scenario → agreement + findings
-  (eligibility / rate / price within settings tolerances). `normalizeOurQuote`, `summarize`.
+  (eligibility / rate / price within settings tolerances). §10.6 honesty: a side that produced no
+  result is `incomparable` (never scored as agreement, and kept out of the agreement-rate
+  denominator), never read as a silent "ineligible". `normalizeOurQuote`, `summarize`.
 - **`lp-normalize.js`** — LP's parsed result (percent/points) → the canonical milli ladder parity uses.
 - **`scenario-matrix.js`** — full cartesian battery generator. **`coverage.js`** (§10.3) — one-field
   goldens (A), numeric boundaries (B), pairwise (C).
