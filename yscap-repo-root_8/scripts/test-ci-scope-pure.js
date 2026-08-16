@@ -254,4 +254,42 @@ assert.doesNotThrow(() => {
 n++;
 ok(res2 && res2.ok === false, 'a malformed dep list answers "everything"');
 
+
+// ---------------------------------------------------------------------------
+// G3. The on-disk format is an INDEX, not repeated paths (ci-deps-build.js).
+// loadDepMap expands it, so nothing downstream ever sees the compact form.
+// Every way that expansion could go wrong must answer "no map" -> everything.
+// ---------------------------------------------------------------------------
+const INDEXED = (over) => JSON.stringify(Object.assign({
+  format: 'indexed-v1',
+  builtAtUtcDay: TODAY,
+  files: ['src/lib/pricing.js', 'src/sitewire/rollup.js'],
+  tests: { 'test-a.js': [0], 'test-b.js': [0, 1] },
+}, over || {}));
+
+let expanded = loadDepMap({ readFileSync: () => INDEXED() }, path, __dirname);
+ok(expanded && expanded.tests, 'an indexed map loads');
+assert.deepStrictEqual(expanded.tests['test-a.js'], ['src/lib/pricing.js']); n++;
+assert.deepStrictEqual(expanded.tests['test-b.js'], ['src/lib/pricing.js', 'src/sitewire/rollup.js']); n++;
+
+// And it selects correctly once expanded — the point of the whole exercise.
+let ri = impactedTests([P('src/sitewire/rollup.js')], expanded, TODAY);
+ok(ri.ok && ri.tests.size === 1 && ri.tests.has('test-b.js'),
+  'an indexed map selects the same tests a plain one would');
+
+eq(loadDepMap({ readFileSync: () => INDEXED({ files: 'not an array' }) }, path, __dirname), null,
+  'an indexed map with no file list reads as no map');
+eq(loadDepMap({ readFileSync: () => INDEXED({ tests: { 'test-a.js': 'nope' } }) }, path, __dirname), null,
+  'an entry that is not a list of indexes reads as no map');
+eq(loadDepMap({ readFileSync: () => INDEXED({ tests: { 'test-a.js': [99] } }) }, path, __dirname), null,
+  'an index pointing past the end of the file list reads as no map');
+eq(loadDepMap({ readFileSync: () => INDEXED({ tests: { 'test-a.js': [-1] } }) }, path, __dirname), null,
+  'a negative index reads as no map');
+
+// A map in the OLD plain-path shape still loads — the reader is not
+// format-locked, so a regeneration mid-flight cannot brick selection.
+const PLAIN = JSON.stringify({ builtAtUtcDay: TODAY, tests: { 'test-a.js': ['src/lib/pricing.js'] } });
+ok(loadDepMap({ readFileSync: () => PLAIN }, path, __dirname).tests['test-a.js'][0] === 'src/lib/pricing.js',
+  'a plain-path map still loads');
+
 console.log(`ci-scope impact: ${n} assertions passed in total`);

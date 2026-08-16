@@ -161,13 +161,40 @@ function stepRuns(step, scope) {
 
 const MAX_MAP_AGE_DAYS = 14;
 
-/** Load the recorded map. Any problem at all answers null, which means "run everything". */
+/**
+ * Load the recorded map. Any problem at all answers null, which means "run everything".
+ *
+ * ON THE INNER GUARDS BELOW, HONESTLY: this function's `try/catch` is the
+ * load-bearing part — mutation testing confirms that removing IT is caught,
+ * while removing some of the individual checks inside is NOT, because the throw
+ * they would have prevented is caught anyway and produces the same `null`.
+ * They are kept as defence-in-depth and because each one names a specific
+ * failure, but do not read them as though each independently changes an
+ * outcome. Where a guard CAN be isolated it is tested directly in
+ * `test-ci-scope-pure.js`; the redundant ones are recorded as redundant rather
+ * than left to imply more than they do.
+ */
 function loadDepMap(fsMod, pathMod, dirname) {
   try {
     const file = pathMod.join(dirname, '..', 'docs', 'ci', 'test-deps.json');
     const raw = JSON.parse(fsMod.readFileSync(file, 'utf8'));
     if (!raw || typeof raw.tests !== 'object' || !raw.tests) return null;
     if (!Object.keys(raw.tests).length) return null;
+
+    // The file stores paths once and refers to them by index (see
+    // ci-deps-build.js). Expand it here so everything downstream — and every
+    // test of it — deals in plain path strings and never in this format.
+    if (raw.format === 'indexed-v1') {
+      if (!Array.isArray(raw.files)) return null;
+      const tests = {};
+      for (const [test, idxs] of Object.entries(raw.tests)) {
+        if (!Array.isArray(idxs)) return null;         // a malformed entry is not evidence
+        const paths = idxs.map((i) => raw.files[i]);
+        if (paths.some((p) => typeof p !== 'string')) return null;  // an index out of range
+        tests[test] = paths;
+      }
+      return { ...raw, tests };
+    }
     return raw;
   } catch (_) { return null; }
 }
