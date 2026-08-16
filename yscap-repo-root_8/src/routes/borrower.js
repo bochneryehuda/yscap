@@ -2798,6 +2798,17 @@ router.get('/track-records', async (req, res) => {
             t.purchase_price, t.sale_price, t.rehab_amount, t.purchase_date, t.sale_date,
             t.rent_amount, t.rent_date, t.refi_amount, t.refi_date, t.current_value, t.notes,
             t.is_verified, t.docs_status, t.owned_personally, t.created_at, t.updated_at,
+            /* PROPERTY TYPE ROUND-TRIPS, AND ITS ABSENCE HERE WAS ERASING IT
+               (owner-reported 2026-08-16: "on all the sides we don't have a
+               property type"). The borrower's tool has ASKED for a property type
+               since it shipped and the save door has always stored it — but this
+               list, the only thing the tool reloads from, never sent it back. So
+               the dropdown re-opened empty, and because the tool posts every
+               field it shows, the very next save wrote a blank over the answer.
+               A field that is collected, stored, and then dropped on the way out
+               is worse than one that was never asked for: it looks like the
+               system lost the answer, and on the next save it actually does. */
+            t.property_type,
             COALESCE(t.entity_name, l.llc_name) AS entity_name,
             (SELECT count(*)::int FROM documents d
               WHERE d.track_record_id=t.id AND d.visibility='borrower' AND d.is_current) AS doc_count,
@@ -2905,7 +2916,16 @@ function trackRecordCols(b) {
     refi_date: require('../lib/fields').normalizeTypedDate(b.refiDate),
     current_value: moneyField(b.currentValue),
     notes: b.notes ? String(b.notes).slice(0, 1000) : null,
-    property_type: b.propertyType ? String(b.propertyType).slice(0, 60) : null,
+    /* ONE GOVERNED VOCABULARY, AND ONE REFUSAL. This column took unvalidated
+       free text from every door, which is how `applications.property_type`
+       ended up holding the appraisal FORM CODE "FNM1025" (db/322) — and
+       `track-record-from-file.js` copies that very column onto a track-record
+       line. `sanitizeTrackRecordPropertyType` reuses the same form-code refusal
+       and canonicalises a spelling it recognises, while deliberately still
+       ACCEPTING a type it has not been taught (the importer, ClickUp and
+       Encompass all feed this column, and refusing an unknown spelling would
+       drop a real property type rather than store it). */
+    property_type: require('../lib/property-type').sanitizeTrackRecordPropertyType(b.propertyType),
     entity_name: (!personal && b.entityName) ? String(b.entityName).slice(0, 160) : null,
     /* THE DEDUPE KEY, written on every save from either door (owner-reported
        2026-08-02: "one track record has twice the same address"). Both tool-save

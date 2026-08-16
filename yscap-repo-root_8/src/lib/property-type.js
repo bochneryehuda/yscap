@@ -56,6 +56,151 @@ const PROPERTY_TYPES = Object.freeze([
 ]);
 const LABEL_OF = Object.freeze(Object.fromEntries(PROPERTY_TYPES.map((p) => [p.key, p.label])));
 
+/**
+ * WHAT KIND OF BUILDING A PAST DEAL WAS — the track record's own vocabulary
+ * (owner-directed 2026-08-16: "we should also have the property type in our
+ * track record … on all the sides").
+ *
+ * IT IS A SEPARATE LIST FROM `PROPERTY_TYPES`, AND THAT IS THE POINT, NOT AN
+ * OVERSIGHT. `PROPERTY_TYPES` is the SUBJECT property of an RTL loan we are
+ * about to make — it is the ClickUp dropdown, it is a pricing input, it feeds
+ * the leverage matrix, and adding "Office" to it would quietly widen the loan
+ * product nobody asked to widen. A TRACK RECORD is a record of deals ALREADY
+ * DONE, and a borrower who built a warehouse in 2023 did build a warehouse.
+ * Both lists live in THIS ONE FILE so the vocabulary still has a single home;
+ * neither may be re-typed anywhere else.
+ *
+ * THE SPELLINGS ARE THE BORROWER TOOL'S OWN, KEPT VERBATIM. Five of these
+ * strings have been stored by `web/v2/tools/track-record.js` since it shipped
+ * ("Single-family", "2-4 unit residential", "5+ unit multifamily", "Mixed-use",
+ * "Commercial", "Land / lot"). Re-spelling one would strand every row already
+ * carrying it — a stored value that is no longer an option reads to the user as
+ * "the system lost my answer" — so this list ADDS and never renames.
+ *
+ * "Condo / townhome" IS THE ONE RETIREMENT, and it is a correctness fix rather
+ * than a tidy-up: it names TWO different buildings, `normPropertyType` tests
+ * /condo/ before /town/, so every townhouse stored under it was being read as a
+ * condominium — and on the CorrFirst export that is the difference between
+ * "Condo" and "SFR-Attached" on a file that goes to a note buyer. It is split
+ * into "Condo" and "Townhouse". Nothing is lost: `trackRecordPropertyTypeLabel`
+ * still renders the retired value, and the pickers append a stored value that
+ * is off this list rather than showing an empty box (see LEGACY below).
+ *
+ * EVERY VALUE HERE IS CHECKED AGAINST WHAT A NOTE BUYER'S FORM ACTUALLY OFFERS.
+ * `src/lib/corrfirst-track-record.js` fills CorrFirst's own CSV from this
+ * column, passing a value their form already offers straight through in their
+ * spelling. Fourteen of the sixteen below land on a real CorrFirst option that
+ * way; `Commercial` and `Land / lot` deliberately do not, because CorrFirst's
+ * form has no such option — those ship a BLANK cell and are reported BY NAME,
+ * which is the honest answer and is exactly why the commercial SUB-types are on
+ * this list at all (an office building used to go out blank as "Commercial"; it
+ * now goes out as "Office"). `scripts/test-track-record-property-type-pure.js`
+ * fails the build if a value here stops reaching a real option.
+ *
+ * `Automotive` is on CorrFirst's form and is deliberately ABSENT here — owner,
+ * 2026-08-16: "our system is never gonna use automotive".
+ *
+ * PURE — this file has no requires, so a picker, a route and a test can all read
+ * the same list with nothing else loaded.
+ */
+const TRACK_RECORD_PROPERTY_GROUPS = Object.freeze([
+  Object.freeze({
+    group: 'Residential',
+    types: Object.freeze([
+      'Single-family',
+      'Townhouse',
+      'Condo',
+      'PUD',
+      '2-4 unit residential',
+      '5+ unit multifamily',
+      'Manufactured',
+      'Modular',
+    ]),
+  }),
+  Object.freeze({
+    group: 'Commercial & mixed-use',
+    types: Object.freeze([
+      'Mixed-use',
+      'Office',
+      'Retail',
+      'Industrial',
+      'Warehouse',
+      'Self storage',
+      'Commercial',
+    ]),
+  }),
+  Object.freeze({
+    group: 'Land',
+    types: Object.freeze(['Land / lot']),
+  }),
+]);
+const TRACK_RECORD_PROPERTY_TYPES = Object.freeze(
+  TRACK_RECORD_PROPERTY_GROUPS.flatMap((g) => g.types));
+
+// LEGACY — a spelling this list no longer OFFERS but that rows on disk still
+// carry, so it is still recognised and still rendered. Never remove an entry:
+// dropping one turns a real stored answer into an unlabelled blank.
+const TRACK_RECORD_LEGACY_PROPERTY_TYPES = Object.freeze(['Condo / townhome']);
+
+const trkKey = (s) => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]+/g, '');
+const TRACK_RECORD_LABEL_BY_KEY = Object.freeze(new Map(
+  TRACK_RECORD_PROPERTY_TYPES.concat(TRACK_RECORD_LEGACY_PROPERTY_TYPES)
+    .map((label) => [trkKey(label), label])));
+
+/**
+ * The list a picker should OFFER for a line that currently holds `current`.
+ *
+ * A stored value this vocabulary does not carry — a retired spelling, something
+ * an import or ClickUp brought in, a type a human typed years ago — is APPENDED
+ * in its own "On this deal" group rather than dropped. A `<select>` whose value
+ * is not among its options renders EMPTY, which is how a screen silently offers
+ * to erase an answer the moment somebody saves anything else on the line.
+ */
+function trackRecordPropertyTypeOptions(current) {
+  const label = trackRecordPropertyTypeLabel(current);
+  if (!label) return TRACK_RECORD_PROPERTY_GROUPS;
+  if (TRACK_RECORD_PROPERTY_TYPES.includes(label)) return TRACK_RECORD_PROPERTY_GROUPS;
+  return TRACK_RECORD_PROPERTY_GROUPS.concat([{ group: 'On this deal', types: [label] }]);
+}
+
+/**
+ * How a stored track-record property type is DISPLAYED.
+ *
+ * A value that matches one this vocabulary knows — in any casing or spacing —
+ * renders in the vocabulary's own spelling, so "single family", "SINGLE-FAMILY"
+ * and "Single-family" are one thing on every screen. Anything else is shown as
+ * it was stored (trimmed): a value we do not recognise is still somebody's
+ * answer, and rewriting it would be inventing a fact. Blank → null.
+ */
+function trackRecordPropertyTypeLabel(v) {
+  const s = String(v == null ? '' : v).trim();
+  if (!s) return null;
+  return TRACK_RECORD_LABEL_BY_KEY.get(trkKey(s)) || s;
+}
+
+/**
+ * The refusal gate every track-record write door runs.
+ *
+ * Blank → null (clear the field). An appraisal FORM CODE → null, reusing
+ * `sanitizePropertyType` so "FNM1025 is not a property type" has ONE definition
+ * across the whole repo — `track_records.property_type` took unvalidated free
+ * text from every door, including `track-record-from-file.js`, which copies
+ * `applications.property_type` verbatim and could therefore carry a form code
+ * straight onto a track-record line. Anything else is canonicalised to a known
+ * spelling when it matches one and otherwise kept as typed, capped at the
+ * column's 60 characters.
+ *
+ * IT NEVER REFUSES AN UNRECOGNISED TYPE. The importer, ClickUp and Encompass
+ * all feed this column, and a door that only accepted this list would drop a
+ * real property type on the floor rather than store a spelling it had not been
+ * taught yet.
+ */
+function sanitizeTrackRecordPropertyType(v) {
+  if (sanitizePropertyType(v) == null) return null;
+  const label = trackRecordPropertyTypeLabel(v);
+  return label ? label.slice(0, 60) : null;
+}
+
 // Fannie/Freddie APPRAISAL FORM numbers. None of these is a property type — they
 // name the REPORT. Kept tight on purpose: a real property type never squashes to
 // a bare form number, and this list only decides what to REFUSE, so a value that
@@ -363,6 +508,12 @@ function band(n) { return Number.isInteger(n) && n >= 2 && n <= 8 ? n : null; }
 module.exports = {
   PROPERTY_TYPES,
   LABEL_OF,
+  TRACK_RECORD_PROPERTY_GROUPS,
+  TRACK_RECORD_PROPERTY_TYPES,
+  TRACK_RECORD_LEGACY_PROPERTY_TYPES,
+  trackRecordPropertyTypeOptions,
+  trackRecordPropertyTypeLabel,
+  sanitizeTrackRecordPropertyType,
   isAppraisalFormCode,
   appraisalFormExpectation,
   unitsFromDesignStyle,
