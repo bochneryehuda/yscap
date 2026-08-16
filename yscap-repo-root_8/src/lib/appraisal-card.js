@@ -223,8 +223,65 @@ async function autoApplySavedCardIfOptedIn(applicationId, borrowerId) {
   } catch (_) { return { applied: false }; }
 }
 
+/**
+ * WHAT THE FILE'S CARD LOOKS LIKE, with nothing secret in it — the ONE answer.
+ *
+ * There were TWO of these, and they had drifted: `richervalues/payment.js` returned
+ * `{present, last4, brand, exp, expired, updatedAt}` while `amc/order-service.js`
+ * returned `{onFile, last4, brand, conditionStatus}`. Different key for the same
+ * boolean, and each knowing something the other did not — so a caller written
+ * against one shape and handed the other reads a card that IS on file as absent,
+ * silently, and the "use the card on file" option greys itself out with a reason
+ * that is not true. That was live the moment a third caller appeared (the shared
+ * payment-options route, 2026-08-16).
+ *
+ * This is the union of both, so BOTH key names are answered and no existing caller
+ * changes behaviour. Never re-inline a third: ask here.
+ *
+ * @param {object} [dbc] run on a caller's connection; defaults to the pool.
+ */
+async function cardStatus(dbc, appId) {
+  const q = (dbc && typeof dbc.query === 'function') ? dbc : db;
+  const empty = {
+    present: false, onFile: false, last4: null, brand: null,
+    exp: null, expired: false, updatedAt: null, conditionStatus: null,
+  };
+  try {
+    const c = await q.query(
+      `SELECT last4, brand, exp_month, exp_year, updated_at
+         FROM application_payment_cards WHERE application_id=$1`, [appId]);
+    const cond = await q.query(
+      `SELECT status FROM checklist_items
+        WHERE application_id=$1 AND tool_key='appraisal_card' LIMIT 1`, [appId]);
+    const conditionStatus = cond.rows[0] ? cond.rows[0].status : null;
+    const row = c.rows[0];
+    if (!row) return { ...empty, conditionStatus };
+    return {
+      present: true,
+      onFile: true,
+      last4: row.last4 || null,
+      brand: row.brand || null,
+      exp: row.exp_month && row.exp_year
+        ? `${String(row.exp_month).padStart(2, '0')}/${String(row.exp_year).slice(-2)}` : null,
+      expired: isCardExpired(row.exp_month, row.exp_year),
+      updatedAt: row.updated_at || null,
+      conditionStatus,
+    };
+  } catch (_) { return empty; }
+}
+
+/** An unknown or unreadable expiry is NOT expired — never refuse a usable card. */
+function isCardExpired(month, year) {
+  const m = parseInt(month, 10);
+  const y = parseInt(year, 10);
+  if (!(m >= 1 && m <= 12) || !(y > 1900)) return false;
+  const now = new Date();
+  return !(y > now.getUTCFullYear() || (y === now.getUTCFullYear() && m >= now.getUTCMonth() + 1));
+}
+
 module.exports = {
   cardBrand, formatExp, parseExp,
   luhnOk, validateCardInput, saveApplicationCard,
   saveCardForReuse, getSavedCard, applySavedCardToApplication, autoApplySavedCardIfOptedIn,
+  cardStatus, isCardExpired,
 };

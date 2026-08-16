@@ -105,6 +105,7 @@ async function requestCancel(db, order, opts = {}) {
       WHERE id = $1 RETURNING *`,
     [order.id, reason.slice(0, REASON_MAX), opts.staffId || null, JSON.stringify(resp)]);
   await orderService.journal(db, { orderId: order.id, appId: order.application_id, action: 'CancelOrder', request: built, response: resp, ok: true, staffId: opts.staffId });
+  require('../lib/appraisal-order-mirror').fire(order.application_id);
   return { ok: true, order: upd.rows[0] };
 }
 

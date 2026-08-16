@@ -259,6 +259,46 @@ fields all come from the vendor's own sample payloads and are pinned by the pure
 The lookups (`GetJobType` etc.) also decide the real `amc_form_map` rules, and those
 cannot be finalized until a lookup call actually returns this tenant's form catalog.
 
+## 7b. WHERE A RETURNED REPORT LANDS — the condition's own slots (2026-08-16)
+
+`rtl_cond_appraisaldocs` declares TWO named slots (db/144) and `signOffGate` matches a
+document to a slot by a lower-case SUBSTRING of `documents.slot_label`. So a returned
+document with no slot label fills neither slot, however plainly it is the appraisal.
+
+**The defect this section records.** `sync.js ingestDocuments` filed the returned XML and
+PDF with `slot_label` NULL and `doc_kind` NULL, onto `order.checklist_item_id` — a column
+nothing ever set, because the order routes only accepted a `checklistItemId` neither
+front-end panel sends. Class Valuation had exactly the same two holes. The live result:
+the report came back, the data imported, the findings were built, and the
+appraisal-documents condition still read *"Upload BOTH the appraisal data file (XML) and
+the appraisal report (PDF)"* with both documents sitting on the file — so the condition
+could not be signed off and the file could not clear to close until somebody downloaded
+the two documents and re-uploaded them into the slots by hand.
+
+**`src/lib/appraisal/condition-slots.js` is the one definition** every vendor now files
+through (Richer Values already did this correctly; this is that behaviour shared):
+
+- the condition item is resolved from the order row, else from the file, so an order
+  placed before the link existed still files correctly;
+- the labels are **derived from the template's own `slots` jsonb** (the `order-slots.js`
+  discipline), never restated, and are only adopted when they still carry the substring
+  the gate tests for;
+- the XML and the PDF carry `doc_kind='appraisal_xml'`/`'appraisal_pdf'`, so
+  `undoAppraisalImport` retires them and reopens the condition exactly as it does for a
+  hand-uploaded import;
+- **only those two go onto the condition.** An extra the AMC returns (an invoice, a
+  supplemental) is filed on the loan file in no slot — a condition refuses sign-off while
+  any document on it is un-reviewed, so an appraiser's invoice must never become a
+  clear-to-close blocker;
+- **a SUCCESSFUL MISMO import is what vouches for them.** They are accepted only once the
+  XML has imported as a valid appraisal — positive proof, stronger than db/424's
+  born-accepted rule for an ordered document gets anywhere else. A delivery that does not
+  import stays `pending` and waits for a human.
+
+Test `scripts/test-appraisal-condition-slots-db.js` (in `npm test`) drives both vendors'
+ingest and then calls the REAL `signOffGate` — a copy of its slot test would keep passing
+if the gate changed. Four mutations of the production code were each proven to fail it.
+
 ## 8. Owner decisions (2026-08-05)
 
 - **Credentials:** *(updated 2026-08-13)* the UAT OAuth pair, the GGID, the AppraisalScope
@@ -275,6 +315,49 @@ cannot be finalized until a lookup call actually returns this tenant's form cata
   condition**, and entering it **at the condition fills the order** — one card, entered
   once, both places. No auto-charge through the AMC for now (the Payment* actions stay
   unused).
+
+## 8b. All three ways to pay, on every appraisal company (owner-directed 2026-08-16)
+
+The owner, restating and widening the rule above: *"We're gonna keep it manual. We're
+gonna have all the options over there, like: if we want to, we should be able to send
+the payment link. If we want to, share to use the card on file. We should be able to
+use the card manually. We should keep all the options open."*
+
+**Manual is unchanged — PILOT still charges nothing on its own.** What changed is that
+the three ways are now offered on all three appraisal companies, and that WHICH one was
+chosen is written down.
+
+- **`src/lib/appraisal/payment-options.js` is the one definition** of the three
+  (`PAYMENT_LINK` / `CARD_ON_FILE` / `NEW_CARD`) and of what each one does at each
+  company. `src/richervalues/payment.js` re-exports that very array — not a copy —
+  so the company that performs a charge and the desk that records it cannot drift
+  about what "the card on file" means.
+- **The real gap was never a charge button.** It was that nothing recorded how a given
+  order was meant to be paid: a saved card was the whole instruction, so "send them a
+  link", "put it on the card on file" and "she's paying it herself" were
+  indistinguishable and somebody had to go and ask, per order.
+  `appraisal_payment_intents` (db/562) is that instruction — one live row per order,
+  who chose it, when, and who settled it. It is read ALONGSIDE the Orders-desk
+  projection, never into it: the mirror recomputes that row from the vendors, and a
+  human's decision must never live in something that is recomputed.
+- **Who performs it differs, and is never blurred.** Richer Values is the only company
+  whose payment calls this repo has (`addCard` / `payForOrder` / `sendPaymentLink`), so
+  its own proven route does the work and the recording rides along afterwards,
+  best-effort — a failed note must never be reported as a failed payment. On
+  AppraisalScope and Class the choice is recorded for the back office, and the shared
+  route **refuses** a vendor-performed method so an instruction can never claim a person
+  will do by hand something the vendor already charged.
+- **Nothing here guesses a vendor payment API.** Class Valuation's client has no payment
+  call of any kind (its whole surface is products, orders, attachments, notes,
+  callbacks — their `PaymentLinkSentToBorrower` is them telling US, not a lever we can
+  pull). AppraisalScope's `PaymentAuthCapture` / `BillInvoice` / `SendInvoice` /
+  `eCheckPayment` have **no verified request shape** and `src/amc/cdg.js` builds none of
+  them; the only payment call we have built there is the pure read `GetPaymentOptions`.
+  When one is verified against the live account, move it from `back_office` to `vendor`
+  in that ONE table and the desk, the wording and the record all follow.
+
+Tests: `scripts/test-appraisal-payment-options-pure.js` (35) and
+`scripts/test-appraisal-payment-intent-db.js` (40), both in `npm test`.
 - **Ordering lives in the Orders desk.** Add "Order an appraisal" as a **new order type
   in the existing Orders section** (`file_orders` — alongside Title, Insurance, Attorney
   closing prep; `src/lib/closing-prep.js` / the Orders desk routes). That's where a

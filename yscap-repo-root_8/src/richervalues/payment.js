@@ -80,8 +80,27 @@ const C = require('../lib/crypto');
  * at the payment link. COMPANY_CARD never sends a number at all: a human saves the
  * card ONCE in the Richer Values portal and we reference the payment source they
  * already hold. Nothing to add, nothing to delete, nothing for Stripe to refuse.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE LIST ITSELF LIVES IN `lib/appraisal/payment-options.js`, AND IS ASKED FOR
+ * PER VENDOR — because the owner separately restated the same ways for EVERY
+ * appraisal company (2026-08-16), and two copies of a payment vocabulary is how
+ * the vendor that performs the charge and the desk that records it end up
+ * disagreeing about what "the card on file" means.
+ *
+ * `methodsFor('rv')` — not a bare shared array — is what lets BOTH of those be
+ * true at once. Richer Values offers FOUR ways because COMPANY_CARD is real here
+ * and nowhere else: AppraisalScope and Class have no verified payment call at
+ * all, so a company card saved with them is not a thing that exists. Asking the
+ * table per vendor keeps ONE definition while letting one vendor honestly offer
+ * more than another — the alternative, a single flat list, would either hide
+ * COMPANY_CARD from Richer Values or advertise it on two vendors that cannot do
+ * it. Re-exported under this name so every existing caller (`payment.METHODS`) is
+ * untouched.
  */
-const METHODS = ['COMPANY_CARD', 'CARD_ON_FILE', 'NEW_CARD', 'PAYMENT_LINK'];
+const { methodsFor } = require('../lib/appraisal/payment-options');
+
+const METHODS = methodsFor('rv');
 
 /**
  * Stripe's refusal to take a raw card number, told apart from every other
@@ -144,32 +163,16 @@ async function readFileCard(db, appId) {
   };
 }
 
-/** What the order screen shows about the card, with nothing secret in it. */
-async function cardStatus(db, appId) {
-  try {
-    const r = await db.query(
-      `SELECT last4, brand, exp_month, exp_year, updated_at FROM application_payment_cards WHERE application_id=$1`, [appId]);
-    const row = r.rows[0];
-    if (!row) return { present: false };
-    const expired = isExpired(row.exp_month, row.exp_year);
-    return {
-      present: true,
-      last4: row.last4 || null,
-      brand: row.brand || null,
-      exp: row.exp_month && row.exp_year ? `${String(row.exp_month).padStart(2, '0')}/${String(row.exp_year).slice(-2)}` : null,
-      expired,
-      updatedAt: row.updated_at,
-    };
-  } catch (_) { return { present: false }; }
-}
-
-function isExpired(month, year) {
-  const m = parseInt(month, 10);
-  const y = parseInt(year, 10);
-  if (!(m >= 1 && m <= 12) || !(y > 1900)) return false;   // unknown is not expired
-  const now = new Date();
-  return !(y > now.getUTCFullYear() || (y === now.getUTCFullYear() && m >= now.getUTCMonth() + 1));
-}
+/**
+ * What the order screen shows about the card, with nothing secret in it.
+ *
+ * DELEGATES to `lib/appraisal-card.js`, which is the one answer to this question.
+ * This module and `amc/order-service.js` each used to carry their own, and they had
+ * drifted — different key for the same boolean, each knowing something the other
+ * did not. Re-exported under this name so every existing caller is untouched.
+ */
+const cardStatus = (dbh, appId) => appraisalCard.cardStatus(dbh, appId);
+const isExpired = appraisalCard.isCardExpired;
 
 /**
  * ADD → PAY → REMOVE. The whole card charge, in one place.
