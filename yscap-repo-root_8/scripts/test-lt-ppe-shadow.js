@@ -46,6 +46,25 @@ async function main() {
     ok(bad.scenario.includes('ltv=75'), 'the finding is tagged to the right scenario');
   }
 
+  // ---- D29: our raw declines reach the comparator, so a reasoned overlay is typed OVERLAY ---
+  {
+    const overlay = require('../src/longterm/ppe/overlay');
+    const ovl = overlay.overlayDecline('occupancy', 'Vacant/Unleased ineligible for cash-out refi');
+    // ours declines (with the overlay decline attached, as quoteProgram emits it); LP prices it.
+    const ourIneligible = () => ({ eligible: false, declines: [ovl] });
+    const lpEligible = () => ({ eligible: true, ladder: [{ rate: 7000, finalPriceMilli: 100000 }] });
+    const r = await S.runOne({ _label: 'ltv=70' }, ourIneligible, lpEligible, { priceToleranceMilli: 0 });
+    eq(r.agree, false, 'overlay divergence is never scored as agreement');
+    eq(r.overlay, true, 'runOne surfaces overlay:true for a reasoned override');
+    eq(r.findings[0].kind, 'eligibility_overlay', 'the finding is typed OVERLAY, not a defect');
+
+    // a decline on an LP-visible fact stays a real mismatch (no overlay pass through the runner)
+    const ourBadDecline = () => ({ eligible: false, declines: [{ code: 'dhvn_max_ltv', reason: 'ltv max 80 exceeded' }] });
+    const r2 = await S.runOne({ _label: 'ltv=85' }, ourBadDecline, lpEligible, { priceToleranceMilli: 0 });
+    eq(r2.overlay, false, 'an LP-visible decline is not an overlay through the runner');
+    eq(r2.findings[0].kind, 'eligibility_mismatch', 'it stays a real eligibility mismatch');
+  }
+
   // ---- an engine throw is recorded, never crashes the batch -----------------
   {
     const { scenarios } = M.buildMatrix({ ltv: [70, 75, 80] });

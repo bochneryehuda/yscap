@@ -89,7 +89,11 @@ async function compareSafely(ourAnswerMaybe, scenario, deps, program, cmpOpts, c
     const theirsLadder = ctx.parsedLp !== undefined
       ? lpNormalize.normalizeLpParsed(ctx.parsedLp, { program })
       : parity.normalizeLadder(null);
-    cmp = parity.compareScenario(oursLadder, theirsLadder, { ...cmpOpts, scenario: ctx.scenarioLabel });
+    // Thread our raw declines to the comparator so an our-ineligible / LP-eligible divergence resting
+    // entirely on reasoned overlay-only facts is typed as OVERLAY (an intentional override), not a
+    // defect (D29). normalizeOurQuote drops declines[], so they must be passed alongside the ladder.
+    const ourDeclines = Array.isArray(ourQuote && ourQuote.declines) ? ourQuote.declines : undefined;
+    cmp = parity.compareScenario(oursLadder, theirsLadder, { ...cmpOpts, scenario: ctx.scenarioLabel, ourDeclines });
   }
 
   if (!cmp.agree && typeof deps.recordFinding === 'function') {

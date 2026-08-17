@@ -39,8 +39,10 @@ async function runOne(scenario, ours, theirs, opts) {
   } catch (e) {
     return { agree: false, scenario: tag, error: 'theirs', findings: [{ kind: ERROR_KIND, side: 'theirs', detail: `Lender Price threw: ${errText(e)}`, scenario: tag }] };
   }
-  const cmp = parity.compareScenario(a, b, { ...opts, scenario: tag });
-  return { agree: cmp.agree, incomparable: cmp.incomparable || false, scenario: tag, findings: cmp.findings };
+  // Thread our raw declines so a reasoned overlay divergence is typed as OVERLAY, not a defect (D29).
+  const ourDeclines = Array.isArray(a && a.declines) ? a.declines : undefined;
+  const cmp = parity.compareScenario(a, b, { ...opts, scenario: tag, ourDeclines });
+  return { agree: cmp.agree, incomparable: cmp.incomparable || false, overlay: cmp.overlay || false, scenario: tag, findings: cmp.findings };
 }
 
 function errText(e) {
