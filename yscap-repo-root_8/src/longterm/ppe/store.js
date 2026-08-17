@@ -16,6 +16,7 @@
  * LT-only. No RTL imports.
  */
 const settings = require('./settings');
+const { resolveMarginHoldback } = require('./margin-holdback');
 
 // Load a tenant's setting OVERRIDES as a { key: value } map. Only keys that are
 // real definitions are returned; an unknown/legacy key is ignored. Never throws —
@@ -68,6 +69,55 @@ async function setSetting(db, scope, key, value, updatedBy = null) {
 async function clearSetting(db, scope, key) {
   await db.query('DELETE FROM lt_ppe_setting_value WHERE scope = $1 AND key = $2', [scope, key]);
   return { ok: true };
+}
+
+// ---- margin & holdback (Layer 1) --------------------------------------------
+
+// The setting scope key for a per-investor override layer. An investor's own margin/
+// holdback/rules live under scope `investor:<code>` in lt_ppe_setting_value (the same
+// override table, a distinct scope), layered OVER the company scope, layered over the
+// coded product defaults. Never throws — an unusable code degrades to the company scope.
+function investorScope(code) {
+  const c = String(code == null ? '' : code).trim();
+  return c ? `investor:${c}` : null;
+}
+
+// Resolve the DEFAULT margin + holdback + per-scenario rules for an investor, layering
+// per-investor override → company default → product default (250), then apply the
+// per-scenario rules against `facts` (margin-holdback.resolveMarginHoldback). `companyScope`
+// is the org/company layer (default 'company'). Returns the resolveMarginHoldback record
+// PLUS `defaults` (what each of the three settings resolved to and from which layer), so a
+// caller/admin can see whether a number came from the investor, the company, or the product.
+//
+// DEGRADES SAFELY: an unreadable override table falls back to the company scope, which falls
+// back to the coded 250 defaults — pricing never resolves to nothing, only to the pre-fill.
+async function resolveMarginHoldbackForInvestor(db, investorCode, facts = {}, companyScope = 'company') {
+  const org = await loadSettingOverrides(db, companyScope);
+  const invScope = investorScope(investorCode);
+  const tenant = invScope ? await loadSettingOverrides(db, invScope) : {};
+
+  const margin = settings.resolve('pricing.margin_milli', { tenant, org });
+  const holdback = settings.resolve('pricing.holdback_milli', { tenant, org });
+  const rulesRes = settings.resolve('pricing.margin_holdback_rules', { tenant, org });
+  const rules = Array.isArray(rulesRes.value) ? rulesRes.value : [];
+
+  const resolved = resolveMarginHoldback({
+    marginMilli: margin.value,
+    holdbackMilli: holdback.value,
+    rules,
+    facts: facts || {},
+  });
+
+  return {
+    ...resolved,
+    // where each of the three settings' DEFAULT layer resolved from (tenant=investor, org=company, product_default)
+    defaults: {
+      margin: { value: margin.value, source: margin.source },
+      holdback: { value: holdback.value, source: holdback.source },
+      rules: { count: rules.length, source: rulesRes.source },
+    },
+    investorScope: invScope,
+  };
 }
 
 // ---- investors / programs (thin reads + creates for the admin surface) ------
@@ -259,6 +309,7 @@ async function currentRateSheetVersion(db, scope, programId, channel = 'correspo
 module.exports = {
   normAlias,
   loadSettingOverrides, resolveSettings, resolveSetting, setSetting, clearSetting,
+  investorScope, resolveMarginHoldbackForInvestor,
   findInvestorByName, createInvestor, listInvestors, createProgram, listPrograms,
   createRateSheetVersion, replaceBasePrices, replaceAdjustments, setPriceLimit,
   loadRateSheet, publishRateSheetVersion, currentRateSheetVersion,

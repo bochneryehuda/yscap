@@ -57,6 +57,38 @@ const DEFINITIONS = {
     group: 'Pricing', label: 'Cumulative adjustment cap',
     help: 'Optional cap on the total of all LLPAs (thousandths of a point). Blank = uncapped.',
   },
+  // ---- Margin & holdback (per-investor; owner pre-fills 0.250) --------------
+  // Owner rule (2026-08-16): "the margin holdback should be set up for each and every Investor
+  // separately in the setting, pre-filled 0.25 but changeable, reaching every Investor, and it
+  // should be able to have different kind of margin and holdback to different scenarios with
+  // different rules." These are the DEFAULT margin + holdback; a per-investor override is stored
+  // under scope `investor:<code>` (store.resolveMarginHoldbackForInvestor), and per-scenario rules
+  // live in `pricing.margin_holdback_rules`. All values in milli-points (250 = 0.250 point).
+  //
+  // NOTE `pricing.correspondent_margin_milli` (above) is the LEGACY single margin knob the pricing
+  // pipeline already consumes; `pricing.margin_milli` is the new per-investor-resolvable margin the
+  // margin/holdback resolver reads. They share the same 250 default so nothing changes today.
+  'pricing.margin_milli': {
+    type: 'number', integer: true, min: 0, max: 5000, default: 250,
+    group: 'Pricing', label: 'Margin (our markup)',
+    help: 'Our margin/markup, in thousandths of a point (250 = 0.250). Pre-filled 0.250; set per-investor and per-scenario as needed.',
+  },
+  'pricing.holdback_milli': {
+    type: 'number', integer: true, min: 0, max: 5000, default: 250,
+    group: 'Pricing', label: 'Margin holdback',
+    help: 'Buffer/retained spread held back per investor, in thousandths of a point (250 = 0.250). Pre-filled 0.250; changeable per investor and per scenario.',
+  },
+  // A per-scenario override list. Each row: { code?, when?: <predicate over scenario facts>,
+  //   marginMilli?, holdbackMilli?, priority? }. Rows are evaluated in priority order; the FIRST
+  //   matching row that names a field wins for that field (margin and holdback resolve independently),
+  //   so a scenario can carry a different margin and/or holdback with its own rule. Predicate grammar
+  //   is rules.evalPredicate (all/any/none/not + leaf ops). Blank = no per-scenario overrides (the
+  //   investor/company default applies to every scenario).
+  'pricing.margin_holdback_rules': {
+    type: 'json', default: [],
+    group: 'Pricing', label: 'Per-scenario margin/holdback rules',
+    help: 'Optional list of per-scenario margin/holdback overrides ({ when, marginMilli?, holdbackMilli? }). Blank = the investor/company default applies to every scenario.',
+  },
 
   // ---- Eligibility ---------------------------------------------------------
   'eligibility.result_mode': {
