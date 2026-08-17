@@ -97,6 +97,15 @@ const PPP_STRUCTURES = [
     lp: { prepayTermMonths: 12, planType: 'Fixed3', smoMonths: 12 }, overlayOnly: false, marginHoldbackDeltaMilli: 0 },
 
   // ── 5% FIXED PROMOTION (D33: a better-pricing LLPA credit on the rate sheet, NOT a holdback) ────────
+  // MEASURED LIVE against Lender Price 2026-08-17 (docs/longterm/ppe-research/
+  // DEEPHAVEN-LP-LIVE-FINDINGS-2026-08-17.md §2): selecting `prepayStructure:'Fixed 5%'` maps to LP
+  // PrePayment_Plan_Type='Fixed5' (this planType, confirmed) and prices on the SAME Deephaven container
+  // as the standard step-down. The itemized prepay line changes from `5 Year Prepay Penalty` (+0.625)
+  // to `5 Year Prepay Penalty - 5%` (+1.125) → a +0.500-point BETTER price than the standard declining
+  // 5-yr PPP at the same coupon (105.800 → 106.300). It is NOT a margin holdback (delta stays 0) — it
+  // is a prepay-structure LLPA credit. Wiring the +0.500 credit into the Layer-1 rate sheet is deferred
+  // until the margin/adjustmentPoints layer is fully reconciled (findings §4), so it is recorded here,
+  // not yet applied. `No Prepay` is the opposite: a −2.000 charge (worst price).
   { key: 'fixed5', label: '5% Fixed (promo)', termYears: null, type: 'fixed_percent', typeParams: { pct: 5 },
     pricingModel: 'fixed5_promo', tierSet: 'promo',
     lp: { prepayTermMonths: null, planType: 'Fixed5', smoMonths: null }, overlayOnly: false, marginHoldbackDeltaMilli: 0 },

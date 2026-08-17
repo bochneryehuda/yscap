@@ -431,6 +431,36 @@ units — all sign-negated like the state/DSCR tables, a 0/n-e band emits no lin
 `UnitRateAdjustment → 'units'` classifier branch was added so the reconcile pairs the 2–4
 units line. `test-lt-ppe-deephaven-dscr-sheet.js` reproduces all 28 add-on values.
 
+### §2.6 — DEEP 300-scenario live verification (2026-08-17) — full report: `ppe-research/DEEPHAVEN-LP-LIVE-FINDINGS-2026-08-17.md`
+
+A read-only live run of the full ~300-scenario battery against LP (filtered to
+`Deephaven Mortgage`), plus a 5%-fixed prepay sweep and a 10-probe ineligibility
+spot-check. Headline: **our confirmed-subset sheet is CORRECT but INCOMPLETE.**
+
+- **Eligible-side agreement 82.71%** (244/295 comparable). The core grids match LP
+  **to the penny — 20,776 itemized LLPA lines exact** (base ladder 6.125–9.500,
+  FICO×CLTV, DSCR-band add-on, state adder). It is NOT a wrong sheet; it is **missing
+  four whole LLPA families** LP prices on: **loan-amount** (>$1.5M, >$2M, <$125k,
+  <$150k), **interest-only**, **escrow-waiver**, **non-warrantable(-condo)**. These
+  are the next encode target — but per-cell values across ALL CLTV bands need a
+  focused re-measure sweep first (only the battery-hit cells were captured). Task #62.
+- **The 5%-Fixed model (D33) — SOLVED, MEASURED.** It is a prepay-STRUCTURE choice,
+  not a program: `prepayStructure:'Fixed 5%'` → `PrePayment_Plan_Type='Fixed5'`
+  (the token our `ppp-structures.fixed5` already carries), priced on the same
+  Deephaven container. **Measured +0.500 points BETTER** than the standard declining
+  5-yr PPP at the same coupon (105.800 → 106.300; the itemized line changes `5 Year
+  Prepay Penalty` +0.625 → `5 Year Prepay Penalty - 5%` +1.125). `No Prepay` is a
+  −2.000 charge. Recorded on the `fixed5` structure; wiring the credit into the
+  Layer-1 sheet is deferred until the margin/adjustmentPoints layer is reconciled.
+- **Ineligibility 9/10 AGREE** — LP's disqualify tree declines the correct Deephaven
+  band with the same rule our engine cites (envelope: FICO ≥640/≥680, LTV ≤80/75/70,
+  DSCR ≥0.75, loan $75k–$2.5M). **The ONE divergence — NJ-individual-PPP — is FIXED**:
+  root cause was `lpScenarioToFacts` never deriving `state` from the ZIP, so a
+  zip-only NJ scenario lost the state and no state-keyed rule (NJ PPP, and the
+  +0.375 DC/MA/NJ/NY state adder) could fire. Now derived from the committed
+  zip-county table; a zip-only NJ individual PPP correctly declines. See §3 (`apr`
+  row context) and `test-lt-ppe-lp-agreement-legs.js`.
+
 ## 3. The request-builder field contract (accepted types)
 
 Scenario field → upstream path → type → default/validation (as of the fixes
