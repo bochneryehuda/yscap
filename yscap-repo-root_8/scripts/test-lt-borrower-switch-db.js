@@ -37,14 +37,19 @@ async function main() {
   const eq = (a, b, w) => { assert.strictEqual(a, b, w); checks++; };
 
   // ---------------------------------------------------------------------------
-  // A. THE SWITCH SHIPS OFF. This is the owner's "build it ready", asserted.
+  // A. THE SWITCH IS ON. This is the owner's decision, asserted.
+  //
+  // It shipped OFF on 2026-08-16 ("build it ready") and the owner said GO on
+  // 2026-08-17 ("turn switch on"). What this assertion is really protecting is that
+  // the state of the switch is always somebody's DECISION and never a drift — the
+  // suite fails whichever way it moves without the owner having said so.
   // ---------------------------------------------------------------------------
   const list = Array.isArray(decls.SETTINGS) ? decls.SETTINGS : Object.values(decls.SETTINGS || {});
   const decl = list.find((d) => d && d.key === 'borrower.longTermVisible');
   ok(decl, 'the borrower-facing long-term switch is a declared setting');
   eq(decl.type, 'boolean', '…a plain on/off');
-  eq(decl.default, false,
-    'THE BORROWER-FACING LONG-TERM SIDE IS OFF BY DEFAULT — the owner said build it ready, not turn it on');
+  eq(decl.default, true,
+    'THE BORROWER-FACING LONG-TERM SIDE IS ON — owner-directed 2026-08-17 "turn switch on"');
 
   // The route module is required directly and its handler driven with a fake
   // request/response, so the whole thing runs without standing up an HTTP server
@@ -102,21 +107,25 @@ async function main() {
     await seedLoan('unlinked', null, 360, 'Investor DSCR 30 YEAR FRM');
 
     // -------------------------------------------------------------------------
-    // B. WITH THE SWITCH OFF, A BORROWER IS TOLD NOTHING — even one who genuinely
-    //    has long-term files. The answer is a plain "off", not an error, so the
-    //    portal can hide the switch rather than show a client a failure.
+    // B. THE OFF STATE IS STILL A REAL KILL SWITCH. It is no longer the default,
+    //    which makes it MORE important to pin, not less: turning the product back
+    //    off has to be one setting, without a deploy, and it has to reach a client
+    //    who genuinely has long-term files. The answer is a plain "off", not an
+    //    error, so the portal hides the switch rather than showing a failure.
     // -------------------------------------------------------------------------
+    await settingsStore.save({ 'borrower.longTermVisible': false }, { actorId: null });
+    switchedOn = true; // the setting has been touched; the finally restores it
+
     const off = await call(me);
-    eq(off.status, 200, 'with the switch off the borrower door still answers cleanly');
+    eq(off.status, 200, 'switched off the borrower door still answers cleanly');
     eq(off.body.enabled, false, '…and says the long-term side is off');
     eq(off.body.loans.length, 0, '…and returns no files at all, even though this borrower has one');
 
     // -------------------------------------------------------------------------
-    // C. TURN IT ON — the one setting that is the whole of what stands between
-    //    this and a client's screen.
+    // C. TURN IT BACK ON — the one setting that is the whole of what stands
+    //    between this and a client's screen.
     // -------------------------------------------------------------------------
     await settingsStore.save({ 'borrower.longTermVisible': true }, { actorId: null });
-    switchedOn = true;
 
     const on = await call(me);
     eq(on.body.enabled, true, 'switched on, the borrower door says so');
@@ -173,7 +182,9 @@ async function main() {
     }
   } finally {
     if (switchedOn) {
-      await settingsStore.save({ 'borrower.longTermVisible': false }, { actorId: null }).catch(() => {});
+      // Restore the DECLARED default (on), not a hard-coded false — leaving the
+      // tenant switched off would be this suite quietly turning the product off.
+      await settingsStore.save({ 'borrower.longTermVisible': true }, { actorId: null }).catch(() => {});
     }
     if (loanIds.length) {
       await db.query('DELETE FROM lt_loans WHERE id = ANY($1::uuid[])', [loanIds]).catch(() => {});

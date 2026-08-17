@@ -299,6 +299,36 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
   // mirror above, so a failure costs one pass, not the sync.
   const links = await require('../borrower-links').applyConfirmedLinks();
 
+  // THE OFFICER MAP REFRESHES WITH THE LOANS (owner-directed 2026-08-17: "make sure
+  // officer mapping is on"). The loans that just arrived name Encompass logins, and
+  // a login nobody has proposed a match for is an officer with no PILOT profile —
+  // so their file shows a name we cannot connect to a person, and, because officer
+  // scope is `own`, it reaches nobody's pipeline. Refreshing the roster on the same
+  // pass is what stops the two drifting: the proposals are always about the logins
+  // the book actually carries, rather than whenever somebody last pressed a button
+  // on the people screen.
+  //
+  // IT PROPOSES AND NEVER DECIDES — unchanged. `syncRoster` writes `suggested` rows
+  // only; a `confirmed` or `rejected` row is never re-litigated (people/links.js).
+  // Automating the CONFIRM is the one thing that must not happen here: a wrong link
+  // hands somebody another officer's book with nothing on screen to say so.
+  //
+  // Best-effort, exactly like the borrower links above: the loan mirror is the job,
+  // and a people failure may not cost it.
+  // `syncRoster` reports an ordinary failure by RETURNING `{ok:false, reason}` rather
+  // than throwing (no credentials, an empty roster it refuses to write), so both
+  // shapes are read — treating an `ok:false` as a caught error would report a
+  // confident "0 officers proposed" on a pass that never ran.
+  let officers = { proposed: 0, waiting: 0, reason: null };
+  try {
+    const r = await require('../people/roster').syncRoster();
+    if (r && r.ok) officers = { proposed: r.proposedNow || 0, waiting: r.unmatched || 0, reason: null };
+    else officers = { proposed: 0, waiting: 0, reason: (r && r.reason) || 'the people map did not run' };
+  } catch (e) {
+    officers = { proposed: 0, waiting: 0, reason: (e && e.message) || String(e) };
+  }
+  if (officers.reason) console.error('[lt] officer roster refresh:', officers.reason);
+
   return {
     ok: true,
     discovered: found.loans.length,
@@ -306,6 +336,11 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
     read,
     failed,
     borrowersLinked: links.linked || 0,
+    // What a human still has to do: `officersProposed` are new matches waiting for a
+    // confirm, `officersUnmatched` are logins the machine could not match at all.
+    officersProposed: officers.proposed,
+    officersUnmatched: officers.waiting,
+    officerSyncReason: officers.reason,
     remaining: Math.max(0, due.length - readBudget),
     truncated: found.truncated,
   };

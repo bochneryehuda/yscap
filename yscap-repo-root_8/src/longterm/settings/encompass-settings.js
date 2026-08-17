@@ -426,23 +426,32 @@ const SETTINGS = [
   // they answered *"build it ready"* — so it is wired end to end and this one
   // setting is the whole of what stands between it and the client's screen.
   //
-  // DEFAULT FALSE, AND IT MUST STAY FALSE UNTIL THE OWNER SAYS OTHERWISE. Long-Term
-  // is a side build with no borrowers and no production traffic (charter §1), and
-  // the borrower mapping is confirmed a person at a time — so on the day this is
-  // flipped, a borrower sees the long-term files that have been CONFIRMED as theirs
-  // and nothing else. Turning it on by deploy would show clients a product we have
-  // not finished, which is the one thing "build it ready" was meant to avoid.
+  // DEFAULT TRUE — THE OWNER SAID GO (2026-08-17: *"turn switch on"*), which is the
+  // "until they say otherwise" this setting was built waiting for. It shipped
+  // `false` on 2026-08-16 because "build it ready" is not "turn it on"; that is now
+  // answered, in the owner's own words, so the default flips rather than leaving the
+  // product live-but-off behind a setting nobody remembers to press.
   //
-  // It is a COMPANY setting, not a per-user one: this is a decision about whether
-  // the product is live, not a preference.
+  // WHAT TURNING IT ON DOES AND DOES NOT DO. It does NOT publish the long-term book
+  // to clients. A borrower sees exactly the long-term files a HUMAN CONFIRMED are
+  // theirs (`lt_loans.borrower_id`, written only by `borrower-links.confirmLink`),
+  // and nothing else — an unmatched loan belongs to nobody and appears to nobody. So
+  // on the day this flips, a borrower with no confirmed links sees an empty
+  // long-term side, not somebody else's loan. That is the safe direction, and it is
+  // the reason the mapping was built confirm-first in the first place.
+  //
+  // It stays a SETTING rather than becoming hard-wired: this is a decision about
+  // whether the product is live, and the owner must be able to take it back without
+  // a deploy. It is a COMPANY setting, not a per-user preference.
   { key: 'borrower.longTermVisible', group: 'Interface',
     label: 'Show long-term files on the borrower login',
-    type: 'boolean', default: false,
-    description: 'When this is off, a borrower sees only their short-term (RTL) files and no '
-      + 'switch at all. When it is on, a borrower can switch to the long-term side and see '
-      + 'the long-term files that have been confirmed as theirs.',
-    evidence: 'Owner-directed 2026-08-16: build the borrower switch READY but leave it off '
-      + 'until they say go. Long-Term is not live to borrowers.' },
+    type: 'boolean', default: true,
+    description: 'When this is on, a borrower can switch to the long-term side and see the '
+      + 'long-term files that have been confirmed as theirs. When it is off, a borrower sees '
+      + 'only their short-term (RTL) files and no switch at all.',
+    evidence: 'Owner-directed 2026-08-17: "turn switch on". Built ready and left off '
+      + '2026-08-16 ("build it ready"); the owner has now said go. A borrower still only '
+      + 'ever sees files a human confirmed are theirs.' },
 
   // ── Rate lock (phase 7) ───────────────────────────────────────────────────
   // Every lock-SPECIFIC endpoint on this tenant answers 403, so the posture is read
