@@ -1,0 +1,90 @@
+{
+  "source": "PPP_Matrix_DH_Current_1.pdf — Deephaven Operational Prepayment Penalty Matrix (Confidential, Effective March 2026, Last Updated 03/12/2026)",
+  "scope": "Occupancy = Non-owner occupied, Investment (DSCR loans qualify).",
+  "resultMeaning": {
+    "standard": "A prepayment penalty MAY be offered (flat / yearly step-down / guaranteed-interest structures).",
+    "prohibited": "A prepayment penalty may NOT be offered — the loan must be No-PPP. Requesting a PPP here is a DISQUALIFIER.",
+    "restricted": "A PPP is allowed but with a state-capped term/amount (see terms)."
+  },
+  "borrowerTypes": { "natural_person": "individual / natural person", "business_entity": "LLC / business entity", "any": "either" },
+  "annualThresholdsNote": "Several states carry a loan-amount threshold that changes annually. Values below are the 2026 figures (this matrix is effective March 2026).",
+  "defaultResult": "standard",
+  "states": {
+    "AL": "standard", "AZ": "standard", "AR": "standard", "CA": "standard", "CO": "standard",
+    "CT": "standard", "DE": "standard", "DC": "standard", "FL": "standard", "GA": "standard",
+    "HI": "standard", "ID": "standard", "IN": "standard", "IA": "standard", "KS": "standard",
+    "KY": "standard", "ME": "standard", "MA": "standard", "MS": "standard", "MO": "standard",
+    "MT": "standard", "NE": "standard", "NV": "standard", "NH": "standard", "NY": "standard",
+    "NC": "standard", "ND": "standard", "OK": "standard", "OR": "standard", "SC": "standard",
+    "SD": "standard", "TN": "standard", "TX": "standard", "UT": "standard", "WA": "standard",
+    "WV": "standard", "WI": "standard", "WY": "standard",
+    "AK": { "rules": [
+      { "when": { "unitsMax": 4 }, "result": "prohibited" },
+      { "when": { "unitsMin": 5, "loanAmountGt": 25000 }, "result": "standard" },
+      { "when": {}, "result": "standard" }
+    ]},
+    "IL": { "rules": [
+      { "when": { "borrowerType": "business_entity", "unitsMax": 4 }, "result": "standard" },
+      { "when": { "borrowerType": "natural_person", "unitsMax": 4, "aprGt": 8 }, "result": "prohibited" },
+      { "when": { "borrowerType": "natural_person", "unitsMax": 4 }, "result": "standard" },
+      { "when": { "unitsMin": 5 }, "result": "standard" }
+    ]},
+    "LA": { "rules": [
+      { "when": { "ruralProperty": true }, "result": "prohibited" },
+      { "when": {}, "result": "standard" }
+    ], "note": "Prohibited if property is rural property." },
+    "MD": { "rules": [
+      { "when": {}, "result": "restricted", "terms": "3-year term MAX; 2 months advance interest on aggregate prepayments in any 12-month period exceeding 1/3 of original principal." }
+    ]},
+    "MI": { "rules": [
+      { "when": { "unitsMax": 1, "lien": "first" }, "result": "restricted", "terms": "3-year term MAX; 1% of the amount prepaid." },
+      { "when": { "unitsMax": 1, "lien": "junior" }, "result": "standard" },
+      { "when": { "unitsMin": 2 }, "result": "standard" }
+    ]},
+    "MN": { "rules": [
+      { "when": { "unitsMax": 4, "loanAmountLe": 832750 }, "result": "prohibited", "note": "business decision; threshold changes annually (2026 $832,750)" },
+      { "when": { "unitsMax": 4, "loanAmountGt": 832750 }, "result": "standard" },
+      { "when": { "unitsMin": 5 }, "result": "standard" }
+    ]},
+    "NJ": { "rules": [
+      { "when": { "borrowerType": "natural_person", "unitsMax": 4 }, "result": "prohibited", "note": "business decision" },
+      { "when": { "borrowerType": "business_entity", "unitsMax": 4 }, "result": "standard" },
+      { "when": { "unitsMin": 5 }, "result": "prohibited", "note": "business decision" }
+    ], "note": "Owner's example: an INDIVIDUAL (natural person) borrower in NJ on a 1-4 unit is PROHIBITED from a PPP." },
+    "NM": { "rules": [
+      { "when": { "unitsMax": 4 }, "result": "prohibited" },
+      { "when": { "unitsMin": 5 }, "result": "standard" }
+    ]},
+    "OH": { "rules": [
+      { "when": { "unitsMax": 2, "loanAmountGe": 116356 }, "result": "restricted", "terms": "5-year Max; 1% of original principal balance", "note": "threshold changes annually (2026 $116,356)" },
+      { "when": { "unitsMax": 2, "lien": "first", "loanAmountLt": 116356 }, "result": "prohibited" },
+      { "when": { "unitsMax": 2, "lien": "junior", "loanAmountLt": 116356 }, "result": "restricted", "terms": "5-year Max; 1% of original principal balance" },
+      { "when": { "unitsMin": 3 }, "result": "standard" }
+    ]},
+    "PA": { "rules": [
+      { "when": { "unitsMax": 2, "loanAmountLe": 329411 }, "result": "prohibited", "note": "threshold changes annually (2026 $329,411)" },
+      { "when": { "unitsMax": 2, "loanAmountGt": 329411 }, "result": "standard" },
+      { "when": { "unitsMin": 3 }, "result": "standard" }
+    ]},
+    "RI": { "rules": [
+      { "when": { "unitsMax": 4 }, "result": "restricted", "terms": "1-year Max; 2% of balance due at payoff; can only be charged at prepayment in full." },
+      { "when": { "unitsMin": 5 }, "result": "standard" }
+    ]},
+    "VT": { "rules": [
+      { "when": { "loanAmountLt": 1000000 }, "result": "prohibited" },
+      { "when": { "loanAmountGe": 1000000 }, "result": "standard" }
+    ]},
+    "VA": { "rules": [
+      { "when": { "unitsMax": 4, "lien": "first", "loanAmountGe": 75000 }, "result": "standard" },
+      { "when": { "unitsMax": 4, "lien": "first", "loanAmountLt": 75000 }, "result": "prohibited", "note": "business decision" },
+      { "when": { "unitsMax": 4, "lien": "junior" }, "result": "prohibited", "note": "business decision" },
+      { "when": { "unitsMin": 5 }, "result": "standard" }
+    ]}
+  },
+  "standardStructures": {
+    "flat": "1/2/3/4/5-year PPP (minimum 3% up to 5%)",
+    "yearlyStepDown": { "5yr": "5/4/3/2/1", "4yr": "5/4/3/2", "3yr": "5/4/3", "2yr": "3/3", "1yr": "3" },
+    "guaranteedInterest": "6-months interest on amount prepaid greater than 20%",
+    "wholesaleNote": "Wholesale/Correspondent PPP options limited to 5% flat and yearly step-down."
+  }
+}
