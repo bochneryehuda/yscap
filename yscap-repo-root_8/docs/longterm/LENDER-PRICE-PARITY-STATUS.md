@@ -494,6 +494,17 @@ HARDER to pass, never falsely pass. A cut never fires on an ABSENT numeric fact 
 fail-safe, the ordinary-scenario no-op, the flagged set, the E3 OVERLAY classification, and the program
 integration; two production constants mutation-proven to turn it red).
 
+**NOW DATA, NOT CODE (the scalable half — PPE #47/#48).** The cuts above are no longer hand-written
+branches: they are a DECLARATIVE TABLE (`deephaven-overlay-rules.DEEPHAVEN_OVERLAY_CUTS`) read by an
+investor-agnostic interpreter (`overlay-cut-engine.evaluateCutTable`), so the SECOND investor's overlay
+cuts become a new table, never a second copy of the branch logic (the PPE "universal rule shape";
+CLAUDE.md build-rule #4). The table shape is a list of overlay-keyed GROUPS, each with numeric cuts
+(`lt`/`gt`/`gte`), cross-fact `isTrue` cuts, a `gtRelative` cut (reads a grid-relative base and FLAGS
+rather than invents a missing cap), and always-on `flags`. The refactor is proven BYTE-IDENTICAL to the
+pre-refactor hand-written version over a 2,880-scenario boundary battery (`test-lt-ppe-overlay-cut-engine.js`
+— the oracle is a faithful copy of the imperative code the table replaced, mutation-proven to bite on an
+interpreter cmp change), and the 42-assertion D36 suite passes unchanged.
+
 ## 3. The request-builder field contract (accepted types)
 
 Scenario field → upstream path → type → default/validation (as of the fixes
