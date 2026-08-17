@@ -1,5 +1,5 @@
 -- ============================================================================
--- LONG-TERM (LT) — db/569 — the PPE canary SCHEDULE (the saved battery + cadence).
+-- LONG-TERM (LT) — db/570 — the PPE canary SCHEDULE (the saved battery + cadence).
 --
 -- WHAT PROBLEM THIS FIXES. Agreement between our engine and Lender Price is only
 -- measured on the days somebody remembered to press "run canary now" — while the
