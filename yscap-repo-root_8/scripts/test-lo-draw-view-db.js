@@ -9,8 +9,11 @@
  *   - a draw-desk WRITE (reconcile): LO → 403, admin → not 403.
  *   - accept-on-behalf (mark-accepted): LO-on-file 200 (accepted_via='staff'), off-file 403.
  *   - dispute-on-behalf: LO-on-file 200 (disputed_via='staff').
- * Plus a SOURCE-SCAN guard: every route relaxed to `requireDrawView` is a GET or one
- * of the two borrower-behalf POSTs — never a draw-desk write.
+ *   - ask for a draw (portal-draws): an LO on the file may, but the two DESK powers
+ *     (allow_over / allow_parallel) are still refused to them.
+ * Plus a SOURCE-SCAN guard: every route relaxed to `requireDrawView` is a GET or one of
+ * the borrower-behalf POSTs on the allowlist below — never a draw-desk write. That list
+ * is checked BOTH ways, so neither a new write nor a retired one goes unnoticed.
  */
 if (!process.env.DATABASE_URL) { console.log('SKIP test-lo-draw-view-db (no DATABASE_URL)'); process.exit(0); }
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-lo-draw';
@@ -42,13 +45,27 @@ async function main() {
   // ---- SOURCE-SCAN guard (no DB needed): what a loan officer can reach ----
   const src = fs.readFileSync(REPO + '/src/routes/sitewire.js', 'utf8');
   const relaxed = [...src.matchAll(/^router\.(get|post|put|patch|delete)\('([^']+)',\s*requireDrawView/gm)].map(m => ({ method: m[1], path: m[2] }));
-  const badWrites = relaxed.filter(r => r.method !== 'get'
-    && !/\/findings\/:findingId\/(mark-accepted|dispute)$/.test(r.path));
+
+  // EVERY non-GET route relaxed to `requireDrawView` is listed HERE, with the owner
+  // direction that authorised it. The rule the list encodes is ONE sentence: a loan
+  // officer may do, on their own file, what the BORROWER could do — and nothing else.
+  // The draw DESK (approve, amend, reopen, reconcile, record a release, push the file to
+  // Sitewire) stays `manage_draws`. Adding a route here is an AUTHORIZATION decision, not
+  // a way to make this test go quiet: if a new write trips it, get the owner's words
+  // first, then add the entry with them.
+  const LO_WRITES = [
+    { re: /\/findings\/:findingId\/mark-accepted$/, why: 'accept a finding on the borrower’s behalf (owner-directed 2026-08-12)' },
+    { re: /\/findings\/:findingId\/dispute$/, why: 'dispute a finding on the borrower’s behalf (owner-directed 2026-08-12)' },
+    { re: /\/files\/:id\/portal-draws$/, why: 'ASK for a draw — a borrower’s own action (owner-directed 2026-08-17: "the loan officer can only do stuff that a borrower can do"); the route itself withholds allow_over / allow_parallel from a non-desk actor' },
+  ];
+  const badWrites = relaxed.filter(r => r.method !== 'get' && !LO_WRITES.some(w => w.re.test(r.path)));
   ok(relaxed.length >= 20, `many read routes are LO-viewable (${relaxed.length} on requireDrawView)`);
   ok(badWrites.length === 0, `NO draw-desk write is on requireDrawView (offenders: ${JSON.stringify(badWrites)})`);
-  ok(relaxed.some(r => r.method === 'post' && /mark-accepted$/.test(r.path))
-    && relaxed.some(r => r.method === 'post' && /\/dispute$/.test(r.path)),
-    'exactly the accept + dispute POSTs are the LO writes');
+
+  // The list is checked BOTH ways. An entry with no route left is a stale authorisation
+  // nobody has noticed retiring — exactly how this list went stale in the first place.
+  const stale = LO_WRITES.filter(w => !relaxed.some(r => r.method !== 'get' && w.re.test(r.path)));
+  ok(stale.length === 0, `every authorised LO write is still a real route (stale: ${JSON.stringify(stale.map(s => s.why))})`);
 
   const app = require(REPO + '/src/server.js');
   await require(REPO + '/src/migrate-boot').ensureSchema();
@@ -116,6 +133,23 @@ async function main() {
     r = await api(server, 'POST', `/api/sitewire/files/${APP}/findings/${findingId}/dispute`,
       { note: 'off-file should be refused', lines: [{ line_id: Number(lineId), desired_cents: 40000, note: 'no' }] }, loOff);
     ok(r.status === 403, `an off-file loan officer cannot dispute on this file (403) — got ${r.status}`);
+
+    // ---- ASK for a draw: the officer may, but the two DESK powers stay behind manage_draws ----
+    // The allowlist above says WHICH routes an officer may reach; this pins what the
+    // route itself still refuses them, so widening the list can never quietly hand an
+    // officer the desk's judgement calls. `allow_over` composes a request ABOVE a line's
+    // remaining budget and `allow_parallel` opens a second draw alongside a running one —
+    // neither is something a borrower could ask for, so neither rides on `view_draws`.
+    for (const flag of ['allow_over', 'allow_parallel']) {
+      r = await api(server, 'POST', `/api/sitewire/files/${APP}/portal-draws`, { entries: [], [flag]: true }, loOn);
+      ok(r.status === 403 && /draw desk/i.test(String(r.body && r.body.error || '')),
+        `a loan officer is refused ${flag} on a draw request (403, names the desk) — got ${r.status}: ${JSON.stringify(r.body).slice(0, 120)}`);
+    }
+    // The control: the same call from the DESK is not refused by that gate. It fails for
+    // its own reason (no lines picked / the file's draw program), which is the point —
+    // a 403 here would mean the assertions above were passing on the file scope instead.
+    r = await api(server, 'POST', `/api/sitewire/files/${APP}/portal-draws`, { entries: [], allow_over: true }, adm);
+    ok(r.status !== 403, `the draw desk passes that gate (not 403) — got ${r.status}`);
   } catch (e) { fail++; console.log('  ✗ EXCEPTION', e && e.stack ? e.stack : e); }
   finally {
     await db.query(`DELETE FROM draw_finding_lines WHERE finding_id=$1`, [findingId]).catch(() => {});
