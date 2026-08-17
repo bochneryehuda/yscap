@@ -124,6 +124,20 @@ async function scopeSees(c, loanId, staffId) {
     check(await scopeSees(c, loanId, shea.id), 'the file starts in Shea\'s book, because Encompass names her');
     check(!(await scopeSees(c, loanId, rivka.id)), '…and not in Rivka\'s');
 
+    // THE SAFETY PROPERTY OF THE RULE CHANGE, asserted rather than argued: with no
+    // override set, COALESCE(override, staff) IS staff, so the new predicate answers
+    // exactly what the old OR answered on every loan nobody has reassigned. Nobody
+    // loses access because the rule moved — only because somebody pressed the button.
+    const { rows: oldRule } = await c.query(
+      `SELECT 1 FROM lt_loans l WHERE l.id = $2::uuid AND EXISTS (
+         SELECT 1 FROM lt_loan_contacts c
+          WHERE c.loan_id = l.id
+            AND (c.staff_id = $1::uuid OR c.override_staff_id = $1::uuid))`,
+      [shea.id, loanId],
+    );
+    check((oldRule.length > 0) === (await scopeSees(c, loanId, shea.id)),
+      'with nothing reassigned the new rule answers exactly what the old one did — the change moves no existing file');
+
     // ── Reassigning it ────────────────────────────────────────────────────────
     console.log('\nreassigning the file to somebody else');
 
@@ -138,27 +152,13 @@ async function scopeSees(c, loanId, staffId) {
     // THE ASSERTION THIS FEATURE EXISTS FOR.
     check(await scopeSees(c, loanId, rivka.id),
       'the file is now genuinely in Rivka\'s pipeline — the scope honours the override, which is the whole point of allowing one');
-    // AND THE PERSON ENCOMPASS NAMES KEEPS THEIR ACCESS. This is asserted rather than
-    // assumed because it is the ONE thing about this feature nobody here may decide,
-    // and it is genuinely surprising: everything else in the codebase that answers
-    // "whose file is this" reads the EFFECTIVE person — `pipeline.officerIsSql`,
-    // `UNASSIGNED_SQL`, the row's own `staffId`, `describeContact.effectiveStaffId` —
-    // all `COALESCE(override_staff_id, staff_id)`. Only the ACCESS scope
-    // (`access.onFileSql`) reads `staff_id = me OR override_staff_id = me`, so a
-    // reassigned file leaves the previous officer's OFFICER FILTER while staying in
-    // their own pipeline and remaining openable by them.
-    //
-    // That was never a decision: until this feature existed nothing could set an
-    // override, so the case could not arise, and the OR was simply the safe way to
-    // make the new person's access work. It matters now — reassigning cannot take a
-    // file away from anybody, so an officer who leaves the team keeps every file they
-    // were ever named on. WHO KEEPS ACCESS AFTER A REASSIGNMENT IS A BUSINESS RULE
-    // and belongs to the owner, so the behaviour is pinned here exactly as it is and
-    // flagged rather than quietly changed. If the answer comes back "the file leaves
-    // them", this assertion is the one that flips, and `onFileSql` becomes the same
-    // COALESCE the other four already use.
-    check(await scopeSees(c, loanId, shea.id),
-      'the person Encompass names KEEPS their access today — pinned, not endorsed: it is the open question this feature raises, and the owner\'s to answer');
+    // AND THE FILE HAS LEFT SHEA — the owner's rule (2026-08-17): *"if you reassign
+    // the Loan Coordinator, then it should be moved."* Within a role slot the override
+    // REPLACES Encompass's answer rather than adding to it, which is what makes a
+    // reassignment able to take a file away from somebody at all. Section E below
+    // proves the other half: a DIFFERENT slot is untouched.
+    check(!(await scopeSees(c, loanId, shea.id)),
+      '…and has LEFT Shea\'s book — a reassignment MOVES the file within that role, it does not merely add somebody');
 
     // The other half of the two-source model: Encompass's answer is untouched, so
     // the screen can show both and say plainly that they disagree.
@@ -234,8 +234,48 @@ async function scopeSees(c, loanId, staffId) {
     check(!(await scopeSees(c, loanId, rivka.id)),
       '…and genuinely LEAVES Rivka\'s book, so an override that was a mistake can be fully undone');
 
-    // The two halves of the open question above, side by side on the same file: the
-    // officer FILTER already treats a reassigned file as the new person's alone.
+    // ── Every slot is judged on its own ────────────────────────────────────────
+    //
+    // The owner's second half: *"If there are a few options in Encompass for a few
+    // Loan Coordinators and you select one of them for one Coordinator and one of them
+    // for another Coordinator, then both of them should have it … If you're just adding
+    // another Processor for another stage, then it should keep both."* Two slots, two
+    // people, and neither reassignment may reach into the other — which is what
+    // `EXISTS` over per-row COALESCE gives, and what a whole-file rule could not.
+    console.log('\ntwo roles, two people — each slot judged on its own');
+
+    await c.query(
+      `INSERT INTO lt_loan_contacts
+         (id, loan_id, role, encompass_name, encompass_login_id, staff_id, encompass_synced_at)
+       VALUES (gen_random_uuid(), $1::uuid, 'processor', 'Shea Weiss', $2, $3::uuid, now())`,
+      [loanId, `${stamp}-sweiss`, shea.id],
+    );
+    check(await scopeSees(c, loanId, shea.id),
+      'Shea is back on the file through a SECOND slot — Encompass names her as the processor too');
+
+    await contacts.reassign(loanId, 'loan_officer', String(rivka.id), String(admin.id), 'Rivka is the officer', c);
+    check(await scopeSees(c, loanId, rivka.id), 'reassigning the officer slot gives Rivka the file');
+    check(await scopeSees(c, loanId, shea.id),
+      '…and Shea KEEPS it through her own processor slot — the officer reassignment never reached into it');
+
+    await contacts.reassign(loanId, 'processor', String(deactivated.id), String(admin.id), 'x', c)
+      .catch(() => {}); // refused (deactivated) — the point is that nothing changed
+    check(await scopeSees(c, loanId, shea.id), '…and a REFUSED reassignment on that second slot leaves her there');
+
+    // Now move the second slot too: with neither slot naming her, she is off the file.
+    await contacts.reassign(loanId, 'processor', String(rivka.id), String(admin.id), 'Rivka took both roles', c);
+    check(!(await scopeSees(c, loanId, shea.id)),
+      'once BOTH slots are reassigned she is off the file — nothing is left holding it for her');
+    check(await scopeSees(c, loanId, rivka.id), '…and Rivka holds it through both');
+
+    // Put the file back to one slot for the sections below.
+    await c.query('DELETE FROM lt_loan_contacts WHERE loan_id = $1::uuid AND role = $2', [loanId, 'processor']);
+    await contacts.reassign(loanId, 'loan_officer', null, String(admin.id), null, c);
+    check(await scopeSees(c, loanId, shea.id), 'cleared back to Encompass\'s answer for the rest of the run');
+
+    // ── The two readings now AGREE ─────────────────────────────────────────────
+    console.log('\nthe officer filter and the access scope answer the same way');
+
     await contacts.reassign(loanId, 'loan_officer', String(rivka.id), String(admin.id), 'again, to compare', c);
     const officerIs = async (staffId) => {
       // The REAL fragment the pipeline filters with — re-typing it would prove
@@ -247,8 +287,14 @@ async function scopeSees(c, loanId, staffId) {
       return rows.length > 0;
     };
     check(await officerIs(rivka.id), 'filtering the pipeline by officer finds the file under Rivka');
-    check(!(await officerIs(shea.id)),
-      '…and NOT under Shea — which is the same file answering "whose is it?" two different ways, and why this is worth one question to the owner');
+    check(!(await officerIs(shea.id)), '…and NOT under Shea');
+    // The drift this feature surfaced, now closed: the officer FILTER and the ACCESS
+    // SCOPE are asserted to give the SAME answer about the same person on the same
+    // file. Written as a comparison rather than two separate truths, so the day one of
+    // them changes the other is forced to change with it.
+    check((await officerIs(rivka.id)) === (await scopeSees(c, loanId, rivka.id))
+      && (await officerIs(shea.id)) === (await scopeSees(c, loanId, shea.id)),
+      '…and the access scope agrees with it for BOTH people — one question, one answer');
     await contacts.reassign(loanId, 'loan_officer', null, String(admin.id), null, c);
 
     // ── The pickable list ─────────────────────────────────────────────────────

@@ -96,6 +96,47 @@ check(access.mayReassignLoan(staffOf('loan_coordinator'), { 'access.adminRoles':
   === access.mayManagePeople(staffOf('loan_coordinator'), { 'access.adminRoles': ['loan_coordinator'] }),
   'it answers exactly what mayManagePeople answers — one rule wearing two hats, not two rules');
 
+// ── The single-file twin must read the same way as the list ─────────────────
+console.log('\nopening ONE file answers what the list would');
+
+// `onFileSql` is SQL and `mayOpenLoan` is JavaScript, so nothing but a test can hold
+// them together — and the failure they guard against is the worst kind: a direct link
+// that opens a file the pipeline would never show, or refuses one it does. The DB
+// suite proves the SQL; this proves the twin, because the two are only ever compared
+// by somebody remembering to.
+const scoped = { seesAll: false };
+const rows = (o) => [o];
+
+check(access.mayOpenLoan(scoped, 'me', rows({ staff_id: 'me' })) === true,
+  'Encompass names me and nobody reassigned it — I may open it');
+check(access.mayOpenLoan(scoped, 'me', rows({ staff_id: 'me', override_staff_id: 'other' })) === false,
+  'the role was reassigned AWAY from me — I may not, exactly as the list no longer shows it');
+check(access.mayOpenLoan(scoped, 'me', rows({ staff_id: 'other', override_staff_id: 'me' })) === true,
+  'the role was reassigned TO me — I may, even though Encompass still names somebody else');
+check(access.mayOpenLoan(scoped, 'me', rows({ override_staff_id: 'me' })) === true,
+  '…including where Encompass named nobody at all');
+
+// The slot boundary, in the twin: a reassignment on one role must not reach another.
+check(access.mayOpenLoan(scoped, 'me', [
+  { role: 'loan_officer', staff_id: 'me', override_staff_id: 'other' },
+  { role: 'processor', staff_id: 'me' },
+]) === true, 'a reassignment on ONE role leaves my claim through another role intact');
+check(access.mayOpenLoan(scoped, 'me', [
+  { role: 'loan_officer', staff_id: 'me', override_staff_id: 'other' },
+  { role: 'processor', staff_id: 'me', override_staff_id: 'other' },
+]) === false, '…and once EVERY role naming me is reassigned, I am off the file');
+
+// The camelCase spelling is what `describeContact` emits, so both must be read.
+check(access.mayOpenLoan(scoped, 'me', rows({ staffId: 'other', overrideStaffId: 'me' })) === true,
+  'the shaped (camelCase) row reads identically to the raw one');
+check(access.mayOpenLoan(scoped, 'me', rows({ staffId: 'me', overrideStaffId: 'other' })) === false,
+  '…in both directions');
+
+check(access.mayOpenLoan({ seesAll: true }, 'me', []) === true, 'somebody who sees the whole book opens anything');
+check(access.mayOpenLoan(scoped, 'me', []) === false, 'a file with no contacts at all is nobody\'s');
+check(access.mayOpenLoan(scoped, '', rows({ staff_id: '' })) === false,
+  'a blank id never matches a blank row — two unknowns are not the same person');
+
 // ── What a request must carry ───────────────────────────────────────────────
 console.log('\nwhat a reassignment has to say');
 

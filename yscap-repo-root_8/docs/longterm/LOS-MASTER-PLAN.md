@@ -892,19 +892,30 @@ Neither an outside broker (a TPO `staff_users` row — an override would put an 
 in the long-term pipeline) nor a deactivated person may be named, and a role that is not on
 the file is refused IN WORDS rather than answered with a silent success.
 
-**And it surfaced the drift `access.js`'s own header warns about.** Everything that answers
-"whose file is this" reads the EFFECTIVE person — `pipeline.officerIsSql`, `UNASSIGNED_SQL`,
-the row's own `staffId`, `describeContact.effectiveStaffId`, all
-`COALESCE(override_staff_id, staff_id)`. Only the ACCESS scope reads
-`staff_id = me OR override_staff_id = me`. So a reassigned file leaves the previous
-officer's officer-filter while staying in their own pipeline and openable by them — the
-same file answering the same question two ways. That was never decided: until this phase
-nothing could set an override, so the case could not arise, and the OR was simply the safe
-way to make the new person's access work. **Who keeps access after a reassignment is a
-business rule and is item 14 below, not a decision taken here** — the behaviour is pinned
-by the DB suite exactly as it is, and the screen says so in words rather than letting an
-admin believe they have taken a file away from somebody. If the answer is "the file leaves
-them", one assertion flips and `onFileSql` becomes the COALESCE the other four already use.
+**And it surfaced a real drift, which the owner then settled (2026-08-17).** Everything that
+answers "whose file is this" read the EFFECTIVE person — `pipeline.officerIsSql`,
+`UNASSIGNED_SQL`, the row's own `staffId`, `describeContact.effectiveStaffId`, all
+`COALESCE(override_staff_id, staff_id)` — while the ACCESS scope alone read
+`staff_id = me OR override_staff_id = me`. So a reassigned file left the previous officer's
+officer-filter while staying in their own pipeline and openable by them: the same file
+answering the same question two ways. Nobody had decided that — until this phase nothing
+could set an override, so the case could not arise, and the OR was simply the safe way to
+make the new person's access work.
+
+The owner's rule: *"if you reassign the Loan Coordinator, then it should be moved. If there
+are a few options in Encompass for a few Loan Coordinators and you select one of them for
+one Coordinator and one of them for another Coordinator, then both of them should have it.
+If you reassign Processor, it should also move over. If you're just adding another Processor
+for another stage, then it should keep both."* **Both halves are one expression** —
+`COALESCE(override_staff_id, staff_id)` per ROW inside an `EXISTS` over every row: within a
+slot the override REPLACES Encompass's answer (so a reassignment can genuinely take a file
+away, which is what makes it useful when somebody leaves), and across slots each row is
+judged alone (so a second coordinator or a processor added for another stage keeps their
+own claim). `onFileSql` is now that COALESCE and `mayOpenLoan` is its JS twin, so the list,
+the single file and the officer filter give one answer. **Nothing moved on any existing
+file**: with `override_staff_id` NULL the expression IS `staff_id`, asserted rather than
+argued. The reassign control states the consequence in words, so nobody presses it thinking
+it only adds somebody.
 
 ---
 
@@ -1092,24 +1103,28 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     **What is still needed is the list of folder names and which of them mean the deal is over** —
     one answer from the owner, typed into one setting, no code change.
 
-14. **When a file is reassigned by hand, does the person Encompass names keep it?** Raised
-    by phase 8's local reassignment (see above), and it is one question with one answer.
-    Today they KEEP it: the access scope admits both the Encompass-resolved person and the
-    locally-assigned one, while every other reading of "whose file is this" already treats
-    the file as the new person's alone. So reassigning ADDS somebody rather than moving the
-    file, and an officer who leaves the team keeps every file they were ever named on.
+14. **ANSWERED (owner, 2026-08-17) — a reassignment MOVES the file within that role, and
+    every role is its own slot.** The owner's words: *"if you reassign the Loan Coordinator,
+    then it should be moved. If there are a few options in Encompass for a few Loan
+    Coordinators and you select one of them for one Coordinator and one of them for another
+    Coordinator, then both of them should have it. If you reassign Processor, it should also
+    move over. If you're just adding another Processor for another stage, then it should keep
+    both."*
 
-    Two defensible answers, and this is the owner's to pick. **"It moves"** makes a
-    reassignment mean what it says and is what the other four predicates already assume;
-    the cost is that a handover is abrupt — the previous officer loses the file the moment
-    the button is pressed. **"They keep it"** is what happens now and is gentler mid-
-    handover; the cost is that nothing can ever take a long-term file away from anybody,
-    which is a real gap when somebody leaves or should not be seeing a file.
+    Both halves fall out of ONE expression, which is why there is no rule to keep in step:
+    per contact row, `COALESCE(override_staff_id, staff_id)`. Within a row the override
+    REPLACES the Encompass name, so the previous person stops seeing the file — that is "it
+    moves". Across rows nothing is combined, so two Loan Coordinator rows, or a second
+    Processor on another stage, each answer for themselves and both people see the file —
+    that is "keep both". `onFileSql` is that COALESCE and `mayOpenLoan` is its JS twin, so the
+    list, the single file and the officer filter give one answer.
 
-    Nothing is hidden while it is open: the behaviour is asserted in
-    `scripts/test-lt-contact-override-db.js` and stated on the reassign control itself, so
-    nobody presses the button believing it does the other thing. One answer, one predicate,
-    no migration.
+    **Nothing moved on any existing file**: with `override_staff_id` NULL the expression IS
+    `staff_id`, which is asserted rather than argued in
+    `scripts/test-lt-contact-override-db.js`. The reassign control states the consequence in
+    words ("this role moves to them, so they stop seeing the file — unless they are named on
+    another role"), so nobody presses it thinking it only adds somebody. One predicate, no
+    migration.
 
 ---
 

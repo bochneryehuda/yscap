@@ -248,14 +248,16 @@ function ReassignControl({ contact, staff, onSave }) {
 
       {/* Both sentences are load-bearing. The first is the one somebody could
           reasonably get wrong — reassigning a file is exactly the moment a person
-          assumes they have corrected the system of record. The second says the
-          quiet part: today the person Encompass names KEEPS their access, so this
-          adds somebody rather than swapping them, and an admin reassigning a file
-          to take it away from somebody would otherwise think they had. */}
+          assumes they have corrected the system of record. The second states the
+          consequence that is not visible from the control: this role MOVES, so the
+          person Encompass names loses the file through it, while anybody named on a
+          DIFFERENT role still holds it through theirs. */}
       <p style={{ margin: '0 0 8px', color: MUTED, fontSize: 12, lineHeight: 1.45 }}>
         This only decides whose pipeline the file is in here. Nothing is sent to
         Encompass, and what Encompass says stays on the file beside it.
-        {contact.staffName ? ` ${contact.staffName} keeps access to this file either way.` : ''}
+        {contact.staffName
+          ? ` This role moves to them, so ${contact.staffName} stops seeing the file — unless they are named on another role.`
+          : ''}
       </p>
 
       {err ? <p style={{ margin: '0 0 8px', color: '#8A2D2D', fontSize: 12 }}>{err}</p> : null}
