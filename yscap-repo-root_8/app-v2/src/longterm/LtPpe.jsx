@@ -395,6 +395,18 @@ export default function LtPpe() {
               </div>
               <div style={{ fontSize: 13, color: SLATE, wordBreak: 'break-word' }}>{it.scenario}</div>
               {it.investor && <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>{it.investor}</div>}
+              {/* WHY it disagreed, diagnosed when the comparison was made and stored on the row. It is
+                  a HYPOTHESIS ranked by numeric proximity — Lender Price publishes no breakdown of its
+                  own — so the confidence is shown beside it rather than folded into the sentence, and a
+                  row recorded before this was wired simply has none. */}
+              {it.diff && it.diff.explanation && it.diff.explanation.summary && (
+                <div style={{ fontSize: 12, color: SLATE, marginTop: 4 }}>
+                  {it.diff.explanation.summary}
+                  {it.diff.explanation.confidence && it.diff.explanation.confidence !== 'none' && (
+                    <span style={{ color: MUTED }}> ({it.diff.explanation.confidence} match — a place to look, not a verdict)</span>
+                  )}
+                </div>
+              )}
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
               <button className="btn ghost" disabled={busy} onClick={() => openSettle(it)}>

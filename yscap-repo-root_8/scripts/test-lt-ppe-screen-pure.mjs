@@ -238,5 +238,23 @@ ok(/to="\/internal\/lt\/ppe"/.test(layout), 'ROUTE-3 …and the long-term nav li
   ok(/scopeRowError\[p\.id\]/.test(code), 'SCOPE-10 a refusal is held per program, never shown on another row');
 }
 
+// ---------------------------------------------------------------------------
+// 9) A finding says WHY, on the row — not only THAT the two disagreed
+// ---------------------------------------------------------------------------
+{
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  // The façade diagnoses every disagreement at the moment it is found and stores the explanation on
+  // the row (`diff.explanation`). Storing it and never drawing it is the same defect one layer up.
+  ok(/it\.diff && it\.diff\.explanation && it\.diff\.explanation\.summary/.test(code),
+    'WHY-1 the finding row renders the stored explanation');
+  // A row recorded before this existed carries none, and must render as it always did rather than as
+  // a blank line or a crash — which is what the composed guard above is pinned to.
+  ok(/it\.diff\.explanation\.confidence !== 'none'/.test(code),
+    'WHY-2 …and the confidence is shown only when there IS one — an unranked guess is not labelled');
+  ok(/a place to look, not a verdict/.test(code),
+    'WHY-3 …worded as a hypothesis, because Lender Price publishes no breakdown of its own');
+}
+
 console.log(`\n${failures === 0 ? 'OFFLINE: all passed' : `FAILURES: ${failures}`}`);
 process.exit(failures ? 1 : 0);
