@@ -64,21 +64,40 @@ const LOAN_FOR_READ = {
   ltv: 71.25,
   loanAmortizationTermMonths: 360,
   loanProgramName: 'DSCR 30 Year Fixed',
+  propertyAppraisedValueAmount: 415000,
+  applications: [{
+    id: 'app-read-1', legacyId: '_borrower1', propertyUsageType: 'Investor',
+    borrower: {
+      firstName: 'Wired', lastName: 'Borrower',
+      taxIdentificationIdentifier: '987-65-4321',
+      emailAddressText: 'wired@example.com', experianCreditScore: '701',
+    },
+    coborrower: { firstName: null, lastName: null },
+  }],
   property: {
     streetAddress: '9 Wired Way', city: 'PATERSON', state: 'NJ', postalCode: '07501',
-    propertyAppraisedValueAmount: 415000, propertyUsageType: 'Investor',
   },
 };
 
 const FULL_LOAN = {
   ltv: 65.5,
   subjectPropertyGrossRentalIncomeAmount: 4200,
+  propertyAppraisedValueAmount: 725000,
+  propertyEstimatedValueAmount: 700000,
+  purchasePriceAmount: 640000,
   loanProductData: { gsePropertyType: 'Detached' },
+  applications: [{
+    id: 'app-1', legacyId: '_borrower1', propertyUsageType: 'Investor',
+    borrower: {
+      firstName: 'Ann', lastName: 'Lee', taxIdentificationIdentifier: '123-45-6789',
+      emailAddressText: 'ann@example.com', birthDate: '1980-04-02',
+      experianCreditScore: '756', middleCreditScore: '756',
+    },
+    coborrower: { firstName: null, lastName: null },
+  }],
   property: {
     streetAddress: '11 Maple Ave', city: 'NEWARK', county: 'Essex',
     state: 'NJ', postalCode: '07103', financedNumberOfUnits: 2,
-    propertyUsageType: 'Investor', propertyAppraisedValueAmount: 725000,
-    propertyEstimatedValueAmount: 700000, purchasePriceAmount: 640000,
   },
 };
 
@@ -113,8 +132,7 @@ async function main() {
     console.log('\na second read updates, and a THINNER one blanks nothing');
 
     const moved = await sync.syncSubjectProperty(loanId, {
-      ...FULL_LOAN,
-      property: { ...FULL_LOAN.property, propertyAppraisedValueAmount: 800000 },
+      ...FULL_LOAN, propertyAppraisedValueAmount: 800000,
     });
     const p2 = await db.query('SELECT * FROM lt_properties WHERE loan_id = $1::uuid', [loanId]);
     check(moved.ok && p2.rows.length === 1, 'reading it again stores no second row');
@@ -138,6 +156,67 @@ async function main() {
     const none = await db.query('SELECT count(*)::int AS n FROM lt_properties WHERE loan_id = $1::uuid', [loanId]);
     check(empty.ok && empty.written === false && empty.found === 0 && none.rows[0].n === 0,
       'a payload with no property figures files NOTHING — an empty row is indistinguishable from a property we read and found empty');
+
+    console.log('\nthe people on the file');
+
+    await db.query(`DELETE FROM lt_parties WHERE pair_id IN (SELECT id FROM lt_borrower_pairs WHERE loan_id = $1::uuid)`, [loanId]);
+    await db.query('DELETE FROM lt_borrower_pairs WHERE loan_id = $1::uuid', [loanId]);
+
+    const people = await sync.syncBorrowerPairs(loanId, FULL_LOAN);
+    check(people.ok && people.pairs === 1 && people.parties === 1,
+      'the pair lands with its one real person — the empty co-borrower object Encompass sends on every single-borrower file is not a second borrower');
+
+    const party = await db.query(
+      `SELECT p.* FROM lt_parties p JOIN lt_borrower_pairs bp ON bp.id = p.pair_id
+        WHERE bp.loan_id = $1::uuid`, [loanId]);
+    check(party.rows.length === 1 && party.rows[0].first_name === 'Ann'
+      && party.rows[0].role === 'borrower' && party.rows[0].party_type === 'individual',
+      'every column the statement names exists, and the enums accept what we bind');
+    check(party.rows[0].ssn_last4 === '6789' && party.rows[0].ssn_encrypted === null,
+      'the LAST FOUR are stored and the number itself is NOT — the encrypted column stays empty until the owner authorizes reaching the RTL crypto module, and no screen is waiting on that');
+    check(party.rows[0].fico_experian === 756 && party.rows[0].fico_representative === 756,
+      'and a score that arrives as a string lands in an integer column');
+
+    // A second read must not mint a second person on the same slot — and it must
+    // actually UPDATE, or a corrected name would never reach the file.
+    const renamed = {
+      ...FULL_LOAN,
+      applications: [{
+        ...FULL_LOAN.applications[0],
+        borrower: { ...FULL_LOAN.applications[0].borrower, lastName: 'Lee-Marsh' },
+      }],
+    };
+    await sync.syncBorrowerPairs(loanId, renamed);
+    const again = await db.query(
+      `SELECT p.last_name, count(*) OVER ()::int AS n FROM lt_parties p
+         JOIN lt_borrower_pairs bp ON bp.id = p.pair_id WHERE bp.loan_id = $1::uuid`, [loanId]);
+    check(again.rows.length === 1 && again.rows[0].n === 1,
+      'reading it again adds nobody — the slot on the application IS the identity, because a name changes and a slot does not');
+    check(again.rows[0].last_name === 'Lee-Marsh',
+      '…and the name that CHANGED is updated in place, so a correction actually reaches the file');
+
+    // A CO-BORROWER arriving later joins the same pair.
+    const withCo = {
+      ...FULL_LOAN,
+      applications: [{
+        ...FULL_LOAN.applications[0],
+        coborrower: { firstName: 'Ben', lastName: 'Lee', taxIdentificationIdentifier: '555-00-1111' },
+      }],
+    };
+    const co = await sync.syncBorrowerPairs(loanId, withCo);
+    const both = await db.query(
+      `SELECT p.role, p.first_name, p.ssn_last4 FROM lt_parties p
+         JOIN lt_borrower_pairs bp ON bp.id = p.pair_id
+        WHERE bp.loan_id = $1::uuid ORDER BY p.role`, [loanId]);
+    check(co.parties === 2 && both.rows.length === 2
+      && both.rows.some((r) => r.role === 'coborrower' && r.first_name === 'Ben' && r.ssn_last4 === '1111'),
+      'a co-borrower who appears later joins the SAME pair, and nobody is duplicated');
+
+    // The file's Borrowers section is what all of this exists for.
+    const withPeople = await file.loadFile(loanId);
+    const borrowers = withPeople && withPeople.borrowers;
+    check(!!borrowers && Array.isArray(borrowers.parties) && borrowers.parties.length === 2,
+      'and the file\'s Borrowers section shows them both — it listed nobody on every loan before anything wrote these two tables');
 
     console.log('\nthe screens that read it actually fill');
 
@@ -174,9 +253,19 @@ async function main() {
     // failure as a mirror nothing fills — and every assertion above would still
     // pass with the call removed, because they all reach the writer directly.
     await db.query('DELETE FROM lt_properties WHERE loan_id = $1::uuid', [loanId]);
+    await db.query(`DELETE FROM lt_parties WHERE pair_id IN (SELECT id FROM lt_borrower_pairs WHERE loan_id = $1::uuid)`, [loanId]);
+    await db.query('DELETE FROM lt_borrower_pairs WHERE loan_id = $1::uuid', [loanId]);
     const out = await loanSync.readLoan(loanId, GUID, {});
     check(out.ok === true && calls.includes(`getLoan:${GUID}`),
       'the real loan read runs against the stubbed tenant');
+    check(!!out.pairs && out.pairs.ok === true && out.pairs.parties === 1,
+      '…and it mirrors the people too, reporting what it did');
+    const viaReadParty = await db.query(
+      `SELECT p.first_name, p.ssn_last4 FROM lt_parties p
+         JOIN lt_borrower_pairs bp ON bp.id = p.pair_id WHERE bp.loan_id = $1::uuid`, [loanId]);
+    check(viaReadParty.rows.length === 1 && viaReadParty.rows[0].first_name === 'Wired'
+      && viaReadParty.rows[0].ssn_last4 === '4321',
+      'and the PERSON landed from the loan read as well — a different person from the one filed directly above, so a leftover row could not have passed this');
     check(!!out.property && out.property.ok === true && out.property.written === true,
       '…and reports what it did with the property, so a failure is visible rather than swallowed');
     const viaRead = await db.query('SELECT * FROM lt_properties WHERE loan_id = $1::uuid', [loanId]);
@@ -186,6 +275,8 @@ async function main() {
 
   } finally {
     if (loanId) {
+      await db.query(`DELETE FROM lt_parties WHERE pair_id IN (SELECT id FROM lt_borrower_pairs WHERE loan_id = $1::uuid)`, [loanId]).catch(() => {});
+      await db.query('DELETE FROM lt_borrower_pairs WHERE loan_id = $1::uuid', [loanId]).catch(() => {});
       await db.query('DELETE FROM lt_properties WHERE loan_id = $1::uuid', [loanId]).catch(() => {});
       await db.query('DELETE FROM lt_loans WHERE id = $1::uuid', [loanId]).catch(() => {});
     }

@@ -27,8 +27,13 @@ const check = (cond, msg) => {
 const LOAN = {
   ltv: 65.5,
   combinedLtv: 65.5,
+  propertyAppraisedValueAmount: 725000,
+  propertyEstimatedValueAmount: 700000,
+  purchasePriceAmount: 640000,
+  subjectPropertyOccupancyPercent: 100,
   subjectPropertyGrossRentalIncomeAmount: 4200,
   loanProductData: { gsePropertyType: 'Detached' },
+  applications: [{ propertyUsageType: 'Investor' }],
   property: {
     streetAddress: '11 Maple Ave',
     city: 'NEWARK',
@@ -36,10 +41,7 @@ const LOAN = {
     state: 'NJ',
     postalCode: '07103',
     financedNumberOfUnits: 2,
-    propertyUsageType: 'Investor',
-    propertyAppraisedValueAmount: 725000,
-    propertyEstimatedValueAmount: 700000,
-    purchasePriceAmount: 640000,
+    refinancePropertyOriginalCostAmount: 300000,
   },
 };
 
@@ -76,14 +78,14 @@ check(bare.appraisedValue === null && bare.ltvPct === null && bare.grossMonthlyR
   'nothing on the payload reads as nothing — `Number(null)` and `Number("")` are both a perfectly finite 0, which is a different loan');
 check(bare.street === null && bare.unitCount === null,
   'and so does the text and the count');
-check(mapper.readSubjectProperty({ property: { propertyAppraisedValueAmount: 0 } }).appraisedValue === 0,
+check(mapper.readSubjectProperty({ propertyAppraisedValueAmount: 0 }).appraisedValue === 0,
   'a REAL zero is kept — it is an answer, and refusing it would be the same mistake in the other direction');
 check(mapper.readSubjectProperty({ ltv: 'n/a' }).ltvPct === null,
   'a figure that is not a number at all is refused rather than stored as NaN');
 // An EMPTY STRING is the shape this actually arrives in — a cleared box in
 // Encompass, or a field the tenant returns as "". `Number('')` is 0, and a 0%
 // LTV or a $0 appraised value on a screen is a decision, not a blank.
-check(mapper.readSubjectProperty({ ltv: '', property: { propertyAppraisedValueAmount: '' } }).ltvPct === null,
+check(mapper.readSubjectProperty({ ltv: '', propertyAppraisedValueAmount: '' }).ltvPct === null,
   'an EMPTY value is not a figure — it reads as absent, never as zero');
 check(mapper._internals.num('') === null && mapper._internals.num(null) === null
   && mapper._internals.num(false) === null && mapper._internals.num([]) === null,
@@ -99,7 +101,7 @@ check(mapper.readSubjectProperty(null) === null && mapper.readSubjectProperty('x
   'a payload that is not a loan produces no row at all, so the caller writes nothing');
 check(!('actualMonthlyRent' in p) && !('floodZone' in p) && !('inFloodZone' in p),
   'the three columns db/549 carries and this tenant has no measured field for are ABSENT — a guessed source is worse than an honest blank on a figure a decision is made on');
-check(p._found > 0 && p._fields === 16 && p._found <= p._fields,
+check(p._found === 16 && p._fields === 16,
   'and the row says how much of itself was found: a mirror that fills two columns of sixteen looks exactly like one that is working');
 check(mapper.readSubjectProperty({ property: {} })._found === 0,
   'a payload with nothing on it reports nothing found — which is what tells the writer not to file an empty property');
@@ -128,6 +130,102 @@ check(mapper.SUBJECT_FIELDS.street.id === SP.address.street
   && mapper.SUBJECT_FIELDS.state.id === SP.address.state
   && mapper.SUBJECT_FIELDS.zip.id === SP.address.zip,
   'and the five address fields');
+
+// THE PATHS, AGAINST THE MEASURED ONES — this is the assertion that matters.
+//
+// An id can be right while the PATH beside it is wrong, and a wrong path is the
+// worst failure this mapper has: the column reads null on every loan, which is
+// indistinguishable from a tenant that does not populate the field. Three of these
+// were wrong on the first pass and every test still passed, because the fixture
+// had been written from the same wrong guess. So they are pinned to the field
+// dictionary's own `jsonPath`, recorded across 772 real loans.
+const DICT = require('../src/longterm/encompass/dictionary/field-dictionary.json');
+const dictFields = DICT.fields || DICT;
+const jsonPathOf = (id) => {
+  const f = dictFields[String(id)];
+  return f && f.jsonPath ? String(f.jsonPath).replace(/^\$\./, '') : null;
+};
+
+const pathMismatch = [];
+for (const [key, spec] of Object.entries(mapper.SUBJECT_FIELDS)) {
+  const measured = jsonPathOf(spec.id);
+  if (!measured) { pathMismatch.push(`${key}: id ${spec.id} is not in the dictionary`); continue; }
+  // `applications[0].x` in the dictionary is `applications.0.x` to a dotted reader.
+  const want = measured.replace(/\[(\d+)\]/g, '.$1');
+  if (spec.paths[0] !== want) pathMismatch.push(`${key}: reads ${spec.paths[0]}, measured at ${want}`);
+}
+check(pathMismatch.length === 0,
+  `every subject-property path is the one the dictionary measured${pathMismatch.length ? ` — ${pathMismatch.join('; ')}` : ''}`);
+
+const partyMismatch = [];
+for (const [key, spec] of Object.entries(mapper.PARTY_FIELDS)) {
+  if (!spec.id) continue; // no measured id: the path is the probe's §1a list
+  const measured = jsonPathOf(spec.id);
+  if (measured !== `applications[0].borrower.${spec.path}`) {
+    partyMismatch.push(`${key}: reads borrower.${spec.path}, measured at ${measured}`);
+  }
+}
+check(partyMismatch.length === 0,
+  `and every party path with a measured id agrees with it${partyMismatch.length ? ` — ${partyMismatch.join('; ')}` : ''}`);
+
+console.log('\nthe people on the file');
+
+const PAIRS_LOAN = {
+  applications: [
+    {
+      id: 'app-1', legacyId: '_borrower1', propertyUsageType: 'Investor',
+      borrower: {
+        firstName: 'Ann', middleName: 'B', lastName: 'Lee', suffixToName: 'Jr',
+        birthDate: '1980-04-02', taxIdentificationIdentifier: '123-45-6789',
+        emailAddressText: 'ann@example.com', homePhoneNumber: '201-555-0100',
+        maritalStatusType: 'Unmarried', dependentCount: 2,
+        urla2020CitizenshipResidencyType: 'USCitizen',
+        experianCreditScore: '756', transUnionScore: '760', equifaxScore: '752',
+        middleCreditScore: '756',
+      },
+      // Encompass returns this object on files that have NO co-borrower.
+      coborrower: { firstName: null, lastName: null, taxIdentificationIdentifier: null },
+    },
+    {
+      // DELIBERATELY _borrower3 at array position 2: a pair deleted in Encompass
+      // leaves a gap, so the label and the position genuinely diverge — and a
+      // fixture where they agree cannot notice which one is being read.
+      id: 'app-2', legacyId: '_borrower3',
+      borrower: { firstName: 'Cal', lastName: 'Ortiz' },
+    },
+  ],
+};
+
+const pairs = mapper.readBorrowerPairs(PAIRS_LOAN);
+check(pairs.length === 2 && pairs[0].pairNumber === 1 && pairs[1].pairNumber === 3,
+  'one pair per application, numbered by ENCOMPASS\'s own _borrowerN label — that is the number its eFolder files documents under, so taking the array position instead would file a document against the wrong person');
+check(pairs[0].parties.length === 1 && pairs[0].parties[0].role === 'borrower',
+  'an EMPTY co-borrower object is not a second person — Encompass sends one on every single-borrower file, and a nameless second borrower reads as a data problem on a perfectly ordinary loan');
+check(pairs[0].parties[0].firstName === 'Ann' && pairs[0].parties[0].nameSuffix === 'Jr'
+  && pairs[0].parties[0].dependentCount === 2 && pairs[0].parties[0].citizenship === 'USCitizen',
+  'the person is read whole — name, suffix, dependants and citizenship');
+check(pairs[0].parties[0].ficoExperian === 756 && pairs[0].parties[0].ficoRepresentative === 756,
+  'the credit scores arrive as STRINGS in this schema and land as numbers');
+
+console.log('\nthe Social Security number never leaves');
+
+check(pairs[0].parties[0].ssnLast4 === '6789',
+  'only the last four are returned — the identifier a person reads back on a phone call');
+const partyJson = JSON.stringify(pairs);
+check(!/123-45-6789|123456789/.test(partyJson),
+  'and the number itself appears NOWHERE in what this returns: once it is in a returned object it is one log line and one JSON response away from leaving the building');
+check(mapper._internals.ssnLast4('1234') === '1234' && mapper._internals.ssnLast4('***-**-4321') === '4321',
+  'a masked or partial number still yields the four digits it can see');
+check(mapper._internals.ssnLast4('12') === null && mapper._internals.ssnLast4('') === null
+  && mapper._internals.ssnLast4(null) === null,
+  '…and FEWER than four digits yields nothing — a two-digit "last four" read back on a phone call is worse than a blank one');
+
+// A field id here would name the FIRST application's PRIMARY borrower, so using
+// one on a co-borrower or a second pair writes one person's details onto another.
+check(mapper.readParty({ firstName: 'Real' }, 'coborrower', { 4000: 'Wrong' }).firstName === 'Real',
+  'a party is read by PATH and never by field number — every id measured for these names applications[0].borrower, so a value read by number is the FIRST borrower\'s and would be written onto whoever is being read');
+check(mapper.PARTY_FIELDS.dependentCount.id === null,
+  'and the dependant COUNT has no id: field 54 is the dependants\' AGES, a different question with a different answer');
 
 console.log('\nit cannot reach Encompass, or a database');
 

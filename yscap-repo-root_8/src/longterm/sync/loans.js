@@ -245,13 +245,25 @@ async function readLoan(loanId, guid, settings) {
     property = { ok: false, reason: (e && e.message) || String(e) };
   }
 
+  // The people on the file ride the same payload, for the same reason and at the
+  // same cost. `lt_borrower_pairs` and `lt_parties` are what the file's Borrowers
+  // section reads and what its residences, employments, incomes, assets,
+  // liabilities and declarations all hang off — so nothing else in the 1003 can
+  // fill until these do. The SSN itself is never written; see application/sync.js.
+  let pairs = null;
+  try {
+    pairs = await application.syncBorrowerPairs(loanId, loan);
+  } catch (e) {
+    pairs = { ok: false, reason: (e && e.message) || String(e) };
+  }
+
   // The lock posture rides the loan we already have — no lock endpoint is called,
   // and none would answer: every lock-specific endpoint on this tenant is 403.
   const lock = locks.lockFromLoan(loan, values, settings);
   const lockWrite = await locks.writeLock(loanId, lock);
 
   return { ok: true, milestoneName, stageKey, team, milestone: milestoneWrite,
-    lock: { ...lockWrite, posture: lock.posture }, property };
+    lock: { ...lockWrite, posture: lock.posture }, property, pairs };
 }
 
 /**

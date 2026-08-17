@@ -84,4 +84,85 @@ async function syncSubjectProperty(loanId, loan, opts = {}) {
   return { ok: true, written: true, found: row._found, fields: row._fields };
 }
 
-module.exports = { syncSubjectProperty };
+/**
+ * Mirror the borrower pairs and the people in them (URLA §1a).
+ *
+ * THE SOCIAL SECURITY NUMBER IS NEVER WRITTEN. `lt_parties.ssn_encrypted` stays
+ * NULL: the only encryption in this codebase is an RTL module, and reaching it
+ * from the long-term side is a crossing that needs the owner's written
+ * authorization in `docs/LONG-TERM-AUTHORIZED-COPIES.md`. Only `ssn_last4` is
+ * stored, which is what `file.js` reads and what a person reads back on a phone
+ * call — so nothing on a screen is waiting on that decision.
+ *
+ * A PAIR THAT DISAPPEARS IS NOT DELETED. Encompass can only ever ADD pairs in
+ * practice, but a payload that momentarily carries one fewer must not take a
+ * borrower off a file — so nothing here removes a pair or a party, and a stale one
+ * would be visible on the screen rather than silently gone. That is the same
+ * choice the condition mirror makes for the same reason.
+ */
+async function syncBorrowerPairs(loanId, loan, opts = {}) {
+  const pairs = mapper.readBorrowerPairs(loan);
+  if (!pairs.length) return { ok: true, pairs: 0, parties: 0, reason: 'the payload carried no applications' };
+
+  const db = opts.db || lazy.db;
+  let parties = 0;
+
+  for (const pair of pairs) {
+    const { rows } = await db.query(
+      `INSERT INTO lt_borrower_pairs
+         (id, loan_id, pair_number, encompass_application_id, property_usage_type, updated_at)
+       VALUES (gen_random_uuid(), $1::uuid, $2, $3, $4, now())
+       ON CONFLICT (loan_id, pair_number) DO UPDATE SET
+         encompass_application_id = COALESCE(EXCLUDED.encompass_application_id, lt_borrower_pairs.encompass_application_id),
+         property_usage_type      = COALESCE(EXCLUDED.property_usage_type, lt_borrower_pairs.property_usage_type),
+         updated_at               = now()
+       RETURNING id`,
+      [loanId, pair.pairNumber, pair.encompassApplicationId, pair.propertyUsageType],
+    );
+    const pairId = rows[0] && rows[0].id;
+    if (!pairId) continue;
+
+    for (const p of pair.parties) {
+      // Keyed on (pair, role) — the unique index db/549 already carries. A person
+      // is identified by the SLOT they occupy on the application, because a name
+      // changes (a marriage, a correction) and a slot does not.
+      await db.query(
+        `INSERT INTO lt_parties
+           (id, pair_id, role, party_type, first_name, middle_name, last_name, name_suffix,
+            date_of_birth, ssn_last4, citizenship, marital_status, dependent_count,
+            email, home_phone, mobile_phone,
+            fico_experian, fico_transunion, fico_equifax, fico_representative, updated_at)
+         VALUES (gen_random_uuid(), $1::uuid, $2::lt_party_role, $3::lt_party_type,
+                 $4, $5, $6, $7, $8::date, $9, $10, $11, $12, $13, $14, $15,
+                 $16, $17, $18, $19, now())
+         ON CONFLICT (pair_id, role) DO UPDATE SET
+           first_name         = COALESCE(EXCLUDED.first_name, lt_parties.first_name),
+           middle_name        = COALESCE(EXCLUDED.middle_name, lt_parties.middle_name),
+           last_name          = COALESCE(EXCLUDED.last_name, lt_parties.last_name),
+           name_suffix        = COALESCE(EXCLUDED.name_suffix, lt_parties.name_suffix),
+           date_of_birth      = COALESCE(EXCLUDED.date_of_birth, lt_parties.date_of_birth),
+           ssn_last4          = COALESCE(EXCLUDED.ssn_last4, lt_parties.ssn_last4),
+           citizenship        = COALESCE(EXCLUDED.citizenship, lt_parties.citizenship),
+           marital_status     = COALESCE(EXCLUDED.marital_status, lt_parties.marital_status),
+           dependent_count    = COALESCE(EXCLUDED.dependent_count, lt_parties.dependent_count),
+           email              = COALESCE(EXCLUDED.email, lt_parties.email),
+           home_phone         = COALESCE(EXCLUDED.home_phone, lt_parties.home_phone),
+           mobile_phone       = COALESCE(EXCLUDED.mobile_phone, lt_parties.mobile_phone),
+           fico_experian      = COALESCE(EXCLUDED.fico_experian, lt_parties.fico_experian),
+           fico_transunion    = COALESCE(EXCLUDED.fico_transunion, lt_parties.fico_transunion),
+           fico_equifax       = COALESCE(EXCLUDED.fico_equifax, lt_parties.fico_equifax),
+           fico_representative = COALESCE(EXCLUDED.fico_representative, lt_parties.fico_representative),
+           updated_at         = now()`,
+        [pairId, p.role, p.partyType, p.firstName, p.middleName, p.lastName, p.nameSuffix,
+          p.dateOfBirth, p.ssnLast4, p.citizenship, p.maritalStatus, p.dependentCount,
+          p.email, p.homePhone, p.mobilePhone,
+          p.ficoExperian, p.ficoTransunion, p.ficoEquifax, p.ficoRepresentative],
+      );
+      parties += 1;
+    }
+  }
+
+  return { ok: true, pairs: pairs.length, parties };
+}
+
+module.exports = { syncSubjectProperty, syncBorrowerPairs };
