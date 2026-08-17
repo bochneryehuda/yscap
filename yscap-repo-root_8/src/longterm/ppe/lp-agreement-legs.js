@@ -73,10 +73,12 @@ function lpScenarioToFacts(s) {
     state: sc.state || null,
     property_type: sc.propertyType || 'SingleFamily',
     units: units != null && units > 0 ? units : 1,
-    prepay_months: prepayMonths(sc.prepayTerm),
+    // LP scenario field names: prepayMonths (number), io, escrowWaive (a legacy prepayTerm string is
+    // still accepted as a fallback so a hand-built scenario is not silently mis-read).
+    prepay_months: num(sc.prepayMonths) != null ? num(sc.prepayMonths) : prepayMonths(sc.prepayTerm),
     cashout_amount: num(sc.cashoutAmount) || 0,
-    interest_only: !!sc.interestOnly,
-    escrow_waiver: !!sc.escrowWaiver,
+    interest_only: !!(sc.io || sc.interestOnly),
+    escrow_waiver: !!(sc.escrowWaive || sc.escrowWaiver),
     lock_days: num(sc.lock_days) || 30,
   };
 }

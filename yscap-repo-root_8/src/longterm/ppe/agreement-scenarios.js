@@ -32,7 +32,10 @@ const FICOS = [800, 780, 760, 740, 720, 700, 680, 660, 640];
 const CLTV_LOANS = { 50: 250000, 55: 275000, 60: 300000, 65: 325000, 70: 350000, 75: 375000, 80: 400000 };
 const DSCRS = [1.5, 1.25, 1.2, 1.15, 1.1, 1.05, 1.0, 0.95, 0.85];
 
-function core(extra) { return { purpose: 'Purchase', value: 500000, prepayTerm: '60 Months', ...ADDR.NY, ...extra }; }
+// Field names are the Lender Price scenario contract's (search-model validateScenario): prepayMonths
+// (number; omitted/60 → the 5-yr DSCR default), io, escrowWaive. Using prepayTerm/interestOnly/
+// escrowWaiver instead is silently IGNORED by the builder (it priced a 5-yr prepay + no flag every time).
+function core(extra) { return { purpose: 'Purchase', value: 500000, prepayMonths: 60, ...ADDR.NY, ...extra }; }
 
 /**
  * Build the canonical scenario battery.
@@ -78,13 +81,13 @@ function buildAgreementScenarios(opts = {}) {
   push('property', 'condo', core({ fico: 760, loan: 350000, dscr: 1.25, propertyType: 'Condo' }));
   push('property', '2-4 units', core({ fico: 760, loan: 350000, dscr: 1.25, propertyType: 'Unit2_4', units: 2 }));
   push('property', '3 units', core({ fico: 760, loan: 350000, dscr: 1.25, propertyType: 'Unit2_4', units: 3 }));
-  // F) prepay term at an anchor.
-  for (const pp of ['36 Months', '24 Months', '12 Months', 'No Prepay']) push('prepay', `prepay ${pp}`, core({ fico: 760, loan: 350000, dscr: 1.25, prepayTerm: pp }));
+  // F) prepay term at an anchor (prepayMonths: 0 = No PPP).
+  for (const pm of [36, 24, 12, 0]) push('prepay', `prepay ${pm}mo`, core({ fico: 760, loan: 350000, dscr: 1.25, prepayMonths: pm }));
   // G) interest-only / escrow waiver at an anchor.
-  push('flags', 'interest-only', core({ fico: 760, loan: 350000, dscr: 1.25, interestOnly: true }));
-  push('flags', 'escrow-waiver', core({ fico: 760, loan: 350000, dscr: 1.25, escrowWaiver: true }));
+  push('flags', 'interest-only', core({ fico: 760, loan: 350000, dscr: 1.25, io: true }));
+  push('flags', 'escrow-waiver', core({ fico: 760, loan: 350000, dscr: 1.25, escrowWaive: true }));
   // H) state sweep at an anchor.
-  for (const k of Object.keys(ADDR)) push('state', `state ${k}`, { purpose: 'Purchase', value: 500000, loan: 350000, fico: 760, dscr: 1.25, prepayTerm: '60 Months', ...ADDR[k] });
+  for (const k of Object.keys(ADDR)) push('state', `state ${k}`, { purpose: 'Purchase', value: 500000, loan: 350000, fico: 760, dscr: 1.25, prepayMonths: 60, ...ADDR[k] });
   // I) INELIGIBLE probes — the harness must prove the disqualifier matches, not only the price.
   const dq = (label, s) => push('ineligible', label, core(s), { _ineligible: true });
   dq('fico 600', { fico: 600, loan: 350000, dscr: 1.25 });

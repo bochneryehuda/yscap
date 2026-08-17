@@ -42,7 +42,9 @@ ok(f1.purpose === 'cashout' && f1.cashout_amount === 50000 && f1.prepay_months =
 ok(f1.property_type === 'SingleFamily' && f1.units === 1, '  property_type + units default');
 ok(legs.lpScenarioToFacts({ value: 500000, ltv: 70 }).ltv === 70000 && legs.lpScenarioToFacts({ ltv: 0.7 }).ltv === 70000, '  ltv accepts a percentage (70) or a ratio (0.70)');
 ok(legs.lpScenarioToFacts({ purpose: 'Refinance' }).purpose === 'refinance' && legs.lpScenarioToFacts({ purpose: 'Purchase' }).purpose === 'purchase', '  purpose "Refinance"/"Purchase" normalized');
-ok(legs.lpScenarioToFacts({ prepayTerm: 'No Prepay' }).prepay_months === 0, '  "No Prepay" → 0 months');
+ok(legs.lpScenarioToFacts({ prepayTerm: 'No Prepay' }).prepay_months === 0, '  legacy "No Prepay" string → 0 months (fallback)');
+const fLp = legs.lpScenarioToFacts({ prepayMonths: 36, io: true, escrowWaive: true });
+ok(fLp.prepay_months === 36 && fLp.interest_only === true && fLp.escrow_waiver === true, '  LP field names prepayMonths/io/escrowWaive are read (not prepayTerm/interestOnly/escrowWaiver)');
 // buildOursLeg with factsFromLp:true prices a LENDER PRICE scenario through the conversion
 const oursLp = legs.buildOursLeg(PROGRAM, SETTINGS, { factsFromLp: true });
 const qLp = oursLp({ value: 500000, loan: 400000, fico: 740, dscr: 1.5, purpose: 'Cash out', state: 'TX', prepayTerm: '60 Months' });
