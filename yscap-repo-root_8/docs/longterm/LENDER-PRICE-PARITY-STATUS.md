@@ -374,12 +374,62 @@ LP's verbatim disqualify reasons (grid `eligibility` bounds — min FICO 640/680
 80/75/70, min DSCR 0.75, loan $75k–$2.5MM): all 6 live ineligible probes decline with the
 matching reason, eligible controls still price.
 
-**Still to close (clearly scoped, never guessed):** (1) the PARTIAL LLPAs (cash-out /
-condo / loan-amount — a few CLTV points measured) need a targeted re-measure across the
-CLTV bands to complete their tables; (2) prepay / interest-only / escrow-waiver / 2–4
-units were NOT reflected in the live output — the request-builder was not sending the
-term/flags, so this is a request-shape fix first, then a measure; (3) the full ≥200-scenario
-live gate run (all angles at once) — confirms the same result at scale.
+**Still to close (clearly scoped, never guessed):** (1) ~~the PARTIAL LLPAs (cash-out /
+condo)~~ — **DONE, see §2.5**; loan-amount LLPA still needs a 2D (amount × CLTV) sweep;
+(2) prepay / interest-only / escrow-waiver were NOT reflected in the live output — the
+request-builder was not sending the term/flags, so this is a request-shape fix first, then
+a measure; (3) the full ≥200-scenario live gate run (all angles at once) — confirms the
+same result at scale.
+
+### §2.4 — the THREE-DOT program: rate sheet + eligibility matrix + PPP matrix (owner 2026-08-17)
+
+The owner uploaded the three "gold-mine" resources and defined the architecture: **every
+program needs THREE connected layers, keyed by the investor name** — and the second/third
+layers must build REAL rules from the published matrices, not merely be reference. The
+rate sheet and the matrix TOGETHER are what let us understand a program deeply; one alone
+does not work. Decoded sources live in `ppe-research/matrices/`.
+
+**THE LOAD-BEARING INSIGHT (why this was needed).** Our old eligibility envelope in
+`deephaven-dscr-sheet.js` was reverse-engineered from Lender Price's OWN disqualify
+reasons — so by construction it could never catch a Lender Price mistake (it always agrees
+with LP). The new second layer is sourced ONLY from the published matrix, so an LP-vs-matrix
+disagreement is real signal. A structural test fails if the new engine imports the LP-derived
+block. (Forensics also found LP's Deephaven **disqualify tree was never successfully
+captured** — every poll timed out at HTTP 202 — which is *why* the envelope only echoed LP.)
+
+- **DOT 2 — `deephaven-matrix.js` (eligibility).** The full published Deephaven DSCR product
+  matrix as independent decline rules: the Max-LTV **grid** (loan tier × FICO floor × purpose
+  × DSCR band; N/A cells = ineligible), min loan **$75k (DSCR≥1.00) / $200k (DSCR<1.00)**,
+  per-tier FICO floors **640 / 660 / 660** (the flat-640 envelope missed the higher tiers),
+  max loan $2.5M, min DSCR 0.75, cash-out caps $1M/$500k, small-loan 75% cap, IO overlay,
+  property type. Overlays needing facts we don't carry (STR, Foreign National, declining
+  market, Philadelphia, geos) are FLAGGED unverifiable — never guessed. Test
+  `test-lt-ppe-deephaven-matrix.js` (29 checks, every grid cell reproduced, cross-checked vs
+  the decoded JSON). **The owner's $75k question is settled FROM THE MATRIX: min loan for
+  DSCR≥1.00 is $75k, so LP allowing it is correct — not a bug.**
+- **DOT 3 — `deephaven-ppp-matrix.js` (prepayment penalty).** The Deephaven Operational PPP
+  Matrix (eff Mar 2026) as a state engine: a PPP requested where the state × (borrower type ×
+  units × lien × loan amount × APR) combo is **prohibited** is a real disqualifier; a No-PPP
+  loan never is. **Owner's example proven end-to-end: NJ individual borrower + PPP →
+  prohibited; NJ LLC → allowed.** Every restriction state (AK IL LA MD MI MN NJ NM OH PA RI
+  VT VA) encoded incl. the 2026 annual thresholds. Test `test-lt-ppe-deephaven-ppp.js` (37).
+- **The program — `program-deephaven-dscr.js`.** Connects the three dots under the investor
+  name ("Deephaven DSCR"); one scenario resolves against BOTH eligibility layers, each
+  decline labelled with its layer (`eligibility_matrix` / `ppp_matrix`). Test
+  `test-lt-ppe-program-deephaven-dscr.js` (10).
+
+**Still to do (needs the LP session free):** capture LP's Deephaven disqualify tree with a
+longer timeout on deliberately-ineligible scenarios, then cross-check every Layer-2/Layer-3
+disqualifier against LP live — classify agree / probable-LP-bug (→ ticket) / our-encoding-bug.
+Design: `ppe-research/TWO-LAYER-ELIGIBILITY-ARCHITECTURE.md`.
+
+### §2.5 — cash-out / condo / 2–4-units LLPAs encoded (2026-08-17)
+
+The PARTIAL add-on LLPAs are complete. Every value re-derived directly from the captured
+live battery (never guessed), CLTV-segmented: cash-out (split at FICO 720), condo, 2–4
+units — all sign-negated like the state/DSCR tables, a 0/n-e band emits no line. The
+`UnitRateAdjustment → 'units'` classifier branch was added so the reconcile pairs the 2–4
+units line. `test-lt-ppe-deephaven-dscr-sheet.js` reproduces all 28 add-on values.
 
 ## 3. The request-builder field contract (accepted types)
 
