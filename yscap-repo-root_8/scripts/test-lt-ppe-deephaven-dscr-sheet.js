@@ -25,7 +25,7 @@ console.log('LT PPE — Deephaven DSCR sheet vs live Lender Price tables\n');
 const sheet = gridToRateSheet(buildDeephavenGrid());
 ok(sheet.problems.length === 0, `grid builds with no problems (${JSON.stringify(sheet.problems.slice(0, 3))})`);
 ok(sheet.basePrices.length === 28, '28 base-price coupons');
-ok(sheet.ineligibilities.length === 4, 'four N/A ineligibility boxes (680/80, 660/80, 640/75, 640/80)');
+ok(sheet.ineligibilities.filter((i) => i.dimension === 'fico_cltv_dscr').length === 4, 'four N/A grid boxes (680/80, 660/80, 640/75, 640/80)');
 
 const program = rateSheetToProgram(sheet, { code: 'DHVN_DSCR30', name: 'Deephaven DSCR 30yr', investorCode: 'DHVN' });
 const S = { 'pricing.correspondent_margin_milli': 0, 'pricing.rounding_mode': 'none' };
@@ -87,8 +87,22 @@ const r950 = l.find((x) => x.rate === 9500);
 ok(r675 && r675.basePriceMilli === 102600, 'coupon 6.750 → base price 102.600 (100 − −2.600)');
 ok(r950 && r950.basePriceMilli === 109927, 'coupon 9.500 → base price 109.927');
 
+// ---- the eligibility envelope (§10 disqualify reasons) -----------------------------------------
+ok(sheet.ineligibilities.length === 12, 'ineligibilities = 4 N/A boxes + 8 explicit bound rules');
+function declines(sc, re) { const s = stack(sc); return !s.eligible && s.declines.some((d) => re.test(d.reason)); }
+ok(declines({ fico: 600, loan: 350000, value: 500000, ltv: 70000, dscr: 1250, state: 'NY', purpose: 'purchase', loan_amount: 350000 }, /Min FICO 640/), 'FICO 600 declines: Min FICO 640');
+ok(declines({ fico: 760, loan: 425000, value: 500000, ltv: 85000, dscr: 1250, state: 'NY', purpose: 'purchase', loan_amount: 425000 }, /Max LTV/), 'LTV 85% declines: Max LTV 80%');
+ok(declines({ fico: 760, loan: 350000, value: 500000, ltv: 70000, dscr: 600, state: 'NY', purpose: 'purchase', loan_amount: 350000 }, /Minimum DSCR/), 'DSCR 0.60 declines: Min DSCR 0.75');
+ok(declines({ fico: 760, loan: 60000, value: 100000, ltv: 60000, dscr: 1250, state: 'NY', purpose: 'purchase', loan_amount: 60000 }, /Minimum Loan/), 'loan $60k declines: Min loan $75,000');
+ok(declines({ fico: 760, loan: 3500000, value: 5000000, ltv: 70000, dscr: 1250, state: 'NY', purpose: 'purchase', loan_amount: 3500000 }, /Maximum Loan/), 'loan $3.5M declines: Max loan $2.5MM');
+ok(declines({ fico: 690, loan: 400000, value: 500000, ltv: 80000, dscr: 900, state: 'NY', purpose: 'purchase', loan_amount: 400000 }, /LTV 70%|LTV 75%|Not eligible/), 'DSCR<1.00 + weak FICO + high LTV declines');
+// eligible controls STILL price (the bounds do not over-reach)
+ok(stack({ fico: 780, loan: 350000, value: 500000, ltv: 70000, dscr: 1250, state: 'NY', purpose: 'purchase', loan_amount: 350000 }).eligible, 'a clean 780/70/1.25 still prices');
+ok(stack({ fico: 640, loan: 250000, value: 500000, ltv: 50000, dscr: 1250, state: 'NY', purpose: 'purchase', loan_amount: 250000 }).eligible, 'FICO 640 at the boundary still prices (min is 640, not >640)');
+ok(stack({ fico: 760, loan: 350000, value: 500000, ltv: 70000, dscr: 950, state: 'CA', purpose: 'purchase', loan_amount: 350000 }).eligible, 'DSCR 0.95 at 70% LTV still prices (within the <1.00 caps)');
+
 // ---- what is deliberately NOT in the sheet is recorded (never guessed) --------------------------
-ok(Array.isArray(UNMEASURED) && UNMEASURED.length >= 4, 'UNMEASURED lists the axes deliberately not encoded yet (cash-out/condo/loan-amount/prepay/IO/units/bounds)');
+ok(Array.isArray(UNMEASURED) && UNMEASURED.length >= 3, 'UNMEASURED lists the axes deliberately not encoded yet (cash-out/condo/loan-amount/prepay/IO/units)');
 
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

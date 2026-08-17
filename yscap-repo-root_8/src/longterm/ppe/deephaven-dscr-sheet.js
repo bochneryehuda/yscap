@@ -100,6 +100,18 @@ function buildDeephavenGrid() {
       { dimension: 'state', code: 'dhvn_state', reason: 'Other - State of DC, MA, NJ, NY', predicate: { fact: 'state', op: 'in', value: ['DC', 'MA', 'NJ', 'NY'] }, adj: cost(0.375) },
       ...dscrTables,
     ],
+    // §2/§10 — the eligibility ENVELOPE, verbatim from Lender Price's disqualify reasons. Facts: fico
+    // RAW, ltv MILLI-percent (80% → 80000), dscr MILLI (1.00 → 1000), loan_amount RAW dollars.
+    eligibility: [
+      { code: 'dhvn_min_fico', declineReason: 'Min FICO 640', predicate: { fact: 'fico', op: 'lt', value: 640 } },
+      { code: 'dhvn_min_fico_lt100', declineReason: 'DSCR < 1.00: Min FICO 680', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'fico', op: 'lt', value: 680 }] } },
+      { code: 'dhvn_max_ltv', declineReason: 'Max LTV/CLTV 80%', predicate: { fact: 'ltv', op: 'gt', value: 80000 } },
+      { code: 'dhvn_max_ltv_lt100', declineReason: 'DSCR < 1.00: Max LTV 75%', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'ltv', op: 'gt', value: 75000 }] } },
+      { code: 'dhvn_max_ltv_lt100_weakfico', declineReason: 'DSCR < 1.00, FICO < 700: Max LTV 70%', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'fico', op: 'lt', value: 700 }, { fact: 'ltv', op: 'gt', value: 70000 }] } },
+      { code: 'dhvn_min_dscr', declineReason: 'Minimum DSCR 0.75', predicate: { fact: 'dscr', op: 'lt', value: 750 } },
+      { code: 'dhvn_min_loan', declineReason: 'Minimum Loan Amount $75,000', predicate: { fact: 'loan_amount', op: 'lt', value: 75000 } },
+      { code: 'dhvn_max_loan', declineReason: 'Maximum Loan Amount $2.5MM', predicate: { fact: 'loan_amount', op: 'gt', value: 2500000 } },
+    ],
     priceLimit: {
       // §8 — no Deephaven price cap/floor was observed; loan size enters via a (not-yet-encoded)
       // loan-amount LLPA, not a cap. Rounding left to the pricer's default (nearest 1/8).
@@ -119,7 +131,6 @@ const UNMEASURED = [
   'loan-amount LLPA (PARTIAL: <125k +2.25, <150k +1.5, >1.5M +0.25 — few CLTV points)',
   'prepay-term differentiation (NOT measured — the live run always priced a 5-yr prepay)',
   'interest-only, escrow-waiver, 2–4 units (NOT measured)',
-  'eligibility BOUNDS beyond the FICO×CLTV n/e cells (min DSCR 0.75, loan $75k–$2.5MM, min FICO 640, max LTV 80)',
 ];
 
 module.exports = { buildDeephavenGrid, LP_TABLES, UNMEASURED, _internals: { cost } };
