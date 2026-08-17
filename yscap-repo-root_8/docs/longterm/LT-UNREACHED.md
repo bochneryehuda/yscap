@@ -71,6 +71,17 @@ that is not a reason to keep a row claiming nothing calls it.
 
 ---
 
+## The one whose absence made every finding half an answer — now wired
+
+`divergence.js` puts our full price build-up beside Lender Price's single number and points at the ONE
+component whose size most closely matches the gap. Nothing called it, so every row in the findings
+ledger said only THAT the two disagreed and by how much — never a first place to look. It is wired in
+`facade.js`, which is the only place it CAN honestly be wired: the diagnosis needs our reconstruction
+record, and that exists while the comparison is being made and nowhere afterwards (`our_payload` is
+NULL on every finding either producer has ever written, so a later screen would have to re-price
+against whatever the sheet says today and would quietly answer about a different sheet). The
+explanation rides onto the recorded row, so it outlives the request that made it.
+
 ## The ledger
 
 | Module | Why it is not wired yet | What would wire it |
@@ -105,7 +116,6 @@ that is not a reason to keep a row claiming nothing calls it.
 | `src/longterm/ppe/cutover-store.js` | Its durable bridge. | As above. |
 | `src/longterm/ppe/best-execution.js` | Best-execution ranking across investors (§8.3). | A multi-investor search surface; there is one investor today. |
 | `src/longterm/ppe/lock.js` | Rate-lock lifecycle + the frozen price stack (§8). | Locks are not in scope for the visibility-only build. |
-| `src/longterm/ppe/divergence.js` | Divergence diagnosis — makes one disagreement actionable. | The findings screen showing a per-finding explanation. |
 | `src/longterm/ppe/parity-review.js` | The scenario review composer (ties P1 + P3 + P-DQ). | The manual-review UI (P8). |
 
 ---

@@ -23,6 +23,7 @@ const lpNormalize = require('./lp-normalize');
 const lpFull = require('./lp-normalize-full');
 const detectors = require('./parity-detectors');
 const finding = require('./finding');
+const divergence = require('./divergence');
 
 // ---------------------------------------------------------------------------
 // The DEEP comparison (§2.8 — P1 of the parity workstream)
@@ -315,6 +316,22 @@ async function compareSafely(ourAnswerMaybe, scenario, deps, program, cmpOpts, c
     }
   }
 
+  // WHY did it disagree? — diagnosed HERE, and here is the only place it can honestly be done.
+  //
+  // `divergence.diagnose` puts our full build-up (base → itemized LLPAs → margin → round → clamp)
+  // beside Lender Price's single number and points at the ONE component whose magnitude most closely
+  // matches the gap. It needs OUR reconstruction record, which exists at exactly this moment and
+  // nowhere afterwards: the ledger stores `our_payload` as NULL on every finding either producer has
+  // ever written, so a later screen re-deriving this would have to re-price the scenario against
+  // whatever the sheet says TODAY and quietly answer a different question. Diagnosing at the moment
+  // the evidence exists is what makes the answer about the run it describes.
+  //
+  // A DIAGNOSIS IS A HYPOTHESIS AND SAYS SO. Lender Price publishes no breakdown of its own, so the
+  // suspect is ranked purely by numeric proximity to the gap and carries its own confidence
+  // ('strong' = a component EXACTLY equals the gap, 'possible' = within tolerance, 'none' = no single
+  // component matches). It never claims which side is wrong.
+  attachDiagnosis(cmp, ourQuote, cmpOpts);
+
   const deep = deepCompare({ ourQuote, ourErr, detail, detailErr, wantDetail, scope, cmpOpts });
   const { persist, held, supersede } = deepRecordable(deep, cmp);
 
@@ -343,6 +360,32 @@ async function compareSafely(ourAnswerMaybe, scenario, deps, program, cmpOpts, c
   };
 }
 
+/**
+ * Attach one `explanation` per finding, in place, from our own reconstruction.
+ *
+ * THE RUNG IS MATCHED BY EXACT COUPON, and abstains otherwise. A near-match would diagnose the gap on
+ * a rate the finding is not about — every LLPA and the margin would be read off the wrong rung — and
+ * `divergence` would then name a suspect with full confidence. No rung is the honest answer, and the
+ * module already words it: "our reconstruction record is unavailable, so the cause cannot be narrowed".
+ *
+ * IT CAN NEVER BREAK A COMPARISON. A diagnosis is a convenience laid on top of a verdict that has
+ * already been reached; if it throws, the finding stands exactly as it was.
+ */
+function attachDiagnosis(cmp, ourQuote, cmpOpts) {
+  if (!cmp || !Array.isArray(cmp.findings) || !cmp.findings.length) return;
+  const ladder = (ourQuote && Array.isArray(ourQuote.ladder)) ? ourQuote.ladder : [];
+  for (const f of cmp.findings) {
+    if (!f || typeof f !== 'object') continue;
+    try {
+      const rung = (f.rate != null) ? ladder.find((r) => r && r.rate === f.rate) : null;
+      f.explanation = divergence.diagnose(f, {
+        reconstruction: rung || null,
+        toleranceMilli: cmpOpts && cmpOpts.priceToleranceMilli,
+      });
+    } catch (_) { /* a diagnosis must never cost a verdict that has already been reached */ }
+  }
+}
+
 function parityLabel(scenario) {
   // reuse scenario-matrix's describe via parity? keep a tiny inline to avoid a cycle
   if (!scenario || typeof scenario !== 'object') return String(scenario == null ? '' : scenario);
@@ -351,5 +394,5 @@ function parityLabel(scenario) {
 
 module.exports = {
   priceWithShadow,
-  _internals: { compareSafely, detach, parityLabel, lpScope, lpLadder, deepCompare, deepRecordable, DEEP_ONLY, DEEP_ELIGIBILITY },
+  _internals: { compareSafely, detach, parityLabel, lpScope, lpLadder, deepCompare, deepRecordable, attachDiagnosis, DEEP_ONLY, DEEP_ELIGIBILITY },
 };
