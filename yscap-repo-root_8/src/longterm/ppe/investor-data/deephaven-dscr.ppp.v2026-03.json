@@ -1,0 +1,146 @@
+{
+  "schema": "lt-ppe/investor-ppp-matrix",
+  "schemaVersion": 1,
+  "investor": "Deephaven",
+  "program": "Deephaven DSCR",
+  "layer": "ppp",
+  "dataVersion": "2026-03",
+  "citation": "Deephaven Operational Prepayment Penalty Matrix, eff March 2026",
+  "source": "docs/longterm/ppe-research/matrices/deephaven-ppp-matrix.json (PPP_Matrix_DH_Current_1.pdf, Confidential, effective March 2026)",
+  "notes": [
+    "The DATA form of src/longterm/ppe/deephaven-ppp-matrix.js. Every threshold is the 2026 figure, transcribed",
+    "from the hand-written module — no value was re-derived. A state absent from `states` is 'standard'.",
+    "Rules are ORDERED and first-match-wins, exactly as the hand-written table is.",
+    "lien is normalized TWICE on purpose: the hand-written module applies `String(x || 'first').toLowerCase()`",
+    "when it builds its normalized input AND again inside its lien handler. That is not a no-op — a lien of []",
+    "is truthy but stringifies to '', so only the second pass turns it into 'first'. The equivalence fuzz found",
+    "this; modelling it as one derivation would have been an approximation."
+  ],
+
+  "defaultResult": "standard",
+  "unmatchedNote": "no restriction rule matched (missing fact) — treated as allowed",
+
+  "numericFacts": ["units", "loanAmount", "apr"],
+  "stateFact": "state_uc",
+  "borrowerClassFact": "borrower_type_class",
+
+  "derivedFacts": {
+    "state_uc": { "kind": "string", "from": "state", "fallbackOn": "falsy", "case": "upper", "strip": "none" },
+    "lien_normalized_once": { "kind": "string", "from": "lien", "fallbackOn": "falsy", "fallback": "first", "case": "lower", "strip": "none" },
+    "lien_lc": { "kind": "string", "from": "lien_normalized_once", "fallbackOn": "falsy", "fallback": "first", "case": "lower", "strip": "none" },
+    "prepay_requested": { "kind": "truthy", "from": "prepayRequested" },
+    "borrower_type_class": {
+      "kind": "classify", "from": "borrowerType",
+      "fallbackOn": "nullish", "case": "lower", "strip": "nonalpha",
+      "cases": [
+        { "needles": ["individual", "naturalperson", "person", "consumer"], "value": "natural_person" },
+        { "needles": ["llc", "corp", "corporation", "partnership", "trust", "entity", "business", "company", "inc"], "value": "business_entity" }
+      ],
+      "default": null
+    }
+  },
+
+  "when": {
+    "borrowerType": { "fact": "borrower_type_class", "op": "eq" },
+    "unitsMax": { "fact": "units", "op": "lte" },
+    "unitsMin": { "fact": "units", "op": "gte" },
+    "lien": { "fact": "lien_lc", "op": "eq" },
+    "aprGt": { "fact": "apr", "op": "gt" },
+    "loanAmountLt": { "fact": "loanAmount", "op": "lt" },
+    "loanAmountLe": { "fact": "loanAmount", "op": "lte" },
+    "loanAmountGt": { "fact": "loanAmount", "op": "gt" },
+    "loanAmountGe": { "fact": "loanAmount", "op": "gte" },
+    "ruralProperty": { "fact": "ruralProperty", "op": "eq", "onlyWhenValue": true }
+  },
+
+  "disqualifier": {
+    "code": "dhvn_ppp_prohibited_{stateLower}",
+    "dimension": "prepay_state",
+    "reason": "Prepayment penalty prohibited in {state} for {borrowerLabel}{noteSuffix} — this loan must be No-PPP",
+    "noteSuffix": " ({note})",
+    "citation": "{citation} — {state} PPP rule",
+    "requestedFact": "prepay_requested",
+    "prohibitedResult": "prohibited",
+    "borrowerLabels": [
+      { "class": "natural_person", "label": "individual borrower" },
+      { "class": "business_entity", "label": "business entity" },
+      { "class": null, "label": "this borrower type" }
+    ]
+  },
+
+  "inputFromFacts": {
+    "state": { "fact": "state" },
+    "borrowerType": { "fact": "borrower_type", "fallbackOnFalsy": "LLC" },
+    "units": { "fact": "units" },
+    "lien": { "const": "first" },
+    "loanAmount": { "fact": "loan_amount" },
+    "apr": { "fact": "apr" },
+    "ruralProperty": { "fact": "rural_property", "coerce": "boolean" },
+    "prepayRequested": { "fact": "prepay_months", "coerce": "numberGtZero" }
+  },
+
+  "states": {
+    "AK": [
+      { "when": { "unitsMax": 4 }, "result": "prohibited" },
+      { "when": { "unitsMin": 5, "loanAmountGt": 25000 }, "result": "standard" },
+      { "when": {}, "result": "standard" }
+    ],
+    "IL": [
+      { "when": { "borrowerType": "business_entity", "unitsMax": 4 }, "result": "standard" },
+      { "when": { "borrowerType": "natural_person", "unitsMax": 4, "aprGt": 8 }, "result": "prohibited", "note": "IL high-cost: natural person, APR > 8%" },
+      { "when": { "borrowerType": "natural_person", "unitsMax": 4 }, "result": "standard", "note": "IL: natural person, APR 8% or less" },
+      { "when": { "unitsMin": 5 }, "result": "standard" }
+    ],
+    "LA": [
+      { "when": { "ruralProperty": true }, "result": "prohibited", "note": "rural property" },
+      { "when": {}, "result": "standard" }
+    ],
+    "MD": [
+      { "when": {}, "result": "restricted", "terms": "3-year term MAX; 2mo advance interest on aggregate prepayments >1/3 of original principal in any 12mo" }
+    ],
+    "MI": [
+      { "when": { "unitsMax": 1, "lien": "first" }, "result": "restricted", "terms": "3-year term MAX; 1% of amount prepaid" },
+      { "when": { "unitsMax": 1, "lien": "junior" }, "result": "standard" },
+      { "when": { "unitsMin": 2 }, "result": "standard" }
+    ],
+    "MN": [
+      { "when": { "unitsMax": 4, "loanAmountLe": 832750 }, "result": "prohibited", "note": "business decision; 2026 threshold $832,750" },
+      { "when": { "unitsMax": 4, "loanAmountGt": 832750 }, "result": "standard" },
+      { "when": { "unitsMin": 5 }, "result": "standard" }
+    ],
+    "NJ": [
+      { "when": { "borrowerType": "natural_person", "unitsMax": 4 }, "result": "prohibited", "note": "business decision — individual borrower" },
+      { "when": { "borrowerType": "business_entity", "unitsMax": 4 }, "result": "standard" },
+      { "when": { "unitsMin": 5 }, "result": "prohibited", "note": "business decision" }
+    ],
+    "NM": [
+      { "when": { "unitsMax": 4 }, "result": "prohibited" },
+      { "when": { "unitsMin": 5 }, "result": "standard" }
+    ],
+    "OH": [
+      { "when": { "unitsMax": 2, "loanAmountGe": 116356 }, "result": "restricted", "terms": "5-year Max; 1% of original principal balance", "note": "2026 threshold $116,356" },
+      { "when": { "unitsMax": 2, "lien": "first", "loanAmountLt": 116356 }, "result": "prohibited", "note": "2026 threshold $116,356" },
+      { "when": { "unitsMax": 2, "lien": "junior", "loanAmountLt": 116356 }, "result": "restricted", "terms": "5-year Max; 1% of original principal balance" },
+      { "when": { "unitsMin": 3 }, "result": "standard" }
+    ],
+    "PA": [
+      { "when": { "unitsMax": 2, "loanAmountLe": 329411 }, "result": "prohibited", "note": "2026 threshold $329,411" },
+      { "when": { "unitsMax": 2, "loanAmountGt": 329411 }, "result": "standard" },
+      { "when": { "unitsMin": 3 }, "result": "standard" }
+    ],
+    "RI": [
+      { "when": { "unitsMax": 4 }, "result": "restricted", "terms": "1-year Max; 2% of balance due at payoff; only at prepayment in full" },
+      { "when": { "unitsMin": 5 }, "result": "standard" }
+    ],
+    "VT": [
+      { "when": { "loanAmountLt": 1000000 }, "result": "prohibited" },
+      { "when": { "loanAmountGe": 1000000 }, "result": "standard" }
+    ],
+    "VA": [
+      { "when": { "unitsMax": 4, "lien": "first", "loanAmountGe": 75000 }, "result": "standard" },
+      { "when": { "unitsMax": 4, "lien": "first", "loanAmountLt": 75000 }, "result": "prohibited", "note": "business decision" },
+      { "when": { "unitsMax": 4, "lien": "junior" }, "result": "prohibited", "note": "business decision" },
+      { "when": { "unitsMin": 5 }, "result": "standard" }
+    ]
+  }
+}

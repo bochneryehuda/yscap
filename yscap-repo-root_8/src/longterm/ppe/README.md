@@ -115,9 +115,39 @@ Never introduce a float price/rate on a stored or compared value; never re-deriv
   matches the gap (`strong`/`possible`/`none`). Honest by design — LP gives only a final price, so a
   suspect is a HYPOTHESIS, never a claim that either side is wrong.
 
+### Investor layers as DATA — the scalable foundation (PPE #47)
+
+Layers 2 (eligibility matrix) and 3 (PPP state matrix) started as hand-written JavaScript for ONE
+investor. They are now expressible as **DATA + pure compilers** that emit the SAME canonical rules
+`rules.evaluateRules` already runs, so onboarding investor #2 is *two JSON files and one registry
+entry*, not a second module.
+
+- **`investor-data/*.json`** — an investor's eligibility matrix / PPP matrix as data. Versioned by
+  effective date (`deephaven-dscr.eligibility.v2026-08-04.json`, `deephaven-dscr.ppp.v2026-03.json`).
+- **`layer-facts.js`** — the CLOSED derived-fact vocabulary (`string`, `is_number`, `truthy`,
+  `number_gt`, `substring_any`, `classify`). It exists because `LEAF_OPS` deliberately has no regex,
+  no substring test and no "is a finite number" test, while the hand-written modules normalize and
+  type-check before comparing. Derivations chain in declaration order. An unknown kind is REFUSED.
+- **`layer-compile-eligibility.js`** / **`layer-compile-ppp.js`** — the pure compilers. They build
+  every rule through **`rule-builder`** and validate through **`rule-builder.validateRule`** (never a
+  second rule shape, never a second validator), inject the numeric guard leaf-LOCALLY, and carry the
+  presentation the canonical shape has no field for (`dimension`, `citation`) in a CATALOG keyed by
+  each rule's unique internal code. Diagnostics that are not declines (the resolved grid cell, which
+  PPP rule matched) ride BOUNDS on non-fact targets, which are inert by construction.
+- **`layer-data-registry.js`** — the versioned catalog: `(investor, layer, version) → document`, a
+  memoized compile, and the compiled program descriptor `program-engine.runProgram` runs. A program
+  PINS the version of each layer it prices on; `getData` never guesses a version. Overlay and
+  informational are still code, and `describeProgram()` says so rather than implying otherwise.
+
+The hand-written `deephaven-matrix.js` / `deephaven-ppp-matrix.js` remain in place and are the
+**ORACLE**: `scripts/test-lt-ppe-layer-compilers.js` drives both forms with the same facts over
+~330,000 scenarios and demands a byte-identical verdict, then mutation-proves the harness bites.
+
 ## Data flow
 
 ```
+layer data:   investor-data/*.json ─ layer-compile-* ─▶ canonical rules ─ rules.evaluateRules ─▶ verdict
+                                   └─ layer-data-registry (investor × layer × VERSION) ─▶ program descriptor
 daily sync:   raw grid ─ ratesheet-ingest ─▶ cells ─ ratesheet-diff ─▶ classify ─▶ auto-apply | review
 pricing:      scenario ─ quote(program, settings) ─▶ ladder (reconstruction records)
 shadow:       scenario ─ facade ─┬─ ourQuote ─ normalizeOurQuote ─┐
