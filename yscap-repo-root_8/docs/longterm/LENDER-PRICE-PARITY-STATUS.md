@@ -136,6 +136,32 @@ with accepted data types and defaults.
   recorded in `docs/LONG-TERM-AUTHORIZED-COPIES.md`; note that the authorized
   RTL module was ultimately **not** the thing used — see that ledger's log row
   for what was built instead and why.
+- **AMBIGUOUS ADVANCED-OVERLAY RULES — ASK THE OWNER (deliberately left flagged, not
+  guessed; owner acknowledged 2026-08-17: "I left them flagged for a person to confirm …
+  remember you need later to ask me this").** The D36 overlay layer ENFORCES only the
+  unambiguous cuts; these are stated in the published Deephaven DSCR matrix in a way that
+  does not pin down the exact behavior, so the engine returns them in `stillFlagged` and
+  never declines on them. **Each needs one plain answer from the owner before it can be
+  enforced:**
+  1. **Vacant / unleased occupancy (D27, task #54).** The matrix says "ineligible for
+     rate-&-term AND cash-out refinance; −5% LTV on a refinance; on a 2+ unit, max one
+     vacant unit." The ambiguity: does "ineligible for refi" mean a vacant property can
+     never be refinanced at all, or only under certain conditions? And is the −5% LTV on
+     TOP of the ineligibility, or the alternative to it? *Question: what exactly happens to
+     a refinance on a vacant property, and to a purchase?*
+  2. **Foreign National LTV caps "70/60."** The matrix lists two numbers with no rule for
+     which applies. *Question: when is the cap 70% and when is it 60% (e.g. by purpose,
+     property type, or unit count)?*
+  3. **Rural "DSCR > 1.0x" + "≤ 10 acres, no agricultural/farm use."** The 65% LTV cap IS
+     enforced. The DSCR line is ambiguous on the boundary (is exactly 1.00 allowed, or must
+     it be strictly above?), and we do not carry an acreage or land-use fact. *Question:
+     confirm the DSCR boundary, and whether we should start collecting acreage / farm-use.*
+  4. **First-Time Homebuyer.** "Ineligible unless 2+ borrowers with at least one non-FTHB."
+     We do not carry a per-borrower first-time-homebuyer count. *Question: confirm the rule
+     and whether to collect it.*
+  5. **Renovation cash-out.** "Appraised value under 6 months of ownership at max 75% LTV."
+     We do not carry a months-owned (seasoning) fact. *Question: confirm and whether to
+     collect ownership date.*
 
 ## 1. Fixed (with the exact behavior + data types)
 
