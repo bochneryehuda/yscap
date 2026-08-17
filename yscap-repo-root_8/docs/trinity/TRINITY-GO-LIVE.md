@@ -125,6 +125,13 @@ nothing was ordered, changed or cancelled):
   the biggest unknown. Reading a genuinely completed order returned its status, its
   **6 budget lines**, **36 photographs**, its documents, the report and the invoice. Every
   one of those paths had only ever been tested against sample data before today.
+- **The money adds up, on a real finished report.** Re-checked on 2026-08-17: PILOT read
+  that completed inspection's six budget lines, worked out what each one had earned, and
+  the total came to **$30,000.00 — the same figure to the cent that Trinity itself
+  reports** for the job. This is the part that decides what a borrower is paid, and until
+  now it had only ever been checked against practice data. If those two figures ever
+  disagree by more than a rounding cent, PILOT refuses the report and asks for a person
+  rather than releasing a number it cannot stand behind.
 - **All 19 of Trinity's statuses** were read and compared to how we interpret them. All six
   flavours of "Report Completed" are recognised, so a **revised** report is never missed.
 - **All five document folders** we file into exist on the live account.
