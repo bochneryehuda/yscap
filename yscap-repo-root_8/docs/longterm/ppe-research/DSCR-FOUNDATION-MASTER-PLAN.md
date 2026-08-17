@@ -137,6 +137,46 @@ borrower_type, apr, prepay_months→prepay_requested, subordinate_amount, rural/
 7. **Message audit** → cross-checked all owner messages vs the plan. Added the missing directives
    D18–D25 above (LO compensation, sellable/config-driven, daily change-detection, shadow→live cutover,
    200-scenario gate, white-label, overlays/CEMA, Excel editor, LP-connector contracts). Nothing lost.
+8. **Basic vs Advanced + LP OVERLAY** (D28/D29) → `R7-BASIC-ADVANCED-OVERLAY.md`. **RUNNING** (2026-08-17).
+9. **PPP TYPE × TERM structures + custom margin-holdback** (D30–D33) → `R8-PPP-TYPE-TERM-STRUCTURES.md`. **RUNNING**.
+10. **Reserves + informational products + delegate exception** (D26/D34) → `R9-RESERVES-INFORMATIONAL-PRODUCTS.md`. **RUNNING**.
+11. **Loan-size / prepay / IO / escrow LLPA re-measure + L1↔L2 reconcile** (D35) → `R10-LOANSIZE-PREPAY-IO-ESCROW-REMEASURE.md`. **RUNNING**.
+
+### 3a. COMPLETE research-doc INDEX (every saved engine output — so nothing is lost)
+
+Owner hard rule: every research engine's result is written down. This is the exhaustive index of the
+saved research artifacts under `docs/longterm/ppe-research/` (full text in each file):
+
+| Doc | What it holds | Feeds |
+|-----|---------------|-------|
+| `01-schema-architecture.md` | DB/schema architecture for a multi-tenant PPE. | Foundation (D16) |
+| `02-config-driven-sellable.md` | Generic, config-driven, sellable multi-tenant PPE design. | Foundation / white-label (D16/D22) |
+| `03-lock-secondary-market.md` | Lock & secondary-market workflow design (LLCK). | Lock/secondary (future) |
+| `04-daily-sync-change-detection.md` | Daily sync + change-detection pipeline. | D19 |
+| `05-ppe-features-industry.md` | Industry PPE feature survey. | D11/D16 |
+| `06-llpa-rate-sheet-pricing.md` | How LLPA rate-sheet pricing is built (the LLPA model). | Layer 1 / D35 |
+| `07-rules-modeling.md` | Modeling pricing/eligibility/LLPAs for a UI-driven rule engine. | D11/D48 |
+| `08-focused-industry-brief.md` | DSCR pricing + rate-sheet knowledge brief. | Layer 1 |
+| `COMPENSATION-MARGIN-MODEL.md` | LO margin + compensation model (design). | D18 |
+| `LENDER-PRICE-AGREEMENT-HARNESS.md` | The ≥200-scenario LP agreement harness design. | D21/D49 |
+| `LP-DEEPHAVEN-DSCR-LIVE-TABLES.md` | Deephaven DSCR rate sheet reconstructed from a live battery. | Layer 1 |
+| `LP-DSCR-ELIGIBILITY-MATRIX.md` | The Deephaven DSCR eligibility matrix (Layer-2 source of truth). | Layer 2 |
+| `LP-LOGIN-PAD.md` | LP durable-login mechanics. | Connector (D25) |
+| `OPEN-SOURCE-FOUNDATION-SCAN.md` | Open-source foundation scan (is there code to build on). | Foundation |
+| `PARITY-BASELINE.md` | The measured pricing/parity baseline (2026-08-16). | Parity gate |
+| `RATE-SHEET-BACKEND-MECHANICS.md` | Rate-sheet backend "ground truth" mechanics. | Layer 1 / D35 |
+| `README-dyn-to-smo.md` | The vendor's dynamic-field → special-mortgage-option table. | Connector |
+| `REQUIREMENTS-LEDGER.md` | Exhaustive engineering requirements ledger. | All |
+| `RULE-CATALOG-AND-BUILDER.md` | Full rule catalog (Job 1) + unified rule/condition builder (Job 2). | D11/D48 |
+| `SEARCHRAW-500-FINDINGS.md` | Why searchRaw returns 500 (measured). | Connector |
+| `SEARCHRAW-FIELD-CONTRACT.md` | The measured searchRaw field contract. | Connector |
+| `TOKEN-REGISTRY-FINDINGS.md` | Every token we send vs LP's published list. | Connector |
+| `TWO-LAYER-ELIGIBILITY-ARCHITECTURE.md` | Two-layer eligibility reconciliation architecture. | Layer 2 / D29 |
+| `VENDOR-CONFIG-GOLDMINE.md` | The vendor config document — trust + do/don't. | Connector |
+| `matrices/deephaven-dscr-matrix.json` | Decoded DSCR eligibility matrix (canonical). | Layer 2 |
+| `matrices/deephaven-ppp-matrix.json` | Decoded PPP state matrix (canonical). | Layer 3 |
+| `matrices/deephaven-dscr-sheet-raw.txt` | Raw Deephaven DSCR rate sheet (DSCR-only). | Layer 1 / D35 |
+| `R7-…`/`R8-…`/`R9-…`/`R10-…` | The 4 engines RUNNING now (D26–D35). | see rows 8–11 |
 
 ---
 
@@ -163,11 +203,19 @@ The scalable foundation is **half-built already**, which is the fast path forwar
 - DSCR-only correction (removed redundant 80% caps; subordinate rule; full overlay list).
 - Research docs: two-layer architecture, DSCR eligibility matrix, this master plan.
 
+**DONE since (committed on `claude/lender-price-frontend-agent-7g7tm9`, 2026-08-17):**
+- **Developer request-builder fixes / DSCR frontend parity (D13/D13a) — SHIPPED.** §2.2 term parity
+  (`criteria.loanYear` stays 30 = amortization; the selected term rides `termsCriteria` only), §2.3
+  AUS "All" forced to `[DU,LP,GUS,MUW,None]` unless the caller chooses AUS, §2.4 closing-cost flags
+  forced true, §2.5 `audit:true` rung digest on the price route. Prepay Buyout SMO already carried via
+  §37.10. Tests updated (the old `loanYear==term` assertions corrected). This is the developer's fix.
+- **Facts wired (task #50 subset):** `borrower_type` + `subordinate_amount` now emitted by
+  `lpScenarioToFacts`, so a LIVE LP scenario trips the subordinate rule (Layer 2) and the borrower-type
+  PPP rules (Layer 3) — proven end-to-end (NJ natural-person → PPP decline through the live path).
+  `apr` + the advanced overlay facts (rural/STR/FTI/vacant) remain (advanced section, R7/R10).
+
 **PENDING (ordered):**
-1. **Developer request-builder fixes** (D13): AUS "All" `[DU,LPA,GUS,MUW,None]` preserved from
-   foundation; closing-cost flags `true/true`; term keep `loanYear` change only `termsCriteria`; Prepay
-   Buyout SMO on Standard; **audit-mode rung digest** on the price route. + regression tests.
-2. **LP disqualify capture + per-layer cross-check** (D6/D14, task #45): pull LP's Deephaven disqualify
+1. **LP disqualify capture + per-layer cross-check** (D6/D14, task #45): pull LP's Deephaven disqualify
    tree (machinery now fixed), run known-ineligible scenarios, match each disqualifier to our rule per
    layer; classify agree / LP-bug (→ ticket) / our-bug / overlay. Report mismatches to the owner.
 3. **Scenario auto-generator** from the program's own axes (qualify + disqualify, each with expected
