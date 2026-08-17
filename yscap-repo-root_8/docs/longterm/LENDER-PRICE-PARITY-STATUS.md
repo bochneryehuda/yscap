@@ -342,6 +342,37 @@ validate). (2) the **≥200 scenarios** — built with `scenario-matrix.buildMat
 the runner uses a small STARTER matrix and says so — a starter agreement is a smoke
 test, not the gate.
 
+### §2.3 — login CONFIRMED, and our sheet AGREES with Lender Price on every core LLPA (2026-08-17)
+
+The blocker in §2.2 is cleared. With the owner-provided credentials:
+
+- **Login works, all three ways** — password grant (1h token + refresh token), the
+  refresh-token grant (fresh token, no password re-send), and the `x-lp-diag-token`
+  HTTP diag route. The durable pad (`getSession`) auto-manages fresh tokens. Full
+  record: `ppe-research/LP-LOGIN-PAD.md`. (Credentials to be rotated after the test,
+  per the owner; they live only in a gitignored `.env` here, never in source.)
+- **The live LP Deephaven DSCR sheet was reconstructed** from a read-only 161-scenario
+  battery: `ppe-research/LP-DEEPHAVEN-DSCR-LIVE-TABLES.md` (v12.7.25 — base ladder, the
+  DSCR-independent FICO×CLTV grid, the SEPARATE additive DSCR-band table, the flat
+  DC/MA/NJ/NY state adder, eligibility box, verbatim disqualify reasons).
+- **OUR sheet-under-test agrees with Lender Price, proven to the penny.**
+  `src/longterm/ppe/deephaven-dscr-sheet.js` encodes the confirmed tables (sign negated —
+  LP quotes cost-positive, our grid is premium-positive). Cross-checked against ALL 148
+  genuinely-priced real captured scenarios: our engine reproduces LP's OWN itemized
+  FICO×CLTV / DSCR-band / State values **148/148**, and correctly DECLINES the 4 N/A
+  boxes LP only "priced" via its documented wrong-container leak. Locked in by
+  `test-lt-ppe-deephaven-dscr-sheet.js` (every FICO×CLTV cell + DSCR band + state + base
+  ladder), CI-safe (no live data needed).
+
+**Still to close (clearly scoped, never guessed):** (1) the itemized-reconcile crosswalk
+for LP's real adjTypes (`SimpleRateAdjustment`=DSCR band, `StatesRateAdjustment`=state,
+`FicoRateAdjustment`=FICO cell vs cash-out) so the full orchestrator prints one clean
+per-dimension verdict; (2) the PARTIAL LLPAs (cash-out / condo / loan-amount) and the
+UNMEASURED axes (prepay / IO / units, plus the loan-size / DSCR-floor eligibility bounds)
+— a targeted re-measure battery; (3) the displayed-price margin (LP's unreconciled −1.25
+origination/holdback) is a separate compensation-model component, so the agreement is
+measured at the LLPA + base-price level, not the margin-inclusive net price.
+
 ## 3. The request-builder field contract (accepted types)
 
 Scenario field → upstream path → type → default/validation (as of the fixes
