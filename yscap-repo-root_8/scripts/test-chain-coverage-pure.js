@@ -70,10 +70,14 @@ const QUARANTINE = {
   // fixture supplied no screened-parties data at all, which exercises the rule's
   // deliberate "we could not tell" branch while asserting the "not screened"
   // outcome. The fixtures moved to the branches they are actually asking about.
-  'scripts/test-esign-cc-viewers.js':
-    '16 of 17 pass; "the loan officer is copied on the term-sheet envelope" '
-    + 'fails. Touches who is carbon-copied on a package that goes out for '
-    + 'signature, so it wants a deliberate answer rather than a quick edit.',
+  // test-esign-cc-viewers.js was here and is now REGISTERED. Settled 2026-08-16,
+  // and it is the SAME shape as the cure suite above: the TEST asserted the old
+  // arrangement. The loan officer SIGNS the term sheet (owner-directed
+  // 2026-07-21, and `loanOfficerRequired` landed in cc78975 / #1127 — the very
+  // commit that added this suite still expecting them to be carbon-copied), and
+  // a DocuSign recipient may not be both a signer and a CC of one envelope, so
+  // the dedup drops them. The suite even asserted that dedup two lines down. It
+  // also gained the no-database skip guard it needs to be in the chain at all.
   'scripts/test-mismo-db.js':
     'Reads a loan amount back as 0 where it expects 420000 — an import or a '
     + 'fixture has drifted from the MISMO parser.',
