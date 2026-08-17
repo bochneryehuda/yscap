@@ -10,7 +10,8 @@
  *   - accept-on-behalf (mark-accepted): LO-on-file 200 (accepted_via='staff'), off-file 403.
  *   - dispute-on-behalf: LO-on-file 200 (disputed_via='staff').
  * Plus a SOURCE-SCAN guard: every route relaxed to `requireDrawView` is a GET or one
- * of the two borrower-behalf POSTs — never a draw-desk write.
+ * of the three borrower-behalf POSTs — accept, dispute, and ask for a draw — never a
+ * draw-desk write, and the ask still refuses the two desk-only powers.
  */
 if (!process.env.DATABASE_URL) { console.log('SKIP test-lo-draw-view-db (no DATABASE_URL)'); process.exit(0); }
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-lo-draw';
@@ -42,13 +43,33 @@ async function main() {
   // ---- SOURCE-SCAN guard (no DB needed): what a loan officer can reach ----
   const src = fs.readFileSync(REPO + '/src/routes/sitewire.js', 'utf8');
   const relaxed = [...src.matchAll(/^router\.(get|post|put|patch|delete)\('([^']+)',\s*requireDrawView/gm)].map(m => ({ method: m[1], path: m[2] }));
-  const badWrites = relaxed.filter(r => r.method !== 'get'
-    && !/\/findings\/:findingId\/(mark-accepted|dispute)$/.test(r.path));
+  // THE THREE THINGS A LOAN OFFICER MAY DO, and nothing else. Each is a thing the
+  // BORROWER could already do on their own file, which is the whole rule (owner-directed
+  // 2026-08-17: "the loan officer can only do stuff that a borrower can do") — accept a
+  // finding, dispute one, and ASK for a draw. Composing a request was added to the route
+  // and not to this list, so the guard reported it as a draw-desk write; naming it here
+  // is the correction, and it is named EXACTLY rather than by a loose pattern, because
+  // the point of this scan is that a fourth write cannot appear unnoticed.
+  const LO_WRITES = [
+    /\/findings\/:findingId\/(mark-accepted|dispute)$/,
+    /^\/files\/:id\/portal-draws$/,
+  ];
+  const badWrites = relaxed.filter(r => r.method !== 'get' && !LO_WRITES.some((re) => re.test(r.path)));
   ok(relaxed.length >= 20, `many read routes are LO-viewable (${relaxed.length} on requireDrawView)`);
   ok(badWrites.length === 0, `NO draw-desk write is on requireDrawView (offenders: ${JSON.stringify(badWrites)})`);
   ok(relaxed.some(r => r.method === 'post' && /mark-accepted$/.test(r.path))
-    && relaxed.some(r => r.method === 'post' && /\/dispute$/.test(r.path)),
-    'exactly the accept + dispute POSTs are the LO writes');
+    && relaxed.some(r => r.method === 'post' && /\/dispute$/.test(r.path))
+    && relaxed.some(r => r.method === 'post' && /portal-draws$/.test(r.path)),
+    'exactly the accept, dispute and ask-for-a-draw POSTs are the LO writes');
+  // ALLOWING THE ROUTE DOES NOT MEAN THE GUARD STOPPED ASKING ANYTHING. Creating a
+  // request is a borrower-shaped act; going OVER a line's remaining budget, or opening a
+  // second draw alongside one already running, are desk judgements a borrower could never
+  // make — so the route carries its own manage_draws check for exactly those two, and
+  // this is what proves it is still there after the path joined the list above.
+  const composeBody = src.slice(src.indexOf("router.post('/files/:id/portal-draws'"));
+  ok(/const isDesk = can\(req\.actor, 'manage_draws'\)/.test(composeBody.slice(0, 1200))
+    && /!isDesk && \(b\.allow_over === true \|\| b\.allow_parallel === true\)/.test(composeBody.slice(0, 1200)),
+    'an officer may ASK for a draw, but going over budget or opening a parallel draw still needs the desk');
 
   const app = require(REPO + '/src/server.js');
   await require(REPO + '/src/migrate-boot').ensureSchema();

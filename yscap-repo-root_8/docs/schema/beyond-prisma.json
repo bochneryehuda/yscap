@@ -3541,7 +3541,7 @@
       {
         "name": "uq_amc_documents_amc_id",
         "table": "amc_order_documents",
-        "definition": "CREATE UNIQUE INDEX uq_amc_documents_amc_id ON public.amc_order_documents USING btree (order_id, direction, amc_document_id) WHERE (amc_document_id IS NOT NULL)"
+        "definition": "CREATE UNIQUE INDEX uq_amc_documents_amc_id ON public.amc_order_documents USING btree (order_id, direction, amc_document_id, COALESCE(object_name, ''::text)) WHERE (amc_document_id IS NOT NULL)"
       },
       {
         "name": "uq_amc_form_map_default",
@@ -15300,7 +15300,7 @@
       {
         "name": "uq_amc_documents_amc_id",
         "table": "amc_order_documents",
-        "definition": "CREATE UNIQUE INDEX uq_amc_documents_amc_id ON public.amc_order_documents USING btree (order_id, direction, amc_document_id) WHERE (amc_document_id IS NOT NULL)"
+        "definition": "CREATE UNIQUE INDEX uq_amc_documents_amc_id ON public.amc_order_documents USING btree (order_id, direction, amc_document_id, COALESCE(object_name, ''::text)) WHERE (amc_document_id IS NOT NULL)"
       },
       {
         "name": "uq_amc_form_map_default",
@@ -23167,8 +23167,8 @@
   ],
   "generatedFrom": {
     "migrations": {
-      "count": 568,
-      "highest": 571
+      "count": 569,
+      "highest": 572
     }
   }
 }
