@@ -47,6 +47,13 @@ router.use('/sync', require('./routes/sync'));
 // /api/lt/pipeline
 router.use('/pipeline', require('./routes/pipeline'));
 
+// The BOOK — the owner's census of the long-term side: every long-term file with
+// the folder, the status and the milestone it sits in, plus the buckets that
+// account for every loan the long/short rule could not place. Same access rule as
+// the pipeline, so it can never show a file the pipeline would hide.
+// /api/lt/book (+ /export.csv)
+router.use('/book', require('./routes/book'));
+
 // Saved pipeline views — a named set of FILTERS, never a scope. A view is appended
 // to the viewer's own access inside the query, so it can only ever narrow.
 // /api/lt/views

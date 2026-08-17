@@ -34,6 +34,7 @@ const discover = require('./discover');
 const contacts = require('../people/contacts');
 const locks = require('../locks');
 const milestones = require('../milestones');
+const productTerm = require('../product-term');
 
 const lazy = {
   get db() { return require('../db'); },
@@ -127,6 +128,28 @@ async function readLoan(loanId, guid, settings) {
     || (loan.loanProductData && loan.loanProductData.currentMilestone));
   const { milestoneName, stageKey } = stageFor(milestone, settings);
 
+  // WHICH PRODUCT IS THIS LOAN? The pipeline discovers with `Loan.LoanAmount > 0`
+  // — the WHOLE Encompass book — because no folder separates the two products at
+  // the source, so the long-term side mirrors RTL loans too and nothing told them
+  // apart. `product-term.js` is that rule (owner-directed 2026-08-16: a program
+  // naming FLIP is short-term; under 36 months is short-term; over 36 is the
+  // long-term list). It needs two facts, and BOTH ride on the loan we already
+  // hold — no second call and no fieldReader batch:
+  //   · term  — field 4,    $.loanAmortizationTermMonths (int, filled on 760/772)
+  //   · program — field 1401, $.loanProgramName          (str, filled on 754/772)
+  // Read off the JSON deliberately rather than added to the fieldReader ids: the
+  // LT client does NOT split a failed batch, so one unpermitted id would blank the
+  // team AND the lock read for every loan. `_fieldValues`, when a caller has
+  // already read them, still WINS — a value read by NUMBER is authoritative, and
+  // the same field number sits at a different path from loan to loan.
+  const fv = (loan && loan._fieldValues) || null;
+  const termMonths = productTerm.termMonthsOf(
+    (fv && (fv['4'] != null ? fv['4'] : fv[4])) ?? (loan && loan.loanAmortizationTermMonths),
+  );
+  const programName = String(
+    (fv && (fv['1401'] != null ? fv['1401'] : fv[1401])) ?? (loan && loan.loanProgramName) ?? '',
+  ).trim() || null;
+
   // What we held BEFORE the write, because the write is what destroys the evidence.
   // Encompass's own milestone log is 403 on this tenant, so noticing that the
   // milestone is not what it was is the only history available — and it can only be
@@ -137,11 +160,16 @@ async function readLoan(loanId, guid, settings) {
     `UPDATE lt_loans
         SET milestone_name = COALESCE($2, milestone_name),
             stage_key = COALESCE($3, stage_key),
+            term_months = COALESCE($4, term_months),
+            program_name = COALESCE($5, program_name),
             encompass_synced_at = now(),
             encompass_sync_error = NULL,
             updated_at = now()
       WHERE id = $1::uuid`,
-    [loanId, milestoneName, stageKey],
+    // COALESCE(new, old) — the milestone's own rule. A read that could not see the
+    // term (an older payload, a partial read) must never BLANK one we already hold;
+    // a real change still lands, because Encompass is the authority on both.
+    [loanId, milestoneName, stageKey, termMonths, programName],
   );
 
   // A first sighting is recorded as a BASELINE, never as an arrival — we cannot know
