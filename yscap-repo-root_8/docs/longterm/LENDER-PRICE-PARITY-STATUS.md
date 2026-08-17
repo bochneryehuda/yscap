@@ -364,14 +364,22 @@ The blocker in §2.2 is cleared. With the owner-provided credentials:
   `test-lt-ppe-deephaven-dscr-sheet.js` (every FICO×CLTV cell + DSCR band + state + base
   ladder), CI-safe (no live data needed).
 
-**Still to close (clearly scoped, never guessed):** (1) the itemized-reconcile crosswalk
-for LP's real adjTypes (`SimpleRateAdjustment`=DSCR band, `StatesRateAdjustment`=state,
-`FicoRateAdjustment`=FICO cell vs cash-out) so the full orchestrator prints one clean
-per-dimension verdict; (2) the PARTIAL LLPAs (cash-out / condo / loan-amount) and the
-UNMEASURED axes (prepay / IO / units, plus the loan-size / DSCR-floor eligibility bounds)
-— a targeted re-measure battery; (3) the displayed-price margin (LP's unreconciled −1.25
-origination/holdback) is a separate compensation-model component, so the agreement is
-measured at the LLPA + base-price level, not the margin-inclusive net price.
+**The full harness now runs GREEN, live.** The orchestrator gained the reason-aware
+reconcile crosswalk (`deephavenLpDimension`) + a margin-aware gate (`coarseIgnore` +
+`skipBounds` — the displayed-price margin is a compensation-layer question, reported but
+not gated). A live run through `test-lt-lp-agreement-run.js --filter-investor "Deephaven
+Mortgage"` reports **GATE MET, 100% agreement** on the priced scenarios, the per-dimension
+LLPA reconcile clean on every one. And the **eligibility envelope is now encoded** from
+LP's verbatim disqualify reasons (grid `eligibility` bounds — min FICO 640/680, max LTV
+80/75/70, min DSCR 0.75, loan $75k–$2.5MM): all 6 live ineligible probes decline with the
+matching reason, eligible controls still price.
+
+**Still to close (clearly scoped, never guessed):** (1) the PARTIAL LLPAs (cash-out /
+condo / loan-amount — a few CLTV points measured) need a targeted re-measure across the
+CLTV bands to complete their tables; (2) prepay / interest-only / escrow-waiver / 2–4
+units were NOT reflected in the live output — the request-builder was not sending the
+term/flags, so this is a request-shape fix first, then a measure; (3) the full ≥200-scenario
+live gate run (all angles at once) — confirms the same result at scale.
 
 ## 3. The request-builder field contract (accepted types)
 
