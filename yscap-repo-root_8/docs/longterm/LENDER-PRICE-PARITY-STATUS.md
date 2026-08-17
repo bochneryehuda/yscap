@@ -461,6 +461,39 @@ spot-check. Headline: **our confirmed-subset sheet is CORRECT but INCOMPLETE.**
   zip-county table; a zip-only NJ individual PPP correctly declines. See §3 (`apr`
   row context) and `test-lt-ppe-lp-agreement-legs.js`.
 
+### §2.7 — D36 overlay ENFORCEMENT: the unambiguous Advanced cuts now decline (2026-08-17)
+
+The D29 classifier (§1) scores a reasoned override of Lender Price; `advanced-facts.js` carries the
+overlay facts. The missing middle — actually ENFORCING the cuts — is now built for the cuts whose
+matrix text is unambiguous AND whose fact we carry: `src/longterm/ppe/deephaven-overlay-rules.js`
+(`evaluateOverlayDeclines`), wired into `program-deephaven-dscr.evaluateProgram` as a new `overlay`
+decline layer beside `eligibility_matrix` / `ppp_matrix`.
+
+**Enforced** (each emits a valid `overlay.overlayDecline`, so E3 scores it OVERLAY not DEFECT):
+
+- **Short-Term Rental** — Min DSCR 1.15, Min FICO 720, Max LTV 75%, and not allowed on a 2+ unit / a
+  first-time investor / a rural property.
+- **First-Time Investor** — Min DSCR 1.00, Min FICO 700 (the long-term-rental-only rule is the same
+  STR↔FTI incompatibility the STR block enforces once).
+- **Rural** — Max 65% LTV.
+- **Declining market** — Max LTV −5 **points** (RELATIVE to the Layer-2 grid cap for that cell; −5% is
+  confirmed = −5 points by STR's own "−5% LTV (75% max)" off an 80% base). Reads `elig.maxLtvMilli`, so
+  the two can never disagree; with no grid cap resolvable it FLAGS rather than invents one.
+- **Foreign National** — max loan $1.5M, DSCR ≥ 1.00.
+
+**Deliberately NOT enforced (flagged in `stillFlagged`, never guessed):** occupancy vacant (D27 —
+internally ambiguous rule text), Foreign National "LTV caps 70/60" (which cap applies is unstated),
+Rural "DSCR > 1.0x" (strict-vs-inclusive boundary) + acreage/ag-use (facts not carried), First-Time
+Homebuyer (needs a borrower-count fact), Renovation (needs a seasoning fact).
+
+**SAFE + ADDITIVE.** Every overlay fact defaults OFF, so an ordinary scenario (no Advanced options)
+triggers nothing — `evaluateProgram` is byte-identical for it and the live agreement run is unaffected.
+An overlay decline can only make our engine STRICTER than LP, which by construction can only make E3
+HARDER to pass, never falsely pass. A cut never fires on an ABSENT numeric fact (fail-safe). Test
+`test-lt-ppe-deephaven-overlay-rules.js` (42 assertions incl. boundary just-below/at/just-above,
+fail-safe, the ordinary-scenario no-op, the flagged set, the E3 OVERLAY classification, and the program
+integration; two production constants mutation-proven to turn it red).
+
 ## 3. The request-builder field contract (accepted types)
 
 Scenario field → upstream path → type → default/validation (as of the fixes
@@ -495,7 +528,7 @@ above). Anything not in this list is **rejected 422** (`unsupported_field`).
 - `crossCollateral`, `firstTimeInvestor`, `livingRentFree`, `dscrAssetDepletion`, `lateInLast12Months` → registry-backed flags; TRUE-ONLY where only the ON token was captured (an explicit `false` INHERITS rather than writing an invented off-token).
 - `date` → `date` — the pricing date.
 - Advanced (strict): `selfEmployed`, `financedProperties`(int 0–100), `numberOfBorrowers`(int 1–10), `monthlyIncome`(≥0), `monthlyDebt`(≥0), `dti`(0–100), `compensationType`, `waiveLenderFee`, `rural`, `mixedUse`, `citizenship`, `tradelines`, `noMortgageHistory`, `bankruptcy`{chapter,status,seasoning}, `mortgageLates`{last12,months13To24}, `foreclosure`/`shortSale`/`deedInLieu`/`chargeOff`/`forbearance` (enum tokens in `field-registry`).
-- **Advanced OVERLAY facts (D27–D29, `advanced-facts.js` registry):** `occupancy` (enum `leased`|`vacant`, default `leased`), `rural_property`, `short_term_rental`, `first_time_investor`, `first_time_homebuyer`, `foreign_national`, `declining_market`, `renovation` (booleans, default false). These are the ADVANCED-section options: Lender Price does NOT price on them (`lpVisible:false`), so they are the OVERLAY-ONLY class our independent matrix can override LP on, **with a stated reason**. They flow into the engine facts via `lpScenarioToFacts` (registry-driven) and each ties to a real matrix overlay (`deephaven-matrix.unverifiable[]`, drift-guarded). The exact numeric cut for each (−5% LTV, 65% cap, DSCR 1.15…) is NOT yet enforced as a decline — that is the D29 overlay-enforcement step, gated on confirming each cut from the matrix / Lender Price live (D36). *(Note: `rural_property` is the OVERLAY fact read by the PPP/eligibility layers; the separate registry flag `rural` above maps to an LP token — two distinct keys.)*
+- **Advanced OVERLAY facts (D27–D29, `advanced-facts.js` registry):** `occupancy` (enum `leased`|`vacant`, default `leased`), `rural_property`, `short_term_rental`, `first_time_investor`, `first_time_homebuyer`, `foreign_national`, `declining_market`, `renovation` (booleans, default false). These are the ADVANCED-section options: Lender Price does NOT price on them (`lpVisible:false`), so they are the OVERLAY-ONLY class our independent matrix can override LP on, **with a stated reason**. They flow into the engine facts via `lpScenarioToFacts` (registry-driven) and each ties to a real matrix overlay (`deephaven-matrix.unverifiable[]`, drift-guarded). **The UNAMBIGUOUS numeric cuts are now ENFORCED as stamped overlay declines — see §2.7 (D36).** The ambiguous ones (occupancy vacant, Foreign National LTV caps 70/60, Rural DSCR>1.0 boundary + acreage, First-Time Homebuyer, Renovation) stay flagged, never guessed. *(Note: `rural_property` is the OVERLAY fact read by the PPP/eligibility layers; the separate registry flag `rural` above maps to an LP token — two distinct keys.)*
 - Always forced (DSCR profile), i.e. a live foundation's value can never win: `propertyUse=Investment`, `compensationType=BorrowerCompPlan`, all-rates/all-prices, disqualify kickoff flags.
 - **Forced ONLY when omitted** (the caller may select any confirmed value; an unrecognized one is 422, never silently the default): `IncomeDocType` (default `DSCR`, 25 values — §33.2), `AddlOccupancyType` (default `Long_Term_Rental_Property`, short/long — §31.3), `GLOBAL_RESERVES` (default `Reserves_24` — §32.4), `loanYear` (30), `dayLocks` (30), `GLOBAL_BorrowerType` (`LLC`). *(These three were listed as "always forced" until the post-merge audit of #1220 — §3 contradicted §1 of this same document.)*
 

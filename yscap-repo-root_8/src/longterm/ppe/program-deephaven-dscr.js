@@ -25,6 +25,7 @@ const { buildDeephavenGrid } = require('./deephaven-dscr-sheet');
 const { evaluateEligibility } = require('./deephaven-matrix');
 const { pppDisqualifier, pppResult } = require('./deephaven-ppp-matrix');
 const { evaluateInformational } = require('./informational');
+const { evaluateOverlayDeclines } = require('./deephaven-overlay-rules');
 
 const INVESTOR = 'Deephaven';
 const PROGRAM_NAME = 'Deephaven DSCR'; // the investor name IS in the program name (owner rule)
@@ -63,6 +64,17 @@ function evaluateProgram(facts, opts = {}) {
   const pppDq = pppDisqualifier(pppInput);
   if (pppDq) reasons.push({ layer: 'ppp_matrix', ...pppDq });
 
+  // Layer-2 ADVANCED-OVERLAY enforcement (D36): the Advanced-only facts Lender Price cannot SEE
+  // (short-term rental, first-time investor, rural, declining market, foreign national). Each decline is
+  // stamped as a reasoned OVERLAY (deephaven-overlay-rules → overlay.overlayDecline), so the E3 gate
+  // scores it as an intentional override of LP, never a parity defect. Every overlay fact defaults OFF,
+  // so an ordinary scenario (no Advanced options) triggers nothing here — byte-identical to before. The
+  // relative declining-market cut reads the grid's OWN resolved max-LTV cap so the two can never disagree.
+  const overlay = evaluateOverlayDeclines(facts, { gridMaxLtvMilli: elig.maxLtvMilli });
+  for (const d of overlay.declines) {
+    reasons.push({ layer: 'overlay', code: d.code, dimension: d.fact, declineReason: d.reason, citation: d.citation, overlay: true, fact: d.fact });
+  }
+
   // The informational layer enriches the product; it NEVER changes the eligible verdict.
   const info = evaluateInformational(facts, { monthlyPitia: opts.monthlyPitia });
 
@@ -75,6 +87,10 @@ function evaluateProgram(facts, opts = {}) {
     cell: elig.cell,
     ppp: { result: ppp.result, terms: ppp.terms || null, matched: ppp.matched },
     unverifiable: elig.unverifiable,
+    // D36 overlay enforcement: which Advanced overlays fired, which cuts each enforced, and which remain
+    // flagged (ambiguous rule text / facts not carried). `declines` are valid overlay declines (the E3
+    // classifier scores them OVERLAY). Empty for an ordinary scenario with no Advanced facts set.
+    overlay: { declines: overlay.declines, enforced: overlay.enforced, stillFlagged: overlay.stillFlagged },
     // informational product attributes (D26/D34) — reserves, notes, and the loud delegate exception.
     reserves: info.reserves,
     informational: info.informational,
