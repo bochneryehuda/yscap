@@ -1096,3 +1096,42 @@ and `llpa_total` fell from **7,056 to 28** — the prepay block closed almost th
 gap, and the 28 that remain are exactly the STR scenario fixed here. What is left is `final_price`
 (7,109 — the un-wired holdback, task #78) and `disqualification_extra` (41 — the sheet-vs-matrix
 question, task #81).
+
+
+---
+
+### §2.15 — ⭐ EVERY ITEMIZED LLPA ON ALL 299 SCENARIOS NOW AGREES WITH LENDER PRICE (2026-08-17)
+
+Full battery, correctly scoped, prepay measured, short-term rental transmitted:
+
+| metric | value |
+|---|---|
+| comparable | 295 (incomparable 4, errors 0) |
+| agreed | **254** |
+| agreement | **86.10 %** |
+| by dimension | *(empty)* |
+| surprises | *(none)* |
+| by category | `final_price` 7109, `disqualification_extra` 41 |
+
+**`by dimension` is empty and there are no surprises.** `llpa_total` is gone entirely. Not one itemized
+adjustment — base grid, DSCR band, state adder, cash-out, condo, units, interest-only, escrow waiver,
+non-warrantable, loan-amount tiers, short-term rental, prepay — disagrees with Lender Price on any of
+the 299 scenarios. **The pricing side is closed.**
+
+The arc, so the number is read for what it is: 82.71 % measured on a sheet with the sign defect through
+a direction-blind comparator → 20.34 % once the signs were fixed and the comparator started reporting
+every credit → 85.76 % with the comparator comparing magnitudes and the escrow adjType known →
+**86.10 %** with short-term rental transmitted. The rises are real; the dip never was.
+
+**WHAT IS LEFT IS TWO OWNER DECISIONS AND NOTHING ELSE.**
+
+- **`disqualification_extra` 41** — every remaining disagreement. These are `fico=680 cltv=80`,
+  `fico=660 cltv=75/80`, `fico=640 cltv=75/80`: the cells where Deephaven's Excel prints a price and
+  Deephaven's matrix caps the leverage. We decline; Lender Price prices. **Task #81** — if the matrix
+  governs we are correctly stricter; if the sheet governs these are 41 loans we refuse and the investor
+  would do.
+- **`final_price` 7109** — reported, not gated. The unreconciled origination/margin, i.e. the 0.25
+  holdback that `quote.js` carries but does not subtract. **Task #78**, owner-gated on the formula.
+
+No engineering work is known to be outstanding on the pricing side. The gate reads NO on the
+eligibility axis alone, and that axis is one question away from settled.
