@@ -2062,7 +2062,7 @@ catalogue while our sheet prices ONE ladder, so an unscoped run reconciles ours 
 theirs — and a PASS from that run is the worst outcome available, because it opens the publish gate on
 a measurement of a question nobody asked.
 
-**THREE DEFECTS WERE FOUND BY WRITING THE TEST, and the first two are the same shape: code that ran
+**FOUR DEFECTS WERE FOUND BY WRITING THE TEST, and every one of them is the same shape: code that ran
 green while doing nothing.** (1) `buildAgreementScenarios()` returns `{ scenarios, count, byGroup }`,
 not an array. The route read `.length` off that object — `undefined` — so nothing was capped and the
 OBJECT was handed to the harness, which reads a non-array as an EMPTY list. Every run measured **zero**
@@ -2070,9 +2070,17 @@ scenarios, summarized them as a clean nothing, and recorded a verdict against a 
 compared. Nothing threw. (2) `summarize()` names the battery size `total`; `recordRun` read
 `s.scenarios`, so every real run stored **0** in the column the publish gate reads months later, beside
 comparable and agreed counts in the hundreds. (3) the stored Lender Price scope was resolved and then
-dropped on the floor, which is what the new refusal above closes. **The lesson is the one this file
-keeps re-learning: a green run is not evidence that anything was measured — assert the COUNT, and
-assert the upstream was actually asked.**
+dropped on the floor, which is what the new refusal above closes. (4) **both LEGS were hand-rolled instead of taken from
+`lp-agreement-legs`**: our engine was handed the raw Lender Price scenario, though it reads FACTS (ltv
+and dscr in MILLI, `loan_amount`, a normalized purpose), so nearly every rule predicate read an absent
+key; and the harness was handed `client.price` itself, whose `{ ok, raw }` is not the
+`{ full, disqualified }` it consumes — against a REAL Lender Price every scenario would have come back
+INCOMPARABLE and every run would have blamed a perfectly healthy vendor. **The test could not see that
+one until its stub was reshaped to the VENDOR's contract rather than the harness's input** — a stub
+shaped like what the code under test wants proves only that the code got what it wanted. Reshaped, it
+fails five assertions when the leg is reverted. **The lesson is the one this file keeps re-learning: a
+green run is not evidence that anything was measured — assert the COUNT, assert the upstream was
+actually asked, and shape the stub like the thing it is standing in for.**
 
 **THE GATE GAINED A THIRD ANSWER.** `gateMet` is `errors === 0 && disagreed === 0 && comparable > 0`,
 so a run where Lender Price returned no usable answer on a single scenario — a degraded upstream, a

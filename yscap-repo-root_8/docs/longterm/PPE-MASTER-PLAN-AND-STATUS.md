@@ -242,7 +242,13 @@ surface or lock-desk UI yet. *(MEGA §8. Later increment.)*
   - **A record that does not land is a 500 (`not_recorded`) carrying the summary**, never a 200 with a
     quiet `recorded:false` — that is exactly how somebody watches a run succeed, presses Publish, and
     is refused with `never_measured` with no way to find out why.
-  - **Two silent defects came out of the testing**, both of which ran green while measuring nothing:
+  - **BOTH LEGS come from `lp-agreement-legs`** (`buildOursLeg({factsFromLp:true})` + `buildLpLeg`),
+    the same pair the live agreement script uses. Hand-rolling either is the silent-wrong-answer class:
+    the battery is LENDER PRICE scenarios and our engine reads FACTS (ltv/dscr in milli), and
+    `client.price` answers `{ok,raw}` rather than the `{full,disqualified}` the harness consumes — that
+    second one makes every scenario INCOMPARABLE against a healthy vendor. Caught only once the test's
+    stub was shaped like the VENDOR instead of like the harness's input.
+  - **Three silent defects came out of the testing**, all of which ran green while measuring nothing:
     the battery builder returns `{scenarios,count,byGroup}` and the route read `.length` off the object
     (so the harness received an empty list and recorded a verdict over ZERO scenarios), and
     `summarize()` names the count `total` while `recordRun` read `s.scenarios` (so every real run
