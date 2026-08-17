@@ -1326,3 +1326,74 @@ different at 1 milli than at 5,000. **Measured, so the split is not read as a he
 battery scenarios are ELIGIBLE on our side and 43 declined, and 41 of those 43 are the `disqualification_
 extra` disagreements — so the 254 agreements are ~252 priced and ~2 eligibility. The 86.10 % was not
 inflated by declines.** What changes is that a reader can now see that, instead of having to assume it.
+
+### §2.19 — A COVERAGE CHECK THAT COULD READ 1 OF 133 RULES, AND WHY THAT IS WORSE THAN NONE (2026-08-17)
+
+Part 2 §2.6 of the master plan has carried "publish-time gap/overlap coverage validation" as TO-BUILD
+since the plan was written. It matters more now than it did then: accepting a suggested rule (P7/P8)
+writes a real rule into the set **from a Lender Price decline**, so rules are about to arrive one at a
+time, authored by different people, months apart. That is exactly how a second FICO band lands on top of
+an existing one and quietly charges a borrower twice.
+
+`src/longterm/ppe/rule-coverage.js` (`analyzeRuleSet`) answers two questions and is ADVISORY — it
+returns findings, it never refuses a rule:
+
+- **an OVERLAP** — two PRICING rules on one dimension that both fire on the same scenario. Only pricing
+  rules are checked, and that is the whole design: the three rule shapes compose differently on purpose
+  (`rules.js` §6.1). Pricing adjustments **accumulate**, so two of them on one dimension covering one
+  scenario is a double charge. Eligibility declines are **collected** (a borrower is told both reasons)
+  and bounds **tighten** — for those two, "both match" is the designed behaviour, and flagging it would
+  cry wolf on correct rules, which teaches people to ignore the checker.
+- **a GAP** — a hole between the rules' own edges on a banded axis. The analyzer is never told the real
+  domain of an axis (does FICO start at 300? does this investor price below 640?), and inventing one
+  would manufacture a gap under every sheet's floor, so a gap is a statement about the rules alone.
+
+**THE DEFECT WORTH RECORDING IS IN THE FIRST VERSION OF THIS CHECK, NOT IN THE SHEET.** It read a
+predicate as a single band on ONE fact. Run against the real Deephaven sheet it reported:
+
+```
+{"totalRules":192,"analyzed":{"pricingRules":133,"banded":1,"dimensions":["dscr"]},"overlaps":0,"gaps":0,"unanalyzable":132}
+```
+
+**One rule of 133, and a clean bill of health over the one.** Every other pricing rule on that sheet is
+a GRID CELL constraining two facts at once — `fico >= 780 AND ltv < 50.5%` — and a one-fact analyzer
+cannot express that. A checker that cannot read the rules is decoration, and a clean report from one is
+strictly worse than no report: it is a reassuring answer to a question nobody actually asked.
+
+So the analyzer reads a predicate as a **REGION** — a box of numeric bands plus enum value sets, where a
+fact ABSENT from a region is unconstrained there. That last part is what makes a whole-column rule
+(`fico >= 780`) correctly overlap every cell in its column. Measured on the same sheet: **129 of 133**
+pricing rules read, across **10 dimensions**, **0 overlaps** — the first time that number has meant
+anything.
+
+Four things in it are deliberate and each is pinned by a mutation-proven assertion:
+
+- **AN ENUM LEAF IS A CONSTRAINT, NOT NOISE.** `purpose eq cashout` and `purpose eq purchase` can never
+  both fire. Dropping enum leaves would report them as overlapping — a false alarm, which is the
+  expensive direction for a checker nobody is obliged to believe.
+- **THE REPORTED OVERLAP CARRIES EVERY FACT, NOT ONLY THE SHARED ONES.** `fico >= 780` and
+  `fico >= 780 AND ltv < 50.5%` meet only where the second holds. Reporting the shared fact alone would
+  print the overlap as the whole 780+ column and send someone hunting a double charge across cells that
+  carry one adjustment. Both carry directions are separate lines of code, and a mutation run proved a
+  fixture that lists the cell first leaves the other one completely untested.
+- **WHAT IT CANNOT PROVE, IT REFUSES AND NAMES.** An `any`/`not`/`none` tree, a `neq`/`nin` complement,
+  or a conjunction that can never be satisfied comes back in `unanalyzable` WITH its code. Today that is
+  the four `dhvn_condo_*` rules, refused on `non_warrantable neq true`: the complement of a box is not a
+  box, and guessing at it would invent overlaps that cannot happen — or, worse, miss a real one because
+  the engine treats a MISSING fact as matching `neq`.
+- **GAPS ARE 1-D ONLY, AND THE REPORT SAYS WHERE IT DID NOT LOOK.** A hole in a set of 2-D grid cells is
+  a genuinely harder question, and a wrong answer would report a gap in a grid that is complete. So a
+  dimension is gap-checked only when EVERY one of its rules is a single band on the SAME fact; otherwise
+  it abstains. **On the real sheet that is every dimension**, so its `gaps: []` means "not looked for",
+  not "none found" — `gapsCheckedOn` and `gapsSkippedOn` state both halves rather than leaving a reader
+  to diff two lists (the no-silent-caps rule).
+
+Suite `scripts/test-lt-ppe-rule-coverage.js` (51 assertions, offline + pure). Section F runs the whole
+thing over the REAL Deephaven sheet and fails if coverage slides back toward 1-of-133 — the guard the
+first version had no way to fail. Six mutations of the production module were each proven to produce
+clean ASSERTION failures, not crashes: two of them (`M2`, the unshared-fact carry, and `M5`, reverting
+to one-fact intervals) initially came back green and CRASHING respectively, which is what forced the
+reversed-order fixture and the defaulted-local reads in the suite.
+
+**NOT DONE:** nothing calls this on save yet. It runs over a rule LIST; wiring it into the publish path
+of a stored rule set is what closes master-plan §2.6 completely.

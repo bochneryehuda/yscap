@@ -97,8 +97,20 @@ is a setting. Layer-2 per-investor margin hook is wired (opt-in, byte-identical 
 - **DONE:** the evaluator (`rules.js`) — three rule shapes (eligibility / bound / pricing), half-open
   `[min,max)` bands, most-restrictive tightening (overlays only tighten), fail-safe on missing facts,
   full trace. Pure, fully tested. *(MEGA §6.)*
-- **TO-BUILD:** the persistent rule *table* (2.2 above) and publish-time gap/overlap coverage validation
-  wired to a stored rule set.
+- **DONE:** gap/overlap coverage validation (`rule-coverage.js` — `analyzeRuleSet`). It answers two
+  questions about a rule set: do two PRICING rules on one dimension both charge the same scenario (a
+  DOUBLE CHARGE, the only one of the three rule shapes where a collision is a money defect), and does a
+  banded axis have a hole between the rules' own edges. It reads a predicate as a **REGION** — a box of
+  numeric bands plus enum value sets — not as a single interval, which is the whole reason it is worth
+  having: measured on the real Deephaven sheet, **129 of its 133 pricing rules** are read, and an
+  interval-only version read **1**. Advisory: it returns findings and never refuses a rule. What it
+  cannot prove it REFUSES and NAMES (`unanalyzable`, today the four `dhvn_condo_*` rules' `neq`
+  complement), and gaps are 1-D only with `gapsCheckedOn` / `gapsSkippedOn` stating where they were and
+  were not looked for — on the real sheet that is **nowhere**, so its empty gap list must not be read as
+  a clean one. Suite `scripts/test-lt-ppe-rule-coverage.js` (51 assertions, incl. a section pinned to
+  the real sheet so a slide back toward 1-of-133 fails loudly). Detail: parity status §2.19.
+- **TO-BUILD:** the persistent rule *table* (2.2 above), and wiring the coverage check to a stored rule
+  set at publish time (it runs over a rule LIST today; nothing calls it on save).
 
 ### 2.7 Locks & secondary market — **DONE (engine) / TO-BUILD (surface)**
 `lock.js` — full lifecycle, frozen price stack, worst-case relock, expiry block; pure, tested. No HTTP
