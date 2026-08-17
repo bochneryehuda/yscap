@@ -44,7 +44,12 @@ ok(m.meta.every((k) => !dp.SUPPORTED_FIELDS.has(k)), 'no meta key is also a pric
 
 // ---- the OVERLAY section carries its UI shape, and every overlay fact is LP-invisible ---------------
 ok(m.overlay.every((o) => o.key && o.label && o.type && Object.prototype.hasOwnProperty.call(o, 'effect')), 'every overlay entry carries key + label + type + effect (the UI shape)');
-ok(m.overlay.every((o) => o.lpVisible === false), 'every overlay fact is lpVisible:false (the Lender-Price-cannot-see class the D36 overlay rules act on)');
+ok(m.overlay.every((o) => o.overlayOnly === true), 'every overlay fact publishes overlayOnly:true (the class the D36 overlay rules act on)');
+// The manifest publishes the MEASURED price side separately, and never as a bare false — the screen
+// draws a badge off it, and "nobody probed this" must not render as "Lender Price ignores it".
+ok(m.overlay.every((o) => o.lpPrices === true || o.lpPrices === null), 'every overlay fact publishes lpPrices as true or null, never false');
+ok(m.overlay.some((o) => o.key === 'short_term_rental' && o.lpPrices === true), 'the one measured fact (short-term rental) publishes lpPrices:true alongside overlayOnly:true');
+ok(m.overlay.every((o) => !Object.prototype.hasOwnProperty.call(o, 'lpVisible')), 'the conflated lpVisible flag is gone from the published manifest (task #82)');
 {
   const occ = m.overlay.find((o) => o.key === 'occupancy');
   ok(occ && occ.type === 'enum' && Array.isArray(occ.enumValues) && occ.enumValues.includes('vacant'), 'the occupancy overlay fact publishes its enum values (leased/vacant)');

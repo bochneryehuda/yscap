@@ -119,8 +119,10 @@ function unsupportedFields(sc) {
 // three sections the frontend's basic/advanced search UI needs, derived ENTIRELY from the existing
 // source-of-truth segments (no hand-kept UI list). `core` = the basic pricing contract; `advanced` =
 // the registry-backed advanced fields (LP-priced borrower/credit criteria); `overlay` = the D27–D29
-// Advanced OVERLAY facts Lender Price cannot see (each carries its label/type/enum/category/effect from
-// the advanced-facts registry); `meta` = request-envelope keys that are not pricing inputs. The three
+// Advanced OVERLAY facts our own matrix cuts on independently (each carries its label/type/enum/category/
+// effect from the advanced-facts registry, plus BOTH of that registry's flags — `overlayOnly` and the
+// separately-MEASURED `lpPrices`, which is `null` where nobody has probed Lender Price for that fact and
+// is NOT a claim that they ignore it); `meta` = request-envelope keys that are not pricing inputs. The three
 // FIELD sections are disjoint and their union is exactly SUPPORTED_FIELDS.
 function buildFieldManifest() {
   const overlay = advancedSection();

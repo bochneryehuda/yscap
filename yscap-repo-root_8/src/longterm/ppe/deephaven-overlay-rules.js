@@ -4,8 +4,8 @@
  *
  * WHAT THIS IS, and why it is a THIRD module and not folded into deephaven-matrix.js. advanced-facts.js
  * carries the overlay facts (short_term_rental, first_time_investor, rural_property, declining_market,
- * foreign_national, first_time_homebuyer, renovation, occupancy — every one `lpVisible:false`, i.e.
- * Lender Price cannot SEE them) and overlay.js stamps a reasoned override of LP. This module is the
+ * foreign_national, first_time_homebuyer, renovation, occupancy — every one `overlayOnly:true`, i.e. our
+ * matrix enforces their cuts independently) and overlay.js stamps a reasoned override of LP. This module is the
  * missing middle: it turns the UNAMBIGUOUS numeric cuts published in the Deephaven DSCR matrix into REAL
  * declines — each stamped via overlay.overlayDecline so the E3 agreement classifier scores it as an
  * intentional OVERLAY (never a parity defect). deephaven-matrix.js stays sourced ONLY from LP-visible

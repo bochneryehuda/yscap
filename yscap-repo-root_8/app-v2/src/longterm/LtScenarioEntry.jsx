@@ -95,14 +95,20 @@ function normalizeEntry(entry, section) {
       // The manifest publishes no `unit` on any section today. It is read anyway so
       // that the day one is added, it renders — rather than needing this file edited.
       unit: typeof entry.unit === 'string' && entry.unit ? entry.unit : null,
-      lpVisible: typeof entry.lpVisible === 'boolean' ? entry.lpVisible : null,
+      // TWO INDEPENDENT FLAGS, and reading either for the other is the conflation task #82 removed.
+      // `overlayOnly` = OUR engine enforces this fact's eligibility cuts itself. `lpPrices` = Lender
+      // Price was MEASURED to itemize a charge for it — `true` only where a live probe said so, and
+      // absent everywhere nobody has asked, which is NOT a claim that Lender Price ignores the fact.
+      // Only an explicit `true` is honoured, so an older server publishing neither draws neither badge.
+      overlayOnly: entry.overlayOnly === true,
+      lpPrices: entry.lpPrices === true,
       section,
     };
   }
   return {
     key: String(entry == null ? '' : entry),
     label: null, kind: null, enumValues: null, hasDefault: false, dflt: undefined,
-    category: null, effect: null, unit: null, lpVisible: null, section,
+    category: null, effect: null, unit: null, overlayOnly: false, lpPrices: false, section,
   };
 }
 
@@ -184,9 +190,14 @@ function FieldRow({ f, value, onChange }) {
             default {String(f.dflt)}
           </Pill>
         )}
-        {f.lpVisible === false && (
-          <Pill tone="warn" title="Lender Price does not price on this fact — it is an overlay our engine applies on top">
+        {f.overlayOnly && (
+          <Pill tone="warn" title="Our engine applies this fact's eligibility rules itself, on top of Lender Price — a disagreement here is deliberate and carries a stated reason">
             overlay only
+          </Pill>
+        )}
+        {f.lpPrices && (
+          <Pill tone="good" title="Measured live: Lender Price itemizes a price adjustment for this fact, so it is sent to them as well as applied here">
+            Lender Price prices this
           </Pill>
         )}
       </div>

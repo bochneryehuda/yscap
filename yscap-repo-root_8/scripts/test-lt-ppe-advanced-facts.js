@@ -20,7 +20,10 @@ ok(Array.isArray(AF.ADVANCED_FACTS) && AF.ADVANCED_FACTS.length >= 8, 'registry 
 for (const f of AF.ADVANCED_FACTS) {
   const okShape = f.key && f.label && f.type && f.category && f.effect && f.matrixMatch
     && (f.type !== 'enum' || (Array.isArray(f.enumValues) && f.enumValues.length))
-    && typeof f.lpVisible === 'boolean';
+    && typeof f.overlayOnly === 'boolean'
+    // `lpPrices` is a MEASUREMENT, so its only honest values are true (a probe itemized a charge) and
+    // null (nobody has asked). A bare `false` would re-assert what the old single flag wrongly claimed.
+    && (f.lpPrices === true || f.lpPrices === null);
   if (!okShape) ok(false, `fact ${f && f.key} is well-formed`);
 }
 ok(true, 'every advanced fact is well-formed');
@@ -39,9 +42,14 @@ ok(AF.getAdvancedFact('nope') === null, 'an unknown key → null (never throws)'
     'occupancy is an enum of leased/vacant, defaulting to leased (a performing rental)');
 }
 
-// ── every advanced fact is OVERLAY-ONLY (LP does not price on it) ─────────────────────────────────
-ok(AF.ADVANCED_FACTS.every((f) => f.lpVisible === false), 'every advanced fact is overlay-only (lpVisible false) — the class we override LP on');
+// ── every advanced fact is OVERLAY-ONLY (our matrix enforces its cuts itself) ─────────────────────
+ok(AF.ADVANCED_FACTS.every((f) => f.overlayOnly === true), 'every advanced fact is overlay-only — the class we override LP on, with a stated reason');
 ok(AF.overlayOnlyKeys().length === AF.ADVANCED_FACTS.length, 'overlayOnlyKeys() returns them all');
+// …and that says NOTHING about the price side, which is the separate measured flag (task #82).
+ok(AF.lpPricedKeys().includes('short_term_rental'),
+  'short-term rental is recorded as MEASURED-priced by Lender Price, while still being overlay-only');
+ok(AF.lpPricedKeys().length < AF.ADVANCED_FACTS.length,
+  'the priced set is a floor, not the whole registry — an unprobed fact is absent because it is unknown');
 ok(AF.isAdvancedFact('rural_property') && !AF.isAdvancedFact('fico') && !AF.isAdvancedFact('ltv'),
   'isAdvancedFact separates advanced facts from the basic LP-priced ones (fico/ltv)');
 

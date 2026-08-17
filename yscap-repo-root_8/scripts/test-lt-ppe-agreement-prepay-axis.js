@@ -164,18 +164,24 @@ ok(occOf({ ...DEAL, short_term_rental: true, rentalTerm: 'long' }) === 'Long_Ter
 ok(occOf({ ...DEAL, rentalTerm: 'short' }) === 'Short_Term_Rental_Property',
   'and an explicit short still works on its own (the pre-existing path is untouched)');
 
-// The registry's `lpVisible:false` is deliberately UNCHANGED, and that is worth pinning so nobody
-// "corrects" it on the strength of the measurement above. It does not mean what its name says: it
-// selects `overlayOnlyKeys()`, the class our matrix independently CUTS on. Lender Price PRICING this
-// fact (measured) is not evidence that it enforces the matrix's eligibility cuts for it (Min DSCR 1.15,
-// Min FICO 720, 75% LTV — unmeasured). Flipping it drops short-term rental out of the overlay set and
-// takes seven suites with it. Open design question, task #82.
+// THE REGISTRY NOW RECORDS BOTH HALVES OF THIS, SEPARATELY (task #82, closed 2026-08-17). The single
+// `lpVisible` flag could only hold one answer, so the measurement above had nowhere to live: flipping it
+// would have dropped short-term rental out of the overlay set — restructuring D29 on the strength of a
+// PRICING measurement that says nothing about ELIGIBILITY — and leaving it read as a claim, in the
+// published manifest and on the screen, that Lender Price ignores a fact we had just watched it charge
+// 0.500 for. Two flags, two answers, and they are asserted together here precisely because the pair is
+// the point: `lpPrices:true` (measured) and `overlayOnly:true` (our matrix still enforces Min DSCR 1.15,
+// Min FICO 720 and the 75 % LTV cap itself, none of which Lender Price has been measured enforcing).
 const advFacts = require('../src/longterm/ppe/advanced-facts');
 const strDef = (advFacts.ADVANCED_FACTS || []).find((f) => f.key === 'short_term_rental');
-ok(strDef && strDef.lpVisible === false,
-  'the registry flag is UNCHANGED — the transmission fix stands on its own and does not restructure the overlay');
+ok(strDef && strDef.lpPrices === true,
+  'the measurement is RECORDED — Lender Price prices this fact, and the registry now says so');
+ok(strDef && strDef.overlayOnly === true,
+  '…and the overlay classification is untouched by that, because they are different questions');
 ok(typeof advFacts.overlayOnlyKeys === 'function' && advFacts.overlayOnlyKeys().includes('short_term_rental'),
   '…so short-term rental is still an overlay-only cut, which is the thing the flag actually selects');
+ok(strDef && !Object.prototype.hasOwnProperty.call(strDef, 'lpVisible'),
+  'the conflated flag is GONE — nothing can read one answer for the other again');
 
 console.log(`\n${fails.length ? `FAILURES: ${fails.length}` : 'OFFLINE: all passed'} (${pass} passed, ${fails.length} failed)`);
 process.exit(fails.length ? 1 : 0);

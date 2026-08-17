@@ -19,8 +19,11 @@
  *                        than LP, never looser, so ours-eligible / LP-ineligible is always a defect).
  *
  * THE OVERLAY FACT SET IS GENERATED, NOT HAND-KEPT (CLAUDE.md build-rule #4): it is derived live from
- * advanced-facts.overlayOnlyKeys() (the `lpVisible:false` registry). Add an overlay fact there and it
- * is recognized here for free; a fact LP later exposes leaves the overlay set on its own.
+ * advanced-facts.overlayOnlyKeys() (the `overlayOnly:true` registry). Add an overlay fact there and it
+ * is recognized here for free; a fact whose cuts LP is later measured to enforce itself leaves the
+ * overlay set on its own. Note `overlayOnly` is about ELIGIBILITY, not price: a fact Lender Price is
+ * measured to PRICE (registry `lpPrices:true`, e.g. short-term rental) is still overlay-only here,
+ * because pricing an adjustment is no evidence of enforcing a cut (task #82).
  *
  * SOURCE DISCIPLINE: this module classifies a divergence and enforces the reason requirement. It does
  * NOT decide WHICH scenarios an overlay declines (the specific numeric cuts — −5% LTV, 65% cap, DSCR

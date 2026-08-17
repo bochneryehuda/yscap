@@ -865,14 +865,15 @@ function buildSearch(sc = {}, opts = {}) {
   if (band && String(process.env.LP_SEND_DSCRRATIO || '') === '1') setDyn('DSCRRATIO', band.ratio);
   // §37.15 — A SHORT-TERM RENTAL MUST BE TOLD TO LENDER PRICE, AND THIS IS MEASURED, NOT INFERRED.
   //
-  // `short_term_rental` is the Advanced section's own overlay fact, and the field registry marks it
-  // `lpVisible: false` — "Lender Price does not price this". MEASURED LIVE 2026-08-17 on the Deephaven
-  // DSCR program, same scenario twice: with `rentalTerm` OMITTED, Lender Price itemizes NOTHING for it;
-  // with `rentalTerm: 'short'` it itemizes **`Short Term Rental - Short Term Rental / CLTV >65.01 % <=
-  // 70.0 %` = 0.500** — exactly the charge our own rate sheet carries from the Excel. So `lpVisible:
-  // false` is simply wrong about this fact, and an omitted rentalTerm DEFAULTS TO LONG-TERM: a borrower
-  // who ticked "short-term rental" was being quoted a LONG-term rental, 0.5 points BETTER than the real
-  // price. Quoting too good is the expensive direction.
+  // `short_term_rental` is the Advanced section's own overlay fact, and the field registry used to mark
+  // it `lpVisible: false` — one flag standing for "Lender Price does not price this". MEASURED LIVE
+  // 2026-08-17 on the Deephaven DSCR program, same scenario twice: with `rentalTerm` OMITTED, Lender
+  // Price itemizes NOTHING for it; with `rentalTerm: 'short'` it itemizes **`Short Term Rental - Short
+  // Term Rental / CLTV >65.01 % <= 70.0 %` = 0.500** — exactly the charge our own rate sheet carries
+  // from the Excel. An omitted rentalTerm DEFAULTS TO LONG-TERM, so a borrower who ticked "short-term
+  // rental" was being quoted a LONG-term rental, 0.5 points BETTER than the real price. Quoting too good
+  // is the expensive direction. The registry now records that measurement honestly as `lpPrices: true`
+  // while keeping the fact `overlayOnly: true` — two independent questions, two flags (task #82).
   //
   // WHY THIS IS NOT THE DSCRRATIO MISTAKE (§37.9), which the same measurement was run to rule out.
   // DSCRRATIO was a token read out of the vendor's JS bundle that their own frontend never sends, and it

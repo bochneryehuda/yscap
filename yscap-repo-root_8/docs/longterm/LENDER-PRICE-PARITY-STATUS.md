@@ -1183,3 +1183,47 @@ vendor can express, or it tests the validator instead of the rule.
 Runner `scripts/test-lt-lp-disqualify-crosscheck.js` — live, run by hand, exits non-zero **only** on the
 dangerous direction: being stricter than the investor is a business decision, being looser is a loan we
 cannot sell.
+
+
+---
+
+### §2.17 — ONE FLAG WAS ANSWERING TWO QUESTIONS, AND A MEASUREMENT PROVED IT (task #82, closed 2026-08-17)
+
+The advanced-facts registry carried a single boolean, `lpVisible`, and it was doing two unrelated jobs:
+
+| what it actually SELECTED | what it READ as |
+| --- | --- |
+| `overlayOnlyKeys()` → `overlay.OVERLAY_FACTS` → the D29 stated-reason overrides and the D36 overlay declines — a statement about **our engine** | "Lender Price does not price this fact" — a statement about **the vendor**, published in the field manifest and drawn as a badge with that exact wording on the scenario-entry screen |
+
+Then §2.14 measured short-term rental live: Lender Price itemizes **0.500** for it. The flag was now
+false about the vendor and right about our engine, **and neither answer could be fixed without breaking
+the other** — flipping it drops short-term rental out of the overlay set (restructuring D29 on the
+strength of a PRICING measurement that says nothing about ELIGIBILITY, and taking seven suites with it),
+leaving it publishes a claim we had just watched the vendor disprove. §2.14 recorded the conflict in a
+comment and left it open rather than resolve it in passing. This closes it.
+
+**Two questions, two flags.** `overlayOnly` (does OUR matrix enforce this fact's eligibility cuts?) and
+`lpPrices` (was Lender Price MEASURED itemizing a charge for it?). Short-term rental now holds
+`overlayOnly: true` **and** `lpPrices: true` — the state one boolean could not represent.
+
+**`lpPrices` is a measurement, so it is `true` or `null` — never a bare `false`.** The old flag's
+blanket `false` asserted "Lender Price does not price this" for all eight facts, and that had never been
+probed for any of them; the one fact anyone did probe came back the other way. Seven are now honestly
+`null` = **not measured**, and `lpPricedKeys()` is documented as a floor rather than a closed set.
+
+**Behaviour is unchanged, deliberately** — `overlayOnlyKeys()` still returns all eight, so this records a
+fact rather than moving a rule. What changed is what the manifest publishes and what the screen says: the
+badge now reads its own flag ("overlay only" = our engine cuts on this), and a measured-priced fact gains
+a second badge instead of a tooltip denying the charge.
+
+**The guard with teeth is transmission.** `test-lt-ppe-overlay-flag-split.js` (35 assertions) asserts
+that every fact recorded as `lpPrices: true` is actually **sent** to Lender Price, measured through the
+real `buildSearch` — because a fact we believe they price and never transmit is exactly the silent
+0.5-point under-quote §2.14 found. It also pins the honesty rule on `lpPrices`, the disappearance of the
+conflated flag from the registry / the manifest / the screen, and that the overlay set and the priced set
+are provably different sets (so reading one for the other is detectable rather than plausible).
+
+**Six mutations of the production code were each proven to fail it**: `overlayOnlyKeys()` reading
+`lpPrices`; the seven unmeasured facts re-asserted as `false`; the short-term-rental measurement dropped;
+the search-model derivation removed so the fact stops being transmitted; the screen reading `lpVisible`
+again; and the conflated flag re-published in the manifest. All 80 LT PPE suites + the DSCR suites pass.
