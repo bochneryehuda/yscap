@@ -55,6 +55,7 @@ const store = require('../ppe/store');
 const facade = require('../ppe/facade');
 const lpScopeLib = require('../ppe/lp-scope');
 const parityMatrix = require('../ppe/parity-matrix');
+const parityCellStore = require('../ppe/parity-cell-store');
 const quote = require('../ppe/quote');
 const canary = require('../ppe/canary');
 const finding = require('../ppe/finding');
@@ -669,6 +670,21 @@ async function canaryRoute(req, res) {
     runPersistError = String((e && e.message) || e).slice(0, 200);
   }
 
+  // THE THIRD durable record, and it answers a question the other two cannot. The findings ledger is
+  // "what disagreed"; the run series is "how well the engines agreed on this date"; this is "how well
+  // they agreed IN THIS BAND on this date", which is what turns a one-off bad afternoon into a
+  // three-week regression somebody can see. Best-effort and reported separately — the three stores
+  // fail independently, and "the run landed but the cells did not" is its own problem.
+  let cellsPersisted = null;
+  let cellPersistError = null;
+  try {
+    cellsPersisted = await parityCellStore.persistCells(scope, run.matrix, {
+      db, investor, program: programLabel(program), dayMs: run.dayMs,
+    });
+  } catch (e) {
+    cellPersistError = String((e && e.message) || e).slice(0, 200);
+  }
+
   return res.json({
     ok: true,
     scope,
@@ -693,6 +709,55 @@ async function canaryRoute(req, res) {
     runPersisted: runPersistError ? false : !!(runPersisted && runPersisted.persisted),
     runPersistError,
     runPersistReason: runPersisted && !runPersisted.persisted ? runPersisted.reason : null,
+    cellsPersisted: cellPersistError ? false : !!(cellsPersisted && cellsPersisted.persisted),
+    cellPersistError,
+    cellsWritten: cellsPersisted ? cellsPersisted.rows : null,
+    // A capped batch is SAID, never silently short: a series missing its tail reads as a clean stretch.
+    cellsTruncated: cellsPersisted ? cellsPersisted.truncated : null,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// GET /parity-cells — how a slice of the book has behaved over TIME
+// ---------------------------------------------------------------------------
+//
+// The matrix on a canary response is one run. This is the same measurement across runs, which is the
+// question a cutover decision actually turns on: has this band been off for three weeks, or was that
+// one bad afternoon? It RANKS and never thresholds — what counts as clean enough is the owner's
+// decision and lives in the cutover gate.
+
+async function parityCellsRoute(req, res) {
+  const scope = readScope(req);
+  const q = req.query || {};
+  const investor = q.investor ? String(q.investor) : null;
+  const program = q.program ? String(q.program) : null;
+  const days = intIn(q.days, 400) || 30;
+  const sinceMs = Date.now() - (days * 24 * 60 * 60 * 1000);
+
+  const cells = await parityCellStore.listCells(scope, {
+    db,
+    investor,
+    program,
+    dimension: q.dimension ? String(q.dimension) : null,
+    cellKey: q.cellKey ? String(q.cellKey) : null,
+    sinceMs,
+  });
+
+  // ONE cell asked for by name gets its own history; otherwise the cells that have disagreed on the
+  // most days, which is the list worth a human's morning.
+  const single = q.dimension && q.cellKey;
+  return res.json({
+    ok: true,
+    scope,
+    investor,
+    program,
+    windowDays: days,
+    measurements: cells.length,
+    // Said plainly, because an empty series and a series of clean days look identical on a chart:
+    // this table starts at the first canary run after db/575, and nothing before it can be recovered.
+    note: cells.length ? null : 'No per-band measurements in this window yet — the series starts at the first canary run after this was built, and earlier runs recorded only a daily total.',
+    history: single ? parityCellStore.cellHistory(cells, { windowDays: days }) : null,
+    persistentlyWorst: single ? null : parityCellStore.persistentlyWorst(cells, { windowDays: days, limit: intIn(q.limit, 50) || 10 }),
   });
 }
 
@@ -962,6 +1027,7 @@ router.get('/findings', wrap(listFindingsRoute, 'lt_ppe_findings_error'));
 router.get('/scoreboard', wrap(scoreboardRoute, 'lt_ppe_scoreboard_error'));
 router.get('/suggestions', wrap(listSuggestionsRoute, 'lt_ppe_suggestions_error'));
 router.get('/rules', wrap(listRulesRoute, 'lt_ppe_rules_error'));
+router.get('/parity-cells', wrap(parityCellsRoute, 'lt_ppe_parity_cells_error'));
 router.post('/quote', wrap(quoteRoute, 'lt_ppe_quote_error'));
 router.post('/breakdown', wrap(breakdownRoute, 'lt_ppe_breakdown_error'));
 
@@ -978,7 +1044,7 @@ module.exports = router;
 module.exports.handlers = {
   health, getSettings, listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, breakdownRoute, canaryRoute, scoreboardRoute,
   listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute, mineSuggestionsRoute,
-  ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute,
+  ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute, parityCellsRoute,
 };
 module.exports._internals = {
   requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe,

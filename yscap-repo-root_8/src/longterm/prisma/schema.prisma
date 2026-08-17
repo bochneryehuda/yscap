@@ -1189,6 +1189,57 @@ model LtPpeInvestorAlias {
 /// per-investor lifecycle: draft | shadow | live | retired — the engine prices a
 /// program for the business only when it is shadow or live, and Lender Price
 /// stays authoritative until it is live.
+/// The PER-CELL parity series (db/575) — one row per matrix cell per canary run. The daily aggregate
+/// in LtPpeShadowRun cannot answer "has THIS band been off for three weeks?", which is the question a
+/// cutover decision turns on. A MISSING row means "not measured that day", never "measured badly":
+/// a run with no scenarios in a band writes nothing for it, and a reader must not zero-fill the gap.
+model LtPpeParityCell {
+  id             String   @id @default(uuid()) @db.Uuid
+  scope          String   @default("company")
+  investor       String   @default("")
+  program        String   @default("")
+  programId      String?  @map("program_id") @db.Uuid
+  dayMs          BigInt   @map("day_ms")
+
+  /// `cellKey` is the stable identity a trend joins on across days; `cellLabel` is display text and
+  /// must never be joined on — a reprice can change a label without changing which loans it holds.
+  dimension      String
+  cellKey        String   @map("cell_key")
+  cellLabel      String   @map("cell_label")
+  kind           String
+
+  total          Int      @default(0)
+  agreed         Int      @default(0)
+  disagreed      Int      @default(0)
+  errors         Int      @default(0)
+  incomparable   Int      @default(0)
+  /// A D29 reasoned override is intentional, not a defect — counted in its own right, never folded
+  /// into `disagreed`.
+  overlay        Int      @default(0)
+  /// Nullable on purpose: a cell with no comparable scenarios has NO rate, and a 0 would read as
+  /// total disagreement.
+  agreementRate  Decimal? @map("agreement_rate") @db.Decimal
+
+  /// `priceScenarios` counts LOANS with a gap, `priceSamples` the individual COUPONS — different
+  /// questions, and one under the other's name makes one scenario off on eight coupons read as eight
+  /// bad loans.
+  priceScenarios Int      @default(0) @map("price_scenarios")
+  priceSamples   Int      @default(0) @map("price_samples")
+  worstAbsMilli  BigInt?  @map("worst_abs_milli")
+  /// SIGNED: uniformly light is a different problem from scattered either side.
+  meanMilli      Decimal? @map("mean_milli") @db.Decimal
+
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  program_       LtPpeProgram? @relation(fields: [programId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  @@unique([scope, investor, program, dayMs, dimension, cellKey], map: "lt_ppe_parity_cell_key_uk")
+  @@index([scope, investor, program, dimension, cellKey, dayMs], map: "lt_ppe_parity_cell_series_idx")
+  @@index([scope, investor, program, dayMs], map: "lt_ppe_parity_cell_day_idx")
+  @@map("lt_ppe_parity_cell")
+}
+
 model LtPpeProgram {
   id             String   @id @default(uuid()) @db.Uuid
   scope          String   @default("company")
@@ -1225,6 +1276,7 @@ model LtPpeProgram {
   investor          LtPpeInvestor?          @relation(fields: [investorId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   rateSheetVersions LtPpeRateSheetVersion[]
   rules             LtPpeRule[]
+  parityCells       LtPpeParityCell[]
 
   @@unique([scope, investorId, code], map: "lt_ppe_program_scope_investor_code_uk")
   @@index([investorId])

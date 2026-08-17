@@ -88,16 +88,15 @@ console.log('/api/lt/ppe/* — the PPE HTTP surface');
 // 1) the router itself
 // ---------------------------------------------------------------------------
 ok(typeof route === 'function' && typeof route.use === 'function', 'the module IS an express router (server.js can mount it)');
-// 17 since the program's LENDER PRICE SCOPE read + write landed (which of Lender Price's programs a
-// comparison is about — db/574).
+// 18 since the PER-CELL PARITY SERIES read landed (how a band has behaved across runs — db/575).
 // This count is a deliberate guard: adding a handler without exporting/testing it should FAIL here, so
 // bump it in the same commit that adds one — never delete the assertion to make a build green.
-ok(Object.keys(H).length === 17, `all 17 handlers are exported for testing (${Object.keys(H).length})`);
+ok(Object.keys(H).length === 18, `all 18 handlers are exported for testing (${Object.keys(H).length})`);
 // A COUNT ALONE IS NOT ENOUGH: it stays satisfied if a handler is renamed, or if one is dropped in the
 // same commit another is added. Naming them is what makes the guard bite on either.
 for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSuggestionRoute',
   'listRulesRoute', 'mineSuggestionsRoute', 'ruleCoverageRoute',
-  'getProgramLpScopeRoute', 'setProgramLpScopeRoute']) {
+  'getProgramLpScopeRoute', 'setProgramLpScopeRoute', 'parityCellsRoute']) {
   ok(typeof H[name] === 'function', `the ${name} handler is exported by name`);
 }
 

@@ -1751,3 +1751,68 @@ Suite: `scripts/test-lt-ppe-parity-matrix.js` (95 assertions, including the REAL
 band edges). **Seventeen mutations** were each proven to fail it; two came back GREEN first — the
 reconciliation theorem above, and a redundant-guard case that turned out to be a genuine finding about
 where the safety actually lives rather than a hole in the tests.
+
+---
+
+### §2.24 — "HAS THIS BAND BEEN OFF FOR THREE WEEKS, OR WAS THAT ONE BAD AFTERNOON?" (2026-08-17)
+
+§2.23 built the per-run parity matrix and named its own residual: the matrix is a snapshot, and
+`lt_ppe_shadow_run` keeps a single agreement rate per day, so per-cell history could not be
+reconstructed at any later date. That makes the question a cutover decision actually turns on
+unanswerable — and it makes a band that quietly regressed after a rate-sheet change look identical to
+one that has never worked. `lt_ppe_parity_cell` (db/575) is that series: one row per cell per run.
+
+**A MISSING ROW MEANS "NOT MEASURED", NEVER "MEASURED BADLY", and every function here is written
+around that.** A run whose scenarios happened to include no loans in the 640–660 band writes nothing
+for that band. Zero-filling the gap — the obvious way to make a chart continuous — would report a band
+nobody priced as one that failed completely, and the trend would then show a collapse that never
+happened. So gaps stay gaps: the series has no invented entries, and `daysMeasured` is reported
+against `windowDays` so a cell measured on two of the last twenty days is never presented beside one
+measured on all twenty as though they carry the same weight. A caller who does not state a window gets
+`null` rather than a number implying full coverage.
+
+**RANKED BY PERSISTENCE, NOT BY TODAY.** The list worth a human's morning is the bands that have
+disagreed on the most days — not the ones worst right now. The test fixture that pins this is the
+whole argument: `chronic` has disagreed on all three measured days and has since recovered to 1.00;
+`fresh` was perfect twice and broke only today, to 0.10. A latest-rate sort puts `fresh` first, which
+is precisely the snapshot thinking the series exists to replace. Without a fixture where the two
+orderings DISAGREE, the ordering is untested — the first cut had one where they happened to agree, and
+removing the persistence term from the sort passed cleanly.
+
+**PERSISTENCE AND DIRECTION ARE DIFFERENT FACTS, and both are reported.** The chronic band above has
+disagreed every single day AND its direction is "improving" (0.20 → 0.30 → 0.25 averages higher in the
+newer half). Ranking on direction alone would let a band that has never once agreed drift down the list
+on a rounding-scale wobble; ranking on persistence alone would hide that a real fix has started to
+land. The direction itself is `scoreboard.trend` — the same function the investor-level scoreboard uses
+— so "improving" means one thing in this codebase rather than two.
+
+**IT MEASURES; IT NEVER DECIDES.** Nothing in the store holds a threshold. What counts as "clean
+enough" is the owner's (Part 4.2/4.3) and lives in the cutover gate.
+
+**THREE SMALLER RULES, each the same discipline seen elsewhere in this file:** a NUMERIC read back
+from Postgres is converted, because an agreement rate arriving as the string `"0.5"` fails every
+arithmetic comparison downstream in silence; a rate is NULL when a cell had nothing comparable, while
+the COUNTS are a real zero, because "none" and "not measured" must never render the same; and a
+capped batch reports what did not fit, because a series missing its tail reads as a clean stretch.
+
+**NO BACKFILL, AND NONE IS POSSIBLE.** Per-cell measures were never captured — the scenario facts were
+being discarded before the matrix existed, which is the defect §2.23 had to fix first — so there is no
+history to reconstruct, and deriving per-band numbers from the daily aggregate would fabricate
+measurements nobody took. The series starts at the first canary run after this lands, and the read
+endpoint SAYS so on an empty window rather than rendering it as a clean stretch.
+
+**A NUL BYTE HAD SLIPPED INTO A TEMPLATE LITERAL AGAIN** — the second time in this session. It survives
+every test (it is just an odd separator character), makes the file read as binary to `grep`, and is
+invisible in a diff. Found by a mutation that silently failed to apply because `grep` refused the file.
+There is now a cheap, permanent guard asserting these modules contain no NUL byte.
+
+Suite: `scripts/test-lt-ppe-parity-cell-store.js` (118 assertions, against a recording stub database
+so the write contract — one upsert per cell on the natural key, every mutable measure refreshed, a
+resolved program anchor never overwritten with a null — is proven without a live Postgres, plus the
+migration and Prisma model read back and compared against the columns the module actually binds,
+because a stub can prove the SQL's shape and never that its columns exist). **Eighteen mutations** were
+each proven to fail it; four came back GREEN first — three were weak assertions matching a NAME rather
+than what the code DOES (a call left dangling in a fire-and-forget wrapper still contains the
+function's name), and the fourth was the ordering fixture above.
+
+**RESIDUAL:** there is still no screen. The measurement, the series and the read endpoint exist.

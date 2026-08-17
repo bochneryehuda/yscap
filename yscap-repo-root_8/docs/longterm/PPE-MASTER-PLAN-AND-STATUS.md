@@ -446,8 +446,19 @@ owner wants to start.
 - **Reachable:** it rides on `canary.runCanary` and `POST /canary` publishes `matrix` + `worstCells`
   (not the up-to-500 raw results). Test `scripts/test-lt-ppe-parity-matrix.js` (95); 17 mutations
   proven to fail it.
-- **STILL TO-BUILD:** the TREND across runs (the matrix is per-run; `lt_ppe_shadow_run` stores one
-  aggregate rate per day, so per-cell history has no home yet) and the screen.
+- **DONE — the TREND across runs (db/575, 2026-08-17).** `lt_ppe_parity_cell` stores one row per cell
+  per run, so "has THIS band been off for three weeks, or was that one bad afternoon?" — the question a
+  cutover decision actually turns on — is answerable. `parity-cell-store.js` writes it from the canary
+  (a third durable record beside the findings ledger and the run series, reported separately because
+  the three fail independently) and reads it back as `GET /parity-cells`. **A MISSING ROW MEANS "NOT
+  MEASURED", NEVER "MEASURED BADLY":** a run with no scenarios in a band writes nothing for it, gaps
+  are never zero-filled, and `daysMeasured` vs `windowDays` is reported so a cell measured on two of
+  twenty days is not presented like one measured on all twenty. Ranked by PERSISTENCE (days seen
+  disagreeing) — a chronic band that has just started recovering outranks one that broke this morning,
+  which a latest-rate sort inverts. The direction is `scoreboard.trend`, reused so "improving" means
+  one thing here. It RANKS and never thresholds. Test
+  `scripts/test-lt-ppe-parity-cell-store.js` (118); 18 mutations proven to fail it.
+- **STILL TO-BUILD:** the screen.
 - **Depends on:** P1, P3. **Owner gate:** ⚠️ tolerances + clean-weeks threshold — Part 4.2/4.3 — which
   gate the CUTOVER decision, not the measurement; the matrix ranks and never thresholds.
 
