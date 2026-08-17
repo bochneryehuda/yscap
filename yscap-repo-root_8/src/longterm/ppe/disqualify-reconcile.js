@@ -23,6 +23,7 @@
  * string into a (fact, op, value) so it can be aligned to our decline's dimension. LT-only.
  */
 const { keyToPredicate } = require('./disqualify-crosswalk');
+const { isOverlayFact, OVERLAY_FACTS } = require('./overlay');
 
 // Reduce our decline dimension and an LP fact to a common key, so "LP declined on FICO" and "we declined
 // on fico" line up. Unknown → the value itself (never silently merged).
@@ -33,10 +34,27 @@ const DIMENSION_ALIAS = {
 };
 function dimKey(d) { const k = String(d || '').toLowerCase(); return DIMENSION_ALIAS[k] || k; }
 
-// Our program decline reasons flag an overlay we cannot verify from the scenario facts (LP may legitimately
-// apply one of these and we would not model it → not a bug on either side). These mirror the eligibility
-// engine's `unverifiable` overlays.
-const OVERLAY_DIMENSIONS = new Set(['declining_market', 'short_term_rental', 'first_time_investor', 'foreign_national', 'city', 'geo', 'rural', 'occupancy', 'vacancy']);
+// Our program flags an overlay decline we cannot verify from the scenario facts (LP may legitimately apply
+// one of these and we would not model it → not a bug on either side). This set is DERIVED from the
+// advanced-facts overlay registry via overlay.OVERLAY_FACTS — the SAME single source overlayDecline enforces
+// at authoring time (CLAUDE.md build-rule #4: generate, don't hand-maintain) — so it can NEVER drift from
+// the fact keys the program engine actually stamps on an overlay decline (`dimension: d.fact`). A hand-kept
+// list DID drift: it carried a phantom `rural` while the engine emits `rural_property`, invented `city` /
+// `geo` / `vacancy` dimensions no layer emits, and omitted first_time_homebuyer / renovation — so a reasoned
+// overlay override of Lender Price mis-scored as an `our_encoding_bug` false ticket at the E3 gate.
+const OVERLAY_DIMENSIONS = new Set(OVERLAY_FACTS);
+
+// Is one of OUR declines an overlay-only decline (a reasoned override LP cannot see)? The program engine
+// stamps `overlay:true` on a normalized overlay decline, which is the AUTHORITATIVE signal; failing that,
+// the decline's dimension being a real overlay fact classifies it (via dimKey, so casing/aliases are
+// handled). Keying on the flag first means a future overlay fact is recognized even before the registry
+// membership check — but the registry stays the fail-safe so a decline carrying only the fact (no flag)
+// is never mistaken for a real eligibility mismatch.
+function isOverlayDecline(reason) {
+  if (!reason || typeof reason !== 'object') return false;
+  if (reason.overlay === true) return true;
+  return isOverlayFact(dimKey(reason.dimension));
+}
 
 function isNum(x) { return typeof x === 'number' && Number.isFinite(x); }
 
@@ -79,7 +97,7 @@ function reconcileScenario(our, lp, opts = {}) {
     // is the bug). Default: our_encoding_bug (we lose to LP, which is the live authority today) but ticket
     // if our reason is a hard matrix number so a human checks whether LP is wrong.
     const r0 = ourReasons[0] || {};
-    const overlay = OVERLAY_DIMENSIONS.has(String(r0.dimension || '').toLowerCase());
+    const overlay = isOverlayDecline(r0);
     return {
       outcome: 'lp_prices_we_decline',
       classification: overlay ? 'legitimate_overlay' : 'our_encoding_bug',
@@ -112,4 +130,4 @@ function summarize(reconciles) {
   return t;
 }
 
-module.exports = { reconcileScenario, summarize, _internals: { dimKey, DIMENSION_ALIAS, OVERLAY_DIMENSIONS } };
+module.exports = { reconcileScenario, summarize, _internals: { dimKey, DIMENSION_ALIAS, OVERLAY_DIMENSIONS, isOverlayDecline } };

@@ -45,11 +45,15 @@ r = reconcileScenario(
   { priced: true, disqualifyReasons: [] });
 ok(r.outcome === 'lp_prices_we_decline' && r.classification === 'our_encoding_bug', 'we decline (hard rule) but LP prices → our_encoding_bug (review our rule vs the matrix)');
 
-// WE decline on an OVERLAY dimension but LP prices → legitimate_overlay (we cannot verify the overlay)
+// WE decline on an OVERLAY fact but LP prices → legitimate_overlay (we cannot verify the overlay). The
+// decline shape is exactly what program-engine normalizes from an overlay.overlayDecline: a REAL overlay
+// fact key (`rural_property`, the advanced-facts registry key) as the dimension + overlay:true. This case
+// used a phantom `rural` dimension the engine never emits — it passed only because the hand-kept overlay
+// list ALSO carried `rural`; a real rural overlay decline (`rural_property`) mis-scored as an our_encoding_bug.
 r = reconcileScenario(
-  { eligible: false, reasons: [{ layer: 'eligibility_matrix', code: 'dhvn_rural', dimension: 'rural', declineReason: 'Rural: DSCR must be > 1.00' }] },
+  { eligible: false, reasons: [{ layer: 'overlay', code: 'overlay_rural_property', dimension: 'rural_property', declineReason: 'Rural: Max 65% LTV', overlay: true, fact: 'rural_property' }] },
   { priced: true, disqualifyReasons: [] });
-ok(r.outcome === 'lp_prices_we_decline' && r.classification === 'legitimate_overlay', 'we decline on an overlay we cannot verify but LP prices → legitimate_overlay (not our bug)');
+ok(r.outcome === 'lp_prices_we_decline' && r.classification === 'legitimate_overlay', 'we decline on the real overlay fact rural_property but LP prices → legitimate_overlay (not our bug)');
 
 // a PPP-layer decline both ways matched on the prepay dimension
 r = reconcileScenario(

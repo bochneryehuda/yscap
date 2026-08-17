@@ -514,6 +514,26 @@ failure mode itself is mutation-proven (removing a branch turns the pairing + bo
 reconcile checks red). This is the LLPA-side analogue of the disqualify crosswalk's dead-map
 guard (`test-lt-ppe-disqualify-crosswalk-facts.js`); both de-risk adding investor #2's sheet.
 
+**Disqualify-side overlay-drift guard (2026-08-17):** the SAME drift class on the INELIGIBILITY
+side. `disqualify-reconcile.reconcileScenario` forks an "LP prices, we decline" divergence into
+`legitimate_overlay` (a reasoned override of a fact LP cannot see — never a ticket) vs
+`our_encoding_bug` (too strict on a fact LP CAN see — a real finding), keyed on whether OUR
+decline is an overlay decline. An overlay decline reaches it normalized by `program-engine` (line
+49) as `{ dimension: d.fact, overlay:true, ... }` where `d.fact` is a real advanced-facts overlay
+key (`overlay.overlayDecline` THROWS on anything else). The old reconciler kept that vocabulary as
+a HAND-TYPED `OVERLAY_DIMENSIONS` list, and it had DRIFTED — a phantom `rural` where the engine
+emits `rural_property`, invented `city`/`geo`/`vacancy` dimensions, and missing
+`first_time_homebuyer`/`renovation` — so a real rural (or FTHB, or renovation) overlay override of
+LP mis-scored as an `our_encoding_bug` FALSE TICKET at the E3 gate. Fix: the set is now DERIVED
+from `advanced-facts.overlayOnlyKeys()` via `overlay.OVERLAY_FACTS` (the one source
+`overlayDecline` enforces), and the classifier keys first on the authoritative `overlay:true` flag
+with the registry set as the fail-safe. `test-lt-ppe-disqualify-overlay-parity.js` proves the set
+equals the registry, that EVERY overlay fact (built through the real `overlayDecline` and
+normalized exactly as `program-engine` does) classifies `legitimate_overlay`, and that the phantom
+`rural` + a genuine FICO decline do NOT — mutation-proven (reverting to the drifted hand-list turns
+10 assertions + the existing reconcile test's `rural_property` case red). The stale existing test
+even encoded the phantom (`dimension:'rural'`); it now uses the real `rural_property` shape.
+
 ### §2.6 — DEEP 300-scenario live verification (2026-08-17) — full report: `ppe-research/DEEPHAVEN-LP-LIVE-FINDINGS-2026-08-17.md`
 
 A read-only live run of the full ~300-scenario battery against LP (filtered to
