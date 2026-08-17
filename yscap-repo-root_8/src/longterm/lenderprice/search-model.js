@@ -29,6 +29,13 @@ const REGISTRY_WARNINGS = Symbol.for('lp.registryWarnings');
 // transmitted upstream. The live cash-out capture carried no legitimate vendor field, so we must not
 // invent or transmit one; the route surfaces this in effectiveScenario as an internal-only value.
 const CASHOUT_INTERNAL = Symbol.for('lp.cashoutInternal');
+// D27 — internal retention channel for the VACANT-vs-LEASED occupancy fact. Symbol-keyed (skipped by
+// JSON.stringify) so the resolved value is retained on the built payload for the eligibility overlay,
+// the route's effectiveScenario echo, and diagnostics/storage — but is NEVER transmitted upstream,
+// because no live capture confirms a Lender Price wire field for vacant-vs-leased (see the SEAM in
+// buildSearch and the field-registry note on deliberately-excluded occupancy tokens). We must not
+// invent or transmit one; the route surfaces this in effectiveScenario as an internal-only value.
+const OCCUPANCY_INTERNAL = Symbol.for('lp.occupancyInternal');
 
 // SMO ids observed in real captures. The DSCR pair selects the DSCR product; it is always sent.
 // These are FALLBACKS: when a live /pricing/smo registry is passed via opts.smo, the current
@@ -246,6 +253,32 @@ function mapRentalTerm(v) {
   if (!t) {
     throw new LpValidationError('unknown_rental_term', 'rentalTerm',
       `Unknown rental term ${JSON.stringify(String(v))}. Supported: "long" (long-term rental) or "short" (short-term rental).`);
+  }
+  return t;
+}
+
+// ---- D27 OCCUPANCY (VACANT vs LEASED) — a first-class DSCR eligibility FACT --
+// The tenancy STATE of the rental collateral: is it currently vacant or leased? This is a DIFFERENT
+// fact from the occupancy TYPE (owner-occupied / second / investment) — which the DSCR profile LOCKS
+// to Investment (criteria.propertyUse), and whose Primary/Second tokens the field registry
+// deliberately leaves out until a capture confirms them — and from the RENTAL TERM (long- vs
+// short-term rental, the confirmed AddlOccupancyType dynamic). Vacancy can move DSCR eligibility (a
+// vacant unit has no in-place rent), so it is carried as its own fact rather than folded into either.
+//
+// ABSENT MEANS UNKNOWN, NEVER A DEFAULT. Omitting it must change nothing about the request — guessing
+// "leased" (or "vacant") would silently price/qualify a deal on a tenancy state nobody stated. So an
+// omitted occupancy resolves to null and is left unset; an UNRECOGNIZED value is REJECTED (422), never
+// coerced — the silent-substitution class this connector exists to refuse. OCCUPANCY_STATES is the one
+// source of truth read by both this mapper and validateInputs. Case/space tolerant, like rentalTerm.
+const OCCUPANCY_STATES = { vacant: 'vacant', leased: 'leased' };
+function occupancyKey(v) { return String(v == null ? '' : v).toLowerCase().replace(/[^a-z]/g, ''); }
+function mapOccupancy(v) {
+  const k = occupancyKey(v);
+  if (k === '') return null;                               // omitted → UNKNOWN, never defaulted
+  const t = OCCUPANCY_STATES[k];
+  if (!t) {
+    throw new LpValidationError('unknown_occupancy', 'occupancy',
+      `Unknown occupancy ${JSON.stringify(String(v))}. Supported: "vacant" or "leased". Absent means unknown and is left unset — vacancy can change DSCR eligibility, so it is never defaulted.`);
   }
   return t;
 }
@@ -831,6 +864,22 @@ function buildSearch(sc = {}, opts = {}) {
   // program count on the same scenario when you do.
   if (band && String(process.env.LP_SEND_DSCRRATIO || '') === '1') setDyn('DSCRRATIO', band.ratio);
   setDyn('AddlOccupancyType', mapRentalTerm(sc.rentalTerm));
+  // D27 — OCCUPANCY (VACANT vs LEASED): RETAINED as a first-class eligibility fact, NOT TRANSMITTED.
+  // Resolved once (mapOccupancy) and stashed on a Symbol channel — the CASHOUT_INTERNAL pattern — so
+  // the eligibility overlay, the route's effectiveScenario echo, and any future measured rule can READ
+  // it, WITHOUT putting a guessed token on the wire. An OMITTED occupancy resolves to null and writes
+  // nothing, so a scenario that does not state it produces a byte-identical payload.
+  //
+  // THE SEAM: no live capture confirms a Lender Price wire field for vacant-vs-leased. The field
+  // registry deliberately leaves occupancy tokens OUT until a one-field capture confirms the
+  // current-tenant token, because a guessed dynamicPropertiesMap fieldId silently prices a whole
+  // lender program away (measured for DSCRRATIO and the mortgage-late buckets); and inventing an
+  // eligibility RULE here is out of scope (D27). So WHEN a capture confirms the vendor field/token for
+  // vacant-vs-leased, wire the transmission HERE the way io/escrowWaive are — only when supplied:
+  //   if (occupancy != null) setDyn('<CONFIRMED_OCCUPANCY_FIELD>', <confirmed token for occupancy>);
+  // and surface it on effectiveScenario as a TRANSMITTED value. Do NOT wire it on a guess.
+  const occupancy = mapOccupancy(sc.occupancy);
+  if (occupancy != null) m[OCCUPANCY_INTERNAL] = occupancy;
   // §33.4/§34.2 — BORROWER TYPE. Previously ANY string was passed straight through to the vendor as a
   // vesting type; every other advanced enum 422s an unrecognized value, so this was the one silent
   // substitution left in the borrower block. Validated against the exact six-value tenant enum
@@ -1202,6 +1251,12 @@ function validateInputs(sc = {}) {
     return bad('invalid_borrower_type', 'borrowerType',
       `Unknown borrower (vesting) type ${JSON.stringify(String(sc.borrowerType))}. Supported: ${Array.from(registry.BORROWER_TYPES).join(', ')}.`);
   }
+  // D27 — OCCUPANCY (vacant vs leased) is a strict enum WHEN SUPPLIED; absent means UNKNOWN and is left
+  // unset (never defaulted). An unrecognized value is REJECTED here rather than silently dropped.
+  if (sc.occupancy != null && sc.occupancy !== '' && !Object.prototype.hasOwnProperty.call(OCCUPANCY_STATES, occupancyKey(sc.occupancy))) {
+    return bad('invalid_occupancy', 'occupancy',
+      `Unknown occupancy ${JSON.stringify(String(sc.occupancy))}. Supported: "vacant" or "leased". Absent means unknown and is left unset.`);
+  }
   // Strict numerics + ranges. Returns { v } (value or null) or { err }.
   const numField = (field, opts = {}) => {
     if (sc[field] == null || sc[field] === '') return { v: null };
@@ -1448,5 +1503,5 @@ function validateScenario(sc = {}) {
   return { ok: true, request, scenario: sc, countyEnrichment };
 }
 
-module.exports = { BASE, buildSearch, clearScenarioOwnedFields, mergeKnownRequestDefaults, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, mortgageHistoryConflict, NONZERO_LATE_COUNTS, SCENARIO_OWNED, clearScenarioOwnedFields, mergeKnownRequestDefaults, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue } };
+module.exports = { BASE, buildSearch, clearScenarioOwnedFields, mergeKnownRequestDefaults, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, OCCUPANCY_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, mortgageHistoryConflict, NONZERO_LATE_COUNTS, SCENARIO_OWNED, clearScenarioOwnedFields, mergeKnownRequestDefaults, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue, mapOccupancy, OCCUPANCY_STATES, occupancyKey } };

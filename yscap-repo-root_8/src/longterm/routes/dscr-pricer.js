@@ -14,7 +14,7 @@
 const express = require('express');
 const lp = require('../lenderprice/client');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
-const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, _internals: modelInternals } = require('../lenderprice/search-model');
+const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, OCCUPANCY_INTERNAL, validateScenario, _internals: modelInternals } = require('../lenderprice/search-model');
 const { lpScenarioToFacts } = require('../ppe/lp-agreement-legs');
 const { evaluateInformational } = require('../ppe/informational');
 const { advancedFactKeys, advancedSection } = require('../ppe/advanced-facts');
@@ -79,6 +79,11 @@ const CORE_FIELDS = [
   'purpose', 'value', 'appraisedValue', 'asIsValue', 'loan', 'ltv', 'fico', 'dscr',
   'propertyType', 'units', 'attachment', 'attachmentType', 'nonWarrantable', 'zip', 'state', 'county', 'countyFps', 'city', 'countyName',
   'borrowerType', 'prepayMonths', 'io', 'escrowWaive', 'fthb', 'date', 'rentalTerm', 'reservesMonths',
+  // D27 — VACANT vs LEASED occupancy is DELIBERATELY NOT LISTED HERE. It is already published as an
+  // OVERLAY fact by advanced-facts.advancedFactKeys(), and SUPPORTED_FIELDS is core ∪ registry ∪
+  // advanced — so listing it again in core would make the three sets overlap and break the manifest's
+  // disjointness contract (test-lt-dscr-fields-manifest). Its validation + retention live in
+  // search-model.js; its value is surfaced in effectiveScenario below.
   'term', 'termYears', 'lockDays', 'cashoutAmount',
   // §33.2/§33.3 — the two menu fields the builder used to hard-code (IncomeDocType always "DSCR",
   // PrePayment_Plan_Type always "Standard"). Both carry the CONFIRMED live token sets; an
@@ -161,6 +166,10 @@ function effectiveOf(payload) {
     interestOnly: c.interestOnly, escrowWaiver: c.escrowWaiver, firstTimeHomeBuyer: c.firstTimeHomeBuyer,
     // Reserves / rental-term / prepay-structure selectors (audit — must appear in effectiveScenario).
     reserves: dyn('GLOBAL_RESERVES'), addlOccupancyType: dyn('AddlOccupancyType'),
+    // D27 — the VACANT-vs-LEASED occupancy fact, read off the built payload's internal (Symbol)
+    // channel. It is available to the eligibility overlay but deliberately NOT on the wire (no captured
+    // vendor token); undefined when the scenario did not state it (unknown, never defaulted).
+    occupancy: payload[OCCUPANCY_INTERNAL],
     prepayPlanType: dyn('PrePayment_Plan_Type'),
     compensationType: c.compensationType, incomeDocType: dyn('IncomeDocType'), borrowerType: dyn('GLOBAL_BorrowerType'),
     // Every special-mortgage-option IDENTITY (id + name), not just the names, so a caller can verify
