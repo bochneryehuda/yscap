@@ -1135,3 +1135,47 @@ every credit → 85.76 % with the comparator comparing magnitudes and the escrow
 
 No engineering work is known to be outstanding on the pricing side. The gate reads NO on the
 eligibility axis alone, and that axis is one question away from settled.
+
+
+---
+
+### §2.16 — THE OTHER HALF OF THE AUDIT: OUR REFUSALS, CHECKED AGAINST LENDER PRICE'S OWN WORDS (2026-08-17)
+
+Task #45, unblocked by the family filter. The agreement run measures price on loans both sides will do;
+this asks the opposite question — **for a loan we REFUSE, does Lender Price refuse it too?**
+
+**Result: `⚠ only Lender Price` = 0, `only us` = 0.** Nothing in the dangerous direction (a loan we would
+price that the investor refuses), and no rule of ours firing where the investor is happy.
+
+**Four rules corroborated by Lender Price's own decline text**, which is the strongest evidence available
+short of the investor telling us directly — our Layer 2 was transcribed from the published matrix, and
+these are Lender Price's independent words for the same rules:
+
+| our rule | what Lender Price says |
+|---|---|
+| `dhvn_max_loan` | `Maximum Loan Amount $2.50 MM` |
+| `dhvn_grid_ltv` | `DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT: Maximum LTV/CLTV 80%` |
+| `dhvn_subordinate` | `Subordinate Financing not eligible` |
+| `dhvn_io_min_dscr` | `Interest Only: Minimum DSCR Ratio 1.00` |
+
+…and on the split cases Lender Price also independently states `DSCR >=1.00, Loan Amount <=$1.5MM: Min
+FICO 640` and `DSCR >= 1.00, Minimum Loan Amount $75,000` — our `dhvn_min_fico_tier` and
+`dhvn_min_loan_ge1`, in the vendor's own words, including the **per-tier** FICO floor this session added
+to Layer 1.
+
+**A CLAIM THIS FILE MADE AND THE MEASUREMENT DISPROVED.** The first cut of the cross-check asserted that
+the battery "drives its violations at a DSCR that does not trip the split". That is false. Lender Price's
+three DSCR band programs mutually exclude at **every** dscr — at 1.10 the `>= 1.25` container still
+declines with *"DSCR >=1.25% only eligible on this program"* — so the **control loan itself** reports
+SPLIT. The split cannot be driven around by choosing a dscr; it is a property of how Lender Price
+partitions the sheet. Four of nine cases land there and stay UNRESOLVED until task #80, which is the
+honest report rather than a number.
+
+**One case was malformed and the vendor caught it:** `5+ units` was sent as property type `Unit2_4` —
+a type whose name means 2–4 — and Lender Price's validator refused the request before anything could be
+measured. The refusal was correct; the case now uses `MultiFamily`. A scenario has to be a loan the
+vendor can express, or it tests the validator instead of the rule.
+
+Runner `scripts/test-lt-lp-disqualify-crosscheck.js` — live, run by hand, exits non-zero **only** on the
+dangerous direction: being stricter than the investor is a business decision, being looser is a loan we
+cannot sell.

@@ -24,11 +24,14 @@
  * a battery where everything declines proves nothing about whether the decline was caused by the thing
  * under test.
  *
- * KNOWN LIMIT, stated up front rather than discovered in the output: on a `dscr >= 1.25` scenario Lender
- * Price BOTH prices and declines within the family (it splits one sheet into three DSCR band programs —
- * §2.9a), so those scenarios report `disqualification_split` and cannot resolve until task #80 settles
- * how LP picks a band. The battery therefore drives its violations at a DSCR that does not trip the
- * split, and says so.
+ * THE KNOWN LIMIT IS WORSE THAN THE FIRST RUN OF THIS FILE CLAIMED, and the correction is the point.
+ * It said the battery "drives its violations at a DSCR that does not trip the split". MEASURED: that is
+ * FALSE. Lender Price splits one Deephaven sheet into three DSCR band PROGRAMS and the bands mutually
+ * exclude at EVERY dscr — at 1.10 the `>= 1.25` container still declines with "DSCR >=1.25% only
+ * eligible on this program". So the split is not something a scenario can be driven around; the CONTROL
+ * loan itself reports it. SPLIT is therefore its own outcome here, never folded into a disagreement, and
+ * a case that lands there is UNRESOLVED until task #80 settles which band governs — not evidence either
+ * way. Four of nine cases land there, and saying so is the honest report.
  *
  * Named `test-lt-*` because it is an LT validation harness. NOT in `npm test` and NOT matched by the
  * `test-lt-ppe-*` aggregate glob — it needs the live Lender Price login and is run by hand.
@@ -65,7 +68,11 @@ const CASES = [
   { label: 'loan below the $75k floor', rule: 'dhvn_min_loan_ge1', scenario: { loan: 60000, value: 120000 } },
   { label: 'LTV above every grid cap', rule: 'dhvn_grid_ltv', scenario: { loan: 450000 } },           // 90% LTV
   { label: 'subordinate financing', rule: 'dhvn_subordinate', scenario: { subordinateLoanAmount: 50000 } },
-  { label: '5+ units', rule: 'dhvn_units_5plus', scenario: { units: 5, propertyType: 'Unit2_4' } },
+  // MultiFamily, not Unit2_4: the first cut set `units: 5` on a type whose NAME means 2–4, and Lender
+  // Price's own validator refused the request before anything could be measured ("A 2–4 unit property
+  // has 2–4 units; got 5"). That refusal was correct and my case was malformed — a scenario has to be a
+  // loan the vendor can express, or it tests the validator instead of the rule.
+  { label: '5+ units', rule: 'dhvn_units_5plus', scenario: { units: 5, propertyType: 'MultiFamily' } },
   { label: 'interest-only below 1.00x DSCR', rule: 'dhvn_io_min_dscr', scenario: { io: true, dscr: 0.9, loan: 250000 } },
 ];
 
@@ -131,7 +138,9 @@ async function main() {
   console.log(`  only us                 ${onlyOurs}   (a deliberate overlay, or a rule that is too tight)`);
   console.log(`  ⚠ only Lender Price     ${onlyLp}   (we would price a loan they refuse — the dangerous direction)`);
   console.log(`  split / unresolvable    ${split}   (LP prices one DSCR band and declines another — task #80)`);
-  console.log(`  unknown                 ${unknown}`);
+  console.log(`  unknown / errored       ${unknown}`);
+  const errored = rows.filter((x) => x.error);
+  if (errored.length) for (const e of errored) console.log(`      ERROR  ${e.label}: ${e.error}`);
 
   const out = arg('--out');
   if (out) { fs.writeFileSync(out, JSON.stringify(rows, null, 2)); console.log(`\n  full report → ${out}`); }
