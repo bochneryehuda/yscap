@@ -109,8 +109,19 @@ is a setting. Layer-2 per-investor margin hook is wired (opt-in, byte-identical 
   were not looked for — on the real sheet that is **nowhere**, so its empty gap list must not be read as
   a clean one. Suite `scripts/test-lt-ppe-rule-coverage.js` (51 assertions, incl. a section pinned to
   the real sheet so a slide back toward 1-of-133 fails loudly). Detail: parity status §2.19.
-- **TO-BUILD:** the persistent rule *table* (2.2 above), and wiring the coverage check to a stored rule
-  set at publish time (it runs over a rule LIST today; nothing calls it on save).
+- **DONE:** the coverage check is WIRED to the stored rule set. `rule-store.coverageForProgram` hands
+  it the set a program actually evaluates — `rulesForProgram`, house rules plus this investor's plus
+  this program's, effective-dated — because two rules collide only if they can both fire on ONE loan;
+  analyzing the whole table would report a house rule against another investor's as a double charge.
+  `acceptSuggestion` returns a `coverage` report on the accept (computed AFTER the commit, so a read
+  error can never abort a write a human authorised, and never refusing the accept — coverage is
+  advisory and a refused button is a dead end for a finding you can only act on by looking at both
+  rules), and `GET /api/lt/ppe/rules/coverage` reads it on demand. An accepted ELIGIBILITY or BOUND
+  rule is reported as NOT overlap-checked WITH the reason, rather than as an empty overlap list — most
+  mined suggestions are eligibility rules, so a clean-looking `overlaps: []` there would be a check
+  that never ran. Suite `scripts/test-lt-ppe-rule-coverage-wiring.js` (27 assertions, stubbed db, 8
+  mutations proven).
+- **TO-BUILD:** the persistent rule *table* is 2.2 above; nothing else remains here.
 
 ### 2.7 Locks & secondary market — **DONE (engine) / TO-BUILD (surface)**
 `lock.js` — full lifecycle, frozen price stack, worst-case relock, expiry block; pure, tested. No HTTP

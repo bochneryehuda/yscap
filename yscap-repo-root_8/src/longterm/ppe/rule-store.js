@@ -16,6 +16,7 @@
  */
 
 const { suggestionCode } = require('./disqualify-analysis');
+const coverage = require('./rule-coverage');
 
 function dedupeKeyOf(adjType, reasonText) { return `${adjType || ''}|${String(reasonText || '').trim()}`; }
 
@@ -124,7 +125,11 @@ async function acceptSuggestion(db, scope, suggestionId, opts = {}) {
       [scope, suggestionId, ruleId, opts.decidedBy || null, opts.note || null]);
 
     await client.query('COMMIT');
-    return { ok: true, ruleId };
+    // ADVISORY, AND DELIBERATELY AFTER THE COMMIT. The accept is already durable, so a coverage read
+    // that fails can only cost the report, never the rule — and running it inside the transaction
+    // would let a read error abort a write a human already authorised.
+    const cov = await coverageAfterAcceptSafe(db, scope, opts.investorId ?? null, opts.programId ?? null, sug.code, sug.kind);
+    return { ok: true, ruleId, coverage: cov };
   } catch (e) {
     try { await client.query('ROLLBACK'); } catch (_) { /* original error matters */ }
     throw e;
@@ -180,7 +185,75 @@ async function rulesForProgram(db, scope, investorId, programId) {
   return r.rows.map(rowToRule);
 }
 
+/**
+ * COVERAGE of the rule set a program will actually evaluate — overlapping PRICING rules (a double
+ * charge) and holes between banded rules. Delegates every judgement to `rule-coverage.analyzeRuleSet`;
+ * this is only the read that hands it the right set.
+ *
+ * ⛔ THE SET IS `rulesForProgram`, NOT `listRules`, AND THAT IS THE WHOLE POINT. Two rules collide only
+ * if they can both fire on ONE loan, so the set to analyze is exactly the set that evaluates together —
+ * house rules plus this investor's plus this program's, effective-dated. Analyzing everything in the
+ * table instead would report a house rule against another investor's rule as a double charge, which is
+ * a false alarm on two rules that can never meet.
+ */
+async function coverageForProgram(db, scope, investorId, programId) {
+  const rules = await rulesForProgram(db, scope, investorId, programId);
+  return coverage.analyzeRuleSet(rules, {
+    note: 'the rules this program evaluates: house rules plus this investor\'s plus this program\'s',
+  });
+}
+
+/**
+ * What accepting ONE rule did to the set — the report a human wants right after pressing Accept.
+ *
+ * ⛔ IT NEVER REFUSES AN ACCEPT, and it is not written to be able to. Coverage is ADVISORY by design
+ * (`rule-coverage.js`): it reports, it never blocks a rule. Blocking a human's accept on an advisory
+ * finding would also be a dead end — the finding is about the rule set, and the only way to act on it
+ * is to look at both rules, which you cannot do from a refused button.
+ *
+ * ⛔ AN ELIGIBILITY OR BOUND RULE IS NOT OVERLAP-CHECKED, AND IT SAYS SO RATHER THAN RETURNING AN EMPTY
+ * LIST. Only PRICING rules can double-charge; declines are collected and bounds tighten, both by
+ * design. Nearly every mined suggestion is an eligibility rule, so returning `overlaps: []` for one
+ * would put a clean bill of health on the screen for a check that was never run — the exact "silence
+ * reads as all-clear" shape this module's own header warns about.
+ *
+ * ⛔ IT REPORTS THE NEW RULE'S OWN COLLISIONS FIRST. A pre-existing overlap between two OTHER rules is
+ * real but is not news about this accept, and re-announcing it on every accept is how a report becomes
+ * background noise. It is still counted (`otherOverlaps`) so nothing is hidden.
+ */
+async function coverageForAcceptedRule(db, scope, investorId, programId, code, kind) {
+  if (kind !== 'pricing') {
+    return {
+      checked: false,
+      kind: kind || null,
+      why: `a ${kind || 'non-pricing'} rule is not overlap-checked: two matching declines are collected on purpose (a borrower hears both reasons) and two matching bounds tighten — only PRICING adjustments accumulate into a double charge`,
+    };
+  }
+  const report = await coverageForProgram(db, scope, investorId, programId);
+  const mine = report.overlaps.filter((o) => (o.rules || []).includes(code));
+  return {
+    checked: true,
+    kind,
+    overlaps: mine,
+    otherOverlaps: report.overlaps.length - mine.length,
+    gaps: report.gaps,
+    unanalyzable: report.unanalyzable,
+    analyzed: report.analyzed,
+  };
+}
+
+// Best-effort wrapper for the accept path: a coverage read may never turn a committed accept into a
+// failure, so an error becomes a stated `checked:false` rather than a throw or a silent empty report.
+async function coverageAfterAcceptSafe(db, scope, investorId, programId, code, kind) {
+  try {
+    return await coverageForAcceptedRule(db, scope, investorId, programId, code, kind);
+  } catch (e) {
+    return { checked: false, kind: kind || null, why: `the coverage check could not run (${e && e.message ? e.message : 'unknown error'}) — the rule was accepted either way` };
+  }
+}
+
 module.exports = {
   dedupeKeyOf, saveSuggestions, listSuggestions, getSuggestion, acceptSuggestion, dismissSuggestion,
   listRules, rowToRule, rulesForProgram,
+  coverageForProgram, coverageForAcceptedRule, coverageAfterAcceptSafe,
 };

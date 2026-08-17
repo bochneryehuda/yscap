@@ -1395,5 +1395,26 @@ clean ASSERTION failures, not crashes: two of them (`M2`, the unshared-fact carr
 to one-fact intervals) initially came back green and CRASHING respectively, which is what forced the
 reversed-order fixture and the defaulted-local reads in the suite.
 
-**NOT DONE:** nothing calls this on save yet. It runs over a rule LIST; wiring it into the publish path
-of a stored rule set is what closes master-plan §2.6 completely.
+**AND IT IS NOW WIRED TO THE SET IT IS FOR.** `rule-store.coverageForProgram` hands it
+`rulesForProgram` — house rules plus this investor's plus this program's, effective-dated — which is
+exactly the set that evaluates together; analyzing the whole table instead would report a house rule
+against another investor's rule as a double charge, on two rules that can never meet. `acceptSuggestion`
+returns a `coverage` report on the accept and `GET /api/lt/ppe/rules/coverage` reads it on demand.
+
+Three things about that wiring are deliberate:
+
+- **IT IS COMPUTED AFTER THE COMMIT.** The accept is already durable, so a coverage read that fails can
+  cost the report and never the rule. Inside the transaction, a read error would abort a write a human
+  had already authorised.
+- **IT NEVER REFUSES AN ACCEPT.** Coverage is advisory, and a refusal would also be a dead end: the
+  finding is about two rules, and the only way to act on it is to look at both — which you cannot do
+  from a button that just said no.
+- **AN ELIGIBILITY OR BOUND RULE IS REPORTED AS NOT CHECKED, WITH THE REASON — never as an empty
+  overlap list.** Nearly every mined suggestion is an eligibility rule, so `overlaps: []` there would
+  put a clean bill of health on the screen for a check that was never run. The two shapes are told
+  apart on purpose: `checked:false` + why, against `checked:true, overlaps:[]`, which is a real answer.
+
+Suite `scripts/test-lt-ppe-rule-coverage-wiring.js` (27 assertions, stubbed db, offline). Eight
+mutations were proven to fail it; one (moving the coverage read before the COMMIT) initially came back
+green because the mutation had not actually moved the call, which is worth remembering — a mutation that
+does not change behaviour proves nothing about the test.

@@ -764,7 +764,26 @@ async function acceptSuggestionRoute(req, res) {
       ? 'Lender Price’s reason could not be mapped to a rule automatically. A human must map it first (never guessed).'
       : `This suggestion cannot be accepted (${out.error}).` });
   }
-  return res.json({ ok: true, scope, ruleId: out.ruleId, investorId, programId });
+  // The coverage report rides on the accept response, ADVISORY. It never gates the accept (the rule is
+  // already written by the time it is computed) — it is what tells the person who just pressed Accept
+  // whether the rule they added now charges the same scenario as one already in the set.
+  return res.json({ ok: true, scope, ruleId: out.ruleId, investorId, programId, coverage: out.coverage || null });
+}
+
+/**
+ * The rule set's own coverage, read-only — overlapping PRICING rules (a double charge) and holes
+ * between banded rules, for the set a program actually evaluates.
+ *
+ * ADVISORY: it reports, it never refuses a rule, and it is not a gate on anything. `?investorId=` /
+ * `?programId=` name the set; omitting both reads the house rules alone, which is a real question
+ * ("what do our own rules do on their own?") rather than an accident.
+ */
+async function ruleCoverageRoute(req, res) {
+  const scope = readScope(req);
+  const investorId = req.query.investorId != null ? uuidOf(req.query.investorId) : null;
+  const programId = req.query.programId != null ? uuidOf(req.query.programId) : null;
+  const report = await ruleStore.coverageForProgram(db, scope, investorId, programId);
+  return res.json({ ok: true, scope, investorId, programId, ...report });
 }
 
 async function dismissSuggestionRoute(req, res) {
@@ -832,6 +851,7 @@ router.post('/breakdown', wrap(breakdownRoute, 'lt_ppe_breakdown_error'));
 
 router.post('/findings/:key/decide', requirePpeAdmin, wrap(decideFindingRoute, 'lt_ppe_decide_error'));
 router.post('/canary', requirePpeAdmin, wrap(canaryRoute, 'lt_ppe_canary_error'));
+router.get('/rules/coverage', requirePpeAdmin, wrap(ruleCoverageRoute, 'lt_ppe_rule_coverage_error'));
 router.post('/suggestions/:id/accept', requirePpeAdmin, wrap(acceptSuggestionRoute, 'lt_ppe_accept_error'));
 router.post('/suggestions/:id/dismiss', requirePpeAdmin, wrap(dismissSuggestionRoute, 'lt_ppe_dismiss_error'));
 router.post('/suggestions/mine', requirePpeAdmin, wrap(mineSuggestionsRoute, 'lt_ppe_mine_error'));
@@ -840,6 +860,7 @@ module.exports = router;
 module.exports.handlers = {
   health, getSettings, listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, breakdownRoute, canaryRoute, scoreboardRoute,
   listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute, mineSuggestionsRoute,
+  ruleCoverageRoute,
 };
 module.exports._internals = {
   requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe,
