@@ -246,6 +246,23 @@ The scalable foundation is **half-built already**, which is the fast path forwar
 
 ---
 
+## 4b. MEASURED findings (proven, awaiting build)
+
+- **L1↔L2 min-loan divergence — FIXED (2026-08-17).** L1's flat $75k min ignored DSCR; now DSCR-gated
+  ($75k ≥1.00 / $200k <1.00) mirroring L2, with a drift test (0 drift over every loan×dscr cell).
+- **L1↔L2 max-LTV/grid divergence — MEASURED, build pending (R10 divergence B).** L1's flat 80/75/70 LTV
+  caps + 4 N/A boxes vs L2's full 4-axis grid diverge on **135 of 720** (fico×ltv×dscr×purpose×loan-tier)
+  scenarios, ALL one direction — **L1 says ELIGIBLE where L2 (the matrix) says INELIGIBLE** (L1 over-lends).
+  Dominated by (a) L1 has only a flat min-FICO 640 and never enforces the **per-tier FICO floors** (T2/T3
+  need 660), and (b) L1's flat LTV caps miss the **tier-aware** caps (T2/T3 drop to 65/70/60). The
+  AUTHORITATIVE program verdict already uses L2 (`evaluateProgram` → `evaluateEligibility`), so this is the
+  rate-sheet layer's OWN eligibility being too loose, not the program answer. FIX = mirror L2's `GRID` into
+  L1 as independently-transcribed DATA + a drift test asserting the two agree on every cell (the sanctioned
+  two-layer mirror pattern; NOT an import — the layers must stay independent to catch each other). Also in
+  the same pass: **L2 is missing the Foreign-National grid row** the matrix JSON carries (R10). Reproduction:
+  `node -e` sweep over the two engines (see the 2026-08-17 session); 135/720 divergences, examples all
+  FICO-640 at $1.75M/$2.25M and high-LTV cells.
+
 ## 5. Open questions / to raise with the owner
 
 - The 9 live divergences (our decline vs LP price at FICO 640/660/680 × cltv 80): once the disqualify
