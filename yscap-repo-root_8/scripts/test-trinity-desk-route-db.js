@@ -84,7 +84,7 @@ function apiCall(server, method, p, body, token) {
   const server = app.listen(0);
   await new Promise((r) => server.once('listening', r));
 
-  const B = uuid(), APP = uuid(), COORD = uuid(), LO = uuid(), OUTSIDER = uuid();
+  const B = uuid(), APP = uuid(), COORD = uuid(), LO = uuid(), OUTSIDER = uuid(), ADMIN = uuid();
   const base = 3000000 + Math.floor(Math.random() * 500000);
   const prop = base, drawId = base + 1, jid = base + 11;
 
@@ -93,8 +93,9 @@ function apiCall(server, method, p, body, token) {
       `INSERT INTO staff_users (id,email,full_name,role,password_hash,is_active) VALUES
         ($1,$2,'Draw Coordinator','draw_coordinator','x',true),
         ($3,$4,'File Officer','loan_officer','x',true),
-        ($5,$6,'Somebody Else','loan_officer','x',true)`,
-      [COORD, `tdc_${COORD.slice(0, 8)}@x.test`, LO, `tlo_${LO.slice(0, 8)}@x.test`, OUTSIDER, `tou_${OUTSIDER.slice(0, 8)}@x.test`]);
+        ($5,$6,'Somebody Else','loan_officer','x',true),
+        ($7,$8,'Platform Admin','admin','x',true)`,
+      [COORD, `tdc_${COORD.slice(0, 8)}@x.test`, LO, `tlo_${LO.slice(0, 8)}@x.test`, OUTSIDER, `tou_${OUTSIDER.slice(0, 8)}@x.test`, ADMIN, `tad_${ADMIN.slice(0, 8)}@x.test`]);
     await db.query(`INSERT INTO borrowers (id,first_name,last_name,email,cell_phone) VALUES ($1,'Grace','Hopper',$2,'7325550188')`,
       [B, `tgh_${B.slice(0, 8)}@x.test`]);
     await db.query(
@@ -136,6 +137,36 @@ function apiCall(server, method, p, body, token) {
     eq(cand && cand.ordered, false, 'A5 …as not yet ordered');
     eq(cand && cand.total_requested_cents, 1500000, 'A6 …with what the borrower asked for, so the picker can name it');
     eq(r.body.autopilot, false, 'A7 the desk still says out loud that nothing goes out on its own');
+
+    // ---- A2. THE FORM CHECK — the thing that would have stopped go-live ----------
+    //
+    // Found live on 2026-08-16: the sandbox company has form 19 and the PRODUCTION company
+    // does not — it has 1079, the same product under a different id. Left unnoticed, every
+    // production order is refused, on a live file, after a coordinator pressed the button.
+    // The admin status page now reads the account's own form list and says so in words.
+    client.forms = async () => [
+      { product: 'Draw Inspection', forms: [{ id: 1079, name: 'General Purpose Line Item Draw PCR' }] },
+      { product: 'Feasibility', forms: [{ id: 102, name: 'Feasibility' }] },
+    ];
+    client.subscriptions = async () => [];
+    const adm = tok(ADMIN, 'admin');
+    r = await apiCall(server, 'GET', '/api/trinity/status', null, adm);
+    eq(r.status, 200, 'A2a an admin can read the connection status');
+    ok(r.body && r.body.formCheck, 'A2b …and it carries the form check');
+    eq(r.body.formCheck.enabled, false,
+      'A2c the form we are configured for is correctly reported as NOT on this account');
+    ok(/NOT enabled/i.test(r.body.formCheck.message || ''),
+      'A2d …in words a human can act on, before anything is ordered');
+    ok((r.body.formCheck.available || []).includes(1079),
+      'A2e …and it names what the account DOES offer, so the fix is obvious');
+    // …and the happy case: configured for the form the account really has.
+    const realFormId = client.formId;
+    client.formId = () => 1079;
+    r = await apiCall(server, 'GET', '/api/trinity/status', null, adm);
+    eq(r.body.formCheck.enabled, true, 'A2f a correctly-configured form reports enabled');
+    client.formId = realFormId;
+    r = await apiCall(server, 'GET', '/api/trinity/status', null, coord);
+    eq(r.status, 403, 'A2g the status page stays admins-only');
 
     // ---- B. who may reach it ----------------------------------------------------
     r = await apiCall(server, 'GET', `/api/trinity/files/${APP}`, null, outsider);
@@ -206,7 +237,7 @@ function apiCall(server, method, p, body, token) {
     await db.query(`DELETE FROM borrowers WHERE id=$1`, [B]).catch(() => {});
     await db.query(`DELETE FROM sitewire_draw_requests WHERE sitewire_draw_id=$1`, [drawId]).catch(() => {});
     await db.query(`DELETE FROM sitewire_draws WHERE sitewire_draw_id=$1`, [drawId]).catch(() => {});
-    await db.query(`DELETE FROM staff_users WHERE id = ANY($1::uuid[])`, [[COORD, LO, OUTSIDER]]).catch(() => {});
+    await db.query(`DELETE FROM staff_users WHERE id = ANY($1::uuid[])`, [[COORD, LO, OUTSIDER, ADMIN]]).catch(() => {});
     server.close();
   }
 
