@@ -54,6 +54,7 @@ const ppeSettings = require('../ppe/settings');
 const store = require('../ppe/store');
 const facade = require('../ppe/facade');
 const lpScopeLib = require('../ppe/lp-scope');
+const parityMatrix = require('../ppe/parity-matrix');
 const quote = require('../ppe/quote');
 const canary = require('../ppe/canary');
 const finding = require('../ppe/finding');
@@ -676,6 +677,13 @@ async function canaryRoute(req, res) {
     agreementRate: run.agreementRate,
     summary: run.summary,
     report: run.report,
+    // WHERE it disagreed, sliced on the SHEET'S OWN band edges (P9). A single agreement rate says we
+    // disagree and never where, so one bad FICO band and a sheet that is wrong everywhere read the
+    // same. The raw per-scenario results are deliberately NOT returned — up to 500 of them is a
+    // payload nobody reads; the matrix is the answer, and it carries its own arithmetic
+    // (`reconciles`) so a reader can check that no scenario was lost in the slicing.
+    matrix: run.matrix,
+    worstCells: run.matrix ? parityMatrix.worstCells(run.matrix, 10) : null,
     findings: run.findingKeys.length,
     persisted: !persistError,
     persistError,

@@ -1657,3 +1657,97 @@ the suite's accept-cases, now closed with the two patterns that discriminate.
 **RESIDUAL:** no program has a scope yet, because none can be derived and none may be guessed. Until a
 human states one per program, live comparisons keep abstaining with the reason — the machinery is on the
 path, waiting for the statement.
+
+---
+
+### §2.23 — THE PARITY NUMBER COULD NOT SAY *WHERE*, BECAUSE THE FACTS WERE THROWN AWAY (2026-08-17)
+
+Master plan P9 asks for the parity dashboard sliced "by state / DSCR band / FICO / LTV". It had been
+sitting as TO-BUILD behind an owner gate on tolerances — but the real blocker was neither: **the data
+it needed was being discarded one function before anybody could use it.**
+
+`shadow.runOne` reduces each scenario to a display label and returns `{ scenario: tag, … }`. The
+scenario OBJECT — the FICO, the LTV, the state, the DSCR — went nowhere. Two consequences, both
+invisible because nothing errored:
+
+* the findings ledger has a **`scenario_facts` column** (db/561) that `finding-store` faithfully
+  persists and `finding.recordsFromComparison` fills **only when handed an object** — and the canary
+  handed it the label, so that column was **NULL on every finding the canary ever recorded**. The
+  review queue could not group or filter by state or FICO;
+* and a sliced dashboard had nothing to slice by at all.
+
+Reproduced before anything was changed: `runOne(...).facts` was `undefined`, `scenarioFacts` was
+`null`. **THE CLASS is the one this codebase already names — a value COMPUTED and then DISCARDED by the
+summarizer.** A label is a SENTENCE about a scenario; it is not the scenario, and re-parsing it back
+into facts would be inventing a format. The fix carries them alongside, additively; the LABEL is
+untouched, because the finding key is built from it and moving it would re-key the whole ledger.
+
+**AND THEN THE MEASUREMENT — `parity-matrix.js`.**
+
+**THE BANDS ARE THE SHEET'S OWN EDGES, DERIVED, NEVER INVENTED.** This is the whole design. A dashboard
+that cuts FICO at 660/680/700 because those are the usual numbers is describing somebody else's rate
+sheet: if THIS sheet breaks at 679, a cell straddling the break averages a good band with a bad one and
+hides both. `bandsFromProgram` reads each axis's cut points off the program's own rules, REUSING
+`rule-coverage.regionOf` rather than re-reading predicates, so the coverage checker and the dashboard
+can never disagree about where a sheet breaks. Measured on the real Deephaven sheet it yields **seven
+axes** — FICO at 640/660/680/700/720/740/760/780, thirteen LTV cuts, DSCR, units, loan amount, cash-out
+amount, subordinate amount. A rule whose predicate is not a readable region contributes NO edges rather
+than a guessed one. An axis the sheet says nothing about is **not** given invented bands.
+
+Bands are HALF-OPEN, matching `rules.js` `between`: a scenario sitting exactly on 700 belongs to
+[700,760) and to nothing else. Closing both ends would count it twice and the reconciliation below
+would quietly stop adding up.
+
+**FOUR MEASUREMENT JUDGEMENTS, each of which would misreport something if taken the other way:**
+
+1. **`scenarios` and `samples` are different questions.** One loan disagreeing on eight coupons is one
+   bad loan and eight bad rungs; reporting either under the other's name is how a book looks eight
+   times worse (or eight times better) than it is.
+2. **The mean is SIGNED; the worst is ABSOLUTE.** A sheet uniformly a quarter point light is a
+   different problem from one scattered either side of Lender Price, and an average of absolute values
+   cannot tell them apart.
+3. **OVERLAY is counted in its own right, never folded into `disagreed`.** A D29 reasoned override —
+   our matrix declining on an overlay-only fact Lender Price cannot see — is intentional, and a cell
+   that hides it inside the disagreement count makes a correct sheet look broken.
+4. **`worstCells` RANKS and never thresholds.** What counts as "bad enough to act on" is the owner's
+   tolerance decision (Part 4.2/4.3), not a constant in a sort function.
+
+**NOTHING IS SILENTLY BUCKETED.** A scenario with no facts, one that does not state the fact, a blank,
+a non-number on a numeric axis — each is counted as unsliceable **with its own reason**, and there is
+deliberately no catch-all "N/A" cell, because such a cell sits beside the real bands and reads as one
+of the sheet's. Every dimension **reconciles** — cells + unsliceable = the run's own total — and the
+report carries that arithmetic rather than leaving a reader to total the columns. A slice that loses
+scenarios reports a BETTER agreement rate than the run earned, which is the one direction a parity
+dashboard must never be wrong in.
+
+**THE AGGREGATE COUNTS EVERY SCENARIO; THE CELLS COUNT ONLY WHAT THEY COULD PLACE**, and both numbers
+are reported. Whether a scenario can be sliced is a fact about our facts bag, not about the two
+engines, so the headline rate must not quietly become "the rate over the scenarios we could
+categorise".
+
+**IT IS REACHABLE.** This repo has already shipped a fully-built, fully-tested PPE with no route; the
+matrix rides on `canary.runCanary` and `POST /canary` publishes `matrix` + `worstCells`. The up-to-500
+raw per-scenario results are deliberately NOT on the response — the matrix is the answer.
+
+**TWO HONEST NOTES.**
+
+*The reconciliation flag is a THEOREM on the production path*, not a behaviour: every result enters one
+cell or is counted as unsliceable, so `buildParityMatrix` cannot produce a dimension that fails it and
+a mutation hard-coding it `true` changes nothing observable — the same shape as the
+containment-vs-overlap mutation in §2.20. Rather than pad the suite, the check was EXTRACTED as
+`reconcilesAll` and is proven directly against a hand-built lossy dimension, so it is a real check even
+though the code cannot make it fire.
+
+*The canary's try/catch around the matrix is belt-and-braces today*, and that is written down rather
+than implied: `parity-matrix` is total by construction, and mutation-testing shows the catch never
+fires on any input the tests can build. It is kept because the alternative is losing a 500-scenario
+live run to a slicing bug.
+
+**RESIDUAL:** this is the per-RUN matrix. The TREND across runs has no home — `lt_ppe_shadow_run`
+stores one aggregate rate per day, so per-cell history is not persisted yet — and there is no screen.
+Both are follow-ups; the measurement they need now exists.
+
+Suite: `scripts/test-lt-ppe-parity-matrix.js` (95 assertions, including the REAL Deephaven sheet's own
+band edges). **Seventeen mutations** were each proven to fail it; two came back GREEN first — the
+reconciliation theorem above, and a redundant-guard case that turned out to be a genuine finding about
+where the safety actually lives rather than a hole in the tests.

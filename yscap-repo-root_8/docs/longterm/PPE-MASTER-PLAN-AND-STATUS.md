@@ -416,14 +416,40 @@ owner wants to start.
   empty list indistinguishable from "nothing to do"), and a failed read is STATED rather than falling
   back to an empty list that reads as all-clear.
 
-### P9 — The point-for-point price parity matrix per investor  ·  TO-BUILD
+### P9 — The point-for-point price parity matrix per investor  ·  **DONE (the measurement)** ✅ *(2026-08-17)*
 - **What.** Run the real rate-for-rate comparison across the scenario matrix for the pilot investor
   (Deephaven), producing the sliced parity dashboard (by state / DSCR band / FICO / LTV) and the trend.
 - **Why.** Today's parity is count/eligibility; this is the sustained-agreement metric that gates
   cutover. *(MEGA §10.3a / §10.5.)*
-- **Acceptance test.** A canary run over the matrix records per-cell price deltas and the scoreboard
-  reflects them.
-- **Depends on:** P1, P3. **Owner gate:** ⚠️ tolerances + clean-weeks threshold — Part 4.2/4.3.
+- **THE BLOCKER WAS A DATA-LOSS DEFECT, not missing analysis.** `shadow.runOne` reduced each scenario
+  to a display STRING and threw the object away — one function before anybody could use it. So the
+  findings ledger's `scenario_facts` column (db/561) was NULL on every finding the canary ever recorded,
+  and a dashboard "sliced by state / DSCR band / FICO / LTV" had no facts to slice by. The facts now
+  ride beside the label (`result.facts`), and the canary hands them to the ledger. The LABEL is
+  unchanged — the finding key is built from it and must not move.
+- **Built.** `parity-matrix.js` (pure): `buildParityMatrix(results, {program})` slices a run by the
+  scenarios' own facts and reports, per cell, agreed / disagreed / errors / incomparable / **overlay**
+  (a D29 reasoned override is not a defect and is never hidden inside `disagreed`) plus the price gap —
+  `scenarios` vs `samples` kept apart, a SIGNED mean (a sheet uniformly light is a different problem
+  from one scattered either side) and `worstAbsMilli` for how bad it gets. `worstCells` ranks without
+  inventing a threshold — what counts as bad enough to act on is the owner's tolerance decision.
+- **THE BANDS ARE THE SHEET'S OWN EDGES, derived, never invented.** `bandsFromProgram` reads each
+  axis's cut points off the program's OWN rules, REUSING `rule-coverage.regionOf` so the two can never
+  disagree about where a sheet breaks. Measured on the real Deephaven sheet: seven axes, FICO at
+  640/660/680/700/720/740/760/780. A dashboard cutting at "the usual" 660/680/700 would straddle real
+  breaks and average a good band with a bad one. Half-open, so a scenario on an edge lands in exactly
+  one cell. An axis the sheet does not describe is NOT given invented bands.
+- **Nothing is silently bucketed.** Every unplaceable scenario is counted with its own reason, there is
+  no catch-all cell masquerading as a band, and every dimension RECONCILES (cells + unsliceable = the
+  run's total) with the arithmetic carried on the report. A slice that loses scenarios reports a better
+  agreement rate than the run earned — the one direction this must never be wrong in.
+- **Reachable:** it rides on `canary.runCanary` and `POST /canary` publishes `matrix` + `worstCells`
+  (not the up-to-500 raw results). Test `scripts/test-lt-ppe-parity-matrix.js` (95); 17 mutations
+  proven to fail it.
+- **STILL TO-BUILD:** the TREND across runs (the matrix is per-run; `lt_ppe_shadow_run` stores one
+  aggregate rate per day, so per-cell history has no home yet) and the screen.
+- **Depends on:** P1, P3. **Owner gate:** ⚠️ tolerances + clean-weeks threshold — Part 4.2/4.3 — which
+  gate the CUTOVER decision, not the measurement; the matrix ranks and never thresholds.
 
 ### P10 — The promote-to-live route + human promote/rollback  ·  TO-BUILD (supporting)
 - **What.** The missing HTTP endpoint that drives the built cutover gate: a human promotes an investor
