@@ -82,7 +82,11 @@ the investor name**:
 | **D32** | **Deephaven CUSTOM softer-PPP overlay = a MARGIN-HOLDBACK RULE (NOT an LP LLPA; does NOT match LP).** Our special unique deal: the softer/friendlier structures **3/3/3/2/1 (5yr)** and **3/3/2/1 (4yr)** cost an additional **+37.5 bps (+0.375)** — a PRICING hit, NOT a coupon hit — structured as an ADDITIONAL MARGIN HOLDBACK (company 0.25 → **0.625**). ONLY for 5-year and 4-year terms; on 3/2/1-year there is NO custom (standard only). The softer PPP is a selectable OPTION. This is an OVERLAY on top of LP (LP won't know it). Wire into the margin-holdback engine as a rule scoped to (structure ∈ {3/3/3/2/1, 3/3/2/1}) × (term ∈ {5,4}). | **NEW — margin-holdback rule** |
 | **D33** | **Two Deephaven PRICING MODELS, both available:** (a) STANDARD (soft declining) with the D31 structures; (b) **5% Fixed** promotion — less consumer-friendly but you get a BETTER-pricing LLPA CREDIT on their rate sheet. It's "all three D31 standard structures OR the 5% fixed." Research the exact type × term pricing off the rate sheet LLPA grid. | **NEW — research + encode** |
 | **D34** | **Delegate-only "EXCEPTION PRODUCT".** A product only available on the DELEGATE channel must be marked ELIGIBLE but flagged as an EXCEPTION PRODUCT: available ALWAYS (even on non-delegate) yet clearly, visibly noting it's delegate-only and needs a **super-admin EXCEPTION** — prominent enough that it's obviously "not simple." Add a channel/exception attribute to the informational product layer (D26) and surface it loudly on the priced product. ALL Job-1 deferred/new-fact gaps go into the ADVANCED section (D28). | **NEW — build** |
-| **D35** | **Reconcile L1↔L2 divergences + targeted LLPA RE-MEASURE battery.** Divergences to fix: the flat **$75k** min should be **$200k for DSCR<1.00**; the flat **80/75/70** envelope vs the REAL 4-axis grid caps. **Loan-amount LLPA + prepay/IO/escrow LLPAs are UNMEASURED** → build a targeted re-measure battery against LP live to capture them (everything is on the rate sheet + matrix). Research engines: (a) loan sizes, (b) prepay / interest-only / escrow LLPAs. | **NEW — research + measure + reconcile** |
+| **D35** | **Reconcile L1↔L2 divergences + targeted LLPA RE-MEASURE battery.** Divergences to fix: the flat **$75k** min should be **$200k for DSCR<1.00**; the flat **80/75/70** envelope vs the REAL 4-axis grid caps. **Loan-amount LLPA + prepay/IO/escrow LLPAs are UNMEASURED** → build a targeted re-measure battery against LP live to capture them (everything is on the rate sheet + matrix). Research engines: (a) loan sizes, (b) prepay / interest-only / escrow LLPAs. | **NEW — research + measure + reconcile (R10 done)** |
+| **D36** | **LP LIVE is the SOURCE OF TRUTH for every open question.** For EVERY question/unclear qualifier/LLPA/disqualifier still open, RUN those scenarios on Lender Price live — push each to eligible/ineligible, read the eligibility AND the ineligibility — and let LP's own answer resolve what the matrix doesn't make clear. Open parallel research engines to run these batteries. (This is task #45 + the D35 re-measure, now the owner's explicit standing method for resolving unknowns.) | **NEW — live LP capture** |
+| **D37** | **MAX + MIN pricing rule off the rate sheet — for EVERY investor.** Research the rate sheet's maximum and minimum pricing and SET it as a rule; this is needed for every investor we add. The rate-sheet research must find the prepay TERM + TYPE LTV adjustments too. | **NEW — research + rule** |
+| **D38** | **"Every bingo thing" sweep.** Open a research engine to sweep the rate sheet + the matrix + the prepayment sections for anything not yet found, and make sure every single item is implemented (nothing left on the sheet/matrix un-encoded). | **NEW — exhaustive sweep** |
+| **D32-fix** | **Softer-PPP holdback correction (2026-08-17):** the extra holdback is a SEPARATE **+0.375**, added on top of the 0.25 base — TWO holdbacks (0.25 + 0.375 = 0.625), NOT one merged 0.625. **DONE** (margin-holdback additive delta + generated overlay rules; ppp-structures.marginHoldbackDeltaMilli:375). | **DONE** |
 
 ---
 
@@ -137,10 +141,24 @@ borrower_type, apr, prepay_months→prepay_requested, subordinate_amount, rural/
 7. **Message audit** → cross-checked all owner messages vs the plan. Added the missing directives
    D18–D25 above (LO compensation, sellable/config-driven, daily change-detection, shadow→live cutover,
    200-scenario gate, white-label, overlays/CEMA, Excel editor, LP-connector contracts). Nothing lost.
-8. **Basic vs Advanced + LP OVERLAY** (D28/D29) → `R7-BASIC-ADVANCED-OVERLAY.md`. **RUNNING** (2026-08-17).
-9. **PPP TYPE × TERM structures + custom margin-holdback** (D30–D33) → `R8-PPP-TYPE-TERM-STRUCTURES.md`. **RUNNING**.
-10. **Reserves + informational products + delegate exception** (D26/D34) → `R9-RESERVES-INFORMATIONAL-PRODUCTS.md`. **RUNNING**.
-11. **Loan-size / prepay / IO / escrow LLPA re-measure + L1↔L2 reconcile** (D35) → `R10-LOANSIZE-PREPAY-IO-ESCROW-REMEASURE.md`. **RUNNING**.
+8. **Basic vs Advanced + LP OVERLAY** (D28/D29) → `R7-BASIC-ADVANCED-OVERLAY.md`. **DONE.** BASIC = the
+   13 facts LP prices on (`lpScenarioToFacts`); ADVANCED = LP-visible registry fields + OVERLAY-ONLY facts
+   (already enumerated in `deephaven-matrix.evaluateEligibility().unverifiable[]`: vacant/leased, declining
+   market, FTHB, FTI, STR, rural, FN, Philly/geo, subordinate, seasoning, <$100k delegated). Overlay override
+   reuses `disqualify-reconcile.reconcileScenario` — hard invariant `overrode ⇒ reasons.length>0` each with a
+   matrix citation. Searchable = a data-driven `advanced-facts.js` registry. 6 incremental phases.
+9. **PPP TYPE × TERM structures + custom margin-holdback** (D30–D33) → `R8-PPP-TYPE-TERM-STRUCTURES.md`.
+   **DONE + BUILT** (`ppp-structures.js`, `margin-holdback` additive delta). Structure = (type × term) data
+   object; the two custom softer ones are `overlayOnly` with null LP token + 375 milli holdback delta.
+10. **Reserves + informational products + delegate exception** (D26/D34) → `R9-RESERVES-INFORMATIONAL-PRODUCTS.md`.
+    **DONE.** A third non-blocking `informational[]` layer: computable reserves (3mo ≤$1M / 6mo >$1M, DSCR<1.00→6),
+    second appraisal (loan >$2M OR cash-out & loan >$1.5M), the D34 delegate exception (<$100k delegated → eligible
+    but `kind:'exception'` in a separate loud array). 7-step build.
+11. **Loan-size / prepay / IO / escrow LLPA re-measure + L1↔L2 reconcile** (D35) → `R10-LOANSIZE-PREPAY-IO-ESCROW-REMEASURE.md`.
+    **DONE.** Two OFFLINE-fixable divergences (highest priority): (A) L1 flat $75k min ignores DSCR — must be
+    $200k for DSCR<1.00 (`deephaven-dscr-sheet.js:140`); (B) L1 flat 80/75/70 vs the real 4-axis grid (L2 has
+    it but is missing the FN row). The prepay/IO/escrow/loan-amount LLPAs need a live re-measure (the raw sheet
+    carries no point values). 7-step plan.
 
 ### 3a. COMPLETE research-doc INDEX (every saved engine output — so nothing is lost)
 
