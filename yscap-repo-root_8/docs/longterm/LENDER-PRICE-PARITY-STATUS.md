@@ -1290,3 +1290,14 @@ that is the **best observed price on the ladder, not a declared ceiling**, and t
 the same thing. Whether Lender Price declares a cap/floor field at all is **unmeasured** and needs a live
 capture — so the cap is checked today against our OWN stated limit (frame-free), never against a vendor
 number we do not have.
+
+**And two more numbers the gate computed and dropped, in the same pass.** `summarize()` now splits
+`agreed` into **`agreedPriced`** (both sides quoted and every itemized LLPA reconciled) vs
+**`agreedDeclined`** (both refused the loan), and rolls up **`worstDeltaMilli`** — the largest per-scenario
+LLPA delta, with its sign. Both are about reading a headline for what it is: a both-decline IS a real
+agreement (the owner asked for ineligible scenarios by name — *"confirm the disqualifier matches"*), but
+it says far less about the SHEET than a priced scenario, and "41 disagreements" means something entirely
+different at 1 milli than at 5,000. **Measured, so the split is not read as a hedge: 256 of the 299
+battery scenarios are ELIGIBLE on our side and 43 declined, and 41 of those 43 are the `disqualification_
+extra` disagreements — so the 254 agreements are ~252 priced and ~2 eligibility. The 86.10 % was not
+inflated by declines.** What changes is that a reader can now see that, instead of having to assume it.

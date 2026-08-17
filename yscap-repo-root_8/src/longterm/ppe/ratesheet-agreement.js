@@ -284,6 +284,8 @@ async function runRatesheetAgreement(scenarios, engines = {}, opts = {}) {
 function summarize(results) {
   const list = Array.isArray(results) ? results : [];
   let agreed = 0; let disagreed = 0; let incomparable = 0; let errors = 0;
+  // The agreement's own composition + magnitude, so the headline can be read for what it is.
+  let agreedPriced = 0; let agreedDeclined = 0; let worstDeltaMilli = 0;
   const byCategory = {};
   const byDimension = {};        // dimension -> count of disagreeing rows (back-compat: a NUMBER)
   const byDimensionStatus = {};  // dimension -> { llpa_mismatch, llpa_missing_ours, llpa_extra_ours }
@@ -307,7 +309,19 @@ function summarize(results) {
     if (!r) continue;
     if (r.error) { errors += 1; continue; }
     if (r.incomparable) { incomparable += 1; continue; }
-    if (r.agree) { agreed += 1; } else { disagreed += 1; disagreeing.push(r.scenario); }
+    // WHAT KIND of agreement it was. A both-decline is a REAL agreement (the owner asked for ineligible
+    // scenarios explicitly — "confirm the disqualifier matches"), but it is weaker evidence about the
+    // SHEET than a priced scenario whose every LLPA reconciled, and a headline built mostly of declines
+    // would read far stronger than it is. Reported separately so the composition of the number is
+    // visible instead of having to be assumed.
+    const priced = !!(r.ourEligible && r.lpEligible);
+    if (r.agree) {
+      agreed += 1;
+      if (priced) agreedPriced += 1; else agreedDeclined += 1;
+    } else { disagreed += 1; disagreeing.push(r.scenario); }
+    // The largest per-dimension LLPA delta anywhere — computed per scenario and, until now, dropped.
+    // "We disagree on 41 scenarios" reads very differently at 1 milli than at 5,000.
+    if (isNum(r.worstDeltaMilli) && Math.abs(r.worstDeltaMilli) > Math.abs(worstDeltaMilli)) worstDeltaMilli = r.worstDeltaMilli;
     if (Array.isArray(r.boundsGate)) {
       bounds.gated = r.boundsGate.slice();
       bounds.ungated = BOUNDS_CHECKS.filter((n) => !r.boundsGate.includes(n));
@@ -360,6 +374,10 @@ function summarize(results) {
   return {
     total: list.length,
     agreed,
+    // agreed = agreedPriced + agreedDeclined. A priced agreement means BOTH sides quoted and every
+    // itemized LLPA reconciled; a declined agreement means both refused the loan.
+    agreedPriced,
+    agreedDeclined,
     disagreed,
     incomparable,
     errors,
@@ -375,6 +393,7 @@ function summarize(results) {
     bounds,
     pendingEncodeFamilies,
     surprises,
+    worstDeltaMilli,
     disagreeing: disagreeing.slice(0, 50),
     gateMet: errors === 0 && disagreed === 0 && comparable > 0,
   };

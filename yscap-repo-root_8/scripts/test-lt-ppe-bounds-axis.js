@@ -141,6 +141,24 @@ const SC = { purpose: 'Purchase', value: 500000, loan: 350000, fico: 760, dscr: 
   ok(emptyB && emptyB.rungsProbed === 0 && emptyB.gated === null,
     'an empty run reports an empty axis rather than an absent one');
 
+  // ── 3b. THE AGREEMENT'S OWN COMPOSITION AND MAGNITUDE ───────────────────────────────────────────
+  // Two more numbers that were computed and dropped. A both-decline IS a real agreement — the owner
+  // asked for ineligible scenarios by name — but it says far less about the SHEET than a priced
+  // scenario whose every LLPA reconciled, so a headline built mostly of declines reads stronger than it
+  // is. And "41 disagreements" means something completely different at 1 milli than at 5,000.
+  {
+    const mixed = agreement.summarize([
+      { scenario: 'priced-agree', agree: true, ourEligible: true, lpEligible: true, bounds: [], worstDeltaMilli: 0 },
+      { scenario: 'both-decline', agree: true, ourEligible: false, lpEligible: false, bounds: [], worstDeltaMilli: 0 },
+      { scenario: 'disagree', agree: false, ourEligible: true, lpEligible: true, bounds: [], worstDeltaMilli: -500, coarse: { differences: [{ category: 'final_price' }] } },
+    ]);
+    ok(mixed.agreed === 2 && mixed.agreedPriced === 1 && mixed.agreedDeclined === 1,
+      'agreed splits into priced vs both-declined, so the composition of the headline is visible');
+    ok(mixed.agreedPriced + mixed.agreedDeclined === mixed.agreed, '…and the two halves always account for the whole');
+    ok(mixed.worstDeltaMilli === -500,
+      'the worst LLPA delta anywhere is rolled up with its SIGN — direction is what says who is quoting too good');
+  }
+
   // ── 4. THE MEASURED STATE OF THE TWO BUILT-IN GRIDS ──────────────────────────────────────────────
   // Measured, not described: what the live gate is actually pricing against. Pinning it is what turns
   // "the default run tested no ceiling" from a comment into something that fails when it stops being

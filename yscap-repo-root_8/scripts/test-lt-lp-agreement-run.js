@@ -165,8 +165,14 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
   console.log('\n===== Lender Price agreement (E3 gate) =====');
   console.log(`  scenarios     ${summary.total}`);
   console.log(`  comparable    ${summary.comparable}  (incomparable ${summary.incomparable}, errors ${summary.errors})`);
-  console.log(`  agreed        ${summary.agreed}`);
+  // The COMPOSITION of the agreement, not just its size. A both-decline is a real agreement (the owner
+  // asked for ineligible scenarios by name), but it says far less about the SHEET than a priced scenario
+  // whose every LLPA reconciled — so a headline built mostly of declines would read stronger than it is.
+  console.log(`  agreed        ${summary.agreed}  (priced ${summary.agreedPriced}, both-declined ${summary.agreedDeclined})`);
   console.log(`  disagreed     ${summary.disagreed}`);
+  // How BIG the worst LLPA disagreement is anywhere. "41 disagreements" reads very differently at 1
+  // milli than at 5,000, and until now the number was computed per scenario and dropped.
+  if (summary.worstDeltaMilli) console.log(`  worst LLPA Δ  ${summary.worstDeltaMilli} milli`);
   console.log(`  agreement     ${summary.agreementRate == null ? 'n/a' : (summary.agreementRate * 100).toFixed(2) + '%'}`);
   if (Object.keys(summary.byCategory).length) console.log(`  by category   ${JSON.stringify(summary.byCategory)}`);
   if (Object.keys(summary.byDimension).length) console.log(`  by dimension  ${JSON.stringify(summary.byDimension)}`);
