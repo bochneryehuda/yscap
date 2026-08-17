@@ -22,11 +22,15 @@ const { scenarios, count, byGroup } = buildAgreementScenarios();
 // ---- 1) the ≥200 bar + group coverage ----------------------------------------------------------
 ok(count >= 200, `battery has ≥200 scenarios (${count})`);
 ok(count === scenarios.length, 'count matches the array length');
-const expectGroups = ['ficoxcltv', 'dscrxcltv', 'purpose', 'loansize', 'property', 'prepay', 'flags', 'state', 'ineligible'];
+const expectGroups = ['ficoxcltv', 'dscrxcltv', 'purpose', 'loansize', 'property', 'prepay', 'flags', 'state',
+  // the deep-verification angles added when the battery grew from 225 → 299 (2026-08-17): the advanced
+  // overlay facts, borrower_type/PPP-by-state, the standard PPP structure library, and the T1/T2/T3
+  // eligibility grid cells — every one a distinct pricing/eligibility angle.
+  'advanced', 'borrower', 'pppstruct', 'eliggrid', 'ineligible'];
 ok(expectGroups.every((g) => byGroup[g] > 0), `every LLPA angle is covered: ${JSON.stringify(byGroup)}`);
 ok(byGroup.ficoxcltv === 126, 'FICO×CLTV swept at both DSCR bands (9×7×2 = 126)');
 ok(byGroup.dscrxcltv === 63, 'DSCR×CLTV swept (9×7 = 63)');
-ok(byGroup.ineligible === 6, 'six ineligible probes');
+ok(byGroup.ineligible === 10, 'ten ineligible probes');
 
 // ---- 2) every scenario is a well-formed LP scenario --------------------------------------------
 ok(scenarios.every((s) => s._label && s._group), 'every scenario carries a _label and _group');
@@ -36,7 +40,7 @@ ok(scenarios.every((s) => s.state && s.zip && s.countyFps), 'every scenario carr
 
 // ---- 3) the ineligible probes are flagged ------------------------------------------------------
 const inelig = scenarios.filter((s) => s._group === 'ineligible');
-ok(inelig.length === 6 && inelig.every((s) => s._ineligible === true), 'every ineligible probe is flagged _ineligible');
+ok(inelig.length === 10 && inelig.every((s) => s._ineligible === true), 'every ineligible probe is flagged _ineligible');
 ok(scenarios.filter((s) => s._group !== 'ineligible').every((s) => !s._ineligible), 'no priced scenario is flagged ineligible');
 
 // ---- 4) EVERY scenario validates against the real Lender Price scenario contract ----------------
