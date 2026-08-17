@@ -310,10 +310,10 @@ ok(priceAt(sc({ loan: 90000, value: 150000, cltv: 60, dscr: 1250 })) != null, 'l
 
 // ═══ 8. WHAT IS DELIBERATELY NOT ENCODED IS RECORDED (never guessed) ══════════════════════════════
 ok(Array.isArray(UNMEASURED) && UNMEASURED.length >= 8, `UNMEASURED records every axis left out (${UNMEASURED.length} entries)`);
-ok(UNMEASURED.some((u) => /PREPAY/i.test(u)), 'UNMEASURED records the prepay LLPA family as out of scope');
-ok(UNMEASURED.some((u) => /MAX-PRICE/i.test(u)), 'UNMEASURED records the max-price caps as out of scope');
-ok(UNMEASURED.some((u) => /LOCK-TERM/i.test(u)), 'UNMEASURED records lock/extension pricing as out of scope');
-ok(UNMEASURED.some((u) => /BASE LADDER/i.test(u)), 'UNMEASURED records the unexplained 0.25 base-ladder gap vs Lender Price');
+ok(UNMEASURED.some((u) => /PREPAY/i.test(u)), 'UNMEASURED records where the prepay LLPA family now lives (deephaven-dscr-prepay-maxprice.js)');
+ok(UNMEASURED.some((u) => /MAX-PRICE/i.test(u)), 'UNMEASURED records where the max-price caps now live');
+ok(UNMEASURED.some((u) => /LOCK-TERM/i.test(u)), 'UNMEASURED records where lock/extension pricing now lives, and why the extension is still unpriced');
+ok(UNMEASURED.some((u) => /BASE LADDER/i.test(u)), 'UNMEASURED records the 0.25 base-ladder gap vs Lender Price — now ANSWERED as our margin holdback, with the wiring still open');
 ok(UNMEASURED.some((u) => /Foreign National/i.test(u)), 'UNMEASURED records the un-encoded Foreign National row');
 
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
