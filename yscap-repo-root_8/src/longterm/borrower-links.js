@@ -9,7 +9,7 @@
  *
  * WHAT A CONFIRMATION DOES, EXACTLY
  * ------------------------------------------------------------------------
- * It records the decision against the ADDRESS (`lt_borrower_links`, db/572) and
+ * It records the decision against the ADDRESS (`lt_borrower_links`, db/573) and
  * then stamps `lt_loans.borrower_id` on every long-term loan carrying that
  * address. That second half is the whole point: `borrower_id` is what a borrower's
  * own login reads, so until it is filled the loan exists and the client cannot see
@@ -143,7 +143,7 @@ async function confirmLink(email, borrowerId, actorId, opts = {}) {
  * Record that this address is NOT the profile we proposed.
  *
  * A rejection is durable on purpose — the matcher reads it and never proposes that
- * address again — and it carries NO borrower id (the db/572 CHECK enforces that),
+ * address again — and it carries NO borrower id (the db/573 CHECK enforces that),
  * so a refusal can never be mistaken for a link by anything that reads the table.
  * It does NOT un-stamp loans: rejecting a SUGGESTION is not the same act as undoing
  * a CONFIRMATION, and quietly detaching loans somebody had already linked would be

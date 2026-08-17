@@ -622,7 +622,11 @@ export const api = {
   },
   amcPostRov:       (orderId, b) => req('POST', `/api/amc/orders/${orderId}/rov`, b),
   amcDocuments:     (appId, orderId) => req('GET', `/api/amc/files/${appId}/documents${orderId ? '?orderId=' + orderId : ''}`),
-  amcUploadDocs:    (orderId, documentIds) => req('POST', `/api/amc/orders/${orderId}/documents`, { documentIds }),
+  // `action` names the AppraisalScope upload to use. Omitted, it follows the count
+  // (UploadDocument / UploadDocumentMulti) exactly as it always has; 'UploadContract'
+  // is how the purchase contract goes up AS the contract, where the appraiser looks
+  // for it, instead of as a generic supporting document.
+  amcUploadDocs:    (orderId, documentIds, action) => req('POST', `/api/amc/orders/${orderId}/documents`, action ? { documentIds, action } : { documentIds }),
   // ACCOUNT-WIDE reads (platform_setup), not per file: what the appraisal company
   // holds that PILOT has no row for, and which payment routes the account allows.
   // Both are pure reads — neither places, changes or charges anything.

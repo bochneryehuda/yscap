@@ -1523,7 +1523,7 @@ model LtPpeRuleSuggestion {
   @@map("lt_ppe_rule_suggestion")
 }
 
-/// Which PILOT borrower profile an Encompass borrower EMAIL belongs to (db/572).
+/// Which PILOT borrower profile an Encompass borrower EMAIL belongs to (db/573).
 ///
 /// The borrower twin of `LtStaffLink`, and it follows the same owner-directed rule:
 /// PILOT proposes a match by email and a HUMAN confirms it. Keyed on the ADDRESS

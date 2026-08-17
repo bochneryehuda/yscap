@@ -9,7 +9,7 @@
  * this whole change exists to end (the column has existed since db/549 and nothing
  * has ever written it). So the assertions below read the loan rows back.
  *
- * The other thing only a database can prove: the db/572 CHECK. A rejection must
+ * The other thing only a database can prove: the db/573 CHECK. A rejection must
  * never carry a borrower id, because the sync applies confirmed links BY ADDRESS
  * and a refusal that carried one would be a single typo away from being applied.
  *

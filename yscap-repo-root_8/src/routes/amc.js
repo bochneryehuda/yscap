@@ -518,7 +518,17 @@ function readOverrides(src) {
   const o = {};
   if (s.productCode != null && s.productCode !== '') o.productCode = String(s.productCode);
   if (s.amcIdentifier != null && s.amcIdentifier !== '') o.amcIdentifier = String(s.amcIdentifier);
-  if (Array.isArray(s.subproductCodes)) o.subproductCodes = s.subproductCodes.map(String);
+  // ADD-ONS ARRIVE TWO WAYS, and both mean the same thing. A POST body carries a
+  // real array; the preview is a GET, where `URLSearchParams` flattens an array to
+  // a comma-joined string — so a query-string selection used to be ignored
+  // silently and the preview kept showing the form rule's default whatever the
+  // staffer ticked. An EMPTY value is a real answer ("none of them"), which is why
+  // the key being PRESENT is what counts, never its truthiness.
+  if (Array.isArray(s.subproductCodes)) {
+    o.subproductCodes = s.subproductCodes.map(String).map((x) => x.trim()).filter(Boolean);
+  } else if (typeof s.subproductCodes === 'string') {
+    o.subproductCodes = s.subproductCodes.split(',').map((x) => x.trim()).filter(Boolean);
+  }
   if (s.mortgageType) o.mortgageType = String(s.mortgageType);
   if (s.bestContact) o.bestContact = String(s.bestContact);
   if (s.titleCategory) o.titleCategory = String(s.titleCategory);
@@ -528,8 +538,24 @@ function readOverrides(src) {
   if (s.requestComment) o.requestComment = String(s.requestComment);
   if (s.needByDate) o.needByDate = String(s.needByDate);
   if (s.rush != null) o.rush = s.rush === true || s.rush === 'true' || s.rush === '1';
-  if (s.requestAction) o.requestAction = String(s.requestAction);
+  // AN ORDER IS PLACED ONE OF TWO WAYS, and nothing else. `requestAction` goes on
+  // the wire verbatim as the CDG `requestActionType`, so an unrecognised value here
+  // is a request the gateway has never heard of — the invented-`CancelOrder` class.
+  // `CreateAppraisal` is a new order; `AddForm` adds a form to an EXISTING one and
+  // rides that order's own number (order-service resolves the parent's cdg number).
+  // Anything else is dropped, so the order is simply placed the ordinary way rather
+  // than sent under a name nobody can answer.
+  if (s.requestAction) {
+    const wanted = String(s.requestAction).trim().toLowerCase();
+    const hit = ['CreateAppraisal', 'AddForm'].find((a) => a.toLowerCase() === wanted);
+    if (hit) o.requestAction = hit;
+  }
   return o;
 }
 
 module.exports = router;
+// Exported for the tests ONLY. `readOverrides` decides what a staffer's pick means —
+// including the two shapes an add-on selection arrives in (a POST array, a GET's
+// comma-joined string) — and a source-grep guard cannot prove it reads either one.
+// Nothing in the app may call this off the router.
+module.exports.readOverrides = readOverrides;

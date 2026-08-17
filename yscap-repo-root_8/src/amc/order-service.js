@@ -425,6 +425,17 @@ async function buildPreview(db, appId, opts = {}) {
       subdomain: (cfg.amc && cfg.amc.subdomain) || '',
     });
   } catch (_) { feeQuote = null; }
+  // WHAT CAN BE ADDED TO THIS FORM, and what this order has already selected. Same
+  // cache-first, refresh-in-the-background discipline as the fee quote: a preview
+  // never waits on the vendor, and a cold cache simply answers an empty list.
+  let addOns = null;
+  try {
+    addOns = await require('./add-ons').addOnsFor(db, {
+      productCode: spec && spec.productCode,
+      selectedCodes: spec && spec.subproductCodes,
+      subdomain: (cfg.amc && cfg.amc.subdomain) || '',
+    });
+  } catch (_) { addOns = null; }
   return {
     context: ctx,
     deal,
@@ -446,6 +457,12 @@ async function buildPreview(db, appId, opts = {}) {
     // simply answers null (the next preview carries the numbers). Best-effort —
     // a fee we cannot quote must never stop an order being built.
     feeQuote,
+    // WHAT ELSE THIS FORM OFFERS (2026-08-17). `available` is the vendor's own list
+    // for this form; `selected` is what the order carries, NAMED; `unknownSelected`
+    // is a code on the order the account no longer offers — surfaced rather than
+    // hidden, because an order asking for a retired subproduct comes back as a
+    // vendor refusal nobody can explain, and here it is fixable before it goes out.
+    addOns,
     config: client.configured(),
   };
 }

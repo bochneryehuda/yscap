@@ -59,6 +59,129 @@ function LineMedia({ appId, drawId, line, byReq }) {
   return <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>{items.map((m) => <AuthMedia key={m.id} appId={appId} drawId={drawId} media={m} />)}</div>;
 }
 
+/* SUBMIT A DRAW REQUEST — the one thing an officer may START (owner-directed 2026-08-17:
+   *"the rule was that the loan officer can only do stuff that a borrower can do"*).
+
+   A borrower can submit a draw request, so an officer can too — they are frequently the
+   person on the phone walking the borrower through it. Nothing here approves, releases or
+   decides anything: this composes the SAME `portal_draw_requests` row the borrower's own
+   screen composes, and it then runs through the coordinator's desk exactly as it always
+   has. That is why it sits in the VIEW-ONLY component without contradicting it.
+
+   TWO DESK-ONLY JUDGEMENTS ARE DELIBERATELY ABSENT, and the server refuses them from an
+   officer regardless of what this screen sends: going ABOVE a line's remaining budget, and
+   opening a second draw while one is already running. A borrower could make neither call.
+
+   "Remaining" is whatever the server says (`lines[].remaining_cents`) — never computed
+   here. It already nets off money approved on a physical draw that has not reached
+   Sitewire's ledger yet, which is precisely the money a second screen doing its own
+   arithmetic would offer twice. */
+function LoRequestDraw({ appId, onSubmitted }) {
+  const [st, setSt] = useState(null);
+  const [lines, setLines] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [amt, setAmt] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const load = useCallback(() => {
+    api.get(`/api/sitewire/files/${appId}/portal-draws`)
+      .then((r) => { setSt((r && r.state) || null); setLines(Array.isArray(r && r.lines) ? r.lines : []); })
+      .catch(() => { setSt(null); setLines([]); });
+  }, [appId]);
+  useEffect(() => { load(); }, [load]);
+
+  if (!st || !st.physical) return null;          // virtual files submit in the construction portal
+
+  const cents = (v) => {
+    const n = Number(String(v == null ? '' : v).replace(/[^0-9.]/g, ''));
+    return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : 0;
+  };
+  const total = lines.reduce((s, l) => s + cents(amt[l.sitewire_job_item_id]), 0);
+  // Mirrors the server's own refusal so the officer is told BEFORE they submit, not after.
+  const over = lines.filter((l) => cents(amt[l.sitewire_job_item_id]) > Number(l.remaining_cents || 0));
+
+  const submit = async () => {
+    const entries = lines
+      .map((l) => ({ sitewire_job_item_id: l.sitewire_job_item_id, requested_cents: cents(amt[l.sitewire_job_item_id]) }))
+      .filter((e) => e.requested_cents > 0);
+    if (!entries.length) { setMsg('Enter an amount on at least one line.'); return; }
+    setBusy(true); setMsg('');
+    try {
+      await api.post(`/api/sitewire/files/${appId}/portal-draws`, { entries });
+      setOpen(false); setAmt({}); setMsg('Draw request submitted — the draw coordinator takes it from here.');
+      load(); if (onSubmitted) onSubmitted();
+    } catch (e) {
+      setMsg(e?.data?.error || e.message || 'Could not submit the request.');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="dd-card" style={{ marginTop: 12 }}>
+      <div className="dd-card-h">
+        <div className="dd-card-t"><h3>Request a draw</h3></div>
+        {st.open_portal_request && <span className="pill sw-pending">Request in flight</span>}
+      </div>
+      <div className="dd-sub" style={{ marginTop: -2, color: '#4B585C' }}>
+        You can submit a draw request on the borrower’s behalf. The draw coordinator reviews it,
+        orders the inspection and decides what is released — this only starts it.
+      </div>
+      {msg && <div className="small" style={{ marginTop: 8, fontWeight: 600, color: '#141B22' }}>{msg}</div>}
+
+      {st.open_portal_request ? (
+        <div className="muted small" style={{ marginTop: 8 }}>
+          A draw request is already open on this file. The next one can be submitted once it is finished.
+        </div>
+      ) : !open ? (
+        <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <button className="btn btn-sm primary" disabled={!st.eligible} onClick={() => { setMsg(''); setOpen(true); }}>
+            Request a draw
+          </button>
+          {!st.funded && <span className="small muted">Available once the loan is funded.</span>}
+          {st.funded && !st.set_up && <span className="small muted">The draw setup (budget lines) hasn’t finished yet.</span>}
+          {st.funded && st.set_up && st.open_sitewire_draw && <span className="small muted">A draw is already open in the construction system.</span>}
+        </div>
+      ) : (
+        <div style={{ marginTop: 10 }}>
+          <div className="dd-tablecard" style={{ overflowX: 'auto', boxShadow: 'none' }}>
+            <table className="dd-table" style={{ minWidth: 520 }}>
+              <thead><tr><th>Budget line</th><th className="num">Still available</th><th className="num" style={{ width: 140 }}>Request ($)</th></tr></thead>
+              <tbody>
+                {lines.map((l) => (
+                  <tr key={l.sitewire_job_item_id}>
+                    <td style={{ fontWeight: 600 }}>{l.name}</td>
+                    <td className="num">{usd2(l.remaining_cents)}</td>
+                    <td className="num">
+                      <input className="input" style={{ width: 120 }} inputMode="decimal" placeholder="0.00"
+                        value={amt[l.sitewire_job_item_id] ?? ''}
+                        onChange={(e) => setAmt((s) => ({ ...s, [l.sitewire_job_item_id]: e.target.value }))} />
+                    </td>
+                  </tr>
+                ))}
+                {lines.length === 0 && <tr><td colSpan={3} className="muted small">No budget lines are set up yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div className="row" style={{ gap: 10, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <b style={{ color: '#141B22' }}>Total requested: {usd2(total)}</b>
+            <button className="btn btn-sm primary" disabled={busy || total <= 0 || over.length > 0} onClick={submit}>
+              {busy ? 'Submitting…' : 'Submit the request'}
+            </button>
+            <button className="btn btn-sm ghost" disabled={busy} onClick={() => { setOpen(false); setMsg(''); }}>Cancel</button>
+          </div>
+          {over.length > 0 && (
+            <div className="small" style={{ marginTop: 6, color: '#B04A3F', fontWeight: 600 }}>
+              {over.map((l) => l.name).join(', ')} {over.length === 1 ? 'is' : 'are'} over what is still available on
+              {over.length === 1 ? ' that line' : ' those lines'}. Only the draw coordinator can request above a line’s
+              remaining budget — lower the amount, or ask the desk to submit it.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function LoDrawView({ appId }) {
   const [rollup, setRollup] = useState(null);
   const [findings, setFindings] = useState([]);
@@ -83,10 +206,17 @@ export default function LoDrawView({ appId }) {
   const proj = rollup && rollup.project ? rollup.project : null;
   const hasProject = !!(proj && proj.budget > 0);
   if (!hasProject && findings.length === 0) {
-    return <div className="dd-card" style={{ textAlign: 'center', padding: '28px 20px' }}>
-      <div style={{ fontFamily: 'var(--serif)', fontSize: 17, fontWeight: 600, color: '#141B22' }}>No draws yet</div>
-      <div className="dd-sub" style={{ marginTop: 4 }}>The draw dashboard appears here once this file's first draw is set up.</div>
-    </div>;
+    // The composer belongs HERE too, and this is the case it matters most in: a funded
+    // file whose budget is set up but which has never drawn is exactly when somebody asks
+    // for the FIRST draw. Returning only "no draws yet" would hide the button on the one
+    // file that needs it. It self-hides when the file is not on physical inspections.
+    return <>
+      <div className="dd-card" style={{ textAlign: 'center', padding: '28px 20px' }}>
+        <div style={{ fontFamily: 'var(--serif)', fontSize: 17, fontWeight: 600, color: '#141B22' }}>No draws yet</div>
+        <div className="dd-sub" style={{ marginTop: 4 }}>The draw dashboard appears here once this file's first draw is set up.</div>
+      </div>
+      <LoRequestDraw appId={appId} onSubmitted={load} />
+    </>;
   }
   const pct = proj ? Math.max(0, Math.min(100, Number(proj.pct_complete) || 0)) : 0;
   const lineRows = (rollup && Array.isArray(rollup.lines) ? rollup.lines : []).filter((l) => l.kind === 'line');
@@ -98,8 +228,10 @@ export default function LoDrawView({ appId }) {
       {/* VIEW-ONLY notice — the officer sees everything and runs nothing, except acting for the borrower. */}
       <div className="notice" role="note" style={{ background: 'var(--paper,#f6f3ec)', border: '1px solid var(--line)', borderRadius: 10, padding: '10px 12px' }}>
         <b style={{ color: '#141B22' }}>View-only draw access.</b>
-        <span className="small" style={{ color: '#4B585C' }}> You can see every draw, the inspector’s results, notes, photos and the report PDFs. The only actions here are on the borrower’s behalf: accepting or disputing an inspection result. The draw desk itself is run by the draw coordinator.</span>
+        <span className="small" style={{ color: '#4B585C' }}> You can see every draw, the inspector’s results, notes, photos and the report PDFs. The actions here are the ones on the borrower’s behalf: submitting a draw request, and accepting or disputing an inspection result. The draw desk itself — approving, releasing and ordering — is run by the draw coordinator.</span>
       </div>
+
+      <LoRequestDraw appId={appId} onSubmitted={load} />
 
       {hasProject && (
         <div className="dd-hero" style={{ gridTemplateColumns: '1fr' }}>

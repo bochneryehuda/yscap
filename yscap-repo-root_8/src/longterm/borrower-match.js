@@ -38,7 +38,7 @@
  * ------------------------------------------------------------------------
  * A borrower has many long-term loans. Confirming the same human once per loan,
  * across a book this size, is not a workflow anybody finishes — so a decision is
- * recorded once per ADDRESS (`lt_borrower_links`, db/572) and every loan carrying
+ * recorded once per ADDRESS (`lt_borrower_links`, db/573) and every loan carrying
  * it inherits the answer, exactly as a staff link recorded against a login id
  * governs every loan that officer touches. It also makes a REJECTION durable: a
  * match a human turned down never returns on the next loan.

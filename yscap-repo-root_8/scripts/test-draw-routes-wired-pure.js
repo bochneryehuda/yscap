@@ -119,4 +119,39 @@ for (const r of SERVER_ONLY) {
     '…and the screen never hard-codes it — a constant there would drift the moment the setting changed');
 }
 
+// ─────────────────────────── a loan officer may only do what a BORROWER may do
+//
+// Owner-directed 2026-08-17: *"the rule was that the loan officer can only do stuff that a
+// borrower can do."* A borrower can SUBMIT a draw request, so an officer can too — and a
+// borrower can do nothing else on a draw, so neither can an officer.
+//
+// This is a MONEY boundary, and the two halves fail in opposite directions: gate the submit
+// door too tightly and the officer this was built for cannot use it; gate any of the desk
+// doors too loosely and an officer can approve or release a draw. Both halves are pinned
+// here because the route file is where a future edit would quietly move either one.
+{
+  const routes = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'sitewire.js'), 'utf8');
+  const gateOf = (verb, suffix) => {
+    const re = new RegExp(`router\\.${verb}\\('/files/:id/portal-draws${suffix.replace(/[/:]/g, (c) => '\\' + c)}',\\s*([A-Za-z]+(?:\\([^)]*\\))?)`);
+    const m = routes.match(re);
+    return m ? m[1] : null;
+  };
+  // SUBMIT — open to the officer, exactly as it is open to the borrower.
+  ok(gateOf('post', '') === 'requireDrawView',
+    'a loan officer can SUBMIT a draw request (requireDrawView = manage_draws OR view_draws)');
+  // THE DESK — approving, closing out and cancelling stay manage_draws. A borrower cannot
+  // do these, so an officer must not either.
+  for (const door of ['/:prId/approve-trinity', '/:prId/close-out', '/:prId/cancel']) {
+    const g = gateOf('post', door);
+    ok(g === "requirePermission('manage_draws')",
+      `…but ${door.replace('/:prId/', '')} stays the draw desk's alone (got ${g})`);
+  }
+  // The two desk-only judgements on the submit door itself: going ABOVE a line's remaining
+  // budget, and opening a second draw alongside a running one. A borrower can do neither,
+  // so the officer's request must not carry them even though the door admits them.
+  ok(/const isDesk = can\(req\.actor, 'manage_draws'\)/.test(routes)
+    && /allowOver: isDesk && /.test(routes) && /allowParallel: isDesk && /.test(routes),
+  'over-budget and parallel draws remain desk-only even on the door an officer may use');
+}
+
 console.log(`test-draw-routes-wired-pure: all ${n} wiring checks passed.`);
