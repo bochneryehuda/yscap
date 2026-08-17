@@ -62,7 +62,7 @@ ok(omitted.criteria.purchasePrice === null, 'LEAK-1 stale purchasePrice cleared 
 ok(omitted.criteria.loanAmount === null, 'LEAK-2 stale loanAmount cleared to neutral on omission');
 ok(omitted.criteria.ltv === null, 'LEAK-3 stale ltv cleared to neutral on omission');
 ok(omitted.criteria.fico === null, 'LEAK-4 stale fico cleared to neutral on omission');
-ok(omitted.criteria.dscr === null, 'LEAK-5 stale dscr cleared to neutral on omission');
+ok(omitted.criteria.dscr === 1.5, 'LEAK-5 stale dscr 0.5 cleared and replaced by the profile default 1.5 — never leaks (§32.6)');
 ok(omitted.criteria.subordinateLoanAmount === 0, 'LEAK-6 stale subordinateLoanAmount cleared to 0 (audit §31.6)');
 ok(omitted.criteria.lineAmount === 0, 'LEAK-7 stale lineAmount cleared to 0');
 ok(omitted.criteria.rehabBudget === 0, 'LEAK-8 stale rehabBudget cleared to 0');

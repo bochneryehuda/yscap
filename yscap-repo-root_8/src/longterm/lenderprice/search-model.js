@@ -638,12 +638,21 @@ function buildSearch(sc = {}, opts = {}) {
   const subordinate = num(sc.subordinateLoanAmount);
   if (subordinate != null) c.subordinateLoanAmount = subordinate;
   if (num(sc.fico) != null) c.fico = num(sc.fico);
+  // §32.6 — DSCR RATIO IS A FORCED DSCR-PROFILE DEFAULT (1.5) WHEN OMITTED. Measured live: a request
+  // carrying `criteria.dscr: null` collapses the result from the full 439 pricing rows to 28 rows
+  // from a single lender — the engine treats a null ratio as an unqualified/near-zero deal rather
+  // than the intended DSCR profile. Adding only `dscr: 1.5` restored the exact 439-row frontend
+  // result. So an OMITTED/NULL dscr takes the profile default 1.5, forced exactly like term (30),
+  // lock (30) and reserves (24). NULLISH, not truthy: an explicitly supplied 0 is a real "No DSCR"
+  // value (dscrBand(0) → NoDSCR) and is preserved — only null/undefined/blank falls back to 1.5.
   const dscrVal = num(sc.dscr);
-  if (dscrVal != null) c.dscr = dscrVal;
-  // §32.3 — DSCR threshold band, derived ONCE from the entered DSCR. Drives both the DSCRRATIO
-  // dynamic token (set below) and the derived pricing-band SMO (pushed into specialMortgageOptions
-  // below). Null when dscr is omitted → no DSCRRATIO, no band SMO (DSCRRATIO was cleared to neutral).
-  const band = dscrBand(dscrVal);
+  const effDscr = dscrVal != null ? dscrVal : 1.5;
+  c.dscr = effDscr;
+  // §32.3 — DSCR threshold band, derived ONCE from the EFFECTIVE DSCR (after the profile default).
+  // Drives both the DSCRRATIO dynamic token (set below) and the derived pricing-band SMO (pushed into
+  // specialMortgageOptions below). Both are gated OFF by default, so deriving from effDscr changes no
+  // live request today; it keeps the band consistent with the ratio actually sent when a gate is on.
+  const band = dscrBand(effDscr);
   // Loan TERM (years). The intentional DSCR profile default is 30-year FIXED (audit §1): when the
   // scenario omits the term we FORCE 30 rather than inherit whatever a live default model carried
   // (the "some DSCR defaults are not enforced" finding). loanYear + termsCriteria must agree;
@@ -1300,8 +1309,10 @@ function validateInputs(sc = {}) {
   //
   // Refusing here is the honest answer, not merely the safe one — a local 422 naming the field is
   // something a caller can act on, while the vendor's 500 is not. Deliberately NOT the same rule for
-  // `dscr`: the sweep measured `criteria.dscr` null, removed AND blank all returning 200, so
-  // requiring it would refuse scenarios the vendor prices perfectly well.
+  // `dscr`: an omitted dscr is not an ERROR (it returns 200), so we do not 422 it — buildSearch
+  // instead FORCES the DSCR-profile default 1.5 (§32.6). A raw `criteria.dscr: null` DOES return 200
+  // but collapses the result to 28 rows from one lender; the 1.5 default is what restores the full
+  // 439-row parity, so the sweep's "null returns 200" is about the status code, not the result set.
   if (fico.v == null) {
     return bad('fico_required', 'fico',
       'A credit score is required to price. Lender Price refuses a search with no FICO — it answers HTTP 500 with no explanation, both when the field is null and when it is absent.');

@@ -21,7 +21,7 @@ ok(s.resolve('pricing.correspondent_margin_milli').source === 'product_default',
 ok(s.resolve('eligibility.result_mode').value === 'show_with_reasons', 'default eligibility mode shows reasons');
 ok(s.resolve('pricing.rounding_mode').value === 'nearest_eighth', 'default rounding = nearest eighth');
 ok(s.resolve('pricing.price_floor_milli').value === 98000, 'default price floor = 98.000');
-ok(s.resolve('validation.price_tolerance_milli').value === 1, 'default price parity tolerance = 0.001');
+ok(s.resolve('validation.price_tolerance_milli').value === 0, 'default price parity tolerance = 0 (exact, owner-directed 2026-08-17)');
 ok(s.resolve('cutover.clean_weeks_required').value === 8, 'default clean-weeks-to-live = 8 (owner pre-fill)');
 ok(s.resolve('program.default_channel').value === 'correspondent', 'default channel = correspondent (owner pre-fill)');
 ok(s.resolve('ingestion.default_format').value === 'excel', 'default rate-sheet format = excel (owner pre-fill)');

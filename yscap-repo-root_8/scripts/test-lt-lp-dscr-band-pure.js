@@ -149,8 +149,8 @@ base.dynamicPropertiesMap.DSCRRATIO = { fieldId: 'DSCRRATIO', value: 'STALE_FROM
 const cleared = sm.buildSearch({ ...S }, { base }); // omit dscr
 ok(dyn(cleared, 'DSCRRATIO') === undefined,
   'FAILCLOSED-1 an omitted DSCR sends NO DSCRRATIO — a live foundation\'s stale token cannot leak');
-ok(cleared.criteria.dscr == null,
-  'FAILCLOSED-2 an omitted DSCR clears criteria.dscr to null (scenario-owned)');
+ok(cleared.criteria.dscr === 1.5,
+  'FAILCLOSED-2 an omitted DSCR clears any stale foundation value and applies the profile default 1.5 (§32.6)');
 ok(cleared.criteria.specialMortgageOptions.every((o) => o.name !== 'DSCR <1.15' && o.name !== 'DSCR >=1.00' && o.name !== 'DSCR >=1.25 - J'),
   'FAILCLOSED-3 an omitted DSCR adds no band SMO');
 // An explicit DSCR still overrides a stale foundation token — the anti-leak property is unchanged,

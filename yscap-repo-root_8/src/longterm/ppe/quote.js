@@ -82,7 +82,8 @@ function selectRungs(baseGrid, scenario) {
  * `severityOf(decline)` (optional) lets a soft finding not decline (settings
  * eligibility.result_mode drives this at the caller).
  */
-function quoteProgram({ scenario, program, settings }, opts) {
+function quoteProgram(arg, opts) {
+  const { scenario, program, settings } = arg || {};
   if (!scenario || typeof scenario !== 'object') throw new Error('quote:no_scenario');
   if (!program || typeof program !== 'object') throw new Error('quote:no_program');
   if (!Array.isArray(program.baseGrid) || !program.baseGrid.length) throw new Error('quote:program_has_no_base_grid');
@@ -104,8 +105,21 @@ function quoteProgram({ scenario, program, settings }, opts) {
 
   // 2) resolve the pricing basis (settings, program overrides win)
   const pl = program.priceLimit || {};
-  const margin = s['pricing.correspondent_margin_milli'];
+  // MARGIN precedence (Layer 2, additive): a per-investor/per-scenario resolved margin
+  // (the shape store.resolveMarginHoldbackForInvestor / margin-holdback.resolveMarginHoldback
+  // returns) wins when the caller passes it; otherwise the legacy settings margin. When no
+  // marginHoldback is passed this is BYTE-IDENTICAL to before (proven in test-lt-ppe-quote).
+  const mh = arg.marginHoldback;
+  const mhMargin = mh && typeof mh.marginMilli === 'number' && Number.isInteger(mh.marginMilli) && mh.marginMilli >= 0
+    ? mh.marginMilli : null;
+  const margin = mhMargin != null ? mhMargin : s['pricing.correspondent_margin_milli'];
   const marginMilli = margin == null ? 0 : margin;
+  // HOLDBACK is CARRIED for the reconstruction record only — it is NOT applied to price.
+  // How holdback combines into the final borrower rate is a MONEY rule that needs the owner's
+  // exact formula (never guessed) — see docs/longterm/PPE-MARGIN-HOLDBACK-PLAN.md §5 Layer 3.
+  const holdbackMilli = mh && typeof mh.holdbackMilli === 'number' && Number.isInteger(mh.holdbackMilli) && mh.holdbackMilli >= 0
+    ? mh.holdbackMilli : null;
+  const marginSource = mhMargin != null ? (mh.marginSource || 'resolved') : 'settings';
   const rounding = resolveRounding(s);
   const roundingMode = pl.roundingMode || rounding.mode;
   const roundingIncrementMilli = pl.roundingIncrementMilli == null ? rounding.incrementMilli : pl.roundingIncrementMilli;
@@ -145,6 +159,8 @@ function quoteProgram({ scenario, program, settings }, opts) {
     unknownFacts: decision.unknownFacts,
     pricingBasis: {
       marginMilli,
+      marginSource,
+      holdbackMilli, // carried for the reconstruction record; NOT applied to price (money rule pending owner)
       roundingMode,
       roundingIncrementMilli,
       floorMilli,

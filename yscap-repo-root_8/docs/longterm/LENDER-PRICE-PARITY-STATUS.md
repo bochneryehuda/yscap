@@ -174,6 +174,7 @@ Each item is covered by an offline test in `scripts/test-lt-lenderprice.js`,
 | **§31.5/§31.6 subordinate financing + broker comp percent** | FIXED | `subordinateLoanAmount` → `criteria.subordinateLoanAmount` (confirmed live), with **no invented CLTV field** — the engine derives the combined ratio, so we VALIDATE it instead (first lien + subordinate may not exceed the value; the rule also applies against a DERIVED value). `compPercent` → `brokerCriteria.compPlan` with the confirmed **SIGN INVERSION** (a visible `2.5` transmits as `-2.5`); the public input is the positive number a human reads and one named conversion (`compPlanValue`) owns the flip, so a negative input is refused rather than double-negated and `0` can never serialize as `-0`. Both are scenario-owned, closing the §31.6 leak the audit reproduced (clearing the visible inputs did not clear the model): the subordinate amount clears to its captured neutral `0` and `compPlan` is **deleted** — the captured base carries no `compPlan` key at all — each re-applied only when supplied, AFTER the clear (the registry's documented footgun). Test `scripts/test-lt-lp-subordinate-comp-pure.js`. |
 | **§36.11 requested vs derived vs effective** | FIXED | The response echoes `requestedScenario` (the caller's own scenario minus request-envelope keys) and `derivedScenario` (what the amount triangle worked out, and **which** figures were supplied vs derived) alongside the existing `effectiveScenario` + foundation provenance — so a short request can be PROVEN to have expanded into the intended full DSCR profile rather than inheriting a stale search. |
 | **§31.3/§31.7 asset depletion + late-window parent flag** | FIXED | `dscrAssetDepletion` → `Global_DSCR_Asset_Depletion` with the confirmed token **`"Yes"`** (deliberately NOT the `"true"` its sibling flags use — copying their shape would be a guess about a different field); `lateInLast12Months` → `Lateinlast12months` `"true"`, the parent toggle the live UI sends alongside the per-bucket `MORT*LATESLAST12M` counts. Both true-only: the off token was never captured, so an explicit `false` INHERITS rather than writing an invented value. The **13–24 month** parent toggle stays unwired — its field name was never captured (only its per-bucket counts were). |
+| **§32.6 DSCR ratio defaults to 1.5 when omitted/null** | FIXED (measured live) | A request carrying `criteria.dscr: null` collapses the result from the full **439** pricing rows to **28** rows from a single lender — the engine reads a null ratio as an unqualified deal. Adding only `dscr: 1.5` restored the exact 439-row frontend result. `buildSearch` now FORCES the DSCR-profile default `1.5` when dscr is missing/null, exactly like term (30) / lock (30) / reserves (24). **Nullish, not truthy**: an explicit `0` (No-DSCR, `dscrBand(0)→NoDSCR`) is preserved. The band token is derived from the effective ratio (both band tokens stay gated off, so no live request changes today). Deploy tested `ca3e0654`. Test `scripts/test-lt-lp-dscr-profile-pure.js` (FORCE-9/9b, PRESERVE-0, EXPLICIT-5 + the reporter's exact minimal-request regression; proven to FAIL with the default flipped to null). |
 | **§37.3 refresh token captured and never used** | FIXED | The login response has always carried `refresh_token` and every renewal replayed the account PASSWORD. `getSession` now follows the developer's ladder: a session approaching expiry renews with **`grant_type=refresh_token`**, storing the replacement access token AND the replacement refresh token; if the grant is **rejected**, exactly ONE password login follows. **Fail-safe by construction** — every failure shape (400, 401, 5xx, unparseable body, network throw) falls through to the password login that has always worked, so the worst case is one wasted round trip and never a lost session; that is what made it shippable before the vendor confirms the grant. A REJECTION additionally opens an **escalating backoff** (15m doubling to a day, reset by the first successful refresh) so a vendor that does not honour the grant is not asked before every renewal forever; a transient failure deliberately does not. The merge is a **carry-over, not a replacement** — a refresh body is a token response and may omit `companyId`, and taking it wholesale would leave a valid token with no company and drop pricing onto the static fallback an hour into every deploy. The access token is treated as OUTPUT: held in memory for its hour, replaced, never a Render setting, never read from a browser. The decision is split PURE (`renewalPlan`/`mergeRefreshed`/`sessionFromTokenBody`/`refreshBackoffMs`) from the IO for the standing reason that `getSession` calls its collaborators locally, so a require-cache stub would silently do nothing. Test `scripts/test-lt-lp-token-renewal.js` — driven through the real `fetch` seam, with an 18-mutation battery each proven to turn it red, including the one the suite caught during the build (the backoff being cleared by its own fallback login, which made it dead code). |
 
 Two permanent **golden request-structure fixtures** encode the audit's canonical
@@ -245,6 +246,39 @@ The same applies to the "off tokens" the code records as uncaptured
 `Global_Living_Rent_Free`, `Lateinlast12months` → `true | false`): the off value
 is now known to be **valid**; whether the frontend sends it or omits the field is
 still a capture question.
+
+### §2.1 — the 31 request-shape differences on BLANK fields (task #31; live report 2026-08-17)
+
+A side-by-side of PILOT's request vs the live frontend on a minimal DSCR deal
+found the **tested eligible results already match** (439 rows after the §32.6 DSCR
+fix above), but **31 structural differences remain on blank/derived fields**. These
+did not change the tested eligible results, but should be normalized for strict
+long-term parity. The safest implementation is to **preserve the live Lender Price
+default request structure and override only fields the scenario explicitly
+supplies** (rather than emitting our own neutral for each). Concrete items from
+the report:
+
+- `pmiType`: frontend sends `"BPMI"`; PILOT sends `"None"`.
+- **Prepay Buyout** special-mortgage-option: frontend includes it; PILOT omits it
+  (already tracked under §5 derived SMO selectors — needs a capture).
+- **AUS list** membership/order differs.
+- `showUnmatchCompPlan`: frontend `true`; PILOT `false`.
+- Default **closing-cost flags**: frontend enables them; PILOT disables them.
+- **Monthly income rounding**: frontend rounds to `16667`; PILOT sends
+  `16666.666…`.
+- **15-year selection**: frontend keeps `criteria.loanYear: 30` and sends
+  `termsCriteria: [15]`; PILOT sets BOTH to 15.
+- Several **blank fields**: frontend OMITS them; PILOT transmits `null`.
+- Frontend includes **blank address fields + a derived city**; PILOT omits some.
+
+Also confirmed by the same report (no code change needed): PILOT authenticates
+independently via username/password + refresh token (not the temporary frontend
+browser token); the health probe's "pricing unavailable" was only because the
+probe omitted a location (complete pricing requests worked); and the apparent
+15-day 695-vs-256 mismatch was a frontend testing artifact (its lock selector is
+multi-select and had BOTH 15 and 30 selected — with only 15, parity was exact).
+**Refinance parity is NOT claimed** — the frontend's masked numeric controls
+rejected the automated edits before a comparable request was sent.
 
 **No longer deferred:** ZIP → county-FIPS enrichment, which this list previously
 carried, shipped 2026-08-16 and has moved to §1. **The cash-out AMOUNT also left
