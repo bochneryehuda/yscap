@@ -88,7 +88,7 @@ console.log('/api/lt/ppe/* — the PPE HTTP surface');
 // 1) the router itself
 // ---------------------------------------------------------------------------
 ok(typeof route === 'function' && typeof route.use === 'function', 'the module IS an express router (server.js can mount it)');
-ok(Object.keys(H).length === 12, `all 12 handlers are exported for testing (${Object.keys(H).length})`);
+ok(Object.keys(H).length === 13, `all 13 handlers are exported for testing (${Object.keys(H).length})`);
 
 // It must actually be MOUNTED, or the whole surface is unreachable — the exact
 // state this route was built to end.
@@ -582,6 +582,7 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
     ok(/router\.post\('\/suggestions\/:id\/accept',\s*requirePpeAdmin/.test(src), 'ROUTER: accepting a suggestion is admin-gated');
     ok(/router\.post\('\/suggestions\/:id\/dismiss',\s*requirePpeAdmin/.test(src), 'ROUTER: dismissing a suggestion is admin-gated');
     ok(!/router\.get\('\/(suggestions|rules)'[^)]*requirePpeAdmin/.test(src), 'ROUTER: listing suggestions/rules is NOT admin-gated (you must see a proposal to judge it)');
+    ok(/router\.post\('\/suggestions\/mine',\s*requirePpeAdmin/.test(src), 'ROUTER: mining suggestions is admin-gated (it hits the upstream and writes)');
   }
 
   // ---- the rule-loop handlers ----------------------------------------------
@@ -599,6 +600,16 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
     ok(r.code === 200 && r.body.ok && r.body.total === 1 && r.body.suggestions[0].decline_reason === 'FICO - below 660', 'list suggestions returns the store rows');
     const rr = await call(H.listRulesRoute, { query: {} });
     ok(rr.code === 200 && rr.body.ok && Array.isArray(rr.body.rules), 'list rules returns an array');
+    dbStub.next = null;
+  }
+  // Mining: no body → 400; an already-parsed disqualified result → saves + summarizes.
+  {
+    const bad = await call(H.mineSuggestionsRoute, { body: {} });
+    ok(bad.code === 400, 'mine with neither searchKey nor disqualified → 400');
+    dbStub.next = () => ({ rows: [] }); // saveSuggestions upserts return nothing
+    const parsed = { ready: true, lenderCount: 1, itemCount: 1, reasonCount: 1, lenders: [{ lender: 'L', investor: 'Deephaven', items: [{ program: 'DSCR 30', reasons: [{ rule: 'FICO - below 660', adjType: 'FicoRateAdjustment' }] }] }] };
+    const r = await call(H.mineSuggestionsRoute, { body: { disqualified: parsed } });
+    ok(r.code === 200 && r.body.ok && r.body.suggestionCount === 1 && r.body.investorCount === 1, 'mine from a parsed disqualified result saves the suggestion + reports counts');
     dbStub.next = null;
   }
 

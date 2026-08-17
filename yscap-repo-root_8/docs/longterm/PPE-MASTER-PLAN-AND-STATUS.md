@@ -217,7 +217,19 @@ owner wants to start.
   the canonical comparison shape.
 - **Depends on:** nothing (parsers already exist). **Owner gate:** none.
 
-### P2 — Dual-run every scenario, persist the comparison, route to MANUAL review  ·  TO-BUILD
+### P2 — Mine suggestions from a disqualifying scenario, persist to the review store  ·  **PARTIAL (mine action DONE)** ✅
+- **Built.** `suggestion-miner.js` (`mineFromParsed(db, scope, parsedDisq)` — analyze → saveSuggestions,
+  best-effort, never throws) + `POST /suggestions/mine` (admin-gated): supply a `searchKey` from a
+  disqualify kickoff (we poll + parse it) or an already-parsed `disqualified` result; it writes the
+  per-investor suggestions and returns the counts. This is the deliberate "look at an actual
+  disqualifying scenario and suggest the rules" action, reusing the existing async disqualify
+  orchestration (searchKey poll) so it never slows the live quote path. Tests: pure miner (fake db,
+  incl. the db-failure path) + route (400 without input, save-from-parsed, admin-gated). 41/41 suites.
+- **Still planned (the automatic half).** Wire the review + mine into the shadow flow so it runs on the
+  canary/scheduled batches automatically (the live quote path stays lean — the disqualify tree is a
+  separate async call, so per-quote mining would hit the upstream twice). That is the scheduled-canary
+  wiring, not a new engine.
+- **What (original).** On every price, run both engines (LP authoritative), **persist** the full R-vs-LP comparison,
 - **What.** On every price, run both engines (LP authoritative), **persist** the full R-vs-LP comparison,
   and **enqueue every non-agreement into the manual-review queue** — never auto-resolved.
 - **Why.** Owner: *"it should go into a manual review for a human to review, not only into demand."* The

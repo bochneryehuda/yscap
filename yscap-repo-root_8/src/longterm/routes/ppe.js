@@ -63,6 +63,7 @@ const runStore = require('../ppe/run-store');
 const scenarioMatrix = require('../ppe/scenario-matrix');
 const ratesheet = require('../ppe/ratesheet');
 const ruleStore = require('../ppe/rule-store');
+const suggestionMiner = require('../ppe/suggestion-miner');
 
 const SCOPE = 'company';
 
@@ -689,6 +690,33 @@ async function dismissSuggestionRoute(req, res) {
   return res.json({ ok: true, scope });
 }
 
+// POST /suggestions/mine — mine per-investor rule suggestions from a disqualifying scenario (admin).
+// Lender Price computes disqualifications asynchronously; the caller supplies either a `searchKey` from
+// a prior disqualify kickoff (we poll + parse it) or an already-parsed `disqualified` result. Mining is
+// best-effort and writes only PROPOSALS — a human accepts. Admin-gated: it hits the upstream and writes.
+async function mineSuggestionsRoute(req, res) {
+  const scope = readScope(req);
+  const b = req.body || {};
+  let parsed = null;
+
+  if (b.disqualified && typeof b.disqualified === 'object') {
+    parsed = b.disqualified; // an already-parsed parseDisqualified result
+  } else if (b.searchKey) {
+    const lp = require('../lenderprice/client');
+    const pr = await lp.pollDisqualifiedByKey(String(b.searchKey));
+    if (!pr || (!pr.ready && !pr.raw && !pr.parsed)) {
+      return res.status(202).json({ ok: true, scope, status: 'computing', message: 'Lender Price is still computing the disqualifications; poll again shortly.' });
+    }
+    parsed = pr.parsed || lp.parseDisqualified(pr.raw);
+  } else {
+    return res.status(400).json({ error: 'Send a `searchKey` (from a disqualify kickoff) or a parsed `disqualified` result.' });
+  }
+
+  const out = await suggestionMiner.mineFromParsed(db, scope, parsed);
+  if (!out.ok) return res.status(502).json({ ok: false, error: 'mine_failed', message: out.error });
+  return res.json({ ok: true, scope, ...out });
+}
+
 async function listRulesRoute(req, res) {
   const scope = readScope(req);
   const opts = {};
@@ -714,11 +742,12 @@ router.post('/findings/:key/decide', requirePpeAdmin, wrap(decideFindingRoute, '
 router.post('/canary', requirePpeAdmin, wrap(canaryRoute, 'lt_ppe_canary_error'));
 router.post('/suggestions/:id/accept', requirePpeAdmin, wrap(acceptSuggestionRoute, 'lt_ppe_accept_error'));
 router.post('/suggestions/:id/dismiss', requirePpeAdmin, wrap(dismissSuggestionRoute, 'lt_ppe_dismiss_error'));
+router.post('/suggestions/mine', requirePpeAdmin, wrap(mineSuggestionsRoute, 'lt_ppe_mine_error'));
 
 module.exports = router;
 module.exports.handlers = {
   health, getSettings, listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, canaryRoute, scoreboardRoute,
-  listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute,
+  listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute, mineSuggestionsRoute,
 };
 module.exports._internals = {
   requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe,
