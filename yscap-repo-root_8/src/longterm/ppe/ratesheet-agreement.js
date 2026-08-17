@@ -34,6 +34,16 @@ const { describeScenario } = require('./scenario-matrix');
 
 const ERROR_KIND = 'engine_error';
 
+// LLPA families Lender Price prices that our confirmed Deephaven sheet does NOT encode yet — measured
+// live 2026-08-17 (§2.6): loan-amount tiers, interest-only, escrow-waiver, non-warrantable(-condo).
+// These are the "next encode target" (task #62) and each needs a per-cell live re-measure sweep first,
+// so they can never be GUESSED. This set is used ONLY to LABEL the gate report — a disagreement in one
+// of these families is STILL a disagreement that blocks `gateMet` (owner HARD RULE: agree on every LLPA
+// to the penny). Its only job is to let a live 200-scenario run separate "the 4 families we already
+// know we must measure" from a genuine sheet bug in a cell we DO encode. Adding a family here after it
+// is encoded (so it stops disagreeing) is harmless; leaving one out only mislabels it as a `surprise`.
+const KNOWN_UNENCODED_FAMILIES = new Set(['loan_amount', 'interest_only', 'escrow_waiver', 'non_warrantable']);
+
 function isNum(x) { return typeof x === 'number' && Number.isFinite(x); }
 
 // Our ladder rung → the reconcileLlpas our-side shape. A rung's normalized adjustments (pricing.js)
@@ -233,7 +243,9 @@ function summarize(results) {
   const list = Array.isArray(results) ? results : [];
   let agreed = 0; let disagreed = 0; let incomparable = 0; let errors = 0;
   const byCategory = {};
-  const byDimension = {};
+  const byDimension = {};        // dimension -> count of disagreeing rows (back-compat: a NUMBER)
+  const byDimensionStatus = {};  // dimension -> { llpa_mismatch, llpa_missing_ours, llpa_extra_ours }
+  const byStatus = {};           // status -> total across every dimension
   const disagreeing = [];
   for (const r of list) {
     if (!r) continue;
@@ -245,9 +257,33 @@ function summarize(results) {
     }
     for (const rec of (r.rungReconciles || [])) {
       for (const it of (rec.itemized || [])) {
-        if (it.deltaMilli !== 0) byDimension[it.dimension] = (byDimension[it.dimension] || 0) + 1;
+        if (it.deltaMilli === 0) continue;
+        byDimension[it.dimension] = (byDimension[it.dimension] || 0) + 1;
+        // reconcileLlpas stamps every non-match row with a status: llpa_missing_ours (LP prices a
+        // dimension we carry NO adjustment for — the four unencoded families), llpa_mismatch (a cell we
+        // DO encode but the number is off — a real sheet bug), or llpa_extra_ours (we price something LP
+        // does not). Tally per dimension AND overall so the gate report is actionable.
+        const st = it.status || 'llpa_mismatch';
+        const bucket = byDimensionStatus[it.dimension] || (byDimensionStatus[it.dimension] = {});
+        bucket[st] = (bucket[st] || 0) + 1;
+        byStatus[st] = (byStatus[st] || 0) + 1;
       }
     }
+  }
+  // Split the disagreeing DIMENSIONS into the two piles a human actually needs kept apart. A dimension is
+  // `pendingEncode` only when EVERY disagreeing row in it is `llpa_missing_ours` AND it is a documented
+  // known-unencoded family — i.e. LP prices a whole family our sheet does not carry yet (task #62), not a
+  // cell we got wrong. Anything else is a `surprise` that must be resolved before agreement can be
+  // claimed: a real cell mismatch, an extra LLPA of ours, a missing family we did NOT expect, or a known
+  // family that ALSO shows a mismatch (so it is no longer purely "unencoded"). `gateMet` is unchanged —
+  // BOTH piles still block the gate; this only labels them.
+  const pendingEncodeFamilies = [];
+  const surprises = [];
+  for (const dim of Object.keys(byDimensionStatus).sort()) {
+    const statuses = Object.keys(byDimensionStatus[dim]);
+    const purelyMissing = statuses.length === 1 && statuses[0] === 'llpa_missing_ours';
+    if (purelyMissing && KNOWN_UNENCODED_FAMILIES.has(dim)) pendingEncodeFamilies.push(dim);
+    else surprises.push(dim);
   }
   const comparable = agreed + disagreed;
   return {
@@ -260,6 +296,10 @@ function summarize(results) {
     agreementRate: comparable ? agreed / comparable : null,
     byCategory,
     byDimension,
+    byDimensionStatus,
+    byStatus,
+    pendingEncodeFamilies,
+    surprises,
     disagreeing: disagreeing.slice(0, 50),
     gateMet: errors === 0 && disagreed === 0 && comparable > 0,
   };
@@ -270,5 +310,6 @@ module.exports = {
   runOne,
   summarize,
   ERROR_KIND,
+  KNOWN_UNENCODED_FAMILIES,
   _internals: { ourAdjustmentsOf, bestRungsOf, matchByRate },
 };

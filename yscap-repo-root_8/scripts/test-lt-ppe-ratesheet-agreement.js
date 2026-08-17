@@ -147,6 +147,43 @@ async function main() {
   const dirty = await agreement.runRatesheetAgreement([CASHOUT], { ours, lp: () => ({ full: lpFull(OFFSET_OPTS), disqualified: { ready: true, lenders: [] } }) }, OPTS);
   ok(dirty.summary.gateMet === false && dirty.summary.byDimension.purpose === 1 && dirty.summary.byDimension.loan_amount === 1,
     '  a single offsetting disagreement fails the gate and names both dimensions');
+  // the report SPLITS the two disagreeing dimensions: purpose is a cell we DO encode that is wrong (a
+  // SURPRISE), loan_amount is a whole family our sheet does not carry yet (a KNOWN unencoded family).
+  ok(JSON.stringify(dirty.summary.surprises) === JSON.stringify(['purpose'])
+    && JSON.stringify(dirty.summary.pendingEncodeFamilies) === JSON.stringify(['loan_amount']),
+    '  and it labels them apart: purpose = surprise, loan_amount = known-unencoded family (task #62)');
+  ok(dirty.summary.byStatus.llpa_mismatch === 1 && dirty.summary.byStatus.llpa_missing_ours === 1
+    && dirty.summary.byDimensionStatus.loan_amount.llpa_missing_ours === 1,
+    '  byStatus / byDimensionStatus break the disagreements down by kind');
+
+  // ---- 7b) a WHOLE missing family (task #62) is labelled pendingEncode, NOT a surprise ----------
+  // LP prices a loan-amount LLPA our sheet carries no cell for; purpose still matches to the penny, so
+  // the ONLY disagreement is llpa_missing_ours on a known-unencoded family. The gate still fails.
+  const MISSING_OPTS = AGREE_OPTS.map((o2, i) => (i === 1
+    ? lpOption(71.25, 102.100, -2.85, 0.5, [
+      { adjType: 'purpose', reason: 'Cash-Out', value: 0.5 },
+      { adjType: 'loanamount', reason: 'Loan amount > $1.5M', value: 0.3 },
+    ], 0.25)
+    : o2));
+  const miss = await agreement.runRatesheetAgreement([CASHOUT], { ours, lp: () => ({ full: lpFull(MISSING_OPTS), disqualified: { ready: true, lenders: [] } }) }, OPTS);
+  ok(miss.summary.gateMet === false && miss.summary.disagreed === 1,
+    'PENDING-ENCODE: a missing known family still FAILS the gate (owner HARD RULE — agree on every LLPA)');
+  ok(miss.summary.byStatus.llpa_missing_ours === 1 && miss.summary.byStatus.llpa_mismatch === undefined,
+    '  the sole disagreement is a missing-ours, never a mismatch');
+  ok(JSON.stringify(miss.summary.pendingEncodeFamilies) === JSON.stringify(['loan_amount'])
+    && miss.summary.surprises.length === 0,
+    '  loan_amount is labelled a known-unencoded family; there are NO surprises (nothing we encode is wrong)');
+
+  // ---- 7c) a WRONG encoded cell is a SURPRISE, never pendingEncode ------------------------------
+  const SURPRISE_OPTS = AGREE_OPTS.map((o2, i) => (i === 1
+    ? lpOption(71.25, 102.100, -2.85, 0.5, [{ adjType: 'purpose', reason: 'Cash-Out', value: 0.7 }], 0.25)
+    : o2));
+  const surp = await agreement.runRatesheetAgreement([CASHOUT], { ours, lp: () => ({ full: lpFull(SURPRISE_OPTS), disqualified: { ready: true, lenders: [] } }) }, OPTS);
+  ok(surp.summary.gateMet === false && surp.summary.byStatus.llpa_mismatch === 1,
+    'SURPRISE: a wrong encoded cell fails the gate as a llpa_mismatch');
+  ok(JSON.stringify(surp.summary.surprises) === JSON.stringify(['purpose'])
+    && surp.summary.pendingEncodeFamilies.length === 0,
+    '  purpose is a SURPRISE — a cell we encode is wrong; it is NEVER a known-unencoded family');
   // a batch that is only ever incomparable does NOT meet the gate (comparable === 0)
   const empty = await agreement.runRatesheetAgreement([CASHOUT], { ours, lp: () => ({ full: { programs: [] }, disqualified: { ready: true, lenders: [] } }) }, OPTS);
   ok(empty.summary.gateMet === false && empty.summary.comparable === 0 && empty.summary.incomparable === 1,

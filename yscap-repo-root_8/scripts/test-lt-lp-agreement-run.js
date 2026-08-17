@@ -113,6 +113,11 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
   console.log(`  agreement     ${summary.agreementRate == null ? 'n/a' : (summary.agreementRate * 100).toFixed(2) + '%'}`);
   if (Object.keys(summary.byCategory).length) console.log(`  by category   ${JSON.stringify(summary.byCategory)}`);
   if (Object.keys(summary.byDimension).length) console.log(`  by dimension  ${JSON.stringify(summary.byDimension)}`);
+  if (summary.byStatus && Object.keys(summary.byStatus).length) console.log(`  by status     ${JSON.stringify(summary.byStatus)}`);
+  // the two piles a human needs kept apart: whole families we already know we must measure (task #62),
+  // vs real surprises (a cell we DO encode got a number wrong, or something unexpected). BOTH block the gate.
+  if (summary.pendingEncodeFamilies && summary.pendingEncodeFamilies.length) console.log(`  pending encode ${summary.pendingEncodeFamilies.join(', ')}  (known-unmeasured families — §2.6 / task #62)`);
+  if (summary.surprises && summary.surprises.length) console.log(`  ⚠ surprises   ${summary.surprises.join(', ')}  (a cell we DO encode disagrees — investigate)`);
   if (summary.disagreeing.length) console.log(`  disagreeing   ${summary.disagreeing.slice(0, 10).join(' | ')}${summary.disagreeing.length > 10 ? ' …' : ''}`);
   console.log(`  GATE MET      ${summary.gateMet ? 'YES' : 'NO'}`);
 

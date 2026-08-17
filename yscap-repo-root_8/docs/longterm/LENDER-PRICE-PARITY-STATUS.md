@@ -563,6 +563,19 @@ spot-check. Headline: **our confirmed-subset sheet is CORRECT but INCOMPLETE.**
   <$150k), **interest-only**, **escrow-waiver**, **non-warrantable(-condo)**. These
   are the next encode target — but per-cell values across ALL CLTV bands need a
   focused re-measure sweep first (only the battery-hit cells were captured). Task #62.
+  - **Gate-report labelling for the four families (2026-08-17, offline):** the E3
+    orchestrator's `summarize()` now SPLITS the fine LLPA disagreements by kind — every
+    reconcile row already carries a `status` (`llpa_missing_ours` = LP prices a family we
+    carry no cell for; `llpa_mismatch` = a cell we DO encode is wrong; `llpa_extra_ours`) —
+    into `byDimensionStatus` + a `byStatus` roll-up, and derives two named piles:
+    `pendingEncodeFamilies` (a whole known-unencoded family — loan-amount / interest-only /
+    escrow-waiver / non-warrantable, `KNOWN_UNENCODED_FAMILIES`) vs `surprises` (a cell we
+    encode that disagrees, or anything unexpected). So a live 300-scenario run reads "these
+    51 disagreements are the 4 families we already know we must measure; zero surprises"
+    instead of one undifferentiated `byDimension` count. **`gateMet` is UNCHANGED — both
+    piles still block the gate** (owner HARD RULE: agree on every LLPA to the penny); this
+    only makes the report actionable. `test-lt-ppe-ratesheet-agreement.js` (26 assertions;
+    the split is mutation-proven — removing a family from the set mis-labels it a surprise).
 - **The 5%-Fixed model (D33) — SOLVED, MEASURED.** It is a prepay-STRUCTURE choice,
   not a program: `prepayStructure:'Fixed 5%'` → `PrePayment_Plan_Type='Fixed5'`
   (the token our `ppp-structures.fixed5` already carries), priced on the same
