@@ -24,6 +24,7 @@
 const { buildDeephavenGrid } = require('./deephaven-dscr-sheet');
 const { evaluateEligibility } = require('./deephaven-matrix');
 const { pppDisqualifier, pppResult } = require('./deephaven-ppp-matrix');
+const { evaluateInformational } = require('./informational');
 
 const INVESTOR = 'Deephaven';
 const PROGRAM_NAME = 'Deephaven DSCR'; // the investor name IS in the program name (owner rule)
@@ -47,11 +48,13 @@ function pppInputFromFacts(f) {
 }
 
 /**
- * The combined ELIGIBILITY verdict for Deephaven DSCR: the matrix layer AND the PPP layer.
+ * The combined ELIGIBILITY verdict for Deephaven DSCR: the matrix layer AND the PPP layer, PLUS the
+ * INFORMATIONAL layer (reserves / notes / the delegate exception — non-blocking; never changes eligible).
  * Returns { program, investor, eligible, reasons:[{layer, code, dimension, declineReason, citation}],
- *   maxLtvMilli, ppp:{result, terms}, unverifiable }.
+ *   maxLtvMilli, ppp:{result, terms}, unverifiable, reserves, informational[], exceptions[] }.
+ *   opts.monthlyPitia — the priced product's monthly PITIA, so the reserve DOLLAR is computable.
  */
-function evaluateProgram(facts) {
+function evaluateProgram(facts, opts = {}) {
   const elig = evaluateEligibility(facts);
   const reasons = elig.reasons.map((r) => ({ layer: 'eligibility_matrix', ...r }));
 
@@ -59,6 +62,9 @@ function evaluateProgram(facts) {
   const ppp = pppResult(pppInput);
   const pppDq = pppDisqualifier(pppInput);
   if (pppDq) reasons.push({ layer: 'ppp_matrix', ...pppDq });
+
+  // The informational layer enriches the product; it NEVER changes the eligible verdict.
+  const info = evaluateInformational(facts, { monthlyPitia: opts.monthlyPitia });
 
   return {
     program: PROGRAM_NAME,
@@ -69,6 +75,10 @@ function evaluateProgram(facts) {
     cell: elig.cell,
     ppp: { result: ppp.result, terms: ppp.terms || null, matched: ppp.matched },
     unverifiable: elig.unverifiable,
+    // informational product attributes (D26/D34) — reserves, notes, and the loud delegate exception.
+    reserves: info.reserves,
+    informational: info.informational,
+    exceptions: info.exceptions,
   };
 }
 
