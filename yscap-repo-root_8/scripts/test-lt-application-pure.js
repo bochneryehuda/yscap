@@ -168,6 +168,74 @@ for (const [key, spec] of Object.entries(mapper.PARTY_FIELDS)) {
 check(partyMismatch.length === 0,
   `and every party path with a measured id agrees with it${partyMismatch.length ? ` — ${partyMismatch.join('; ')}` : ''}`);
 
+console.log('\nthe terms, the PITIA and the DSCR');
+
+const TERMS_LOAN = {
+  loanAmortizationType: 'Fixed',
+  property: { loanPurposeType: 'Cash-Out Refinance' },
+  loanProductData: { lienPriorityType: 'FirstLien' },
+  regulationZ: { interestOnlyMonths: 120 },
+  requestedInterestRatePercent: 7.125,
+  proposedHousingExpenseTotal: 1700.81,
+  proposedFirstMortgageAmount: 1200,
+  proposedRealEstateTaxesAmount: 400,
+  subjectPropertyGrossRentalIncomeAmount: 2450,
+  applications: [{ borrower: { currentEmploymentDoesNotApply: true } }],
+  customFields: [
+    { fieldName: 'CUST01FV', value: '1.44' },
+    { fieldName: 'CX.PPPTERM', value: '60' },
+    { fieldName: 'CX.PPPTYPE', value: '5/4/3/2/1' },
+    // The recorded DEFECT: this field's LABEL says PITIA and its VALUE is a
+    // cash-from-borrower figure. Reading it is the mistake formulas.js warns about.
+    { fieldName: 'CX.PITIA', value: '911988.90' },
+  ],
+};
+
+const T = mapper.readLoanTerms(TERMS_LOAN);
+check(T.amortizationType === 'fixed' && T.loanPurpose === 'cash_out_refinance' && T.lienPosition === 'first',
+  'the tenant\'s own words land in our enums — "Cash-Out Refinance" and "FirstLien" are its spellings, not ours');
+check(T.interestOnlyMonths === 120 && T.noteRatePct === 7.125,
+  'the interest-only period is read in MONTHS, which is the number that tells the programs apart');
+check(T.housingExpenseTotal === 1700.81,
+  'the PITIA total is field 912\'s own figure');
+check(T.expenseFirstMortgagePi === 1200 && T.expenseRealEstateTaxes === 400,
+  'and the components are stored beside it for the breakdown');
+check(T.housingExpenseTotal !== (T.expenseFirstMortgagePi + T.expenseRealEstateTaxes),
+  'the total is READ, never rebuilt from the parts — on 8% of this book the tax line is blank and the total is right, so adding them up understates the housing expense by about $1,300 a month, which INFLATES the DSCR and makes a deal look better than it is');
+check(T.dscrRatio === 1.44 && T.dscrSource === 'encompass',
+  'the DSCR is taken as the tenant stored it');
+check(T.dscrRatio !== 911988.90 && !JSON.stringify(T).includes('911988'),
+  'and CX.PITIA is NEVER read — it is filled on 99.6% of long-term files and does not hold a PITIA, which is a recorded defect');
+check(T.prepaymentPenaltyMonths === 60 && T.prepaymentPenaltyStructure === '5/4/3/2/1',
+  'the prepayment penalty comes off the tenant\'s own custom fields');
+check(T.employmentApplies === false,
+  'and "employment does not apply" — true on 98% of this book, because a DSCR loan qualifies on the property — is read as employment NOT applying');
+check(mapper.readLoanTerms({ ...TERMS_LOAN, applications: [{ borrower: {} }] }).employmentApplies === null,
+  'while an UNANSWERED flag is unanswered: reading a blank as "there is a job" would put an empty Employment section on nearly every long-term file');
+
+const NO_STORED = { ...TERMS_LOAN, customFields: [] };
+check(mapper.readLoanTerms(NO_STORED).dscrRatio === 1.44
+  && mapper.readLoanTerms(NO_STORED).dscrSource === 'computed',
+  'a file the tenant has not struck a DSCR on gets one by the SAME rule — Round(rent / total housing expense, 2), measured across the book and confirmed by the owner in his own words, so it is the same number rather than a second opinion');
+check(mapper.readLoanTerms({ ...NO_STORED, proposedHousingExpenseTotal: 0 }).dscrRatio === null,
+  '…and never on a denominator of zero: a DSCR of Infinity is not a coverage ratio');
+check(mapper.readLoanTerms({ ...NO_STORED, subjectPropertyGrossRentalIncomeAmount: undefined }).dscrRatio === null,
+  'nor with no rent to divide');
+
+check(T.armIndexName === undefined && !('armMarginPct' in T),
+  'the ARM block is ABSENT: this tenant has no field carrying an ARM index, margin or any cap — there is nowhere in it to record what makes an ARM an ARM, and filling those columns from anything available would be inventing loan terms');
+
+// Same rule as the property: the paths are the dictionary's, not a guess.
+const termMismatch = [];
+for (const [key, spec] of Object.entries(mapper.TERM_FIELDS)) {
+  const measured = jsonPathOf(spec.id);
+  if (!measured) { termMismatch.push(`${key}: id ${spec.id} is not in the dictionary`); continue; }
+  const want = measured.replace(/\[(\d+)\]/g, '.$1');
+  if (spec.paths[0] !== want) termMismatch.push(`${key}: reads ${spec.paths[0]}, measured at ${want}`);
+}
+check(termMismatch.length === 0,
+  `every loan-term path is the one the dictionary measured${termMismatch.length ? ` — ${termMismatch.join('; ')}` : ''}`);
+
 console.log('\nthe people on the file');
 
 const PAIRS_LOAN = {

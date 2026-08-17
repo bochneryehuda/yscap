@@ -250,6 +250,17 @@ async function readLoan(loanId, guid, settings) {
   // section reads and what its residences, employments, incomes, assets,
   // liabilities and declarations all hang off — so nothing else in the 1003 can
   // fill until these do. The SSN itself is never written; see application/sync.js.
+  // The loan's OWN terms — its amortization, its interest-only period, its
+  // prepayment penalty, the whole PITIA block and the DSCR. Twenty-seven columns
+  // db/549 carries, all of them read by the file's Terms section and the summary
+  // rail, none of them ever written. Same payload, same pass, no extra call.
+  let terms = null;
+  try {
+    terms = await application.syncLoanTerms(loanId, loan, { values });
+  } catch (e) {
+    terms = { ok: false, reason: (e && e.message) || String(e) };
+  }
+
   let pairs = null;
   try {
     pairs = await application.syncBorrowerPairs(loanId, loan);
@@ -263,7 +274,7 @@ async function readLoan(loanId, guid, settings) {
   const lockWrite = await locks.writeLock(loanId, lock);
 
   return { ok: true, milestoneName, stageKey, team, milestone: milestoneWrite,
-    lock: { ...lockWrite, posture: lock.posture }, property, pairs };
+    lock: { ...lockWrite, posture: lock.posture }, property, terms, pairs };
 }
 
 /**

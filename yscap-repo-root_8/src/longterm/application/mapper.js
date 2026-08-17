@@ -710,8 +710,138 @@ function readEmployments(borrower) {
   return out;
 }
 
+// ── The loan's own terms, its PITIA and its DSCR ─────────────────────────────
+
+/**
+ * A CUSTOM field, by name.
+ *
+ * The tenant's own fields arrive as `customFields: [{fieldName, value, format}]`,
+ * so a name lookup is a scan rather than a path — which is exactly why the field
+ * dictionary records these as a JSONPath filter. Three of the numbers a long-term
+ * file is judged on live here.
+ */
+function customField(loan, name) {
+  const list = loan && Array.isArray(loan.customFields) ? loan.customFields : [];
+  for (const f of list) {
+    if (f && typeof f === 'object' && String(f.fieldName) === name) return f.value;
+  }
+  return undefined;
+}
+
+/** Loan-level fields, each at the path the dictionary measured. */
+const TERM_FIELDS = {
+  amortizationType: { id: '608', paths: ['loanAmortizationType'] },
+  loanPurpose: { id: '19', paths: ['property.loanPurposeType'] },
+  lienPosition: { id: '420', paths: ['loanProductData.lienPriorityType'] },
+  interestOnlyMonths: { id: '1177', paths: ['regulationZ.interestOnlyMonths'] },
+  noteRatePct: { id: '3', paths: ['requestedInterestRatePercent'] },
+  housingExpenseTotal: { id: '912', paths: ['proposedHousingExpenseTotal'] },
+  expenseFirstMortgagePi: { id: '228', paths: ['proposedFirstMortgageAmount'] },
+  expenseOtherFinancingPi: { id: '229', paths: ['proposedOtherMortgagesAmount'] },
+  expenseHazardInsurance: { id: '230', paths: ['proposedHazardInsuranceAmount'] },
+  expenseRealEstateTaxes: { id: '1405', paths: ['proposedRealEstateTaxesAmount'] },
+  expenseAssociationDues: { id: '233', paths: ['proposedDuesAmount'] },
+  expenseOther: { id: '234', paths: ['proposedOtherAmount'] },
+  expenseSupplementalInsurance: { id: 'URLA.X144', paths: ['supplementalPropertyInsuranceAmount'] },
+  grossMonthlyRent: { id: '1005', paths: ['subjectPropertyGrossRentalIncomeAmount'] },
+  employmentDoesNotApply: { id: 'URLA.X199', paths: ['applications.0.borrower.currentEmploymentDoesNotApply'] },
+};
+
+const AMORTIZATION = { fixed: 'fixed', adjustable: 'adjustable', arm: 'adjustable' };
+const LIEN_POSITION = { firstlien: 'first', first: 'first', secondlien: 'second', second: 'second' };
+const LOAN_PURPOSE = {
+  purchase: 'purchase',
+  nocashoutrefinance: 'rate_term_refinance',
+  ratetermrefinance: 'rate_term_refinance',
+  refinance: 'rate_term_refinance',
+  cashoutrefinance: 'cash_out_refinance',
+};
+
+const enumOf = (map, v) => map[String(v === null || v === undefined ? '' : v).toLowerCase().replace(/[^a-z]/g, '')] || null;
+
+/**
+ * The loan's terms, its housing expense and its DSCR.
+ *
+ * THE TOTAL PITIA IS READ, NEVER REBUILT. The seven components sum to field 912
+ * on 91% of files; on the other 8% the TAX LINE is simply blank and the total is
+ * right, so adding the parts up would understate the housing expense by about
+ * $1,300 a month — which INFLATES the DSCR and makes a deal look better than it
+ * is. The components are stored beside the total for the breakdown, and the total
+ * is 912's own figure.
+ *
+ * CX.PITIA IS NEVER READ. It is filled on 99.6% of long-term files and it does
+ * not hold a PITIA — field 142 sits next to it in the tenant's own calculation,
+ * so it carries cash-from-borrower figures in the hundreds of thousands. That is
+ * a recorded defect (`encompass/formulas.js`), and reading the field whose LABEL
+ * says PITIA is exactly the mistake it warns about.
+ *
+ * THE DSCR IS TAKEN AS STORED, and only computed when the tenant has not. The
+ * formula is `Round([1005] / [912], 2)` — measured across the book AND confirmed
+ * by the owner in his own words on 2026-08-14 — so a computed ratio is the same
+ * number by the same rule rather than a second opinion. It is refused when the
+ * denominator is zero or absent: a DSCR of Infinity is not a coverage ratio.
+ *
+ * THE ARM BLOCK IS DELIBERATELY UNTOUCHED. This tenant has NO field carrying an
+ * ARM index, margin, first-adjustment cap, periodic cap or lifetime cap
+ * (DEFECT-NO-ARM-FIELDS) — there is nowhere in it to record what makes an ARM an
+ * ARM. Our model carries the columns so one can be described properly when there
+ * is somewhere to read it from; filling them from anything available today would
+ * be inventing loan terms.
+ */
+function readLoanTerms(loan, values) {
+  if (!loan || typeof loan !== 'object') return null;
+  const f = (key) => fieldOf(loan, TERM_FIELDS[key], values);
+
+  const stored = num(customField(loan, 'CUST01FV'));
+  const rent = num(f('grossMonthlyRent'));
+  const total = num(f('housingExpenseTotal'));
+  const computed = (rent !== null && total !== null && total > 0)
+    ? Math.round((rent / total) * 100) / 100
+    : null;
+
+  const notApply = bool(f('employmentDoesNotApply'));
+
+  const row = {
+    amortizationType: enumOf(AMORTIZATION, f('amortizationType')),
+    loanPurpose: enumOf(LOAN_PURPOSE, f('loanPurpose')),
+    lienPosition: enumOf(LIEN_POSITION, f('lienPosition')),
+    interestOnlyMonths: int(f('interestOnlyMonths')),
+    noteRatePct: num(f('noteRatePct')),
+
+    housingExpenseTotal: total,
+    expenseFirstMortgagePi: num(f('expenseFirstMortgagePi')),
+    expenseOtherFinancingPi: num(f('expenseOtherFinancingPi')),
+    expenseHazardInsurance: num(f('expenseHazardInsurance')),
+    expenseRealEstateTaxes: num(f('expenseRealEstateTaxes')),
+    expenseAssociationDues: num(f('expenseAssociationDues')),
+    expenseOther: num(f('expenseOther')),
+    expenseSupplementalInsurance: num(f('expenseSupplementalInsurance')),
+
+    dscrRatio: stored !== null ? stored : computed,
+    // Whose figure it is. A ratio we worked out and one the tenant stored are the
+    // same number by the same rule, but "where did this come from" is a question
+    // somebody asks about a DSCR eventually.
+    dscrSource: stored !== null ? 'encompass' : (computed !== null ? 'computed' : null),
+
+    prepaymentPenaltyMonths: int(customField(loan, 'CX.PPPTERM')),
+    prepaymentPenaltyStructure: text(customField(loan, 'CX.PPPTYPE')),
+
+    // An UNANSWERED flag is not "employment applies": it is true on 98% of this
+    // book, so reading a blank as "there is a job" would put an empty Employment
+    // section on nearly every long-term file.
+    employmentApplies: notApply === null ? null : !notApply,
+  };
+
+  const found = Object.entries(row)
+    .filter(([k]) => k !== 'dscrSource')
+    .filter(([, v]) => v !== null).length;
+  return { ...row, _found: found };
+}
+
 module.exports = {
   readSubjectProperty,
+  readLoanTerms,
+  TERM_FIELDS,
   readBorrowerPairs,
   readParty,
   readDeclarations,
@@ -723,5 +853,5 @@ module.exports = {
   readLiabilities,
   SUBJECT_FIELDS,
   PARTY_FIELDS,
-  _internals: { num, text, int, bool, at, fieldOf, partyValue, ssnLast4, ownerRole, acctLast4, durationMonths },
+  _internals: { num, text, int, bool, customField, enumOf, at, fieldOf, partyValue, ssnLast4, ownerRole, acctLast4, durationMonths },
 };

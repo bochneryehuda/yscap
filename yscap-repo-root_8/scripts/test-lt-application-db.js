@@ -65,6 +65,9 @@ const LOAN_FOR_READ = {
   loanAmortizationTermMonths: 360,
   loanProgramName: 'DSCR 30 Year Fixed',
   propertyAppraisedValueAmount: 415000,
+  // A rate NO other fixture uses, so the assertion below can only pass if the
+  // terms were written BY THE LOAN READ rather than by an earlier direct call.
+  requestedInterestRatePercent: 9.875,
   applications: [{
     id: 'app-read-1', legacyId: '_borrower1', propertyUsageType: 'Investor',
     borrower: {
@@ -81,11 +84,23 @@ const LOAN_FOR_READ = {
 
 const FULL_LOAN = {
   ltv: 65.5,
+  loanAmortizationType: 'Fixed',
+  loanProductData: { gsePropertyType: 'Detached', lienPriorityType: 'FirstLien' },
+  regulationZ: { interestOnlyMonths: 120 },
+  requestedInterestRatePercent: 7.125,
+  proposedHousingExpenseTotal: 1700.81,
+  proposedFirstMortgageAmount: 1200,
+  proposedRealEstateTaxesAmount: 400,
+  customFields: [
+    { fieldName: 'CUST01FV', value: '1.44' },
+    { fieldName: 'CX.PPPTERM', value: '60' },
+    { fieldName: 'CX.PPPTYPE', value: '5/4/3/2/1' },
+    { fieldName: 'CX.PITIA', value: '911988.90' },
+  ],
   subjectPropertyGrossRentalIncomeAmount: 4200,
   propertyAppraisedValueAmount: 725000,
   propertyEstimatedValueAmount: 700000,
   purchasePriceAmount: 640000,
-  loanProductData: { gsePropertyType: 'Detached' },
   applications: [{
     id: 'app-1', legacyId: '_borrower1', propertyUsageType: 'Investor',
     borrower: {
@@ -130,6 +145,7 @@ const FULL_LOAN = {
   property: {
     streetAddress: '11 Maple Ave', city: 'NEWARK', county: 'Essex',
     state: 'NJ', postalCode: '07103', financedNumberOfUnits: 2,
+    loanPurposeType: 'Cash-Out Refinance',
   },
 };
 
@@ -188,6 +204,32 @@ async function main() {
     const none = await db.query('SELECT count(*)::int AS n FROM lt_properties WHERE loan_id = $1::uuid', [loanId]);
     check(empty.ok && empty.written === false && empty.found === 0 && none.rows[0].n === 0,
       'a payload with no property figures files NOTHING — an empty row is indistinguishable from a property we read and found empty');
+
+    console.log('\nthe terms, the PITIA and the DSCR');
+
+    const t = await sync.syncLoanTerms(loanId, FULL_LOAN);
+    check(t.ok && t.written === true && t.dscrSource === 'encompass',
+      'the terms land, and the pass says where the DSCR came from');
+    const lt = (await db.query('SELECT * FROM lt_loans WHERE id = $1::uuid', [loanId])).rows[0];
+    check(lt.amortization_type === 'fixed' && lt.loan_purpose === 'cash_out_refinance'
+      && lt.lien_position === 'first' && lt.interest_only_months === 120,
+      'every enum column takes the value we bind, and every column the statement names exists');
+    check(Number(lt.housing_expense_total) === 1700.81 && Number(lt.dscr_ratio) === 1.44
+      && Number(lt.note_rate_pct) === 7.125,
+      'the PITIA, the DSCR and the note rate survive their numeric columns');
+    check(lt.prepayment_penalty_months === 60 && lt.prepayment_penalty_structure === '5/4/3/2/1',
+      'and so does the prepayment penalty, off the tenant\'s own custom fields');
+    check(lt.employment_applies === false,
+      'employment does not apply on this file, which is true of 98% of the book');
+    check(lt.arm_index_name === null && lt.arm_margin_pct === null,
+      'the ARM columns stay EMPTY — this tenant has no field to fill them from, and inventing loan terms is worse than an honest blank');
+
+    // A NOT NULL column with a default must never be pushed a null.
+    const thinTerms = await sync.syncLoanTerms(loanId, { requestedInterestRatePercent: 8 });
+    const lt2 = (await db.query('SELECT * FROM lt_loans WHERE id = $1::uuid', [loanId])).rows[0];
+    check(thinTerms.ok && lt2.amortization_type === 'fixed' && lt2.lien_position === 'first'
+      && Number(lt2.note_rate_pct) === 8 && Number(lt2.housing_expense_total) === 1700.81,
+      'a payload that says nothing about the amortization leaves the row\'s own value alone rather than failing the whole write on a NOT NULL column');
 
     console.log('\nthe people on the file');
 
@@ -365,6 +407,11 @@ async function main() {
     const out = await loanSync.readLoan(loanId, GUID, {});
     check(out.ok === true && calls.includes(`getLoan:${GUID}`),
       'the real loan read runs against the stubbed tenant');
+    check(!!out.terms && out.terms.ok === true,
+      '…and the terms too');
+    const rateAfterRead = (await db.query('SELECT note_rate_pct FROM lt_loans WHERE id = $1::uuid', [loanId])).rows[0];
+    check(Number(rateAfterRead.note_rate_pct) === 9.875,
+      'and the TERMS landed from that read — a rate no other fixture uses, so an earlier direct call could not have left it');
     check(!!out.pairs && out.pairs.ok === true && out.pairs.parties === 1,
       '…and it mirrors the people too, reporting what it did');
     const viaReadParty = await db.query(

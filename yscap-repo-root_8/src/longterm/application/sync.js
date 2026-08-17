@@ -85,6 +85,60 @@ async function syncSubjectProperty(loanId, loan, opts = {}) {
 }
 
 /**
+ * Mirror the loan's own terms, its housing expense and its DSCR.
+ *
+ * NOT NULL columns with defaults (`amortization_type`, `lien_position`,
+ * `product_kind`, `employment_applies`) are only ever written when we actually
+ * read one — the COALESCE keeps the default rather than pushing a null at a
+ * column that will not take it, so a payload that says nothing about the
+ * amortization leaves the row's `fixed` alone instead of failing the whole write.
+ *
+ * `dscr_source` is NOT a column and is deliberately not made one: db/549 has no
+ * place for it, adding one for a provenance note would be a schema change nobody
+ * asked for, and the value is reported to the caller where a sync screen can show
+ * it. If it ever needs to be durable, that is its own decision.
+ */
+async function syncLoanTerms(loanId, loan, opts = {}) {
+  const row = mapper.readLoanTerms(loan, opts.values);
+  if (!row) return { ok: false, reason: 'no loan payload to read the terms from' };
+  if (row._found === 0) {
+    return { ok: true, written: false, found: 0, reason: 'the payload carried no terms' };
+  }
+
+  const db = opts.db || lazy.db;
+  await db.query(
+    `UPDATE lt_loans SET
+       amortization_type              = COALESCE($2::lt_amortization_type, amortization_type),
+       loan_purpose                   = COALESCE($3::lt_loan_purpose, loan_purpose),
+       lien_position                  = COALESCE($4::lt_lien_position, lien_position),
+       interest_only_months           = COALESCE($5, interest_only_months),
+       note_rate_pct                  = COALESCE($6, note_rate_pct),
+       housing_expense_total          = COALESCE($7, housing_expense_total),
+       expense_first_mortgage_pi      = COALESCE($8, expense_first_mortgage_pi),
+       expense_other_financing_pi     = COALESCE($9, expense_other_financing_pi),
+       expense_hazard_insurance       = COALESCE($10, expense_hazard_insurance),
+       expense_real_estate_taxes      = COALESCE($11, expense_real_estate_taxes),
+       expense_association_dues       = COALESCE($12, expense_association_dues),
+       expense_other                  = COALESCE($13, expense_other),
+       expense_supplemental_insurance = COALESCE($14, expense_supplemental_insurance),
+       dscr_ratio                     = COALESCE($15, dscr_ratio),
+       prepayment_penalty_months      = COALESCE($16, prepayment_penalty_months),
+       prepayment_penalty_structure   = COALESCE($17, prepayment_penalty_structure),
+       employment_applies             = COALESCE($18, employment_applies),
+       updated_at                     = now()
+     WHERE id = $1::uuid`,
+    [loanId, row.amortizationType, row.loanPurpose, row.lienPosition,
+      row.interestOnlyMonths, row.noteRatePct, row.housingExpenseTotal,
+      row.expenseFirstMortgagePi, row.expenseOtherFinancingPi, row.expenseHazardInsurance,
+      row.expenseRealEstateTaxes, row.expenseAssociationDues, row.expenseOther,
+      row.expenseSupplementalInsurance, row.dscrRatio,
+      row.prepaymentPenaltyMonths, row.prepaymentPenaltyStructure, row.employmentApplies],
+  );
+
+  return { ok: true, written: true, found: row._found, dscr: row.dscrRatio, dscrSource: row.dscrSource };
+}
+
+/**
  * ONE child row on one person — a residence, an income, an REO property, an
  * asset, a debt.
  *
@@ -340,4 +394,4 @@ async function syncBorrowerPairs(loanId, loan, opts = {}) {
   return { ok: true, pairs: pairs.length, parties, children, unkeyed, orphaned };
 }
 
-module.exports = { syncSubjectProperty, syncBorrowerPairs };
+module.exports = { syncSubjectProperty, syncLoanTerms, syncBorrowerPairs };
