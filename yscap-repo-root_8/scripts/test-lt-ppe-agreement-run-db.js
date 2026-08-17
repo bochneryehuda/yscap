@@ -59,7 +59,16 @@ function stubRes() {
   r.json = (b) => { r.body = b; r.headersSent = true; return r; };
   return r;
 }
-const call = async (fn, req) => { const res = stubRes(); await fn(req, res); return res; };
+// A handler that THROWS is a defect this suite must REPORT, not die on: `wrap()` turns a throw into a
+// 500 in production, so the stub does the same here. Without it one bad path kills the run and every
+// assertion after it silently never executes — which reads exactly like a passing suite that stopped.
+const call = async (fn, req) => {
+  const res = stubRes();
+  try { await fn(req, res); } catch (e) {
+    if (!res.headersSent) res.status(500).json({ error: String((e && e.message) || e), threw: true });
+  }
+  return res;
+};
 const REQ = (over = {}) => Object.assign(
   { params: {}, body: {}, query: {}, actor: { id: null, email: 'harness@ys' } }, over,
 );

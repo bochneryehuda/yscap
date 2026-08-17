@@ -53,6 +53,22 @@ The three rows that covered it — `ratesheet-agreement.js`, `agreement-scenario
 `ratesheet-agreement-diff.js` — are struck off. The check caught them itself the moment the route
 landed, which is exactly what it is for.
 
+## The sheet's own dead cells — now wired
+
+`agreement-scenario-generator.js` derives a battery from a rate sheet's OWN compiled rules and reports
+every cell it cannot satisfy, with a reason: a transposed band (a minimum above its maximum) is the
+likeliest mistake when a human loads a vendor's grid, and it is invisible in every other way — the
+sheet publishes, quotes price, and the LLPA simply never applies. Nothing called it.
+`GET /api/lt/ppe/rate-sheets/:id/coverage` does now, and it does not take the generator's word for it:
+a cell counts as reachable only when the sheet was PRICED at that scenario and the rule's own trace
+shows it CONTRIBUTED. The check is FREE — no vendor call, no writes, no ledger row — which is what
+makes it the thing to run before spending a paid agreement battery.
+
+That route pulls `agreement-dimensions.js` (the shared dimension classifier the generator uses) and
+`coverage.js` (its golden/boundary/pairwise scenario layers) in with it, so all three rows are struck
+off. `coverage.js` still has a second, unbuilt caller waiting — the scenario playground (§2.11) — and
+that is not a reason to keep a row claiming nothing calls it.
+
 ---
 
 ## The ledger
@@ -60,8 +76,6 @@ landed, which is exactly what it is for.
 | Module | Why it is not wired yet | What would wire it |
 | --- | --- | --- |
 | `src/longterm/audience.js` | The investor-name block. No Long-Term client-facing surface exists yet, so there is nothing to scrub. | The first LT borrower/TPO payload — see above. |
-| `src/longterm/ppe/agreement-dimensions.js` | The shared dimension classifier for the SCALED per-program harness — a different entry point from the canonical battery, which is wired. | The per-program agreement run (#49). |
-| `src/longterm/ppe/agreement-scenario-generator.js` | Generates a per-program battery rather than the canonical one. | The per-program agreement run (#49). |
 | `src/longterm/ppe/disqualifier-reconciler.js` | Reconciles our declines against Lender Price's, per layer. | The per-program agreement run (#49). |
 | `src/longterm/ppe/rung-digest.js` | The compact rung-by-rung audit output of that run. | The per-program agreement run (#49). |
 | `src/longterm/ppe/program-audit.js` | The offline our-side half of the same harness (dead-rule / coverage profiler). | The per-program agreement run (#49). |
@@ -91,7 +105,6 @@ landed, which is exactly what it is for.
 | `src/longterm/ppe/cutover-store.js` | Its durable bridge. | As above. |
 | `src/longterm/ppe/best-execution.js` | Best-execution ranking across investors (§8.3). | A multi-investor search surface; there is one investor today. |
 | `src/longterm/ppe/lock.js` | Rate-lock lifecycle + the frozen price stack (§8). | Locks are not in scope for the visibility-only build. |
-| `src/longterm/ppe/coverage.js` | Scenario coverage generators (§10.3). | The scenario playground (§2.11 TO-BUILD). |
 | `src/longterm/ppe/divergence.js` | Divergence diagnosis — makes one disagreement actionable. | The findings screen showing a per-finding explanation. |
 | `src/longterm/ppe/parity-review.js` | The scenario review composer (ties P1 + P3 + P-DQ). | The manual-review UI (P8). |
 

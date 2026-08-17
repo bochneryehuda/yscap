@@ -72,6 +72,7 @@ const agreementStore = require('../ppe/agreement-store');
 const ratesheetAgreement = require('../ppe/ratesheet-agreement');
 const agreementScenarios = require('../ppe/agreement-scenarios');
 const lpAgreementLegs = require('../ppe/lp-agreement-legs');
+const agreementScenarioGenerator = require('../ppe/agreement-scenario-generator');
 const suggestionMiner = require('../ppe/suggestion-miner');
 const pricingBreakdown = require('../ppe/pricing-breakdown');
 const lpNormalizeFull = require('../ppe/lp-normalize-full');
@@ -1604,6 +1605,123 @@ async function agreementRoute(req, res) {
 }
 
 /**
+ * WHAT ON THIS SHEET CAN NOTHING EVER REACH? — the offline dead-cell guard.
+ *
+ * A rate sheet is loaded by a human from a vendor's PDF or spreadsheet, cell by cell, and a cell
+ * nobody can hit is invisible in every other way: the sheet publishes, quotes price, and the LLPA
+ * simply never applies. `agreement-scenario-generator` already answers this — it DERIVES a battery
+ * from the sheet's own compiled rules, synthesizes a facts bag per rule and then PROVES the synthesis
+ * by running the real `rules.js` evaluator, reporting the ones it could not satisfy WITH a reason.
+ * Nothing called it.
+ *
+ * TWO THINGS MAKE THIS WORTH A ROUTE RATHER THAN A SCRIPT. It is the check to run BEFORE the paid
+ * agreement battery — measuring a sheet against Lender Price is expensive, and a sheet with a
+ * contradictory cell (`fico_min 900, fico_max 800` — a transposed pair) should be fixed first. And it
+ * costs NOTHING: no vendor call, no writes, no ledger row, so it can be run on every save.
+ *
+ * IT DOES NOT TRUST THE GENERATOR'S OWN VERDICT. "Reachable" here means the sheet was actually
+ * PRICED at that scenario and the rule's own trace entry shows it CONTRIBUTED — an adjustment, a
+ * decline, or a bound. A rule the generator says is satisfiable and the engine then does not match is
+ * reported as its own disagreement rather than quietly counted as covered: the generator and the
+ * pricer reading one predicate differently is exactly the kind of thing this is for.
+ */
+const MAX_COVERAGE_SCENARIOS = 400;
+
+async function rateSheetCoverageRoute(req, res) {
+  const found = await resolveVersion(req, res);
+  if (!found) return undefined;
+
+  const { program, reason: noProgram } = await loadProgram(found.scope, found.versionId);
+  if (!program) {
+    return res.status(422).json({
+      error: 'This rate sheet cannot be priced yet, so there are no cells to check.',
+      reason: noProgram,
+    });
+  }
+  if (!Array.isArray(program.rules) || !program.rules.length) {
+    return res.json({
+      ok: true, scope: found.scope, versionId: found.versionId,
+      rules: { total: 0, reachable: 0, unreachable: [], disagreed: [] },
+      scenarios: { generated: 0, priced: 0, eligible: 0, ineligible: 0, errors: [], errorCount: 0 },
+      truncated: 0,
+      // A grid with no LLPAs and no ineligibility rows is a legitimate sheet, not an empty result.
+      note: 'This sheet carries a base grid and no adjustment or ineligibility rules, so there is nothing whose reachability could be in question.',
+    });
+  }
+
+  const { values: settings } = await resolveSettingsSafe(found.scope);
+  const built = agreementScenarioGenerator.buildProgramAgreementScenarios({
+    program,
+    opts: { maxScenarios: MAX_COVERAGE_SCENARIOS },
+  });
+  const scenarios = Array.isArray(built && built.scenarios) ? built.scenarios : [];
+
+  // Price every generated scenario. A scenario our OWN engine cannot price is a sheet defect in its
+  // own right (the `nearest_eighth` rounding-mode trap was exactly this shape), so the failures are
+  // reported rather than swallowed — bounded, with the full count beside the sample.
+  const quotes = new Array(scenarios.length);
+  const errors = [];
+  let eligible = 0; let ineligible = 0; let priced = 0;
+  for (let i = 0; i < scenarios.length; i += 1) {
+    try {
+      const q = quote.quoteProgram({ scenario: scenarios[i], program, settings });
+      quotes[i] = q;
+      priced += 1;
+      if (q.eligible) eligible += 1; else ineligible += 1;
+    } catch (e) {
+      quotes[i] = null;
+      errors.push({ scenario: scenarios[i]._label || `#${i}`, error: msgOf(e) });
+    }
+  }
+
+  const unreachable = [];
+  const disagreed = [];
+  let reachable = 0;
+  for (const r of (built.coverage && built.coverage.rules) || []) {
+    if (!r.targeted || r.scenarioIndex == null) {
+      unreachable.push({ code: r.code, kind: r.kind, dimension: r.dimension, reason: r.reason || 'no_scenario_targets_it' });
+      continue;
+    }
+    const q = quotes[r.scenarioIndex];
+    if (!q) {
+      disagreed.push({ code: r.code, kind: r.kind, reason: 'its scenario could not be priced' });
+      continue;
+    }
+    const t = (q.trace || []).find((x) => x.code === r.code);
+    if (t && t.matched && t.contribution) { reachable += 1; continue; }
+    disagreed.push({
+      code: r.code,
+      kind: r.kind,
+      // Stated as a disagreement between two readings of one predicate, never as "unreachable" — the
+      // fix is different, and so is who has to look at it.
+      reason: t ? 'the generator satisfied this rule but the pricer did not apply it' : 'the rule is not in the priced trace at all',
+    });
+  }
+
+  return res.json({
+    ok: true,
+    scope: found.scope,
+    versionId: found.versionId,
+    status: found.row.status,
+    rules: { total: (built.coverage && built.coverage.total) || 0, reachable, unreachable, disagreed },
+    scenarios: {
+      generated: scenarios.length,
+      priced,
+      eligible,
+      ineligible,
+      errorCount: errors.length,
+      errors: errors.slice(0, 20),
+    },
+    // No silent caps, here as everywhere: a truncated battery covers fewer cells than the sheet has.
+    truncated: built.meta && built.meta.truncated ? true : false,
+    budget: MAX_COVERAGE_SCENARIOS,
+    note: unreachable.length
+      ? 'Each unreachable cell is a cell no loan can ever land in — usually a transposed band (a minimum above its maximum) or a rule another rule already excludes.'
+      : 'Every encoded cell on this sheet was reached by a generated scenario and applied by the pricer.',
+  });
+}
+
+/**
  * RUN the ≥200-scenario Lender Price agreement harness against this sheet, and RECORD the verdict.
  *
  * THE MISSING HALF OF THE GATE. `ratesheet-agreement.js` has always MEASURED the owner's hard rule,
@@ -1821,6 +1939,7 @@ router.get('/rate-sheets/:id', requirePpeAdmin, wrap(getRateSheetRoute, 'lt_ppe_
 router.put('/rate-sheets/:id/base-prices', requirePpeAdmin, wrap(setBasePricesRoute, 'lt_ppe_base_prices_error'));
 router.put('/rate-sheets/:id/adjustments', requirePpeAdmin, wrap(setAdjustmentsRoute, 'lt_ppe_adjustments_error'));
 router.put('/rate-sheets/:id/price-limit', requirePpeAdmin, wrap(setPriceLimitRoute, 'lt_ppe_price_limit_error'));
+router.get('/rate-sheets/:id/coverage', requirePpeAdmin, wrap(rateSheetCoverageRoute, 'lt_ppe_ratesheet_coverage_error'));
 router.get('/rate-sheets/:id/agreement', requirePpeAdmin, wrap(agreementRoute, 'lt_ppe_agreement_read_error'));
 router.post('/rate-sheets/:id/agreement/run', requirePpeAdmin, wrap(runAgreementRoute, 'lt_ppe_agreement_run_error'));
 router.post('/rate-sheets/:id/publish', requirePpeAdmin, wrap(publishRateSheetRoute, 'lt_ppe_publish_error'));
@@ -1832,11 +1951,11 @@ module.exports.handlers = {
   ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute, parityCellsRoute, listProgramsRoute,
   listSchedulesRoute, saveScheduleRoute, deleteScheduleRoute, canaryTickRoute,
   createInvestorRoute, createProgramRoute, createRateSheetRoute, getRateSheetRoute,
-  setBasePricesRoute, setAdjustmentsRoute, setPriceLimitRoute, agreementRoute, runAgreementRoute,
+  setBasePricesRoute, setAdjustmentsRoute, setPriceLimitRoute, rateSheetCoverageRoute, agreementRoute, runAgreementRoute,
   publishRateSheetRoute,
 };
 module.exports._internals = {
   requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe,
   MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K, programLabel, resolveBattery, runBattery, msgOf,
-  resolveVersion, numOrNull, textOrNull, MAX_SHEET_ROWS, MAX_AGREEMENT_SCENARIOS,
+  resolveVersion, numOrNull, textOrNull, MAX_SHEET_ROWS, MAX_AGREEMENT_SCENARIOS, MAX_COVERAGE_SCENARIOS,
 };
