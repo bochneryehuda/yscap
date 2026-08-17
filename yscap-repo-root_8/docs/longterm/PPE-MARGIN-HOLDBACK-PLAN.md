@@ -175,13 +175,21 @@ input; holdback has no pipeline consumer yet — on purpose (see §5).
 
 ## 5. Layers 2–6 — the plan (NOT built; the money step needs the owner)
 
-### Layer 2 — wire the resolved margin into the pipeline caller (LOW risk)
-The façade that prices a scenario resolves `resolveMarginHoldbackForInvestor(...)` for the scenario's
-investor + facts, and passes `marginMilli` into `pricing.priceRung`. This is a pure plumbing change —
-`priceRung` already subtracts `marginMilli`. It changes today's behavior only if a per-investor or
-per-scenario margin override is actually SET (none are seeded, so the 250 default keeps every price
-identical). **This is safe to build without new money rules** because the margin math already exists and
-is unchanged; only the SOURCE of the number becomes per-investor.
+### Layer 2 — the opt-in per-investor margin hook (the MECHANISM is BUILT; the DB caller is planned)
+`quote.quoteProgram` now accepts an OPTIONAL `marginHoldback` input (the exact shape
+`resolveMarginHoldback` / `resolveMarginHoldbackForInvestor` returns). When the caller passes it, its
+`marginMilli` OVERRIDES the settings margin and its `holdbackMilli` is carried into the reconstruction
+record's `pricingBasis` (`marginSource` reports `settings` vs `resolved`). When NOTHING is passed, the
+quote is **BYTE-IDENTICAL to before** — proven in `test-lt-ppe-quote.js` §10 (a JSON compare of the
+whole ladder), so today's pricing is untouched. A garbage resolved margin (negative/non-integer) falls
+back to the settings margin. `priceRung` already subtracts `marginMilli`, so only the SOURCE of the
+number changed — no money math moved.
+
+**Still planned (needs a DB-aware caller):** the façade/route that actually prices a scenario resolves
+`resolveMarginHoldbackForInvestor(db, program.investorCode, scenarioFacts)` and passes the result in as
+`marginHoldback`. That is a pure plumbing change on top of the hook above; because no per-investor
+overrides are seeded, it keeps every price identical until an admin sets one. **Holdback is carried but
+never applied** by this layer — see Layer 3.
 
 ### Layer 3 — wire holdback into the final rate (⚠️ MONEY RULE — needs the owner)
 Holdback has no pipeline consumer today because **how holdback combines into the final borrower rate is
