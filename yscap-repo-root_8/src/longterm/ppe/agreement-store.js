@@ -99,6 +99,21 @@ function gateDecision(records) {
       run: latest,
     };
   }
+  // A THIRD ANSWER, and it only became reachable once something actually ran the harness. `gateMet` is
+  // `errors === 0 && disagreed === 0 && comparable > 0`, so a run where Lender Price returned no usable
+  // answer on a single scenario — the upstream degraded, the account lost its entitlement, our filter
+  // matched none of its programs — fails the gate with ZERO disagreements and ZERO errors. Reporting
+  // that as "it disagrees" sends somebody to fix a sheet that may be perfectly correct, which is the
+  // same collapse this module's header refuses for "never measured" vs "measured and failed". It is
+  // NOT proven either: a run that compared nothing proves nothing.
+  if (latest.gateMet !== true && latest.comparable === 0) {
+    return {
+      proven: false,
+      reason: 'nothing_comparable',
+      message: `The last agreement run priced ${latest.scenarios} scenario${latest.scenarios === 1 ? '' : 's'} and Lender Price gave a usable answer on none of them, so nothing is known about whether this sheet agrees.`,
+      run: latest,
+    };
+  }
   if (latest.gateMet !== true) {
     return {
       proven: false,
@@ -140,13 +155,19 @@ async function recordRun(scope, opts = {}) {
   const nowMs = num(opts.nowMs);
   if (nowMs == null) return { ok: false, reason: 'no_clock', message: 'No clock was supplied, so the run cannot be stamped.' };
   const s = opts.summary || {};
+  // THE HARNESS CALLS IT `total`. `ratesheet-agreement.summarize()` returns `{ total, agreed,
+  // disagreed, incomparable, errors, comparable, gateMet }` — every key this row stores lines up by
+  // name EXCEPT the battery size, which it names `total`. Reading `s.scenarios` alone stored a 0 for
+  // every real run: a recorded verdict claiming it had compared nothing, next to counts saying it had
+  // compared hundreds. Both names are accepted, `scenarios` first so a caller that states it wins.
+  const scenarioCount = s.scenarios != null ? s.scenarios : s.total;
   const r = await db.query(
     `INSERT INTO lt_ppe_ratesheet_agreement
        (scope, rate_sheet_version_id, kind, gate_met, scenarios, comparable, agreed, disagreed, errors, summary, recorded_by, recorded_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12)
      RETURNING *`,
     [scope || 'company', versionId, KIND_RUN, s.gateMet === true,
-      int(s.scenarios), int(s.comparable), int(s.agreed), int(s.disagreed), int(s.errors),
+      int(scenarioCount), int(s.comparable), int(s.agreed), int(s.disagreed), int(s.errors),
       JSON.stringify(s), opts.recordedBy || null, nowMs],
   );
   return { ok: true, record: rowToRecord(r.rows[0]) };

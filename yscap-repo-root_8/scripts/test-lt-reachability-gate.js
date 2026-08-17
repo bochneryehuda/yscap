@@ -126,8 +126,12 @@ module.exports = live;
   // reachable this test fails and the write-up must be corrected in the same commit.
   ok(unreachable.some((f) => rel(f).endsWith('src/longterm/audience.js')),
     'R14 audience.js is still uncalled by production code — the ledger says so, so it must be true');
-  ok(unreachable.some((f) => rel(f).endsWith('src/longterm/ppe/ratesheet-agreement.js')),
-    'R15 …and so is the agreement harness, which is why the publish gate can only be passed by override today');
+  // The agreement harness is the one this check has already MOVED. It was unreachable when the ledger
+  // was written — which is why the publish gate could only ever be passed by the recorded override —
+  // and the run route wired it. The assertion is INVERTED rather than deleted, because the ledger's
+  // prose now claims it is wired and an unbacked claim in that file is exactly what it warns about.
+  ok(!unreachable.some((f) => rel(f).endsWith('src/longterm/ppe/ratesheet-agreement.js')),
+    'R15 …and the agreement harness IS wired now, so the publish gate can be passed by measurement rather than only by override');
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });

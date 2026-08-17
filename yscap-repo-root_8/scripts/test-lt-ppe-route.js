@@ -88,14 +88,16 @@ console.log('/api/lt/ppe/* — the PPE HTTP surface');
 // 1) the router itself
 // ---------------------------------------------------------------------------
 ok(typeof route === 'function' && typeof route.use === 'function', 'the module IS an express router (server.js can mount it)');
-// 32 since the ONBOARDING + RATE-SHEET CONSOLE became reachable — create an investor, create a
+// 33 since the agreement HARNESS became reachable — the gate's missing measuring half, so a sheet
+// can be made publishable by being MEASURED rather than only by the recorded override.
+// 32 was the ONBOARDING + RATE-SHEET CONSOLE — create an investor, create a
 // program, open a draft version, load its grid / LLPAs / price limits, read it back, read the
 // agreement gate, and publish. Before them EVERY rate-sheet writer in ppe/store.js had zero callers
 // anywhere in src/, so an investor could not be onboarded through the product at all and the
 // ≥200-scenario agreement gate guarded a door that did not exist. (23 was the canary schedule.)
 // This count is a deliberate guard: adding a handler without exporting/testing it should FAIL here, so
 // bump it in the same commit that adds one — never delete the assertion to make a build green.
-ok(Object.keys(H).length === 32, `all 32 handlers are exported for testing (${Object.keys(H).length})`);
+ok(Object.keys(H).length === 33, `all 33 handlers are exported for testing (${Object.keys(H).length})`);
 // A COUNT ALONE IS NOT ENOUGH: it stays satisfied if a handler is renamed, or if one is dropped in the
 // same commit another is added. Naming them is what makes the guard bite on either.
 for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSuggestionRoute',
@@ -104,7 +106,7 @@ for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSug
   'listSchedulesRoute', 'saveScheduleRoute', 'deleteScheduleRoute', 'canaryTickRoute',
   'createInvestorRoute', 'createProgramRoute', 'createRateSheetRoute', 'getRateSheetRoute',
   'setBasePricesRoute', 'setAdjustmentsRoute', 'setPriceLimitRoute', 'agreementRoute',
-  'publishRateSheetRoute']) {
+  'runAgreementRoute', 'publishRateSheetRoute']) {
   ok(typeof H[name] === 'function', `the ${name} handler is exported by name`);
 }
 

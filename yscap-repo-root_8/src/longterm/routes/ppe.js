@@ -69,6 +69,8 @@ const scenarioMatrix = require('../ppe/scenario-matrix');
 const ratesheet = require('../ppe/ratesheet');
 const ruleStore = require('../ppe/rule-store');
 const agreementStore = require('../ppe/agreement-store');
+const ratesheetAgreement = require('../ppe/ratesheet-agreement');
+const agreementScenarios = require('../ppe/agreement-scenarios');
 const suggestionMiner = require('../ppe/suggestion-miner');
 const pricingBreakdown = require('../ppe/pricing-breakdown');
 const lpNormalizeFull = require('../ppe/lp-normalize-full');
@@ -1345,6 +1347,9 @@ async function setProgramLpScopeRoute(req, res) {
 /** Bound on a single write, so one request cannot post an unbounded grid. */
 const MAX_SHEET_ROWS = 5000;
 
+/** A hard ceiling on one agreement run. Each scenario is a live, paid Lender Price call. */
+const MAX_AGREEMENT_SCENARIOS = 500;
+
 /** A finite number, else null — never NaN, never a coerced string into a numeric column. */
 function numOrNull(v) {
   if (v === undefined || v === null || v === '') return null;
@@ -1597,6 +1602,149 @@ async function agreementRoute(req, res) {
   });
 }
 
+/**
+ * RUN the ≥200-scenario Lender Price agreement harness against this sheet, and RECORD the verdict.
+ *
+ * THE MISSING HALF OF THE GATE. `ratesheet-agreement.js` has always MEASURED the owner's hard rule,
+ * and db/576 gave the verdict somewhere to live — but nothing ever called the harness, so no run
+ * could be recorded and the publish gate could only ever be passed by the recorded override. This is
+ * what makes the gate satisfiable the honest way: a sheet becomes publishable because it was
+ * MEASURED and agreed, never because somebody said it did. That is also why there is no route that
+ * takes a result in a request body, and why this one takes none.
+ *
+ * IT IS PULLED, NOT PUSHED — no timer, same as the canary tick. This prices the whole battery against
+ * a paid vendor, so a background loop firing it on its own schedule is the owner's decision, not a
+ * refactor's.
+ *
+ * IT REFUSES BEFORE IT SPENDS. A run with no resolvable program, or with the upstream not configured,
+ * would price N scenarios into N error verdicts that say nothing about agreement and cost real money
+ * — the same reasoning `runBattery` already applies to a canary with no program.
+ *
+ * A FAILING RUN IS RECORDED TOO, and that is deliberate: it moves the gate from "nobody has measured
+ * this" to "this disagrees", which are different answers that send a reader to different places.
+ */
+async function runAgreementRoute(req, res) {
+  const found = await resolveVersion(req, res);
+  if (!found) return undefined;
+
+  const { program, lpScope, reason: noProgram } = await loadProgram(found.scope, found.versionId);
+  if (!program) {
+    return res.status(422).json({
+      error: 'This rate sheet cannot be priced yet, so there is nothing to measure against Lender Price.',
+      reason: noProgram,
+    });
+  }
+  // THE COMPARISON MUST BE SCOPED, and an unscoped run is refused rather than run — the same rule the
+  // shadow façade already applies, and it matters more here. Lender Price answers a scenario with its
+  // WHOLE catalogue (an investor's seventeen product lines) while our sheet prices ONE; with no filter
+  // the harness would reconcile our single ladder against a merge of all of them, and whatever verdict
+  // came back — agree or disagree — would be about the wrong question. A recorded PASS from an
+  // unscoped run is the worst outcome available: it opens the publish gate on a measurement that
+  // measured something nobody asked for.
+  if (!lpScope) {
+    return res.status(422).json({
+      error: 'This program has no Lender Price scope, so a run could not tell which of their programs to compare against.',
+      reason: 'no_lp_scope',
+      remedy: 'Set the scope first with POST /api/lt/ppe/programs/:id/lp-scope, then run the harness.',
+    });
+  }
+
+  const lpClient = require('../lenderprice/client');
+  if (typeof lpClient.configured === 'function' && !lpClient.configured()) {
+    // Refused BEFORE the battery runs. Every scenario would come back an error verdict, the summary
+    // would read "0 comparable", and the gate would record a measurement that measured nothing.
+    return res.status(503).json({
+      error: 'Lender Price is not configured, so this sheet cannot be measured against it yet.',
+      reason: 'upstream_not_configured',
+    });
+  }
+
+  const { values: settings } = await resolveSettingsSafe(found.scope);
+  // `buildAgreementScenarios` returns **{ scenarios, count, byGroup }**, NOT an array. The first cut
+  // read `.length` off that object: undefined, so nothing was ever capped and the OBJECT itself was
+  // handed to the harness — which reads a non-array as an EMPTY list. The run then measured zero
+  // scenarios, summarized them as a clean nothing, and recorded a verdict against a sheet it had never
+  // compared. That is the exact shape this route exists to prevent, so an empty battery is a refusal
+  // rather than a run: there is no honest verdict to record when there is nothing to measure.
+  const built = agreementScenarios.buildAgreementScenarios();
+  const all = Array.isArray(built && built.scenarios) ? built.scenarios : [];
+  if (!all.length) {
+    return res.status(500).json({
+      error: 'The agreement battery came back empty, so there is nothing to measure and nothing will be recorded.',
+      reason: 'empty_battery',
+    });
+  }
+  const capped = all.length > MAX_AGREEMENT_SCENARIOS;
+  const battery = capped ? all.slice(0, MAX_AGREEMENT_SCENARIOS) : all;
+
+  let run;
+  try {
+    run = await ratesheetAgreement.runRatesheetAgreement(
+      battery,
+      {
+        ours: (sc) => quote.quoteProgram({ scenario: sc, program, settings }),
+        lp: (sc) => lpClient.price(sc),
+      },
+      {
+        // The stored scope, never a body value — same reasoning as the shadow route: a caller-supplied
+        // filter is a second source for one fact, and `programLike` is compiled with `new RegExp`.
+        filter: lpScope,
+        priceToleranceMilli: settings[K.priceTolerance],
+        rateToleranceMilli: settings[K.rateTolerance],
+        concurrency: intIn(req.body && req.body.concurrency, 8) || 4,
+      },
+    );
+  } catch (e) {
+    return res.status(502).json({ error: `The agreement run could not finish: ${msgOf(e)}`, reason: 'run_failed' });
+  }
+
+  // THE RECORD IS THE POINT, so a failure to store it is reported as a failure — not as a run that
+  // "worked". A caller told the sheet agreed, whose verdict never reached the ledger, would press
+  // Publish and be refused with `never_measured` and no idea why.
+  const rec = await agreementStore.recordRun(found.scope, {
+    db,
+    versionId: found.versionId,
+    summary: run.summary,
+    recordedBy: (req.actor && (req.actor.email || req.actor.id)) || null,
+    nowMs: Date.now(),
+  });
+  // No silent caps: if the battery was trimmed the caller is told, because a run over fewer scenarios
+  // than intended is a weaker claim than the one they asked for.
+  const measured = {
+    scope: found.scope,
+    versionId: found.versionId,
+    scenarios: battery.length,
+    truncated: capped ? all.length - battery.length : 0,
+    summary: run.summary,
+  };
+
+  if (!rec.ok) {
+    // A FAILED RECORD IS A FAILED RUN, answered as one. The measurement still rides along — the
+    // battery has already been priced against a paid vendor and throwing the answer away to make a
+    // point would be worse — but the caller is never told "ok" about a verdict that did not land.
+    // Silently returning 200 here is precisely how somebody presses Publish, is refused with
+    // `never_measured`, and has no way to know the run they just watched succeed was never stored.
+    return res.status(500).json({
+      ok: false,
+      error: 'The agreement run finished but its verdict could not be recorded, so this sheet is still unmeasured as far as the publish gate is concerned.',
+      reason: 'not_recorded',
+      recorded: false,
+      recordError: rec.message || rec.reason || null,
+      ...measured,
+    });
+  }
+
+  const gate = await agreementStore.gateStatus(found.scope, found.versionId, { db });
+
+  return res.json({
+    ok: true,
+    ...measured,
+    recorded: true,
+    recordError: null,
+    gate: { proven: gate.proven, reason: gate.reason, message: gate.message },
+  });
+}
+
 async function publishRateSheetRoute(req, res) {
   const found = await resolveVersion(req, res);
   if (!found) return undefined;
@@ -1663,6 +1811,7 @@ router.put('/rate-sheets/:id/base-prices', requirePpeAdmin, wrap(setBasePricesRo
 router.put('/rate-sheets/:id/adjustments', requirePpeAdmin, wrap(setAdjustmentsRoute, 'lt_ppe_adjustments_error'));
 router.put('/rate-sheets/:id/price-limit', requirePpeAdmin, wrap(setPriceLimitRoute, 'lt_ppe_price_limit_error'));
 router.get('/rate-sheets/:id/agreement', requirePpeAdmin, wrap(agreementRoute, 'lt_ppe_agreement_read_error'));
+router.post('/rate-sheets/:id/agreement/run', requirePpeAdmin, wrap(runAgreementRoute, 'lt_ppe_agreement_run_error'));
 router.post('/rate-sheets/:id/publish', requirePpeAdmin, wrap(publishRateSheetRoute, 'lt_ppe_publish_error'));
 
 module.exports = router;
@@ -1672,10 +1821,11 @@ module.exports.handlers = {
   ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute, parityCellsRoute, listProgramsRoute,
   listSchedulesRoute, saveScheduleRoute, deleteScheduleRoute, canaryTickRoute,
   createInvestorRoute, createProgramRoute, createRateSheetRoute, getRateSheetRoute,
-  setBasePricesRoute, setAdjustmentsRoute, setPriceLimitRoute, agreementRoute, publishRateSheetRoute,
+  setBasePricesRoute, setAdjustmentsRoute, setPriceLimitRoute, agreementRoute, runAgreementRoute,
+  publishRateSheetRoute,
 };
 module.exports._internals = {
   requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe,
   MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K, programLabel, resolveBattery, runBattery, msgOf,
-  resolveVersion, numOrNull, textOrNull, MAX_SHEET_ROWS,
+  resolveVersion, numOrNull, textOrNull, MAX_SHEET_ROWS, MAX_AGREEMENT_SCENARIOS,
 };

@@ -224,8 +224,20 @@ const REQ = (over = {}) => Object.assign({ params: {}, body: {}, query: {}, acto
     // Rule 3 — no typed agreement result.
     const routeSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'routes', 'ppe.js'), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');   // comments stripped: a guard must never be satisfied by the prose explaining it
-    ok(!/agreementStore\.recordRun/.test(routeSrc),
-      'D8 NO route records an agreement RUN — a typed "agreed on 240 scenarios" would satisfy the gate with nothing compared');
+    // THIS GUARD WAS NARROWED WHEN THE HARNESS WAS WIRED, and the property it protects did not move.
+    // It used to read "no route records a run at all", which was true only because nothing could
+    // measure a sheet yet — and reading it as the rule would have banned the measuring half of the
+    // gate forever. What must never exist is a route that records a verdict it was TOLD, so: exactly
+    // one recorder, and the numbers it stores are the harness's own return value.
+    const recCalls = routeSrc.match(/agreementStore\.recordRun\(/g) || [];
+    ok(recCalls.length === 1,
+      'D8 exactly ONE route records an agreement run — a second recorder is a second chance to store a verdict nobody measured');
+    const recAt = routeSrc.indexOf('agreementStore.recordRun(');
+    const recBlock = routeSrc.slice(recAt, routeSrc.indexOf('});', recAt) + 3);
+    ok(/summary:\s*run\.summary/.test(recBlock) && !/req\.body|\bb\./.test(recBlock),
+      'D8b …and what it stores is the harness\'s OWN result, never anything from the request body');
+    ok(/ratesheetAgreement\.runRatesheetAgreement\(/.test(routeSrc),
+      'D8c …which exists only because the battery was actually run against Lender Price');
     ok(/agreementStore\.recordOverride|store\.publishRateSheetVersion/.test(routeSrc),
       'D9 …while the override path (which is honest about being one) is wired');
 

@@ -37,14 +37,21 @@ because the codebase says it is the one definition. **Wire `maySeeField` / `stri
 `scrubInvestorNames` into the FIRST Long-Term client payload that exists, before it carries anything a
 client reads.**
 
-## The one that blocks the agreement gate
+## The one that blocked the agreement gate — now wired
 
-`ratesheet-agreement.js` MEASURES the ≥200-scenario rule and returns `summary.gateMet`. db/576 now
-keeps that verdict and `publishRateSheetVersion` refuses an unproven sheet — but **nothing calls the
-harness**, so no run can be recorded, so today the only way past the gate is the recorded override.
-That is by design for the moment (the harness needs live Lender Price credentials, and those are
-awaiting rotation), and it is the reason the override exists at all. Wiring it is the next real step
-once the login is reset.
+`ratesheet-agreement.js` MEASURES the ≥200-scenario rule and returns `summary.gateMet`. db/576 keeps
+that verdict and `publishRateSheetVersion` refuses an unproven sheet — but for a while **nothing
+called the harness**, so no run could be recorded and the only way past the gate was the recorded
+override. `POST /api/lt/ppe/rate-sheets/:id/agreement/run` now runs it and records the verdict, so a
+sheet can be made publishable by being MEASURED rather than only by somebody deciding to publish it
+anyway. It is PULLED, never scheduled — this prices the whole battery against a paid vendor, so a
+background loop firing it is the owner's decision, the same line drawn for the canary tick. It still
+cannot RUN until the Lender Price login is rotated; it refuses up front (`upstream_not_configured`)
+rather than spending a battery on error verdicts that would say nothing about agreement.
+
+The three rows that covered it — `ratesheet-agreement.js`, `agreement-scenarios.js` and
+`ratesheet-agreement-diff.js` — are struck off. The check caught them itself the moment the route
+landed, which is exactly what it is for.
 
 ---
 
@@ -53,10 +60,7 @@ once the login is reset.
 | Module | Why it is not wired yet | What would wire it |
 | --- | --- | --- |
 | `src/longterm/audience.js` | The investor-name block. No Long-Term client-facing surface exists yet, so there is nothing to scrub. | The first LT borrower/TPO payload — see above. |
-| `src/longterm/ppe/ratesheet-agreement.js` | The ≥200-scenario agreement harness. Needs live Lender Price credentials to run. | A route or scheduled run that records its verdict through `agreement-store.recordRun`. |
-| `src/longterm/ppe/agreement-scenarios.js` | The canonical battery the harness prices. | Wired with the harness above. |
-| `src/longterm/ppe/agreement-dimensions.js` | The shared dimension classifier for the scaled harness. | Wired with the harness above. |
-| `src/longterm/ppe/ratesheet-agreement-diff.js` | The two pure comparators the harness reconciles with. | Wired with the harness above. |
+| `src/longterm/ppe/agreement-dimensions.js` | The shared dimension classifier for the SCALED per-program harness — a different entry point from the canonical battery, which is wired. | The per-program agreement run (#49). |
 | `src/longterm/ppe/agreement-scenario-generator.js` | Generates a per-program battery rather than the canonical one. | The per-program agreement run (#49). |
 | `src/longterm/ppe/disqualifier-reconciler.js` | Reconciles our declines against Lender Price's, per layer. | The per-program agreement run (#49). |
 | `src/longterm/ppe/rung-digest.js` | The compact rung-by-rung audit output of that run. | The per-program agreement run (#49). |
