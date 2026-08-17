@@ -17,6 +17,7 @@ const { assertDescriptor } = require('../src/longterm/ppe/program-engine');
 const { buildMatrix } = require('../src/longterm/ppe/scenario-matrix');
 const deephaven = require('../src/longterm/ppe/program-deephaven-dscr');
 const { DEEPHAVEN_OVERLAY_CUTS } = require('../src/longterm/ppe/deephaven-overlay-rules');
+const { STATE_RULES } = require('../src/longterm/ppe/deephaven-ppp-matrix');
 
 let pass = 0; let fail = 0;
 function ok(c, l) { if (c) { pass++; console.log('  ok   ' + l); } else { fail++; console.log('  FAIL ' + l); } }
@@ -90,6 +91,31 @@ console.log('LT PPE — program self-audit (#49)\n');
   ok(Object.keys(d.stillUnverifiableCounts).some((k) => /Philadelphia/.test(k)) && d.stillUnverifiableCounts[Object.keys(d.stillUnverifiableCounts).find((k) => /Philadelphia/.test(k))] === scenarios.length, 'audit: the Philadelphia geo overlay is unverifiable on every scenario (a fact no layer carries)');
   // occupancy=vacant armed the D27 flag on the vacant half
   ok(Object.keys(d.stillFlaggedCounts).some((k) => /Vacant\/Unleased/.test(k)), 'audit: the vacant-occupancy D27 rule shows up in the stillFlagged tally');
+}
+
+// ---- D) LAYER-3 (PPP) REACHABILITY: every prohibition-capable state actually fires, over a FULL grid --
+// A dead PPP prohibition (a state whose rule can never trigger) would silently let a PPP through where it
+// is illegal. The expected code list is DERIVED from STATE_RULES (a state added later is covered for free).
+{
+  const canProhibit = Object.entries(STATE_RULES).filter(([, rules]) => rules.some((r) => r.result === 'prohibited')).map(([s]) => s);
+  const expected = canProhibit.map((s) => `dhvn_ppp_prohibited_${s.toLowerCase()}`);
+  ok(canProhibit.length >= 10, `STATE_RULES declares ${canProhibit.length} prohibition-capable states`);
+
+  const d = auditProgramMatrix(deephaven.PROGRAM.descriptor, {
+    state: canProhibit,
+    borrower_type: ['LLC', 'Individual'],           // → business_entity / natural_person
+    units: [1, 2, 4, 6],                            // spans the 1-4 vs 5+ bands
+    loan_amount: [50000, 100000, 116356, 120000, 329411, 400000, 832750, 900000, 1000000, 1100000], // spans the 2026 thresholds
+    apr: [7, 9],                                    // brackets the IL 8% high-cost line
+    rural_property: [false, true],                  // the LA trigger
+    prepay_months: [60],                            // a PPP is requested (else the layer never disqualifies)
+    fico: [760], dscr: [1250], ltv: [ltv(70)], purpose: ['purchase'],
+  }, { base: {}, maxScenarios: 1000000, expectedCodes: expected });
+
+  ok(d.coverage.truncated === false && d.neverFiredReliable === true, `PPP: the reachability grid is FULL (${d.coverage.sampled} scenarios, untruncated) — neverFired is trustworthy`);
+  ok(d.neverFired.length === 0, `PPP: EVERY prohibition-capable state's rule is reachable — no dead PPP rule (${expected.length} states, 0 never-fired)`);
+  if (d.neverFired.length) console.log('   never fired:', d.neverFired.join(', '));
+  ok(d.layerHitCounts.ppp_matrix > 0, 'PPP: the ppp_matrix layer declined scenarios in the grid');
 }
 
 // ---- C) COVERAGE GUARD: a truncated (strided) battery can FALSELY report a live rule as dead ---------
