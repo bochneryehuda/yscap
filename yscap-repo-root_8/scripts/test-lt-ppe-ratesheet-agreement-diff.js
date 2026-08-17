@@ -53,9 +53,61 @@ const lpTot = lpOffset.reduce((s, a) => s + a.valueMilli, 0);
 ok(ourTot === lpTot, 'the offsetting case: the STACK TOTALS are equal (300 == 300) — a total check would pass');
 const rOff = reconcileLlpas(ourOffset, lpOffset);
 ok(rOff.agree === false, '…but reconcileLlpas FAILS it (two cell errors that cancel in the total)');
+// The deltas are MAGNITUDE deltas (see reconcileLlpas: Lender Price publishes no direction on an
+// itemized line, so comparing our signed value against its magnitude flagged every credit in the book —
+// 8,344 lines on the live battery, all `ours === -lp`). loan_amount is ours −200 vs LP 0, which is a
+// 200-magnitude adjustment we apply and LP does not, so its delta reads +200 rather than the −200 this
+// assertion expected while the comparison was signed. The property under test is unchanged and still
+// holds: two cell errors that CANCEL in the stack total are still caught per dimension.
 ok(rOff.itemized.find((x) => x.dimension === 'fico_cltv_dscr').deltaMilli === 200
-  && rOff.itemized.find((x) => x.dimension === 'loan_amount').deltaMilli === -200,
-  'both offending dimensions are itemized with their real +200 / −200 deltas');
+  && rOff.itemized.find((x) => x.dimension === 'loan_amount').deltaMilli === 200,
+  'both offending dimensions are itemized with their real magnitude deltas (+200 / +200)');
+ok(rOff.itemized.find((x) => x.dimension === 'loan_amount').ourSignedMilli === -200,
+  '…and our SIGNED value rides along, so a reader still sees the direction we applied');
+
+// ---- LP PUBLISHES A MAGNITUDE, SO A CREDIT MUST NOT READ AS A DISAGREEMENT -------------------------
+// This is the defect that took the live battery from 82.71% to 20.34% — and it appeared only AFTER the
+// sheet's signs were CORRECTED, because the pre-rebuild sheet made every value positive and collided
+// with LP's magnitudes by accident. Direction is NOT knowable here; it is proven on the composed PRICE
+// in test-lt-ppe-deephaven-dscr-sheet.js. Do not re-add a signed comparison.
+{
+  const rCredit = reconcileLlpas(
+    [{ dimension: 'fico_cltv_dscr', adjMilli: -1000 }, { dimension: 'state', adjMilli: 375 }],
+    [{ adjType: 'FicoRateAdjustment', valueMilli: 1000, reason: 'DSCR (All) - 780+ / CLTV To 50.0%' },
+      { adjType: 'StatesRateAdjustment', valueMilli: 375, reason: 'Other - State of DC, MA, NJ, NY' }]);
+  ok(rCredit.agree === true, 'a CREDIT of 1.000 against LP\'s magnitude 1.000 AGREES (it used to read as a 2.000 gap)');
+  ok(rCredit.itemized.find((x) => x.dimension === 'fico_cltv_dscr').ourSignedMilli === -1000,
+    '…while still recording that OUR value was a credit');
+  ok(rCredit.itemized.credits === 1, 'and the credit is COUNTED, so a book that silently loses every credit is visible');
+  // A real size disagreement is still caught — magnitude-blind is not value-blind.
+  const rWrong = reconcileLlpas([{ dimension: 'fico_cltv_dscr', adjMilli: -1250 }],
+    [{ adjType: 'FicoRateAdjustment', valueMilli: 1000 }]);
+  ok(rWrong.agree === false && rWrong.itemized[0].deltaMilli === 250,
+    'a credit of the WRONG SIZE still disagrees (1.250 vs 1.000 → +0.250)');
+}
+
+// ---- ESCROW WAIVER HAS ITS OWN adjType, MEASURED LIVE ---------------------------------------------
+// `EscrowWaiverRateAdjustment`, not SimpleRateAdjustment — so the reason-keyed branch never saw it and
+// every escrow line fell through to `other:<reason>`, reporting ours EXTRA and LP's MISSING with the
+// same 250 on both sides (140 lines on the live battery).
+{
+  // Required locally: the file's own `deephavenLpDimension` binding is declared further down, and a
+  // temporal-dead-zone ReferenceError here would CRASH the suite — which several harnesses report as
+  // something other than a clean failure (this repo's own rule: a crashing test also "fails", and looks
+  // like proof).
+  const { deephavenLpDimension: dimOf } = require('../src/longterm/ppe/ratesheet-agreement-diff');
+  const dim = dimOf({ adjType: 'EscrowWaiverRateAdjustment', reason: 'Other - Escrow Waiver / CLTV >65.01 % <= 70.0 %' });
+  ok(dim === 'escrow_waiver', `LP's own EscrowWaiverRateAdjustment keys to escrow_waiver (got ${dim})`);
+  // Through the DEEPHAVEN classifier — the one the agreement runner injects as opts.dimensionOf. The
+  // default `lpLlpaDimension` deliberately does not know this investor's adjTypes.
+  const rEsc = reconcileLlpas([{ dimension: 'escrow_waiver', adjMilli: 250 }],
+    [{ adjType: 'EscrowWaiverRateAdjustment', valueMilli: 250, reason: 'Other - Escrow Waiver / CLTV >65.01 % <= 70.0 %' }],
+    { dimensionOf: dimOf });
+  ok(rEsc.agree === true, '…so our escrow line and LP\'s reconcile instead of double-reporting');
+  // The fail-safe itself must stay: an adjType nobody has measured still SURFACES rather than merging.
+  const unknown = dimOf({ adjType: 'SomeBrandNewRateAdjustment', reason: 'Other - Something New' });
+  ok(unknown === null, 'an UNMEASURED adjType still returns null so it surfaces as a disagreement — the fail-safe is not loosened');
+}
 
 // ---- one-sided LLPAs -------------------------------------------------------
 const rMissing = reconcileLlpas([{ dimension: 'loan_amount', adjMilli: -100 }], [{ adjType: 'StatesRateAdjustment', valueMilli: 250 }]);

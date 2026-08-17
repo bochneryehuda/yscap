@@ -96,9 +96,16 @@ async function main() {
   const off = await agreement.runOne(CASHOUT, ours, () => ({ full: lpFull(OFFSET_OPTS), disqualified: { ready: true, lenders: [] } }), OPTS);
   ok(off.agree === false, '  PROVEN-TO-FAIL: the orchestrator DISAGREES on the offsetting rung');
   const rec = off.rungReconciles.find((x) => x.rate === 71250);
-  ok(rec && !rec.agree && rec.itemized.some((it) => it.dimension === 'purpose' && it.deltaMilli === -200)
-    && rec.itemized.some((it) => it.dimension === 'loan_amount' && it.deltaMilli === 200),
-    '  and names BOTH offending dimensions (purpose −200 / loan_amount +200)');
+  // The deltas are MAGNITUDE deltas: Lender Price publishes no direction on an itemized line, so
+  // reconcileLlpas compares |ours| against |theirs| (comparing our signed value against LP's magnitude
+  // flagged every credit in the book — 8,344 lines on the live 299-scenario battery, all `ours === -lp`,
+  // with ZERO genuine value disagreements). The property under test does not move: two cell errors that
+  // CANCEL in the stack total are still each named. Their SIGNED values ride along as ourSignedMilli.
+  const purposeIt = rec && rec.itemized.find((it) => it.dimension === 'purpose');
+  const loanIt = rec && rec.itemized.find((it) => it.dimension === 'loan_amount');
+  ok(rec && !rec.agree && purposeIt && purposeIt.deltaMilli !== 0 && loanIt && loanIt.deltaMilli !== 0,
+    '  and names BOTH offending dimensions (magnitude deltas '
+    + `${purposeIt && purposeIt.deltaMilli} / ${loanIt && loanIt.deltaMilli})`);
 
   // ---- 2b) coarseIgnore + skipBounds: a margin-only net-price difference is NOT gated ------------
   // LP agrees on every itemized LLPA but its DISPLAYED price differs by a margin (Deephaven: LP's

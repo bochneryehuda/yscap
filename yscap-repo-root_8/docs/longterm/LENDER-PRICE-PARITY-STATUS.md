@@ -919,3 +919,51 @@ decline loans Deephaven would do — the expensive direction — which is exactl
 Test `scripts/test-lt-ppe-l1-l2-ltv-grid.js` (39 assertions). Mutations proven red: all six overlays
 removed (8 failures), the small-loan cap removed (2), the per-tier FICO floors weakened (4), one T3 cap
 loosened 70→80 (1), the small-loan threshold moved (2), the T3 N/A cell given a cap (2).
+
+
+---
+
+### §2.11 — THE 82.71 % WAS MEASURED THROUGH A DIRECTION-BLIND COMPARATOR (2026-08-17)
+
+The authoritative re-measurement after the Layer-1 sign rebuild came back at **20.34 %** (60/295), down
+from 82.71 %. It was not a regression. Decomposing all **21,728 itemized lines** of that run:
+
+| | lines |
+|---|---|
+| match | **13,244** |
+| flagged where **`ours === -lp` EXACTLY** | **8,344** |
+| everything else | **140** |
+| **genuine value disagreements** | **0** |
+
+**Cause 1 — the itemized axis compared a SIGNED value against a MAGNITUDE.** Lender Price's itemized
+`value` never carries a direction; ours are cost-positive, so a credit is negative. Every credit in the
+book was therefore reported as a value disagreement of exactly twice the cell. Worked example, FICO 800
+/ CLTV 50 / NY: `fico_cltv_dscr` ours −1000 vs LP +1000 → "mismatch"; `dscr` ours −250 vs LP +250 →
+"mismatch"; `state` ours +375 vs LP +375 → **match**. Every charge matched; every credit did not.
+
+**It appeared only BECAUSE the signs were fixed.** Before the rebuild `cost(v) = -v` made every value
+positive, so credits collided with LP's magnitudes and "matched" — the comparator was agreeing with a
+sheet that mispriced every strong-credit loan by twice the cell value. **The 82.71 % was measured on
+that sheet, through that comparator.** It is not a baseline to restore.
+
+**Cause 2 — escrow waiver has its own adjType.** Measured live: `EscrowWaiverRateAdjustment`, not
+`SimpleRateAdjustment`, so the reason-keyed branch never saw it and every escrow line fell through to
+`other:<reason>` — reporting ours EXTRA and LP's MISSING with the SAME 250 on both sides (140 lines).
+That is the classifier's documented fail-safe working as designed: an unknown adjType SURFACES rather
+than being silently merged. Resolved with the measured value; the fail-safe itself is unchanged and an
+unmeasured adjType still returns null.
+
+**THE FIX, AND WHY IT IS NOT THE SAME BLINDNESS AGAIN.** The itemized axis now compares MAGNITUDES,
+because **direction is not knowable on that axis at all** — LP does not publish it, so no comparison
+there can test it, and pretending otherwise is what produced a confident wrong verdict. Direction is
+proven where direction actually lives, and proven harder: `test-lt-ppe-deephaven-dscr-sheet.js` asserts
+every cell against the Excel's own SIGNED value **on the composed price** (a credit must improve it, a
+charge must worsen it) and ties four live Lender Price prices to the penny. This axis answers *"are the
+same adjustments applied, at the same size"*; that suite answers *"in the right direction"*. Our signed
+value rides along as `ourSignedMilli` and credits are counted, so a book that silently loses every
+credit is visible. **Do not re-add a signed comparison here** — it can only ever re-flag every credit.
+
+Mutations proven red: restoring the signed comparison (6 failures), removing the escrow adjType (2),
+de-magnituding the LP side (3). Two existing assertions encoded the old signed deltas and were updated
+with the reason rather than deleted; the property they test (two cell errors that cancel in the stack
+total are still each named) is unchanged.

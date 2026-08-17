@@ -80,7 +80,8 @@ function deephavenLpDimension(llpa) {
     if (/prepay/i.test(r)) return 'prepay';
     // the three "Other - …" add-on families measured live 2026-08-17, all SimpleRateAdjustment.
     if (/interest\s*only/i.test(r)) return 'interest_only';
-    if (/escrow\s*waiver/i.test(r)) return 'escrow_waiver';
+    if (/escrow\s*waiver/i.test(r)) return 'escrow_waiver';   // kept: a SimpleRateAdjustment-shaped one
+
     if (/non.?warrantable/i.test(r)) return 'non_warrantable';
     // Short-Term Rental — the sheet's "Rental Type" row. The VALUES are the sheet's, but LP's own
     // adjType for this family is UNCONFIRMED (never probed live), so this branch is keyed on the reason
@@ -90,6 +91,13 @@ function deephavenLpDimension(llpa) {
     if (/short.?term\s*rental/i.test(r)) return 'short_term_rental';
     return `other:${norm(r) || 'simple'}`;
   }
+  // MEASURED LIVE 2026-08-17: escrow waiver has its OWN adjType, `EscrowWaiverRateAdjustment` — it is
+  // NOT a SimpleRateAdjustment, so the reason-keyed branch above never saw it and every escrow line fell
+  // through to `other:<reason>`, reporting our line as EXTRA and LP's as MISSING with the SAME value
+  // (250) on both sides. That is the classifier's documented fail-safe working exactly as intended: an
+  // unknown adjType SURFACES as a disagreement instead of being silently merged. This is that surfaced
+  // disagreement being resolved with the real value, not the fail-safe being loosened.
+  if (t === 'escrowwaiverrateadjustment') return 'escrow_waiver';
   if (t === 'statesrateadjustment') return 'state';
   if (t === 'loanamountrateadjustment') return 'loan_amount';
   if (/condo/i.test(t)) return 'property_type';
@@ -134,20 +142,51 @@ function reconcileLlpas(ourAdjustments, lpLlpas, opts = {}) {
   const keys = new Set([...ours.keys(), ...theirs.keys()]);
   const itemized = [];
   let worst = 0;
+  // ---- THE ITEMIZED AXIS COMPARES MAGNITUDES, BECAUSE LENDER PRICE PUBLISHES NO DIRECTION ---------
+  //
+  // WHAT WENT WRONG. This compared our SIGNED value against LP's `valueMilli`, and LP's itemized value is
+  // an absolute MAGNITUDE — it never carries a sign. Our values are cost-positive, so a CREDIT is
+  // negative. Measured over the live 299-scenario battery: 13,244 lines matched, and **8,344 lines were
+  // flagged where `ours === -lp` EXACTLY** — that is, every credit in the book, reported as a value
+  // disagreement it never was. The remaining 140 were one escrow band the classifier could not key (same
+  // value on both sides). Genuine value disagreements: ZERO. The run printed 20.34% agreement.
+  //
+  // It read as a catastrophic regression and was the opposite: it appeared only AFTER the sheet's signs
+  // were CORRECTED (the 2026-08-17 rebuild). Before that, `cost(v) = -v` made every value positive, so
+  // credits collided with LP's magnitudes and "matched" — the comparator agreed with a sheet that
+  // mispriced every strong-credit loan by twice the cell value.
+  //
+  // SO WHY IS COMPARING MAGNITUDES NOT THE SAME BLINDNESS AGAIN? Because DIRECTION IS NOT KNOWABLE ON
+  // THIS AXIS AT ALL — LP does not publish it, so no comparison here can test it, and pretending
+  // otherwise is what produced a confident wrong verdict. Direction is proven where the direction
+  // actually lives, and proven harder: `test-lt-ppe-deephaven-dscr-sheet.js` asserts every cell against
+  // the Excel's own SIGNED value ON THE COMPOSED PRICE (a credit must improve it, a charge must worsen
+  // it) and ties four live Lender Price prices to the penny. This axis answers "are the same adjustments
+  // applied, at the same size"; that suite answers "in the right direction". Do NOT re-add a signed
+  // comparison here — it can only ever re-flag every credit.
+  //
+  // Our SIGNED value rides along as `ourSignedMilli` so a human reading a report still sees the
+  // direction we applied, and `credits` counts them, so a book that suddenly has no credits at all is
+  // visible rather than silent.
+  let credits = 0;
   for (const dim of [...keys].sort()) {
     const o = ours.get(dim);
     const t = theirs.get(dim);
-    const ourMilli = o ? o.milli : null;
-    const lpMilli = t ? t.milli : null;
-    const deltaMilli = (o ? o.milli : 0) - (t ? t.milli : 0);
+    const ourSignedMilli = o ? o.milli : null;
+    // LP's side is already a magnitude; ours is normalized to one for the comparison.
+    const ourMilli = o ? Math.abs(o.milli) : null;
+    const lpMilli = t ? Math.abs(t.milli) : null;
+    if (ourSignedMilli != null && ourSignedMilli < 0) credits += 1;
+    const deltaMilli = (ourMilli || 0) - (lpMilli || 0);
     if (Math.abs(deltaMilli) > Math.abs(worst)) worst = deltaMilli;
     itemized.push({
-      dimension: dim, ourMilli, lpMilli, deltaMilli,
+      dimension: dim, ourMilli, lpMilli, deltaMilli, ourSignedMilli,
       ourReason: o ? [...o.reasons].join('; ') || null : null,
       lpReason: t ? [...t.reasons].join('; ') || null : null,
       status: deltaMilli === 0 ? 'match' : (ourMilli == null ? 'llpa_missing_ours' : (lpMilli == null ? 'llpa_extra_ours' : 'llpa_mismatch')),
     });
   }
+  itemized.credits = credits;
   return { itemized, agree: itemized.every((x) => x.deltaMilli === 0), worstDeltaMilli: worst };
 }
 
