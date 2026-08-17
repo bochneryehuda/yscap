@@ -84,6 +84,20 @@ export const ltApi = {
   // REFUSAL is shown — a hidden button is indistinguishable from a broken one.
   ppeDecideFinding: (key, body) => ltPost(lt(`/ppe/findings/${encodeURIComponent(key)}/decide`), body),
 
+  // The per-investor rule loop (P5/P7). Lender Price's own declines are mined into
+  // PROPOSALS; a human accepts one and it becomes a real rule our engine enforces.
+  // Nothing here is auto-applied — accept and dismiss are the only two ways a
+  // suggestion leaves the list, and both are a deliberate person's click.
+  ppeSuggestions(params = {}) {
+    const q = new URLSearchParams();
+    if (params.status) q.set('status', params.status);
+    if (params.investor) q.set('investor', params.investor);
+    const s = q.toString();
+    return ltGet(lt(`/ppe/suggestions${s ? `?${s}` : ''}`));
+  },
+  ppeAcceptSuggestion: (id, body = {}) => ltPost(lt(`/ppe/suggestions/${encodeURIComponent(id)}/accept`), body),
+  ppeDismissSuggestion: (id, body = {}) => ltPost(lt(`/ppe/suggestions/${encodeURIComponent(id)}/dismiss`), body),
+
   // The DSCR FIELD MANIFEST (D28) — the machine-readable contract of what the pricer
   // accepts, split into {core, advanced, overlay, meta, counts}. It is what the Basic
   // vs Advanced scenario-entry screen draws itself from, so that screen carries no

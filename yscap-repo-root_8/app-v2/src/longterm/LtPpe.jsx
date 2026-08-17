@@ -137,6 +137,53 @@ export default function LtPpe() {
     } finally { setBusy(false); }
   };
 
+  // ---- the suggested-rule loop (P5 → P7) --------------------------------------------------------
+  // Deliberately NOT filtered by the investor picker above: that picker carries OUR investor code
+  // while a suggestion carries Lender Price's verbatim name for the same investor, and the two are
+  // different strings. Filtering on the code would return an empty list that reads exactly like
+  // "nothing to do" — so every open suggestion is listed and each row names its own investor.
+  const [suggestions, setSuggestions] = useState(null);
+  const [sugError, setSugError] = useState('');
+  const [deciding, setDeciding] = useState(null);
+  const [sugNote, setSugNote] = useState('');
+  const [sugRowError, setSugRowError] = useState({});
+
+  const loadSuggestions = useCallback(() => {
+    ltApi.ppeSuggestions({ status: 'open' })
+      .then((r) => { setSuggestions(r); setSugError(''); })
+      // A read failure is SAID. Falling back to an empty list would render as "nothing is waiting",
+      // which is the one thing it must never be mistaken for.
+      .catch((e) => { setSuggestions(null); setSugError(e.message || 'Could not read the suggested rules.'); });
+  }, []);
+  useEffect(loadSuggestions, [loadSuggestions]);
+
+  const openDecide = (s) => {
+    setDeciding(deciding === s.id ? null : s.id);
+    setSugNote('');
+    setSugRowError((e) => ({ ...e, [s.id]: null }));
+  };
+
+  const decideSuggestion = async (s, action) => {
+    setBusy(true);
+    setSugRowError((e) => ({ ...e, [s.id]: null }));
+    try {
+      if (action === 'accept') await ltApi.ppeAcceptSuggestion(s.id, { note: sugNote });
+      else await ltApi.ppeDismissSuggestion(s.id, { note: sugNote });
+      setDeciding(null);
+      setSugNote('');
+      loadSuggestions();
+      // An accepted suggestion becomes a rule our engine enforces, so the differences it explains can
+      // change. Re-read the queue rather than leaving a stale picture beside a fresh decision.
+      loadQueue();
+    } catch (e) {
+      // The server refuses a non-admin AND an unmappable suggestion, with different wording for each.
+      // Showing its own message is what tells the person which of the two happened.
+      setSugRowError((prev) => ({ ...prev, [s.id]: e.message || 'That decision was refused.' }));
+    } finally { setBusy(false); }
+  };
+
+  const openSuggestions = (suggestions && Array.isArray(suggestions.suggestions) ? suggestions.suggestions : []);
+
   const items = (queue && queue.items) || [];
 
   return (
@@ -260,6 +307,91 @@ export default function LtPpe() {
             Showing {queue.returned} of {queue.total}. The rest are further down the same order.
           </p>
         )}
+      </div>
+
+      {/* ---- the rules Lender Price's own refusals suggest (P5 → P7) ---- */}
+      <div style={card}>
+        <h2 style={h2}>Rules Lender Price's refusals suggest</h2>
+        <p style={sub}>
+          When Lender Price turns a loan down for a reason our engine does not carry, that refusal is
+          written down here as a SUGGESTION. Nothing is applied on its own — you accept one and it becomes
+          a real rule for that investor, so our engine turns down exactly what they turn down.
+        </p>
+
+        {sugError && <p style={{ ...sub, color: '#8A2F2F' }}>{sugError}</p>}
+
+        {suggestions && openSuggestions.length === 0 && !sugError && (
+          <p style={{ ...sub, marginBottom: 0 }}>
+            Nothing is waiting. Either every refusal Lender Price has shown us is already a rule, or no
+            refusals have been read yet.
+          </p>
+        )}
+
+        {openSuggestions.map((s) => (
+          <div key={s.id} style={{
+            borderTop: '1px solid rgba(20,27,34,.10)', padding: '12px 0',
+            display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start',
+          }}>
+            <div style={{ flex: 1, minWidth: 240 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
+                {/* A suggestion nobody could map is the one that must NOT look ready to accept: the
+                    server refuses it, so the row says why before the button is pressed. */}
+                {s.needs_human
+                  ? <Pill tone="warn">needs a person to map it</Pill>
+                  : <Pill tone={s.confidence === 'strong' ? 'good' : 'flat'}>{s.confidence || 'suggested'}</Pill>}
+                {s.occurrences > 1 && <Pill tone="flat">seen {s.occurrences}×</Pill>}
+                {s.fact && <Pill tone="flat">{s.fact}</Pill>}
+              </div>
+              {/* The investor's VERBATIM label, shown on every row rather than filtered on. The picker
+                  above carries our investor CODE while a suggestion carries Lender Price's own name for
+                  the investor, and the two are not the same string — filtering by the code would quietly
+                  return an empty list, which is indistinguishable from "nothing to do". */}
+              <div style={{ fontSize: 12, color: MUTED, marginBottom: 2 }}>{s.investor_label}</div>
+              {/* Lender Price's own words, never paraphrased — this is what the rule will carry as its
+                  decline reason, so the person accepting it should read exactly that. */}
+              <div style={{ fontSize: 13, color: INK, wordBreak: 'break-word' }}>“{s.decline_reason}”</div>
+              {s.needs_human && (
+                <div style={{ fontSize: 12, color: MUTED, marginTop: 4 }}>
+                  We could not turn that sentence into a rule automatically, and a guess here would refuse
+                  real loans. It is kept so a person can map it, never applied.
+                </div>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              <button className="btn ghost" disabled={busy} onClick={() => openDecide(s)}>
+                {deciding === s.id ? 'Cancel' : 'Decide'}
+              </button>
+            </div>
+
+            {deciding === s.id && (
+              <div style={{ flexBasis: '100%', marginTop: 8 }}>
+                <label style={{ ...eyebrow, display: 'block', marginBottom: 4 }}>Why</label>
+                <textarea
+                  className="input"
+                  rows={2}
+                  style={{ width: '100%', marginBottom: 8 }}
+                  placeholder="Accepting writes a real rule for this investor. This note is the record of the decision."
+                  value={sugNote}
+                  onChange={(e) => setSugNote(e.target.value)}
+                />
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {/* The button is shown even when the server will refuse it — a hidden control is
+                      indistinguishable from a broken one, and the refusal below says which rule was
+                      broken (not an admin, or a reason nobody has mapped yet). */}
+                  <button className="btn" disabled={busy} onClick={() => decideSuggestion(s, 'accept')}>
+                    Accept — make it a rule
+                  </button>
+                  <button className="btn ghost" disabled={busy} onClick={() => decideSuggestion(s, 'dismiss')}>
+                    Dismiss
+                  </button>
+                </div>
+                {sugRowError[s.id] && (
+                  <div style={{ marginTop: 8, fontSize: 13, color: '#8A2F2F' }}>{sugRowError[s.id]}</div>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
       </div>
 
       {/* ---- the go-live picture ---- */}

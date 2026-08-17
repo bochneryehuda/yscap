@@ -268,7 +268,7 @@ owner wants to start.
 - **Acceptance test.** One pure test per detector with a fixture that isolates that single difference.
 - **Depends on:** P1 (all), P4 (P3e). **Owner gate:** none for detection.
 
-### P4 — The curated Lender-Price-key → rule-predicate crosswalk  ·  TO-BUILD
+### P4 — The curated Lender-Price-key → rule-predicate crosswalk  ·  **DONE** ✅ *(status corrected 2026-08-17)*
 - **What.** A **curated** map from LP's free-text LLPA/disqualify `key` strings (e.g. "LTV >75.01% <=
   80.0%", "DSCR - Interest Only") → our rule predicate `{fact, op, value}` (half-open, milli units).
   Start with the **Deephaven ("DPave")** sheet the owner named.
@@ -281,7 +281,7 @@ owner wants to start.
 - **Depends on:** P1. **Owner gate:** ⚠️ **owner confirms the curated-crosswalk approach** (curated map,
   human-verified, never auto-guessed) before it drives any suggested rule.
 
-### P5 — The rule-suggestion engine + a suggestion store  ·  WRITES A PROPOSAL  ·  TO-BUILD
+### P5 — The rule-suggestion engine + a suggestion store  ·  WRITES A PROPOSAL  ·  **DONE** ✅ *(status corrected 2026-08-17)*
 - **What.** Given a missing disqualification (or a missing LLPA) from P3e/P3f, synthesize a **suggested
   rule** — `{ kind:'eligibility'|'pricing', source:'overlay', when:<predicate from P4>, declineReason:<LP
   key verbatim>, code:<generated> }` scoped to `investor:<code>` — and record it as a **proposal** in a
@@ -322,7 +322,7 @@ owner wants to start.
   `evaluateRules` declines the scenario it targets — and that an overlay can only tighten.
 - **Depends on:** nothing new. **Owner gate:** none (structure only).
 
-### P7 — Close the loop: accept a suggestion → write the rule → re-run parity  ·  TO-BUILD
+### P7 — Close the loop: accept a suggestion → write the rule → re-run parity  ·  **DONE** ✅ *(status corrected 2026-08-17)*
 - **What.** Accepting a P5 suggestion writes it into the P6 rule table (overlay, scoped to the investor);
   the next parity run shows the finding **resolved** (our engine now declines exactly what LP declines).
 - **Why.** This is the whole point — the review makes our engine converge on Lender Price, investor by
@@ -331,13 +331,31 @@ owner wants to start.
   rule written → re-run → finding settles and does not re-open.
 - **Depends on:** P5, P6. **Owner gate:** ⚠️ a human performs the accept.
 
-### P8 — The manual-review + suggested-rules UI  ·  TO-BUILD
+### P8 — The manual-review + suggested-rules UI  ·  **DONE** ✅ *(built 2026-08-17)*
 - **What.** A staff-only screen (`app-v2/src/longterm/**`): per scenario, LP's answer beside ours, the
   categorized diffs (P3a–f), and the suggested rules (P5) with an **Accept** button (P7). Investor names
   stay staff-only.
 - **Acceptance test.** Renders the diffs + a suggestion; Accept calls the P7 endpoint; dark-on-white per
   the house rule.
 - **Depends on:** P2, P3, P5, P7. **Owner gate:** none.
+
+- **STATUS CORRECTED 2026-08-17, against the code rather than from memory.** P4/P5/P7 were still marked
+  TO-BUILD here while P6 two rows down already announced "+ P5-store + P7 accept-and-write" — the
+  document contradicted itself, and a plan that reports built work as outstanding sends the next person
+  to rebuild it. Verified present: the crosswalk `ppe/disqualify-crosswalk.js` (`keyToPredicate`, which
+  REFUSES an unrecognised key rather than guessing), the miner `ppe/suggestion-miner.js`, the store
+  `ppe/rule-store.js` (`saveSuggestions` / `listSuggestions` / `acceptSuggestion` / `dismissSuggestion`,
+  idempotent on `(scope, investor_label, dedupe_key)`, and a decided suggestion is never reopened), the
+  tables `db/571_lt_ppe_rule_and_suggestion_store.sql`, and the routes `GET /ppe/suggestions` +
+  `POST /ppe/suggestions/:id/{accept,dismiss,…}` with accept/dismiss admin-gated.
+- **P8 was the one that was genuinely missing, and it is now built** — the "Rules Lender Price's
+  refusals suggest" section of `app-v2/src/longterm/LtPpe.jsx`. It was the human end of the loop: every
+  server piece existed, so the only way to accept a suggestion was to call the endpoint by hand.
+  `scripts/test-lt-ppe-suggestion-ui.mjs` (25 assertions, 4 mutation-proven) pins the two traps it is
+  built around — the list is deliberately NOT filtered by the screen's investor picker (that carries OUR
+  investor CODE while a suggestion carries Lender Price's VERBATIM label, so filtering would return an
+  empty list indistinguishable from "nothing to do"), and a failed read is STATED rather than falling
+  back to an empty list that reads as all-clear.
 
 ### P9 — The point-for-point price parity matrix per investor  ·  TO-BUILD
 - **What.** Run the real rate-for-rate comparison across the scenario matrix for the pilot investor
