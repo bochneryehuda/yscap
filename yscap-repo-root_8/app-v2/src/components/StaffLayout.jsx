@@ -29,6 +29,10 @@ const NAV_ICON = {
   dashboards: <><path d="M3.6 16.5a9 9 0 1 1 16.8 0" /><path d="m12 13 4.2-3.6" /><circle cx="12" cy="13" r="1.4" /></>,
   pipeline: <><rect x="3" y="4" width="4" height="16" rx="1" /><rect x="10" y="4" width="4" height="11" rx="1" /><rect x="17" y="4" width="4" height="7" rx="1" /></>,
   tasks: <><rect x="4" y="4" width="16" height="16" rx="2.5" /><path d="m8.5 12 2.2 2.2 4.8-4.7" /></>,
+  // An open ledger — the long-term census. Its own glyph rather than a borrowed
+  // one: `NavIcon` renders `NAV_ICON[name]` straight into the <svg>, so a name
+  // with no entry draws an EMPTY icon and leaves a nav item looking broken.
+  book: <><path d="M12 6.5v13" /><path d="M12 6.5C10.4 5.2 8.4 4.6 5.5 4.6a1 1 0 0 0-1 1v11.3a1 1 0 0 0 1 1c2.9 0 4.9.6 6.5 1.9" /><path d="M12 6.5c1.6-1.3 3.6-1.9 6.5-1.9a1 1 0 0 1 1 1v11.3a1 1 0 0 1-1 1c-2.9 0-4.9.6-6.5 1.9" /></>,
   workflow: <><circle cx="6" cy="7" r="2.2" /><circle cx="18" cy="7" r="2.2" /><circle cx="12" cy="17" r="2.2" /><path d="M8.2 7h7.6M6.6 9.1 11 14.8M17.4 9.1 13 14.8" /></>,
   chat: <path d="M5 4h14a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 15h-7l-4 4v-4H5a1.5 1.5 0 0 1-1.5-1.5v-8A1.5 1.5 0 0 1 5 4Z" />,
   leads: <><circle cx="9" cy="8" r="3.5" /><path d="M3.5 19a5.5 5.5 0 0 1 11 0" /><path d="M18.5 7.5v5M21 10h-5" /></>,
@@ -446,7 +450,10 @@ export default function StaffLayout({ children }) {
           <>
             <div className="sb-sec">Long-term</div>
             <NavLink className="sb-link" to="/internal/lt" end><NavIcon name="pipeline" />Pipeline</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/book" title="Every long-term file, with the folder, the status and the milestone it sits in."><NavIcon name="book" />The book</NavLink>
             <NavLink className="sb-link" to="/internal/lt/people"><NavIcon name="team" />People</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/borrowers" title="Which client each long-term file belongs to — what puts it on their own login."><NavIcon name="borrowers" />Borrowers</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/statuses" title="Encompass's milestones, our own stage names, and what the borrower is told — side by side."><NavIcon name="conditions" />Statuses</NavLink>
             <NavLink className="sb-link" to="/internal/lt/conditions"><NavIcon name="conditions" />Condition Center</NavLink>
             <NavLink className="sb-link" to="/internal/lt/ppe"><NavIcon name="pricing" />Pricing engine</NavLink>
             <NavLink className="sb-link" to="/internal/lt/sync"><NavIcon name="health" />Sync</NavLink>

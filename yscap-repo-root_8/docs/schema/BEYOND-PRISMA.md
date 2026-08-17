@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**775 objects**, and a database rebuilt from the Prisma
+**776 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 569 numbered migrations in `db/` (highest `db/572`) remain the only thing that builds this database.
+rebuild a database from them.** The 570 numbered migrations in `db/` (highest `db/573`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 339 |
-| Columns | 5548 |
+| Tables | 340 |
+| Columns | 5561 |
 | Triggers | 34 |
 | Functions | 137 |
-| CHECK constraints | 267 |
+| CHECK constraints | 268 |
 | Generated columns | 12 |
 | Partial indexes | 325 |
-| Primary keys | 339 |
-| Foreign keys | 699 |
+| Primary keys | 340 |
+| Foreign keys | 700 |
 | Unique constraints | 47 |
-| Indexes (all kinds) | 1169 |
+| Indexes (all kinds) | 1173 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -553,7 +553,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (267)
+## CHECK constraints (268)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -736,6 +736,7 @@ the live database.
 - **loan_exceptions_severity_check** on `loan_exceptions`
 - **loan_exceptions_status_check** on `loan_exceptions`
 - **loan_facts_status_check** on `loan_facts`
+- **lt_borrower_links_status_chk** on `lt_borrower_links`
 - **lt_milestone_events_type_check** on `lt_milestone_events`
 - **lt_ppe_adjustment_target_chk** on `lt_ppe_adjustment`
 - **lt_ppe_adjustment_unit_chk** on `lt_ppe_adjustment`
@@ -823,7 +824,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (699)
+## Foreign keys (700)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -1259,6 +1260,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **logical_documents** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
 - **logical_documents** → `document_packages` — `FOREIGN KEY (package_id) REFERENCES document_packages(id) ON DELETE CASCADE`
 - **lt_assets** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_borrower_links** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
 - **lt_borrower_pairs** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_declarations** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_employments** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
@@ -1598,7 +1600,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 339 primary keys and 1169 indexes is
+Every one of the 340 primary keys and 1173 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

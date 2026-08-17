@@ -4,6 +4,13 @@ import { api } from '../lib/api.js';
 import { scenarioToDraft, scenarioLabelFromState } from '../lib/scenario.js';
 import { programLabel, loanTypeLabel, officerLabel } from '../lib/labels.js';
 import { askConfirm } from '../lib/dialog.js';
+// The ONE long-term reference this screen is allowed to hold, and it is here to
+// render the Short-Term / Long-Term switch — nothing else (owner-directed
+// 2026-08-17, recorded in docs/LONG-TERM-AUTHORIZED-COPIES.md alongside the two
+// staff-side seam files). It renders NOTHING for a client with no long-term
+// loans, and that judgement lives on the long-term side so this screen never
+// carries a second copy of it.
+import { BorrowerLongTermSwitch } from '../longterm/BorrowerLongTerm.jsx';
 
 // Files that are muted OUTSIDE the file (owner-directed): funded/terminal AND
 // ON-HOLD loans never nag in the cross-file "to complete" rollup or the per-loan
@@ -199,6 +206,7 @@ export default function Dashboard() {
       <div className="row" style={{ marginBottom: 20, flexWrap: 'wrap', gap: 8 }}>
         <div><h1>Your loans</h1><p className="muted small">Track every file with YS Capital in one place.</p></div>
         <div className="spacer" />
+        <BorrowerLongTermSwitch />
         {/* #103: a discoverable entry point to self-service pricing right where
             borrowers land — build a term sheet from your own numbers, save it,
             come back to it. */}

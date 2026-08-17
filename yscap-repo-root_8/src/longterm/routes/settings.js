@@ -26,6 +26,7 @@ const router = express.Router();
 
 const settingsStore = require('../settings/store');
 const access = require('../access');
+const observed = require('../observed');
 
 const COMPANY = 'company';
 const userScope = (staffId) => `user:${String(staffId)}`;
@@ -60,6 +61,11 @@ async function requireSettingsAdmin(req, res, next) {
 router.get('/', async (req, res) => {
   try {
     const described = await settingsStore.describe(COMPANY);
+    // Offer the values the book actually uses, where a setting asks for them —
+    // today the loan folders, which the pipeline's finished-folder list needs and
+    // which nobody could type without going and looking. Best-effort by
+    // construction: a setting with no suggestions is the plain box it was.
+    await observed.attachSuggestions(described).catch(() => described);
     let canManage = false;
     try {
       const { settings } = await settingsStore.load();

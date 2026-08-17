@@ -60,6 +60,49 @@ export async function ltFetch(method, path, body) {
   return data;
 }
 
+/**
+ * Download a file the server builds (today: the census spreadsheet).
+ *
+ * It cannot be a plain `<a href>`: every /api/lt route is behind the session, and
+ * a bare link sends no Authorization header — so the browser would navigate to a
+ * 401 and the person would see a broken page instead of a spreadsheet. So the
+ * bytes are fetched with the header, turned into a blob, and handed to a
+ * throwaway link. The object URL is REVOKED afterwards or the whole file stays in
+ * memory for the life of the tab.
+ *
+ * A FAILURE IS THROWN, never saved. Without the `res.ok` check the caller would
+ * "download" the error JSON as a .csv — a file that opens to a shrug.
+ */
+export async function ltDownload(path, filename) {
+  const headers = {};
+  const t = token();
+  if (t) headers.Authorization = `Bearer ${t}`;
+
+  const res = await fetch(path, { method: 'GET', headers, credentials: 'same-origin' });
+  if (!res.ok) {
+    let data = null;
+    try { data = await res.json(); } catch { /* the status is enough */ }
+    const err = new Error(messageFor(res.status, data));
+    err.status = res.status;
+    throw err;
+  }
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    // Deferred: Safari reads the URL asynchronously after the click, so revoking
+    // in the same tick can hand it an already-freed blob and save nothing.
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  }
+}
+
 export const ltGet = (p) => ltFetch('GET', p);
 export const ltPost = (p, b) => ltFetch('POST', p, b);
 export const ltPut = (p, b) => ltFetch('PUT', p, b);

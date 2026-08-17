@@ -388,14 +388,21 @@ const SETTINGS = [
     description: 'Which columns the long-term pipeline shows, in order.' },
   { key: 'pipeline.inactiveFolders', group: 'Pipeline', label: 'Loan folders that mean the deal is over',
     type: 'list', default: [],
+    // The screen offers the folder names the book ACTUALLY uses, with a count each.
+    // See `src/longterm/observed.js` for why that is now possible.
+    suggestFrom: 'loanFolders',
     description: 'Encompass loan folders whose files are finished — declined, withdrawn, trashed. '
       + 'The pipeline opens on the live book and puts these one click away, in the same table. '
       + 'A folder NOT on this list always counts as live, so leaving it empty (the default) '
       + 'shows every file exactly as before.',
-    evidence: 'Folder names are this tenant\'s own and the endpoint that lists them answers 403, '
-      + 'so we cannot read them and must not guess: treating a folder called "Archive" as finished '
-      + 'on a hunch would silently empty part of an officer\'s pipeline. Until somebody types the '
-      + 'real names here, nothing is hidden from anybody.' },
+    evidence: 'CORRECTED 2026-08-17. This used to read "the endpoint that lists them answers 403, '
+      + 'so we cannot read them" — true of the endpoint, and FALSE of the fact. Every mirrored loan '
+      + 'carries its own folder (`lt_loans.loan_folder`, from CX.LOAN.FOLDER.CURRENT), so the names '
+      + 'and their file counts are already here and the screen now offers them. What has NOT changed '
+      + 'is the half that matters: which of those folders MEAN the deal is over is a business rule '
+      + 'nobody here may guess — treating a folder called "Archive" as finished on a hunch would '
+      + 'silently empty part of an officer\'s pipeline. So the names are offered and a human picks; '
+      + 'until somebody picks, nothing is hidden from anybody.' },
 
   // ── The product switch (owner-directed 2026-08-14) ────────────────────────
   // "everybody should have a switch on his login to switch to the long-term side".
@@ -418,6 +425,40 @@ const SETTINGS = [
       + 'the company default is what a brand-new user gets.',
     evidence: 'Long-Term is a side build and is not live, so the default must stay RTL — '
       + 'nobody should be moved to the new side by a deploy.' },
+
+  // THE BORROWER'S OWN SWITCH — BUILT READY, AND SWITCHED OFF.
+  //
+  // The owner (2026-08-16): *"The borrower should also have, in their login, the
+  // option to switch from long-term to short-term."* Asked whether to turn it on,
+  // they answered *"build it ready"* — so it is wired end to end and this one
+  // setting is the whole of what stands between it and the client's screen.
+  //
+  // DEFAULT TRUE — THE OWNER SAID GO (2026-08-17: *"turn switch on"*), which is the
+  // "until they say otherwise" this setting was built waiting for. It shipped
+  // `false` on 2026-08-16 because "build it ready" is not "turn it on"; that is now
+  // answered, in the owner's own words, so the default flips rather than leaving the
+  // product live-but-off behind a setting nobody remembers to press.
+  //
+  // WHAT TURNING IT ON DOES AND DOES NOT DO. It does NOT publish the long-term book
+  // to clients. A borrower sees exactly the long-term files a HUMAN CONFIRMED are
+  // theirs (`lt_loans.borrower_id`, written only by `borrower-links.confirmLink`),
+  // and nothing else — an unmatched loan belongs to nobody and appears to nobody. So
+  // on the day this flips, a borrower with no confirmed links sees an empty
+  // long-term side, not somebody else's loan. That is the safe direction, and it is
+  // the reason the mapping was built confirm-first in the first place.
+  //
+  // It stays a SETTING rather than becoming hard-wired: this is a decision about
+  // whether the product is live, and the owner must be able to take it back without
+  // a deploy. It is a COMPANY setting, not a per-user preference.
+  { key: 'borrower.longTermVisible', group: 'Interface',
+    label: 'Show long-term files on the borrower login',
+    type: 'boolean', default: true,
+    description: 'When this is on, a borrower can switch to the long-term side and see the '
+      + 'long-term files that have been confirmed as theirs. When it is off, a borrower sees '
+      + 'only their short-term (RTL) files and no switch at all.',
+    evidence: 'Owner-directed 2026-08-17: "turn switch on". Built ready and left off '
+      + '2026-08-16 ("build it ready"); the owner has now said go. A borrower still only '
+      + 'ever sees files a human confirmed are theirs.' },
 
   // ── Rate lock (phase 7) ───────────────────────────────────────────────────
   // Every lock-SPECIFIC endpoint on this tenant answers 403, so the posture is read

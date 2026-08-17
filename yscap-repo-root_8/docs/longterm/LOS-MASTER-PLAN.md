@@ -993,10 +993,29 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     "distinguished by status — no separate archive screen", and today nothing distinguishes them:
     the sweep discovers every folder Encompass returns for a loan amount over zero, so a file
     somebody moved to Adverse or Trash sits in an officer's live book looking exactly like a
-    live one. Folder names are the TENANT'S OWN — this instance's list is one of the 68 endpoints
-    the missing `encompass_admin` scope refuses (item 6), so we cannot read them and **must not
-    guess**: treating a folder called "Archive" as dead would silently empty part of somebody's
+    live one. Folder names are the TENANT'S OWN, and we **must not guess** which of them mean the
+    deal is over: treating a folder called "Archive" as dead would silently empty part of somebody's
     pipeline on a hunch.
+
+    **CORRECTED 2026-08-17 — "we cannot read them" was FALSE, and it had been written down three
+    times.** This item, the setting's own evidence note and §4.1 all said the names were unreadable
+    because the folder-LIST endpoint is one of the 68 the entitlement question refuses (item 6).
+    True of that endpoint, and **false of the fact**: the folder is a FIELD ON EVERY LOAN
+    (`CX.LOAN.FOLDER.CURRENT` → `lt_loans.loan_folder`), which the sync has been mirroring since
+    phase 2 — so the names, and the number of files in each, were already sitting in our own
+    database the whole time. `src/longterm/observed.js` counts them straight off the book and the
+    settings screen now offers them as chips with a file count each, so the answer is a few clicks
+    rather than somebody going and transcribing a list from Encompass.
+
+    **The lesson is worth more than the feature.** A blocker recorded once gets read as settled
+    forever, and this one survived three re-readings because every reader checked the same
+    endpoint. A "we cannot read X" note is only as good as the LAST place somebody looked — before
+    trusting one, ask whether the fact rides on something we already mirror.
+
+    **What has NOT changed is the half that matters.** Reading a fact is ours; judging what it
+    means is the owner's. Which of those folders mean the deal is over is a business rule nobody
+    here may guess, so the default is still empty, nothing is hidden from anybody until a human
+    picks, and the screen OFFERS rather than pre-selects.
 
     **The mechanism is now BUILT — only the folder names are outstanding.** (An earlier draft of
     this item said it was already built; it was not. `pipeline.inactiveFolders` existed nowhere.
@@ -1020,7 +1039,14 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     the rule (an unlisted folder counted as finished, the folderless loan dropped out of both
     books, the book filter applied to its own chip counts instead of lifted, the spacing collapse
     dropped, the split turned on with nothing configured, a guessed folder name shipped as the
-    default) were each confirmed to turn both suites red.
+    default) were each confirmed to turn both suites red. The observed-name half is guarded by
+    `scripts/test-lt-screens-db.js` — the folders are counted off a real book including the
+    no-folder bucket, the resolver answers EMPTY rather than throwing (an unreadable list must
+    leave the setting exactly as usable as the plain box it was), and the default is still `[]`.
+
+    **What is still needed is one answer: which of those names mean the deal is over.** The screen
+    now shows the owner their own folders with a count each; picking them is a few clicks and no
+    code change.
 
     **What is still needed is the list of folder names and which of them mean the deal is over** —
     one answer from the owner, typed into one setting, no code change.

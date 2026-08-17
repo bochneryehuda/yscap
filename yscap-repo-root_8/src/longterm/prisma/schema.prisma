@@ -152,6 +152,15 @@ model LtLoan {
   /// Authorized crossing `sql-ref borrowers` (ledger, 2026-08-03). Long-Term READS
   /// this record and never writes it.
   borrowerId String? @map("borrower_id") @db.Uuid
+  /// What ENCOMPASS says about the borrower — mirrored, never authored here, and
+  /// kept separately from `borrowerId` on purpose: these are the facts a human
+  /// reads while DECIDING the link, and the link itself is the only thing that
+  /// puts a file on a client's login. `borrowerEmail` is the match key (field
+  /// 1240, filled on 92.4% of the DSCR cohort) and is stored lowercased.
+  borrowerName String? @map("borrower_name")
+  borrowerFirstName String? @map("borrower_first_name")
+  borrowerLastName String? @map("borrower_last_name")
+  borrowerEmail String? @map("borrower_email")
   /// The assigned officer — the shared `staff_users` roster. Authorized crossing
   /// `sql-ref staff_users` (ledger, 2026-08-03).
   loanOfficerId String? @map("loan_officer_id") @db.Uuid
@@ -1512,4 +1521,45 @@ model LtPpeRuleSuggestion {
 
   @@unique([scope, investorLabel, dedupeKey], map: "lt_ppe_rule_suggestion_uk")
   @@map("lt_ppe_rule_suggestion")
+}
+
+/// Which PILOT borrower profile an Encompass borrower EMAIL belongs to (db/573).
+///
+/// The borrower twin of `LtStaffLink`, and it follows the same owner-directed rule:
+/// PILOT proposes a match by email and a HUMAN confirms it. Keyed on the ADDRESS
+/// rather than on a loan, because a borrower has many long-term loans and
+/// confirming the same person once per loan is not a workflow anybody finishes —
+/// so one decision governs every loan carrying that address, and a REJECTION is
+/// just as durable as a confirmation.
+model LtBorrowerLink {
+  /// The normalised (lowercased) Encompass borrower email.
+  encompassEmail String @id @map("encompass_email")
+
+  /// The authorized `sql-ref borrowers`. ON DELETE SET NULL, and NULL is also the
+  /// state of a rejection — enforced by `lt_borrower_links_status_chk`, so a
+  /// refusal can never be mistaken for a link.
+  borrowerId String? @map("borrower_id") @db.Uuid
+
+  status LtLinkStatus @default(suggested)
+
+  /// How the pair was proposed: 'email' or 'manual'.
+  matchMethod String? @map("match_method")
+
+  /// The name Encompass carried on the loan when the link was made, so the screen
+  /// can still show what was decided after Encompass is re-read and the spelling
+  /// moves.
+  encompassName String? @map("encompass_name")
+
+  confirmedBy String?   @map("confirmed_by") @db.Uuid
+  confirmedAt DateTime? @map("confirmed_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  /// Deliberately NOT unique: a borrower legitimately has more than one address —
+  /// a personal one and an entity one — and both are the same human, so refusing
+  /// the second would make the true state unrecordable.
+  @@index([borrowerId])
+  @@index([status])
+  @@map("lt_borrower_links")
 }
