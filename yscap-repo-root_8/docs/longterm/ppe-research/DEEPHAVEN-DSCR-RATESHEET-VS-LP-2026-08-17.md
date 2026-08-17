@@ -1,0 +1,112 @@
+<!--
+  The owner-supplied Deephaven (DHM) "Corr Flow Rate Sheet (T0)" — DSCR tab — read cell by cell and
+  compared against what we measured LIVE from Lender Price. LT-only. The machine-readable extraction is
+  matrices/deephaven-dscr-ratesheet-corr-t0.json; this file is the ANALYSIS: what ties out, what we are
+  missing, and the one sign question that must be settled live before anything is encoded.
+  Only the DSCR tab was read (owner-directed 2026-08-17: "look only on the DSCR tab").
+-->
+
+# Deephaven DSCR rate sheet (Corr T0) vs Lender Price — 2026-08-17
+
+The owner supplied the real Deephaven rate sheet. It is the **source of truth** the whole Layer-1
+sheet should be built from, and it contains **four tables we had never encoded**. It also settles the
+prepay question the owner raised, exactly.
+
+## 1. The prepay penalty table — FOUND, and it ties out to LP to the penny
+
+Sheet block `O42` **"Max Price/Prepay Buydown"**. Baseline is stated on the sheet itself (`B10`):
+**base pricing is a 30-day lock at a 3-YEAR prepay** — which is why the 3-Year row is 0.000.
+
+| Term | LLPA Other | LLPA **5% Fixed** | Max Price |
+| --- | --- | --- | --- |
+| 5 Year | **+0.625** | **+1.125** | 105 |
+| 4 Year | +0.25 | +0.5 | 105 |
+| 3 Year | **0** (baseline) | +0.25 | 104 |
+| 2 Year | −0.5 | −0.5 | 102.75 |
+| 1 Year | −1 | −1 | 102 |
+| No Prepay | **−2** | −2 | 101.5 |
+
+Footnote `O51`: *"Prepay Penalties allowed on Investor only. See matrix for details."*
+
+**Cross-check against the LIVE Lender Price measurement** (same loan, only the prepay selection
+changed — `DEEPHAVEN-LP-LIVE-FINDINGS-2026-08-17.md` §2, coupon 7.500, base 105.175):
+
+| prepay selection | LP itemized line | LP price | sheet says | agrees? |
+| --- | --- | --- | --- | --- |
+| Fixed 3% / 36 mo | *(no line — baseline)* | 105.175 | 3 Year = 0 | ✅ |
+| Standard step-down 5 yr | `5 Year Prepay Penalty` 0.625 | 105.800 | 5 Year Other = +0.625 | ✅ exact |
+| **Fixed 5%, 5 yr** | `5 Year Prepay Penalty - 5%` 1.125 | **106.300** | 5 Year 5% Fixed = **+1.125** | ✅ exact |
+| No Prepay | `No Prepay Penalty` 2.000 | 103.175 | No Prepay = **−2** | ✅ exact |
+
+Every measured point matches the sheet **to the penny**, and the arithmetic closes:
+`105.175 + 0.625 = 105.800`, `105.175 + 1.125 = 106.300`, `105.175 − 2.000 = 103.175`. So for this
+family the sheet is **premium-positive** (a positive value IMPROVES the price) and LP's displayed
+numbers move the price the same way. The **5% Fixed promotion is worth +0.500 over the standard
+5-year declining penalty** (1.125 − 0.625), confirmed from two independent sources.
+
+## 2. Three more tables we had never encoded
+
+**(a) Max Price tiers by loan amount** (`B42`), with the sheet's own combining rule verbatim (`B48`):
+> *"Max Price includes Lender Paid Comp, if applicable. **Max Price is the lower of Max Price Tiers
+> and Prepay Buydown, when applicable.**"*
+
+| Loan amount | Max price |
+| --- | --- |
+| ≤ $1,500,000 | 105 |
+| ≤ $2,000,000 | 104.5 |
+| ≤ $2,500,000 | 103.5 |
+
+**Min price: 98.000.** So a quote is clamped by **the LOWER of** (loan-amount tier, prepay-term cap),
+then floored at 98 — two independent ceilings, lowest wins, exactly as the owner described.
+
+**(b) Term / extension adjustments** (`T42`). Base is a 30-day lock, so 30 days carries no row:
+
+| | Days | Adj. |
+| --- | --- | --- |
+| Lock term | 45 | −0.15 |
+| Lock term | 60 | −0.30 |
+| Extension *(max 3, max 30 days)* | 5 | −0.125 |
+| | 10 | −0.25 |
+| | 15 | −0.375 |
+| | 30 | −0.75 |
+
+**(c) Other program requirements** (`X42`): min loan **$100,000**, max loan **$2,500,000**, mortgage
+history **0x30x12**, bankruptcy seasoning **36 months**, FC/SS/DIL seasoning **36 months**.
+
+## 3. What this changes for our encoded sheet
+
+`deephaven-dscr-sheet.js` was reconstructed from live LP probing and its own header already admits the
+prepay LLPA is *"measured but not yet wired into Layer-1."* Against the real sheet, our gaps are:
+
+- **the whole prepay LLPA family** (6 terms × 2 pricing models) — absent;
+- **max-price caps per prepay term** and **max-price tiers by loan amount + the 98.000 floor** — absent
+  (this is D37's "max/min price rule", now fully specified);
+- **lock-term (45/60) and extension pricing** — absent; we price only the 30-day base;
+- **Short-Term Rental** (−0.5 across CLTV) and the **< 250,000** loan-amount row — absent;
+- **DSCR band labels differ**: the sheet's middle band is **1.15 – 1.24**, ours is 1.00 – 1.24. The
+  sheet lists **no row for 1.00 – 1.14** at all, and LP's own containers are "1.00-1.24" / "< 1.00".
+  Do not guess this band — it needs one live measurement at DSCR 1.10.
+
+## 4. ⚠ The one thing that must be settled LIVE before encoding — a SIGN conflict
+
+The sheet is premium-positive throughout (FICO 780+ = +1 at 50 CLTV improves the price; FICO 640-659
+= −2.5 worsens it), and our sheet negates LP's cost-positive values (`cost(v) = -v`), so the two
+normally agree. **They do not agree on the DSCR ≥ 1.25 row:**
+
+- the sheet states **+0.25 = a CREDIT** (better price for a stronger DSCR — the economically sensible
+  direction);
+- we encode `cost(0.25)` = **−0.25 = a CHARGE**, reproducing LP's itemized `DSCR Ratio - DSCR >= 1.25`
+  as a cost.
+
+Same magnitude, opposite direction. One of the two is mispricing every strong-DSCR loan by half a
+point of spread. **This is NOT resolved here and nothing has been re-encoded on the strength of it** —
+it is settled by one live probe (price a loan at DSCR 1.30 vs 1.20 and read which way the price
+moves), which is queued for the moment the 299-scenario battery releases the LP connection. The same
+probe should read the 1.00 – 1.14 band above.
+
+## 5. Sources
+
+- Extraction: `matrices/deephaven-dscr-ratesheet-corr-t0.json` (verbatim; nothing derived or rounded).
+- Live LP measurements: `DEEPHAVEN-LP-LIVE-FINDINGS-2026-08-17.md`, `LP-SMO-REGISTRY-2026-08-17.md`
+  (the `5% Flat Prepay` SMO token, id `6373fe9dce8ad00001a1b87e`, and the `1–5 Yr PPP` series).
+- Our encoded sheet under test: `src/longterm/ppe/deephaven-dscr-sheet.js`.

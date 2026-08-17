@@ -1,0 +1,149 @@
+{
+  "_source": "Deephaven Mortgage LLC — Corr Flow Rate Sheet (T0), DSCR tab. Owner-supplied Excel 2026-08-17.",
+  "_workbookPath": "G:\\NQM 2.0 Pricing\\DHM\\Rate Sheets-Matrices\\Corr T0\\",
+  "_extractedBy": "verbatim cell extraction from the DSCR worksheet (sheet4.xml); NO value is derived, rounded or inferred",
+  "_signConvention": "PREMIUM-POSITIVE — a positive value IMPROVES the price (adds to it). This is the OPPOSITE of Lender Price's itemized LLPA convention for the FICO/other families (cost-positive), and it is why deephaven-dscr-sheet.js negates LP values via cost(v)=-v. An Excel cell therefore maps DIRECTLY onto a deephaven-grid premium-positive cell with NO negation.",
+  "_baseline": "Base pricing is quoted at a 30-DAY LOCK and a 3-YEAR PREPAY (cell B10: 'Base Pricing (30D) - 3 Yr Prepay'). Both baselines are therefore the ZERO row of their adjustment tables: prepay 3 Year = 0.000, lock 30 day = no row.",
+
+  "basePricing": {
+    "_note": "B10 header. Columns F (15Y Fixed, 5/6 ARM) and J (30Y Fixed) carry IDENTICAL prices on this sheet.",
+    "lockDays": 30,
+    "prepayTerm": "3 Year",
+    "coupons": [
+      { "coupon": 6.125, "price15yFixed_5_6Arm": 100.1,   "price30yFixed": 100.1 },
+      { "coupon": 6.25,  "price15yFixed_5_6Arm": 100.75,  "price30yFixed": 100.75 },
+      { "coupon": 6.375, "price15yFixed_5_6Arm": 101.3,   "price30yFixed": 101.3 },
+      { "coupon": 6.5,   "price15yFixed_5_6Arm": 101.85,  "price30yFixed": 101.85 },
+      { "coupon": 6.625, "price15yFixed_5_6Arm": 102.35,  "price30yFixed": 102.35 },
+      { "coupon": 6.75,  "price15yFixed_5_6Arm": 102.85,  "price30yFixed": 102.85 },
+      { "coupon": 6.875, "price15yFixed_5_6Arm": 103.325, "price30yFixed": 103.325 },
+      { "coupon": 6.99,  "price15yFixed_5_6Arm": 103.775, "price30yFixed": 103.775 },
+      { "coupon": 7.125, "price15yFixed_5_6Arm": 104.225, "price30yFixed": 104.225 },
+      { "coupon": 7.25,  "price15yFixed_5_6Arm": 104.65,  "price30yFixed": 104.65 },
+      { "coupon": 7.375, "price15yFixed_5_6Arm": 105.05,  "price30yFixed": 105.05 },
+      { "coupon": 7.5,   "price15yFixed_5_6Arm": 105.425, "price30yFixed": 105.425 },
+      { "coupon": 7.625, "price15yFixed_5_6Arm": 105.8,   "price30yFixed": 105.8 },
+      { "coupon": 7.75,  "price15yFixed_5_6Arm": 106.175, "price30yFixed": 106.175 },
+      { "coupon": 7.875, "price15yFixed_5_6Arm": 106.55,  "price30yFixed": 106.55 },
+      { "coupon": 7.99,  "price15yFixed_5_6Arm": 106.925, "price30yFixed": 106.925 },
+      { "coupon": 8.125, "price15yFixed_5_6Arm": 107.3,   "price30yFixed": 107.3 },
+      { "coupon": 8.25,  "price15yFixed_5_6Arm": 107.64,  "price30yFixed": 107.64 },
+      { "coupon": 8.375, "price15yFixed_5_6Arm": 107.94,  "price30yFixed": 107.94 },
+      { "coupon": 8.5,   "price15yFixed_5_6Arm": 108.24,  "price30yFixed": 108.24 },
+      { "coupon": 8.625, "price15yFixed_5_6Arm": 108.52125, "price30yFixed": 108.52125 },
+      { "coupon": 8.75,  "price15yFixed_5_6Arm": 108.8025,  "price30yFixed": 108.8025 },
+      { "coupon": 8.875, "price15yFixed_5_6Arm": 109.08375, "price30yFixed": 109.08375 },
+      { "coupon": 8.99,  "price15yFixed_5_6Arm": 109.349375, "price30yFixed": 109.349375 },
+      { "coupon": 9.125, "price15yFixed_5_6Arm": 109.615,  "price30yFixed": 109.615 },
+      { "coupon": 9.25,  "price15yFixed_5_6Arm": 109.8025, "price30yFixed": 109.8025 },
+      { "coupon": 9.375, "price15yFixed_5_6Arm": 109.99,   "price30yFixed": 109.99 },
+      { "coupon": 9.5,   "price15yFixed_5_6Arm": 110.1775, "price30yFixed": 110.1775 }
+    ]
+  },
+
+  "cltvColumns": {
+    "_note": "Column headers T..Z for BOTH adjustment blocks (row 12 and row 26). Recorded verbatim as the sheet's own decimals. 'N/A' in a cell = not eligible at that CLTV (an ELIGIBILITY cut, not a price).",
+    "values": [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
+  },
+
+  "priceAdjustmentsFicoByCltv": {
+    "_block": "O11 'Price Adjustments --- FICO x CLTV'",
+    "rows": [
+      { "label": "780+",             "byCltv": [1,      0.75,  0.625, 0.5,   0.125,  -0.25,  -0.75] },
+      { "label": "760 - 779",        "byCltv": [0.875,  0.75,  0.625, 0.5,   0.125,  -0.25,  -1.125] },
+      { "label": "740 - 759",        "byCltv": [0.75,   0.625, 0.5,   0.375, -0.125, -0.5,   -1.5] },
+      { "label": "720 - 739",        "byCltv": [0.625,  0.5,   0.375, 0.125, -0.375, -0.875, -1.875] },
+      { "label": "700 - 719",        "byCltv": [0.25,   0.125, 0,     -0.25, -1,     -1.5,   -2.625] },
+      { "label": "680 - 699",        "byCltv": [0,      -0.25, -0.5,  -0.75, -1.625, -2.5,   "N/A"] },
+      { "label": "660 - 679",        "byCltv": [-0.5,   -0.75, -1,    -1.25, -2.125, -3.75,  "N/A"] },
+      { "label": "640 - 659",        "byCltv": [-2.5,   -2.75, -3,    -3.375, -3.875, "N/A", "N/A"] },
+      { "label": "Foreign National", "byCltv": [-2,     -2.25, -2.75, -3.25, -4,     "N/A",  "N/A"] }
+    ]
+  },
+
+  "priceAdjustmentsDscr": {
+    "_block": "O22 'DSCR'",
+    "rows": [
+      { "label": "DSCR ≥ 1.25",      "byCltv": [0.25,  0.25,   0.25, 0.25,   0.25,  0.25, 0.25] },
+      { "label": "DSCR 1.15 - 1.24", "byCltv": [0,     0,      0,    0,      0,     0,    0] },
+      { "label": "DSCR < 1.00",      "byCltv": [-0.75, -0.875, -1,   -1.25,  -1.5,  -2,   "N/A"] }
+    ]
+  },
+
+  "priceAdjustmentsOther": {
+    "_block": "O25 'Price Adjustments --- Other'",
+    "rows": [
+      { "group": "Rental Type", "label": "Short-Term Rental",     "byCltv": [-0.5,  -0.5,  -0.5,   -0.5,  -0.5,   -0.5,  "N/A"] },
+      { "group": "Loan Amount", "label": "< 125,000",             "byCltv": [-1.75, -1.75, -2,     -2.25, -2.25,  -2.5,  "N/A"] },
+      { "group": "Loan Amount", "label": "< 150,000",             "byCltv": [-1.25, -1.25, -1.25,  -1.5,  -1.5,   -1.5,  -1.75] },
+      { "group": "Loan Amount", "label": "< 250,000",             "byCltv": [0,     0,     0,      0,     0,      0,     -0.125] },
+      { "group": "Loan Amount", "label": "> 1,500,000",           "byCltv": [0,     0,     0,      -0.125, -0.25, -0.25, -0.25] },
+      { "group": "Loan Amount", "label": "> 2,000,000",           "byCltv": [-0.25, -0.25, -0.375, -0.5,  -0.5,   "N/A", "N/A"] },
+      { "group": "Other",       "label": "Cash-Out | FICO ≥ 720", "byCltv": [0,     -0.125, -0.25, -0.25, -0.5,   -0.875, -2.625] },
+      { "group": "Other",       "label": "Cash-Out | FICO < 720", "byCltv": [-0.25, -0.375, -0.375, -0.5, -0.75,  -1,    "N/A"] },
+      { "group": "Other",       "label": "Interest Only",         "byCltv": [-0.25, -0.25, -0.25,  -0.5,  -0.625, -0.75, -1.25] },
+      { "group": "Other",       "label": "2-4 Units",             "byCltv": [-0.25, -0.25, -0.5,   -0.5,  -0.75,  -1,    -1.5] },
+      { "group": "Other",       "label": "Condo",                 "byCltv": [0,     0,     0,      -0.125, -0.125, -0.25, -0.5] },
+      { "group": "Other",       "label": "Escrow Waiver",         "byCltv": [-0.25, -0.25, -0.25,  -0.25, -0.25,  -0.25, -0.25] },
+      { "group": "Other",       "label": "Non-Warrantable",       "byCltv": [-0.75, -0.75, -0.75,  -0.75, -0.75,  -1,    -1] },
+      { "group": "Other",       "label": "State**",               "byCltv": [-0.375, -0.375, -0.375, -0.375, -0.375, -0.375, -0.375] }
+    ],
+    "_stateFootnote": "**States: DC, MA, NJ, NY (cell O41)"
+  },
+
+  "maxPricePrepayBuydown": {
+    "_block": "O42 'Max Price/Prepay Buydown' — THE PREPAY PENALTY TABLE (owner-flagged 2026-08-17)",
+    "_columns": "O=Term, P='LLPA Other', Q='LLPA 5% Fixed', R='Max Price'",
+    "_baselineRow": "3 Year (LLPA Other = 0) — matches the B10 base-pricing baseline exactly",
+    "_footnote": "O51: 'Prepay Penalties allowed on Investor only. See matrix for details'",
+    "rows": [
+      { "term": "5 Year",    "termMonths": 60, "llpaOther": 0.625, "llpa5PctFixed": 1.125, "maxPrice": 105 },
+      { "term": "4 Year",    "termMonths": 48, "llpaOther": 0.25,  "llpa5PctFixed": 0.5,   "maxPrice": 105 },
+      { "term": "3 Year",    "termMonths": 36, "llpaOther": 0,     "llpa5PctFixed": 0.25,  "maxPrice": 104 },
+      { "term": "2 Year",    "termMonths": 24, "llpaOther": -0.5,  "llpa5PctFixed": -0.5,  "maxPrice": 102.75 },
+      { "term": "1 Year",    "termMonths": 12, "llpaOther": -1,    "llpa5PctFixed": -1,    "maxPrice": 102 },
+      { "term": "No Prepay", "termMonths": 0,  "llpaOther": -2,    "llpa5PctFixed": -2,    "maxPrice": 101.5 }
+    ]
+  },
+
+  "maxPriceTiersByLoanAmount": {
+    "_block": "B42 'Max Price Tiers' (B43 'Loan Amount' / H43 'Max Price')",
+    "_rule": "B48 verbatim: 'Max Price includes Lender Paid Comp, if applicable.  Max Price is the lower of Max Price Tiers and Prepay Buydown, when applicable.' — THE LOWEST WINS.",
+    "rows": [
+      { "loanAmountMax": 1500000, "label": "≤ $1,500,000", "maxPrice": 105 },
+      { "loanAmountMax": 2000000, "label": "≤ $2,000,000", "maxPrice": 104.5 },
+      { "loanAmountMax": 2500000, "label": "≤ $2,500,000", "maxPrice": 103.5 }
+    ],
+    "minPrice": 98.0
+  },
+
+  "termExtensionAdjustments": {
+    "_block": "T42 'Term/Extension Adjustments' (U43 'Days' / V43 'Adj.')",
+    "_baseline": "Base pricing is a 30-DAY lock, so 30 days carries NO row and NO adjustment.",
+    "lockTerm": [
+      { "days": 45, "adj": -0.15 },
+      { "days": 60, "adj": -0.3 }
+    ],
+    "extension": {
+      "_label": "T46 verbatim: 'Extension (Max 3 for Max 30 Days)'",
+      "maxExtensions": 3,
+      "maxTotalDays": 30,
+      "rows": [
+        { "days": 5,  "adj": -0.125 },
+        { "days": 10, "adj": -0.25 },
+        { "days": 15, "adj": -0.375 },
+        { "days": 30, "adj": -0.75 }
+      ]
+    }
+  },
+
+  "otherProgramRequirements": {
+    "_block": "X42 'Other Program Requirements' (X43 'DSCR')",
+    "minimumLoanAmount": 100000,
+    "maximumLoanAmount": 2500000,
+    "mortgageHistory": "0x30x12",
+    "bankruptcySeasoning": "36 Months",
+    "fcSsDilSeasoning": "36 Months",
+    "armFeatures": "See Cover Page"
+  }
+}
