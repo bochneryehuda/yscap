@@ -83,5 +83,35 @@ ok(S.structuresFor({ tierSet: 'custom_softer' }).length === 2, 'structuresFor ti
 ok(Array.isArray(S.verifyLpTokens()) && S.verifyLpTokens().length === 0,
   'verifyLpTokens: every NON-null LP plan token is a real field-registry token (no invented tokens)');
 
+// ── SOURCED cross-check: the library faithfully implements the AUTHORITATIVE Deephaven PPP matrix
+//    PDF's documented STANDARD structures (transcribed in the canonical matrices/deephaven-ppp-matrix
+//    .json). The PDF's yearly step-down: 5yr 5/4/3/2/1; 4yr 5/4/3/2; 3yr 5/4/3; 2yr 3/3; 1yr 3. Each
+//    must be a real structure in the library — so the library and the authoritative source can't drift.
+{
+  const path = require('path');
+  const J = require(path.join(__dirname, '..', 'docs', 'longterm', 'ppe-research', 'matrices', 'deephaven-ppp-matrix.json'));
+  const stepDown = (J.standardStructures || {}).yearlyStepDown || {};
+  // a step_down structure's schedule IS its per-year %; a `flat` structure of pct p over N years is the
+  // constant schedule [p × N] (the PDF's 2yr "3/3" and 1yr "3" are stored as flat 3% — no LP 3/3 token).
+  const effSchedule = (s) => s.type === 'step_down' ? s.schedule
+    : (s.type === 'flat' && s.typeParams && s.termYears ? Array(s.termYears).fill(s.typeParams.pct) : null);
+  let stepMiss = 0;
+  for (const [yr, str] of Object.entries(stepDown)) {
+    const term = Number(String(yr).replace(/yr$/i, ''));
+    const want = String(str).split('/').map(Number);
+    const found = S.PPP_STRUCTURES.some((s) => s.termYears === term && JSON.stringify(effSchedule(s)) === JSON.stringify(want));
+    if (!found) { stepMiss += 1; console.log(`    (no library structure for PDF step-down ${yr} = ${str})`); }
+  }
+  ok(Object.keys(stepDown).length === 5 && stepMiss === 0,
+    `every PDF yearly step-down tier (5/4/3/2/1, 5/4/3/2, 5/4/3, 3/3, 3) is a real library structure (${5 - stepMiss}/5)`);
+  // the 5% flat promo the PDF names as the wholesale flat option exists as the fixed5_promo model.
+  ok(S.getStructure('fixed5') && S.getStructure('fixed5').typeParams.pct === 5 && S.getStructure('fixed5').pricingModel === 'fixed5_promo',
+    'the PDF wholesale "5% flat" is the fixed5_promo structure');
+  // the authoritative channel restriction is transcribed (not enforced yet — pricing per channel is a
+  // live-measured question), so the knowledge is captured and cannot silently vanish.
+  ok(/wholesale/i.test((J.standardStructures || {}).wholesaleNote || '') && /5% flat/i.test(J.standardStructures.wholesaleNote),
+    'the PDF wholesale/correspondent channel restriction (5% flat + step-down) is recorded in the canonical matrix');
+}
+
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);
