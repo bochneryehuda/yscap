@@ -61,6 +61,16 @@ const njFacts = legs.lpScenarioToFacts({ value: 5e5, loan: 4e5, fico: 740, dscr:
 const njProg = prog.evaluateProgram(njFacts);
 ok(njProg.eligible === false && njProg.reasons.some((r) => r.layer === 'ppp_matrix' && /nj/i.test(r.code)),
   '  only an explicit individual (Advanced) NJ PPP request declines via the PPP layer');
+// ZIP → STATE derivation (measured LP-live divergence 2026-08-17: LP declined a zip-only NJ individual
+// PPP that our engine ALLOWED, because `state` was never derived from the ZIP). Now a zip-only scenario
+// carries the state, so the state-keyed matrix/PPP rules fire; a caller-supplied state always wins.
+ok(legs.lpScenarioToFacts({ zip: '07030' }).state === 'NJ' && legs.lpScenarioToFacts({ zip: '10001' }).state === 'NY',
+  '  state is DERIVED from the ZIP when not supplied (07030 → NJ, 10001 → NY)');
+ok(legs.lpScenarioToFacts({ state: 'CA', zip: '07030' }).state === 'CA' && legs.lpScenarioToFacts({}).state === null,
+  '  a supplied state wins over the ZIP; no zip + no state → null');
+const njZip = prog.evaluateProgram(legs.lpScenarioToFacts({ value: 5e5, loan: 4e5, fico: 740, dscr: 1.25, zip: '07030', borrowerType: 'Individual', units: 1, prepayMonths: 60 }));
+ok(njZip.eligible === false && njZip.reasons.some((r) => r.layer === 'ppp_matrix' && /nj/i.test(r.code)),
+  '  a ZIP-ONLY NJ individual PPP request now DECLINES (the measured LP-live divergence is closed)');
 // APR (Layer-3 PPP) — a PURE PASS-THROUGH: emitted only when a scenario supplies one, else null.
 ok(legs.lpScenarioToFacts({ apr: 9.25 }).apr === 9.25 && legs.lpScenarioToFacts({ value: 5e5 }).apr === null,
   '  apr is carried from an LP scenario, and is null when absent (PPP layer fails OPEN)');

@@ -24,6 +24,11 @@
  */
 const { quoteProgram } = require('./quote');
 const { advancedFactsFromScenario } = require('./advanced-facts');
+// ZIP → state derivation (committed offline table; PURE, no network). Needed so a realistic zip-only
+// scenario carries a state for the state-keyed Layer-2/Layer-3 rules (e.g. NJ PPP): measured live
+// 2026-08-17, LP declines an NJ individual PPP that our engine allowed ONLY because `state` was never
+// derived from the ZIP here. A caller-supplied state is an assertion and always wins.
+const { lookupZip } = require('../lenderprice/zip-county');
 
 // The three credentials client.credentials() reads. Named here only to report WHICH are missing (the
 // client exposes a boolean, not the gap). Keep in step with lenderprice/client.js credentials().
@@ -71,7 +76,9 @@ function lpScenarioToFacts(s) {
     loan_amount: loan,
     value,
     purpose: normPurpose(sc.purpose),
-    state: sc.state || null,
+    // A caller-supplied state is authoritative; otherwise DERIVE it from the ZIP (offline table), so a
+    // zip-only scenario still carries a state for the state-keyed matrix/PPP rules. null when neither.
+    state: sc.state || (sc.zip != null ? (lookupZip(sc.zip) || {}).state : null) || null,
     property_type: sc.propertyType || 'SingleFamily',
     units: units != null && units > 0 ? units : 1,
     // LP scenario field names: prepayMonths (number), io, escrowWaive (a legacy prepayTerm string is
