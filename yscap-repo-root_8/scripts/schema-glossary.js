@@ -55,6 +55,7 @@ const GLOSSARY = {
   amc_orders: 'An appraisal ordered through an appraisal management company, and where that order has got to.',
   messages: 'Messages inside the system — between the team, and with a borrower or a broker.',
   finding_decisions: 'A human’s verdict on a finding, kept so it is never asked again.',
+  lt_loans: 'One long-term loan file. The long-term product is a separate system that shares only the login and the person, so this is its own spine — nothing here touches a short-term loan.',
 };
 
 module.exports = { GLOSSARY };
