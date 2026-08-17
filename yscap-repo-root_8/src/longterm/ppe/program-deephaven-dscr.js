@@ -26,6 +26,7 @@ const { evaluateEligibility } = require('./deephaven-matrix');
 const { pppDisqualifier, pppResult } = require('./deephaven-ppp-matrix');
 const { evaluateInformational } = require('./informational');
 const { evaluateOverlayDeclines } = require('./deephaven-overlay-rules');
+const { runProgram, assertDescriptor } = require('./program-engine');
 
 const INVESTOR = 'Deephaven';
 const PROGRAM_NAME = 'Deephaven DSCR'; // the investor name IS in the program name (owner rule)
@@ -48,54 +49,31 @@ function pppInputFromFacts(f) {
   };
 }
 
+// The Deephaven DSCR PROGRAM DESCRIPTOR — the per-investor slots the generic `program-engine.runProgram`
+// pipeline calls. This is the seed entry of the multi-investor program registry (PPE #47): a second
+// investor's program is a NEW descriptor (its own layer functions + overlay cut table), never a second
+// copy of the three-layer wiring. `runProgram` composes them identically for every investor.
+const DESCRIPTOR = assertDescriptor({
+  investor: INVESTOR,
+  programName: PROGRAM_NAME,
+  evaluateEligibility,                                                   // dot 2 — the eligibility matrix
+  pppInputFromFacts,                                                     // engine facts → the PPP input shape
+  pppResult,                                                            // dot 3 — the PPP result
+  pppDisqualifier,                                                      // dot 3 — the PPP disqualifier
+  evaluateOverlay: (facts, o) => evaluateOverlayDeclines(facts, o),      // D36 Advanced-overlay declines
+  evaluateInformational,                                               // reserves / notes / delegate exception
+});
+
 /**
  * The combined ELIGIBILITY verdict for Deephaven DSCR: the matrix layer AND the PPP layer, PLUS the
  * INFORMATIONAL layer (reserves / notes / the delegate exception — non-blocking; never changes eligible).
  * Returns { program, investor, eligible, reasons:[{layer, code, dimension, declineReason, citation}],
- *   maxLtvMilli, ppp:{result, terms}, unverifiable, reserves, informational[], exceptions[] }.
+ *   maxLtvMilli, ppp:{result, terms}, unverifiable, overlay, reserves, informational[], exceptions[] }.
  *   opts.monthlyPitia — the priced product's monthly PITIA, so the reserve DOLLAR is computable.
+ * Byte-identical to the previous hand-written composition — it now runs through the shared program engine.
  */
 function evaluateProgram(facts, opts = {}) {
-  const elig = evaluateEligibility(facts);
-  const reasons = elig.reasons.map((r) => ({ layer: 'eligibility_matrix', ...r }));
-
-  const pppInput = pppInputFromFacts(facts);
-  const ppp = pppResult(pppInput);
-  const pppDq = pppDisqualifier(pppInput);
-  if (pppDq) reasons.push({ layer: 'ppp_matrix', ...pppDq });
-
-  // Layer-2 ADVANCED-OVERLAY enforcement (D36): the Advanced-only facts Lender Price cannot SEE
-  // (short-term rental, first-time investor, rural, declining market, foreign national). Each decline is
-  // stamped as a reasoned OVERLAY (deephaven-overlay-rules → overlay.overlayDecline), so the E3 gate
-  // scores it as an intentional override of LP, never a parity defect. Every overlay fact defaults OFF,
-  // so an ordinary scenario (no Advanced options) triggers nothing here — byte-identical to before. The
-  // relative declining-market cut reads the grid's OWN resolved max-LTV cap so the two can never disagree.
-  const overlay = evaluateOverlayDeclines(facts, { gridMaxLtvMilli: elig.maxLtvMilli });
-  for (const d of overlay.declines) {
-    reasons.push({ layer: 'overlay', code: d.code, dimension: d.fact, declineReason: d.reason, citation: d.citation, overlay: true, fact: d.fact });
-  }
-
-  // The informational layer enriches the product; it NEVER changes the eligible verdict.
-  const info = evaluateInformational(facts, { monthlyPitia: opts.monthlyPitia });
-
-  return {
-    program: PROGRAM_NAME,
-    investor: INVESTOR,
-    eligible: reasons.length === 0,
-    reasons,
-    maxLtvMilli: elig.maxLtvMilli,
-    cell: elig.cell,
-    ppp: { result: ppp.result, terms: ppp.terms || null, matched: ppp.matched },
-    unverifiable: elig.unverifiable,
-    // D36 overlay enforcement: which Advanced overlays fired, which cuts each enforced, and which remain
-    // flagged (ambiguous rule text / facts not carried). `declines` are valid overlay declines (the E3
-    // classifier scores them OVERLAY). Empty for an ordinary scenario with no Advanced facts set.
-    overlay: { declines: overlay.declines, enforced: overlay.enforced, stillFlagged: overlay.stillFlagged },
-    // informational product attributes (D26/D34) — reserves, notes, and the loud delegate exception.
-    reserves: info.reserves,
-    informational: info.informational,
-    exceptions: info.exceptions,
-  };
+  return runProgram(DESCRIPTOR, facts, opts);
 }
 
 // The program descriptor — the three dots, named by the investor, in one place.
@@ -107,7 +85,8 @@ const PROGRAM = {
     eligibility: evaluateEligibility,        // dot 2
     ppp: { result: pppResult, disqualifier: pppDisqualifier }, // dot 3
   },
+  descriptor: DESCRIPTOR,
   evaluate: evaluateProgram,
 };
 
-module.exports = { PROGRAM, evaluateProgram, INVESTOR, PROGRAM_NAME, _internals: { pppInputFromFacts } };
+module.exports = { PROGRAM, DESCRIPTOR, evaluateProgram, INVESTOR, PROGRAM_NAME, _internals: { pppInputFromFacts } };

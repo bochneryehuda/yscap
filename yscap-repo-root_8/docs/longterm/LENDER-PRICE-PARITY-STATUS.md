@@ -414,9 +414,19 @@ captured** — every poll timed out at HTTP 202 — which is *why* the envelope 
   prohibited; NJ LLC → allowed.** Every restriction state (AK IL LA MD MI MN NJ NM OH PA RI
   VT VA) encoded incl. the 2026 annual thresholds. Test `test-lt-ppe-deephaven-ppp.js` (37).
 - **The program — `program-deephaven-dscr.js`.** Connects the three dots under the investor
-  name ("Deephaven DSCR"); one scenario resolves against BOTH eligibility layers, each
-  decline labelled with its layer (`eligibility_matrix` / `ppp_matrix`). Test
-  `test-lt-ppe-program-deephaven-dscr.js` (10).
+  name ("Deephaven DSCR"); one scenario resolves against BOTH eligibility layers PLUS the D36
+  overlay layer, each decline labelled with its layer (`eligibility_matrix` / `ppp_matrix` /
+  `overlay`). Test `test-lt-ppe-program-deephaven-dscr.js` (10).
+- **NOW GENERIC (the scalable seam — PPE #47).** The three-layer+overlay wiring lives ONCE in
+  `program-engine.runProgram(descriptor, facts, opts)`; `program-deephaven-dscr` builds a PROGRAM
+  DESCRIPTOR (its per-investor layer functions + overlay cut table) and delegates to it, and
+  `program-registry.js` catalogs descriptors by investor key (`evaluateProgramFor(key, …)`, alias-
+  resolving, null on an unknown investor — never a silent default). Adding the SECOND investor is a
+  new descriptor + one registry line; the pricing pipeline does not change. Proven BYTE-IDENTICAL to
+  the pre-refactor hand-written composition over 4,000 layer-exercising scenarios
+  (`test-lt-ppe-program-engine.js`), with the layer labelling pinned by concrete assertions in the
+  D36 + engine suites (mutation-proven to bite). `assertDescriptor` fails the build if a descriptor
+  omits a slot.
 
 **Still to do (needs the LP session free):** capture LP's Deephaven disqualify tree with a
 longer timeout on deliberately-ineligible scenarios, then cross-check every Layer-2/Layer-3
