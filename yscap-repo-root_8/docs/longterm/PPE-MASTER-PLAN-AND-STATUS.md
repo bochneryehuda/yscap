@@ -134,12 +134,28 @@ is a setting. Layer-2 per-investor margin hook is wired (opt-in, byte-identical 
 `lock.js` — full lifecycle, frozen price stack, worst-case relock, expiry block; pure, tested. No HTTP
 surface or lock-desk UI yet. *(MEGA §8. Later increment.)*
 
-### 2.8 The dual-run "LP wins" model — **PARTIAL** ⭐ active
+### 2.8 The dual-run "LP wins" model — **DONE** (deepened 2026-08-17)
 - **DONE:** `facade.js priceWithShadow` (shadow default, LP is the business answer, our engine's failure
   never breaks it, comparison is best-effort/async). *(MEGA §9.)*
-- **TO-BUILD:** the comparison today is **shallow** — it consumes only `client.parse()` (qualified
-  rungs + an LLPA *count*), so it cannot see **margin, itemized LLPAs, or disqualification reasons.**
-  Deepening this is P1 of the active workstream.
+- **DONE (P1 of the active workstream):** the comparison is no longer shallow. `deps.lpDetail` turns the
+  one Lender Price answer into the three parsed shapes and the façade now runs **both** halves — the
+  ladder (as before) **and** `lp-normalize-full` + `parity-detectors`, the same two modules the ≥200-scenario
+  agreement harness has always used, **reused rather than re-implemented**. So the live shadow finally sees
+  **margin, itemized LLPAs and Lender Price's own decline reasons**. Additive and optional: with no
+  `deps.lpDetail` the façade is byte-identical, and the deep block says in words why it did not run.
+- **Two defects it uncovered on the live route, both fixed:** `lp.price()` returns the **raw envelope**
+  (`{ok, raw, request, searchKey}`), which the façade was normalizing as if it were the `parse()` shape —
+  no `.programs`, so **zero matched programs, so Lender Price read as INELIGIBLE on every single quote**;
+  and the route passed the whole program **object** as Lender Price's program-*name* filter, which renders
+  `"[object object]"` and matches nothing — the same wrong answer by a second route. Every live quote was
+  recording a phantom `eligibility_mismatch`: a wiring fact filling the ledger, which is exactly the failure
+  the route's own no-program rule exists to prevent. Reproduced before the fix, guarded after it.
+- **Scope is STATED, never inferred.** Lender Price answers one request with every program it sells (17 on
+  the live Deephaven capture); our engine prices one. Unscoped, **both halves abstain with the reason** rather
+  than compare our ladder against a merge. `programLike` (a compiled RegExp) is deliberately **not accepted
+  over HTTP** — `/quote` is not admin-gated. A durable per-sheet LP scope is the remaining follow-up.
+- Tests `scripts/test-lt-ppe-facade-deep.js` (74) + `scripts/test-lt-ppe-quote-deep-wiring.js` (22); 18
+  mutations of the production code were each proven to fail them.
 
 ### 2.9 Validation / parity strategy — **PARTIAL** ⭐ active
 - **DONE:** `parity.js` (eligibility / rate / price comparison, incomparable never scored as agreement),

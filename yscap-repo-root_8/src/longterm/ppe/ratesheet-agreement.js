@@ -29,7 +29,7 @@
  */
 const { detectDifferences } = require('./parity-detectors');
 const { reconcileLlpas, boundsProbe } = require('./ratesheet-agreement-diff');
-const { normalizeLpFull, normalizeLpDisqualified } = require('./lp-normalize-full');
+const { normalizeLpFull, normalizeLpDisqualified, bestRungs } = require('./lp-normalize-full');
 const { describeScenario } = require('./scenario-matrix');
 
 const ERROR_KIND = 'engine_error';
@@ -63,17 +63,10 @@ function ourAdjustmentsOf(rung) {
 // (llpas, margin, basePoints) so the fine comparators have everything — bestLadder is not enough (it
 // carries only rate+price). best-execution.js is the production picker for the quote path; the
 // agreement harness needs only per-coupon best for the comparison.
-function bestRungsOf(lpNorm) {
-  const byRate = new Map();
-  for (const p of (lpNorm.programs || [])) {
-    for (const r of (p.rungs || [])) {
-      if (!isNum(r.rate) || !isNum(r.priceMilli)) continue;
-      const prev = byRate.get(r.rate);
-      if (prev == null || r.priceMilli > prev.priceMilli) byRate.set(r.rate, r);
-    }
-  }
-  return Array.from(byRate.values()).sort((a, b) => a.rate - b.rate);
-}
+// ONE definition, in lp-normalize-full beside the normalizer whose output it folds — the live shadow
+// façade folds LP's programs through the very same function, so the audit harness and production can
+// never come to disagree about which rung wins at a coupon.
+const bestRungsOf = bestRungs;
 
 // match an our-rung to an LP rung by coupon within the rate tolerance (mirrors parity-detectors)
 function matchByRate(lpRungs, rate, tol) {

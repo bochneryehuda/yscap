@@ -1476,3 +1476,96 @@ mere overlap, which is not a behaviour change at all but a THEOREM about the dec
 every cut is a region's own edge, a cell is wholly inside a region or wholly outside, so the two tests
 are identical. A mutation that changes no behaviour proves nothing about a test, and mistaking one for a
 coverage hole is how a suite gets padded with assertions that were never needed.
+
+---
+
+### §2.21 — THE LIVE SHADOW WAS COMPARING AGAINST NOTHING, AND HAD BEEN ALL ALONG (2026-08-17)
+
+The master plan's §2.8 said the live dual-run comparison was **shallow**: it consumed only
+`client.parse()` — qualified rungs and an LLPA *count* — so it could not see margin, itemized LLPAs
+or decline reasons. That was true, and it was not the worst of it.
+
+**THE LIVE COMPARISON WAS NOT SHALLOW, IT WAS EMPTY.** `lp.price()` returns the **raw envelope**
+(`{ ok, raw, request, searchKey }`), not the `parse()` shape — and the route handed that envelope
+straight to a normalizer that reads `.programs` off it. There are none, so **zero matched programs, so
+Lender Price scored as INELIGIBLE**, so our engine's perfectly good ladder disagreed with a phantom
+decline, on **every single quote**. And underneath it the same wrong answer arrived by a second route:
+the route passes the whole program **object** as Lender Price's program-*name* filter, which `norm()`
+renders `"[object object]"` and which therefore matches nothing either. Fixing one alone would have
+changed nothing.
+
+Both were reproduced against the real modules before a line was changed:
+
+```
+envelope   -> {"eligible":false,"rungs":[],"programsMatched":0}
+obj filter -> {"eligible":false,"rungs":[],"programsMatched":0}
+str filter -> {"eligible":true,"rungs":[{"rate":7000,"priceMilli":102850}],"programsMatched":1}
+```
+
+**WHAT IT COST is precisely what the route's own no-program rule was written to prevent.** That rule
+refuses to shadow a quote with no program because `quoteProgram` would throw and the façade would
+"faithfully record an `engine_error` finding on EVERY quote — filling the ledger with a configuration
+fact rather than a disagreement, and burying the real findings." This is the same failure one door
+along: a ledger of `eligibility_mismatch` rows that are a **wiring fact**, not a disagreement. **THE
+CLASS: a comparison whose inputs are mis-shaped does not fail — it agrees with itself about nothing,
+loudly, forever.** Nothing threw. Every test passed. The findings ledger filled up.
+
+**THE FIX, AND WHY IT IS ONE FIX AND NOT TWO.** `deps.lpDetail` turns the one Lender Price answer into
+the three parsed shapes at the one place that has the client: `parse` for the ladder, `parseFull` +
+`parseDisqualified` for the six categorized axes. So repairing the wiring and deepening the comparison
+are the same edit — the reason the deep half was never wired is the reason the shallow half was
+broken. The detectors themselves are **reused, not re-implemented**: `lp-normalize-full` and
+`parity-detectors` are the modules the ≥200-scenario agreement harness has always run, and `bestRungs`
+(which rung wins at a coupon) moved beside the normalizer so the harness and production fold Lender
+Price's programs through the same function. Two copies of "how do we compare to Lender Price" is how
+the number a nightly audit reports and the number live traffic records come to disagree.
+
+**SCOPE IS STATED, NEVER INFERRED — and this is what the deep half taught.** Lender Price answers one
+request with **every program it sells** (17 on the live Deephaven capture, across several investors and
+product lines) while our engine prices one. Comparing our single ladder against a merge of seventeen is
+not a weaker comparison, it is a meaningless one, and it would have reported a storm of "Lender Price
+offers a coupon we do not price" that is really a statement about an unscoped query. So with no scope
+**both halves abstain and say so**, naming the count and exactly how to scope it. Our `program` is a
+rate-sheet version, not Lender Price's program name; inferring one from the other would be a guess
+about somebody else's product catalogue.
+
+**FIVE JUDGEMENTS WORTH KEEPING, each of which was wrong in an earlier cut:**
+
+1. **An unreadable Lender Price side is INCOMPARABLE, never a decline.** "We could not read it" and
+   "Lender Price declined it" are different facts and only one of them is ever true. Letting the first
+   degrade into the second is the original defect wearing a new coat.
+2. **One eligibility decision is one ledger row — and the RICHER reading owns it.** The first cut
+   dropped the deep verdict whenever the ladder had already spoken, which threw away the only part
+   anybody can act on: Lender Price's own decline reason, and the ability to tell a real decline from
+   Lender Price contradicting itself across a program family. The ladder keeps the axis only where it
+   can make a reading the detectors cannot — the D29 **overlay** override (our matrix declining on a
+   stated overlay-only fact LP cannot see is *intentional*, not a defect) and incomparable.
+3. **An axis the ladder already reports is not recorded twice.** `final_price` ≡ `price_mismatch`;
+   `coupon_missing_*` ≡ `rung_missing_*`. Two rows for one fact is two things to settle, one of which
+   reopens on the next run. They are still fully **reported** — nothing is dropped silently, and every
+   difference held back is named on the response with its reason.
+4. **A per-coupon difference is a per-coupon FINDING.** The deep categories had to join `RATE_KINDS`
+   or every coupon's margin gap would collapse onto one ledger key, where the first sighting hides the
+   rest and settling it settles a disagreement nobody looked at.
+5. **The disqualify tree is ASYNCHRONOUS**, so an ordinary price call usually returns before it is
+   ready. `disqualifyReady:false` says the eligibility axis was only half-tested, because a silent
+   absence of declines otherwise reads as "Lender Price declined nothing".
+
+**AND ONE SECURITY LINE.** `programLike` — the family pattern the Deephaven DSCR split actually needs —
+is compiled with `new RegExp(...)`, and `/quote` is **not** admin-gated. Accepting it over HTTP would
+let any caller hand the server a pattern to compile and run; a few characters of nested quantifier is a
+request that never returns. It stays a server-side concept (the harness passes it directly), and the
+HTTP door takes only the equality keys.
+
+**RESIDUAL, stated plainly:** with no durable per-sheet Lender Price scope, a live `/quote` against the
+17-program Deephaven capture still **abstains** rather than compares — honest, and not yet useful. That
+scope is the follow-up; the machinery is now on the live path waiting for it. This also means the
+*volume* of live findings should now FALL to near zero before it rises for real reasons, and a ledger
+that stops producing eligibility rows is the fix working, not the shadow going dark.
+
+Suites: `scripts/test-lt-ppe-facade-deep.js` (74 assertions) and
+`scripts/test-lt-ppe-quote-deep-wiring.js` (22 — the route's own wiring, read from source, because a
+pure façade test cannot see what the route hands it, and that is exactly where the defect lived).
+**Eighteen mutations** of the production code were each proven to fail them; two initially came back
+GREEN and both were real gaps in the suite, not in the code — the supersession of the ladder's poorer
+eligibility row, and an unreadable capture degrading into a decline. Each earned an assertion.

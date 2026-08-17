@@ -19,8 +19,16 @@
 
 const OPEN = new Set(['open', 'triaged']);
 const SETTLED = new Set(['fixed', 'verified', 'wontfix']);
-// kinds carrying a coupon in their identity (eligibility/engine_error do not)
-const RATE_KINDS = new Set(['price_mismatch', 'rate_mismatch', 'rung_missing_ours', 'rung_missing_theirs']);
+// Kinds carrying a COUPON in their identity (eligibility/engine_error do not, because they are facts
+// about the whole scenario). The second row is the DEEP comparison's per-coupon categories
+// (parity-detectors), which are per-coupon for exactly the same reason the first row is: our base
+// price can agree at 7.000 and be off at 7.250, and two rows are two things to settle. Leave one out
+// and every coupon's difference collapses onto ONE ledger row, so the first sighting hides the rest
+// and settling it settles a disagreement nobody looked at.
+const RATE_KINDS = new Set([
+  'price_mismatch', 'rate_mismatch', 'rung_missing_ours', 'rung_missing_theirs',
+  'base_price', 'final_price', 'margin', 'llpa_total', 'coupon_missing_ours', 'coupon_missing_lp',
+]);
 
 function norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
 

@@ -154,6 +154,28 @@ function normalizeLpFull(full, opts = {}) {
 }
 
 /**
+ * The best-priced RUNG per coupon across every matched program — the whole rich rung, not just its
+ * price, because every axis past the ladder (base points, margin, the itemized LLPAs) lives ON the
+ * rung and `bestLadder` above deliberately carries only { rate, priceMilli }.
+ *
+ * This is what a detector-driven comparison consumes, and it lives HERE — beside the normalizer whose
+ * output it folds — so the agreement harness and the live shadow façade fold LP's programs the SAME
+ * way. Two copies of "which rung wins at this coupon" is exactly how one surface comes to disagree
+ * with another about a price neither of them computed.
+ */
+function bestRungs(lpNorm) {
+  const byRate = new Map();
+  for (const p of ((lpNorm && lpNorm.programs) || [])) {
+    for (const r of (p.rungs || [])) {
+      if (!isNum(r.rate) || !isNum(r.priceMilli)) continue;
+      const prev = byRate.get(r.rate);
+      if (prev == null || r.priceMilli > prev.priceMilli) byRate.set(r.rate, r);
+    }
+  }
+  return Array.from(byRate.values()).sort((a, b) => a.rate - b.rate);
+}
+
+/**
  * Normalize a parseDisqualified result into the declined-programs shape, filtered to the scenario's
  * investor/program if given.
  *   disq: client.parseDisqualified(raw) → { ready, lenders:[{ lender, investor, items:[…] }] }
@@ -186,5 +208,6 @@ function normalizeLpDisqualified(disq, opts = {}) {
 module.exports = {
   normalizeLpFull,
   normalizeLpDisqualified,
+  bestRungs,
   _internals: { marginOf, llpasOf, rungOf, matches },
 };

@@ -192,7 +192,35 @@ async function loadProgram(scope, versionId) {
 const K = {
   priceTolerance: 'validation.price_tolerance_milli',
   rateTolerance: 'validation.rate_tolerance_milli',
+  marginTolerance: 'validation.margin_tolerance_milli',
+  basePriceTolerance: 'validation.base_price_tolerance_milli',
 };
+
+// A caller-supplied Lender Price scope, reduced to plain strings and to the keys that are compared by
+// EQUALITY.
+//
+// `programLike` — the family PATTERN — is deliberately NOT accepted over HTTP, even though it is the
+// key the Deephaven DSCR family actually needs. It is compiled with `new RegExp(...)` downstream, and
+// this route is not admin-gated, so honouring it here would let any caller hand the server a pattern
+// to compile and run: a few characters of nested quantifier is a request that never returns. The
+// family pattern stays a SERVER-SIDE concept — the agreement harness passes it in directly, and the
+// durable per-sheet scope (the recorded follow-up) will too.
+//
+// A filter that ends up empty is returned as null, which the façade reads as "not scoped" and abstains
+// on — never as "match everything". A filter that silently matches everything is the exact failure the
+// family pattern exists to prevent.
+const LP_FILTER_KEYS = ['program', 'product', 'lender', 'investor'];
+const LP_FILTER_MAX = 200;
+
+function lpFilterOf(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out = {};
+  for (const k of LP_FILTER_KEYS) {
+    const v = raw[k];
+    if (typeof v === 'string' && v.trim() && v.length <= LP_FILTER_MAX) out[k] = v.trim();
+  }
+  return Object.keys(out).length ? out : null;
+}
 
 async function resolveSettingsSafe(scope) {
   try {
@@ -410,12 +438,46 @@ async function quoteRoute(req, res) {
       mode: () => 'shadow', // §1.2 — for now, in every scenario
       priceLp: (sc) => lp.price(sc),
       ourQuote: (sc) => quote.quoteProgram({ scenario: sc, program, settings }),
+      // THE CAPTURE, READ PROPERLY — §2.8. `lp.price()` returns the RAW envelope
+      // ({ ok, raw, request, searchKey }), NOT the parse() shape, and the façade had
+      // been normalizing that envelope as if it were one: no `.programs`, so ZERO
+      // matched programs, so Lender Price read as INELIGIBLE and every single quote
+      // recorded a phantom eligibility finding. This turns the one envelope into the
+      // three parsed shapes — the ladder for the price comparison, the full parse and
+      // the disqualify tree for the six categorized axes (margin, itemized LLPAs,
+      // decline reasons) that the shallow ladder structurally cannot see.
+      //
+      // The disqualify tree is computed ASYNCHRONOUSLY by Lender Price, so an ordinary
+      // price call usually returns before it is ready; `hasDisqualifyData` asks rather
+      // than assuming, and the façade reports `disqualifyReady` so a half-tested
+      // eligibility axis is never mistaken for "Lender Price declined nothing".
+      lpDetail: (answer) => {
+        const raw = answer && answer.raw;
+        if (!raw) return null;
+        return {
+          parsed: lp.parse(raw),
+          full: lp.parseFull(raw),
+          disqualified: lp.hasDisqualifyData(raw) ? lp.parseDisqualified(raw) : { ready: false, lenders: [] },
+        };
+      },
       recordFinding: (records) => findingStore.persistRun(scope, records, { db, nowMs }),
       nowMs,
     },
     {
       priceToleranceMilli: settings[K.priceTolerance],
       rateToleranceMilli: settings[K.rateTolerance],
+      marginToleranceMilli: settings[K.marginTolerance],
+      basePriceToleranceMilli: settings[K.basePriceTolerance],
+      settings,
+      // WHICH Lender Price programs this comparison is about. Lender Price answers one
+      // request with EVERY program it sells (17 on the live Deephaven capture, across
+      // several investors and product lines) while our engine prices ONE, so the scope
+      // has to be STATED — our `program` is a rate-sheet version, not Lender Price's
+      // program name, and inferring one from it would be a guess about somebody else's
+      // product catalogue. Unscoped, the façade abstains with that reason rather than
+      // comparing our one ladder against a merge of seventeen. A durable per-sheet
+      // scope is the follow-up; until then a caller that knows its family says so here.
+      lpFilter: lpFilterOf(b.lpFilter),
     },
   );
 
@@ -865,4 +927,5 @@ module.exports.handlers = {
 module.exports._internals = {
   requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe,
   MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K, programLabel,
+  lpFilterOf, LP_FILTER_KEYS, LP_FILTER_MAX,
 };
