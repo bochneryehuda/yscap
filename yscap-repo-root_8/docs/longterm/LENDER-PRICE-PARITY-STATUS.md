@@ -15,6 +15,31 @@ with accepted data types and defaults.
 
 ## 0. What is NOT code (needs a human — ops, vendor, or an owner decision)
 
+### 0.0 — THE SHORT LIST: what is waiting on the owner, and what each answer unblocks (2026-08-17)
+
+An INDEX, not a second copy — each row points at the section that already carries the measurement and
+the reasoning. It exists because the open questions had spread across seven subsections, and "what is
+actually blocked?" should be answerable in one place.
+
+| # | The question, in plain words | What it unblocks | Where the detail is |
+| --- | --- | --- | --- |
+| — | **Rotate the Lender Price login.** It was pasted into a chat, so it must be treated as compromised and changed in the vendor's portal. | Every live run keeps working, safely. Nothing is blocked while it waits, but it should not wait. | Part 4 |
+| #78 | **How exactly does our 0.25 holdback come off the price?** We hold the number and never subtract it, so our quoted price is not yet the final one. | The last remaining price difference (7,109 across the battery). It is reported, not gated. | §2.8, §2.15 |
+| #81 | **The rate sheet prices five cells the eligibility matrix refuses. Which one governs?** If the matrix is right we are correctly stricter; if the sheet is right, these are 41 loans we refuse that the investor would do. | All 41 remaining disagreements — the whole eligibility axis, and with it the gate. | §2.10, §2.15 |
+| #69 | **Five "advanced" rules we deliberately left flagged rather than guessed** (vacant, foreign national, rural, first-time homebuyer, renovation). | Turning those five into real declines instead of warnings. | §0 (the flagged list) |
+| #57 | **Prepayment penalty: which types and terms does each investor allow, and how is each priced?** | The per-investor prepay library beyond Deephaven. | D30 |
+| #51 | **The loan officer margin and commission rules** (front/back split, per-loan minimum and maximum, who pays). | The whole compensation layer. | D18 |
+
+**Two more that need a CAPTURE rather than a decision** — nobody has to answer these, someone has to
+record one screen of the vendor's own frontend: **#80** (how Lender Price picks which DSCR band program a
+loan belongs to — §2.9a; four cross-check cases stay unresolved without it) and the last **§2.1** item
+(which field the frontend sends for "Prepay Buyout").
+
+**Everything else on the pricing side is done.** Every itemized adjustment on all 299 scenarios agrees
+with Lender Price to the penny (§2.15), our refusals were checked against Lender Price's own words with
+nothing dangerous found (§2.16), and the max-price/min-price axis is now measured and reported (§2.18).
+
+
 - ~~**PRICING NEEDS ONE SETUP STEP AT LENDER PRICE — "Loan Officer Pricing
   Configuration not setup". THIS IS THE CURRENT BLOCKER.**~~ ~~**OUR DEFECT: the
   pricing path needs the PPE user id.**~~ **BOTH RETRACTED, AND PRICING NOW WORKS
