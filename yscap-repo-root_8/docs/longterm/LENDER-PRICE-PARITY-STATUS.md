@@ -311,6 +311,40 @@ carried, shipped 2026-08-16 and has moved to §1. **The cash-out AMOUNT also lef
 this list**: it is transmitted as the captured `criteria.cashoutAmount`, and the
 reasoning for reversing the earlier fail-closed reading is in the §1 row.
 
+**MEASURED CLOSE-OUT (2026-08-17): the offline §2.1 work is DONE; one item is
+genuinely deferred to a live capture, and two "differences" are deliberate design
+choices, not gaps.** The "31 differences" were measured against a LIVE foundation
+(the tenant's `defaultSearch` config model, cloned in production), NOT the captured
+frontend request. Diffing the actual production build (`validateScenario` → enrich →
+`buildSearch`) against `search-base.json` (the frontend's own captured request) on a
+minimal DSCR purchase now shows the request is **structurally byte-identical apart
+from scenario values and the two address items below**: 0 null-vs-omit divergences,
+0 extra fields, 0 missing fields on the whole non-address body. Item by item:
+
+- `pmiType` BPMI, `showUnmatchCompPlan` true, the full **AUS** list, the default
+  **closing-cost flags**, and the **15-year** `loanYear:30`/`termsCriteria:[15]`
+  split are all FORCED in `buildSearch` (§2.1 force block + the term-parity block) —
+  so a live foundation can never diverge from the frontend on them again.
+- **Monthly-income rounding: FIXED (2026-08-17, this session).** The round moved into
+  `wireDiscipline` (the "one place, last" chokepoint) so it survives BOTH a live
+  foundation's value AND a scenario-supplied one (which `applyRegistry` writes after
+  the §2.1 force block) — the two paths can never disagree with the frontend's
+  `16667` again. Regression: section J of `test-lt-lp-request-foundation.js`.
+- The `null`-vs-omit "several blank fields" item **does not reproduce**: `buildSearch`
+  already omits exactly what the frontend omits (measured: 0 such fields).
+- **`street:""` / `streetCont:""` / `zipExt:""` are DELIBERATELY omitted** (see the
+  wireDiscipline "(3)" comment in `search-model.js`): our own 200-returning body
+  omitted all three (provably not required), and their absence is what keeps the
+  scenario-ownership guarantee clean (a prior session's street can never ride along)
+  — the author explicitly chose this over "cosmetic parity." Not a gap; do not fill
+  them without owner direction.
+- The **derived `city`** is DELIBERATELY not derived from a ZIP (the `clearScenarioOwnedFields`
+  comment: "per-deal city — never derived from a ZIP, so a stale one survives every
+  enrichment"), and `city` is a documented known-uncarried fact. Cosmetic-only; not a gap.
+- **STILL OPEN (live capture, not offline):** the **Prepay Buyout** special-mortgage
+  option — tracked under §5 derived SMO selectors; closing it needs a live SMO-registry
+  capture, not a code change here.
+
 ### §2.2 — the ≥200-scenario AGREEMENT harness is BUILT; the only blocker is the login (2026-08-17)
 
 The owner's HARD RULE (2026-08-17): before ANY long-term rate sheet is built into
