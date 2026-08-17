@@ -1147,7 +1147,10 @@ this asks the opposite question — **for a loan we REFUSE, does Lender Price re
 **Result: `⚠ only Lender Price` = 0, `only us` = 0.** Nothing in the dangerous direction (a loan we would
 price that the investor refuses), and no rule of ours firing where the investor is happy.
 
-**Four rules corroborated by Lender Price's own decline text**, which is the strongest evidence available
+**FINAL RUN (after the malformed case was fixed): 5 corroborated, 0 only-us, 0 only-Lender-Price,
+4 split, 0 errors.**
+
+**Five rules corroborated by Lender Price's own decline text**, which is the strongest evidence available
 short of the investor telling us directly — our Layer 2 was transcribed from the published matrix, and
 these are Lender Price's independent words for the same rules:
 
@@ -1156,6 +1159,7 @@ these are Lender Price's independent words for the same rules:
 | `dhvn_max_loan` | `Maximum Loan Amount $2.50 MM` |
 | `dhvn_grid_ltv` | `DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT: Maximum LTV/CLTV 80%` |
 | `dhvn_subordinate` | `Subordinate Financing not eligible` |
+| `dhvn_units_5plus` | `Maximum 4 Units` |
 | `dhvn_io_min_dscr` | `Interest Only: Minimum DSCR Ratio 1.00` |
 
 …and on the split cases Lender Price also independently states `DSCR >=1.00, Loan Amount <=$1.5MM: Min
