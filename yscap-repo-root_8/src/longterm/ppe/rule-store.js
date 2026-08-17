@@ -105,7 +105,9 @@ async function acceptSuggestion(db, scope, suggestionId, opts = {}) {
          (scope, investor_id, program_id, code, kind, source, predicate, decline_reason, priority,
           description, origin, lp_decline_reason, created_by)
        VALUES ($1,$2,$3,$4,$5,'overlay',$6::jsonb,$7,$8,$9,'suggested',$10,$11)
-       ON CONFLICT (scope, COALESCE(investor_id, 0), COALESCE(program_id, 0), code)
+       ON CONFLICT (scope,
+                    COALESCE(investor_id, '00000000-0000-0000-0000-000000000000'::uuid),
+                    COALESCE(program_id, '00000000-0000-0000-0000-000000000000'::uuid), code)
          DO UPDATE SET predicate = EXCLUDED.predicate, decline_reason = EXCLUDED.decline_reason,
                        active = true, updated_at = now()
        RETURNING id`,

@@ -48,11 +48,13 @@
 -- here (manual authoring, an accepted suggestion, or an imported sheet), and
 -- `lp_decline_reason` keeps Lender Price's verbatim key when it came from a
 -- disqualification suggestion.
+-- NOTE: lt_ppe_investor.id and lt_ppe_program.id are UUID (db/558) and lt_ppe_program(id) is UUID
+-- (db/560), so investor_id/program_id here MUST be UUID — a bigint column cannot reference a UUID key.
 CREATE TABLE IF NOT EXISTS lt_ppe_rule (
   id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   scope             text        NOT NULL DEFAULT 'company',
-  investor_id       bigint      REFERENCES lt_ppe_investor(id) ON DELETE CASCADE,
-  program_id        bigint      REFERENCES lt_ppe_program(id) ON DELETE CASCADE,
+  investor_id       uuid        REFERENCES lt_ppe_investor(id) ON DELETE CASCADE,
+  program_id        uuid        REFERENCES lt_ppe_program(id) ON DELETE CASCADE,
   code              text        NOT NULL,
   kind              text        NOT NULL DEFAULT 'eligibility',
   source            text        NOT NULL DEFAULT 'overlay',
@@ -76,7 +78,9 @@ CREATE TABLE IF NOT EXISTS lt_ppe_rule (
 -- One rule per code within a (scope, investor, program). COALESCE the nullable
 -- anchors so a house rule (investor_id/program_id NULL) still dedupes cleanly.
 CREATE UNIQUE INDEX IF NOT EXISTS lt_ppe_rule_code_uk
-  ON lt_ppe_rule (scope, COALESCE(investor_id, 0), COALESCE(program_id, 0), code);
+  ON lt_ppe_rule (scope,
+                  COALESCE(investor_id, '00000000-0000-0000-0000-000000000000'::uuid),
+                  COALESCE(program_id, '00000000-0000-0000-0000-000000000000'::uuid), code);
 CREATE INDEX IF NOT EXISTS lt_ppe_rule_lookup_idx
   ON lt_ppe_rule (scope, investor_id, program_id) WHERE active;
 
@@ -101,7 +105,7 @@ ALTER TABLE lt_ppe_rule ADD CONSTRAINT lt_ppe_rule_origin_chk
 CREATE TABLE IF NOT EXISTS lt_ppe_rule_suggestion (
   id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   scope             text        NOT NULL DEFAULT 'company',
-  investor_id       bigint      REFERENCES lt_ppe_investor(id) ON DELETE SET NULL,
+  investor_id       uuid        REFERENCES lt_ppe_investor(id) ON DELETE SET NULL,
   investor_label    text        NOT NULL,               -- the verbatim investor name/key
   dedupe_key        text        NOT NULL,               -- adjType|reasonText (the distinct identity)
   code              text        NOT NULL,               -- the deterministic suggested rule code

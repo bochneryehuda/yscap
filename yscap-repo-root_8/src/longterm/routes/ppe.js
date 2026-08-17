@@ -130,6 +130,10 @@ function readScope(_req) { return SCOPE; }
 // useless one. So: one helper, used by both.
 function programLabel(program) { return (program && (program.code || program.name)) || ''; }
 
+/** A UUID string, else null — for the lt_ppe_investor/program ids (UUID PKs, db/558). */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function uuidOf(v) { const s = v == null ? '' : String(v).trim(); return UUID_RE.test(s) ? s : null; }
+
 /** A positive integer within [1, max], else null. Never NaN, never a coerced string. */
 function intIn(v, max) {
   if (v === undefined || v === null || v === '') return null;
@@ -656,8 +660,8 @@ async function acceptSuggestionRoute(req, res) {
   // from its verbatim label via the alias table), unless the caller names one
   // explicitly. A house rule (investor_id null) is the safe fallback when the
   // label does not resolve — the rule still applies, just to every program.
-  let investorId = b.investorId != null ? b.investorId : null;
-  const programId = b.programId != null ? b.programId : null;
+  let investorId = b.investorId != null ? uuidOf(b.investorId) : null;
+  const programId = b.programId != null ? uuidOf(b.programId) : null;
   if (investorId == null) {
     const sug = await ruleStore.getSuggestion(db, scope, id);
     if (sug && sug.investor_label) {
@@ -720,8 +724,10 @@ async function mineSuggestionsRoute(req, res) {
 async function listRulesRoute(req, res) {
   const scope = readScope(req);
   const opts = {};
-  if (req.query.investorId) opts.investorId = intIn(req.query.investorId, Number.MAX_SAFE_INTEGER);
-  if (req.query.programId) opts.programId = intIn(req.query.programId, Number.MAX_SAFE_INTEGER);
+  // investor_id / program_id are UUIDs (db/558); a non-UUID query param is ignored rather than
+  // cast-erroring the query into a 500.
+  if (req.query.investorId) opts.investorId = uuidOf(req.query.investorId);
+  if (req.query.programId) opts.programId = uuidOf(req.query.programId);
   if (req.query.kind) opts.kind = String(req.query.kind);
   const rows = await ruleStore.listRules(db, scope, opts);
   return res.json({ ok: true, scope, total: rows.length, rules: rows });
