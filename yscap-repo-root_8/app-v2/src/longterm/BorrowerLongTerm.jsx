@@ -96,6 +96,36 @@ export function BorrowerProductSwitch({ side = 'long' }) {
   );
 }
 
+/**
+ * The switch as the BORROWER'S HOME SCREEN mounts it (owner-directed 2026-08-17:
+ * "put the switch on the borrower's home screen"; recorded in
+ * docs/LONG-TERM-AUTHORIZED-COPIES.md as the third — and narrowest — RTL file
+ * allowed to reference long-term code).
+ *
+ * IT DECIDES FOR ITSELF, AND THAT IS THE WHOLE POINT OF ITS EXISTING. The
+ * dashboard could have called `useLongTermSide()` and written the test itself,
+ * and then the rule "when does a client have a long-term side?" would live in
+ * an RTL screen — a second definition, in the product that may not hold one.
+ * So the RTL screen imports ONE component and renders it; everything below is
+ * on this side of the wall and can change without touching RTL at all.
+ *
+ * IT RENDERS NOTHING unless the client genuinely has somewhere to go: the side
+ * must be switched ON and they must have at least one CONFIRMED long-term loan
+ * (`lt_loans.borrower_id`, which only a human's confirmation ever writes). A
+ * switch offered to a borrower with no long-term loans is a door onto an empty
+ * room, and on the home screen — the one page every client sees — that reads as
+ * a fault in their file rather than as a product they are not on.
+ *
+ * It FAILS QUIET, deliberately: `useLongTermSide` answers "off" on any error, so
+ * an unreachable long-term side leaves the borrower's own home screen exactly as
+ * it was rather than putting our plumbing in front of a client.
+ */
+export function BorrowerLongTermSwitch() {
+  const { ready, enabled, loans } = useLongTermSide();
+  if (!ready || !enabled || !loans.length) return null;
+  return <BorrowerProductSwitch side="short" />;
+}
+
 /** The list itself. */
 export function BorrowerLongTermLoans({ loans }) {
   const list = Array.isArray(loans) ? loans : [];

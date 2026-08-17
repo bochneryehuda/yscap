@@ -96,6 +96,26 @@ rtl-import app-v2/src/App.jsx
 rtl-import app-v2/src/components/StaffLayout.jsx
 
 # ---------------------------------------------------------------------------
+# THE CLIENT'S OWN SWITCH — authorized in writing by the owner, 2026-08-17:
+#   "put the switch on the borrower's home screen"
+#
+# Asked as one specific question — the client's long-term page was built and
+# routed at /long-term, and putting its entry point on the borrower dashboard
+# means an RTL screen referencing Long-Term code, which the seam above says
+# needs the owner's written OK per file. This is that OK, for that one file.
+#
+# SCOPE: exactly the same narrowness as the staff shell — this file may
+# reference Long-Term code ONLY to render the switch. It imports ONE component
+# (`BorrowerLongTermSwitch`) and renders it; it holds no Long-Term logic, reads
+# no Long-Term data itself, and may not import a second Long-Term component.
+# The decision of whether there is anything to switch TO lives on the
+# Long-Term side, so the RTL screen never learns how that is judged.
+# ---------------------------------------------------------------------------
+
+# The borrower's home screen renders the Short-Term / Long-Term switch.
+rtl-import app-v2/src/screens/Dashboard.jsx
+
+# ---------------------------------------------------------------------------
 # ADDRESS → COUNTY LOOKUP — authorized in writing by the owner, 2026-08-16:
 #   "Yes, you have my written OK to reuse that."
 #
@@ -145,6 +165,7 @@ import src/lib/address-canon.js
 | 2026-08-03 | `import app-v2/src/components/BorrowerProfilePanel.jsx` — the ONE shared borrower editor, mounted on a long-term file | RTL → LT | *"officers should be able to change the borrower profile on long term files"* — confirmed in the same breath as *"keep borrower read only"*, so the edit goes through the existing shared editor and the existing borrower endpoint; Long-Term code still never writes `borrowers` | #975 |
 | 2026-08-03 | `sql-ref borrower_officers` + `sql-write borrower_officers` — Long-Term records the officer↔person link | RTL → LT | Required to make the line above actually work: a non-privileged officer may only open a borrower profile they have a recorded relationship to, and today that means an **RTL** file. `borrower_officers` (db/327) is the identity-zone link built for precisely this — *"the client who has only ever done non-RTL business with them, so there is no file to match on"* | #975 |
 | 2026-08-14 | `rtl-import app-v2/src/App.jsx` + `rtl-import app-v2/src/components/StaffLayout.jsx` — the FRONT-END mount seam: the router mounts the Long-Term screens, and the staff shell renders the Short-Term / Long-Term switch | LT → RTL | *"You were authorized to touch that switch of the short-term shell."* Asked directly, because rule 5 forbids touching RTL to make LT work and the switch cannot exist without it. Deliberately as narrow as the back-end seam (`src/server.js`): these two files may reference LT code ONLY to mount it and to render the switch — no RTL screen may import an LT component for its own use, and no LT logic may move into a shared file | this PR |
+| 2026-08-17 | `rtl-import app-v2/src/screens/Dashboard.jsx` — the borrower's HOME SCREEN renders the Short-Term / Long-Term switch | LT → RTL | *"put the switch on the borrower's home screen"* — answering a direct question that named the cost: the client's long-term page was already built and routed at `/long-term`, and moving its entry point onto the borrower dashboard makes an RTL screen reference LT code, which the 2026-08-14 seam permits only per file, in writing. Scoped exactly as narrowly as the staff shell: this file imports ONE component (`BorrowerLongTermSwitch`) and renders it — no LT logic, no LT data read, no second LT import. Whether there is anything to switch TO is decided on the Long-Term side, so the RTL screen never carries that rule | this PR |
 | 2026-08-16 | `import src/lib/address-canon.js` — ZIP → city/state/county/county-FIPS lookup for the Long-Term DSCR pricer | RTL → LT | *"Yes, you have my written OK to reuse that."* Asked as one specific question: the vendor's own screen turns a ZIP into the full location before pricing, while our connector required the caller to supply the county FIPS and refused an incomplete location. Scoped to this one module used as a READ-ONLY lookup — NOT the RTL address writers, and Long-Term still rewrites no RTL address record. **CORRECTION (2026-08-16, same day): the authorized module was ultimately NOT used.** It returns a county NAME with no FIPS, refuses a bare ZIP (it is built for a full street address), and needs a `DATABASE_URL` — none of which suits a pure pricing path, and the owner separately corrected the premise: the screen is ZIP-driven, no street address is involved. The shipped answer is `src/longterm/lenderprice/zip-county.js` + a committed Census ZCTA table — LT-only, so not a crossing at all. The permission stands and is recorded here as granted, not as a description of the shipment | #1220 |
 | 2026-08-14 | **The Encompass integration — brought into Long-Term as a self-contained BY-VALUE copy** (logic, authorization, requests, credentials mechanism, field map). Lives entirely in `src/longterm/encompass/**`. | RTL → LT | *"Pull in and copy: the logic of Encompass integration, the credentials of Encompass integration, the requests, the authorization. We need to start long-term loans with a full Encompass understanding … take also all the fields from this mapping and bring it in."* This is a specific, owner-directed exception to the 2026-08-03 "no shared integrations" line below (Encompass only; everything else still stays separate). | this PR |
 

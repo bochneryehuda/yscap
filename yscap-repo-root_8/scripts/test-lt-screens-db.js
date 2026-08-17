@@ -71,16 +71,46 @@ async function main() {
 
   // The CLIENT's own long-term side, and the switch back to the short-term one.
   //
-  // It is its own ROUTE and not a panel on the dashboard, and that is the charter
-  // deciding the shape: the ledger lets `App.jsx` MOUNT long-term code and says in
-  // as many words that no other RTL screen may import an LT component. So the
-  // assertion below is BOTH halves — the route exists AND the borrower dashboard
-  // still imports nothing from the long-term side.
+  // The PAGE is its own route, mounted by `App.jsx` — the front-end seam the
+  // ledger has always named. The SWITCH now also sits on the borrower's home
+  // screen (owner-directed 2026-08-17, "put the switch on the borrower's home
+  // screen"), which makes `Dashboard.jsx` the third RTL file allowed to reference
+  // long-term code — and the ledger grants that per file, in writing.
+  //
+  // SO THE ASSERTIONS BELOW PIN THE NARROWNESS, NOT MERELY THE WIRING. The
+  // permission is "to render the switch"; the failure it has to catch is that
+  // permission quietly widening into a general licence for the borrower portal
+  // to pull long-term components in one at a time.
   ok(fs.existsSync(path.join(REPO, 'app-v2/src/longterm/BorrowerLongTerm.jsx')),
     'the client\'s long-term side is a real screen');
   ok(app.includes('path="/long-term"'), '…mounted by the router at its own route');
-  ok(!/longterm\//.test(dash),
-    'the borrower dashboard imports NOTHING from the long-term side — the separation the ledger names');
+
+  const dashLtImports = dash.match(/^\s*import[^\n]*from '\.\.\/longterm\/[^\n]*$/gm) || [];
+  ok(dashLtImports.length === 1,
+    'the borrower home screen holds EXACTLY ONE long-term reference — not a growing list');
+  ok(/BorrowerLongTermSwitch/.test(dashLtImports[0] || ''),
+    '…and it is the SWITCH, which is the only thing the ledger authorises there');
+  ok(/<BorrowerLongTermSwitch\s*\/>/.test(dash),
+    '…actually rendered on the home screen, not imported and forgotten');
+
+  // The rule "does this client have a long-term side at all?" stays on the
+  // long-term side of the wall. If the dashboard asked that question itself there
+  // would be two definitions of it, and the copy inside RTL is the one nobody
+  // maintains.
+  ok(!/useLongTermSide|ltApi|myLoans/.test(dash),
+    'the home screen never decides FOR ITSELF whether the client has a long-term side');
+  const btl = read('app-v2/src/longterm/BorrowerLongTerm.jsx');
+  ok(/export function BorrowerLongTermSwitch/.test(btl),
+    'the switch component lives on the long-term side');
+  ok(/if \(!ready \|\| !enabled \|\| !loans\.length\) return null/.test(btl),
+    '…and shows nothing to a client with no long-term loans — never a door onto an empty room');
+
+  // The ledger is the authority, so it must actually SAY so — a crossing that
+  // only exists in code is the thing the whole gate is built to refuse.
+  const ledger = read('docs/LONG-TERM-AUTHORIZED-COPIES.md');
+  const authorizedBlock = (ledger.match(/```authorized\n([\s\S]*?)```/) || [])[1] || '';
+  ok(authorizedBlock.includes('rtl-import app-v2/src/screens/Dashboard.jsx'),
+    'the crossing is recorded in the ledger the CI gate reads');
 
   // THE SEPARATION HOLDS AT THE SEAM. The long-term components may be MOUNTED by
   // an RTL screen; they may not reach back into RTL code. A single `../lib/api`
