@@ -534,6 +534,22 @@ normalized exactly as `program-engine` does) classifies `legitimate_overlay`, an
 10 assertions + the existing reconcile test's `rural_property` case red). The stale existing test
 even encoded the phantom (`dimension:'rural'`); it now uses the real `rural_property` shape.
 
+**Layer-3 PPP when-key guard (2026-08-17):** the SAME silent-drift class on the PREPAYMENT-PENALTY
+disqualifier (`deephaven-ppp-matrix`). `whenMatches` decides whether a state's PPP rule fires; the OLD
+implementation checked a fixed key list and `return true`-fell-through on anything else — so a rule
+carrying a key it did not handle (a typo `unitMax`/`borrowrType`, or a new dimension added to a rule
+but not to the matcher) had that clause SILENTLY IGNORED. Since these rules resolve overwhelmingly to
+`prohibited`, an ignored clause makes the rule match MORE BROADLY → a PPP prohibition fires where it
+should not → a false disqualifier → our engine declines a loan LP prices → a permanent false E3
+disagreement. The reachability guard (Layer-3 dead-rule audit) can't catch this — an over-broad rule
+is still reachable. Fix: `whenMatches` is now a declarative `WHEN_HANDLERS` table (byte-identical for
+the committed rules, proven over 864 inputs × every clause vs a copy of the original) that FAILS CLOSED
+on an unknown key, `SUPPORTED_WHEN_KEYS` is derived from that table, and the module THROWS at load if
+`STATE_RULES` carry an unsupported key (naming it). `test-lt-ppe-ppp-when-key-coverage.js` proves the
+coverage, the fail-closed behaviour, and the end-to-end over-fire it averts — mutation-proven both ways
+(reverting the matcher turns 2 assertions red; a typo'd rule key throws at load). This is the third of
+the three E3-comparator vocabulary guards — LLPA dimensions, disqualify overlays, and now PPP keys.
+
 ### §2.6 — DEEP 300-scenario live verification (2026-08-17) — full report: `ppe-research/DEEPHAVEN-LP-LIVE-FINDINGS-2026-08-17.md`
 
 A read-only live run of the full ~300-scenario battery against LP (filtered to

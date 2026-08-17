@@ -96,21 +96,64 @@ function normBorrowerType(v) {
   return null;
 }
 
+// The `when`-clause VOCABULARY: one handler per supported key, each returning TRUE when the clause is
+// satisfied (or is a wildcard) and FALSE when it fails — reproducing the original per-key semantics
+// EXACTLY (a falsy/null value is a wildcard, same as before), so whenMatches is byte-identical for the
+// committed STATE_RULES. Deriving the supported-key SET from this ONE table (CLAUDE.md build-rule #4:
+// generate, don't hand-maintain) is what lets an unknown key be detected instead of silently absorbed.
+const WHEN_HANDLERS = {
+  borrowerType:  (w, i) => !w.borrowerType || i.borrowerType === w.borrowerType,
+  unitsMax:      (w, i) => w.unitsMax == null || (isNum(i.units) && i.units <= w.unitsMax),
+  unitsMin:      (w, i) => w.unitsMin == null || (isNum(i.units) && i.units >= w.unitsMin),
+  lien:          (w, i) => !w.lien || String(i.lien || 'first').toLowerCase() === w.lien,
+  aprGt:         (w, i) => w.aprGt == null || (isNum(i.apr) && i.apr > w.aprGt),
+  loanAmountLt:  (w, i) => w.loanAmountLt == null || (isNum(i.loanAmount) && i.loanAmount < w.loanAmountLt),
+  loanAmountLe:  (w, i) => w.loanAmountLe == null || (isNum(i.loanAmount) && i.loanAmount <= w.loanAmountLe),
+  loanAmountGt:  (w, i) => w.loanAmountGt == null || (isNum(i.loanAmount) && i.loanAmount > w.loanAmountGt),
+  loanAmountGe:  (w, i) => w.loanAmountGe == null || (isNum(i.loanAmount) && i.loanAmount >= w.loanAmountGe),
+  ruralProperty: (w, i) => w.ruralProperty !== true || i.ruralProperty === true,
+};
+
+// The keys whenMatches can evaluate — DERIVED from WHEN_HANDLERS, never a second hand-typed list.
+const SUPPORTED_WHEN_KEYS = new Set(Object.keys(WHEN_HANDLERS));
+
 // Does a rule's `when` match the input? An absent key in `when` is a wildcard. A key that needs an input
-// the caller did not supply does NOT match (so a rule can never fire on missing data).
+// the caller did not supply does NOT match (so a rule can never fire on missing data). An UNKNOWN key is
+// FAIL-CLOSED: we cannot confirm that restriction applies, so the clause does NOT match. This turns a
+// typo'd or newly-added rule key from a SILENT BROADENING (the old fall-through `return true`, which
+// over-fires a `prohibited` rule → a false PPP disqualifier → a permanent false E3 disagreement) into a
+// rule that visibly stops matching — and validateWhenKeys() below rejects it at load so it never ships.
 function whenMatches(when, input) {
   const w = when || {};
-  if (w.borrowerType && input.borrowerType !== w.borrowerType) return false;
-  if (w.unitsMax != null) { if (!isNum(input.units) || input.units > w.unitsMax) return false; }
-  if (w.unitsMin != null) { if (!isNum(input.units) || input.units < w.unitsMin) return false; }
-  if (w.lien && String(input.lien || 'first').toLowerCase() !== w.lien) return false;
-  if (w.aprGt != null) { if (!isNum(input.apr) || !(input.apr > w.aprGt)) return false; }
-  if (w.loanAmountLt != null) { if (!isNum(input.loanAmount) || !(input.loanAmount < w.loanAmountLt)) return false; }
-  if (w.loanAmountLe != null) { if (!isNum(input.loanAmount) || !(input.loanAmount <= w.loanAmountLe)) return false; }
-  if (w.loanAmountGt != null) { if (!isNum(input.loanAmount) || !(input.loanAmount > w.loanAmountGt)) return false; }
-  if (w.loanAmountGe != null) { if (!isNum(input.loanAmount) || !(input.loanAmount >= w.loanAmountGe)) return false; }
-  if (w.ruralProperty === true && input.ruralProperty !== true) return false;
+  for (const key of Object.keys(w)) {
+    const h = WHEN_HANDLERS[key];
+    if (!h || !h(w, input)) return false;
+  }
   return true;
+}
+
+// Every `when`-key across a rule table that whenMatches cannot evaluate. Empty on the committed
+// STATE_RULES; non-empty exactly when a rule carries a typo'd or un-taught key. PURE.
+function unsupportedWhenKeys(rules) {
+  const src = rules || STATE_RULES;
+  const bad = [];
+  for (const [state, list] of Object.entries(src)) {
+    for (const r of (Array.isArray(list) ? list : [])) {
+      for (const key of Object.keys((r && r.when) || {})) {
+        if (!SUPPORTED_WHEN_KEYS.has(key)) bad.push(`${state}:${key}`);
+      }
+    }
+  }
+  return bad;
+}
+
+// Fail LOUD at load if the committed STATE_RULES carry a when-key whenMatches cannot evaluate. Because
+// whenMatches now fails closed on an unknown key, a bad key would make its rule stop matching — silently
+// dropping a real PPP prohibition. A static, committed table that is wrong is a developer error to catch
+// at boot, exactly like a syntax error; the test asserts this never fires.
+const _badWhenKeys = unsupportedWhenKeys(STATE_RULES);
+if (_badWhenKeys.length) {
+  throw new Error(`deephaven-ppp-matrix: STATE_RULES use unsupported when-key(s): ${_badWhenKeys.join(', ')} — teach WHEN_HANDLERS or fix the typo`);
 }
 
 /**
@@ -152,4 +195,7 @@ function pppDisqualifier(input) {
   };
 }
 
-module.exports = { pppResult, pppDisqualifier, normBorrowerType, STATE_RULES, _internals: { whenMatches } };
+module.exports = {
+  pppResult, pppDisqualifier, normBorrowerType, STATE_RULES,
+  _internals: { whenMatches, WHEN_HANDLERS, SUPPORTED_WHEN_KEYS, unsupportedWhenKeys },
+};
