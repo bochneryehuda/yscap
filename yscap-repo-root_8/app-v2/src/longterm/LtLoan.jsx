@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import LtLayout from './LtLayout.jsx';
 import LtFileSection, { hasFileSection } from './LtFileSections.jsx';
+import LtConditionCenter from './LtConditionCenter.jsx';
 import ProductStamp from './ProductStamp.jsx';
 import { ltApi } from './api.js';
 
@@ -434,6 +435,17 @@ export default function LtLoan() {
             </div>
           ) : active === 'lock' ? (
             <LockCard lock={lock} />
+          ) : active === 'conditions' && current && current.available ? (
+            // The Condition Center loads ITSELF. It is two Encompass feeds rather
+            // than a slice of the 1003, so it is not in `file` and does not go
+            // through LtFileSection — which stays about the URLA sections it
+            // documents. While the switch is off the server greys this section and
+            // the branch below shows its reason, so the screen never renders a
+            // centre the API would refuse.
+            <div className="card" style={{ color: INK }}>
+              <h2 style={{ margin: '0 0 6px', fontSize: 16 }}>Conditions</h2>
+              <LtConditionCenter loanId={loanId} />
+            </div>
           ) : (
             <div className="card" style={{ color: INK }}>
               <h2 style={{ margin: '0 0 6px', fontSize: 16 }}>{current ? current.label : 'Loan summary'}</h2>

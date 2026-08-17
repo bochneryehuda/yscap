@@ -1,0 +1,483 @@
+'use strict';
+/**
+ * LONG-TERM — the Condition Center's READ-ONLY sync.
+ *
+ * Fills the db/574 mirror from Encompass: the conditions on a loan, the eFolder
+ * documents, their attachments (METADATA ONLY — the paper stays in Encompass),
+ * and the inverted document->condition link.
+ *
+ * ENCOMPASS IS NEVER WRITTEN. Every call here goes through the read-only client,
+ * which refuses any method other than GET on the paths it allows; the eFolder
+ * UPLOAD is a separate, still-BLOCKED write governed by
+ * docs/ENCOMPASS-WRITE-AUTHORIZATIONS.md. Nothing in this module could perform it.
+ *
+ * IT DOES NOTHING UNTIL THE SETTING IS ON. `conditions.enabled` defaults to
+ * false, so on every deployment as it stands this module reads nothing, writes
+ * nothing and costs nothing — turning it on is what starts the mirror, exactly as
+ * the deferral recorded (plan §5). The gate is checked HERE rather than only on
+ * the screen: a screen-only gate would still let a boot sweep hammer a tenant
+ * whose owner has switched the feature off.
+ *
+ * A FAILURE IS RECORDED ON THE LOAN, NEVER SWALLOWED. `conditions_sync_error` /
+ * `documents_sync_error` hold the reason one loan could not be read and the pass
+ * continues — one unreadable file must never stop the other six hundred, and a
+ * sync that fails silently is worse than one that fails loudly.
+ *
+ * NOTHING IS EVER DELETED. A condition or document that has disappeared from
+ * Encompass is marked `is_removed` and filtered on READ. Deleting it would
+ * destroy the record of what was once asked for, which is exactly the history a
+ * post-purchase condition list exists to keep.
+ *
+ * SEPARATION: reads and writes `lt_*` only.
+ */
+
+const mapper = require('./mapper');
+
+const lazy = {
+  get db() { return require('../db'); },
+  get client() { return require('../encompass/client'); },
+  get settings() { return require('../settings/store'); },
+};
+
+/** How many loans one pass will read. A loan is two HTTP calls, so this is the
+ *  knob that decides what the sweep costs; discovery is not involved. */
+const DEFAULT_READ_BUDGET = 20;
+
+/** How long a mirrored loan stays fresh before the sweep asks again. */
+const DEFAULT_REFRESH_HOURS = 12;
+
+/**
+ * Is the Condition Center switched on?
+ *
+ * FAILS CLOSED. An unreadable settings table answers "off" — with the feature
+ * deferred, doing nothing is the correct behaviour under uncertainty, and the
+ * opposite default would start reading a tenant because a query timed out.
+ */
+async function enabled() {
+  try {
+    const { settings } = await lazy.settings.load();
+    return settings['conditions.enabled'] === true;
+  } catch {
+    return false;
+  }
+}
+
+// ── Writing one loan's conditions ───────────────────────────────────────────
+
+/**
+ * Upsert one condition. Keyed on (loan, Encompass's own id) — never on the title,
+ * which two conditions on one loan routinely share.
+ */
+async function upsertCondition(dbc, loanId, row, syncedAt) {
+  const { rows } = await dbc.query(
+    `INSERT INTO lt_conditions
+       (id, loan_id, encompass_condition_id, condition_type, title,
+        internal_description, external_description, category, prior_to,
+        status, status_open, status_date, source, source_of_condition,
+        print_definitions, application_ref, owner_role, assigned_to, recipient,
+        days_to_receive, comments_count, internal_id, is_removed,
+        encompass_created_by, encompass_created_at, encompass_modified_by,
+        encompass_modified_at, raw, encompass_synced_at, updated_at)
+     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+             $12, $13, $14::jsonb, $15, $16, $17, $18, $19, $20, $21, $22,
+             $23, $24, $25, $26, $27::jsonb, $28, now())
+     ON CONFLICT (loan_id, encompass_condition_id) DO UPDATE SET
+       condition_type       = EXCLUDED.condition_type,
+       title                = EXCLUDED.title,
+       internal_description = EXCLUDED.internal_description,
+       external_description = EXCLUDED.external_description,
+       category             = EXCLUDED.category,
+       prior_to             = EXCLUDED.prior_to,
+       status               = EXCLUDED.status,
+       status_open          = EXCLUDED.status_open,
+       status_date          = EXCLUDED.status_date,
+       source               = EXCLUDED.source,
+       source_of_condition  = EXCLUDED.source_of_condition,
+       print_definitions    = EXCLUDED.print_definitions,
+       application_ref      = EXCLUDED.application_ref,
+       owner_role           = EXCLUDED.owner_role,
+       assigned_to          = EXCLUDED.assigned_to,
+       recipient            = EXCLUDED.recipient,
+       days_to_receive      = EXCLUDED.days_to_receive,
+       comments_count       = EXCLUDED.comments_count,
+       internal_id          = EXCLUDED.internal_id,
+       is_removed           = EXCLUDED.is_removed,
+       encompass_created_by = EXCLUDED.encompass_created_by,
+       encompass_created_at = EXCLUDED.encompass_created_at,
+       encompass_modified_by = EXCLUDED.encompass_modified_by,
+       encompass_modified_at = EXCLUDED.encompass_modified_at,
+       raw                  = EXCLUDED.raw,
+       encompass_synced_at  = EXCLUDED.encompass_synced_at,
+       updated_at           = now()
+     RETURNING id`,
+    [loanId, row.encompassConditionId, row.conditionType, row.title,
+      row.internalDescription, row.externalDescription, row.category, row.priorTo,
+      row.status, row.statusOpen, row.statusDate, row.source, row.sourceOfCondition,
+      row.printDefinitions === null ? null : JSON.stringify(row.printDefinitions),
+      row.applicationRef, row.ownerRole, row.assignedTo, row.recipient,
+      row.daysToReceive, row.commentsCount, row.internalId, row.isRemoved,
+      row.encompassCreatedBy, row.encompassCreatedAt, row.encompassModifiedBy,
+      row.encompassModifiedAt, row.raw === undefined ? null : JSON.stringify(row.raw),
+      syncedAt],
+  );
+  return rows[0] ? rows[0].id : null;
+}
+
+/**
+ * Mark every condition on this loan that Encompass no longer lists as removed.
+ *
+ * NOT a delete — see the module header. It is also skipped entirely when the read
+ * returned NOTHING: an empty answer is far more likely a filter change or an
+ * outage than every condition on the loan being withdrawn at once, and marking a
+ * whole loan removed on a bad read is the kind of quiet damage nobody notices for
+ * weeks. (The same reasoning `sync/loans.js` applies to an empty pipeline.)
+ */
+async function retireMissingConditions(dbc, loanId, keptIds, syncedAt) {
+  if (!keptIds.length) return 0;
+  const { rowCount } = await dbc.query(
+    `UPDATE lt_conditions
+        SET is_removed = true, encompass_synced_at = $3, updated_at = now()
+      WHERE loan_id = $1
+        AND NOT (encompass_condition_id = ANY($2::text[]))
+        AND is_removed = false`,
+    [loanId, keptIds, syncedAt],
+  );
+  return rowCount;
+}
+
+/**
+ * Read + mirror one loan's conditions.
+ *
+ * Returns a plain report rather than throwing: the caller is a sweep over many
+ * loans, and one loan's failure is data, not an exception.
+ */
+async function syncConditionsForLoan(loanId, loanGuid, opts = {}) {
+  const client = opts.client || lazy.client;
+  const syncedAt = opts.now || new Date();
+
+  let payload;
+  try {
+    payload = await client.apiGet(`/encompass/v3/loans/${encodeURIComponent(loanGuid)}/conditions`);
+  } catch (e) {
+    await recordError(loanId, 'conditions', (e && e.message) || String(e));
+    return { ok: false, reason: (e && e.message) || String(e) };
+  }
+
+  const read = mapper.readConditions(payload);
+  const dbc = await lazy.db.getClient();
+  try {
+    await dbc.query('BEGIN');
+    const kept = [];
+    for (const row of read.rows) {
+      await upsertCondition(dbc, loanId, row, syncedAt);
+      kept.push(row.encompassConditionId);
+    }
+    const retired = await retireMissingConditions(dbc, loanId, kept, syncedAt);
+
+    // A condition arriving AFTER the documents that answer it: point their links
+    // at it now, rather than leaving them dangling until the next eFolder read.
+    const resolved = await resolveLinks(dbc, loanId);
+
+    await dbc.query(
+      `UPDATE lt_loans SET conditions_synced_at = $2, conditions_sync_error = NULL WHERE id = $1`,
+      [loanId, syncedAt],
+    );
+    await dbc.query('COMMIT');
+    return { ok: true, stored: read.rows.length, seen: read.seen, unreadable: read.unreadable, retired, resolved };
+  } catch (e) {
+    try { await dbc.query('ROLLBACK'); } catch { /* the connection is going back either way */ }
+    await recordError(loanId, 'conditions', (e && e.message) || String(e));
+    return { ok: false, reason: (e && e.message) || String(e) };
+  } finally {
+    dbc.release();
+  }
+}
+
+// ── Writing one loan's eFolder ──────────────────────────────────────────────
+
+async function upsertDocument(dbc, loanId, d, syncedAt) {
+  const { rows } = await dbc.query(
+    `INSERT INTO lt_documents
+       (id, loan_id, encompass_document_id, title, title_with_index,
+        application_ref, application_name, milestone_id, milestone_name, status,
+        roles, web_center_allowed, tpo_allowed, third_party_allowed, is_protected,
+        days_due, days_till_expire, attachment_count, is_removed,
+        encompass_created_by, encompass_created_at, raw, encompass_synced_at, updated_at)
+     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
+             $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21::jsonb, $22, now())
+     ON CONFLICT (loan_id, encompass_document_id) DO UPDATE SET
+       title               = EXCLUDED.title,
+       title_with_index    = EXCLUDED.title_with_index,
+       application_ref     = EXCLUDED.application_ref,
+       application_name    = EXCLUDED.application_name,
+       milestone_id        = EXCLUDED.milestone_id,
+       milestone_name      = EXCLUDED.milestone_name,
+       status              = EXCLUDED.status,
+       roles               = EXCLUDED.roles,
+       web_center_allowed  = EXCLUDED.web_center_allowed,
+       tpo_allowed         = EXCLUDED.tpo_allowed,
+       third_party_allowed = EXCLUDED.third_party_allowed,
+       is_protected        = EXCLUDED.is_protected,
+       days_due            = EXCLUDED.days_due,
+       days_till_expire    = EXCLUDED.days_till_expire,
+       attachment_count    = EXCLUDED.attachment_count,
+       is_removed          = EXCLUDED.is_removed,
+       encompass_created_by = EXCLUDED.encompass_created_by,
+       encompass_created_at = EXCLUDED.encompass_created_at,
+       raw                 = EXCLUDED.raw,
+       encompass_synced_at = EXCLUDED.encompass_synced_at,
+       updated_at          = now()
+     RETURNING id`,
+    [loanId, d.encompassDocumentId, d.title, d.titleWithIndex, d.applicationRef,
+      d.applicationName, d.milestoneId, d.milestoneName, d.status,
+      d.roles === null || d.roles === undefined ? null : JSON.stringify(d.roles),
+      d.webCenterAllowed, d.tpoAllowed, d.thirdPartyAllowed, d.isProtected,
+      d.daysDue, d.daysTillExpire, d.attachmentCount, d.isRemoved,
+      d.encompassCreatedBy, d.encompassCreatedAt,
+      d.raw === undefined ? null : JSON.stringify(d.raw), syncedAt],
+  );
+  return rows[0] ? rows[0].id : null;
+}
+
+async function upsertAttachment(dbc, documentId, a, syncedAt) {
+  await dbc.query(
+    `INSERT INTO lt_document_attachments
+       (id, document_id, encompass_attachment_id, title, file_name, content_type,
+        file_size, page_count, encompass_uri, is_removed, encompass_created_by,
+        encompass_created_at, raw, encompass_synced_at, updated_at)
+     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+             $12::jsonb, $13, now())
+     ON CONFLICT (document_id, encompass_attachment_id) DO UPDATE SET
+       title                = EXCLUDED.title,
+       file_name            = EXCLUDED.file_name,
+       content_type         = EXCLUDED.content_type,
+       file_size            = EXCLUDED.file_size,
+       page_count           = EXCLUDED.page_count,
+       encompass_uri        = EXCLUDED.encompass_uri,
+       is_removed           = EXCLUDED.is_removed,
+       encompass_created_by = EXCLUDED.encompass_created_by,
+       encompass_created_at = EXCLUDED.encompass_created_at,
+       raw                  = EXCLUDED.raw,
+       encompass_synced_at  = EXCLUDED.encompass_synced_at,
+       updated_at           = now()`,
+    [documentId, a.encompassAttachmentId, a.title, a.fileName, a.contentType,
+      a.fileSize, a.pageCount, a.encompassUri, a.isRemoved, a.encompassCreatedBy,
+      a.encompassCreatedAt, a.raw === undefined ? null : JSON.stringify(a.raw), syncedAt],
+  );
+}
+
+/**
+ * Record the document -> condition link.
+ *
+ * THE LINK IS WRITTEN, THE RESOLUTION IS NOT. `encompass_condition_id` is the
+ * link — Encompass's own id, always present — and `condition_id` is only its
+ * resolution to a row of ours, which `resolveLinks` (below) is the ONE place
+ * that decides. An earlier cut resolved it a second way, in a sub-select right
+ * here; the two never disagreed, but two copies of a rule is how they start to,
+ * and while both stood NEITHER could be proven to bite (breaking one left the
+ * other quietly covering for it, so the tests stayed green either way).
+ *
+ * A link to a condition we have not mirrored is still STORED, with `condition_id`
+ * left null. A foreign key alone would have dropped exactly the links most worth
+ * having — a removed condition is still referenced by the documents that
+ * answered it.
+ *
+ * On conflict the existing `condition_id` is LEFT ALONE rather than overwritten
+ * with this statement's null, or every re-read would un-resolve every link.
+ */
+async function upsertLink(dbc, documentId, link, syncedAt) {
+  await dbc.query(
+    `INSERT INTO lt_document_conditions
+       (id, document_id, encompass_condition_id, condition_id, entity_type,
+        entity_name, entity_uri, encompass_synced_at)
+     VALUES (gen_random_uuid(), $1, $2, NULL, $3, $4, $5, $6)
+     ON CONFLICT (document_id, encompass_condition_id) DO UPDATE SET
+       entity_type         = EXCLUDED.entity_type,
+       entity_name         = EXCLUDED.entity_name,
+       entity_uri          = EXCLUDED.entity_uri,
+       encompass_synced_at = EXCLUDED.encompass_synced_at`,
+    [documentId, link.encompassConditionId, link.entityType,
+      link.entityName, link.entityUri, syncedAt],
+  );
+}
+
+/**
+ * Point every link at the condition row it names, wherever one now exists.
+ *
+ * THE ONE DEFINITION of how a link resolves, and it runs at the end of BOTH
+ * reads — because the two reads land in either order and each order leaves a
+ * different half dangling: documents first leaves links naming conditions we do
+ * not hold yet, conditions first leaves nothing to point at until the documents
+ * arrive. Running it on both sides is what makes the order not matter, and it
+ * means a condition arriving second fixes its documents immediately instead of
+ * waiting hours for the next document read.
+ *
+ * It only ever fills a NULL, so a resolution already made is never rewritten.
+ */
+async function resolveLinks(dbc, loanId) {
+  const { rowCount } = await dbc.query(
+    `UPDATE lt_document_conditions l
+        SET condition_id = c.id
+       FROM lt_conditions c, lt_documents d
+      WHERE l.document_id = d.id
+        AND d.loan_id = $1
+        AND c.loan_id = $1
+        AND c.encompass_condition_id = l.encompass_condition_id
+        AND l.condition_id IS NULL`,
+    [loanId],
+  );
+  return rowCount;
+}
+
+async function retireMissingDocuments(dbc, loanId, keptIds, syncedAt) {
+  if (!keptIds.length) return 0;
+  const { rowCount } = await dbc.query(
+    `UPDATE lt_documents
+        SET is_removed = true, encompass_synced_at = $3, updated_at = now()
+      WHERE loan_id = $1
+        AND NOT (encompass_document_id = ANY($2::text[]))
+        AND is_removed = false`,
+    [loanId, keptIds, syncedAt],
+  );
+  return rowCount;
+}
+
+/** Read + mirror one loan's eFolder. Same failure posture as the conditions half. */
+async function syncDocumentsForLoan(loanId, loanGuid, opts = {}) {
+  const client = opts.client || lazy.client;
+  const syncedAt = opts.now || new Date();
+
+  let payload;
+  try {
+    payload = await client.apiGet(`/encompass/v3/loans/${encodeURIComponent(loanGuid)}/documents`);
+  } catch (e) {
+    await recordError(loanId, 'documents', (e && e.message) || String(e));
+    return { ok: false, reason: (e && e.message) || String(e) };
+  }
+
+  const read = mapper.readDocuments(payload);
+  const dbc = await lazy.db.getClient();
+  try {
+    await dbc.query('BEGIN');
+    const kept = [];
+    let attachments = 0;
+    let links = 0;
+    for (const one of read.rows) {
+      const docId = await upsertDocument(dbc, loanId, one.document, syncedAt);
+      kept.push(one.document.encompassDocumentId);
+      if (!docId) continue;
+      for (const a of one.attachments) { await upsertAttachment(dbc, docId, a, syncedAt); attachments += 1; }
+      for (const l of one.conditionLinks) { await upsertLink(dbc, docId, l, syncedAt); links += 1; }
+    }
+    const retired = await retireMissingDocuments(dbc, loanId, kept, syncedAt);
+    const resolved = await resolveLinks(dbc, loanId);
+    await dbc.query(
+      `UPDATE lt_loans SET documents_synced_at = $2, documents_sync_error = NULL WHERE id = $1`,
+      [loanId, syncedAt],
+    );
+    await dbc.query('COMMIT');
+    return {
+      ok: true, stored: read.rows.length, seen: read.seen, unreadable: read.unreadable,
+      attachments, links, resolved, retired,
+    };
+  } catch (e) {
+    try { await dbc.query('ROLLBACK'); } catch { /* the connection is going back either way */ }
+    await recordError(loanId, 'documents', (e && e.message) || String(e));
+    return { ok: false, reason: (e && e.message) || String(e) };
+  } finally {
+    dbc.release();
+  }
+}
+
+/**
+ * Record why a loan could not be read.
+ *
+ * Best-effort on its own connection: this runs on the failure path, and a failure
+ * to record a failure must not replace the original one in the caller's hands.
+ */
+async function recordError(loanId, which, reason) {
+  const col = which === 'documents' ? 'documents_sync_error' : 'conditions_sync_error';
+  try {
+    await lazy.db.query(
+      `UPDATE lt_loans SET ${col} = $2 WHERE id = $1`,
+      [loanId, String(reason || '').slice(0, 500)],
+    );
+  } catch { /* the reason is already being returned to the caller */ }
+}
+
+// ── The sweep ───────────────────────────────────────────────────────────────
+
+/**
+ * One pass: read the least-recently-checked loans.
+ *
+ * Oldest-first with NULLS FIRST, so a loan nobody has ever read goes to the front
+ * and the sweep drains a fresh tenant instead of re-reading the same few files.
+ */
+async function dueLoans(dbc, budget, refreshHours) {
+  const { rows } = await dbc.query(
+    `SELECT id, encompass_loan_guid AS guid
+       FROM lt_loans
+      WHERE encompass_loan_guid IS NOT NULL
+        AND (conditions_synced_at IS NULL
+             OR conditions_synced_at < now() - ($2 || ' hours')::interval)
+      ORDER BY conditions_synced_at ASC NULLS FIRST
+      LIMIT $1`,
+    [budget, String(refreshHours)],
+  );
+  return rows;
+}
+
+/**
+ * Read a bounded slice of the book.
+ *
+ * Refuses politely rather than throwing when the feature is off or Encompass is
+ * not connected — a caller wired at boot must be able to call this unconditionally
+ * and get a plain answer.
+ */
+async function syncOnce(opts = {}) {
+  if (!(await enabled())) {
+    return { ok: false, reason: 'The Condition Center is switched off (conditions.enabled).' };
+  }
+  const client = opts.client || lazy.client;
+  if (!client.configured()) {
+    return { ok: false, reason: 'Encompass is not connected yet — add the long-term Encompass credentials first.' };
+  }
+
+  const budget = Number(opts.readBudget) > 0 ? Math.trunc(opts.readBudget) : DEFAULT_READ_BUDGET;
+  const refreshHours = Number(opts.refreshHours) > 0 ? Number(opts.refreshHours) : DEFAULT_REFRESH_HOURS;
+
+  const dbc = await lazy.db.getClient();
+  let due;
+  try {
+    due = await dueLoans(dbc, budget, refreshHours);
+  } finally {
+    dbc.release();
+  }
+
+  let read = 0;
+  let failed = 0;
+  const failures = [];
+  for (const loan of due) {
+    const c = await syncConditionsForLoan(loan.id, loan.guid, { client, now: opts.now });
+    const d = await syncDocumentsForLoan(loan.id, loan.guid, { client, now: opts.now });
+    if (c.ok && d.ok) read += 1;
+    else {
+      failed += 1;
+      failures.push({ loanId: loan.id, conditions: c.ok ? null : c.reason, documents: d.ok ? null : d.reason });
+    }
+  }
+
+  // The cap is REPORTED, never silent: "we read 20 and there are more" is the
+  // difference between a sweep that is keeping up and one that never will.
+  return { ok: true, due: due.length, read, failed, failures, budget, more: due.length === budget };
+}
+
+module.exports = {
+  DEFAULT_READ_BUDGET,
+  DEFAULT_REFRESH_HOURS,
+  enabled,
+  syncConditionsForLoan,
+  syncDocumentsForLoan,
+  syncOnce,
+  _internals: { upsertCondition, upsertDocument, upsertAttachment, upsertLink, resolveLinks, retireMissingConditions, retireMissingDocuments, dueLoans },
+};

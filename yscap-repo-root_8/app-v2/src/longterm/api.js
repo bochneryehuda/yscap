@@ -98,6 +98,13 @@ export const ltApi = {
   mySettings: () => ltGet(lt('/settings/mine')),
   saveMySettings: (settings) => ltPatch(lt('/settings/mine'), { settings }),
 
+  // The Condition Center, READ side. One call per loan gives BOTH feeds — this
+  // loan's conditions with the documents that answer each one, and the eFolder
+  // needs list — plus `face`, which says which of the two this file's work
+  // actually is. There is deliberately no write here: nothing in the Condition
+  // Center writes to Encompass or to us (the eFolder upload stays blocked).
+  conditionCenter: (loanId) => ltGet(lt(`/conditions/${encodeURIComponent(loanId)}`)),
+
   // The Product & Pricing Engine. Lender Price stays authoritative — these read
   // the SHADOW: what our engine disagreed with, and how far it is from ready.
   // Every list is served pre-ordered by the server's own review queue, so this

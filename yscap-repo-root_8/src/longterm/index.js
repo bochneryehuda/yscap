@@ -72,6 +72,14 @@ router.use('/book', require('./routes/book'));
 // /api/lt/views
 router.use('/views', require('./routes/views'));
 
+// The Condition Center, READ side: this loan's conditions with the documents that
+// answer each one, plus the eFolder needs list — which is where the work actually
+// is on a live file, since every condition in this tenant sits on a loan that is
+// already sold. Behind `conditions.enabled` (off by default) and the same file
+// scope as the workspace. READ-ONLY: no route here writes to Encompass or to us.
+// /api/lt/conditions
+router.use('/conditions', require('./routes/conditions'));
+
 // The signed-in person's own long-term preferences — today, which product side
 // they open on (the owner's switch), remembered per user. /api/lt/me
 router.use('/me', require('./routes/me'));
