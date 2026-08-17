@@ -94,5 +94,20 @@ ok(ruleDrift === 0, `every restriction state's engine rules match the decoded PP
 const dq = pppDisqualifier({ state: 'NJ', borrowerType: 'Individual', units: 1, loanAmount: 400000, prepayRequested: true });
 ok(dq && dq.code === 'dhvn_ppp_prohibited_nj' && dq.dimension === 'prepay_state' && /New Jersey|NJ/.test(dq.declineReason) && /PPP/.test(dq.citation), 'the NJ disqualifier carries a state-coded id, dimension, plain reason and a matrix citation');
 
+// ---- COVERAGE: every US state + DC is pre-filled from the Deephaven PPP matrix PDF (owner: "run
+//      every state") — a state must be EXACTLY ONE of standard or a restriction rule set; none missing.
+{
+  const ALL = ['AL','AK','AZ','AR','CA','CO','CT','DE','DC','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY'];
+  const jurisdictions = J.states;
+  const covered = ALL.filter((s) => jurisdictions[s] === 'standard' || (jurisdictions[s] && typeof jurisdictions[s] === 'object'));
+  const extra = Object.keys(jurisdictions).filter((s) => !ALL.includes(s));
+  ok(ALL.length === 51 && covered.length === 51, `all 50 states + DC are pre-filled (${covered.length}/51 covered)`);
+  ok(extra.length === 0, `no non-jurisdiction keys in the matrix (${extra.length} extra${extra.length ? ': ' + extra.join(',') : ''})`);
+  // the engine's restriction rules must match the JSON's ruled set exactly (both the source of truth).
+  const jsonRuled = Object.keys(jurisdictions).filter((s) => jurisdictions[s] && typeof jurisdictions[s] === 'object').sort();
+  const engRuled = Object.keys(STATE_RULES).sort();
+  ok(JSON.stringify(engRuled) === JSON.stringify(jsonRuled), `engine restriction states == JSON restriction states (${engRuled.length}: ${engRuled.join(',')})`);
+}
+
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);
