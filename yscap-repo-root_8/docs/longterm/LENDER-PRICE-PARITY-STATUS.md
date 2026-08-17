@@ -285,6 +285,63 @@ carried, shipped 2026-08-16 and has moved to §1. **The cash-out AMOUNT also lef
 this list**: it is transmitted as the captured `criteria.cashoutAmount`, and the
 reasoning for reversing the earlier fail-closed reading is in the §1 row.
 
+### §2.2 — the ≥200-scenario AGREEMENT harness is BUILT; the only blocker is the login (2026-08-17)
+
+The owner's HARD RULE (2026-08-17): before ANY long-term rate sheet is built into
+the system, our own engine must **agree with Lender Price on ≥200 scenarios — every
+LLPA, every eligibility AND ineligibility, and the max/min price — to the penny.**
+Lender Price stays the authority; a disagreement is a finding a human fixes.
+
+**The whole harness is written and unit-tested offline. It is IO-injected, so it
+runs the moment the login is present — nothing else is outstanding in code.** The
+pieces (all `src/longterm/ppe/*`, all LT-only, pure):
+
+- `ratesheet-agreement-diff.js` — the two FINE comparators. `reconcileLlpas` lines
+  up every individual LLPA by DIMENSION (LP itemizes fico/cltv/dscr separately; our
+  grid folds them into one cell, so the crosswalk sums LP's items into our one
+  cell — two offsetting cell errors a stack total agrees on are caught here).
+  `boundsProbe` checks the cap (max price) and floor (min price) fired to the SAME
+  number LP landed on. (21 assertions.)
+- `ratesheet-agreement.js` — the ORCHESTRATOR. Per scenario it prices our engine off
+  the sheet-under-test, normalizes the LP legs, and composes the coarse
+  `parity-detectors.detectDifferences` with the two fine comparators into ONE verdict
+  and a batch gate report. A scenario AGREES only when the coarse axes agree AND every
+  matched rung reconciles to the penny on every dimension AND every cap/floor probe is
+  faithful. Both-decline is a real eligibility agreement; no-LP-signal is incomparable
+  (never counted); a thrown leg becomes an `engine_error` and the batch survives.
+  `gateMet` = no errors, no disagreements, ≥1 comparable scenario. (17 assertions;
+  the load-bearing offsetting case is mutation-proven.)
+- `lp-agreement-legs.js` — the adapters that wire the real quote engine (`buildOursLeg`)
+  and the live LP client (`buildLpLeg`, mapping `price()`/`priceDisqualified()` →
+  `{ full, disqualified }`) into the orchestrator, plus `readiness()` (names which
+  credentials are absent). (10 assertions, stubbed client.)
+- `scripts/test-lt-lp-agreement-run.js` — the ONE-COMMAND runner. Named `test-lt-*`
+  because only LT test/validation scripts may import Long-Term code (the
+  product-separation gate); it needs the live login and is run by hand, never in CI.
+
+**Run it:**
+
+```
+node scripts/test-lt-lp-agreement-run.js --sheet <sheet.json> \
+     [--scenarios <scenarios.json>] [--filter-investor DHVN] [--out report.json]
+```
+
+**THE ONLY BLOCKER is the Lender Price login.** In this coding environment
+`LP_USERNAME` / `LP_PASSWORD` / `LP_CLIENT_SECRET` are unset (`client.configured()`
+= false), so the LP leg has nothing to call. The runner reports exactly that and
+exits — it is not a code gap. Set those three as environment variables and re-run.
+
+**Two inputs are still needed for a real PASS, and both are deliberately NOT
+guessed:** (1) the **sheet-under-test** — our INDEPENDENT ANALYSIS of the Deephaven
+DSCR sheet, a `rateSheetToProgram` input (`deephaven-grid.gridToRateSheet`). The
+sheet STRUCTURE is captured in `RATE-SHEET-KNOWLEDGE.md` and the source Excel is on
+file; encoding the full FICO×CLTV×DSCR grid is the next build step, best done where
+it can be reviewed against the sheet (it is the exact thing the owner wants LP to
+validate). (2) the **≥200 scenarios** — built with `scenario-matrix.buildMatrix` +
+`coverage` over the live capability lists. Until a real `--scenarios` file is given,
+the runner uses a small STARTER matrix and says so — a starter agreement is a smoke
+test, not the gate.
+
 ## 3. The request-builder field contract (accepted types)
 
 Scenario field → upstream path → type → default/validation (as of the fixes
@@ -327,3 +384,10 @@ above). Anything not in this list is **rejected 422** (`unsupported_field`).
 - `node scripts/test-lt-dscr-routes.js` — routes, item cursor, effectiveScenario (offline).
 - `DATABASE_URL=… node scripts/test-lt-lp-disqualify-store-db.js` — durable ineligible store (reboot survival).
 - `node scripts/test-lt-lenderprice.js --live` — real Lender Price battery (needs credentials + healthy production).
+- `node scripts/test-lt-ppe-all.js` — every LT PPE suite (offline), including the E3 agreement
+  harness: `test-lt-ppe-ratesheet-agreement-diff.js` (the two fine comparators),
+  `test-lt-ppe-ratesheet-agreement.js` (the orchestrator, offsetting case mutation-proven),
+  `test-lt-ppe-lp-agreement-legs.js` (the live-LP leg adapters, stubbed client).
+- `node scripts/test-lt-lp-agreement-run.js --sheet <sheet.json>` — the live ≥200-scenario
+  agreement run (§2.2). Needs the Lender Price login + a sheet-under-test; reports the exact
+  blocker and exits when either is absent. Run by hand, never in CI.
