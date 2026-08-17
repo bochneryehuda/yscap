@@ -96,7 +96,6 @@ console.log('\n3. the card NEVER survives masking');
 {
   for (const [name, built] of [
     ['auth-capture', cdg.buildPaymentAuthCapture({ ...CTX, payment: CARD })],
-    ['vault', cdg.buildPaymentToCaptureLater({ ...CTX, payment: CARD })],
   ]) {
     const masked = JSON.stringify(cdg.maskRequest(built));
     ok(!masked.includes('4012888888881881'), `${name}: the full card number is gone`);
@@ -117,25 +116,27 @@ console.log('\n3. the card NEVER survives masking');
     'a card typed with spaces is masked too — the builder normalises before it is stored');
 }
 
-console.log('\n4. PaymentCapture carries the reference and the email — and NOTHING else');
+console.log('\n4+5. THE VAULT-THEN-CHARGE-LATER ROUTE IS NOT BUILT, and must not come back as two builders');
 {
-  const built = cdg.buildPaymentCapture({ ...CTX, referenceId: '38298', email: 'brittthompson@corelogic.com' });
-  const theirs = sample('CDG JSON paymentcapture request.json');
-  assert.deepStrictEqual(Object.keys(payOf(built)).sort(), Object.keys(payOf(theirs)).sort());
-  ok(true, 'the same two fields their sample sends');
-  ok(!('paymentAccountIdentifier' in payOf(built)) && !('paymentAccountCardSecurityCode' in payOf(built)),
-    'no card number and no security code — that is the entire point of having vaulted it');
-  ok(actionOf(built) === 'PaymentCapture', 'and the action is theirs');
-}
-
-console.log('\n5. the vault call is the same block under a different action');
-{
-  const built = cdg.buildPaymentToCaptureLater({ ...CTX, payment: CARD });
-  const theirs = sample('CDG JSON paymenttocaptureleter request.json');
-  assert.deepStrictEqual(Object.keys(payOf(built)).sort(), Object.keys(payOf(theirs)).sort());
-  ok(true, 'the same card fields their sample sends');
-  ok(actionOf(built) === actionOf(theirs),
-    `the action is spelled their way ("${actionOf(theirs)}") — correcting their spelling would make it unrecognised`);
+  // AppraisalScope offers a second way to take money: PaymentToCaptureLeter vaults
+  // the card without charging it, PaymentCapture charges the vaulted card later.
+  // Builders for both existed and NOTHING called them — a two-request money path
+  // that had never been sent, with no route, no button and no record of which
+  // orders were vaulted. It answers a problem PILOT does not have (the card is
+  // already stored here) and doubles the states a payment can be stuck in, on the
+  // one path where being wrong costs real money.
+  ok(typeof cdg.buildPaymentToCaptureLater === 'undefined', 'the vault builder is gone');
+  ok(typeof cdg.buildPaymentCapture === 'undefined', 'the capture-a-vaulted-card builder is gone');
+  const src = fs.readFileSync(path.join(ROOT, 'src/amc/cdg.js'), 'utf8');
+  ok(!/requestActionType:\s*'(PaymentToCaptureLeter|PaymentCapture)'/.test(src),
+    'and nothing in cdg.js emits either action');
+  // What it would take is recorded where the builders were, so the next person does
+  // not mistake two envelopes for the job.
+  ok(/VAULT-THEN-CHARGE-LATER ROUTE IS DELIBERATELY NOT BUILT/.test(src),
+    'the reasoning is recorded in the file, not lost with the code');
+  // The ONE way money moves is still exactly as it was.
+  ok(actionOf(cdg.buildPaymentAuthCapture({ ...CTX, payment: CARD })) === 'PaymentAuthCapture',
+    'the single-step charge is untouched');
 }
 
 console.log('\n6. SendInvoice names ONE address, the way their sample does');
@@ -189,8 +190,7 @@ console.log('\n8. the card block normalises the things that arrive from a form')
 
 console.log('\n9. the module surface says what it can do');
 {
-  for (const f of ['buildPaymentAuthCapture', 'buildPaymentToCaptureLater', 'buildPaymentCapture',
-    'buildSendInvoice', 'parsePaymentTransactionId']) {
+  for (const f of ['buildPaymentAuthCapture', 'buildSendInvoice', 'parsePaymentTransactionId']) {
     ok(typeof cdg[f] === 'function', `${f} is exported`);
   }
   // The payment module must not have grown a second, unmasked way to send a card.

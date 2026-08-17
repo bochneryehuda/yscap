@@ -109,12 +109,34 @@ async function applyStatusResponse(dbh, order, resp) {
 // Document pull → Document Center → appraisal import.
 // deps lets a test inject the transport + importer; production uses the real ones.
 // ---------------------------------------------------------------------------
-function looksXml(doc, contentType, bytes) {
-  const name = String(doc.objectName || '').toLowerCase();
+/**
+ * ARE THESE BYTES ACTUALLY XML? Judged on the CONTENT alone — never on the filename,
+ * which is the point: an expired link, a login wall or a vendor error page is served
+ * with a 200 and whatever name we asked under, so a name-based test would hand the
+ * appraisal importer an HTML page and call it the data file.
+ *
+ * HTML is REFUSED EXPLICITLY, and that is the whole reason this exists rather than a
+ * bare "starts with <" test. `<!doctype html>` starts with `<`, so the cheap test
+ * says yes to exactly the thing that goes wrong most often.
+ */
+function xmlBytes(contentType, bytes) {
   const ct = String(contentType || '').toLowerCase();
-  if (name.endsWith('.xml') || /xml/.test(ct)) return true;
-  const head = bytes && bytes.length ? bytes.slice(0, 64).toString('utf8').trimStart() : '';
+  const head = bytes && bytes.length
+    ? bytes.slice(0, 512).toString('utf8').replace(/^﻿/, '').trimStart()
+    : '';
+  if (/<!doctype\s+html|<html[\s>]/i.test(head)) return false;   // an error page, not a report
+  if (/xml/.test(ct)) return true;
+  if (head.startsWith('<?xml')) return true;
   return head.startsWith('<');
+}
+function looksXml(doc, contentType, bytes) {
+  // THE BYTES DECIDE WHENEVER THERE ARE BYTES. A name or content type only CLAIMS
+  // xml, and every real ingest has the file in hand, so a claim is never taken over
+  // the thing it claims about. With nothing downloaded there is nothing to check the
+  // claim against, and the declared name/type is the only evidence there is.
+  if (bytes && bytes.length) return xmlBytes(contentType, bytes);
+  const name = String(doc.objectName || '').toLowerCase();
+  return name.endsWith('.xml') || /xml/.test(String(contentType || '').toLowerCase());
 }
 function looksPdf(doc, contentType, bytes) {
   const name = String(doc.objectName || '').toLowerCase();
@@ -215,6 +237,92 @@ async function ingestDocuments(dbh, order, deps = {}) {
       else if (isPdf) { pdfDocId = docId; }
     } catch (e) {
       console.error('[amc] could not file a returned document for order', order.id, (e && e.message) || e);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // THE DATA FILE IS FETCHED BY ITS OWN ID — the listing never carries a URL for it.
+  //
+  // `RetriveAppraisalDocuments` answers with one entry per report whose `objectURL`
+  // is the PDF. The MISMO data file the importer runs on is NOT an entry: it is
+  // named on that entry (`objectXMLFileName`) and flagged by `includeXMLIndicator`,
+  // and the only way to its bytes is `RetriveDocumentContent` against that entry's
+  // `documentId` — whose own documented example value is `1843_XML`. Without this
+  // step a completed AppraisalScope order files a PDF and NO data file, so the
+  // appraisal never imports: no value, no comparables, no findings, and the desk
+  // shows an appraisal it cannot read.
+  //
+  // THE BYTES ARE VERIFIED, NEVER TRUSTED. What their package proves is the shape of
+  // the call, not what comes back down the URL — so a response that is not actually
+  // XML is DISCARDED rather than filed as a data file the importer would choke on.
+  // That is the whole reason this reads the bytes instead of believing the `_XML`
+  // in the id, and it is what makes wiring this safe before a live order confirms it.
+  //
+  // Only ever fills a GAP: it runs when the listing produced no data file of its own,
+  // so a vendor that starts returning the XML as a normal entry silently makes this
+  // a no-op instead of fetching the same file twice.
+  if (!xmlDocId) {
+    const withXml = docs.find((d) => d && d.hasXml && d.amcDocumentId);
+    // DEDUPED THE SAME WAY THE LISTING IS, and it needs its own check rather than
+    // inheriting the loop's: the loop `continue`s past an already-filed entry
+    // WITHOUT setting xmlDocId, so on every re-sync of a delivered order the gap
+    // above still reads as open. Without this the data file would be downloaded and
+    // filed again on each pass, growing a duplicate per poll on the one condition a
+    // human has to sign off. Identity is (the AMC's document id, the file's name) —
+    // the pair the listing loop uses, for the reason recorded there.
+    const alreadyFetched = withXml && (await dbh.query(
+      `SELECT 1 FROM amc_order_documents
+        WHERE order_id=$1 AND direction='inbound' AND amc_document_id=$2
+          AND COALESCE(object_name,'') = COALESCE($3,'')`,
+      [order.id, withXml.amcDocumentId, withXml.xmlFileName || 'appraisal.xml'])).rowCount > 0;
+    if (withXml && !alreadyFetched) {
+      try {
+        const cResp = await transport.read(cdg.buildRetrieveDocumentContent({
+          apiKey: authCtx.apiKey, subdomain: order.sp_subdomain || authCtx.subdomain,
+          spOrderNumber: order.sp_order_number, clientOrderNumber: order.client_order_number,
+          documentId: withXml.amcDocumentId,
+        }), { label: 'RetriveDocumentContent' });
+        const cErr = cdg.parseError(cResp);
+        const url = cErr ? null : cdg.parseDocumentContentUrl(cResp);
+        if (cErr) {
+          // NEVER SILENTLY: the report filed without its data file, and the reason why.
+          console.error('[amc] could not fetch the data file for order', order.id, '—', cErr.description || cErr.code);
+        } else if (url) {
+          const { bytes, contentType } = await transport.getDocument(url);
+          const name = withXml.xmlFileName || 'appraisal.xml';
+          if (looksXml({ objectName: name }, contentType, bytes)) {
+            const sha = crypto.createHash('sha256').update(bytes).digest('hex');
+            const slotLabel = await conditionSlots.labelFor(dbh, itemId, 'xml', slotLabels);
+            const { ref, provider } = await storage.save(bytes, { filename: name });
+            const ins = await dbh.query(
+              `INSERT INTO documents
+                 (application_id, borrower_id, checklist_item_id, filename, content_type, size_bytes,
+                  storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, review_status, sha256,
+                  source_type, visibility, slot_label)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',NULL,$10,'pending',$9,'system','staff_only',$11)
+               RETURNING id`,
+              [order.application_id, borrowerId, itemId, String(name).slice(0, 300),
+               contentType || 'application/xml', bytes.length, provider, ref, sha,
+               conditionSlots.DOC_KIND.xml, slotLabel]);
+            xmlDocId = ins.rows[0].id;
+            xmlString = bytes.toString('utf8');
+            await dbh.query(
+              `INSERT INTO amc_order_documents
+                 (order_id, direction, document_id, amc_document_id, document_type, object_name,
+                  action, retrieval_url, object_size, is_additional, status, raw)
+               VALUES ($1,'inbound',$2,$3,$4,$5,'RetriveDocumentContent',$6,$7,false,'retrieved',$8)`,
+              [order.id, xmlDocId, withXml.amcDocumentId, withXml.documentType || null, name,
+               url, String(bytes.length), withXml.raw ? JSON.stringify(withXml.raw) : null]);
+            filed += 1;
+          } else {
+            // The id said XML and the bytes are not. Say so; file nothing.
+            console.error('[amc] the data file for order', order.id,
+              'came back as', contentType || 'an unreadable type', '— not filed');
+          }
+        }
+      } catch (e) {
+        console.error('[amc] data-file fetch failed for order', order.id, (e && e.message) || e);
+      }
     }
   }
 
@@ -344,5 +452,5 @@ function start() {
 module.exports = {
   start, pollOpenOrdersOnce, syncOne, ingestDocuments,
   applyStatusResponse, recordStatusEvent, statusDedupeKey,
-  looksXml, looksPdf, OPEN_STATUSES,
+  looksXml, looksPdf, xmlBytes, OPEN_STATUSES,
 };

@@ -3,20 +3,23 @@
  * DB-gated test for the NAN (AMC / AppraisalScope) cancel service (src/amc/cancel.js)
  * against a REAL Postgres.
  *
- * requestCancel rides the SAME guarded write channel as CreateAppraisal — it calls
- * session.authContext() (DoLogin) and client.write() directly — so, like the sibling
- * AMC db tests, this drives the network by STUBBING those two module singletons in the
- * require cache (cancel.js holds the same cached exports objects, and reads .authContext
- * / .write at call time, so mutating them here is what cancel.js sees). Everything else
- * — the DB writes, the amc_write_log journal, describeSendFailure, cdg.parseError — runs
- * for real. Everything happens inside ONE transaction that is ROLLED BACK.
+ * A CANCELLATION IS A MESSAGE ON THE ORDER'S OWN THREAD (owner-directed 2026-08-17),
+ * sent through the documented AddComment action — there is no cancel action anywhere in
+ * the vendor package. So requestCancel goes through comments.postComment, which rides
+ * the SAME guarded write channel as CreateAppraisal: session.authContext() (DoLogin) and
+ * client.write(). Like the sibling AMC db tests, this drives the network by STUBBING
+ * those two module singletons in the require cache (comments.js holds the same cached
+ * exports objects and reads .authContext / .write at call time, so mutating them here is
+ * what it sees). Everything else — the DB writes, the amc_order_comments thread, the
+ * amc_write_log journal, cdg.parseError — runs for real, inside ONE transaction that is
+ * ROLLED BACK.
  *
- * Covers: the three guards (reason_required / not_placed / not_cancellable); the DRY-RUN
- * flow (status → cancel_requested, reason recorded, journaled, api key masked in the
- * journal); a vendor NACK (status unchanged, journaled ok:false); an ACCEPTED cancel
- * (status → cancel_requested, cancel_requested_by/at, last_status_response, last_error
- * cleared, journaled ok:true); a send failure (status unchanged, journaled ok:false);
- * outbound-off; and that buildPreview surfaces the auto-filled assumptions.
+ * Covers: the guards (reason_required / not_placed / not_cancellable); the DRY-RUN flow
+ * (status → cancel_requested, reason recorded, journaled, api key masked in the journal);
+ * a vendor NACK (status unchanged, journaled ok:false); an ACCEPTED cancel (the ask lands
+ * on the thread, status → cancel_requested, cancel_requested_by/at, last_error cleared,
+ * journaled ok:true); a send failure (status unchanged, journaled ok:false); outbound-off;
+ * and that buildPreview surfaces the auto-filled assumptions.
  *
  * Skips cleanly without DATABASE_URL.
  */
@@ -127,8 +130,8 @@ const nackResp = { message: { statusResponses: [
     }
 
     // ---- guard: a cancel already in flight is not re-sent -------------------
-    // A second requestCancel on a cancel_requested order must NOT send another
-    // CancelOrder to the vendor and must NOT overwrite the original cancel audit
+    // A second requestCancel on a cancel_requested order must NOT send their team a
+    // second identical message and must NOT overwrite the original cancel audit
     // metadata (who/when first asked). The poll worker is already waiting for the
     // vendor's confirmation.
     const inFlight = await c.query(
@@ -155,9 +158,16 @@ const nackResp = { message: { statusResponses: [
     ok(dry.order.dryrun === true, 'dry-run: the order is marked dryrun');
     ok(/TEST MODE/i.test(dry.order.last_error || ''), 'dry-run: last_error explains it was not really sent');
     const dryJ = await journalRows(order.id);
-    ok(dryJ.length === 1 && dryJ[0].action === 'CancelOrder' && dryJ[0].ok === true, 'dry-run: one CancelOrder journal row, ok:true');
+    ok(dryJ.length === 1 && dryJ[0].action === 'AddComment' && dryJ[0].ok === true, 'dry-run: one AddComment journal row, ok:true');
     // the api key never lands in the journal (maskRequest hides it)
     ok(!JSON.stringify(dryJ[0].request_summary || '').includes('SECRETKEY'), 'dry-run: the api key is masked out of the journal');
+    // recorded-not-sent: the ask is on the thread so the desk reads the same state a
+    // live send produces, and the journal says plainly it never left.
+    const dryThread = await c.query(
+      `SELECT body, direction FROM amc_order_comments WHERE order_id=$1 ORDER BY id DESC LIMIT 1`, [order.id]);
+    ok(dryThread.rows[0] && dryThread.rows[0].direction === 'outbound'
+      && /^Please cancel this order\./.test(dryThread.rows[0].body || ''),
+      'dry-run: the cancellation is recorded on the order thread');
 
     // ---- a vendor NACK: nothing changes on the order ------------------------
     // Reset the order to a placed, non-cancel state to test the NACK cleanly.
@@ -173,32 +183,43 @@ const nackResp = { message: { statusResponses: [
     ok(nackJ[0].ok === false && /not found/i.test(nackJ[0].error || ''), 'NACK: journaled ok:false with the reason');
 
     // ---- ACCEPTED: the cancel request is recorded ---------------------------
+    let sentBody = null;
     writeImpl = async (built, opts) => {
-      // the action rides ?orderId=<cdg order number> exactly as an AddForm does
-      ok(opts && opts.orderId === 'CLG500' && opts.label === 'CancelOrder', 'accepted: write() is called with the cdg order id + CancelOrder label');
+      // the message rides ?orderId=<cdg order number>, exactly as any other comment does
+      ok(opts && opts.orderId === 'CLG500' && opts.label === 'AddComment', 'accepted: write() is called with the cdg order id + AddComment label');
+      sentBody = built && built.message && built.message.products && built.message.products.requestCommentText;
       return acceptedResp;
     };
-    const acc = await cancel.requestCancel(c, order, { reason: 'Deal fell through', staffId });
+    const acc = await cancel.requestCancel(c, order, { reason: 'Deal fell through', staffId, staffName: 'Cara Coordinator' });
     ok(acc.ok && acc.order, 'an accepted cancel returns ok + the order');
-    ok(acc.order.status === 'cancel_requested', 'accepted: status → cancel_requested (not yet cancelled)');
+    ok(/^Please cancel this order\./.test(String(sentBody || '')), 'accepted: the ask itself is what was sent');
+    ok(String(sentBody || '').includes('Deal fell through'), 'accepted: the reason rides with it');
+    ok(acc.comment && acc.comment.id, 'accepted: the ask is filed on the order thread');
+    ok(acc.order.status === 'cancel_requested', 'accepted: status → cancel_requested (asking is not agreeing)');
     ok(acc.order.cancel_reason === 'Deal fell through', 'accepted: the reason is recorded');
     ok(String(acc.order.cancel_requested_by) === String(staffId), 'accepted: cancel_requested_by is the staffer');
     ok(acc.order.cancel_requested_at != null, 'accepted: cancel_requested_at is stamped');
-    ok(acc.order.last_status_response != null, 'accepted: the vendor response is stored');
     ok(acc.order.last_error == null, 'accepted: last_error is cleared');
     const accJ = await journalRows(order.id);
-    ok(accJ[0].ok === true && accJ[0].action === 'CancelOrder', 'accepted: journaled ok:true');
+    // Two rows, newest first: the CancelRequest we recorded, over the AddComment that carried it.
+    ok(accJ[0].ok === true && accJ[0].action === 'CancelRequest', 'accepted: journaled as a CancelRequest, ok:true');
+    ok(accJ[1] && accJ[1].ok === true && accJ[1].action === 'AddComment', 'accepted: the message itself is journaled as AddComment');
+    ok(JSON.stringify(accJ[0].request_summary || '').includes('AddComment'),
+      'accepted: the journal records HOW it was asked (via AddComment), so the route is answerable later');
 
     // ---- a send failure: the order is untouched, the failure is recorded ----
     // Reset to a placed non-cancel state so the "unchanged" assertion is meaningful.
     await c.query(`UPDATE amc_orders SET status='ordered', cancel_reason=NULL, cancel_requested_at=NULL, cancel_requested_by=NULL, last_error=NULL, last_status_response=NULL WHERE id=$1`, [order.id]);
-    writeImpl = async () => { const e = new Error('AMC CancelOrder -> 500'); e.status = 500; e.body = { raw: 'gateway boom' }; throw e; };
+    writeImpl = async () => { const e = new Error('AMC AddComment -> 500 gateway boom'); e.status = 500; e.body = { raw: 'gateway boom' }; throw e; };
     const failed = await cancel.requestCancel(c, order, { reason: 'try to cancel', staffId });
     ok(!failed.ok && failed.error === 'send_failed', 'a transport error returns send_failed');
     const afterFail = await reload(order.id);
+    // NOTHING IS RECORDED AS REQUESTED WHEN THE ASK DID NOT LEAVE: a refused send that
+    // still flipped the order would leave the desk waiting forever for the AMC to
+    // confirm a message their team never received.
     ok(afterFail.status === 'ordered', 'send failure: status is unchanged (never flips to cancel_requested)');
     ok(afterFail.cancel_reason == null, 'send failure: no cancel metadata is written');
-    ok(/gateway boom|HTTP 500/i.test(afterFail.last_error || ''), 'send failure: last_error carries the gateway reason');
+    ok(/gateway boom/i.test(afterFail.last_error || ''), 'send failure: last_error carries the gateway reason');
     const failJ = await journalRows(order.id);
     ok(failJ[0].ok === false, 'send failure: journaled ok:false');
 

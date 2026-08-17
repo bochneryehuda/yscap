@@ -519,6 +519,11 @@ function NanBuilder({ appId, cfg, onPlaced }) {
   const [payErr, setPayErr] = useState('');
   const [formOverride, setFormOverride] = useState('');
   const [cdorOverride, setCdorOverride] = useState('');
+  // WHICH ADD-ONS THIS ORDER ASKS FOR. `null` means "nobody touched it", so the
+  // form rule's own default still applies — and an EMPTY ARRAY means "none of
+  // them", which is a different answer and has to survive as one, or unticking the
+  // last box would silently put the rule's default back.
+  const [addOnOverride, setAddOnOverride] = useState(null);
 
   // HOW THIS ORDER GETS PAID, chosen at the moment it goes out (owner-directed
   // 2026-08-16). `null` means "not now" and is the default, so an order can still
@@ -569,8 +574,12 @@ function NanBuilder({ appId, cfg, onPlaced }) {
     const o = {};
     if (formOverride) o.productCode = formOverride;
     if (cdorOverride) o.clientDisplayedId = cdorOverride;
+    // Sent as a comma-joined string on BOTH the preview (a GET, where an array
+    // cannot survive the query string) and the place (a POST) — the server reads
+    // either shape, so there is one thing to get right rather than two.
+    if (addOnOverride) o.subproductCodes = addOnOverride.join(',');
     return o;
-  }, [formOverride, cdorOverride]);
+  }, [formOverride, cdorOverride, addOnOverride]);
 
   const load = useCallback(async () => {
     try {
@@ -634,8 +643,13 @@ function NanBuilder({ appId, cfg, onPlaced }) {
       {preview ? (
         <PreviewCard preview={preview} busy={busy} onDraft={() => place(false)} onPlace={() => place(true)}
           outbound={!!(cfg && cfg.outbound)} appId={appId} onCardSaved={load}
-          formValue={formOverride || (preview.spec && preview.spec.productCode) || ''} onPickForm={setFormOverride}
+          formValue={formOverride || (preview.spec && preview.spec.productCode) || ''}
+          /* An add-on belongs to a FORM, so picking a different form throws the
+             selection away rather than carrying codes across to a form that may
+             not offer them. */
+          onPickForm={(v) => { setFormOverride(v); setAddOnOverride(null); }}
           cdorValue={cdorOverride || (preview.spec && preview.spec.clientDisplayedId) || ''} onPickCdor={setCdorOverride}
+          addOnValue={addOnOverride} onPickAddOns={setAddOnOverride}
           payOptions={payOpts} payMethod={payMethod} onPayMethod={setPayMethod}
           payCard={payCard} onPayCard={setPayCard} />
       ) : (
@@ -696,8 +710,63 @@ function FeeQuote({ quote }) {
   );
 }
 
+/* WHAT ELSE THIS FORM OFFERS (owner-directed 2026-08-17).
+ *
+ * AppraisalScope calls these "job type add-ons" — the extras that ride an order as
+ * `products[].subproducts[].identifier`. PILOT has been able to SEND them since the
+ * integration was written (a form rule can carry `subproduct_codes`), but the lookup
+ * that says WHICH ones a form offers was being asked without the form, so it
+ * answered nothing and no screen ever showed one. A staffer could only order an
+ * add-on by already knowing its number.
+ *
+ * SILENT WHEN THERE IS NOTHING TO SAY — same discipline as the fee quote. The list
+ * is read from a cache and refreshed behind the scenes, so the first preview on a
+ * cold cache has nothing to show, and an empty "Add-ons: —" row would teach people
+ * the section is broken.
+ *
+ * A CODE THE ACCOUNT NO LONGER OFFERS IS NAMED, NOT HIDDEN. A form rule can carry a
+ * subproduct the vendor has since retired; sending it comes back as a refusal
+ * nobody can explain, and this is the one moment it can be fixed before the order
+ * goes out.
+ */
+function AddOns({ addOns, value, onChange }) {
+  if (!addOns) return null;
+  const available = addOns.available || [];
+  const unknown = addOns.unknownSelected || [];
+  if (!available.length && !unknown.length) return null;
+  // `value` is the staffer's own selection once they touch it; before that, what
+  // the order already carries.
+  const selected = value || (addOns.selected || []).map((a) => a.id);
+  const toggle = (id) => {
+    const has = selected.includes(id);
+    onChange(has ? selected.filter((x) => x !== id) : selected.concat(id));
+  };
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div className="aord-eyebrow" style={{ margin: '0 0 4px' }}>Add-ons for this form</div>
+      {available.map((a) => (
+        <label key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, color: INK, padding: '3px 0' }}>
+          <input type="checkbox" checked={selected.includes(a.id)} onChange={() => toggle(a.id)} />
+          <span>{a.name}<span style={{ color: MUTED }}> · #{a.id}</span></span>
+        </label>
+      ))}
+      {unknown.length ? (
+        <div style={{ marginTop: 6, fontSize: 12, color: WARN }}>
+          This order asks for {unknown.length === 1 ? 'an add-on' : 'add-ons'} the appraisal company
+          doesn’t list for this form ({unknown.join(', ')}). Check the form rule before ordering.
+        </div>
+      ) : null}
+      {available.length ? (
+        <div style={{ marginTop: 4, fontSize: 12, color: MUTED }}>
+          Each add-on is charged on top of the form. Leave them all off unless the deal needs one.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function PreviewCard({ preview, busy, onDraft, onPlace, outbound, appId, onCardSaved, formValue, onPickForm, cdorValue, onPickCdor,
-  payOptions, payMethod, onPayMethod, payCard, onPayCard }) {
+  addOnValue, onPickAddOns, payOptions, payMethod, onPayMethod, payCard, onPayCard }) {
   const spec = preview.spec || {};
   const missing = preview.missing || [];
   const cardOnFile = preview.card || {};
@@ -731,6 +800,8 @@ function PreviewCard({ preview, busy, onDraft, onPlace, outbound, appId, onCardS
           <div style={{ fontSize: 12, color: MUTED, marginTop: 4 }}>The form list isn’t loaded yet — it fills in once the appraisal catalog syncs.</div>
         )}
       </div>
+
+      <AddOns addOns={preview.addOns} value={addOnValue} onChange={onPickAddOns} />
 
       {(cdorOptions.length > 1 || needsCdorPick) ? (
         <div style={{ marginBottom: 12 }}>
@@ -2695,6 +2766,14 @@ function ActiveOrderCard({ order, appId, card, onChanged, onPay }) {
         </button>
         <button className="aord-btn" onClick={() => toggle('documents')} aria-pressed={open === 'documents'}>Documents</button>
         <button className="aord-btn" onClick={() => toggle('revision')} aria-pressed={open === 'revision'}>Revision</button>
+        {/* ORDER ANOTHER FORM ON THIS ORDER. AppraisalScope's `AddForm` action —
+            a 1004D final inspection after the 1004, a 1007 rent schedule — has
+            been wired end to end since the integration was written and had no
+            button, so it was only reachable by hand-posting the request. NAN
+            only: Class has no equivalent action. */}
+        {order._vendor === 'nan' ? (
+          <button className="aord-btn" onClick={() => toggle('addform')} aria-pressed={open === 'addform'}>Add a form</button>
+        ) : null}
         <span className="sep" />
         {/* THE BUTTON SAYS WHAT IT DOES. Payment on these two vendors is MANUAL
             (owner-directed 2026-08-05: the back office charges the card by hand;
@@ -2728,6 +2807,80 @@ function ActiveOrderCard({ order, appId, card, onChanged, onPay }) {
       {open === 'messages' ? <SubMessages order={order} appId={appId} onChanged={onChanged} /> : null}
       {open === 'documents' ? <SubDocuments order={order} appId={appId} onChanged={onChanged} /> : null}
       {open === 'revision' ? <SubRevision order={order} appId={appId} onChanged={onChanged} /> : null}
+      {open === 'addform' ? <NanAddForm appId={appId} order={order} onChanged={onChanged} /> : null}
+    </div>
+  );
+}
+
+/* ---- ADD ANOTHER FORM TO AN ORDER (AppraisalScope `AddForm`) ----------------
+ *
+ * The whole path has been built since the integration was written — `order-build`
+ * carries `requestAction`, `cdg.buildCreateAppraisal` switches the action,
+ * `order-service` resolves the parent's own CDG order number and rides it as
+ * ?orderId=, and the route accepts `parentOrderId`. Nothing offered it, so the one
+ * thing missing was a button, and an appraiser could not be asked for a 1004D
+ * final inspection or a 1007 rent schedule without hand-posting the request.
+ *
+ * IT IS A REAL ORDER, so it says so before it goes: an extra form is charged like
+ * any other, and it is placed against THIS order rather than as a new one.
+ */
+function NanAddForm({ appId, order, onChanged }) {
+  const [forms, setForms] = useState([]);
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [notice, setNotice] = useState('');
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const p = await api.amcPreview(appId);
+        if (alive) setForms((p && p.forms) || []);
+      } catch (_) { /* the list simply stays empty, and the copy below says so */ }
+    })();
+    return () => { alive = false; };
+  }, [appId]);
+
+  const send = async () => {
+    if (!code) return;
+    const name = (forms.find((f) => String(f.id) === code) || {}).name || ('form #' + code);
+    if (!(await askConfirm(`Order ${name} on this appraisal?\n\nIt is an extra form on order ${order.sp_order_number || order.id}, and the appraisal company charges for it.`))) return;
+    setBusy(true); setErr(''); setNotice('');
+    try {
+      const out = await api.amcPlaceOrder(appId, {
+        place: true, requestAction: 'AddForm', parentOrderId: order.id, productCode: code,
+      });
+      if (!out.ok) setErr(parseOrderFailure(null, out));
+      else {
+        setNotice(out.dryrun ? 'Built in test mode — nothing was sent.' : 'The extra form was ordered.');
+        setCode('');
+        if (onChanged) onChanged();
+      }
+    } catch (e) { setErr((e && e.message) || 'Could not order the extra form.'); }
+    setBusy(false);
+  };
+
+  return (
+    <div style={surfaceWrap}>
+      {err ? <Banner tone="bad">{err}</Banner> : null}
+      {notice ? <Banner tone="good">{notice}</Banner> : null}
+      <div style={{ fontSize: 13, color: MUTED, marginBottom: 8 }}>
+        Adds a form to this order — a final inspection, a rent schedule — rather than starting a new appraisal.
+      </div>
+      {forms.length ? (
+        <select value={code} onChange={(e) => setCode(e.target.value)}
+          style={{ ...inputStyle, width: '100%', marginBottom: 8 }}>
+          <option value="">Choose a form…</option>
+          {forms.map((f) => <option key={f.id} value={String(f.id)}>{f.name ? (f.name + ' (#' + f.id + ')') : ('Form #' + f.id)}</option>)}
+        </select>
+      ) : (
+        <div style={{ fontSize: 13, color: MUTED, marginBottom: 8 }}>
+          The form list isn’t loaded yet — it fills in once the appraisal catalog syncs.
+        </div>
+      )}
+      <button className="btn primary" disabled={busy || !code} onClick={send}>
+        {busy ? 'Ordering…' : 'Order this form'}
+      </button>
     </div>
   );
 }
@@ -2959,6 +3112,11 @@ function NanDocuments({ appId, orderId, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [notice, setNotice] = useState('');
+  // SEND IT AS THE CONTRACT. AppraisalScope has a dedicated `UploadContract` action
+  // and nothing here ever used it, so a purchase contract went up as a generic
+  // supporting document — filed where the appraiser has to go looking for it rather
+  // than in the slot their own system keeps for it.
+  const [asContract, setAsContract] = useState(false);
   const load = useCallback(async () => {
     try { const r = await api.amcDocuments(appId, orderId); setRows((r && r.documents) || []); } catch (_) { /* ignore */ }
   }, [appId, orderId]);
@@ -2969,9 +3127,13 @@ function NanDocuments({ appId, orderId, onChanged }) {
     if (!ids.length) return;
     setBusy(true); setErr(''); setNotice('');
     try {
-      const o = await api.amcUploadDocs(orderId, ids);
+      const o = await api.amcUploadDocs(orderId, ids, asContract ? 'UploadContract' : undefined);
       if (!o.ok) setErr(o.message || 'Could not upload.');
-      else { setNotice('Sent ' + (o.uploaded ? o.uploaded.length : 0) + ' document(s) to the order.'); setPick({}); await load(); if (onChanged) onChanged(); }
+      else {
+        setNotice('Sent ' + (o.uploaded ? o.uploaded.length : 0) + ' document(s) to the order'
+          + (asContract ? ' as the purchase contract.' : '.'));
+        setPick({}); setAsContract(false); await load(); if (onChanged) onChanged();
+      }
     } catch (e) { setErr(e.message || 'Could not upload.'); }
     setBusy(false);
   };
@@ -2990,6 +3152,10 @@ function NanDocuments({ appId, orderId, onChanged }) {
           </label>
         )) : <div style={{ padding: 10, color: MUTED, fontSize: 13 }}>No documents on this file yet.</div>}
       </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: INK, margin: '0 0 8px' }}>
+        <input type="checkbox" checked={asContract} onChange={(e) => setAsContract(e.target.checked)} />
+        <span>Send as the purchase contract<span style={{ color: MUTED }}> — files it in their contract slot instead of as a supporting document</span></span>
+      </label>
       <button className="btn primary" disabled={busy || !ids.length} onClick={send}>{busy ? 'Sending…' : ('Send ' + (ids.length || '') + ' to the order')}</button>
       <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>The scope of work and contract are sent automatically when they change or arrive.</div>
     </div>

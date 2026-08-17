@@ -127,6 +127,146 @@ const nackResp = {
     const docCount2 = await c.query(`SELECT count(*)::int n FROM documents WHERE application_id=$1`, [appId]);
     ok(docCount2.rows[0].n === 2, 'still exactly two Document Center rows after re-ingest');
 
+    // ---- THE DATA FILE IS FETCHED BY ITS OWN ID (RetriveDocumentContent) ------
+    //
+    // The listing's entries carry the PDF. The MISMO data file the appraisal
+    // importer runs on is NAMED on an entry (`objectXMLFileName`) and flagged by
+    // `includeXMLIndicator` — it is not an entry with a URL of its own — so without a
+    // second call a delivered order files a report and NO data file, and the
+    // appraisal never imports. These four cases pin that second call, including the
+    // two ways it must decline to file anything.
+    const xmlListing = { message: { deals: [{ embeddedFiles: [{
+      documentId: '1843_XML', documentType: 'Appraisal', objectName: 'report.pdf',
+      objectURL: 'https://amc/getdoc/PDF-ONLY', isAdditionalDocument: '0',
+      includeXMLIndicator: true, objectXMLFileName: 'integrations_Test(1843)-V1.xml',
+    }] }] } };
+    const contentResp = { message: { deals: [{ embeddedFiles: [{ objectURL: 'https://amc/content/1843' }] }] } };
+    const contentNack = { message: { digitalGatewaySystem: { statusResponses: [
+      { statusCode: '-1', statusName: 'ERROR', statusDescription: 'Document not available.', statusCondition: 'Nack' },
+    ] } } };
+
+    // A fresh order per case: the fetch is deduped per (order, document id, name),
+    // so re-using one order would prove nothing about the cases after the first.
+    const freshOrder = async (tag) => {
+      const r = await c.query(
+        `INSERT INTO amc_orders (application_id, client_order_number, sp_order_number, status, sp_subdomain)
+         VALUES ($1,$2,$3,'product_available','integrations.uat') RETURNING *`,
+        [appId, 'YSCAP-SYNC-' + tag, 'SP-' + tag]);
+      return r.rows[0];
+    };
+    const xmlDocsFor = (orderId) => c.query(
+      `SELECT d.filename, d.doc_kind, aod.action FROM amc_order_documents aod
+         JOIN documents d ON d.id = aod.document_id
+        WHERE aod.order_id=$1 AND aod.action='RetriveDocumentContent'`, [orderId]).then((r) => r.rows);
+
+    // (a) the happy path: the data file is fetched by its id and reaches the importer.
+    {
+      const o = await freshOrder('XML-OK');
+      let contentReq = null, imported = null;
+      const r = await sync.ingestDocuments(c, o, {
+        authContext: { apiKey: 'K', subdomain: 'integrations.uat' },
+        transport: {
+          read: async (built, opts) => {
+            if (opts && opts.label === 'RetriveDocumentContent') { contentReq = built; return contentResp; }
+            return xmlListing;
+          },
+          getDocument: async (url) => url.endsWith('/1843')
+            ? { bytes: Buffer.from('<?xml version="1.0"?><VALUATION_RESPONSE/>'), contentType: 'application/xml' }
+            : { bytes: Buffer.from('%PDF-1.4 fake'), contentType: 'application/pdf' },
+        },
+        importAppraisal: async (args) => { imported = args; return { ok: true }; },
+      });
+      ok(r.ok && r.filed === 2, 'the report AND the data file are both filed');
+      ok(contentReq && contentReq.message.products[0].documentId === '1843_XML',
+        'the data file is asked for by the _XML-suffixed documentId the listing gave us');
+      const rows = await xmlDocsFor(o.id);
+      ok(rows.length === 1 && rows[0].filename === 'integrations_Test(1843)-V1.xml',
+        'the data file is filed under the name the vendor gave it (objectXMLFileName)');
+      ok(rows[0].doc_kind && /xml/i.test(rows[0].doc_kind), 'it takes the condition’s XML slot');
+      ok(imported && /VALUATION_RESPONSE/.test(imported.xml), 'the appraisal importer receives the fetched XML');
+
+      // Re-syncing must not file it a second time. The listing loop skips an
+      // already-filed entry WITHOUT setting the xml marker, so the gap still reads
+      // as open — the fetch needs its own dedupe or every poll adds a duplicate to
+      // the one condition a human has to sign off.
+      // The stub answers the second call FAITHFULLY — a stub that refused it would
+      // pass whether or not the dedupe exists, proving nothing.
+      let refetched = false;
+      const again = await sync.ingestDocuments(c, o, {
+        authContext: { apiKey: 'K', subdomain: 'integrations.uat' },
+        transport: {
+          read: async (built, opts) => {
+            if (opts && opts.label === 'RetriveDocumentContent') { refetched = true; return contentResp; }
+            return xmlListing;
+          },
+          getDocument: async () => ({ bytes: Buffer.from('<?xml version="1.0"?><VALUATION_RESPONSE/>'), contentType: 'application/xml' }),
+        },
+        importAppraisal: async () => ({ ok: true }),
+      });
+      ok(again.filed === 0, 're-sync files nothing new');
+      ok(refetched === false, 're-sync does not ask the vendor for the data file a second time');
+      ok((await xmlDocsFor(o.id)).length === 1, 're-sync does NOT file a second copy of the data file');
+    }
+
+    // (b) THE BYTES ARE VERIFIED, NEVER TRUSTED. Their package proves the shape of
+    //     the call, not what comes back down the URL — so an answer that is not XML
+    //     is discarded rather than filed as a data file the importer would choke on.
+    {
+      const o = await freshOrder('XML-BAD');
+      let imported = false;
+      const r = await sync.ingestDocuments(c, o, {
+        authContext: { apiKey: 'K', subdomain: 'integrations.uat' },
+        transport: {
+          read: async (built, opts) => (opts && opts.label === 'RetriveDocumentContent' ? contentResp : xmlListing),
+          getDocument: async (url) => url.endsWith('/1843')
+            ? { bytes: Buffer.from('<!doctype html><html>Session expired</html>'), contentType: 'text/html' }
+            : { bytes: Buffer.from('%PDF-1.4 fake'), contentType: 'application/pdf' },
+        },
+        importAppraisal: async () => { imported = true; return { ok: true }; },
+      });
+      ok(r.filed === 1, 'a non-XML answer files nothing — only the report lands');
+      ok((await xmlDocsFor(o.id)).length === 0, 'no data file is recorded for an answer that is not XML');
+      ok(imported === false, 'the importer is never handed an error page');
+    }
+
+    // (c) the vendor refuses the content call: the report still lands, nothing is invented.
+    {
+      const o = await freshOrder('XML-NACK');
+      const r = await sync.ingestDocuments(c, o, {
+        authContext: { apiKey: 'K', subdomain: 'integrations.uat' },
+        transport: {
+          read: async (built, opts) => (opts && opts.label === 'RetriveDocumentContent' ? contentNack : xmlListing),
+          getDocument: async () => ({ bytes: Buffer.from('%PDF-1.4 fake'), contentType: 'application/pdf' }),
+        },
+        importAppraisal: async () => ({ ok: true }),
+      });
+      ok(r.filed === 1, 'a NACK on the content call leaves the report filed and files no data file');
+      ok((await xmlDocsFor(o.id)).length === 0, 'a refused fetch records nothing');
+    }
+
+    // (d) ONLY EVER FILLS A GAP: a vendor that returns the data file as an entry of
+    //     its own makes the second call a no-op instead of fetching the same file twice.
+    {
+      const o = await freshOrder('XML-INLINE');
+      let contentCalled = false;
+      const r = await sync.ingestDocuments(c, o, {
+        authContext: { apiKey: 'K', subdomain: 'integrations.uat' },
+        transport: {
+          read: async (built, opts) => {
+            if (opts && opts.label === 'RetriveDocumentContent') { contentCalled = true; return contentResp; }
+            return { message: { deals: [{ embeddedFiles: [
+              { documentId: 'INLINE_XML', objectName: 'appraisal.xml', objectURL: 'https://amc/getdoc/INLINE',
+                includeXMLIndicator: true, objectXMLFileName: 'appraisal.xml', isAdditionalDocument: '0' },
+            ] }] } };
+          },
+          getDocument: async () => ({ bytes: Buffer.from('<?xml version="1.0"?><VALUATION_RESPONSE/>'), contentType: 'application/xml' }),
+        },
+        importAppraisal: async () => ({ ok: true }),
+      });
+      ok(r.filed === 1, 'a listing that carries the data file itself files it once');
+      ok(contentCalled === false, 'and the second call is never made — never the same file twice');
+    }
+
     await c.query('ROLLBACK');
   } catch (e) {
     try { await c.query('ROLLBACK'); } catch (_) { /* ignore */ }
