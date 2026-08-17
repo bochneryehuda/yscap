@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * LT PPE — the canary SCHEDULE's durable home (`ppe/schedule-store.js`, db/567).
+ * LT PPE — the canary SCHEDULE's durable home (`ppe/schedule-store.js`, db/570).
  *
  * Pure: an in-memory `lt_ppe_canary_schedule` stands in for Postgres, so the save/read round-trip is
  * exercised with no DATABASE_URL. The stub enforces the table's real UNIQUE (scope, investor) and its
@@ -102,7 +102,7 @@ function mkDb() {
 }
 
 (async () => {
-  console.log('LT PPE — canary schedule store (db/567)');
+  console.log('LT PPE — canary schedule store (db/570)');
 
   // ---- REFUSALS WRITE NOTHING ---------------------------------------------
   {
