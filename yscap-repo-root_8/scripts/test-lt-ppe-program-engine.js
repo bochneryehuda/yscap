@@ -18,7 +18,7 @@
  */
 const deephaven = require('../src/longterm/ppe/program-deephaven-dscr');
 const registry = require('../src/longterm/ppe/program-registry');
-const { runProgram, assertDescriptor } = require('../src/longterm/ppe/program-engine');
+const { runProgram, assertDescriptor, reconcileUnverifiable } = require('../src/longterm/ppe/program-engine');
 const { lpScenarioToFacts } = require('../src/longterm/ppe/lp-agreement-legs');
 
 let pass = 0; let fail = 0;
@@ -137,6 +137,30 @@ console.log('LT PPE — generic program engine + investor registry (PPE #47)\n')
   // an equivalence spot-check via lpScenarioToFacts (the live-scenario path)
   const facts = lpScenarioToFacts({ value: 500000, loan: 350000, fico: 760, dscr: 1.25, purpose: 'Purchase', state: 'NY', borrowerType: 'LLC', prepayMonths: 60 });
   ok(J(registry.evaluateProgramFor('deephaven', facts)) === J(deephaven.evaluateProgram(facts)), 'registry: a live-shaped scenario prices identically through the registry');
+}
+
+// ---- D) UNVERIFIABLE RECONCILIATION: matrix catalog vs what the overlay layer now handles -----------
+{
+  // The Deephaven program: the 8 Advanced-fact overlays are now HANDLED by the D36 overlay layer; only
+  // the geo/delivery overlays (city / lava-zone / delivery-channel) remain genuinely unverifiable.
+  const r = deephaven.evaluateProgram({ fico: 760, ltv: ltv(70), dscr: 1250, loan_amount: 400000, purpose: 'purchase', state: 'NY', borrower_type: 'LLC', units: 1, prepay_months: 60 });
+  const rc = r.unverifiableReconciled;
+  const handledFacts = new Set(rc.handledByOverlay.flatMap((u) => u.facts));
+  const stillFacts = rc.stillUnverifiable.flatMap((u) => u.facts);
+  ok(r.unverifiable.length === rc.handledByOverlay.length + rc.stillUnverifiable.length, 'reconcile: handledByOverlay + stillUnverifiable partition the raw unverifiable catalog exactly');
+  ok(['short_term_rental', 'first_time_investor', 'rural_property', 'declining_market', 'foreign_national', 'occupancy', 'first_time_homebuyer', 'renovation'].every((f) => handledFacts.has(f)), 'reconcile: all 8 Advanced-fact overlays move to handledByOverlay (the overlay layer carries their fact)');
+  ok(stillFacts.length === 3 && stillFacts.filter((f) => f === 'city').length === 2 && stillFacts.includes('delivery_channel') && !stillFacts.includes('short_term_rental'), 'reconcile: only the geo/delivery overlays (city×2, delivery_channel) stay genuinely unverifiable');
+  ok(J(r.unverifiable) === J(deephaven.PROGRAM.descriptor.evaluateEligibility({ fico: 760, ltv: ltv(70), dscr: 1250, loan_amount: 400000, purpose: 'purchase', state: 'NY', units: 1 }).unverifiable), 'reconcile: the RAW unverifiable list is the matrix catalog, unchanged');
+
+  // fail-safe: no coverage → everything stays unverifiable; an entry with an UNCOVERED fact stays too
+  const uv = [{ overlay: 'A', facts: ['x'] }, { overlay: 'B', facts: ['y', 'z'] }, { overlay: 'C', facts: [] }, { overlay: 'D' }];
+  const none = reconcileUnverifiable(uv, []);
+  ok(none.handledByOverlay.length === 0 && none.stillUnverifiable.length === 4, 'reconcile: no coverage → nothing is claimed handled (fail-safe)');
+  const some = reconcileUnverifiable(uv, ['x', 'y']); // B needs y AND z; z not covered → stays
+  ok(some.handledByOverlay.length === 1 && some.handledByOverlay[0].overlay === 'A' && some.stillUnverifiable.some((u) => u.overlay === 'B'), 'reconcile: an entry is handled only when EVERY named fact is covered (B keeps z uncovered → stays)');
+  ok(reconcileUnverifiable(uv, ['x', 'y', 'z']).handledByOverlay.some((u) => u.overlay === 'B'), 'reconcile: covering all of B\'s facts moves it to handled');
+  ok(some.stillUnverifiable.some((u) => u.overlay === 'C') && some.stillUnverifiable.some((u) => u.overlay === 'D'), 'reconcile: an entry with no/empty facts is never claimed handled');
+  ok(J(reconcileUnverifiable(['plain string'], ['x'])) === J({ handledByOverlay: [], stillUnverifiable: ['plain string'] }), 'reconcile: a non-object entry (a foreign descriptor\'s list) passes through as still-unverifiable');
 }
 
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);

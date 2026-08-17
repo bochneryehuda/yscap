@@ -52,6 +52,14 @@ function runProgram(desc, facts, opts = {}) {
   // The informational layer enriches the product; it NEVER changes the eligible verdict.
   const info = desc.evaluateInformational(facts, { monthlyPitia: opts.monthlyPitia });
 
+  // Reconcile the eligibility layer's `unverifiable` catalog against what the OVERLAY layer now handles.
+  // The matrix layer honestly lists every overlay IT cannot check; the D36 overlay layer since carries
+  // some of those facts. An unverifiable entry whose EVERY `facts` key is in the program's overlay
+  // coverage is now handled (enforced or flagged) — only the rest is genuinely still unverifiable. A
+  // descriptor without `overlayCoverage`, or an entry with no `facts`, stays unverifiable (fail-safe:
+  // this never HIDES an unverifiable overlay, it only recognizes ones a layer demonstrably handles).
+  const unverifiableReconciled = reconcileUnverifiable(elig.unverifiable, desc.overlayCoverage);
+
   return {
     program: desc.programName,
     investor: desc.investor,
@@ -61,6 +69,10 @@ function runProgram(desc, facts, opts = {}) {
     cell: elig.cell,
     ppp: { result: ppp.result, terms: ppp.terms || null, matched: ppp.matched },
     unverifiable: elig.unverifiable,
+    // The reconciled view of `unverifiable`: `handledByOverlay` = overlays the D36 overlay layer now
+    // carries the fact for (no longer "nobody can check"); `stillUnverifiable` = the ones whose facts no
+    // layer carries yet (geo / delivery). `unverifiable` above is the raw matrix-layer catalog, unchanged.
+    unverifiableReconciled,
     // D36 overlay enforcement detail — which overlays fired, which cuts each enforced, which stay flagged.
     overlay: { declines: overlay.declines, enforced: overlay.enforced, stillFlagged: overlay.stillFlagged },
     // informational product attributes (D26/D34) — reserves, notes, and the loud delegate exception.
@@ -68,6 +80,24 @@ function runProgram(desc, facts, opts = {}) {
     informational: info.informational,
     exceptions: info.exceptions,
   };
+}
+
+// Partition an eligibility layer's `unverifiable` catalog into { handledByOverlay, stillUnverifiable }
+// given the program's overlay coverage (the fact keys its overlay layer carries). An entry is handled
+// only when it names AT LEAST ONE fact and EVERY named fact is covered — so it can never HIDE a
+// genuinely unverifiable overlay (a missing/empty `facts`, or one fact not covered, keeps it in
+// stillUnverifiable). PURE. `unverifiable` entries that are not `{facts}` objects (e.g. plain strings)
+// are treated as still-unverifiable, so a foreign descriptor's list passes through untouched.
+function reconcileUnverifiable(unverifiable, overlayCoverage) {
+  const coverage = new Set(Array.isArray(overlayCoverage) ? overlayCoverage : []);
+  const handledByOverlay = [];
+  const stillUnverifiable = [];
+  for (const u of Array.isArray(unverifiable) ? unverifiable : []) {
+    const facts = u && Array.isArray(u.facts) ? u.facts : [];
+    const handled = facts.length > 0 && facts.every((k) => coverage.has(k));
+    (handled ? handledByOverlay : stillUnverifiable).push(u);
+  }
+  return { handledByOverlay, stillUnverifiable };
 }
 
 // Validate that a descriptor carries every slot the pipeline calls (a missing slot is a build-time error,
@@ -85,4 +115,4 @@ function assertDescriptor(desc) {
   return desc;
 }
 
-module.exports = { runProgram, assertDescriptor, REQUIRED_SLOTS };
+module.exports = { runProgram, assertDescriptor, reconcileUnverifiable, REQUIRED_SLOTS };

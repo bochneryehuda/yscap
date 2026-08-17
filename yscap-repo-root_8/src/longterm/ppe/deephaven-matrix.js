@@ -155,19 +155,27 @@ function evaluateEligibility(facts) {
   // --- overlays we CANNOT verify (facts not carried) — flagged, never guessed, never a decline. These
   // are the complete set from the DSCR sheet; each needs a NEW scenario fact before it can be enforced,
   // so it is reported here rather than silently omitted (the whole point of an honest second layer). ---
+  // Each entry carries the machine `facts` key(s) the overlay it names is keyed on — so the PROGRAM
+  // layer can RECONCILE this list against what the D36 overlay layer now actually handles (an overlay
+  // whose fact the overlay layer carries is no longer "nobody can check this"; only the geo/delivery
+  // overlays, whose facts we still do not carry, remain genuinely unverifiable). The matrix layer's own
+  // list is unchanged — it honestly reports what THE MATRIX cannot verify; the reconciliation is the
+  // program's job (program-engine.runProgram → unverifiableReconciled).
   const unverifiable = [];
-  const flag = (overlay, needs) => unverifiable.push({ overlay, needs });
-  flag('Rural: Max 65% LTV, DSCR > 1.0x, Long-Term Rent only, <=10 acres no ag/farm use', 'rural_property + acreage facts');
-  flag('Short-Term Rental: Min DSCR 1.15, Min FICO 720, -5% LTV (75% max), no FTI/2+unit/rural', 'short_term_rental fact');
-  flag('First-Time Investor: Min DSCR 1.00, Min FICO 700, long-term rental only', 'first_time_investor fact');
-  flag('First-Time Homebuyer: ineligible unless 2+ borrowers with one non-FTHB', 'first_time_homebuyer fact');
-  flag('Foreign National: max loan $1.5M, LTV caps 70/60, DSCR >= 1.00 only', 'foreign_national fact');
-  flag('Declining market: Max LTV -5%', 'declining_market fact (appraisal-driven)');
-  flag('Vacant/Unleased: ineligible for R/T & C/O refi; -5% LTV on refi; 2+unit max 1 vacant', 'vacancy/leased fact');
-  flag('Renovation cash-out: appraised value under 6mo ownership at max 75% LTV', 'renovation + seasoning facts');
-  flag('Philadelphia, PA: Max LTV -10%', 'city fact (state alone is insufficient)');
-  flag('Ineligible geos: HI lava zones 1&2; Baltimore City, MD', 'sub-state city / lava-zone fact');
-  flag('Loan < $100,000: delegated delivery only', 'delivery_channel fact (advisory, not a decline)');
+  const flag = (overlay, needs, facts) => unverifiable.push({ overlay, needs, facts: facts || [] });
+  flag('Rural: Max 65% LTV, DSCR > 1.0x, Long-Term Rent only, <=10 acres no ag/farm use', 'rural_property + acreage facts', ['rural_property']);
+  flag('Short-Term Rental: Min DSCR 1.15, Min FICO 720, -5% LTV (75% max), no FTI/2+unit/rural', 'short_term_rental fact', ['short_term_rental']);
+  flag('First-Time Investor: Min DSCR 1.00, Min FICO 700, long-term rental only', 'first_time_investor fact', ['first_time_investor']);
+  flag('First-Time Homebuyer: ineligible unless 2+ borrowers with one non-FTHB', 'first_time_homebuyer fact', ['first_time_homebuyer']);
+  flag('Foreign National: max loan $1.5M, LTV caps 70/60, DSCR >= 1.00 only', 'foreign_national fact', ['foreign_national']);
+  flag('Declining market: Max LTV -5%', 'declining_market fact (appraisal-driven)', ['declining_market']);
+  flag('Vacant/Unleased: ineligible for R/T & C/O refi; -5% LTV on refi; 2+unit max 1 vacant', 'vacancy/leased fact', ['occupancy']);
+  flag('Renovation cash-out: appraised value under 6mo ownership at max 75% LTV', 'renovation + seasoning facts', ['renovation']);
+  // Geo / delivery overlays: their facts (sub-state city, lava zone, delivery channel) are NOT carried by
+  // ANY layer today, so they remain genuinely unverifiable after reconciliation.
+  flag('Philadelphia, PA: Max LTV -10%', 'city fact (state alone is insufficient)', ['city']);
+  flag('Ineligible geos: HI lava zones 1&2; Baltimore City, MD', 'sub-state city / lava-zone fact', ['city']);
+  flag('Loan < $100,000: delegated delivery only', 'delivery_channel fact (advisory, not a decline)', ['delivery_channel']);
 
   return { eligible: reasons.length === 0, reasons, maxLtvMilli, cell: cell.status === 'priced' ? cell.cell : null, gridStatus: cell.status, unverifiable };
 }

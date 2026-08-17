@@ -25,7 +25,7 @@ const { buildDeephavenGrid } = require('./deephaven-dscr-sheet');
 const { evaluateEligibility } = require('./deephaven-matrix');
 const { pppDisqualifier, pppResult } = require('./deephaven-ppp-matrix');
 const { evaluateInformational } = require('./informational');
-const { evaluateOverlayDeclines } = require('./deephaven-overlay-rules');
+const { evaluateOverlayDeclines, DEEPHAVEN_OVERLAY_CUTS } = require('./deephaven-overlay-rules');
 const { runProgram, assertDescriptor } = require('./program-engine');
 
 const INVESTOR = 'Deephaven';
@@ -62,6 +62,10 @@ const DESCRIPTOR = assertDescriptor({
   pppDisqualifier,                                                      // dot 3 — the PPP disqualifier
   evaluateOverlay: (facts, o) => evaluateOverlayDeclines(facts, o),      // D36 Advanced-overlay declines
   evaluateInformational,                                               // reserves / notes / delegate exception
+  // the overlay facts THIS program's overlay layer handles (enforces or flags) — the `when` keys of its
+  // cut table. The program engine uses it to reconcile the matrix's `unverifiable` catalog: an overlay
+  // whose fact is covered here is no longer "nobody can check it". Derived from the table, never hand-kept.
+  overlayCoverage: [...new Set(DEEPHAVEN_OVERLAY_CUTS.map((g) => g.when))],
 });
 
 /**
