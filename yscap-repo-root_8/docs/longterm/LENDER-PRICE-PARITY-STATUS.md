@@ -2111,3 +2111,37 @@ suites pass against a real Postgres.
 **IT STILL CANNOT RUN.** The route refuses up front with `upstream_not_configured` until the owner
 rotates the Lender Price login in the vendor portal. That is the honest state: the machinery is
 complete and proven against a stub, and not one live scenario has been compared through it.
+
+**§2.32 — WHAT ON THIS SHEET CAN NOTHING EVER REACH? (2026-08-17).** A rate sheet is loaded by a human
+from a vendor's PDF, cell by cell, and a cell nobody can land in is invisible in every other way: the
+sheet publishes, quotes price, and the LLPA simply never applies. Nothing errors, no test fails, and
+the parity run against Lender Price will not necessarily catch it either — a cell neither engine
+exercises agrees with itself. **`agreement-scenario-generator.js` has always been able to answer this**
+— it DERIVES a battery from the sheet's own compiled rules rather than from a hand-kept axes list,
+synthesizes a facts bag per rule, PROVES the synthesis by running the real `rules.js` evaluator, and
+reports every rule it could not satisfy WITH a reason. **Nothing called it.** That is the sixth
+instance of §2.30's defect class and it was found by the check §2.30 built, not by hand.
+
+`GET /api/lt/ppe/rate-sheets/:id/coverage` is the door. It is **FREE** — no vendor call, no writes, no
+ledger row — which is precisely what makes it the check to run BEFORE spending a paid agreement
+battery: a transposed band (`fico_min 900, fico_max 800`, a pair typed the wrong way round) looks
+entirely ordinary in the row and should be fixed before anybody prices 299 scenarios against it.
+
+**IT DOES NOT TAKE THE GENERATOR'S WORD FOR IT, and that distinction is the whole design.** A cell
+counts as reachable only when the sheet was actually PRICED at that scenario and the rule's own trace
+entry shows it CONTRIBUTED — an adjustment, a decline, or a bound. A rule the generator satisfies and
+the pricer then does not apply lands in a separate `disagreed` bucket, because the two reading one
+predicate differently is a different fix, for a different person, from a cell nobody can reach. And a
+scenario **our own engine cannot price** — the documented `nearest_eighth` rounding-mode trap is
+exactly this shape — is reported with its message, and its cells are NOT called reachable: a coverage
+report that counted them would send somebody to publish a sheet that cannot be priced at all.
+
+Proven by `scripts/test-lt-ppe-ratesheet-coverage-db.js` against a real Postgres, and the anti-vacuous
+half is asked in the same suite: a healthy sheet reads healthy AND a broken one is caught, because a
+checker silent on both is worth less than no checker. Also asserted rather than assumed: the Lender
+Price stub counts its own calls, so "this check is free" is measured. Four mutations proven to bite.
+
+**A SMALL THING WORTH KEEPING.** Both new DB suites now turn a THROWING handler into a reported failed
+assertion instead of dying on it. A crash kills the run, every assertion after it silently never
+executes, and the output reads exactly like a suite that finished — which is the same class as
+everything else on this page: **the failure that looks like success.**
