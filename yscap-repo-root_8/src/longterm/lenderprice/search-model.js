@@ -863,7 +863,32 @@ function buildSearch(sc = {}, opts = {}) {
   // turn it on by default again without a capture showing the frontend doing it, and re-measure the
   // program count on the same scenario when you do.
   if (band && String(process.env.LP_SEND_DSCRRATIO || '') === '1') setDyn('DSCRRATIO', band.ratio);
-  setDyn('AddlOccupancyType', mapRentalTerm(sc.rentalTerm));
+  // §37.15 — A SHORT-TERM RENTAL MUST BE TOLD TO LENDER PRICE, AND THIS IS MEASURED, NOT INFERRED.
+  //
+  // `short_term_rental` is the Advanced section's own overlay fact, and the field registry marks it
+  // `lpVisible: false` — "Lender Price does not price this". MEASURED LIVE 2026-08-17 on the Deephaven
+  // DSCR program, same scenario twice: with `rentalTerm` OMITTED, Lender Price itemizes NOTHING for it;
+  // with `rentalTerm: 'short'` it itemizes **`Short Term Rental - Short Term Rental / CLTV >65.01 % <=
+  // 70.0 %` = 0.500** — exactly the charge our own rate sheet carries from the Excel. So `lpVisible:
+  // false` is simply wrong about this fact, and an omitted rentalTerm DEFAULTS TO LONG-TERM: a borrower
+  // who ticked "short-term rental" was being quoted a LONG-term rental, 0.5 points BETTER than the real
+  // price. Quoting too good is the expensive direction.
+  //
+  // WHY THIS IS NOT THE DSCRRATIO MISTAKE (§37.9), which the same measurement was run to rule out.
+  // DSCRRATIO was a token read out of the vendor's JS bundle that their own frontend never sends, and it
+  // cost a whole lender program for nothing. `rentalTerm` is a REAL vendor field with REAL published
+  // tokens (`Short_Term_Rental_Property` / `Long_Term_Rental_Property`) that buildSearch has always
+  // transmitted. The same probe measured the cost of asking: programs 19 → 18, lenders 10 → 10, options
+  // 494 → 473, and Deephaven's own DSCR rungs UNCHANGED at 56. The one program that drops is a program
+  // that does not do short-term rentals — removing it from a short-term-rental quote is the CORRECT
+  // answer, not a loss.
+  //
+  // AN EXPLICIT `rentalTerm` ALWAYS WINS: a caller's assertion beats an inference, and a caller may
+  // legitimately state a long-term rental while some other overlay is set. The inference runs ONE way —
+  // it never infers "long", because an omitted rentalTerm already defaults to long-term, so inferring it
+  // would change nothing and could only add a way to get it wrong.
+  const strFact = sc.short_term_rental === true || sc.shortTermRental === true;
+  setDyn('AddlOccupancyType', mapRentalTerm(sc.rentalTerm != null ? sc.rentalTerm : (strFact ? 'short' : undefined)));
   // D27 — OCCUPANCY (VACANT vs LEASED): RETAINED as a first-class eligibility fact, NOT TRANSMITTED.
   // Resolved once (mapOccupancy) and stashed on a Symbol channel — the CASHOUT_INTERNAL pattern — so
   // the eligibility overlay, the route's effectiveScenario echo, and any future measured rule can READ

@@ -1048,3 +1048,51 @@ carries a real STR price adjustment. If a borrower's short-term rental reaches t
 only the overlay fact, **Lender Price is being asked to price a long-term rental.** One live probe with
 `rentalTerm: 'short'` versus omitted settles it — measuring the program COUNT as well as the
 adjustments, per the standing rule that an unasked-for token can narrow the lender set.
+
+
+---
+
+### §2.14 — A BORROWER'S SHORT-TERM RENTAL WAS BEING QUOTED AS A LONG-TERM ONE (2026-08-17)
+
+**Settled by measurement, not opinion.** Live probe on the Deephaven DSCR program, the same scenario
+twice:
+
+| | Lender Price's itemized short-term-rental line |
+|---|---|
+| `rentalTerm` **omitted** | *(nothing)* |
+| `rentalTerm: 'short'` | `Short Term Rental - Short Term Rental / CLTV >65.01 % <= 70.0 %` = **0.500** |
+
+0.500 is **exactly** the charge our own rate sheet carries from the Excel. So Lender Price does price
+this fact — and an omitted `rentalTerm` **defaults to long-term**.
+
+**The live consequence.** The Advanced section's tick sets `short_term_rental`, which the field registry
+marks `lpVisible: false`, so it was never transmitted. A borrower who said "short-term rental" was
+quoted a **long-term** rental — **0.5 points better than the real price.** Quoting too good is the
+expensive direction.
+
+**The fix is one derivation at the request boundary** (`search-model` §37.15): a scenario stating
+`short_term_rental` now sends `rentalTerm: 'short'`. An explicit `rentalTerm` always wins — a caller's
+assertion beats an inference — and the inference runs ONE way, never inferring "long" (omitted already
+defaults to long, so inferring it could only add a way to get it wrong).
+
+**THE COST OF ASKING WAS MEASURED FIRST**, because §37.9's lesson is that an unasked-for token can narrow
+the lender set: programs **19 → 18**, lenders **10 → 10**, options **494 → 473**, and Deephaven's own
+DSCR rungs **UNCHANGED at 56**. The one program that drops is a program that does not do short-term
+rentals — removing it from a short-term-rental quote is the CORRECT answer, not a loss. This is the
+opposite of the DSCRRATIO case: that was a token read out of the vendor's JS bundle that their frontend
+never sends; `rentalTerm` is a real vendor field with published tokens that buildSearch has always
+transmitted.
+
+**WHAT WAS DELIBERATELY NOT CHANGED.** `lpVisible: false` stays on the fact, even though the measurement
+shows it is wrong about the PRICE — because the flag does not mean what its name says. It selects
+`overlayOnlyKeys()`, the class our matrix independently CUTS on, and those are two different questions:
+*does Lender Price price on this fact* (measured: yes) versus *must our matrix independently enforce its
+eligibility cuts* (Min DSCR 1.15, Min FICO 720, 75% LTV — **unmeasured**; pricing an adjustment is no
+evidence of enforcing a cut). Flipping it drops short-term rental out of the overlay set and takes seven
+suites with it — that restructures D29 rather than recording a fact. Left open as task #82.
+
+**Full 299-scenario battery, prepay measured** (this run predates the STR fix): 253/295, **85.76 %**,
+and `llpa_total` fell from **7,056 to 28** — the prepay block closed almost the entire itemized stack
+gap, and the 28 that remain are exactly the STR scenario fixed here. What is left is `final_price`
+(7,109 — the un-wired holdback, task #78) and `disqualification_extra` (41 — the sheet-vs-matrix
+question, task #81).

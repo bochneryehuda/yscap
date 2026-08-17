@@ -40,6 +40,23 @@ const ADVANCED_FACTS = [
     matrixMatch: 'Rural:',
   },
   {
+    // ⚠ `lpVisible: false` IS MEASURABLY WRONG ABOUT THE PRICE, AND IS DELIBERATELY LEFT AS IT IS.
+    //
+    // Live probe 2026-08-17, Deephaven DSCR, the same scenario twice: with `rentalTerm` omitted Lender
+    // Price itemizes nothing; with `rentalTerm: 'short'` it itemizes `Short Term Rental - Short Term
+    // Rental / CLTV >65.01 % <= 70.0 %` = 0.500 — exactly our own sheet's charge. So Lender Price DOES
+    // price on this fact. search-model now derives `rentalTerm` from it (§37.15), which is the half that
+    // fixes the real mispricing: a borrower ticking this box is quoted the short-term rental they
+    // described instead of a long-term one.
+    //
+    // THE FLAG IS NOT FLIPPED, because it does not mean what its name says. `lpVisible:false` selects
+    // `overlayOnlyKeys()` — the class our matrix independently CUTS on — and those are two different
+    // questions: "does Lender Price PRICE on this fact?" (measured: yes) and "must our matrix
+    // independently enforce this fact's ELIGIBILITY cuts?" (the matrix states Min DSCR 1.15, Min FICO
+    // 720, max 75% LTV for a short-term rental; whether Lender Price enforces those is NOT measured, and
+    // pricing an adjustment is no evidence that it does). Flipping it drops short-term rental out of the
+    // overlay set and takes SEVEN suites with it — that restructures D29 rather than recording a fact.
+    // Left as an open design question (task #82) rather than resolved in passing.
     key: 'short_term_rental', label: 'Short-term rental', type: 'boolean', default: false,
     category: 'property', lpVisible: false,
     effect: 'Short-Term Rental: Min DSCR 1.15, Min FICO 720, -5% LTV (75% max), no FTI/2+unit/rural',

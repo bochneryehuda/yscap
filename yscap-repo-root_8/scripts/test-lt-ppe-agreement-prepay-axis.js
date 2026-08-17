@@ -125,5 +125,57 @@ ok(model.mapRentalTerm('short') === 'Short_Term_Rental_Property' && model.mapRen
 ok(model.mapRentalTerm(undefined) === 'Long_Term_Rental_Property',
   'an OMITTED rental term defaults to long-term — which is exactly why stating only our overlay fact silently disagreed');
 
+
+// ---------------------------------------------------------------------------------------------
+// 6. A SHORT-TERM RENTAL IS NOW TRANSMITTED — the live mispricing this session measured and closed.
+//
+// MEASURED LIVE 2026-08-17, Deephaven DSCR, the SAME scenario twice:
+//   rentalTerm omitted   → Lender Price itemizes NOTHING for short-term rental
+//   rentalTerm 'short'   → `Short Term Rental - Short Term Rental / CLTV >65.01 % <= 70.0 %` = 0.500
+// which is exactly the charge our own rate sheet carries from the Excel. The Advanced section's tick
+// sets `short_term_rental`, the registry called it `lpVisible: false`, and an omitted rentalTerm
+// DEFAULTS TO LONG-TERM — so a borrower who ticked the box was quoted a LONG-term rental, 0.5 points
+// BETTER than the real price. Quoting too good is the expensive direction.
+//
+// The same probe measured the COST of asking, because §37.9's lesson is that an unwanted token can
+// narrow the lender set: programs 19 → 18, lenders 10 → 10, options 494 → 473, Deephaven's own DSCR
+// rungs UNCHANGED at 56. The one program that drops is a program that does not do short-term rentals,
+// so removing it from a short-term-rental quote is the CORRECT answer rather than a loss.
+// ---------------------------------------------------------------------------------------------
+const { buildSearch } = require('../src/longterm/lenderprice/search-model');
+const occOf = (sc) => {
+  const dp = buildSearch(sc).dynamicPropertiesMap || {};
+  return dp.AddlOccupancyType && dp.AddlOccupancyType.value;
+};
+const DEAL = { purpose: 'Purchase', value: 500000, loan: 350000, fico: 760, dscr: 1.25, state: 'NY', zip: '11211' };
+
+ok(occOf({ ...DEAL, short_term_rental: true }) === 'Short_Term_Rental_Property',
+  'the Advanced short-term-rental tick alone now TELLS Lender Price it is short-term');
+ok(occOf({ ...DEAL, shortTermRental: true }) === 'Short_Term_Rental_Property',
+  '…under either spelling of the fact');
+ok(occOf(DEAL) === 'Long_Term_Rental_Property',
+  'a scenario that says nothing is still long-term — the derivation runs ONE way and invents nothing');
+ok(occOf({ ...DEAL, short_term_rental: false }) === 'Long_Term_Rental_Property',
+  'and an explicit FALSE stays long-term');
+
+// An explicit rentalTerm is an ASSERTION and beats the inference, in both directions.
+ok(occOf({ ...DEAL, short_term_rental: true, rentalTerm: 'long' }) === 'Long_Term_Rental_Property',
+  'an explicit rentalTerm WINS over the inferred one — a caller\'s assertion is never overridden');
+ok(occOf({ ...DEAL, rentalTerm: 'short' }) === 'Short_Term_Rental_Property',
+  'and an explicit short still works on its own (the pre-existing path is untouched)');
+
+// The registry's `lpVisible:false` is deliberately UNCHANGED, and that is worth pinning so nobody
+// "corrects" it on the strength of the measurement above. It does not mean what its name says: it
+// selects `overlayOnlyKeys()`, the class our matrix independently CUTS on. Lender Price PRICING this
+// fact (measured) is not evidence that it enforces the matrix's eligibility cuts for it (Min DSCR 1.15,
+// Min FICO 720, 75% LTV — unmeasured). Flipping it drops short-term rental out of the overlay set and
+// takes seven suites with it. Open design question, task #82.
+const advFacts = require('../src/longterm/ppe/advanced-facts');
+const strDef = (advFacts.ADVANCED_FACTS || []).find((f) => f.key === 'short_term_rental');
+ok(strDef && strDef.lpVisible === false,
+  'the registry flag is UNCHANGED — the transmission fix stands on its own and does not restructure the overlay');
+ok(typeof advFacts.overlayOnlyKeys === 'function' && advFacts.overlayOnlyKeys().includes('short_term_rental'),
+  '…so short-term rental is still an overlay-only cut, which is the thing the flag actually selects');
+
 console.log(`\n${fails.length ? `FAILURES: ${fails.length}` : 'OFFLINE: all passed'} (${pass} passed, ${fails.length} failed)`);
 process.exit(fails.length ? 1 : 0);
