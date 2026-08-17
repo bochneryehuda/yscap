@@ -344,8 +344,12 @@ owner wants to start.
 
 ## Part 5 — Execution order (number by number)
 
-**DONE so far:** **P-DQ** (the disqualify-side analysis + crosswalk + rule suggestions — owner's first
-step) and Layer-1/Layer-2 margin/holdback (Part 2.3/2.5).
+**DONE so far:** **P-DQ** (disqualify analysis + crosswalk + rule suggestions), **P1** (rich LP capture:
+margin, itemized LLPAs, base rate, decline reasons in canonical units), **P3** (the six difference
+detectors), and the **review composer** (`parity-review.js` — one call: a priced scenario → its
+differences vs Lender Price + the suggested per-investor rules, proven end-to-end through the real
+parser + real engine), plus Layer-1/Layer-2 margin/holdback. **The whole detection + suggestion half of
+the parity engine is built and pure-tested (39/39 suites).**
 
 Detection-only and safe to build next (LP still wins; nothing auto-applies): **P1 → P2 → P3 (a–f) → P9**.
 Rule-writing loop, gated on Part 4.1/4.4 + a human in the loop: **P6 → P5-store → P7 → P8** (P4's
