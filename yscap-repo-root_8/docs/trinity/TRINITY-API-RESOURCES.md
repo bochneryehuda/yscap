@@ -197,6 +197,55 @@ the signature of a running draw: this inspection has approved nothing *yet*.
   and reconciles cost, requested, already-drawn and the key, per line —
   `budget_verified_at` / `budget_mismatch` on the order row, and it is shown on the desk.
 
+### 3.2e THE ROUND TRIP IS ONE SCHEMA, NOT TWO — and that closes the form-1079 gap
+
+The live proof above was taken on **form 19** (sandbox). Production runs **form 1079**, and
+placing a production order dispatches a real inspector, so that proof cannot simply be
+repeated there. It does not need to be. Read out of Trinity's own
+`swagger-v1.1.json` (2026-08-17):
+
+| | form 19 | form 1079 |
+|---|---|---|
+| create request | `DollarLineItemDollarLineItemTotalBudgetedOrderModelProjectModel` | **the same** |
+| budget response | `DollarLineItemDollarLineItemTotalOrderBudgetModel` | **the same** |
+| the line itself | `DollarLineItem` | **the same** |
+
+Not "field-by-field equivalent" — the **same named schema object**, the same `$ref`, in
+both directions. `order.lineItems` on the way out and `lineItems` on the way back are
+**one model**: we send a `DollarLineItem` and they hand a `DollarLineItem` back, with
+`percentCompleted` and `remarks` filled in. So the key coming home is *structural*, not a
+courtesy that could differ per form.
+
+Trinity's own field descriptions, from that response model:
+
+| field | their words |
+|---|---|
+| `customerKey` | *"Your identifier for this item. Must be unique within the order. **Will carry forward to future orders in this project.**"* |
+| `percentCompleted` | *"Percent completed this inspection."* |
+| `remarks` | *"Short comment related to this item. **Generally provided by Trinity or the vendor.**"* — the per-line inspector note |
+| `previousPercentCompleted` | *"Percent complete prior to this inspection. Often used when importing a partially completed project."* |
+
+**Confirmed against the live production account** on completed order **1625290** (form
+1079): its budget lines carry exactly those ten `DollarLineItem` fields — `customerKey`
+and `remarks` among them — and `readResults` reconciled them to **$30,000.00, to the cent
+against Trinity's own total**. `customerKey` reads `null` there only because that order
+was placed BY HAND in Trinity's UI, so no key was ever sent; the field is present.
+
+**A form that is NOT this schema is a real hazard, not a hypothetical.** The production
+account also offers **form 26 "Fixed Percent Blank"**, which is
+`PercentageLineItem…` — a *percent-based* budget with a different model, and the
+feasibility forms use `FeasibilityLineItem…`. Pointing `TRINITY_FORM_ID` at one of those
+would not merely mismatch a field; it would be a different budget engine.
+
+**What is still not proven, stated plainly:** no order has been placed on production over
+the API, so the key has never physically made the round trip on 1079 — only on the
+identical schema. If certainty beyond that is wanted, `setupOnly: true` is Trinity's own
+mechanism for it: their spec says such an order *"will be created in a holding status. It
+will not be worked until it has been moved into the 'New' status."* — i.e. the project and
+budget are set up and **no inspector is dispatched**. One held order, budget read back,
+then cancelled, would settle it. That is a WRITE to the live account, so it is the owner's
+call, not an agent's.
+
 ### 3.3 Subsequent draws
 
 On the second and later draws we send the FULL line-item set again with refreshed
@@ -694,15 +743,19 @@ report; **203 Redacted Draw**; **86 Photo Album**; **151 Construction Loan Budge
 
 ## 8. Still open with Trinity
 
-1. **Have a sandbox order worked end-to-end.** Trinity does not process sandbox orders
-   automatically — their own note: *"Orders are not worked automatically, if you would like
-   an order to be worked during development please contact us with the Order ID."* **There
-   are zero completed orders on our sandbox account**, so the completed path (report PDF +
-   moved percentages + per-line `remarks` + photos + invoice) is verified against the
-   schema and a recorded fixture, **not against live data**. Ask them to work
-   **735313** (project 335587) or **735314** (project 335588).
-2. **Confirm the production form list** — production differs from sandbox, and form 19 must
-   be enabled on the production company.
+1. ~~**Have a sandbox order worked end-to-end.**~~ **ANSWERED 2026-08-17 — on PRODUCTION,
+   which is better.** The sandbox still has zero completed orders, but the production
+   account carries six, and completed order **1625290** (form 1079, "Report Completed")
+   was read live: status, **6 budget lines**, **36 photographs**, 5 documents, the report
+   and the invoice all returned, and the per-line figures reconciled to **$30,000.00, to
+   the cent against Trinity's own total**. So the completed path — moved percentages,
+   per-line `remarks`, photos, report, invoice — is now verified against **real live
+   data**, not a fixture. Nothing further is needed from the sandbox for this.
+2. ~~**Confirm the production form list.**~~ **ANSWERED 2026-08-16/17.** Production offers
+   **1079 "General Purpose Line Item Draw PCR"** and does **NOT** offer form 19. Set
+   `TRINITY_FORM_ID=1079`. The API-Health page checks this and says so in plain words
+   before anything is ordered. See §3.2e — 19 and 1079 share the identical request and
+   response schemas, so nothing else had to change.
 3. **Ask whether webhooks can carry a shared secret / signature.** They currently carry
    none; until then the secret-path-token + hydrate-everything design stands.
 4. **Confirm `Report Completed – Revision Requested` (223) can follow a completion.** We
