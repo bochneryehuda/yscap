@@ -500,10 +500,62 @@ fields/Excel-grid→rule design; the disqualify-always workflow + troubleshooter
   Lender Price." *(Composes parity-review.js + the suggestion store; the build is the record + the
   screen.)*
 
+- **E9 — The loan-officer MARGIN + COMPENSATION model (owner-directed 2026-08-17).** How the company AND
+  each loan officer make money on top of the investor's raw pricing. Full design:
+  `docs/longterm/ppe-research/COMPENSATION-MARGIN-MODEL.md`. The owner's rules, captured:
+  - **The 0.25 company holdback is NON-OVERRIDABLE.** It is a company margin, kept in the back, shown
+    behind the investor pricing. A loan officer can NEVER remove or override it. Company-set on the loan.
+  - **Company default margin = 2.00, made two ways** (and the LO chooses the split): price at par (100) +
+    a 2-point ORIGINATION charge (front), OR zero origination + price at 102 (back/rebate). Every LO
+    defaults to points but sets his OWN front/back split in personal settings.
+  - **Totals include the 0.25:** an LO who wants to make 2.25 himself means a 2.5 TOTAL margin (0.25
+    company + 2.25 his). Example split: 0.25 in the back + 2 points origination.
+  - **Two Lender Price search modes:** we ALWAYS search **borrower-paid**, which prices with ONLY our
+    0.25 holdback (investor really 100.25, shown 100) and the LO's origination goes on top; a
+    **lender-paid** search carries the LO's ENTIRE markup in the back (e.g. investor 102.25 shows as 100,
+    keeping 2.25 in the back). Our holdback can never be removed from either.
+  - **Min / Max per loan (dollar), company default + per-LO override:** a $3,000 minimum on a $100k loan
+    = 3 points (not the standard 2); a $50,000 maximum on a $5M loan = 1 point.
+  - **Compensation SPLIT** (company settings, per LO): only on the ORIGINATION charges, NEVER on the 0.25
+    holdback. The LO gets a % of the origination and can always see what he nets on a file.
+  - **Guardrails:** 0.25 never removable; split only on origination, never on the holdback; company sets
+    defaults, LO overrides everything EXCEPT the 0.25. Builds on `ppe/margin-holdback.js`,
+    `store.resolveMarginHoldbackForInvestor`, `settings.js` (add `comp.*` keys + an `officer:<id>`
+    scope), `quote.js` (holdbackMilli carried-not-applied), `search-model.js compPlanValue`. **DESIGN
+    ONLY — not built; 2 open questions flagged** (does the split touch back-earned margin? is the company
+    min/max a hard floor or a replaceable default?).
+
 **Sequencing:** E2 (parser audit) and E8 (troubleshooter record) are backend and can proceed as the
 research lands; E1 (auto-disqualify wiring) needs the live upstream (credentials rotated); E3/E4/E5 (the
-Excel-grid UI + import) wait on research engine B's design + a sample sheet; E6 is a scheduled job; E7
-extends the scoreboard. The three owner decisions in Part 4 still gate the money math + go-live.
+Excel-grid UI + import) are GATED by the ⛔ ≥200-scenario Lender Price agreement (E3 above); E6 is a
+scheduled job; E7 extends the scoreboard; E9 (comp model) is design-ready pending 2 owner answers. The
+three owner decisions in Part 4 still gate the money math + go-live.
+
+## Part 7 — The official research engine output (owner-directed 2026-08-17: "everything written down")
+
+The owner asked for an engine to collect every piece of information given across the whole initiative,
+research each, and record it officially. Four research passes ran and their outputs are committed as
+official LT docs (read these; they are the detail behind Parts 1–6):
+
+1. **`ppe-research/REQUIREMENTS-LEDGER.md`** — the exhaustive, numbered ledger: EVERY owner directive →
+   DONE / PARTIAL / TODO, where it lives in code/docs, and the gap. Grouped A–G (shadow/parity engine;
+   disqualify+suggestions; rate-sheet grid; rule hierarchy; ops E6–E8; owner decisions; margin money).
+2. **`ppe-research/RATE-SHEET-BACKEND-MECHANICS.md`** — the ground-truth backend reference: rate-sheet
+   vocabulary + stacking, the Deephaven "Corr Flow" DSCR sheet block-by-block, the full Lender Price
+   response anatomy (concept → our stored field → LP response path), the disqualify training insight,
+   and the exact milli units + the cost-positive sign convention. **This is what we must AGREE with.**
+3. **`ppe-research/LENDER-PRICE-AGREEMENT-HARNESS.md`** — the design of the ⛔ ≥200-scenario agreement
+   harness (the E3 gate): the scenario battery (every angle, incl. deliberately-ineligible + cap/floor
+   edges), the per-scenario eligible + disqualify + max/min comparison, the per-LLPA reconciliation, and
+   the one thin new module `ratesheet-agreement.js` composing existing parity modules. Fixture-testable
+   offline; live agreement blocked on the two items below.
+4. **`ppe-research/COMPENSATION-MARGIN-MODEL.md`** — E9 above, in full, with four worked numeric examples.
+
+**THE TWO BLOCKERS THAT GATE EVERYTHING LIVE (owner action items):**
+- **Rotate the Lender Price login** — it was exposed in chat and is compromised; no live scenario can run
+  until it is reset and the new value is in Render.
+- **The Deephaven Excel is now RECEIVED** (`Corr_Flow_Rate_Sheet__T0__Excel.xlsx`, DSCR tab) — so the
+  grid can be built from the real cells; the live agreement still waits on the login reset.
 
 ## Appendix — key Lender Price field paths (the ground truth for Part 3)
 
