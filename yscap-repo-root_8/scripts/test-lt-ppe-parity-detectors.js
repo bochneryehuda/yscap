@@ -113,7 +113,7 @@ const mkLp = (rung) => ({ eligible: true, rungs: [rung] });
 // 13) tolerancesOf reads settings, opts override.
 {
   const t = _internals.tolerancesOf({ settings: S });
-  ok(t.price === 1 && t.rate === 0 && t.margin === 0 && t.basePrice === 1, 'tolerancesOf reads the settings defaults');
+  ok(t.price === 0 && t.rate === 0 && t.margin === 0 && t.basePrice === 0, 'tolerancesOf reads the settings defaults (all exact, owner-directed 2026-08-17)');
   ok(_internals.tolerancesOf({ settings: S, priceToleranceMilli: 5 }).price === 5, 'an explicit opt overrides the settings tolerance');
 }
 

@@ -357,18 +357,38 @@ owner wants to start.
 
 ## Part 4 — Owner decisions needed (each blocks a specific step)
 
-1. **Holdback → final-rate formula (a MONEY rule).** How does the per-investor holdback combine into the
-   borrower's quote — a second cost line like margin, retained out of our spread invisibly, or
-   eligibility-gating? *Blocks: applying holdback to price (not its detection).* Needed before P3d wires
-   holdback into the pipeline; margin detection proceeds without it.
-2. **Parity tolerances.** Price within ±X (default 0.001 point) and rate exact? *Blocks: P9's verdicts.*
-3. **Clean-weeks cutover threshold.** Consecutive clean weeks before an investor may go live (default 8).
-   *Blocks: P9/P10 gate.*
-4. **Curated-crosswalk approval.** Confirm the LP-key→predicate map is curated + human-verified, never
-   auto-guessed. *Blocks: P4 driving P5.*
-5. **Pilot investor.** Owner named **Deephaven ("DPave")** — confirmed as first. *Drives P4/P9.*
+**ANSWERED 2026-08-17 (owner, via the beginner-question round):**
+
+- **Our markup is PER INVESTOR.** ✅ Each investor (and its programs) carries its OWN markup number
+  that we set and control — not one flat company-wide cut. Foundation is already in place:
+  `store.resolveMarginHoldbackForInvestor` layers investor → company → default, and
+  `pricing.margin_holdback_rules` holds the per-investor entries. *Next: expose the per-investor
+  markup in the admin surface + the rate-sheet editor (E3).*
+- **Parity match is EXACT, to the penny.** ✅ (was decision 2) Any difference at all → a disagreement
+  → human review. Encoded: `validation.price_tolerance_milli` and `base_price_tolerance_milli`
+  defaults set to **0** (rate + margin were already 0). An admin may still loosen per-company.
+- **Curated crosswalk stays ALWAYS human-approved.** ✅ (was decision 4) Nothing the engine suggests
+  turns on by itself — a person accepts every rule. Matches the built `acceptSuggestion` loop
+  (`needs_human` / `origin='suggested'`, never auto-applied). *Unblocks: P4 driving P5.*
+- **Pilot investor = Deephaven, first.** ✅ (was decision 5) Confirmed as the first rate sheet for
+  the Excel-grid editor (E3) and the parity matrix (P9).
+
+**STILL OPEN:**
+
+1. **Holdback → final-rate formula (the finer MONEY mechanic).** Markup being per-investor is settled;
+   what remains is HOW a per-investor *holdback* combines into the borrower's quote — a second cost
+   line like margin, retained out of our spread invisibly, or eligibility-gating. *Blocks: applying
+   holdback to price (not its detection).* Margin (per-investor) and detection proceed without it.
+3. **Clean-weeks cutover threshold.** Consecutive clean weeks before an investor may go live
+   (default 8). *Blocks: P9/P10 gate.*
 6. **Promotion authority + live spot-check.** Who promotes; does "live" keep an occasional LP canary?
    *Blocks: P10.*
+
+**Two action items for the owner (not code):**
+- Re-attach the Deephaven Corr Flow Excel if a fresh copy exists — we have the full written
+  breakdown, but the .xlsx binary is not stored here; re-verifying exact cell values would sharpen E3.
+- The Lender Price login password appeared in an earlier chat and is considered compromised — reset
+  it in the vendor portal and set the new value in Render before any live disqualify captures run.
 
 ---
 
