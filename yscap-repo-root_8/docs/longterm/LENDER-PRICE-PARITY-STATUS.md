@@ -837,3 +837,33 @@ pattern fail open, and disabling the runner's refusal.
 selector LP actually uses is not yet identified, and re-enabling a token on that suspicion would trade a
 measured program loss for an unmeasured guess. Recorded here rather than acted on — it needs a capture
 of the frontend selecting a band, not a theory.
+
+#### §2.9a — AND THE FAMILY FILTER EXPOSED THE NEXT LAYER: LP CONTRADICTS ITSELF ACROSS BANDS
+
+Re-running the 6-scenario control **correctly scoped** still reported `0.00% —
+{"disqualification_missing":6}`. That is not the filter failing; it is the filter finally showing the
+real thing. On `dscr = 1.25`, within the scoped family, Lender Price **both prices and declines**: it
+prices `DSCR 1.00-1.24` and `DSCR < 1.00`, and declines `DSCR >= 1.25`. Our sheet models that family as
+one program, so it emits one answer — eligible.
+
+Reporting that as `disqualification_missing` was **wrong twice**:
+
+1. It reads as *"we would price a loan Lender Price declines"* — the dangerous direction — and that is
+   not what happened. The loan **is** priceable at this investor; LP said so on the same request.
+2. `parity-review` mines rule **suggestions** from that category's `lpReasons`, so it would propose we
+   adopt *"DSCR >=1.25% only eligible on this program"* as an **eligibility rule**. That sentence
+   describes LP's own program partitioning, not the borrower. Adopting it would make our engine
+   **decline loans Deephaven genuinely prices** — a silently worse quote, the expensive direction.
+
+So the state now has its own category, **`disqualification_split`**, carrying the declined band names
+and LP's reasons. It is deliberately **NOT** downgraded to agreement: which band governs — and whether
+LP's priced answer is a "leaked price" from the wrong container (§1a) — is a question about the
+investor's own product split, and the standing rule is never to guess a business rule. It stays `high`,
+still fails the gate, and is only **named honestly** so a human sees *"LP contradicts itself across
+bands"* instead of *"our engine is dangerous"*, and the miner leaves it alone. The genuinely dangerous
+direction is untouched: LP declining the **whole** scope while we price is still
+`disqualification_missing`, pinned by its own test.
+
+**This is the concrete blocker behind task #80.** Until we know how LP selects a band, the disqualify
+side of the E3 gate cannot resolve on any `dscr >= 1.25` scenario — and the eligible-side 82.71 %
+(§2.6) is measured with `--no-disqualify`, so it does not answer this question either.

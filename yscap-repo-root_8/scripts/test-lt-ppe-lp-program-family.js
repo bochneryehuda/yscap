@@ -135,5 +135,45 @@ ok(/if \(builtin && !flag\('--unscoped'\) && !filter\.investor && !filter\.lende
 ok(/--filter-investor "Deephaven Mortgage"/.test(runner), 'the refusal names the exact flag that fixes it — never a dead end');
 ok(/--filter-program-like/.test(runner) && /filter\.programLike = new RegExp/.test(runner), 'the runner accepts the family pattern');
 
+
+// ---------------------------------------------------------------------------------------------
+// 7. LP CONTRADICTING ITSELF ACROSS THE FAMILY IS ITS OWN CATEGORY — never "our engine is dangerous",
+//    and never a rule the suggestion miner will propose we adopt.
+//    Measured live: dscr = 1.25 → LP PRICES `DSCR 1.00-1.24` + `DSCR < 1.00` and DECLINES `DSCR >= 1.25`
+//    ("DSCR >=1.25%  only eligible on this program"). Our sheet is ONE program, so it answers eligible.
+// ---------------------------------------------------------------------------------------------
+const { detectDifferences } = require('../src/longterm/ppe/parity-detectors');
+const OURS = { eligible: true, ladder: [{ rate: 6500, basePriceMilli: 101500, finalPriceMilli: 101500 }], declines: [] };
+const LP_PRICED = { eligible: true, rungs: [{ rate: 6500, priceMilli: 101500, basePointsMilli: -1500, adjustmentPointsMilli: 0, llpas: [] }] };
+const LP_DECLINED_BAND = { declined: [{ program: 'DSCR  >= 1.25  - 30 Yr Fixed', reasons: [{ rule: 'DSCR >=1.25%  only eligible on this program' }] }] };
+
+const split = detectDifferences({ ours: OURS, lp: LP_PRICED, lpDisqualified: LP_DECLINED_BAND }, {});
+const splitCats = split.differences.map((d) => d.category);
+ok(splitCats.includes('disqualification_split'), 'LP priced AND declined within the family → disqualification_split');
+ok(!splitCats.includes('disqualification_missing'),
+  'it is NOT reported as disqualification_missing — that reads as "we price a loan LP declines", and LP priced it');
+ok(split.verdict === 'disagree', 'it still DISAGREES — which band governs is unresolved, so the gate must not pass');
+ok(split.differences[0].severity === 'high', 'and it is still high severity');
+ok(Array.isArray(split.differences[0].lpDeclinedPrograms) && split.differences[0].lpDeclinedPrograms[0] === 'DSCR  >= 1.25  - 30 Yr Fixed',
+  'the declined band is NAMED so a human can see which one LP refused');
+
+// The suggestion miner keys on `disqualification_missing`, so this category keeps it from proposing
+// "DSCR >=1.25% only eligible on this program" as an eligibility rule — a rule that would make our
+// engine decline loans Deephaven genuinely prices.
+const { reviewScenario } = require('../src/longterm/ppe/parity-review');
+const rev = reviewScenario({
+  ours: OURS,
+  lpFull: { programs: [{ lender: DHVN, investor: DHVN, program: 'DSCR  1.00-1.24   -  30 Yr Fixed', options: [opt(6.5, 101.5)] }] },
+  lpDisq: { ready: true, lenders: [{ lender: DHVN, investor: DHVN, items: [{ program: 'DSCR  >= 1.25  - 30 Yr Fixed', reasons: [{ rule: 'DSCR >=1.25%  only eligible on this program' }] }] }] },
+  filter: { investor: DHVN, programLike: DSCR_FAMILY },
+});
+ok((rev.suggestions || []).length === 0,
+  'the suggestion miner proposes NO rule from a band split — adopting LP\'s own partitioning would decline good loans');
+
+// The genuinely dangerous direction is UNCHANGED: LP declined everything in scope and we still priced.
+const danger = detectDifferences({ ours: OURS, lp: { eligible: false, rungs: [] }, lpDisqualified: LP_DECLINED_BAND }, {});
+ok(danger.differences.map((d) => d.category).includes('disqualification_missing'),
+  'LP declined the WHOLE scope and we priced → still disqualification_missing (the dangerous direction is untouched)');
+
 console.log(`\n${fails.length ? `FAILURES: ${fails.length}` : 'OFFLINE: all passed'} (${pass} passed, ${fails.length} failed)`);
 process.exit(fails.length ? 1 : 0);
