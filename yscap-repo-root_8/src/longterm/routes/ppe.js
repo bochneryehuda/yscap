@@ -63,6 +63,8 @@ const findingStore = require('../ppe/finding-store');
 const reviewQueue = require('../ppe/review-queue');
 const cutover = require('../ppe/cutover');
 const runStore = require('../ppe/run-store');
+const canarySchedule = require('../ppe/canary-schedule');
+const scheduleStore = require('../ppe/schedule-store');
 const scenarioMatrix = require('../ppe/scenario-matrix');
 const ratesheet = require('../ppe/ratesheet');
 const ruleStore = require('../ppe/rule-store');
@@ -134,6 +136,9 @@ function readScope(_req) { return SCOPE; }
 // OBJECT would stringify to "[object Object]", which is a series key too, just a
 // useless one. So: one helper, used by both.
 function programLabel(program) { return (program && (program.code || program.name)) || ''; }
+
+/** An error's own words, bounded — never an object stringified into a response. */
+function msgOf(e) { return String((e && e.message) || e).slice(0, 200); }
 
 /** A UUID string, else null — for the lt_ppe_investor/program ids (UUID PKs, db/558). */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -557,6 +562,58 @@ async function breakdownRoute(req, res) {
 }
 
 // ---------------------------------------------------------------------------
+// resolveBattery — WHICH scenarios a canary prices, and the refusals around it
+// ---------------------------------------------------------------------------
+//
+// Shared by the button and by a saved schedule, for the reason the size rules exist at all: a battery
+// that is silently thinned reports an agreement rate measured over scenarios nobody chose, and that
+// number feeds the promote gate. A second copy of these refusals is how one caller ends up thinning
+// what the other refuses — so a schedule and a person hit exactly the same wall.
+//
+// Returns { scenarios } or { refused: { status, body } }. It never prices anything and never throws.
+
+function resolveBattery(source) {
+  const src = source || {};
+  let scenarios;
+  if (Array.isArray(src.scenarios)) {
+    scenarios = src.scenarios;
+  } else if (src.matrix && typeof src.matrix === 'object') {
+    try {
+      // buildMatrix returns { scenarios, fullSize, truncated, stride } — NOT an array. Taking it
+      // whole made `Array.isArray(scenarios)` false below, so EVERY matrix-shaped canary answered
+      // 400 "that produced no scenarios to price" and the endpoint's own size refusal was
+      // unreachable from this branch. Found by the re-audit; it matters more now that a saved
+      // schedule can carry a matrix.
+      const expanded = scenarioMatrix.buildMatrix(src.matrix);
+      scenarios = expanded.scenarios;
+      // A STRIDED-DOWN battery is never priced silently: an agreement rate measured over scenarios
+      // nobody chose reads cleaner than it is, and this endpoint already refuses rather than
+      // truncates when a caller sends too many outright.
+      if (expanded.truncated) {
+        return { refused: { status: 422, body: {
+          error: `That matrix expands to ${expanded.fullSize} scenarios; this endpoint prices at most ${MAX_CANARY_SCENARIOS} in one run. Narrow it — it is refused rather than thinned, because an agreement rate over a thinned battery is measured on scenarios nobody chose.`,
+          limit: MAX_CANARY_SCENARIOS, asked: expanded.fullSize, reason: 'battery_truncated',
+        } } };
+      }
+    } catch (e) {
+      return { refused: { status: 400, body: { error: `That matrix could not be expanded: ${String((e && e.message) || e).slice(0, 160)}`, reason: 'bad_matrix' } } };
+    }
+  } else {
+    return { refused: { status: 400, body: { error: 'Send either `scenarios` (an array) or `matrix` (axes to expand).', reason: 'no_battery' } } };
+  }
+  if (!Array.isArray(scenarios) || !scenarios.length) {
+    return { refused: { status: 400, body: { error: 'That produced no scenarios to price.', reason: 'empty_battery' } } };
+  }
+  if (scenarios.length > MAX_CANARY_SCENARIOS) {
+    return { refused: { status: 422, body: {
+      error: `That is ${scenarios.length} scenarios; this endpoint prices at most ${MAX_CANARY_SCENARIOS} in one run. Narrow the matrix.`,
+      limit: MAX_CANARY_SCENARIOS, asked: scenarios.length, reason: 'battery_too_large',
+    } } };
+  }
+  return { scenarios };
+}
+
+// ---------------------------------------------------------------------------
 // POST /canary — price a battery beside LP and record what disagreed (admin)
 // ---------------------------------------------------------------------------
 //
@@ -569,55 +626,45 @@ async function canaryRoute(req, res) {
   const b = req.body || {};
   const investor = b.investor ? String(b.investor) : null;
 
-  let scenarios;
-  if (Array.isArray(b.scenarios)) {
-    scenarios = b.scenarios;
-  } else if (b.matrix && typeof b.matrix === 'object') {
-    try {
-      // buildMatrix returns { scenarios, fullSize, truncated, stride } — NOT an array. Taking it
-      // whole made `Array.isArray(scenarios)` false below, so EVERY matrix-shaped canary answered
-      // 400 "that produced no scenarios to price" and the endpoint's own size refusal was
-      // unreachable from this branch. Found by the re-audit; it matters more now that a saved
-      // schedule can carry a matrix.
-      const expanded = scenarioMatrix.buildMatrix(b.matrix);
-      scenarios = expanded.scenarios;
-      // A STRIDED-DOWN battery is never priced silently: an agreement rate measured over scenarios
-      // nobody chose reads cleaner than it is, and this endpoint already refuses rather than
-      // truncates when a caller sends too many outright.
-      if (expanded.truncated) {
-        return res.status(422).json({
-          error: `That matrix expands to ${expanded.fullSize} scenarios; this endpoint prices at most ${MAX_CANARY_SCENARIOS} in one run. Narrow it — it is refused rather than thinned, because an agreement rate over a thinned battery is measured on scenarios nobody chose.`,
-          limit: MAX_CANARY_SCENARIOS, asked: expanded.fullSize,
-        });
-      }
-    } catch (e) {
-      return res.status(400).json({ error: `That matrix could not be expanded: ${String((e && e.message) || e).slice(0, 160)}` });
-    }
-  } else {
-    return res.status(400).json({ error: 'Send either `scenarios` (an array) or `matrix` (axes to expand).' });
-  }
-  if (!Array.isArray(scenarios) || !scenarios.length) {
-    return res.status(400).json({ error: 'That produced no scenarios to price.' });
-  }
-  if (scenarios.length > MAX_CANARY_SCENARIOS) {
-    return res.status(422).json({
-      error: `That is ${scenarios.length} scenarios; this endpoint prices at most ${MAX_CANARY_SCENARIOS} in one run. Narrow the matrix.`,
-      limit: MAX_CANARY_SCENARIOS,
-      asked: scenarios.length,
-    });
-  }
+  const battery = resolveBattery(b);
+  if (battery.refused) return res.status(battery.refused.status).json(battery.refused.body);
+  const scenarios = battery.scenarios;
 
-  const { program, reason: noProgram } = await loadProgram(scope, b.rateSheetVersionId);
+  const out = await runBattery(scope, scenarios, {
+    investor, rateSheetVersionId: b.rateSheetVersionId, concurrency: b.concurrency,
+  });
+  if (out.refused) return res.status(out.refused.status).json(out.refused.body);
+  return res.json(out.result);
+}
+
+// ---------------------------------------------------------------------------
+// runBattery — the canary EXECUTION, shared by the button and the schedule
+// ---------------------------------------------------------------------------
+//
+// Extracted out of `canaryRoute` the moment the SCHEDULE became reachable, and the extraction IS the
+// point: a canary somebody fires by hand and one a cadence fires overnight must produce the same
+// measurement, into the same three durable records, or the run series would mean one thing on the days
+// a person pressed the button and another thing the rest of the week — and the go-live gate reads that
+// series. A second copy of this is the ordinary way that happens, so there is one.
+//
+// It RETURNS a refusal rather than writing a response, because its second caller is not an HTTP
+// request: the route turns `refused` into a status, and the tick records it against the schedule that
+// asked. Everything else — the program load, the tolerances, the three best-effort persists and their
+// separately-reported failures — is the code that was already here, moved whole.
+
+async function runBattery(scope, scenarios, opts = {}) {
+  const investor = opts.investor || null;
+  const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
+  const { program, reason: noProgram } = await loadProgram(scope, opts.rateSheetVersionId);
   if (!program) {
     // Same reasoning as /quote, and it matters more here: a canary with no
     // program would price N scenarios against a live upstream and record N
     // engine_error findings that say nothing about agreement.
-    return res.status(422).json({ error: 'A canary needs a rate-sheet version to price against.', reason: noProgram });
+    return { refused: { status: 422, body: { error: 'A canary needs a rate-sheet version to price against.', reason: noProgram } } };
   }
 
   const { values: settings } = await resolveSettingsSafe(scope);
   const lp = require('../lenderprice/client');
-  const nowMs = Date.now();
 
   // TWO ADJACENT CONTRACTS, AND THEY ARE NOT THE SAME ONE. The /quote route above
   // drives `facade.priceWithShadow`, whose injected engines are named
@@ -640,7 +687,7 @@ async function canaryRoute(req, res) {
       nowMs,
       priceToleranceMilli: settings[K.priceTolerance],
       rateToleranceMilli: settings[K.rateTolerance],
-      concurrency: intIn(b.concurrency, 8) || 4,
+      concurrency: intIn(opts.concurrency, 8) || 4,
     },
   );
 
@@ -685,7 +732,7 @@ async function canaryRoute(req, res) {
     cellPersistError = String((e && e.message) || e).slice(0, 200);
   }
 
-  return res.json({
+  return { ok: true, result: {
     ok: true,
     scope,
     investor,
@@ -714,6 +761,195 @@ async function canaryRoute(req, res) {
     cellsWritten: cellsPersisted ? cellsPersisted.rows : null,
     // A capped batch is SAID, never silently short: a series missing its tail reads as a clean stretch.
     cellsTruncated: cellsPersisted ? cellsPersisted.truncated : null,
+    } };
+}
+
+// ---------------------------------------------------------------------------
+// The canary SCHEDULE — saving a cadence, and the tick that honours it
+// ---------------------------------------------------------------------------
+//
+// `canary-schedule.js` (the decision) and `schedule-store.js` (db/570) were built, tested and
+// UNREACHABLE: nothing created a schedule and nothing ticked one. So the only thing that ever fed the
+// findings ledger, the run series and the per-band trend was a person POSTing /canary by hand — which
+// nobody does. The scoreboard's clean-day STREAK and agreement TREND read that series, and a streak
+// nobody feeds does not read as "unmeasured": it reads as a low score. An investor could sit
+// permanently short of promotion for want of a cron rather than for want of agreement.
+//
+// THE TICK IS PULLED, NOT PUSHED — deliberately, and it is the safest shape available today. There is
+// no timer in this process: something outside asks, and a run happens only if a saved, enabled
+// schedule is genuinely due. A timer inside the web process would be the first background loop in the
+// Long-Term product AND would call a paid vendor on its own schedule, which is a decision belonging to
+// the owner, not to a refactor. Until that is asked for, the tick is an admin action a scheduler can
+// call, and every refusal it makes is reported rather than swallowed.
+
+async function listSchedulesRoute(req, res) {
+  const scope = readScope(req);
+  const rows = await scheduleStore.listSchedules(scope, { db });
+  // A saved schedule is not a running one: `enabled` defaults to false and the decision module refuses
+  // several shapes outright. So each row is reported WITH what the runner would decide about it, from
+  // the same function the tick uses — a list saying "saved" beside a schedule that can never fire is
+  // exactly how a measurement gap hides.
+  const schedules = rows.map((sch) => {
+    const v = canarySchedule.validateSchedule(sch);
+    return {
+      investor: sch.investor,
+      enabled: sch.enabled,
+      intervalMs: sch.intervalMs,
+      rateSheetVersionId: sch.rateSheetVersionId,
+      note: sch.note,
+      updatedBy: sch.updatedBy,
+      updatedAt: sch.updatedAt,
+      batteryKind: sch.matrix ? 'matrix' : 'scenarios',
+      runnable: !!v.ok && sch.enabled === true,
+      // The module's own wording, never a paraphrase: it names WHICH rule stops it.
+      reason: v.ok ? (sch.enabled === true ? null : 'disabled') : v.reason,
+      message: v.ok ? (sch.enabled === true ? null : 'This canary schedule is saved but paused.') : v.message,
+    };
+  });
+  const runnable = schedules.filter((x) => x.runnable).length;
+  return res.json({
+    ok: true,
+    scope,
+    schedules,
+    runnable,
+    // Said plainly: with nothing runnable, the agreement series only grows on the days a person presses
+    // the button, and every gate that reads it stays unmeasured.
+    note: runnable ? null : 'No canary schedule can run, so the agreement series only grows when somebody fires one by hand — and the go-live gate reads that series.',
+  });
+}
+
+async function saveScheduleRoute(req, res) {
+  const scope = readScope(req);
+  const b = req.body || {};
+  const who = (req.actor && (req.actor.email || req.actor.id)) || null;
+  if (!who) return res.status(400).json({ error: 'A vendor loop records who armed it, and this request carries nobody.' });
+  const out = await scheduleStore.saveSchedule(scope, {
+    investor: b.investor == null ? null : String(b.investor),
+    enabled: b.enabled === true,
+    intervalMs: b.intervalMs,
+    intervalMinutes: b.intervalMinutes,
+    scenarios: b.scenarios,
+    matrix: b.matrix,
+    rateSheetVersionId: b.rateSheetVersionId || null,
+    concurrency: b.concurrency,
+    note: b.note,
+  }, { db, by: String(who), nowMs: Date.now() });
+  // The store returns the DECISION module's own reason and wording, so the person saving hears exactly
+  // what the runner would have said — silently accepting an unrunnable schedule and discovering at 3am
+  // that it has never fired is the failure this guards.
+  if (!out.ok) return res.status(400).json({ error: out.message, reason: out.reason });
+  return res.json({ ok: true, scope, schedule: out.schedule });
+}
+
+async function deleteScheduleRoute(req, res) {
+  const scope = readScope(req);
+  const investor = req.params.investor === '-' ? null : String(req.params.investor || '');
+  const out = await scheduleStore.deleteSchedule(scope, investor, { db });
+  return res.json({ ok: true, scope, removed: out.removed });
+}
+
+/**
+ * POST /canary/tick — run the schedules that are genuinely due.
+ *
+ * FAILS TOWARD NOT RUNNING, at every step, because the two failures are not symmetric: a canary that
+ * does not fire is a gap somebody can see on the scoreboard, while one that fires when it should not is
+ * N live vendor calls per tick, forever. So an unreadable last-run stamp, an unresolvable program, an
+ * unexpandable battery and a paused schedule all HOLD — each with the reason attached to that schedule,
+ * never swallowed and never turned into a silent success.
+ */
+async function canaryTickRoute(req, res) {
+  const scope = readScope(req);
+  const b = req.body || {};
+  const nowMs = Date.now();
+  // ONE per tick by default. Each run is a whole battery against a live upstream, so the cap is about
+  // the vendor, not about speed — and whatever it holds back is REPORTED, because a tick that quietly
+  // skipped half its schedules looks exactly like a tick with nothing to do.
+  const maxPerTick = intIn(b.maxPerTick, 5) || 1;
+
+  const rows = await scheduleStore.listSchedules(scope, { db });
+
+  // The last-run stamp is read from the RUN SERIES, never from a private column on the schedule
+  // (db/570 says why: a second stamp is a second answer, and the one that drifts is the one the gate
+  // reads). It also means a canary an admin fired BY HAND counts toward the cadence, which is right.
+  const entries = [];
+  for (const sch of rows) {
+    const entry = { investor: sch.investor, schedule: sch, lastRunMs: null, program: null, programError: null };
+    try {
+      const loaded = await loadProgram(scope, sch.rateSheetVersionId);
+      entry.program = loaded.program || null;
+      if (!loaded.program) entry.programError = loaded.reason || 'no_program';
+    } catch (e) {
+      entry.programError = msgOf(e);
+    }
+    if (entry.program) {
+      try {
+        const runs = await runStore.listRuns(scope, { db, investor: sch.investor, program: programLabel(entry.program) });
+        // The freshest run wins, and an EMPTY series is left as null — "never measured", which the
+        // decision module reads as most-overdue. A 0 here would read as 1970 and be just as due, but
+        // it would also make a read failure indistinguishable from a fresh schedule.
+        entry.lastRunMs = runs.length ? runs[runs.length - 1].dayMs : null;
+      } catch (e) {
+        // An unreadable series must NOT read as "never run" — that is the one error that would make a
+        // schedule fire on every tick forever. Held, with the reason.
+        entry.seriesError = msgOf(e);
+      }
+    }
+    entries.push(entry);
+  }
+
+  // A schedule whose program or series could not be read is never offered to the decision module: it
+  // would answer "due" on a cadence it cannot honour.
+  const blocked = entries.filter((e) => e.programError || e.seriesError);
+  const askable = entries.filter((e) => !e.programError && !e.seriesError);
+  const { run: due, skipped, held } = canarySchedule.selectDue(askable, { nowMs, maxPerTick });
+
+  const ran = [];
+  for (const item of due) {
+    const battery = resolveBattery(item.decision.battery && item.decision.battery.kind === 'matrix'
+      ? { matrix: item.decision.battery.matrix }
+      : { scenarios: item.decision.battery && item.decision.battery.scenarios });
+    if (battery.refused) {
+      ran.push({ investor: item.investor, ok: false, reason: battery.refused.body.reason || 'battery_refused', message: battery.refused.body.error });
+      continue;
+    }
+    try {
+      const out = await runBattery(scope, battery.scenarios, {
+        investor: item.investor,
+        rateSheetVersionId: item.schedule.rateSheetVersionId,
+        concurrency: item.schedule.concurrency,
+        nowMs,
+      });
+      if (out.refused) {
+        ran.push({ investor: item.investor, ok: false, reason: 'refused', message: out.refused.body.error });
+      } else {
+        const r = out.result;
+        ran.push({
+          investor: item.investor, ok: true, scenarios: r.scenarios, agreementRate: r.agreementRate,
+          findings: r.findings, runPersisted: r.runPersisted, cellsPersisted: r.cellsPersisted,
+        });
+      }
+    } catch (e) {
+      // One schedule's failure never stops the next: a vendor timeout on Deephaven must not silently
+      // cancel every other investor's measurement for the night.
+      ran.push({ investor: item.investor, ok: false, reason: 'threw', message: msgOf(e) });
+    }
+  }
+
+  return res.json({
+    ok: true,
+    scope,
+    schedules: rows.length,
+    ran,
+    // EVERY schedule that did not run says why — the module's own reason, the program that would not
+    // resolve, or the series that would not read. A tick reporting only what it ran is a tick that
+    // reads as healthy while measuring nothing.
+    held: [
+      ...blocked.map((e) => ({ investor: e.investor, reason: e.programError ? 'no_program' : 'series_unreadable', message: e.programError || e.seriesError })),
+      ...held.map((h) => ({ investor: h.investor, reason: h.decision.reason, message: h.decision.message, dueAt: h.decision.dueAt })),
+    ],
+    // A cap that hid work is SAID, never left to be inferred from a short list.
+    overCap: skipped,
+    maxPerTick,
   });
 }
 
@@ -1085,11 +1321,15 @@ router.get('/suggestions', wrap(listSuggestionsRoute, 'lt_ppe_suggestions_error'
 router.get('/rules', wrap(listRulesRoute, 'lt_ppe_rules_error'));
 router.get('/parity-cells', wrap(parityCellsRoute, 'lt_ppe_parity_cells_error'));
 router.get('/programs', wrap(listProgramsRoute, 'lt_ppe_programs_error'));
+router.get('/canary/schedules', wrap(listSchedulesRoute, 'lt_ppe_schedules_error'));
 router.post('/quote', wrap(quoteRoute, 'lt_ppe_quote_error'));
 router.post('/breakdown', wrap(breakdownRoute, 'lt_ppe_breakdown_error'));
 
 router.post('/findings/:key/decide', requirePpeAdmin, wrap(decideFindingRoute, 'lt_ppe_decide_error'));
 router.post('/canary', requirePpeAdmin, wrap(canaryRoute, 'lt_ppe_canary_error'));
+router.post('/canary/schedules', requirePpeAdmin, wrap(saveScheduleRoute, 'lt_ppe_schedule_save_error'));
+router.delete('/canary/schedules/:investor', requirePpeAdmin, wrap(deleteScheduleRoute, 'lt_ppe_schedule_delete_error'));
+router.post('/canary/tick', requirePpeAdmin, wrap(canaryTickRoute, 'lt_ppe_canary_tick_error'));
 router.get('/rules/coverage', requirePpeAdmin, wrap(ruleCoverageRoute, 'lt_ppe_rule_coverage_error'));
 router.post('/suggestions/:id/accept', requirePpeAdmin, wrap(acceptSuggestionRoute, 'lt_ppe_accept_error'));
 router.post('/suggestions/:id/dismiss', requirePpeAdmin, wrap(dismissSuggestionRoute, 'lt_ppe_dismiss_error'));
@@ -1102,8 +1342,9 @@ module.exports.handlers = {
   health, getSettings, listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, breakdownRoute, canaryRoute, scoreboardRoute,
   listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute, mineSuggestionsRoute,
   ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute, parityCellsRoute, listProgramsRoute,
+  listSchedulesRoute, saveScheduleRoute, deleteScheduleRoute, canaryTickRoute,
 };
 module.exports._internals = {
   requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe,
-  MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K, programLabel,
+  MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K, programLabel, resolveBattery, runBattery, msgOf,
 };

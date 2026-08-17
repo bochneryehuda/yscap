@@ -192,6 +192,18 @@ surface or lock-desk UI yet. *(MEGA §8. Later increment.)*
 ### 2.11 Interfaces (admin surface) — **PARTIAL**
 - **DONE:** `/api/lt/ppe/*` (health, settings, investors, findings, scoreboard, quote, decide-finding,
   canary) + the `LtPpe.jsx` findings/scoreboard/readiness screen (staff-only, wired).
+- **DONE (2026-08-17):** the canary SCHEDULE is reachable — `GET/POST /canary/schedules`,
+  `DELETE /canary/schedules/:investor` and `POST /canary/tick`. `canary-schedule.js` (the decision) and
+  `schedule-store.js` (db/570) were built, tested and callable by NOTHING, so the findings ledger, the
+  run series and the per-band trend only ever grew on the days a person fired a canary by hand — and
+  the promote gate reads that series, where an unfed clean-day streak does not read as "unmeasured", it
+  reads as a low score. The tick is PULLED, not pushed: no timer was added, because a background loop
+  calling a paid vendor on its own schedule is the owner's decision, not a refactor's. The execution
+  (`runBattery`) and the battery rules (`resolveBattery`) were EXTRACTED so a canary fired by hand and
+  one fired by a cadence produce the same measurement into the same three records — a second copy is
+  how the series comes to mean two different things. Every uncertainty HOLDS with its reason
+  (unresolvable program, unreadable run series, paused, not due), because a canary that does not fire
+  is a visible gap while one that fires wrongly is N live vendor calls per tick, forever.
 - **DONE (2026-08-17):** `GET /programs` + the LP-scope editor on `LtPpe.jsx` — the first admin surface
   that consumes a program writer. It exists because db/574's scope route needs a program UUID no read
   surface published, so no sheet could be scoped and every shadow comparison abstained silently. The

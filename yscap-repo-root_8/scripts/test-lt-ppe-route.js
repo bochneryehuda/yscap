@@ -88,16 +88,18 @@ console.log('/api/lt/ppe/* — the PPE HTTP surface');
 // 1) the router itself
 // ---------------------------------------------------------------------------
 ok(typeof route === 'function' && typeof route.use === 'function', 'the module IS an express router (server.js can mount it)');
-// 19 since the PROGRAM LIST landed — the read that finally makes the db/574 scope writer reachable
-// (its door needs a program UUID that no read surface published, so no sheet could be scoped at all).
+// 23 since the CANARY SCHEDULE became reachable — list/save/delete plus the tick that honours it.
+// Before them, `canary-schedule.js` and `schedule-store.js` were built, tested and callable by nothing,
+// so the agreement series only grew on the days somebody fired a canary by hand.
 // This count is a deliberate guard: adding a handler without exporting/testing it should FAIL here, so
 // bump it in the same commit that adds one — never delete the assertion to make a build green.
-ok(Object.keys(H).length === 19, `all 19 handlers are exported for testing (${Object.keys(H).length})`);
+ok(Object.keys(H).length === 23, `all 23 handlers are exported for testing (${Object.keys(H).length})`);
 // A COUNT ALONE IS NOT ENOUGH: it stays satisfied if a handler is renamed, or if one is dropped in the
 // same commit another is added. Naming them is what makes the guard bite on either.
 for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSuggestionRoute',
   'listRulesRoute', 'mineSuggestionsRoute', 'ruleCoverageRoute',
-  'getProgramLpScopeRoute', 'setProgramLpScopeRoute', 'parityCellsRoute', 'listProgramsRoute']) {
+  'getProgramLpScopeRoute', 'setProgramLpScopeRoute', 'parityCellsRoute', 'listProgramsRoute',
+  'listSchedulesRoute', 'saveScheduleRoute', 'deleteScheduleRoute', 'canaryTickRoute']) {
   ok(typeof H[name] === 'function', `the ${name} handler is exported by name`);
 }
 
@@ -664,6 +666,136 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
     ok(empty.code === 200 && empty.body.programs.length === 0 && empty.body.note === null,
       'PROG-10 an empty book answers empty, with no warning about programs that do not exist');
     dbStub.next = null;
+  }
+
+  // ---- the canary SCHEDULE, and the tick that honours it -----------------------------------------
+  //
+  // The decision module and its store were built, tested and callable by nothing, so the agreement
+  // series only grew on the days somebody fired a canary by hand — and the promote gate reads that
+  // series, where an unfed streak does not look unmeasured, it looks like a low score. What these
+  // guard is the asymmetry the whole design turns on: a canary that does not fire is a visible gap,
+  // while one that fires when it should not is N live vendor calls per tick, forever. So every
+  // uncertainty must HOLD, with its reason.
+  {
+    const HOUR = 60 * 60 * 1000;
+    const schedRow = (over) => Object.assign({
+      scope: 'company', investor: 'DHVN', enabled: true, interval_ms: 24 * HOUR,
+      battery_kind: 'scenarios', battery: [{ fico: 720 }], rate_sheet_version_id: null,
+      concurrency: null, note: null, updated_by: 'someone@ys', updated_at: 1,
+    }, over);
+
+    // LISTING says what the RUNNER would decide, from the same function the tick uses.
+    dbStub.next = () => ({ rows: [schedRow({}), schedRow({ investor: 'PAUSED', enabled: false })] });
+    let r = await call(H.listSchedulesRoute, { query: {} });
+    ok(r.code === 200 && r.body.schedules.length === 2, 'SCHED-1 the schedules list');
+    ok(r.body.schedules[0].runnable === true, 'SCHED-2 …an enabled, valid one reads as runnable');
+    const paused = r.body.schedules.find((x) => x.investor === 'PAUSED');
+    ok(paused.runnable === false && paused.reason === 'disabled',
+      'SCHED-3 …and a SAVED one that is paused says so — saved is not running');
+    ok(r.body.runnable === 1, 'SCHED-4 the runnable ones are counted');
+
+    // Nothing runnable is called out: it means the series only grows by hand.
+    dbStub.next = () => ({ rows: [schedRow({ enabled: false })] });
+    r = await call(H.listSchedulesRoute, { query: {} });
+    ok(r.body.runnable === 0 && /only grows when somebody fires one by hand/.test(r.body.note || ''),
+      'SCHED-5 …and with none runnable the list SAYS the series is only fed by hand');
+
+    // SAVING refuses with the decision module's own wording, and records who armed it.
+    dbStub.next = () => ({ rows: [] });
+    r = await call(H.saveScheduleRoute, { body: { investor: 'DHVN', enabled: true, intervalMs: 1000, scenarios: [{ fico: 720 }] }, actor: { email: 'a@ys' } });
+    ok(r.code === 400 && r.body.reason === 'interval_too_short',
+      'SCHED-6 a cadence under the floor is refused — the floor guards a live vendor, not a preference');
+    r = await call(H.saveScheduleRoute, { body: { investor: 'DHVN', enabled: true, intervalMs: 24 * HOUR }, actor: { email: 'a@ys' } });
+    ok(r.code === 400 && /battery/i.test(String(r.body.error)),
+      'SCHED-7 …and a schedule with NO battery is refused — a schedule never invents one');
+    r = await call(H.saveScheduleRoute, { body: { investor: 'DHVN', enabled: true, intervalMs: 24 * HOUR, scenarios: [{ fico: 720 }] }, actor: null });
+    ok(r.code === 400 && /who armed it/.test(String(r.body.error)),
+      'SCHED-8 …and an anonymous request cannot arm a vendor loop');
+
+    // THE TICK. With no program resolvable, every schedule HOLDS with the reason — it never runs.
+    dbStub.next = (sql) => {
+      if (/FROM lt_ppe_canary_schedule/.test(sql)) return { rows: [schedRow({})] };
+      return { rows: [] }; // no rate-sheet version -> loadProgram finds none
+    };
+    // The upstream stub is SHARED with the canary tests above, so the count is snapshotted rather
+    // than compared to zero — an assertion that reads a running total proves nothing about this call.
+    const lpBefore = lpStub.calls.length;
+    r = await call(H.canaryTickRoute, { body: {} });
+    ok(r.code === 200 && r.body.ran.length === 0, 'TICK-1 with no program to price against, nothing runs');
+    ok(r.body.held.length === 1 && r.body.held[0].reason === 'no_program',
+      'TICK-2 …and the schedule is HELD with the reason, never silently skipped');
+    ok(lpStub.calls.length === lpBefore, 'TICK-3 …and the live upstream was never called');
+
+    // A PAUSED schedule holds with the module's own reason, and still never prices anything.
+    dbStub.next = (sql) => (/FROM lt_ppe_canary_schedule/.test(sql) ? { rows: [schedRow({ enabled: false })] } : { rows: [] });
+    r = await call(H.canaryTickRoute, { body: {} });
+    ok(r.body.ran.length === 0 && r.body.held.some((h) => h.reason === 'no_program' || h.reason === 'disabled'),
+      'TICK-4 a paused schedule never runs');
+
+    // ---- the two cases that need a RESOLVABLE program, and they are the dangerous ones ----------
+    // Both survived the first cut of these tests: with no program in the fixture every schedule was
+    // held as `no_program` long before the code under test could be reached, so the assertions passed
+    // while the rules they name were unenforced. A fixture that stops short of the branch it claims to
+    // cover is the quietest way a suite can be decorative.
+    const sheet = {
+      version: { id: 'v1', label: 'Sheet A' },
+      basePrices: [{ note_rate_milli_pct: 7125, lock_days: 30, product: 'DSCR30', price_milli: 102850 }],
+    };
+    const withProgram = (extra) => (text) => {
+      if (/FROM lt_ppe_canary_schedule/.test(text)) return { rows: [schedRow({ rate_sheet_version_id: 'v1' })] };
+      if (/lt_ppe_rate_sheet_version/.test(text)) return { rows: [sheet.version] };
+      if (/lt_ppe_base_price/.test(text)) return { rows: sheet.basePrices };
+      return extra(text);
+    };
+
+    // (a) AN UNREADABLE RUN SERIES MUST NEVER READ AS "NEVER RUN". The last-run stamp is what the
+    //     cadence is measured from, so a failed read treated as null says "most overdue thing there
+    //     is" and the schedule fires on EVERY tick, forever, against a paid vendor. It holds instead.
+    const lpBeforeSeries = lpStub.calls.length;
+    dbStub.next = withProgram((text) => {
+      if (/FROM lt_ppe_shadow_run/.test(text)) throw new Error('series read failed');
+      return { rows: [] };
+    });
+    r = await call(H.canaryTickRoute, { body: {} });
+    ok(r.body.ran.length === 0, 'TICK-7 an unreadable run series never runs a battery');
+    ok(r.body.held.some((h) => h.reason === 'series_unreadable'),
+      'TICK-8 …it is HELD as unreadable — read as "never run" it would fire on every tick forever');
+    ok(lpStub.calls.length === lpBeforeSeries, 'TICK-9 …and the vendor was not called');
+
+    // (b) A SCHEDULE THAT IS SIMPLY NOT DUE YET is held with the DECISION MODULE's own reason. A tick
+    //     that reports only what it ran reads as healthy while measuring nothing.
+    const lpBeforeDue = lpStub.calls.length;
+    dbStub.next = withProgram((text) => {
+      // A run a minute ago on a daily cadence: nothing to do, and the tick must say so.
+      if (/FROM lt_ppe_shadow_run/.test(text)) return { rows: [{ day_ms: String(Date.now() - 60000), agreement_rate: '1', finding_keys: [], summary: {} }] };
+      return { rows: [] };
+    });
+    r = await call(H.canaryTickRoute, { body: {} });
+    ok(r.body.ran.length === 0, 'TICK-10 a schedule that ran a minute ago is not due on a daily cadence');
+    ok(r.body.held.length === 1 && typeof r.body.held[0].reason === 'string' && r.body.held[0].reason !== 'no_program',
+      'TICK-11 …and it is reported in `held` with the decision module\'s own reason, not omitted');
+    ok(r.body.held[0].dueAt != null, 'TICK-12 …carrying WHEN it next comes due, so a quiet tick is explainable');
+    ok(lpStub.calls.length === lpBeforeDue, 'TICK-13 …and again nothing was priced');
+
+    // No schedules at all is an honest empty answer, not an error.
+    dbStub.next = () => ({ rows: [] });
+    r = await call(H.canaryTickRoute, { body: {} });
+    ok(r.code === 200 && r.body.schedules === 0 && r.body.ran.length === 0 && r.body.held.length === 0,
+      'TICK-5 an empty schedule table ticks to nothing');
+    ok(r.body.maxPerTick === 1, 'TICK-6 …and the default cap is ONE battery per tick, because each is a live vendor run');
+    dbStub.next = null;
+  }
+
+  // ---- the battery rules are ONE definition, shared by the button and the schedule ---------------
+  {
+    const big = { scenarios: new Array(I.MAX_CANARY_SCENARIOS + 1).fill({ fico: 720 }) };
+    const refused = I.resolveBattery(big);
+    ok(refused.refused && refused.refused.status === 422 && refused.refused.body.reason === 'battery_too_large',
+      'BATT-1 an over-size battery is REFUSED, never thinned — a thinned one measures scenarios nobody chose');
+    ok(I.resolveBattery({}).refused.body.reason === 'no_battery', 'BATT-2 no battery at all is refused');
+    ok(I.resolveBattery({ scenarios: [] }).refused.body.reason === 'empty_battery', 'BATT-3 …and an empty one is its own reason');
+    ok(I.resolveBattery({ scenarios: [{ fico: 720 }] }).scenarios.length === 1, 'BATT-4 a real battery passes through untouched');
+    ok(I.resolveBattery({ matrix: 'nope' }).refused.body.reason === 'no_battery', 'BATT-5 a matrix that is not an object is refused, never coerced');
   }
 
   accessStub.mayManagePeople = realMayManage;
