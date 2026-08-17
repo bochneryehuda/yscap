@@ -92,8 +92,32 @@ const FULL_LOAN = {
       firstName: 'Ann', lastName: 'Lee', taxIdentificationIdentifier: '123-45-6789',
       emailAddressText: 'ann@example.com', birthDate: '1980-04-02',
       experianCreditScore: '756', middleCreditScore: '756',
+      residences: [{
+        id: 'res-1', residencyType: 'Current', residencyBasisType: 'Rent',
+        addressStreetLine1: '5 Elm St', addressCity: 'NEWARK', addressState: 'NJ',
+        durationTermYears: 3, durationTermMonths: 2, rent: 2200,
+      }],
     },
     coborrower: { firstName: null, lastName: null },
+    // §1e — the NET RENTAL INCOME a DSCR file is actually underwritten on.
+    income: [{ id: 'inc-1', incomeType: 'NetRentalIncome', owner: 'Borrower', amount: 298.72 }],
+    // §3 — the schedule, and the SUBJECT row that must never be filed onto it.
+    reoProperties: [
+      { id: 'reo-1', owner: 'Borrower', streetAddress: '2 Oak Ave', city: 'NEWARK', state: 'NJ',
+        propertyUsageType: 'Investor', marketValueAmount: 725000, lienUpbAmount: 393000,
+        lienInstallmentAmount: 4037.33, rentalIncomeNetAmount: -4628.33 },
+      { id: 'reo-subject', owner: 'Borrower', subjectIndicator: true, streetAddress: '11 Maple Ave' },
+      // An owner who is NOT on this file — there is no co-borrower here.
+      { id: 'reo-orphan', owner: 'CoBorrower', streetAddress: '99 Nobody Rd' },
+    ],
+    // §2a is `vods[]` on this tenant; §2b is `otherAssets[]`.
+    vods: [{ id: 'vod-1', assetType: 'CheckingAccount', holderName: 'Chase',
+      accountIdentifier: '1234567', cashOrMarketValueAmount: 50000, owner: 'Borrower' }],
+    otherAssets: [{ id: 'oa-1', assetType: 'EarnestMoney', cashOrMarketValue: 65000 }],
+    // §2c is `vols[]` — where the tradelines actually live here.
+    vols: [{ id: 'vol-1', liabilityType: 'MortgageLoan', holderName: 'OCEANFIR/DMI',
+      accountIdentifier: '9999888', unpaidBalanceAmount: 750451, monthlyPaymentAmount: 6529,
+      remainingTermMonths: 339, owner: 'Borrower' }],
   }],
   property: {
     streetAddress: '11 Maple Ave', city: 'NEWARK', county: 'Essex',
@@ -217,6 +241,64 @@ async function main() {
     const borrowers = withPeople && withPeople.borrowers;
     check(!!borrowers && Array.isArray(borrowers.parties) && borrowers.parties.length === 2,
       'and the file\'s Borrowers section shows them both — it listed nobody on every loan before anything wrote these two tables');
+
+    console.log('\nthe rest of the 1003 hangs off the person');
+
+    // BACK TO ONE BORROWER, deliberately. The co-borrower added above would give
+    // the `CoBorrower`-owned row somewhere real to go, and the point of that row
+    // is what happens when the owner is NOT on the file.
+    await db.query(`DELETE FROM lt_parties WHERE pair_id IN (SELECT id FROM lt_borrower_pairs WHERE loan_id = $1::uuid)`, [loanId]);
+    await db.query('DELETE FROM lt_borrower_pairs WHERE loan_id = $1::uuid', [loanId]);
+    const solo = await sync.syncBorrowerPairs(loanId, FULL_LOAN);
+    check(solo.orphaned === 1 && solo.unkeyed === 0,
+      'a row owned by somebody not on the file is COUNTED — a silent drop is how nobody finds out');
+
+    const childRows = async (t) => (await db.query(
+      `SELECT c.* FROM ${t} c JOIN lt_parties p ON p.id = c.party_id
+         JOIN lt_borrower_pairs bp ON bp.id = p.pair_id
+        WHERE bp.loan_id = $1::uuid ORDER BY c.encompass_id`, [loanId])).rows;
+
+    const res = await childRows('lt_residences');
+    check(res.length === 1 && res[0].residency_type === 'current' && res[0].residency_basis === 'rent'
+      && res[0].duration_months === 38 && Number(res[0].monthly_rent) === 2200,
+      'the address a person lives at, with three years and two months read as ONE figure');
+
+    const inc = await childRows('lt_other_incomes');
+    check(inc.length === 1 && inc[0].income_type === 'NetRentalIncome'
+      && Number(inc[0].monthly_amount) === 298.72,
+      'the net rental income — the figure a DSCR file is underwritten on');
+
+    const reo = await childRows('lt_reo_properties');
+    check(reo.length === 1 && reo[0].encompass_id === 'reo-1',
+      'the real-estate schedule carries the OTHER properties only');
+    check(!reo.some((r) => /Maple/.test(String(r.street || ''))),
+      '…and never the SUBJECT property, which lives on lt_properties — filing it here as well would show it twice and double any total somebody adds up');
+    check(!reo.some((r) => /Nobody/.test(String(r.street || ''))),
+      'and a row whose owner is not on this file is DROPPED, not parked on the primary — one person\'s schedule on another\'s file is what the loan is underwritten on');
+    check(Number(reo[0].net_monthly_rental_income) === -4628.33,
+      'a NEGATIVE rental income survives — it is a real answer about a property that loses money');
+
+    const assets = await childRows('lt_assets');
+    check(assets.length === 2
+      && assets.some((a) => a.section === 'accounts' && a.institution_name === 'Chase' && a.account_last4 === '4567')
+      && assets.some((a) => a.section === 'credits' && a.asset_type === 'EarnestMoney'),
+      'money in an account and money already spent are two SECTIONS — folding them together would count a deposit that has left the borrower\'s hands as money they still have');
+    check(!assets.some((a) => String(a.account_last4 || '').length > 4),
+      'and only the last four of an account number are kept');
+
+    const liab = await childRows('lt_liabilities');
+    check(liab.length === 1 && liab[0].section === 'debts' && liab[0].creditor_name === 'OCEANFIR/DMI'
+      && Number(liab[0].unpaid_balance) === 750451 && liab[0].months_remaining === 339,
+      'the tradelines come from vols[], which is where this tenant actually keeps them');
+    check(liab[0].to_be_paid_off === false,
+      'and an ABSENT payoff flag is not a plan to pay it off');
+
+    // Every child table must survive a second read without multiplying.
+    const before2 = (await Promise.all(['lt_residences', 'lt_other_incomes', 'lt_reo_properties', 'lt_assets', 'lt_liabilities'].map(childRows))).map((r) => r.length);
+    await sync.syncBorrowerPairs(loanId, FULL_LOAN);
+    const after2 = (await Promise.all(['lt_residences', 'lt_other_incomes', 'lt_reo_properties', 'lt_assets', 'lt_liabilities'].map(childRows))).map((r) => r.length);
+    check(before2.join() === after2.join(),
+      'reading the whole 1003 again multiplies NOTHING — every child row is keyed on Encompass\'s own id, which is the entire reason db/575 exists');
 
     console.log('\nthe screens that read it actually fill');
 

@@ -816,6 +816,20 @@ disagree; and the lesson worth carrying into phase 8 is that **a swallowing catc
 name OR a wrong value into a confident empty answer, and only a real row of the real type can
 tell the two apart from "there is genuinely nothing here".**
 
+**AND THEN THE SAME CLASS, ONE LAYER DOWN: none of it had a writer (2026-08-17).** db/549 shipped
+the whole URLA spine, `file.js` read all ten sections off it, the summary rail read the property
+and the pipeline LEFT JOINed it for its address and LTV column — and NOTHING had ever written a
+row into any of those tables. Every one of those surfaces answered blank on every loan, from the
+day each shipped. `src/longterm/application/{mapper,sync}.js` is that writer: the subject
+property, the borrower pairs, the people in them, and their addresses, other income, real-estate
+schedule, assets and debts — all read off the loan payload `sync/loans.js` ALREADY fetches, so it
+costs no HTTP call, no fieldReader id and no pacing delay. db/575 adds the `encompass_id` each
+child row is keyed on, because without one a second read of a nine-property schedule could only
+ever ADD. The Social Security number is never written (`ssn_last4` only — the encrypted column
+waits on an authorized crossing to the RTL crypto module, and no screen is waiting on it), and
+every field path is pinned to the field dictionary's own measured `jsonPath` after three
+plausible guesses turned out to be columns that could never have filled.
+
 **One more, from the screen rather than the data.** A grid with no declared column gets an
 implicit `auto` one that sizes to its content, so a section carrying a table wider than a phone
 stretched its whole card to 759px inside a 390px screen — and `html{overflow-x:clip}` then hid

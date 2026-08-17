@@ -298,18 +298,278 @@ function readBorrowerPairs(loan) {
   apps.forEach((app, i) => {
     if (!app || typeof app !== 'object') return;
     const labelled = int(String(app.legacyId || app.borrowerPairId || '').replace(/^\D*/, ''));
+    // Each person carries their OWN addresses, because a residence hangs off the
+    // borrower object rather than off the application — and the application-level
+    // lists carry a `role` instead, which is the only thing that says whose they
+    // are. Keeping both shapes here means the writer never has to know either.
     const parties = [
-      readParty(app.borrower, 'borrower'),
-      readParty(app.coborrower, 'coborrower'),
-    ].filter(Boolean);
+      [app.borrower, 'borrower'],
+      [app.coborrower, 'coborrower'],
+    ].map(([raw, role]) => {
+      const party = readParty(raw, role);
+      return party ? { ...party, residences: readResidences(raw) } : null;
+    }).filter(Boolean);
 
     out.push({
       pairNumber: labelled && labelled > 0 ? labelled : i + 1,
       encompassApplicationId: text(app.id),
       propertyUsageType: text(app.propertyUsageType),
       parties,
+      incomes: readOtherIncomes(app),
+      reo: readReoProperties(app),
+      assets: readAssets(app),
+      liabilities: readLiabilities(app),
     });
   });
+  return out;
+}
+
+// ── The rest of the 1003 (URLA §1a addresses, §1b–e, §2, §3) ────────────────
+
+/**
+ * WHICH PERSON DOES THIS ROW BELONG TO?
+ *
+ * Every row on an application — an income, an asset, a liability, an REO
+ * property — carries an `owner` of `Borrower` or `CoBorrower`, and it is the ONLY
+ * thing that says whose it is. Getting it wrong puts one person's debts on
+ * another's schedule, which is not a display bug: it is what a DSCR file is
+ * underwritten on.
+ *
+ * An owner we cannot read is `borrower` — the primary — because that is what
+ * Encompass's own default is on a single-borrower file, which is nearly all of
+ * them here. `Both` / `Joint` likewise sits with the primary rather than being
+ * duplicated onto two schedules, where it would be counted twice.
+ */
+function ownerRole(v) {
+  const s = String(v === null || v === undefined ? '' : v).toLowerCase().replace(/[^a-z]/g, '');
+  return s === 'coborrower' ? 'coborrower' : 'borrower';
+}
+
+/** The last four of an account number — the rest is not ours to keep. */
+function acctLast4(v) {
+  const s = String(v === null || v === undefined ? '' : v).replace(/\s/g, '');
+  if (s.length < 4) return null;
+  return s.slice(-4);
+}
+
+/** Years + months as one figure. Either may be absent; both absent is null. */
+function durationMonths(years, months) {
+  const y = int(years);
+  const m = int(months);
+  if (y === null && m === null) return null;
+  return (y || 0) * 12 + (m || 0);
+}
+
+const RESIDENCY_TYPE = { current: 'current', prior: 'prior' };
+const RESIDENCY_BASIS = {
+  own: 'own', rent: 'rent', nopimaryhousingexpense: 'no_primary_housing_expense',
+  noprimaryhousingexpense: 'no_primary_housing_expense',
+};
+
+/**
+ * The addresses a person has lived at (§1a).
+ *
+ * A MAILING address is DROPPED, not guessed into a slot. The column is an enum of
+ * exactly `current` and `prior`; Encompass's third value is `Mailing`, which is
+ * where post goes rather than where somebody lives, and filing it as "current"
+ * would put a PO box on the file as the borrower's home. Same for a basis we do
+ * not recognise: the enum has three values and inventing a fourth reading of one
+ * of them is how a "rents" becomes an "owns".
+ */
+function readResidences(borrower) {
+  if (!borrower || typeof borrower !== 'object') return [];
+  const list = Array.isArray(borrower.residences) ? borrower.residences : [];
+  const out = [];
+  for (const r of list) {
+    if (!r || typeof r !== 'object') continue;
+    const type = RESIDENCY_TYPE[String(r.residencyType || '').toLowerCase()];
+    const basis = RESIDENCY_BASIS[String(r.residencyBasisType || '').toLowerCase().replace(/[^a-z]/g, '')];
+    if (!type || !basis) continue;
+    out.push({
+      encompassId: text(r.id),
+      residencyType: type,
+      residencyBasis: basis,
+      street: text(r.urla2020StreetAddress) || text(r.addressStreetLine1),
+      city: text(r.addressCity),
+      state: text(r.addressState),
+      zip: text(r.addressPostalCode),
+      country: text(r.countryCode) || 'US',
+      durationMonths: durationMonths(r.durationTermYears, r.durationTermMonths),
+      monthlyRent: num(r.rent),
+    });
+  }
+  return out;
+}
+
+/**
+ * Income from other sources (§1e) — including the NET RENTAL INCOME that a DSCR
+ * file is actually underwritten on.
+ *
+ * `income_type` and `monthly_amount` are both NOT NULL in db/549, so a row
+ * missing either is DROPPED rather than filed under a made-up type or a zero: an
+ * income row reading "$0" is a statement about the borrower, and one reading
+ * "Other" is a statement about us.
+ */
+function readOtherIncomes(app) {
+  if (!app || typeof app !== 'object') return [];
+  const list = Array.isArray(app.income) ? app.income : [];
+  const out = [];
+  for (const i of list) {
+    if (!i || typeof i !== 'object') continue;
+    const type = text(i.incomeType);
+    const amount = num(i.amount);
+    if (!type || amount === null) continue;
+    out.push({
+      encompassId: text(i.id),
+      role: ownerRole(i.owner),
+      incomeType: type,
+      monthlyAmount: amount,
+      description: text(i.description),
+    });
+  }
+  return out;
+}
+
+/**
+ * The real-estate schedule (§3).
+ *
+ * The one field that is NOT taken: `subjectIndicator`. A row marked as the
+ * subject is the property this loan is against, which db/549 keeps on
+ * `lt_properties` — filing it here as well would show an investor's own subject
+ * property twice on their schedule and double it in any total somebody adds up.
+ */
+function readReoProperties(app) {
+  if (!app || typeof app !== 'object') return [];
+  const list = Array.isArray(app.reoProperties) ? app.reoProperties : [];
+  const out = [];
+  for (const r of list) {
+    if (!r || typeof r !== 'object') continue;
+    if (r.subjectIndicator === true) continue;
+    out.push({
+      encompassId: text(r.id),
+      role: ownerRole(r.owner),
+      street: text(r.urla2020StreetAddress) || text(r.streetAddress),
+      city: text(r.city),
+      state: text(r.state),
+      zip: text(r.postalCode),
+      propertyType: null,
+      occupancyType: text(r.propertyUsageType),
+      dispositionStatus: text(r.dispositionStatusType),
+      presentValue: num(r.marketValueAmount),
+      mortgageBalance: num(r.lienUpbAmount),
+      monthlyMortgagePayment: num(r.lienInstallmentAmount),
+      monthlyExpenses: num(r.maintenanceExpenseAmount),
+      grossMonthlyRent: num(r.rentalIncomeGrossAmount),
+      netMonthlyRentalIncome: num(r.rentalIncomeNetAmount),
+    });
+  }
+  return out;
+}
+
+/**
+ * What the borrower has (§2a/§2b).
+ *
+ * TWO SECTIONS, AND THEY ARE DIFFERENT THINGS. `accounts` is money in an account
+ * somebody can verify — `vods[]` is where this tenant actually keeps it, with the
+ * modern `assets[]` empty on every loan sampled. `credits` is §2b: earnest money
+ * already paid, proceeds from a sale, a gift. Folding the two together would
+ * count a deposit that has already left the borrower's hands as money they still
+ * have.
+ */
+function readAssets(app) {
+  if (!app || typeof app !== 'object') return [];
+  const out = [];
+
+  const accounts = [
+    ...(Array.isArray(app.vods) ? app.vods : []),
+    ...(Array.isArray(app.assets) ? app.assets : []),
+  ];
+  for (const a of accounts) {
+    if (!a || typeof a !== 'object') continue;
+    const type = text(a.assetType);
+    if (!type) continue;
+    out.push({
+      encompassId: text(a.id),
+      role: ownerRole(a.owner),
+      section: 'accounts',
+      assetType: type,
+      institutionName: text(a.holderName) || text(a.depositoryAccountName),
+      accountLast4: acctLast4(a.accountIdentifier),
+      value: num(a.cashOrMarketValueAmount) ?? num(a.urla2020CashOrMarketValueAmount),
+    });
+  }
+
+  for (const a of (Array.isArray(app.otherAssets) ? app.otherAssets : [])) {
+    if (!a || typeof a !== 'object') continue;
+    const type = text(a.assetType);
+    if (!type) continue;
+    out.push({
+      encompassId: text(a.id),
+      role: ownerRole(a.owner),
+      section: 'credits',
+      assetType: type,
+      institutionName: null,
+      accountLast4: null,
+      value: num(a.cashOrMarketValue),
+    });
+  }
+
+  return out;
+}
+
+/**
+ * What the borrower owes (§2c/§2d).
+ *
+ * `vols[]` IS THE ONE THAT MATTERS: it is where the credit-report tradelines
+ * actually live on this tenant, 7–38 rows a loan, while the modern `liabilities[]`
+ * array was empty on every loan sampled. Both are read, because a tenant that
+ * starts populating the modern array must not silently halve somebody's debts.
+ */
+function readLiabilities(app) {
+  if (!app || typeof app !== 'object') return [];
+  const out = [];
+
+  const debts = [
+    ...(Array.isArray(app.vols) ? app.vols : []),
+    ...(Array.isArray(app.liabilities) ? app.liabilities : []),
+  ];
+  for (const l of debts) {
+    if (!l || typeof l !== 'object') continue;
+    const type = text(l.liabilityType);
+    if (!type) continue;
+    out.push({
+      encompassId: text(l.id),
+      role: ownerRole(l.owner),
+      section: 'debts',
+      liabilityType: type,
+      creditorName: text(l.holderName),
+      accountLast4: acctLast4(l.accountIdentifier),
+      unpaidBalance: num(l.unpaidBalanceAmount),
+      monthlyPayment: num(l.monthlyPaymentAmount),
+      monthsRemaining: int(l.remainingTermMonths),
+      // Only an explicit TRUE is a payoff. An absent flag is not a plan.
+      toBePaidOff: l.payoffIncludedIndicator === true || l.payoffStatusIndicator === true,
+    });
+  }
+
+  for (const l of (Array.isArray(app.otherLiabilities) ? app.otherLiabilities : [])) {
+    if (!l || typeof l !== 'object') continue;
+    const type = text(l.liabilityType) || text(l.otherLiabilityType);
+    if (!type) continue;
+    out.push({
+      encompassId: text(l.id),
+      role: ownerRole(l.owner),
+      section: 'obligations',
+      liabilityType: type,
+      creditorName: text(l.holderName),
+      accountLast4: null,
+      unpaidBalance: num(l.unpaidBalanceAmount),
+      monthlyPayment: num(l.monthlyPaymentAmount),
+      monthsRemaining: int(l.remainingTermMonths),
+      toBePaidOff: false,
+    });
+  }
+
   return out;
 }
 
@@ -317,7 +577,12 @@ module.exports = {
   readSubjectProperty,
   readBorrowerPairs,
   readParty,
+  readResidences,
+  readOtherIncomes,
+  readReoProperties,
+  readAssets,
+  readLiabilities,
   SUBJECT_FIELDS,
   PARTY_FIELDS,
-  _internals: { num, text, int, at, fieldOf, partyValue, ssnLast4 },
+  _internals: { num, text, int, at, fieldOf, partyValue, ssnLast4, ownerRole, acctLast4, durationMonths },
 };

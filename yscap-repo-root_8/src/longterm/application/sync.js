@@ -85,6 +85,50 @@ async function syncSubjectProperty(loanId, loan, opts = {}) {
 }
 
 /**
+ * ONE child row on one person — a residence, an income, an REO property, an
+ * asset, a debt.
+ *
+ * ONE writer for five tables, because the RULE is the same for all of them and
+ * five copies of it would drift: keyed on Encompass's own id, COALESCEd onto what
+ * we hold, nothing deleted. The COLUMNS differ, so they are passed in; the SHAPE
+ * does not, so it lives here.
+ *
+ * THE `ON CONFLICT` REPEATS THE INDEX'S `WHERE`. db/575's unique indexes are
+ * PARTIAL — a row Encompass sends without an id must still be storable, and a
+ * blanket unique index over a nullable column would collapse two real rows that
+ * both arrived without one. Postgres cannot infer a partial index without its
+ * predicate, and leaving it off is a 42P10 at runtime, inside a catch, reading
+ * for ever as "these rows would not store".
+ *
+ * A ROW WITH NO ID IS INSERTED AND NEVER RE-KEYED — the same trade the condition
+ * thread makes, for the same reason. Here it is bounded differently: this writer
+ * runs on a per-loan basis and an id-less row would multiply on every read, so it
+ * is COUNTED and skipped rather than filed. If a tenant turns out to send these
+ * without ids, that number climbs loudly on the first pass.
+ *
+ * The column names and casts are the CALLER's, and every one of them is checked
+ * against the real schema by the DB suite — a phantom column here would sit
+ * inside its caller's catch reporting a confident success.
+ */
+async function upsertChild(db, table, partyId, encompassId, cols) {
+  if (!encompassId) return false;
+
+  const names = Object.keys(cols);
+  const params = [partyId, encompassId, ...names.map((n) => cols[n].v)];
+  const placeholders = names.map((n, i) => `$${i + 3}${cols[n].cast || ''}`);
+  const setters = names.map((n) => `${n} = COALESCE(EXCLUDED.${n}, ${table}.${n})`);
+
+  await db.query(
+    `INSERT INTO ${table} (id, party_id, encompass_id, ${names.join(', ')}, updated_at)
+     VALUES (gen_random_uuid(), $1::uuid, $2, ${placeholders.join(', ')}, now())
+     ON CONFLICT (party_id, encompass_id) WHERE encompass_id IS NOT NULL
+     DO UPDATE SET ${setters.join(', ')}, updated_at = now()`,
+    params,
+  );
+  return true;
+}
+
+/**
  * Mirror the borrower pairs and the people in them (URLA §1a).
  *
  * THE SOCIAL SECURITY NUMBER IS NEVER WRITTEN. `lt_parties.ssn_encrypted` stays
@@ -106,6 +150,9 @@ async function syncBorrowerPairs(loanId, loan, opts = {}) {
 
   const db = opts.db || lazy.db;
   let parties = 0;
+  let children = 0;
+  let unkeyed = 0;
+  let orphaned = 0;
 
   for (const pair of pairs) {
     const { rows } = await db.query(
@@ -122,19 +169,22 @@ async function syncBorrowerPairs(loanId, loan, opts = {}) {
     const pairId = rows[0] && rows[0].id;
     if (!pairId) continue;
 
+    const partyIdByRole = new Map();
+
     for (const p of pair.parties) {
       // Keyed on (pair, role) — the unique index db/549 already carries. A person
       // is identified by the SLOT they occupy on the application, because a name
       // changes (a marriage, a correction) and a slot does not.
-      await db.query(
+      const party = await db.query(
         `INSERT INTO lt_parties
            (id, pair_id, role, party_type, first_name, middle_name, last_name, name_suffix,
             date_of_birth, ssn_last4, citizenship, marital_status, dependent_count,
             email, home_phone, mobile_phone,
-            fico_experian, fico_transunion, fico_equifax, fico_representative, updated_at)
+            fico_experian, fico_transunion, fico_equifax, fico_representative,
+            encompass_id, updated_at)
          VALUES (gen_random_uuid(), $1::uuid, $2::lt_party_role, $3::lt_party_type,
                  $4, $5, $6, $7, $8::date, $9, $10, $11, $12, $13, $14, $15,
-                 $16, $17, $18, $19, now())
+                 $16, $17, $18, $19, $20, now())
          ON CONFLICT (pair_id, role) DO UPDATE SET
            first_name         = COALESCE(EXCLUDED.first_name, lt_parties.first_name),
            middle_name        = COALESCE(EXCLUDED.middle_name, lt_parties.middle_name),
@@ -152,17 +202,83 @@ async function syncBorrowerPairs(loanId, loan, opts = {}) {
            fico_transunion    = COALESCE(EXCLUDED.fico_transunion, lt_parties.fico_transunion),
            fico_equifax       = COALESCE(EXCLUDED.fico_equifax, lt_parties.fico_equifax),
            fico_representative = COALESCE(EXCLUDED.fico_representative, lt_parties.fico_representative),
-           updated_at         = now()`,
+           encompass_id       = COALESCE(EXCLUDED.encompass_id, lt_parties.encompass_id),
+           updated_at         = now()
+         RETURNING id`,
         [pairId, p.role, p.partyType, p.firstName, p.middleName, p.lastName, p.nameSuffix,
           p.dateOfBirth, p.ssnLast4, p.citizenship, p.maritalStatus, p.dependentCount,
           p.email, p.homePhone, p.mobilePhone,
-          p.ficoExperian, p.ficoTransunion, p.ficoEquifax, p.ficoRepresentative],
+          p.ficoExperian, p.ficoTransunion, p.ficoEquifax, p.ficoRepresentative,
+          p.encompassId || null],
       );
       parties += 1;
+
+      const partyId = party.rows[0] && party.rows[0].id;
+      if (!partyId) continue;
+      partyIdByRole.set(p.role, partyId);
+
+      for (const r of (p.residences || [])) {
+        const wrote = await upsertChild(db, 'lt_residences', partyId, r.encompassId, {
+          residency_type: { v: r.residencyType, cast: '::lt_residency_type' },
+          residency_basis: { v: r.residencyBasis, cast: '::lt_residency_basis' },
+          street: { v: r.street }, city: { v: r.city }, state: { v: r.state },
+          zip: { v: r.zip }, country: { v: r.country },
+          duration_months: { v: r.durationMonths }, monthly_rent: { v: r.monthlyRent },
+        });
+        if (wrote) children += 1; else unkeyed += 1;
+      }
     }
+
+    // The application-level lists say WHOSE they are with an `owner`, so they are
+    // routed by role — and a row whose owner is not on this file is DROPPED rather
+    // than parked on the primary, because one person's debts on another's schedule
+    // is what a DSCR file is underwritten on.
+    const route = (rowsIn, table, cols) => rowsIn.filter((r) => partyIdByRole.has(r.role))
+      .map((r) => ({ partyId: partyIdByRole.get(r.role), id: r.encompassId, cols: cols(r), table }));
+
+    const childWrites = [
+      ...route(pair.incomes, 'lt_other_incomes', (r) => ({
+        income_type: { v: r.incomeType }, monthly_amount: { v: r.monthlyAmount },
+        description: { v: r.description },
+      })),
+      ...route(pair.reo, 'lt_reo_properties', (r) => ({
+        street: { v: r.street }, city: { v: r.city }, state: { v: r.state }, zip: { v: r.zip },
+        property_type: { v: r.propertyType }, occupancy_type: { v: r.occupancyType },
+        disposition_status: { v: r.dispositionStatus },
+        present_value: { v: r.presentValue }, mortgage_balance: { v: r.mortgageBalance },
+        monthly_mortgage_payment: { v: r.monthlyMortgagePayment },
+        monthly_expenses: { v: r.monthlyExpenses },
+        gross_monthly_rent: { v: r.grossMonthlyRent },
+        net_monthly_rental_income: { v: r.netMonthlyRentalIncome },
+      })),
+      ...route(pair.assets, 'lt_assets', (r) => ({
+        section: { v: r.section, cast: '::lt_asset_section' },
+        asset_type: { v: r.assetType }, institution_name: { v: r.institutionName },
+        account_last4: { v: r.accountLast4 }, value: { v: r.value },
+      })),
+      ...route(pair.liabilities, 'lt_liabilities', (r) => ({
+        section: { v: r.section, cast: '::lt_liability_section' },
+        liability_type: { v: r.liabilityType }, creditor_name: { v: r.creditorName },
+        account_last4: { v: r.accountLast4 }, unpaid_balance: { v: r.unpaidBalance },
+        monthly_payment: { v: r.monthlyPayment }, months_remaining: { v: r.monthsRemaining },
+        to_be_paid_off: { v: r.toBePaidOff },
+      })),
+    ];
+
+    for (const w of childWrites) {
+      if (await upsertChild(db, w.table, w.partyId, w.id, w.cols)) children += 1;
+      else unkeyed += 1;
+    }
+
+    // A row the OWNER named as somebody not on this file. Counted rather than
+    // parked on the primary: one person's debts on another's schedule is what a
+    // DSCR file is underwritten on, and a silent drop is how nobody finds out.
+    const routed = childWrites.length;
+    const offered = pair.incomes.length + pair.reo.length + pair.assets.length + pair.liabilities.length;
+    orphaned += offered - routed;
   }
 
-  return { ok: true, pairs: pairs.length, parties };
+  return { ok: true, pairs: pairs.length, parties, children, unkeyed, orphaned };
 }
 
 module.exports = { syncSubjectProperty, syncBorrowerPairs };
