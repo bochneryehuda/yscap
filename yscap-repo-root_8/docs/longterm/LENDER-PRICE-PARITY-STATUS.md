@@ -2145,3 +2145,15 @@ Price stub counts its own calls, so "this check is free" is measured. Four mutat
 assertion instead of dying on it. A crash kills the run, every assertion after it silently never
 executes, and the output reads exactly like a suite that finished — which is the same class as
 everything else on this page: **the failure that looks like success.**
+
+**§2.33 — AND A PERSON CAN NOW PRESS THEM (2026-08-17).** §2.31 and §2.32 built two routes that were
+reachable by code and by nobody — the same defect §2.30 exists to catch, one layer up. The rate-sheet
+console now carries both, and **keeps them apart on purpose, because pressing the wrong one costs
+money**: "Check its own cells" is free and runs offline; "Measure against Lender Price" prices the
+whole battery at the vendor and records the verdict, and the card says so before either is pressed.
+Three smaller promises ride with them, each mutation-proven: a finished run RE-READS the sheet (or the
+gate line above would go on saying "never measured" beside a run that just finished), a verdict that
+did not reach the ledger is shown as such rather than as a run that worked, and a 503 renders as the
+upstream speaking — the ordinary state until the login is rotated — never as the button being broken.
+There is still no control anywhere that records a run somebody typed, and the console's own test
+asserts it.

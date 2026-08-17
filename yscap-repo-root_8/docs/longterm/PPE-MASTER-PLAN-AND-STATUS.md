@@ -305,6 +305,19 @@ surface or lock-desk UI yet. *(MEGA §8. Later increment.)*
     opened. Both are scoped now, guarded at the store layer (see the note in §2.9's suites below).
   - Tests `test-lt-ppe-console-db.js` (the journey end to end over a real Postgres) + section E of
     `test-lt-ppe-store-roundtrip-db.js`; ten mutations proven to bite.
+- **DONE (2026-08-17) — the sheet's own DEAD-CELL check has a door: `GET /rate-sheets/:id/coverage`.**
+  `agreement-scenario-generator.js` derives a battery from a sheet's OWN compiled rules and names every
+  cell it cannot satisfy; nothing called it. The route is FREE (no vendor call, no writes, no ledger
+  row), which is what makes it the check to run BEFORE a paid battery — a transposed band
+  (`fico_min 900, fico_max 800`) is invisible in every other way. It does NOT take the generator's word:
+  a cell counts as reachable only when the sheet was PRICED there and the rule's own trace shows it
+  contributed; a generator/pricer disagreement and an unpriceable scenario each get their own bucket.
+  Wires `agreement-scenario-generator` + `agreement-dimensions` + `coverage` off the unreached ledger.
+  Test `test-lt-ppe-ratesheet-coverage-db.js` (healthy sheet AND broken sheet, four mutations proven).
+- **DONE (2026-08-17) — both new checks are on the SCREEN.** The console offers "Check its own cells
+  (free)" and "Measure against Lender Price", with the cost of the paid one stated beside the free one;
+  a finished run re-reads the sheet, an unrecorded verdict is shown as unrecorded, and a 503 renders as
+  the upstream speaking. Still no control that records a typed run (asserted, R7).
 - **DONE (2026-08-17) — the console SCREEN.** `RateSheetConsole.jsx` on `LtPpe.jsx` walks the whole
   journey: add the investor, add its program, open a draft sheet, load the grid and the LLPAs, read it
   back, publish. The gate's verdict is shown BEFORE Publish is pressed, and its refusal carries both
