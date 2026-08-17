@@ -132,6 +132,25 @@ export const ltApi = {
   // which is where the manifest handler is actually wired — NOT `/ppe/fields`, which
   // does not exist. Read-only and pure on the server (no Lender Price call).
   dscrFields: () => ltGet(lt('/dscr/fields')),
+
+  // ---- onboarding + the rate-sheet console --------------------------------
+  // These are the WRITERS that had no door: before them an investor could not be
+  // onboarded through the product at all, and the ≥200-scenario Lender Price
+  // agreement gate on the publish guarded something nothing could reach.
+  //
+  // There is deliberately NO method here that records an agreement RUN. A run comes
+  // from the harness; a typed one would satisfy the gate with nothing compared. The
+  // human path is `ppePublishRateSheet(id, { override, overrideReason })`, which the
+  // server records against the version with the person's name on it.
+  ppeCreateInvestor: (body) => ltPost(lt('/ppe/investors'), body),
+  ppeCreateProgram: (body) => ltPost(lt('/ppe/programs'), body),
+  ppeCreateRateSheet: (programId, body = {}) => ltPost(lt(`/ppe/programs/${encodeURIComponent(programId)}/rate-sheets`), body),
+  ppeRateSheet: (id) => ltGet(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}`)),
+  ppeSetBasePrices: (id, rows) => ltPut(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/base-prices`), { rows }),
+  ppeSetAdjustments: (id, rows) => ltPut(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/adjustments`), { rows }),
+  ppeSetPriceLimit: (id, body) => ltPut(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/price-limit`), body),
+  ppeRateSheetAgreement: (id) => ltGet(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/agreement`)),
+  ppePublishRateSheet: (id, body = {}) => ltPost(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/publish`), body),
 };
 
 export default ltApi;

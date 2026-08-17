@@ -295,17 +295,82 @@ const twoCellMatrix = () => ({
     await store.replaceBasePrices(db, scope, eVer.id, [{ noteRateMilliPct: 70000, lockDays: 30, priceMilli: 101500 }]);
     await store.replaceAdjustments(db, scope, eVer.id, [{ code: 'x', dimension: 'dscr', dscrMin: 1000, dscrMax: 1250, adjMilli: 250 }]);
 
-    await store.replaceBasePrices(db, `${scope}_intruder`, eVer.id, [{ noteRateMilliPct: 1, lockDays: 1, priceMilli: 1 }]);
-    const bp = await db.query('SELECT COUNT(*)::int AS n, MIN(price_milli)::int AS p FROM lt_ppe_base_price WHERE version_id = $1 AND scope = $2', [eVer.id, scope]);
-    ok(bp.rows[0].n === 1 && bp.rows[0].p === 101500,
-      'E1 a write under ANOTHER scope does not delete this scope\'s base prices');
+    // The write is REFUSED outright, not merely made harmless. Scoping the DELETE alone stopped an
+    // intruder DESTROYING this grid, and left them able to ADD rows to it — which matters because
+    // `loadRateSheet` selects the grid by version_id ALONE, so those foreign rows would join the grid
+    // the OWNER's quotes price from.
+    let refused = null;
+    try {
+      await store.replaceBasePrices(db, `${scope}_intruder`, eVer.id, [{ noteRateMilliPct: 1, lockDays: 1, priceMilli: 1 }]);
+    } catch (e) { refused = e; }
+    ok(refused && refused.code === 'LT_PPE_VERSION_OUT_OF_SCOPE', 'E1 a base-price write against another scope\'s version is REFUSED');
 
-    await store.replaceAdjustments(db, `${scope}_intruder`, eVer.id, []);
-    const adjRows = await db.query('SELECT COUNT(*)::int AS n FROM lt_ppe_adjustment WHERE version_id = $1 AND scope = $2', [eVer.id, scope]);
-    ok(adjRows.rows[0].n === 1, 'E2 …nor this scope\'s LLPAs');
+    let refusedAdj = null;
+    try {
+      await store.replaceAdjustments(db, `${scope}_intruder`, eVer.id, []);
+    } catch (e) { refusedAdj = e; }
+    ok(refusedAdj && refusedAdj.code === 'LT_PPE_VERSION_OUT_OF_SCOPE', 'E2 …and so is an LLPA write');
+
+    // Nothing of the owner's moved, and — the half a scoped DELETE could not give — nothing of the
+    // intruder's was ADDED either, on ANY scope.
+    const bp = await db.query('SELECT COUNT(*)::int AS n, MIN(price_milli)::int AS p FROM lt_ppe_base_price WHERE version_id = $1', [eVer.id]);
+    ok(bp.rows[0].n === 1 && bp.rows[0].p === 101500, 'E2a the owner\'s grid is untouched and carries no foreign row');
+    const adjRows = await db.query('SELECT COUNT(*)::int AS n FROM lt_ppe_adjustment WHERE version_id = $1', [eVer.id]);
+    ok(adjRows.rows[0].n === 1, 'E2b …and so are the LLPAs');
 
     ok(await store.rateSheetVersionInScope(db, scope, eVer.id) !== null, 'E3 rateSheetVersionInScope finds a version in its own scope');
     ok(await store.rateSheetVersionInScope(db, `${scope}_intruder`, eVer.id) === null, 'E4 …and refuses it from another scope');
+
+    // ---- F. a grid write is ATOMIC ----------------------------------------
+    //
+    // REPRODUCED BEFORE IT WAS FIXED, against this database: `replaceBasePrices` is
+    // DELETE-then-INSERT-in-a-loop, and on a pool each statement is its own transaction — so one
+    // duplicated cell (an ordinary copy/paste mistake) tripped lt_ppe_base_price_cell_uk AFTER the
+    // delete had already committed, and a live two-row sheet became a one-row sheet. Any INSERT
+    // failure does it, not only a duplicate. The grid is what every quote prices from, so it is the
+    // one thing here that must never be half-written.
+    console.log('\nF. a grid write is atomic\n');
+
+    await store.replaceBasePrices(db, scope, eVer.id, [
+      { noteRateMilliPct: 7000, lockDays: 30, priceMilli: 101500 },
+      { noteRateMilliPct: 7125, lockDays: 30, priceMilli: 102850 },
+    ]);
+    const gridBefore = await db.query(
+      'SELECT COUNT(*)::int AS n, SUM(price_milli)::int AS s FROM lt_ppe_base_price WHERE version_id = $1', [eVer.id]);
+
+    let threw = null;
+    try {
+      await store.replaceBasePrices(db, scope, eVer.id, [
+        { noteRateMilliPct: 7000, lockDays: 30, priceMilli: 101500 },
+        { noteRateMilliPct: 7000, lockDays: 30, priceMilli: 999999 },   // the same cell twice
+        { noteRateMilliPct: 7250, lockDays: 30, priceMilli: 103000 },
+      ]);
+    } catch (e) { threw = e; }
+    ok(threw !== null && String(threw.code) === '23505', 'F1 a duplicated cell is refused by the unique key');
+    const gridAfter = await db.query(
+      'SELECT COUNT(*)::int AS n, SUM(price_milli)::int AS s FROM lt_ppe_base_price WHERE version_id = $1', [eVer.id]);
+    // The SUM matters as much as the count: a rolled-back write that happened to leave two rows of
+    // the WRONG prices would pass a count check and still be a corrupted sheet.
+    ok(gridAfter.rows[0].n === gridBefore.rows[0].n && gridAfter.rows[0].s === gridBefore.rows[0].s,
+      'F2 …and the previous grid is byte-for-byte intact — the failed write rolled back whole');
+
+    await store.replaceBasePrices(db, scope, eVer.id, [{ noteRateMilliPct: 7500, lockDays: 45, priceMilli: 100250 }]);
+    const replaced = await db.query(
+      'SELECT COUNT(*)::int AS n, MIN(price_milli)::int AS p FROM lt_ppe_base_price WHERE version_id = $1', [eVer.id]);
+    ok(replaced.rows[0].n === 1 && replaced.rows[0].p === 100250,
+      'F3 …while a GOOD write still replaces the grid cleanly (the transaction did not break the ordinary path)');
+
+    let adjThrew = null;
+    try {
+      await store.replaceAdjustments(db, scope, eVer.id, [
+        { code: 'ok', dimension: 'dscr', adjMilli: 250 },
+        { code: 'bad', dimension: null, adjMilli: 100 },   // dimension is NOT NULL
+      ]);
+    } catch (e) { adjThrew = e; }
+    ok(adjThrew !== null, 'F4 an LLPA row the column refuses raises');
+    const adjLeft = await db.query('SELECT COUNT(*)::int AS n FROM lt_ppe_adjustment WHERE version_id = $1', [eVer.id]);
+    ok(adjLeft.rows[0].n === 1,
+      'F5 …and the LLPA set rolled back whole too — not the one good row left behind on its own');
 
     await db.query('DELETE FROM lt_ppe_base_price WHERE version_id = $1', [eVer.id]);
     await db.query('DELETE FROM lt_ppe_adjustment WHERE version_id = $1', [eVer.id]);

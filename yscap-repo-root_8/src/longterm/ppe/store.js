@@ -260,29 +260,85 @@ async function createRateSheetVersion(db, scope, opts = {}) {
 
 // Replace a version's base-price grid (append-only versioning means a version's grid is set once; this
 // is a full-set write used at ingestion). Each row: { noteRateMilliPct, lockDays, product?, priceMilli }.
-async function replaceBasePrices(db, scope, versionId, rows = []) {
-  // SCOPED DELETE. Every row is INSERTed with the caller's scope, so deleting by version_id alone was
-  // asymmetric: a caller holding a version id from ANOTHER tenant would wipe that tenant's grid and
-  // re-stamp the rows as its own. Unreachable while nothing called this, and armed the moment a door
-  // opened — so the scope the function already takes is now actually used. Multi-tenancy is a
-  // governing principle here (§2.1), not a later feature.
-  await db.query('DELETE FROM lt_ppe_base_price WHERE version_id = $1 AND scope = $2', [versionId, scope]);
-  for (const bp of rows) {
-    await db.query(
-      `INSERT INTO lt_ppe_base_price (scope, version_id, note_rate_milli_pct, lock_days, product, price_milli)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-      [scope, versionId, bp.noteRateMilliPct, bp.lockDays, bp.product || '', bp.priceMilli]);
+/**
+ * ATOMIC, and that is the whole point of the transaction.
+ *
+ * This is DELETE-then-INSERT-in-a-loop over the grid every quote prices from. On a pool each
+ * statement is its own transaction, so a failure part way through used to leave the OLD grid already
+ * deleted and the new one half written — reproduced against a real Postgres with an ordinary
+ * copy/paste mistake: one duplicated cell trips `lt_ppe_base_price_cell_uk`, and a live two-row sheet
+ * became a one-row sheet with an error returned to the caller. Any INSERT failure does it (a value too
+ * big for INTEGER, a NOT NULL), not only a duplicate. A rate sheet is the one thing here that must
+ * never be half-written, so the whole replacement commits or none of it does.
+ *
+ * `opts.client` lets a caller that is ALREADY inside a transaction pass its client in and keep the
+ * grid write in the same unit of work rather than opening a nested one.
+ */
+/**
+ * AND IT REFUSES A VERSION THAT IS NOT THE CALLER'S.
+ *
+ * Scoping the DELETE stopped one tenant DESTROYING another's grid, and that is only half of it: the
+ * INSERTs still stamped the caller's own scope, so an intruder could ADD rows onto somebody else's
+ * version. That is not harmless, because `loadRateSheet` selects the grid by `version_id` ALONE — so
+ * those foreign rows would join the grid the owner's quotes price from. Refusing here makes the store
+ * safe for ANY caller rather than only for callers that remember to check first; the routes check
+ * ownership too, and defence in depth is the point.
+ */
+async function assertVersionInScope(c, scope, versionId) {
+  const r = await c.query('SELECT 1 FROM lt_ppe_rate_sheet_version WHERE id = $1 AND scope = $2', [versionId, scope]);
+  if (!r.rows.length) {
+    const e = new Error('That rate-sheet version does not belong to this scope.');
+    e.code = 'LT_PPE_VERSION_OUT_OF_SCOPE';
+    throw e;
   }
-  return rows.length;
+}
+
+async function replaceGridRows(db, scope, versionId, opts, run) {
+  if (opts && opts.client) {
+    await assertVersionInScope(opts.client, scope, versionId);
+    return run(opts.client);
+  }
+  const client = await (typeof db.getClient === 'function' ? db.getClient() : db.connect());
+  try {
+    await client.query('BEGIN');
+    await assertVersionInScope(client, scope, versionId);
+    const out = await run(client);
+    await client.query('COMMIT');
+    return out;
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* the original error is the one that matters */ }
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+async function replaceBasePrices(db, scope, versionId, rows = [], opts = {}) {
+  return replaceGridRows(db, scope, versionId, opts, async (c) => {
+    // SCOPED DELETE. Every row is INSERTed with the caller's scope, so deleting by version_id alone was
+    // asymmetric: a caller holding a version id from ANOTHER tenant would wipe that tenant's grid and
+    // re-stamp the rows as its own. Unreachable while nothing called this, and armed the moment a door
+    // opened — so the scope the function already takes is now actually used. Multi-tenancy is a
+    // governing principle here (§2.1), not a later feature.
+    await c.query('DELETE FROM lt_ppe_base_price WHERE version_id = $1 AND scope = $2', [versionId, scope]);
+    for (const bp of rows) {
+      await c.query(
+        `INSERT INTO lt_ppe_base_price (scope, version_id, note_rate_milli_pct, lock_days, product, price_milli)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+        [scope, versionId, bp.noteRateMilliPct, bp.lockDays, bp.product || '', bp.priceMilli]);
+    }
+    return rows.length;
+  });
 }
 
 // Replace a version's LLPA adjustment rows. Each row: { dimension, ficoMin?, ficoMax?, ltvMin?,
 // ltvMax?, dscrMin?, dscrMax?, predicate?, adjMilli, adjustmentTarget?, unit?, signConvention?,
 // cumulative?, priority?, reason?, code?, meta? }. Bands are half-open [min,max).
-async function replaceAdjustments(db, scope, versionId, rows = []) {
-  await db.query('DELETE FROM lt_ppe_adjustment WHERE version_id = $1 AND scope = $2', [versionId, scope]); // scoped — see replaceBasePrices
+async function replaceAdjustments(db, scope, versionId, rows = [], opts = {}) {
+  return replaceGridRows(db, scope, versionId, opts, async (c) => {
+  await c.query('DELETE FROM lt_ppe_adjustment WHERE version_id = $1 AND scope = $2', [versionId, scope]); // scoped — see replaceBasePrices
   for (const a of rows) {
-    await db.query(
+    await c.query(
       `INSERT INTO lt_ppe_adjustment
          (scope, version_id, dimension, fico_min, fico_max, ltv_min, ltv_max, dscr_min, dscr_max,
           predicate, adj_milli, adjustment_target, unit, sign_convention, cumulative, priority, reason, code, meta)
@@ -293,6 +349,7 @@ async function replaceAdjustments(db, scope, versionId, rows = []) {
         a.cumulative !== false, a.priority || 0, a.reason || null, a.code || null, JSON.stringify(a.meta || {})]);
   }
   return rows.length;
+  });
 }
 
 // Set (upsert) a version's price limits. { minPriceMilli?, roundingIncrementMilli?, roundingMode?,
