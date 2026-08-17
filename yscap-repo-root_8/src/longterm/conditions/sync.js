@@ -428,6 +428,34 @@ async function dueLoans(dbc, budget, refreshHours) {
 }
 
 /**
+ * How stale a mirrored loan may be before this pass reads it again.
+ *
+ * ZERO IS A REAL ANSWER — "re-read every loan now", which is what a human asking
+ * for a pass by hand means. Only an ABSENT or unreadable value falls back to the
+ * ordinary refresh age; `> 0` would have silently turned the deliberate re-read
+ * into the default and re-read almost nothing.
+ *
+ * A NEGATIVE age is not an instruction, it is junk — `now() - '-3 hours'` puts the
+ * cutoff in the FUTURE, which would sweep the whole book on a typo. It falls back.
+ *
+ * This is the ONE definition: the HTTP door hands its raw body value straight
+ * through rather than deciding again, so the button and the sweep can never
+ * disagree about what "0" means.
+ */
+function refreshHoursFor(opts = {}) {
+  const raw = opts && opts.refreshHours;
+  // `Number(null)`, `Number('')`, `Number(false)` and `Number([])` are all ZERO —
+  // finite, non-negative, and therefore indistinguishable from a deliberate "now"
+  // if this were left to `Number()` alone. A caller that sent nothing must not be
+  // read as having asked for the whole book, so only a real number or a number
+  // somebody typed is considered at all.
+  if (typeof raw !== 'number' && typeof raw !== 'string') return DEFAULT_REFRESH_HOURS;
+  if (typeof raw === 'string' && raw.trim() === '') return DEFAULT_REFRESH_HOURS;
+  const asked = Number(raw);
+  return Number.isFinite(asked) && asked >= 0 ? asked : DEFAULT_REFRESH_HOURS;
+}
+
+/**
  * Read a bounded slice of the book.
  *
  * Refuses politely rather than throwing when the feature is off or Encompass is
@@ -444,7 +472,7 @@ async function syncOnce(opts = {}) {
   }
 
   const budget = Number(opts.readBudget) > 0 ? Math.trunc(opts.readBudget) : DEFAULT_READ_BUDGET;
-  const refreshHours = Number(opts.refreshHours) > 0 ? Number(opts.refreshHours) : DEFAULT_REFRESH_HOURS;
+  const refreshHours = refreshHoursFor(opts);
 
   const dbc = await lazy.db.getClient();
   let due;
@@ -476,6 +504,7 @@ module.exports = {
   DEFAULT_READ_BUDGET,
   DEFAULT_REFRESH_HOURS,
   enabled,
+  refreshHoursFor,
   syncConditionsForLoan,
   syncDocumentsForLoan,
   syncOnce,

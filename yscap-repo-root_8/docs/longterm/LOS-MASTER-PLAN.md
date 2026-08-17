@@ -417,29 +417,31 @@ because their user *is* the broker; ours cannot. `AUDIENCE-RULES.md` outranks an
 
 ## 5. The Condition Center
 
-> ### DEFERRED — owner-directed 2026-08-14
+> ### THE READ SIDE IS BUILT — behind the switch (2026-08-17)
 >
-> *"put the condition center in side for now that center should say colming soom continie
-> building the rest non stop"*
+> The deferral of 2026-08-14 (*"put the condition center in side for now that center should
+> say colming soom continie building the rest non stop"*) is **half lifted**: the READING is
+> built, and the switch it was deferred behind is the switch that turns it on.
 >
-> **The Condition Center is set aside.** It keeps its place in the shell — the nav entry and
-> the loan-workspace section both exist — and both render a **"Coming soon"** panel. Nothing
-> else changes:
+> **What now exists** — mirror tables `db/574` (`lt_conditions`, `lt_condition_comments`,
+> `lt_documents`, `lt_document_attachments`, `lt_document_conditions` + four freshness columns
+> on `lt_loans`); a read-only sync (`src/longterm/conditions/sync.js`) called from BOTH the
+> whole-book pass and its own admin-only door `POST /api/lt/sync/conditions`; a read layer
+> (`read.js`) and a GET-only router; and the screen `LtConditionCenter.jsx` on the loan.
 >
-> - **No `lt_conditions*` tables are created yet.** A migration that ships a table nobody
->   reads is a schema we would have to live with before we know the shape is right; the
->   research below (§5.0–§5.5) stays as the design of record for when it is taken up.
-> - **No condition sync runs.** The read-only sweep that settled §5.0 is a research script,
->   not a worker, and it stays that way.
-> - **The placeholder is a SETTING, not a hard-coded screen** (`conditions.enabled`,
->   default `false`). Turning it on is what un-hides the real screen when it is built — so
->   the deferral is a switch, exactly like every other customisation in §7. A buyer who
->   never wants it leaves it off.
-> - **Nothing downstream may depend on it.** No stage, no access rule, no pipeline column
->   and no settings default may read a condition; if a later phase wants one, it waits.
+> **What has NOT changed:**
 >
-> Everything below is the plan for the build, held in place, not deleted. When the owner
-> lifts the deferral, §8's phase order picks it up where it was.
+> - **`conditions.enabled` still defaults to `false`**, and it is checked in the SYNC as well
+>   as on the screen — so on every deployment as it stands nothing is read, nothing is
+>   written, and the "Coming soon" panel is the honest answer rather than a placeholder shown
+>   while the data quietly flows.
+> - **The eFolder UPLOAD is still BLOCKED.** It is a WRITE to Encompass, its shape is recorded
+>   as UNVERIFIED on `docs/ENCOMPASS-WRITE-AUTHORIZATIONS.md`, and the read side carries no
+>   control that could perform one. §5.6 stays the plan, not the build.
+> - **Nothing downstream depends on it.** No stage, no access rule, no pipeline column and no
+>   settings default reads a condition.
+>
+> Everything below stays the design of record; §5.6 (the write side) is what remains.
 
 The owner called this a major part of the build, and the reference portal's own condition
 screen is the interaction the whole product is judged on.
@@ -815,11 +817,13 @@ stretched its whole card to 759px inside a 390px screen — and `html{overflow-x
 it, so the page reported no sideways scrolling while half of every row was cut off and
 unreachable. Measuring `documentElement` is what made it invisible; measure `document.body`.
 
-### Phase 5 — The Condition Center (read) — **DEFERRED (owner-directed 2026-08-14)**
-Set aside. The nav entry and the workspace section ship as a **"Coming soon"** placeholder
-behind the `conditions.enabled` setting (default off); no tables, no sync, no dependants.
-The design is held in §5. **Ends with:** nothing — this phase does not run until the owner
-lifts the deferral, and the phases below moved up one to take its slot.
+### Phase 5 — The Condition Center (read) — **BUILT (behind the switch)**
+The mirror (`db/574`), the read-only sync, the GET-only routes and the screen — both feeds:
+this loan's conditions with the documents that answer each one, and the eFolder needs list.
+`conditions.enabled` still defaults to OFF and is checked in the SYNC as well as on the
+screen, so an untouched deployment reads nothing and still shows "Coming soon". The eFolder
+UPLOAD is a WRITE and stays blocked on the pad. **Ends with:** a loan can answer "what is
+this file waiting on?" from Encompass's own record, and nothing can write back.
 
 ### Phase 6 — Settings — **BUILT**
 `lt_settings`, both screens, and the pass that moves every value this plan named as a
@@ -1001,8 +1005,10 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
 
 **Still open:**
 
-5. **§5.0 — do conditions exist in this tenant or not?** Two of our own measurements disagree.
-   This is the largest open question in the plan and it blocks phase 5.
+5. ~~**§5.0 — do conditions exist in this tenant or not?**~~ **SETTLED 2026-08-14** by a
+   read-only sweep, and recorded in §5.0: they exist, and they are a POST-PURCHASE artifact.
+   The four v1 routes answer `200 []` on every loan — an empty 200 is not proof of absence —
+   while the v3 Enhanced Conditions resource answers. Phase 5's read side is built on it.
 6. **ICE entitlement — REVISED 2026-08-16. The owner's objection was right, and the
    likeliest cause is ours, not theirs.** 68 endpoints answer 403, including the loan-folder
    list, milestone logs, the v3 associates roster and **69 of the 91 Milestone Completion
@@ -1137,13 +1143,14 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
 - **The 403s are a real ceiling.** Until the client registration gains `encompass_admin`, we
   cannot read the loan-folder list, the milestone logs, or most of the completion rules — and
   custom dropdown option sets are inferred floors, not the real lists.
-- **The condition centre may be built on sand — see §5.0.** Our own two measurements disagree
-  about whether this tenant holds any conditions at all. Even on the optimistic reading, 12 of
-  490 long-term loans carry them, because the investor underwrites most files — so a centre
-  built only against Encompass conditions is quiet on 97% of the book. On the pessimistic
-  reading the live workflow is the eFolder needs-list instead, and the module is a different
-  product. **This is the single biggest scoping risk in the plan**, and it is a question for
-  the owner rather than a decision for us.
+- **The condition centre is quiet on most of the book — the measured half of §5.0.** The
+  question "do conditions exist at all" is SETTLED (they do, on the v3 resource, as a
+  post-purchase artifact), but the scoping risk it carried is real and remains: only a
+  minority of long-term loans carry Encompass conditions, because the investor underwrites
+  most files. That is why the built read side answers with BOTH feeds and states which of the
+  two this file's work actually is (`face`) — a centre that only ever showed conditions would
+  read as empty on most of the book. Whether the eFolder needs-list should become the primary
+  workflow is still a question for the owner rather than a decision for us.
 - **The URLA arrays are not where a modern reader would look.** In this tenant the loan
   carries its data in `vols[]` / `vods[]` / `otherAssets[]`, while the modern `assets[]` and
   `liabilities[]` arrays are **empty**. A 1003 screen built against the modern arrays would

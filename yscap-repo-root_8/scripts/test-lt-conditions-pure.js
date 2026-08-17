@@ -24,6 +24,8 @@ const path = require('path');
 
 const mapper = require('../src/longterm/conditions/mapper');
 const read = require('../src/longterm/conditions/read');
+// Safe to require with no database: sync.js pulls db/client/settings lazily.
+const sync = require('../src/longterm/conditions/sync');
 
 let failures = 0;
 const check = (cond, msg) => {
@@ -226,6 +228,37 @@ check(clientView.body === 'Please send the operating agreement.',
   'a client sees the EXTERNAL description — never the internal one, which carries our own reasoning');
 check(clientView.owner === null && clientView.assignedTo === null,
   'and never who inside the company owns it');
+
+// ── Pressing the button by hand ─────────────────────────────────────────────
+// A person asking for a pass means "read them again NOW". Reading a refresh age
+// of 0 as "unset" would silently give them the ordinary 12-hour age and re-read
+// almost nothing — the button would look like it worked and do nothing.
+console.log('\nasking for a pass by hand means NOW');
+
+check(sync.refreshHoursFor({ refreshHours: 0 }) === 0,
+  'zero is a real answer — every mirrored loan is re-read, which is what pressing the button means');
+check(sync.refreshHoursFor({}) === sync.DEFAULT_REFRESH_HOURS,
+  'an ABSENT age is the ordinary refresh age — the scheduled sweep is unchanged');
+check(sync.refreshHoursFor({ refreshHours: 3 }) === 3,
+  'a real age is honoured as asked');
+check(sync.refreshHoursFor({ refreshHours: -3 }) === sync.DEFAULT_REFRESH_HOURS,
+  'a NEGATIVE age is junk, not an instruction — it would put the cutoff in the FUTURE and sweep the whole book on a typo');
+check(sync.refreshHoursFor({ refreshHours: 'soon' }) === sync.DEFAULT_REFRESH_HOURS
+  && sync.refreshHoursFor({ refreshHours: null }) === sync.DEFAULT_REFRESH_HOURS
+  && sync.refreshHoursFor({ refreshHours: '' }) === sync.DEFAULT_REFRESH_HOURS
+  && sync.refreshHoursFor({ refreshHours: false }) === sync.DEFAULT_REFRESH_HOURS
+  && sync.refreshHoursFor({ refreshHours: [] }) === sync.DEFAULT_REFRESH_HOURS,
+  '…and so is anything unreadable — including null, blank, false and an empty list, every one of which Number() reads as a perfectly valid ZERO');
+check(sync.refreshHoursFor({ refreshHours: '0' }) === 0,
+  'while a typed "0" from a form IS the deliberate re-read — a form sends strings');
+
+// ONE definition: the HTTP door hands the raw body value through rather than
+// deciding again. A second copy of this rule is how the button and the sweep
+// come to disagree about what "0" means.
+const syncRouteSrc = fs.readFileSync(path.join(__dirname, '..', 'src/longterm/routes/sync.js'), 'utf8')
+  .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+check(/refreshHours:\s*body\.refreshHours/.test(syncRouteSrc),
+  'and the door passes the asked-for age straight through — it never re-decides what an age means');
 
 // ── The source guards ───────────────────────────────────────────────────────
 console.log('\nnothing here can write to Encompass, or to us');

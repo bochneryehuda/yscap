@@ -29,6 +29,8 @@ if (!process.env.DATABASE_URL) {
   process.exit(0);
 }
 
+const fs = require('fs');
+const path = require('path');
 const db = require('../src/longterm/db');
 const sync = require('../src/longterm/conditions/sync');
 const read = require('../src/longterm/conditions/read');
@@ -234,6 +236,29 @@ async function main() {
     const swept = await sync.syncOnce({ client: stubClient([], []) });
     check(swept.ok === false && /switched off|not connected/i.test(swept.reason || ''),
       'with conditions.enabled off (its default), a sweep reads NOTHING and says why — the placeholder on the screen is not a lie told while the data flows anyway');
+
+    // ── SOMETHING ACTUALLY CALLS IT ─────────────────────────────────────────
+    // The read side shipped able to answer only "nothing", because the sweep had
+    // no caller anywhere in the repository: the mirror could never fill, and no
+    // test of the sweep itself could notice. Read the SOURCE, because that is the
+    // only place the wiring exists.
+    console.log('\nthe sweep is actually wired to something');
+    const syncRoute = fs.readFileSync(path.join(__dirname, '..', 'src/longterm/routes/sync.js'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    check(/require\(['"]\.\.\/conditions\/sync['"]\)/.test(syncRoute),
+      'the sync door knows the Condition Center exists');
+    check(/conditionSync\.syncOnce\(/.test(syncRoute),
+      '…and calls the sweep — a mirror nothing ever fills can only ever answer "nothing"');
+    check((syncRoute.match(/conditionSync\.syncOnce\(/g) || []).length >= 2,
+      'from BOTH doors: the whole-book pass carries it along, and it has its own door for reading the centre again without re-reading every loan');
+    check(/router\.post\(['"]\/conditions['"],\s*requireSyncAdmin/.test(syncRoute),
+      'and that door is ADMIN-gated like every other pass — a bounded but real burst of Encompass reads');
+
+    // A hand-run pass means "read them again NOW". `> 0` would have silently
+    // turned that into the ordinary refresh age and re-read almost nothing.
+    const zeroDue = await sync._internals.dueLoans(db, 50, 0);
+    check(zeroDue.some((r) => r.id === loanId),
+      'asking for a refresh age of ZERO re-reads a loan that was just read — which is what pressing the button by hand means');
   } finally {
     if (loanId) {
       // One DELETE: every mirror row cascades from the loan.

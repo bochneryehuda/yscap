@@ -78,6 +78,10 @@ export const ltApi = {
   // The loan sync.
   syncState: () => ltGet(lt('/sync')),
   runSync: (body = {}) => ltPost(lt('/sync'), body),
+  // The Condition Center's own pass, without re-reading every loan. Admin-only
+  // on the server; called anyway from a non-admin's screen so the REFUSAL is
+  // shown — a hidden button is indistinguishable from a broken one.
+  runConditionSync: (body = {}) => ltPost(lt('/sync/conditions'), body),
 
   // Saved pipeline views. A view carries FILTERS and never a scope — the server
   // appends them to whatever the signed-in person is allowed to see — so opening
