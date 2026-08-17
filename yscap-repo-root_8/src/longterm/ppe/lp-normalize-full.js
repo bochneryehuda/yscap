@@ -30,13 +30,39 @@ function isNum(x) { return typeof x === 'number' && Number.isFinite(x); }
 function norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
 function milli(v, scale) { return isNum(v) ? Math.round(v * scale) : null; }
 
-// A program/investor matches the filter when every provided key matches (case-insensitive, exact).
+/**
+ * `programLike` — a program-FAMILY pattern, because an exact program name CANNOT express the thing we
+ * actually need to scope to.
+ *
+ * MEASURED LIVE (2026-08-17, one canonical scenario): Lender Price splits ONE Deephaven DSCR rate
+ * sheet into THREE separate PROGRAMS by DSCR band — `DSCR < 1.00 - 30 Yr Fixed`,
+ * `DSCR  1.00-1.24   -  30 Yr Fixed`, `DSCR  >= 1.25  - 30 Yr Fixed` — and prices whichever band it
+ * selects while DECLINING the other two ("DSCR >=1.25%  only eligible on this program"). The same
+ * investor also sells Expanded Prime, Non Prime and ITIN, which decline on every DSCR scenario. So
+ * scoping by `investor` alone leaves 535 declined items on the table and scoping by an exact
+ * `program` name pins us to ONE band that LP may not have chosen — either way the disqualification
+ * comparison is meaningless. Our sheet models the whole DSCR family as one program with the band as an
+ * additive adjustment, so the LP side must be scoped to that FAMILY.
+ *
+ * Accepts a RegExp or a string pattern (compiled case-insensitively). A pattern that does not compile
+ * THROWS here rather than being ignored — a filter that silently matches everything is exactly the
+ * failure this exists to prevent.
+ */
+function programRe(v) {
+  if (v == null) return null;
+  if (v instanceof RegExp) return v;
+  return new RegExp(String(v), 'i');
+}
+
+// A program/investor matches the filter when every provided key matches (case-insensitive, exact —
+// except `programLike`, which is a family PATTERN; see above).
 function matches(p, filter) {
   if (!filter) return true;
   if (filter.program != null && norm(p.program) !== norm(filter.program)) return false;
   if (filter.product != null && norm(p.product) !== norm(filter.product)) return false;
   if (filter.lender != null && norm(p.lender) !== norm(filter.lender)) return false;
   if (filter.investor != null && norm(p.investor) !== norm(filter.investor)) return false;
+  if (filter.programLike != null && !programRe(filter.programLike).test(String(p.program == null ? '' : p.program))) return false;
   return true;
 }
 
@@ -101,8 +127,8 @@ function rungOf(option, rateScale, priceScale) {
 function normalizeLpFull(full, opts = {}) {
   const rateScale = opts.rateScale == null ? 1000 : opts.rateScale;
   const priceScale = opts.priceScale == null ? 1000 : opts.priceScale;
-  const filter = (opts.program != null || opts.product != null || opts.lender != null || opts.investor != null)
-    ? { program: opts.program, product: opts.product, lender: opts.lender, investor: opts.investor }
+  const filter = (opts.program != null || opts.product != null || opts.lender != null || opts.investor != null || opts.programLike != null)
+    ? { program: opts.program, product: opts.product, lender: opts.lender, investor: opts.investor, programLike: opts.programLike }
     : null;
 
   const src = (full && Array.isArray(full.programs)) ? full.programs : [];
@@ -141,8 +167,13 @@ function normalizeLpDisqualified(disq, opts = {}) {
   for (const lg of d.lenders) {
     if (opts.investor != null && norm(lg.investor) !== norm(opts.investor) && norm(lg.lender) !== norm(opts.investor)) continue;
     if (opts.lender != null && norm(lg.lender) !== norm(opts.lender)) continue;
+    // The disqualify tree's rows carry the PROGRAM on the item, not on the lender group, so the family
+    // pattern is applied here — this is what finally makes the disqualify side of the E3 gate usable
+    // (see programRe: an investor declines its own other product lines on every DSCR scenario).
+    const progRe = programRe(opts.programLike);
     for (const item of (lg.items || [])) {
       if (opts.program != null && norm(item.program) !== norm(opts.program)) continue;
+      if (progRe && !progRe.test(String(item.program == null ? '' : item.program))) continue;
       declined.push({
         lender: lg.lender || null, investor: lg.investor || null, program: item.program || null,
         reasons: (item.reasons || []).map((r) => ({ rule: r.rule || null, adjType: r.adjType || null })),

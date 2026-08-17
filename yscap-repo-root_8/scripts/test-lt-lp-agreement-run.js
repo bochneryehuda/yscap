@@ -82,6 +82,34 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
   const s = settings.resolveAll().values;
   const filter = {};
   for (const k of ['program', 'investor', 'lender', 'product']) { const v = arg(`--filter-${k}`); if (v) filter[k] = v; }
+  // --filter-program-like: the program FAMILY pattern. Lender Price splits ONE rate sheet into several
+  // PROGRAMS (Deephaven's DSCR sheet is three programs, one per DSCR band, and the same investor also
+  // sells Expanded Prime / Non Prime / ITIN, which decline on every DSCR scenario). An exact --filter-
+  // program pins us to one band LP may not have chosen; the investor alone leaves the other product
+  // lines in. See lp-normalize-full.programRe.
+  {
+    const v = arg('--filter-program-like');
+    if (v) { try { filter.programLike = new RegExp(v, 'i'); } catch (e) { die(5, `--filter-program-like is not a valid pattern: ${e.message}`); } }
+  }
+
+  // ---- THE MIS-INVOCATION GUARD -------------------------------------------------------------------
+  // An UNSCOPED run of the built-in Deephaven sheet does not produce a weak verdict — it produces a
+  // CONFIDENT WRONG ONE, and that is the expensive direction. Measured live 2026-08-17 on the canonical
+  // battery: with no filter the LP side is the WHOLE MARKET, so normalizeLpFull's ladder merges 30 DSCR
+  // programs across 16 lenders (→ `coupon_missing_ours` on coupons no single sheet prices) and the
+  // disqualify tree contributes 9,146 declined items from 20 lenders (→ `disqualification_missing` on
+  // every scenario, because SOMEBODY always declines). The run printed "agreement 0.00% — GATE MET NO"
+  // for 299 scenarios, which reads exactly like a total engine regression and is not one: the same
+  // battery scoped to `Deephaven Mortgage` agrees on 244/295. A gate that answers confidently when it
+  // was asked the wrong question is worse than a gate that refuses, so this refuses.
+  if (builtin && !flag('--unscoped') && !filter.investor && !filter.lender && !filter.program && !filter.programLike) {
+    die(6, 'REFUSING to run the built-in Deephaven sheet UNSCOPED.\n\n'
+      + 'With no --filter-*, the Lender Price side is every lender in the market, so our one-investor\n'
+      + 'sheet is compared against ~30 DSCR programs and ~9,000 unrelated declines. The result is a\n'
+      + 'confident 0.00% that means nothing. Scope it to the sheet\'s own investor, e.g.\n\n'
+      + '  --filter-investor "Deephaven Mortgage" --filter-program-like "^dscr"\n\n'
+      + 'Pass --unscoped only if you deliberately want the whole-market comparison.');
+  }
   const ours = legs.buildOursLeg(program, s, { factsFromLp: true });
   const lp = legs.buildLpLeg(client, { withDisqualify: !flag('--no-disqualify') });
 

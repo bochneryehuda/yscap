@@ -761,3 +761,79 @@ above). Anything not in this list is **rejected 422** (`unsupported_field`).
 - `node scripts/test-lt-lp-agreement-run.js --sheet <sheet.json>` — the live ≥200-scenario
   agreement run (§2.2). Needs the Lender Price login + a sheet-under-test; reports the exact
   blocker and exits when either is absent. Run by hand, never in CI.
+
+---
+
+### §2.9 — THE E3 GATE CAN BE ASKED THE WRONG QUESTION, AND IT USED TO ANSWER CONFIDENTLY (2026-08-17)
+
+**A 299-scenario run reported `agreement 0.00% — 299/299 disagreed — GATE MET NO`,
+`{"disqualification_missing":276,"coupon_missing_ours":810}`. Our engine had NOT regressed.** The same
+battery, correctly scoped, agrees on 244/295 (§2.6). The 0.00% was a **mis-invocation of the runner**,
+and the runner reported it as a verdict.
+
+**What was actually wrong.** The run was launched with **no `--filter-*`**, so the Lender Price side was
+the **entire market**:
+
+- `normalizeLpDisqualified` returned **9,146 declined items across 20 lenders**. `detectDifferences`
+  fires `disqualification_missing` the moment *anything* in that set is declined — and on any real
+  scenario *somebody* always declines. So every scenario reported "LP declined this program; our engine
+  priced it", and that check short-circuits the price axes, which is why the categories look total.
+- `normalizeLpFull` merged **~30 DSCR programs across 16 lenders** into one ladder, so LP "offered"
+  coupons no single-investor sheet prices → `coupon_missing_ours`.
+
+Both numbers are measured, not inferred: probed live against one canonical scenario, unfiltered
+`declined = 9146`, `investor:'Deephaven Mortgage'` → `535`, family-scoped → the DSCR bands only.
+
+**The diagnosis discipline that mattered.** Before concluding the engine had regressed, the sheet and
+our leg were exercised directly: `gridToRateSheet(buildDeephavenGrid())` → 28 base prices, 0 problems;
+`rateSheetToProgram` → 146 rules; `buildOursLeg(...)` on a canonical scenario → `eligible:true`,
+28 rungs, `declines:[]`. A green engine behind a red gate means the **gate** is wrong. A control run at
+`--concurrency 1` (ruling out my own instrumentation change, since the disqualify poll is stateful)
+reproduced the 0.00% exactly — which is what sent the investigation to the filter rather than the run.
+
+**THE SECOND HALF, and it is a real defect, not just a CLI slip: scoping by investor is NOT enough.**
+Measured live — Lender Price splits **one** Deephaven DSCR rate sheet into **three PROGRAMS by DSCR
+band**:
+
+| LP program | on `dscr = 1.25` |
+|---|---|
+| `DSCR  1.00-1.24   -  30 Yr Fixed` | **priced** (28 options) |
+| `DSCR < 1.00  -  30 Yr Fixed` | **priced** (28 options) |
+| `DSCR  >= 1.25  - 30 Yr Fixed` | **declined** — *"DSCR >=1.25%  only eligible on this program"* |
+
+…and the same investor also sells Expanded Prime, Non Prime and ITIN, which decline on **every** DSCR
+scenario. So `investor:'Deephaven Mortgage'` alone still leaves 535 declines standing, and an **exact**
+`--filter-program` pins the comparison to one band LP may not have chosen — under which the band LP
+*did* decline becomes invisible and the disqualification check **silently passes**. Our sheet models the
+whole DSCR family as ONE program with the band as an additive adjustment, so the LP side has to be
+scoped to the **family**, which an exact name cannot express.
+
+**What was built.**
+
+1. **`programLike`** — a program-family pattern on `normalizeLpFull` / `normalizeLpDisqualified`
+   (`--filter-program-like` on the runner). Accepts a RegExp or a string, compiled case-insensitively;
+   an uncompilable pattern **throws** rather than degrading to "match everything", which is this exact
+   defect again. This is what finally makes the **disqualify side** of the E3 gate usable — it is why
+   every run so far has needed `--no-disqualify`, and it unblocks task #45.
+2. **The runner REFUSES an unscoped built-in run**, naming the flag that fixes it
+   (`--unscoped` is the deliberate escape hatch). A gate that answers confidently when it was asked the
+   wrong question is worse than one that refuses.
+
+The correct invocation is now:
+
+```
+node scripts/test-lt-lp-agreement-run.js \
+  --filter-investor "Deephaven Mortgage" --filter-program-like "^dscr" --concurrency 2
+```
+
+Test `scripts/test-lt-ppe-lp-program-family.js` (pure, offline, fixtures are the live shapes). Three
+mutations were each proven to turn it red: removing the disqualify-side family filter, making a broken
+pattern fail open, and disabling the runner's refusal.
+
+**STILL OPEN, and deliberately not guessed at.** Why LP selects the `1.00-1.24` band on a scenario whose
+`criteria.dscr` **is** 1.25 is unresolved. `DSCRRATIO` and the band SMO were removed deliberately
+(§37.9 / task #30) because sending `DSCRRATIO` was **measured** to cost a whole lender program
+(10 programs/281 options vs the frontend's 11/309; removing it restored exact parity). So the band
+selector LP actually uses is not yet identified, and re-enabling a token on that suspicion would trade a
+measured program loss for an unmeasured guess. Recorded here rather than acted on — it needs a capture
+of the frontend selecting a band, not a theory.
