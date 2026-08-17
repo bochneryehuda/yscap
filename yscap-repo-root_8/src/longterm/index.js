@@ -100,4 +100,16 @@ router.use('/dscr', require('./routes/dscr-pricer').makeRouter());
 // findings,scoreboard,quote,canary}
 router.use('/ppe', require('./routes/ppe'));
 
+// THE PASS THAT RUNS ON ITS OWN.
+//
+// Started HERE rather than from src/server.js on purpose: this module is the one
+// seam RTL is permitted to touch, and having it schedule its own background work
+// keeps the whole of Long-Term behind that one door. A second call from server.js
+// would be a second seam — exactly what the separation gate refuses.
+//
+// OFF by default (`LT_SYNC_ENABLED`), and it says so in the log either way. With
+// the switch off nothing is scheduled, so requiring this module — which a test or
+// a script may do — starts no timers and reads nothing.
+require('./sync/worker').start();
+
 module.exports = { router };

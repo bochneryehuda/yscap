@@ -711,6 +711,40 @@ Writes `lt_loans` and its sections, `lt_loan_contacts`, milestones. Records
 > fields as null that the full loan read populates. Never populate a decision-bearing
 > snapshot from a pipeline row.
 
+> **"Refreshing on a cadence" is now literally true — `src/longterm/sync/worker.js` (2026-08-17).**
+> Until it was written, every long-term mirror — the loans, their stage, their team, their lock,
+> the whole 1003, the Condition Center — filled ONLY when a human opened the Sync screen and
+> pressed a button, so a loan changed in Encompass overnight stayed stale until somebody
+> happened to notice. That is the same "built but never triggered" failure as a mirror with no
+> writer, one level up: every writer existed and nothing ever called them.
+>
+> It is **OFF by default** behind `LT_SYNC_ENABLED`, exactly as `ENCOMPASS_ENABLED` and
+> `CLICKUP_OUTBOUND_ENABLED` gate their own workers — and it SAYS so in the log either way,
+> because a worker that is silently off looks exactly like one that is broken. With the switch
+> off it schedules nothing, reads nothing and costs nothing, so it ships to every deployment as
+> it stands and changes none of them. `LT_SYNC_POLL_MIN` (default 20) and
+> `LT_SYNC_FIRST_RUN_SEC` (default 90) tune it.
+>
+> Four properties are load-bearing and must not be "simplified" away. **It is bounded by the
+> passes it calls, never by a limit of its own** — `loans.syncOnce` and `conditions.syncOnce`
+> each own their read budget and each report whether there is more to do; a worker with its own
+> idea of "how much" would be a second place for that to be got wrong on a tenant whose API
+> budget is shared with every other integration. **A pass never overlaps itself** — a tick that
+> lands while the previous one is still reading is SKIPPED, not queued, because queueing would
+> double our share of that shared budget and keep doing it on a slow tenant. **The two halves
+> are independent** — they read different things and fail for different reasons, so a loan pass
+> that threw still leaves the conditions read running, and each failure is reported rather than
+> swallowed. **Every timer fires a WRAPPED tick** — an unhandled rejection inside a timer takes
+> the whole process down, and a sync that kills the server is worse than a sync that misses an
+> hour.
+>
+> It is started by `src/longterm/index.js` — the ONE module `src/server.js` is permitted to
+> import — and NOT from `src/server.js` itself, which would be a second seam into Long-Term and
+> is exactly what the separation gate refuses. It schedules only reads: Encompass stays one-way.
+> Proved by `scripts/test-lt-sync-worker-pure.js` (no database, no tenant — both syncs are
+> replaced in the module cache so the real pass runs end to end against stubs, because a source
+> grep would prove a call exists, not that it happens).
+
 ### Phase 3 — The pipeline and the switch — **BUILT**
 `app-v2/src/longterm/**` comes into existence: the shell, the product switch, the pipeline
 table, filters, saved views, scope. **Ends with:** an officer signs in, flips to Long-Term,
