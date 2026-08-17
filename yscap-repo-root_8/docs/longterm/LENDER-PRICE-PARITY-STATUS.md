@@ -1227,3 +1227,66 @@ are provably different sets (so reading one for the other is detectable rather t
 `lpPrices`; the seven unmeasured facts re-asserted as `false`; the short-term-rental measurement dropped;
 the search-model derivation removed so the fact stops being transmitted; the screen reading `lpVisible`
 again; and the conflated flag re-published in the manifest. All 80 LT PPE suites + the DSCR suites pass.
+
+
+---
+
+### §2.18 — THE GATE WAS NOT CHECKING MAX PRICE OR MIN PRICE, AND IT WAS THE SAME FLAG BUG (2026-08-17)
+
+The owner's ⛔ HARD RULE names four things that must agree with Lender Price before a rate sheet may be
+built: every LLPA, every eligibility, every ineligibility, and *"you need to understand **max price and
+min price**"*. Three were gated and reported. The fourth was computed per rung by `boundsProbe` and then
+**thrown away** — `summarize()` never read `result.bounds`, and the live runner passed `skipBounds:
+builtin`, so on every live run the cap/floor axis was neither gated nor reported.
+
+**AND THE FLAG THAT HID IT WAS ONE FLAG ANSWERING TWO QUESTIONS — the same shape as §2.17, found hours
+apart in a different module.** `boundsProbe` makes two checks:
+
+| check | what it asks | can it be gated on the live sheet? |
+| --- | --- | --- |
+| `samePrice` | our final price == Lender Price's | **No** — FRAME-DEPENDENT: LP's displayed price carries the unreconciled origination/margin (task #78). Same question as the coarse `final_price` axis. |
+| `clampFaithful` | when WE clamped, the price equals OUR stated cap or floor | **Yes** — FRAME-FREE: pure arithmetic of our own engine, true in any frame. |
+
+`skipBounds` switched off both, so the frame-free check was lost for the frame-dependent one's reason.
+`runOne` now takes **`boundsGate`** naming which checks COUNT (a mis-spelled name throws rather than
+silently gating nothing), `summarize()` rolls the axis up, and the runner gates `['clampFaithful']`.
+
+**MEASURED BEFORE SWITCHING IT ON, over the whole 299-scenario battery — 7,168 rungs per grid:**
+
+| | default built-in grid | composed `--with-prepay` grid |
+| --- | --- | --- |
+| ceiling stated | **0 rungs** | 7,168 rungs |
+| floor stated | 7,168 | 7,168 |
+| clamped by the cap | 0 | **4,180** |
+| clamped by the floor | 106 | 57 |
+| best price | **110.500** | 104.750 (exactly the cap) |
+| `clampFaithful` false | **0** | **0** |
+
+Three things fall out, and the first is the one to act on:
+
+1. **The default live run — the run that produced the 86.10 % — prices against NO ceiling and quotes up
+   to 110.500, against an investor sheet whose own ceiling is 105.** That is not a new defect: the
+   max-price block deliberately lives in the `--with-prepay` grid and `deephaven-dscr-sheet.js` records
+   its absence in UNMEASURED. What was missing is that **nothing said so**, so a reader of the gate report
+   could not tell an agreed ceiling from one that was never tested. The report now prints the axis and
+   says outright: *"no ceiling was stated on any rung — this run TESTED no max price"*.
+2. **The caps genuinely bind** — 4,180 of 7,168 rungs on the composed grid, best price landing exactly on
+   104.750 (= 105 − the 0.25 holdback, LP's frame). A cap that clamps 58 % of the ladder is not a detail.
+3. **`clampFaithful` is false on zero rungs on either grid**, which is what makes gating it safe —
+   measured before the change, not hoped afterwards.
+
+`test-lt-ppe-bounds-axis.js` (28 assertions) pins the probe's two checks as independent, the per-check
+gate, the throw on an unknown check name, the roll-up, and all three measurements above — so the day the
+max-price block is folded into the default grid, this fails and forces a re-measure instead of quietly
+changing what the gate covers. **Six mutations were each proven to fail it**: the roll-up dropped again;
+`boundsGate` ignored; an unknown gate name silently accepted; `clampFaithful` softened; `boundBy` always
+reporting the cap; and the broken-clamp case, which passes unnoticed under the old blunt skip and fails
+under the new setting — the defect the change restores.
+
+**Correcting a stale claim while here:** `PPE-MASTER-PLAN-AND-STATUS.md` said `lp-normalize-full` "carries
+… max/min price". It does not, and never did — it carries base rates, adjustment points, margin and
+LLPAs. What Lender Price's payload publishes is a rung ladder; `client.parse` derives a `maxPrice` from it
+that is the **best observed price on the ladder, not a declared ceiling**, and the two must not be read as
+the same thing. Whether Lender Price declares a cap/floor field at all is **unmeasured** and needs a live
+capture — so the cap is checked today against our OWN stated limit (frame-free), never against a vendor
+number we do not have.

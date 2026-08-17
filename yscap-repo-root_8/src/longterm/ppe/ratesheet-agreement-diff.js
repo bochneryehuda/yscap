@@ -191,13 +191,30 @@ function reconcileLlpas(ourAdjustments, lpLlpas, opts = {}) {
 }
 
 /**
- * Max/min price probe for ONE matched rung.
+ * Max/min price probe for ONE matched rung — the owner's HARD-RULE item "you need to understand max
+ * price and min price", per rung.
  *   ourRung   — { finalPriceMilli, floorMilli, capMilli, clamped }
  *   lpPriceMilli — LP's post-bound final price (normalizeLpFull rung.priceMilli)
- * Asserts, EXACT (milli):
- *   (1) our final == LP's final (LP bounded it to the same number) — the load-bearing check;
- *   (2) when we clamped, the clamped value equals our stated cap or floor (our bound is faithful).
- * Returns { agree, checks:{samePrice, clampFaithful}, detail }.
+ *
+ * TWO CHECKS, AND THEY ARE INDEPENDENT — which is the whole reason they are reported separately:
+ *   (1) `samePrice`     — our final == LP's final. FRAME-DEPENDENT: it only means anything while both
+ *                         sides' prices are in the same frame. On the live Deephaven sheet LP's
+ *                         displayed price carries an origination/margin our composed price does not
+ *                         (task #78), so this check is expected to differ there and is reported rather
+ *                         than gated. It is also the same question the coarse `final_price` axis asks.
+ *   (2) `clampFaithful` — when WE clamped, the clamped value equals our own stated cap or floor.
+ *                         FRAME-FREE: it is entirely about our engine's own arithmetic, and it holds
+ *                         whatever frame the price is in. A missing cap/floor with clamped=true is a
+ *                         faithfulness failure.
+ * A single flag switching BOTH off (the old `skipBounds`) took the frame-free check down with the
+ * frame-dependent one, which is how the cap/floor axis came to be neither gated nor reported on every
+ * live run. The caller now chooses per check (`ratesheet-agreement.runOne` opts.boundsGate).
+ *
+ * It also reports what was actually EXERCISED, because an unexercised limit is not a verified one:
+ *   capStated / floorStated — did we state a limit at all for this rung;
+ *   clamped                 — did a limit actually BIND (a cap no price ever reaches is untested);
+ *   boundBy                 — 'cap' | 'floor' | null, which limit the price landed on.
+ * Returns { agree, checks:{samePrice, clampFaithful}, capStated, floorStated, clamped, boundBy, detail }.
  */
 function boundsProbe(ourRung, lpPriceMilli) {
   const r = ourRung || {};
@@ -205,15 +222,24 @@ function boundsProbe(ourRung, lpPriceMilli) {
   // clampFaithful is vacuously true when we did not clamp; when we did, the clamped price must equal a
   // stated limit (not a coincidence). A missing cap/floor with clamped=true is a faithfulness failure.
   let clampFaithful = true;
-  if (r.clamped === true) {
-    clampFaithful = (isNum(r.capMilli) && r.finalPriceMilli === r.capMilli)
-                 || (isNum(r.floorMilli) && r.finalPriceMilli === r.floorMilli);
-  }
+  const atCap = isNum(r.capMilli) && r.finalPriceMilli === r.capMilli;
+  const atFloor = isNum(r.floorMilli) && r.finalPriceMilli === r.floorMilli;
+  if (r.clamped === true) clampFaithful = atCap || atFloor;
   const agree = samePrice && clampFaithful;
   let detail = null;
   if (!samePrice) detail = `final price ${r.finalPriceMilli} vs LP ${lpPriceMilli}`;
   else if (!clampFaithful) detail = `clamped but final ${r.finalPriceMilli} is neither cap ${r.capMilli} nor floor ${r.floorMilli}`;
-  return { agree, checks: { samePrice, clampFaithful }, detail };
+  return {
+    agree,
+    checks: { samePrice, clampFaithful },
+    capStated: isNum(r.capMilli),
+    floorStated: isNum(r.floorMilli),
+    clamped: r.clamped === true,
+    // Only meaningful when a limit actually bound; the cap is reported first because a tie means the
+    // ceiling is what the price landed on either way.
+    boundBy: r.clamped === true ? (atCap ? 'cap' : (atFloor ? 'floor' : null)) : null,
+    detail,
+  };
 }
 
 module.exports = { reconcileLlpas, boundsProbe, lpLlpaDimension, deephavenLpDimension, _internals: { ADJTYPE_TO_DIMENSION, norm } };

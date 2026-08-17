@@ -139,10 +139,24 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
     // --with-prepay it is a measured axis and ignoring it would hide the very thing that was turned on.
     ignoreDimensions: (builtin && !withPrepay) ? ['prepay'] : undefined,
     // The rate-sheet AGREEMENT is eligibility + base price + itemized LLPAs. LP's displayed price and
-    // adjustmentPoints carry an unreconciled origination/margin (NOT the LLPAs), and Deephaven has no
-    // cap/floor — so those net-price axes are a compensation-layer question, reported but not gated.
+    // adjustmentPoints carry an unreconciled origination/margin (NOT the LLPAs), so those net-price axes
+    // are a compensation-layer question (task #78), reported but not gated.
     coarseIgnore: builtin ? ['final_price', 'llpa_total', 'margin'] : undefined,
-    skipBounds: builtin,
+    // ⛔ CAP/FLOOR: gate the FRAME-FREE check only, and never the blunt `skipBounds`.
+    //
+    // The owner's HARD RULE names max price and min price among the things that must AGREE, and this
+    // runner used to pass `skipBounds: builtin` — one flag that switched off BOTH of boundsProbe's
+    // checks. `samePrice` genuinely cannot be gated here (it is the same origination/margin gap as
+    // `final_price` above), but `clampFaithful` is pure arithmetic of our own and has nothing to do with
+    // the frame — so it went un-gated for no reason, and the cap/floor axis was neither gated NOR
+    // reported on every live run.
+    //
+    // MEASURED OFFLINE 2026-08-17 over the whole 299-scenario battery before switching this on, so it
+    // cannot newly fail a live run by surprise: 7,168 rungs on each grid, `clampFaithful` false on ZERO.
+    // What the same measurement found is worth reading in the bounds line below — the DEFAULT built-in
+    // grid states NO ceiling at all (the max-price block lives in the --with-prepay grid), and prices up
+    // to 110.500 against an investor sheet whose own ceiling is 105.
+    boundsGate: builtin ? ['clampFaithful'] : undefined,
     concurrency: Number(arg('--concurrency', '2')) || 2,
     onResult,
   });
@@ -161,6 +175,21 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
   // vs real surprises (a cell we DO encode got a number wrong, or something unexpected). BOTH block the gate.
   if (summary.pendingEncodeFamilies && summary.pendingEncodeFamilies.length) console.log(`  pending encode ${summary.pendingEncodeFamilies.join(', ')}  (known-unmeasured families — §2.6 / task #62)`);
   if (summary.surprises && summary.surprises.length) console.log(`  ⚠ surprises   ${summary.surprises.join(', ')}  (a cell we DO encode disagrees — investigate)`);
+  // THE CAP/FLOOR AXIS, STATED. It used to be computed per rung and dropped, so a reader had no way to
+  // tell an agreed ceiling from one nothing ever tested. `capStated 0` means this run priced against NO
+  // ceiling; `clamped 0` means every limit stated was stated and never reached — an unexercised limit is
+  // not a verified one, and only a run that BINDS a limit can say anything about it.
+  {
+    const b = summary.bounds;
+    if (b && b.rungsProbed) {
+      const gated = (b.gated && b.gated.length) ? b.gated.join(', ') : 'none';
+      const ungated = (b.ungated && b.ungated.length) ? b.ungated.join(', ') : 'none';
+      console.log(`  cap/floor     rungs ${b.rungsProbed} · cap stated ${b.capStated} · floor stated ${b.floorStated} · clamped ${b.clamped} (by cap ${b.boundByCap}, by floor ${b.boundByFloor})`);
+      console.log(`                gated: ${gated} · reported only: ${ungated}${Object.keys(b.failures).length ? ` · failures ${JSON.stringify(b.failures)}` : ''}`);
+      if (!b.capStated) console.log('                ⚠ no ceiling was stated on any rung — this run TESTED no max price (the max-price block is the --with-prepay grid)');
+      else if (!b.clamped) console.log('                ⚠ a ceiling was stated but never reached — this run did not exercise it');
+    }
+  }
   if (summary.disagreeing.length) console.log(`  disagreeing   ${summary.disagreeing.slice(0, 10).join(' | ')}${summary.disagreeing.length > 10 ? ' …' : ''}`);
   console.log(`  GATE MET      ${summary.gateMet ? 'YES' : 'NO'}`);
 

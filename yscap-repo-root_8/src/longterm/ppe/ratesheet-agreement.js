@@ -106,12 +106,35 @@ function errorVerdict(tag, side, e) {
  *              Deephaven harness passes ratesheet-agreement-diff.deephavenLpDimension); default folds by
  *              adjType only,
  *            ignoreDimensions     — LP dimensions to drop from the fine reconcile (e.g. ['prepay'] while
- *              our sheet does not model prepay yet — surfaced separately, not counted as a disagreement) }
+ *              our sheet does not model prepay yet — surfaced separately, not counted as a disagreement),
+ *            boundsGate           — which boundsProbe checks COUNT toward agreement, by name
+ *              (`samePrice` / `clampFaithful`). Default: both. Everything not gated is still fully
+ *              reported and rolled up by summarize(), so a skipped check is STATED, never silent.
+ *            skipBounds           — legacy blunt form of `boundsGate: []` (gate no bounds check). Kept
+ *              meaning exactly what it always meant so no caller's gate moves; prefer boundsGate. }
  */
+// The probe's checks, and the default gate (all of them). Named here so `boundsGate` can be validated
+// rather than silently ignoring a typo — a mis-spelled check name would otherwise read as "gated" while
+// gating nothing, which is the failure mode this whole change exists to remove.
+const BOUNDS_CHECKS = ['samePrice', 'clampFaithful'];
+
+function resolveBoundsGate(o) {
+  if (o.skipBounds) return [];
+  const raw = o.boundsGate;
+  if (raw == null) return BOUNDS_CHECKS.slice();
+  const list = Array.isArray(raw) ? raw : [raw];
+  const unknown = list.filter((n) => !BOUNDS_CHECKS.includes(n));
+  if (unknown.length) throw new Error(`unknown boundsGate check(s): ${unknown.join(', ')} (known: ${BOUNDS_CHECKS.join(', ')})`);
+  return list.slice();
+}
+
 async function runOne(scenario, ours, lp, opts) {
   const o = opts || {};
   const tag = scenario && scenario._label ? scenario._label : describeScenario(scenario);
   const rateTol = isNum(o.rateToleranceMilli) ? o.rateToleranceMilli : 0;
+  // Resolved BEFORE either engine leg runs: a bad gate spec is a caller bug and must surface as a
+  // throw, not as an `engine_error` verdict blamed on the pricing engine.
+  const boundsGate = resolveBoundsGate(o);
 
   let our; let legs;
   try { our = await ours(scenario); } catch (e) { return errorVerdict(tag, 'ours', e); }
@@ -157,16 +180,32 @@ async function runOne(scenario, ours, lp, opts) {
         lpr.priceMilli,
       );
       if (!rec.agree) reconcileAgree = false;
-      if (!bp.agree) boundsAgree = false;
+      // GATE PER CHECK, not per probe. `boundsGate` names which of the probe's checks count toward
+      // agreement; the rest are still fully reported. This exists because the two checks answer
+      // independent questions (see boundsProbe): `samePrice` is FRAME-DEPENDENT and on the live
+      // Deephaven sheet is the known origination/margin gap (task #78), while `clampFaithful` is
+      // frame-free and is the only thing that ever verified our cap/floor arithmetic at all.
+      for (const name of boundsGate) if (bp.checks[name] === false) boundsAgree = false;
       rungReconciles.push({ rate: orr.rate, agree: rec.agree, worstDeltaMilli: rec.worstDeltaMilli, itemized: rec.itemized });
-      bounds.push({ rate: orr.rate, agree: bp.agree, checks: bp.checks, detail: bp.detail });
+      bounds.push({
+        rate: orr.rate,
+        agree: bp.agree,
+        gatedAgree: boundsGate.every((name) => bp.checks[name] !== false),
+        checks: bp.checks,
+        capStated: bp.capStated,
+        floorStated: bp.floorStated,
+        clamped: bp.clamped,
+        boundBy: bp.boundBy,
+        detail: bp.detail,
+      });
     }
   }
-  // The FINE gate is the per-dimension LLPA reconcile ALWAYS; the cap/floor bounds probe counts unless
-  // skipped. `skipBounds` is for a sheet with no cap/floor whose net price carries a margin the
-  // rate-sheet agreement is not about (Deephaven: the displayed price is base net of an unreconciled
-  // origination/margin, so the net-price comparison is a compensation-layer question, not an LLPA one).
-  const fineAgree = reconcileAgree && (o.skipBounds ? true : boundsAgree);
+  // The FINE gate is the per-dimension LLPA reconcile ALWAYS, plus whichever bounds checks `boundsGate`
+  // names. `skipBounds:true` is the blunt legacy form (gate NO bounds check) and is kept meaning exactly
+  // what it always meant, so no caller's gate moves under it; prefer `boundsGate` — switching one flag
+  // off used to take the frame-free cap/floor check down with the frame-dependent price comparison, and
+  // that is how the cap/floor axis came to be neither gated NOR reported on every live run.
+  const fineAgree = reconcileAgree && boundsAgree;
 
   // INCOMPARABLE = LP gave no usable signal for our filter (not ready / nothing matched). A both-decline
   // is NOT incomparable — it is a real ELIGIBILITY agreement (the owner's "run a few ineligible ones and
@@ -192,6 +231,9 @@ async function runOne(scenario, ours, lp, opts) {
     coarse,
     rungReconciles,
     bounds,
+    // Which bounds checks GATED this verdict. Carried on the result (not only in the caller's opts) so
+    // summarize() can report the ungated ones as ungated rather than as passing.
+    boundsGate,
     worstDeltaMilli,
   };
 }
@@ -247,11 +289,40 @@ function summarize(results) {
   const byDimensionStatus = {};  // dimension -> { llpa_mismatch, llpa_missing_ours, llpa_extra_ours }
   const byStatus = {};           // status -> total across every dimension
   const disagreeing = [];
+  // THE CAP/FLOOR AXIS, ROLLED UP — the owner's HARD RULE names max price and min price among the things
+  // that must agree, and until now the probe's answer was computed per rung and then dropped on the
+  // floor here. Counting it is what turns "we skipped that" into something a reader can see.
+  const bounds = {
+    rungsProbed: 0,
+    capStated: 0,      // rungs where our engine stated a ceiling at all
+    floorStated: 0,
+    clamped: 0,        // rungs where a limit actually BOUND — an unexercised limit is not a tested one
+    boundByCap: 0,
+    boundByFloor: 0,
+    failures: {},      // check name -> rungs where it failed (gated or not)
+    gated: null,       // which checks counted toward agreement (null until a result says)
+    ungated: [],
+  };
   for (const r of list) {
     if (!r) continue;
     if (r.error) { errors += 1; continue; }
     if (r.incomparable) { incomparable += 1; continue; }
     if (r.agree) { agreed += 1; } else { disagreed += 1; disagreeing.push(r.scenario); }
+    if (Array.isArray(r.boundsGate)) {
+      bounds.gated = r.boundsGate.slice();
+      bounds.ungated = BOUNDS_CHECKS.filter((n) => !r.boundsGate.includes(n));
+    }
+    for (const b of (r.bounds || [])) {
+      bounds.rungsProbed += 1;
+      if (b.capStated) bounds.capStated += 1;
+      if (b.floorStated) bounds.floorStated += 1;
+      if (b.clamped) bounds.clamped += 1;
+      if (b.boundBy === 'cap') bounds.boundByCap += 1;
+      if (b.boundBy === 'floor') bounds.boundByFloor += 1;
+      for (const name of Object.keys(b.checks || {})) {
+        if (b.checks[name] === false) bounds.failures[name] = (bounds.failures[name] || 0) + 1;
+      }
+    }
     for (const d of ((r.coarse && r.coarse.differences) || [])) {
       byCategory[d.category] = (byCategory[d.category] || 0) + 1;
     }
@@ -298,6 +369,10 @@ function summarize(results) {
     byDimension,
     byDimensionStatus,
     byStatus,
+    // `bounds.clamped === 0` is the honest headline for the cap/floor axis: every limit our engine
+    // stated was stated and never reached, so this run did not TEST one. A limit that never binds
+    // cannot be confirmed by a run, only refuted by one.
+    bounds,
     pendingEncodeFamilies,
     surprises,
     disagreeing: disagreeing.slice(0, 50),

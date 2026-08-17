@@ -462,10 +462,20 @@ fields/Excel-grid→rule design; the disqualify-always workflow + troubleshooter
       deterministic, many axes, truncation-reported) + `parity-review.reviewScenario` +
       `parity-detectors` (base_price / final_price / coupon / margin / **llpa_total** differences AND
       `disqualification_missing`/`_extra`) + `lp-normalize-full` (carries base rates, adjustment points,
-      **max/min price**, margin, LLPAs in canonical milli units). The one thin piece to add is a
-      per-investor grid-validation report that composes them over the ≥200 battery and emits a
-      per-scenario pass/fail (eligible price+LLPA+cap/floor match AND disqualify match), plus the summary
-      "we agree on N/200, here is every disagreement."
+      margin, LLPAs in canonical milli units). The one thin piece to add is a per-investor
+      grid-validation report that composes them over the ≥200 battery and emits a per-scenario pass/fail
+      (eligible price+LLPA+cap/floor match AND disqualify match), plus the summary "we agree on N/200,
+      here is every disagreement."
+      - **CORRECTED 2026-08-17 (§2.18 of the parity status): `lp-normalize-full` does NOT carry max/min
+        price** — the claim above said it did, and it never has. Lender Price's payload publishes a rung
+        LADDER; `client.parse` derives a `maxPrice` from it that is the **best observed price on that
+        ladder, not a declared ceiling**, and the two must never be read as the same thing. Whether the
+        vendor declares a cap/floor field at all is UNMEASURED and needs a live capture. The cap/floor
+        axis is therefore checked against **our own** stated limit (frame-free) — `boundsProbe` +
+        `runOne` opts.boundsGate + the `summary.bounds` roll-up — never against a vendor number we do
+        not have. MEASURED at the same time: the DEFAULT built-in Deephaven grid states no ceiling at
+        all and prices to 110.500 against a sheet whose ceiling is 105 (the max-price block is the
+        `--with-prepay` grid, where 4,180 of 7,168 rungs clamp at the cap).
     - **BLOCKED on two owner action items (both in Part 4):** (a) the Lender Price login was exposed in
       chat and is compromised — ROTATE it before any live scenario runs; (b) the actual Deephaven Excel
       (`Corr_Flow_Rate_Sheet__T0__Excel.xlsx`) so the grid is built from the real cells, not the written
