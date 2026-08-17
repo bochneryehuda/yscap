@@ -78,6 +78,10 @@ function deephavenLpDimension(llpa) {
   if (t === 'simplerateadjustment') {
     if (/dscr\s*ratio/i.test(r)) return 'dscr';
     if (/prepay/i.test(r)) return 'prepay';
+    // the three "Other - …" add-on families measured live 2026-08-17, all SimpleRateAdjustment.
+    if (/interest\s*only/i.test(r)) return 'interest_only';
+    if (/escrow\s*waiver/i.test(r)) return 'escrow_waiver';
+    if (/non.?warrantable/i.test(r)) return 'non_warrantable';
     return `other:${norm(r) || 'simple'}`;
   }
   if (t === 'statesrateadjustment') return 'state';

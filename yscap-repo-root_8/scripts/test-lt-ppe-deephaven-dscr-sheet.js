@@ -99,13 +99,49 @@ function addCheck(label, cltv, extra, dim, lpVal) {
 ADDON_CLTV.forEach((cltv, i) => {
   addCheck('cashout≥720', cltv, { purpose: 'cashout', fico: 760 }, 'cashout', LP_TABLES.CASHOUT_GE720_BY_CLTV[i]);
   addCheck('cashout<720', cltv, { purpose: 'cashout', fico: 700 }, 'cashout', LP_TABLES.CASHOUT_LT720_BY_CLTV[i]);
-  addCheck('condo', cltv, { property_type: 'Condo' }, 'property_type', LP_TABLES.CONDO_BY_CLTV[i]);
+  // a WARRANTABLE condo (non_warrantable false) still fires the Condo line under the new gate.
+  addCheck('condo', cltv, { property_type: 'Condo', non_warrantable: false }, 'property_type', LP_TABLES.CONDO_BY_CLTV[i]);
   addCheck('units2', cltv, { property_type: 'Unit2_4', units: 2 }, 'units', LP_TABLES.UNITS_BY_CLTV[i]);
+  // the FOUR families measured live 2026-08-17 (interest-only, escrow-waiver, non-warrantable).
+  addCheck('io', cltv, { interest_only: true }, 'interest_only', LP_TABLES.IO_BY_CLTV[i]);
+  addCheck('escrow', cltv, { escrow_waiver: true }, 'escrow_waiver', LP_TABLES.ESCROW_BY_CLTV[i]);
+  addCheck('nonwarr', cltv, { property_type: 'Condo', non_warrantable: true }, 'non_warrantable', LP_TABLES.NONWARR_BY_CLTV[i]);
 });
-ok(addOk === addChk, `all ${addChk} add-on (cash-out/condo/units) values reproduce Lender Price${addMiss.length ? ' — ' + addMiss.slice(0, 5).join(' | ') : ''}`);
+ok(addOk === addChk, `all ${addChk} add-on (cash-out/condo/units/io/escrow/non-warrantable) values reproduce Lender Price${addMiss.length ? ' — ' + addMiss.slice(0, 5).join(' | ') : ''}`);
 // a non-add-on scenario carries NONE of the add-on dimensions (the predicates never fire)
 const plain = addonAt(70, {});
-ok(!(plain.m.cashout) && !(plain.m.property_type) && !(plain.m.units), 'a plain purchase SFR fires no add-on LLPA');
+ok(!(plain.m.cashout) && !(plain.m.property_type) && !(plain.m.units) && !(plain.m.interest_only) && !(plain.m.escrow_waiver) && !(plain.m.non_warrantable) && !(plain.m.loan_amount), 'a plain purchase SFR fires no add-on LLPA');
+// a NON-warrantable condo emits the Non-Warrantable line INSTEAD of the plain Condo line (measured).
+const nwCondo = addonAt(75, { property_type: 'Condo', non_warrantable: true });
+ok(nwCondo.eligible && nwCondo.m.non_warrantable === 1000 && !nwCondo.m.property_type, 'a non-warrantable condo fires Non-Warrantable (+1.000 @75) and SUPPRESSES the Condo line');
+
+// ---- loan-amount family (2D: tier × CLTV), measured 2026-08-17 -------------------------------
+// a dedicated helper sizes value so the loan lands squarely in a CLTV band AND a loan-amount tier.
+function loanAmtAt(loan, cltv) {
+  const value = Math.round(loan / (cltv / 100));
+  return stack({ fico: 760, loan, value, ltv: cltv * 1000, dscr: 1250, state: 'CA', purpose: 'purchase', loan_amount: loan });
+}
+let laOk = 0; let laChk = 0; const laMiss = [];
+function laCheck(label, loan, cltv, i, table) {
+  laChk += 1;
+  const exp = table[i]; // number (a real value), 0 (no line), or null (n/e — the matching container declines)
+  const s = loanAmtAt(loan, cltv);
+  const got = s.eligible ? (s.m.loan_amount || 0) : 'ineligible';
+  // a null (n/e) band: our sheet emits no priced line (the inferred LTV cap is a separate open item), so
+  // we assert NO loan_amount line there — never a guessed price.
+  const want = (exp == null) ? 0 : Math.round(exp * 1000);
+  if (got === want) laOk += 1; else laMiss.push(`${label} cltv${cltv}: want ${want} got ${got}`);
+}
+ADDON_CLTV.forEach((cltv, i) => {
+  laCheck('loan>1.5M', 1600000, cltv, i, LP_TABLES.LOANAMT_GT_1_5M_BY_CLTV);
+  laCheck('loan>2.0M', 2100000, cltv, i, LP_TABLES.LOANAMT_GT_2_0M_BY_CLTV);
+  laCheck('loan<150k', 140000, cltv, i, LP_TABLES.LOANAMT_LT_150K_BY_CLTV);
+  laCheck('loan<125k', 120000, cltv, i, LP_TABLES.LOANAMT_LT_125K_BY_CLTV);
+});
+ok(laOk === laChk, `all ${laChk} loan-amount (>1.5M / >2M / <150k / <125k × CLTV) values reproduce Lender Price${laMiss.length ? ' — ' + laMiss.slice(0, 6).join(' | ') : ''}`);
+// tier selection is mutually exclusive: $2.1M fires the >2.0M tier, NOT >1.5M; $120k fires <125k, NOT <150k.
+const t21 = loanAmtAt(2100000, 60); const t120 = loanAmtAt(120000, 50);
+ok(t21.m.loan_amount === 375 && t120.m.loan_amount === 1750, 'loan-amount tiers are mutually exclusive (most-specific fires: $2.1M→>2M @60=0.375, $120k→<125k @50=1.750)');
 
 // ---- base price ladder (price = 100 − basePoints) ---------------------------------------------
 const l = stack({ fico: 780, loan: 350000, value: 500000, ltv: 70000, dscr: 1250, state: 'CA', purpose: 'purchase', loan_amount: 350000 }).ladder;
@@ -158,7 +194,7 @@ ok(stack({ fico: 640, loan: 250000, value: 500000, ltv: 50000, dscr: 1250, state
 ok(stack({ fico: 760, loan: 350000, value: 500000, ltv: 70000, dscr: 950, state: 'CA', purpose: 'purchase', loan_amount: 350000 }).eligible, 'DSCR 0.95 at 70% LTV still prices (within the <1.00 caps)');
 
 // ---- what is deliberately NOT in the sheet is recorded (never guessed) --------------------------
-ok(Array.isArray(UNMEASURED) && UNMEASURED.length >= 3, 'UNMEASURED lists the axes deliberately not encoded yet (loan-amount/prepay/IO/escrow/cashout-<720@80)');
+ok(Array.isArray(UNMEASURED) && UNMEASURED.length >= 3, 'UNMEASURED lists the axes deliberately not encoded yet (loan-amount n/e cells, the deferred prepay-structure LLPA, SFR non-warrantable, cashout-<720@80)');
 
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

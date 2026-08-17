@@ -87,6 +87,10 @@ function lpScenarioToFacts(s) {
     cashout_amount: num(sc.cashoutAmount) || 0,
     interest_only: !!(sc.io || sc.interestOnly),
     escrow_waiver: !!(sc.escrowWaive || sc.escrowWaiver),
+    // non-warrantable (condo/project) — the LP `nonWarrantable` flag. Feeds the Deephaven
+    // `Other - Non-Warrantable` add-on LLPA (measured live 2026-08-17), which REPLACES the plain Condo
+    // line on a non-warrantable condo (the condo add-on is gated `non_warrantable != true`).
+    non_warrantable: !!(sc.nonWarrantable || sc.non_warrantable || sc.nonWarrantableProject),
     lock_days: num(sc.lock_days) || 30,
     // Layer-2/Layer-3 facts the pricer carries but this converter used to DROP, so a live LP scenario
     // could never trip the subordinate-not-allowed rule (deephaven-matrix reads f.subordinate_amount)
